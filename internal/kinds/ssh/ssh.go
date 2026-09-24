@@ -915,6 +915,12 @@ func (se *session) answerRequest(clientCh, upCh cssh.Channel, r *cssh.Request, s
 		}
 	case "subsystem":
 		name := sshStringPayload(r.Payload)
+		// A subsystem starts a program just as shell and exec do.  Do not
+		// let it bypass the command fixed by the certificate, including
+		// through the separately inspected SFTP path below.
+		if se.forceCommand != "" {
+			return se.runForced(clientCh, upCh, r, startPump, st)
+		}
 		if !se.policy.subsystems[name] {
 			se.refuseRequest(r, "subsystem_refused", name)
 			return true
