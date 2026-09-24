@@ -4210,7 +4210,7 @@ where something changed.
 Filters are middleware instances attached to routes; the built-in kinds
 are `header_guard`, `basic_auth`, `api_key`, `openapi`, `graphql`,
 `upload_guard`, `sensitive_data`, `account_guard`, `body_rewrite`,
-`bot_score`, `oidc`, `saml_sp` and `wasm` (`xproxyctl filters` lists what the binary has;
+`bot_score`, `oidc`, `saml_sp`, `xml_guard` and `wasm` (`xproxyctl filters` lists what the binary has;
 [EXTENDING.md](EXTENDING.md) shows how to add one).
 
 ```yaml

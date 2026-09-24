@@ -14689,6 +14689,228 @@ The access log carries \fBsaml_user\fR for requests with a session and \fBflow: 
 \fBSingle logout is not implemented, on purpose.\fR \fBlogout_path\fR clears the session at this proxy; signing out at the provider is the provider\(aqs own page. A SAML logout request arrives as a cross\-site POST or redirect carrying a name identifier, which is a way to sign other people out, and the response half needs a signed document sent \fIto\fR a provider \[u2014] a different set of machinery for a feature whose safe part (forgetting the session here) needs none of it. Sessions are short and the provider\(aqs own \fBSessionNotOnOrAfter\fR caps them.
 .PP
 \fBRelay state is not the binding.\fR The filter sends a digest of its own state cookie as \fBRelayState\fR and refuses a response that returns a different one, but the binding that matters is \fBInResponseTo\fR against the request identifier sealed in that cookie, checked on both the response element and the subject confirmation. A provider that drops \fBRelayState\fR entirely still works.
+.SS "Kind \fBxml_guard\fR"
+.PP
+Decides whether an XML request body is one the application should see.
+.PP
+The WAF reads bodies as text and the \fBopenapi\fR filter validates JSON; between them sits every XML and SOAP API with neither. XML is also the format with the oldest and most reliable parser attacks, and all of them arrive the same way:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+an \fBexternal entity\fR that reads a file off the machine (\fB<!ENTITY x SYSTEM "file:///etc/passwd">\fR) or makes a request from inside the network on the application\(aqs behalf;
+.PP
+.ti -3n
+\(bu
+\fBentity expansion\fR \[u2014] the billion laughs \[u2014] that turns a kilobyte into gigabytes of heap inside the application\(aqs parser;
+.PP
+.ti -3n
+\(bu
+\fBparameter entity\fR loops and external DTD fetches.
+.RE
+.PP
+.PP
+Every one of those needs a document type declaration or an entity reference in the body, and a gateway cannot know how the application\(aqs parser is configured \[u2014] the defaults of most XML libraries were unsafe for years. So this refuses the shapes those attacks need before that parser sees them, and names which shape it refused.
+.PP
+.TS
+allbox;
+lbw(1.3i) lbw(0.8i) lbw(1.3i) lbx
+lw(1.3i) lw(0.8i) lw(1.3i) lx.
+T{
+Option
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBcontent_\:types\fR
+T}	T{
+list
+T}	T{
+\fBapplication/\:xml\fR,\: \fBtext/\:xml\fR,\: \fBapplication/\:soap+xml\fR,\: \fB+xml\fR
+T}	T{
+Media types to read. An entry beginning \fB+\fR matches any type ending in it,\: which is how the registry marks an XML format. Parameters (\fB; charset=\:\[u2026]\fR) are ignored
+T}
+T{
+\fBmethods\fR
+T}	T{
+list
+T}	T{
+\fB[POST,\: PUT,\: PATCH]\fR
+T}	T{
+Methods with a body worth reading
+T}
+T{
+\fBmax_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB1048576\fR
+T}	T{
+Bound on the document. A larger body is \fBrefused\fR,\: not passed uninspected: an oversize document must not be the way past the filter. 64 to 64 MiB
+T}
+T{
+\fBmax_\:depth\fR
+T}	T{
+int
+T}	T{
+\fB64\fR
+T}	T{
+Element nesting: the first thing an expansion attack spends. 1 to 10000
+T}
+T{
+\fBmax_\:elements\fR
+T}	T{
+int
+T}	T{
+\fB50000\fR
+T}	T{
+Elements in the document
+T}
+T{
+\fBmax_\:attributes\fR
+T}	T{
+int
+T}	T{
+\fB64\fR
+T}	T{
+Attributes on one element
+T}
+T{
+\fBmax_\:name_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB256\fR
+T}	T{
+An element or attribute name
+T}
+T{
+\fBmax_\:text_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB65536\fR
+T}	T{
+One run of character data,\: one CDATA section,\: one attribute value
+T}
+T{
+\fBallow_\:cdata\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+CDATA sections. On by default because ordinary XML APIs use them
+T}
+T{
+\fBallow_\:comments\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Comments
+T}
+T{
+\fBallow_\:processing_\:instructions\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Processing instructions beyond the XML declaration,\: which is always allowed
+T}
+T{
+\fBrequire_\:root\fR
+T}	T{
+element name
+T}	T{
+none
+T}	T{
+The local name the root element must have
+T}
+T{
+\fBrequire_\:root_\:namespace\fR
+T}	T{
+URI
+T}	T{
+none
+T}	T{
+With \fBrequire_\:root\fR,\: the namespace that name must be in. Needs \fBrequire_\:root\fR: a namespace with no name allows any element of it
+T}
+T{
+\fBallow_\:elements\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+When set,\: every local name the document may use. Must contain \fBrequire_\:root\fR,\: or nothing would load
+T}
+T{
+\fBdeny_\:elements\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Local names no element may have,\: whatever the allow list says
+T}
+T{
+\fBstatus\fR
+T}	T{
+4xx
+T}	T{
+\fB400\fR
+T}	T{
+What a refusal answers
+T}
+T{
+\fBreason\fR
+T}	T{
+string
+T}	T{
+the filter name
+T}	T{
+Deny reason in logs,\: counters and ban triggers
+T}
+T{
+\fBreport\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Log what would have been refused (\fBxml_\:would_\:refuse\fR in the access log) and refuse nothing: for turning the filter on in front of traffic nobody has read yet
+T}
+.TE
+.PP
+A refusal\(aqs detail names the rule: \fBxml_doctype\fR, \fBxml_entity\fR, \fBxml_cdata\fR, \fBxml_comment\fR, \fBxml_processing_instruction\fR, \fBxml_size\fR, \fBxml_depth\fR, \fBxml_elements\fR, \fBxml_attributes\fR, \fBxml_name_length\fR, \fBxml_text_length\fR, \fBxml_encoding\fR, \fBxml_root\fR, \fBxml_element\fR or \fBxml_malformed\fR. The body is read whole and replayed byte for byte, so the application receives exactly what the client sent.
+.PP
+A SOAP endpoint, which is the common case:
+.PP
+.RS 4
+.nf
+.ft CR
+filters:
+  \- name: soap
+    kind: xml_guard
+    options:
+      content_types: [application/soap+xml, text/xml]
+      require_root: Envelope
+      require_root_namespace: http://schemas.xmlsoap.org/soap/envelope/
+      max_bytes: 262144
+      max_depth: 32
+      allow_processing_instructions: false
+.ft
+.fi
+.RE
+.PP
+\fBSchema validation is deliberately not implemented.\fR XSD is a language with its own parser, its own imports and its own denial\-of\-service history; a gateway that fetched and interpreted one would add a larger attack surface than it removed, and the application already has the schema. \fBrequire_root\fR, \fBrequire_root_namespace\fR, \fBallow_elements\fR and \fBdeny_elements\fR are a positive model of the document\(aqs shape without a schema language in the middle \[u2014] the same trade the positive security policy makes for the rest of a request. A malformed document is refused rather than forwarded, because two parsers disagree about what a malformed document means and that disagreement is where the interesting bugs live.
 .SS "Kind \fBwasm\fR"
 .PP
 Runs a WebAssembly module per request in a sandbox. The module follows the ABI in EXTENDING.md (exports \fBxproxy_abi_version\fR, \fBxproxy_alloc\fR, \fBxproxy_on_request\fR, optionally \fBxproxy_on_response\fR; imports \fBget\fR, \fBset_header\fR, \fBremove_header\fR, \fBdeny\fR, \fBlog\fR, \fBlog_attr\fR from module \fBxproxy\fR). It is read and compiled at load and on reload; a broken module or a wrong ABI version is a load error.

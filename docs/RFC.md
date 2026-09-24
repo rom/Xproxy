@@ -242,6 +242,7 @@ document, with the parts of each that are implemented.
 | 9530 | Digest Fields | Full | The body digest an origin signature covers |
 | 3507 | Internet Content Adaptation Protocol (ICAP) | Full | `REQMOD` and `RESPMOD` with preview and `204 No Content` |
 | 2046 | MIME Part Two: Media Types | Full | Multipart parsing |
+| 4918 / 3023 | XML Media Types | Partial | An XML request body is scanned before the application parses it: no document type declaration, no entity reference but the five predefines, bounded depth, elements, attributes, names and text. XSD validation is deliberately not implemented; see CONFIG.md |
 
 ## Addressing, logging and operations
 

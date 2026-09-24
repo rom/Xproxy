@@ -3500,6 +3500,43 @@ Under attack, a full table is the design working. In ordinary traffic it
 means a key that never repeats — a header value with a timestamp in it,
 a path with an id — and the fix is the key, not the bound.
 
+## XML and SOAP bodies
+
+**Everything is refused with `xml_doctype`.** The client is sending a
+document type declaration. That is refused whole and on purpose: it is
+where an external entity, an external DTD and entity expansion live, and
+this proxy cannot know what the application's parser would do with one.
+Most XML libraries emit a `<!DOCTYPE>` only when asked to; the fix is on
+the client side. There is no option to allow it.
+
+**`xml_entity` on documents that look fine.** The body references an entity
+that is not one of the five XML predefines (`&lt;` `&gt;` `&amp;` `&quot;`
+`&apos;`). Anything else is a reference to something the document did not
+carry, which is the external entity attack. A client that means a literal
+character should send a character reference (`&#233;`) or the character
+itself.
+
+**`xml_size` where the body is not that large.** `max_bytes` bounds the
+document, and an oversize body is refused rather than passed uninspected —
+otherwise a large document would be the way past the filter. Raise
+`max_bytes` for an API that genuinely sends them; do not turn the filter
+off for that route.
+
+**`xml_root` after a deployment.** The service moved namespace or the
+client is posting to the wrong endpoint. `require_root_namespace` compares
+the root's own declarations, so a client that dropped the `xmlns` on the
+envelope fails here even though the local name is right.
+
+**`xml_malformed` on documents the application used to accept.** Some
+parsers accept mismatched tags, duplicate attributes and unquoted values;
+this does not, because two parsers disagreeing about a malformed document
+is where the interesting bugs are. The detail says which rule and at which
+byte.
+
+**Turning the filter on without breaking anybody.** `report: true` logs
+`xml_would_refuse` with the rule and refuses nothing. Leave it on for a
+day, read the access log, then turn it off.
+
 ## Early hints, early data and trailers
 
 **Clients get a 425 on POSTs and nothing else changed.** A terminating

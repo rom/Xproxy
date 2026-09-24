@@ -5779,6 +5779,82 @@ request identifier sealed in that cookie, checked on both the response
 element and the subject confirmation. A provider that drops `RelayState`
 entirely still works.
 
+### Kind `xml_guard`
+
+Decides whether an XML request body is one the application should see.
+
+The WAF reads bodies as text and the `openapi` filter validates JSON;
+between them sits every XML and SOAP API with neither. XML is also the
+format with the oldest and most reliable parser attacks, and all of them
+arrive the same way:
+
+- an **external entity** that reads a file off the machine
+  (`<!ENTITY x SYSTEM "file:///etc/passwd">`) or makes a request from
+  inside the network on the application's behalf;
+- **entity expansion** — the billion laughs — that turns a kilobyte into
+  gigabytes of heap inside the application's parser;
+- **parameter entity** loops and external DTD fetches.
+
+Every one of those needs a document type declaration or an entity
+reference in the body, and a gateway cannot know how the application's
+parser is configured — the defaults of most XML libraries were unsafe for
+years. So this refuses the shapes those attacks need before that parser
+sees them, and names which shape it refused.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `content_types` | list | `application/xml`, `text/xml`, `application/soap+xml`, `+xml` | Media types to read. An entry beginning `+` matches any type ending in it, which is how the registry marks an XML format. Parameters (`; charset=…`) are ignored |
+| `methods` | list | `[POST, PUT, PATCH]` | Methods with a body worth reading |
+| `max_bytes` | int | `1048576` | Bound on the document. A larger body is **refused**, not passed uninspected: an oversize document must not be the way past the filter. 64 to 64 MiB |
+| `max_depth` | int | `64` | Element nesting: the first thing an expansion attack spends. 1 to 10000 |
+| `max_elements` | int | `50000` | Elements in the document |
+| `max_attributes` | int | `64` | Attributes on one element |
+| `max_name_bytes` | int | `256` | An element or attribute name |
+| `max_text_bytes` | int | `65536` | One run of character data, one CDATA section, one attribute value |
+| `allow_cdata` | bool | `true` | CDATA sections. On by default because ordinary XML APIs use them |
+| `allow_comments` | bool | `true` | Comments |
+| `allow_processing_instructions` | bool | `false` | Processing instructions beyond the XML declaration, which is always allowed |
+| `require_root` | element name | none | The local name the root element must have |
+| `require_root_namespace` | URI | none | With `require_root`, the namespace that name must be in. Needs `require_root`: a namespace with no name allows any element of it |
+| `allow_elements` | list | any | When set, every local name the document may use. Must contain `require_root`, or nothing would load |
+| `deny_elements` | list | `[]` | Local names no element may have, whatever the allow list says |
+| `status` | 4xx | `400` | What a refusal answers |
+| `reason` | string | the filter name | Deny reason in logs, counters and ban triggers |
+| `report` | bool | `false` | Log what would have been refused (`xml_would_refuse` in the access log) and refuse nothing: for turning the filter on in front of traffic nobody has read yet |
+
+A refusal's detail names the rule: `xml_doctype`, `xml_entity`,
+`xml_cdata`, `xml_comment`, `xml_processing_instruction`, `xml_size`,
+`xml_depth`, `xml_elements`, `xml_attributes`, `xml_name_length`,
+`xml_text_length`, `xml_encoding`, `xml_root`, `xml_element` or
+`xml_malformed`. The body is read whole and replayed byte for byte, so the
+application receives exactly what the client sent.
+
+A SOAP endpoint, which is the common case:
+
+```yaml
+filters:
+  - name: soap
+    kind: xml_guard
+    options:
+      content_types: [application/soap+xml, text/xml]
+      require_root: Envelope
+      require_root_namespace: http://schemas.xmlsoap.org/soap/envelope/
+      max_bytes: 262144
+      max_depth: 32
+      allow_processing_instructions: false
+```
+
+**Schema validation is deliberately not implemented.** XSD is a language
+with its own parser, its own imports and its own denial-of-service history;
+a gateway that fetched and interpreted one would add a larger attack
+surface than it removed, and the application already has the schema.
+`require_root`, `require_root_namespace`, `allow_elements` and
+`deny_elements` are a positive model of the document's shape without a
+schema language in the middle — the same trade the positive security policy
+makes for the rest of a request. A malformed document is refused rather
+than forwarded, because two parsers disagree about what a malformed
+document means and that disagreement is where the interesting bugs live.
+
 ### Kind `wasm`
 
 Runs a WebAssembly module per request in a sandbox. The module follows

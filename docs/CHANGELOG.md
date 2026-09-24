@@ -442,6 +442,51 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **XML bodies get what JSON already had** (`xml_guard` filter,
+  `internal/xmlsafe`).
+
+  The WAF reads bodies as text and the `openapi` filter validates JSON;
+  between them sat every XML and SOAP API with neither. XML is also the
+  format with the oldest and most reliable parser attacks -- an external
+  entity that reads a file off the machine or makes requests from inside
+  the network, entity expansion that turns a kilobyte into gigabytes of
+  heap, parameter entity loops, external DTD fetches -- and every one of
+  them arrives as a document type declaration or an entity reference in the
+  body. A gateway cannot know how the application's parser is configured,
+  and the defaults of most XML libraries were unsafe for years, so this
+  refuses those shapes before that parser sees them and names which shape
+  it refused: `xml_doctype`, `xml_entity`, and eleven more.
+
+  `internal/xmlsafe` is a scanner rather than a parser: it reads the
+  document once, keeps a stack of open element names and nothing else, and
+  reports the first rule broken. Nothing is built, so a document that would
+  have expanded to gigabytes is refused at the declaration that would have
+  done it, in the bytes it arrived as, and a hundred thousand levels of
+  nesting is refused by the depth bound rather than by this process running
+  out of stack.
+
+  Bounds on size, depth, elements, attributes, name length and text length;
+  CDATA, comments and processing instructions each allowed or not; and a
+  document shape policy -- `require_root`, `require_root_namespace`,
+  `allow_elements`, `deny_elements` -- which is a positive model without a
+  schema language. A body over `max_bytes` is refused rather than passed
+  uninspected, because an oversize document must not be the way past the
+  filter, and the body is replayed byte for byte so the application reads
+  exactly what the client sent. `report: true` says what it would have
+  refused and refuses nothing.
+
+  **XSD validation is deliberately not implemented**, and the reason is in
+  CONFIG.md: it is a language with its own parser, its own imports and its
+  own denial-of-service history, and a gateway that fetched and interpreted
+  one would add a larger attack surface than it removed. The application
+  has the schema already.
+
+  Thirty-six deliberate weakenings across the scanner and the filter were
+  each caught by the tests, two only after the tests were extended for
+  them: that a document type declaration is refused *as one* rather than as
+  a generic declaration, and that the root-name check is not doing the
+  namespace check's work.
+
 - **The four HTTP gateway controls the batch asked for, and one real bug
   among them** (`routes[].early_hints`, `early_data`, `trailers`,
   `client_priority`).
