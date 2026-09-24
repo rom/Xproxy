@@ -2,6 +2,7 @@ package wasm
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -12,10 +13,26 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/rom/xproxy/internal/filter"
 	"github.com/rom/xproxy/internal/filter/filtertest"
 )
+
+type blockingBody struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (b *blockingBody) Read([]byte) (int, error) {
+	<-b.closed
+	return 0, errors.New("body closed")
+}
+
+func (b *blockingBody) Close() error {
+	b.once.Do(func() { close(b.closed) })
+	return nil
+}
 
 // writeGuest builds a hostile guest and returns its path.
 func writeGuest(t *testing.T, s guestSpec) string {
@@ -807,15 +824,15 @@ func TestFilterLifecycle(t *testing.T) {
 // TestBufferBodyDirectly covers the helper's own edges, which the guest
 // cannot reach: no body at all, http.NoBody, and a limit of zero.
 func TestBufferBodyDirectly(t *testing.T) {
-	st, rc := bufferBody(nil, 100)
+	st, rc := bufferBody(context.Background(), nil, 100)
 	if st.tooLarge || len(st.data) != 0 || rc != nil {
 		t.Errorf("a nil body: %+v %v", st, rc)
 	}
-	st, rc = bufferBody(http.NoBody, 100)
+	st, rc = bufferBody(context.Background(), http.NoBody, 100)
 	if st.tooLarge || len(st.data) != 0 || rc != http.NoBody {
 		t.Errorf("http.NoBody: %+v", st)
 	}
-	st, rc = bufferBody(io.NopCloser(strings.NewReader("abc")), 0)
+	st, rc = bufferBody(context.Background(), io.NopCloser(strings.NewReader("abc")), 0)
 	if !st.tooLarge {
 		t.Error("a limit of zero did not report too large")
 	}
@@ -823,12 +840,44 @@ func TestBufferBodyDirectly(t *testing.T) {
 	if string(rest) != "abc" {
 		t.Errorf("the restored stream is %q", rest)
 	}
-	st, rc = bufferBody(io.NopCloser(bytes.NewReader(nil)), 10)
+	st, rc = bufferBody(context.Background(), io.NopCloser(bytes.NewReader(nil)), 10)
 	if st.tooLarge || len(st.data) != 0 {
 		t.Errorf("an empty body: %+v", st)
 	}
 	if rest, _ := io.ReadAll(rc); len(rest) != 0 {
 		t.Errorf("an empty body restored %d bytes", len(rest))
+	}
+}
+
+// TestBodyReadHonorsCallTimeout proves that a transport read entered by a
+// host function is interrupted by the guest deadline rather than retaining
+// the request and its module until a longer server timeout expires.
+func TestBodyReadHonorsCallTimeout(t *testing.T) {
+	f := build(t, guestSpec{
+		code: func(_, _ func(string) []byte) []byte {
+			return cat(i32c(getRequestBody), i32c(0), i32c(0), callOp(0), opDrop, i32c(0))
+		},
+	}, filter.Options{"timeout": "20ms"})
+	body := &blockingBody{closed: make(chan struct{})}
+	r := httptest.NewRequest(http.MethodPost, "/x", nil)
+	r.Body = body
+	done := make(chan filtertest.Result, 1)
+	go func() { done <- filtertest.Run(f, r, nil) }()
+	select {
+	case res := <-done:
+		if !res.Request.Deny {
+			t.Fatalf("timed-out body read was allowed: %+v", res.Request)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("body read outlived the WASM call timeout")
+	}
+	select {
+	case <-body.closed:
+	default:
+		t.Fatal("timeout did not close the body")
+	}
+	if got := f.(interface{ Status() Status }).Status().Timeouts; got != 1 {
+		t.Fatalf("timeouts = %d, want 1", got)
 	}
 }
 
