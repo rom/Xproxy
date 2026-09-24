@@ -14620,7 +14620,7 @@ T}
 Denials: 401 with \fBWWW\-Authenticate: ApiKey\fR and the detail \fBmissing\fR, \fBunknown\fR, \fBrevoked\fR, \fBexpired\fR or \fBrotated\fR (the previous secret after its grace), 403 \fBscope:<name>\fR; the access log carries \fBapi_key\fR with the id.
 .SS "Kind \fBopenapi\fR"
 .PP
-Validates requests against an OpenAPI 3.0 or 3.1 description (JSON or YAML): the path must be documented (concrete paths win over templated ones), the method defined for it (else 405 with \fBAllow\fR), path, query, header and cookie parameters present when required and matching their schema (strings are coerced to the declared type), the content type one the operation declares (else 415) and a JSON body valid against its schema. The schema subset covers types and \fBnullable\fR, \fBenum\fR, \fBconst\fR, \fBrequired\fR, \fBproperties\fR, \fBadditionalProperties\fR, \fBpatternProperties\fR, \fBitems\fR, \fBminItems\fR/\fBmaxItems\fR/\fBuniqueItems\fR, \fBminLength\fR/\fBmaxLength\fR/ \fBpattern\fR, \fBminimum\fR/\fBmaximum\fR (exclusive too), \fBmultipleOf\fR, \fBminProperties\fR/\fBmaxProperties\fR, \fBallOf\fR/\fBanyOf\fR/\fBoneOf\fR/\fBnot\fR, local \fB$ref\fR and the formats \fBdate\-time\fR, \fBdate\fR, \fBemail\fR, \fBuuid\fR, \fBipv4\fR, \fBipv6\fR, \fBuri\fR and \fBhostname\fR; other keywords and formats are ignored as the specification allows. Denials answer JSON with the reason and up to twenty \fBdetails\fR naming the offending path.
+Validates requests against an OpenAPI 3.0 or 3.1 description (JSON or YAML): the path must be documented (concrete paths win over templated ones), the method defined for it (else 405 with \fBAllow\fR), path, query, header and cookie parameters present when required and matching their schema (strings are coerced to the declared type, in the \fBstyle\fR the parameter declares), the content type one the operation declares (else 415) and a JSON or urlencoded body valid against its schema. The schema subset covers types and \fBnullable\fR, \fBenum\fR, \fBconst\fR, \fBrequired\fR, \fBproperties\fR, \fBadditionalProperties\fR, \fBpatternProperties\fR, \fBitems\fR, \fBminItems\fR/\fBmaxItems\fR/\fBuniqueItems\fR, \fBminLength\fR/\fBmaxLength\fR/ \fBpattern\fR, \fBminimum\fR/\fBmaximum\fR (exclusive too), \fBmultipleOf\fR, \fBminProperties\fR/\fBmaxProperties\fR, \fBallOf\fR/\fBanyOf\fR/\fBoneOf\fR/\fBnot\fR, local \fB$ref\fR and the formats \fBdate\-time\fR, \fBdate\fR, \fBemail\fR, \fBuuid\fR, \fBipv4\fR, \fBipv6\fR, \fBuri\fR and \fBhostname\fR; other keywords and formats are ignored as the specification allows. Denials answer JSON with the reason and up to twenty \fBdetails\fR naming the offending path.
 .PP
 .TS
 allbox;
@@ -14714,7 +14714,7 @@ bool
 T}	T{
 \fBfalse\fR
 T}	T{
-Refuse query parameters the operation does not declare
+Refuse query parameters the operation does not declare. A \fBdeepObject\fR parameter\(aqs own bracketed names count as declared,\: since those names belong to it
 T}
 T{
 \fBvalidate_\:body\fR
@@ -14753,6 +14753,72 @@ T}	T{
 What to do with a body carrying a property the description marks \fBreadOnly\fR;\: see below
 T}
 .TE
+.PP
+\fBParameter styles.\fR A parameter is not always one string, and OpenAPI\(aqs \fBstyle\fR and \fBexplode\fR say which spelling the operation takes. All of them are read, because a validator that assumes one refuses every request in the others \[u2014] a worse failure than not checking at all, since the request was correct and the description said so.
+.PP
+.TS
+allbox;
+lbw(0.7i) lbw(1.5i) lbx
+lw(0.7i) lw(1.5i) lx.
+T{
+Where
+T}	T{
+\fBstyle\fR
+T}	T{
+Spelling
+T}
+T{
+query
+T}	T{
+\fBform\fR (default)
+T}	T{
+\fB?ids=\:1&ids=\:2\fR and \fB?ids=\:1,\:2\fR;\: both are read,\: because both are unambiguous and a client may send either
+T}
+T{
+query
+T}	T{
+\fBspaceDelimited\fR
+T}	T{
+\fB?ids=\:1%202\fR
+T}
+T{
+query
+T}	T{
+\fBpipeDelimited\fR
+T}	T{
+\fB?ids=\:1|2\fR
+T}
+T{
+query
+T}	T{
+\fBdeepObject\fR
+T}	T{
+\fB?filter[from]=\:x&filter[size]=\:10\fR,\: assembled into the object the schema declares,\: each property coerced by its own schema (at most 200 properties,\: since the keys come from the client)
+T}
+T{
+path
+T}	T{
+\fBsimple\fR (default),\: \fBlabel\fR,\: \fBmatrix\fR
+T}	T{
+\fB1,\:2,\:3\fR (\fBlabel\fR splits on \fB.\fR)
+T}
+T{
+header
+T}	T{
+\fBsimple\fR (default)
+T}	T{
+\fBa,\:b\fR,\: and a repeated header adds elements
+T}
+T{
+cookie
+T}	T{
+\fBform\fR (default)
+T}	T{
+\fBa,\:b\fR
+T}
+.TE
+.PP
+A repeated scalar parameter is validated for \fIevery\fR value rather than one. Everything behind a proxy reads \fB?limit=10&limit=999\fR differently \[u2014] PHP and Rails take the last, ASP.NET joins them with commas, Spring binds an array \[u2014] so judging only one of them would leave the application reading a value nothing had checked.
 .PP
 A \fBform body\fR declared as \fBapplication/x\-www\-form\-urlencoded\fR is validated against its schema like a JSON one. A form carries strings, so each field is coerced by what its property schema says it is \[u2014] the same coercion the query and path parameters get, and for the same reason: \fBlimit=abc\fR against \fBtype: integer\fR has to be a type error rather than a string that happens not to be a number. A repeated field becomes an array when the schema says the property is one and stays the last value otherwise, which is what a form parser behind the proxy does with it. The body reaches the application byte for byte as the client sent it: it is validated, not re\-encoded. \fBmultipart/form\-data\fR is not validated here \[u2014] that is \fBupload_guard\fR\(aqs job, and it buffers the parts already.
 .SS "\fBrequire_security\fR: the part of the description that is a control"

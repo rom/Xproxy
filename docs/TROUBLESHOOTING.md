@@ -1271,6 +1271,18 @@ is the contract here. `strict_query` refuses undeclared parameters; a
 repeated parameter is validated for *every* value, not just the first.
 Update the description or relax the filter.
 
+**`openapi` refuses an array or object parameter the client spells
+correctly.** Check the parameter's `style` in the description against what
+the client sends. A `pipeDelimited` array (`?ids=1|2`) sent to a parameter
+with no `style` is one value that is not a number, because the default is
+comma-separated — the description is the thing to fix, not the client. An
+object parameter must be declared `style: deepObject` for
+`?filter[from]=x` to be read as that object; without it the filter looks
+for a parameter called `filter`, finds nothing, and calls a required
+parameter missing. `label` and `matrix` path parameters are read by their
+own separators; other exotic styles are not, and a parameter that needs
+one is better declared with `content` instead.
+
 **`openapi` answers 401 with detail `security` for requests that used to
 work.** `require_security` is enforcing the description's own `security`
 section. Three causes worth checking in order. The credential is going to

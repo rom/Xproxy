@@ -561,6 +561,23 @@ Open findings of the earlier rounds:
     deliberately not `anyOf` or `oneOf`: those are alternatives, and a
     property read-only in a branch the value may not be matching says
     nothing certain about the value in hand.
+  - **Only one of OpenAPI's parameter styles was read.** A parameter is
+    not always one string: an array may arrive repeated
+    (`?ids=1&ids=2`), comma-separated, pipe-separated or
+    space-separated, and an object may arrive as bracketed names
+    (`?filter[from]=x`), with `style` and `explode` saying which. The
+    filter assumed the comma form, so a `pipeDelimited` or
+    `spaceDelimited` array was one item that was not a number and a
+    `deepObject` parameter was missing -- correct requests refused by the
+    gateway on the strength of the description that declared them, which
+    is how a validating gateway gets taken out of the path. Every style
+    is read now, with both spellings of a form array accepted since both
+    are unambiguous, a `deepObject` assembled into the object its schema
+    declares (bounded, because the keys come from the client), and
+    `strict_query` taught that a `deepObject`'s bracketed names belong to
+    it. A repeated scalar is still validated for every value, and the
+    array is now built from the occurrences rather than joined and split
+    again, so a comma inside one of them no longer becomes two elements.
   - **A form body declared with a schema was forwarded unvalidated.**
     `application/x-www-form-urlencoded` is now checked against its
     schema, with each field coerced by what the schema says it is -- the

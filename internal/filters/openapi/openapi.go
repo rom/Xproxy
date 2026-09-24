@@ -222,6 +222,11 @@ type parameter struct {
 	name, in string
 	required bool
 	schema   map[string]any
+	// style and explode are how the value is spelled on the wire: an
+	// array may arrive repeated, comma-separated, pipe-separated or
+	// space-separated, and an object may arrive as bracketed names.
+	style   string
+	explode bool
 }
 
 type requestBody struct {
@@ -416,7 +421,8 @@ func (a *api) parameters(list []any) []parameter {
 				}
 			}
 		}
-		out = append(out, parameter{name: name, in: in, required: req, schema: schema})
+		style, explode := styleOf(m, in)
+		out = append(out, parameter{name: name, in: in, required: req, schema: schema, style: style, explode: explode})
 	}
 	return out
 }
@@ -564,53 +570,36 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 		// untouched. The proxy's own routes[].policy already judges
 		// every value; these two parsers disagreed about what the value
 		// of a parameter is.
-		var raws []string
 		switch p.in {
-		case "path":
-			if v, has := pathVals[p.name]; has {
-				raws = []string{v}
-			}
-		case "query":
-			if vals, has := query[p.name]; has {
-				if p.schema != nil && jsonschema.TypeAllows(p.schema["type"], "array") && len(vals) > 1 {
-					raws = []string{strings.Join(vals, ",")}
-				} else {
-					raws = vals
-				}
-			}
-		case "header":
-			for _, v := range r.Header.Values(p.name) {
-				if v != "" {
-					raws = append(raws, v)
-				}
-			}
-		case "cookie":
-			for _, c := range r.Cookies() {
-				if c.Name == p.name {
-					raws = append(raws, c.Value)
-				}
-			}
+		case "path", "query", "header", "cookie":
 		default:
 			continue
 		}
+		vals, present := in.values(p, r, query, pathVals)
 		where := p.in + "." + p.name
-		if len(raws) == 0 {
+		if !present {
 			if p.required {
 				rep.Add(where, "is required")
 			}
 			continue
 		}
 		if p.schema != nil {
-			for _, raw := range raws {
-				in.api.v.Validate(p.schema, jsonschema.Coerce(p.schema, raw), where, rep, 0)
+			for _, val := range vals {
+				in.api.v.Validate(p.schema, val, where, rep, 0)
 			}
 		}
 	}
 	if g.cfg.StrictQuery {
+		// A deepObject parameter's values arrive under names that are not
+		// its name -- filter[from], filter[to] -- so the prefixes count
+		// as declared, or strict_query would refuse the very shape the
+		// description asked for.
+		prefixes := deepPrefixes(op)
 		for name := range query {
-			if !op.declared[name] {
-				rep.Add("query."+name, "is not a parameter of this operation")
+			if op.declared[name] || hasAnyPrefix(name, prefixes) {
+				continue
 			}
+			rep.Add("query."+name, "is not a parameter of this operation")
 		}
 	}
 	if op.body != nil && (g.cfg.ValidateBody == nil || *g.cfg.ValidateBody) {

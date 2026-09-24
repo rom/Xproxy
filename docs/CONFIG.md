@@ -5577,9 +5577,9 @@ Validates requests against an OpenAPI 3.0 or 3.1 description (JSON or
 YAML): the path must be documented (concrete paths win over templated
 ones), the method defined for it (else 405 with `Allow`), path, query,
 header and cookie parameters present when required and matching their
-schema (strings are coerced to the declared type), the content type one
-the operation declares (else 415) and a JSON body valid against its
-schema. The schema subset covers types and `nullable`, `enum`, `const`,
+schema (strings are coerced to the declared type, in the `style` the
+parameter declares), the content type one the operation declares (else
+415) and a JSON or urlencoded body valid against its schema. The schema subset covers types and `nullable`, `enum`, `const`,
 `required`, `properties`, `additionalProperties`, `patternProperties`,
 `items`, `minItems`/`maxItems`/`uniqueItems`, `minLength`/`maxLength`/
 `pattern`, `minimum`/`maximum` (exclusive too), `multipleOf`,
@@ -5599,11 +5599,33 @@ to twenty `details` naming the offending path.
 | `cache_file` | path | none | With `spec_url`: the last good description is written here (mode `0600`) and used when the URL is unreachable at start, so a registry outage does not stop the proxy |
 | `base_path` | path | from `servers[0].url` | Prefix under which the paths are served |
 | `unknown_paths` | `deny`, `allow` | `deny` | `deny` answers 404 for a path the description lacks |
-| `strict_query` | bool | `false` | Refuse query parameters the operation does not declare |
+| `strict_query` | bool | `false` | Refuse query parameters the operation does not declare. A `deepObject` parameter's own bracketed names count as declared, since those names belong to it |
 | `validate_body` | bool | `true` | Parse and validate JSON and urlencoded form bodies; off checks only the media type |
 | `max_body_bytes` | int | `1048576` | A body above this is refused with 413 rather than parsed (1 to 64 MiB) |
 | `require_security` | bool | `false` | Refuse a request that carries none of the credentials the operation's `security` asks for; see below |
 | `read_only` | `allow`, `log`, `deny` | `allow` | What to do with a body carrying a property the description marks `readOnly`; see below |
+
+**Parameter styles.** A parameter is not always one string, and OpenAPI's
+`style` and `explode` say which spelling the operation takes. All of them
+are read, because a validator that assumes one refuses every request in
+the others — a worse failure than not checking at all, since the request
+was correct and the description said so.
+
+| Where | `style` | Spelling |
+|-------|---------|----------|
+| query | `form` (default) | `?ids=1&ids=2` and `?ids=1,2`; both are read, because both are unambiguous and a client may send either |
+| query | `spaceDelimited` | `?ids=1%202` |
+| query | `pipeDelimited` | `?ids=1\|2` |
+| query | `deepObject` | `?filter[from]=x&filter[size]=10`, assembled into the object the schema declares, each property coerced by its own schema (at most 200 properties, since the keys come from the client) |
+| path | `simple` (default), `label`, `matrix` | `1,2,3` (`label` splits on `.`) |
+| header | `simple` (default) | `a,b`, and a repeated header adds elements |
+| cookie | `form` (default) | `a,b` |
+
+A repeated scalar parameter is validated for *every* value rather than
+one. Everything behind a proxy reads `?limit=10&limit=999` differently —
+PHP and Rails take the last, ASP.NET joins them with commas, Spring binds
+an array — so judging only one of them would leave the application reading
+a value nothing had checked.
 
 A **form body** declared as `application/x-www-form-urlencoded` is
 validated against its schema like a JSON one. A form carries strings, so
