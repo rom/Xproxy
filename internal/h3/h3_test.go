@@ -73,12 +73,13 @@ func TestNewRefusesIncompleteOptions(t *testing.T) {
 	h := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
 	lim := limits.NewConnLimiter(8, 4)
 
-	full := Options{Conn: pc, TLS: tc, Handler: h, Limiter: lim, Limits: defaultLimits(), H3: config.H3{MaxStreams: 10}}
+	full := Options{Conn: pc, TLS: tc, Handler: h, Limiter: lim, HeaderLimiter: limits.NewConcurrency(10), Limits: defaultLimits(), H3: config.H3{MaxStreams: 10}}
 	for name, o := range map[string]Options{
-		"no socket":  {TLS: tc, Handler: h, Limiter: lim},
-		"no tls":     {Conn: pc, Handler: h, Limiter: lim},
-		"no handler": {Conn: pc, TLS: tc, Limiter: lim},
-		"no limiter": {Conn: pc, TLS: tc, Handler: h},
+		"no socket":         {TLS: tc, Handler: h, Limiter: lim},
+		"no tls":            {Conn: pc, Handler: h, Limiter: lim},
+		"no handler":        {Conn: pc, TLS: tc, Limiter: lim},
+		"no limiter":        {Conn: pc, TLS: tc, Handler: h},
+		"no header limiter": {Conn: pc, TLS: tc, Handler: h, Limiter: lim},
 	} {
 		if _, err := New(o); err == nil {
 			t.Errorf("%s was accepted", name)
@@ -116,7 +117,7 @@ func TestServeAndClientRoundTrip(t *testing.T) {
 	s, err := New(Options{
 		Conn: pc, TLS: tc, Port: pc.LocalAddr().(*net.UDPAddr).Port,
 		Limits: defaultLimits(), H3: config.H3{MaxStreams: 10, ValidateAddresses: "under_load"},
-		Limiter: limits.NewConnLimiter(64, 8), Log: slog.New(slog.DiscardHandler),
+		Limiter: limits.NewConnLimiter(64, 8), HeaderLimiter: limits.NewConcurrency(100), Log: slog.New(slog.DiscardHandler),
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			gotProto.Store(r.Proto)
 			gotTE.Store(r.Header.Get("Te"))
@@ -301,7 +302,7 @@ func TestConnectionsPastTheLimitAreRefused(t *testing.T) {
 	// same admission the TCP listener applies, before any request runs.
 	s, err := New(Options{
 		Conn: pc, TLS: tc, Limits: defaultLimits(), H3: config.H3{MaxStreams: 10},
-		Limiter: limits.NewConnLimiter(1, 1), Log: slog.New(slog.DiscardHandler),
+		Limiter: limits.NewConnLimiter(1, 1), HeaderLimiter: limits.NewConcurrency(10), Log: slog.New(slog.DiscardHandler),
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "ok") }),
 	})
 	if err != nil {
@@ -363,7 +364,7 @@ func TestWebTransportEndpointServes(t *testing.T) {
 	tc, _ := serverTLS(t)
 	s, err := New(Options{
 		Conn: pc, TLS: tc, Limits: defaultLimits(), H3: config.H3{MaxStreams: 10},
-		Limiter: limits.NewConnLimiter(8, 4), Log: slog.New(slog.DiscardHandler), WebTransport: true,
+		Limiter: limits.NewConnLimiter(8, 4), HeaderLimiter: limits.NewConcurrency(80), Log: slog.New(slog.DiscardHandler), WebTransport: true,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "ok") }),
 	})
 	if err != nil {

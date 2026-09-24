@@ -47,6 +47,7 @@ type engine struct {
 	// maintenance is the runtime toggle, over the configured window.
 	maintenance atomic.Bool
 	concurrency *limits.Concurrency
+	h3Headers   *limits.Concurrency
 	// tarpits bounds the requests held in a tarpit at once.
 	tarpits *limits.Concurrency
 	// bodyBudget is the process-wide ceiling on request bodies held in
