@@ -4277,6 +4277,78 @@ is not applied to clients in exempt ranges. Fingerprint bans apply at
 the request stage (the fingerprint is known after the TLS handshake),
 not at accept; at most 4096 are held.
 
+## threat_intel
+
+Imported lists of client addresses and TLS fingerprints somebody else
+attributed, and what to do about a match.
+
+**It is deliberately not the ban list beside it.** A ban is earned here:
+this proxy watched a client do something and decided. A list is imported
+— a feed of scanner networks, of exit nodes, of addresses seen attacking
+somebody else — and it says nothing about what the client did *here*. A
+feed with one wrong line in it is an outage nobody can explain from the
+logs, which is why `log` is the default action and why `block` warns.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `lists` | list | required | The lists, in order. **The first list that matches decides**, so a narrow list belongs before the broad one it softens |
+| `refresh` | duration | `5m` | How often the files are checked; only a file whose size or modification time moved is re-read. At least `10s`, or 0 for never — a reload of the configuration still re-reads every list |
+| `log_matches` | bool | `true` | Write a security event for a match whose action is `log` as well. A list nobody can see matching is a list nobody can tune |
+
+### threat_intel.lists[]
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | name | required | What the security event, the counters and `xproxyctl status` call this list |
+| `kind` | `cidr`, `ja4` | `cidr` | Client addresses and networks, or TLS client fingerprints |
+| `file` | path | required | The entries. One per line, with `#`, `;` and `//` comment lines and a trailing comment after whitespace; a network may be written with host bits set and is masked. An address list matches IPv4 and its IPv6-mapped form alike |
+| `action` | `log`, `challenge`, `block` | `log` | Record it and serve the request; make the client prove it is a browser (needs the `challenge` section); or refuse it with 403 |
+
+```yaml
+threat_intel:
+  refresh: 15m
+  lists:
+    # The office first, so nothing below can take it out.
+    - {name: known-good, file: /etc/xproxy/intel/office.txt, action: log}
+    - {name: tor-exits, file: /etc/xproxy/intel/tor-exits.txt, action: challenge}
+    - {name: scanner-fingerprints, kind: ja4, file: /etc/xproxy/intel/scanners.txt, action: challenge}
+    # A feed this estate maintains itself, so blocking on it is a
+    # decision somebody here can be asked about.
+    - {name: internal-deny, file: /etc/xproxy/intel/deny.txt, action: block}
+```
+
+What follows from the shape:
+
+- **A list that cannot be read fails the load**, and a reload that cannot
+  read one is refused whole. An imported list that silently matches
+  nothing is worse than no list, because the operator believes it works.
+  A file that disappears *after* the load keeps the entries already read:
+  a feed being rewritten in place must not empty the policy for the
+  moment that takes.
+- **The check runs after routing**, so `threat_intel: false` on a route
+  exempts it — which is what a health endpoint or a status page wants.
+  The ban list is checked earlier and applies to everything, because a
+  ban is this proxy's own finding.
+- **`challenge` with nothing to challenge with serves the request.** A
+  list that asks for a challenge on a listener without the `challenge`
+  section, or a client that has already proved itself, is not turned into
+  a block: that would be a policy the operator did not write. Validation
+  refuses the combination at load, so it only arises if the section is
+  removed later.
+- **An entry is a whole match or nothing.** `cidr` matches the client
+  address the proxy decided on (so behind a trusted proxy chain, the
+  forwarded one), and `ja4` the fingerprint of the TLS handshake, which a
+  plaintext listener does not have.
+- **A block hands the ban list `threat_intel`**, so a trigger can
+  escalate a client that keeps arriving from a listed network into a real
+  ban. `log` and `challenge` do not.
+
+`threat_intel_matched`, `threat_intel_blocked`, `threat_intel_challenged`
+and `threat_intel_reloads` are in `xproxyctl status`, which also lists
+every list with its entry count, hits and when it was last read;
+`xproxy_threat_intel_total{result="logged"|"blocked"|"challenged"}` is
+the metric. A match adds `threat_list` to the access log line.
+
 ## waf
 
 Present means enabled. Routes without a `waf` block use `default_mode` and
@@ -7127,6 +7199,17 @@ What is not guessed at:
 policy acted on, a refusal is logged as `ranges`, and
 `xproxy_ranges_total{result="dropped"|"refused"}` counts them
 (`ranges_dropped` and `ranges_refused` in `xproxyctl status`).
+
+### routes[].threat_intel
+
+`true` (default) or `false`: whether the imported `threat_intel` lists
+apply to this route.
+
+`false` exempts it. A list is an import, and an import with one wrong
+line in it must not take the health endpoint an operator watches the
+outage with, or the status page they diagnose it from. The ban list is a
+separate decision and still applies: a ban is this proxy's own finding
+about that client.
 
 ### routes[].trailers
 

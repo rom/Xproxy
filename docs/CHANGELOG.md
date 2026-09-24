@@ -512,6 +512,45 @@ Open findings of the earlier rounds:
   access log line carries `view`. Twelve deliberate weakenings were each
   caught by the tests.
 
+- **Imported threat intelligence** (`threat_intel`, `routes[].threat_intel`).
+
+  Named lists of client addresses and TLS fingerprints, read from files,
+  each with its own action: `log`, `challenge` or `block`. A feed of
+  scanner networks, of exit nodes, of addresses seen attacking somebody
+  else -- the estate has the files already, and until now the only place
+  to put them was `deny_cidrs` on every route, edited by hand and reloaded
+  for every change.
+
+  **It is deliberately not the ban list.** A ban is earned here: this proxy
+  watched a client do something and decided. A list is imported, and says
+  nothing about what the client did *here*. So `log` is the default action,
+  `block` warns at load, and the check runs **after** routing, which is what
+  lets `threat_intel: false` exempt a route -- a feed with one wrong line in
+  it must not take the health endpoint an operator watches the outage with.
+  The ban list is still checked before routing, because a ban is this
+  proxy's own finding and applies to everything.
+
+  A list that cannot be read fails the load, and a reload that cannot read
+  one is refused whole: an imported list that silently matches nothing is
+  worse than no list, because the operator believes it works. A file that
+  disappears or stops parsing *after* the load keeps the entries already
+  read and says so in the error log, because a feed being rewritten in
+  place must not empty the policy for the moment that takes. Files are
+  re-read on their own (`refresh`, 5m by default, `0` for never) rather
+  than needing a reload, and only a file whose size or modification time
+  moved is read again.
+
+  A `block` hands the ban list the `threat_intel` reason, so a trigger can
+  escalate a client that keeps arriving from a listed network into a real
+  ban. `challenge` with nothing to challenge with serves the request
+  rather than blocking, since that would be a policy nobody wrote;
+  validation refuses the combination at load. `xproxyctl status` lists
+  every list with its entries, hits and when it was last read, and says
+  whether the files are being watched at all. Twenty-eight deliberate
+  weakenings were each caught, five after the tests were extended or two
+  redundant guards removed -- among them a `refresh: 0` that could not be
+  told from an unset field, which is now a pointer and means never.
+
 - **A set of byte ranges is a decision, not a relay**
   (`routes[].ranges`, RFC 9110 section 14).
 

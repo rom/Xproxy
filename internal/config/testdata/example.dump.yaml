@@ -404,6 +404,7 @@ routes:
       early_hints: ""
       early_data: ""
       ranges: null
+      threat_intel: null
       trailers: ""
       challenge:
         mode: always
@@ -478,6 +479,7 @@ routes:
       early_hints: ""
       early_data: ""
       ranges: null
+      threat_intel: null
       trailers: ""
       challenge: null
       jwt:
@@ -547,6 +549,7 @@ routes:
       early_hints: ""
       early_data: ""
       ranges: null
+      threat_intel: null
       trailers: ""
       challenge: null
       jwt: null
@@ -615,6 +618,7 @@ routes:
       early_hints: ""
       early_data: ""
       ranges: null
+      threat_intel: null
       trailers: ""
       challenge: null
       jwt: null
@@ -688,6 +692,7 @@ routes:
       early_hints: ""
       early_data: ""
       ranges: null
+      threat_intel: null
       trailers: ""
       challenge:
         mode: load
@@ -760,6 +765,7 @@ routes:
       early_hints: ""
       early_data: ""
       ranges: null
+      threat_intel: null
       trailers: ""
       challenge: null
       jwt: null
@@ -808,6 +814,7 @@ bans:
           net_v4: 24
           net_v6: 48
           min_sources: 1
+threat_intel: null
 waf:
     profiles:
         - name: default

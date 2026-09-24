@@ -53,6 +53,10 @@ type Config struct {
 
 	// Bans enables the ban list when present.
 	Bans *Bans `yaml:"bans"`
+	// ThreatIntel imports lists of client addresses and TLS
+	// fingerprints somebody else attributed, with what to do about a
+	// match.
+	ThreatIntel *ThreatIntel `yaml:"threat_intel"`
 	// WAF enables the web application firewall when present.
 	WAF *WAF `yaml:"waf"`
 	// Cluster enables sharing of rate limit consumption and bans between
@@ -3358,6 +3362,11 @@ type Route struct {
 	// Ranges bounds byte range requests on this route. Without the
 	// section a Range header is relayed as it arrived.
 	Ranges *RouteRanges `yaml:"ranges"`
+	// ThreatIntel applies the imported lists to this route. Default
+	// true; false exempts it, which is what a health endpoint or a
+	// status page wants -- a list with one wrong line in it should not
+	// take the thing an operator watches the outage with.
+	ThreatIntel *bool `yaml:"threat_intel"`
 	// Trailers says what to do with the response's trailers: pass
 	// (default) or strip. gRPC carries its status in them, so a gRPC
 	// route cannot strip them.
@@ -4476,6 +4485,64 @@ type SandboxCapabilities struct {
 
 // On reports whether the sandbox applies.
 func (s *Sandbox) On() bool { return s.Enabled == nil || *s.Enabled }
+
+// ThreatIntel imports lists of client addresses and TLS fingerprints,
+// each with its own action.
+//
+// It is deliberately not the ban list. A ban is earned here -- this proxy
+// watched a client do something and decided -- while a list is imported
+// and says nothing about what the client did *here*. That is why the
+// default action is the careful one: a feed whose provenance an operator
+// cannot check, with one wrong line in it, is an outage nobody can
+// explain from the logs.
+type ThreatIntel struct {
+	// Lists are the lists, in order. The first one that matches decides,
+	// so a narrow list belongs before the broad one it softens.
+	Lists []ThreatList `yaml:"lists"`
+	// Refresh is how often the files are checked for changes; only a
+	// file whose size or modification time moved is re-read. Default 5m,
+	// minimum 10s, 0 for never (a reload of the configuration still
+	// re-reads them). A pointer so that 0 is a decision rather than an
+	// unset field.
+	Refresh *Duration `yaml:"refresh"`
+	// LogMatches writes a security event for every match, including the
+	// ones whose action is log. Default true: a list nobody can see
+	// matching is a list nobody can tune.
+	LogMatches *bool `yaml:"log_matches"`
+}
+
+// RefreshInterval is how often the files are re-checked, with the
+// default filled in. A section that says 0 means never, and a reload of
+// the configuration still re-reads every list.
+func (t *ThreatIntel) RefreshInterval() Duration {
+	switch {
+	case t == nil:
+		return 0
+	case t.Refresh == nil:
+		return Duration(5 * time.Minute)
+	default:
+		return *t.Refresh
+	}
+}
+
+// Logs reports whether a match is written to the security log.
+func (t *ThreatIntel) Logs() bool { return t == nil || t.LogMatches == nil || *t.LogMatches }
+
+// ThreatList is one imported list.
+type ThreatList struct {
+	Name string `yaml:"name"`
+	// Kind is cidr (client addresses and networks) or ja4 (TLS client
+	// fingerprints). Default cidr.
+	Kind string `yaml:"kind"`
+	// File holds the entries: one per line, with #, ; and // comments
+	// and a trailing comment after whitespace. A network may be written
+	// with host bits set; it is masked.
+	File string `yaml:"file"`
+	// Action is log (record it and serve the request), challenge (make
+	// the client prove it is a browser, which needs the challenge
+	// section) or block. Default log.
+	Action string `yaml:"action"`
+}
 
 // WAF configures the web application firewall engine.
 type WAF struct {

@@ -209,6 +209,14 @@
         }
       ]
     },
+    "threat_intel": {
+      "description": "ThreatIntel imports lists of client addresses and TLS fingerprints somebody else attributed, with what to do about a match.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/ThreatIntel"
+        }
+      ]
+    },
     "tracing": {
       "description": "Tracing gives requests a W3C trace context and exports spans.",
       "allOf": [
@@ -4471,6 +4479,10 @@
           "description": "Tenant is a free label that groups routes for quota reporting (GET /v1/quotas, xproxyctl quotas) and the per route metrics.",
           "type": "string"
         },
+        "threat_intel": {
+          "description": "ThreatIntel applies the imported lists to this route. Default true; false exempts it, which is what a health endpoint or a status page wants -- a list with one wrong line in it should not take the thing an operator watches the outage with.",
+          "type": "boolean"
+        },
         "timeout": {
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
@@ -6359,6 +6371,51 @@
         },
         "upstream": {
           "description": "Upstream is the pool of targets. Required.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ThreatIntel": {
+      "description": "ThreatIntel imports lists of client addresses and TLS fingerprints, each with its own action. It is deliberately not the ban list. A ban is earned here -- this proxy watched a client do something and decided -- while a list is imported and says nothing about what the client did *here*. That is why the default action is the careful one: a feed whose provenance an operator cannot check, with one wrong line in it, is an outage nobody can explain from the logs.",
+      "type": "object",
+      "properties": {
+        "lists": {
+          "description": "Lists are the lists, in order. The first one that matches decides, so a narrow list belongs before the broad one it softens.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ThreatList"
+          }
+        },
+        "log_matches": {
+          "description": "LogMatches writes a security event for every match, including the ones whose action is log. Default true: a list nobody can see matching is a list nobody can tune.",
+          "type": "boolean"
+        },
+        "refresh": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ThreatList": {
+      "description": "ThreatList is one imported list.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "Action is log (record it and serve the request), challenge (make the client prove it is a browser, which needs the challenge section) or block. Default log.",
+          "type": "string"
+        },
+        "file": {
+          "description": "File holds the entries: one per line, with #, ; and // comments and a trailing comment after whitespace. A network may be written with host bits set; it is masked.",
+          "type": "string"
+        },
+        "kind": {
+          "description": "Kind is cidr (client addresses and networks) or ja4 (TLS client fingerprints). Default cidr.",
+          "type": "string"
+        },
+        "name": {
           "type": "string"
         }
       },

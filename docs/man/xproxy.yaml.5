@@ -9885,6 +9885,149 @@ T}
 .TE
 .PP
 Manual bans (\fBxproxyctl ban\fR) accept addresses, CIDRs no wider than /8 (IPv4) or /32 (IPv6) and fingerprints as \fBja4:<fp>\fR; loopback and unspecified addresses are refused. A network overlapping an exempt range is never banned, by trigger, operator or peer; a fingerprint ban is not applied to clients in exempt ranges. Fingerprint bans apply at the request stage (the fingerprint is known after the TLS handshake), not at accept; at most 4096 are held.
+.SH "threat_intel"
+.PP
+Imported lists of client addresses and TLS fingerprints somebody else attributed, and what to do about a match.
+.PP
+\fBIt is deliberately not the ban list beside it.\fR A ban is earned here: this proxy watched a client do something and decided. A list is imported \[u2014] a feed of scanner networks, of exit nodes, of addresses seen attacking somebody else \[u2014] and it says nothing about what the client did \fIhere\fR. A feed with one wrong line in it is an outage nobody can explain from the logs, which is why \fBlog\fR is the default action and why \fBblock\fR warns.
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.9i) lbw(0.9i) lbx
+lw(0.8i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBlists\fR
+T}	T{
+list
+T}	T{
+required
+T}	T{
+The lists,\: in order. \fBThe first list that matches decides\fR,\: so a narrow list belongs before the broad one it softens
+T}
+T{
+\fBrefresh\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+How often the files are checked;\: only a file whose size or modification time moved is re\-read. At least \fB10s\fR,\: or 0 for never \[u2014] a reload of the configuration still re\-reads every list
+T}
+T{
+\fBlog_\:matches\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Write a security event for a match whose action is \fBlog\fR as well. A list nobody can see matching is a list nobody can tune
+T}
+.TE
+.SS "threat_intel.lists[]"
+.PP
+.TS
+allbox;
+lbw(0.7i) lbw(1.1i) lbw(0.9i) lbx
+lw(0.7i) lw(1.1i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+name
+T}	T{
+required
+T}	T{
+What the security event,\: the counters and \fBxproxyctl status\fR call this list
+T}
+T{
+\fBkind\fR
+T}	T{
+\fBcidr\fR,\: \fBja4\fR
+T}	T{
+\fBcidr\fR
+T}	T{
+Client addresses and networks,\: or TLS client fingerprints
+T}
+T{
+\fBfile\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+The entries. One per line,\: with \fB#\fR,\: \fB;\fR and \fB/\:/\fR comment lines and a trailing comment after whitespace;\: a network may be written with host bits set and is masked. An address list matches IPv4 and its IPv6\-mapped form alike
+T}
+T{
+\fBaction\fR
+T}	T{
+\fBlog\fR,\: \fBchallenge\fR,\: \fBblock\fR
+T}	T{
+\fBlog\fR
+T}	T{
+Record it and serve the request;\: make the client prove it is a browser (needs the \fBchallenge\fR section);\: or refuse it with 403
+T}
+.TE
+.PP
+.RS 4
+.nf
+.ft CR
+threat_intel:
+  refresh: 15m
+  lists:
+    # The office first, so nothing below can take it out.
+    \- {name: known\-good, file: /etc/xproxy/intel/office.txt, action: log}
+    \- {name: tor\-exits, file: /etc/xproxy/intel/tor\-exits.txt, action: challenge}
+    \- {name: scanner\-fingerprints, kind: ja4, file: /etc/xproxy/intel/scanners.txt, action: challenge}
+    # A feed this estate maintains itself, so blocking on it is a
+    # decision somebody here can be asked about.
+    \- {name: internal\-deny, file: /etc/xproxy/intel/deny.txt, action: block}
+.ft
+.fi
+.RE
+.PP
+What follows from the shape:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBA list that cannot be read fails the load\fR, and a reload that cannot read one is refused whole. An imported list that silently matches nothing is worse than no list, because the operator believes it works. A file that disappears \fIafter\fR the load keeps the entries already read: a feed being rewritten in place must not empty the policy for the moment that takes.
+.PP
+.ti -3n
+\(bu
+\fBThe check runs after routing\fR, so \fBthreat_intel: false\fR on a route exempts it \[u2014] which is what a health endpoint or a status page wants. The ban list is checked earlier and applies to everything, because a ban is this proxy\(aqs own finding.
+.PP
+.ti -3n
+\(bu
+\fB\fBchallenge\fR with nothing to challenge with serves the request.\fR A list that asks for a challenge on a listener without the \fBchallenge\fR section, or a client that has already proved itself, is not turned into a block: that would be a policy the operator did not write. Validation refuses the combination at load, so it only arises if the section is removed later.
+.PP
+.ti -3n
+\(bu
+\fBAn entry is a whole match or nothing.\fR \fBcidr\fR matches the client address the proxy decided on (so behind a trusted proxy chain, the forwarded one), and \fBja4\fR the fingerprint of the TLS handshake, which a plaintext listener does not have.
+.PP
+.ti -3n
+\(bu
+\fBA block hands the ban list \fBthreat_intel\fR\fR, so a trigger can escalate a client that keeps arriving from a listed network into a real ban. \fBlog\fR and \fBchallenge\fR do not.
+.RE
+.PP
+.PP
+\fBthreat_intel_matched\fR, \fBthreat_intel_blocked\fR, \fBthreat_intel_challenged\fR and \fBthreat_intel_reloads\fR are in \fBxproxyctl status\fR, which also lists every list with its entry count, hits and when it was last read; \fBxproxy_threat_intel_total{result="logged"|"blocked"|"challenged"}\fR is the metric. A match adds \fBthreat_list\fR to the access log line.
 .SH "waf"
 .PP
 Present means enabled. Routes without a \fBwaf\fR block use \fBdefault_mode\fR and \fBdefault_profile\fR. Profiles compile at load and at reload; a broken rule set fails the reload.
@@ -17850,6 +17993,11 @@ What is not guessed at:
 .PP
 .PP
 \fBranges\fR and \fBranges_sent\fR appear in the access log for a request the policy acted on, a refusal is logged as \fBranges\fR, and \fBxproxy_ranges_total{result="dropped"|"refused"}\fR counts them (\fBranges_dropped\fR and \fBranges_refused\fR in \fBxproxyctl status\fR).
+.SS "routes[].threat_intel"
+.PP
+\fBtrue\fR (default) or \fBfalse\fR: whether the imported \fBthreat_intel\fR lists apply to this route.
+.PP
+\fBfalse\fR exempts it. A list is an import, and an import with one wrong line in it must not take the health endpoint an operator watches the outage with, or the status page they diagnose it from. The ban list is a separate decision and still applies: a ban is this proxy\(aqs own finding about that client.
 .SS "routes[].trailers"
 .PP
 \fBpass\fR (default) or \fBstrip\fR: the fields an upstream sends after the body \[u2014] a checksum, a signature, gRPC\(aqs status.

@@ -182,7 +182,10 @@ type compiledRoute struct {
 	// them.
 	stripTrailers bool
 	// ranges is the byte range policy, nil when the route has none.
-	ranges       *rangePolicy
+	ranges *rangePolicy
+	// intel is false on a route exempted from the imported threat
+	// intelligence lists.
+	intel        bool
 	challenge    *config.RouteChallenge // nil or mode off means no gate
 	counts       [5]atomic.Uint64       // 2xx, 3xx, 4xx, 5xx, denied
 	hist         *metrics.Histogram     // request duration per route
@@ -431,6 +434,7 @@ func newRuntime(cfg *config.Config, generation uint64, pools map[string]*upstrea
 			class: shed.ParseClass(r.PriorityClass), lowerByClient: r.ClientPriority == "lower",
 			stripEarlyHints: r.EarlyHints == "strip", earlyData: r.EarlyData, stripTrailers: r.Trailers == "strip",
 			ranges: compileRangePolicy(r.Ranges),
+			intel:  r.ThreatIntel == nil || *r.ThreatIntel,
 		}
 		cr.policy = compilePolicy(r.Policy)
 

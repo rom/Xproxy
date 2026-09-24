@@ -427,6 +427,14 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		st.chalTier, st.device, st.automation = ck.Tier, ck.Device, ck.Automation
 	}
 
+	// Imported threat intelligence: a list somebody else attributed this
+	// address or fingerprint to, and what the operator asked for about
+	// it. After routing, so a route can be exempt, and before the
+	// challenge gate, so a list that asks for a challenge gets one.
+	if s.threatIntel(rw, r, st, !cr.intel) {
+		return
+	}
+
 	// Browser challenge gate: unverified clients get the page instead of
 	// the route. In load mode only while the shedder reports pressure.
 	if cr.challenge != nil {

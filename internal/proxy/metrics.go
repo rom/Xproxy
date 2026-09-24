@@ -268,6 +268,9 @@ func (s *Server) Collect(e metrics.Collector) {
 		e.Counter("xproxy_capture_truncated_total", "Captured bodies cut short at max_body_bytes.", nil, float64(cs.Truncated))
 		e.Counter("xproxy_capture_bytes_total", "Bytes written to capture files.", nil, float64(cs.Bytes))
 	}
+	e.Counter("xproxy_threat_intel_total", "Requests an imported threat intelligence list matched, by what was done.", L{"result": "logged"}, float64(sn.ThreatIntelMatched-sn.ThreatIntelBlocked-sn.ThreatIntelChallenged))
+	e.Counter("xproxy_threat_intel_total", "Requests an imported threat intelligence list matched, by what was done.", L{"result": "blocked"}, float64(sn.ThreatIntelBlocked))
+	e.Counter("xproxy_threat_intel_total", "Requests an imported threat intelligence list matched, by what was done.", L{"result": "challenged"}, float64(sn.ThreatIntelChallenged))
 	e.Counter("xproxy_ranges_total", "Byte range requests the range policy acted on.", L{"result": "dropped"}, float64(sn.RangesDropped))
 	e.Counter("xproxy_ranges_total", "Byte range requests the range policy acted on.", L{"result": "refused"}, float64(sn.RangesRefused))
 	e.Counter("xproxy_static_responses_total", "Requests answered by static routes.", L{"result": "served"}, float64(sn.StaticServed))

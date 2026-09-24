@@ -2044,6 +2044,52 @@ a second listener.
 do not contain the clients, or the clients reach this resolver through a
 forwarder whose address is what the view sees.
 
+## Threat intelligence lists
+
+**A list matches nothing.** `xproxyctl status` shows every list with the
+number of entries read: zero means the file held no entries the proxy
+could use (all comments, or all blank). A `cidr` list is matched against
+the client address the proxy decided on, so behind a trusted proxy chain
+it is the forwarded address, not the peer's; a `ja4` list needs a TLS
+handshake, so a plaintext listener never matches one.
+
+**A feed changed and nothing happened.** The status says whether the files
+are being watched (`threat_intel_watching`): `refresh: 0` means nothing
+is, and only a reload re-reads them. Otherwise a file is re-read when its
+size or modification time moves — a rewrite that preserves both looks
+unchanged. `threat_intel_reloads` counts the re-reads.
+
+**The proxy will not start after a feed was updated.** A list that cannot
+be read, or that holds an entry which is not an address, fails the load,
+and a reload that cannot read one is refused whole. The error names the
+list and the line. That is deliberate: a list silently matching nothing is
+worse than no list. A file that goes missing or stops parsing *while the
+proxy runs* keeps the entries already loaded and writes a warning to the
+error log instead.
+
+**A client on a `challenge` list is served normally.** There is nothing
+to challenge with — no `challenge` section on this configuration — or the
+client already holds a solved challenge cookie. A list that asks for a
+challenge is never turned into a block; validation refuses that
+combination at load, so this only arises when the challenge section is
+removed later.
+
+**A blocked client is not banned.** Only `block` hands the ban list the
+`threat_intel` reason; `log` and `challenge` do not. A trigger naming
+that reason escalates a client that keeps arriving from a listed network:
+
+```yaml
+bans:
+  triggers:
+    - {name: intel, reasons: [threat_intel], threshold: 5, window: 10m, duration: 24h}
+```
+
+**A list took out something it should not have.** Put the narrow list
+first: the first list that matches decides, so a `log` list naming the
+office network before the broad feed keeps the office out of it. And
+`threat_intel: false` on a route exempts it entirely, which is what a
+health endpoint wants.
+
 ## Byte ranges
 
 **A client's `Range` header does not reach the upstream.** A route with a
