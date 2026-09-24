@@ -1271,6 +1271,29 @@ is the contract here. `strict_query` refuses undeclared parameters; a
 repeated parameter is validated for *every* value, not just the first.
 Update the description or relax the filter.
 
+**The backend stopped seeing `X-SSL-Client-DN` (or another certificate
+identity header) it used to read.** Those headers are now removed from
+every request that did not arrive from a peer inside `trusted_proxies`,
+because a client that can send one chooses its own identity and the
+backend cannot tell the two apart. Two fixes, depending on who was
+setting it. If this proxy terminates the TLS, set
+`routes[].client_cert_headers: rfc9440` (or `xfcc`), or set the backend's
+own header name from `${cert:...}` in `request_headers.set`. If another
+proxy in front terminates it and sets the header, add that proxy's network
+to `trusted_proxies` — which is the same switch that decides whether its
+`X-Forwarded-For` is believed, and for the same reason.
+
+**A backend reads `Client-Cert` and gets nothing on a plaintext
+listener.** Correct: there is no certificate, so there is nothing to
+state, and an empty header would mean whatever the backend's parser makes
+of emptiness. The absence is the answer.
+
+**`Client-Cert` does not parse at the backend.** It is a Structured Fields
+Byte Sequence (RFC 8941): standard base64, padded, between colons. A
+parser expecting URL-safe base64, or one that forgets to strip the colons,
+fails on a correct value. `openssl x509 -in <(printf %s "$v" | tr -d : |
+base64 -d) -inform DER -noout -subject` is the shell check.
+
 **`openapi` refuses an array or object parameter the client spells
 correctly.** Check the parameter's `style` in the description against what
 the client sends. A `pipeDelimited` array (`?ids=1|2`) sent to a parameter

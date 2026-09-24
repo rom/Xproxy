@@ -6068,7 +6068,7 @@ T}
 T{
 \fBcert:\:field\fR
 T}	T{
-the client certificate of a listener with \fBclient_\:auth\fR (empty without one): \fBcn\fR,\: \fBsubject\fR and \fBissuer\fR (RFC 2253),\: \fBserial\fR (hex),\: \fBfingerprint\fR (SHA\-256 of the DER,\: hex),\: \fBsans\fR (DNS names,\: addresses,\: emails and URIs,\: comma separated),\: \fBnot_\:after\fR (RFC 3339),\: \fBxfcc\fR (an Envoy style \fBX\-\:Forwarded\-\:Client\-\:Cert\fR value with \fBHash\fR,\: \fBSubject\fR,\: \fBURI\fR and \fBDNS\fR) and \fBpem\fR (URL encoded PEM). Set the header with \fBrequest_\:headers.\:set\fR,\: which also discards a client supplied copy
+the client certificate of a listener with \fBclient_\:auth\fR (empty without one): \fBcn\fR,\: \fBsubject\fR and \fBissuer\fR (RFC 2253),\: \fBserial\fR (hex),\: \fBfingerprint\fR (SHA\-256 of the DER,\: hex),\: \fBsans\fR (DNS names,\: addresses,\: emails and URIs,\: comma separated),\: \fBnot_\:after\fR (RFC 3339),\: \fBclient_\:cert\fR (RFC 9440\(aqs Structured Fields Byte Sequence: standard base64 of the DER between colons),\: \fBxfcc\fR (an Envoy style \fBX\-\:Forwarded\-\:Client\-\:Cert\fR value with \fBHash\fR,\: \fBSubject\fR,\: \fBURI\fR and \fBDNS\fR) and \fBpem\fR (URL encoded PEM). Set the header with \fBrequest_\:headers.\:set\fR,\: which also discards a client supplied copy
 T}
 T{
 \fB1\fR to \fB9\fR,\: \fBname\fR
@@ -6091,6 +6091,15 @@ T}	T{
 current date (\fB2026\-\:09\-\:19\fR),\: hour (\fB0\fR to \fB23\fR),\: minute and weekday (\fBMon\fR to \fBSun\fR),\: UTC
 T}
 .TE
+.SS "Client certificate identity headers"
+.PP
+A backend behind a TLS\-terminating proxy cannot see the handshake, so the proxy tells it. RFC 9440 standardises \fBClient\-Cert\fR and \fBClient\-Cert\-Chain\fR for that; Envoy has used \fBX\-Forwarded\-Client\-Cert\fR for years; and nginx and Apache deployments read a handful of \fBX\-SSL\-Client\-*\fR names their own configurations set. Every one of them is a statement about something only the terminating proxy can know.
+.PP
+Which makes every one of them an authentication bypass when a client can send it. The backend has no way to tell the proxy\(aqs header from the client\(aqs \[u2014] they are the same bytes in the same field \[u2014] so a request carrying its own \fBClient\-Cert\fR is a request that chooses its own identity. RFC 9440 section 3 says so in as many words: the terminating proxy must sanitise the header.
+.PP
+So \fBall of them are removed from every forwarded request\fR, unless the immediate peer is inside \fBtrusted_proxies\fR \[u2014] the one case where the header belongs to a proxy that did terminate a handshake. The list is \fBClient\-Cert\fR, \fBClient\-Cert\-Chain\fR, \fBX\-Forwarded\-Client\-Cert\fR, \fBX\-Client\-Cert\fR, \fBX\-Client\-Cert\-Chain\fR, \fBX\-Client\-Verify\fR, \fBX\-Client\-Subject\-DN\fR, \fBX\-Client\-Issuer\-DN\fR, \fBX\-SSL\-Client\-Cert\fR, \fBX\-SSL\-Client\-Verify\fR, \fBX\-SSL\-Client\-S\-DN\fR, \fBX\-SSL\-Client\-I\-DN\fR, \fBX\-SSL\-Client\-Serial\fR, \fBX\-SSL\-Client\-Fingerprint\fR, \fBSSL\-Client\-Cert\fR, \fBSSL\-Client\-Verify\fR and \fBSSL\-Client\-Subject\-DN\fR. A backend that reads one of these therefore reads what this proxy said or nothing at all.
+.PP
+\fBroutes[].client_cert_headers\fR then writes the truth over the blank: \fBrfc9440\fR sets \fBClient\-Cert\fR to the leaf and \fBClient\-Cert\-Chain\fR to the rest of the chain in order, each as a Structured Fields Byte Sequence (RFC 8941: standard base64 with padding, between colons, which a structured\-fields parser accepts and anything else it rejects); \fBxfcc\fR sets Envoy\(aqs header. A route that wants a different shape sets its own header from \fB${cert:...}\fR, which strips a client copy of that name too.
 .SS "Expressions"
 .PP
 \fBroutes[].when\fR, \fBrequest_headers.when\fR and \fBresponse_headers.when\fR hold a condition that is parsed at load (unknown names, functions, arities, patterns and capture groups are errors) and evaluated per request. Values are strings; a variable without a value is the empty string. \fB==\fR and \fB!=\fR compare as strings; \fB<\fR, \fB<=\fR, \fB>\fR and \fB>=\fR compare numerically when both sides are numbers and by string otherwise. A bare string is true when it is neither empty, \fB0\fR nor \fBfalse\fR.
@@ -8696,6 +8705,15 @@ T}	T{
 
 T}	T{
 Applied to responses,\: including redirect and respond actions
+T}
+T{
+\fBclient_\:cert_\:headers\fR
+T}	T{
+\fBnone\fR,\: \fBrfc9440\fR,\: \fBxfcc\fR
+T}	T{
+\fBnone\fR
+T}	T{
+State the client\(aqs TLS certificate to the backend: \fBrfc9440\fR sets \fBClient\-\:Cert\fR and \fBClient\-\:Cert\-\:Chain\fR (RFC 9440),\: \fBxfcc\fR sets Envoy\(aqs \fBX\-\:Forwarded\-\:Client\-\:Cert\fR. Nothing is sent when the client presented no certificate \[u2014] an absent header is how the backend is told there was none. See "Client certificate identity headers" below
 T}
 T{
 \fBrequest_\:headers.\:*\fR,\: \fBresponse_\:headers.\:*\fR values

@@ -3175,6 +3175,17 @@ type Route struct {
 
 	RequestHeaders  HeaderOps `yaml:"request_headers"`
 	ResponseHeaders HeaderOps `yaml:"response_headers"`
+	// ClientCertHeaders states the client's TLS certificate to the
+	// backend: none (the default), rfc9440 (Client-Cert and
+	// Client-Cert-Chain, RFC 9440) or xfcc (Envoy's
+	// X-Forwarded-Client-Cert).
+	//
+	// Whatever this says, a client's own copy of any of those headers is
+	// removed from every request that did not arrive from a peer inside
+	// trusted_proxies: the backend cannot tell the proxy's header from
+	// the client's, so a client that can send one chooses its own
+	// identity.
+	ClientCertHeaders string `yaml:"client_cert_headers"`
 
 	RateLimits []string `yaml:"rate_limits"`
 	// AllowCIDRs / DenyCIDRs implement simple IP access control. Deny is

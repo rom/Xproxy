@@ -1909,6 +1909,11 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 	}
 	seen[r.Name] = true
 	v.websocketGuard(p, r)
+	switch r.ClientCertHeaders {
+	case "", "none", "rfc9440", "xfcc":
+	default:
+		v.errf("%s.client_cert_headers: must be none, rfc9440 or xfcc", p)
+	}
 
 	for j, h := range r.Hosts {
 		if !hostPatternOK(h) {

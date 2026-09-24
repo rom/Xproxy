@@ -478,6 +478,39 @@ Open findings of the earlier rounds:
   `discovery`, the sinkhole addresses -- are not, which is why
   `sinkhole_ipv4: 0.0.0.0` still works inside a denied range.
 
+- **A client can no longer send its own certificate identity, and the
+  proxy states the real one in RFC 9440's form**
+  (`routes[].client_cert_headers`).
+
+  A backend behind a TLS-terminating proxy cannot see the handshake, so
+  the proxy tells it: RFC 9440 standardises `Client-Cert` and
+  `Client-Cert-Chain`, Envoy has long used `X-Forwarded-Client-Cert`, and
+  nginx and Apache deployments read a handful of `X-SSL-Client-*` names
+  their own configurations set. Every one of them is a statement about
+  something only the terminating proxy can know -- which makes every one
+  of them an authentication bypass when a client can send it, because the
+  backend has no way to tell the proxy's header from the client's. They
+  are the same bytes in the same field.
+
+  All seventeen of those names are now removed from every forwarded
+  request, unless the immediate peer is inside `trusted_proxies` -- the
+  one case where such a header belongs to a proxy that did terminate a
+  handshake. That is what RFC 9440 section 3 asks for in as many words,
+  and it was previously true only for the specific header a route
+  happened to set from `${cert:...}`. A backend that reads one of these
+  therefore reads what this proxy said or nothing at all.
+
+  `routes[].client_cert_headers: rfc9440` then writes the truth over the
+  blank: the leaf in `Client-Cert` and the rest of the chain in
+  `Client-Cert-Chain`, each as the Structured Fields Byte Sequence RFC
+  8941 defines (standard base64, padded, between colons, which a
+  structured-fields parser accepts and anything else it rejects). `xfcc`
+  sets Envoy's header instead, and `${cert:client_cert}` is available for
+  a route that wants the value somewhere else. Nothing is sent when the
+  client presented no certificate: an absent header is how the backend is
+  told there was none, where an empty one would mean whatever its parser
+  makes of emptiness.
+
 - **The GraphQL filter judges what an operation is, not only what it
   costs** (`mutations`, `subscriptions`, `allow_operations`,
   `require_operation_name`, `persisted`, `max_root_fields`,

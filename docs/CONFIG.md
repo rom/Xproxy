@@ -2931,11 +2931,46 @@ rewrites and redirects and is kept literally in pages.
 | `country`, `ja4` | GeoIP country code and TLS client fingerprint, empty when unknown |
 | `tls_version`, `tls_cipher` | TLS parameters of the client connection |
 | `header:Name`, `cookie:name`, `query:name` | a request header, cookie or query parameter |
-| `cert:field` | the client certificate of a listener with `client_auth` (empty without one): `cn`, `subject` and `issuer` (RFC 2253), `serial` (hex), `fingerprint` (SHA-256 of the DER, hex), `sans` (DNS names, addresses, emails and URIs, comma separated), `not_after` (RFC 3339), `xfcc` (an Envoy style `X-Forwarded-Client-Cert` value with `Hash`, `Subject`, `URI` and `DNS`) and `pem` (URL encoded PEM). Set the header with `request_headers.set`, which also discards a client supplied copy |
+| `cert:field` | the client certificate of a listener with `client_auth` (empty without one): `cn`, `subject` and `issuer` (RFC 2253), `serial` (hex), `fingerprint` (SHA-256 of the DER, hex), `sans` (DNS names, addresses, emails and URIs, comma separated), `not_after` (RFC 3339), `client_cert` (RFC 9440's Structured Fields Byte Sequence: standard base64 of the DER between colons), `xfcc` (an Envoy style `X-Forwarded-Client-Cert` value with `Hash`, `Subject`, `URI` and `DNS`) and `pem` (URL encoded PEM). Set the header with `request_headers.set`, which also discards a client supplied copy |
 | `1` to `9`, `name` | groups of `rewrite_regex.pattern` or, without one, of the matching `path_regex` (numbered and named) |
 | `status`, `status_text`, `reason` | error pages only: the status, its phrase and the denial category (`acl`, `rate_limit`, `waf`, `banned`, `upstream`...) |
 | `time` | current time, RFC 3339, UTC |
 | `date`, `hour`, `minute`, `weekday` | current date (`2026-09-19`), hour (`0` to `23`), minute and weekday (`Mon` to `Sun`), UTC |
+
+### Client certificate identity headers
+
+A backend behind a TLS-terminating proxy cannot see the handshake, so the
+proxy tells it. RFC 9440 standardises `Client-Cert` and
+`Client-Cert-Chain` for that; Envoy has used `X-Forwarded-Client-Cert`
+for years; and nginx and Apache deployments read a handful of
+`X-SSL-Client-*` names their own configurations set. Every one of them is
+a statement about something only the terminating proxy can know.
+
+Which makes every one of them an authentication bypass when a client can
+send it. The backend has no way to tell the proxy's header from the
+client's — they are the same bytes in the same field — so a request
+carrying its own `Client-Cert` is a request that chooses its own
+identity. RFC 9440 section 3 says so in as many words: the terminating
+proxy must sanitise the header.
+
+So **all of them are removed from every forwarded request**, unless the
+immediate peer is inside `trusted_proxies` — the one case where the header
+belongs to a proxy that did terminate a handshake. The list is
+`Client-Cert`, `Client-Cert-Chain`, `X-Forwarded-Client-Cert`,
+`X-Client-Cert`, `X-Client-Cert-Chain`, `X-Client-Verify`,
+`X-Client-Subject-DN`, `X-Client-Issuer-DN`, `X-SSL-Client-Cert`,
+`X-SSL-Client-Verify`, `X-SSL-Client-S-DN`, `X-SSL-Client-I-DN`,
+`X-SSL-Client-Serial`, `X-SSL-Client-Fingerprint`, `SSL-Client-Cert`,
+`SSL-Client-Verify` and `SSL-Client-Subject-DN`. A backend that reads one
+of these therefore reads what this proxy said or nothing at all.
+
+`routes[].client_cert_headers` then writes the truth over the blank:
+`rfc9440` sets `Client-Cert` to the leaf and `Client-Cert-Chain` to the
+rest of the chain in order, each as a Structured Fields Byte Sequence
+(RFC 8941: standard base64 with padding, between colons, which a
+structured-fields parser accepts and anything else it rejects); `xfcc`
+sets Envoy's header. A route that wants a different shape sets its own
+header from `${cert:...}`, which strips a client copy of that name too.
 
 ### Expressions
 
@@ -3733,6 +3768,7 @@ not match is skipped and the next candidate is tried.
 | `request_headers` | `{set, add, remove, when}` | | Applied before forwarding; values may not contain CR, LF or NUL |
 | `request_headers.when`, `response_headers.when` | expression | none | Apply the block only when the expression holds (see "Expressions" below), for example `query("debug") == "1"` or `not has_cookie("consent")`; `${variable}` values are still expanded |
 | `response_headers` | `{set, add, remove}` | | Applied to responses, including redirect and respond actions |
+| `client_cert_headers` | `none`, `rfc9440`, `xfcc` | `none` | State the client's TLS certificate to the backend: `rfc9440` sets `Client-Cert` and `Client-Cert-Chain` (RFC 9440), `xfcc` sets Envoy's `X-Forwarded-Client-Cert`. Nothing is sent when the client presented no certificate — an absent header is how the backend is told there was none. See "Client certificate identity headers" below |
 | `request_headers.*`, `response_headers.*` values | template | | `set` and `add` values may contain `${variable}` placeholders (see "Variables" below); `$$` is a literal dollar; a placeholder without a value expands to an empty string |
 | `rate_limits` | list of names | `[]` | Evaluated in order; first exhausted policy acts |
 | `allow_cidrs` | list | `[]` (all) | Client must be inside one |
