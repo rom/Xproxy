@@ -2704,6 +2704,14 @@
         "strip_token": {
           "description": "StripToken removes the token from the forwarded request. Default true.",
           "type": "boolean"
+        },
+        "token_exchange": {
+          "description": "TokenExchange swaps the client's token for one issued to the backend (RFC 8693), so what is forwarded is not a credential that works at the front door.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/TokenExchange"
+            }
+          ]
         }
       },
       "additionalProperties": false
@@ -6125,6 +6133,64 @@
         },
         "upstream": {
           "description": "Upstream is the pool of targets. Required.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "TokenExchange": {
+      "description": "TokenExchange is an RFC 8693 exchange at the token endpoint. A token the client sent to the gateway is a token the gateway forwards, and everything behind the gateway then holds a credential that works at the gateway. That is the confused-deputy problem in one sentence: a backend with a bug — a log line, an error page, an outbound request to somewhere it should not go — leaks a token that reaches the front door again with all of the client's scopes on it. Exchange replaces it. The proxy presents the verified client token to the authorization server and asks for one issued for *this* backend: a different audience, usually fewer scopes, and no standing anywhere else. The backend never sees the client's token, so there is nothing there to leak that would work at the gateway. The client's identity survives — the authorization server puts the same subject in the new token, which is what makes this an exchange rather than an impersonation.",
+      "type": "object",
+      "properties": {
+        "required": {
+          "description": "Required refuses the request when the exchange fails. Default true: forwarding the client's token after failing to replace it would quietly undo the control on exactly the requests where it went wrong.",
+          "type": "boolean"
+        },
+        "audience": {
+          "description": "Audience and Resource say who the new token is for: the backend's identifier at the authorization server, or its URI. At least one is required — an exchange that names neither asks for a token as broad as the one it replaces, which is the whole point undone.",
+          "type": "string"
+        },
+        "ca_file": {
+          "description": "CAFile pins the CA for the endpoint. Default: system pool.",
+          "type": "string"
+        },
+        "cache_ttl": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "client_id": {
+          "description": "ClientID and ClientSecretFile authenticate the proxy to the authorization server with HTTP basic authentication.",
+          "type": "string"
+        },
+        "client_secret_file": {
+          "type": "string"
+        },
+        "header": {
+          "description": "Header is where the new token goes. Default Authorization, as \"Bearer \u003ctoken\u003e\"; any other name carries the token alone.",
+          "type": "string"
+        },
+        "requested_token_type": {
+          "description": "RequestedTokenType asks for a particular token type. Default: the authorization server's choice, which must be an access token or a JWT — a refresh token forwarded as an access token would be a long-lived credential handed to a backend.",
+          "type": "string"
+        },
+        "resource": {
+          "type": "string"
+        },
+        "scopes": {
+          "description": "Scopes asks for a subset. Empty leaves the decision to the authorization server, which will usually issue what the audience is entitled to.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "url": {
+          "description": "URL is the token endpoint (https).",
           "type": "string"
         }
       },

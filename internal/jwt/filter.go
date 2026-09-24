@@ -124,6 +124,31 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 	if cfg.Strips() {
 		f.strip(r)
 	}
+	// The exchange runs on a verified token and never before: asking the
+	// authorization server about whatever a client posted would be
+	// spending its capacity on this proxy's behalf, and caching the answer
+	// by the token's digest would let one client's garbage fill the table.
+	if f.p.swap != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), f.p.swap.client.Timeout)
+		out, xerr := f.p.swap.exchange(ctx, token, time.Now())
+		cancel()
+		switch {
+		case xerr == nil:
+			f.p.swap.place(r.Header, out)
+			in.attrs = append(in.attrs, "token_exchange", "ok")
+		case !cfg.TokenExchange.Requires():
+			// The operator asked for the request to go on. It goes on
+			// without the exchanged token, and without the client's
+			// either: the strip already happened, and putting it back
+			// would forward the credential this exists to withhold.
+			in.attrs = append(in.attrs, "token_exchange", "failed")
+		case errors.Is(xerr, ErrExchangeRefused):
+			return filter.Verdict{Deny: true, Status: http.StatusForbidden, Reason: "jwt", Detail: "exchange_refused"}
+		default:
+			return filter.Verdict{Deny: true, Status: http.StatusServiceUnavailable, Reason: "jwt",
+				Detail: "exchange_unavailable", Headers: map[string]string{"Retry-After": "5"}}
+		}
+	}
 	for h, claim := range cfg.ForwardClaims {
 		if v, ok := claims[claim]; ok {
 			r.Header.Set(h, ClaimString(v))

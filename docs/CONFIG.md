@@ -5164,6 +5164,59 @@ accepted.
 | `dpop.max_age` | duration | `60s` | How old a proof's `iat` may be; `clock_skew` is allowed on top, in both directions; at most 10m |
 | `dpop.replay_entries` | int | `65536` | Bound on the table of spent proof identifiers |
 | `dpop.external_url` | URL | none | The scheme and authority the client sees, for the `htu` comparison, when another proxy terminates TLS in front |
+| `token_exchange` | object | none | Swap the verified client token for one issued to the backend (RFC 8693); see below |
+| `token_exchange.url` | https URL | required | The token endpoint |
+| `token_exchange.client_id`, `token_exchange.client_secret_file` | string, path | required | HTTP basic credentials of the proxy at the authorization server |
+| `token_exchange.ca_file` | path | system pool | CA pinned for the endpoint |
+| `token_exchange.audience`, `token_exchange.resource` | string, URI | one is required | Who the new token is for: the backend's identifier, or its URI (RFC 8707) |
+| `token_exchange.scopes` | list | `[]` | Ask for a subset; empty leaves the decision to the authorization server |
+| `token_exchange.requested_token_type` | URN | server's choice | Only the `access_token` or `jwt` URN; anything else would be forwarded as an access token |
+| `token_exchange.header` | header name | `Authorization` | Where the new token goes; `Authorization` carries `Bearer <token>`, any other name the token alone |
+| `token_exchange.cache_ttl` | duration | `60s` | One exchange kept this long, bounded by the new token's own expiry; at most 32768 entries; `0` exchanges on every request |
+| `token_exchange.timeout` | duration | `3s` | Per exchange, 100ms to 30s |
+| `token_exchange.required` | bool | `true` | `false` lets the request through with no token at all when the exchange fails |
+
+#### jwt.providers[].token_exchange: a token the backend cannot reuse
+
+A token the client sent to the gateway is a token the gateway forwards,
+and everything behind the gateway then holds a credential that works at
+the gateway. That is the confused-deputy problem in one sentence: a backend
+with a bug — a log line, an error page, an outbound request to somewhere it
+should not go — leaks a token that reaches the front door again with all of
+the client's scopes on it.
+
+Exchange replaces it. The proxy presents the verified client token to the
+authorization server and asks for one issued for *this* backend: a
+different `audience`, usually fewer `scopes`, and no standing anywhere
+else. The backend never sees the client's token, so there is nothing there
+to leak that would work at the gateway. The client's identity survives —
+the authorization server puts the same subject in the new token, which is
+what makes this an exchange rather than an impersonation.
+
+The exchange runs **after** the client's token has been verified, never
+before: sending an unverified token to the authorization server would spend
+its capacity on whatever a client posted, and caching the answer against
+the token's digest would let one client's garbage occupy the table. It also
+runs after `strip_token`, so the client's token is gone from the forwarded
+request whether the exchange succeeded or not.
+
+An exchange that names neither an audience nor a resource is refused at
+load: it asks for a token as broad as the one it replaces, which is the
+feature undone while the configuration reads as if it were on. The
+`issued_token_type` in the answer is checked rather than assumed — a server
+that answered with a refresh token would otherwise have it forwarded as an
+access token, which is a long-lived credential handed to a backend.
+
+Outcomes: a refusal from the authorization server (400, 401 or 403 there)
+is 403 here with detail `exchange_refused`, because the token is valid and
+this backend is not somewhere it reaches; an endpoint that cannot be asked
+is 503 with `Retry-After` and detail `exchange_unavailable`. Refusals are
+cached for `cache_ttl` like successes — they are the authorization server's
+decision about this client and this backend, and asking again per request
+turns one misconfiguration into load the login flow shares — while an
+unreachable endpoint is never cached. `required: false` lets the request
+reach the backend with no token, which validation warns about: it is the
+control failing open on exactly the requests where it went wrong.
 
 #### jwt.providers[].dpop: proof of possession
 

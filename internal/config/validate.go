@@ -4187,6 +4187,62 @@ func (v *validator) dnsListener(p string, d *DNSListener) {
 	v.dnsTunnel(p+".tunnel_detection", d.TunnelDetection)
 }
 
+// tokenExchange checks an RFC 8693 exchange.
+//
+// The one shape worth refusing at load is an exchange that names neither
+// an audience nor a resource: it asks the authorization server for a token
+// as broad as the one it replaces, which is the point of the feature
+// undone while the configuration reads as if it were on.
+func (v *validator) tokenExchange(p string, t *TokenExchange) {
+	if t == nil {
+		return
+	}
+	if u, err := url.Parse(t.URL); err != nil || u.Scheme != "https" || u.Host == "" {
+		v.errf("%s.url: must be an https URL", p)
+	}
+	if t.ClientID == "" || !strings.HasPrefix(t.ClientSecretFile, "/") {
+		v.errf("%s: client_id and an absolute client_secret_file are required", p)
+	} else {
+		v.file(p+".client_secret_file", t.ClientSecretFile)
+	}
+	if t.CAFile != "" {
+		v.file(p+".ca_file", t.CAFile)
+	}
+	if t.Audience == "" && t.Resource == "" {
+		v.errf("%s: audience or resource is required; an exchange that names neither asks for a token as broad as the one it replaces", p)
+	}
+	if t.Resource != "" {
+		if u, err := url.Parse(t.Resource); err != nil || u.Scheme == "" || u.Host == "" {
+			v.errf("%s.resource: must be an absolute URI (RFC 8707)", p)
+		}
+	}
+	for i, sc := range t.Scopes {
+		if sc == "" || strings.ContainsAny(sc, " \t\r\n\"") {
+			v.errf("%s.scopes[%d]: a scope is a non-empty token without spaces", p, i)
+		}
+	}
+	switch t.RequestedTokenType {
+	case "", "urn:ietf:params:oauth:token-type:access_token", "urn:ietf:params:oauth:token-type:jwt":
+	default:
+		v.errf("%s.requested_token_type: must be the access_token or jwt URN; anything else would be forwarded as an access token", p)
+	}
+	if t.Header != "" && !headerNameOK(t.Header) {
+		v.errf("%s.header: %q is not a valid header name", p, t.Header)
+	}
+	if strings.EqualFold(t.Header, "Cookie") || strings.EqualFold(t.Header, "Host") {
+		v.errf("%s.header: %s cannot carry a token", p, t.Header)
+	}
+	if t.CacheTTL < 0 || t.CacheTTL > Duration(time.Hour) {
+		v.errf("%s.cache_ttl: must be between 0 and 1h", p)
+	}
+	if t.Timeout != 0 && (t.Timeout < Duration(100*time.Millisecond) || t.Timeout > Duration(30*time.Second)) {
+		v.errf("%s.timeout: must be between 100ms and 30s", p)
+	}
+	if !t.Requires() {
+		v.warnf("%s.required: false lets a request through when the exchange fails, so the backend is reached with no token at all on exactly the requests where the control went wrong", p)
+	}
+}
+
 // dpop checks a proof-of-possession policy.
 //
 // The algorithm list is the part worth refusing at load: a symmetric
@@ -4767,6 +4823,7 @@ func (v *validator) jwt(j *JWT, seen map[string]bool) {
 			v.errf("%s.clock_skew: must be between 0 and 10m", pp)
 		}
 		v.dpop(pp+".dpop", p.DPoP, p.Source)
+		v.tokenExchange(pp+".token_exchange", p.TokenExchange)
 		switch {
 		case p.Source == "bearer":
 		case strings.HasPrefix(p.Source, "header:") && headerNameOK(p.Source[7:]):

@@ -4830,7 +4830,69 @@ type JWTProvider struct {
 	// DPoP requires the client to prove it holds the key the token is
 	// bound to (RFC 9449).
 	DPoP *DPoP `yaml:"dpop"`
+	// TokenExchange swaps the client's token for one issued to the
+	// backend (RFC 8693), so what is forwarded is not a credential that
+	// works at the front door.
+	TokenExchange *TokenExchange `yaml:"token_exchange"`
 }
+
+// TokenExchange is an RFC 8693 exchange at the token endpoint.
+//
+// A token the client sent to the gateway is a token the gateway forwards,
+// and everything behind the gateway then holds a credential that works at
+// the gateway. That is the confused-deputy problem in one sentence: a
+// backend with a bug — a log line, an error page, an outbound request to
+// somewhere it should not go — leaks a token that reaches the front door
+// again with all of the client's scopes on it.
+//
+// Exchange replaces it. The proxy presents the verified client token to
+// the authorization server and asks for one issued for *this* backend: a
+// different audience, usually fewer scopes, and no standing anywhere else.
+// The backend never sees the client's token, so there is nothing there to
+// leak that would work at the gateway. The client's identity survives —
+// the authorization server puts the same subject in the new token, which
+// is what makes this an exchange rather than an impersonation.
+type TokenExchange struct {
+	// URL is the token endpoint (https).
+	URL string `yaml:"url"`
+	// ClientID and ClientSecretFile authenticate the proxy to the
+	// authorization server with HTTP basic authentication.
+	ClientID         string `yaml:"client_id"`
+	ClientSecretFile string `yaml:"client_secret_file"`
+	// CAFile pins the CA for the endpoint. Default: system pool.
+	CAFile string `yaml:"ca_file"`
+	// Audience and Resource say who the new token is for: the backend's
+	// identifier at the authorization server, or its URI. At least one is
+	// required — an exchange that names neither asks for a token as broad
+	// as the one it replaces, which is the whole point undone.
+	Audience string `yaml:"audience"`
+	Resource string `yaml:"resource"`
+	// Scopes asks for a subset. Empty leaves the decision to the
+	// authorization server, which will usually issue what the audience is
+	// entitled to.
+	Scopes []string `yaml:"scopes"`
+	// RequestedTokenType asks for a particular token type. Default: the
+	// authorization server's choice, which must be an access token or a
+	// JWT — a refresh token forwarded as an access token would be a
+	// long-lived credential handed to a backend.
+	RequestedTokenType string `yaml:"requested_token_type"`
+	// Header is where the new token goes. Default Authorization, as
+	// "Bearer <token>"; any other name carries the token alone.
+	Header string `yaml:"header"`
+	// CacheTTL keeps one exchange this long, bounded by the new token's
+	// own expiry; 0 exchanges on every request. Default 60s.
+	CacheTTL Duration `yaml:"cache_ttl"`
+	// Timeout bounds one exchange. Default 3s.
+	Timeout Duration `yaml:"timeout"`
+	// Required refuses the request when the exchange fails. Default true:
+	// forwarding the client's token after failing to replace it would
+	// quietly undo the control on exactly the requests where it went
+	// wrong.
+	Required *bool `yaml:"required"`
+}
+
+// Requires reports whether a failed exchange refuses the request.
+func (t *TokenExchange) Requires() bool { return t.Required == nil || *t.Required }
 
 // DPoP is demonstrating proof of possession, RFC 9449.
 //

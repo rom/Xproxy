@@ -12888,8 +12888,8 @@ Present means providers are available; routes opt in with a \fBjwt\fR block. Tok
 .PP
 .TS
 allbox;
-lbw(1.5i) lbw(0.9i) lbw(1.0i) lbx
-lw(1.5i) lw(0.9i) lw(1.0i) lx.
+lbw(1.5i) lbw(0.9i) lbw(1.4i) lbx
+lw(1.5i) lw(0.9i) lw(1.4i) lx.
 T{
 Key
 T}	T{
@@ -13151,7 +13151,117 @@ none
 T}	T{
 The scheme and authority the client sees,\: for the \fBhtu\fR comparison,\: when another proxy terminates TLS in front
 T}
+T{
+\fBtoken_\:exchange\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Swap the verified client token for one issued to the backend (RFC 8693);\: see below
+T}
+T{
+\fBtoken_\:exchange.\:url\fR
+T}	T{
+https URL
+T}	T{
+required
+T}	T{
+The token endpoint
+T}
+T{
+\fBtoken_\:exchange.\:client_\:id\fR,\: \fBtoken_\:exchange.\:client_\:secret_\:file\fR
+T}	T{
+string,\: path
+T}	T{
+required
+T}	T{
+HTTP basic credentials of the proxy at the authorization server
+T}
+T{
+\fBtoken_\:exchange.\:ca_\:file\fR
+T}	T{
+path
+T}	T{
+system pool
+T}	T{
+CA pinned for the endpoint
+T}
+T{
+\fBtoken_\:exchange.\:audience\fR,\: \fBtoken_\:exchange.\:resource\fR
+T}	T{
+string,\: URI
+T}	T{
+one is required
+T}	T{
+Who the new token is for: the backend\(aqs identifier,\: or its URI (RFC 8707)
+T}
+T{
+\fBtoken_\:exchange.\:scopes\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Ask for a subset;\: empty leaves the decision to the authorization server
+T}
+T{
+\fBtoken_\:exchange.\:requested_\:token_\:type\fR
+T}	T{
+URN
+T}	T{
+server\(aqs choice
+T}	T{
+Only the \fBaccess_\:token\fR or \fBjwt\fR URN;\: anything else would be forwarded as an access token
+T}
+T{
+\fBtoken_\:exchange.\:header\fR
+T}	T{
+header name
+T}	T{
+\fBAuthorization\fR
+T}	T{
+Where the new token goes;\: \fBAuthorization\fR carries \fBBearer <token>\fR,\: any other name the token alone
+T}
+T{
+\fBtoken_\:exchange.\:cache_\:ttl\fR
+T}	T{
+duration
+T}	T{
+\fB60s\fR
+T}	T{
+One exchange kept this long,\: bounded by the new token\(aqs own expiry;\: at most 32768 entries;\: \fB0\fR exchanges on every request
+T}
+T{
+\fBtoken_\:exchange.\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB3s\fR
+T}	T{
+Per exchange,\: 100ms to 30s
+T}
+T{
+\fBtoken_\:exchange.\:required\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+\fBfalse\fR lets the request through with no token at all when the exchange fails
+T}
 .TE
+.SS "jwt.providers[].token_exchange: a token the backend cannot reuse"
+.PP
+A token the client sent to the gateway is a token the gateway forwards, and everything behind the gateway then holds a credential that works at the gateway. That is the confused\-deputy problem in one sentence: a backend with a bug \[u2014] a log line, an error page, an outbound request to somewhere it should not go \[u2014] leaks a token that reaches the front door again with all of the client\(aqs scopes on it.
+.PP
+Exchange replaces it. The proxy presents the verified client token to the authorization server and asks for one issued for \fIthis\fR backend: a different \fBaudience\fR, usually fewer \fBscopes\fR, and no standing anywhere else. The backend never sees the client\(aqs token, so there is nothing there to leak that would work at the gateway. The client\(aqs identity survives \[u2014] the authorization server puts the same subject in the new token, which is what makes this an exchange rather than an impersonation.
+.PP
+The exchange runs \fBafter\fR the client\(aqs token has been verified, never before: sending an unverified token to the authorization server would spend its capacity on whatever a client posted, and caching the answer against the token\(aqs digest would let one client\(aqs garbage occupy the table. It also runs after \fBstrip_token\fR, so the client\(aqs token is gone from the forwarded request whether the exchange succeeded or not.
+.PP
+An exchange that names neither an audience nor a resource is refused at load: it asks for a token as broad as the one it replaces, which is the feature undone while the configuration reads as if it were on. The \fBissued_token_type\fR in the answer is checked rather than assumed \[u2014] a server that answered with a refresh token would otherwise have it forwarded as an access token, which is a long\-lived credential handed to a backend.
+.PP
+Outcomes: a refusal from the authorization server (400, 401 or 403 there) is 403 here with detail \fBexchange_refused\fR, because the token is valid and this backend is not somewhere it reaches; an endpoint that cannot be asked is 503 with \fBRetry\-After\fR and detail \fBexchange_unavailable\fR. Refusals are cached for \fBcache_ttl\fR like successes \[u2014] they are the authorization server\(aqs decision about this client and this backend, and asking again per request turns one misconfiguration into load the login flow shares \[u2014] while an unreachable endpoint is never cached. \fBrequired: false\fR lets the request reach the backend with no token, which validation warns about: it is the control failing open on exactly the requests where it went wrong.
 .SS "jwt.providers[].dpop: proof of possession"
 .PP
 A bearer token is a password: whoever holds it is whoever it says. That is the whole of its security model, and it is why a token stolen from a log, a browser\(aqs storage, a proxy\(aqs cache or a crash dump is as good as the original \[u2014] nothing about the request says it came from the client the token was issued to.

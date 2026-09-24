@@ -57,6 +57,7 @@ type Provider struct {
 	fetch   *fetcher
 	intro   *introspector // nil without introspection
 	dpop    *dpop         // never nil; off unless configured
+	swap    *exchanger    // nil without token exchange
 
 	mu           sync.Mutex
 	lastOnDemand time.Time
@@ -124,6 +125,13 @@ func NewProvider(cfg config.JWTProvider, log *slog.Logger) (*Provider, error) {
 		return nil, fmt.Errorf("jwt provider %s: %w", cfg.Name, err)
 	}
 	p.dpop = d
+	if cfg.TokenExchange != nil {
+		x, err := newExchanger(*cfg.TokenExchange)
+		if err != nil {
+			return nil, fmt.Errorf("jwt provider %s: token_exchange: %w", cfg.Name, err)
+		}
+		p.swap = x
+	}
 	if len(cfg.Audiences) == 0 {
 		// RFC 8725 §3.8: without an audience check any token the issuer
 		// minted for another relying party is accepted here.
@@ -146,6 +154,14 @@ func (p *Provider) DPoPStatus() (mode string, replayEntries int) {
 		return dpopOff, 0
 	}
 	return p.dpop.mode, p.dpop.seen.Len()
+}
+
+// ExchangeStats reports the token exchange for the status view.
+func (p *Provider) ExchangeStats() (calls, errs, hits, refusals uint64, cached int) {
+	if p.swap == nil {
+		return 0, 0, 0, 0, 0
+	}
+	return p.swap.Calls.Load(), p.swap.Errors.Load(), p.swap.Hits.Load(), p.swap.Refusals.Load(), p.swap.cacheLen()
 }
 
 // Introspects reports whether token goes to the introspection endpoint:

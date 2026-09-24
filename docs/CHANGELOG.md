@@ -478,6 +478,38 @@ Open findings of the earlier rounds:
   `discovery`, the sinkhole addresses -- are not, which is why
   `sinkhole_ipv4: 0.0.0.0` still works inside a denied range.
 
+- **The backend no longer receives a credential that works at the front
+  door** (`jwt.providers[].token_exchange`, RFC 8693).
+
+  A token the client sent to the gateway was a token the gateway
+  forwarded, so everything behind the gateway held a credential that works
+  at the gateway. That is the confused-deputy problem in one sentence: a
+  backend with a bug -- a log line, an error page, an outbound request to
+  somewhere it should not go -- leaks a token that reaches the front door
+  again with all of the client's scopes on it.
+
+  Exchange replaces it. The proxy presents the *verified* client token to
+  the authorization server and asks for one issued for this backend: a
+  different audience, usually fewer scopes, no standing anywhere else. The
+  client's identity survives, because the authorization server puts the
+  same subject in the new token, which is what makes this an exchange
+  rather than an impersonation.
+
+  The exchange runs after verification and after `strip_token`, so the
+  client's token leaves the request whether the exchange succeeded or not.
+  A configuration that names neither an audience nor a resource is refused
+  at load, since it asks for a token as broad as the one it replaces. The
+  answer's `issued_token_type` is checked rather than assumed -- a server
+  answering with a refresh token would otherwise have it forwarded as an
+  access token, which is a long-lived credential handed to a backend. A
+  refusal from the authorization server is the client's 403
+  (`exchange_refused`) and is cached like a success, because it is a
+  decision about this client and this backend and asking per request turns
+  one misconfiguration into load the login flow shares; an endpoint that
+  cannot be asked is a 503 with `Retry-After` and is never cached. Calls in
+  flight are bounded, so a flood of distinct tokens cannot be amplified
+  into an outage of the authorization server.
+
 - **A stolen access token is no longer enough where the authorization
   server bound it to a key** (`jwt.providers[].dpop`, RFC 9449).
 

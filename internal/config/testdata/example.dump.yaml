@@ -897,6 +897,7 @@ jwt:
             - sub
           introspection: null
           dpop: null
+          token_exchange: null
 metrics:
     listen: 10.0.0.1:9100
     allow_cidrs:

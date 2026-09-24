@@ -1150,6 +1150,8 @@ to the cause:
 | `issuer`, `audience` | The claim does not match the configuration. Absence also fails — deliberately |
 | `algorithm` | The token's algorithm is not in the allowed list (`none` never is) |
 | `keys_unavailable` | The key set never loaded. 503, not 401, because it is the proxy's problem |
+| `exchange_refused` | The authorization server refused to exchange the token for this audience. 403: the token is valid and this backend is not somewhere it reaches |
+| `exchange_unavailable` | The token endpoint could not be asked. 503 with `Retry-After`, because it is the proxy's problem |
 | `dpop_missing` | The token says it is bound to a key (`cnf.jkt`) and no `DPoP` header came with it |
 | `dpop_unbound` | `dpop.mode: require` and the token carries no `cnf.jkt` at all |
 | `dpop_binding` | The proof is valid and signed by a *different* key than the token names |
@@ -1158,6 +1160,37 @@ to the cause:
 
 `keys_unavailable` is the one to escalate: check `jwks_url`,
 `jwks_ca_file` and egress from the proxy to the provider.
+
+**Everything gets 403 `exchange_refused` after `token_exchange` went on.**
+The authorization server considered the request and said no, so its own
+logs name the reason; the usual causes are a `client_id` that is not
+registered for the token-exchange grant, an `audience` or `resource` that
+is not a client it knows, or `scopes` the subject is not entitled to at
+that audience. Start by removing `scopes` and letting the server decide
+what the audience gets. A refusal is cached for `cache_ttl`, so a fix at
+the authorization server takes up to that long to show — or a reload,
+which builds a fresh cache.
+
+**403 `exchange_refused` for one client only.** That client's token cannot
+be exchanged for this audience: the subject is not entitled to the backend,
+which is the control working. The alternative reading — that the client's
+token is fine and the audience is wrong — shows up as *every* client
+failing, not one.
+
+**The backend says it got no credential at all.** Three possibilities.
+`token_exchange.required: false` is set and the exchange failed, which is
+exactly what that setting does and what validation warns about. The
+`header` names something the backend does not read — note that any header
+other than `Authorization` carries the bare token with no `Bearer ` in
+front. Or `strip_token` removed the client's token and the exchange is not
+configured on the provider the route names.
+
+**The authorization server is being hammered.** Calls in flight are bounded
+at 32 per provider and answers are cached for `cache_ttl`, so a steady
+stream of *distinct* tokens is the only shape that produces load —
+short-lived tokens with `cache_ttl` longer than their life do not help,
+because the cache never outlives what was issued. Raise the token lifetime
+at the authorization server, not `cache_ttl`.
 
 **Every request fails with `dpop_proof` after `dpop` went on.** Four
 causes, in the order worth checking. The client's proof signs the URI *it*
