@@ -5416,10 +5416,91 @@ secret does not sign everyone out.
 | `require_enrolment` | bool | `true` | Refuse a user with no enrolment |
 | `max_failures`, `window`, `lockout` | | `5`, `5m`, `15m` | Guessing bound, as on an ssh listener |
 | `identity` | list | `[]` (any) | Which identity kinds to challenge, in order of preference: `basic`, `ldap`, `oidc`, `jwt`, `api_key` |
+| `webauthn` | object | none | Offer a security key beside the code (WebAuthn level 2); see below |
+| `webauthn.rp_id` | host | required | The relying party identifier: the site's registrable domain, or a subdomain of it |
+| `webauthn.origins` | list | required | The exact origins a ceremony may run on; `https` only, except `localhost` |
+| `webauthn.credentials_file` | path | required | The registered keys. The proxy **writes** this file: a registration adds a line and every login updates a sign count |
+| `webauthn.user_verification` | bool | `false` | Require the authenticator to have verified the user (a PIN or a biometric), not only their presence |
+| `webauthn.register` | bool | `false` | Offer the registration ceremony on this gate |
+| `webauthn.max_challenges` | int | `4096` | Bound on the outstanding ceremonies |
 
 Every failure gets the same page: a wrong code, a replayed one, a locked
 account and a name that never enrolled are one answer. Counters:
 `mfa_verified`, `mfa_failed`; `xproxy_mfa_total` by outcome.
+
+#### Kind `mfa`: a security key beside the code
+
+A one-time code is a shared secret typed into whatever page asked for it,
+so a convincing copy of that page collects codes that work. WebAuthn does
+not have that failure: the assertion is bound to the origin the ceremony
+ran on, so a look-alike site gets a signature naming its own origin, which
+this refuses. That is the reason to have it, and it is the only reason that
+matters — everything else about a key is convenience.
+
+The two live side by side rather than one replacing the other. A code is
+how somebody gets in from a machine with no key attached, and it is how a
+key is registered in the first place: **registration requires a factor the
+user already has**, because a registration endpoint that trusts only the
+first factor is a way to add a second factor to an account whose password
+has just been stolen. Bootstrap is therefore `xproxyctl mfa enrol` (or the
+GUI) for the code, then `register` for the key.
+
+The ceremonies are four POSTs to the path the request was going to:
+`?xproxy_mfa=webauthn-options` and `?xproxy_mfa=webauthn` to authenticate,
+`?xproxy_mfa=webauthn-register-options` and `?xproxy_mfa=webauthn-register`
+to register. The challenge page carries the small script that drives them
+and offers the key only to a user who has one registered — a button that
+always fails is noise, and offering it to everybody says who has a key.
+
+What is checked on every assertion, and why each one is not a formality:
+
+- the ceremony **type**, so a registration signature cannot be replayed as
+  an authentication or the reverse;
+- the **challenge**, which this proxy issued, to this account, within
+  `3m`, and which is spent on first use whether the ceremony succeeded or
+  not — one that survives a failure is an attacker's retry budget;
+- the **origin**, exactly, against `origins`: the anti-phishing property;
+- the **relying party hash**, which the authenticator computes from
+  `rp_id` itself and a page cannot choose;
+- **user presence**, and user verification when `user_verification` is
+  set — including at registration, so a key cannot be enrolled under the
+  weaker rule and used under the stronger one;
+- the **signature**, under the key stored for that credential and the
+  algorithm stored with it, so an assertion cannot pick a weaker one;
+- the **sign count**, which must move forward for an authenticator that
+  counts. A count that stands still or goes backwards is what a cloned
+  credential looks like. It is written to `credentials_file` before the
+  cookie is issued, because a count kept only in memory is a check a
+  restart forgets, and a store that cannot be written is a refusal rather
+  than a login.
+
+A credential identifier is public — it travels in the allow list on every
+login page — so the store looks one up by *account and* identifier: finding
+a credential by identifier and using it for whatever account the request
+claims would let anybody in as anybody whose identifier they had seen.
+
+**Attestation is deliberately not verified.** Attestation says which
+authenticator model produced a credential, which matters when a deployment
+allows only certain hardware; it says nothing about whether the person
+registering is the person the account belongs to. Here a credential is
+trusted because the registration was authenticated by a factor the user
+already had. The alternative — a metadata service, a certificate chain per
+vendor and a revocation story — is a different feature with a different
+name.
+
+The credential file is the record, one line per credential:
+
+```
+alice:AQIDBA:pQECAyYgASFYIA...:7:yubikey-5c
+```
+
+the user, the credential identifier, the COSE public key (both base64url
+without padding), the sign count and an optional label. It is replaced
+atomically and re-read when it changes, so removing a lost key with an
+editor takes effect without a restart; a line that does not parse fails the
+read, because a credential meant to be there and silently not locks
+somebody out and one meant to be removed and still there is worse. At most
+ten credentials per account.
 
 ### Kind `yara`
 

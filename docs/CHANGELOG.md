@@ -478,6 +478,48 @@ Open findings of the earlier rounds:
   `discovery`, the sinkhole addresses -- are not, which is why
   `sinkhole_ipv4: 0.0.0.0` still works inside a denied range.
 
+- **A security key beside the one-time code** (`mfa` filter,
+  `webauthn`; WebAuthn level 2, `internal/webauthn`).
+
+  A code is a shared secret typed into whatever page asked for it, so a
+  convincing copy of that page collects codes that work. WebAuthn does not
+  have that failure: the assertion is bound to the origin the ceremony ran
+  on, so a look-alike site gets a signature naming its own origin, which
+  this refuses. That is the reason to have it.
+
+  The two live side by side. A code is how somebody gets in from a machine
+  with no key attached, and it is how a key is registered: registration
+  requires a factor the user already has, because a registration endpoint
+  that trusts only the first factor is a way to add a second factor to an
+  account whose password has just been stolen.
+
+  Verified on every assertion, each for a reason the signature alone does
+  not give: the ceremony type, so a registration signature cannot be
+  replayed as an authentication; the challenge, issued to that account,
+  short-lived, and spent on first use whether the ceremony succeeded or
+  not; the origin, exactly; the relying party hash, which the
+  authenticator computes itself and a page cannot choose; user presence,
+  and verification when asked, including at registration so a key cannot
+  be enrolled under the weaker rule and used under the stronger one; the
+  signature, under the stored key and the algorithm stored with it; and the
+  sign count, which must move forward for an authenticator that counts,
+  written to the credential file before the cookie is issued because a
+  count kept only in memory is a clone check a restart forgets.
+
+  A credential identifier is public -- it travels in the allow list on
+  every login page -- so the store looks one up by account *and*
+  identifier. Attestation is deliberately not verified, and the package
+  comment says why: it identifies an authenticator model, not a person, and
+  here a credential is trusted because the registration was authenticated
+  by a factor the user already had.
+
+  Everything runs on the standard library: a CBOR reader for the shapes the
+  specification uses (definite lengths only, no tags, no floats, bounded
+  depth, items and strings, duplicate map keys refused), COSE keys for
+  ES256/384/512, EdDSA, RS256 and PS256 with the curve checked against the
+  algorithm, and a credential file the proxy writes atomically and re-reads
+  when it changes.
+
 - **The backend no longer receives a credential that works at the front
   door** (`jwt.providers[].token_exchange`, RFC 8693).
 

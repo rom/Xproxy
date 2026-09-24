@@ -47,6 +47,7 @@ import (
 	"github.com/rom/xproxy/internal/filter"
 	"github.com/rom/xproxy/internal/mfa"
 	"github.com/rom/xproxy/internal/secret"
+	"github.com/rom/xproxy/internal/webauthn"
 )
 
 // Config is the options schema.
@@ -65,6 +66,11 @@ type Config struct {
 	// Identity names the identity kinds to challenge, in order of
 	// preference. Empty takes whichever one a filter established.
 	Identity []string `json:"identity"`
+	// WebAuthn offers a security key beside the code. A code is a shared
+	// secret typed into whatever page asked for it, so a convincing copy
+	// of that page collects codes that work; an assertion is bound to the
+	// origin the ceremony ran on, which is the whole reason to have it.
+	WebAuthn *WebAuthn `json:"webauthn"`
 
 	ttl     time.Duration
 	window  time.Duration
@@ -105,6 +111,34 @@ func parse(opts filter.Options) (*Config, error) {
 	if c.MaxFailures == 0 {
 		c.MaxFailures = 5
 	}
+	if w := c.WebAuthn; w != nil {
+		if w.RPID == "" {
+			errs = append(errs, errors.New("webauthn.rp_id is required: the authenticator hashes it, so it cannot be guessed from the request"))
+		}
+		if strings.ContainsAny(w.RPID, "/:? ") {
+			errs = append(errs, fmt.Errorf("webauthn.rp_id: %q is a host name, not a URL", w.RPID))
+		}
+		if len(w.Origins) == 0 {
+			errs = append(errs, errors.New("webauthn.origins is required: comparing it is the anti-phishing property of the whole mechanism"))
+		}
+		for _, o := range w.Origins {
+			// https, because the API does not run anywhere else except on
+			// localhost, and because an origin a network can rewrite is
+			// not an origin.
+			if !strings.HasPrefix(o, "https://") && !strings.HasPrefix(o, "http://localhost") && !strings.HasPrefix(o, "http://127.0.0.1") {
+				errs = append(errs, fmt.Errorf("webauthn.origins: %q must be an https origin (or localhost)", o))
+			}
+			if strings.Count(o, "/") > 2 {
+				errs = append(errs, fmt.Errorf("webauthn.origins: %q carries a path; an origin is a scheme, a host and a port", o))
+			}
+		}
+		if !strings.HasPrefix(w.CredentialsFile, "/") {
+			errs = append(errs, errors.New("webauthn.credentials_file: an absolute path is required; the proxy writes it"))
+		}
+		if w.MaxChallenges < 0 || w.MaxChallenges > 1_000_000 {
+			errs = append(errs, errors.New("webauthn.max_challenges: must be between 0 and 1000000"))
+		}
+	}
 	for _, d := range []struct {
 		name string
 		in   string
@@ -130,12 +164,41 @@ func parse(opts filter.Options) (*Config, error) {
 	return &c, errors.Join(errs...)
 }
 
+// WebAuthn is the key policy.
+type WebAuthn struct {
+	// RPID is the relying party identifier: the site's registrable
+	// domain, or a subdomain of it. The authenticator hashes it, so a page
+	// cannot choose it.
+	RPID string `json:"rp_id"`
+	// Origins are the exact origins a ceremony may run on. Exact, because
+	// this is the anti-phishing property: a prefix or suffix match admits
+	// a look-alike host.
+	Origins []string `json:"origins"`
+	// CredentialsFile holds the registered keys. The proxy writes it: a
+	// registration adds a line and every login updates a sign count.
+	CredentialsFile string `json:"credentials_file"`
+	// UserVerification requires the authenticator to have verified the
+	// user (a PIN or a biometric) rather than only their presence.
+	UserVerification bool `json:"user_verification"`
+	// Register offers the registration ceremony on this gate. It needs a
+	// factor already verified, so it is a way to add a key using the code
+	// you have and not a way to add one to a stolen password.
+	Register bool `json:"register"`
+	// MaxChallenges bounds the outstanding ceremonies. Default 4096.
+	MaxChallenges int `json:"max_challenges"`
+}
+
 type gate struct {
 	name  string
 	cfg   *Config
 	guard *mfa.Guard
 	ring  *secret.Keyring
 	log   *slog.Logger
+	// keys, policy and challenges are the WebAuthn half; keys is nil
+	// without it.
+	keys       *webauthn.Store
+	policy     *webauthn.Policy
+	challenges *webauthn.Challenges
 
 	verified atomic.Uint64
 	failed   atomic.Uint64
@@ -178,6 +241,26 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 		// attacker will use.
 		in.step = "not_enrolled"
 		return filter.Continue
+	}
+	// The ceremony endpoints come before the cookie check, because
+	// registering a key *needs* a verified factor: a request carrying a
+	// valid cookie would otherwise pass straight through to the
+	// application and never reach the endpoint it was posting to.
+	if g.webauthnOn() && r.Method == http.MethodPost {
+		switch webauthnEndpoint(r) {
+		case "options":
+			return in.assertOptions(user)
+		case "assert":
+			return in.assert(r, user)
+		case "register-options":
+			if g.cfg.WebAuthn.Register {
+				return in.registerOptions(r, user)
+			}
+		case "register":
+			if g.cfg.WebAuthn.Register {
+				return in.register(r, user)
+			}
+		}
 	}
 	if in.cookieValid(r, user) {
 		in.step = "cookie"
@@ -263,7 +346,7 @@ func (in *instance) challenge(r *http.Request, message string) filter.Verdict {
 		`<label for="code">` + html.EscapeString(g.cfg.Prompt) + `</label>` +
 		`<input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" autofocus>` +
 		`<input type="hidden" name="next" value="` + html.EscapeString(next) + `">` +
-		`<button type="submit">Continue</button></form></body></html>`
+		`<button type="submit">Continue</button></form>` + in.keyOffer(next) + `</body></html>`
 	resp := &http.Response{StatusCode: http.StatusUnauthorized, Header: http.Header{},
 		Body: io.NopCloser(strings.NewReader(page)), ContentLength: int64(len(page))}
 	resp.Header.Set("Content-Type", "text/html; charset=utf-8")
@@ -271,6 +354,17 @@ func (in *instance) challenge(r *http.Request, message string) filter.Verdict {
 	resp.Header.Set("Content-Length", strconv.Itoa(len(page)))
 	return filter.Verdict{Deny: true, Silent: true, Status: http.StatusUnauthorized, Reason: g.name,
 		Detail: "mfa_challenge", Response: resp}
+}
+
+// keyOffer adds the security key button when this user has one
+// registered. Offering it to somebody who has not registered would be a
+// button that always fails, and would also say who has a key.
+func (in *instance) keyOffer(next string) string {
+	g := in.g
+	if !g.webauthnOn() || in.user == "" || !g.keys.Enrolled(in.user) {
+		return ""
+	}
+	return keyButton(next)
 }
 
 // cookie carries the verified factor: the user, an expiry, and a MAC
@@ -376,8 +470,15 @@ func init() {
 			if err != nil {
 				return err
 			}
-			_, err = mfa.Load(c.File)
-			return err
+			if _, err := mfa.Load(c.File); err != nil {
+				return err
+			}
+			if c.WebAuthn != nil {
+				if _, err := webauthn.Load(c.WebAuthn.CredentialsFile); err != nil {
+					return fmt.Errorf("webauthn.credentials_file: %w", err)
+				}
+			}
+			return nil
 		},
 		New: func(name string, opts filter.Options, env filter.Env) (filter.Filter, error) {
 			c, err := parse(opts)
@@ -392,10 +493,24 @@ func init() {
 			if err != nil {
 				return nil, fmt.Errorf("cookie secret: %w", err)
 			}
-			return &gate{name: name, cfg: c, ring: ring, log: env.Log,
+			g := &gate{name: name, cfg: c, ring: ring, log: env.Log,
 				guard: mfa.NewGuard(store, *c.Skew, mfa.Lockout{
 					MaxFailures: c.MaxFailures, Window: c.window, Duration: c.lockout,
-				})}, nil
+				})}
+			if w := c.WebAuthn; w != nil {
+				keys, err := webauthn.Load(w.CredentialsFile)
+				if err != nil {
+					return nil, fmt.Errorf("webauthn.credentials_file: %w", err)
+				}
+				keys.Warn = func(err error) {
+					g.log.Error("webauthn credential file could not be re-read; the previous one stays in force",
+						"filter", name, "err", err.Error())
+				}
+				g.keys = keys
+				g.policy = &webauthn.Policy{RPID: w.RPID, Origins: w.Origins, UserVerification: w.UserVerification}
+				g.challenges = webauthn.NewChallenges(w.MaxChallenges, challengeTTL)
+			}
+			return g, nil
 		},
 	})
 }

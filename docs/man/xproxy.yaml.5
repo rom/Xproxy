@@ -13654,8 +13654,8 @@ A request without a verified factor gets an HTML form (401, no redirect, so the 
 .PP
 .TS
 allbox;
-lbw(1.0i) lbw(0.9i) lbw(0.9i) lbx
-lw(1.0i) lw(0.9i) lw(0.9i) lx.
+lbw(1.3i) lbw(0.9i) lbw(0.9i) lbx
+lw(1.3i) lw(0.9i) lw(0.9i) lx.
 T{
 Option
 T}	T{
@@ -13755,9 +13755,128 @@ T}	T{
 T}	T{
 Which identity kinds to challenge,\: in order of preference: \fBbasic\fR,\: \fBldap\fR,\: \fBoidc\fR,\: \fBjwt\fR,\: \fBapi_\:key\fR
 T}
+T{
+\fBwebauthn\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Offer a security key beside the code (WebAuthn level 2);\: see below
+T}
+T{
+\fBwebauthn.\:rp_\:id\fR
+T}	T{
+host
+T}	T{
+required
+T}	T{
+The relying party identifier: the site\(aqs registrable domain,\: or a subdomain of it
+T}
+T{
+\fBwebauthn.\:origins\fR
+T}	T{
+list
+T}	T{
+required
+T}	T{
+The exact origins a ceremony may run on;\: \fBhttps\fR only,\: except \fBlocalhost\fR
+T}
+T{
+\fBwebauthn.\:credentials_\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+The registered keys. The proxy \fBwrites\fR this file: a registration adds a line and every login updates a sign count
+T}
+T{
+\fBwebauthn.\:user_\:verification\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Require the authenticator to have verified the user (a PIN or a biometric),\: not only their presence
+T}
+T{
+\fBwebauthn.\:register\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Offer the registration ceremony on this gate
+T}
+T{
+\fBwebauthn.\:max_\:challenges\fR
+T}	T{
+int
+T}	T{
+\fB4096\fR
+T}	T{
+Bound on the outstanding ceremonies
+T}
 .TE
 .PP
 Every failure gets the same page: a wrong code, a replayed one, a locked account and a name that never enrolled are one answer. Counters: \fBmfa_verified\fR, \fBmfa_failed\fR; \fBxproxy_mfa_total\fR by outcome.
+.SS "Kind \fBmfa\fR: a security key beside the code"
+.PP
+A one\-time code is a shared secret typed into whatever page asked for it, so a convincing copy of that page collects codes that work. WebAuthn does not have that failure: the assertion is bound to the origin the ceremony ran on, so a look\-alike site gets a signature naming its own origin, which this refuses. That is the reason to have it, and it is the only reason that matters \[u2014] everything else about a key is convenience.
+.PP
+The two live side by side rather than one replacing the other. A code is how somebody gets in from a machine with no key attached, and it is how a key is registered in the first place: \fBregistration requires a factor the user already has\fR, because a registration endpoint that trusts only the first factor is a way to add a second factor to an account whose password has just been stolen. Bootstrap is therefore \fBxproxyctl mfa enrol\fR (or the GUI) for the code, then \fBregister\fR for the key.
+.PP
+The ceremonies are four POSTs to the path the request was going to: \fB?xproxy_mfa=webauthn\-options\fR and \fB?xproxy_mfa=webauthn\fR to authenticate, \fB?xproxy_mfa=webauthn\-register\-options\fR and \fB?xproxy_mfa=webauthn\-register\fR to register. The challenge page carries the small script that drives them and offers the key only to a user who has one registered \[u2014] a button that always fails is noise, and offering it to everybody says who has a key.
+.PP
+What is checked on every assertion, and why each one is not a formality:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+the ceremony \fBtype\fR, so a registration signature cannot be replayed as an authentication or the reverse;
+.PP
+.ti -3n
+\(bu
+the \fBchallenge\fR, which this proxy issued, to this account, within \fB3m\fR, and which is spent on first use whether the ceremony succeeded or not \[u2014] one that survives a failure is an attacker\(aqs retry budget;
+.PP
+.ti -3n
+\(bu
+the \fBorigin\fR, exactly, against \fBorigins\fR: the anti\-phishing property;
+.PP
+.ti -3n
+\(bu
+the \fBrelying party hash\fR, which the authenticator computes from \fBrp_id\fR itself and a page cannot choose;
+.PP
+.ti -3n
+\(bu
+\fBuser presence\fR, and user verification when \fBuser_verification\fR is set \[u2014] including at registration, so a key cannot be enrolled under the weaker rule and used under the stronger one;
+.PP
+.ti -3n
+\(bu
+the \fBsignature\fR, under the key stored for that credential and the algorithm stored with it, so an assertion cannot pick a weaker one;
+.PP
+.ti -3n
+\(bu
+the \fBsign count\fR, which must move forward for an authenticator that counts. A count that stands still or goes backwards is what a cloned credential looks like. It is written to \fBcredentials_file\fR before the cookie is issued, because a count kept only in memory is a check a restart forgets, and a store that cannot be written is a refusal rather than a login.
+.RE
+.PP
+.PP
+A credential identifier is public \[u2014] it travels in the allow list on every login page \[u2014] so the store looks one up by \fIaccount and\fR identifier: finding a credential by identifier and using it for whatever account the request claims would let anybody in as anybody whose identifier they had seen.
+.PP
+\fBAttestation is deliberately not verified.\fR Attestation says which authenticator model produced a credential, which matters when a deployment allows only certain hardware; it says nothing about whether the person registering is the person the account belongs to. Here a credential is trusted because the registration was authenticated by a factor the user already had. The alternative \[u2014] a metadata service, a certificate chain per vendor and a revocation story \[u2014] is a different feature with a different name.
+.PP
+The credential file is the record, one line per credential:
+.PP
+.RS 4
+.nf
+.ft CR
+alice:AQIDBA:pQECAyYgASFYIA...:7:yubikey\-5c
+.ft
+.fi
+.RE
+.PP
+the user, the credential identifier, the COSE public key (both base64url without padding), the sign count and an optional label. It is replaced atomically and re\-read when it changes, so removing a lost key with an editor takes effect without a restart; a line that does not parse fails the read, because a credential meant to be there and silently not locks somebody out and one meant to be removed and still there is worse. At most ten credentials per account.
 .SS "Kind \fByara\fR"
 .PP
 The same engine as a tcp listener\(aqs \fByara\fR section, over request and response bodies. The supported subset and the reasons for it are described under \fBserver.listeners[].tcp.yara\fR.

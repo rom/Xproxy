@@ -1446,6 +1446,40 @@ sees, or one the client omits, is scored as `max_list`, which is usually
 the surprise. The other half is that a larger literal beside a smaller
 variable still wins.
 
+**A security key is refused and the page just says it was not accepted.**
+By design: which step refused a key is what an attacker probes for, so the
+page says one thing and the error log says which. Look for
+`webauthn ceremony refused` with its `step` field. The common causes in
+order: `origin` — `webauthn.origins` does not list the origin the browser
+is actually on, which includes the port (`https://app.example.test:8443`
+is not `https://app.example.test`); `challenge` — the page was open longer
+than three minutes, or was reloaded and posted an old one; `assertion`
+with an rp-id complaint — `webauthn.rp_id` is not the page's domain or a
+parent of it, and the browser refuses before the request is even made.
+
+**Registration answers 401 `verify_first`.** Registering a key needs a
+factor already verified, which is the point: an endpoint that trusted only
+the password would let somebody who has just stolen one add their own
+second factor. Enter a code first, then register. For a user with no code
+either, bootstrap with `xproxyctl mfa enrol` (or the GUI) and have them
+register the key afterwards.
+
+**A key that worked stops working, with a clone complaint in the log.**
+The authenticator's sign count did not move forward. Two real causes: the
+credential was copied (which is what the check is for), or the credential
+file was restored from a backup taken after some logins, so the stored
+count is ahead of the authenticator. In the second case remove that
+credential line and register the key again. Note that many authenticators
+do not count at all and report zero forever; that is permitted and is not
+this.
+
+**The credential file is not being written.** The proxy writes it on every
+registration *and* on every login, to record the sign count, so the
+directory must be writable by the proxy user — the file is replaced by a
+rename, so the directory matters and not only the file. A login whose count
+cannot be stored is refused with a 503 rather than allowed, because a
+forgotten count is a clone check that passes.
+
 **`account_guard` blocks a real user.** `xproxyctl accounts` shows the
 ladder state per key. Counts keyed on the account belong to the person
 being attacked, not the attacker, which is why no built-in class blocks
