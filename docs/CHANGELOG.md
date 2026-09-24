@@ -442,6 +442,138 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **Modbus, in both directions, in front of equipment that cannot be
+  patched** (`kind: modbus`, `internal/modbus`, `internal/kinds/modbus`;
+  Modbus Application Protocol v1.1b3, Modbus over Serial Line v1.02,
+  Modbus/TCP Security v21).
+
+  Modbus has no authentication, no integrity and no session. A frame says
+  which device it is for, what to do and where, and the device does it.
+  That is not a flaw somebody will fix: it is a protocol from 1979 running
+  equipment installed a decade ago, whose vendor is gone and whose process
+  does not stop for a firmware upgrade. So the only place a policy can
+  exist is in the path, and it has to be written in the protocol's own
+  terms -- the unit identifier, the function code, the register range, the
+  value -- because those are the only terms the traffic has.
+
+  Every frame is parsed whole, in all three framings: Modbus/TCP (MBAP)
+  and the two serial framings every Modbus gateway ever sold tunnels over
+  TCP. `framing` is what arrives and `upstream_framing` is what leaves,
+  so one listener bridges a serial drive behind a terminal server to a
+  master speaking MBAP, per route if a listener fronts both kinds of
+  device at once, with `unit_override` for a device that answers only to
+  slave address 1.
+
+  **It works both ways round, because a plant has masters inside it and
+  devices inside it.** `mode: reverse` fronts the equipment: masters
+  connect to the listener and it dials the PLC, which is how a device that
+  cannot be patched gets an allow list, a read-only historian, a value
+  bound on a setpoint and an audit trail. `mode: forward` is the plant's
+  controlled egress towards a device somewhere else, where the `routes`
+  are the only destinations that exist -- a unit identifier no route claims
+  is refused with a gateway exception rather than sent somewhere invented.
+  The policy is the same either way.
+
+  **The policy.** `read_only` refuses every function code that changes
+  anything, for every client, before any rule is read, and no rule can
+  override it: a read-only listener a rule could write through would not
+  be one. Beyond it, ordered rules with first match winning, each naming
+  any of the client network, the Modbus/TCP Security role, the unit
+  identifier, the function code, the access class (`read`, `write`,
+  `diagnostic`, `identify`, `vendor` -- the durable way to write "no
+  writing" without listing every code that writes), the register ranges,
+  the write ranges, a quantity bound, value bounds and a schedule. An
+  `observe` action records and keeps looking, which is how a rule is tried
+  on live traffic before it decides anything.
+
+  Two decisions inside that are worth naming. An `addresses` rule must
+  cover the **whole** range a request asks for: a read of 0 to 200 against
+  a rule for 0 to 99 does not match, because splitting the request is not
+  the relay's decision. And a value outside a `values` bound is refused
+  *by the rule that set the bound* rather than falling through to a later
+  rule that would permit it -- a bound that can be escaped by writing
+  another rule underneath it is not a bound. The value bounds are the deep
+  inspection a plant actually needs: a setpoint register that may hold 0
+  to 100 and nothing else, `signed` for the ones encoded as signed
+  integers, and a coil bound that says which way a coil may be driven, so
+  "this client may stop the pump but not start it" is a rule and its
+  mirror image is the same rule written the other way round.
+
+  **A refusal is Modbus.** `deny_response: exception` answers with the
+  exception a master already understands -- illegal function for a code the
+  policy does not permit, illegal data address for a range it does not,
+  illegal data value for a value outside a bound, gateway path unavailable
+  for a unit with no route, server busy for a session whose queue is full,
+  gateway target failed to respond for a device that did not answer -- and
+  the session carries on, so an operator's diagnostics say something true
+  at 3am. `drop` and `close` are there for the cases where a master should
+  learn nothing.
+
+  **Modbus/TCP Security**, the Modbus Organization's own answer: TLS with
+  mutual authentication, conventionally on port 802 with no in-band
+  upgrade to negotiate, and authorisation by the role in the client
+  certificate's x.509 extension under the Modbus arc
+  (`1.3.6.1.4.1.50316.802.1`). `security.mode: require` is what the
+  specification describes and `allow` is the migration; `role_source: cn`
+  or `ou` reads the subject instead, for an authority that cannot issue
+  the extension yet, and warns, because a subject field says who a
+  certificate is *for*. A role can only come from a certificate and a
+  certificate only from TLS, so a listener asking for roles without TLS
+  refuses every session and says `security_requires_tls` rather than
+  leaving a mystery.
+
+  **Learning mode, because nobody knows what a plant's Modbus traffic
+  is.** The drawings say what it was meant to be; the traffic says what
+  the integrator left behind. `learn` records every client, role, unit,
+  function code, address range and value range that crosses the listener
+  and writes it out as YAML: an `observed:` block describing the traffic
+  and under it a `rules:` block permitting exactly what was seen, ready to
+  paste. A subject whose `device_exceptions` are not zero is a request the
+  device itself refuses, which is a line to write out of the policy rather
+  than into it. `enforce` is false by default and validation warns while
+  it is off: a learning run that decided things would not be a learning
+  run, and one left on by accident should say so.
+
+  **Traces** are the other tool and a separate file: one JSON object per
+  frame, for an afternoon during a commissioning, with its own bound --
+  at which it writes one line saying it stopped rather than filling the
+  disk the plant's historian is also on.
+
+  Three architectural decisions, documented in
+  [CONFIG.md](CONFIG.md#serverlistenersmodbus-kind-modbus) beside the
+  keys:
+
+  - **Requests are serialised towards each device.** A Modbus slave has
+    one scan. A relay that pipelined into it would be turning a policy
+    engine into a load generator, so each session holds one connection
+    per route and one request in flight at a time, with `max_pending`
+    bounding the queue behind it -- 1 for the serial framings, which have
+    no transaction identifier and where a second request in flight could
+    not be told from the first.
+  - **A forwarded frame keeps its bytes.** The frame the device is sent is
+    the frame that arrived, byte for byte, and the answer the master gets
+    is the answer that arrived; the relay re-encodes only when the
+    framings differ or the unit was rewritten, because re-encoding is how
+    a relay and a device come to disagree about what was said. The one
+    exception runs the other way: the master's own MBAP transaction
+    identifier is put back on the answer, because that is the field the
+    master matches on.
+  - **The device's answer is checked too.** A response the relay cannot
+    parse, or one answering for a different unit identifier, is not handed
+    to the master -- the two would read the same bytes differently, which
+    is the whole class of bug this relay exists to prevent. The master
+    gets a server failure and the event is logged.
+
+  Fifteen counters (`modbus_requests`, `modbus_denied`,
+  `modbus_would_deny`, `modbus_exceptions`, `modbus_queue_full`, …), the
+  fine-grained refusal reasons in the per-kind refusal counters, and
+  `modbus_denied` as a ban reason, so the ladder that answers a walk
+  through function codes works here as it does everywhere else.
+  `examples/ot/modbus.yaml` is three deployable listeners: the reverse
+  line with a historian, bounded setpoints, a shift-scheduled pump and a
+  serial drive; the same line again under Modbus/TCP Security with three
+  roles; and a read-only forward egress with a trace.
+
 - **DNS64: an AAAA answer for a name that has only an A record**
   (`server.listeners[].dns.dns64`; RFC 6147 with RFC 6052 addressing).
 

@@ -1,0 +1,261 @@
+# Modbus, in both directions, in front of equipment that cannot be
+# patched.
+#
+# Modbus has no authentication, no integrity and no session. A frame says
+# which device it is for, what to do and where, and the device does it.
+# The devices cannot be fixed — a decade old, the vendor is gone, and the
+# process they run does not stop — so the only place a policy can exist is
+# in the path, and it has to be written in Modbus's own terms: the unit
+# identifier, the function code, the register range and the value.
+#
+# Three listeners:
+#   plant   — reverse: the masters and the historian reach the PLCs
+#             through it (port 502)
+#   secure  — the same, with Modbus/TCP Security: TLS with mutual
+#             authentication and a role in the client certificate (802)
+#   egress  — forward: the plant's own masters reach a device at another
+#             site, and the routes say which destinations exist at all
+#
+# Validate: xrelay -config examples/ot/modbus.yaml -validate
+version: 1
+server:
+  listeners:
+    # ---------------------------------------------------------------
+    # Reverse: masters connect here, the relay dials the PLC.
+    # ---------------------------------------------------------------
+    - name: plant
+      address: "10.30.0.10:502"
+      kind: modbus
+      modbus:
+        upstream: plc_line1
+        framing: tcp
+
+        # The control network, and nothing else. Modbus/TCP on an open
+        # port is a PLC on an open port.
+        allow_clients:
+          - "10.30.1.0/24"       # engineering workstations
+          - "10.30.2.0/24"       # the SCADA masters
+          - "10.30.3.7/32"       # the historian
+        deny_clients:
+          - "10.30.1.99/32"      # the contractor's laptop, until it is not
+
+        # The unit identifiers this line actually has. A frame for unit
+        # 99 is a frame nobody meant to send.
+        units: ["1-8"]
+
+        # A gateway multiplexing three devices onto one address: unit 5
+        # is the old drive behind a terminal server, which speaks RTU
+        # and answers only to slave address 1.
+        routes:
+          - {name: line1, units: ["1-4"], upstream: plc_line1}
+          - {name: drive, units: ["5"], upstream: drive_serial, framing: rtu, unit_override: 1}
+          - {name: line2, units: ["6-8"], upstream: plc_line2}
+
+        # First match wins. An observe rule records and keeps looking,
+        # which is how a rule is tried on live traffic before it decides.
+        rules:
+          # The historian reads and never writes. read_only would say
+          # the same thing for the whole listener; this says it for one
+          # client, on the listener the masters also use.
+          - name: historian
+            action: allow
+            clients: ["10.30.3.7/32"]
+            access: [read, identify]
+            addresses: ["0-1999"]
+            max_quantity: 125
+            comment: "change 2024-114: historian scan"
+
+          # The masters write setpoints, inside the range the process
+          # engineer signed off, and only values that range can hold.
+          - name: setpoints
+            action: allow
+            clients: ["10.30.2.0/24"]
+            functions: [write_single_register, write_multiple_registers]
+            addresses: ["400-499"]
+            write_addresses: ["400-499"]
+            values:
+              - {registers: "400-449", min: 0, max: 100}          # percent
+              - {registers: "450-499", min: -50, max: 250, signed: true}  # degrees
+            comment: "change 2024-118: setpoint window"
+
+          # The pump may be stopped by the operators at any time and
+          # started only during the shift, which is two rules because it
+          # is two decisions.
+          - name: stop-pump
+            action: allow
+            clients: ["10.30.2.0/24"]
+            functions: [write_single_coil]
+            values: [{registers: "10", coils: false}]
+          - name: start-pump
+            action: allow
+            clients: ["10.30.2.0/24"]
+            functions: [write_single_coil]
+            values: [{registers: "10", coils: true}]
+            schedule:
+              days: [mon, tue, wed, thu, fri]
+              from: "06:00"
+              to: "18:00"
+              timezone: Europe/Stockholm
+
+          # Engineering may read anything and write nothing from here;
+          # writing is what the secure listener below is for.
+          - name: engineering-reads
+            action: allow
+            clients: ["10.30.1.0/24"]
+            access: [read, identify]
+
+          # A diagnostic is how a device is restarted or its counters
+          # cleared. Worth seeing before it is worth allowing.
+          - name: diagnostics
+            action: observe
+            access: [diagnostic]
+            comment: "watching: decide after the next outage"
+
+        default_action: deny
+        # A master reads an exception as the device's own refusal and
+        # carries on, which is what an operator wants at 3am.
+        deny_response: exception
+
+        # The audit trail a plant is asked for is per frame, not per
+        # session: "who wrote what, when" is a frame.
+        log_frames: true
+        alert_on_deny: true
+
+        max_connections: 64
+        max_pending: 8
+        idle_timeout: 120s
+        request_timeout: 3s
+        connect_timeout: 2s
+        max_frame_bytes: 260
+
+        # A PLC's scan budget is finite: a master asking faster than the
+        # device can answer is an outage with no attacker in it.
+        rate_limit: 100
+        rate_burst: 200
+
+        proxy_protocol: false
+
+    # ---------------------------------------------------------------
+    # Modbus/TCP Security: TLS with mutual authentication and the role
+    # the client certificate carries. Port 802, TLS from the first
+    # octet — there is no in-band upgrade to negotiate.
+    # ---------------------------------------------------------------
+    - name: secure
+      address: "10.30.0.10:802"
+      kind: modbus
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/certs/modbus.pem, key_file: /etc/xproxy/certs/modbus-key.pem}
+        min_version: "1.2"
+        client_auth: require
+        client_ca_file: /etc/xproxy/certs/plant-ca.pem
+      modbus:
+        upstream: plc_line1
+        tls_mode: implicit
+        allow_clients: ["10.30.1.0/24", "10.30.2.0/24"]
+        units: ["1-8"]
+
+        security:
+          # require is what the specification describes: a client with
+          # no usable role does not get to send a frame.
+          mode: require
+          # The x.509 extension under the Modbus arc. cn and ou read the
+          # subject instead, which trusts whoever issues certificates to
+          # keep to a naming convention.
+          role_source: extension
+          roles: [operator, engineer, maintenance]
+          require_client_cert: true
+
+        rules:
+          - {name: operators-read, action: allow, roles: [operator], access: [read, identify]}
+          - name: operators-setpoints
+            action: allow
+            roles: [operator]
+            functions: [write_single_register]
+            addresses: ["400-449"]
+            values: [{registers: "400-449", min: 0, max: 100}]
+          - name: engineers
+            action: allow
+            roles: [engineer]
+            access: [read, write, identify]
+            addresses: ["0-1999"]
+          - name: maintenance-window
+            action: allow
+            roles: [maintenance]
+            access: [read, write, diagnostic, identify]
+            schedule: {days: [sat, sun], from: "22:00", to: "04:00", timezone: Europe/Stockholm}
+            comment: "the planned window; outside it maintenance reads only"
+          - {name: maintenance-reads, action: allow, roles: [maintenance], access: [read, identify]}
+
+        default_action: deny
+        log_frames: true
+
+        # The device behind this listener speaks Modbus/TCP Security
+        # too, so the TLS does not stop at the relay.
+        upstream_tls_mode: implicit
+        upstream_tls:
+          server_name: plc1.plant.internal
+          ca_file: /etc/xproxy/certs/plant-ca.pem
+          min_version: "1.2"
+
+    # ---------------------------------------------------------------
+    # Forward: the plant's masters reach a device at another site. The
+    # routes are the whole point — a unit with no route has nowhere to
+    # go, and inventing a destination is the one thing an egress
+    # gateway must not do.
+    # ---------------------------------------------------------------
+    - name: egress
+      address: "10.30.0.10:5020"
+      kind: modbus
+      modbus:
+        mode: forward
+        framing: tcp
+        allow_clients: ["10.30.2.0/24"]
+        routes:
+          - {name: substation, units: ["20-21"], upstream: substation}
+        # read_only cannot be overridden by a rule, which is what makes
+        # "this path never writes" a property rather than a hope.
+        read_only: true
+        rules:
+          - {name: substation-reads, action: allow, units: ["20-21"], access: [read], addresses: ["0-499"]}
+        default_action: deny
+        log_frames: true
+        request_timeout: 5s
+
+        # An afternoon's trace during a commissioning. The data bytes
+        # are process data, so they are off.
+        trace:
+          file: /var/log/xproxy/modbus-egress.jsonl
+          max_bytes: 268435456
+          include_data: false
+          requests: true
+          responses: true
+
+upstreams:
+  - name: plc_line1
+    endpoints: [{address: "10.30.10.11:502"}]
+    # One device, one connection at a time: a Modbus slave has one scan.
+    timeouts: {connect: 2s}
+  - name: plc_line2
+    endpoints: [{address: "10.30.10.12:502"}]
+    timeouts: {connect: 2s}
+  - name: drive_serial
+    # A terminal server with the old drive on its serial port.
+    endpoints: [{address: "10.30.10.50:4001"}]
+    timeouts: {connect: 2s}
+  - name: substation
+    endpoints: [{address: "10.40.0.5:502"}]
+    timeouts: {connect: 5s}
+
+bans:
+  triggers:
+    # A master does not probe function codes. Something walking them is
+    # either broken or not a master.
+    - name: modbus-abuse
+      reasons: [modbus_denied]
+      threshold: 5
+      window: 10m
+      duration: 1h
+
+logging:
+  access: {enabled: true}

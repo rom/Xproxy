@@ -7,6 +7,7 @@ import (
 	"github.com/rom/xproxy/internal/filter"
 	"github.com/rom/xproxy/internal/ftp"
 	"github.com/rom/xproxy/internal/listener"
+	"github.com/rom/xproxy/internal/modbus"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/rdp"
 	"github.com/rom/xproxy/internal/rfb"
@@ -422,6 +423,16 @@ func (v *validator) config(c *Config) {
 		if q := c.Server.Listeners[i].MQTT; q != nil && q.Upstream != "" && !upstreams[q.Upstream] {
 			v.errf("server.listeners[%d].mqtt.upstream: unknown upstream %q", i, q.Upstream)
 		}
+		if m := c.Server.Listeners[i].Modbus; m != nil {
+			if m.Upstream != "" && !upstreams[m.Upstream] {
+				v.errf("server.listeners[%d].modbus.upstream: unknown upstream %q", i, m.Upstream)
+			}
+			for j, r := range m.Routes {
+				if r.Upstream != "" && !upstreams[r.Upstream] {
+					v.errf("server.listeners[%d].modbus.routes[%d].upstream: unknown upstream %q", i, j, r.Upstream)
+				}
+			}
+		}
 		if h := c.Server.Listeners[i].SSH; h != nil && h.Upstream != "" && !upstreams[h.Upstream] {
 			v.errf("server.listeners[%d].ssh.upstream: unknown upstream %q", i, h.Upstream)
 		}
@@ -771,6 +782,15 @@ func (v *validator) server(s *Server) {
 			} else {
 				v.ftpListener(p+".ftp", ln.FTP, ln.TLS != nil)
 			}
+		case "modbus":
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
+				v.errf("%s: a modbus listener takes only address, modbus and tls", p)
+			}
+			if ln.Modbus == nil {
+				v.errf("%s.modbus: required for kind modbus", p)
+			} else {
+				v.modbusListener(p+".modbus", ln.Modbus, ln.TLS != nil)
+			}
 		case "syslog":
 			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
 				v.errf("%s: a syslog listener takes only address, syslog and tls", p)
@@ -789,6 +809,9 @@ func (v *validator) server(s *Server) {
 		}
 		if ln.Syslog != nil && ln.Kind != "syslog" {
 			v.errf("%s.syslog: set on a %s listener (kind: syslog)", p, ln.Kind)
+		}
+		if ln.Modbus != nil && ln.Kind != "modbus" {
+			v.errf("%s.modbus: set on a %s listener (kind: modbus)", p, ln.Kind)
 		}
 		if ln.FTP != nil && ln.Kind != "ftp" {
 			v.errf("%s.ftp: set on a %s listener (kind: ftp)", p, ln.Kind)
@@ -2323,6 +2346,7 @@ var denyReasons = map[string]bool{
 	"account_abuse": true, "api_abuse": true, "honeytoken": true, "scim": true, "threat_intel": true, "smtp_denied": true, "mqtt_denied": true, "ssh_denied": true, "ftp_denied": true, "syslog_denied": true, "yara": true,
 	"forward_sni_mismatch": true, "dns_tunnel": true, "dns_answer_denied": true,
 	"telnet_denied": true, "vnc_denied": true, "rdp_denied": true, "sftp_icap": true, "udp_denied": true,
+	"modbus_denied": true,
 }
 
 // securityTxtFieldRE bounds an extra field name to the token RFC 9116
@@ -6726,6 +6750,335 @@ func (v *validator) ftpListener(p string, f *FTPListener, hasTLS bool) {
 }
 
 // syslogListener validates a kind: syslog listener.
+// modbusListener checks the Modbus relay. Every check here is about the
+// same thing: this listener sits in front of equipment that does what it
+// is told, so a rule that does not do what its author thought is a rule
+// that lets somebody write a setpoint.
+func (v *validator) modbusListener(p string, m *ModbusListener, hasTLS bool) {
+	switch m.Mode {
+	case "", "reverse":
+	case "forward":
+		if len(m.Routes) == 0 && m.Upstream == "" {
+			v.errf("%s: a forward listener needs routes or an upstream: an egress with no destination has nowhere to send a frame", p)
+		}
+	default:
+		v.errf("%s.mode: must be reverse or forward", p)
+	}
+	if m.Upstream == "" && len(m.Routes) == 0 {
+		v.errf("%s.upstream: required unless routes name every destination", p)
+	}
+	for _, f := range []struct{ key, val string }{{"framing", m.Framing}, {"upstream_framing", m.UpstreamFraming}} {
+		switch f.val {
+		case "", "tcp", "rtu", "ascii":
+		default:
+			v.errf("%s.%s: must be tcp, rtu or ascii", p, f.key)
+		}
+	}
+	names := map[string]bool{}
+	for i := range m.Routes {
+		r := &m.Routes[i]
+		q := fmt.Sprintf("%s.routes[%d]", p, i)
+		if !nameRE.MatchString(r.Name) {
+			v.errf("%s.name: %q is not a valid name", q, r.Name)
+		} else if names[r.Name] {
+			v.errf("%s.name: duplicate %q", q, r.Name)
+		}
+		names[r.Name] = true
+		if len(r.Units) == 0 {
+			v.errf("%s.units: required; a route that claims no unit identifier claims nothing", q)
+		}
+		v.modbusRanges(q+".units", r.Units, 255)
+		if r.Upstream == "" {
+			v.errf("%s.upstream: required", q)
+		}
+		switch r.Framing {
+		case "", "tcp", "rtu", "ascii":
+		default:
+			v.errf("%s.framing: must be tcp, rtu or ascii", q)
+		}
+		if r.UnitOverride != nil && (*r.UnitOverride < 0 || *r.UnitOverride > 255) {
+			v.errf("%s.unit_override: must be between 0 and 255", q)
+		}
+	}
+	switch m.TLSMode {
+	case "", "implicit", "none":
+	default:
+		v.errf("%s.tls_mode: must be implicit or none", p)
+	}
+	if m.TLSMode == "implicit" && !hasTLS {
+		v.errf("%s.tls_mode: implicit needs the listener's tls section", p)
+	}
+	switch m.UpstreamTLSMode {
+	case "", "none", "implicit":
+	default:
+		v.errf("%s.upstream_tls_mode: must be none or implicit", p)
+	}
+	if m.UpstreamTLS != nil {
+		v.upstreamTLS(p+".upstream_tls", m.UpstreamTLS)
+	}
+	if s := m.Security; s != nil {
+		switch s.Mode {
+		case "", "off", "allow", "require":
+		default:
+			v.errf("%s.security.mode: must be off, allow or require", p)
+		}
+		switch s.RoleSource {
+		case "", "extension", "cn", "ou":
+		default:
+			v.errf("%s.security.role_source: must be extension, cn or ou", p)
+		}
+		if s.Mode == "require" && !hasTLS {
+			v.errf("%s.security.mode: require needs the listener's tls section: a role comes from a client certificate", p)
+		}
+		if s.RoleSource == "cn" || s.RoleSource == "ou" {
+			v.warnf("%s.security.role_source is %s, which reads a role out of the certificate subject rather than the Modbus role extension: that trusts whoever issues certificates to keep to a naming convention", p, s.RoleSource)
+		}
+		for i, r := range s.Roles {
+			if r == "" || len(r) > 64 || strings.ContainsAny(r, " \t") {
+				v.errf("%s.security.roles[%d]: %q is not a role name", p, i, r)
+			}
+		}
+	}
+	v.modbusCIDRs(p+".allow_clients", m.AllowClients)
+	v.modbusCIDRs(p+".deny_clients", m.DenyClients)
+	v.modbusRanges(p+".units", m.Units, 255)
+	switch m.DefaultAction {
+	case "", "deny", "allow":
+	default:
+		v.errf("%s.default_action: must be deny or allow", p)
+	}
+	switch m.DenyResponse {
+	case "", "exception", "drop", "close":
+	default:
+		v.errf("%s.deny_response: must be exception, drop or close", p)
+	}
+	ruleNames := map[string]bool{}
+	for i := range m.Rules {
+		r := &m.Rules[i]
+		q := fmt.Sprintf("%s.rules[%d]", p, i)
+		if !nameRE.MatchString(r.Name) {
+			v.errf("%s.name: %q is not a valid name", q, r.Name)
+		} else if ruleNames[r.Name] {
+			v.errf("%s.name: duplicate %q", q, r.Name)
+		}
+		ruleNames[r.Name] = true
+		switch r.Action {
+		case "", "allow", "deny", "observe":
+		default:
+			v.errf("%s.action: must be allow, deny or observe", q)
+		}
+		v.modbusCIDRs(q+".clients", r.Clients)
+		v.modbusRanges(q+".units", r.Units, 255)
+		v.modbusRanges(q+".addresses", r.Addresses, 0xFFFF)
+		v.modbusRanges(q+".write_addresses", r.WriteAddresses, 0xFFFF)
+		for j, f := range r.Functions {
+			if _, ok := modbusFunction(f); !ok {
+				v.errf("%s.functions[%d]: %q is not a function code name or a number from 1 to 127", q, j, f)
+			}
+		}
+		for j, a := range r.Access {
+			switch a {
+			case "read", "write", "diagnostic", "identify", "vendor":
+			default:
+				v.errf("%s.access[%d]: must be read, write, diagnostic, identify or vendor", q, j)
+			}
+		}
+		if r.MaxQuantity < 0 || r.MaxQuantity > 2000 {
+			v.errf("%s.max_quantity: must be between 0 and 2000", q)
+		}
+		for j := range r.Values {
+			val := &r.Values[j]
+			vq := fmt.Sprintf("%s.values[%d]", q, j)
+			if val.Registers != "" {
+				v.modbusRanges(vq+".registers", []string{val.Registers}, 0xFFFF)
+			}
+			if val.Coils == nil && (val.Min == nil || val.Max == nil) {
+				v.errf("%s: min and max are both required unless coils is set", vq)
+			}
+			if val.Min != nil && val.Max != nil && *val.Min > *val.Max {
+				v.errf("%s: min %d is above max %d", vq, *val.Min, *val.Max)
+			}
+			lo, hi := 0, 65535
+			if val.Signed {
+				lo, hi = -32768, 32767
+			}
+			if val.Min != nil && (*val.Min < lo || *val.Min > hi) {
+				v.errf("%s.min: outside %d to %d", vq, lo, hi)
+			}
+			if val.Max != nil && (*val.Max < lo || *val.Max > hi) {
+				v.errf("%s.max: outside %d to %d", vq, lo, hi)
+			}
+		}
+		if s := r.Schedule; s != nil {
+			for j, d := range s.Days {
+				if !modbusDay(d) {
+					v.errf("%s.schedule.days[%d]: %q is not a day (mon to sun)", q, j, d)
+				}
+			}
+			v.modbusClock(q+".schedule.from", s.From)
+			v.modbusClock(q+".schedule.to", s.To)
+			if s.Timezone != "" {
+				if _, err := time.LoadLocation(s.Timezone); err != nil {
+					v.errf("%s.schedule.timezone: %v", q, err)
+				}
+			}
+			if s.From == "" && s.To == "" && len(s.Days) == 0 {
+				v.errf("%s.schedule: sets nothing, so the rule is always in force; drop the section", q)
+			}
+		}
+		if r.Action == "observe" && len(r.Values) > 0 {
+			v.warnf("%s: an observe rule with value bounds records the frame and decides nothing, so the bounds are not applied", q)
+		}
+	}
+	if l := m.Learn; l != nil && l.Enabled {
+		if l.File == "" {
+			v.errf("%s.learn.file: required when learning is enabled", p)
+		} else if !strings.HasPrefix(l.File, "/") {
+			v.errf("%s.learn.file: must be an absolute path", p)
+		}
+		if l.Interval != 0 && (l.Interval.D() < 10*time.Second || l.Interval.D() > 24*time.Hour) {
+			v.errf("%s.learn.interval: must be between 10s and 24h", p)
+		}
+		if l.MaxSubjects != 0 && (l.MaxSubjects < 16 || l.MaxSubjects > 1_000_000) {
+			v.errf("%s.learn.max_subjects: must be between 16 and 1000000", p)
+		}
+		if !l.Enforce {
+			v.warnf("%s.learn is enabled without enforce, so this listener records and decides nothing: turn enforce on, or take the learning section out, once the rules are written", p)
+		}
+	}
+	if tr := m.Trace; tr != nil {
+		if tr.File == "" {
+			v.errf("%s.trace.file: required", p)
+		} else if !strings.HasPrefix(tr.File, "/") {
+			v.errf("%s.trace.file: must be an absolute path", p)
+		}
+		if tr.MaxBytes != 0 && (tr.MaxBytes < 1<<20 || tr.MaxBytes > 64<<30) {
+			v.errf("%s.trace.max_bytes: must be between 1MiB and 64GiB", p)
+		}
+		if tr.IncludeData {
+			v.warnf("%s.trace.include_data writes the frames' data bytes, which is process data, into the trace file", p)
+		}
+	}
+	if m.MaxConnections < 0 || m.MaxConnections > 65536 {
+		v.errf("%s.max_connections: must be between 0 and 65536", p)
+	}
+	if m.MaxPending < 0 || m.MaxPending > 256 {
+		v.errf("%s.max_pending: must be between 0 and 256", p)
+	}
+	if m.MaxFrameBytes != 0 && (m.MaxFrameBytes < 8 || m.MaxFrameBytes > 260) {
+		v.errf("%s.max_frame_bytes: must be between 8 and 260, the longest ADU the specification has", p)
+	}
+	if m.RateLimit < 0 || m.RateLimit > 1_000_000 {
+		v.errf("%s.rate_limit: must be between 0 and 1000000", p)
+	}
+	if m.RateBurst < 0 || m.RateBurst > 1_000_000 {
+		v.errf("%s.rate_burst: must be between 0 and 1000000", p)
+	}
+	for _, d := range []struct {
+		key string
+		val Duration
+	}{{"idle_timeout", m.IdleTimeout}, {"request_timeout", m.RequestTimeout}, {"connect_timeout", m.ConnectTimeout}} {
+		if d.val < 0 || d.val > Duration(10*time.Minute) {
+			v.errf("%s.%s: must be between 0 and 10m", p, d.key)
+		}
+	}
+	// The advice. Each of these loads, and each is a relay in front of
+	// equipment with one fewer lock on it than it should have.
+	if len(m.AllowClients) == 0 && len(m.DenyClients) == 0 {
+		v.warnf("%s.allow_clients is empty, so any client that can reach this listener can reach the equipment behind it: name the masters' networks", p)
+	}
+	if len(m.Rules) == 0 && m.DefaultAction == "allow" && !m.ReadOnly {
+		v.warnf("%s has no rules and default_action allow, so every frame is forwarded: that is a relay that watches, which is what learning mode is for", p)
+	}
+	if m.ReadOnly {
+		for i := range m.Rules {
+			for _, a := range m.Rules[i].Access {
+				if a == "write" {
+					v.warnf("%s.rules[%d] allows write access on a read_only listener, where read_only wins: a read-only listener a rule could write through would not be one", p, i)
+				}
+			}
+		}
+	}
+	if !m.LogFrames {
+		v.warnf("%s.log_frames is off, so the audit trail is one line per session rather than per frame: a plant asked to show who wrote what needs the frames", p)
+	}
+}
+
+// modbusCIDRs checks a network list.
+func (v *validator) modbusCIDRs(p string, in []string) {
+	for i, c := range in {
+		if _, err := netip.ParsePrefix(c); err != nil {
+			v.errf("%s[%d]: %q is not a CIDR: %v", p, i, c, err)
+		}
+	}
+}
+
+// modbusRanges checks the "5" and "1-16" range lists the Modbus policy is
+// written with.
+func (v *validator) modbusRanges(p string, in []string, max int) {
+	for i, s := range in {
+		text := strings.TrimSpace(s)
+		if text == "" {
+			v.errf("%s[%d]: empty", p, i)
+			continue
+		}
+		lo, hi := text, text
+		if j := strings.IndexByte(text, '-'); j > 0 {
+			lo, hi = strings.TrimSpace(text[:j]), strings.TrimSpace(text[j+1:])
+		}
+		l, okLo := modbusNum(lo)
+		h, okHi := modbusNum(hi)
+		switch {
+		case !okLo || !okHi:
+			v.errf("%s[%d]: %q is not a number or a range", p, i, s)
+		case l > h:
+			v.errf("%s[%d]: %q starts after it ends", p, i, s)
+		case l < 0 || h > max:
+			v.errf("%s[%d]: %q is outside 0 to %d", p, i, s, max)
+		}
+	}
+}
+
+func modbusNum(s string) (int, bool) {
+	if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
+		n, err := strconv.ParseInt(s[2:], 16, 32)
+		return int(n), err == nil
+	}
+	n, err := strconv.Atoi(s)
+	return n, err == nil
+}
+
+// modbusFunction says whether a function code is written as a name this
+// build knows or as a number the protocol has.
+func modbusFunction(s string) (int, bool) {
+	if _, ok := modbus.FunctionCode(s); ok {
+		return 0, true
+	}
+	n, ok := modbusNum(strings.TrimSpace(s))
+	return n, ok && n >= 1 && n <= 127
+}
+
+func modbusDay(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "mon", "monday", "tue", "tuesday", "wed", "wednesday", "thu", "thursday",
+		"fri", "friday", "sat", "saturday", "sun", "sunday":
+		return true
+	}
+	return false
+}
+
+func (v *validator) modbusClock(p, s string) {
+	if s == "" {
+		return
+	}
+	h, m, ok := strings.Cut(s, ":")
+	hh, err1 := strconv.Atoi(h)
+	mm, err2 := strconv.Atoi(m)
+	if !ok || err1 != nil || err2 != nil || hh < 0 || hh > 23 || mm < 0 || mm > 59 {
+		v.errf("%s: %q is not a time of day as HH:MM", p, s)
+	}
+}
+
 func (v *validator) syslogListener(p string, g *SyslogListener, hasTLS bool) {
 	if g.Upstream == "" {
 		v.errf("%s.upstream: required", p)

@@ -27,6 +27,7 @@ var sections = map[string]string{
 	"mqtt":    "mqtt: {upstream: u}",
 	"ftp":     "ftp: {upstream: u}",
 	"syslog":  "syslog: {upstream: u}",
+	"modbus":  "modbus: {upstream: u}",
 }
 
 // TestUnlinkedKindRefused is the guarantee the three-binary split rests

@@ -2908,6 +2908,119 @@ sender is refused rather than evicting the entries doing the limiting.
 `queue` is what waits for the collector, and a full queue drops and
 counts rather than holding every sender behind one slow collector.
 
+## Modbus relay
+
+**The master reports an illegal function or an illegal data address it
+never got before.** That is the relay refusing, in the protocol's own
+words, and it is meant to look like the device's refusal — see
+`modbus_denied` climbing and the security event with the rule that
+decided. The mapping is: illegal function (01) for a function code the
+policy does not permit, `read_only` included; illegal data address (02)
+for a register range no rule covers; illegal data value (03) for a value
+outside a `values` bound; gateway path unavailable (0A) for a unit
+identifier with no route; gateway target failed to respond (0B) for a
+device that did not answer; server busy (06) for a session whose
+`max_pending` queue is full. `deny_response: drop` or `close` changes
+the refusal but not the decision.
+
+**A read that used to work is refused.** An `addresses` rule must cover
+the **whole** range a request asks for. A master that was reading 0 to
+99 and now reads 0 to 199 does not match a rule for `0-99`, and the
+relay does not split the request — splitting it would be answering a
+question nobody asked. Widen the range or add a rule.
+
+**A write is refused and the rule that names it looks right.** Check
+`values`. A value outside a bound is refused *by the rule that set the
+bound*, so a later rule that would have allowed the write is never
+reached — which is the point, but it means the security event names the
+bounding rule rather than the one an engineer was looking at. `signed`
+matters here: 65486 unsigned is −50 signed, and a bound written one way
+refuses what the other way would allow.
+
+**A mask write is refused under a value bound.** Function code 22
+carries an AND mask and an OR mask, not a value at an address. A bound
+written about values cannot be applied to them, so a rule that carries
+`values` refuses the mask write (`value_masked_write`) rather than
+passing it as if the bound had been checked. Give the mask write a rule
+of its own, or take the function code out of the rule that bounds
+values.
+
+**The whole listener refuses everything.** Three usual causes, in order:
+`allow_clients` does not contain the master (`client_not_allowed`);
+`default_action` is `deny`, which it is by default, and no rule matches
+(`no_rule`); or `security.mode` is `require` on a listener whose
+`tls_mode` is `none`, in which case every session is refused with
+`security_requires_tls` — a role can only come from a certificate and a
+certificate only from TLS.
+
+**Modbus/TCP Security refuses a client that has a certificate.** In
+order: `no_client_certificate` (the handshake did not ask for one — set
+`client_auth: require` in the listener's `tls`), `no_role` (the
+certificate has no role: the x.509 extension `1.3.6.1.4.1.50316.802.1`
+is missing, or `role_source` is `cn`/`ou` and that field is empty), or
+`role_not_allowed` (the role is not in `security.roles`). A rule naming
+`roles` never matches a session with no role, so a policy written for
+roles refuses everything on a listener where the roles are not arriving.
+
+**Requests are slow, or the master reports timeouts under load.**
+Requests are serialised towards each device on purpose: a Modbus slave
+has one scan, and pipelining into it would be a load generator wearing a
+policy engine's clothes. `modbus_queue_full` climbing means masters are
+asking faster than the device answers — raise `max_pending` only if the
+device can actually take it, and look at `rate_limit` before assuming it
+can. `modbus_upstream_failed` with `modbus_queue_full` at zero is the
+device not answering at all.
+
+**The device answers and the master gets a server failure (04).** The
+relay would not pass on an answer it could not read
+(`malformed_response`) or one carrying a different unit identifier
+(`response_unit_mismatch`) — the master and the relay would be reading
+the same bytes differently, which is the bug this relay exists to
+prevent. A gateway in the path renumbering unit identifiers is the
+common cause of the second; `routes[].unit_override` is how a rewrite is
+declared rather than discovered.
+
+**Frames are refused as malformed.** The relay parses every frame whole,
+and the reasons are `framing` (an MBAP protocol identifier that is not
+zero, a length field the specification does not allow, a bad RTU CRC or
+ASCII LRC), `frame_too_large` (`max_frame_bytes`) and `malformed` (a
+function code the specification does not have, or fields that do not fit
+the code — a read of 3000 registers, a byte count that does not match
+the quantity). A framing error ends the session, because a stream cannot
+be trusted to resume at a frame boundary after one.
+
+**The serial framings.** `framing: rtu` or `ascii` reads the framing a
+"Modbus gateway" tunnels over TCP. RTU has no start or end delimiter, so
+its length is computed per function code and direction and the CRC is
+the only proof the frame ended where the device thinks it did — which is
+why an unknown function code cannot be read at all in RTU. Both
+framings default to `max_pending: 1`, because with no transaction
+identifier a second request in flight cannot be told from the first.
+
+**Learning mode is on and nothing is refused.** That is what it does:
+`learn.enforce` is false by default, so the listener records and decides
+nothing, and `modbus_would_deny` counts the refusals that did not
+happen. Validation warns while it is off. The report is written on
+`learn.interval` and at shutdown.
+
+**The learning report is missing observations.** `learn.max_subjects`
+bounds them: one subject per client, role, unit and function code. Past
+the bound the oldest goes, the drops are counted, and the report's header
+says how many — raise it rather than guessing what is missing. Address
+ranges have a bound of their own: past it the set collapses to its span,
+which is wider than the truth and says so.
+
+**The trace stopped.** `trace.max_bytes` is the bound, and at it the
+trace writes one line saying it stopped rather than filling the disk the
+plant's historian is also on. Rotate or raise it. A trace is meant for
+an afternoon; the audit trail is `log_frames`.
+
+**There is no audit trail of what was written.** `log_frames` is off by
+default and writes one access line per frame when it is on. That is the
+record a plant is asked for, and it is a line per request — a scan of a
+thousand registers a second is a thousand lines a second, which is why
+it is a choice rather than a default.
+
 ## FTP proxy
 
 **Transfers hang, or the client reports "cannot open data connection".**
@@ -4095,6 +4208,7 @@ innocent.
 | `ftp_denied` | The FTP proxy: a refused command, path, extension or address, a failed login, a malformed control line, a bounce attempt, or a transfer cut by a bound or a rule (`detail` says which) | yes |
 | `ssh_denied` | The SSH bastion: a failed authentication, a refused channel, request, subsystem, command, environment variable, file transfer helper or forward, or a refused SFTP request (`detail` says which) | yes |
 | `mqtt_denied` | The MQTT listener: a refused CONNECT, a topic or filter outside the policy, a malformed packet, or a client outside `allow_clients` (`detail` says which) | yes |
+| `modbus_denied` | The Modbus relay: a frame the policy refused -- a function code, a unit identifier, a register range or a value outside what a rule allows, a write on a `read_only` listener, a role that is missing or not allowed -- or a client outside `allow_clients`, a frame it could not read, or an answer from the device it would not pass on (`reason` says which, and the event carries the unit, the function, the address and the rule) | yes |
 | `telnet_denied` | The telnet gateway: a client outside `allow_clients`, a refused option, a failed factor, or a session it could not open (`detail` says which) | yes |
 | `vnc_denied` | The VNC gateway: a security type outside the policy, a failed VNC authentication or factor, a target that offered nothing mediable, a client outside `allow_clients`, or a bound on the picture -- a framebuffer, a rectangle or a clipboard transfer past what `bounds` allows (`what` says which, and `detail` carries the numbers) | yes |
 | `rdp_denied` | The RDP gateway: a refused channel or device, a failed factor, a connection sequence it could not read, or a client outside `allow_clients` (`detail` says which) | yes |
@@ -4148,6 +4262,7 @@ actually being refused. What each kind can say:
 | `mqtt` | `client_not_allowed`, `max_connections`, `not_connect`, `second_connect`, `version_refused`, the client id policy (`empty_client_id`, `client_id_too_long`, `client_id_refused`), `no_username`, `keep_alive_refused`, the topic policy (`publish_topic_refused`, `subscribe_refused`, `retain_refused`, `will_topic_refused`, `will_retain_refused`), `packet_too_large`, `malformed` |
 | `ftp` | `client_refused`, `banned`, `max_connections`, `auth_failed`, `identity_refused`, `mfa_required`, `mfa_failed`, the command and path policy (`unknown_command`, `command_refused`, `path_refused`, `read_only`, `active_refused`, `no_data_connection`), the path shapes it will not guess about (`path_separator`, `path_control`, `path_encoding`), the commands that are half a decision (`rest_invalid`, `rest_unscannable`, `rename_out_of_order`), TLS (`tls_required`, `auth_refused`, `ccc_refused`, `tls_pipelined`), the data channel (`bounce_refused`, `malformed_address`, `data_stranger`, `upstream_address`, `transfer_cut`) and the line discipline (`line_too_long`, `malformed_line`, `malformed_command`) |
 | `syslog` | `sender_refused`, `max_connections`, `rate_limit`, `too_large`, `framing`, `malformed`, the message policy (`facility`, `severity`, `pattern`) and `queue_full` when the collector is behind |
+| `modbus` | `client_not_allowed`, `max_connections`, `rate_limit`, `queue_full`, the session's own locks (`tls_handshake`, `no_client_certificate`, `no_role`, `role_not_allowed`, `security_requires_tls`), the framing (`framing`, `frame_too_large`, `malformed`), the policy (`read_only`, `read_only_unknown_function`, `unit_not_allowed`, `rule_deny`, `no_rule`, `value_out_of_range`, `value_masked_write`, `coil_set_not_allowed`, `coil_clear_not_allowed`), the routing (`no_route_for_unit`) and what the device answered (`malformed_response`, `response_unit_mismatch`) |
 
 Two things are deliberately *not* in this family. Refusals by the
 server-wide accept path — `server.limits.max_connections`,

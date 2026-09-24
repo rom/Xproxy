@@ -12,7 +12,7 @@ configuration patterns and reading the logs. Installation is covered in
 |--------|---------|
 | `xproxy` | The edge data plane: `http`, `forward`, `tcp` and `dns` listeners |
 | `xgate` | The gate: `ssh` listeners — the bastion, its SFTP mediation and its session recording |
-| `xrelay` | The relay: `smtp`, `mqtt`, `ftp` and `syslog` listeners |
+| `xrelay` | The relay: `smtp`, `mqtt`, `ftp`, `syslog` and `modbus` listeners |
 | `xproxyctl` | Control tool talking to a daemon's Unix socket |
 | `xproxy-admin` | Web GUI: a separate process serving a browser interface over the same socket |
 
@@ -2723,6 +2723,154 @@ record actually came from rather than what it claimed to be.
 
 `examples/logs/syslog.yaml` has a general relay, a legacy upgrade
 listener and a separate audit path with client certificates.
+
+### Modbus in front of a PLC
+
+```yaml
+server:
+  listeners:
+    - name: plant
+      address: "10.30.0.10:502"
+      kind: modbus
+      modbus:
+        upstream: plc_line1
+        allow_clients: ["10.30.2.0/24", "10.30.3.7/32"]
+        units: ["1-8"]
+        rules:
+          - {name: historian, action: allow, clients: ["10.30.3.7/32"], access: [read], max_quantity: 125}
+          - name: setpoints
+            action: allow
+            clients: ["10.30.2.0/24"]
+            functions: [write_single_register]
+            addresses: ["400-499"]
+            values: [{registers: "400-499", min: 0, max: 100}]
+        default_action: deny
+        log_frames: true
+```
+
+Modbus has no authentication, no integrity and no session. A frame says
+which device it is for, what to do and where, and the device does it.
+That is not a flaw somebody will fix: it is a protocol from 1979 running
+equipment installed in 2009, whose vendor is gone and whose process does
+not stop for a firmware upgrade. So the only place a policy can exist is
+in the path, and it has to be written in the protocol's own terms — the
+unit identifier, the function code, the register range, the value —
+because those are the only terms the traffic has.
+
+Every frame is parsed whole. A relay that forwarded what it could not
+read would be forwarding what it could not decide about, and the device
+behind it will read those bytes somehow.
+
+**Both directions.** `mode: reverse`, the default, fronts the devices:
+masters connect to the listener and it dials the PLC. `mode: forward`
+is the plant's controlled egress towards devices elsewhere, where the
+`routes` are the only destinations that exist — a unit identifier no
+route claims is refused with a gateway exception rather than sent
+somewhere invented.
+
+**All three framings, bridged.** `framing` is what arrives (`tcp` for
+MBAP, or `rtu` and `ascii` for the serial framings every "Modbus
+gateway" ever sold tunnels over TCP) and `upstream_framing` is what
+leaves. Setting them differently makes the listener a protocol
+converter, which is what a serial drive behind a terminal server needs;
+`routes[].framing` does it for one device rather than the listener, and
+`unit_override` rewrites the identifier for a device that answers only
+to slave address 1.
+
+**What a rule can say.** `clients` and `roles` are who; `units`,
+`functions` and `access` are what; `addresses`, `write_addresses`,
+`max_quantity` and `values` are where and how much. `access` is the
+durable half — `access: [read]` means no writing without listing every
+code that writes, including the ones a vendor adds. An `addresses` rule
+must cover the **whole** range a request asks for: a read of 0 to 200
+against a rule for 0 to 99 does not match, because splitting it is not
+the relay's decision. `read_only: true` is the shorthand for the
+commonest requirement in a plant, and no rule can override it — a
+read-only listener a rule could write through would not be one.
+
+**Values are where this earns its place.** `values` bounds what a write
+may carry: a setpoint register that may hold 0 to 100 and nothing else,
+`signed: true` for the ones encoded as signed integers, and
+`coils: false` for "this client may stop the pump but not start it"
+(with `coils: true` the other way round). A value outside the bound is
+refused *by the rule that set the bound*, not passed to a later rule
+that would permit it.
+
+**Schedules** put a rule in force for a window — `{days: [sat, sun],
+from: "22:00", to: "04:00", timezone: Europe/Stockholm}` for a
+maintenance window, with a `to` before its `from` spanning midnight.
+"These rules during the shift and those outside it" is written as the
+scheduled rules first and the unscheduled ones after them.
+
+**Modbus/TCP Security** is the Modbus Organization's own answer: TLS
+with mutual authentication, conventionally on port 802, with the
+client's role in an x.509 extension under the Modbus arc
+(`1.3.6.1.4.1.50316.802.1`). Set `tls_mode: implicit` and
+`security: {mode: require}` and the rules can name `roles: [engineer]`.
+`role_source: cn` or `ou` reads the subject instead, for an authority
+that cannot issue the extension yet — it warns, because a subject field
+says who a certificate is *for*, so using it as a role trusts whoever
+issues certificates to keep to a naming convention. A role can only come
+from a certificate and a certificate only from TLS, so a listener asking
+for roles without TLS refuses every session and says so.
+
+**A refusal is Modbus.** `deny_response: exception` answers with the
+exception the master already understands — illegal function for a code
+the policy does not permit, illegal data address for a range it does
+not, illegal data value for a value outside a bound, gateway path
+unavailable for a unit with no route — and the session carries on, so an
+operator's diagnostics say something true. `drop` and `close` are there
+for the cases where the master should learn nothing.
+
+**Learning mode, because nobody knows what the traffic is.** The
+drawings say what a plant was meant to do; the traffic says what the
+integrator left behind.
+
+```yaml
+      modbus:
+        upstream: plc_line1
+        learn: {enabled: true, file: /var/lib/xproxy/modbus-learned.yaml, interval: 15m}
+```
+
+It records every client, role, unit, function code, address range and
+value range that crosses the listener and writes it out as YAML: an
+`observed:` block describing the traffic, and under it a `rules:` block
+permitting exactly what was seen, ready to paste. A subject whose
+`device_exceptions` are not zero is a request the device itself refuses
+— write those out of the policy rather than into it. `enforce` is false
+by default, so a learning run records and decides nothing, which is the
+only honest way to find out what a policy would have broken; validation
+warns while it is off so it is not left on by accident. The report is
+rewritten on the interval and at shutdown, so a week's run is not lost
+with the process.
+
+**Traces** are the other tool: `trace: {file: …}` writes one JSON object
+per frame for as long as it is enabled, which is how "what is this
+master actually doing" gets answered during a commissioning. It is a
+separate file from the audit log with a bound of its own, and at the
+bound it writes one line saying it stopped rather than filling the disk
+the plant's historian is also on. `include_data` writes the frame's data
+bytes, which are process data, so it is off and warns.
+
+**Bounds that match the equipment.** Requests are serialised towards
+each device, because a Modbus slave has one scan and a relay that
+pipelined into it would be a load generator wearing a policy engine's
+clothes. `max_pending` bounds the queue behind that (1 for the serial
+framings, which have no transaction identifier), and a master whose
+queue is full is answered with exception 06, server busy. `rate_limit`
+is per client address: a PLC's scan budget is finite, and a master
+asking faster than the device can answer is an outage with no attacker
+in it.
+
+`log_frames: true` writes an access line per frame rather than per
+session. That is the audit trail a plant is asked for — and it is a line
+per request, so a scan of a thousand registers a second is a thousand
+lines a second, which is why it is a choice.
+
+`examples/ot/modbus.yaml` has all three shapes: the reverse listener with
+the historian, the setpoints and the serial drive; the same line again
+with Modbus/TCP Security and roles; and the read-only forward egress with
+a trace.
 
 ### FTP with the data connection mediated
 
