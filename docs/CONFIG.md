@@ -4559,6 +4559,32 @@ away from being the outage. Where a compressed body has to be read, the
 an expansion-ratio bound, and ICAP or `yara` scan the stream — each of
 them a decision about one route rather than a default for all of them.
 
+**XML targets are two collections, not an XPath engine.** With the XML
+body processor selected, the engine fills exactly two: `XML://@*`, every
+attribute value in the document, and `XML:/*`, every piece of character
+data. A rule over either works, and it is how the Core Rule Set reads an
+XML body:
+
+```
+SecRule REQUEST_HEADERS:Content-Type "@rx xml" \
+    "id:9200,phase:1,pass,nolog,ctl:requestBodyProcessor=XML"
+SecRule XML://@* "@rx (?i)\bunion\b.{1,100}?\bselect\b" \
+    "id:9201,phase:2,deny,status:403,msg:'injection in an XML attribute'"
+```
+
+Any other selector — `XML:/invoice/total`, `XML://item[@id]` — is
+**accepted by the parser and then evaluated against nothing**, so a rule
+written over it never fires. That is the engine's limitation rather than a
+setting, and it is stated here because a rule an operator believes is
+running is worse than one they know they have to write differently. Where
+a *named* element or a document's shape is the requirement, the
+`xml_guard` filter is the one that reads structure: `require_root`,
+`require_root_namespace`, `allow_elements` and `deny_elements` are a
+positive model over the element names, with the entity, expansion and
+depth bounds beside them, and `deny_patterns` covers the text. A test
+drives all three selectors, so the sentence above stays true of the
+engine this binary links.
+
 ### waf.learning
 
 Learning aggregates every match of a detection rule by rule id, matched

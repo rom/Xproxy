@@ -10359,6 +10359,21 @@ SecRule ARGS:payload "@rx (?i)union\es+select" \e
 .RE
 .PP
 The bodies the rules see are parsed by content type \[u2014] urlencoded, multipart, JSON and XML \[u2014] up to \fBrequest_body_limit\fR. What they do \fBnot\fR see is a body wrapped in a \fItransfer\fR encoding: a \fBContent\-Encoding: gzip\fR request body is inspected as the compressed bytes it arrived as, not expanded first. That is a deliberate line, and the reason is amplification: a decoder at the gateway, applied to every body before any rule has decided anything, is a second parser and a decompression bomb away from being the outage. Where a compressed body has to be read, the \fBsensitive_data\fR filter decodes \fBgzip\fR, \fBdeflate\fR, \fBbr\fR and \fBzstd\fR under an expansion\-ratio bound, and ICAP or \fByara\fR scan the stream \[u2014] each of them a decision about one route rather than a default for all of them.
+.PP
+\fBXML targets are two collections, not an XPath engine.\fR With the XML body processor selected, the engine fills exactly two: \fBXML://@*\fR, every attribute value in the document, and \fBXML:/*\fR, every piece of character data. A rule over either works, and it is how the Core Rule Set reads an XML body:
+.PP
+.RS 4
+.nf
+.ft CR
+SecRule REQUEST_HEADERS:Content\-Type "@rx xml" \e
+    "id:9200,phase:1,pass,nolog,ctl:requestBodyProcessor=XML"
+SecRule XML://@* "@rx (?i)\ebunion\eb.{1,100}?\ebselect\eb" \e
+    "id:9201,phase:2,deny,status:403,msg:'injection in an XML attribute'"
+.ft
+.fi
+.RE
+.PP
+Any other selector \[u2014] \fBXML:/invoice/total\fR, \fBXML://item[@id]\fR \[u2014] is \fBaccepted by the parser and then evaluated against nothing\fR, so a rule written over it never fires. That is the engine\(aqs limitation rather than a setting, and it is stated here because a rule an operator believes is running is worse than one they know they have to write differently. Where a \fInamed\fR element or a document\(aqs shape is the requirement, the \fBxml_guard\fR filter is the one that reads structure: \fBrequire_root\fR, \fBrequire_root_namespace\fR, \fBallow_elements\fR and \fBdeny_elements\fR are a positive model over the element names, with the entity, expansion and depth bounds beside them, and \fBdeny_patterns\fR covers the text. A test drives all three selectors, so the sentence above stays true of the engine this binary links.
 .SS "waf.learning"
 .PP
 Learning aggregates every match of a detection rule by rule id, matched variable (for example \fBARGS:q\fR) and route, in block and detect mode alike. A triple seen \fBmin_hits\fR times becomes a proposal with a ready to review SecLang exclusion, scoped to the route\(aqs path prefix when it has one (\fBGET /v1/waf\fR, \fBGET /v1/waf/exclusions\fR, \fBxproxyctl waf proposals\fR). The table and the per rule statistics live for the process and survive reloads; \fBPOST /v1/waf/reset\fR clears them.

@@ -769,8 +769,8 @@ Open findings of the earlier rounds:
   tests were extended -- among them a compound filter, which the first
   version read as its first comparison and ignored the rest of.
 
-- **Two things documented instead of built** (`docs/CONFIG.md`), each with
-  the configuration it replaces and a test that drives it.
+- **Three things documented instead of built** (`docs/CONFIG.md`), each
+  with the configuration it replaces and a test that drives it.
 
   *Content decoding in the WAF* is SecLang's own transformations --
   `t:urlDecodeUni`, `t:base64Decode`, `t:hexDecode`, `t:jsDecode`,
@@ -786,6 +786,19 @@ Open findings of the earlier rounds:
   compressed body is read instead: `sensitive_data`, which decodes gzip,
   deflate, br and zstd under an expansion-ratio bound, and ICAP or
   `yara` over the stream.
+
+  *The WAF's `XML:` targets are two collections, not an XPath engine*, and
+  RFC.md now names XPath 1.0 as not implemented for exactly that reason.
+  The engine fills every attribute value (`XML://@*`) and every piece of
+  character data (`XML:/*`), which is how the Core Rule Set reads an XML
+  body; any other selector -- `XML:/invoice/total` -- is accepted by the
+  parser and then evaluated against nothing, so a rule over it never
+  fires. That is worth a paragraph rather than silence, because a rule an
+  operator believes is running is worse than one they know they have to
+  write differently: where a named element or a document's shape is the
+  requirement, `xml_guard` is the filter that reads structure. A test
+  drives all three selectors, so the claim stays true of the engine this
+  binary links.
 
   *API version routing* needs no key of its own, because every way a
   version is actually spelled is already a matcher: `paths` for `/v1/`,
