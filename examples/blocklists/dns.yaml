@@ -41,6 +41,14 @@ server:
         # for, which is what makes its security events attributable and
         # bannable. respond never refuses a client that has no cookies.
         cookies: respond
+        # An IPv6-only network reaches IPv4-only services through a
+        # translator: the AAAA answer is synthesised from the A record.
+        # The A address is screened by answer_policy above *before* it is
+        # embedded, so a private address is not laundered into a prefix
+        # no list would recognise.
+        dns64:
+          prefix: "64:ff9b::/96"
+          clients: ["2001:db8:6::/48"]
         # Split horizon: the same name, a different answer by who asked.
         # Order is the policy -- the laboratory is inside 10.0.0.0/8 too,
         # so it is listed first or it never matches.

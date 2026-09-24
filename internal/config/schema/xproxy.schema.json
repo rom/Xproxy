@@ -1049,6 +1049,28 @@
       },
       "additionalProperties": false
     },
+    "DNS64": {
+      "description": "DNS64 is RFC 6147 address synthesis on a dns listener: an AAAA query for a name that has only an A record is answered with that IPv4 address embedded in a prefix (RFC 6052) routed to a translator. The answer is one this resolver invented, which is why the address policy sees the IPv4 address before it is embedded rather than the synthesised address afterwards: 64:ff9b::7f00:1 is not inside 127.0.0.0/8 and no prefix list would catch it, but it is 127.0.0.1 to everything past the translator. A synthesised answer also carries no AD bit, because there is nothing signed about it.",
+      "type": "object",
+      "properties": {
+        "clients": {
+          "description": "Clients are the networks this applies to; empty is every client of the listener. Name the IPv6-only networks: a dual-stack client handed a synthesised address reaches the service the long way round, through the translator, for no reason.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "prefix": {
+          "description": "Prefix is the translation prefix. Default 64:ff9b::/96, the well-known prefix of RFC 6052; a network-specific prefix must be a /32, /40, /48, /56, /64 or /96, which are the only lengths with a defined place to put the address.",
+          "type": "string"
+        },
+        "ttl": {
+          "description": "TTL overrides the TTL of a synthesised record; 0 keeps the A record's own, which is what RFC 6147 prefers.",
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
     "DNSAnswerPolicy": {
       "description": "DNSAnswerPolicy screens the addresses an upstream answer carries. A block list decides by name, and the name is the part an attacker picks last: blocking one costs them a registration. The address is what they cannot move, because it is where they want the client to go, and two attacks live entirely there. DNS rebinding answers a name the attacker owns with a public address while the page loads and with 127.0.0.1 a moment later, and a browser keeps calling the two one origin. The cloud metadata endpoint at 169.254.169.254 hands instance credentials to any process that can make an HTTP request, so a name resolving there turns \"fetch this URL\" into \"read my keys\". Neither is a name a list could hold.",
       "type": "object",
@@ -1226,6 +1248,14 @@
           "items": {
             "$ref": "#/$defs/DNSDesignated"
           }
+        },
+        "dns64": {
+          "description": "DNS64 synthesises AAAA answers for IPv4-only names (RFC 6147), so an IPv6-only client can reach an IPv4-only service through a translator.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/DNS64"
+            }
+          ]
         },
         "dnssec": {
           "description": "DNSSEC validates upstream answers against a trust anchor.",

@@ -139,6 +139,8 @@ named here so nobody has to guess:
 | 9276 | Guidance for NSEC3 Parameter Settings | Full | Iteration counts above the guidance are refused rather than computed |
 | 6840 | Clarifications and Implementation Notes for DNSSEC | Full | |
 | 3110 | RSA/SHA-1 SIGs and RSA KEYs in the Domain Name System | Full | The DNSKEY exponent and modulus form |
+| 6147 | DNS64: DNS Extensions for Network Address Translation from IPv6 Clients to IPv4 Servers | Partial | AAAA synthesis for a name with only an A record, per client network, with the IPv4 address screened by `answer_policy` before it is embedded and no AD bit on a synthesised answer. PTR synthesis for the prefix, and the prefix discovery of RFC 7050, are not implemented |
+| 6052 | IPv6 Addressing of IPv4/IPv6 Translators | Full | The address placement at all six defined prefix lengths, checked against the RFC's own worked example |
 | 2606 | Reserved Top Level DNS Names | Full | Used throughout the decoys and tests, so nothing in them resolves |
 
 ## Mail

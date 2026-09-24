@@ -1024,6 +1024,47 @@ rather than an upstream lookup, because a forwarded answer would
 contradict the local one. Answers carry the AA bit. `queries_local`
 counts them and `xproxyctl dns` lists the names.
 
+#### server.listeners[].dns.dns64
+
+RFC 6147 address synthesis: an AAAA answer for a name that has only an A
+record, so an IPv6-only client can reach an IPv4-only service through a
+translator.
+
+The client asks for AAAA, the name has none, and this resolver asks for A
+instead and answers with that IPv4 address embedded in a prefix (RFC 6052)
+routed to the translator. Nothing on the client changes — it believes it is
+speaking IPv6 throughout, which is the point.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `prefix` | IPv6 CIDR | `64:ff9b::/96` | The translation prefix. A network-specific prefix must be a `/32`, `/40`, `/48`, `/56`, `/64` or `/96` — the only lengths RFC 6052 gives a place to put the address — with no bits set past its length |
+| `clients` | list of IPv6 CIDR | every client | The networks this applies to. Name the IPv6-only ones: a dual-stack client handed a synthesised address reaches the service through the translator for no reason. An IPv4 network here is a load error, since a client with IPv4 does not need the translation |
+| `ttl` | int | the A record's | Override the TTL of a synthesised record |
+
+Two things about it are security decisions rather than protocol, and both
+are worth knowing before turning it on.
+
+**The address policy sees the IPv4 address, not the synthesised one.**
+`64:ff9b::7f00:1` is not inside `127.0.0.0/8` and no prefix list would
+catch it, but it is `127.0.0.1` to everything past the translator. So the A
+lookup runs through the ordinary path — the same one a client's own A query
+takes — which screens it against `answer_policy` and caches it; an address
+that policy denies is not embedded. Without that, DNS64 would be a way
+around rebinding protection rather than a feature beside it.
+
+**A synthesised answer is never signed and never says it is.** The reply is
+built from the client's question, so the AD bit is clear by construction
+(RFC 6147 section 5.5). A validating client that wants the truth about the
+name asks for A itself, which this resolver answers and validates
+normally.
+
+A name with an AAAA record of its own is answered with it, and a name that
+does not exist stays NXDOMAIN: synthesising over either would be this
+resolver inventing a second answer. At most 32 records are synthesised from
+one A answer, so an upstream with hundreds of addresses does not decide the
+size of this listener's reply. `queries_synthesised` counts them and the
+access log source ends in `:dns64`.
+
 #### server.listeners[].dns.views
 
 Split horizon: the same name answered differently by who asked.

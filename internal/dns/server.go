@@ -65,6 +65,9 @@ type Policy struct {
 	Cookies string
 	// CookieLifetime is how long a server cookie stays valid. Default 1h.
 	CookieLifetime time.Duration
+	// DNS64 answers an AAAA query for an IPv4-only name with the address
+	// embedded in a translation prefix (RFC 6147). nil disables it.
+	DNS64 *DNS64
 	// Views answer the same name differently by who asked: see views.go.
 	// The first view whose networks contain the client wins; a client in
 	// none of them gets the listener's own records and block list.
@@ -142,8 +145,9 @@ type Server struct {
 	UDP, TCP, DoT, DoH, DoQ atomic.Uint64
 	// Local counts answers served from the local record set, and Viewed
 	// the queries a split-horizon view answered rather than the
-	// listener's own policy.
-	Local, Viewed atomic.Uint64
+	// listener's own policy. Synthesised counts the AAAA answers DNS64
+	// built from an A record.
+	Local, Viewed, Synthesised atomic.Uint64
 	// Tunnels counts detections and TunnelBlocked the queries refused
 	// because of one.
 	Tunnels, TunnelBlocked atomic.Uint64
@@ -224,6 +228,9 @@ type Status struct {
 	// queries one of them answered.
 	Views         []string `json:"views,omitempty"`
 	QueriesViewed uint64   `json:"queries_viewed"`
+	// QueriesSynthesised counts the AAAA answers DNS64 built from an A
+	// record.
+	QueriesSynthesised uint64 `json:"queries_synthesised"`
 	// AnswerDenied and AnswerStripped report the answer policy, and
 	// ECSStripped the client subnet options removed.
 	AnswerDenied   uint64 `json:"answer_denied"`
@@ -303,7 +310,7 @@ func (s *Server) Status() Status {
 		AnswerDenied: s.AnswerDenied.Load(), AnswerStripped: s.AnswerStripped.Load(), ECSStripped: s.ECSStripped.Load(),
 		Stale: s.Stale.Load(), Prefetched: s.Prefetched.Load(),
 		CookiesIssued: s.CookiesIssued.Load(), CookiesVerified: s.CookiesVerified.Load(), CookiesRefused: s.CookiesRefused.Load(),
-		QueriesViewed: s.Viewed.Load()}
+		QueriesViewed: s.Viewed.Load(), QueriesSynthesised: s.Synthesised.Load()}
 	if p != nil {
 		st.LocalNames = p.Local.Names()
 		st.Views = p.ViewNames()
@@ -708,6 +715,11 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 					s.fit(a, query, qEnd, h, sc.resp, sc.rEnd))
 			}
 			s.maybePrefetch(p, q, now)
+			// An AAAA answer with nothing in it is where DNS64 has work
+			// to do, and a cached one is no different from a fresh one.
+			if out, outEnd, ok := s.dns64(context.Background(), p, query, qEnd, h, q, client, proto, now, resp, rEnd, tcp); ok {
+				return s.finish(a, q, source+":dns64", s.fit(a, query, qEnd, h, out, outEnd))
+			}
 			if qm != nil {
 				resp = s.finalizeDNSSEC(resp, qm, h)
 				if _, e, err := ParseQuestion(resp); err == nil {
@@ -765,6 +777,11 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 		return s.finish(a, q, lk.source, lk.resp)
 	}
 	resp, rEnd := lk.resp, lk.rEnd
+	if out, outEnd, ok := s.dns64(ctx, p, query, qEnd, h, q, client, proto, now, resp, rEnd, len(query) > maxUDP); ok {
+		// The reply is built from the client's question, so it carries no
+		// signatures and no AD bit to shape (RFC 6147 section 5.5).
+		return s.finish(a, q, lk.source+":dns64", s.fit(a, query, qEnd, h, out, outEnd))
+	}
 	if lk.synthetic {
 		qm = nil // a synthetic answer carries no signatures to shape
 	}

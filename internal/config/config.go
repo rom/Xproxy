@@ -1398,6 +1398,10 @@ type DNSListener struct {
 	// (most usefully the ECH configuration of a name this proxy
 	// terminates), and A, AAAA, TXT and PTR.
 	Records []DNSRecord `yaml:"records"`
+	// DNS64 synthesises AAAA answers for IPv4-only names (RFC 6147), so
+	// an IPv6-only client can reach an IPv4-only service through a
+	// translator.
+	DNS64 *DNS64 `yaml:"dns64"`
 	// Views answer the same name differently by who asked: split
 	// horizon. The first view whose networks contain the client wins; a
 	// client in none of them gets this listener's own records and block
@@ -1605,6 +1609,32 @@ type DNSRecord struct {
 	// Params are service parameters in presentation form:
 	// {alpn: "h2,h3", port: "443", ech: "AEr+DQ...", ipv4hint: "..."}.
 	Params map[string]string `yaml:"params"`
+}
+
+// DNS64 is RFC 6147 address synthesis on a dns listener: an AAAA query
+// for a name that has only an A record is answered with that IPv4 address
+// embedded in a prefix (RFC 6052) routed to a translator.
+//
+// The answer is one this resolver invented, which is why the address
+// policy sees the IPv4 address before it is embedded rather than the
+// synthesised address afterwards: 64:ff9b::7f00:1 is not inside
+// 127.0.0.0/8 and no prefix list would catch it, but it is 127.0.0.1 to
+// everything past the translator. A synthesised answer also carries no
+// AD bit, because there is nothing signed about it.
+type DNS64 struct {
+	// Prefix is the translation prefix. Default 64:ff9b::/96, the
+	// well-known prefix of RFC 6052; a network-specific prefix must be a
+	// /32, /40, /48, /56, /64 or /96, which are the only lengths with a
+	// defined place to put the address.
+	Prefix string `yaml:"prefix"`
+	// Clients are the networks this applies to; empty is every client of
+	// the listener. Name the IPv6-only networks: a dual-stack client
+	// handed a synthesised address reaches the service the long way
+	// round, through the translator, for no reason.
+	Clients []string `yaml:"clients"`
+	// TTL overrides the TTL of a synthesised record; 0 keeps the A
+	// record's own, which is what RFC 6147 prefers.
+	TTL int `yaml:"ttl"`
 }
 
 // DNSView is a client-scoped answer set on a dns listener: split

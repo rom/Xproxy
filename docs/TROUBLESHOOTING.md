@@ -1983,6 +1983,39 @@ serves; compare it with the `ech` value here. A mismatch means clients
 fall back to the public name on every attempt, which looks healthy and
 encrypts nothing.
 
+## DNS64
+
+**Nothing is synthesised.** Four things to check, in order. `clients` may
+not contain the client (it is empty by default, meaning every client;
+narrow it deliberately). The name may have a real AAAA record, which is
+answered with, never over. The name may not exist at all, which stays
+NXDOMAIN — synthesising over either would be this resolver inventing an
+answer. Or the A address is one `answer_policy` denies, which is the check
+working: see below.
+
+**A private address is not synthesised.** That is deliberate and it is the
+reason DNS64 is safe to have here. `64:ff9b::7f00:1` is not inside
+`127.0.0.0/8` and no prefix list would catch it, but it is `127.0.0.1` to
+everything past the translator — so the IPv4 address is screened before it
+is embedded. If the estate really does translate to private space, exempt
+the name with `answer_policy.allow_names` or carve the range out with
+`answer_policy.allow`.
+
+**Dual-stack clients are reaching services through the translator.** They
+are in `clients`. A client that has IPv4 does not need DNS64, and a
+synthesised address sends it the long way round for nothing. Name only the
+IPv6-only networks — an IPv4 network in that list is refused at load for
+the same reason.
+
+**A validating client rejects the answer.** It should: a synthesised answer
+is not signed and does not carry AD (RFC 6147 section 5.5). A client that
+validates for itself has to ask for A and do its own synthesis, which is
+what RFC 6147 expects of it.
+
+**`queries_synthesised` is far below the AAAA query count.** Most names
+have AAAA records of their own, which is the healthy case. Compare with the
+access log: a synthesised answer's `source` ends in `:dns64`.
+
 ## DNS views (split horizon)
 
 **A client gets the wrong view's answer.** The first view whose networks

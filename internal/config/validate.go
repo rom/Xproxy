@@ -4523,6 +4523,7 @@ func (v *validator) dnsDiscovery(p string, d *DNSListener) {
 func (v *validator) dnsRecords(p string, d *DNSListener) {
 	v.dnsRecordSet(p, d.Records)
 	v.dnsViews(p, d)
+	v.dns64(p+".dns64", d.DNS64)
 }
 
 func (v *validator) dnsRecordSet(p string, recs []DNSRecord) {
@@ -4593,6 +4594,43 @@ func (v *validator) dnsRecordSet(p string, recs []DNSRecord) {
 func (v *validator) dnsRecordNoSVCB(rp string, r *DNSRecord) {
 	if r.Target != "" || len(r.Params) > 0 || r.Priority != 0 {
 		v.errf("%s: target, params and priority belong to svcb and https records", rp)
+	}
+}
+
+// dns64 checks the address synthesis section.
+func (v *validator) dns64(p string, d *DNS64) {
+	if d == nil {
+		return
+	}
+	prefix := d.Prefix
+	if prefix == "" {
+		prefix = dns.WellKnownPrefix
+	}
+	switch pfx, err := netip.ParsePrefix(prefix); {
+	case err != nil:
+		v.errf("%s.prefix: %q is not a CIDR", p, d.Prefix)
+	case !pfx.Addr().Is6() || pfx.Addr().Is4In6():
+		v.errf("%s.prefix: %q is not an IPv6 prefix", p, prefix)
+	case !dns.PrefixLengthOK(pfx.Bits()):
+		v.errf("%s.prefix: /%d has no defined place for the address; RFC 6052 defines /32, /40, /48, /56, /64 and /96", p, pfx.Bits())
+	case pfx.Masked().Addr() != pfx.Addr():
+		v.errf("%s.prefix: %q has bits set past its length", p, prefix)
+	}
+	for i, c := range d.Clients {
+		pfx, err := netip.ParsePrefix(c)
+		if err != nil {
+			v.errf("%s.clients[%d]: %q is not a CIDR", p, i, c)
+			continue
+		}
+		// A synthesised answer is for a client that has no IPv4 at all;
+		// handing one to an IPv4 client would send it through a
+		// translator to reach an address it could have dialled directly.
+		if pfx.Addr().Unmap().Is4() {
+			v.errf("%s.clients[%d]: %q is an IPv4 network, and DNS64 answers clients that have no IPv4", p, i, c)
+		}
+	}
+	if d.TTL < 0 || d.TTL > 604800 {
+		v.errf("%s.ttl: must be between 0 and 604800", p)
 	}
 }
 

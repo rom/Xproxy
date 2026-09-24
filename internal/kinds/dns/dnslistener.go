@@ -209,6 +209,20 @@ func dnsPolicy(cfg *config.DNSListener) (*wire.Policy, error) {
 		}
 		p.Views = append(p.Views, v)
 	}
+	if d := cfg.DNS64; d != nil {
+		prefix := d.Prefix
+		if prefix == "" {
+			prefix = wire.WellKnownPrefix
+		}
+		pfx, err := netip.ParsePrefix(prefix)
+		if err != nil {
+			return nil, fmt.Errorf("dns64.prefix: %w", err)
+		}
+		p.DNS64 = &wire.DNS64{Prefix: pfx.Masked(), Clients: netutil.ParsePrefixes(d.Clients)}
+		if d.TTL > 0 {
+			p.DNS64.TTL = uint32(d.TTL) //nolint:gosec // validated range
+		}
+	}
 	if rl := cfg.RateLimit; rl != nil {
 		p.RateLimit = limits.NewKeyedLimiter(rl.QPS, rl.Burst, 65536)
 	}
