@@ -127,12 +127,14 @@ ejection; active health checks run as configured on the upstream — for a
 pool with no HTTP behind it, `health_check.type: tcp` is the probe that
 fits.
 
-**A server that speaks first is relayed.** The listener waits about a
-second for a ClientHello before deciding there is not one, so SSH, SMTP,
-FTP, MySQL and PostgreSQL — all of which greet the client before it says
-anything — reach their client rather than deadlocking against a peek
-that is waiting for bytes the client is waiting to be greeted before
-sending. Every
+**A server that speaks first is relayed on a default-only listener.** When
+no SNI routes are configured, the listener waits about a second for a
+ClientHello before selecting the default, so SSH, SMTP, FTP, MySQL and
+PostgreSQL — all of which greet the client before it says anything —
+reach their client rather than deadlocking against a peek that is waiting
+for bytes the client is waiting to be greeted before sending. A listener
+with SNI routes waits for the ClientHello hard timeout instead: initial
+silence cannot select the default and bypass those routes. Every
 connection writes one `tcp` line to the access log with the name,
 upstream, endpoint, bytes and duration (`proto: quic` for QUIC flows).
 Counters: `tcp_connections`, `tcp_rejected`, `tcp_errors`,

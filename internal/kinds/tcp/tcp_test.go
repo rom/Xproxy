@@ -117,6 +117,29 @@ upstreams:
 	if body, err := fetch(addr, "b.test"); err != nil || body != "b.test:/x" {
 		t.Fatalf("b.test: %q %v", body, err)
 	}
+	// Initial silence must not select the default before an SNI route can
+	// be inspected. This models a client that delays its ordinary hello
+	// beyond the server-first settle timeout.
+	delayed, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1500 * time.Millisecond)
+	tlsDelayed := tls.Client(delayed, &tls.Config{ServerName: "a.test", RootCAs: pool, MinVersion: tls.VersionTLS12})
+	_ = tlsDelayed.SetDeadline(time.Now().Add(5 * time.Second))
+	if err := tlsDelayed.Handshake(); err != nil {
+		_ = delayed.Close()
+		t.Fatalf("delayed a.test ClientHello: %v", err)
+	}
+	if _, err := io.WriteString(tlsDelayed, "GET /delayed HTTP/1.0\r\nHost: a.test\r\n\r\n"); err != nil {
+		_ = tlsDelayed.Close()
+		t.Fatal(err)
+	}
+	response, err := io.ReadAll(tlsDelayed)
+	_ = tlsDelayed.Close()
+	if err != nil || !strings.HasSuffix(string(response), "a.test:/delayed") {
+		t.Fatalf("delayed a.test: %q %v", response, err)
+	}
 	if body, err := fetch(addr, "www.a.test"); err == nil || body != "" {
 		// The wildcard routes to a, whose certificate is for a.test only:
 		// the client refuses it, proving the TLS session is end to end.
@@ -143,7 +166,7 @@ upstreams:
 		t.Fatalf("strict a.test: %q %v", body, err)
 	}
 	st := s.Stats()
-	if st.TCPConnections < 5 || st.TCPRejected != 1 || st.TCPBytesIn == 0 || st.TCPBytesOut == 0 {
+	if st.TCPConnections < 6 || st.TCPRejected != 1 || st.TCPBytesIn == 0 || st.TCPBytesOut == 0 {
 		t.Fatalf("stats %+v", st)
 	}
 	if up := s.Upstreams()["a"]; up[0].Requests < 2 {
