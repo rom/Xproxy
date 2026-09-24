@@ -98,6 +98,35 @@ func TestGuest(t *testing.T) {
 	}
 }
 
+func TestAllocatorExhaustionFailsClosed(t *testing.T) {
+	mod := writeModule(t, 1, false)
+	f, err := filtertest.Build("wasm", "policy", filter.Options{"module": mod, "timeout": "200ms", "instances": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = f.(filter.Closer).Close() })
+
+	for i := 0; i < 2; i++ {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.Header.Set("X-Block", strings.Repeat("x", 60_000))
+		res := filtertest.Run(f, r, nil)
+		if !res.Request.Deny {
+			t.Fatalf("request %d allowed after allocator exhaustion: %+v", i+1, res.Request)
+		}
+		if i == 0 && res.Request.Status != 451 {
+			t.Fatalf("first request did not reach guest policy: %+v", res.Request)
+		}
+		if i == 1 && (res.Request.Status != 500 || res.Request.Detail != "guest_error") {
+			t.Fatalf("allocator exhaustion did not fail closed: %+v", res.Request)
+		}
+	}
+
+	st := f.(*wasmFilter).Status()
+	if st.Errors != 1 || st.Pooled != 0 {
+		t.Fatalf("exhausted instance was not discarded: %+v", st)
+	}
+}
+
 func TestLoadErrors(t *testing.T) {
 	dir := t.TempDir()
 	cases := []struct {

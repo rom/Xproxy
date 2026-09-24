@@ -157,6 +157,7 @@ type call struct {
 	verdict filter.Verdict
 	attrs   []any
 	ops     int
+	hostErr error // failure while copying a host value into guest memory
 	// bodies are buffered on first access, once per phase.
 	reqBody  *bodyState
 	respBody *bodyState
@@ -344,19 +345,22 @@ func readString(m api.Module, ptr, n uint32) (string, bool) {
 // writeString allocates in the guest and writes s; the result packs the
 // pointer in the high 32 bits and the length in the low 32 bits, 0 for
 // an absent value.
-func writeString(ctx context.Context, m api.Module, s string) uint64 {
+func writeString(ctx context.Context, m api.Module, s string) (uint64, error) {
 	if s == "" || len(s) > maxString {
-		return 0
+		return 0, nil
 	}
 	res, err := m.ExportedFunction("xproxy_alloc").Call(ctx, uint64(len(s)))
-	if err != nil || len(res) != 1 {
-		return 0
+	if err != nil {
+		return 0, fmt.Errorf("xproxy_alloc: %w", err)
+	}
+	if len(res) != 1 {
+		return 0, errors.New("xproxy_alloc returned no result")
 	}
 	ptr := uint32(res[0]) //nolint:gosec // wasm32 pointer
 	if !m.Memory().Write(ptr, []byte(s)) {
-		return 0
+		return 0, errors.New("xproxy_alloc returned an out-of-bounds region")
 	}
-	return uint64(ptr)<<32 | uint64(len(s))
+	return uint64(ptr)<<32 | uint64(len(s)), nil
 }
 
 // Kinds of get.
@@ -426,13 +430,17 @@ func hostGet(ctx context.Context, m api.Module, kind, ptr, n uint32) uint64 {
 	case getRequestBody:
 		if c.f.cfg.bodyLimit > 0 {
 			if b := c.requestBody(); !b.tooLarge {
-				return writeBytes(ctx, m, b.data)
+				v, err := writeBytes(ctx, m, b.data)
+				c.recordHostError(err)
+				return v
 			}
 		}
 	case getResponseBody:
 		if c.f.cfg.bodyLimit > 0 && c.resp != nil {
 			if b := c.responseBody(); !b.tooLarge {
-				return writeBytes(ctx, m, b.data)
+				v, err := writeBytes(ctx, m, b.data)
+				c.recordHostError(err)
+				return v
 			}
 		}
 	case getBodyState:
@@ -445,24 +453,35 @@ func hostGet(ctx context.Context, m api.Module, kind, ptr, n uint32) uint64 {
 			v = "ok"
 		}
 	}
-	return writeString(ctx, m, v)
+	result, err := writeString(ctx, m, v)
+	c.recordHostError(err)
+	return result
+}
+
+func (c *call) recordHostError(err error) {
+	if err != nil && c.hostErr == nil {
+		c.hostErr = err
+	}
 }
 
 // writeBytes is writeString for a body, bounded by the body limit
 // instead of the string bound.
-func writeBytes(ctx context.Context, m api.Module, b []byte) uint64 {
+func writeBytes(ctx context.Context, m api.Module, b []byte) (uint64, error) {
 	if len(b) == 0 {
-		return 0
+		return 0, nil
 	}
 	res, err := m.ExportedFunction("xproxy_alloc").Call(ctx, uint64(len(b)))
-	if err != nil || len(res) != 1 {
-		return 0
+	if err != nil {
+		return 0, fmt.Errorf("xproxy_alloc: %w", err)
+	}
+	if len(res) != 1 {
+		return 0, errors.New("xproxy_alloc returned no result")
 	}
 	ptr := uint32(res[0]) //nolint:gosec // wasm32 pointer
 	if !m.Memory().Write(ptr, b) {
-		return 0
+		return 0, errors.New("xproxy_alloc returned an out-of-bounds region")
 	}
-	return uint64(ptr)<<32 | uint64(len(b))
+	return uint64(ptr)<<32 | uint64(len(b)), nil
 }
 
 // hostSetBody replaces the request (target 0) or response (target 1)
@@ -645,6 +664,7 @@ type instance struct {
 // and a deadline; a trap, a timeout or a bad result is an error.
 func (f *wasmFilter) run(c *call, export string, args ...uint64) (int32, error) {
 	f.Calls.Add(1)
+	c.hostErr = nil
 	ctx, cancel := context.WithTimeout(context.WithValue(context.Background(), callKey{}, c), f.cfg.timeout)
 	defer cancel()
 	// instances is a concurrency bound, not only a pool size: a request
@@ -668,6 +688,9 @@ func (f *wasmFilter) run(c *call, export string, args ...uint64) (int32, error) 
 		return 0, fmt.Errorf("module does not export %s", export)
 	}
 	res, err := fn.Call(ctx, args...)
+	if err == nil && c.hostErr != nil {
+		err = fmt.Errorf("host-to-guest copy failed: %w", c.hostErr)
+	}
 	if err != nil {
 		f.release(context.Background(), m, false) // a trapped instance is not reused
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -677,11 +700,12 @@ func (f *wasmFilter) run(c *call, export string, args ...uint64) (int32, error) 
 		}
 		return 0, err
 	}
-	f.release(ctx, m, true)
 	if len(res) != 1 {
+		f.release(context.Background(), m, false)
 		f.Errors.Add(1)
 		return 0, errors.New("guest returned no result")
 	}
+	f.release(ctx, m, true)
 	return int32(res[0]), nil //nolint:gosec // guest value
 }
 
