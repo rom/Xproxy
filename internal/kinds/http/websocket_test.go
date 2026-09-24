@@ -308,6 +308,43 @@ func TestWebSocketGuardCloses(t *testing.T) {
 	}
 }
 
+// TestWebSocketGuardDoesNotForwardDeniedMessage verifies enforcement at the
+// protected side of the proxy. Checking only that the client sees a close can
+// miss a rejected Read returning bytes that io.Copy has already delivered.
+func TestWebSocketGuardDoesNotForwardDeniedMessage(t *testing.T) {
+	received := make(chan string, 1)
+	origin := wsEcho(t, func(_ byte, payload []byte) (byte, []byte, bool) {
+		received <- string(payload)
+		return wsOpText, payload, false
+	})
+	s := wsProxy(t, origin.URL, "    websocket_guard: {deny_patterns: [\"DROP TABLE\"]}")
+	c, br, code := wsDial(t, s.Addrs()["main"], "/chat", "")
+	if code != http.StatusSwitchingProtocols {
+		t.Fatalf("upgrade status %d", code)
+	}
+	defer func() { _ = c.Close() }()
+
+	// Split the denied message across frames and writes. Neither the first
+	// fragment nor the fragment that completes the denied pattern may escape.
+	first := wsFrame(wsOpText, []byte("DROP "), true)
+	first[0] &^= 0x80
+	if _, err := c.Write(first); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Write(wsFrame(wsOpContinuation, []byte("TABLE users"), true)); err != nil {
+		t.Fatal(err)
+	}
+	_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if op, _, err := wsRead(br); err == nil && op != wsOpClose {
+		t.Fatalf("guard returned opcode %d instead of closing", op)
+	}
+	select {
+	case payload := <-received:
+		t.Fatalf("origin received denied client payload %q", payload)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 // TestWebSocketGuardServerSide: the origin is inspected too. A
 // compromised or buggy application must not be able to push frames the
 // policy refuses at the client.
