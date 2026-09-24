@@ -22,6 +22,7 @@ import (
 	"github.com/rom/xproxy/internal/fleet"
 	"github.com/rom/xproxy/internal/icap"
 	"github.com/rom/xproxy/internal/proxy"
+	"github.com/rom/xproxy/internal/sessions"
 	"github.com/rom/xproxy/internal/upstream"
 )
 
@@ -262,6 +263,25 @@ func (c *Client) Series(since time.Duration, limit int) (*SeriesResponse, error)
 		q += "&limit=" + strconv.Itoa(limit)
 	}
 	return &out, c.do("GET", q, &out)
+}
+
+// Sessions lists the sessions this daemon is serving now.
+func (c *Client) Sessions() ([]sessions.View, error) {
+	var out []sessions.View
+	return out, c.do("GET", "/v1/sessions", &out)
+}
+
+// KillSessions closes one session by id, or every session matching a
+// filter, and returns what it closed.
+func (c *Client) KillSessions(id, kind, listener, user string) ([]sessions.View, error) {
+	q := url.Values{}
+	for k, v := range map[string]string{"id": id, "kind": kind, "listener": listener, "user": user} {
+		if v != "" {
+			q.Set(k, v)
+		}
+	}
+	var out []sessions.View
+	return out, c.doBody("DELETE", "/v1/sessions?"+q.Encode(), nil, &out)
 }
 
 // Bans lists active bans.

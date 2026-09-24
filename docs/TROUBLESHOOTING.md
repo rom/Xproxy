@@ -232,6 +232,7 @@ do not know where to look, start at the top.
 | Which certificate is served for a name | `xproxyctl tls` |
 | Whether a managed certificate is stuck | `xproxyctl acme` |
 | Who is banned | `xproxyctl bans` |
+| Who is on the estate right now, and getting them off | `xproxyctl sessions`, `xproxyctl sessions -kill ID` |
 | Which keys are consuming a rate limit | `xproxyctl quotas -top 20` |
 | Which WAF rules fire | `xproxyctl waf -top 20` |
 | Which filters are configured and what they deny | `xproxyctl filters` |
@@ -3447,6 +3448,59 @@ before closing the client's channel — a lost exit status or a lost
 reply to the `exec` itself looks to the client like a crash. One such
 race was fixed in 1.4; if you see it again, collect the access line and
 the target's own log.
+
+## Live sessions
+
+**`xproxyctl sessions` is empty although somebody is connected.** Only
+the kinds that hold a session register one: `ssh` (with its `sftp`
+channels), `telnet`, `vnc`, `rdp`, `ftp` and the Modbus device queues. An
+HTTP request, a DNS query, a syslog message or an NTP exchange is not a
+session and never appears — those are counted, logged and, for HTTP,
+visible per route. Check also that you are asking the right daemon:
+`xproxyctl -socket /run/xgate/mgmt.sock sessions` is the bastion,
+`/run/xrelay/mgmt.sock` the relay.
+
+**A session is listed with no login and no target.** It has not got that
+far. A session is registered before its handshake finishes on purpose,
+so a client that opened a connection and then stopped — a stalled TLS
+handshake, a client waiting on a second factor, a scanner that connects
+and says nothing — is visible and can be closed. The login appears when
+authentication succeeds and the target when it is dialled.
+
+**A session stays in the list after `-kill`.** That is the design: the
+gateway serving it removes the entry when its own goroutine notices the
+socket close, so a session still draining reads as still there rather
+than as gone. It should disappear within a moment. If it does not, the
+serving goroutine is blocked on the *target* rather than the client —
+look at the target's own state, and at `xproxyctl stats` for that kind's
+counters.
+
+**`-kill` says the session is not there, right after listing it.** Two
+causes, both honest. The session ended between the two commands, or it
+was already closed by an earlier `-kill` (or by a filter that matched
+it): a session already closing is not closed twice, and the command says
+so rather than reporting a closure the gateway never made.
+
+**`-kill-matching` refuses to run.** It needs at least one of `-kind`,
+`-listener` or `-user`. A command that drops every session in the estate
+is not one to arrive at by forgetting an argument; name the set you mean.
+
+**Who closed what.** Every closure is in the audit stream with the
+session's identifier, the kind, the listener, the client, the login, the
+target and how long it had been up, together with the kernel-verified
+identity of the caller that asked:
+
+```sh
+xproxyctl tail audit | jq -c 'select(.action=="session_kill")'
+```
+
+**The totals.** `xproxyctl status` carries `sessions_live`,
+`sessions_opened`, `sessions_closed` and `sessions_killed`; Prometheus
+has `xproxy_sessions_live`, `xproxy_sessions_total` and
+`xproxy_sessions_closed_total{by="operator"}`. `sessions_refused` above
+zero means the bound (65536 live sessions) was reached —
+a session is still served when it cannot be listed, because refusing to
+serve because of a full table would be the table deciding policy.
 
 ## Second factor (MFA)
 

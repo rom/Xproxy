@@ -27,6 +27,7 @@ import (
 	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/safe"
 	"github.com/rom/xproxy/internal/sessionrec"
+	"github.com/rom/xproxy/internal/sessions"
 	wire "github.com/rom/xproxy/internal/telnet"
 	"github.com/rom/xproxy/internal/textsafe"
 	"github.com/rom/xproxy/internal/upstream"
@@ -186,6 +187,7 @@ type session struct {
 	// the proxy does not read it.
 	user string
 	rec  *sessionrec.Recording
+	live *sessions.Session
 	pool *upstream.Pool
 	ep   *upstream.Endpoint
 	// cols and rows are the last window size the client announced,
@@ -216,6 +218,15 @@ func (t *server) handle(client net.Conn) {
 		_ = client.Close()
 		return
 	}
+
+	// Listed from here, before the handshake: a session stuck in one is a
+	// session an operator wants to see and be able to close. Closing the
+	// client's socket is what ends it; the kind closes the target's leg in
+	// its own deferred work.
+	se.live = s.Sessions().Register(sessions.Info{
+		Kind: "telnet", Listener: t.cfg.Name, Client: client.RemoteAddr().String(),
+	}, func() { _ = client.Close() })
+	defer se.live.Done()
 	if t.tlsCfg != nil {
 		tc := tls.Server(client, t.tlsCfg)
 		if err := tc.HandshakeContext(context.Background()); err != nil {
@@ -294,6 +305,7 @@ func (se *session) connect() error {
 			}
 		}
 		se.up, se.ep, se.target = conn, ep, ep.Address
+		se.live.Annotate(se.user, se.target, "")
 		return nil
 	}
 	if lastErr == nil {

@@ -20,6 +20,7 @@
 //	reload-certs   re-read TLS certificate files
 //	reopen-logs    reopen log files after rotation
 //	tail STREAM    follow a log stream (access, error, security, audit)
+//	sessions       list the sessions being served now (-kill ID, -kill-matching)
 //	bans           list active bans
 //	ban TARGET     ban an address or CIDR (-duration 1h -reason text)
 //	unban TARGET   remove a ban
@@ -72,6 +73,7 @@ import (
 	"github.com/rom/xproxy/internal/sandbox"
 	"github.com/rom/xproxy/internal/secret"
 	"github.com/rom/xproxy/internal/termsafe"
+	"github.com/rom/xproxy/internal/textsafe"
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/tui"
 	"github.com/rom/xproxy/internal/upstream"
@@ -1251,6 +1253,57 @@ func run(args []string, out, errOut io.Writer) int {
 			}
 			_ = tw.Flush()
 		}
+		return 0
+	case "sessions":
+		// The sessions a daemon is serving now, and the one operation an
+		// operator needs on them. "session" is the recorded ones on
+		// disk; this is the live ones.
+		sf := flag.NewFlagSet("sessions", flag.ContinueOnError)
+		sf.SetOutput(errOut)
+		kill := sf.String("kill", "", "close the session with this id")
+		kind := sf.String("kind", "", "with -kill-matching, only this listener kind")
+		listener := sf.String("listener", "", "with -kill-matching, only this listener")
+		user := sf.String("user", "", "with -kill-matching, only this login")
+		killMatching := sf.Bool("kill-matching", false, "close every session the filters match")
+		if err := sf.Parse(fs.Args()[1:]); err != nil {
+			return 2
+		}
+		if *kill != "" || *killMatching {
+			if *killMatching && *kill == "" && *kind == "" && *listener == "" && *user == "" {
+				_, _ = fmt.Fprintln(errOut, "sessions: -kill-matching needs -kind, -listener or -user")
+				return 2
+			}
+			closed, err := c.KillSessions(*kill, *kind, *listener, *user)
+			if err != nil {
+				return fail(err)
+			}
+			if *asJSON {
+				return printJSON(out, closed)
+			}
+			for _, v := range closed {
+				_, _ = fmt.Fprintf(out, "closed %s: %s %s %s %s after %s\n", v.ID, v.Kind, v.Listener,
+					textsafe.Clip64(v.User), v.Client, time.Duration(v.DurationMS)*time.Millisecond)
+			}
+			if len(closed) == 0 {
+				_, _ = fmt.Fprintln(out, "no session matched")
+			}
+			return 0
+		}
+		live, err := c.Sessions()
+		if err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			return printJSON(out, live)
+		}
+		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, "ID\tKIND\tLISTENER\tCLIENT\tUSER\tTARGET\tDETAIL\tFOR")
+		for _, v := range live {
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", v.ID, v.Kind, v.Listener,
+				v.Client, textsafe.Clip64(v.User), textsafe.Clip64(v.Target), textsafe.Clip64(v.Detail),
+				(time.Duration(v.DurationMS) * time.Millisecond).Round(time.Second))
+		}
+		_ = tw.Flush()
 		return 0
 	case "bans":
 		es, err := c.Bans()

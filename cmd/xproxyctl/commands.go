@@ -53,6 +53,7 @@ var commandTable = []command{
 	{name: "cache", args: "[purge [HOST [PATH-PREFIX]]]", summary: "Response cache counters; purge removes entries", words: []string{"purge"}},
 	{name: "honeypot", args: "[forget IP]", summary: "Clients marked by honeypot routes", words: []string{"forget"}},
 	{name: "patches", summary: "Virtual patches with state, hits and expiry"},
+	{name: "sessions", args: "[-kill ID] [-kill-matching -kind K -listener L -user U]", summary: "List the sessions this daemon is serving now, and close one or a set of them", flags: []string{"-kill", "-kill-matching", "-kind", "-listener", "-user"}},
 	{name: "session", args: "list DIR | show [-safe] [-input] FILE | play [-speed N] [-plain] FILE", summary: "Read a recorded gate session back, with the escape sequences that reach outside the window taken out", words: []string{"list", "show", "play"}, flags: []string{"-safe", "-input", "-speed", "-plain"}, files: true},
 	{name: "capture", args: "[status|start [-duration D]|stop]", summary: "Packet capture of proxied exchanges as pcapng", words: []string{"status", "start", "stop"}, flags: []string{"-duration"}},
 	{name: "api", args: "[all|shadow|zombie|versions|documented|undocumented] [-top N] [-openapi [-title T]]", summary: "API inventory discovered from traffic, with shadow, zombie and superseded endpoints, or an OpenAPI skeleton of a view", words: []string{"all", "shadow", "zombie", "versions", "documented", "undocumented"}, flags: []string{"-top", "-openapi", "-title"}},

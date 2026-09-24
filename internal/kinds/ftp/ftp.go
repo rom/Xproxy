@@ -23,6 +23,7 @@ import (
 	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/safe"
 	"github.com/rom/xproxy/internal/sessionrec"
+	"github.com/rom/xproxy/internal/sessions"
 	"github.com/rom/xproxy/internal/sftp"
 	"github.com/rom/xproxy/internal/streamscan"
 	"github.com/rom/xproxy/internal/textsafe"
@@ -306,7 +307,8 @@ type session struct {
 	// policy is the session's, with {user} resolved.
 	policy *ftpPolicy
 	// rec is this session's recording, when one is configured.
-	rec *sessionrec.Recording
+	rec  *sessionrec.Recording
+	live *sessions.Session
 	// mfa is where the second factor has got to.
 	mfa mfaState
 	// pending is a code taken off a PASS argument, waiting for the
@@ -355,6 +357,15 @@ func (t *server) handle(client net.Conn) {
 		_ = client.Close()
 		return
 	}
+
+	// Listed from here, before the handshake: a session stuck in one is a
+	// session an operator wants to see and be able to close. Closing the
+	// client's socket is what ends it; the kind closes the target's leg in
+	// its own deferred work.
+	se.live = s.Sessions().Register(sessions.Info{
+		Kind: "ftp", Listener: t.cfg.Name, Client: client.RemoteAddr().String(),
+	}, func() { _ = client.Close() })
+	defer se.live.Done()
 	if t.f.SessionTimeout > 0 {
 		timer := time.AfterFunc(t.f.SessionTimeout.D(), func() { _ = client.Close() })
 		defer timer.Stop()
@@ -470,6 +481,7 @@ func (se *session) connect() error {
 			conn = tc
 		}
 		se.up, se.ep, se.target = conn, ep, ep.Address
+		se.live.Annotate(se.user, se.target, "")
 		se.ur = wire.NewReader(bufio.NewReaderSize(conn, t.f.MaxCommandLine+2), t.f.MaxCommandLine)
 		se.uw = bufio.NewWriter(conn)
 		return nil
@@ -750,6 +762,7 @@ func (se *session) follow(c wire.Command, rep wire.Reply) {
 	switch c.Verb {
 	case "USER":
 		se.user = c.Arg
+		se.live.Annotate(c.Arg, "", "")
 	case "PASS", "ACCT":
 		if rep.Code >= 200 && rep.Code < 300 {
 			se.authed = true

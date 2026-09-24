@@ -170,6 +170,11 @@ T}	T{
 Virtual patches with state (active,\: disabled,\: expired),\: action,\: hits,\: last hit and expiry
 T}
 T{
+\fBsessions\fR [\fB\-\:kill\fR \fIID\fR] [\fB\-\:kill\-\:matching\fR \fB\-\:kind\fR \fIK\fR \fB\-\:listener\fR \fIL\fR \fB\-\:user\fR \fIU\fR]
+T}	T{
+The sessions the daemon is serving now \[u2014] SSH,\: SFTP,\: telnet,\: VNC,\: RDP,\: FTP and the Modbus device queues \[u2014] oldest first: the identifier,\: the kind,\: the listener,\: where the client came from,\: the login,\: the target it reached,\: one detail the kind chose (the desktop\(aqs name,\: the unit identifier,\: the subsystem) and how long it has been up. \fB\-\:kill\fR \fIID\fR closes one;\: \fB\-\:kill\-\:matching\fR closes every session matching the \fB\-\:kind\fR,\: \fB\-\:listener\fR and \fB\-\:user\fR given,\: and refuses to run with none of them,\: so a filter is never accidentally everything. A session is registered before its handshake finishes,\: so one stuck in a handshake is listed and can be closed. Every closure is written to the audit log with who asked. The names,\: logins and details came off the network and are clipped and filtered before they are printed. This is the live table;\: \fBsession\fR (singular) reads recordings back from disk
+T}
+T{
 \fBsession\fR \fBlist\fR \fIDIR\fR |\: \fBshow\fR [\fB\-\:safe\fR] [\fB\-\:input\fR] \fIFILE\fR |\: \fBplay\fR [\fB\-\:speed\fR \fIN\fR] [\fB\-\:plain\fR] \fIFILE\fR
 T}	T{
 Read a recorded gate session back. \fBlist\fR names the recordings in a directory with their size,\: start,\: dimensions and title;\: \fBshow\fR prints what the session showed,\: and \fBplay\fR replays it with its timing. The escape sequences that reach outside the window a replay is drawn in are never forwarded: a recording is the bytes a session sent,\: and a terminal is an interpreter of exactly those bytes,\: so writing one out unfiltered lets a recorded session set the reviewer\(aqs clipboard (OSC 52),\: retitle their window,\: or ask for a device report \[u2014] which the terminal answers on its own input,\: and a shell reads as a command line. \fBshow\fR keeps the text and drops every sequence;\: \fB\-\:safe\fR keeps the colours and cursor movement and writes the rest out inert;\: \fBplay\fR is \fB\-\:safe\fR by default and \fB\-\:plain\fR is the reading view. The file itself is never rewritten

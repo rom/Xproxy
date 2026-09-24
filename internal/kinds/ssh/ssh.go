@@ -24,6 +24,7 @@ import (
 	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/safe"
 	"github.com/rom/xproxy/internal/sessionrec"
+	"github.com/rom/xproxy/internal/sessions"
 	"github.com/rom/xproxy/internal/textsafe"
 	"github.com/rom/xproxy/internal/upstream"
 )
@@ -480,6 +481,7 @@ type session struct {
 	user   string
 	auth   string
 	target string
+	live   *sessions.Session
 	// policy is the listener's, or the one the matched principal
 	// refined it to. principal names that entry for the log.
 	policy    *sshPolicy
@@ -514,6 +516,14 @@ func (t *server) handle(raw net.Conn) {
 		t.log(se, start, "client_not_allowed")
 		return
 	}
+	// Listed from here, before the handshake: a connection stuck in one,
+	// or one whose authentication never finishes, is exactly what an
+	// operator wants to see and be able to close. Closing the accepted
+	// socket ends it, whatever stage it reached.
+	se.live = s.Sessions().Register(sessions.Info{
+		Kind: "ssh", Listener: t.cfg.Name, Client: raw.RemoteAddr().String(),
+	}, func() { _ = raw.Close() })
+	defer se.live.Done()
 	// The handshake and authentication share one deadline. Once the
 	// session is up the idle timeout takes over, applied by the
 	// connection wrapper below.
@@ -528,6 +538,7 @@ func (t *server) handle(raw net.Conn) {
 	se.sconn = sconn
 	se.user = sconn.User()
 	se.policy = t.base
+	se.live.Annotate(se.user, "", "")
 	if sconn.Permissions != nil {
 		se.auth = sconn.Permissions.Extensions["auth"]
 		se.principal = sconn.Permissions.Extensions["principal"]
@@ -653,6 +664,7 @@ func (se *session) connect() error {
 		pool.End(e, false, 0)
 		se.client = cssh.NewClient(nc, nchans, nreqs)
 		se.target = e.Address
+		se.live.Annotate("", se.target, se.principal)
 		return nil
 	}
 	if lastErr == nil {

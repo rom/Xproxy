@@ -29,6 +29,7 @@ import (
 	"github.com/rom/xproxy/internal/metrics"
 	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/sandbox"
+	"github.com/rom/xproxy/internal/sessions"
 	"github.com/rom/xproxy/internal/tracing"
 	"github.com/rom/xproxy/internal/unixsock"
 	"github.com/rom/xproxy/internal/version"
@@ -174,6 +175,12 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 	mux.HandleFunc("GET /v1/bans", s.listBans)
 	mux.HandleFunc("POST /v1/bans", s.addBan)
 	mux.HandleFunc("DELETE /v1/bans", s.removeBan)
+	mux.HandleFunc("GET /v1/sessions", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, 200, s.proxy.Sessions().List())
+	})
+	// Closing a session is an operation on the estate, so it is audited
+	// like a ban: who asked, which session, and what it was.
+	mux.HandleFunc("DELETE /v1/sessions", s.killSession)
 	mux.HandleFunc("GET /v1/cluster", s.clusterStatus)
 	mux.HandleFunc("GET /v1/acme", func(w http.ResponseWriter, _ *http.Request) {
 		if s.proxy.ACME() == nil {
@@ -567,6 +574,40 @@ type FiltersView struct {
 type FilterKind struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
+}
+
+// killSession closes one live session, or every session matching a
+// filter. A request that names nothing is refused rather than read as
+// "all of them": an operator who meant every session says so with a
+// filter that matches it.
+func (s *Server) killSession(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	id, kind, listener, user := q.Get("id"), q.Get("kind"), q.Get("listener"), q.Get("user")
+	if id == "" && kind == "" && listener == "" && user == "" {
+		writeJSON(w, 400, result{Error: "name a session with id, or a filter with kind, listener or user"})
+		return
+	}
+	table := s.proxy.Sessions()
+	var closed []sessions.View
+	if id != "" {
+		v, ok := table.Kill(id)
+		if !ok {
+			writeJSON(w, 404, result{Error: "no live session with that id"})
+			return
+		}
+		closed = []sessions.View{v}
+	} else {
+		closed = table.KillWhere(func(v sessions.View) bool {
+			return (kind == "" || v.Kind == kind) &&
+				(listener == "" || v.Listener == listener) &&
+				(user == "" || v.User == user)
+		})
+	}
+	for _, v := range closed {
+		s.audit(r, "session_kill", "session_id", v.ID, "kind", v.Kind, "listener", v.Listener,
+			"client", v.Client, "user", v.User, "target", v.Target, "duration_ms", v.DurationMS)
+	}
+	writeJSON(w, 200, closed)
 }
 
 // BanRequest is the body of POST /v1/bans.

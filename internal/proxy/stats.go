@@ -592,6 +592,11 @@ type Snapshot struct {
 	ForwardBytesIn         uint64             `json:"forward_bytes_in"`
 	ForwardBytesOut        uint64             `json:"forward_bytes_out"`
 	WAFDetected            uint64             `json:"waf_detected"`
+	SessionsLive           int                `json:"sessions_live"`
+	SessionsOpened         uint64             `json:"sessions_opened"`
+	SessionsClosed         uint64             `json:"sessions_closed"`
+	SessionsKilled         uint64             `json:"sessions_killed"`
+	SessionsRefused        uint64             `json:"sessions_refused"`
 	BansActive             int                `json:"bans_active"`
 	BansTotal              uint64             `json:"bans_total"`
 	ClusterPeers           int                `json:"cluster_peers"`

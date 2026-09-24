@@ -932,6 +932,7 @@ script:
 | Defence | `bans`, `ban`, `unban`, `waf`, `botscore`, `accounts`, `patches`, `honeypot`, `filters`, `api` |
 | Traffic | `drain`, `maintenance`, `cache`, `dns`, `ingress`, `icap`, `geoip` |
 | Identity | `mfa`, `apikey`, `htpasswd` |
+| Live sessions | `sessions` — who is on now across SSH, SFTP, telnet, VNC, RDP, FTP and the Modbus device queues, with the login, the target and how long; `-kill ID` closes one and `-kill-matching` closes a set by kind, listener or person (audited, and a filter that names nothing is refused rather than taken as everything) |
 | Records | `tail`, `session` (list, show, play), `capture` (start, stop, status), `reopen-logs` |
 | Views | `tui` — a full screen terminal view; the web GUI is `xproxy-admin`, with viewer and operator roles, validated configuration editing, graphs and live logs |
 | Recordings | `xproxy-replay` reads a session file and shows it: a terminal session replayed with its timing, a VNC one decoded into frames or one self-contained page, an RDP one as the timeline of what it did. It needs no daemon and opens no sockets |

@@ -26,6 +26,7 @@ import (
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/metrics"
 	"github.com/rom/xproxy/internal/safe"
+	"github.com/rom/xproxy/internal/sessions"
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/tracing"
 	"github.com/rom/xproxy/internal/upstream"
@@ -74,6 +75,9 @@ type Server struct {
 	// capture writes exchanges as pcapng, kept across generations so a
 	// recording survives a reload.
 	capture atomic.Pointer[capture.Capturer]
+	// live is the table of sessions this daemon is serving now, which
+	// every kind that holds one registers with.
+	live *sessions.Table
 	// tickets manages shared session ticket keys; nil without the section.
 	tickets        *tlsconf.Tickets
 	ticketMismatch bound.Notice
@@ -160,6 +164,7 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 		fingerprints: tlsconf.NewFingerprintTable(max(cfg.Server.Limits.MaxConnections, 1024)),
 		connLimiter:  limits.NewConnLimiter(cfg.Server.Limits.MaxConnections, cfg.Server.Limits.MaxConnectionsPerIP),
 		drains:       upstream.NewDrains(),
+		live:         sessions.New(),
 	}
 	// A contained panic is a bug in the proxy, not an event about the
 	// client, so it goes to the error log with its stack rather than to
@@ -342,6 +347,12 @@ func (s *Server) Stats() Snapshot {
 	if bl := s.bans.Load(); bl != nil {
 		snap.BansActive, snap.BansTotal = bl.Stats()
 	}
+	// The live sessions, so a status view says what the table says: how
+	// many are on now, and how many an operator has closed.
+	live := s.live.Status()
+	snap.SessionsLive, snap.SessionsOpened = live.Live, live.Opened
+	snap.SessionsClosed, snap.SessionsKilled = live.Closed, live.Killed
+	snap.SessionsRefused = live.Refused
 	if set := s.intel.Load(); set != nil {
 		snap.ThreatLists = set.Status()
 		snap.ThreatIntelReloads = set.Reloads.Load()
@@ -1143,6 +1154,10 @@ func (s *Server) reloadCapture(cfg *config.Config) error {
 // Capture returns the capturer, or nil when the configuration has no
 // capture section.
 func (s *Server) Capture() *capture.Capturer { return s.capture.Load() }
+
+// Sessions is the table of live sessions, for the kinds that register
+// and for the management plane that lists and closes them.
+func (s *Server) Sessions() *sessions.Table { return s.live }
 
 // CaptureStatus reports the capture state, with Enabled false when the
 // configuration has no capture section.

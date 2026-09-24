@@ -44,6 +44,7 @@ import (
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/safe"
+	"github.com/rom/xproxy/internal/sessions"
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/upstream"
 )
@@ -252,6 +253,7 @@ type session struct {
 	ip     netip.Addr
 	role   string
 	secure bool
+	live   *sessions.Session
 
 	// workers are the per-route device connections, opened on demand:
 	// one session may reach several devices when the routes send
@@ -312,6 +314,15 @@ func (t *server) handle(client net.Conn) {
 		t.log(se, start, "client_not_allowed")
 		return
 	}
+	// Listed from here: a Modbus session is a device's connection that
+	// lives for as long as the plant runs, so "who is connected and can
+	// you get them off" is the question an operator has during an
+	// incident. Closing the master's socket ends it; the per-device
+	// workers are stopped by the deferred work above.
+	se.live = s.Sessions().Register(sessions.Info{
+		Kind: "modbus", Listener: t.cfg.Name, Client: client.RemoteAddr().String(),
+	}, func() { _ = client.Close() })
+	defer se.live.Done()
 	if t.m.TLSMode == "implicit" || (t.tlsCfg != nil && t.m.TLSMode == "") {
 		tc := tls.Server(client, t.tlsCfg)
 		_ = tc.SetDeadline(time.Now().Add(10 * time.Second))
@@ -376,6 +387,7 @@ func (se *session) readRole(st tls.ConnectionState) string {
 		return "role_not_allowed"
 	}
 	se.role = role
+	se.live.Annotate(role, "", "")
 	return ""
 }
 

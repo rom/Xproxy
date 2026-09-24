@@ -30,6 +30,7 @@ import (
 	"github.com/rom/xproxy/internal/rdp"
 	"github.com/rom/xproxy/internal/safe"
 	"github.com/rom/xproxy/internal/sessionrec"
+	"github.com/rom/xproxy/internal/sessions"
 	"github.com/rom/xproxy/internal/textsafe"
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/upstream"
@@ -294,6 +295,7 @@ type session struct {
 	// ended is closed when either direction of the relay stops.
 	ended chan struct{}
 	rec   *sessionrec.Recording
+	live  *sessions.Session
 	pool  *upstream.Pool
 	ep    *upstream.Endpoint
 }
@@ -320,6 +322,15 @@ func (t *server) handle(client net.Conn) {
 		_ = client.Close()
 		return
 	}
+
+	// Listed from here, before the handshake: a session stuck in one is a
+	// session an operator wants to see and be able to close. Closing the
+	// client's socket is what ends it; the kind closes the target's leg in
+	// its own deferred work.
+	se.live = s.Sessions().Register(sessions.Info{
+		Kind: "rdp", Listener: t.cfg.Name, Client: client.RemoteAddr().String(),
+	}, func() { _ = client.Close() })
+	defer se.live.Done()
 	defer func() { _ = se.client.Close() }()
 	if t.v.SessionTimeout > 0 {
 		timer := time.AfterFunc(t.v.SessionTimeout.D(), func() { _ = se.client.Close() })
@@ -398,6 +409,7 @@ func (se *session) connect() error {
 			continue
 		}
 		se.up, se.ep, se.target = conn, ep, ep.Address
+		se.live.Annotate(se.user, se.target, "")
 		_ = conn.SetDeadline(time.Now().Add(t.v.HandshakeTimeout.D()))
 		return nil
 	}

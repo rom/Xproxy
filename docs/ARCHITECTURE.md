@@ -1345,6 +1345,8 @@ Endpoints:
 | POST | `/v1/reload-certs` | re-read certificates |
 | POST | `/v1/logs/reopen` | reopen log files |
 | GET | `/v1/bans`, POST `/v1/bans`, DELETE `/v1/bans?target=` | ban list |
+| GET | `/v1/sessions` | the sessions this daemon is serving now, oldest first: id, kind, listener, client, login, target, one detail the kind chose, and how long it has been up |
+| DELETE | `/v1/sessions` | close the session named by `id`, or every session matching `kind`, `listener` and `user`; a request naming none of them is refused rather than taken as "all", and every closure is audited |
 | GET | `/v1/mfa` | every listener that asks for a second factor: its kind, its enrolment file, and who is enrolled with the parameters, recovery codes left, failures and lockout this process remembers |
 | POST | `/v1/mfa/enrol` | enrol `user` on `listener`, optionally with `issuer`, `digits`, `period_seconds` and `algo`; answers with the secret, the `otpauth://` URI, that URI drawn as a QR code (a PNG `data:` URI) and the recovery codes, which exist only in that answer (audited) |
 | POST | `/v1/mfa/recovery` | replace a person's recovery codes and return the new ones (audited) |

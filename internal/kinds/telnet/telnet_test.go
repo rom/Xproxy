@@ -15,6 +15,7 @@ import (
 	"github.com/rom/xproxy/internal/mfa"
 	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/proxytest"
+	"github.com/rom/xproxy/internal/sessions"
 	wire "github.com/rom/xproxy/internal/telnet"
 )
 
@@ -350,5 +351,56 @@ func TestTheCodeIsNotEchoed(t *testing.T) {
 	// The proxy takes over echoing for the code line.
 	if !bytes.Contains([]byte(out), []byte{wire.IAC, wire.WILL, wire.OptEcho}) {
 		t.Errorf("the proxy did not take over echoing before the code: %v", []byte(out))
+	}
+}
+
+// A live session appears in the table with the target it reached, and an
+// operator closing it drops the client. This is the bastion operation
+// the table exists for, tested through a real session rather than the
+// table's own unit tests.
+func TestALiveSessionIsListedAndCanBeClosed(t *testing.T) {
+	s, addr, _ := gateway(t, "")
+	c := dial(t, addr)
+	c.readUntil("target ready")
+
+	var v sessions.View
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		live := s.Sessions().List()
+		if len(live) == 1 && live[0].Target != "" {
+			v = live[0]
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the session was not listed: %+v", live)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if v.Kind != "telnet" || v.Listener != "legacy" || v.Client == "" {
+		t.Fatalf("listed %+v", v)
+	}
+	if _, ok := s.Sessions().Kill(v.ID); !ok {
+		t.Fatal("the session was not there to close")
+	}
+	// The client's connection ends.
+	_ = c.c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	buf := make([]byte, 64)
+	for {
+		if _, err := c.c.Read(buf); err != nil {
+			break
+		}
+	}
+	// And the table forgets it once the serving goroutine notices.
+	for deadline = time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		if s.Sessions().Len() == 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if n := s.Sessions().Len(); n != 0 {
+		t.Errorf("%d sessions still listed after the session ended", n)
+	}
+	if st := s.Sessions().Status(); st.Killed != 1 || st.Opened != 1 || st.Closed != 1 {
+		t.Errorf("status %+v", st)
 	}
 }

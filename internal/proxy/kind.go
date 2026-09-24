@@ -20,6 +20,7 @@ import (
 	"github.com/rom/xproxy/internal/listener"
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/mfa"
+	"github.com/rom/xproxy/internal/sessions"
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/upstream"
 )
@@ -85,6 +86,11 @@ type Host interface {
 	// listener set, so the lookup is here rather than between the two
 	// kinds, which are not linked together in every daemon.
 	DNSServer(listener string) *dns.Server
+	// Sessions is the table of live sessions, which every kind that holds
+	// one for longer than a request registers with, so an operator can
+	// list them and close one. Never nil, so a kind writes no
+	// conditionals around it.
+	Sessions() *sessions.Table
 	// TakeRemote asks the cluster owner of a rate limit key to decide.
 	// decided is false without a cluster, without an owner or when the
 	// answer did not come in time, and the caller falls back to the

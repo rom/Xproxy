@@ -115,6 +115,7 @@ units put the other two.
 | `bans` | List active bans with expiry, source and count |
 | `ban TARGET` | Ban an address, CIDR or `ja4:<fingerprint>`; `-duration 1h`, `-reason text` |
 | `unban TARGET` | Remove a ban |
+| `sessions` | The sessions the daemon is serving now (ssh, sftp, telnet, vnc, rdp, ftp, modbus) with the client, login, target, one detail and how long; `-kill ID` closes one, `-kill-matching` with `-kind`, `-listener` or `-user` closes a set (audited) |
 | `cluster` | Peers, inbound connections and gossip counters |
 | `accounts` | Account guard state: endpoints with tracked keys, active blocks (`-top N` per endpoint), campaign state and the action counters |
 | `maintenance` [`on`\|`off`] | Show or set maintenance mode; on holds every request but the allowlist behind a 503 |
@@ -3421,6 +3422,62 @@ read is a stream you cannot log.
 a deployment robot, an on-call rota by certificate and everyone else,
 and a delivery account that can do nothing but read one directory over
 sftp.
+
+### Who is on now, and getting them off
+
+A recording answers what happened. The live table answers what is
+happening, which is the question an incident starts with:
+
+```sh
+xproxyctl sessions
+```
+
+```
+ID                KIND    LISTENER  CLIENT             USER     TARGET          DETAIL     FOR
+9f3c1e0a77b41d52  ssh     operators 10.4.2.9:51402     alice    db-1:22         shell      18m12s
+a1b7c4e590d2f631  rdp     desks     10.4.2.31:49771    contractor  ws-7:3389    desktop    2h04m
+c80d2f4a19e7b653  modbus  line-2    10.9.0.4:52210     engineer  plc-1:502      unit=2     41m03s
+```
+
+Every gateway that holds a session for longer than a request is in it:
+`ssh` (and its `sftp` channels), `telnet`, `vnc`, `rdp`, `ftp` and the
+Modbus device queues. A session is registered *before* its handshake
+finishes, so one stuck in a handshake — a client that opened a
+connection and never authenticated — is listed and can be closed, which
+is the case a table built from finished logins would miss.
+
+Closing one, and closing a set:
+
+```sh
+xproxyctl sessions -kill 9f3c1e0a77b41d52
+xproxyctl sessions -kill-matching -user contractor      # every session of one person
+xproxyctl sessions -kill-matching -listener desks       # every session of one listener
+xproxyctl sessions -kill-matching -kind rdp -user bob   # both, together
+```
+
+`-kill-matching` with no filter is refused rather than taken as
+*everything*: a command that drops every session in the estate is not
+one to arrive at by forgetting an argument. Each closure is written to
+the audit log with the peer that asked for it, the session's identifier,
+the login and the target, next to every other management action.
+
+The identifiers are random rather than sequential, so one seen in a log
+line an operator pasted into a ticket does not let anybody guess the
+others, and a counter does not leak how many sessions the daemon has
+served. What the table prints — the login, the target, the desktop's
+name, the unit identifier — came off the network, so it is clipped and
+filtered before it reaches a terminal, like every other view.
+
+Closing a session does not remove it from the table: the gateway serving
+it removes it when its own goroutine notices the socket close, so a
+session still draining is reported as still there rather than as gone.
+`xproxyctl status` carries the totals (`sessions_live`, `sessions_opened`,
+`sessions_closed`, `sessions_killed`), and Prometheus has
+`xproxy_sessions_live`, `xproxy_sessions_total` and
+`xproxy_sessions_closed_total{by="operator"}`.
+
+`xproxyctl sessions` is the live table; `xproxyctl session` (singular)
+reads recordings back from disk.
 
 ### A second factor, on SSH and on HTTPS
 

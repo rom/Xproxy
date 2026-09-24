@@ -442,6 +442,41 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **Live session control: who is on, and getting them off.** A bastion
+  whose only answer to "who is on the production database right now, and
+  can you get them off" is "restart the daemon, which drops everybody"
+  is missing the operation a bastion exists for. `GET /v1/sessions` lists
+  what the daemon is serving now -- SSH and its SFTP channels, telnet,
+  VNC, RDP, FTP and the Modbus device queues -- oldest first, with the
+  client, the login, the target, one detail the kind chose (the desktop's
+  name, the unit identifier, the subsystem) and how long it has been up.
+  `DELETE /v1/sessions` closes the session named by `id`, or every
+  session matching `kind`, `listener` and `user`. `xproxyctl sessions`
+  and `xproxyctl sessions -kill ID` / `-kill-matching` are the commands.
+
+  Four decisions worth writing down. A session registers *before* its
+  handshake finishes, so one stuck in a handshake -- a client that
+  connected and then stopped, a scanner, somebody waiting on a second
+  factor -- is listed and can be closed, which a table built from
+  finished logins would miss. Each session carries its own closer,
+  because only the kind knows what ending its session means, and a table
+  that closed sockets itself would race the kind that owns them; the
+  entry is removed by the goroutine that notices the socket close, so a
+  session still draining reads as still there rather than as gone. A
+  request that names neither an id nor a filter is refused rather than
+  taken as *everything*. And the identifiers are random rather than
+  sequential, so one seen in a log line an operator pasted into a ticket
+  does not let anybody guess the others.
+
+  Every closure is audited with the session, the login, the target and
+  the kernel-verified identity of the caller. `sessions_live`,
+  `sessions_opened`, `sessions_closed`, `sessions_killed` and
+  `sessions_refused` are in the status view, with
+  `xproxy_sessions_live`, `xproxy_sessions_total` and
+  `xproxy_sessions_closed_total{by="operator"}` in the Prometheus
+  exposition. `xproxyctl sessions` is the live table; `xproxyctl session`
+  (singular) still reads recordings back from disk.
+
 - **xproxy-replay: the player the recordings were waiting for**, and the
   bug it found.
 
