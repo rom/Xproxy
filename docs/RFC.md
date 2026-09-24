@@ -32,6 +32,7 @@ did not build it" and "it does not apply" are different promises again.
 - [Mail](#mail)
 - [Messaging](#messaging)
 - [Industrial control](#industrial-control)
+- [Time](#time)
 - [Secure Shell and file transfer](#secure-shell-and-file-transfer)
 - [Proxying and forwarding](#proxying-and-forwarding)
 - [Identity, tokens and authentication](#identity-tokens-and-authentication)
@@ -185,6 +186,32 @@ security one, and none of the three has an RFC.
 | Modbus Application Protocol v1.1b3 | Full | Every public function code -- 1 to 24 and 43 -- parsed as request and response, with the specification's own bounds enforced: the quantity limits, the byte counts, the single-coil values, the file record shapes, the MEI types, and a range that runs past the address space. Function codes 65 to 72 and 100 to 110 are recognised as user-defined and can be named in a rule; anything else is refused rather than forwarded |
 | Modbus over Serial Line v1.02 | Full, as tunnelled over TCP | RTU and ASCII framing, in both directions. RTU has no delimiters, so a frame's length is computed per function code and direction and the CRC is the check that it ended where the device will think it did; the inter-frame silence of a real serial line has no equivalent on a stream, so a shape whose length cannot be computed -- a CANopen request, a response to a request that was not made -- is refused rather than guessed at |
 | Modbus/TCP Security v21 (MB-TCP-Security) | Partial | TLS with mutual authentication on the listener and towards the device, and authorisation by the role in the client certificate's x.509 extension under the Modbus arc, `1.3.6.1.4.1.50316.802.1`. The role-to-object-list mapping in the specification's appendix is not read from the certificate: the rules in the configuration are richer than it (function codes, register ranges, value bounds, schedules) and are where a plant's policy actually lives |
+
+## Time
+
+Time is the one protocol whose whole job is to change something every
+other protocol depends on, so the table says exactly which parts of it
+this proxy reads, which it refuses, and which it deliberately does not
+implement.
+
+| RFC | Title | Status | Notes |
+|-----|-------|--------|-------|
+| 5905 | Network Time Protocol Version 4 | Partial | The packet, the modes and the timestamp arithmetic, as a gateway rather than as a clock: versions 1 to 4 parsed onto one header, era-safe modular subtraction for the offset and delay, stratum 0 (kiss-o'-death) and stratum 16 read as the statements they are, and the reference identifier read by stratum rather than assumed to be an IPv4 address. The clock discipline of section 10 and the mitigation algorithms of section 11 are the local time daemon's job, not a relay's |
+| 4330 | Simple NTP (SNTPv4) | Full | SNTP is NTPv4's packet with a simpler client, so the same parser reads it; a device profile names the version and mode it uses |
+| 7822 | NTP Extension Field Format | Full | The field format, the minimum length, and the ambiguity between a trailing extension field and a MAC -- which this reads as a MAC (as every implementation does) and reports rather than resolving silently, because the server behind it may read it the other way |
+| 8573 | AES-CMAC for the NTP Authentication Extension | Full | The algorithm for symmetric keys, implemented from RFC 4493 and tested against its vectors, subkeys included. MD5 and SHA-1 are verifiable only behind an explicit exception that warns |
+| 8915 | Network Time Security for NTPv4 | Partial | The visible fields (unique identifier, cookie, cookie placeholder, authenticator) are read, protected packets are passed through whole, a downgrade to plain NTP is refused, and key establishment is relayed on TCP 4460 with the ALPN `ntske/1` checked from the ClientHello. Termination -- key derivation from the TLS exporter, cookie keys shared with the servers, rotation with overlap -- is deliberately absent rather than approximated: an implementation that faked it would tell clients their time was authenticated when nobody had checked |
+| 9109 | NTP Client Data Minimization | Full | A client that changes its source port and zeroes the fields it need not send is an ordinary client here: an association is an address and a port, and nothing requires port 123 on the client side |
+| 9748 | NTP Extension Field Types registry | Partial | The registry is the reference for what a field type means. This build recognises the NTS types and the checksum complement of RFC 7821; anything else is counted as unknown and refused by default, because a relay cannot decide about an instruction it cannot read |
+| 7821 | UDP Checksum Complement in NTP | Partial | The field type is recognised and forwarded; the complement itself is not computed, because this relay does not rewrite timestamps |
+| 5906 | Autokey | Refused | Withdrawn by its own community and never implemented here. Its extension fields are refused with every other field type this relay does not know, rather than tunnelled |
+| 9769 | NTP over PTP | Not applicable | This is a gateway for the NTP packet on UDP; carrying it over the PTP transport is a different transport binding, and nothing here would be more honest for pretending otherwise |
+| 1119 / 1305 | NTPv2 and NTPv3 | Partial | The header is the same one, so a version 3 packet is read and forwarded where a listener's profile names version 3. Version 1 and 2 need naming too, because a version 1 packet has no mode field and reading its zero bits as a client request is a decision rather than a reading |
+
+NTPv5 is a draft whose packet format is not version 4's. The dispatch
+refuses it by name, and `allow_version5` forwards it as opaque bytes on a
+transaction socket of its own rather than parsing fields whose meaning is
+not settled.
 
 ## Secure Shell and file transfer
 

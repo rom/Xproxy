@@ -3072,6 +3072,22 @@
         "name": {
           "type": "string"
         },
+        "ntp": {
+          "description": "NTP configures a kind: ntp listener.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/NTPListener"
+            }
+          ]
+        },
+        "ntske": {
+          "description": "NTSKE configures a kind: ntske listener.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/NTSKEListener"
+            }
+          ]
+        },
         "protocols": {
           "description": "Protocols accepted. Defaults to [h1, h2] with TLS and [h1] without.",
           "type": "array",
@@ -4065,6 +4081,479 @@
         "signed": {
           "description": "Signed reads the value as a signed 16-bit integer, which is how most setpoints are actually encoded.",
           "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "NTPAuth": {
+      "description": "NTPAuth is symmetric authentication with pre-shared keys. RFC 8573 makes AES-CMAC the algorithm: the older construction is MD5 over the key followed by the packet, which is a length-extension shape with a broken hash in it. The legacy algorithms are therefore an explicit exception rather than a default, because a device from 2006 cannot be taught a new one and pretending otherwise ends with no authentication at all rather than weak authentication somebody knows about. Autokey (RFC 5906) is not implemented and will not be.",
+      "type": "object",
+      "properties": {
+        "allow_legacy_algorithms": {
+          "description": "AllowLegacyAlgorithms accepts a key whose algorithm is md5 or sha1. It warns.",
+          "type": "boolean"
+        },
+        "keys": {
+          "description": "Keys are the shared keys, by identifier.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NTPKey"
+          }
+        },
+        "probe_key_id": {
+          "description": "ProbeKeyID is the key the listener signs its own monitoring probes with, for a server that requires authentication.",
+          "type": "integer"
+        },
+        "require": {
+          "description": "Require refuses a packet that carries no authentication this listener can check. NTS counts as authentication for this purpose -- and the listener says plainly that it has not verified it, because only the party holding the key can.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "NTPExtensions": {
+      "description": "NTPExtensions bounds the extension fields a packet may carry.",
+      "type": "object",
+      "properties": {
+        "allow_unknown": {
+          "description": "AllowUnknown forwards a field whose type this relay does not know. Off by default: a relay cannot decide about an instruction it cannot read, and that includes every field Autokey defined.",
+          "type": "boolean"
+        },
+        "max": {
+          "description": "Max is the number of fields one packet may carry. Default 8.",
+          "type": "integer"
+        },
+        "refuse_ambiguous_mac": {
+          "description": "RefuseAmbiguousMAC refuses a packet whose tail is both a valid MAC and a valid extension field -- the ambiguity RFC 7822 documents and cannot remove. Default true: a packet whose meaning depends on which reading the receiver picks is a packet two implementations will disagree about.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "NTPHoldover": {
+      "description": "NTPHoldover bounds how long a server whose time cannot be verified is still used.",
+      "type": "object",
+      "properties": {
+        "max_duration": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "NTPKey": {
+      "description": "NTPKey is one pre-shared key.",
+      "type": "object",
+      "properties": {
+        "algorithm": {
+          "description": "Algorithm is aes-cmac (the default), md5 or sha1.",
+          "type": "string"
+        },
+        "id": {
+          "description": "ID is the key identifier the packet carries: 1 to 65535.",
+          "type": "integer"
+        },
+        "key_file": {
+          "description": "KeyFile holds the key, as hexadecimal or as the ASCII a ntp.keys file uses. Owner-readable only.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "NTPKoD": {
+      "description": "NTPKoD is the kiss-o'-death policy: a stratum-0 answer whose four reference identifier octets are a code. It is the protocol's own way of saying \"not now\", and a client that gets one backs off.",
+      "type": "object",
+      "properties": {
+        "forward": {
+          "description": "Forward passes a server's own kiss-o'-death on to the client. Default true: the client is the thing that has to back off.",
+          "type": "boolean"
+        },
+        "on_deny": {
+          "description": "OnDeny answers a policy refusal with a DENY kiss. Default false: a refusal usually should not tell the client what the policy is.",
+          "type": "boolean"
+        },
+        "on_rate_limit": {
+          "description": "OnRateLimit answers a rate-limited client with a RATE kiss rather than dropping its packet. Default true: a drop teaches a client nothing and it asks again.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "NTPLearn": {
+      "description": "NTPLearn records what asks this listener for the time.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enabled turns the recording on.",
+          "type": "boolean"
+        },
+        "enforce": {
+          "description": "Enforce keeps the policy in force while learning. Default false.",
+          "type": "boolean"
+        },
+        "file": {
+          "description": "File is where the report is written, as YAML. Required when enabled.",
+          "type": "string"
+        },
+        "interval": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_subjects": {
+          "description": "MaxSubjects bounds the observations held: one per client, version and mode. Default 8192.",
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "NTPListener": {
+      "description": "NTPListener is an NTP and NTS security gateway. A time packet is small, has no session, carries no identity and is believed absolutely: the device on the other side will step its clock to whatever it is told, and a clock is what every certificate, every log line and every ordering of events in a plant depends on. So the three jobs on this port are kept apart deliberately: - forwarding time packets, which is what this listener does; - authenticating them, which belongs to whoever holds the key -- symmetric keys this listener can check, NTS it deliberately cannot; - keeping an accurate clock, which is the local time daemon's job. A relay that tried to be a time source would be one nobody calibrated. What it can do that a client cannot is compare. It sees every server the estate has, measures each the same way, and refuses to pass on an answer from one that disagrees with its peers or says not to trust it. It works in both directions. A *reverse* listener fronts the estate's own time servers: the devices point at it and it forwards to them, which is where the allow lists, the version profile and the audit trail live. A *forward* listener is the controlled egress towards servers somewhere else, where `allow_servers` bounds the destinations and the quality rules are the estate's protection against what the internet answers.",
+      "type": "object",
+      "properties": {
+        "alert_on_deny": {
+          "description": "AlertOnDeny writes a security event for every refusal. Default true.",
+          "type": "boolean"
+        },
+        "allow_clients": {
+          "description": "AllowClients and DenyClients are the networks a client may ask from. Deny is evaluated first. An empty allow list allows every client the deny list does not refuse, which validation advises against: an open NTP port is an amplifier.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_manycast": {
+          "description": "AllowManycast opts into manycast discovery, whose responders are the addresses this listener will accept an answer from. It is a separate switch from broadcast because it is a separate mechanism: bounded discovery rather than an unsolicited stream.",
+          "type": "boolean"
+        },
+        "allow_servers": {
+          "description": "AllowServers bounds the addresses this listener will send to, whatever the pool resolves to. It is the egress policy: a pool whose name starts resolving somewhere new does not quietly become a new destination, and an NTS key exchange that names another server cannot move the time traffic outside this list.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_version5": {
+          "description": "AllowVersion5 forwards NTPv5 packets as opaque bytes, on a transaction socket of its own. It is off by default: version 5 is experimental and its packet format is not version 4's, so it is never parsed with the version 4 parser.",
+          "type": "boolean"
+        },
+        "auth": {
+          "description": "Auth is symmetric authentication: the pre-shared keys and whether a packet without one is refused.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/NTPAuth"
+            }
+          ]
+        },
+        "deny_clients": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "extensions": {
+          "description": "Extensions bounds the extension fields a packet may carry.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/NTPExtensions"
+            }
+          ]
+        },
+        "holdover": {
+          "description": "Holdover bounds how long a server whose time cannot be verified is still used.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/NTPHoldover"
+            }
+          ]
+        },
+        "idle_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "interleaved": {
+          "description": "Interleaved accepts interleaved mode, where a server's answer echoes its own previous transmit timestamp rather than the client's. Default true: it is how a server gives a client a hardware-quality transmit timestamp, and a relay that refused it would be refusing the most accurate exchange there is.",
+          "type": "boolean"
+        },
+        "kod": {
+          "description": "KoD is the kiss-o'-death policy: the protocol's own way of saying \"not now\".",
+          "allOf": [
+            {
+              "$ref": "#/$defs/NTPKoD"
+            }
+          ]
+        },
+        "learn": {
+          "description": "Learn records what actually asks this listener for the time and writes it out as an allow list, a version profile and a mode profile.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/NTPLearn"
+            }
+          ]
+        },
+        "log_packets": {
+          "description": "LogPackets writes an access line per packet rather than per association. It is the record an estate asked to show who asked for the time and what they were told, and it is a line per poll.",
+          "type": "boolean"
+        },
+        "manycast_responders": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_associations": {
+          "description": "MaxAssociations bounds the client associations held. Default 16384. An association is a client address and port, so the bound is also what stops a flood of forged sources filling the table.",
+          "type": "integer"
+        },
+        "max_extensions": {
+          "description": "MaxExtensions bounds the extension fields in one packet. Default 8.",
+          "type": "integer"
+        },
+        "max_outstanding": {
+          "description": "MaxOutstanding bounds the requests waiting for an answer, which is a separate table from the associations on purpose: a client may have several in flight, and an answer may arrive after its association moved to another server.",
+          "type": "integer"
+        },
+        "max_packet_bytes": {
+          "description": "MaxPacketBytes bounds one packet. Default 1280. A time packet is 48 octets plus its extension fields; NTS makes it a few hundred.",
+          "type": "integer"
+        },
+        "mode": {
+          "description": "Mode is reverse (the default: clients here, servers upstream) or forward (this listener is the estate's egress to servers elsewhere).",
+          "type": "string"
+        },
+        "modes": {
+          "description": "Modes are the association modes accepted: client, server, symmetric_active, symmetric_passive, broadcast. Default client and server. The symmetric modes and broadcast are relationships rather than requests and are only ever between named peers. Modes 6 (control) and 7 (private, which monlist belongs to) are always refused and cannot be named.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "nts": {
+          "description": "NTS is how Network Time Security is handled.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/NTPNTS"
+            }
+          ]
+        },
+        "peers": {
+          "description": "Peers are the networks a symmetric or broadcast association may come from. A symmetric association is a relationship in which each end accepts the other's time, so it is never open to whoever asks.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "prefix_rate_burst": {
+          "type": "integer"
+        },
+        "prefix_rate_limit": {
+          "type": "integer"
+        },
+        "quality": {
+          "description": "Quality is what the listener requires of a server's answer, and how it compares the servers with each other.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/NTPQuality"
+            }
+          ]
+        },
+        "rate_burst": {
+          "type": "integer"
+        },
+        "rate_limit": {
+          "description": "RateLimit and RateBurst bound packets a second from one client address; PrefixRateLimit and PrefixRateBurst do the same for a network, because a subnet asking in unison is one problem rather than many. RatePrefixLength is the network they are counted by: default /24 for IPv4 and /56 for IPv6.",
+          "type": "integer"
+        },
+        "rate_prefix_length": {
+          "type": "integer"
+        },
+        "request_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "trace": {
+          "description": "Trace writes one line per packet for as long as it is enabled.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/NTPTrace"
+            }
+          ]
+        },
+        "upstream": {
+          "description": "Upstream is the pool of time servers. Required.",
+          "type": "string"
+        },
+        "versions": {
+          "description": "Versions are the protocol versions accepted, as numbers. Default 4 and 3: version 4 is the protocol, version 3 is the legacy profile a plant still has devices on. Versions 1 and 2 are only accepted when they are named, because a version 1 packet has no mode field and accepting one by default would be guessing what it is.",
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "NTPNTS": {
+      "description": "NTPNTS is how Network Time Security is handled. The time exchanges are UDP 123 with authentication in extension fields; the key establishment is TLS on TCP 4460 with the ALPN \"ntske/1\", and it is a listener of its own (kind: ntske). This section is about the time side.",
+      "type": "object",
+      "properties": {
+        "mode": {
+          "description": "Mode is passthrough (the default) or off. Pass-through forwards NTS-protected packets whole and unaltered, which is the only honest thing a relay that does not hold the keys can do with them: the authentication is between the client and the server, and every visible NTS field is readable by anybody on the path and proves nothing. Termination is deliberately absent rather than approximated -- it needs real key derivation from the TLS exporter, cookie keys shared with the server, and rotation with overlap, and an implementation that faked any of it would be telling clients their time was authenticated when it was not.",
+          "type": "string"
+        },
+        "require": {
+          "description": "Require refuses a packet that carries no NTS fields. It is how a listener says \"this estate is NTS only\", and it is the setting that makes the no-downgrade rule visible: an answer that arrives without NTS fields for a request that had them is refused, never passed on as plain NTP.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "NTPQuality": {
+      "description": "NTPQuality is what the listener requires of a server's answer, and how it compares the servers with each other. Every bound here is about *responses*. A client's request carries a stratum, a root delay and a root dispersion too, and they mean nothing -- the protocol does not ask a client to fill them in -- so a listener that applied these to requests would be refusing clients for empty fields.",
+      "type": "object",
+      "properties": {
+        "compare_sources": {
+          "description": "CompareSources runs the monitor: the listener sends its own probes to every server, measures each the same way, and compares them. Default true, because a server that is reachable, synchronised, authenticated and wrong is the case every other check passes.",
+          "type": "boolean"
+        },
+        "healthy_after": {
+          "description": "HealthyAfter and UnhealthyAfter are the hysteresis: how many probes in a row it takes to change a server's state. Default 3 each, because one slow answer on a busy network is not a fault and a relay that moved every client on one sample would be an outage generator with a health check attached.",
+          "type": "integer"
+        },
+        "max_delay": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_disagreement": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_offset": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_root_delay": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_root_dispersion": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_stratum": {
+          "description": "MaxStratum refuses an answer from too far down the tree. 0 leaves the protocol's own bound of 15.",
+          "type": "integer"
+        },
+        "on_all_suspect": {
+          "description": "OnAllSuspect is what happens when no server is usable: pass (the default -- keep forwarding and keep saying so) or refuse. A blanket fail-closed here stops the plant's clocks, which is itself an outage, so it is a decision an estate makes in writing.",
+          "type": "string"
+        },
+        "probe_interval": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "refuse_unsynchronised": {
+          "description": "RefuseUnsynchronised refuses an answer from a server that says its own clock is not synchronised -- by the leap indicator or by stratum 16, which are two separate statements. Default true.",
+          "type": "boolean"
+        },
+        "unhealthy_after": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "NTPTrace": {
+      "description": "NTPTrace writes one JSON object per packet.",
+      "type": "object",
+      "properties": {
+        "file": {
+          "description": "File is the trace file. Required.",
+          "type": "string"
+        },
+        "max_bytes": {
+          "description": "MaxBytes bounds it. Default 104857600 (100 MiB); at the bound the trace says it stopped and stops.",
+          "type": "integer"
+        },
+        "requests": {
+          "description": "Requests and Responses select the directions traced. Default both.",
+          "type": "boolean"
+        },
+        "responses": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "NTSKEListener": {
+      "description": "NTSKEListener is NTS key establishment: TLS on TCP 4460 with the ALPN \"ntske/1\" (RFC 8915). It is a listener of its own because it is a different port, a different transport and a different security property from the time service, and because running one without the other should be something a deployment writes down. It relays rather than terminates. The TLS session is between the client and the key establishment server, so this listener reads the one thing the handshake shows in the clear -- the server name and the application protocol the client offers -- refuses anything that is not an NTS client, and hands the rest to the pool. Terminating it would mean deriving the NTS keys from the TLS exporter, holding the cookie keys the time servers use, and rotating them with overlap; none of that is faked here.",
+      "type": "object",
+      "properties": {
+        "alert_on_deny": {
+          "description": "AlertOnDeny writes a security event for every refusal. Default true.",
+          "type": "boolean"
+        },
+        "allow_clients": {
+          "description": "AllowClients and DenyClients are the networks a client may connect from. Deny is evaluated first.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_clients": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "handshake_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "idle_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "log_sessions": {
+          "description": "LogSessions writes an access line per session.",
+          "type": "boolean"
+        },
+        "max_bytes": {
+          "description": "MaxBytes bounds one session's traffic each way. Default 65536.",
+          "type": "integer"
+        },
+        "max_concurrent_handshakes": {
+          "description": "MaxConcurrentHandshakes bounds the handshakes in flight, because a TLS handshake is the expensive part of NTS and a flood of them is the denial of service this port has. Default 32.",
+          "type": "integer"
+        },
+        "max_connections": {
+          "description": "MaxConnections bounds live sessions. Default 256.",
+          "type": "integer"
+        },
+        "require_alpn": {
+          "description": "RequireALPN refuses a connection that does not offer \"ntske/1\". Default true: a connection to this port that is not an NTS client is something else entirely, and this is the only port where that can be told from the handshake alone.",
+          "type": "boolean"
+        },
+        "server_names": {
+          "description": "ServerNames is the allow list of server names a client may ask for. Empty accepts any name, including none.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "upstream": {
+          "description": "Upstream is the pool of key establishment servers. Required.",
+          "type": "string"
         }
       },
       "additionalProperties": false

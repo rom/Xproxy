@@ -99,74 +99,118 @@ type Stats struct {
 	// The generic datagram relay. Dropped counts datagrams the relay
 	// would not forward and could not refuse -- there is nothing to
 	// refuse a datagram with -- with the reason in the security log.
-	UDPSessions            atomic.Uint64
-	UDPSessionsOpen        atomic.Int64
-	UDPDatagramsIn         atomic.Uint64
-	UDPDatagramsOut        atomic.Uint64
-	UDPBytesIn             atomic.Uint64
-	UDPBytesOut            atomic.Uint64
-	UDPDropped             atomic.Uint64
-	UDPRejected            atomic.Uint64
-	UDPErrors              atomic.Uint64
-	ForwardRequests        atomic.Uint64
-	ForwardTunnels         atomic.Uint64
-	ForwardTunnelsOpen     atomic.Int64
-	ForwardDenied          atomic.Uint64
-	ForwardAuthFailed      atomic.Uint64
-	ForwardRejected        atomic.Uint64
-	ForwardErrors          atomic.Uint64
-	ForwardBytesIn         atomic.Uint64
-	ForwardBytesOut        atomic.Uint64
-	ForwardSOCKS           atomic.Uint64
-	MasqueUDP              atomic.Uint64
-	MasqueIP               atomic.Uint64
-	MasqueOpen             atomic.Int64
-	MasqueDropped          atomic.Uint64
-	SMTPSessions           atomic.Uint64
-	SMTPSessionsOpen       atomic.Int64
-	SMTPMessages           atomic.Uint64
-	SMTPRefused            atomic.Uint64
-	SMTPRejected           atomic.Uint64
-	SMTPTLSUpgrades        atomic.Uint64
-	SMTPProtocolErrors     atomic.Uint64
-	SMTPBytesIn            atomic.Uint64
-	MQTTSessions           atomic.Uint64
-	MQTTSessionsOpen       atomic.Int64
-	MQTTPublished          atomic.Uint64
-	MQTTSubscribed         atomic.Uint64
-	MQTTRefused            atomic.Uint64
-	MQTTRejected           atomic.Uint64
-	MQTTProtocolErrors     atomic.Uint64
-	SSHSessions            atomic.Uint64
-	SSHSessionsOpen        atomic.Int64
-	SSHChannels            atomic.Uint64
-	SSHRefused             atomic.Uint64
-	FTPSessions            atomic.Uint64
-	FTPSessionsOpen        atomic.Int64
-	FTPRefused             atomic.Uint64
-	FTPRejected            atomic.Uint64
-	FTPAuthFailed          atomic.Uint64
-	FTPTransfers           atomic.Uint64
-	FTPScanned             atomic.Uint64
-	FTPScanBlocked         atomic.Uint64
-	FTPRecorded            atomic.Uint64
-	FTPMFAOK               atomic.Uint64
-	FTPMFAFailed           atomic.Uint64
-	ModbusSessions         atomic.Uint64
-	ModbusSessionsOpen     atomic.Int64
-	ModbusRequests         atomic.Uint64
-	ModbusResponses        atomic.Uint64
-	ModbusDenied           atomic.Uint64
-	ModbusWouldDeny        atomic.Uint64
-	ModbusExceptions       atomic.Uint64
-	ModbusMalformed        atomic.Uint64
-	ModbusRefused          atomic.Uint64
-	ModbusRejected         atomic.Uint64
-	ModbusRateLimited      atomic.Uint64
-	ModbusQueueFull        atomic.Uint64
-	ModbusUpstreamFailed   atomic.Uint64
-	ModbusTraced           atomic.Uint64
-	ModbusLearned          atomic.Uint64
+	UDPSessions          atomic.Uint64
+	UDPSessionsOpen      atomic.Int64
+	UDPDatagramsIn       atomic.Uint64
+	UDPDatagramsOut      atomic.Uint64
+	UDPBytesIn           atomic.Uint64
+	UDPBytesOut          atomic.Uint64
+	UDPDropped           atomic.Uint64
+	UDPRejected          atomic.Uint64
+	UDPErrors            atomic.Uint64
+	ForwardRequests      atomic.Uint64
+	ForwardTunnels       atomic.Uint64
+	ForwardTunnelsOpen   atomic.Int64
+	ForwardDenied        atomic.Uint64
+	ForwardAuthFailed    atomic.Uint64
+	ForwardRejected      atomic.Uint64
+	ForwardErrors        atomic.Uint64
+	ForwardBytesIn       atomic.Uint64
+	ForwardBytesOut      atomic.Uint64
+	ForwardSOCKS         atomic.Uint64
+	MasqueUDP            atomic.Uint64
+	MasqueIP             atomic.Uint64
+	MasqueOpen           atomic.Int64
+	MasqueDropped        atomic.Uint64
+	SMTPSessions         atomic.Uint64
+	SMTPSessionsOpen     atomic.Int64
+	SMTPMessages         atomic.Uint64
+	SMTPRefused          atomic.Uint64
+	SMTPRejected         atomic.Uint64
+	SMTPTLSUpgrades      atomic.Uint64
+	SMTPProtocolErrors   atomic.Uint64
+	SMTPBytesIn          atomic.Uint64
+	MQTTSessions         atomic.Uint64
+	MQTTSessionsOpen     atomic.Int64
+	MQTTPublished        atomic.Uint64
+	MQTTSubscribed       atomic.Uint64
+	MQTTRefused          atomic.Uint64
+	MQTTRejected         atomic.Uint64
+	MQTTProtocolErrors   atomic.Uint64
+	SSHSessions          atomic.Uint64
+	SSHSessionsOpen      atomic.Int64
+	SSHChannels          atomic.Uint64
+	SSHRefused           atomic.Uint64
+	FTPSessions          atomic.Uint64
+	FTPSessionsOpen      atomic.Int64
+	FTPRefused           atomic.Uint64
+	FTPRejected          atomic.Uint64
+	FTPAuthFailed        atomic.Uint64
+	FTPTransfers         atomic.Uint64
+	FTPScanned           atomic.Uint64
+	FTPScanBlocked       atomic.Uint64
+	FTPRecorded          atomic.Uint64
+	FTPMFAOK             atomic.Uint64
+	FTPMFAFailed         atomic.Uint64
+	ModbusSessions       atomic.Uint64
+	ModbusSessionsOpen   atomic.Int64
+	ModbusRequests       atomic.Uint64
+	ModbusResponses      atomic.Uint64
+	ModbusDenied         atomic.Uint64
+	ModbusWouldDeny      atomic.Uint64
+	ModbusExceptions     atomic.Uint64
+	ModbusMalformed      atomic.Uint64
+	ModbusRefused        atomic.Uint64
+	ModbusRejected       atomic.Uint64
+	ModbusRateLimited    atomic.Uint64
+	ModbusQueueFull      atomic.Uint64
+	ModbusUpstreamFailed atomic.Uint64
+	ModbusTraced         atomic.Uint64
+	ModbusLearned        atomic.Uint64
+
+	// The NTP and NTS gateway.
+	//
+	// The counters are split by what an operator does next. Requests and
+	// Forwarded are the traffic; Denied and WouldDeny are the policy;
+	// Malformed, Unsolicited and TimedOut are the packets that were not
+	// an exchange; Probes, Disagreements and the Source counters are the
+	// monitor, which is the half of this listener that answers "is the
+	// time any good".
+	NTPRequests            atomic.Uint64
+	NTPForwarded           atomic.Uint64
+	NTPResponses           atomic.Uint64
+	NTPAnswered            atomic.Uint64
+	NTPDenied              atomic.Uint64
+	NTPWouldDeny           atomic.Uint64
+	NTPDropped             atomic.Uint64
+	NTPMalformed           atomic.Uint64
+	NTPUnsolicited         atomic.Uint64
+	NTPRateLimited         atomic.Uint64
+	NTPKissSent            atomic.Uint64
+	NTPTimedOut            atomic.Uint64
+	NTPAssociations        atomic.Uint64
+	NTPAssociationsOpen    atomic.Int64
+	NTPUpstreamFailed      atomic.Uint64
+	NTPUpstreamUnavailable atomic.Uint64
+	NTPSendFailed          atomic.Uint64
+	NTPInterleaved         atomic.Uint64
+	NTPNTSForwarded        atomic.Uint64
+	NTPVersion5            atomic.Uint64
+	NTPProbes              atomic.Uint64
+	NTPProbeFailed         atomic.Uint64
+	NTPDisagreements       atomic.Uint64
+	NTPSourceHealthy       atomic.Uint64
+	NTPSourceUnhealthy     atomic.Uint64
+	NTPHoldoverExpired     atomic.Uint64
+
+	// NTS key establishment, which is its own listener on its own port.
+	NTSKESessions          atomic.Uint64
+	NTSKERelayed           atomic.Uint64
+	NTSKERefused           atomic.Uint64
+	NTSKERejected          atomic.Uint64
+	NTSKENotNTS            atomic.Uint64
+	NTSKEHandshakeLimited  atomic.Uint64
+	NTSKEUpstreamFailed    atomic.Uint64
 	SyslogReceived         atomic.Uint64
 	SyslogForwarded        atomic.Uint64
 	SyslogDropped          atomic.Uint64
@@ -452,6 +496,39 @@ type Snapshot struct {
 	ModbusUpstreamFailed   uint64             `json:"modbus_upstream_failed"`
 	ModbusTraced           uint64             `json:"modbus_traced"`
 	ModbusLearned          uint64             `json:"modbus_learned"`
+	NTPRequests            uint64             `json:"ntp_requests"`
+	NTPForwarded           uint64             `json:"ntp_forwarded"`
+	NTPResponses           uint64             `json:"ntp_responses"`
+	NTPAnswered            uint64             `json:"ntp_answered"`
+	NTPDenied              uint64             `json:"ntp_denied"`
+	NTPWouldDeny           uint64             `json:"ntp_would_deny"`
+	NTPDropped             uint64             `json:"ntp_dropped"`
+	NTPMalformed           uint64             `json:"ntp_malformed"`
+	NTPUnsolicited         uint64             `json:"ntp_unsolicited"`
+	NTPRateLimited         uint64             `json:"ntp_rate_limited"`
+	NTPKissSent            uint64             `json:"ntp_kiss_sent"`
+	NTPTimedOut            uint64             `json:"ntp_timed_out"`
+	NTPAssociations        uint64             `json:"ntp_associations"`
+	NTPAssociationsOpen    int64              `json:"ntp_associations_open"`
+	NTPUpstreamFailed      uint64             `json:"ntp_upstream_failed"`
+	NTPUpstreamUnavailable uint64             `json:"ntp_upstream_unavailable"`
+	NTPSendFailed          uint64             `json:"ntp_send_failed"`
+	NTPInterleaved         uint64             `json:"ntp_interleaved"`
+	NTPNTSForwarded        uint64             `json:"ntp_nts_forwarded"`
+	NTPVersion5            uint64             `json:"ntp_version5"`
+	NTPProbes              uint64             `json:"ntp_probes"`
+	NTPProbeFailed         uint64             `json:"ntp_probe_failed"`
+	NTPDisagreements       uint64             `json:"ntp_disagreements"`
+	NTPSourceHealthy       uint64             `json:"ntp_source_healthy"`
+	NTPSourceUnhealthy     uint64             `json:"ntp_source_unhealthy"`
+	NTPHoldoverExpired     uint64             `json:"ntp_holdover_expired"`
+	NTSKESessions          uint64             `json:"ntske_sessions"`
+	NTSKERelayed           uint64             `json:"ntske_relayed"`
+	NTSKERefused           uint64             `json:"ntske_refused"`
+	NTSKERejected          uint64             `json:"ntske_rejected"`
+	NTSKENotNTS            uint64             `json:"ntske_not_nts"`
+	NTSKEHandshakeLimited  uint64             `json:"ntske_handshake_limited"`
+	NTSKEUpstreamFailed    uint64             `json:"ntske_upstream_failed"`
 	SyslogReceived         uint64             `json:"syslog_received"`
 	SyslogForwarded        uint64             `json:"syslog_forwarded"`
 	SyslogDropped          uint64             `json:"syslog_dropped"`
@@ -704,6 +781,39 @@ func (s *Stats) snapshot() Snapshot {
 		ModbusUpstreamFailed:   s.ModbusUpstreamFailed.Load(),
 		ModbusTraced:           s.ModbusTraced.Load(),
 		ModbusLearned:          s.ModbusLearned.Load(),
+		NTPRequests:            s.NTPRequests.Load(),
+		NTPForwarded:           s.NTPForwarded.Load(),
+		NTPResponses:           s.NTPResponses.Load(),
+		NTPAnswered:            s.NTPAnswered.Load(),
+		NTPDenied:              s.NTPDenied.Load(),
+		NTPWouldDeny:           s.NTPWouldDeny.Load(),
+		NTPDropped:             s.NTPDropped.Load(),
+		NTPMalformed:           s.NTPMalformed.Load(),
+		NTPUnsolicited:         s.NTPUnsolicited.Load(),
+		NTPRateLimited:         s.NTPRateLimited.Load(),
+		NTPKissSent:            s.NTPKissSent.Load(),
+		NTPTimedOut:            s.NTPTimedOut.Load(),
+		NTPAssociations:        s.NTPAssociations.Load(),
+		NTPAssociationsOpen:    s.NTPAssociationsOpen.Load(),
+		NTPUpstreamFailed:      s.NTPUpstreamFailed.Load(),
+		NTPUpstreamUnavailable: s.NTPUpstreamUnavailable.Load(),
+		NTPSendFailed:          s.NTPSendFailed.Load(),
+		NTPInterleaved:         s.NTPInterleaved.Load(),
+		NTPNTSForwarded:        s.NTPNTSForwarded.Load(),
+		NTPVersion5:            s.NTPVersion5.Load(),
+		NTPProbes:              s.NTPProbes.Load(),
+		NTPProbeFailed:         s.NTPProbeFailed.Load(),
+		NTPDisagreements:       s.NTPDisagreements.Load(),
+		NTPSourceHealthy:       s.NTPSourceHealthy.Load(),
+		NTPSourceUnhealthy:     s.NTPSourceUnhealthy.Load(),
+		NTPHoldoverExpired:     s.NTPHoldoverExpired.Load(),
+		NTSKESessions:          s.NTSKESessions.Load(),
+		NTSKERelayed:           s.NTSKERelayed.Load(),
+		NTSKERefused:           s.NTSKERefused.Load(),
+		NTSKERejected:          s.NTSKERejected.Load(),
+		NTSKENotNTS:            s.NTSKENotNTS.Load(),
+		NTSKEHandshakeLimited:  s.NTSKEHandshakeLimited.Load(),
+		NTSKEUpstreamFailed:    s.NTSKEUpstreamFailed.Load(),
 		SyslogReceived:         s.SyslogReceived.Load(),
 		SyslogForwarded:        s.SyslogForwarded.Load(),
 		SyslogDropped:          s.SyslogDropped.Load(),

@@ -442,6 +442,152 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **Time: an NTP and NTS security gateway** (`kind: ntp` and
+  `kind: ntske`, `internal/ntp`, `internal/kinds/ntp`,
+  `internal/kinds/ntske`; RFC 5905, 4330, 7822, 8573, 8915, 9109, and
+  RFC 9748 for the extension field registry).
+
+  A time packet is forty-eight octets, has no session, carries no
+  identity and is believed absolutely: the device on the other side
+  steps its clock to whatever it is told. Every certificate's validity,
+  every log line's order and every "what happened first" in an
+  investigation rests on it.
+
+  Three jobs live on this port and only one of them is "forward a
+  packet", so they are kept apart deliberately: **forwarding** time
+  packets, which this listener does with a policy; **authenticating**
+  them, which belongs to whoever holds the key -- symmetric keys this
+  listener can check, and NTS it deliberately cannot; and **keeping an
+  accurate clock**, which is the local time daemon's job. A relay that
+  tried to be a time source would be a time source nobody calibrated.
+
+  **What a relay can do that a client cannot is compare.** A client asks
+  one server and believes it. This one probes every server in the pool
+  with its own transactions, measures each the same way, and refuses to
+  pass on an answer from a server whose time disagrees with its peers or
+  whose own dispersion says not to trust it -- because a server that is
+  reachable, synchronised, authenticated and *wrong* is the case every
+  other check passes. Four states are kept apart, because the operator's
+  next action differs: unreachable, unsynchronised (it answers and says
+  not to use its time), suspect (it answers, claims to be fine and
+  disagrees) and healthy. With three or more sources the median is the
+  estate's opinion and the outlier is named; with two that disagree
+  neither can be called wrong, so both are marked and the event says
+  that -- which is why a pool of fewer than three warns at validation.
+  The transitions have hysteresis, because one slow answer on a busy
+  network is not a fault and a relay that moved every client in a plant
+  on one sample would be an outage generator with a health check
+  attached.
+
+  **Both directions**, as everywhere else: `reverse` fronts the estate's
+  own time servers, `forward` is the controlled egress towards servers
+  elsewhere, with `allow_servers` bounding the destinations whatever the
+  pool's names resolve to.
+
+  **The modes that are not time.** Mode 6 is the control protocol and
+  mode 7 the vendor-private one that `monlist` belongs to -- the
+  amplifier this port is famous for. Neither has the header this relay
+  parses, so both are refused from the first octet, before any field of
+  the body is read, and neither can be named in `modes` at all. NTPv5 is
+  a different packet format again: the dispatch refuses it by name, and
+  `allow_version5` forwards it as opaque bytes on a transaction socket
+  of its own rather than parsing fields whose meaning is not settled.
+  Versions 1 and 2 are accepted only when named, because a version 1
+  packet has no mode field and reading its zero bits as a client request
+  is a decision rather than a reading.
+
+  **The packet, read whole.** Forty-eight octets is the header and not
+  the packet: extension fields (RFC 7822), a MAC, both or neither.
+  RFC 7822 cannot always tell the last field from a MAC -- a twenty or
+  twenty-four octet tail is both -- so the relay reads it as a MAC, as
+  every implementation does, *and reports that the reading was a
+  choice*, which a policy then refuses by default. Before version 4
+  there are no extension fields at all, so a tail there can only be a
+  MAC. A field type this relay does not know is refused rather than
+  forwarded, which is also how Autokey (RFC 5906, withdrawn) is handled:
+  it is not implemented and its fields are not tunnelled.
+
+  **Symmetric authentication** is AES-CMAC (RFC 8573), implemented from
+  RFC 4493 and tested against its vectors with the subkeys checked
+  separately. MD5 and SHA-1 verify only behind an explicit exception
+  that warns, because a device from 2006 cannot be taught a new
+  algorithm and refusing to speak to it at all is how an estate ends up
+  with no authentication rather than weak authentication somebody knows
+  about.
+
+  **NTS** is pass-through, and that is a decision rather than a
+  limitation. Protected packets are forwarded whole -- fields, order and
+  bytes -- because the authentication is between the client and the
+  server and every visible NTS field is readable by anybody on the path:
+  "NTS is present" is a routing fact here, never an authentication one.
+  What the relay does enforce is the rule that matters: an answer
+  arriving without NTS fields for a request that had them is a downgrade
+  to plain NTP and is refused, never passed on silently. Key
+  establishment is its own listener (`kind: ntske`) on TCP 4460, where
+  the ALPN `ntske/1` and the server name are read from the ClientHello,
+  a connection that is not an NTS client is refused, and the handshakes
+  in flight are bounded -- a TLS handshake is the expensive part of NTS
+  and a flood of them is this port's denial of service. Termination is
+  deliberately absent rather than approximated: doing it honestly needs
+  key derivation from the TLS exporter, the cookie keys the time servers
+  hold, rotation with an overlap and recovery across a restart, and an
+  implementation that faked any part would be telling clients their time
+  was authenticated when nobody had checked.
+
+  **A refusal is a drop, except the one the protocol has.** A datagram
+  cannot be refused -- there is no reply that means "no", and a reply to a
+  forged source is traffic aimed at whoever was named -- so everything
+  refused is dropped and counted with the reason in the security log.
+  The exception is the kiss-o'-death: a client asking too often gets a
+  stratum-0 answer whose reference identifier is `RATE`, which it
+  understands and backs off from, where a drop teaches it nothing.
+
+  Architectural decisions, documented in
+  [CONFIG.md](CONFIG.md#serverlistenersntp-kind-ntp) beside the keys:
+
+  - **Packets are forwarded as the bytes that arrived**, never
+    re-encoded: an NTS-protected packet re-encoded is one the client
+    rejects, and an authenticated one re-encoded is worse. So the
+    client's own transmit timestamp reaches the server and the server's
+    own answer reaches the client, which is what lets the client verify
+    the exchange itself.
+  - **Every timeout, expiry and rate limit is on the monotonic clock.**
+    This is the relay for the protocol that moves the wall clock;
+    wall-clock arithmetic here would be a timeout that fires when the
+    time is set. The datagram relay beside it had the same bug in
+    miniature -- session activity stored as Unix nanoseconds, which loses
+    Go's monotonic reading -- and it is fixed, with a test that fails if
+    anybody stores a wall-clock stamp there again.
+  - **The association table and the outstanding-request table are
+    separate.** An association is a client address *and port*, and its
+    server is chosen once and kept: a client that asked a different
+    server every poll would see a different offset every poll, and the
+    jitter it measured would be the relay's doing. Nothing is round
+    robin per packet and nothing hedges. The outstanding table is keyed
+    by the server and the client's transmit timestamp, because a client
+    may have several requests in flight, an answer may arrive after its
+    association moved, and a server may answer something nobody asked --
+    each of which is a counter rather than a confusion. An answer whose
+    origin timestamp matches nothing is dropped even though it came from
+    the right address; interleaved mode, where the server echoes its own
+    previous transmit timestamp, is the documented exception with a
+    table and a switch of its own.
+  - **The relay's own cost is a number**: a packet takes one path out
+    and another back, so the offset a client computes is wrong by
+    `(forward − reverse delay) / 2`. Nothing removes it, so the data
+    path is short and the accuracy advice is in the documentation: put a
+    time server near its consumers rather than a relay in front of a
+    distant one. (And a one-way data diode cannot carry NTP at all: the
+    protocol needs the round trip.)
+
+  Twenty-six counters for the time listener and seven for key
+  establishment, the fine-grained refusal reasons in the per-kind
+  counters, and `ntp_denied` and `ntske_denied` as ban reasons.
+  `examples/ot/ntp.yaml` is three deployable listeners: the reverse
+  gateway with the version and mode profile, the rate limits and the
+  comparison; the forward egress with bounded destinations and a trace;
+  and the key establishment relay.
+
 - **Modbus, in both directions, in front of equipment that cannot be
   patched** (`kind: modbus`, `internal/modbus`, `internal/kinds/modbus`;
   Modbus Application Protocol v1.1b3, Modbus over Serial Line v1.02,

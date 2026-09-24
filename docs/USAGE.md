@@ -10,9 +10,9 @@ configuration patterns and reading the logs. Installation is covered in
 
 | Binary | Purpose |
 |--------|---------|
-| `xproxy` | The edge data plane: `http`, `forward`, `tcp` and `dns` listeners |
-| `xgate` | The gate: `ssh` listeners — the bastion, its SFTP mediation and its session recording |
-| `xrelay` | The relay: `smtp`, `mqtt`, `ftp`, `syslog` and `modbus` listeners |
+| `xproxy` | The edge data plane: `http`, `forward`, `tcp`, `udp` and `dns` listeners |
+| `xgate` | The gate: `ssh`, `telnet`, `vnc` and `rdp` listeners — the bastion and the remote access gateways, their policy, second factor and session recording |
+| `xrelay` | The relay: `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `ntp` and `ntske` listeners |
 | `xproxyctl` | Control tool talking to a daemon's Unix socket |
 | `xproxy-admin` | Web GUI: a separate process serving a browser interface over the same socket |
 
@@ -2871,6 +2871,182 @@ lines a second, which is why it is a choice.
 the historian, the setpoints and the serial drive; the same line again
 with Modbus/TCP Security and roles; and the read-only forward egress with
 a trace.
+
+### Time: an NTP and NTS gateway
+
+```yaml
+server:
+  listeners:
+    - name: plant
+      address: "10.30.0.10:123"
+      kind: ntp
+      ntp:
+        upstream: local_clocks
+        allow_clients: ["10.30.0.0/16"]
+        versions: [3, 4]
+        modes: [client, server]
+        rate_limit: 20
+        quality:
+          compare_sources: true
+          max_disagreement: 100ms
+          max_root_dispersion: 1s
+          max_stratum: 10
+```
+
+Three jobs live on UDP 123 and only one of them is "forward a packet".
+This listener does that one; the second belongs to whoever holds the key;
+the third belongs to the local time daemon.
+
+- **Forwarding** time packets, with a policy: which clients, which
+  protocol versions, which modes, at what rate, and what an answer has to
+  look like before it is handed to a device.
+- **Authenticating** them. Symmetric keys the listener can check, and NTS
+  it deliberately cannot — the authentication is between the client and
+  the server, and every visible NTS field is readable by anybody on the
+  path.
+- **Keeping an accurate clock**, which this is not. A relay that tried to
+  be a time source would be a time source nobody calibrated.
+
+**What a relay can do that a client cannot is compare.** A client asks one
+server and believes it. This sees every server the estate has, probes each
+one the same way, and refuses to pass on an answer from a server whose
+time disagrees with its peers or whose own dispersion says not to trust
+it. A server that is reachable, synchronised, authenticated and *wrong* is
+the case every other check passes, and comparison is the only thing that
+catches it. With three sources the outlier is named; with two that
+disagree neither can be called wrong, and the event says exactly that —
+which is why fewer than three sources warns at validation.
+
+**Both directions.** `mode: reverse` (the default) fronts the estate's own
+time servers: the devices point here. `mode: forward` is the controlled
+egress towards servers somewhere else, where `allow_servers` bounds the
+addresses whatever the pool's names resolve to.
+
+**The modes that are not time.** Mode 6 is the control protocol and mode 7
+the vendor-private one that `monlist` belongs to — the amplifier this port
+is famous for. Neither has the header this relay parses, so both are
+refused from the first octet, before any field of the body is read, and
+neither reaches a server. They cannot be named in `modes` at all.
+
+**The versions.** Version 4 is the protocol and version 3 the legacy
+profile a plant still has devices on; both are accepted by default.
+Versions 1 and 2 are accepted only when named, because a version 1 packet
+has no mode field — the bits are zero, and treating that as a client
+request is a decision rather than a reading. Version 5 is a different
+packet format, so it is refused unless `allow_version5` says to forward it
+as opaque bytes, which it does on a transaction socket of its own rather
+than by parsing fields whose meaning is not settled.
+
+**Symmetric and broadcast modes are relationships**, not requests: each
+end accepts the other's time, and broadcast has no round trip to measure
+a delay with. They are only ever between the networks `peers` names, and
+naming one without peers does not load.
+
+**A refusal is a drop, except the one the protocol has.** A datagram
+cannot be refused — there is no reply that means "no", and a reply to a
+forged source is traffic aimed at whoever was named — so everything
+refused here is dropped and counted, with the reason in the security log.
+The exception is the kiss-o'-death: a client that is asking too often gets
+a stratum-0 answer whose reference identifier is `RATE`, which it
+understands and backs off from. A drop teaches it nothing and it asks
+again.
+
+**Authentication.**
+
+```yaml
+        auth:
+          require: true
+          keys:
+            - {id: 7, algorithm: aes-cmac, key_file: /etc/xproxy/ntp/key7.hex}
+          probe_key_id: 7
+```
+
+AES-CMAC, because RFC 8573 replaced the older construction — MD5 over the
+key followed by the packet — for the reason the shape suggests. `md5` and
+`sha1` need `allow_legacy_algorithms` and warn: a device from 2006 cannot
+be taught a new algorithm, and refusing to speak to it at all usually
+means somebody turns authentication off entirely. **Autokey (RFC 5906) is
+not implemented and will not be**; its extension fields are refused with
+every other field this relay cannot read.
+
+**NTS.** The time exchanges are UDP 123 with authentication in extension
+fields, and the key establishment is TLS on TCP 4460 with the ALPN
+`ntske/1`. Those are two ports and two listeners:
+
+```yaml
+    - name: ke
+      address: "10.30.0.10:4460"
+      kind: ntske
+      ntske:
+        upstream: ke_servers
+        server_names: ["time.plant.example"]
+        require_alpn: true
+        max_concurrent_handshakes: 32
+```
+
+Protected time packets are **passed through whole** — fields, order and
+bytes — because that is the only honest thing a relay that does not hold
+the keys can do with them. What it does enforce is the rule that matters:
+an answer arriving without NTS fields for a request that had them is a
+downgrade to plain NTP, and it is refused rather than passed on. With
+`nts: {require: true}` a plain request is refused too.
+
+The key establishment listener relays rather than terminates, and that is
+a decision. Terminating it honestly means deriving the NTS keys from the
+TLS exporter, holding the same cookie keys the time servers hold,
+rotating them with an overlap so a cookie issued before a rotation still
+works after it, and recovering that across a restart. Faking any part
+would be telling clients their time was authenticated when nobody
+checked. So the listener does the part a relay can do: it reads the
+server name and the application protocol from the ClientHello — the only
+things a TLS handshake shows in the clear — refuses a connection that does
+not offer `ntske/1`, bounds the handshakes in flight (a TLS handshake is
+the expensive part of NTS, and a flood of them is this port's denial of
+service), and hands the rest to the servers whose keys they are.
+
+**Learning mode**, because nobody knows what asks a time server for the
+time:
+
+```yaml
+        learn: {enabled: true, file: /var/lib/xproxy/ntp-learned.yaml, interval: 15m}
+```
+
+It records every client, version and mode that crosses the listener, with
+the poll intervals they really use and whether any of it is
+authenticated, and writes out the three lists a policy is made of —
+`allow_clients`, `versions`, `modes` — ready to paste. While it is on and
+`enforce` is off it decides nothing, and it does not apply
+`allow_clients` either: a run written to discover the clients cannot be
+stopped from seeing them by the list it is discovering.
+
+**What the monitor says, and what to do about it.** Four states, kept
+apart because the next action differs: `unreachable` (no answer),
+`unsynchronised` (it answers and says not to use its time),
+`suspect` (it answers, claims to be fine and disagrees with its peers)
+and `healthy`. The transitions have hysteresis — `healthy_after` and
+`unhealthy_after`, three probes each by default — because one slow answer
+on a busy network is not a fault and a relay that moved every client in a
+plant on one sample would be an outage generator with a health check
+attached. `on_all_suspect` decides what happens when nothing is
+trustworthy: `pass` keeps the clocks running and keeps saying so,
+`refuse` stops them, and that is a deliberate outage rather than a wrong
+clock — so it warns.
+
+**What a relay costs, in time.** A packet through a relay takes one path
+out and another back, and the offset a client computes is wrong by half
+the difference: `(forward − reverse delay) / 2`. Nothing removes it. So
+the data path here is short — a compiled policy, no deep inspection (there
+is nothing in a time packet to inspect deeply), bounded queues, logging
+and learning off the forwarding path — and an estate that needs better than
+the asymmetry allows puts a time server near its consumers rather than a
+relay in front of a distant one. The same reasoning is why a one-way data
+diode cannot carry NTP at all: the protocol needs the round trip, so a
+network with no return path needs its own clock on the far side.
+
+`examples/ot/ntp.yaml` has all three listeners: the reverse gateway with
+the version and mode profile, the rate limits and the comparison; the
+forward egress with bounded destinations and a trace; and the key
+establishment relay.
 
 ### FTP with the data connection mediated
 

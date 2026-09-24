@@ -1751,6 +1751,291 @@ the refusal counters: `client_not_allowed`, `tls_handshake`,
 of its own: the frame falls through to the next rule, and to `no_rule` if
 none matches.
 
+### server.listeners[].ntp (kind: ntp)
+
+A `kind: ntp` listener is an NTP and NTS security gateway: it reads every
+packet, decides about it in the protocol's own terms, and compares the
+servers behind it with each other.
+
+Three jobs live on this port and only one of them is "forward a packet",
+so they are kept apart deliberately:
+
+- **forwarding** time packets between clients and servers, which is what
+  this listener does;
+- **authenticating** them, which belongs to whoever holds the key —
+  symmetric keys this listener can check, and NTS it deliberately cannot;
+- **keeping an accurate clock**, which is the local time daemon's job and
+  not this relay's. A relay that tried to be a time source would be a
+  time source nobody calibrated.
+
+What a relay can do that a client cannot is **compare**. It sees every
+server the estate has, measures each the same way, and can refuse to pass
+on an answer from a server whose time disagrees with its peers or whose
+own dispersion says not to trust it. A server that is reachable,
+synchronised, authenticated and *wrong* is the case every other check
+passes.
+
+It works in both directions. `mode: reverse` (the default) fronts the
+estate's own time servers: the devices point at this listener and it
+forwards to them. `mode: forward` is the controlled egress towards
+servers somewhere else, where `allow_servers` bounds the destinations.
+
+Datagram only: no TCP port is bound, so nothing can connect to one and
+hang. NTS key establishment is TCP and is a listener of its own
+(`kind: ntske`, below).
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `mode` | enum | `reverse` | `reverse` (clients here, servers upstream) or `forward` (this is the estate's egress) |
+| `upstream` | upstream | required | The pool of time servers. Fewer than three warns: with two, a disagreement can be reported but the wrong clock cannot be identified |
+| `versions` | list of int | `[3, 4]` | The protocol versions accepted. Versions 1 and 2 are accepted only when named, because a version 1 packet has no mode field; version 5 is `allow_version5` |
+| `modes` | list | `[client, server]` | `client`, `server`, `symmetric_active`, `symmetric_passive`, `broadcast`. Modes 6 (control) and 7 (private, which `monlist` belongs to) are **always refused** and cannot be named |
+| `allow_version5` | bool | `false` | Forward NTPv5 as opaque bytes, on a transaction socket of its own. It is never parsed with the version 4 parser |
+| `peers` | list of CIDR | `[]` | The networks a symmetric or broadcast association may come from. Required when such a mode is accepted |
+| `allow_manycast` | bool | `false` | Opt into manycast discovery |
+| `manycast_responders` | list of CIDR | `[]` | The addresses a manycast answer may come from. Required with `allow_manycast` |
+| `allow_clients` | list of CIDR | `[]` (any) | The networks a client may ask from. Empty warns: an open NTP port is also an amplifier |
+| `deny_clients` | list of CIDR | `[]` | Refused whatever the allow list says |
+| `allow_servers` | list of CIDR | `[]` (any) | The addresses this listener will send to, whatever the pool resolves to. The egress policy: a pool whose name starts resolving somewhere new does not quietly become a new destination, and an NTS key exchange that names another server cannot move the time traffic outside this list |
+| `auth` | object | | Symmetric authentication with pre-shared keys, below |
+| `nts` | object | | How Network Time Security is handled, below |
+| `extensions` | object | | What extension fields a packet may carry, below |
+| `quality` | object | | What is required of a server's answer, and how the servers are compared, below |
+| `holdover` | object | | How long a server whose time cannot be verified is still used, below |
+| `kod` | object | | The kiss-o'-death policy, below |
+| `interleaved` | bool | `true` | Accept interleaved mode, where a server's answer echoes its own previous transmit timestamp rather than the client's. It is how a server hands out a hardware-quality transmit timestamp; refusing it means refusing the most accurate exchange the protocol has |
+| `learn` | object | | Learning mode, below |
+| `trace` | object | | One line per packet, below |
+| `max_packet_bytes` | int | `1280` | One packet; 48..9000. The header is 48 octets and NTS makes a packet a few hundred |
+| `max_extensions` | int | `8` | Extension fields in one packet; 1..32 |
+| `max_associations` | int | `16384` | Client associations held. An association is an address **and port**, so this is also what stops forged sources filling the table |
+| `max_outstanding` | int | `4096` | Requests waiting for an answer. A separate table from the associations on purpose |
+| `idle_timeout` | duration | `30m` | Forget an association that has said nothing |
+| `request_timeout` | duration | `3s` | How long a server has to answer |
+| `rate_limit`, `rate_burst` | int | `0` (none) | Packets a second from one client address. Unset warns |
+| `prefix_rate_limit`, `prefix_rate_burst` | int | `0` (none) | The same for a network, because a subnet asking in unison is one problem rather than many |
+| `rate_prefix_length` | int | `24` v4, `56` v6 | The network the prefix limit counts by |
+| `log_packets` | bool | `false` | An access line per packet rather than per association |
+| `alert_on_deny` | bool | `true` | A security event for every refusal |
+
+**`auth`** is symmetric authentication. RFC 8573 makes AES-CMAC the
+algorithm: the older construction is MD5 over the key followed by the
+packet, which is a length-extension shape with a broken hash in it. The
+legacy algorithms are an explicit exception rather than a default,
+because a device from 2006 cannot be taught a new one and pretending
+otherwise ends with no authentication at all rather than weak
+authentication somebody knows about. **Autokey (RFC 5906) is not
+implemented and will not be**; its extension fields fall under the
+unknown-field policy like anything else this relay cannot reason about.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `require` | bool | `false` | Refuse a packet carrying no authentication this listener can check. NTS counts — and the listener says plainly it has not verified it, because only the party holding the key can |
+| `allow_legacy_algorithms` | bool | `false` | Accept a key whose algorithm is `md5` or `sha1`. It warns |
+| `probe_key_id` | int | `0` | The key the listener signs its own monitoring probes with, for a server that requires authentication |
+| `keys` | list | `[]` | `{id, algorithm, key_file}`: the identifier the packet carries (1..65535), `aes-cmac` (the default), `md5` or `sha1`, and an absolute path holding the key as hexadecimal or as the ASCII a `ntp.keys` file uses |
+
+**`nts`** is Network Time Security. The time exchanges are UDP 123 with
+authentication in extension fields; the key establishment is TLS on TCP
+4460 with the ALPN `ntske/1`, and that is the `ntske` listener.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `mode` | enum | `passthrough` | `passthrough` or `off`. Pass-through forwards NTS-protected packets whole and unaltered, which is the only honest thing a relay that does not hold the keys can do with them |
+| `require` | bool | `false` | Refuse a packet with no NTS fields. It is how a listener says "this estate is NTS only", and it is what makes the no-downgrade rule visible: an answer arriving without NTS fields for a request that had them is refused, **never** passed on as plain NTP |
+
+**Termination is deliberately absent rather than approximated.** Doing it
+honestly means deriving the NTS keys from the TLS exporter, holding the
+same cookie keys the time servers hold, rotating them with an overlap so
+a cookie issued before a rotation still works after it, and recovering
+all of that across a restart. An implementation that faked any part would
+be telling clients their time was authenticated when nobody had checked.
+And **the visible NTS fields prove nothing to this relay**: a unique
+identifier, a cookie and an authenticator field are all readable by
+anybody on the path, so "NTS is present" is a routing and preservation
+fact here, never an authentication one.
+
+**`extensions`** bounds what a packet may carry.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `allow_unknown` | bool | `false` | Forward a field whose type this relay does not know. Off by default: a relay cannot decide about an instruction it cannot read |
+| `refuse_ambiguous_mac` | bool | `true` | Refuse a packet whose tail is both a valid MAC and a valid extension field — the ambiguity RFC 7822 documents and cannot remove. A packet whose meaning depends on which reading the receiver picks is one two implementations will disagree about |
+| `max` | int | `8` | Fields in one packet |
+
+**`quality`** is what the listener requires of a server's answer, and how
+it compares the servers. Every bound here is about **responses**: a
+client's request carries a stratum, a root delay and a root dispersion
+too, and they mean nothing — the protocol does not ask a client to fill
+them in — so applying these to requests would refuse clients for empty
+fields.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `compare_sources` | bool | `true` | Run the monitor: the listener sends its own probes to every server, measures each the same way, and compares them. Off warns |
+| `probe_interval` | duration | `64s` | How often each server is measured; 1s..1h |
+| `max_disagreement` | duration | `100ms` | How far apart two sources may be before the listener says so |
+| `max_offset`, `max_delay` | duration | `0` (off) | Refuse an answer whose measured offset or round trip is past them |
+| `max_root_delay`, `max_root_dispersion` | duration | `0` (off) | Refuse an answer whose own statement of its error is past them |
+| `max_stratum` | int | `0` (the protocol's 15) | Refuse an answer from too far down the tree |
+| `refuse_unsynchronised` | bool | `true` | Refuse an answer from a server that says its own clock is not synchronised — by the leap indicator **or** by stratum 16, which are two separate statements |
+| `healthy_after`, `unhealthy_after` | int | `3` | The hysteresis: how many probes in a row it takes to change a server's state |
+| `on_all_suspect` | enum | `pass` | What happens when no server is usable: `pass` (keep forwarding and keep saying so) or `refuse`. A blanket fail-closed stops the estate's clocks, which is itself an outage, so `refuse` warns |
+
+The monitor keeps four states apart, because the operator's next action
+differs: **unreachable** (no answer), **unsynchronised** (it answers and
+says not to use its time), **suspect** (it answers, claims to be fine and
+disagrees with its peers) and **healthy**. With three or more sources the
+median is the estate's opinion and the outlier is named; with two that
+disagree neither can be called wrong, so both are marked and the event
+says exactly that.
+
+**`holdover`** bounds how long a server whose time cannot be verified is
+still used: `max_duration` (0 disables it). Past it the listener says the
+holdover has expired, and the estate's `on_all_suspect` decides whether
+that stops the answers.
+
+**`kod`** is the kiss-o'-death: a stratum-0 answer whose four reference
+identifier octets are a code. It is the protocol's own way of saying "not
+now", and a client that gets one backs off.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `on_rate_limit` | bool | `true` | Answer a rate-limited client with a `RATE` kiss rather than dropping its packet. A drop teaches a client nothing and it asks again |
+| `on_deny` | bool | `false` | Answer a policy refusal with a `DENY` kiss. Off by default: a refusal usually should not tell the client what the policy is |
+| `forward` | bool | `true` | Pass a server's own kiss-o'-death on to the client, which is the thing that has to back off |
+
+**`learn`** records what actually asks this listener for the time — the
+clients, the versions, the modes, whether any of it is authenticated, and
+the poll intervals it really uses — and writes it out as the three lists a
+policy is made of, ready to paste. `{enabled, file, interval (10s..24h,
+default 5m), max_subjects (default 8192), enforce}`. `enforce` is false
+by default and validation warns while it is off; a learning run also does
+not apply `allow_clients`, because a run written to discover the clients
+cannot be stopped from seeing them by the list it is discovering.
+
+**`trace`** writes one JSON object per packet:
+`{file, max_bytes (1MiB..64GiB, default 100MiB), requests, responses}`.
+At the bound it writes one line saying it stopped rather than filling the
+disk.
+
+#### Architectural decisions
+
+**Packets are forwarded as the bytes that arrived.** Never re-encoded. An
+NTS-protected packet re-encoded is a packet the client will reject; an
+authenticated one re-encoded is worse. So the client's own transmit
+timestamp reaches the server and the server's own answer reaches the
+client, which is what lets the client verify the exchange itself — the
+relay is in the path, not in the middle of the cryptography.
+
+**Every timeout, expiry and rate limit is on the monotonic clock.** This
+is a relay for the protocol that changes the wall clock. Wall-clock
+arithmetic here would be a timeout that fires when the time is set: every
+association expiring at once when the clock jumps forward, and none of
+them ever when it jumps back.
+
+**The association table and the outstanding-request table are separate.**
+An association is a client address and port, and its server is chosen
+once and kept: a client that asked a different server every poll would
+see a different offset every poll, and the jitter it measured would be
+the relay's doing. Nothing here is round robin per packet, and nothing
+hedges. The outstanding table is keyed by the backend and the client's
+transmit timestamp, because a client may have several requests in flight,
+an answer may arrive after its association moved, and a server may answer
+something nobody asked — and each of those is a counter rather than a
+confusion.
+
+**An answer is tied to its question by the origin timestamp.** That is
+the only thing in NTP that ties them, so an answer whose origin matches
+no outstanding request is dropped and counted (`ntp_unsolicited`), even
+though it came from the right address on a connected socket. Interleaved
+mode is the documented exception: there the server echoes its own
+previous transmit timestamp, which is a second table and a switch of its
+own.
+
+**Version and mode dispatch happen before the parser.** A mode 6 or mode
+7 packet is not a time packet with an odd number in it — it is the control
+protocol and the vendor-private protocol, whose headers are not this one,
+and whose `monlist` request is the amplifier this port is famous for. A
+version 5 packet is a different layout again. All three are refused from
+the first octet, before any field of the body is read; `allow_version5`
+forwards version 5 as opaque bytes rather than parsing it.
+
+**The relay adds asymmetry, and that is a number.** A packet through a
+relay takes one path out and another back, and the offset a client
+computes is wrong by half the difference between them: `(forward −
+reverse delay) / 2`. Nothing can remove it, so the data path is kept
+short — the policy is compiled, the logging and the learning are off the
+forwarding path, the queues are bounded, and there is no deep inspection
+of anything, because there is nothing in a time packet to inspect deeply.
+An estate that needs better than the asymmetry allows puts a time server
+near its consumers rather than a relay.
+
+Counters: `ntp_requests`, `ntp_forwarded`, `ntp_responses`,
+`ntp_answered`, `ntp_denied`, `ntp_would_deny`, `ntp_dropped`,
+`ntp_malformed`, `ntp_unsolicited`, `ntp_rate_limited`, `ntp_kiss_sent`,
+`ntp_timed_out`, `ntp_associations`, `ntp_associations_open`,
+`ntp_upstream_failed`, `ntp_upstream_unavailable`, `ntp_send_failed`,
+`ntp_interleaved`, `ntp_nts_forwarded`, `ntp_version5`, `ntp_probes`,
+`ntp_probe_failed`, `ntp_disagreements`, `ntp_source_healthy`,
+`ntp_source_unhealthy`, `ntp_holdover_expired`. Refusals are `ntp_denied`
+for the ban triggers, and the fine-grained reason is in the refusal
+counters: `banned`, `client_not_allowed`, `rate_limit`, `control_mode`,
+`private_mode`, `version5`, `version`, `version_not_allowed`,
+`mode_not_allowed`, `not_a_peer`, `broadcast_not_allowed`, `malformed`,
+`packet_too_large`, `too_many_extensions`, `unknown_extension`,
+`ambiguous_mac`, `nts_required`, `auth_required`, `auth_failed`,
+`max_associations`, `outstanding_full`, `no_server`,
+`server_not_allowed`, `malformed_response`, `unsolicited`,
+`response_mode`, `kiss_of_death`, `unsynchronised`,
+`unsynchronised_stratum`, `stratum_too_high`, `root_delay`,
+`root_dispersion`, `delay`, `offset`, `nts_stripped`, `auth_stripped`.
+
+### server.listeners[].ntske (kind: ntske)
+
+A `kind: ntske` listener is NTS key establishment (RFC 8915) on TCP 4460:
+TLS with the ALPN `ntske/1`, relayed to the key establishment servers
+whose keys it is.
+
+It is a separate listener from `kind: ntp` because it is a separate port,
+a separate transport and a separate security property. A deployment that
+wants NTS runs both, and having to write both down is the point: an
+estate with a time listener and no key establishment listener has clients
+that cannot get cookies, and that is better seen in the configuration
+than found in the logs.
+
+It **relays** rather than terminates, for the reasons under `nts` above.
+What it does is the part a relay can do honestly: read the one thing a
+TLS handshake shows in the clear — the server name and the application
+protocol the client offers — refuse a connection that is not an NTS
+client, bound the handshakes in flight, and hand the rest to the server.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | upstream | required | The pool of key establishment servers |
+| `allow_clients`, `deny_clients` | list of CIDR | `[]` | The networks a client may connect from. Deny first |
+| `server_names` | list | `[]` (any) | The server names a client may ask for, as exact names or `*.example` patterns |
+| `require_alpn` | bool | `true` | Refuse a connection that does not offer `ntske/1`. Off warns: the application protocol is the only thing the handshake shows that says what a connection is for |
+| `max_connections` | int | `256` | Live sessions |
+| `max_concurrent_handshakes` | int | `32` | Handshakes in flight. A TLS handshake is the expensive part of NTS and a flood of them is this port's denial of service; a client that cannot get a slot is refused rather than queued, because a queue here is a queue of handshakes |
+| `handshake_timeout` | duration | `10s` | How long a client has to get through the handshake |
+| `idle_timeout` | duration | `30s` | A key establishment is a handshake and a short exchange, not a session anybody holds open |
+| `max_bytes` | int | `65536` | One session's traffic each way |
+| `log_sessions` | bool | `false` | An access line per session |
+| `alert_on_deny` | bool | `true` | A security event for every refusal |
+
+A deployment on a port other than 4460 warns: a client that found this
+service through a server's own key establishment record will look for
+4460.
+
+Counters: `ntske_sessions`, `ntske_relayed`, `ntske_refused`,
+`ntske_rejected`, `ntske_not_nts`, `ntske_handshake_limited`,
+`ntske_upstream_failed`. Refusals are `ntske_denied` for the ban
+triggers, with the reasons `banned`, `client_not_allowed`,
+`max_connections`, `handshake_limit`, `not_tls`, `no_hello`,
+`incomplete_hello`, `hello_too_large`, `alpn_not_offered` and
+`server_name_not_allowed`.
+
 ### server.listeners[].vnc (kind: vnc)
 
 A `kind: vnc` listener is a VNC gateway: the proxy is an RFB server to
@@ -4652,7 +4937,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `modbus_denied`, `yara` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `modbus_denied`, `ntp_denied`, `ntske_denied`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |

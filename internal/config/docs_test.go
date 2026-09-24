@@ -4,6 +4,7 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -87,6 +88,35 @@ func TestDecoyReferenceComplete(t *testing.T) {
 	}
 	if found != len(HoneypotDecoys) {
 		t.Errorf("the decoy tables hold %d rows for %d decoys", found, len(HoneypotDecoys))
+	}
+}
+
+// TestDecoyCountIsWhatTheDocsSay keeps the two places that put a number
+// on the decoy set in step with the set itself.
+//
+// A number in prose is the one kind of documentation that cannot be
+// checked by reading it, and this one was wrong: the README and
+// docs/DECEPTION.md both said 142 while the build carried 138. A reader
+// cannot tell, and an operator who counts them has found a discrepancy
+// they now have to explain.
+func TestDecoyCountIsWhatTheDocsSay(t *testing.T) {
+	want := len(HoneypotDecoys)
+	for _, f := range []struct{ path, pattern string }{
+		{"../../README.md", `([0-9]+) built-in decoys`},
+		{"../../docs/DECEPTION.md", `The build carries ([0-9]+) of them`},
+	} {
+		doc, err := os.ReadFile(f.path)
+		if err != nil {
+			t.Skip("docs not available:", err)
+		}
+		m := regexp.MustCompile(f.pattern).FindStringSubmatch(string(doc))
+		if m == nil {
+			t.Errorf("%s no longer states how many decoys the build carries", f.path)
+			continue
+		}
+		if got, err := strconv.Atoi(m[1]); err != nil || got != want {
+			t.Errorf("%s says %s decoys, the build carries %d", f.path, m[1], want)
+		}
 	}
 }
 
