@@ -213,10 +213,16 @@ func (t *server) handle(client net.Conn) {
 	buf := make([]byte, 0, 4096)
 	sni := ""
 	for {
-		// A connection that has said nothing yet is given the settle
-		// timeout; once it has started speaking it gets the hard bound,
-		// because a ClientHello split across packets is ordinary.
-		deadline := time.Now().Add(helloSettleTimeout)
+		// A default-only connection that has said nothing yet is given the
+		// settle timeout. Once it has started speaking it gets the hard
+		// bound, because a ClientHello split across packets is ordinary.
+		deadline := hard
+		// Silence is only enough to select the default when there are no
+		// SNI routes to bypass. With routes configured, wait for the hard
+		// bound so a delayed ClientHello cannot be sent to the default.
+		if len(t.cfg.TCP.Routes) == 0 {
+			deadline = time.Now().Add(helloSettleTimeout)
+		}
 		if len(buf) > 0 || deadline.After(hard) {
 			deadline = hard
 		}
