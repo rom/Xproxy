@@ -922,6 +922,15 @@ func applyDefaults(c *Config) {
 				setDur(&in.CacheTTL, DefaultIntrospectionCacheTTL)
 				setDur(&in.Timeout, DefaultIntrospectionTimeout)
 			}
+			if tx := p.TokenExchange; tx != nil {
+				setDur(&tx.CacheTTL, DefaultIntrospectionCacheTTL)
+				setDur(&tx.Timeout, DefaultIntrospectionTimeout)
+			}
+			if d := p.DPoP; d != nil {
+				setStr(&d.Mode, "off")
+				setDur(&d.MaxAge, time.Minute)
+				setInt(&d.ReplayEntries, 65536)
+			}
 			setDur(&p.ClockSkew, 30*time.Second)
 			setStr(&p.Source, "bearer")
 		}

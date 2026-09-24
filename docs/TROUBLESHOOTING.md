@@ -1150,9 +1150,78 @@ to the cause:
 | `issuer`, `audience` | The claim does not match the configuration. Absence also fails — deliberately |
 | `algorithm` | The token's algorithm is not in the allowed list (`none` never is) |
 | `keys_unavailable` | The key set never loaded. 503, not 401, because it is the proxy's problem |
+| `exchange_refused` | The authorization server refused to exchange the token for this audience. 403: the token is valid and this backend is not somewhere it reaches |
+| `exchange_unavailable` | The token endpoint could not be asked. 503 with `Retry-After`, because it is the proxy's problem |
+| `dpop_missing` | The token says it is bound to a key (`cnf.jkt`) and no `DPoP` header came with it |
+| `dpop_unbound` | `dpop.mode: require` and the token carries no `cnf.jkt` at all |
+| `dpop_binding` | The proof is valid and signed by a *different* key than the token names |
+| `dpop_replay` | That proof's `jti` has been used inside its window |
+| `dpop_proof` | The proof itself: the type, the algorithm, the signature, `htm`, `htu`, `iat`, `ath`, or its shape |
 
 `keys_unavailable` is the one to escalate: check `jwks_url`,
 `jwks_ca_file` and egress from the proxy to the provider.
+
+**Everything gets 403 `exchange_refused` after `token_exchange` went on.**
+The authorization server considered the request and said no, so its own
+logs name the reason; the usual causes are a `client_id` that is not
+registered for the token-exchange grant, an `audience` or `resource` that
+is not a client it knows, or `scopes` the subject is not entitled to at
+that audience. Start by removing `scopes` and letting the server decide
+what the audience gets. A refusal is cached for `cache_ttl`, so a fix at
+the authorization server takes up to that long to show — or a reload,
+which builds a fresh cache.
+
+**403 `exchange_refused` for one client only.** That client's token cannot
+be exchanged for this audience: the subject is not entitled to the backend,
+which is the control working. The alternative reading — that the client's
+token is fine and the audience is wrong — shows up as *every* client
+failing, not one.
+
+**The backend says it got no credential at all.** Three possibilities.
+`token_exchange.required: false` is set and the exchange failed, which is
+exactly what that setting does and what validation warns about. The
+`header` names something the backend does not read — note that any header
+other than `Authorization` carries the bare token with no `Bearer ` in
+front. Or `strip_token` removed the client's token and the exchange is not
+configured on the provider the route names.
+
+**The authorization server is being hammered.** Calls in flight are bounded
+at 32 per provider and answers are cached for `cache_ttl`, so a steady
+stream of *distinct* tokens is the only shape that produces load —
+short-lived tokens with `cache_ttl` longer than their life do not help,
+because the cache never outlives what was issued. Raise the token lifetime
+at the authorization server, not `cache_ttl`.
+
+**Every request fails with `dpop_proof` after `dpop` went on.** Four
+causes, in the order worth checking. The client's proof signs the URI *it*
+used and this process compares it with the URI *it* saw: behind another
+TLS-terminating proxy those differ, and `dpop.external_url` is the answer
+— the scheme is deliberately never taken from `X-Forwarded-Proto`, because
+a client that can set that header could otherwise choose which URI its
+proof has to match. The client's clock may be outside `max_age` plus
+`clock_skew` in either direction. The proof's algorithm may not be in
+`dpop.algorithms` (the default list has no RS256 in it). Or the client is
+not sending `ath`, which RFC 9449 requires beside an access token.
+
+**`dpop_binding` for one client only.** That client's proof verifies and
+names a key the token was not issued for. Either it is using a different
+key than the one it registered at the token endpoint — a key rotation on
+its side that the authorization server has not seen — or the token is not
+that client's. The security log's `dpop_jkt` is absent on a refusal and
+present on success, so comparing a working client's value with the token's
+`cnf.jkt` settles which.
+
+**`dpop_missing` where the client does send a proof.** The proof travels in
+the `DPoP` header and the token in `Authorization`. A load balancer or
+service mesh in front that strips unknown headers takes the proof with it.
+Check what reaches this proxy, not what the client sent.
+
+**A client's requests stop working under load with `dpop_replay`.** Either
+it is reusing one `jti`, which is a client bug (the identifier is meant to
+be fresh per request), or a retry is re-sending the same proof after a
+timeout — which is the same thing from the proxy's side, and correct to
+refuse. `replay_entries` does not cause this: over its bound the table
+drops entries, which loses protection rather than adding refusals.
 
 **Introspection accepts nothing.** A missing `iss` or `aud` in the
 introspection response fails, the same as on the JWT path. If your
@@ -1271,9 +1340,111 @@ is the contract here. `strict_query` refuses undeclared parameters; a
 repeated parameter is validated for *every* value, not just the first.
 Update the description or relax the filter.
 
+**The backend stopped seeing `X-SSL-Client-DN` (or another certificate
+identity header) it used to read.** Those headers are now removed from
+every request that did not arrive from a peer inside `trusted_proxies`,
+because a client that can send one chooses its own identity and the
+backend cannot tell the two apart. Two fixes, depending on who was
+setting it. If this proxy terminates the TLS, set
+`routes[].client_cert_headers: rfc9440` (or `xfcc`), or set the backend's
+own header name from `${cert:...}` in `request_headers.set`. If another
+proxy in front terminates it and sets the header, add that proxy's network
+to `trusted_proxies` — which is the same switch that decides whether its
+`X-Forwarded-For` is believed, and for the same reason.
+
+**A backend reads `Client-Cert` and gets nothing on a plaintext
+listener.** Correct: there is no certificate, so there is nothing to
+state, and an empty header would mean whatever the backend's parser makes
+of emptiness. The absence is the answer.
+
+**`Client-Cert` does not parse at the backend.** It is a Structured Fields
+Byte Sequence (RFC 8941): standard base64, padded, between colons. A
+parser expecting URL-safe base64, or one that forgets to strip the colons,
+fails on a correct value. `openssl x509 -in <(printf %s "$v" | tr -d : |
+base64 -d) -inform DER -noout -subject` is the shell check.
+
+**`openapi` refuses an array or object parameter the client spells
+correctly.** Check the parameter's `style` in the description against what
+the client sends. A `pipeDelimited` array (`?ids=1|2`) sent to a parameter
+with no `style` is one value that is not a number, because the default is
+comma-separated — the description is the thing to fix, not the client. An
+object parameter must be declared `style: deepObject` for
+`?filter[from]=x` to be read as that object; without it the filter looks
+for a parameter called `filter`, finds nothing, and calls a required
+parameter missing. `label` and `matrix` path parameters are read by their
+own separators; other exotic styles are not, and a parameter that needs
+one is better declared with `content` instead.
+
+**`openapi` answers 401 with detail `security` for requests that used to
+work.** `require_security` is enforcing the description's own `security`
+section. Three causes worth checking in order. The credential is going to
+a different place than the description says — compare
+`components.securitySchemes` against what the client actually sends. An
+authentication filter earlier in the same chain *consumed* the header, so
+by the time this filter looks there is nothing there; put this filter
+before that one. Or the description is wrong: an operation inherited the
+global requirement when it should have declared `security: []`. The
+security log line carries `security_schemes` with the names of the
+alternative that was expected.
+
+**A warning at every load: "openapi description asks for a credential
+that is not being enforced".** The description declares `security` on
+that many operations and `require_security` is off, so the section is
+being read as documentation. Either turn it on, or — if authentication is
+terminated somewhere else entirely — the warning is the reminder that
+this filter is not the thing enforcing it.
+
+**`openapi` answers 400 with detail `read_only:body.<field>`.** The body
+carries a property the description marks `readOnly`, which OpenAPI says
+must not be sent. The usual innocent cause is a client that GETs an
+object and PUTs the whole thing back, server-owned fields included. Use
+`read_only: log` for a while: the request goes through and the access log
+carries `openapi_read_only` with the properties, which is how to see
+whether `deny` would break the clients before it does.
+
+**A form body started being refused.** `application/x-www-form-urlencoded`
+bodies are validated against their declared schema now, where they used
+to be forwarded unchecked. The detail is `schema:body.<field>` as it is
+for JSON. Fields are coerced by what the schema says they are, so
+`remember=perhaps` against `type: boolean` is a type error — which is
+what the application would have made of it too, less predictably.
+`validate_body: false` turns the whole body check off if the schema and
+the clients disagree and the schema is the one that is wrong.
+
 **`graphql` refuses with `expansion`.** The query's fragments expand
 past the visit budget. A legitimate query does not; a generated one
 might, and should be simplified.
+
+**`graphql` refuses with `get_mutation`.** A mutation or subscription
+arrived by GET, which the GraphQL over HTTP specification does not allow
+and no option here permits: a GET is what a link, an image tag, a
+prefetch and a crawler all produce, so a mutation reachable that way is
+one anybody can fire from another origin with the browser attaching the
+cookies. Send it by POST. A client that uses GET for everything is a
+client to fix, not a bound to relax.
+
+**`graphql` refuses with `unnamed` or `operation`.**
+`require_operation_name` is on (possibly because `allow_operations` is
+set, which implies it) and the client sent an anonymous operation; or the
+operation's name is not on the list. `xproxyctl` does not enumerate the
+names — the security log line carries the detail, and the client's own
+query is the other half. Adding a name to the list is a deliberate act;
+that is the point of the list.
+
+**`graphql` refuses with `persisted`.** The request carried no query
+text, only a hash the origin would look up, and `persisted: deny` says an
+unreadable query is not an allowed one. If persisted queries are how the
+clients work, this is the wrong setting for that route: nothing here can
+bound a document it cannot see, and the bound has to live at the origin
+instead.
+
+**A `graphql` complexity refusal disagrees with the query's own
+arithmetic.** Variables are read now, so `friends(first: $n)` costs what
+the request says `n` is — but only when the request carries it as a whole
+non-negative number. A variable with a schema default the filter never
+sees, or one the client omits, is scored as `max_list`, which is usually
+the surprise. The other half is that a larger literal beside a smaller
+variable still wins.
 
 **`account_guard` blocks a real user.** `xproxyctl accounts` shows the
 ladder state per key. Counts keyed on the account belong to the person

@@ -1430,6 +1430,37 @@
       },
       "additionalProperties": false
     },
+    "DPoP": {
+      "description": "DPoP is demonstrating proof of possession, RFC 9449. A bearer token is a password: whoever holds it is whoever it says. That is why a token stolen from a log, a browser's storage, a proxy's cache or a crash dump is as good as the original — nothing about the request says it came from the client the token was issued to. DPoP adds that. The client keeps a key pair, the authorization server records the public key's thumbprint in the token (cnf.jkt), and every request carries a small JWT signed with the private key over this method, this URI and this moment. A stolen token without the key produces no proof, and a proof captured from one request does not fit another.",
+      "type": "object",
+      "properties": {
+        "algorithms": {
+          "description": "Algorithms allowed in a proof, from the asymmetric set (RS*, PS*, ES*, EdDSA). Default ES256, ES384, ES512, PS256, PS384, PS512, EdDSA. Nothing symmetric is permitted: a proof the verifier could have written itself proves nothing about the client.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "external_url": {
+          "description": "ExternalURL is the scheme and authority the client sees, for the htu comparison, when this proxy is behind another one that terminates TLS. Without it the scheme comes from the connection and the authority from the Host header — never from X-Forwarded-Proto, because a client that can set that header could otherwise choose which URI its proof has to match.",
+          "type": "string"
+        },
+        "max_age": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "mode": {
+          "description": "Mode is off (default), allow or require. allow verifies a proof whenever the access token says it is bound to a key, and refuses a bound token presented without one — which is the replay this exists to stop — while leaving an ordinary bearer token alone. It therefore costs nothing to turn on. require additionally refuses an access token that carries no cnf.jkt: on that route, only sender-constrained tokens are accepted.",
+          "type": "string"
+        },
+        "replay_entries": {
+          "description": "ReplayEntries bounds the table of spent proof identifiers. Default 65536. The identifiers come from clients, so the bound is a decision rather than an accident.",
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
     "Deceive": {
       "description": "Deceive answers a client the proxy no longer trusts with something plausible instead of with the origin's answer — or with a refusal. A refusal is information. A scanner that gets 403 knows the request it sent was the interesting one, and varies it until something is not refused; the refusal is the oracle that tells it when it has found the way through. An answer that looks ordinary gives it nothing to steer by: the crawl completes, the data is wrong, and the request that would have worked looks exactly like the one that did not. It is a deliberately sharp tool, and the rules follow from that: - It applies only to clients the proxy already has a reason to distrust — a honeypot or honeytoken mark, a bot score, a named network. A route with no condition is refused at validation, because a deceive that admits everyone is an outage that looks like a feature. - The write never reaches the origin. That is the point for a POST, and it means a false positive loses a client's data, so the conditions are worth being sure of. - It is loud on the inside. The access log line carries deceived: \u003croute\u003e, a security event records it, and the counter and metric are separate from every other refusal, so nobody debugs a \"working\" endpoint for a week.",
       "type": "object",
@@ -2601,6 +2632,14 @@
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
         },
+        "dpop": {
+          "description": "DPoP requires the client to prove it holds the key the token is bound to (RFC 9449).",
+          "allOf": [
+            {
+              "$ref": "#/$defs/DPoP"
+            }
+          ]
+        },
         "forward_claims": {
           "description": "ForwardClaims maps upstream header names to claim names. Client supplied values of these headers are always removed first.",
           "type": "object",
@@ -2665,6 +2704,14 @@
         "strip_token": {
           "description": "StripToken removes the token from the forwarded request. Default true.",
           "type": "boolean"
+        },
+        "token_exchange": {
+          "description": "TokenExchange swaps the client's token for one issued to the backend (RFC 8693), so what is forwarded is not a credential that works at the front door.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/TokenExchange"
+            }
+          ]
         }
       },
       "additionalProperties": false
@@ -4048,6 +4095,10 @@
               "$ref": "#/$defs/RouteChallenge"
             }
           ]
+        },
+        "client_cert_headers": {
+          "description": "ClientCertHeaders states the client's TLS certificate to the backend: none (the default), rfc9440 (Client-Cert and Client-Cert-Chain, RFC 9440) or xfcc (Envoy's X-Forwarded-Client-Cert). Whatever this says, a client's own copy of any of those headers is removed from every request that did not arrive from a peer inside trusted_proxies: the backend cannot tell the proxy's header from the client's, so a client that can send one chooses its own identity.",
+          "type": "string"
         },
         "compress": {
           "description": "Compress overrides the compression section for this route: false turns it off, true requires the section.",
@@ -6082,6 +6133,64 @@
         },
         "upstream": {
           "description": "Upstream is the pool of targets. Required.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "TokenExchange": {
+      "description": "TokenExchange is an RFC 8693 exchange at the token endpoint. A token the client sent to the gateway is a token the gateway forwards, and everything behind the gateway then holds a credential that works at the gateway. That is the confused-deputy problem in one sentence: a backend with a bug — a log line, an error page, an outbound request to somewhere it should not go — leaks a token that reaches the front door again with all of the client's scopes on it. Exchange replaces it. The proxy presents the verified client token to the authorization server and asks for one issued for *this* backend: a different audience, usually fewer scopes, and no standing anywhere else. The backend never sees the client's token, so there is nothing there to leak that would work at the gateway. The client's identity survives — the authorization server puts the same subject in the new token, which is what makes this an exchange rather than an impersonation.",
+      "type": "object",
+      "properties": {
+        "required": {
+          "description": "Required refuses the request when the exchange fails. Default true: forwarding the client's token after failing to replace it would quietly undo the control on exactly the requests where it went wrong.",
+          "type": "boolean"
+        },
+        "audience": {
+          "description": "Audience and Resource say who the new token is for: the backend's identifier at the authorization server, or its URI. At least one is required — an exchange that names neither asks for a token as broad as the one it replaces, which is the whole point undone.",
+          "type": "string"
+        },
+        "ca_file": {
+          "description": "CAFile pins the CA for the endpoint. Default: system pool.",
+          "type": "string"
+        },
+        "cache_ttl": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "client_id": {
+          "description": "ClientID and ClientSecretFile authenticate the proxy to the authorization server with HTTP basic authentication.",
+          "type": "string"
+        },
+        "client_secret_file": {
+          "type": "string"
+        },
+        "header": {
+          "description": "Header is where the new token goes. Default Authorization, as \"Bearer \u003ctoken\u003e\"; any other name carries the token alone.",
+          "type": "string"
+        },
+        "requested_token_type": {
+          "description": "RequestedTokenType asks for a particular token type. Default: the authorization server's choice, which must be an access token or a JWT — a refresh token forwarded as an access token would be a long-lived credential handed to a backend.",
+          "type": "string"
+        },
+        "resource": {
+          "type": "string"
+        },
+        "scopes": {
+          "description": "Scopes asks for a subset. Empty leaves the decision to the authorization server, which will usually issue what the audience is entitled to.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "url": {
+          "description": "URL is the token endpoint (https).",
           "type": "string"
         }
       },

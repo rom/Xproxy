@@ -19,6 +19,14 @@ filters:
       spec_file: /etc/xproxy/openapi/orders.yaml   # examples/filters/orders-openapi.yaml
       strict_query: true
       max_body_bytes: 262144
+      # The description says which operations need a credential. Without
+      # this that is documentation; with it, an endpoint the application
+      # forgot to protect is refused here instead of answered there.
+      require_security: true
+      # readOnly properties are the ones the server owns. log first:
+      # a client that GETs an object and PUTs it back sends them, so
+      # find out what the clients do before refusing them.
+      read_only: log
   - name: gql
     kind: graphql
     options:
@@ -27,6 +35,17 @@ filters:
       max_aliases: 10
       max_batch: 1
       introspection: false
+      # Breadth and directives: depth says nothing about either.
+      max_root_fields: 15
+      max_directives: 50
+      # This API is read through the gateway and written through another
+      # route, so nothing here mutates.
+      mutations: deny
+      subscriptions: deny
+      # A query nobody named cannot be judged against a list, and a
+      # persisted query cannot be judged at all.
+      require_operation_name: true
+      persisted: deny
   # gRPC calls are length-prefixed protobuf inside the body. Routing
   # them by path reads the envelope; this reads the messages, which is
   # where a bound on one message, on how deeply it nests and on how

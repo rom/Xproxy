@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/rom/xproxy/internal/filter"
 )
@@ -38,6 +39,11 @@ func (f *jwtFilter) extract(r *http.Request) (string, bool) {
 		v := r.Header.Get("Authorization")
 		if len(v) > 7 && strings.EqualFold(v[:7], "Bearer ") {
 			return strings.TrimSpace(v[7:]), true
+		}
+		// RFC 9449 gives a sender-constrained token its own scheme, so a
+		// server that only reads "Bearer " does not see the token at all.
+		if f.p.dpop.on() && len(v) > 5 && strings.EqualFold(v[:5], "DPoP ") {
+			return strings.TrimSpace(v[5:]), true
 		}
 		return "", false
 	case strings.HasPrefix(src, "header:"):
@@ -98,8 +104,50 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 		}
 		return deny(http.StatusUnauthorized, category(err), `Bearer realm="xproxy", error="invalid_token"`)
 	}
+	// The proof is checked against claims this proxy has verified:
+	// reading cnf.jkt out of an unverified token would let an attacker
+	// write their own thumbprint into it.
+	if f.p.dpop.on() {
+		thumb, derr := f.p.dpop.check(r, token, claims, time.Now())
+		if derr != nil {
+			return dpopDeny(derr, f.p.dpop.algList)
+		}
+		if thumb != "" {
+			in.attrs = append(in.attrs, "dpop_jkt", thumb)
+		}
+		// The proof belongs to this hop. Forwarding it invites the
+		// backend to verify it against its own URI, which will not match,
+		// and leaves a signed statement about this request in a log
+		// somewhere else.
+		r.Header.Del("DPoP")
+	}
 	if cfg.Strips() {
 		f.strip(r)
+	}
+	// The exchange runs on a verified token and never before: asking the
+	// authorization server about whatever a client posted would be
+	// spending its capacity on this proxy's behalf, and caching the answer
+	// by the token's digest would let one client's garbage fill the table.
+	if f.p.swap != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), f.p.swap.client.Timeout)
+		out, xerr := f.p.swap.exchange(ctx, token, time.Now())
+		cancel()
+		switch {
+		case xerr == nil:
+			f.p.swap.place(r.Header, out)
+			in.attrs = append(in.attrs, "token_exchange", "ok")
+		case !cfg.TokenExchange.Requires():
+			// The operator asked for the request to go on. It goes on
+			// without the exchanged token, and without the client's
+			// either: the strip already happened, and putting it back
+			// would forward the credential this exists to withhold.
+			in.attrs = append(in.attrs, "token_exchange", "failed")
+		case errors.Is(xerr, ErrExchangeRefused):
+			return filter.Verdict{Deny: true, Status: http.StatusForbidden, Reason: "jwt", Detail: "exchange_refused"}
+		default:
+			return filter.Verdict{Deny: true, Status: http.StatusServiceUnavailable, Reason: "jwt",
+				Detail: "exchange_unavailable", Headers: map[string]string{"Retry-After": "5"}}
+		}
 	}
 	for h, claim := range cfg.ForwardClaims {
 		if v, ok := claims[claim]; ok {
@@ -116,6 +164,29 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 		}
 	}
 	return filter.Continue
+}
+
+// dpopDeny answers a proof problem the way RFC 9449 section 7.1 says to:
+// invalid_dpop_proof for the proof, invalid_token for a token this route
+// will not take as a bearer token, and the algs the client should have
+// signed with either way.
+func dpopDeny(err error, algs string) filter.Verdict {
+	detail, code := "dpop_proof", "invalid_dpop_proof"
+	switch {
+	case errors.Is(err, ErrDPoPMissing):
+		detail, code = "dpop_missing", "invalid_token"
+	case errors.Is(err, ErrDPoPUnbound):
+		detail, code = "dpop_unbound", "invalid_token"
+	case errors.Is(err, ErrDPoPBinding):
+		detail = "dpop_binding"
+	case errors.Is(err, ErrDPoPReplay):
+		detail = "dpop_replay"
+	}
+	challenge := `DPoP error="` + code + `"`
+	if algs != "" {
+		challenge += `, algs="` + algs + `"`
+	}
+	return deny(http.StatusUnauthorized, detail, challenge)
 }
 
 func deny(status int, detail, challenge string) filter.Verdict {

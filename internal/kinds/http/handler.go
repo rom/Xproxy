@@ -965,8 +965,21 @@ func (s *engine) rewrite(pr *httputil.ProxyRequest, st *reqState, cr *compiledRo
 		grpcWebRequest(out, in.Header.Get("Content-Type"))
 	}
 	// Forwarding headers: only a trusted peer's chain is preserved.
-	if netutil.Contains(rt.trusted, netutil.RemoteAddr(in)) {
+	trustedPeer := netutil.Contains(rt.trusted, netutil.RemoteAddr(in))
+	if trustedPeer {
 		out.Header["X-Forwarded-For"] = in.Header["X-Forwarded-For"]
+	}
+	// The client certificate identity headers are a statement about a
+	// handshake only a terminating proxy can have seen, and the backend
+	// cannot tell the proxy's copy from the client's -- they are the same
+	// bytes in the same field. A request carrying its own is a request
+	// choosing its own identity, so they go, unless the peer is a proxy
+	// this one trusts (RFC 9440 section 3).
+	if !trustedPeer {
+		stripClientCert(out.Header)
+	}
+	if in.TLS != nil {
+		sendClientCert(out.Header, in.TLS.PeerCertificates, cr.cfg.ClientCertHeaders)
 	}
 	pr.SetXForwarded()
 	out.Header.Set("X-Real-Ip", st.clientIP.String())

@@ -2931,11 +2931,46 @@ rewrites and redirects and is kept literally in pages.
 | `country`, `ja4` | GeoIP country code and TLS client fingerprint, empty when unknown |
 | `tls_version`, `tls_cipher` | TLS parameters of the client connection |
 | `header:Name`, `cookie:name`, `query:name` | a request header, cookie or query parameter |
-| `cert:field` | the client certificate of a listener with `client_auth` (empty without one): `cn`, `subject` and `issuer` (RFC 2253), `serial` (hex), `fingerprint` (SHA-256 of the DER, hex), `sans` (DNS names, addresses, emails and URIs, comma separated), `not_after` (RFC 3339), `xfcc` (an Envoy style `X-Forwarded-Client-Cert` value with `Hash`, `Subject`, `URI` and `DNS`) and `pem` (URL encoded PEM). Set the header with `request_headers.set`, which also discards a client supplied copy |
+| `cert:field` | the client certificate of a listener with `client_auth` (empty without one): `cn`, `subject` and `issuer` (RFC 2253), `serial` (hex), `fingerprint` (SHA-256 of the DER, hex), `sans` (DNS names, addresses, emails and URIs, comma separated), `not_after` (RFC 3339), `client_cert` (RFC 9440's Structured Fields Byte Sequence: standard base64 of the DER between colons), `xfcc` (an Envoy style `X-Forwarded-Client-Cert` value with `Hash`, `Subject`, `URI` and `DNS`) and `pem` (URL encoded PEM). Set the header with `request_headers.set`, which also discards a client supplied copy |
 | `1` to `9`, `name` | groups of `rewrite_regex.pattern` or, without one, of the matching `path_regex` (numbered and named) |
 | `status`, `status_text`, `reason` | error pages only: the status, its phrase and the denial category (`acl`, `rate_limit`, `waf`, `banned`, `upstream`...) |
 | `time` | current time, RFC 3339, UTC |
 | `date`, `hour`, `minute`, `weekday` | current date (`2026-09-19`), hour (`0` to `23`), minute and weekday (`Mon` to `Sun`), UTC |
+
+### Client certificate identity headers
+
+A backend behind a TLS-terminating proxy cannot see the handshake, so the
+proxy tells it. RFC 9440 standardises `Client-Cert` and
+`Client-Cert-Chain` for that; Envoy has used `X-Forwarded-Client-Cert`
+for years; and nginx and Apache deployments read a handful of
+`X-SSL-Client-*` names their own configurations set. Every one of them is
+a statement about something only the terminating proxy can know.
+
+Which makes every one of them an authentication bypass when a client can
+send it. The backend has no way to tell the proxy's header from the
+client's — they are the same bytes in the same field — so a request
+carrying its own `Client-Cert` is a request that chooses its own
+identity. RFC 9440 section 3 says so in as many words: the terminating
+proxy must sanitise the header.
+
+So **all of them are removed from every forwarded request**, unless the
+immediate peer is inside `trusted_proxies` — the one case where the header
+belongs to a proxy that did terminate a handshake. The list is
+`Client-Cert`, `Client-Cert-Chain`, `X-Forwarded-Client-Cert`,
+`X-Client-Cert`, `X-Client-Cert-Chain`, `X-Client-Verify`,
+`X-Client-Subject-DN`, `X-Client-Issuer-DN`, `X-SSL-Client-Cert`,
+`X-SSL-Client-Verify`, `X-SSL-Client-S-DN`, `X-SSL-Client-I-DN`,
+`X-SSL-Client-Serial`, `X-SSL-Client-Fingerprint`, `SSL-Client-Cert`,
+`SSL-Client-Verify` and `SSL-Client-Subject-DN`. A backend that reads one
+of these therefore reads what this proxy said or nothing at all.
+
+`routes[].client_cert_headers` then writes the truth over the blank:
+`rfc9440` sets `Client-Cert` to the leaf and `Client-Cert-Chain` to the
+rest of the chain in order, each as a Structured Fields Byte Sequence
+(RFC 8941: standard base64 with padding, between colons, which a
+structured-fields parser accepts and anything else it rejects); `xfcc`
+sets Envoy's header. A route that wants a different shape sets its own
+header from `${cert:...}`, which strips a client copy of that name too.
 
 ### Expressions
 
@@ -3733,6 +3768,7 @@ not match is skipped and the next candidate is tried.
 | `request_headers` | `{set, add, remove, when}` | | Applied before forwarding; values may not contain CR, LF or NUL |
 | `request_headers.when`, `response_headers.when` | expression | none | Apply the block only when the expression holds (see "Expressions" below), for example `query("debug") == "1"` or `not has_cookie("consent")`; `${variable}` values are still expanded |
 | `response_headers` | `{set, add, remove}` | | Applied to responses, including redirect and respond actions |
+| `client_cert_headers` | `none`, `rfc9440`, `xfcc` | `none` | State the client's TLS certificate to the backend: `rfc9440` sets `Client-Cert` and `Client-Cert-Chain` (RFC 9440), `xfcc` sets Envoy's `X-Forwarded-Client-Cert`. Nothing is sent when the client presented no certificate — an absent header is how the backend is told there was none. See "Client certificate identity headers" below |
 | `request_headers.*`, `response_headers.*` values | template | | `set` and `add` values may contain `${variable}` placeholders (see "Variables" below); `$$` is a literal dollar; a placeholder without a value expands to an empty string |
 | `rate_limits` | list of names | `[]` | Evaluated in order; first exhausted policy acts |
 | `allow_cidrs` | list | `[]` (all) | Client must be inside one |
@@ -5122,6 +5158,131 @@ accepted.
 | `introspection.cache_ttl` | duration | `60s` | How long an answer (positive or negative) is kept, bounded by the token's `exp`; at most 65536 entries per provider; `0` caches nothing |
 | `introspection.timeout` | duration | `3s` | Per call, 100ms to 30s |
 | `introspection.always` | bool | `false` | Introspect signed tokens too, for revocation |
+| `dpop` | object | none | Demonstrating proof of possession (RFC 9449); see below |
+| `dpop.mode` | `off`, `allow`, `require` | `off` | `allow` verifies a proof whenever the token says it is bound to a key and refuses a bound token presented without one; `require` also refuses a token that is not bound |
+| `dpop.algorithms` | list | `[ES256, ES384, ES512, PS256, PS384, PS512, EdDSA]` | Allowed proof algorithms, from the asymmetric set; nothing symmetric is permitted |
+| `dpop.max_age` | duration | `60s` | How old a proof's `iat` may be; `clock_skew` is allowed on top, in both directions; at most 10m |
+| `dpop.replay_entries` | int | `65536` | Bound on the table of spent proof identifiers |
+| `dpop.external_url` | URL | none | The scheme and authority the client sees, for the `htu` comparison, when another proxy terminates TLS in front |
+| `token_exchange` | object | none | Swap the verified client token for one issued to the backend (RFC 8693); see below |
+| `token_exchange.url` | https URL | required | The token endpoint |
+| `token_exchange.client_id`, `token_exchange.client_secret_file` | string, path | required | HTTP basic credentials of the proxy at the authorization server |
+| `token_exchange.ca_file` | path | system pool | CA pinned for the endpoint |
+| `token_exchange.audience`, `token_exchange.resource` | string, URI | one is required | Who the new token is for: the backend's identifier, or its URI (RFC 8707) |
+| `token_exchange.scopes` | list | `[]` | Ask for a subset; empty leaves the decision to the authorization server |
+| `token_exchange.requested_token_type` | URN | server's choice | Only the `access_token` or `jwt` URN; anything else would be forwarded as an access token |
+| `token_exchange.header` | header name | `Authorization` | Where the new token goes; `Authorization` carries `Bearer <token>`, any other name the token alone |
+| `token_exchange.cache_ttl` | duration | `60s` | One exchange kept this long, bounded by the new token's own expiry; at most 32768 entries; `0` exchanges on every request |
+| `token_exchange.timeout` | duration | `3s` | Per exchange, 100ms to 30s |
+| `token_exchange.required` | bool | `true` | `false` lets the request through with no token at all when the exchange fails |
+
+#### jwt.providers[].token_exchange: a token the backend cannot reuse
+
+A token the client sent to the gateway is a token the gateway forwards,
+and everything behind the gateway then holds a credential that works at
+the gateway. That is the confused-deputy problem in one sentence: a backend
+with a bug — a log line, an error page, an outbound request to somewhere it
+should not go — leaks a token that reaches the front door again with all of
+the client's scopes on it.
+
+Exchange replaces it. The proxy presents the verified client token to the
+authorization server and asks for one issued for *this* backend: a
+different `audience`, usually fewer `scopes`, and no standing anywhere
+else. The backend never sees the client's token, so there is nothing there
+to leak that would work at the gateway. The client's identity survives —
+the authorization server puts the same subject in the new token, which is
+what makes this an exchange rather than an impersonation.
+
+The exchange runs **after** the client's token has been verified, never
+before: sending an unverified token to the authorization server would spend
+its capacity on whatever a client posted, and caching the answer against
+the token's digest would let one client's garbage occupy the table. It also
+runs after `strip_token`, so the client's token is gone from the forwarded
+request whether the exchange succeeded or not.
+
+An exchange that names neither an audience nor a resource is refused at
+load: it asks for a token as broad as the one it replaces, which is the
+feature undone while the configuration reads as if it were on. The
+`issued_token_type` in the answer is checked rather than assumed — a server
+that answered with a refresh token would otherwise have it forwarded as an
+access token, which is a long-lived credential handed to a backend.
+
+Outcomes: a refusal from the authorization server (400, 401 or 403 there)
+is 403 here with detail `exchange_refused`, because the token is valid and
+this backend is not somewhere it reaches; an endpoint that cannot be asked
+is 503 with `Retry-After` and detail `exchange_unavailable`. Refusals are
+cached for `cache_ttl` like successes — they are the authorization server's
+decision about this client and this backend, and asking again per request
+turns one misconfiguration into load the login flow shares — while an
+unreachable endpoint is never cached. `required: false` lets the request
+reach the backend with no token, which validation warns about: it is the
+control failing open on exactly the requests where it went wrong.
+
+#### jwt.providers[].dpop: proof of possession
+
+A bearer token is a password: whoever holds it is whoever it says. That is
+the whole of its security model, and it is why a token stolen from a log,
+a browser's storage, a proxy's cache or a crash dump is as good as the
+original — nothing about the request says it came from the client the
+token was issued to.
+
+DPoP (RFC 9449) adds the missing part. The client keeps a key pair, the
+authorization server records the public key's thumbprint in the token as
+`cnf.jkt`, and every request carries a small JWT — the proof — signed with
+the private key over *this* method, *this* URI and *this* moment. A stolen
+token without the key produces no proof, and a proof captured from one
+request does not fit another.
+
+What is checked, in this order, because each step is only meaningful once
+the one before it holds:
+
+1. The proof is a JWT with `typ: dpop+jwt` and an algorithm from
+   `dpop.algorithms`. Nothing symmetric and no `none`: a proof the
+   verifier could have written itself proves nothing about the client. A
+   key carrying private material is refused too — that is a client that
+   has sent its secret.
+2. Its signature verifies under the key embedded in its own header. On its
+   own that proves nothing, since anybody can generate a key; step 5 is
+   why it matters.
+3. `htm` and `htu` match the request. The method is compared exactly
+   (HTTP methods are case-sensitive); the URI is compared without query or
+   fragment, as RFC 9449 section 4.3 says, because the query is not what a
+   replay changes. The scheme comes from the connection and the authority
+   from the `Host` header — never from `X-Forwarded-Proto`, since a client
+   that can set that header could otherwise choose which URI its proof has
+   to match. Behind another terminating proxy, `dpop.external_url` says
+   what the client sees.
+4. `iat` is within `max_age` (plus `clock_skew`, both ways) and the `jti`
+   has not been seen. Together they bound replay to a window and then
+   remove it. The `jti` is spent *last*, once everything else holds, so a
+   proof refused for another reason does not consume the identifier a
+   correct retry would use.
+5. The RFC 7638 thumbprint of the embedded key equals the token's
+   `cnf.jkt`. This is the step the rest exists for: it ties the key that
+   signed the proof to the key the authorization server bound the token
+   to. The claims are read from a token **this proxy has already
+   verified** — reading `cnf` from an unverified token would let an
+   attacker write their own thumbprint into it.
+6. `ath` equals the base64url SHA-256 of the access token, so a proof
+   cannot be moved between two tokens the same client holds.
+
+`mode: allow` costs nothing to turn on: it never refuses an ordinary
+bearer token, and it closes the replay hole for every token the
+authorization server did constrain. `require` is the stricter statement
+that this route takes constrained tokens only.
+
+With DPoP on, the `Authorization: DPoP <token>` scheme RFC 9449 defines is
+read as well as `Bearer` — a server that reads only `Bearer ` does not see
+a sender-constrained token at all. The proof is removed before forwarding:
+it is a signed statement about *this* hop, and a backend verifying it
+against its own URI would fail.
+
+Refusals are 401 with `WWW-Authenticate: DPoP error="invalid_dpop_proof",
+algs="..."`, or `error="invalid_token"` when the problem is the token
+rather than the proof (`dpop_missing`, `dpop_unbound`). The access log
+carries `dpop_jkt` with the thumbprint that was proved. The details are
+`dpop_proof`, `dpop_binding`, `dpop_replay`, `dpop_missing` and
+`dpop_unbound`.
 
 A provider whose key set has never loaded (for example the JWKS URL is
 unreachable at start) rejects tokens with 503 and `Retry-After` until a
@@ -5577,9 +5738,9 @@ Validates requests against an OpenAPI 3.0 or 3.1 description (JSON or
 YAML): the path must be documented (concrete paths win over templated
 ones), the method defined for it (else 405 with `Allow`), path, query,
 header and cookie parameters present when required and matching their
-schema (strings are coerced to the declared type), the content type one
-the operation declares (else 415) and a JSON body valid against its
-schema. The schema subset covers types and `nullable`, `enum`, `const`,
+schema (strings are coerced to the declared type, in the `style` the
+parameter declares), the content type one the operation declares (else
+415) and a JSON or urlencoded body valid against its schema. The schema subset covers types and `nullable`, `enum`, `const`,
 `required`, `properties`, `additionalProperties`, `patternProperties`,
 `items`, `minItems`/`maxItems`/`uniqueItems`, `minLength`/`maxLength`/
 `pattern`, `minimum`/`maximum` (exclusive too), `multipleOf`,
@@ -5599,9 +5760,132 @@ to twenty `details` naming the offending path.
 | `cache_file` | path | none | With `spec_url`: the last good description is written here (mode `0600`) and used when the URL is unreachable at start, so a registry outage does not stop the proxy |
 | `base_path` | path | from `servers[0].url` | Prefix under which the paths are served |
 | `unknown_paths` | `deny`, `allow` | `deny` | `deny` answers 404 for a path the description lacks |
-| `strict_query` | bool | `false` | Refuse query parameters the operation does not declare |
-| `validate_body` | bool | `true` | Parse and validate JSON bodies; off checks only the media type |
-| `max_body_bytes` | int | `1048576` | A JSON body above this is refused with 413 rather than parsed (1 to 64 MiB) |
+| `strict_query` | bool | `false` | Refuse query parameters the operation does not declare. A `deepObject` parameter's own bracketed names count as declared, since those names belong to it |
+| `validate_body` | bool | `true` | Parse and validate JSON and urlencoded form bodies; off checks only the media type |
+| `max_body_bytes` | int | `1048576` | A body above this is refused with 413 rather than parsed (1 to 64 MiB) |
+| `require_security` | bool | `false` | Refuse a request that carries none of the credentials the operation's `security` asks for; see below |
+| `read_only` | `allow`, `log`, `deny` | `allow` | What to do with a body carrying a property the description marks `readOnly`; see below |
+
+**Parameter styles.** A parameter is not always one string, and OpenAPI's
+`style` and `explode` say which spelling the operation takes. All of them
+are read, because a validator that assumes one refuses every request in
+the others — a worse failure than not checking at all, since the request
+was correct and the description said so.
+
+| Where | `style` | Spelling |
+|-------|---------|----------|
+| query | `form` (default) | `?ids=1&ids=2` and `?ids=1,2`; both are read, because both are unambiguous and a client may send either |
+| query | `spaceDelimited` | `?ids=1%202` |
+| query | `pipeDelimited` | `?ids=1\|2` |
+| query | `deepObject` | `?filter[from]=x&filter[size]=10`, assembled into the object the schema declares, each property coerced by its own schema (at most 200 properties, since the keys come from the client) |
+| path | `simple` (default), `label`, `matrix` | `1,2,3` (`label` splits on `.`) |
+| header | `simple` (default) | `a,b`, and a repeated header adds elements |
+| cookie | `form` (default) | `a,b` |
+
+A repeated scalar parameter is validated for *every* value rather than
+one. Everything behind a proxy reads `?limit=10&limit=999` differently —
+PHP and Rails take the last, ASP.NET joins them with commas, Spring binds
+an array — so judging only one of them would leave the application reading
+a value nothing had checked.
+
+A **form body** declared as `application/x-www-form-urlencoded` is
+validated against its schema like a JSON one. A form carries strings, so
+each field is coerced by what its property schema says it is — the same
+coercion the query and path parameters get, and for the same reason:
+`limit=abc` against `type: integer` has to be a type error rather than a
+string that happens not to be a number. A repeated field becomes an array
+when the schema says the property is one and stays the last value
+otherwise, which is what a form parser behind the proxy does with it. The
+body reaches the application byte for byte as the client sent it: it is
+validated, not re-encoded. `multipart/form-data` is not validated here —
+that is `upload_guard`'s job, and it buffers the parts already.
+
+#### `require_security`: the part of the description that is a control
+
+An operation says which credential it needs — `security: [{bearerAuth:
+[]}]` — and `components.securitySchemes` says where that credential lives:
+a named header, a query parameter, a cookie, or an `Authorization` header
+with a particular scheme. That is a statement about every request the
+operation accepts, and it is the one statement a gateway can act on
+without knowing anything about the credential itself.
+
+Acting on it catches the failure that keeps happening: an endpoint that
+was meant to be authenticated and is not, because the middleware was
+registered for one router and not another, or the annotation was left
+off, or the check sits behind a flag somebody turned off. The description
+already says the endpoint needs a credential; the application is the
+thing that might forget.
+
+What is checked is **presence and shape** — the header is there, the
+scheme is the declared one, there is something after it — and never
+validity. Deciding whether a token is real belongs to the identity
+provider and the application, and this filter has no business guessing. A
+request with a forged bearer token still reaches the API and is still
+refused there; a request with no credential at all does not reach it.
+
+- `apiKey`: the declared header, query parameter or cookie must be
+  present and non-empty.
+- `http`: `Authorization` must carry the declared scheme (matched
+  case-insensitively, as RFC 9110 requires) with something after it.
+  `basic` is additionally checked for the shape RFC 7617 defines —
+  base64 of something containing a colon — because a value that is not
+  that is not a credential the application can read either.
+- `oauth2` and `openIdConnect`: `Authorization: Bearer <token>`, which is
+  the binding RFC 6750 defines.
+- `mutualTLS`: not checked here. Whether the client presented a
+  certificate was settled by the listener's `client_auth` before this
+  filter ran, and second-guessing it from here would be guessing, so such
+  a requirement counts as met.
+
+The alternatives are an OR of ANDs, as OpenAPI defines them: any one
+alternative satisfies the operation, and every scheme named inside one
+must be present. An operation's own `security` replaces the global one
+entirely, `security: []` on an operation means it needs nothing, and an
+empty object among the alternatives (`security: [{}, {bearerAuth: []}]`)
+is how OpenAPI says the credential is optional. A description whose
+`security` names a scheme `components.securitySchemes` never defined is
+refused at load, because such a section means nothing and an operator
+should find out before the gateway is relied on.
+
+A refusal is 401 with `WWW-Authenticate` naming the scheme where there is
+a registered challenge to name (`Bearer`, `Basic`); an API key has none,
+and inventing one would tell a client to do something no client
+understands. The security log carries `security_schemes` with the names.
+
+The default is off, because turning it on refuses whatever was reaching
+the API without a credential — which is the point, and is also a change
+worth making deliberately. A description that declares security on any
+operation while this is off logs a warning naming the count at every
+load, so the control is not silently read as documentation. One ordering
+note: if an authentication filter earlier in the chain *consumes* the
+credential header rather than leaving it in place, put this filter before
+it, or `require_security` will refuse the requests that filter just
+authenticated.
+
+#### `read_only`: the fields the client is not supposed to choose
+
+OpenAPI says a `readOnly: true` property "MUST NOT be sent as part of the
+request", and the reason is mass assignment: an object with `id`, `owner`
+and `role` marked read-only is an object whose server-controlled fields a
+client is not supposed to pick. An application that binds the whole body
+onto its model — which is what every framework's convenience path does —
+lets the client pick them anyway, and the description already names which
+fields those are.
+
+The walk follows `properties`, array `items`, `additionalProperties` and
+`allOf`, and deliberately does **not** follow `anyOf` or `oneOf`. `allOf`
+is a conjunction, so a `readOnly` there applies to the value whatever else
+matches; `anyOf` and `oneOf` are alternatives, and a property that is
+read-only in one branch and writable in another says nothing certain
+about the value in hand — refusing on the strength of a branch the value
+may not even be matching would refuse correct requests.
+
+`allow` is the default because a client that GETs an object and PUTs it
+back sends the server's own fields, and a great many REST clients are
+written exactly that way. `log` lets the request through and records
+`openapi_read_only` in the access log with the properties, which is how
+to find out whether `deny` would break the clients before turning it on.
+`deny` answers 400 with detail `read_only:body.<field>`.
 
 ### Kind `graphql`
 
@@ -5609,11 +5893,31 @@ Bounds GraphQL requests (`POST` with `application/json` or
 `application/graphql`, `GET` with `query`) before they reach the API:
 depth (nesting of selection sets, fragments expanded, a fragment cycle
 fails), complexity (each field costs 1 times the product of the list
-arguments of its ancestors; a variable in a list argument counts as
-`max_list`), aliases, operations per batch, query size and
-introspection. Nothing is executed or forwarded to a schema. Denials are
-400 with a GraphQL `errors` body and the detail `depth`, `complexity`,
-`aliases`, `batch`, `size`, `syntax` or `introspection`.
+arguments of its ancestors), breadth, directives, aliases, operations per
+batch, query size and introspection — and what the operation *is*: a
+mutation, a subscription, an operation nobody named, or one this filter
+cannot read at all. Nothing is executed or forwarded to a schema. Denials
+are 400 with a GraphQL `errors` body and the detail `depth`,
+`complexity`, `root_fields`, `directives`, `aliases`, `batch`, `size`,
+`syntax`, `introspection`, `get_mutation`, `mutation`, `subscription`,
+`unnamed`, `operation` or `persisted`.
+
+**A mutation may not arrive by GET**, whatever the options say. The
+GraphQL over HTTP specification reserves GET for queries, and the reason
+is that a GET is what a link, an image tag, a prefetch and a crawler all
+produce: a mutation reachable that way is a mutation anybody can fire
+from another origin with the browser attaching the cookies. No
+configuration makes that safe, so there is no option to allow it
+(`get_mutation`).
+
+**Only the selected operation is measured.** A document may carry a
+client's whole query file and select one with `operationName`; only that
+one runs, so judging the request by the others would refuse a client for
+queries it did not send. With no `operationName` the server picks, so
+every operation in the document is measured. What the *document* contains
+is still policy: a mutation sitting beside the selected query is a
+mutation the server could run, so `mutations`, `subscriptions`,
+`allow_operations` and `require_operation_name` look at all of them.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
@@ -5624,7 +5928,24 @@ introspection. Nothing is executed or forwarded to a schema. Denials are
 | `max_query_bytes` | int | `65536` | Query text and body size (256 to 16 MiB) |
 | `introspection` | bool | `true` | `false` refuses `__schema` and `__type` |
 | `list_args` | list | `[first, last, limit]` | Arguments whose integer value multiplies the cost of the fields below |
-| `max_list` | int | `1000` | Cap of one multiplier, and the value assumed for a variable. It bounds the cost model, not the page size: `first: 1000000` is scored as `max_list`, because a client can move the number into a variable whose value this filter never sees. The page size itself belongs to the origin, or to an `openapi` route policy |
+| `max_list` | int | `1000` | Cap of one multiplier, and the value assumed for a variable the request does not carry. It bounds the cost model, not the page size: `first: 1000000` is scored as `max_list`. The page size itself belongs to the origin, or to an `openapi` route policy |
+| `max_root_fields` | int | `20` | Top-level fields of an operation. Depth says nothing about breadth: two hundred root fields are two hundred resolvers at depth one |
+| `max_directives` | int | `100` | Directives in the query text. A directive is evaluated per field it decorates, so a field carrying a thousand `@include`s is a thousand evaluations before anything resolves. The count is of the text rather than the expansion, because that is the number an operator can look at their own query and predict |
+| `mutations` | `allow`, `deny` | `allow` | `deny` makes the endpoint read-only |
+| `subscriptions` | `allow`, `deny` | `allow` | `deny` refuses subscription operations |
+| `require_operation_name` | bool | `false` | Refuse an operation with no name (`unnamed`) |
+| `allow_operations` | list | any | The only operation names that may run (`operation`). It implies `require_operation_name`, because an anonymous operation is on no list and a list that let it through would be a list in name only. This is the strongest control here for a closed client set: the queries are known, so anything else is not a query this API serves |
+| `persisted` | `allow`, `deny` | `allow` | What to do with a request that carries no query text — a persisted query the origin looks up by hash. There is nothing to parse and nothing to measure, so every bound above walks past it. `allow` is the default because the origin only runs documents it already has, which is usually the safest thing a client can send; `deny` is for a deployment whose API is reached through this filter and not otherwise, where an unreadable query should not be an allowed one (`persisted`) |
+
+**Variables are read.** A pagination argument given as a variable —
+`friends(first: $count)` with `{"count": 10}` in the request — is a real
+number the server will use, and scoring it as `max_list` refuses a query
+that costs nothing. That is how a complexity bound ends up switched off by
+the operator it kept annoying. A variable the request does not carry, or
+carries as something that is not a whole non-negative number (a string, a
+null, a fraction, a negative), or that has a schema default this filter
+never sees, is still the worst case; and a literal larger than the
+variable still wins.
 
 ### Kind `upload_guard`
 

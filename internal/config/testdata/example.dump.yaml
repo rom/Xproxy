@@ -386,6 +386,7 @@ routes:
         add: {}
         remove: []
         when: ""
+      client_cert_headers: ""
       rate_limits:
         - login
         - per-ip
@@ -451,6 +452,7 @@ routes:
         add: {}
         remove: []
         when: ""
+      client_cert_headers: ""
       rate_limits:
         - per-ip
       allow_cidrs: []
@@ -517,6 +519,7 @@ routes:
         add: {}
         remove: []
         when: ""
+      client_cert_headers: ""
       rate_limits: []
       allow_cidrs:
         - 10.0.0.0/8
@@ -580,6 +583,7 @@ routes:
         add: {}
         remove: []
         when: ""
+      client_cert_headers: ""
       rate_limits:
         - per-ip
       allow_cidrs: []
@@ -647,6 +651,7 @@ routes:
         add: {}
         remove: []
         when: ""
+      client_cert_headers: ""
       rate_limits:
         - per-ip
       allow_cidrs: []
@@ -710,6 +715,7 @@ routes:
         add: {}
         remove: []
         when: ""
+      client_cert_headers: ""
       rate_limits: []
       allow_cidrs: []
       deny_cidrs: []
@@ -890,6 +896,8 @@ jwt:
           log_claims:
             - sub
           introspection: null
+          dpop: null
+          token_exchange: null
 metrics:
     listen: 10.0.0.1:9100
     allow_cidrs:

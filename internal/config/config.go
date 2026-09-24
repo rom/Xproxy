@@ -3175,6 +3175,17 @@ type Route struct {
 
 	RequestHeaders  HeaderOps `yaml:"request_headers"`
 	ResponseHeaders HeaderOps `yaml:"response_headers"`
+	// ClientCertHeaders states the client's TLS certificate to the
+	// backend: none (the default), rfc9440 (Client-Cert and
+	// Client-Cert-Chain, RFC 9440) or xfcc (Envoy's
+	// X-Forwarded-Client-Cert).
+	//
+	// Whatever this says, a client's own copy of any of those headers is
+	// removed from every request that did not arrive from a peer inside
+	// trusted_proxies: the backend cannot tell the proxy's header from
+	// the client's, so a client that can send one chooses its own
+	// identity.
+	ClientCertHeaders string `yaml:"client_cert_headers"`
 
 	RateLimits []string `yaml:"rate_limits"`
 	// AllowCIDRs / DenyCIDRs implement simple IP access control. Deny is
@@ -4816,6 +4827,117 @@ type JWTProvider struct {
 	// endpoint (RFC 7662): opaque tokens always, signed tokens too with
 	// always. A provider may have introspection alone, without keys.
 	Introspection *TokenIntrospection `yaml:"introspection"`
+	// DPoP requires the client to prove it holds the key the token is
+	// bound to (RFC 9449).
+	DPoP *DPoP `yaml:"dpop"`
+	// TokenExchange swaps the client's token for one issued to the
+	// backend (RFC 8693), so what is forwarded is not a credential that
+	// works at the front door.
+	TokenExchange *TokenExchange `yaml:"token_exchange"`
+}
+
+// TokenExchange is an RFC 8693 exchange at the token endpoint.
+//
+// A token the client sent to the gateway is a token the gateway forwards,
+// and everything behind the gateway then holds a credential that works at
+// the gateway. That is the confused-deputy problem in one sentence: a
+// backend with a bug — a log line, an error page, an outbound request to
+// somewhere it should not go — leaks a token that reaches the front door
+// again with all of the client's scopes on it.
+//
+// Exchange replaces it. The proxy presents the verified client token to
+// the authorization server and asks for one issued for *this* backend: a
+// different audience, usually fewer scopes, and no standing anywhere else.
+// The backend never sees the client's token, so there is nothing there to
+// leak that would work at the gateway. The client's identity survives —
+// the authorization server puts the same subject in the new token, which
+// is what makes this an exchange rather than an impersonation.
+type TokenExchange struct {
+	// URL is the token endpoint (https).
+	URL string `yaml:"url"`
+	// ClientID and ClientSecretFile authenticate the proxy to the
+	// authorization server with HTTP basic authentication.
+	ClientID         string `yaml:"client_id"`
+	ClientSecretFile string `yaml:"client_secret_file"`
+	// CAFile pins the CA for the endpoint. Default: system pool.
+	CAFile string `yaml:"ca_file"`
+	// Audience and Resource say who the new token is for: the backend's
+	// identifier at the authorization server, or its URI. At least one is
+	// required — an exchange that names neither asks for a token as broad
+	// as the one it replaces, which is the whole point undone.
+	Audience string `yaml:"audience"`
+	Resource string `yaml:"resource"`
+	// Scopes asks for a subset. Empty leaves the decision to the
+	// authorization server, which will usually issue what the audience is
+	// entitled to.
+	Scopes []string `yaml:"scopes"`
+	// RequestedTokenType asks for a particular token type. Default: the
+	// authorization server's choice, which must be an access token or a
+	// JWT — a refresh token forwarded as an access token would be a
+	// long-lived credential handed to a backend.
+	RequestedTokenType string `yaml:"requested_token_type"`
+	// Header is where the new token goes. Default Authorization, as
+	// "Bearer <token>"; any other name carries the token alone.
+	Header string `yaml:"header"`
+	// CacheTTL keeps one exchange this long, bounded by the new token's
+	// own expiry; 0 exchanges on every request. Default 60s.
+	CacheTTL Duration `yaml:"cache_ttl"`
+	// Timeout bounds one exchange. Default 3s.
+	Timeout Duration `yaml:"timeout"`
+	// Required refuses the request when the exchange fails. Default true:
+	// forwarding the client's token after failing to replace it would
+	// quietly undo the control on exactly the requests where it went
+	// wrong.
+	Required *bool `yaml:"required"`
+}
+
+// Requires reports whether a failed exchange refuses the request.
+func (t *TokenExchange) Requires() bool { return t.Required == nil || *t.Required }
+
+// DPoP is demonstrating proof of possession, RFC 9449.
+//
+// A bearer token is a password: whoever holds it is whoever it says. That
+// is why a token stolen from a log, a browser's storage, a proxy's cache
+// or a crash dump is as good as the original — nothing about the request
+// says it came from the client the token was issued to.
+//
+// DPoP adds that. The client keeps a key pair, the authorization server
+// records the public key's thumbprint in the token (cnf.jkt), and every
+// request carries a small JWT signed with the private key over this
+// method, this URI and this moment. A stolen token without the key
+// produces no proof, and a proof captured from one request does not fit
+// another.
+type DPoP struct {
+	// Mode is off (default), allow or require.
+	//
+	// allow verifies a proof whenever the access token says it is bound
+	// to a key, and refuses a bound token presented without one — which
+	// is the replay this exists to stop — while leaving an ordinary
+	// bearer token alone. It therefore costs nothing to turn on.
+	//
+	// require additionally refuses an access token that carries no
+	// cnf.jkt: on that route, only sender-constrained tokens are
+	// accepted.
+	Mode string `yaml:"mode"`
+	// Algorithms allowed in a proof, from the asymmetric set (RS*, PS*,
+	// ES*, EdDSA). Default ES256, ES384, ES512, PS256, PS384, PS512,
+	// EdDSA. Nothing symmetric is permitted: a proof the verifier could
+	// have written itself proves nothing about the client.
+	Algorithms []string `yaml:"algorithms"`
+	// MaxAge is how old a proof's iat may be. Default 60s. The provider's
+	// clock_skew is allowed on top, in both directions.
+	MaxAge Duration `yaml:"max_age"`
+	// ReplayEntries bounds the table of spent proof identifiers. Default
+	// 65536. The identifiers come from clients, so the bound is a
+	// decision rather than an accident.
+	ReplayEntries int `yaml:"replay_entries"`
+	// ExternalURL is the scheme and authority the client sees, for the
+	// htu comparison, when this proxy is behind another one that
+	// terminates TLS. Without it the scheme comes from the connection and
+	// the authority from the Host header — never from X-Forwarded-Proto,
+	// because a client that can set that header could otherwise choose
+	// which URI its proof has to match.
+	ExternalURL string `yaml:"external_url"`
 }
 
 // TokenIntrospection is an RFC 7662 introspection endpoint.

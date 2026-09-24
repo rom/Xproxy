@@ -478,6 +478,215 @@ Open findings of the earlier rounds:
   `discovery`, the sinkhole addresses -- are not, which is why
   `sinkhole_ipv4: 0.0.0.0` still works inside a denied range.
 
+- **The backend no longer receives a credential that works at the front
+  door** (`jwt.providers[].token_exchange`, RFC 8693).
+
+  A token the client sent to the gateway was a token the gateway
+  forwarded, so everything behind the gateway held a credential that works
+  at the gateway. That is the confused-deputy problem in one sentence: a
+  backend with a bug -- a log line, an error page, an outbound request to
+  somewhere it should not go -- leaks a token that reaches the front door
+  again with all of the client's scopes on it.
+
+  Exchange replaces it. The proxy presents the *verified* client token to
+  the authorization server and asks for one issued for this backend: a
+  different audience, usually fewer scopes, no standing anywhere else. The
+  client's identity survives, because the authorization server puts the
+  same subject in the new token, which is what makes this an exchange
+  rather than an impersonation.
+
+  The exchange runs after verification and after `strip_token`, so the
+  client's token leaves the request whether the exchange succeeded or not.
+  A configuration that names neither an audience nor a resource is refused
+  at load, since it asks for a token as broad as the one it replaces. The
+  answer's `issued_token_type` is checked rather than assumed -- a server
+  answering with a refresh token would otherwise have it forwarded as an
+  access token, which is a long-lived credential handed to a backend. A
+  refusal from the authorization server is the client's 403
+  (`exchange_refused`) and is cached like a success, because it is a
+  decision about this client and this backend and asking per request turns
+  one misconfiguration into load the login flow shares; an endpoint that
+  cannot be asked is a 503 with `Retry-After` and is never cached. Calls in
+  flight are bounded, so a flood of distinct tokens cannot be amplified
+  into an outage of the authorization server.
+
+- **A stolen access token is no longer enough where the authorization
+  server bound it to a key** (`jwt.providers[].dpop`, RFC 9449).
+
+  A bearer token is a password: whoever holds it is whoever it says. That
+  is the whole of its security model, and it is why a token stolen from a
+  log, a browser's storage, a proxy's cache or a crash dump is as good as
+  the original -- nothing about the request says it came from the client
+  the token was issued to.
+
+  DPoP adds the missing part, and this proxy now verifies it. The client
+  keeps a key pair, the authorization server records the public key's
+  thumbprint in the token as `cnf.jkt`, and every request carries a small
+  JWT signed with the private key over *this* method, *this* URI and
+  *this* moment. Six things are checked, in the order that makes each
+  meaningful: the proof is a `dpop+jwt` with an asymmetric algorithm from
+  the allow list and no private material in its key; its signature
+  verifies under the key it embeds; `htm` and `htu` match the request
+  (method exactly, URI without query or fragment, scheme from the
+  connection and never from `X-Forwarded-Proto`); `iat` is inside the
+  window and the `jti` has not been seen; **the RFC 7638 thumbprint of
+  that key equals the token's `cnf.jkt`**, read from claims this proxy has
+  already verified; and `ath` is the hash of the access token it came
+  with.
+
+  `mode: allow` costs nothing to turn on -- it never refuses an ordinary
+  bearer token, and it closes the replay hole for every token that was
+  constrained; `require` takes constrained tokens only. The `jti` is spent
+  last, after every other check holds, so a proof refused for another
+  reason does not consume the identifier a correct retry would use, and
+  the replay table is bounded because the identifiers come from clients.
+  The `Authorization: DPoP` scheme is read as well as `Bearer`, since a
+  server that reads only `Bearer ` does not see a sender-constrained token
+  at all, and the proof is removed before forwarding: it is a signed
+  statement about this hop.
+
+- **A client can no longer send its own certificate identity, and the
+  proxy states the real one in RFC 9440's form**
+  (`routes[].client_cert_headers`).
+
+  A backend behind a TLS-terminating proxy cannot see the handshake, so
+  the proxy tells it: RFC 9440 standardises `Client-Cert` and
+  `Client-Cert-Chain`, Envoy has long used `X-Forwarded-Client-Cert`, and
+  nginx and Apache deployments read a handful of `X-SSL-Client-*` names
+  their own configurations set. Every one of them is a statement about
+  something only the terminating proxy can know -- which makes every one
+  of them an authentication bypass when a client can send it, because the
+  backend has no way to tell the proxy's header from the client's. They
+  are the same bytes in the same field.
+
+  All seventeen of those names are now removed from every forwarded
+  request, unless the immediate peer is inside `trusted_proxies` -- the
+  one case where such a header belongs to a proxy that did terminate a
+  handshake. That is what RFC 9440 section 3 asks for in as many words,
+  and it was previously true only for the specific header a route
+  happened to set from `${cert:...}`. A backend that reads one of these
+  therefore reads what this proxy said or nothing at all.
+
+  `routes[].client_cert_headers: rfc9440` then writes the truth over the
+  blank: the leaf in `Client-Cert` and the rest of the chain in
+  `Client-Cert-Chain`, each as the Structured Fields Byte Sequence RFC
+  8941 defines (standard base64, padded, between colons, which a
+  structured-fields parser accepts and anything else it rejects). `xfcc`
+  sets Envoy's header instead, and `${cert:client_cert}` is available for
+  a route that wants the value somewhere else. Nothing is sent when the
+  client presented no certificate: an absent header is how the backend is
+  told there was none, where an empty one would mean whatever its parser
+  makes of emptiness.
+
+- **The GraphQL filter judges what an operation is, not only what it
+  costs** (`mutations`, `subscriptions`, `allow_operations`,
+  `require_operation_name`, `persisted`, `max_root_fields`,
+  `max_directives`).
+
+  - **A mutation could arrive by GET.** The operation type was parsed and
+    thrown away, so nothing separated a query from a mutation. The
+    GraphQL over HTTP specification reserves GET for queries, and the
+    reason is that a GET is what a link, an image tag, a prefetch and a
+    crawler all produce: a mutation reachable that way is a mutation
+    anybody can fire from another origin with the browser attaching the
+    cookies. It is refused unconditionally (`get_mutation`) -- there is no
+    option, because no configuration makes it safe. Beside it,
+    `mutations: deny` and `subscriptions: deny` make an endpoint
+    read-only outright.
+  - **Operation names were invisible.** `require_operation_name` refuses
+    an anonymous operation and `allow_operations` names the only ones
+    that may run, which is the strongest control here for a closed client
+    set: the queries are known, so anything else is not a query this API
+    serves. The list implies the name requirement, because an anonymous
+    operation is on no list and a list that let it through would be a
+    list in name only.
+  - **A persisted query walked past every bound.** A request with no
+    query text -- the origin looks the document up by hash -- had nothing
+    to parse and nothing to measure, and the filter returned Continue.
+    `persisted: deny` refuses it. `allow` stays the default, because an
+    origin that only runs documents it already has is usually the safest
+    thing a client can send.
+  - **Breadth and directives were unbounded.** `max_root_fields` (20)
+    bounds an operation's top-level selection, which is the breadth a
+    depth bound says nothing about, and `max_directives` (100) bounds the
+    directives in the query text, since a directive is evaluated per
+    field it decorates.
+  - **Only the selected operation is measured now.** A document may carry
+    a client's whole query file and select one with `operationName`; only
+    that one runs, so judging the request by the others refused clients
+    for queries they did not send. What the document *contains* is still
+    policy, so the mutation sitting beside the selected query is still
+    caught.
+  - **Variables are read.** `friends(first: $count)` with `{"count": 10}`
+    in the request is ten things, and scoring it as `max_list` refused a
+    query that costs nothing -- which is how a complexity bound ends up
+    switched off by the operator it kept annoying. A variable the request
+    does not carry, or carries as anything but a whole non-negative
+    number, is still the worst case, and a larger literal still wins.
+
+- **The OpenAPI filter enforces the parts of a description it was reading
+  as documentation** (`require_security`, `read_only`, and form bodies).
+
+  - **`security` was ignored.** An operation says which credential it
+    needs and `components.securitySchemes` says where that credential
+    lives -- a named header, a query parameter, a cookie, an
+    `Authorization` header with a particular scheme -- and the filter
+    checked none of it. `require_security: true` refuses a request that
+    carries none of the alternatives the operation asks for, with 401 and
+    `WWW-Authenticate` where there is a registered challenge to name.
+    That catches the failure that keeps happening: an endpoint meant to
+    be authenticated and not, because the middleware was registered for
+    one router and not another. Presence and shape are checked, never
+    validity -- a forged token still reaches the API and is still refused
+    there; a request with no credential does not reach it. The
+    alternatives are OpenAPI's OR of ANDs, an operation's own `security`
+    replaces the global one, `security: []` opts an operation out, and an
+    empty object among the alternatives is how the specification says the
+    credential is optional. A description whose `security` names a scheme
+    `securitySchemes` never defined is refused at load, since such a
+    section means nothing. `mutualTLS` is left to the listener's
+    `client_auth`, which settled it before this filter ran. The default
+    is off because turning it on refuses whatever was reaching the API
+    without a credential, and a description that declares security while
+    it is off now logs a warning at every load naming the count.
+  - **`readOnly` was ignored.** OpenAPI says such a property "MUST NOT be
+    sent as part of the request", and the reason is mass assignment: an
+    object with `id`, `owner` and `role` marked read-only is one whose
+    server-owned fields a client is not supposed to pick, and an
+    application that binds the whole body onto its model lets them.
+    `read_only: deny` refuses those bodies and `log` records
+    `openapi_read_only` in the access log without refusing, which is how
+    to find out whether `deny` would break the clients. The walk follows
+    `properties`, `items`, `additionalProperties` and `allOf` and
+    deliberately not `anyOf` or `oneOf`: those are alternatives, and a
+    property read-only in a branch the value may not be matching says
+    nothing certain about the value in hand.
+  - **Only one of OpenAPI's parameter styles was read.** A parameter is
+    not always one string: an array may arrive repeated
+    (`?ids=1&ids=2`), comma-separated, pipe-separated or
+    space-separated, and an object may arrive as bracketed names
+    (`?filter[from]=x`), with `style` and `explode` saying which. The
+    filter assumed the comma form, so a `pipeDelimited` or
+    `spaceDelimited` array was one item that was not a number and a
+    `deepObject` parameter was missing -- correct requests refused by the
+    gateway on the strength of the description that declared them, which
+    is how a validating gateway gets taken out of the path. Every style
+    is read now, with both spellings of a form array accepted since both
+    are unambiguous, a `deepObject` assembled into the object its schema
+    declares (bounded, because the keys come from the client), and
+    `strict_query` taught that a `deepObject`'s bracketed names belong to
+    it. A repeated scalar is still validated for every value, and the
+    array is now built from the occurrences rather than joined and split
+    again, so a comma inside one of them no longer becomes two elements.
+  - **A form body declared with a schema was forwarded unvalidated.**
+    `application/x-www-form-urlencoded` is now checked against its
+    schema, with each field coerced by what the schema says it is -- the
+    same coercion the query parameters get, so `limit=abc` against
+    `type: integer` is a type error rather than a string that happens not
+    to be a number. The body reaches the application byte for byte as
+    sent: it is validated, not re-encoded. `multipart/form-data` stays
+    with `upload_guard`, which buffers the parts already.
+
 - **A DNS listener answers and requires DNS cookies** (`dns.cookies`,
   `dns.cookie_lifetime`; RFC 7873 with RFC 9018's server cookie layout).
 

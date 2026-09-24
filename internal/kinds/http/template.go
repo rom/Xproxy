@@ -268,9 +268,9 @@ func (o *compiledOps) apply(h http.Header, v *tvars) {
 // certField returns one field of the client certificate for ${cert:...}
 // and cert(...): cn, subject, issuer (RFC 2253), serial (hex),
 // fingerprint (SHA-256 hex of the DER), sans (DNS names, addresses,
-// emails and URIs, comma separated), not_after (RFC 3339), xfcc (an
-// Envoy style X-Forwarded-Client-Cert value) or pem (the URL encoded
-// PEM).
+// emails and URIs, comma separated), not_after (RFC 3339), client_cert
+// (RFC 9440's Structured Fields Byte Sequence), xfcc (an Envoy style
+// X-Forwarded-Client-Cert value) or pem (the URL encoded PEM).
 func certField(c *x509.Certificate, field string) (string, bool) {
 	switch field {
 	case "cn":
@@ -294,6 +294,10 @@ func certField(c *x509.Certificate, field string) (string, bool) {
 		return c.NotAfter.UTC().Format(time.RFC3339), true
 	case "pem":
 		return url.QueryEscape(string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: c.Raw}))), true
+	case "client_cert":
+		// RFC 9440's Client-Cert: the leaf in a Structured Fields Byte
+		// Sequence, which is standard base64 between colons.
+		return sfBinary(c.Raw), true
 	case "xfcc":
 		sum := sha256.Sum256(c.Raw)
 		parts := []string{"Hash=" + hex.EncodeToString(sum[:]), "Subject=" + strconv.Quote(c.Subject.String())}

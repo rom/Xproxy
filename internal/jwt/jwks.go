@@ -53,6 +53,21 @@ type jwk struct {
 	Crv string `json:"crv"`
 	X   string `json:"x"`
 	Y   string `json:"y"`
+	// The private members, read only so a key that carries one can be
+	// refused. A public key set has none of them, and a DPoP proof that
+	// embeds one is a client that has sent its secret to a server.
+	D  string `json:"d"`
+	P  string `json:"p"`
+	Q  string `json:"q"`
+	DP string `json:"dp"`
+	DQ string `json:"dq"`
+	QI string `json:"qi"`
+	K  string `json:"k"`
+}
+
+// private reports a key carrying private material.
+func (k jwk) private() bool {
+	return k.D != "" || k.P != "" || k.Q != "" || k.DP != "" || k.DQ != "" || k.QI != "" || k.K != ""
 }
 
 // parseJWKS parses a JSON Web Key Set. Unsupported or malformed keys are

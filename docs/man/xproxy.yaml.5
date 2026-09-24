@@ -6068,7 +6068,7 @@ T}
 T{
 \fBcert:\:field\fR
 T}	T{
-the client certificate of a listener with \fBclient_\:auth\fR (empty without one): \fBcn\fR,\: \fBsubject\fR and \fBissuer\fR (RFC 2253),\: \fBserial\fR (hex),\: \fBfingerprint\fR (SHA\-256 of the DER,\: hex),\: \fBsans\fR (DNS names,\: addresses,\: emails and URIs,\: comma separated),\: \fBnot_\:after\fR (RFC 3339),\: \fBxfcc\fR (an Envoy style \fBX\-\:Forwarded\-\:Client\-\:Cert\fR value with \fBHash\fR,\: \fBSubject\fR,\: \fBURI\fR and \fBDNS\fR) and \fBpem\fR (URL encoded PEM). Set the header with \fBrequest_\:headers.\:set\fR,\: which also discards a client supplied copy
+the client certificate of a listener with \fBclient_\:auth\fR (empty without one): \fBcn\fR,\: \fBsubject\fR and \fBissuer\fR (RFC 2253),\: \fBserial\fR (hex),\: \fBfingerprint\fR (SHA\-256 of the DER,\: hex),\: \fBsans\fR (DNS names,\: addresses,\: emails and URIs,\: comma separated),\: \fBnot_\:after\fR (RFC 3339),\: \fBclient_\:cert\fR (RFC 9440\(aqs Structured Fields Byte Sequence: standard base64 of the DER between colons),\: \fBxfcc\fR (an Envoy style \fBX\-\:Forwarded\-\:Client\-\:Cert\fR value with \fBHash\fR,\: \fBSubject\fR,\: \fBURI\fR and \fBDNS\fR) and \fBpem\fR (URL encoded PEM). Set the header with \fBrequest_\:headers.\:set\fR,\: which also discards a client supplied copy
 T}
 T{
 \fB1\fR to \fB9\fR,\: \fBname\fR
@@ -6091,6 +6091,15 @@ T}	T{
 current date (\fB2026\-\:09\-\:19\fR),\: hour (\fB0\fR to \fB23\fR),\: minute and weekday (\fBMon\fR to \fBSun\fR),\: UTC
 T}
 .TE
+.SS "Client certificate identity headers"
+.PP
+A backend behind a TLS\-terminating proxy cannot see the handshake, so the proxy tells it. RFC 9440 standardises \fBClient\-Cert\fR and \fBClient\-Cert\-Chain\fR for that; Envoy has used \fBX\-Forwarded\-Client\-Cert\fR for years; and nginx and Apache deployments read a handful of \fBX\-SSL\-Client\-*\fR names their own configurations set. Every one of them is a statement about something only the terminating proxy can know.
+.PP
+Which makes every one of them an authentication bypass when a client can send it. The backend has no way to tell the proxy\(aqs header from the client\(aqs \[u2014] they are the same bytes in the same field \[u2014] so a request carrying its own \fBClient\-Cert\fR is a request that chooses its own identity. RFC 9440 section 3 says so in as many words: the terminating proxy must sanitise the header.
+.PP
+So \fBall of them are removed from every forwarded request\fR, unless the immediate peer is inside \fBtrusted_proxies\fR \[u2014] the one case where the header belongs to a proxy that did terminate a handshake. The list is \fBClient\-Cert\fR, \fBClient\-Cert\-Chain\fR, \fBX\-Forwarded\-Client\-Cert\fR, \fBX\-Client\-Cert\fR, \fBX\-Client\-Cert\-Chain\fR, \fBX\-Client\-Verify\fR, \fBX\-Client\-Subject\-DN\fR, \fBX\-Client\-Issuer\-DN\fR, \fBX\-SSL\-Client\-Cert\fR, \fBX\-SSL\-Client\-Verify\fR, \fBX\-SSL\-Client\-S\-DN\fR, \fBX\-SSL\-Client\-I\-DN\fR, \fBX\-SSL\-Client\-Serial\fR, \fBX\-SSL\-Client\-Fingerprint\fR, \fBSSL\-Client\-Cert\fR, \fBSSL\-Client\-Verify\fR and \fBSSL\-Client\-Subject\-DN\fR. A backend that reads one of these therefore reads what this proxy said or nothing at all.
+.PP
+\fBroutes[].client_cert_headers\fR then writes the truth over the blank: \fBrfc9440\fR sets \fBClient\-Cert\fR to the leaf and \fBClient\-Cert\-Chain\fR to the rest of the chain in order, each as a Structured Fields Byte Sequence (RFC 8941: standard base64 with padding, between colons, which a structured\-fields parser accepts and anything else it rejects); \fBxfcc\fR sets Envoy\(aqs header. A route that wants a different shape sets its own header from \fB${cert:...}\fR, which strips a client copy of that name too.
 .SS "Expressions"
 .PP
 \fBroutes[].when\fR, \fBrequest_headers.when\fR and \fBresponse_headers.when\fR hold a condition that is parsed at load (unknown names, functions, arities, patterns and capture groups are errors) and evaluated per request. Values are strings; a variable without a value is the empty string. \fB==\fR and \fB!=\fR compare as strings; \fB<\fR, \fB<=\fR, \fB>\fR and \fB>=\fR compare numerically when both sides are numbers and by string otherwise. A bare string is true when it is neither empty, \fB0\fR nor \fBfalse\fR.
@@ -8696,6 +8705,15 @@ T}	T{
 
 T}	T{
 Applied to responses,\: including redirect and respond actions
+T}
+T{
+\fBclient_\:cert_\:headers\fR
+T}	T{
+\fBnone\fR,\: \fBrfc9440\fR,\: \fBxfcc\fR
+T}	T{
+\fBnone\fR
+T}	T{
+State the client\(aqs TLS certificate to the backend: \fBrfc9440\fR sets \fBClient\-\:Cert\fR and \fBClient\-\:Cert\-\:Chain\fR (RFC 9440),\: \fBxfcc\fR sets Envoy\(aqs \fBX\-\:Forwarded\-\:Client\-\:Cert\fR. Nothing is sent when the client presented no certificate \[u2014] an absent header is how the backend is told there was none. See "Client certificate identity headers" below
 T}
 T{
 \fBrequest_\:headers.\:*\fR,\: \fBresponse_\:headers.\:*\fR values
@@ -12870,8 +12888,8 @@ Present means providers are available; routes opt in with a \fBjwt\fR block. Tok
 .PP
 .TS
 allbox;
-lbw(1.5i) lbw(0.9i) lbw(1.0i) lbx
-lw(1.5i) lw(0.9i) lw(1.0i) lx.
+lbw(1.5i) lbw(0.9i) lbw(1.4i) lbx
+lw(1.5i) lw(0.9i) lw(1.4i) lx.
 T{
 Key
 T}	T{
@@ -13079,7 +13097,186 @@ T}	T{
 T}	T{
 Introspect signed tokens too,\: for revocation
 T}
+T{
+\fBdpop\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Demonstrating proof of possession (RFC 9449);\: see below
+T}
+T{
+\fBdpop.\:mode\fR
+T}	T{
+\fBoff\fR,\: \fBallow\fR,\: \fBrequire\fR
+T}	T{
+\fBoff\fR
+T}	T{
+\fBallow\fR verifies a proof whenever the token says it is bound to a key and refuses a bound token presented without one;\: \fBrequire\fR also refuses a token that is not bound
+T}
+T{
+\fBdpop.\:algorithms\fR
+T}	T{
+list
+T}	T{
+\fB[ES256,\: ES384,\: ES512,\: PS256,\: PS384,\: PS512,\: EdDSA]\fR
+T}	T{
+Allowed proof algorithms,\: from the asymmetric set;\: nothing symmetric is permitted
+T}
+T{
+\fBdpop.\:max_\:age\fR
+T}	T{
+duration
+T}	T{
+\fB60s\fR
+T}	T{
+How old a proof\(aqs \fBiat\fR may be;\: \fBclock_\:skew\fR is allowed on top,\: in both directions;\: at most 10m
+T}
+T{
+\fBdpop.\:replay_\:entries\fR
+T}	T{
+int
+T}	T{
+\fB65536\fR
+T}	T{
+Bound on the table of spent proof identifiers
+T}
+T{
+\fBdpop.\:external_\:url\fR
+T}	T{
+URL
+T}	T{
+none
+T}	T{
+The scheme and authority the client sees,\: for the \fBhtu\fR comparison,\: when another proxy terminates TLS in front
+T}
+T{
+\fBtoken_\:exchange\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Swap the verified client token for one issued to the backend (RFC 8693);\: see below
+T}
+T{
+\fBtoken_\:exchange.\:url\fR
+T}	T{
+https URL
+T}	T{
+required
+T}	T{
+The token endpoint
+T}
+T{
+\fBtoken_\:exchange.\:client_\:id\fR,\: \fBtoken_\:exchange.\:client_\:secret_\:file\fR
+T}	T{
+string,\: path
+T}	T{
+required
+T}	T{
+HTTP basic credentials of the proxy at the authorization server
+T}
+T{
+\fBtoken_\:exchange.\:ca_\:file\fR
+T}	T{
+path
+T}	T{
+system pool
+T}	T{
+CA pinned for the endpoint
+T}
+T{
+\fBtoken_\:exchange.\:audience\fR,\: \fBtoken_\:exchange.\:resource\fR
+T}	T{
+string,\: URI
+T}	T{
+one is required
+T}	T{
+Who the new token is for: the backend\(aqs identifier,\: or its URI (RFC 8707)
+T}
+T{
+\fBtoken_\:exchange.\:scopes\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Ask for a subset;\: empty leaves the decision to the authorization server
+T}
+T{
+\fBtoken_\:exchange.\:requested_\:token_\:type\fR
+T}	T{
+URN
+T}	T{
+server\(aqs choice
+T}	T{
+Only the \fBaccess_\:token\fR or \fBjwt\fR URN;\: anything else would be forwarded as an access token
+T}
+T{
+\fBtoken_\:exchange.\:header\fR
+T}	T{
+header name
+T}	T{
+\fBAuthorization\fR
+T}	T{
+Where the new token goes;\: \fBAuthorization\fR carries \fBBearer <token>\fR,\: any other name the token alone
+T}
+T{
+\fBtoken_\:exchange.\:cache_\:ttl\fR
+T}	T{
+duration
+T}	T{
+\fB60s\fR
+T}	T{
+One exchange kept this long,\: bounded by the new token\(aqs own expiry;\: at most 32768 entries;\: \fB0\fR exchanges on every request
+T}
+T{
+\fBtoken_\:exchange.\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB3s\fR
+T}	T{
+Per exchange,\: 100ms to 30s
+T}
+T{
+\fBtoken_\:exchange.\:required\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+\fBfalse\fR lets the request through with no token at all when the exchange fails
+T}
 .TE
+.SS "jwt.providers[].token_exchange: a token the backend cannot reuse"
+.PP
+A token the client sent to the gateway is a token the gateway forwards, and everything behind the gateway then holds a credential that works at the gateway. That is the confused\-deputy problem in one sentence: a backend with a bug \[u2014] a log line, an error page, an outbound request to somewhere it should not go \[u2014] leaks a token that reaches the front door again with all of the client\(aqs scopes on it.
+.PP
+Exchange replaces it. The proxy presents the verified client token to the authorization server and asks for one issued for \fIthis\fR backend: a different \fBaudience\fR, usually fewer \fBscopes\fR, and no standing anywhere else. The backend never sees the client\(aqs token, so there is nothing there to leak that would work at the gateway. The client\(aqs identity survives \[u2014] the authorization server puts the same subject in the new token, which is what makes this an exchange rather than an impersonation.
+.PP
+The exchange runs \fBafter\fR the client\(aqs token has been verified, never before: sending an unverified token to the authorization server would spend its capacity on whatever a client posted, and caching the answer against the token\(aqs digest would let one client\(aqs garbage occupy the table. It also runs after \fBstrip_token\fR, so the client\(aqs token is gone from the forwarded request whether the exchange succeeded or not.
+.PP
+An exchange that names neither an audience nor a resource is refused at load: it asks for a token as broad as the one it replaces, which is the feature undone while the configuration reads as if it were on. The \fBissued_token_type\fR in the answer is checked rather than assumed \[u2014] a server that answered with a refresh token would otherwise have it forwarded as an access token, which is a long\-lived credential handed to a backend.
+.PP
+Outcomes: a refusal from the authorization server (400, 401 or 403 there) is 403 here with detail \fBexchange_refused\fR, because the token is valid and this backend is not somewhere it reaches; an endpoint that cannot be asked is 503 with \fBRetry\-After\fR and detail \fBexchange_unavailable\fR. Refusals are cached for \fBcache_ttl\fR like successes \[u2014] they are the authorization server\(aqs decision about this client and this backend, and asking again per request turns one misconfiguration into load the login flow shares \[u2014] while an unreachable endpoint is never cached. \fBrequired: false\fR lets the request reach the backend with no token, which validation warns about: it is the control failing open on exactly the requests where it went wrong.
+.SS "jwt.providers[].dpop: proof of possession"
+.PP
+A bearer token is a password: whoever holds it is whoever it says. That is the whole of its security model, and it is why a token stolen from a log, a browser\(aqs storage, a proxy\(aqs cache or a crash dump is as good as the original \[u2014] nothing about the request says it came from the client the token was issued to.
+.PP
+DPoP (RFC 9449) adds the missing part. The client keeps a key pair, the authorization server records the public key\(aqs thumbprint in the token as \fBcnf.jkt\fR, and every request carries a small JWT \[u2014] the proof \[u2014] signed with the private key over \fIthis\fR method, \fIthis\fR URI and \fIthis\fR moment. A stolen token without the key produces no proof, and a proof captured from one request does not fit another.
+.PP
+What is checked, in this order, because each step is only meaningful once the one before it holds:
+.PP
+1. The proof is a JWT with \fBtyp: dpop+jwt\fR and an algorithm from \fBdpop.algorithms\fR. Nothing symmetric and no \fBnone\fR: a proof the verifier could have written itself proves nothing about the client. A key carrying private material is refused too \[u2014] that is a client that has sent its secret. 2. Its signature verifies under the key embedded in its own header. On its own that proves nothing, since anybody can generate a key; step 5 is why it matters. 3. \fBhtm\fR and \fBhtu\fR match the request. The method is compared exactly (HTTP methods are case\-sensitive); the URI is compared without query or fragment, as RFC 9449 section 4.3 says, because the query is not what a replay changes. The scheme comes from the connection and the authority from the \fBHost\fR header \[u2014] never from \fBX\-Forwarded\-Proto\fR, since a client that can set that header could otherwise choose which URI its proof has to match. Behind another terminating proxy, \fBdpop.external_url\fR says what the client sees. 4. \fBiat\fR is within \fBmax_age\fR (plus \fBclock_skew\fR, both ways) and the \fBjti\fR has not been seen. Together they bound replay to a window and then remove it. The \fBjti\fR is spent \fIlast\fR, once everything else holds, so a proof refused for another reason does not consume the identifier a correct retry would use. 5. The RFC 7638 thumbprint of the embedded key equals the token\(aqs \fBcnf.jkt\fR. This is the step the rest exists for: it ties the key that signed the proof to the key the authorization server bound the token to. The claims are read from a token \fBthis proxy has already verified\fR \[u2014] reading \fBcnf\fR from an unverified token would let an attacker write their own thumbprint into it. 6. \fBath\fR equals the base64url SHA\-256 of the access token, so a proof cannot be moved between two tokens the same client holds.
+.PP
+\fBmode: allow\fR costs nothing to turn on: it never refuses an ordinary bearer token, and it closes the replay hole for every token the authorization server did constrain. \fBrequire\fR is the stricter statement that this route takes constrained tokens only.
+.PP
+With DPoP on, the \fBAuthorization: DPoP <token>\fR scheme RFC 9449 defines is read as well as \fBBearer\fR \[u2014] a server that reads only \fBBearer \fR does not see a sender\-constrained token at all. The proof is removed before forwarding: it is a signed statement about \fIthis\fR hop, and a backend verifying it against its own URI would fail.
+.PP
+Refusals are 401 with \fBWWW\-Authenticate: DPoP error="invalid_dpop_proof", algs="..."\fR, or \fBerror="invalid_token"\fR when the problem is the token rather than the proof (\fBdpop_missing\fR, \fBdpop_unbound\fR). The access log carries \fBdpop_jkt\fR with the thumbprint that was proved. The details are \fBdpop_proof\fR, \fBdpop_binding\fR, \fBdpop_replay\fR, \fBdpop_missing\fR and \fBdpop_unbound\fR.
 .PP
 A provider whose key set has never loaded (for example the JWKS URL is unreachable at start) rejects tokens with 503 and \fBRetry\-After\fR until a fetch succeeds; a fetch that returns no keys keeps the previous set.
 .SS "routes[].jwt"
@@ -14620,7 +14817,7 @@ T}
 Denials: 401 with \fBWWW\-Authenticate: ApiKey\fR and the detail \fBmissing\fR, \fBunknown\fR, \fBrevoked\fR, \fBexpired\fR or \fBrotated\fR (the previous secret after its grace), 403 \fBscope:<name>\fR; the access log carries \fBapi_key\fR with the id.
 .SS "Kind \fBopenapi\fR"
 .PP
-Validates requests against an OpenAPI 3.0 or 3.1 description (JSON or YAML): the path must be documented (concrete paths win over templated ones), the method defined for it (else 405 with \fBAllow\fR), path, query, header and cookie parameters present when required and matching their schema (strings are coerced to the declared type), the content type one the operation declares (else 415) and a JSON body valid against its schema. The schema subset covers types and \fBnullable\fR, \fBenum\fR, \fBconst\fR, \fBrequired\fR, \fBproperties\fR, \fBadditionalProperties\fR, \fBpatternProperties\fR, \fBitems\fR, \fBminItems\fR/\fBmaxItems\fR/\fBuniqueItems\fR, \fBminLength\fR/\fBmaxLength\fR/ \fBpattern\fR, \fBminimum\fR/\fBmaximum\fR (exclusive too), \fBmultipleOf\fR, \fBminProperties\fR/\fBmaxProperties\fR, \fBallOf\fR/\fBanyOf\fR/\fBoneOf\fR/\fBnot\fR, local \fB$ref\fR and the formats \fBdate\-time\fR, \fBdate\fR, \fBemail\fR, \fBuuid\fR, \fBipv4\fR, \fBipv6\fR, \fBuri\fR and \fBhostname\fR; other keywords and formats are ignored as the specification allows. Denials answer JSON with the reason and up to twenty \fBdetails\fR naming the offending path.
+Validates requests against an OpenAPI 3.0 or 3.1 description (JSON or YAML): the path must be documented (concrete paths win over templated ones), the method defined for it (else 405 with \fBAllow\fR), path, query, header and cookie parameters present when required and matching their schema (strings are coerced to the declared type, in the \fBstyle\fR the parameter declares), the content type one the operation declares (else 415) and a JSON or urlencoded body valid against its schema. The schema subset covers types and \fBnullable\fR, \fBenum\fR, \fBconst\fR, \fBrequired\fR, \fBproperties\fR, \fBadditionalProperties\fR, \fBpatternProperties\fR, \fBitems\fR, \fBminItems\fR/\fBmaxItems\fR/\fBuniqueItems\fR, \fBminLength\fR/\fBmaxLength\fR/ \fBpattern\fR, \fBminimum\fR/\fBmaximum\fR (exclusive too), \fBmultipleOf\fR, \fBminProperties\fR/\fBmaxProperties\fR, \fBallOf\fR/\fBanyOf\fR/\fBoneOf\fR/\fBnot\fR, local \fB$ref\fR and the formats \fBdate\-time\fR, \fBdate\fR, \fBemail\fR, \fBuuid\fR, \fBipv4\fR, \fBipv6\fR, \fBuri\fR and \fBhostname\fR; other keywords and formats are ignored as the specification allows. Denials answer JSON with the reason and up to twenty \fBdetails\fR naming the offending path.
 .PP
 .TS
 allbox;
@@ -14714,7 +14911,7 @@ bool
 T}	T{
 \fBfalse\fR
 T}	T{
-Refuse query parameters the operation does not declare
+Refuse query parameters the operation does not declare. A \fBdeepObject\fR parameter\(aqs own bracketed names count as declared,\: since those names belong to it
 T}
 T{
 \fBvalidate_\:body\fR
@@ -14723,7 +14920,7 @@ bool
 T}	T{
 \fBtrue\fR
 T}	T{
-Parse and validate JSON bodies;\: off checks only the media type
+Parse and validate JSON and urlencoded form bodies;\: off checks only the media type
 T}
 T{
 \fBmax_\:body_\:bytes\fR
@@ -14732,17 +14929,146 @@ int
 T}	T{
 \fB1048576\fR
 T}	T{
-A JSON body above this is refused with 413 rather than parsed (1 to 64 MiB)
+A body above this is refused with 413 rather than parsed (1 to 64 MiB)
+T}
+T{
+\fBrequire_\:security\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse a request that carries none of the credentials the operation\(aqs \fBsecurity\fR asks for;\: see below
+T}
+T{
+\fBread_\:only\fR
+T}	T{
+\fBallow\fR,\: \fBlog\fR,\: \fBdeny\fR
+T}	T{
+\fBallow\fR
+T}	T{
+What to do with a body carrying a property the description marks \fBreadOnly\fR;\: see below
 T}
 .TE
-.SS "Kind \fBgraphql\fR"
 .PP
-Bounds GraphQL requests (\fBPOST\fR with \fBapplication/json\fR or \fBapplication/graphql\fR, \fBGET\fR with \fBquery\fR) before they reach the API: depth (nesting of selection sets, fragments expanded, a fragment cycle fails), complexity (each field costs 1 times the product of the list arguments of its ancestors; a variable in a list argument counts as \fBmax_list\fR), aliases, operations per batch, query size and introspection. Nothing is executed or forwarded to a schema. Denials are 400 with a GraphQL \fBerrors\fR body and the detail \fBdepth\fR, \fBcomplexity\fR, \fBaliases\fR, \fBbatch\fR, \fBsize\fR, \fBsyntax\fR or \fBintrospection\fR.
+\fBParameter styles.\fR A parameter is not always one string, and OpenAPI\(aqs \fBstyle\fR and \fBexplode\fR say which spelling the operation takes. All of them are read, because a validator that assumes one refuses every request in the others \[u2014] a worse failure than not checking at all, since the request was correct and the description said so.
 .PP
 .TS
 allbox;
-lbw(1.4i) lbw(0.6i) lbw(0.8i) lbx
-lw(1.4i) lw(0.6i) lw(0.8i) lx.
+lbw(0.7i) lbw(1.5i) lbx
+lw(0.7i) lw(1.5i) lx.
+T{
+Where
+T}	T{
+\fBstyle\fR
+T}	T{
+Spelling
+T}
+T{
+query
+T}	T{
+\fBform\fR (default)
+T}	T{
+\fB?ids=\:1&ids=\:2\fR and \fB?ids=\:1,\:2\fR;\: both are read,\: because both are unambiguous and a client may send either
+T}
+T{
+query
+T}	T{
+\fBspaceDelimited\fR
+T}	T{
+\fB?ids=\:1%202\fR
+T}
+T{
+query
+T}	T{
+\fBpipeDelimited\fR
+T}	T{
+\fB?ids=\:1|2\fR
+T}
+T{
+query
+T}	T{
+\fBdeepObject\fR
+T}	T{
+\fB?filter[from]=\:x&filter[size]=\:10\fR,\: assembled into the object the schema declares,\: each property coerced by its own schema (at most 200 properties,\: since the keys come from the client)
+T}
+T{
+path
+T}	T{
+\fBsimple\fR (default),\: \fBlabel\fR,\: \fBmatrix\fR
+T}	T{
+\fB1,\:2,\:3\fR (\fBlabel\fR splits on \fB.\fR)
+T}
+T{
+header
+T}	T{
+\fBsimple\fR (default)
+T}	T{
+\fBa,\:b\fR,\: and a repeated header adds elements
+T}
+T{
+cookie
+T}	T{
+\fBform\fR (default)
+T}	T{
+\fBa,\:b\fR
+T}
+.TE
+.PP
+A repeated scalar parameter is validated for \fIevery\fR value rather than one. Everything behind a proxy reads \fB?limit=10&limit=999\fR differently \[u2014] PHP and Rails take the last, ASP.NET joins them with commas, Spring binds an array \[u2014] so judging only one of them would leave the application reading a value nothing had checked.
+.PP
+A \fBform body\fR declared as \fBapplication/x\-www\-form\-urlencoded\fR is validated against its schema like a JSON one. A form carries strings, so each field is coerced by what its property schema says it is \[u2014] the same coercion the query and path parameters get, and for the same reason: \fBlimit=abc\fR against \fBtype: integer\fR has to be a type error rather than a string that happens not to be a number. A repeated field becomes an array when the schema says the property is one and stays the last value otherwise, which is what a form parser behind the proxy does with it. The body reaches the application byte for byte as the client sent it: it is validated, not re\-encoded. \fBmultipart/form\-data\fR is not validated here \[u2014] that is \fBupload_guard\fR\(aqs job, and it buffers the parts already.
+.SS "\fBrequire_security\fR: the part of the description that is a control"
+.PP
+An operation says which credential it needs \[u2014] \fBsecurity: [{bearerAuth: []}]\fR \[u2014] and \fBcomponents.securitySchemes\fR says where that credential lives: a named header, a query parameter, a cookie, or an \fBAuthorization\fR header with a particular scheme. That is a statement about every request the operation accepts, and it is the one statement a gateway can act on without knowing anything about the credential itself.
+.PP
+Acting on it catches the failure that keeps happening: an endpoint that was meant to be authenticated and is not, because the middleware was registered for one router and not another, or the annotation was left off, or the check sits behind a flag somebody turned off. The description already says the endpoint needs a credential; the application is the thing that might forget.
+.PP
+What is checked is \fBpresence and shape\fR \[u2014] the header is there, the scheme is the declared one, there is something after it \[u2014] and never validity. Deciding whether a token is real belongs to the identity provider and the application, and this filter has no business guessing. A request with a forged bearer token still reaches the API and is still refused there; a request with no credential at all does not reach it.
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBapiKey\fR: the declared header, query parameter or cookie must be present and non\-empty.
+.PP
+.ti -3n
+\(bu
+\fBhttp\fR: \fBAuthorization\fR must carry the declared scheme (matched case\-insensitively, as RFC 9110 requires) with something after it. \fBbasic\fR is additionally checked for the shape RFC 7617 defines \[u2014] base64 of something containing a colon \[u2014] because a value that is not that is not a credential the application can read either.
+.PP
+.ti -3n
+\(bu
+\fBoauth2\fR and \fBopenIdConnect\fR: \fBAuthorization: Bearer <token>\fR, which is the binding RFC 6750 defines.
+.PP
+.ti -3n
+\(bu
+\fBmutualTLS\fR: not checked here. Whether the client presented a certificate was settled by the listener\(aqs \fBclient_auth\fR before this filter ran, and second\-guessing it from here would be guessing, so such a requirement counts as met.
+.RE
+.PP
+.PP
+The alternatives are an OR of ANDs, as OpenAPI defines them: any one alternative satisfies the operation, and every scheme named inside one must be present. An operation\(aqs own \fBsecurity\fR replaces the global one entirely, \fBsecurity: []\fR on an operation means it needs nothing, and an empty object among the alternatives (\fBsecurity: [{}, {bearerAuth: []}]\fR) is how OpenAPI says the credential is optional. A description whose \fBsecurity\fR names a scheme \fBcomponents.securitySchemes\fR never defined is refused at load, because such a section means nothing and an operator should find out before the gateway is relied on.
+.PP
+A refusal is 401 with \fBWWW\-Authenticate\fR naming the scheme where there is a registered challenge to name (\fBBearer\fR, \fBBasic\fR); an API key has none, and inventing one would tell a client to do something no client understands. The security log carries \fBsecurity_schemes\fR with the names.
+.PP
+The default is off, because turning it on refuses whatever was reaching the API without a credential \[u2014] which is the point, and is also a change worth making deliberately. A description that declares security on any operation while this is off logs a warning naming the count at every load, so the control is not silently read as documentation. One ordering note: if an authentication filter earlier in the chain \fIconsumes\fR the credential header rather than leaving it in place, put this filter before it, or \fBrequire_security\fR will refuse the requests that filter just authenticated.
+.SS "\fBread_only\fR: the fields the client is not supposed to choose"
+.PP
+OpenAPI says a \fBreadOnly: true\fR property "MUST NOT be sent as part of the request", and the reason is mass assignment: an object with \fBid\fR, \fBowner\fR and \fBrole\fR marked read\-only is an object whose server\-controlled fields a client is not supposed to pick. An application that binds the whole body onto its model \[u2014] which is what every framework\(aqs convenience path does \[u2014] lets the client pick them anyway, and the description already names which fields those are.
+.PP
+The walk follows \fBproperties\fR, array \fBitems\fR, \fBadditionalProperties\fR and \fBallOf\fR, and deliberately does \fBnot\fR follow \fBanyOf\fR or \fBoneOf\fR. \fBallOf\fR is a conjunction, so a \fBreadOnly\fR there applies to the value whatever else matches; \fBanyOf\fR and \fBoneOf\fR are alternatives, and a property that is read\-only in one branch and writable in another says nothing certain about the value in hand \[u2014] refusing on the strength of a branch the value may not even be matching would refuse correct requests.
+.PP
+\fBallow\fR is the default because a client that GETs an object and PUTs it back sends the server\(aqs own fields, and a great many REST clients are written exactly that way. \fBlog\fR lets the request through and records \fBopenapi_read_only\fR in the access log with the properties, which is how to find out whether \fBdeny\fR would break the clients before turning it on. \fBdeny\fR answers 400 with detail \fBread_only:body.<field>\fR.
+.SS "Kind \fBgraphql\fR"
+.PP
+Bounds GraphQL requests (\fBPOST\fR with \fBapplication/json\fR or \fBapplication/graphql\fR, \fBGET\fR with \fBquery\fR) before they reach the API: depth (nesting of selection sets, fragments expanded, a fragment cycle fails), complexity (each field costs 1 times the product of the list arguments of its ancestors), breadth, directives, aliases, operations per batch, query size and introspection \[u2014] and what the operation \fIis\fR: a mutation, a subscription, an operation nobody named, or one this filter cannot read at all. Nothing is executed or forwarded to a schema. Denials are 400 with a GraphQL \fBerrors\fR body and the detail \fBdepth\fR, \fBcomplexity\fR, \fBroot_fields\fR, \fBdirectives\fR, \fBaliases\fR, \fBbatch\fR, \fBsize\fR, \fBsyntax\fR, \fBintrospection\fR, \fBget_mutation\fR, \fBmutation\fR, \fBsubscription\fR, \fBunnamed\fR, \fBoperation\fR or \fBpersisted\fR.
+.PP
+\fBA mutation may not arrive by GET\fR, whatever the options say. The GraphQL over HTTP specification reserves GET for queries, and the reason is that a GET is what a link, an image tag, a prefetch and a crawler all produce: a mutation reachable that way is a mutation anybody can fire from another origin with the browser attaching the cookies. No configuration makes that safe, so there is no option to allow it (\fBget_mutation\fR).
+.PP
+\fBOnly the selected operation is measured.\fR A document may carry a client\(aqs whole query file and select one with \fBoperationName\fR; only that one runs, so judging the request by the others would refuse a client for queries it did not send. With no \fBoperationName\fR the server picks, so every operation in the document is measured. What the \fIdocument\fR contains is still policy: a mutation sitting beside the selected query is a mutation the server could run, so \fBmutations\fR, \fBsubscriptions\fR, \fBallow_operations\fR and \fBrequire_operation_name\fR look at all of them.
+.PP
+.TS
+allbox;
+lbw(1.4i) lbw(0.7i) lbw(0.8i) lbx
+lw(1.4i) lw(0.7i) lw(0.8i) lx.
 T{
 Option
 T}	T{
@@ -14822,9 +15148,74 @@ int
 T}	T{
 \fB1000\fR
 T}	T{
-Cap of one multiplier,\: and the value assumed for a variable. It bounds the cost model,\: not the page size: \fBfirst:\: 1000000\fR is scored as \fBmax_\:list\fR,\: because a client can move the number into a variable whose value this filter never sees. The page size itself belongs to the origin,\: or to an \fBopenapi\fR route policy
+Cap of one multiplier,\: and the value assumed for a variable the request does not carry. It bounds the cost model,\: not the page size: \fBfirst:\: 1000000\fR is scored as \fBmax_\:list\fR. The page size itself belongs to the origin,\: or to an \fBopenapi\fR route policy
+T}
+T{
+\fBmax_\:root_\:fields\fR
+T}	T{
+int
+T}	T{
+\fB20\fR
+T}	T{
+Top\-level fields of an operation. Depth says nothing about breadth: two hundred root fields are two hundred resolvers at depth one
+T}
+T{
+\fBmax_\:directives\fR
+T}	T{
+int
+T}	T{
+\fB100\fR
+T}	T{
+Directives in the query text. A directive is evaluated per field it decorates,\: so a field carrying a thousand \fB@include\fRs is a thousand evaluations before anything resolves. The count is of the text rather than the expansion,\: because that is the number an operator can look at their own query and predict
+T}
+T{
+\fBmutations\fR
+T}	T{
+\fBallow\fR,\: \fBdeny\fR
+T}	T{
+\fBallow\fR
+T}	T{
+\fBdeny\fR makes the endpoint read\-only
+T}
+T{
+\fBsubscriptions\fR
+T}	T{
+\fBallow\fR,\: \fBdeny\fR
+T}	T{
+\fBallow\fR
+T}	T{
+\fBdeny\fR refuses subscription operations
+T}
+T{
+\fBrequire_\:operation_\:name\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse an operation with no name (\fBunnamed\fR)
+T}
+T{
+\fBallow_\:operations\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+The only operation names that may run (\fBoperation\fR). It implies \fBrequire_\:operation_\:name\fR,\: because an anonymous operation is on no list and a list that let it through would be a list in name only. This is the strongest control here for a closed client set: the queries are known,\: so anything else is not a query this API serves
+T}
+T{
+\fBpersisted\fR
+T}	T{
+\fBallow\fR,\: \fBdeny\fR
+T}	T{
+\fBallow\fR
+T}	T{
+What to do with a request that carries no query text \[u2014] a persisted query the origin looks up by hash. There is nothing to parse and nothing to measure,\: so every bound above walks past it. \fBallow\fR is the default because the origin only runs documents it already has,\: which is usually the safest thing a client can send;\: \fBdeny\fR is for a deployment whose API is reached through this filter and not otherwise,\: where an unreadable query should not be an allowed one (\fBpersisted\fR)
 T}
 .TE
+.PP
+\fBVariables are read.\fR A pagination argument given as a variable \[u2014] \fBfriends(first: $count)\fR with \fB{"count": 10}\fR in the request \[u2014] is a real number the server will use, and scoring it as \fBmax_list\fR refuses a query that costs nothing. That is how a complexity bound ends up switched off by the operator it kept annoying. A variable the request does not carry, or carries as something that is not a whole non\-negative number (a string, a null, a fraction, a negative), or that has a schema default this filter never sees, is still the worst case; and a literal larger than the variable still wins.
 .SS "Kind \fBupload_guard\fR"
 .PP
 Inspects file uploads before the application stores them: multipart bodies (and, with \fBraw_uploads\fR, any other body of a write request) are buffered up to \fBmax_total_bytes\fR, every file part is checked and the body is replayed to the upstream unchanged. Checks, in order: file count, the form field, the file name (no path separators, control characters or traversal, at most \fBmax_filename_length\fR), the extension chain (\fBinvoice.pdf.exe\fR has two; a denied extension anywhere in the chain refuses, and with an allow list an unexpected extension before the last one, \fBphoto.html.jpg\fR, refuses too, while \fBreport.2024.pdf\fR passes), the size, the content (PE, ELF and Mach\-O images, \fB#!\fR scripts, PHP, JSP and ASP tags are refused whatever the name, unless \fBdeny_executables\fR is off), and the bytes against the extension\(aqs family and the declared media type (a PNG named \fB.jpg\fR, a PDF declared as an image). Denials answer 400, 413 or 415 with reason \fBupload\fR, a detail \fBcheck:filename\fR and a JSON body; the access log carries \fBupload_files\fR and \fBupload_bytes\fR. Malware scanning stays with ICAP.

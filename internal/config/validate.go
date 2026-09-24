@@ -1909,6 +1909,11 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 	}
 	seen[r.Name] = true
 	v.websocketGuard(p, r)
+	switch r.ClientCertHeaders {
+	case "", "none", "rfc9440", "xfcc":
+	default:
+		v.errf("%s.client_cert_headers: must be none, rfc9440 or xfcc", p)
+	}
 
 	for j, h := range r.Hosts {
 		if !hostPatternOK(h) {
@@ -4182,6 +4187,103 @@ func (v *validator) dnsListener(p string, d *DNSListener) {
 	v.dnsTunnel(p+".tunnel_detection", d.TunnelDetection)
 }
 
+// tokenExchange checks an RFC 8693 exchange.
+//
+// The one shape worth refusing at load is an exchange that names neither
+// an audience nor a resource: it asks the authorization server for a token
+// as broad as the one it replaces, which is the point of the feature
+// undone while the configuration reads as if it were on.
+func (v *validator) tokenExchange(p string, t *TokenExchange) {
+	if t == nil {
+		return
+	}
+	if u, err := url.Parse(t.URL); err != nil || u.Scheme != "https" || u.Host == "" {
+		v.errf("%s.url: must be an https URL", p)
+	}
+	if t.ClientID == "" || !strings.HasPrefix(t.ClientSecretFile, "/") {
+		v.errf("%s: client_id and an absolute client_secret_file are required", p)
+	} else {
+		v.file(p+".client_secret_file", t.ClientSecretFile)
+	}
+	if t.CAFile != "" {
+		v.file(p+".ca_file", t.CAFile)
+	}
+	if t.Audience == "" && t.Resource == "" {
+		v.errf("%s: audience or resource is required; an exchange that names neither asks for a token as broad as the one it replaces", p)
+	}
+	if t.Resource != "" {
+		if u, err := url.Parse(t.Resource); err != nil || u.Scheme == "" || u.Host == "" {
+			v.errf("%s.resource: must be an absolute URI (RFC 8707)", p)
+		}
+	}
+	for i, sc := range t.Scopes {
+		if sc == "" || strings.ContainsAny(sc, " \t\r\n\"") {
+			v.errf("%s.scopes[%d]: a scope is a non-empty token without spaces", p, i)
+		}
+	}
+	switch t.RequestedTokenType {
+	case "", "urn:ietf:params:oauth:token-type:access_token", "urn:ietf:params:oauth:token-type:jwt":
+	default:
+		v.errf("%s.requested_token_type: must be the access_token or jwt URN; anything else would be forwarded as an access token", p)
+	}
+	if t.Header != "" && !headerNameOK(t.Header) {
+		v.errf("%s.header: %q is not a valid header name", p, t.Header)
+	}
+	if strings.EqualFold(t.Header, "Cookie") || strings.EqualFold(t.Header, "Host") {
+		v.errf("%s.header: %s cannot carry a token", p, t.Header)
+	}
+	if t.CacheTTL < 0 || t.CacheTTL > Duration(time.Hour) {
+		v.errf("%s.cache_ttl: must be between 0 and 1h", p)
+	}
+	if t.Timeout != 0 && (t.Timeout < Duration(100*time.Millisecond) || t.Timeout > Duration(30*time.Second)) {
+		v.errf("%s.timeout: must be between 100ms and 30s", p)
+	}
+	if !t.Requires() {
+		v.warnf("%s.required: false lets a request through when the exchange fails, so the backend is reached with no token at all on exactly the requests where the control went wrong", p)
+	}
+}
+
+// dpop checks a proof-of-possession policy.
+//
+// The algorithm list is the part worth refusing at load: a symmetric
+// algorithm in it is a policy that verifies proofs the verifier could have
+// written itself, which is proof of nothing and reads as if it were.
+func (v *validator) dpop(p string, d *DPoP, source string) {
+	if d == nil {
+		return
+	}
+	switch d.Mode {
+	case "", "off", "allow", "require":
+	default:
+		v.errf("%s.mode: must be off, allow or require", p)
+	}
+	for i, a := range d.Algorithms {
+		switch a {
+		case "RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512", "EdDSA":
+		default:
+			v.errf("%s.algorithms[%d]: %q is not an asymmetric JWS algorithm", p, i, a)
+		}
+	}
+	if d.MaxAge < 0 || d.MaxAge > Duration(10*time.Minute) {
+		v.errf("%s.max_age: must be between 0 and 10m", p)
+	}
+	if d.ReplayEntries < 0 || d.ReplayEntries > 10_000_000 {
+		v.errf("%s.replay_entries: must be between 0 and 10000000", p)
+	}
+	if d.ExternalURL != "" {
+		if u, err := url.Parse(d.ExternalURL); err != nil || u.Scheme == "" || u.Host == "" {
+			v.errf("%s.external_url: must be an absolute URL", p)
+		}
+	}
+	// A proof binds the token in the Authorization header, and RFC 9449
+	// puts it there under its own scheme. A provider reading the token
+	// from a cookie or another header is a provider whose tokens no client
+	// library will send a proof for.
+	if d.Mode != "" && d.Mode != "off" && source != "" && source != "bearer" {
+		v.warnf("%s: proof of possession is defined for the Authorization header (RFC 9449), and this provider reads its token from %q", p, source)
+	}
+}
+
 // dnsAnswerPolicy checks the answer screen. An answer policy that denies
 // nothing is the one shape worth refusing at load: it reads like
 // rebinding protection and is not, and an operator who wrote the section
@@ -4720,6 +4822,8 @@ func (v *validator) jwt(j *JWT, seen map[string]bool) {
 		if p.ClockSkew < 0 || p.ClockSkew > Duration(600_000_000_000) {
 			v.errf("%s.clock_skew: must be between 0 and 10m", pp)
 		}
+		v.dpop(pp+".dpop", p.DPoP, p.Source)
+		v.tokenExchange(pp+".token_exchange", p.TokenExchange)
 		switch {
 		case p.Source == "bearer":
 		case strings.HasPrefix(p.Source, "header:") && headerNameOK(p.Source[7:]):
