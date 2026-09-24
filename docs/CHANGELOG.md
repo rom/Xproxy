@@ -512,6 +512,60 @@ Open findings of the earlier rounds:
   access log line carries `view`. Twelve deliberate weakenings were each
   caught by the tests.
 
+- **SSH command policy reads the command instead of matching it**
+  (`server.listeners[].ssh.command_rules`, `internal/sshcmd`).
+
+  `allow_commands` is a list of patterns, and for the commands that move
+  files a pattern is the wrong shape of statement. `^scp -t
+  /srv/incoming$` is somebody writing *"uploads into that directory,
+  nothing else"*, and `scp -f /srv/incoming` (the other direction, the
+  same words), `scp -rt /srv/incoming` (bundled flags), `/usr/bin/scp -t
+  /srv/incoming` (a path), `scp  -t  /srv/incoming` (two spaces),
+  `scp -t /srv/incoming/../../etc/ssh` (a path that resolves elsewhere)
+  and `LD_PRELOAD=/tmp/x.so scp -t /srv/incoming` (an environment the
+  env policy never sees, because it is a shell assignment and not an env
+  request) each walk past it. Tighten the pattern against one and it is
+  still wrong about the next.
+
+  So a rule says what the operator meant: the direction (`upload` puts
+  files on the target, `download` takes them off it), whether recursion
+  is allowed, whether the rsync options that delete are, and which paths
+  are in reach. `internal/sshcmd` splits the line the way a POSIX shell
+  splits one simple command -- quoting and all, so the words the rule
+  checks are the words the target will run -- and then reads scp's server
+  flags, rsync's `--server`/`--sender` and short bundles, git's transport
+  verbs and the sftp server's options the way each program reads its own.
+
+  Four families, and the direction is always the file movement rather
+  than the program's verb: a git fetch is `upload-pack` because that name
+  is the server's point of view, and it is a `download` here. An approved
+  exec of the sftp server binary is **relayed through the sftp policy**,
+  which is what makes allowing it safe -- the channel carries the same
+  protocol the subsystem does, so the same path, read-only and scanning
+  rules apply to a transfer that used to be an opaque stream.
+
+  Where a rule cannot be honest it refuses rather than implying a
+  boundary that is not there. A line it cannot read as one simple command
+  is `command_syntax`, including under `allow_shell_syntax`. A glob is
+  admitted only where `paths` covers a whole subtree containing the
+  directory the pattern sits in (a shell's `*` does not cross a `/`), and
+  never where a `deny_paths` entry would have to be proven unmatched. A
+  wrapper is not read through: `env scp -t /etc` is `env`, so no rule
+  covers it and the blanket check refuses it as before. And rsync's file
+  list travels inside rsync's own protocol, so an rsync rule decides the
+  direction, the deletions and the transfer root and CONFIG.md says
+  plainly that everything under that root is in reach -- sftp is the
+  protocol that can carry a per-file rule.
+
+  Each refusal is counted and logged under what was wrong with the
+  command (`command_direction`, `command_path`, `command_recursive`,
+  `command_delete`, `command_server`, `command_env`, `command_no_rule`,
+  `command_syntax`), so a counter names the property rather than a rule
+  number. With any rule present a family named by no rule is refused, so
+  a rule for scp does not quietly leave rsync to the patterns. Forty-eight
+  deliberate weakenings were each caught, two after the tests were
+  extended for them.
+
 - **Aggressive NSEC caching: a proof answers more than one question**
   (`server.listeners[].dns.dnssec.aggressive_nsec`, RFC 8198).
 

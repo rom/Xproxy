@@ -65,11 +65,43 @@ server:
         allow_env: [TERM, LANG, "LC_*"]
 
         # scp and rsync move files without ever opening the sftp
-        # subsystem. On this listener there is no sftp section to
-        # bypass, so they are allowed; on the dropbox listener below
-        # they are refused, which is what makes its path policy mean
-        # something.
+        # subsystem, so an sftp policy says nothing about them. This
+        # switch is the blunt answer -- yes or no -- and on this
+        # listener the rules below are the sharp one, so what it admits
+        # is only what no rule covers.
         allow_file_transfer_commands: true
+
+        # What the transfer commands may actually do. A pattern over the
+        # command line cannot say this: "^scp -t /srv/incoming$" is
+        # somebody meaning "uploads into that directory", and
+        # "scp -f /srv/incoming" (the other way, the same words),
+        # "scp -rt /srv/incoming" (bundled flags), "/usr/bin/scp -t ..."
+        # (a path) and "scp -t /srv/incoming/../../etc/ssh" each walk
+        # past it. So the line is split as a shell splits it, the flags
+        # are read as scp and rsync read them, and the rule decides on
+        # the meaning: direction, recursion, deletion, path.
+        #
+        # Once there is one rule, a family with no rule is refused, so
+        # this list is the whole answer for scp, rsync, git and the sftp
+        # server binary. Everything else is still allow_commands.
+        command_rules:
+          - command: scp
+            directions: [upload]
+            paths: ["/srv/incoming/**"]
+            # A directory somebody's own keys live in is not a place an
+            # upload belongs.
+            deny_paths: ["/srv/incoming/.ssh/**"]
+          # Backups pull, and may not delete what they pull from: the
+          # --delete family and --remove-source-files stay refused.
+          - command: rsync
+            directions: [download]
+            paths: ["/srv/data/**"]
+          # Clones and fetches, no pushes. The direction is the file
+          # movement, not git's own verb: a fetch is "upload-pack"
+          # because that name is the server's.
+          - command: git
+            directions: [download]
+            paths: ["/srv/git/**"]
 
         # Certificates instead of a growing authorized_keys: the CA
         # signs a principal into a certificate with a lifetime, and the

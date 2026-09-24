@@ -150,6 +150,13 @@ func (tg *targetSSH) session(ch cssh.Channel, reqs <-chan *cssh.Request) {
 		switch r.Type {
 		case "exec":
 			_ = r.Reply(true, nil)
+			if strings.Contains(payload, "sftp-server") {
+				// An exec of the sftp server binary carries the same
+				// protocol the subsystem does, which is the whole
+				// reason a gateway has to inspect it.
+				tg.sftp(ch)
+				return
+			}
 			if payload == "cat" {
 				// One command reads its input and echoes it, so a test
 				// can see what crossed the channel in that direction.

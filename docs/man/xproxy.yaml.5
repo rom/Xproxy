@@ -4827,6 +4827,15 @@ T}	T{
 Accept \fBexec\fR commands that are file transfer helpers: \fBscp\fR,\: \fBrsync\fR,\: \fBsftp\-\:server\fR,\: \fBinternal\-\:sftp\fR,\: \fBlftp\fR,\: \fBrclone\fR. They move files without ever opening the \fBsftp\fR subsystem,\: so every path and operation rule there is off their path;\: setting this beside an \fBsftp\fR section warns,\: because it is exactly the bypass that section exists to close. Every word of the command is read,\: not only the first,\: each with any directory part removed and a \fBVAR=\:value\fR prefix skipped,\: so a wrapper (\fBenv scp \-\:t\fR,\: \fBsudo rsync\fR,\: \fBsh \-\:c "scp \[u2026]"\fR) is refused too
 T}
 T{
+\fBcommand_\:rules\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Hold the file transfer families to what they \fImean\fR rather than to a pattern: the direction,\: recursion,\: deletions and the paths in reach,\: read the way \fBscp\fR,\: \fBrsync\fR,\: the sftp server and \fBgit\fR read their own arguments. See below
+T}
+T{
 \fBprincipals\fR
 T}	T{
 list
@@ -5003,7 +5012,7 @@ T}
 .PP
 An entry that names neither a fingerprint nor a certificate principal matches every key, which is how a list ends in a default. It must be the last entry, because an entry after it could never be reached.
 .PP
-The policy object takes \fBupstream_user\fR, \fBallow_channels\fR, \fBallow_requests\fR, \fBallow_subsystems\fR, \fBallow_commands\fR, \fBallow_env\fR, \fBforward\fR, \fBremote_forward\fR and \fBsftp\fR, each meaning what it means on the listener and each falling back to the listener when unset, plus:
+The policy object takes \fBupstream_user\fR, \fBallow_channels\fR, \fBallow_requests\fR, \fBallow_subsystems\fR, \fBallow_commands\fR, \fBcommand_rules\fR, \fBallow_env\fR, \fBforward\fR, \fBremote_forward\fR and \fBsftp\fR, each meaning what it means on the listener and each falling back to the listener when unset, plus:
 .PP
 .TS
 allbox;
@@ -5067,6 +5076,232 @@ Both policies apply and the narrower wins: the CA says what this credential may 
 This is deliberately crude and deliberately broad. A bastion does not need to know what a line would do; it needs to know that the line is a command with arguments, which is the only shape a list of patterns can be written against. \fBallow_shell_syntax: true\fR turns the check off for a listener that genuinely needs shell syntax, and warns, because the patterns then have to be written knowing it.
 .PP
 The strong form of a command policy is \fBforce\-command\fR on the certificate: the CA fixes the command and the client\(aqs own is replaced, so there is no line to pattern\-match at all.
+.PP
+##### server.listeners[].ssh.command_rules
+.PP
+A pattern is a weak boundary, and for the commands that move files it is the wrong shape of statement. \fB^scp \-t /srv/incoming$\fR is somebody writing \fI"uploads into that directory, nothing else"\fR, and each of these is past it:
+.PP
+.TS
+allbox;
+lbw(1.0i) lbx
+lw(1.0i) lx.
+T{
+The line
+T}	T{
+What a pattern misses
+T}
+T{
+\fBscp \-\:f /\:srv/\:incoming\fR
+T}	T{
+The other direction,\: spelled with the same words
+T}
+T{
+\fBscp \-\:rt /\:srv/\:incoming\fR
+T}	T{
+Bundled flags,\: so the pattern does not match \[u2014] and recursion is a different permission
+T}
+T{
+\fB/\:usr/\:bin/\:scp \-\:t /\:srv/\:incoming\fR
+T}	T{
+A path,\: so the pattern does not match
+T}
+T{
+\fBscp  \-\:t  /\:srv/\:incoming\fR
+T}	T{
+Two spaces
+T}
+T{
+\fBscp \-\:t /\:srv/\:incoming/\:.\:.\:/\:.\:.\:/\:etc/\:ssh\fR
+T}	T{
+A path inside \fB/\:srv/\:incoming\fR to a pattern,\: \fB/\:etc\fR to the target
+T}
+T{
+\fBLD_\:PRELOAD=\:/\:tmp/\:x.\:so scp \-\:t /\:srv/\:incoming\fR
+T}	T{
+An environment the \fBallow_\:env\fR policy never sees,\: because it is a shell assignment and not an \fBenv\fR request
+T}
+.TE
+.PP
+Tighten the pattern against any one of them and it is still wrong about the next. What the policy means to say is a statement about the command\(aqs \fImeaning\fR, so that is what a rule says: the direction, whether recursion is allowed, whether deletions are, and which paths are in reach. The command line is split the way a shell splits it, the options are read the way the program reads them, and the rule is applied to that.
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(0.9i) lbw(0.9i) lbx
+lw(1.1i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBcommand\fR
+T}	T{
+\fBscp\fR,\: \fBrsync\fR,\: \fBsftp_\:server\fR,\: \fBgit\fR
+T}	T{
+required
+T}	T{
+The family this rule decides. One rule per family;\: a second is a load error,\: since which of the two was silent would be the policy
+T}
+T{
+\fBdirections\fR
+T}	T{
+list of \fBupload\fR,\: \fBdownload\fR
+T}	T{
+required (not for \fBsftp_\:server\fR)
+T}	T{
+The file movements allowed. \fBupload\fR puts files \fBon\fR the target,\: \fBdownload\fR takes them \fBoff\fR it \[u2014] the movement,\: not the program\(aqs own verb: a git fetch is \fBupload\-\:pack\fR because that name is the server\(aqs,\: and it is a \fBdownload\fR here
+T}
+T{
+\fBpaths\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (every path)
+T}	T{
+The paths in reach,\: as the \fBsftp\fR policy\(aqs patterns (\fB/\:srv/\:incoming/\:**\fR). Absolute;\: a relative pattern is a load error,\: because the path it is matched against is resolved from the root
+T}
+T{
+\fBdeny_\:paths\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Refused whatever \fBpaths\fR says
+T}
+T{
+\fBrecursive\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Allow \fBscp \-\:r\fR. Only scp takes it
+T}
+T{
+\fBdelete\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Allow the rsync options that remove files at the far end: \fB\-\:\-\:delete\fR and its family,\: \fB\-\:\-\:remove\-\:source\-\:files\fR,\: \fB\-\:\-\:force\fR. Only rsync has them
+T}
+T{
+\fBenforce_\:sftp_\:policy\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Relay an approved exec of the sftp server binary through the \fBsftp\fR policy. Required for a \fBsftp_\:server\fR rule and refused for the others
+T}
+.TE
+.PP
+.RS 4
+.nf
+.ft CR
+sftp: {read_only: true, allow_paths: ["/srv/data/**"]}
+command_rules:
+  # The deployment robot puts artefacts in one directory and takes
+  # nothing out. No recursion: a file is a file.
+  \- command: scp
+    directions: [upload]
+    paths: ["/srv/incoming/**"]
+    deny_paths: ["/srv/incoming/keys/**"]
+  # Backups pull, and may not delete what they pull from.
+  \- command: rsync
+    directions: [download]
+    paths: ["/srv/data/**"]
+  # Clones and fetches, no pushes.
+  \- command: git
+    directions: [download]
+    paths: ["/srv/git/**"]
+  # And the sftp server binary run as a command is the sftp subsystem
+  # under another name, so it is allowed only inspected.
+  \- command: sftp_server
+    enforce_sftp_policy: true
+.ft
+.fi
+.RE
+.PP
+\fBWith any rule present, a family named by no rule is refused.\fR A rule for scp must not quietly leave rsync to the patterns, so the families this gateway can read are a positive model once the list exists (\fBcommand_no_rule\fR). Everything else \[u2014] every command with no parser here \[u2014] stays with \fBallow_commands\fR exactly as before.
+.PP
+\fBA rule allows what \fBallow_file_transfer_commands: false\fR refuses.\fR That switch is "scp and rsync, yes or no"; a rule is "scp, uploads, into this directory", which is the decision an operator wanted to make. So a rule wins over the blanket refusal for the family it names, and over \fBallow_commands\fR too: a command a rule allows is not also pattern matched, because the rule is the narrower statement.
+.PP
+\fBA line that cannot be read is refused, never guessed at\fR (\fBcommand_syntax\fR): a substitution, an unbalanced quote, an option no version of the program takes. This applies to the families the rules cover even where \fBallow_shell_syntax\fR is on \[u2014] \fBscp \-t $(cat /etc/x)\fR is refused as an scp whose words cannot be trusted \[u2014] while a command of no family keeps whatever behaviour that setting gives it.
+.PP
+\fBA wrapper is not read through.\fR \fBenv scp \-t /etc\fR, \fBsudo rsync\fR, \fBsh \-c "scp \-t /etc"\fR: the command is \fBenv\fR, \fBsudo\fR and \fBsh\fR, so no rule covers it and the blanket check refuses it as it did before. A rule is never a way to reach scp through something else.
+.PP
+What each refusal is counted and logged as:
+.PP
+.TS
+allbox;
+lbw(1.0i) lbx
+lw(1.0i) lx.
+T{
+Label
+T}	T{
+What it means
+T}
+T{
+\fBcommand_\:direction\fR
+T}	T{
+The movement the rule does not allow (\fBscp \-\:f\fR where only uploads are allowed,\: a push where only fetches are)
+T}
+T{
+\fBcommand_\:path\fR
+T}	T{
+A path outside \fBpaths\fR,\: inside \fBdeny_\:paths\fR,\: above its own root,\: or a glob whose expansion cannot be proven inside an allowed subtree
+T}
+T{
+\fBcommand_\:recursive\fR
+T}	T{
+\fBscp \-\:r\fR without \fBrecursive:\: true\fR
+T}
+T{
+\fBcommand_\:delete\fR
+T}	T{
+An rsync option that removes files,\: without \fBdelete:\: true\fR
+T}
+T{
+\fBcommand_\:server\fR
+T}	T{
+Not the far side of a client\(aqs transfer at all: an scp with neither \fB\-\:t\fR nor \fB\-\:f\fR,\: an rsync with no \fB\-\:\-\:server\fR (which would dial out of the target)
+T}
+T{
+\fBcommand_\:env\fR
+T}	T{
+A \fBVAR=\:value\fR assignment in front of a transfer command
+T}
+T{
+\fBcommand_\:no_\:rule\fR
+T}	T{
+A family this gateway reads,\: with no rule of its own
+T}
+T{
+\fBcommand_\:syntax\fR
+T}	T{
+A transfer line that could not be read as one simple command
+T}
+.TE
+.PP
+Two honest limits, because a boundary that is believed to be somewhere it is not is worse than a narrow one:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBrsync\(aqs file list is inside rsync\(aqs own protocol.\fR In server mode the arguments carry the transfer root and the options; which files move is negotiated afterwards, in a stream this gateway relays but does not parse. So an rsync rule decides the direction, the deletions and the root \[u2014] and everything under that root is in reach of the transfer. Where a per\-file rule is the requirement, \fBsftp\fR is the protocol that can carry one.
+.PP
+.ti -3n
+\(bu
+\fBA glob is the target shell\(aqs to expand.\fR \fBscp \-f /srv/data/*\fR is admitted only when \fBpaths\fR covers a whole subtree that contains the directory the pattern sits in (\fB/srv/data/**\fR), since a shell\(aqs \fB*\fR does not cross a \fB/\fR. With a single\-level pattern, or with any \fBdeny_paths\fR \[u2014] which a glob cannot be proven clear of \[u2014] it is refused. Globs need \fBallow_shell_syntax\fR to reach a rule at all.
+.RE
+.PP
 .SS "server.listeners[].ssh.recording"
 .PP
 The access log says a session happened. It cannot say what was done in it, because what was done is a stream of control sequences inside the channel. This writes that stream to a file per channel, in the asciicast v2 format, so "what did they actually run" is a question with an answer that is watched rather than reconstructed:

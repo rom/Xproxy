@@ -17,11 +17,14 @@ import (
 //
 // listener's policy, or of a principal's override of it.
 type sshPolicy struct {
-	upstreamUser  string
-	channels      map[string]bool
-	requests      map[string]bool
-	subsystems    map[string]bool
-	commands      []*regexp.Regexp
+	upstreamUser string
+	channels     map[string]bool
+	requests     map[string]bool
+	subsystems   map[string]bool
+	commands     []*regexp.Regexp
+	// rules are the structured command rules, nil when the policy has
+	// none and every command is held to the patterns above instead.
+	rules         *cmdRules
 	env           []string
 	forwards      []sshForward
 	remoteForward bool
@@ -83,6 +86,17 @@ func compileSSHPolicy(c *config.SSHPolicy, base *sshPolicy) (*sshPolicy, error) 
 		}
 	case base != nil:
 		p.commands = base.commands
+	}
+
+	switch {
+	case len(c.CommandRules) > 0:
+		rs, err := compileCmdRules(c.CommandRules)
+		if err != nil {
+			return nil, err
+		}
+		p.rules = rs
+	case base != nil:
+		p.rules = base.rules
 	}
 
 	switch {

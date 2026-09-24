@@ -2760,6 +2760,58 @@ removed and `VAR=value` prefixes skipped, so `env scp -t` and
 `scp` is refused with them; that is the direction to be wrong in on a
 bastion.
 
+With `command_rules` the answer is narrower than that switch: a rule says
+the direction, the paths and whether recursion is allowed, and it decides
+for the family it names instead of the blanket refusal. See the
+`command_*` labels below.
+
+**A command is refused with `command_direction`, `command_path` or
+another `command_*` label.** That is a `command_rules` entry deciding,
+and the label says which property of the command was wrong rather than
+which rule said so. `xproxyctl status` counts them per listener:
+
+| Label | What the command asked for |
+|-------|----------------------------|
+| `command_direction` | A movement the rule does not allow: `scp -f` under `directions: [upload]`, a `git-receive-pack` push under `[download]`, an `rsync --server` without `--sender` under a download-only rule |
+| `command_path` | A path outside `paths`, inside `deny_paths`, one that climbs above its own root, or a glob whose expansion cannot be proven to stay inside an allowed subtree. The path is judged **after** resolving it, so `/srv/incoming/../../etc/ssh` is refused as `/etc/ssh` |
+| `command_recursive` | `scp -r` without `recursive: true` |
+| `command_delete` | `--delete`, `--delete-during`, `--remove-source-files` or `--force` without `delete: true` |
+| `command_server` | An scp with neither `-t` nor `-f`, or an rsync with no `--server`: not the far side of a client's transfer, so it is doing something else on the target — an rsync client would dial out of it |
+| `command_env` | A `VAR=value` assignment in front of the command. The `allow_env` policy covers `env` requests; an assignment is a shell's, and it is refused rather than read |
+| `command_no_rule` | A family this gateway reads (`scp`, `rsync`, the sftp server binary, git's transport verbs) with no rule of its own. Once there is one rule, a family named by none is refused — otherwise a rule for scp would quietly leave rsync to the patterns |
+| `command_syntax` | The line could not be read as one simple command: a substitution, an unbalanced quote, an option no version of the program takes. It applies to the transfer families even under `allow_shell_syntax` |
+
+**A command a rule should allow is refused as `command_syntax`.** Look at
+the detail in the security event: it names what could not be read. The
+usual causes are a substitution (`scp -t $(cat /etc/x)` — the gateway
+cannot know what path that becomes), a glob without
+`allow_shell_syntax` (refused earlier, as `shell_syntax`), and an option
+the program's server mode does not take.
+
+**A glob is refused although the directory is in `paths`.** A glob is
+expanded by the target's shell, so the only honest check is whether every
+name it could produce is inside an allowed subtree: `paths` must contain
+a pattern ending in `/**` (or `/`) that covers the directory the glob
+sits in, and a single-level pattern is not enough. With any `deny_paths`
+entry a glob is refused outright — a pattern cannot be proven not to
+match one. Name the file, or widen `paths` to the subtree deliberately.
+
+**`env scp -t /srv/incoming` is refused although a scp rule allows that
+path.** A wrapper is not read through: the command is `env`, so no rule
+covers it, and the blanket `file_transfer_refused` check — which reads
+every word — refuses it. That is deliberate. A rule is never a way to
+reach a transfer command through something else, because this gateway
+cannot know what a wrapper will do with the words after it.
+
+**rsync copies a file the rule's `paths` does not name.** In server mode
+rsync's file list travels inside rsync's own protocol, negotiated after
+the command line: the rule decides the direction, the deletions and the
+transfer root, and everything under that root is in reach of the
+transfer. Where the requirement is a rule per file, sftp is the protocol
+that can carry one — and an `sftp_server` rule with
+`enforce_sftp_policy: true` is how an exec of the sftp server binary is
+held to it.
+
 **Port forwarding is refused.** Two separate gates: `direct-tcpip` must
 be in `allow_channels`, and the destination must be in `forward`.
 Validation refuses one without the other, so a listener that allows the
@@ -3785,7 +3837,7 @@ actually being refused. What each kind can say:
 | `udp` | `client_not_allowed`, `datagram_too_large`, `rate_limit`, `max_sessions`, `max_sessions_per_ip`, `banned`, `upstream_datagram_too_large` |
 | `forward` | the destination policy (`not_allowed`, `deny`, `private`, `host`, `port`, `resolve`), the request shape (`not_absolute`, `scheme`, `authority`), `auth`, `tunnel_limit`, interception (`sni_mismatch`, `upstream_tls`, `client_tls`), SOCKS UDP (`udp_malformed`, `udp_unsolicited`, `udp_wrong_source`, `udp_peer_table_full`, `udp_disabled`) and MASQUE (`masque_target`, `masque_session_limit`, `masque_context`, `masque_spoofed`, `masque_unsolicited`) |
 | `dns` | `workers_busy` (`max_in_flight`), `rate_limit`, `banned`, `malformed`, `client_not_allowed`, `blocked`, `tunnel`, `any_over_udp`, `formerr`, `opcode`, `answer_denied`, `answer_stripped`, `cookie_required`, `cookie_missing`, `cookie_malformed` |
-| `ssh` | `client_not_allowed`, `max_sessions`, `max_sessions_per_principal`, `max_forwards`, `auth_failed`, `mfa_failed`, `mfa_not_enrolled`, the channel and request policy (`channel_refused`, `request_refused`, `subsystem_refused`, `env_refused`, `command_refused`, `shell_syntax`, `file_transfer_refused`, `forward_refused`, `remote_forward_refused`), what the certificate did not grant (`cert_no_port_forwarding`, `cert_pty_refused`, `cert_X11_forwarding_refused`, `cert_agent_forwarding_refused`), and SFTP (`sftp_refused`, `sftp_malformed`, `sftp_identity_refused`, `sftp_icap`) |
+| `ssh` | `client_not_allowed`, `max_sessions`, `max_sessions_per_principal`, `max_forwards`, `auth_failed`, `mfa_failed`, `mfa_not_enrolled`, the channel and request policy (`channel_refused`, `request_refused`, `subsystem_refused`, `env_refused`, `command_refused`, `shell_syntax`, `file_transfer_refused`, `forward_refused`, `remote_forward_refused`), the structured command rules (`command_direction`, `command_path`, `command_recursive`, `command_delete`, `command_server`, `command_env`, `command_no_rule`, `command_syntax`), what the certificate did not grant (`cert_no_port_forwarding`, `cert_pty_refused`, `cert_X11_forwarding_refused`, `cert_agent_forwarding_refused`), and SFTP (`sftp_refused`, `sftp_malformed`, `sftp_identity_refused`, `sftp_icap`) |
 | `telnet` | `client_refused`, `banned`, `option_refused`, `subnegotiation_refused`, `malformed`, `mfa_failed`, `prompt` |
 | `vnc` | `client_refused`, `banned`, `version`, `auth_failed`, `mfa_failed`, `view_only`, the security negotiation (`security_not_offered`, `security_not_usable`, `security_not_mediated`, `subtype_not_offered`, `vencrypt_subtype_not_mediated`, `tight_auth_not_offered`), the variants' own parameters (`tls`, `mslogon_parameters`, `ard_parameters`, `rsaaes_key`, `rsaaes_random`, `rsaaes_transcript`), and the picture (`framebuffer_too_large`, `rectangle_too_large`, `rectangle_outside_framebuffer`, `too_many_rectangles`, `encoded_rectangle_too_large`, `decode_ratio`, `cut_text_too_large`, `unframable`, `pixel_format`, `pixel_format_changed`, `resize_refused`, `resize_too_large`, `clipboard_to_client`, `clipboard_to_target`, and `encoding_<name>` for each encoding taken out of a client's list) |
 | `rdp` | `client_refused`, `banned`, `mfa_failed`, `negotiate`, `no_protocol`, `tls`, `channels`, `channel_inert`, `channel_message`, `channel_chunk`, `channel_compressed`, `device_announce`, `client_info`, `info_encrypted`, `client_security`, `client_encryption`, `no_encryption_method`, `security_exchange`, `conference`, `no_io_channel`, `fast_path`, `data_unit` |

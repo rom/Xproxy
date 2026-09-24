@@ -2877,6 +2877,38 @@ skipped): a wrapper is otherwise all it takes to walk past the check —
 `env scp -t`, `sudo rsync`, `sh -c 'scp -t /etc'`. That refuses more
 than it must, which is the direction to be wrong in.
 
+**And where a transfer is what you want, a rule says what it may do.**
+`command_rules` is the sharp form of that switch: the family is read the
+way the program reads its own arguments, and the rule decides on the
+meaning rather than on the spelling.
+
+```yaml
+        command_rules:
+          # Uploads into one directory. "scp -f" (the other direction,
+          # the same words), "scp -rt" (bundled, so a pattern misses),
+          # "/usr/bin/scp -t" (a path) and
+          # "scp -t /srv/incoming/../../etc/ssh" (a path that resolves
+          # elsewhere) are each refused, under the property that was
+          # wrong with them.
+          - command: scp
+            directions: [upload]
+            paths: ["/srv/incoming/**"]
+          # Backups pull, and may not delete what they pull from.
+          - command: rsync
+            directions: [download]
+            paths: ["/srv/data/**"]
+          # An exec of the sftp server binary is the sftp subsystem
+          # under another name, so it is allowed only inspected: the
+          # path and read-only rules below apply to it.
+          - command: sftp_server
+            enforce_sftp_policy: true
+```
+
+Once there is one rule, a family named by no rule is refused, so a rule
+for scp does not quietly leave rsync to the patterns. `directions` is the
+file movement and not the program's verb — a git fetch is `upload-pack`
+because that name is the server's, and it is a `download` here.
+
 **SFTP is where "may use sftp" stops being the whole answer.** The
 entire difference between reading a file and deleting a tree happens
 inside the subsystem channel:
