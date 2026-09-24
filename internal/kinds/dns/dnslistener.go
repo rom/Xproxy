@@ -253,6 +253,18 @@ func dnsPolicy(cfg *config.DNSListener) (*wire.Policy, error) {
 		}
 		p.Tunnel = wire.NewDetector(tp)
 	}
+	if r := cfg.RPZ; r != nil {
+		specs := make([]wire.RPZSpec, 0, len(r.Zones))
+		for _, z := range r.Zones {
+			specs = append(specs, wire.RPZSpec{Name: z.Name, File: z.File,
+				Override: z.Action, IgnoreUnsupported: z.IgnoreUnsupported})
+		}
+		set, err := wire.NewRPZ(specs)
+		if err != nil {
+			return nil, err
+		}
+		p.RPZ = set
+	}
 	answers, err := answerPolicy(cfg.AnswerPolicy)
 	if err != nil {
 		return nil, err
@@ -351,7 +363,22 @@ func newServer(host proxy.Host, lc config.Listener, udp net.PacketConn, tcp net.
 		},
 		Refuse: func(reason string) { host.Counters().Refuse("dns", reason) },
 	}
+	startRPZ(host, lc, p)
 	return wire.New(lc.Name, udp, tcp, lc.DNS.Cache.MaxEntries, lc.DNS.MaxInFlight, p, hooks), nil
+}
+
+// startRPZ watches the policy zone files, so a feed that is rewritten
+// takes effect without a reload. A re-read that fails leaves the rules
+// already in force and says so in the error log: a feed being replaced
+// in place must not empty the policy for the moment that takes.
+func startRPZ(host proxy.Host, lc config.Listener, p *wire.Policy) {
+	if p.RPZ == nil {
+		return
+	}
+	p.RPZ.Refresh(lc.DNS.RPZ.RefreshInterval(), func(err error) {
+		host.Logs().Error.Warn("dns response policy zone could not be re-read; the rules already loaded stay in force",
+			"listener", lc.Name, "error", err)
+	})
 }
 
 // derefF, derefI and derefI64 read a setting whose zero value an

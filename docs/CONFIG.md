@@ -49,6 +49,7 @@ on the first line of the file to enable it.
 | `compression` | object | none | gzip of eligible responses; see `compression` |
 | `tracing` | object | none | W3C trace context and span export; see `tracing` |
 | `capture` | object | none | pcapng capture of the exchanges the proxy handled; see `capture` |
+| `scim` | object | none | A SCIM 2.0 provisioning endpoint for the second factor and the API keys; see `scim` |
 
 ## server
 
@@ -1123,6 +1124,110 @@ views:
 `queries_viewed` counts the queries a view answered
 (`xproxy_dns_viewed_total`), and the access log line carries `view` for
 them (and nothing for a client in no view).
+
+#### server.listeners[].dns.rpz
+
+Response policy zones: the file format a DNS threat feed actually ships
+in.
+
+`block` and `block_file` take a flat list of names, which is what an
+operator writes by hand. A feed publishes a zone file instead, and the
+policy is in the records — so one file says "this name does not exist",
+"this one answers 10.0.0.1" and "this one is an exception", and the file
+is transferred and diffed by tools that already exist. Reading it here
+means a subscription is dropped in rather than converted every hour by a
+script somebody wrote once and nobody owns.
+
+```yaml
+server:
+  listeners:
+    - name: resolver
+      kind: dns
+      address: "0.0.0.0:53"
+      dns:
+        upstreams: ["tls://1.1.1.1:853"]
+        rpz:
+          # How often a zone file's size and modification time are
+          # checked. 0 means never, and then a reload picks a feed up.
+          refresh: 5m
+          zones:
+            # Order is the policy: the first zone with a rule for the
+            # name decides, so the estate's own exceptions go first and
+            # nothing below can take them back.
+            - name: our-own
+              file: /etc/xproxy/rpz/exceptions.rpz
+            - name: malware-feed
+              file: /var/lib/xproxy/rpz/malware.rpz
+            - name: new-feed
+              file: /var/lib/xproxy/rpz/trial.rpz
+              # Every rule of this zone becomes this action, which is how
+              # a feed is tried out before it is trusted.
+              action: passthru
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `refresh` | duration | `5m` | How often a zone file's size and modification time are checked; at least 10s, or `0` for never |
+| `zones[].name` | name | required, unique | Identifies the zone in the access log, the security log and `xproxyctl dns` |
+| `zones[].file` | path | required | The zone file, in the master format a feed publishes |
+| `zones[].action` | `zone`, `nxdomain`, `nodata`, `passthru`, `drop`, `tcp_only` | `zone` | Replaces every rule's own action; `zone` honours the file |
+| `zones[].ignore_unsupported` | bool | `false` | Load a zone that carries a trigger this resolver does not implement, skipping those rules and counting them |
+
+**The records, and what each one means.** A rule is written as the name
+with the zone's own name after it (`evil.example.rpz.local` in a zone
+whose origin is `rpz.local`), and that suffix comes off before the rule
+is matched:
+
+| Record | Action |
+|--------|--------|
+| `CNAME .` | NXDOMAIN: the name does not exist |
+| `CNAME *.` | NODATA: it exists and has nothing of the type asked for |
+| `CNAME rpz-passthru.` | An exception: the query is answered normally |
+| `CNAME rpz-drop.` | No answer at all, counted as a drop |
+| `CNAME rpz-tcp-only.` | Truncated over UDP, so the client retries over TCP; refused if it is already TCP |
+| `A`, `AAAA`, `TXT` | Local data: this answer instead of the upstream's |
+| `CNAME name.example.` | Local data: the CNAME is answered, and the client resolves the target itself |
+
+A wildcard rule (`*.evil.example…`) covers the names *under* one and not
+the name itself, and matching is what a zone lookup does: the name, then
+a wildcard on each parent, longest first. So `good.bank.example CNAME
+rpz-passthru.` is an exception for that host while `*.bank.example CNAME
+.` still denies everything else below it — and, as in any zone, a rule
+without a wildcard covers that one name and nothing under it.
+
+`$ORIGIN` and `$TTL` are read, an `SOA` and `NS` records say whose zone
+it is rather than being rules, and the zone's apex carries neither. A
+record continued over lines in parentheses is refused rather than half
+read: a feed writes one record per line, and a reader that guesses at the
+rest applies a rule nobody wrote. A file with neither an `$ORIGIN` nor an
+SOA owner of its own — which a plain download of a feed sometimes is — is
+read as a list of absolute names.
+
+**The triggers this does not implement**, and a zone carrying one fails
+the load naming it: `rpz-client-ip`, `rpz-ip`, `rpz-nsdname` and
+`rpz-nsip` select on the client, on the addresses inside an answer, and
+on the name servers of the delegation — the last two needing the resolver
+to police a path this one forwards. `ignore_unsupported: true` loads such
+a zone without those rules and counts them (`xproxyctl dns` shows the
+tally), which is a decision to make deliberately rather than a default,
+because a policy that half applies is one the operator believes is
+working. Where the addresses in an answer are the concern,
+`answer_policy` screens them already, and by range rather than by feed.
+
+A zone file that cannot be read or parsed **fails the load**, and so
+does a reload: a policy zone that silently matches nothing is worse than
+none, because the operator believes the feed is in force. A file that
+disappears or stops parsing *after* the load keeps the rules already
+read and says so in the error log, since a feed being rewritten in place
+must not empty the policy for the moment that takes.
+
+Every decision writes a security event (`dns_rpz`, with the zone, the
+rule and the action) and a deny event under the `dns_rpz` reason, which a
+ban trigger can name: a client walking a feed's names is one to stop at
+the edge. `rpz_matched` and `rpz_passthru` are in `xproxyctl dns` with
+the zones, their rule counts and when each was read
+(`xproxy_dns_rpz_total{result="acted"|"passthru"}`,
+`xproxy_dns_rpz_rules`).
 
 #### server.listeners[].dns.dnssec
 
@@ -4052,6 +4157,50 @@ not match is skipped and the next candidate is tried.
 | `grpc.web` | bool | `false` | Accept gRPC-web requests (`application/grpc-web`, `grpc-web+proto`, `grpc-web-text`, `grpc-web-text+proto`, over HTTP/1.1 or HTTP/2) on this gRPC route and translate them: the upstream sees plain gRPC, the response trailers come back as a trailer frame in the body and the text variants are base64. Without it a gRPC-web request is refused with gRPC status 2 |
 | `grpc.web_origins` | list | `[]` | Browser origins (`https://app.example.com`, or `*`) whose CORS preflights are answered (`POST`, the requested headers, ten minutes) and whose responses get `Access-Control-Allow-Origin` and the exposed `grpc-status` and `grpc-message`; needs `web: true`. Empty leaves CORS to the upstream or to header operations |
 
+**Routing by API version.** There is no `version` key, because every way
+a version is actually expressed is already a matcher here, and a
+dedicated key would only cover one of them:
+
+```yaml
+routes:
+  # In the path, which is most APIs.
+  - {name: api-v1, hosts: [api.example.com], paths: ["/v1/"], upstream: orders-v1}
+  - {name: api-v2, hosts: [api.example.com], paths: ["/v2/"], upstream: orders-v2}
+
+  # In a media type, the "vendor versioning" style. A conditioned route
+  # is tried before the plain route on the same path, so this takes the
+  # requests that ask for v2 and the unconditioned route below keeps the
+  # rest.
+  - name: api-accept-v2
+    hosts: [api.example.com]
+    paths: ["/orders/"]
+    headers: [{name: Accept, regex: ".*vnd\\.example\\.v2(\\+json)?"}]
+    upstream: orders-v2
+
+  # In a header, with a default. `priority` decides only ties; the
+  # condition count already puts the conditioned route first.
+  - name: api-header-v2
+    hosts: [api.example.com]
+    paths: ["/orders/"]
+    headers: [{name: X-API-Version, exact: "2"}]
+    upstream: orders-v2
+  - {name: api-default, hosts: [api.example.com], paths: ["/orders/"], upstream: orders-v1}
+
+  # Anything else -- a query parameter, a version pinned per client
+  # network, a date-based version -- is an expression.
+  - name: api-pinned
+    hosts: [api.example.com]
+    paths: ["/orders/"]
+    when: 'query("api-version") == "2024-11-01" || client_ip in cidr("10.9.0.0/16")'
+    upstream: orders-v2
+```
+
+A version that has to be *removed* before the backend sees it is
+`strip_prefix: /v2` or a `request_headers.remove`; one that has to be
+*added* is `request_headers.set`. The deprecation of an old version is a
+`response_headers.add` of `Deprecation` and `Sunset` on the old route,
+and `maintenance` on it when the day comes.
+
 ## ingress
 
 Kubernetes ingress controller mode. When enabled, the proxy reads the
@@ -4274,7 +4423,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `honeytoken`, `account_abuse`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `sftp_icap`, `udp_denied`, `yara` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |
@@ -4382,6 +4531,59 @@ set fails the reload.
 | `response_mime_types` | list | text and JSON/XML types | Bodies with other content types are not inspected |
 | `learning` | object | none | Exclusion learning; see below |
 | `anomaly` | object | none | Behavioural anomaly detection per client; see below |
+
+**What decodes a body, and what does not.** There is no list of content
+decoders here, deliberately. Decoding is SecLang's own, per rule and per
+target: `t:urlDecodeUni`, `t:base64Decode`, `t:base64DecodeExt`,
+`t:hexDecode`, `t:jsDecode`, `t:cssDecode`, `t:cmdLine`,
+`t:utf8toUnicode`, `t:removeNulls` and the rest, which is how the Core
+Rule Set already reads a payload hidden inside an encoding — and which is
+right, because a rule knows which of its targets can be encoded and a
+gateway-wide decoder does not. Writing one is a rule:
+
+```
+SecRule ARGS:payload "@rx (?i)union\s+select" \
+    "id:9100,phase:2,t:none,t:urlDecodeUni,t:base64Decode,deny,status:403,\
+     msg:'SQL injection inside a base64 parameter'"
+```
+
+The bodies the rules see are parsed by content type — urlencoded,
+multipart, JSON and XML — up to `request_body_limit`. What they do **not**
+see is a body wrapped in a *transfer* encoding: a `Content-Encoding:
+gzip` request body is inspected as the compressed bytes it arrived as,
+not expanded first. That is a deliberate line, and the reason is
+amplification: a decoder at the gateway, applied to every body before any
+rule has decided anything, is a second parser and a decompression bomb
+away from being the outage. Where a compressed body has to be read, the
+`sensitive_data` filter decodes `gzip`, `deflate`, `br` and `zstd` under
+an expansion-ratio bound, and ICAP or `yara` scan the stream — each of
+them a decision about one route rather than a default for all of them.
+
+**XML targets are two collections, not an XPath engine.** With the XML
+body processor selected, the engine fills exactly two: `XML://@*`, every
+attribute value in the document, and `XML:/*`, every piece of character
+data. A rule over either works, and it is how the Core Rule Set reads an
+XML body:
+
+```
+SecRule REQUEST_HEADERS:Content-Type "@rx xml" \
+    "id:9200,phase:1,pass,nolog,ctl:requestBodyProcessor=XML"
+SecRule XML://@* "@rx (?i)\bunion\b.{1,100}?\bselect\b" \
+    "id:9201,phase:2,deny,status:403,msg:'injection in an XML attribute'"
+```
+
+Any other selector — `XML:/invoice/total`, `XML://item[@id]` — is
+**accepted by the parser and then evaluated against nothing**, so a rule
+written over it never fires. That is the engine's limitation rather than a
+setting, and it is stated here because a rule an operator believes is
+running is worse than one they know they have to write differently. Where
+a *named* element or a document's shape is the requirement, the
+`xml_guard` filter is the one that reads structure: `require_root`,
+`require_root_namespace`, `allow_elements` and `deny_elements` are a
+positive model over the element names, with the entity, expansion and
+depth bounds beside them, and `deny_patterns` covers the text. A test
+drives all three selectors, so the sentence above stays true of the
+engine this binary links.
 
 ### waf.learning
 
@@ -5349,6 +5551,136 @@ give a signed one an explicit `Expires` inside the signature and
 re-sign before it lapses; `xproxyctl stats` reports how many requests
 each entry answered, which is how you notice a document nobody reads.
 
+## scim
+
+A SCIM 2.0 provisioning endpoint (RFC 7644), so the directory that owns
+the joiner and leaver process provisions and deprovisions the
+credentials this proxy holds: a second-factor enrolment and an API key.
+
+The point is the leaver. An account closed in the directory and not here
+is access that still works, and every estate has a story about the
+contractor whose key kept opening the door for a year. Doing it by hand
+needs somebody to remember at exactly the moment nobody is thinking
+about it; doing it over SCIM means the same event that closes the
+mailbox closes this.
+
+```yaml
+scim:
+  # Where the provider reaches it. The endpoints are this plus /Users,
+  # /ServiceProviderConfig, /ResourceTypes and /Schemas.
+  path: /scim/v2
+  external_url: https://admin.example.com/scim/v2
+
+  # Who may reach it at all. An endpoint that creates and destroys
+  # credentials is not left to a route's access list.
+  hosts: [admin.example.com]
+  listeners: [edge]
+  client_cidrs: [203.0.113.0/24]
+
+  token_file: /etc/xproxy/scim.token       # the bearer token, >= 16 characters
+  state_file: /var/lib/xproxy/scim-users   # the resources, not the credentials
+
+  mfa_users_file: /etc/xproxy/mfa.users    # a second factor is enrolled here
+  keys_file: /etc/xproxy/api-keys          # a key is issued and revoked here
+  key_scopes: [orders:read]
+  key_ttl: 8760h
+  issuer: example-estate                   # named in the otpauth URI
+
+  return_secrets: false                    # see below
+  max_results: 100
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `path` | string | `/scim/v2` | The base the endpoints hang off, absolute and without a trailing slash |
+| `hosts` | list | `[]` (every host) | Exact names or `*.example.com` patterns the endpoint answers on |
+| `listeners` | list | `[]` (every listener) | Listener names it answers on |
+| `client_cidrs` | list of CIDR | `[]` (every client) | Networks the provider connects from |
+| `token_file` | path | required | The bearer token, one line, at least 16 characters. Compared in constant time against a SHA-256 |
+| `state_file` | path | required | Where the provisioned resources are kept. Written by the proxy; it need not exist yet |
+| `mfa_users_file` | path | none | The enrolment file a second factor is provisioned in — the same file the `mfa` filter and the gate listeners read |
+| `keys_file` | path | none | The API key file a key is issued in and revoked in — the same file the `api_key` filter reads |
+| `key_scopes` | list | `[]` | Scopes an issued key gets when the request names none |
+| `key_ttl` | duration | none | Expiry of an issued key, 1h to 10 years |
+| `issuer` | string | `xproxy` | Names this estate in the `otpauth://` enrolment URI |
+| `return_secrets` | bool | `false` | Whether a response may carry the credentials it just made |
+| `max_results` | int | `100` | Page bound, reported in the service provider configuration |
+| `external_url` | URL | none | The base the provider reaches this endpoint at; what `meta.location` and the `Location` header are built from |
+
+At least one of `mfa_users_file` and `keys_file` is required: with
+neither there is nothing to provision.
+
+**What is implemented**, and deliberately nothing else — an endpoint
+that half-understands an operation is worse than one that refuses it,
+because the directory believes the change landed:
+
+| Request | What happens |
+|---------|--------------|
+| `POST /Users` | Creates the resource, enrols a second factor, issues a key |
+| `GET /Users` | Lists, with `filter=userName eq "name"`, `startIndex` and `count` |
+| `GET /Users/{id}` | Reads one, with what is *currently* in place rather than what was provisioned once |
+| `PUT /Users/{id}` | Replaces `externalId`, `displayName` and `active` |
+| `PATCH /Users/{id}` | `replace` of `active`, `externalId` or `displayName`, by path or as a value object |
+| `DELETE /Users/{id}` | Deprovisions and forgets the resource |
+| `GET /ServiceProviderConfig`, `/ResourceTypes`, `/Schemas` | What a provider fetches before it provisions anything |
+
+Everything else answers a SCIM error object (`urn:ietf:params:scim:api:messages:2.0:Error`)
+with the `scimType` RFC 7644 section 3.12 gives it: a filter on another
+attribute is `invalidFilter`, a `userName` that would be changed is
+`mutability`, an attribute this endpoint does not keep is
+`invalidSyntax`, a second create of one name is `uniqueness` (409).
+
+**`active: false` and `DELETE` do the same thing to the credentials**:
+every API key of that user is *revoked* — kept in the file as the record
+of what it reached and when it stopped — and the enrolment is removed.
+The difference is the resource: a deactivated user is still there to be
+read, which is what `state_file` is for, and a deleted one is not. There
+is no "disabled enrolment" in the enrolment file, so a suspension that
+left one in place would be a suspension in name only.
+
+Which makes one setting elsewhere load-bearing: **`require_enrolment`
+must be on** wherever the enrolment file this endpoint writes is used —
+on a gate listener's `mfa` section and on the `mfa` filter alike. With it
+off, a user with no enrolment is let through *unchallenged*, so removing
+an enrolment opens the door instead of closing it, and a deprovisioning
+would be the opposite of what the directory asked for.
+
+Which means **reactivating mints new credentials.** The old secret is
+gone and cannot be handed back, so `active: true` on a deactivated user
+enrols again and issues a new key; with `return_secrets: false` nobody
+can read them, and the operator delivers a fresh enrolment with
+`xproxyctl mfa enrol` and a fresh key with `xproxyctl apikey rotate`.
+
+**`return_secrets` is off by default.** With it on, the response to a
+create or a reactivation carries the `otpauth://` URI, the recovery
+codes and the key plaintext under the extension attribute `secrets` —
+which is what an automated onboarding needs, and which puts them in the
+provider's response logs and in whatever it stores. Validation says so
+at load. With it off the credentials are still made; they are simply not
+in the answer.
+
+**What is not changed here.** `userName` is immutable, because it is
+what the credentials are keyed on: a rename is a new user and the old
+one deprovisioned, said in the directory rather than inferred here. The
+scopes of an issued key cannot be changed either — that is a new
+credential, and this endpoint does not replace one nobody asked it to
+replace.
+
+**Where it runs.** Before routing, like the virtual `security.txt`: the
+provider needs no route, and no route can take the endpoint away by
+matching the path first. A request on the endpoint's path that the
+selectors refuse is answered 404 and **not** routed on — passing it to a
+proxied application would hand it a request meant for the control plane.
+
+`scim` and `scim_user` are in the access log, every change writes a
+security event (`scim` with the operation), a refusal writes a deny
+event with `scim` as the reason — which a ban trigger can name, and a
+bad token feeds it, because somebody trying tokens against a
+provisioning endpoint is not a client making a mistake twice.
+`scim_requests` and `scim_denied` are in `xproxyctl stats`, and
+`xproxy_scim_requests_total{result="answered"|"refused"}` in the
+metrics.
+
 ## virtual_patches[]
 
 A virtual patch blocks a known vulnerability by the shape of the
@@ -5765,7 +6097,7 @@ the binary; [EXTENDING.md](EXTENDING.md) describes how to add one.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Referenced by routes; the default deny reason |
-| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `ldap_auth`, `api_key`, `openapi`, `graphql`, `grpc_guard`, `authz`, `upload_guard`, `sensitive_data`, `account_guard`, `body_rewrite`, `bot_score`, `form_guard`, `oidc`, `wasm`, or one added to `internal/filters` |
+| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `ldap_auth`, `api_key`, `api_abuse`, `openapi`, `graphql`, `grpc_guard`, `authz`, `upload_guard`, `sensitive_data`, `account_guard`, `body_rewrite`, `bot_score`, `form_guard`, `oidc`, `wasm`, or one added to `internal/filters` |
 | `stage` | `before_auth`, `after_auth`, `after_waf`, `after_scan` | `after_auth` | Position relative to the built-in JWT, WAF and ICAP filters |
 | `options` | mapping | | Kind specific; unknown keys are rejected |
 
@@ -6392,6 +6724,102 @@ or 100 distinct paths per address, challenges at 400 or 200 and blocks
 1h at 1000. Tables are bounded per endpoint (65536 keys each, oldest
 evicted with a throttled warning). A delay holds a request slot, so
 keep `max_delayed` under the route's concurrency.
+
+### Kind `api_abuse`
+
+Watches what a caller does with an API rather than what it sends.
+
+Every request in this sequence is valid on its own — the right method, the
+right path, an authenticated caller, a well formed identifier — and the
+attack is the sequence:
+
+```
+GET /api/orders/1041   200
+GET /api/orders/1042   403
+GET /api/orders/1043   403
+GET /api/orders/1044   200   <- somebody else's order
+```
+
+That is broken object level authorisation, the first item on the OWASP API
+Security Top 10, and nothing that reads one request at a time can see it.
+What it is visible in is the shape of the sequence, per caller and per
+endpoint, over a window:
+
+| Signal | What was observed |
+|--------|-------------------|
+| `enumeration` | The caller touched more than `max_objects` **distinct** identifiers on one endpoint. A person reads their own orders; a script reads everybody's |
+| `sequential` | The numeric identifiers are consecutive: `sequential.min` of them covering a span they fill to `sequential.density`. A catalogue read in order is a scrape, and that is a different fact from having read a lot |
+| `refused` | Of `refused.min_requests`, at least `refused.share` were answered 401, 403 or 404. Probing for objects that are not yours looks exactly like this and little else does |
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `window` | duration | `5m` | The observation period; 1s to 24h. A caller flagged in one window is flagged until it ends, and the counts start again with the next |
+| `max_objects` | int | `200` | Distinct identifiers per caller per endpoint; 0 turns the signal off |
+| `sequential.min` | int | `20` | Numeric identifiers needed before the density is judged; 0 turns the signal off |
+| `sequential.density` | float | `0.8` | Distinct identifiers over the span they cover: 1.0 is a perfect walk |
+| `refused.min_requests` | int | `20` | Requests needed before the share is judged; 0 turns the signal off |
+| `refused.share` | float | `0.5` | The fraction refused that raises the signal |
+| `action` | `log`, `challenge`, `block` | `log` | What a flagged caller gets. `challenge` needs a `challenge` section; without one the verdict falls through to the refusal `block` would have given |
+| `paths` | list | `[]` (every path) | Limits the filter to request paths under one of these prefixes |
+| `max_subjects` | int | `8192` | (caller, endpoint) pairs held at once; the oldest is dropped and the drops are counted |
+
+```yaml
+filters:
+  - name: abuse
+    kind: api_abuse
+    options:
+      window: 5m
+      max_objects: 200
+      sequential: {min: 20, density: 0.8}
+      refused: {min_requests: 20, share: 0.5}
+      action: challenge
+      paths: ["/api/"]
+routes:
+  - name: api
+    hosts: [api.example.com]
+    upstream: api
+    # After the identity filters, so a caller is an account rather than
+    # an address.
+    filters: [jwt-auth, abuse]
+```
+
+What it counts, and what it does not:
+
+- **A caller is the authenticated identity when the chain established
+  one, and the client address otherwise.** An API abused through one
+  account is one caller however many addresses it arrives from, which is
+  why this filter belongs *after* the identity filters in the chain.
+- **Objects, not requests.** A caller re-reading its own order fifty times
+  has touched one object. That is what keeps an ordinary page refresh out
+  of the `sequential` signal, which counts distinct identifiers over the
+  span they cover.
+- **An endpoint is the method and the path template**, with identifiers
+  folded out (`GET /api/orders/*`), so one busy endpoint never flags a
+  caller on another. A path with no identifier in it — a collection
+  endpoint — has no object to count.
+- **Identifiers are held per (caller, endpoint) up to 1024**, and past
+  that the count continues as a lower bound rather than the memory:
+  `xproxy_api_abuse_objects` and `xproxy_api_abuse_overflowed` say which.
+  An identifier longer than 128 characters is not counted at all.
+- **The response is the other half of the probing signal**, so the filter
+  reads both phases, and which request the action lands on follows from
+  that. A bound crossed on the way in — one object too many, a walk long
+  enough to judge — refuses *that* request. The `refused` signal is raised
+  by the answer instead, so it applies from the caller's next request: the
+  answer that revealed the probing has already been sent.
+
+A flagged request adds `api_abuse` to the access log with the signals that
+were raised; `block` and `challenge` also write a security event with the
+`api_abuse` reason, which a ban trigger can name — a caller that keeps
+walking after a refusal is one to stop at the edge rather than at the
+filter.
+
+Per filter, `xproxy_api_abuse_requests_total`, `_flagged_total`,
+`_blocked_total`, `_challenged_total` and `_dropped_total` count what it
+did, and `xproxy_api_abuse_subjects`, `xproxy_api_abuse_objects` and
+`xproxy_api_abuse_overflowed` say how much it is holding: a `subjects`
+gauge pinned at `max_subjects` with `_dropped_total` climbing is a filter
+watching more callers than it was given room for.
 
 ### Kind `api_key`
 

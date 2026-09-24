@@ -634,6 +634,237 @@ Open findings of the earlier rounds:
   `xproxy_ranges_total` counts what was dropped and what was refused.
   Twenty-five deliberate weakenings were each caught.
 
+- **The attack that is a sequence of valid requests** (`api_abuse` filter).
+
+  Every request in this sequence is correct on its own -- the right method,
+  the right path, an authenticated caller, a well formed identifier -- and
+  the attack is the sequence:
+
+  ```
+  GET /api/orders/1041   200
+  GET /api/orders/1042   403
+  GET /api/orders/1043   403
+  GET /api/orders/1044   200   <- somebody else's order
+  ```
+
+  That is broken object level authorisation, the first item on the OWASP
+  API Security Top 10, and nothing in this proxy could see it: the WAF
+  reads one request and finds nothing wrong with any of these, because
+  nothing is wrong with any of these. `account_guard` watches the
+  credential endpoints, a rate limit counts requests without caring what
+  they asked for, and a caller reading a hundred *different* objects at a
+  perfectly ordinary rate was invisible to both.
+
+  So the filter counts the shape of the sequence, per caller and per
+  endpoint, over a window: how many **distinct** objects were touched
+  (`enumeration`), whether their numeric identifiers are consecutive
+  enough to be a walk rather than a busy afternoon (`sequential`), and
+  what share of the answers said the object was not theirs
+  (`refused` -- 401, 403 or 404, which is what probing looks like and
+  little else does). A caller is the authenticated identity when the chain
+  established one and the client address otherwise, so an attacker who
+  spreads a walk over a hundred addresses is one caller, and the filter
+  belongs after the identity filters for exactly that reason.
+
+  **Objects, not requests**: a caller re-reading its own order fifty times
+  has touched one object, which is what keeps a page refresh out of the
+  `sequential` signal -- the first version of this counted requests and
+  would have called forty reads of one identifier a walk of forty. An
+  endpoint is the method and the path template with identifiers folded out
+  (`GET /api/orders/*`), so one busy endpoint never flags a caller on
+  another, and a collection endpoint with no identifier in it has no object
+  to count. Identifiers are held per caller and endpoint up to 1024 and the
+  excess is counted rather than forgotten silently, so a distinct count is
+  never quietly wrong.
+
+  Which request the action lands on follows from where the signal came
+  from: a bound crossed on the way in refuses *that* request, while the
+  `refused` share is raised by an answer already sent and applies from the
+  next one. `log` is the default, `challenge` lets a person through and
+  stops a script, and `block` answers 403 with the `api_abuse` reason --
+  which a ban trigger can now name, so a caller that keeps walking is
+  stopped before routing instead of at the filter. Per filter,
+  `xproxy_api_abuse_requests_total`, `_flagged_total`, `_blocked_total`,
+  `_challenged_total` and `_dropped_total` count what it did, and
+  `xproxy_api_abuse_subjects`, `_objects` and `_overflowed` say how much it
+  is holding. Forty deliberate weakenings were each caught, eight of them
+  only after the tests were extended.
+
+  Also fixed while the ban reasons were being read: `bans.triggers[].reasons`
+  in CONFIG.md had fallen three reasons behind the table the validator
+  checks against (`threat_intel`, `dns_answer_denied` and this one), which
+  is the worst shape of documentation bug -- an operator reads the list,
+  does not find the refusal they are watching, and concludes the proxy
+  cannot ban on it. A test now compares the two.
+
+- **The leaver, handled by the directory** (`scim`, RFC 7643 and RFC 7644).
+
+  A SCIM 2.0 provisioning endpoint, so the directory that owns the joiner
+  and leaver process provisions and deprovisions the credentials this
+  proxy holds: the second-factor enrolment and the API keys. An account
+  closed in the directory and not here is access that still works, and
+  every estate has the story about the contractor whose key kept opening
+  the door for a year -- because closing it was somebody's job to
+  remember at exactly the moment nobody was thinking about it. Until now
+  the only ways in were `xproxyctl mfa`, `xproxyctl apikey` and the GUI:
+  all of them a person, doing it on purpose, afterwards.
+
+  A create enrols a factor and issues a key; `active: false` and `DELETE`
+  **revoke** every key of that user -- kept in the file as the record of
+  what it reached and when it stopped -- and remove the enrolment. The
+  resources live in a file of their own (`state_file`), because they are
+  not the credentials: a deactivated user has to survive losing both, and
+  a read reports what is *currently* in place rather than what was
+  provisioned once, so an enrolment an operator removed by hand shows as
+  removed.
+
+  **One setting elsewhere is load-bearing, and CONFIG.md says so twice:**
+  `require_enrolment` must be on wherever that enrolment file is used.
+  Removing an enrolment refuses a user only where one is required; with
+  it off the same removal means no factor is asked for, and a
+  deprovisioning that opens the door is worse than none.
+
+  What is implemented is the subset a provider drives -- `GET`, `POST`,
+  `PUT`, `PATCH` and `DELETE` on `/Users`, the three discovery endpoints,
+  the error object with its `scimType`, pagination -- and **nothing
+  else**, because an endpoint that half-understands an operation is worse
+  than one that refuses it: the directory believes the change landed. So
+  a filter on anything but `userName` is `invalidFilter` rather than
+  answered with the whole list (a provider whose filter was ignored would
+  read the first user as its match and deprovision somebody else's
+  account), a `userName` that would change is `mutability` (it is what
+  the credentials are keyed on), an attribute this endpoint does not keep
+  is refused rather than stored and never read, and the scopes of an
+  issued key cannot be edited into something else.
+
+  It is an administrative interface with the power to create and destroy
+  credentials, so it carries its own locks rather than borrowing a
+  route's: a bearer token of at least 16 characters compared in constant
+  time, and `hosts`, `listeners` and `client_cidrs` -- validation says so
+  when none of the three is set. It answers **before routing**, like the
+  virtual `security.txt`, so the provider needs no route and no route can
+  take the endpoint away; a request on its path that the selectors refuse
+  is answered 404 and *not* routed on, because handing a proxied
+  application a request meant for the control plane is how a control
+  plane leaks. A refusal is a deny event with the `scim` reason, which a
+  ban trigger can name, and a bad token feeds it: somebody trying tokens
+  against a provisioning endpoint is not a client making a mistake twice.
+
+  `return_secrets` is off by default. With it on, the response to a
+  create or a reactivation carries the `otpauth://` URI, the recovery
+  codes and the key plaintext -- which is what an automated onboarding
+  needs and what puts them in the provider's logs; validation says that
+  too. With it off the credentials are still made, and a reactivation
+  mints fresh ones because the old secret is gone and cannot be handed
+  back.
+
+  `internal/mfa` gained `LoadProvisioning` for this: `Load` refuses an
+  empty enrolment file, because a *verifying* store pointed at one is
+  almost certainly pointed at the wrong file and would let everybody
+  through unchallenged -- while a store that provisions starts empty by
+  definition, and the same check there would mean nobody could ever be
+  enrolled through it. `scim_requests` and `scim_denied` are in
+  `xproxyctl stats`, `xproxy_scim_requests_total{result}` in the metrics.
+  Thirty-six deliberate weakenings were each caught, five only after the
+  tests were extended -- among them a compound filter, which the first
+  version read as its first comparison and ignored the rest of.
+
+- **Three things documented instead of built** (`docs/CONFIG.md`), each
+  with the configuration it replaces and a test that drives it.
+
+  *Content decoding in the WAF* is SecLang's own transformations --
+  `t:urlDecodeUni`, `t:base64Decode`, `t:hexDecode`, `t:jsDecode`,
+  `t:cmdLine` and the rest -- applied per rule and per target, which is
+  how the Core Rule Set already reads a payload hidden inside an
+  encoding. A gateway-wide list of decoders would be worse than nothing:
+  a rule knows which of its targets can be encoded and a decoder applied
+  to every body before any rule has decided anything is a second parser
+  and a decompression bomb away from being the outage. What the rules do
+  *not* see is a body wrapped in a transfer encoding -- a
+  `Content-Encoding: gzip` request body is inspected as the bytes it
+  arrived as -- and the reference now says so, and says where a
+  compressed body is read instead: `sensitive_data`, which decodes gzip,
+  deflate, br and zstd under an expansion-ratio bound, and ICAP or
+  `yara` over the stream.
+
+  *The WAF's `XML:` targets are two collections, not an XPath engine*, and
+  RFC.md now names XPath 1.0 as not implemented for exactly that reason.
+  The engine fills every attribute value (`XML://@*`) and every piece of
+  character data (`XML:/*`), which is how the Core Rule Set reads an XML
+  body; any other selector -- `XML:/invoice/total` -- is accepted by the
+  parser and then evaluated against nothing, so a rule over it never
+  fires. That is worth a paragraph rather than silence, because a rule an
+  operator believes is running is worse than one they know they have to
+  write differently: where a named element or a document's shape is the
+  requirement, `xml_guard` is the filter that reads structure. A test
+  drives all three selectors, so the claim stays true of the engine this
+  binary links.
+
+  *API version routing* needs no key of its own, because every way a
+  version is actually spelled is already a matcher: `paths` for `/v1/`,
+  a `headers` regex for `Accept: application/vnd.example.v2+json`, a
+  `headers` exact for `X-API-Version`, and `when` for a query parameter
+  or a pinned client network -- with the conditioned routes tried before
+  the plain route on the same path, which is what makes a default work. A
+  dedicated key would have covered one of those four. The reference shows
+  all of them, plus where a version is stripped before the backend sees
+  it and how an old one is deprecated and then held.
+
+- **The file a DNS threat feed actually ships**
+  (`server.listeners[].dns.rpz`, `draft-vixie-dns-rpz`).
+
+  Response policy zones. `block` and `block_file` take a flat list of
+  names, which is what an operator writes by hand; a feed publishes a
+  zone file, where the policy is in the records -- one file saying "this
+  name does not exist", "this one answers 10.0.0.1" and "this one is an
+  exception" -- and it is transferred and diffed by tools that exist
+  already. Until now a subscription had to be converted by an hourly
+  script somebody wrote once and nobody owns, and the conversion threw
+  away everything but the names.
+
+  The QNAME trigger and the five actions are implemented -- `CNAME .` for
+  NXDOMAIN, `CNAME *.` for NODATA, `rpz-passthru.` for an exception,
+  `rpz-drop.` for no answer at all, `rpz-tcp-only.` for truncated over
+  UDP -- plus local data (A, AAAA, TXT, and a CNAME the client resolves
+  itself). Matching is what a zone lookup does: the name, then a wildcard
+  on each parent, longest first, so `good.bank.example CNAME
+  rpz-passthru.` is an exception for that host while `*.bank.example
+  CNAME .` still denies everything else below it. Zones are ordered, and
+  that is the feature: the estate's own exception zone goes in front of a
+  subscription and nothing below can take an exception back. A zone's
+  `action` overrides every rule in it, which is how a new feed is tried
+  out (`passthru`) before it is trusted -- validation says out loud that
+  such a zone blocks nothing.
+
+  **The triggers it does not implement fail the load by name**:
+  `rpz-client-ip`, `rpz-ip`, `rpz-nsdname` and `rpz-nsip` select on the
+  client, on the addresses inside an answer and on the name servers of
+  the delegation -- the last two needing the resolver to police a path
+  this one forwards. A zone whose rules half apply is a policy the
+  operator believes is working, so `ignore_unsupported: true` is what
+  loads such a zone without them, counting what it skipped and saying so
+  in the advice; where an answer's addresses are the concern,
+  `answer_policy` screens them already and by range rather than by feed.
+
+  A zone that cannot be read or parsed fails the load and the reload; a
+  file that disappears or stops parsing *after* the load keeps the rules
+  already read and says so in the error log, because a feed rewritten in
+  place must not empty the policy for the moment that takes. Files are
+  re-read on their own (`refresh`, 5m by default, `0` for never) and only
+  one whose size or modification time moved is read again. Every decision
+  writes a security event with the zone, the rule and the action, and a
+  deny event under the new `dns_rpz` reason, which a ban trigger can name:
+  a client walking a feed's names is one to stop at the edge rather than
+  answer NXDOMAIN to a thousand times. `rpz_matched`, `rpz_passthru` and
+  the per-zone rule counts are in `xproxyctl dns`
+  (`xproxy_dns_rpz_total{result}`, `xproxy_dns_rpz_rules`).
+
+  Thirty-three deliberate weakenings were each caught, five only after
+  the tests were extended -- among them the one that changed the code: a
+  `$ORIGIN` moved part way down a file was taking *itself* off the rules
+  instead of the zone's own name, which turned a rule for `evil.sub` into
+  a rule for `evil`.
+
 - **Fixed: a DNS listener stopped the moment it started raced its own
   WaitGroup.** `Serve` registered each goroutine with `wg.Add` outside any
   lock while `Shutdown` called `wg.Wait`, and it published the DoH server

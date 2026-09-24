@@ -4,6 +4,7 @@ import (
 	"sort"
 
 	"github.com/rom/xproxy/internal/filters/accountguard"
+	"github.com/rom/xproxy/internal/filters/apiabuse"
 	"github.com/rom/xproxy/internal/filters/sensitive"
 	"github.com/rom/xproxy/internal/metrics"
 )
@@ -36,6 +37,17 @@ func (s *engine) Collect(e metrics.Collector) {
 	e.Counter("xproxy_account_disposable_total", "Registrations with a disposable e-mail domain.", nil, float64(acc.Disposable))
 	e.Counter("xproxy_account_automation_total", "Requests whose challenge cookie carried automation markers on an endpoint acting on them.", nil, float64(acc.Automation))
 	e.Gauge("xproxy_account_blocks_active", "Account guard blocks in force.", nil, float64(accountBlocksActive()))
+	for _, ab := range apiabuse.Statuses() {
+		l := L{"filter": ab.Name}
+		e.Counter("xproxy_api_abuse_requests_total", "Requests an api_abuse filter counted against a caller and endpoint.", l, float64(ab.Requests))
+		e.Counter("xproxy_api_abuse_flagged_total", "Requests from a caller an api_abuse filter had flagged.", l, float64(ab.Flagged))
+		e.Counter("xproxy_api_abuse_blocked_total", "Requests an api_abuse filter refused.", l, float64(ab.Blocked))
+		e.Counter("xproxy_api_abuse_challenged_total", "Requests an api_abuse filter sent to the challenge.", l, float64(ab.Challenged))
+		e.Counter("xproxy_api_abuse_dropped_total", "Callers dropped from an api_abuse filter's table for space.", l, float64(ab.Dropped))
+		e.Gauge("xproxy_api_abuse_subjects", "Caller and endpoint pairs an api_abuse filter holds.", l, float64(ab.Subjects))
+		e.Gauge("xproxy_api_abuse_objects", "Identifiers an api_abuse filter holds across its callers.", l, float64(ab.Objects))
+		e.Gauge("xproxy_api_abuse_overflowed", "Identifiers past what one caller holds, counted but not kept.", l, float64(ab.Overflowed))
+	}
 	for _, vp := range rt.patches {
 		e.Counter("xproxy_virtual_patch_hits_total", "Requests matched by a virtual patch.", L{"patch": vp.cfg.ID}, float64(vp.hits.Load()))
 	}

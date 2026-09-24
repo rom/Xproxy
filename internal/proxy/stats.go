@@ -34,12 +34,16 @@ type Stats struct {
 	DeniedBodySize    atomic.Uint64
 	DeniedBodyBudget  atomic.Uint64
 	SecurityTxt       atomic.Uint64
-	DeniedURILength   atomic.Uint64
-	DeniedNoRoute     atomic.Uint64
-	DeniedWebSocket   atomic.Uint64
-	DeniedBadHost     atomic.Uint64
-	DeniedBan         atomic.Uint64
-	Shed              atomic.Uint64
+	// SCIMRequests counts requests the provisioning endpoint answered,
+	// SCIMDenied the ones it refused.
+	SCIMRequests    atomic.Uint64
+	SCIMDenied      atomic.Uint64
+	DeniedURILength atomic.Uint64
+	DeniedNoRoute   atomic.Uint64
+	DeniedWebSocket atomic.Uint64
+	DeniedBadHost   atomic.Uint64
+	DeniedBan       atomic.Uint64
+	Shed            atomic.Uint64
 	// RangesDropped counts requests whose Range header the range policy
 	// removed, RangesRefused the ones it answered 416.
 	RangesDropped atomic.Uint64
@@ -297,6 +301,10 @@ type Snapshot struct {
 	DeniedBodyBudget  uint64    `json:"denied_body_budget"`
 	// SecurityTxt counts requests answered with a virtual security.txt.
 	SecurityTxt uint64 `json:"security_txt"`
+	// SCIMRequests counts requests the SCIM provisioning endpoint
+	// answered and SCIMDenied the ones it refused.
+	SCIMRequests uint64 `json:"scim_requests"`
+	SCIMDenied   uint64 `json:"scim_denied"`
 	// BufferedBody is the process-wide buffered-body budget.
 	BufferedBody           bodybudget.Stats   `json:"buffered_body"`
 	DeniedURILength        uint64             `json:"denied_uri_length"`
@@ -542,6 +550,8 @@ func (s *Stats) snapshot() Snapshot {
 		DeniedBodySize:         s.DeniedBodySize.Load(),
 		DeniedBodyBudget:       s.DeniedBodyBudget.Load(),
 		SecurityTxt:            s.SecurityTxt.Load(),
+		SCIMRequests:           s.SCIMRequests.Load(),
+		SCIMDenied:             s.SCIMDenied.Load(),
 		DeniedURILength:        s.DeniedURILength.Load(),
 		DeniedNoRoute:          s.DeniedNoRoute.Load(),
 		DeniedWebSocket:        s.DeniedWebSocket.Load(),

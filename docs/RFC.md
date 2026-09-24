@@ -228,6 +228,9 @@ HAProxy's specification, versions 1 and 2, both implemented.
 | 4514 | LDAP: String Representation of Distinguished Names | Full | |
 | 4515 | LDAP: String Representation of Search Filters | Full | Filters are parsed and re-encoded, never concatenated from user input |
 | 2253 | UTF-8 String Representation of Distinguished Names | Full | The certificate subject form in identity headers |
+| 7642 | System for Cross-domain Identity Management: Definitions, Overview, Concepts, and Requirements | Full | The provisioning model the `scim` endpoint implements: the directory is authoritative and pushes changes |
+| 7643 | System for Cross-domain Identity Management: Core Schema | Partial | The `User` resource in the attributes this proxy keeps -- `userName`, `externalId`, `displayName`, `active`, `meta` -- plus an extension for what was provisioned. Groups, `Enterprise User`, names, e-mails, phone numbers and the other multi-valued attributes are not kept: this endpoint provisions credentials, and an attribute it stored and never read would be a directory nobody maintains |
+| 7644 | System for Cross-domain Identity Management: Protocol | Partial | `GET`, `POST`, `PUT`, `PATCH` and `DELETE` on `/Users`, the three discovery endpoints, the error object with its `scimType`, and pagination. The filter grammar is the `userName eq "value"` subset and anything else is refused as `invalidFilter` rather than answered with the whole list; bulk, sort, ETags and `/Groups` are not implemented and the service provider configuration says so |
 
 OpenID Connect Core 1.0 is an OpenID Foundation specification rather
 than an RFC; the discovery document, the authorization code flow, the
@@ -282,9 +285,11 @@ not mistaken for an omission:
 | Encrypted Client Hello | `draft-ietf-tls-esni` | Version `0xfe0d` |
 | X25519MLKEM768 | `draft-kwiatkowski-tls-ecdhe-mlkem`, FIPS 203 | |
 | pcapng | `draft-ietf-opsawg-pcapng` | The capture file format |
+| DNS Response Policy Zones | `draft-vixie-dns-rpz` (ISC) | The QNAME trigger and the five policy actions -- NXDOMAIN, NODATA, PASSTHRU, DROP, TCP-only -- plus local data, read from zone files in the master format a feed publishes. The `rpz-client-ip`, `rpz-ip`, `rpz-nsdname` and `rpz-nsip` triggers are refused by name at load: the last two need the resolver to police a delegation path this one forwards, and where an answer's addresses are the concern `answer_policy` screens them by range. `ignore_unsupported` loads such a zone without those rules and counts them |
 | WebTransport over HTTP/3 | W3C and `draft-ietf-webtrans-http3` | |
 | OpenID Connect Core 1.0 | OpenID Foundation | |
 | SAML 2.0 Core, Bindings and Profiles | OASIS | As a service provider: the web browser single sign-on profile with the HTTP Redirect binding for requests and HTTP POST for responses. A deliberately narrow profile -- one unencrypted assertion, exclusive canonicalization, SHA-256 and above, the signing key from the configuration -- and no single logout. [CONFIG.md](CONFIG.md) lists every refusal and the reason for it |
+| XPath 1.0 | W3C | Not implemented, and named here because SecLang's `XML:` targets look like it. The engine fills two collections -- every attribute value (`XML://@*`) and every piece of character data (`XML:/*`) -- and any other selector is parsed and then matched against nothing, so a rule over one never fires. Where a named element or a document's shape is the requirement, the `xml_guard` filter reads structure instead |
 | XML Signature Syntax and Processing | W3C | Verification only, of one enveloped signature per element: one `Reference` naming its own parent, the enveloped-signature transform and canonicalization and no other, no `KeyInfo` trust. No signature generation |
 | Exclusive XML Canonicalization 1.0 | W3C | Full, without comments, including an `InclusiveNamespaces` prefix list. The inclusive canonicalization of `REC-xml-c14n-20010315` is refused rather than approximated |
 | Web Authentication (WebAuthn) level 2 | W3C | Registration and authentication as a relying party; attestation is parsed but deliberately not verified (it identifies a model, not a person) |

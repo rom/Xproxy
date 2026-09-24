@@ -3178,6 +3178,70 @@ process's kernel-reported credentials, and, when it came through the
 GUI, by the GUI with the operator's account. Neither line ever carries
 what was handed out — only who changed whose factor on which listener.
 
+### Provisioning from the directory (SCIM)
+
+Everything on the previous page is an operator doing it by hand. The
+`scim` section lets the identity provider do it instead, which matters
+for exactly one moment: the leaver. An account closed in the directory
+and not here is access that still works.
+
+```yaml
+scim:
+  path: /scim/v2
+  external_url: https://admin.example.com/scim/v2
+  hosts: [admin.example.com]
+  listeners: [edge]
+  client_cidrs: [203.0.113.0/24]     # the provider's egress
+  token_file: /etc/xproxy/scim.token
+  state_file: /var/lib/xproxy/scim-users
+  mfa_users_file: /etc/xproxy/mfa     # the same file the mfa filter reads
+  keys_file: /etc/xproxy/api-keys     # the same file the api_key filter reads
+  key_scopes: [orders:read]
+```
+
+Give the provider two things: the base URL and the contents of
+`token_file`. It discovers the rest from
+`GET /scim/v2/ServiceProviderConfig`.
+
+```sh
+# what the provider does, by hand, to check the plumbing
+curl -sS -H "Authorization: Bearer $(cat /etc/xproxy/scim.token)" \
+     -H 'Content-Type: application/scim+json' \
+     -d '{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"userName":"alice"}' \
+     https://admin.example.com/scim/v2/Users
+
+# and the leaver, which is the point
+curl -sS -X PATCH -H "Authorization: Bearer $(cat /etc/xproxy/scim.token)" \
+     -H 'Content-Type: application/scim+json' \
+     -d '{"schemas":["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+          "Operations":[{"op":"replace","value":{"active":false}}]}' \
+     https://admin.example.com/scim/v2/Users/$ID
+```
+
+A create enrols a second factor and issues an API key; a deactivation or
+a delete revokes every key of that user and removes the enrolment. Three
+things to know before turning it on, each of which has bitten somebody:
+
+- **`require_enrolment: true` wherever that enrolment file is used.**
+  Removing an enrolment only refuses a user where one is required; with
+  it off, the same removal means no factor is asked for. A
+  deprovisioning that opens the door is worse than none.
+- **`return_secrets` is off by default**, so the enrolment URI, the
+  recovery codes and the key plaintext are not in the provider's
+  responses — and so an automated onboarding cannot hand them to the
+  user. Turn it on deliberately, knowing they land in the provider's
+  logs, or deliver them with `xproxyctl mfa enrol` as above.
+- **The endpoint is an administrative interface.** `hosts`, `listeners`
+  and `client_cidrs` are three independent locks and all three are
+  worth setting; validation says so when none of them is. A ban trigger
+  naming `scim` turns token guessing into a ban.
+
+`xproxyctl stats` carries `scim_requests` and `scim_denied`, every change
+writes a security event naming the user and the operation, and
+`GET /scim/v2/Users/$ID` reports what is *currently* in place rather than
+what was provisioned once — so an enrolment an operator removed by hand
+shows as removed.
+
 ### YARA rules over streams and bodies
 
 ```yaml

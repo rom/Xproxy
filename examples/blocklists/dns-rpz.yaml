@@ -1,0 +1,97 @@
+# Response policy zones: the file a threat feed actually ships.
+#
+# The block list takes a flat list of names, which is what a person
+# writes. A feed publishes a zone file, where the policy is in the
+# records -- so one file says "this name does not exist", "this one
+# answers an address of ours" and "this one is an exception", and it is
+# transferred and diffed by tools that already exist. Point this at the
+# file and the subscription is in force; no hourly conversion script that
+# somebody wrote once and nobody owns.
+#
+# Order is the policy: the first zone with a rule for the name decides,
+# so the estate's own exceptions come first and no feed can take them
+# back.
+#
+# Validate: xproxy -config examples/blocklists/dns-rpz.yaml -validate
+version: 1
+server:
+  listeners:
+    - name: resolver
+      kind: dns
+      address: "0.0.0.0:53"
+      dns:
+        upstreams:
+          - "tls://1.1.1.1:853"
+          - "tls://9.9.9.9:853"
+        cache: {max_entries: 100000, min_ttl: 30s}
+
+        rpz:
+          # The files are re-read on their own; only one whose size or
+          # modification time moved is read again. 0 would mean never,
+          # and then a reload is what picks a feed up.
+          refresh: 5m
+          zones:
+            # This estate's own file, first, so an exception here cannot
+            # be taken back by a feed below. It is where a false
+            # positive goes at three in the morning:
+            #
+            #   $ORIGIN exceptions.local.
+            #   @ SOA ns.exceptions.local. hostmaster.exceptions.local. 1 3600 600 86400 60
+            #   partner.example.exceptions.local.   CNAME rpz-passthru.
+            #   *.cdn.example.exceptions.local.     CNAME rpz-passthru.
+            - name: our-own
+              file: /etc/xproxy/rpz/exceptions.rpz
+
+            # The subscription, honoured as it is written: a name the
+            # feed says does not exist gets NXDOMAIN, one it points at an
+            # address gets that address.
+            - name: malware-feed
+              file: /var/lib/xproxy/rpz/malware.rpz
+
+            # A feed on trial. Every rule becomes a passthru, so the
+            # zone blocks nothing and the counters say what it would
+            # have acted on -- which is how a feed earns its place
+            # rather than being trusted on the day it is subscribed to.
+            # Validation says out loud that this zone blocks nothing.
+            - name: trial-feed
+              file: /var/lib/xproxy/rpz/trial.rpz
+              action: passthru
+
+            # A feed that carries address triggers this resolver does not
+            # implement. Without ignore_unsupported the zone fails the
+            # load naming the trigger, which is the right default: a
+            # policy that half applies is one an operator believes is
+            # working. With it, those rules are skipped and counted --
+            # `xproxyctl dns` shows the tally -- and `answer_policy`
+            # below is what screens where an answer points.
+            - name: mixed-feed
+              file: /var/lib/xproxy/rpz/mixed.rpz
+              ignore_unsupported: true
+
+        # The other half of the same job, in this proxy's own shape: a
+        # good name pointing at a private address is rebinding, whatever
+        # any feed says about the name.
+        answer_policy:
+          action: refuse
+          deny_private: true
+
+        log_queries: true
+
+upstreams:
+  - name: unused
+    endpoints: [{address: 127.0.0.1:9}]
+routes:
+  - {name: unused, upstream: unused}
+
+# A client walking a feed's names is a client to stop at the edge rather
+# than answer NXDOMAIN to a thousand times.
+bans:
+  state_file: /var/lib/xproxy/bans.db
+  triggers:
+    - name: rpz-walkers
+      reasons: [dns_rpz]
+      threshold: 50
+      window: 5m
+      duration: 1h
+      escalation: 2
+      max_duration: 24h

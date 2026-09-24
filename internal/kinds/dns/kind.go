@@ -40,7 +40,7 @@ func build(su *proxy.Setup) (proxy.Instance, error) {
 			_ = pc.Close()
 			return nil, err
 		}
-		return &instance{srv: d}, nil
+		return &instance{srv: d, host: su.Host}, nil
 	}
 
 	// Encrypted: the ALPN separates DNS over TLS from DNS over HTTPS on
@@ -53,7 +53,7 @@ func build(su *proxy.Setup) (proxy.Instance, error) {
 	}
 	d.Encrypted = true
 	d.DoHPath = lc.DNS.DoHPath
-	in := &instance{srv: d}
+	in := &instance{srv: d, host: su.Host}
 	if lc.DNS.DoQ {
 		// DNS over QUIC shares the address and the certificate; only
 		// the transport differs, and the ALPN is what separates it
@@ -78,6 +78,10 @@ func build(su *proxy.Setup) (proxy.Instance, error) {
 type instance struct {
 	srv *wire.Server
 	doq *wire.DoQServer
+	// host is kept for a reload: a replaced policy's zone files need
+	// watching, and the watcher needs somewhere to report a feed that
+	// stopped parsing.
+	host proxy.Host
 }
 
 // Serve implements proxy.Instance.
@@ -107,6 +111,7 @@ func (i *instance) Apply(lc config.Listener) error {
 	if err != nil {
 		return err
 	}
+	startRPZ(i.host, lc, p)
 	i.srv.Apply(p, lc.DNS.Cache.MaxEntries)
 	return nil
 }

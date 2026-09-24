@@ -271,6 +271,8 @@ func (s *Server) Collect(e metrics.Collector) {
 	e.Counter("xproxy_threat_intel_total", "Requests an imported threat intelligence list matched, by what was done.", L{"result": "logged"}, float64(sn.ThreatIntelMatched-sn.ThreatIntelBlocked-sn.ThreatIntelChallenged))
 	e.Counter("xproxy_threat_intel_total", "Requests an imported threat intelligence list matched, by what was done.", L{"result": "blocked"}, float64(sn.ThreatIntelBlocked))
 	e.Counter("xproxy_threat_intel_total", "Requests an imported threat intelligence list matched, by what was done.", L{"result": "challenged"}, float64(sn.ThreatIntelChallenged))
+	e.Counter("xproxy_scim_requests_total", "Requests the SCIM provisioning endpoint acted on, by outcome.", L{"result": "answered"}, float64(sn.SCIMRequests-sn.SCIMDenied))
+	e.Counter("xproxy_scim_requests_total", "Requests the SCIM provisioning endpoint acted on, by outcome.", L{"result": "refused"}, float64(sn.SCIMDenied))
 	e.Counter("xproxy_ranges_total", "Byte range requests the range policy acted on.", L{"result": "dropped"}, float64(sn.RangesDropped))
 	e.Counter("xproxy_ranges_total", "Byte range requests the range policy acted on.", L{"result": "refused"}, float64(sn.RangesRefused))
 	e.Counter("xproxy_static_responses_total", "Requests answered by static routes.", L{"result": "served"}, float64(sn.StaticServed))
@@ -315,6 +317,12 @@ func (s *Server) Collect(e metrics.Collector) {
 		e.Counter("xproxy_dns_synthesised_total", "AAAA answers synthesised from an A record for a DNS64 client (RFC 6147).", l, float64(d.QueriesSynthesised))
 		e.Counter("xproxy_dns_nsec_denied_total", "NXDOMAIN answers taken from a validated NSEC gap instead of the upstream (RFC 8198).", l, float64(d.QueriesNSEC))
 		e.Gauge("xproxy_dns_denials_held", "Parent names whose validated NSEC gaps are held.", l, float64(d.DenialsHeld))
+		e.Counter("xproxy_dns_rpz_total", "DNS queries a response policy zone decided.", L{"listener": d.Listener, "result": "acted"}, float64(d.RPZMatched-d.RPZPassthru))
+		e.Counter("xproxy_dns_rpz_total", "DNS queries a response policy zone decided.", L{"listener": d.Listener, "result": "passthru"}, float64(d.RPZPassthru))
+		for _, z := range d.RPZZones {
+			e.Gauge("xproxy_dns_rpz_rules", "Rules held by a response policy zone.", L{"listener": d.Listener, "zone": z.Name}, float64(z.Rules))
+			e.Counter("xproxy_dns_rpz_zone_matches_total", "Queries one response policy zone decided.", L{"listener": d.Listener, "zone": z.Name}, float64(z.Matches))
+		}
 	}
 	e.Counter("xproxy_mirror_total", "Mirror copies by outcome.", L{"outcome": "sent"}, float64(sn.MirrorSent))
 	e.Counter("xproxy_mirror_total", "Mirror copies by outcome.", L{"outcome": "dropped"}, float64(sn.MirrorDropped))

@@ -49,6 +49,9 @@ type runtime struct {
 	// securityTxt answers /.well-known/security.txt before routing, or
 	// is nil when the configuration has no entry.
 	securityTxt *securitytxt.Set
+	// scim answers the provisioning endpoint before routing, or is nil
+	// when the configuration has no scim section.
+	scim *scimEndpoint
 	// honeytokens are the planted credentials, checked before routing
 	// because a stolen one can be presented anywhere; nil when none are
 	// configured.
@@ -292,6 +295,14 @@ func newRuntime(cfg *config.Config, generation uint64, pools map[string]*upstrea
 			return nil, err
 		}
 		rt.securityTxt = set
+	}
+	if cfg.SCIM != nil {
+		ep, err := newSCIM(cfg)
+		if err != nil {
+			rt.stop()
+			return nil, err
+		}
+		rt.scim = ep
 	}
 	if len(cfg.Honeytokens) > 0 {
 		ht, err := newHoneytokens(cfg.Honeytokens, tokens)

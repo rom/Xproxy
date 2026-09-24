@@ -142,6 +142,15 @@ none
 T}	T{
 pcapng capture of the exchanges the proxy handled;\: see \fBcapture\fR
 T}
+T{
+\fBscim\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+A SCIM 2.0 provisioning endpoint for the second factor and the API keys;\: see \fBscim\fR
+T}
 .TE
 .SH "server"
 .PP
@@ -2161,6 +2170,160 @@ views:
 .RE
 .PP
 \fBqueries_viewed\fR counts the queries a view answered (\fBxproxy_dns_viewed_total\fR), and the access log line carries \fBview\fR for them (and nothing for a client in no view).
+.SS "server.listeners[].dns.rpz"
+.PP
+Response policy zones: the file format a DNS threat feed actually ships in.
+.PP
+\fBblock\fR and \fBblock_file\fR take a flat list of names, which is what an operator writes by hand. A feed publishes a zone file instead, and the policy is in the records \[u2014] so one file says "this name does not exist", "this one answers 10.0.0.1" and "this one is an exception", and the file is transferred and diffed by tools that already exist. Reading it here means a subscription is dropped in rather than converted every hour by a script somebody wrote once and nobody owns.
+.PP
+.RS 4
+.nf
+.ft CR
+server:
+  listeners:
+    \- name: resolver
+      kind: dns
+      address: "0.0.0.0:53"
+      dns:
+        upstreams: ["tls://1.1.1.1:853"]
+        rpz:
+          # How often a zone file's size and modification time are
+          # checked. 0 means never, and then a reload picks a feed up.
+          refresh: 5m
+          zones:
+            # Order is the policy: the first zone with a rule for the
+            # name decides, so the estate's own exceptions go first and
+            # nothing below can take them back.
+            \- name: our\-own
+              file: /etc/xproxy/rpz/exceptions.rpz
+            \- name: malware\-feed
+              file: /var/lib/xproxy/rpz/malware.rpz
+            \- name: new\-feed
+              file: /var/lib/xproxy/rpz/trial.rpz
+              # Every rule of this zone becomes this action, which is how
+              # a feed is tried out before it is trusted.
+              action: passthru
+.ft
+.fi
+.RE
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(1.0i) lbw(1.0i) lbx
+lw(1.2i) lw(1.0i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBrefresh\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+How often a zone file\(aqs size and modification time are checked;\: at least 10s,\: or \fB0\fR for never
+T}
+T{
+\fBzones[].\:name\fR
+T}	T{
+name
+T}	T{
+required,\: unique
+T}	T{
+Identifies the zone in the access log,\: the security log and \fBxproxyctl dns\fR
+T}
+T{
+\fBzones[].\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+The zone file,\: in the master format a feed publishes
+T}
+T{
+\fBzones[].\:action\fR
+T}	T{
+\fBzone\fR,\: \fBnxdomain\fR,\: \fBnodata\fR,\: \fBpassthru\fR,\: \fBdrop\fR,\: \fBtcp_\:only\fR
+T}	T{
+\fBzone\fR
+T}	T{
+Replaces every rule\(aqs own action;\: \fBzone\fR honours the file
+T}
+T{
+\fBzones[].\:ignore_\:unsupported\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Load a zone that carries a trigger this resolver does not implement,\: skipping those rules and counting them
+T}
+.TE
+.PP
+\fBThe records, and what each one means.\fR A rule is written as the name with the zone\(aqs own name after it (\fBevil.example.rpz.local\fR in a zone whose origin is \fBrpz.local\fR), and that suffix comes off before the rule is matched:
+.PP
+.TS
+allbox;
+lbw(1.0i) lbx
+lw(1.0i) lx.
+T{
+Record
+T}	T{
+Action
+T}
+T{
+\fBCNAME .\fR
+T}	T{
+NXDOMAIN: the name does not exist
+T}
+T{
+\fBCNAME *.\fR
+T}	T{
+NODATA: it exists and has nothing of the type asked for
+T}
+T{
+\fBCNAME rpz\-\:passthru.\fR
+T}	T{
+An exception: the query is answered normally
+T}
+T{
+\fBCNAME rpz\-\:drop.\fR
+T}	T{
+No answer at all,\: counted as a drop
+T}
+T{
+\fBCNAME rpz\-\:tcp\-\:only.\fR
+T}	T{
+Truncated over UDP,\: so the client retries over TCP;\: refused if it is already TCP
+T}
+T{
+\fBA\fR,\: \fBAAAA\fR,\: \fBTXT\fR
+T}	T{
+Local data: this answer instead of the upstream\(aqs
+T}
+T{
+\fBCNAME name.\:example.\fR
+T}	T{
+Local data: the CNAME is answered,\: and the client resolves the target itself
+T}
+.TE
+.PP
+A wildcard rule (\fB*.evil.example\[u2026]\fR) covers the names \fIunder\fR one and not the name itself, and matching is what a zone lookup does: the name, then a wildcard on each parent, longest first. So \fBgood.bank.example CNAME rpz\-passthru.\fR is an exception for that host while \fB*.bank.example CNAME .\fR still denies everything else below it \[u2014] and, as in any zone, a rule without a wildcard covers that one name and nothing under it.
+.PP
+\fB$ORIGIN\fR and \fB$TTL\fR are read, an \fBSOA\fR and \fBNS\fR records say whose zone it is rather than being rules, and the zone\(aqs apex carries neither. A record continued over lines in parentheses is refused rather than half read: a feed writes one record per line, and a reader that guesses at the rest applies a rule nobody wrote. A file with neither an \fB$ORIGIN\fR nor an SOA owner of its own \[u2014] which a plain download of a feed sometimes is \[u2014] is read as a list of absolute names.
+.PP
+\fBThe triggers this does not implement\fR, and a zone carrying one fails the load naming it: \fBrpz\-client\-ip\fR, \fBrpz\-ip\fR, \fBrpz\-nsdname\fR and \fBrpz\-nsip\fR select on the client, on the addresses inside an answer, and on the name servers of the delegation \[u2014] the last two needing the resolver to police a path this one forwards. \fBignore_unsupported: true\fR loads such a zone without those rules and counts them (\fBxproxyctl dns\fR shows the tally), which is a decision to make deliberately rather than a default, because a policy that half applies is one the operator believes is working. Where the addresses in an answer are the concern, \fBanswer_policy\fR screens them already, and by range rather than by feed.
+.PP
+A zone file that cannot be read or parsed \fBfails the load\fR, and so does a reload: a policy zone that silently matches nothing is worse than none, because the operator believes the feed is in force. A file that disappears or stops parsing \fIafter\fR the load keeps the rules already read and says so in the error log, since a feed being rewritten in place must not empty the policy for the moment that takes.
+.PP
+Every decision writes a security event (\fBdns_rpz\fR, with the zone, the rule and the action) and a deny event under the \fBdns_rpz\fR reason, which a ban trigger can name: a client walking a feed\(aqs names is one to stop at the edge. \fBrpz_matched\fR and \fBrpz_passthru\fR are in \fBxproxyctl dns\fR with the zones, their rule counts and when each was read (\fBxproxy_dns_rpz_total{result="acted"|"passthru"}\fR, \fBxproxy_dns_rpz_rules\fR).
 .SS "server.listeners[].dns.dnssec"
 .PP
 With the section present the listener is a validating resolver in front of its upstreams: every upstream query carries the DO bit, and each answer is checked before it reaches the client or the cache. Positive answers need a verified RRSIG on every RRset, chained through DNSKEY and DS records up to a trust anchor; negative answers need a verified NSEC or NSEC3 proof (NXDOMAIN, NODATA, wildcard, opt\-out); an insecure delegation proven by the parent makes answers below it insecure. The outcome shapes the answer: secure answers carry AD when the client set AD or DO, bogus answers become SERVFAIL (a \fBdns_bogus\fR security event) unless the client set CD, insecure and indeterminate answers pass without AD. Clients without DO never receive RRSIG, NSEC or NSEC3 records. Algorithms 5, 7, 8, 10, 13, 14 and 15 and DS digests 1, 2 and 4 are supported; a zone signed only with others counts as insecure (RFC 4035). DNSKEY and DS lookups go to the same upstreams and are cached per zone until the shorter of their TTL and signature validity, bounded to 10000 zones. \fBxproxyctl dns\fR shows secure, insecure, bogus and indeterminate counts, the key cache size and lookups.
@@ -9294,6 +9457,48 @@ T}	T{
 Browser origins (\fBhttps:\:/\:/\:app.\:example.\:com\fR,\: or \fB*\fR) whose CORS preflights are answered (\fBPOST\fR,\: the requested headers,\: ten minutes) and whose responses get \fBAccess\-\:Control\-\:Allow\-\:Origin\fR and the exposed \fBgrpc\-\:status\fR and \fBgrpc\-\:message\fR;\: needs \fBweb:\: true\fR. Empty leaves CORS to the upstream or to header operations
 T}
 .TE
+.PP
+\fBRouting by API version.\fR There is no \fBversion\fR key, because every way a version is actually expressed is already a matcher here, and a dedicated key would only cover one of them:
+.PP
+.RS 4
+.nf
+.ft CR
+routes:
+  # In the path, which is most APIs.
+  \- {name: api\-v1, hosts: [api.example.com], paths: ["/v1/"], upstream: orders\-v1}
+  \- {name: api\-v2, hosts: [api.example.com], paths: ["/v2/"], upstream: orders\-v2}
+
+  # In a media type, the "vendor versioning" style. A conditioned route
+  # is tried before the plain route on the same path, so this takes the
+  # requests that ask for v2 and the unconditioned route below keeps the
+  # rest.
+  \- name: api\-accept\-v2
+    hosts: [api.example.com]
+    paths: ["/orders/"]
+    headers: [{name: Accept, regex: ".*vnd\e\e.example\e\e.v2(\e\e+json)?"}]
+    upstream: orders\-v2
+
+  # In a header, with a default. `priority` decides only ties; the
+  # condition count already puts the conditioned route first.
+  \- name: api\-header\-v2
+    hosts: [api.example.com]
+    paths: ["/orders/"]
+    headers: [{name: X\-API\-Version, exact: "2"}]
+    upstream: orders\-v2
+  \- {name: api\-default, hosts: [api.example.com], paths: ["/orders/"], upstream: orders\-v1}
+
+  # Anything else \-\- a query parameter, a version pinned per client
+  # network, a date\-based version \-\- is an expression.
+  \- name: api\-pinned
+    hosts: [api.example.com]
+    paths: ["/orders/"]
+    when: 'query("api\-version") == "2024\-11\-01" || client_ip in cidr("10.9.0.0/16")'
+    upstream: orders\-v2
+.ft
+.fi
+.RE
+.PP
+A version that has to be \fIremoved\fR before the backend sees it is \fBstrip_prefix: /v2\fR or a \fBrequest_headers.remove\fR; one that has to be \fIadded\fR is \fBrequest_headers.set\fR. The deprecation of an old version is a \fBresponse_headers.add\fR of \fBDeprecation\fR and \fBSunset\fR on the old route, and \fBmaintenance\fR on it when the day comes.
 .SH "ingress"
 .PP
 Kubernetes ingress controller mode. When enabled, the proxy reads the Ingress, Service, EndpointSlice and TLS Secret resources of one ingress class, and the Gateway API resources (Gateway, HTTPRoute) of the same class when the cluster has them, from the API server with the pod\(aqs service account (no client library), translates them and appends the result to this file\(aqs routes, upstreams and certificates: the running configuration is the file plus the cluster. The file\(aqs own routes and upstreams are kept and a name collision is an error. Watch streams on the resources trigger a sync within \fBdebounce\fR of a change, with a full poll every \fBresync\fR as the fallback; a change reloads the proxy like a SIGHUP, and a SIGHUP or \fBxproxyctl reload\fR re\-reads the file and merges the latest snapshot. The API server being unreachable at start is a warning, not a failure: the file configuration serves until the first successful sync.
@@ -9812,7 +10017,7 @@ list
 T}	T{
 \fB[]\fR (all)
 T}	T{
-Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBsftp_\:icap\fR,\: \fBudp_\:denied\fR,\: \fByara\fR
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBudp_\:denied\fR,\: \fByara\fR
 T}
 T{
 \fBthreshold\fR
@@ -10140,6 +10345,35 @@ T}	T{
 Behavioural anomaly detection per client;\: see below
 T}
 .TE
+.PP
+\fBWhat decodes a body, and what does not.\fR There is no list of content decoders here, deliberately. Decoding is SecLang\(aqs own, per rule and per target: \fBt:urlDecodeUni\fR, \fBt:base64Decode\fR, \fBt:base64DecodeExt\fR, \fBt:hexDecode\fR, \fBt:jsDecode\fR, \fBt:cssDecode\fR, \fBt:cmdLine\fR, \fBt:utf8toUnicode\fR, \fBt:removeNulls\fR and the rest, which is how the Core Rule Set already reads a payload hidden inside an encoding \[u2014] and which is right, because a rule knows which of its targets can be encoded and a gateway\-wide decoder does not. Writing one is a rule:
+.PP
+.RS 4
+.nf
+.ft CR
+SecRule ARGS:payload "@rx (?i)union\es+select" \e
+    "id:9100,phase:2,t:none,t:urlDecodeUni,t:base64Decode,deny,status:403,\e
+     msg:'SQL injection inside a base64 parameter'"
+.ft
+.fi
+.RE
+.PP
+The bodies the rules see are parsed by content type \[u2014] urlencoded, multipart, JSON and XML \[u2014] up to \fBrequest_body_limit\fR. What they do \fBnot\fR see is a body wrapped in a \fItransfer\fR encoding: a \fBContent\-Encoding: gzip\fR request body is inspected as the compressed bytes it arrived as, not expanded first. That is a deliberate line, and the reason is amplification: a decoder at the gateway, applied to every body before any rule has decided anything, is a second parser and a decompression bomb away from being the outage. Where a compressed body has to be read, the \fBsensitive_data\fR filter decodes \fBgzip\fR, \fBdeflate\fR, \fBbr\fR and \fBzstd\fR under an expansion\-ratio bound, and ICAP or \fByara\fR scan the stream \[u2014] each of them a decision about one route rather than a default for all of them.
+.PP
+\fBXML targets are two collections, not an XPath engine.\fR With the XML body processor selected, the engine fills exactly two: \fBXML://@*\fR, every attribute value in the document, and \fBXML:/*\fR, every piece of character data. A rule over either works, and it is how the Core Rule Set reads an XML body:
+.PP
+.RS 4
+.nf
+.ft CR
+SecRule REQUEST_HEADERS:Content\-Type "@rx xml" \e
+    "id:9200,phase:1,pass,nolog,ctl:requestBodyProcessor=XML"
+SecRule XML://@* "@rx (?i)\ebunion\eb.{1,100}?\ebselect\eb" \e
+    "id:9201,phase:2,deny,status:403,msg:'injection in an XML attribute'"
+.ft
+.fi
+.RE
+.PP
+Any other selector \[u2014] \fBXML:/invoice/total\fR, \fBXML://item[@id]\fR \[u2014] is \fBaccepted by the parser and then evaluated against nothing\fR, so a rule written over it never fires. That is the engine\(aqs limitation rather than a setting, and it is stated here because a rule an operator believes is running is worse than one they know they have to write differently. Where a \fInamed\fR element or a document\(aqs shape is the requirement, the \fBxml_guard\fR filter is the one that reads structure: \fBrequire_root\fR, \fBrequire_root_namespace\fR, \fBallow_elements\fR and \fBdeny_elements\fR are a positive model over the element names, with the entity, expansion and depth bounds beside them, and \fBdeny_patterns\fR covers the text. A test drives all three selectors, so the sentence above stays true of the engine this binary links.
 .SS "waf.learning"
 .PP
 Learning aggregates every match of a detection rule by rule id, matched variable (for example \fBARGS:q\fR) and route, in block and detect mode alike. A triple seen \fBmin_hits\fR times becomes a proposal with a ready to review SecLang exclusion, scoped to the route\(aqs path prefix when it has one (\fBGET /v1/waf\fR, \fBGET /v1/waf/exclusions\fR, \fBxproxyctl waf proposals\fR). The table and the per rule statistics live for the process and survive reloads; \fBPOST /v1/waf/reset\fR clears them.
@@ -13043,6 +13277,248 @@ T}
 Field values may not contain a line break or a control character: a newline would end the field and begin another, so a value carrying one could add a \fBContact\fR of somebody else\(aqs choosing to the document this proxy serves. The response is \fBtext/plain; charset=utf\-8\fR with \fBX\-Content\-Type\-Options: nosniff\fR, and only \fBGET\fR and \fBHEAD\fR are answered \[u2014] a \fBsecurity.txt\fR is a file and nothing else.
 .PP
 The signed form is worth the trouble on a public document: sign it once, put it in \fBbody_file\fR, and a reload picks up a re\-signed file without a restart. \fBvalid_for\fR cannot refresh a signed document, so give a signed one an explicit \fBExpires\fR inside the signature and re\-sign before it lapses; \fBxproxyctl stats\fR reports how many requests each entry answered, which is how you notice a document nobody reads.
+.SH "scim"
+.PP
+A SCIM 2.0 provisioning endpoint (RFC 7644), so the directory that owns the joiner and leaver process provisions and deprovisions the credentials this proxy holds: a second\-factor enrolment and an API key.
+.PP
+The point is the leaver. An account closed in the directory and not here is access that still works, and every estate has a story about the contractor whose key kept opening the door for a year. Doing it by hand needs somebody to remember at exactly the moment nobody is thinking about it; doing it over SCIM means the same event that closes the mailbox closes this.
+.PP
+.RS 4
+.nf
+.ft CR
+scim:
+  # Where the provider reaches it. The endpoints are this plus /Users,
+  # /ServiceProviderConfig, /ResourceTypes and /Schemas.
+  path: /scim/v2
+  external_url: https://admin.example.com/scim/v2
+
+  # Who may reach it at all. An endpoint that creates and destroys
+  # credentials is not left to a route's access list.
+  hosts: [admin.example.com]
+  listeners: [edge]
+  client_cidrs: [203.0.113.0/24]
+
+  token_file: /etc/xproxy/scim.token       # the bearer token, >= 16 characters
+  state_file: /var/lib/xproxy/scim\-users   # the resources, not the credentials
+
+  mfa_users_file: /etc/xproxy/mfa.users    # a second factor is enrolled here
+  keys_file: /etc/xproxy/api\-keys          # a key is issued and revoked here
+  key_scopes: [orders:read]
+  key_ttl: 8760h
+  issuer: example\-estate                   # named in the otpauth URI
+
+  return_secrets: false                    # see below
+  max_results: 100
+.ft
+.fi
+.RE
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.9i) lbw(1.0i) lbx
+lw(1.0i) lw(0.9i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBpath\fR
+T}	T{
+string
+T}	T{
+\fB/\:scim/\:v2\fR
+T}	T{
+The base the endpoints hang off,\: absolute and without a trailing slash
+T}
+T{
+\fBhosts\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (every host)
+T}	T{
+Exact names or \fB*.\:example.\:com\fR patterns the endpoint answers on
+T}
+T{
+\fBlisteners\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (every listener)
+T}	T{
+Listener names it answers on
+T}
+T{
+\fBclient_\:cidrs\fR
+T}	T{
+list of CIDR
+T}	T{
+\fB[]\fR (every client)
+T}	T{
+Networks the provider connects from
+T}
+T{
+\fBtoken_\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+The bearer token,\: one line,\: at least 16 characters. Compared in constant time against a SHA\-256
+T}
+T{
+\fBstate_\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+Where the provisioned resources are kept. Written by the proxy;\: it need not exist yet
+T}
+T{
+\fBmfa_\:users_\:file\fR
+T}	T{
+path
+T}	T{
+none
+T}	T{
+The enrolment file a second factor is provisioned in \[u2014] the same file the \fBmfa\fR filter and the gate listeners read
+T}
+T{
+\fBkeys_\:file\fR
+T}	T{
+path
+T}	T{
+none
+T}	T{
+The API key file a key is issued in and revoked in \[u2014] the same file the \fBapi_\:key\fR filter reads
+T}
+T{
+\fBkey_\:scopes\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Scopes an issued key gets when the request names none
+T}
+T{
+\fBkey_\:ttl\fR
+T}	T{
+duration
+T}	T{
+none
+T}	T{
+Expiry of an issued key,\: 1h to 10 years
+T}
+T{
+\fBissuer\fR
+T}	T{
+string
+T}	T{
+\fBxproxy\fR
+T}	T{
+Names this estate in the \fBotpauth:\:/\:/\fR enrolment URI
+T}
+T{
+\fBreturn_\:secrets\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Whether a response may carry the credentials it just made
+T}
+T{
+\fBmax_\:results\fR
+T}	T{
+int
+T}	T{
+\fB100\fR
+T}	T{
+Page bound,\: reported in the service provider configuration
+T}
+T{
+\fBexternal_\:url\fR
+T}	T{
+URL
+T}	T{
+none
+T}	T{
+The base the provider reaches this endpoint at;\: what \fBmeta.\:location\fR and the \fBLocation\fR header are built from
+T}
+.TE
+.PP
+At least one of \fBmfa_users_file\fR and \fBkeys_file\fR is required: with neither there is nothing to provision.
+.PP
+\fBWhat is implemented\fR, and deliberately nothing else \[u2014] an endpoint that half\-understands an operation is worse than one that refuses it, because the directory believes the change landed:
+.PP
+.TS
+allbox;
+lbw(2.3i) lbx
+lw(2.3i) lx.
+T{
+Request
+T}	T{
+What happens
+T}
+T{
+\fBPOST /\:Users\fR
+T}	T{
+Creates the resource,\: enrols a second factor,\: issues a key
+T}
+T{
+\fBGET /\:Users\fR
+T}	T{
+Lists,\: with \fBfilter=\:userName eq "name"\fR,\: \fBstartIndex\fR and \fBcount\fR
+T}
+T{
+\fBGET /\:Users/\:{id}\fR
+T}	T{
+Reads one,\: with what is \fIcurrently\fR in place rather than what was provisioned once
+T}
+T{
+\fBPUT /\:Users/\:{id}\fR
+T}	T{
+Replaces \fBexternalId\fR,\: \fBdisplayName\fR and \fBactive\fR
+T}
+T{
+\fBPATCH /\:Users/\:{id}\fR
+T}	T{
+\fBreplace\fR of \fBactive\fR,\: \fBexternalId\fR or \fBdisplayName\fR,\: by path or as a value object
+T}
+T{
+\fBDELETE /\:Users/\:{id}\fR
+T}	T{
+Deprovisions and forgets the resource
+T}
+T{
+\fBGET /\:ServiceProviderConfig\fR,\: \fB/\:ResourceTypes\fR,\: \fB/\:Schemas\fR
+T}	T{
+What a provider fetches before it provisions anything
+T}
+.TE
+.PP
+Everything else answers a SCIM error object (\fBurn:ietf:params:scim:api:messages:2.0:Error\fR) with the \fBscimType\fR RFC 7644 section 3.12 gives it: a filter on another attribute is \fBinvalidFilter\fR, a \fBuserName\fR that would be changed is \fBmutability\fR, an attribute this endpoint does not keep is \fBinvalidSyntax\fR, a second create of one name is \fBuniqueness\fR (409).
+.PP
+\fB\fBactive: false\fR and \fBDELETE\fR do the same thing to the credentials\fR: every API key of that user is \fIrevoked\fR \[u2014] kept in the file as the record of what it reached and when it stopped \[u2014] and the enrolment is removed. The difference is the resource: a deactivated user is still there to be read, which is what \fBstate_file\fR is for, and a deleted one is not. There is no "disabled enrolment" in the enrolment file, so a suspension that left one in place would be a suspension in name only.
+.PP
+Which makes one setting elsewhere load\-bearing: \fB\fBrequire_enrolment\fR must be on\fR wherever the enrolment file this endpoint writes is used \[u2014] on a gate listener\(aqs \fBmfa\fR section and on the \fBmfa\fR filter alike. With it off, a user with no enrolment is let through \fIunchallenged\fR, so removing an enrolment opens the door instead of closing it, and a deprovisioning would be the opposite of what the directory asked for.
+.PP
+Which means \fBreactivating mints new credentials.\fR The old secret is gone and cannot be handed back, so \fBactive: true\fR on a deactivated user enrols again and issues a new key; with \fBreturn_secrets: false\fR nobody can read them, and the operator delivers a fresh enrolment with \fBxproxyctl mfa enrol\fR and a fresh key with \fBxproxyctl apikey rotate\fR.
+.PP
+\fB\fBreturn_secrets\fR is off by default.\fR With it on, the response to a create or a reactivation carries the \fBotpauth://\fR URI, the recovery codes and the key plaintext under the extension attribute \fBsecrets\fR \[u2014] which is what an automated onboarding needs, and which puts them in the provider\(aqs response logs and in whatever it stores. Validation says so at load. With it off the credentials are still made; they are simply not in the answer.
+.PP
+\fBWhat is not changed here.\fR \fBuserName\fR is immutable, because it is what the credentials are keyed on: a rename is a new user and the old one deprovisioned, said in the directory rather than inferred here. The scopes of an issued key cannot be changed either \[u2014] that is a new credential, and this endpoint does not replace one nobody asked it to replace.
+.PP
+\fBWhere it runs.\fR Before routing, like the virtual \fBsecurity.txt\fR: the provider needs no route, and no route can take the endpoint away by matching the path first. A request on the endpoint\(aqs path that the selectors refuse is answered 404 and \fBnot\fR routed on \[u2014] passing it to a proxied application would hand it a request meant for the control plane.
+.PP
+\fBscim\fR and \fBscim_user\fR are in the access log, every change writes a security event (\fBscim\fR with the operation), a refusal writes a deny event with \fBscim\fR as the reason \[u2014] which a ban trigger can name, and a bad token feeds it, because somebody trying tokens against a provisioning endpoint is not a client making a mistake twice. \fBscim_requests\fR and \fBscim_denied\fR are in \fBxproxyctl stats\fR, and \fBxproxy_scim_requests_total{result="answered"|"refused"}\fR in the metrics.
 .SH "virtual_patches[]"
 .PP
 A virtual patch blocks a known vulnerability by the shape of the requests that exploit it, while the application is being fixed, and records how often it fired. Patches run right after route matching, before rate limits, filters and the WAF, so they cost nothing for other traffic and need no \fBwaf\fR section. Every listed condition must hold for a patch to apply; at least one of \fBpaths\fR, \fBpath_regex\fR, \fBquery\fR, \fBheaders\fR, \fBcookies\fR or \fBbody\fR is required. A match with \fBaction: block\fR answers \fBstatus\fR with reason \fBvirtual_patch\fR and the id as \fBdetail\fR (ban category \fBvirtual_patch\fR); with \fBaction: log\fR the request continues and the security event and the access log carry \fBvirtual_patch: <id>\fR. \fBxproxyctl patches\fR and \fBGET /v1/patches\fR list the patches with hits, last hit, expiry and state; \fBxproxy_virtual_patch_hits_total{patch}\fR counts per patch and hits survive reloads.
@@ -14166,7 +14642,7 @@ name
 T}	T{
 required
 T}	T{
-A registered kind: \fBheader_\:guard\fR,\: \fBbasic_\:auth\fR,\: \fBldap_\:auth\fR,\: \fBapi_\:key\fR,\: \fBopenapi\fR,\: \fBgraphql\fR,\: \fBgrpc_\:guard\fR,\: \fBauthz\fR,\: \fBupload_\:guard\fR,\: \fBsensitive_\:data\fR,\: \fBaccount_\:guard\fR,\: \fBbody_\:rewrite\fR,\: \fBbot_\:score\fR,\: \fBform_\:guard\fR,\: \fBoidc\fR,\: \fBwasm\fR,\: or one added to \fBinternal/\:filters\fR
+A registered kind: \fBheader_\:guard\fR,\: \fBbasic_\:auth\fR,\: \fBldap_\:auth\fR,\: \fBapi_\:key\fR,\: \fBapi_\:abuse\fR,\: \fBopenapi\fR,\: \fBgraphql\fR,\: \fBgrpc_\:guard\fR,\: \fBauthz\fR,\: \fBupload_\:guard\fR,\: \fBsensitive_\:data\fR,\: \fBaccount_\:guard\fR,\: \fBbody_\:rewrite\fR,\: \fBbot_\:score\fR,\: \fBform_\:guard\fR,\: \fBoidc\fR,\: \fBwasm\fR,\: or one added to \fBinternal/\:filters\fR
 T}
 T{
 \fBstage\fR
@@ -16030,6 +16506,199 @@ T}
 .TE
 .PP
 Default ladders (thresholds reached within the window): \fBlogin\fR delays 2s at 5 address, 3 account or 3 pair failures, challenges at 15 address, 5 account, 5 pair, 10 accounts per address, 5 addresses per account or 10 accounts per device, blocks 15m at 50 address, 20 account, 10 pair, 30 accounts per address, 20 addresses per account, 50 events or 30 accounts per device; \fBregister\fR delays 2s at 2 requests per address, challenges at 3 per address or device or 2 per identity, blocks 1h at 10 per address or device or 5 per identity; \fBreset\fR delays 2s at 3 per address or 2 per account, challenges at 5 per address or device or 3 per account, blocks 1h at 20 or 10; \fBcart\fR delays 1s at 30, challenges at 60 and blocks 30m at 150 requests per address, identity or device; \fBscrape\fR delays 1s at 200 requests or 100 distinct paths per address, challenges at 400 or 200 and blocks 1h at 1000. Tables are bounded per endpoint (65536 keys each, oldest evicted with a throttled warning). A delay holds a request slot, so keep \fBmax_delayed\fR under the route\(aqs concurrency.
+.SS "Kind \fBapi_abuse\fR"
+.PP
+Watches what a caller does with an API rather than what it sends.
+.PP
+Every request in this sequence is valid on its own \[u2014] the right method, the right path, an authenticated caller, a well formed identifier \[u2014] and the attack is the sequence:
+.PP
+.RS 4
+.nf
+.ft CR
+GET /api/orders/1041   200
+GET /api/orders/1042   403
+GET /api/orders/1043   403
+GET /api/orders/1044   200   <\- somebody else's order
+.ft
+.fi
+.RE
+.PP
+That is broken object level authorisation, the first item on the OWASP API Security Top 10, and nothing that reads one request at a time can see it. What it is visible in is the shape of the sequence, per caller and per endpoint, over a window:
+.PP
+.TS
+allbox;
+lbw(1.2i) lbx
+lw(1.2i) lx.
+T{
+Signal
+T}	T{
+What was observed
+T}
+T{
+\fBenumeration\fR
+T}	T{
+The caller touched more than \fBmax_\:objects\fR \fBdistinct\fR identifiers on one endpoint. A person reads their own orders;\: a script reads everybody\(aqs
+T}
+T{
+\fBsequential\fR
+T}	T{
+The numeric identifiers are consecutive: \fBsequential.\:min\fR of them covering a span they fill to \fBsequential.\:density\fR. A catalogue read in order is a scrape,\: and that is a different fact from having read a lot
+T}
+T{
+\fBrefused\fR
+T}	T{
+Of \fBrefused.\:min_\:requests\fR,\: at least \fBrefused.\:share\fR were answered 401,\: 403 or 404. Probing for objects that are not yours looks exactly like this and little else does
+T}
+.TE
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(1.1i) lbw(0.8i) lbx
+lw(1.2i) lw(1.1i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBwindow\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+The observation period;\: 1s to 24h. A caller flagged in one window is flagged until it ends,\: and the counts start again with the next
+T}
+T{
+\fBmax_\:objects\fR
+T}	T{
+int
+T}	T{
+\fB200\fR
+T}	T{
+Distinct identifiers per caller per endpoint;\: 0 turns the signal off
+T}
+T{
+\fBsequential.\:min\fR
+T}	T{
+int
+T}	T{
+\fB20\fR
+T}	T{
+Numeric identifiers needed before the density is judged;\: 0 turns the signal off
+T}
+T{
+\fBsequential.\:density\fR
+T}	T{
+float
+T}	T{
+\fB0.\:8\fR
+T}	T{
+Distinct identifiers over the span they cover: 1.0 is a perfect walk
+T}
+T{
+\fBrefused.\:min_\:requests\fR
+T}	T{
+int
+T}	T{
+\fB20\fR
+T}	T{
+Requests needed before the share is judged;\: 0 turns the signal off
+T}
+T{
+\fBrefused.\:share\fR
+T}	T{
+float
+T}	T{
+\fB0.\:5\fR
+T}	T{
+The fraction refused that raises the signal
+T}
+T{
+\fBaction\fR
+T}	T{
+\fBlog\fR,\: \fBchallenge\fR,\: \fBblock\fR
+T}	T{
+\fBlog\fR
+T}	T{
+What a flagged caller gets. \fBchallenge\fR needs a \fBchallenge\fR section;\: without one the verdict falls through to the refusal \fBblock\fR would have given
+T}
+T{
+\fBpaths\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (every path)
+T}	T{
+Limits the filter to request paths under one of these prefixes
+T}
+T{
+\fBmax_\:subjects\fR
+T}	T{
+int
+T}	T{
+\fB8192\fR
+T}	T{
+(caller,\: endpoint) pairs held at once;\: the oldest is dropped and the drops are counted
+T}
+.TE
+.PP
+.RS 4
+.nf
+.ft CR
+filters:
+  \- name: abuse
+    kind: api_abuse
+    options:
+      window: 5m
+      max_objects: 200
+      sequential: {min: 20, density: 0.8}
+      refused: {min_requests: 20, share: 0.5}
+      action: challenge
+      paths: ["/api/"]
+routes:
+  \- name: api
+    hosts: [api.example.com]
+    upstream: api
+    # After the identity filters, so a caller is an account rather than
+    # an address.
+    filters: [jwt\-auth, abuse]
+.ft
+.fi
+.RE
+.PP
+What it counts, and what it does not:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBA caller is the authenticated identity when the chain established one, and the client address otherwise.\fR An API abused through one account is one caller however many addresses it arrives from, which is why this filter belongs \fIafter\fR the identity filters in the chain.
+.PP
+.ti -3n
+\(bu
+\fBObjects, not requests.\fR A caller re\-reading its own order fifty times has touched one object. That is what keeps an ordinary page refresh out of the \fBsequential\fR signal, which counts distinct identifiers over the span they cover.
+.PP
+.ti -3n
+\(bu
+\fBAn endpoint is the method and the path template\fR, with identifiers folded out (\fBGET /api/orders/*\fR), so one busy endpoint never flags a caller on another. A path with no identifier in it \[u2014] a collection endpoint \[u2014] has no object to count.
+.PP
+.ti -3n
+\(bu
+\fBIdentifiers are held per (caller, endpoint) up to 1024\fR, and past that the count continues as a lower bound rather than the memory: \fBxproxy_api_abuse_objects\fR and \fBxproxy_api_abuse_overflowed\fR say which. An identifier longer than 128 characters is not counted at all.
+.PP
+.ti -3n
+\(bu
+\fBThe response is the other half of the probing signal\fR, so the filter reads both phases, and which request the action lands on follows from that. A bound crossed on the way in \[u2014] one object too many, a walk long enough to judge \[u2014] refuses \fIthat\fR request. The \fBrefused\fR signal is raised by the answer instead, so it applies from the caller\(aqs next request: the answer that revealed the probing has already been sent.
+.RE
+.PP
+.PP
+A flagged request adds \fBapi_abuse\fR to the access log with the signals that were raised; \fBblock\fR and \fBchallenge\fR also write a security event with the \fBapi_abuse\fR reason, which a ban trigger can name \[u2014] a caller that keeps walking after a refusal is one to stop at the edge rather than at the filter.
+.PP
+Per filter, \fBxproxy_api_abuse_requests_total\fR, \fB_flagged_total\fR, \fB_blocked_total\fR, \fB_challenged_total\fR and \fB_dropped_total\fR count what it did, and \fBxproxy_api_abuse_subjects\fR, \fBxproxy_api_abuse_objects\fR and \fBxproxy_api_abuse_overflowed\fR say how much it is holding: a \fBsubjects\fR gauge pinned at \fBmax_subjects\fR with \fB_dropped_total\fR climbing is a filter watching more callers than it was given room for.
 .SS "Kind \fBapi_key\fR"
 .PP
 API keys with a life cycle: issued by \fBxproxyctl apikey add\fR (the plaintext \fBxpk_<id>_<secret>\fR is printed once; the file keeps a SHA\-256), scoped, expiring, rotated with a grace period for the previous secret (\fBapikey rotate \-grace 24h\fR) and revoked (\fBapikey revoke\fR, kept in the file so the id is never reused). The filter re\-reads the file when its contents change, at most every \fBreload\fR, and keeps the previous table when the new file does not parse.
