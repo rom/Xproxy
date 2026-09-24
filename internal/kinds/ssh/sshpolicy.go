@@ -212,8 +212,8 @@ func sshEnvRequest(payload []byte) (string, bool) {
 // and rsync never touch the sftp subsystem, so every path and
 // operation rule there is simply not on their path.
 //
-// Every word is read, not only the first, and each is taken the way a
-// shell would: the directory part removed, a "VAR=value" prefix
+// Every word is read, not only the first, after shell quotes and escapes
+// have been removed; the directory part is removed and a "VAR=value" prefix
 // skipped. A wrapper is otherwise all it takes to walk past the check
 // — "env scp -t", "sudo rsync", "sh -c 'scp -t /etc'" — and there is
 // no reading of a shell word that would catch those from the first
@@ -221,7 +221,15 @@ func sshEnvRequest(payload []byte) (string, bool) {
 // merely says "scp"), which is the direction to be wrong in: a bastion
 // that guesses permissively is a bastion with the door beside it.
 func fileTransferCommand(cmd string) bool {
-	for _, word := range strings.Fields(cmd) {
+	normalized, ok := literalShellCommand(cmd)
+	if !ok {
+		// Expansions and shell operators can synthesize a command name in
+		// ways that cannot be checked without running the target's shell.
+		// When transfers are disabled, fail closed rather than pretending
+		// to understand that shell.
+		return true
+	}
+	for _, word := range strings.Fields(normalized) {
 		// Skip VAR=value prefixes, which is how a shell is asked to run
 		// something with an environment.
 		if i := strings.IndexByte(word, '='); i > 0 && !strings.ContainsAny(word[:i], "/\\.") {
@@ -233,6 +241,47 @@ func fileTransferCommand(cmd string) bool {
 		}
 	}
 	return false
+}
+
+// literalShellCommand removes quoting and backslash escaping from the
+// literal subset of shell syntax. It rejects expansions and operators: their
+// result depends on the upstream shell, environment and filesystem, so a
+// proxy cannot safely decide whether they will produce a transfer helper.
+func literalShellCommand(cmd string) (string, bool) {
+	var out strings.Builder
+	var quote byte
+	for i := 0; i < len(cmd); i++ {
+		c := cmd[i]
+		switch {
+		case c == '\x00':
+			return "", false
+		case quote == '\'':
+			if c == '\'' {
+				quote = 0
+			} else {
+				out.WriteByte(c)
+			}
+		case c == '\'' || c == '"':
+			if quote == 0 {
+				quote = c
+			} else if quote == c {
+				quote = 0
+			} else {
+				out.WriteByte(c)
+			}
+		case c == '\\':
+			if i+1 == len(cmd) {
+				return "", false
+			}
+			i++
+			out.WriteByte(cmd[i])
+		case strings.ContainsRune("$`;|&<>(){}[]*?!~", rune(c)):
+			return "", false
+		default:
+			out.WriteByte(c)
+		}
+	}
+	return out.String(), quote == 0
 }
 
 // principalFor picks the entry that covers a key, and the name to log
