@@ -22,14 +22,20 @@ type jwtFilter struct {
 
 func (f *jwtFilter) Name() string { return "jwt:" + f.p.cfg.Name }
 
-func (f *jwtFilter) Begin(_ context.Context, _ *filter.Info) filter.Instance {
-	return &instance{f: f}
+func (f *jwtFilter) Begin(_ context.Context, info *filter.Info) filter.Instance {
+	return &instance{f: f, info: info}
 }
 
 type instance struct {
 	f     *jwtFilter
+	info  *filter.Info
 	attrs []any
 }
+
+// trustedPeer reports whether the immediate peer is inside
+// trusted_proxies, which is what decides whether a forwarded client
+// certificate counts. A missing description is not a trusted peer.
+func (in *instance) trustedPeer() bool { return in.info != nil && in.info.TrustedPeer }
 
 // extract returns the token and whether one was present.
 func (f *jwtFilter) extract(r *http.Request) (string, bool) {
@@ -90,7 +96,7 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 	token, present := f.extract(r)
 	if !present {
 		if f.required {
-			return deny(http.StatusUnauthorized, "missing", `Bearer realm="xproxy"`)
+			return deny("missing", `Bearer realm="xproxy"`)
 		}
 		return filter.Continue
 	}
@@ -102,7 +108,7 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 		if errors.Is(err, ErrIntrospection) {
 			return filter.Verdict{Deny: true, Status: http.StatusServiceUnavailable, Reason: "jwt", Detail: "introspection_unavailable", Headers: map[string]string{"Retry-After": "5"}}
 		}
-		return deny(http.StatusUnauthorized, category(err), `Bearer realm="xproxy", error="invalid_token"`)
+		return deny(category(err), `Bearer realm="xproxy", error="invalid_token"`)
 	}
 	// The proof is checked against claims this proxy has verified:
 	// reading cnf.jkt out of an unverified token would let an attacker
@@ -120,6 +126,18 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 		// and leaves a signed statement about this request in a log
 		// somewhere else.
 		r.Header.Del("DPoP")
+	}
+	// The certificate binding is the other half of proof of possession,
+	// and it is checked on the same verified claims for the same reason:
+	// cnf out of an unverified token is a value the presenter chose.
+	if f.p.cert.on() {
+		thumb, cerr := f.p.cert.check(r, claims, in.trustedPeer())
+		if cerr != nil {
+			return certDeny(cerr)
+		}
+		if thumb != "" {
+			in.attrs = append(in.attrs, "cert_thumbprint", thumb)
+		}
 	}
 	if cfg.Strips() {
 		f.strip(r)
@@ -186,11 +204,30 @@ func dpopDeny(err error, algs string) filter.Verdict {
 	if algs != "" {
 		challenge += `, algs="` + algs + `"`
 	}
-	return deny(http.StatusUnauthorized, detail, challenge)
+	return deny(detail, challenge)
 }
 
-func deny(status int, detail, challenge string) filter.Verdict {
-	return filter.Verdict{Deny: true, Status: status, Reason: "jwt", Detail: detail, Headers: map[string]string{"WWW-Authenticate": challenge}}
+// certDeny answers a certificate binding problem. RFC 8705 defines no
+// error code of its own, so this is invalid_token: the token is not
+// usable on this connection, whatever it would be worth on another.
+func certDeny(err error) filter.Verdict {
+	detail := "cert_binding"
+	switch {
+	case errors.Is(err, ErrCertMissing):
+		detail = "cert_missing"
+	case errors.Is(err, ErrCertUnbound):
+		detail = "cert_unbound"
+	}
+	return deny(detail, `Bearer realm="xproxy", error="invalid_token"`)
+}
+
+// deny is a credential refusal: always 401 with a challenge, because
+// every refusal here is "this credential does not authenticate you". The
+// two that are the proxy's own problem rather than the client's -- keys
+// unavailable, the exchange endpoint unreachable -- build their own 503
+// at the call site.
+func deny(detail, challenge string) filter.Verdict {
+	return filter.Verdict{Deny: true, Status: http.StatusUnauthorized, Reason: "jwt", Detail: detail, Headers: map[string]string{"WWW-Authenticate": challenge}}
 }
 
 func category(err error) string {

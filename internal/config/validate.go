@@ -73,6 +73,13 @@ type validator struct {
 	// that names one is told at load rather than at the first file it
 	// tries to scan.
 	icapNames map[string]bool
+	// clientCertAsked is set when any listener asks for a client
+	// certificate, so a certificate binding that can never fire is
+	// pointed out. Listeners are validated before the JWT providers.
+	clientCertAsked bool
+	// trustedProxies is set when trusted_proxies names anything, which is
+	// what decides whether a forwarded client certificate is ever read.
+	trustedProxies bool
 }
 
 // transferICAP checks a scanning section on a kind that moves files.
@@ -187,6 +194,8 @@ func (v *validator) config(c *Config) {
 			v.errf("trusted_proxies[%d]: %q would trust every client; list the load balancer networks", i, cidr)
 		}
 	}
+
+	v.trustedProxies = len(c.TrustedProxies) > 0
 
 	rateLimits := map[string]bool{}
 	for i := range c.RateLimits {
@@ -872,6 +881,9 @@ func (v *validator) tls(p string, t *TLS) {
 	case "1.2", "1.3":
 	default:
 		v.errf("%s.min_version: must be \"1.2\" or \"1.3\" (TLS 1.0 and 1.1 are never allowed)", p)
+	}
+	if t.ClientAuth == "request" || t.ClientAuth == "require" {
+		v.clientCertAsked = true
 	}
 	switch t.ClientAuth {
 	case "none":
@@ -4284,6 +4296,32 @@ func (v *validator) dpop(p string, d *DPoP, source string) {
 	}
 }
 
+// certificateBinding checks an RFC 8705 certificate binding. Both things
+// it warns about are configurations that load and can never fire, which
+// is worse than an error: the operator believes the control is on.
+func (v *validator) certificateBinding(p string, c *CertificateBinding) {
+	if c == nil {
+		return
+	}
+	switch c.Mode {
+	case "", "off":
+		if c.TrustForwardedHeader {
+			v.warnf("%s.trust_forwarded_header: set with mode off, so no certificate is ever compared", p)
+		}
+		return
+	case "allow", "require":
+	default:
+		v.errf("%s.mode: must be off, allow or require", p)
+		return
+	}
+	if c.TrustForwardedHeader && !v.trustedProxies {
+		v.warnf("%s.trust_forwarded_header: needs trusted_proxies naming the peers that terminate TLS; without it the header is never read", p)
+	}
+	if !c.TrustForwardedHeader && !v.clientCertAsked {
+		v.warnf("%s: no listener asks for a client certificate (tls.client_auth), so there is none to compare a bound token against", p)
+	}
+}
+
 // dnsAnswerPolicy checks the answer screen. An answer policy that denies
 // nothing is the one shape worth refusing at load: it reads like
 // rebinding protection and is not, and an operator who wrote the section
@@ -4824,6 +4862,7 @@ func (v *validator) jwt(j *JWT, seen map[string]bool) {
 		}
 		v.dpop(pp+".dpop", p.DPoP, p.Source)
 		v.tokenExchange(pp+".token_exchange", p.TokenExchange)
+		v.certificateBinding(pp+".certificate_binding", p.CertificateBinding)
 		switch {
 		case p.Source == "bearer":
 		case strings.HasPrefix(p.Source, "header:") && headerNameOK(p.Source[7:]):

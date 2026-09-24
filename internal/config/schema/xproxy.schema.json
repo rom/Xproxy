@@ -742,6 +742,21 @@
       },
       "additionalProperties": false
     },
+    "CertificateBinding": {
+      "description": "CertificateBinding is RFC 8705 mutual-TLS client certificate bound access tokens: the token carries the SHA-256 thumbprint of the client's certificate in cnf[\"x5t#S256\"], and a request presenting it on a connection with another certificate -- or none -- is not the client the token was issued to. It is the cheaper sibling of DPoP and the more limited one: no proof is signed per request, because the TLS handshake already proved possession of the key, but only a client that can present a certificate can use it. The two can be on together; a token bound both ways must satisfy both.",
+      "type": "object",
+      "properties": {
+        "mode": {
+          "description": "Mode is off (default), allow or require. allow checks the binding whenever the token carries one, and refuses a bound token presented on the wrong connection, while leaving an ordinary bearer token alone. require additionally refuses a token with no cnf[\"x5t#S256\"]: on that route, only certificate-bound tokens are accepted.",
+          "type": "string"
+        },
+        "trust_forwarded_header": {
+          "description": "TrustForwardedHeader reads the certificate from the RFC 9440 Client-Cert request header when the immediate peer is inside trusted_proxies, for a deployment where TLS is terminated in front of this proxy. Without trusted_proxies it never fires: a client that could set the header would otherwise choose which certificate its own token is checked against.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
     "Challenge": {
       "description": "Challenge configures the browser proof-of-work challenge (AMR-023).",
       "type": "object",
@@ -2626,6 +2641,14 @@
           "items": {
             "type": "string"
           }
+        },
+        "certificate_binding": {
+          "description": "CertificateBinding requires the client to present the certificate its token is bound to (RFC 8705).",
+          "allOf": [
+            {
+              "$ref": "#/$defs/CertificateBinding"
+            }
+          ]
         },
         "clock_skew": {
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",

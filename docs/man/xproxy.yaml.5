@@ -13152,6 +13152,33 @@ T}	T{
 The scheme and authority the client sees,\: for the \fBhtu\fR comparison,\: when another proxy terminates TLS in front
 T}
 T{
+\fBcertificate_\:binding\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Certificate\-bound access tokens (RFC 8705);\: see below
+T}
+T{
+\fBcertificate_\:binding.\:mode\fR
+T}	T{
+\fBoff\fR,\: \fBallow\fR,\: \fBrequire\fR
+T}	T{
+\fBoff\fR
+T}	T{
+\fBallow\fR compares the token\(aqs \fBcnf["x5t#S256"]\fR with the client certificate whenever the token carries one;\: \fBrequire\fR also refuses a token that is not bound
+T}
+T{
+\fBcertificate_\:binding.\:trust_\:forwarded_\:header\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Read the certificate from the RFC 9440 \fBClient\-\:Cert\fR request header when the peer is inside \fBtrusted_\:proxies\fR,\: for a deployment where TLS is terminated in front
+T}
+T{
 \fBtoken_\:exchange\fR
 T}	T{
 object
@@ -13279,6 +13306,31 @@ With DPoP on, the \fBAuthorization: DPoP <token>\fR scheme RFC 9449 defines is r
 Refusals are 401 with \fBWWW\-Authenticate: DPoP error="invalid_dpop_proof", algs="..."\fR, or \fBerror="invalid_token"\fR when the problem is the token rather than the proof (\fBdpop_missing\fR, \fBdpop_unbound\fR). The access log carries \fBdpop_jkt\fR with the thumbprint that was proved. The details are \fBdpop_proof\fR, \fBdpop_binding\fR, \fBdpop_replay\fR, \fBdpop_missing\fR and \fBdpop_unbound\fR.
 .PP
 A provider whose key set has never loaded (for example the JWKS URL is unreachable at start) rejects tokens with 503 and \fBRetry\-After\fR until a fetch succeeds; a fetch that returns no keys keeps the previous set.
+.SS "jwt.providers[].certificate_binding: the certificate the token names"
+.PP
+The other answer to a stolen bearer token, and the cheaper one. Where DPoP has the client sign a proof per request, a certificate\-bound token needs no proof at all: the client already proved possession of its private key in the TLS handshake, and the authorization server recorded the certificate\(aqs SHA\-256 thumbprint in the token as \fBcnf["x5t#S256"]\fR (RFC 8705 section 3). So the check is a comparison \[u2014] the thumbprint of the certificate on this connection against the one in the token \[u2014] and a token lifted out of a log, a crash dump or a proxy\(aqs cache is useless on any other connection.
+.PP
+It is also the more limited one: it works only where the client can present a certificate, which in practice means machine to machine. A browser cannot, which is why DPoP exists. The two can be on together, and a token carrying both confirmations must satisfy both.
+.PP
+.RS 4
+.nf
+.ft CR
+jwt:
+  providers:
+    \- name: partners
+      issuer: https://idp.example.com/
+      audiences: [api]
+      jwks_url: https://idp.example.com/.well\-known/jwks.json
+      certificate_binding: {mode: require}
+.ft
+.fi
+.RE
+.PP
+The certificate compared is the one from the handshake \fBthis proxy terminated\fR (\fBserver.listeners[].tls.client_auth\fR must ask for it, and validation warns when no listener does). Where TLS is terminated in front, \fBtrust_forwarded_header\fR reads the certificate from RFC 9440\(aqs \fBClient\-Cert\fR instead \[u2014] and only when the immediate peer is inside \fBtrusted_proxies\fR, because a client that could set that header would otherwise choose which certificate its own token is checked against, which is the whole of the check. A certificate on the connection always wins over a header. The header is parsed as a certificate before it is hashed, so a header that is not one is no certificate rather than a thumbprint of something else, and one over 16 KiB is refused before it is decoded.
+.PP
+Like DPoP, the comparison runs on claims \fBthis proxy has already verified\fR: \fBcnf\fR read out of an unverified token is a value whoever presented it chose. A padded thumbprint is accepted as the same thumbprint \[u2014] RFC 8705\(aqs encoding has no padding, but an authorization server that adds it has not issued a different value, and refusing it would look exactly like an attack in the log.
+.PP
+Refusals are 401 with \fBWWW\-Authenticate: Bearer error="invalid_token"\fR and a detail: \fBcert_missing\fR (a bound token presented with no certificate), \fBcert_binding\fR (a bound token on another certificate) or \fBcert_unbound\fR (\fBrequire\fR, and the token carries no binding). The access log carries \fBcert_thumbprint\fR with the thumbprint that matched.
 .SS "routes[].jwt"
 .PP
 .TS

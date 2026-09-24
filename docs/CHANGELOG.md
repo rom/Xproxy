@@ -442,6 +442,41 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **The other answer to a stolen bearer token: the certificate it names**
+  (`jwt.providers[].certificate_binding`; RFC 8705 section 3).
+
+  DPoP landed in this batch and has the client sign a proof per request.
+  This is the cheaper half of the same idea, for the clients that can do
+  it: the client already proved possession of its private key in the TLS
+  handshake, the authorization server recorded the certificate's SHA-256
+  thumbprint in the token as `cnf["x5t#S256"]`, and the check is a
+  comparison against the certificate on this connection. A token lifted
+  out of a log or a crash dump is then useless anywhere else, with nothing
+  for the client to implement.
+
+  `mode: allow` compares whenever a token carries a binding and leaves an
+  ordinary bearer token alone, so it can go on before every client is
+  issuing bound tokens; `require` additionally refuses a token with no
+  binding at all. Both can run beside `dpop`, and a token carrying both
+  confirmations must satisfy both -- checked by a test that fails the
+  right key on the wrong connection and the right connection with no
+  proof.
+
+  The certificate compared is the one from the handshake this proxy
+  terminated. Where TLS is terminated in front, `trust_forwarded_header`
+  reads RFC 9440's `Client-Cert` instead, and only from a peer inside
+  `trusted_proxies`: a client that could set that header would otherwise
+  choose which certificate its own token is checked against, which is the
+  whole of the check. A certificate on the connection always wins over a
+  header, the header is parsed as a certificate before it is hashed rather
+  than after, and one over 16 KiB is refused before it is decoded.
+
+  Both ways this can be configured so that it loads and never fires are
+  warnings at every load -- no listener asking for a client certificate,
+  and a forwarded header with no trusted proxies -- because a control the
+  operator believes is on and is not is worse than one that refuses to
+  load.
+
 - **A SAML 2.0 service provider, with a profile narrow enough to be
   readable** (`saml_sp` filter, `internal/saml`).
 

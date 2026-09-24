@@ -5164,6 +5164,9 @@ accepted.
 | `dpop.max_age` | duration | `60s` | How old a proof's `iat` may be; `clock_skew` is allowed on top, in both directions; at most 10m |
 | `dpop.replay_entries` | int | `65536` | Bound on the table of spent proof identifiers |
 | `dpop.external_url` | URL | none | The scheme and authority the client sees, for the `htu` comparison, when another proxy terminates TLS in front |
+| `certificate_binding` | object | none | Certificate-bound access tokens (RFC 8705); see below |
+| `certificate_binding.mode` | `off`, `allow`, `require` | `off` | `allow` compares the token's `cnf["x5t#S256"]` with the client certificate whenever the token carries one; `require` also refuses a token that is not bound |
+| `certificate_binding.trust_forwarded_header` | bool | `false` | Read the certificate from the RFC 9440 `Client-Cert` request header when the peer is inside `trusted_proxies`, for a deployment where TLS is terminated in front |
 | `token_exchange` | object | none | Swap the verified client token for one issued to the backend (RFC 8693); see below |
 | `token_exchange.url` | https URL | required | The token endpoint |
 | `token_exchange.client_id`, `token_exchange.client_secret_file` | string, path | required | HTTP basic credentials of the proxy at the authorization server |
@@ -5287,6 +5290,58 @@ carries `dpop_jkt` with the thumbprint that was proved. The details are
 A provider whose key set has never loaded (for example the JWKS URL is
 unreachable at start) rejects tokens with 503 and `Retry-After` until a
 fetch succeeds; a fetch that returns no keys keeps the previous set.
+
+#### jwt.providers[].certificate_binding: the certificate the token names
+
+The other answer to a stolen bearer token, and the cheaper one. Where
+DPoP has the client sign a proof per request, a certificate-bound token
+needs no proof at all: the client already proved possession of its
+private key in the TLS handshake, and the authorization server recorded
+the certificate's SHA-256 thumbprint in the token as `cnf["x5t#S256"]`
+(RFC 8705 section 3). So the check is a comparison — the thumbprint of
+the certificate on this connection against the one in the token — and a
+token lifted out of a log, a crash dump or a proxy's cache is useless on
+any other connection.
+
+It is also the more limited one: it works only where the client can
+present a certificate, which in practice means machine to machine. A
+browser cannot, which is why DPoP exists. The two can be on together, and
+a token carrying both confirmations must satisfy both.
+
+```yaml
+jwt:
+  providers:
+    - name: partners
+      issuer: https://idp.example.com/
+      audiences: [api]
+      jwks_url: https://idp.example.com/.well-known/jwks.json
+      certificate_binding: {mode: require}
+```
+
+The certificate compared is the one from the handshake **this proxy
+terminated** (`server.listeners[].tls.client_auth` must ask for it, and
+validation warns when no listener does). Where TLS is terminated in front,
+`trust_forwarded_header` reads the certificate from RFC 9440's
+`Client-Cert` instead — and only when the immediate peer is inside
+`trusted_proxies`, because a client that could set that header would
+otherwise choose which certificate its own token is checked against, which
+is the whole of the check. A certificate on the connection always wins over
+a header. The header is parsed as a certificate before it is hashed, so a
+header that is not one is no certificate rather than a thumbprint of
+something else, and one over 16 KiB is refused before it is decoded.
+
+Like DPoP, the comparison runs on claims **this proxy has already
+verified**: `cnf` read out of an unverified token is a value whoever
+presented it chose. A padded thumbprint is accepted as the same
+thumbprint — RFC 8705's encoding has no padding, but an authorization
+server that adds it has not issued a different value, and refusing it
+would look exactly like an attack in the log.
+
+Refusals are 401 with `WWW-Authenticate: Bearer error="invalid_token"` and
+a detail: `cert_missing` (a bound token presented with no certificate),
+`cert_binding` (a bound token on another certificate) or `cert_unbound`
+(`require`, and the token carries no binding). The access log carries
+`cert_thumbprint` with the thumbprint that matched.
 
 ### routes[].jwt
 

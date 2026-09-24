@@ -205,6 +205,7 @@ HAProxy's specification, versions 1 and 2, both implemented.
 | 9449 | OAuth 2.0 Demonstrating Proof of Possession (DPoP) | Full | The proof, its claims, the RFC 7638 thumbprint and the `cnf.jkt` binding, with a bounded replay cache for `jti` |
 | 8693 | OAuth 2.0 Token Exchange | Partial | As a client: a verified token is exchanged for one the backend can use, narrowed by audience, resource or scope. This proxy is not an exchange endpoint |
 | 8707 | Resource Indicators for OAuth 2.0 | Full | The `resource` parameter of an exchange |
+| 8705 | OAuth 2.0 Mutual-TLS Client Authentication and Certificate-Bound Access Tokens | Partial | The certificate-bound access token half (section 3): `cnf["x5t#S256"]` is compared with the client certificate of the connection, or with an RFC 9440 header from a trusted peer. Mutual-TLS *client authentication* to a token endpoint (section 2) is not implemented: this proxy is not one |
 | 9440 | Client-Cert HTTP Header Fields | Full | `Client-Cert` and `Client-Cert-Chain` as RFC 8941 byte sequences, sent to the upstream and stripped from an untrusted peer |
 | 8941 | Structured Field Values for HTTP | Partial | The byte sequence form the client certificate headers use |
 | 8949 | Concise Binary Object Representation (CBOR) | Partial | The canonical (CTAP2) subset a WebAuthn attestation and COSE key use; indefinite lengths, tags, floats and duplicate keys are refused |

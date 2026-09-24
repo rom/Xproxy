@@ -138,3 +138,67 @@ func TestDPoPSettingsAreChecked(t *testing.T) {
 		t.Fatalf("no warning about the token source: %v", out.Advice())
 	}
 }
+
+// The certificate binding has two ways to be configured so that it loads
+// and can never fire, and both are worse than an error: the operator
+// believes the control is on. Both are warnings an operator sees at every
+// load, and both are asserted by their words here.
+func TestCertificateBindingSettingsAreChecked(t *testing.T) {
+	for _, tc := range []struct{ section, want string }{
+		{`certificate_binding: {mode: maybe}`, "mode: must be off, allow or require"},
+	} {
+		cfg, secret := identityConfig(t, "      "+tc.section)
+		_, err := parseNoFiles([]byte(strings.ReplaceAll(cfg, "SECRET", secret)))
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: error %v, want one containing %q", tc.section, err, tc.want)
+		}
+	}
+	for _, tc := range []struct{ name, section, want string }{
+		{"no listener asks for a certificate", `certificate_binding: {mode: require}`,
+			"no listener asks for a client certificate"},
+		{"a forwarded certificate with nothing trusted", `certificate_binding: {mode: allow, trust_forwarded_header: true}`,
+			"needs trusted_proxies"},
+		{"a forwarded certificate with the binding off", `certificate_binding: {mode: off, trust_forwarded_header: true}`,
+			"no certificate is ever compared"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, secret := identityConfig(t, "      "+tc.section)
+			out, err := parseNoFiles([]byte(strings.ReplaceAll(cfg, "SECRET", secret)))
+			if err != nil {
+				t.Fatalf("a configuration that should only warn was refused: %v", err)
+			}
+			found := false
+			for _, w := range out.Advice() {
+				if strings.Contains(w, tc.want) {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("no advice containing %q: %v", tc.want, out.Advice())
+			}
+		})
+	}
+	// And the configuration that can fire warns about nothing: a listener
+	// asking for a certificate, and a binding that compares it.
+	cfg, secret := identityConfig(t, "      certificate_binding: {mode: require}")
+	cfg = strings.Replace(cfg,
+		`  listeners: [{name: main, address: "127.0.0.1:0"}]`,
+		"  listeners:\n    - name: main\n      address: \"127.0.0.1:0\"\n      tls:\n        client_auth: require\n        client_ca_file: CA\n        certificates: [{cert_file: CERT, key_file: KEY}]", 1)
+	dir := t.TempDir()
+	for name, target := range map[string]string{"CA": "ca.pem", "CERT": "cert.pem", "KEY": "key.pem"} {
+		p := filepath.Join(dir, target)
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg = strings.Replace(cfg, name, p, 1)
+	}
+	out, err := parseNoFiles([]byte(strings.ReplaceAll(cfg, "SECRET", secret)))
+	if err != nil {
+		t.Fatalf("a binding on a listener that asks for a certificate: %v", err)
+	}
+	for _, w := range out.Advice() {
+		if strings.Contains(w, "certificate_binding") {
+			t.Errorf("unexpected advice: %s", w)
+		}
+	}
+}

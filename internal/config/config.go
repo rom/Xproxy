@@ -4835,6 +4835,9 @@ type JWTProvider struct {
 	// backend (RFC 8693), so what is forwarded is not a credential that
 	// works at the front door.
 	TokenExchange *TokenExchange `yaml:"token_exchange"`
+	// CertificateBinding requires the client to present the certificate
+	// its token is bound to (RFC 8705).
+	CertificateBinding *CertificateBinding `yaml:"certificate_binding"`
 }
 
 // TokenExchange is an RFC 8693 exchange at the token endpoint.
@@ -4939,6 +4942,36 @@ type DPoP struct {
 	// because a client that can set that header could otherwise choose
 	// which URI its proof has to match.
 	ExternalURL string `yaml:"external_url"`
+}
+
+// CertificateBinding is RFC 8705 mutual-TLS client certificate bound
+// access tokens: the token carries the SHA-256 thumbprint of the
+// client's certificate in cnf["x5t#S256"], and a request presenting it on
+// a connection with another certificate -- or none -- is not the client
+// the token was issued to.
+//
+// It is the cheaper sibling of DPoP and the more limited one: no proof is
+// signed per request, because the TLS handshake already proved possession
+// of the key, but only a client that can present a certificate can use
+// it. The two can be on together; a token bound both ways must satisfy
+// both.
+type CertificateBinding struct {
+	// Mode is off (default), allow or require.
+	//
+	// allow checks the binding whenever the token carries one, and
+	// refuses a bound token presented on the wrong connection, while
+	// leaving an ordinary bearer token alone.
+	//
+	// require additionally refuses a token with no cnf["x5t#S256"]: on
+	// that route, only certificate-bound tokens are accepted.
+	Mode string `yaml:"mode"`
+	// TrustForwardedHeader reads the certificate from the RFC 9440
+	// Client-Cert request header when the immediate peer is inside
+	// trusted_proxies, for a deployment where TLS is terminated in front
+	// of this proxy. Without trusted_proxies it never fires: a client
+	// that could set the header would otherwise choose which certificate
+	// its own token is checked against.
+	TrustForwardedHeader bool `yaml:"trust_forwarded_header"`
 }
 
 // TokenIntrospection is an RFC 7662 introspection endpoint.

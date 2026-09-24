@@ -1157,6 +1157,9 @@ to the cause:
 | `dpop_binding` | The proof is valid and signed by a *different* key than the token names |
 | `dpop_replay` | That proof's `jti` has been used inside its window |
 | `dpop_proof` | The proof itself: the type, the algorithm, the signature, `htm`, `htu`, `iat`, `ath`, or its shape |
+| `cert_missing` | The token is bound to a certificate (`cnf["x5t#S256"]`) and the request presented none |
+| `cert_binding` | The token is bound to a *different* certificate than the one presented |
+| `cert_unbound` | `certificate_binding.mode: require` and the token carries no `cnf["x5t#S256"]` |
 
 `keys_unavailable` is the one to escalate: check `jwks_url`,
 `jwks_ca_file` and egress from the proxy to the provider.
@@ -1222,6 +1225,34 @@ be fresh per request), or a retry is re-sending the same proof after a
 timeout — which is the same thing from the proxy's side, and correct to
 refuse. `replay_entries` does not cause this: over its bound the table
 drops entries, which loses protection rather than adding refusals.
+
+**Everything fails with `cert_missing` after `certificate_binding` went
+on.** The proxy sees no client certificate. Either the listener does not
+ask for one — `server.listeners[].tls.client_auth` must be `request` or
+`require`, and validation warns at every load when nothing does — or TLS is
+terminated in front of this proxy, in which case the certificate is not on
+this connection at all: set `trust_forwarded_header` and have the
+terminating proxy send RFC 9440's `Client-Cert`, and name that proxy in
+`trusted_proxies`. Without `trusted_proxies` the header is never read, and
+validation warns about that too.
+
+**`cert_binding` for one client only.** That client's token names another
+certificate than the one it is presenting. The usual cause is a renewal:
+the client rotated its certificate and is still holding tokens issued
+against the old one, which expire on their own. If it persists, the client
+is presenting a certificate the authorization server never saw — check
+which certificate it authenticates to the token endpoint with, since that
+is the one the binding names. The access log's `cert_thumbprint` is
+present on success and absent on a refusal, so comparing a working
+client's value with the token's `cnf["x5t#S256"]` settles it.
+
+**`cert_unbound` on tokens that used to work.** That is `require` doing its
+job: the authorization server is issuing tokens without a confirmation
+claim for this client. Either the client is not authenticating to the token
+endpoint with mutual TLS (the server only binds a token when it is), or the
+server is not configured to bind for it. `mode: allow` is the setting for a
+route where some clients are there yet and some are not: it refuses a bound
+token on the wrong connection and leaves the rest alone.
 
 **Introspection accepts nothing.** A missing `iss` or `aud` in the
 introspection response fails, the same as on the JWT path. If your

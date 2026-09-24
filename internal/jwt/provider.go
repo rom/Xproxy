@@ -57,6 +57,7 @@ type Provider struct {
 	fetch   *fetcher
 	intro   *introspector // nil without introspection
 	dpop    *dpop         // never nil; off unless configured
+	cert    *certBinding  // never nil; off unless configured
 	swap    *exchanger    // nil without token exchange
 
 	mu           sync.Mutex
@@ -125,6 +126,7 @@ func NewProvider(cfg config.JWTProvider, log *slog.Logger) (*Provider, error) {
 		return nil, fmt.Errorf("jwt provider %s: %w", cfg.Name, err)
 	}
 	p.dpop = d
+	p.cert = newCertBinding(cfg.CertificateBinding)
 	if cfg.TokenExchange != nil {
 		x, err := newExchanger(*cfg.TokenExchange)
 		if err != nil {
