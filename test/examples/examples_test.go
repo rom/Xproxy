@@ -32,6 +32,7 @@ import (
 	"github.com/rom/xproxy/internal/listener"
 	"github.com/rom/xproxy/internal/mfa"
 	"github.com/rom/xproxy/internal/passwd"
+	"github.com/rom/xproxy/internal/saml/samltest"
 	"github.com/rom/xproxy/internal/waf"
 	"github.com/rom/xproxy/internal/yara"
 )
@@ -78,6 +79,8 @@ func TestYAMLDocuments(t *testing.T) {
 			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/filters/policy.wasm", filepath.Join(dir, "filters", "wasm", "policy.wasm")))
 			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/api-keys", keysFile(t)))
 			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/ldap.secret", secretFile(t)))
+			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/saml/idp-metadata.xml", idpMetadataFile(t)))
+			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/saml/idp-signing.pem", idpCertFile(t)))
 			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/openapi/orders.yaml", filepath.Join(dir, "filters", "orders-openapi.yaml")))
 			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/staff.htpasswd", usersFile(t)))
 			data = []byte(strings.ReplaceAll(string(data), "/etc/xproxy/mfa", mfaFile(t)))
@@ -188,6 +191,37 @@ func keysFile(t *testing.T) string {
 
 // secretFile writes a non world-readable one line secret, for kinds that
 // check the permissions of a password file at validation.
+// idpMetadataFile and idpCertFile are what a SAML service provider opens
+// at validation: the identity provider's metadata and its signing
+// certificate. Both come from the test provider, so the example is
+// checked against a document a provider could have published.
+func idpMetadataFile(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "idp-metadata.xml")
+	if err := os.WriteFile(p, testIDP(t).MetadataXML(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func idpCertFile(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "idp-signing.pem")
+	if err := os.WriteFile(p, testIDP(t).CertPEM(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func testIDP(t *testing.T) *samltest.IDP {
+	t.Helper()
+	idp, err := samltest.New("urn:example:idp", "https://idp.example.com/sso")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return idp
+}
+
 func secretFile(t *testing.T) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "secret")

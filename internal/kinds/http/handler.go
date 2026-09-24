@@ -446,13 +446,38 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Adaptive load shedding by priority class.
+	// Early data (RFC 8470): a request that arrived in the handshake can
+	// be replayed by anybody who captured it, so a route that cannot
+	// afford that answers 425 and the client sends it again on the
+	// finished connection.
+	if earlyData(r, netutil.Contains(rt.trusted, netutil.RemoteAddr(r))) {
+		st.extra = append(st.extra, "early_data", true)
+		if tooEarly(cr.earlyData, r.Method) {
+			st.denied = "early_data"
+			s.plainStatus(rw, r, http.StatusTooEarly)
+			return
+		}
+	}
+
+	// Adaptive load shedding by priority class. A client's RFC 9218
+	// urgency may move this request down the order on a route that reads
+	// it, and never up: see priority.go.
+	class := cr.class
+	if cr.lowerByClient {
+		if p := parsePriority(r.Header.Get("Priority")); p.stated {
+			class = p.lower(class)
+			st.extra = append(st.extra, "priority_urgency", p.urgency)
+			if class != cr.class {
+				st.extra = append(st.extra, "priority_class", class.String())
+			}
+		}
+	}
 	if sh := s.shedder.Load(); sh != nil {
-		if ok, level := sh.Admit(cr.class); !ok {
+		if ok, level := sh.Admit(class); !ok {
 			s.stats.Shed.Add(1)
-			st.denied = "shed:" + cr.class.String()
+			st.denied = "shed:" + class.String()
 			rw.Header().Set("Retry-After", strconv.Itoa(int(sh.RetryAfter().Seconds())))
-			s.logs.Error.Debug("request shed", "request_id", st.id, "route", st.route, "class", cr.class.String(), "level", level)
+			s.logs.Error.Debug("request shed", "request_id", st.id, "route", st.route, "class", class.String(), "level", level)
 			s.plainStatus(rw, r, http.StatusServiceUnavailable)
 			return
 		}
@@ -812,6 +837,12 @@ func (s *engine) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 			s.rewrite(pr, st, cr)
 		},
 		ModifyResponse: func(resp *http.Response) error {
+			// Trailers, where the route does not want them: announced and
+			// actual both go, since an announcement with nothing behind it
+			// is a client waiting for fields that never arrive.
+			if cr.stripTrailers {
+				stripTrailers(resp)
+			}
 			// A 101 is the last moment the upgrade is still a response
 			// the proxy can refuse. The subprotocol the origin picked
 			// is checked here, before any frame exists.
@@ -977,6 +1008,11 @@ func (s *engine) rewrite(pr *httputil.ProxyRequest, st *reqState, cr *compiledRo
 	// this one trusts (RFC 9440 section 3).
 	if !trustedPeer {
 		stripClientCert(out.Header)
+		// Early-Data is a statement about how the request reached the
+		// first hop, which only that hop can make (RFC 8470 section 5.1).
+		// A client's own is a client deciding how its request is treated
+		// downstream.
+		out.Header.Del("Early-Data")
 	}
 	if in.TLS != nil {
 		sendClientCert(out.Header, in.TLS.PeerCertificates, cr.cfg.ClientCertHeaders)

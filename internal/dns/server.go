@@ -65,6 +65,17 @@ type Policy struct {
 	Cookies string
 	// CookieLifetime is how long a server cookie stays valid. Default 1h.
 	CookieLifetime time.Duration
+	// Denials remembers validated non-existence so a name in a gap an
+	// NSEC already proved empty is answered without asking again
+	// (RFC 8198). nil disables it; it needs DNSSEC.
+	Denials *Denials
+	// DNS64 answers an AAAA query for an IPv4-only name with the address
+	// embedded in a translation prefix (RFC 6147). nil disables it.
+	DNS64 *DNS64
+	// Views answer the same name differently by who asked: see views.go.
+	// The first view whose networks contain the client wins; a client in
+	// none of them gets the listener's own records and block list.
+	Views []*View
 }
 
 // staleSeconds is the TTL a stale answer carries, in seconds.
@@ -136,8 +147,14 @@ type Server struct {
 	Queries, Hits, Blocked, Refused, Dropped, ServFail, Truncated, FormErr atomic.Uint64
 	// Per transport counters.
 	UDP, TCP, DoT, DoH, DoQ atomic.Uint64
-	// Local counts answers served from the local record set.
-	Local atomic.Uint64
+	// Local counts answers served from the local record set, and Viewed
+	// the queries a split-horizon view answered rather than the
+	// listener's own policy. Synthesised counts the AAAA answers DNS64
+	// built from an A record.
+	Local, Viewed, Synthesised atomic.Uint64
+	// NSECDenied counts the NXDOMAIN answers synthesised from a
+	// validated NSEC gap (RFC 8198).
+	NSECDenied atomic.Uint64
 	// Tunnels counts detections and TunnelBlocked the queries refused
 	// because of one.
 	Tunnels, TunnelBlocked atomic.Uint64
@@ -214,6 +231,16 @@ type Status struct {
 	QueriesDoH   uint64   `json:"queries_doh"`
 	QueriesDoQ   uint64   `json:"queries_doq"`
 	QueriesLocal uint64   `json:"queries_local"`
+	// Views are the split-horizon views in order, and QueriesViewed the
+	// queries one of them answered.
+	Views         []string `json:"views,omitempty"`
+	QueriesViewed uint64   `json:"queries_viewed"`
+	// QueriesSynthesised counts the AAAA answers DNS64 built from an A
+	// record, and QueriesNSEC the NXDOMAIN answers taken from a
+	// validated NSEC gap; DenialsHeld is the size of that store.
+	QueriesSynthesised uint64 `json:"queries_synthesised"`
+	QueriesNSEC        uint64 `json:"queries_nsec"`
+	DenialsHeld        int    `json:"denials_held"`
 	// AnswerDenied and AnswerStripped report the answer policy, and
 	// ECSStripped the client subnet options removed.
 	AnswerDenied   uint64 `json:"answer_denied"`
@@ -281,7 +308,13 @@ func (s *Server) Close() {
 }
 
 // Purge empties the cache.
-func (s *Server) Purge() int { return s.cache.Purge() }
+func (s *Server) Purge() int {
+	n := s.cache.Purge()
+	if p := s.policy.Load(); p != nil {
+		n += p.Denials.Purge()
+	}
+	return n
+}
 
 // Status reports counters.
 func (s *Server) Status() Status {
@@ -292,9 +325,13 @@ func (s *Server) Status() Status {
 		QueriesUDP: s.UDP.Load(), QueriesTCP: s.TCP.Load(), QueriesDoT: s.DoT.Load(), QueriesDoH: s.DoH.Load(), QueriesDoQ: s.DoQ.Load(), QueriesLocal: s.Local.Load(),
 		AnswerDenied: s.AnswerDenied.Load(), AnswerStripped: s.AnswerStripped.Load(), ECSStripped: s.ECSStripped.Load(),
 		Stale: s.Stale.Load(), Prefetched: s.Prefetched.Load(),
-		CookiesIssued: s.CookiesIssued.Load(), CookiesVerified: s.CookiesVerified.Load(), CookiesRefused: s.CookiesRefused.Load()}
+		CookiesIssued: s.CookiesIssued.Load(), CookiesVerified: s.CookiesVerified.Load(), CookiesRefused: s.CookiesRefused.Load(),
+		QueriesViewed: s.Viewed.Load(), QueriesSynthesised: s.Synthesised.Load(),
+		QueriesNSEC: s.NSECDenied.Load()}
 	if p != nil {
 		st.LocalNames = p.Local.Names()
+		st.Views = p.ViewNames()
+		st.DenialsHeld = p.Denials.Len()
 	}
 	if s.Encrypted {
 		st.DoHPath = s.DoHPath
@@ -624,29 +661,37 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 		s.refuse("any_over_udp")
 		return s.finish(a, q, "any_truncated", Truncate(Reply(query, qEnd, h, RcodeNoError), qEnd))
 	}
+	// Which answers this client gets: a view's, where one covers it.
+	// Everything a view decides happens here, before anything is asked
+	// upstream, which is what lets the cache stay shared (views.go).
+	ans := p.answersFor(p.viewFor(client))
+	a.view = ans.view
+	if ans.view != "" {
+		s.Viewed.Add(1)
+	}
 	// A name this resolver owns is answered from the local set and
 	// never forwarded: an upstream answer would contradict it, and for
 	// the discovery name there is no upstream that could answer
 	// truthfully at all.
-	if recs, owned := p.Local.Lookup(q); owned {
+	if recs, owned := ans.local.Lookup(q); owned {
 		s.Local.Add(1)
 		return s.finish(a, q, "local",
 			s.fit(a, query, qEnd, h, AnswerLocal(query, qEnd, h, q, recs), len(query)))
 	}
-	if p.Block != nil && p.Block.Match(q.Name) {
+	if ans.block != nil && ans.block.Match(q.Name) {
 		s.Blocked.Add(1)
 		s.refuse("blocked")
 		if s.hooks.Event != nil {
-			s.hooks.Event(client, "dns_blocked", a.verified, "listener", s.Name, "name", q.Name, "type", TypeName(q.Type), "proto", proto)
+			s.hooks.Event(client, "dns_blocked", a.verified, "listener", s.Name, "name", q.Name, "type", TypeName(q.Type), "proto", proto, "view", ans.view)
 		}
 		var resp []byte
-		switch p.BlockAction {
+		switch ans.action {
 		case "refuse":
 			resp = Reply(query, qEnd, h, RcodeRefused)
 		case "sinkhole":
-			addr := p.Sinkhole4
+			addr := ans.sinkhole4
 			if q.Type == TypeAAAA {
-				addr = p.Sinkhole6
+				addr = ans.sinkhole6
 			}
 			resp = Sinkhole(query, qEnd, h, q, addr, p.SinkholeTTL)
 		default:
@@ -688,6 +733,11 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 					s.fit(a, query, qEnd, h, sc.resp, sc.rEnd))
 			}
 			s.maybePrefetch(p, q, now)
+			// An AAAA answer with nothing in it is where DNS64 has work
+			// to do, and a cached one is no different from a fresh one.
+			if out, outEnd, ok := s.dns64(context.Background(), p, query, qEnd, h, q, client, proto, now, resp, rEnd, tcp); ok {
+				return s.finish(a, q, source+":dns64", s.fit(a, query, qEnd, h, out, outEnd))
+			}
 			if qm != nil {
 				resp = s.finalizeDNSSEC(resp, qm, h)
 				if _, e, err := ParseQuestion(resp); err == nil {
@@ -695,6 +745,16 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 				}
 			}
 			return s.finish(a, q, source, s.fit(a, query, qEnd, h, resp, rEnd))
+		}
+	}
+	// A name a validated NSEC already put inside an empty gap needs no
+	// upstream query at all (RFC 8198). Only for a client that did not
+	// ask for signatures: a synthesised NXDOMAIN carries none, and a
+	// client that set DO asked for something this cannot give.
+	if p.Denials != nil && qm != nil && h.RecursionDesired() && h.Flags&flagCD == 0 {
+		if do, _ := clientDO(qm); !do && p.Denials.Covers(q, now) {
+			s.NSECDenied.Add(1)
+			return s.finish(a, q, "nsec", s.fit(a, query, qEnd, h, Reply(query, qEnd, h, RcodeNXDomain), qEnd))
 		}
 	}
 	// Upstream transport is the resolver's business: UDP first with TCP
@@ -745,6 +805,11 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 		return s.finish(a, q, lk.source, lk.resp)
 	}
 	resp, rEnd := lk.resp, lk.rEnd
+	if out, outEnd, ok := s.dns64(ctx, p, query, qEnd, h, q, client, proto, now, resp, rEnd, len(query) > maxUDP); ok {
+		// The reply is built from the client's question, so it carries no
+		// signatures and no AD bit to shape (RFC 6147 section 5.5).
+		return s.finish(a, q, lk.source+":dns64", s.fit(a, query, qEnd, h, out, outEnd))
+	}
 	if lk.synthetic {
 		qm = nil // a synthetic answer carries no signatures to shape
 	}
@@ -919,6 +984,15 @@ func (s *Server) ask(ctx context.Context, p *Policy, query, upQuery []byte, qEnd
 			out.resp, out.rEnd, out.bogus = resp, qEnd, true
 			return out
 		}
+		// A validated NXDOMAIN carries the NSEC records that prove it, and
+		// they prove more than the one name that was asked for (RFC 8198).
+		// Learned here and nowhere else: the proof is only worth keeping
+		// because this is the point at which it has been validated.
+		if res == Secure && p.Denials != nil && rcodeOf(resp) == RcodeNXDomain {
+			if m, perr := ParseMessage(resp); perr == nil {
+				p.Denials.Learn(q, m, now, p.MaxTTL)
+			}
+		}
 	}
 	rh, _ := ParseHeader(resp)
 	out.rcode = rh.Rcode()
@@ -961,6 +1035,15 @@ func (s *Server) ask(ctx context.Context, p *Policy, query, upQuery []byte, qEnd
 	}
 	out.resp, out.rEnd = resp, rEnd
 	return out
+}
+
+// rcodeOf is the response code of a message, or -1 when it has no header.
+func rcodeOf(resp []byte) int {
+	h, err := ParseHeader(resp)
+	if err != nil {
+		return -1
+	}
+	return h.Rcode()
 }
 
 // finalizeDNSSEC shapes a validated response for the client: AD only
@@ -1013,6 +1096,8 @@ type asked struct {
 	verified bool
 	// cookie is the COOKIE option value the answer carries, or nil.
 	cookie []byte
+	// view is the split-horizon view that answered, or "".
+	view string
 }
 
 func (s *Server) finish(a *asked, q Question, source string, resp []byte) []byte {
@@ -1041,8 +1126,12 @@ func (s *Server) finish(a *asked, q Question, source string, resp []byte) []byte
 		}
 	}
 	if p != nil && p.LogQueries && s.hooks.Access != nil {
-		s.hooks.Access("listener", s.Name, "client_ip", client.String(), "proto", proto, "name", q.Name, "type", TypeName(q.Type),
-			"rcode", rcode, "source", source, "bytes", len(resp), "duration_ms", float64(time.Since(start).Microseconds())/1000)
+		attrs := []any{"listener", s.Name, "client_ip", client.String(), "proto", proto, "name", q.Name, "type", TypeName(q.Type),
+			"rcode", rcode, "source", source, "bytes", len(resp), "duration_ms", float64(time.Since(start).Microseconds()) / 1000}
+		if a.view != "" {
+			attrs = append(attrs, "view", a.view)
+		}
+		s.hooks.Access(attrs...)
 	}
 	return resp
 }

@@ -11,6 +11,8 @@ import (
 	"math/big"
 	"net"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -125,8 +127,20 @@ type signedUpstream struct {
 	t       *testing.T
 	udp     net.PacketConn
 	tcp     net.Listener
+	mu      sync.Mutex
 	answers map[string]answer
 	v       *Validator // for the time base when signing
+	// queries counts what reached it, which is how a test proves an
+	// answer came from somewhere else.
+	queries atomic.Uint64
+}
+
+// set adds or replaces a fixture. It takes the lock because a test may add
+// one between queries while the serving goroutines are still alive.
+func (u *signedUpstream) set(key string, a answer) {
+	u.mu.Lock()
+	u.answers[key] = a
+	u.mu.Unlock()
 }
 
 func (u *signedUpstream) serve() {
@@ -165,12 +179,15 @@ func (u *signedUpstream) serve() {
 }
 
 func (u *signedUpstream) respond(query []byte) []byte {
+	u.queries.Add(1)
 	m, err := ParseMessage(query)
 	if err != nil {
 		return nil
 	}
 	key := m.Question.Name + "/" + TypeName(m.Question.Type)
+	u.mu.Lock()
 	a, ok := u.answers[key]
+	u.mu.Unlock()
 	if !ok {
 		a = answer{rcode: RcodeNXDomain}
 	}
@@ -206,7 +223,7 @@ func buildHierarchy(t *testing.T) (*signedUpstream, *Validator, []TrustAnchor) {
 	anchors := []TrustAnchor{{Zone: "", KeyTag: root.tag, Algorithm: 13, DigestType: 2, Digest: anchorDS.Data[4:]}}
 	v := NewValidator(res, anchors)
 	u.v = v
-	set := func(key string, a answer) { u.answers[key] = a }
+	set := func(key string, a answer) { u.set(key, a) }
 	sign := func(z *signedZone, rrs ...RR) []RR {
 		return append(rrs, z.sign(t, v, rrs, labelCount(rrs[0].Name), false))
 	}

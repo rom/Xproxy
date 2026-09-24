@@ -997,25 +997,131 @@ really serves.
 
 #### server.listeners[].dns.records
 
-SVCB and HTTPS records (RFC 9460) this resolver answers itself, without
-asking an upstream. The reason this exists is ECH: a client cannot
-encrypt its ClientHello until it has read the `ech` parameter from an
-HTTPS record, so an estate running its own resolver publishes it here.
+Records this resolver answers itself, without asking an upstream. Two
+things need them: ECH — a client cannot encrypt its ClientHello until it
+has read the `ech` parameter from an HTTPS record, so an estate running
+its own resolver publishes it here — and split horizon, where a name
+resolves to an internal address for the clients a view covers.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required | The name the record is published for |
-| `type` | `https`, `svcb` | `https` | Record type |
-| `priority` | int | `0` | 0 is an alias record (no parameters); 1 and up are service records, lowest first |
-| `target` | name | `.` | The endpoint name; `.` means the owner name itself |
+| `type` | `https`, `svcb`, `a`, `aaaa`, `txt`, `ptr` | `https` | Record type |
+| `address` | IP | required for `a`, `aaaa` | The address. The family must match the type: an `a` record holding an IPv6 address is one no client can read, so it is a load error |
+| `text` | string | required for `txt`, `ptr` | The string of a `txt` record (1 to 255 bytes, one character string), or the name a `ptr` record points to |
+| `priority` | int | `0` | `svcb`/`https` only: 0 is an alias record (no parameters); 1 and up are service records, lowest first |
+| `target` | name | `.` | `svcb`/`https` only: the endpoint name; `.` means the owner name itself |
 | `ttl` | int | `300` | Seconds |
-| `params` | mapping | `{}` | Service parameters in presentation form: `alpn: "h3,h2"`, `port: "443"`, `ech: "AEr+DQ..."` (the value `xproxyctl ech keygen` prints), `ipv4hint`, `ipv6hint`, `dohpath`, `mandatory`, `no-default-alpn`, or `keyNNNNN` for one this build does not name |
+| `params` | mapping | `{}` | `svcb`/`https` only: service parameters in presentation form: `alpn: "h3,h2"`, `port: "443"`, `ech: "AEr+DQ..."` (the value `xproxyctl ech keygen` prints), `ipv4hint`, `ipv6hint`, `dohpath`, `mandatory`, `no-default-alpn`, or `keyNNNNN` for one this build does not name |
+
+`target`, `params` and `priority` belong to `svcb` and `https` records and
+`address`/`text` to the others; a record mixing them is a load error rather
+than a record that loads ignoring half of itself.
 
 A name listed here is **owned**: it is answered from this set and never
 forwarded, and a type it does not have gets NOERROR with no answers
 rather than an upstream lookup, because a forwarded answer would
 contradict the local one. Answers carry the AA bit. `queries_local`
 counts them and `xproxyctl dns` lists the names.
+
+#### server.listeners[].dns.dns64
+
+RFC 6147 address synthesis: an AAAA answer for a name that has only an A
+record, so an IPv6-only client can reach an IPv4-only service through a
+translator.
+
+The client asks for AAAA, the name has none, and this resolver asks for A
+instead and answers with that IPv4 address embedded in a prefix (RFC 6052)
+routed to the translator. Nothing on the client changes — it believes it is
+speaking IPv6 throughout, which is the point.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `prefix` | IPv6 CIDR | `64:ff9b::/96` | The translation prefix. A network-specific prefix must be a `/32`, `/40`, `/48`, `/56`, `/64` or `/96` — the only lengths RFC 6052 gives a place to put the address — with no bits set past its length |
+| `clients` | list of IPv6 CIDR | every client | The networks this applies to. Name the IPv6-only ones: a dual-stack client handed a synthesised address reaches the service through the translator for no reason. An IPv4 network here is a load error, since a client with IPv4 does not need the translation |
+| `ttl` | int | the A record's | Override the TTL of a synthesised record |
+
+Two things about it are security decisions rather than protocol, and both
+are worth knowing before turning it on.
+
+**The address policy sees the IPv4 address, not the synthesised one.**
+`64:ff9b::7f00:1` is not inside `127.0.0.0/8` and no prefix list would
+catch it, but it is `127.0.0.1` to everything past the translator. So the A
+lookup runs through the ordinary path — the same one a client's own A query
+takes — which screens it against `answer_policy` and caches it; an address
+that policy denies is not embedded. Without that, DNS64 would be a way
+around rebinding protection rather than a feature beside it.
+
+**A synthesised answer is never signed and never says it is.** The reply is
+built from the client's question, so the AD bit is clear by construction
+(RFC 6147 section 5.5). A validating client that wants the truth about the
+name asks for A itself, which this resolver answers and validates
+normally.
+
+A name with an AAAA record of its own is answered with it, and a name that
+does not exist stays NXDOMAIN: synthesising over either would be this
+resolver inventing a second answer. At most 32 records are synthesised from
+one A answer, so an upstream with hundreds of addresses does not decide the
+size of this listener's reply. `queries_synthesised` counts them
+(`xproxy_dns_synthesised_total`) and the access log source ends in
+`:dns64`.
+
+#### server.listeners[].dns.views
+
+Split horizon: the same name answered differently by who asked.
+
+One name with two answers is an ordinary requirement rather than a trick.
+`app.example.com` is a private address from inside the estate and a public
+one from outside; a laboratory network resolves a name to the test system
+while everybody else reaches production; a guest network is held to a
+stricter block list than the staff network. Without views the answer is two
+resolvers on two addresses and a routing decision somewhere else.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | name | required | Identifies the view in the access log (as `view`) and in `xproxyctl dns` |
+| `clients` | list of CIDR | required | The networks this view serves. **The first view whose networks contain the client wins**, so the order of the list is the policy. A view with no networks is refused: one that matched everybody would be the listener's own policy under another name |
+| `records` | list | the listener's | Replaces the listener's record set while this view is selected (same shape as `dns.records`) |
+| `block`, `block_file` | list, path | the listener's | Replaces the listener's block list |
+| `block_action` | `nxdomain`, `refuse`, `sinkhole` | the listener's | What a block answers in this view |
+| `sinkhole_ipv4`, `sinkhole_ipv6` | IP | the listener's | The addresses of this view's own `block_action` |
+
+A view must change something — records, a block list or a block action —
+or it is a section an operator wrote expecting something for it, and that
+is a load error.
+
+**A view has no upstream of its own, on purpose.** Two views with
+different upstreams would answer the same question differently out of one
+shared cache, and a cache per view is a second resolver with a second
+memory — which is a second listener, said plainly in the configuration,
+rather than hidden inside a view. So a view decides only what this
+resolver settles before it asks anything: the records it answers itself
+and the names it refuses. That is also why the cache cannot leak one
+view's answer to another client — a local answer is never cached, and a
+block is decided before the cache is read.
+
+```yaml
+views:
+  # Order matters: the laboratory is inside 10.0.0.0/8 too.
+  - name: lab
+    clients: [10.9.0.0/16]
+    records:
+      - {name: app.example.com, type: a, address: 10.9.0.20}
+  - name: estate
+    clients: [10.0.0.0/8, 192.168.0.0/16]
+    records:
+      - {name: app.example.com, type: a, address: 10.0.5.10}
+      - {name: app.example.com, type: aaaa, address: "2001:db8::5"}
+  - name: guest
+    clients: [192.168.50.0/24]
+    block_file: /etc/xproxy/guest-blocklist.txt
+    block_action: sinkhole
+    sinkhole_ipv4: 192.0.2.1
+```
+
+`queries_viewed` counts the queries a view answered
+(`xproxy_dns_viewed_total`), and the access log line carries `view` for
+them (and nothing for a client in no view).
 
 #### server.listeners[].dns.dnssec
 
@@ -1043,6 +1149,39 @@ indeterminate counts, the key cache size and lookups.
 | `trust_anchors` | list | the IANA root keys (KSK-2017 20326, KSK-2024 38696) | DS records as `zone keytag algorithm digesttype digest` (`IN DS` accepted); setting any replaces the built-in list |
 | `trust_anchors_file` | path | none | More DS lines from a file (`#` comments), read at load and reload |
 | `max_lookups` | int | `48` | DNSKEY and DS queries per answer (4 to 1000); beyond it the answer is bogus |
+| `aggressive_nsec` | bool | `false` | Answer a sibling of a name a validated NSEC record already placed in an empty gap without asking the upstream again (RFC 8198) |
+| `nsec_entries` | int | `8192` | Parents whose proofs are remembered (0 to 1000000); the oldest is dropped past it |
+
+With `aggressive_nsec` a validated NXDOMAIN is not just an answer to one
+question: the NSEC record that proved it names a gap in the zone, and
+every name in that gap does not exist either. The resolver keeps the gap
+and answers the next name inside it from the proof it already has, which
+is what RFC 8198 is for. The traffic it saves is the traffic that
+produces it -- a random-subdomain flood, or junk queries under a
+top-level name -- where each name is a sibling of the last and one signed
+proof covers them all.
+
+It is narrowed twice on purpose:
+
+- A gap is reused only for a **sibling** of the name it was collected
+  for: the same parent, therefore the same closest encloser, therefore
+  the same wildcard denial the validator already checked. A name deeper
+  or elsewhere in the zone needs its own proof, because a wildcard that
+  covers it may exist without covering the name the gap came from.
+- Only for a client that did **not** set DO. A synthesised NXDOMAIN
+  carries no signatures, and a client that asked for the proof should
+  get the proof; it goes upstream. A client that set CD does too.
+
+Only NSEC is used. NSEC3 hashes the owner names, so the gap says nothing
+about which names it holds without re-hashing each candidate, and an
+opt-out gap does not deny existence at all. Gaps are held for the
+shorter of the NSEC record's TTL and `cache.max_ttl`, keyed by the
+parent name, and `nsec_entries` parents are kept at most; `xproxyctl dns
+purge` empties the store with the caches, since a gap left behind would
+deny a name the cache no longer has anything to say about. `xproxyctl
+dns` shows `queries_nsec` (answers served from a held proof) and
+`denials_held`; the metrics are `xproxy_dns_nsec_denied_total` and
+`xproxy_dns_denials_held`.
 
 `GET /v1/dns` and `xproxyctl dns` show per listener counters (queries,
 cache hits and entries, blocked, refused, dropped, SERVFAIL, truncated,
@@ -3211,7 +3350,7 @@ Keys:
 | `cookie:<name>` | value of the cookie (256 bytes), a session or device identifier | client address |
 | `jwt:<claim>` | a string, number or boolean claim of the bearer token in `Authorization`, read without verification (the value only names a bucket; the `jwt` route setting still rejects a forged token) | client address |
 | `identity` | the identity a preceding auth filter verified this request against, preferring `oidc`, `jwt`, `api_key` then `basic`; unlike `jwt:<claim>` it cannot be spoofed, because the filter proved it. Evaluated after the filter chain, so the limiter sees the authenticated principal | client address (unauthenticated) |
-| `identity:<kind>` | the verified identity of one kind: `jwt` (the `sub` claim), `oidc` (the session subject), `api_key` (the key id), `basic` (the user) or `ldap` (the user) | client address |
+| `identity:<kind>` | the verified identity of one kind: `jwt` (the `sub` claim), `oidc` (the session subject), `saml` (the session name identifier), `api_key` (the key id), `basic` (the user) or `ldap` (the user) | client address |
 
 The fallback keeps a limit from being avoided by omitting the
 identifier; rotating it still buys fresh buckets, so pair an identifier
@@ -5164,6 +5303,9 @@ accepted.
 | `dpop.max_age` | duration | `60s` | How old a proof's `iat` may be; `clock_skew` is allowed on top, in both directions; at most 10m |
 | `dpop.replay_entries` | int | `65536` | Bound on the table of spent proof identifiers |
 | `dpop.external_url` | URL | none | The scheme and authority the client sees, for the `htu` comparison, when another proxy terminates TLS in front |
+| `certificate_binding` | object | none | Certificate-bound access tokens (RFC 8705); see below |
+| `certificate_binding.mode` | `off`, `allow`, `require` | `off` | `allow` compares the token's `cnf["x5t#S256"]` with the client certificate whenever the token carries one; `require` also refuses a token that is not bound |
+| `certificate_binding.trust_forwarded_header` | bool | `false` | Read the certificate from the RFC 9440 `Client-Cert` request header when the peer is inside `trusted_proxies`, for a deployment where TLS is terminated in front |
 | `token_exchange` | object | none | Swap the verified client token for one issued to the backend (RFC 8693); see below |
 | `token_exchange.url` | https URL | required | The token endpoint |
 | `token_exchange.client_id`, `token_exchange.client_secret_file` | string, path | required | HTTP basic credentials of the proxy at the authorization server |
@@ -5287,6 +5429,58 @@ carries `dpop_jkt` with the thumbprint that was proved. The details are
 A provider whose key set has never loaded (for example the JWKS URL is
 unreachable at start) rejects tokens with 503 and `Retry-After` until a
 fetch succeeds; a fetch that returns no keys keeps the previous set.
+
+#### jwt.providers[].certificate_binding: the certificate the token names
+
+The other answer to a stolen bearer token, and the cheaper one. Where
+DPoP has the client sign a proof per request, a certificate-bound token
+needs no proof at all: the client already proved possession of its
+private key in the TLS handshake, and the authorization server recorded
+the certificate's SHA-256 thumbprint in the token as `cnf["x5t#S256"]`
+(RFC 8705 section 3). So the check is a comparison — the thumbprint of
+the certificate on this connection against the one in the token — and a
+token lifted out of a log, a crash dump or a proxy's cache is useless on
+any other connection.
+
+It is also the more limited one: it works only where the client can
+present a certificate, which in practice means machine to machine. A
+browser cannot, which is why DPoP exists. The two can be on together, and
+a token carrying both confirmations must satisfy both.
+
+```yaml
+jwt:
+  providers:
+    - name: partners
+      issuer: https://idp.example.com/
+      audiences: [api]
+      jwks_url: https://idp.example.com/.well-known/jwks.json
+      certificate_binding: {mode: require}
+```
+
+The certificate compared is the one from the handshake **this proxy
+terminated** (`server.listeners[].tls.client_auth` must ask for it, and
+validation warns when no listener does). Where TLS is terminated in front,
+`trust_forwarded_header` reads the certificate from RFC 9440's
+`Client-Cert` instead — and only when the immediate peer is inside
+`trusted_proxies`, because a client that could set that header would
+otherwise choose which certificate its own token is checked against, which
+is the whole of the check. A certificate on the connection always wins over
+a header. The header is parsed as a certificate before it is hashed, so a
+header that is not one is no certificate rather than a thumbprint of
+something else, and one over 16 KiB is refused before it is decoded.
+
+Like DPoP, the comparison runs on claims **this proxy has already
+verified**: `cnf` read out of an unverified token is a value whoever
+presented it chose. A padded thumbprint is accepted as the same
+thumbprint — RFC 8705's encoding has no padding, but an authorization
+server that adds it has not issued a different value, and refusing it
+would look exactly like an attack in the log.
+
+Refusals are 401 with `WWW-Authenticate: Bearer error="invalid_token"` and
+a detail: `cert_missing` (a bound token presented with no certificate),
+`cert_binding` (a bound token on another certificate) or `cert_unbound`
+(`require`, and the token carries no binding). The access log carries
+`cert_thumbprint` with the thumbprint that matched.
 
 ### routes[].jwt
 
@@ -5416,10 +5610,91 @@ secret does not sign everyone out.
 | `require_enrolment` | bool | `true` | Refuse a user with no enrolment |
 | `max_failures`, `window`, `lockout` | | `5`, `5m`, `15m` | Guessing bound, as on an ssh listener |
 | `identity` | list | `[]` (any) | Which identity kinds to challenge, in order of preference: `basic`, `ldap`, `oidc`, `jwt`, `api_key` |
+| `webauthn` | object | none | Offer a security key beside the code (WebAuthn level 2); see below |
+| `webauthn.rp_id` | host | required | The relying party identifier: the site's registrable domain, or a subdomain of it |
+| `webauthn.origins` | list | required | The exact origins a ceremony may run on; `https` only, except `localhost` |
+| `webauthn.credentials_file` | path | required | The registered keys. The proxy **writes** this file: a registration adds a line and every login updates a sign count |
+| `webauthn.user_verification` | bool | `false` | Require the authenticator to have verified the user (a PIN or a biometric), not only their presence |
+| `webauthn.register` | bool | `false` | Offer the registration ceremony on this gate |
+| `webauthn.max_challenges` | int | `4096` | Bound on the outstanding ceremonies |
 
 Every failure gets the same page: a wrong code, a replayed one, a locked
 account and a name that never enrolled are one answer. Counters:
 `mfa_verified`, `mfa_failed`; `xproxy_mfa_total` by outcome.
+
+#### Kind `mfa`: a security key beside the code
+
+A one-time code is a shared secret typed into whatever page asked for it,
+so a convincing copy of that page collects codes that work. WebAuthn does
+not have that failure: the assertion is bound to the origin the ceremony
+ran on, so a look-alike site gets a signature naming its own origin, which
+this refuses. That is the reason to have it, and it is the only reason that
+matters — everything else about a key is convenience.
+
+The two live side by side rather than one replacing the other. A code is
+how somebody gets in from a machine with no key attached, and it is how a
+key is registered in the first place: **registration requires a factor the
+user already has**, because a registration endpoint that trusts only the
+first factor is a way to add a second factor to an account whose password
+has just been stolen. Bootstrap is therefore `xproxyctl mfa enrol` (or the
+GUI) for the code, then `register` for the key.
+
+The ceremonies are four POSTs to the path the request was going to:
+`?xproxy_mfa=webauthn-options` and `?xproxy_mfa=webauthn` to authenticate,
+`?xproxy_mfa=webauthn-register-options` and `?xproxy_mfa=webauthn-register`
+to register. The challenge page carries the small script that drives them
+and offers the key only to a user who has one registered — a button that
+always fails is noise, and offering it to everybody says who has a key.
+
+What is checked on every assertion, and why each one is not a formality:
+
+- the ceremony **type**, so a registration signature cannot be replayed as
+  an authentication or the reverse;
+- the **challenge**, which this proxy issued, to this account, within
+  `3m`, and which is spent on first use whether the ceremony succeeded or
+  not — one that survives a failure is an attacker's retry budget;
+- the **origin**, exactly, against `origins`: the anti-phishing property;
+- the **relying party hash**, which the authenticator computes from
+  `rp_id` itself and a page cannot choose;
+- **user presence**, and user verification when `user_verification` is
+  set — including at registration, so a key cannot be enrolled under the
+  weaker rule and used under the stronger one;
+- the **signature**, under the key stored for that credential and the
+  algorithm stored with it, so an assertion cannot pick a weaker one;
+- the **sign count**, which must move forward for an authenticator that
+  counts. A count that stands still or goes backwards is what a cloned
+  credential looks like. It is written to `credentials_file` before the
+  cookie is issued, because a count kept only in memory is a check a
+  restart forgets, and a store that cannot be written is a refusal rather
+  than a login.
+
+A credential identifier is public — it travels in the allow list on every
+login page — so the store looks one up by *account and* identifier: finding
+a credential by identifier and using it for whatever account the request
+claims would let anybody in as anybody whose identifier they had seen.
+
+**Attestation is deliberately not verified.** Attestation says which
+authenticator model produced a credential, which matters when a deployment
+allows only certain hardware; it says nothing about whether the person
+registering is the person the account belongs to. Here a credential is
+trusted because the registration was authenticated by a factor the user
+already had. The alternative — a metadata service, a certificate chain per
+vendor and a revocation story — is a different feature with a different
+name.
+
+The credential file is the record, one line per credential:
+
+```
+alice:AQIDBA:pQECAyYgASFYIA...:7:yubikey-5c
+```
+
+the user, the credential identifier, the COSE public key (both base64url
+without padding), the sign count and an optional label. It is replaced
+atomically and re-read when it changes, so removing a lost key with an
+editor takes effect without a restart; a line that does not parse fails the
+read, because a credential meant to be there and silently not locks
+somebody out and one meant to be removed and still there is worse. At most
+ten credentials per account.
 
 ### Kind `yara`
 
@@ -5527,6 +5802,197 @@ The access log carries `oidc_user` for requests with a session and
 token's `sid` claim when the provider sends one; a logout at the proxy
 revokes it as well, so other browsers sharing that provider session
 end too.
+
+### Kind `saml_sp`
+
+Logs browsers in as a SAML 2.0 service provider and keeps the result in
+an encrypted, HttpOnly, SameSite Lax session cookie. A request without a
+session is redirected to the identity provider with an authentication
+request (HTTP Redirect binding, deflated); the provider posts the signed
+response back to `acs_path` (HTTP POST binding), where it is verified
+against the configured signing key and checked whole before a cookie is
+set and the browser is sent back to the page it asked for. Requests with
+a session carry the listed attributes to the upstream as headers (client
+supplied values of those headers are always removed) and the cookie is
+stripped upstream. `metadata_path` serves this service provider's
+metadata for the provider to import.
+
+**The profile is deliberately narrow, and the narrowness is the
+feature.** Web single sign-on breaks in one place — the reader that
+verifies a signature and the reader that consumes the assertion
+disagreeing about what was signed — so everything that lets one document
+mean two things is refused rather than ignored:
+
+- A document type declaration, an entity declaration, any entity
+  reference but the five XML predefines, a processing instruction, a
+  CDATA section, a name outside ASCII, an undeclared prefix, a duplicate
+  attribute. There is no external entity resolution to disable, because
+  there is no entity resolution.
+- An encrypted assertion, attribute or name identifier (`EncryptedAssertion`
+  and friends). XML Encryption in a responder has been a decryption
+  oracle more than once, and TLS already covers the hop the response
+  takes. The refusal names itself, so a provider configured to encrypt
+  is a clear message rather than a mystery.
+- More than one assertion in a response, and two elements sharing an
+  `ID`. Those are the shapes signature wrapping needs.
+- Any signature in the document that does not verify, including one
+  nothing would have read.
+- A signature whose single `Reference` is not `#` plus the `ID` of the
+  element the signature is enveloped in; more than one reference; a
+  transform other than the enveloped-signature transform followed by
+  exclusive canonicalization; a canonicalization other than
+  `xml-exc-c14n#`; SHA-1, HMAC or DSA.
+- A response with no `InResponseTo`, so provider-initiated ("unsolicited")
+  single sign-on is not supported: there is no state to bind it to.
+- A bearer subject confirmation carrying `NotBefore`, a condition this
+  profile does not understand, an attribute value wrapped in markup, a
+  timestamp with no zone.
+
+What it accepts, it accepts completely: the issuer, `Destination`,
+`InResponseTo` on both the envelope and the subject confirmation, the
+`Recipient`, the audience, both condition windows, the confirmation
+window, the provider's session bound, the status code, the name
+identifier format, and a one-time check on the assertion identifier. The
+signing key comes from the configuration; `KeyInfo` in the document is
+not read at all, so a response signed by a key it carries is simply an
+unverifiable response.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `entity_id` | string | required | This service provider's identifier, and the audience every assertion must name |
+| `idp_metadata_file` | path | | The provider's metadata document; `idp_entity_id`, `idp_sso_url` and the signing certificates are read from it. An explicit option below wins over it, so a stale endpoint can be corrected in place. Read at load with the same strict parser as an assertion; its own signature is not checked, because a file an operator installed is configuration, not network input |
+| `idp_entity_id` | string | required | The issuer every response and assertion must name |
+| `idp_sso_url` | URL | required | Where the authentication request goes (`https://`, plain `http://` only with `allow_http`) |
+| `idp_cert_file` | path | required | PEM certificates (at most eight) whose public keys verify signatures. An expired certificate is warned about at load and still trusted: a pinned key is its own trust anchor, and there is no chain to expire |
+| `cookie_secret_file` | path | required | 32 or more random bytes or a keyring, created `0600` if absent; sessions survive reloads and restarts while the key stays, and `xproxyctl rotate-secret` keeps sessions sealed under the kept keys |
+| `acs_path` | path | `/saml/acs` | The assertion consumer service. Register `external_url` + path at the provider. Only `POST` with a form body is accepted: a response in a query string is a response in a browser history, a proxy log and a `Referer` |
+| `metadata_path` | path | `/saml/metadata` | Serves `application/samlmetadata+xml` describing this service provider |
+| `logout_path` | path | `/saml/logout` | Clears the session here and redirects to `logout_redirect`. There is no single logout binding: see the note below |
+| `logout_redirect` | path | `/` | A path on this host |
+| `external_url` | URL | derived | `scheme://host` the browser reaches the proxy on. Set it. Unset, it is derived from the request: `Host`, the listener's own TLS, and `X-Forwarded-Proto` only from a peer inside `trusted_proxies` — any client can send that header, and the URL derived from it is the one the provider is told to post the assertion to |
+| `cookie_name` | token | `XPSAML` | The state cookie is `<cookie_name>_state`, ten minutes |
+| `cookie_domain` | string | host only | |
+| `session_ttl` | duration | `8h` | 1m to 720h. The session never outlives the assertion: the earliest of the condition window, the confirmation window and `SessionNotOnOrAfter` caps it |
+| `clock_skew` | duration | `30s` | Tolerance on every timestamp; 0 to 5m |
+| `max_assertion_age` | duration | `1h` | How old an assertion may be whatever windows it declares, and the ceiling on a session; 1m to 24h |
+| `signed_element` | `assertion`, `response`, `either` | `assertion` | What the signature must cover. `either` accepts a signature on one or the other; a response with neither signed is never accepted, whatever this says |
+| `name_id_formats` | list | any | Accepted `NameID` formats; a login with another is refused |
+| `request_name_id_format` | URN | none | The format the authentication request asks for |
+| `force_authn` | bool | `false` | Ask the provider to re-authenticate rather than reuse its own session |
+| `forward_headers` | map | `{}` | Header name to attribute name, or to `nameid`, `nameid_format` or `session_index` (for example `X-Remote-User: nameid`) |
+| `require_attributes` | map | `{}` | Attribute to required value; a login whose assertion differs is refused with 403 and detail `attribute:<name>` |
+| `groups_attribute` | string | `groups` | The attribute carrying the groups an `authz` policy may decide on |
+| `policy_attributes` | list | `[]` | Attributes recorded on the identity for a policy to read |
+| `log_attributes` | list | `[]` | Attributes copied to the access log as `saml_<name>` |
+| `replay_max` | int | `65536` | Bound of the one-time assertion identifier table; entries expire with the assertions they refuse, and over the bound the soonest to expire is dropped |
+| `allow_http` | bool | `false` | Permit a plain `http://` endpoint and external URL (tests) |
+
+The session cookie carries only the attributes something names — a
+header, a log field, a policy, a requirement, the groups — because a
+cookie is four kilobytes and an assertion can carry far more. It is
+sealed under both entity identifiers, so two filters sharing one
+`cookie_secret_file` cannot open each other's sessions and a login
+through a lenient provider does not satisfy a stricter one.
+
+The access log carries `saml_user` for requests with a session and
+`flow: <name>:login`, `login_complete`, `logout` or `metadata` for the
+flow steps. Login and logout redirects are not security events; a
+refused response is, with reason `<filter name>` and a detail
+(`signature`, `refused`, `profile`, `provider_status`, `replay`,
+`state_missing`, `state_invalid`, `relay_state`, `attribute:<name>`),
+and counts towards ban triggers.
+
+**Single logout is not implemented, on purpose.** `logout_path` clears
+the session at this proxy; signing out at the provider is the provider's
+own page. A SAML logout request arrives as a cross-site POST or redirect
+carrying a name identifier, which is a way to sign other people out, and
+the response half needs a signed document sent *to* a provider — a
+different set of machinery for a feature whose safe part (forgetting the
+session here) needs none of it. Sessions are short and the provider's own
+`SessionNotOnOrAfter` caps them.
+
+**Relay state is not the binding.** The filter sends a digest of its own
+state cookie as `RelayState` and refuses a response that returns a
+different one, but the binding that matters is `InResponseTo` against the
+request identifier sealed in that cookie, checked on both the response
+element and the subject confirmation. A provider that drops `RelayState`
+entirely still works.
+
+### Kind `xml_guard`
+
+Decides whether an XML request body is one the application should see.
+
+The WAF reads bodies as text and the `openapi` filter validates JSON;
+between them sits every XML and SOAP API with neither. XML is also the
+format with the oldest and most reliable parser attacks, and all of them
+arrive the same way:
+
+- an **external entity** that reads a file off the machine
+  (`<!ENTITY x SYSTEM "file:///etc/passwd">`) or makes a request from
+  inside the network on the application's behalf;
+- **entity expansion** — the billion laughs — that turns a kilobyte into
+  gigabytes of heap inside the application's parser;
+- **parameter entity** loops and external DTD fetches.
+
+Every one of those needs a document type declaration or an entity
+reference in the body, and a gateway cannot know how the application's
+parser is configured — the defaults of most XML libraries were unsafe for
+years. So this refuses the shapes those attacks need before that parser
+sees them, and names which shape it refused.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `content_types` | list | `application/xml`, `text/xml`, `application/soap+xml`, `+xml` | Media types to read. An entry beginning `+` matches any type ending in it, which is how the registry marks an XML format. Parameters (`; charset=…`) are ignored |
+| `methods` | list | `[POST, PUT, PATCH]` | Methods with a body worth reading |
+| `max_bytes` | int | `1048576` | Bound on the document. A larger body is **refused**, not passed uninspected: an oversize document must not be the way past the filter. 64 to 64 MiB |
+| `max_depth` | int | `64` | Element nesting: the first thing an expansion attack spends. 1 to 10000 |
+| `max_elements` | int | `50000` | Elements in the document |
+| `max_attributes` | int | `64` | Attributes on one element |
+| `max_name_bytes` | int | `256` | An element or attribute name |
+| `max_text_bytes` | int | `65536` | One run of character data, one CDATA section, one attribute value |
+| `allow_cdata` | bool | `true` | CDATA sections. On by default because ordinary XML APIs use them |
+| `allow_comments` | bool | `true` | Comments |
+| `allow_processing_instructions` | bool | `false` | Processing instructions beyond the XML declaration, which is always allowed |
+| `require_root` | element name | none | The local name the root element must have |
+| `require_root_namespace` | URI | none | With `require_root`, the namespace that name must be in. Needs `require_root`: a namespace with no name allows any element of it |
+| `allow_elements` | list | any | When set, every local name the document may use. Must contain `require_root`, or nothing would load |
+| `deny_elements` | list | `[]` | Local names no element may have, whatever the allow list says |
+| `status` | 4xx | `400` | What a refusal answers |
+| `reason` | string | the filter name | Deny reason in logs, counters and ban triggers |
+| `report` | bool | `false` | Log what would have been refused (`xml_would_refuse` in the access log) and refuse nothing: for turning the filter on in front of traffic nobody has read yet |
+
+A refusal's detail names the rule: `xml_doctype`, `xml_entity`,
+`xml_cdata`, `xml_comment`, `xml_processing_instruction`, `xml_size`,
+`xml_depth`, `xml_elements`, `xml_attributes`, `xml_name_length`,
+`xml_text_length`, `xml_encoding`, `xml_root`, `xml_element` or
+`xml_malformed`. The body is read whole and replayed byte for byte, so the
+application receives exactly what the client sent.
+
+A SOAP endpoint, which is the common case:
+
+```yaml
+filters:
+  - name: soap
+    kind: xml_guard
+    options:
+      content_types: [application/soap+xml, text/xml]
+      require_root: Envelope
+      require_root_namespace: http://schemas.xmlsoap.org/soap/envelope/
+      max_bytes: 262144
+      max_depth: 32
+      allow_processing_instructions: false
+```
+
+**Schema validation is deliberately not implemented.** XSD is a language
+with its own parser, its own imports and its own denial-of-service history;
+a gateway that fetched and interpreted one would add a larger attack
+surface than it removed, and the application already has the schema.
+`require_root`, `require_root_namespace`, `allow_elements` and
+`deny_elements` are a positive model of the document's shape without a
+schema language in the middle — the same trade the positive security policy
+makes for the rest of a request. A malformed document is refused rather
+than forwarded, because two parsers disagree about what a malformed
+document means and that disagreement is where the interesting bugs live.
 
 ### Kind `wasm`
 
@@ -6018,7 +6484,7 @@ Each rule:
 | `subjects` | list | The name the authenticating filter recorded |
 | `groups` | list | Any of these; compared without case, as directories treat them |
 | `scopes` | list | **All** of these. A credential carrying two of three does not satisfy it |
-| `kinds` | list | Which filter verified the identity: `oidc`, `ldap`, `api_key`, `basic`, `jwt`, `mfa` |
+| `kinds` | list | Which filter verified the identity: `oidc`, `saml`, `ldap`, `api_key`, `basic`, `jwt`, `mfa` |
 | `claims` | map | Each named claim must equal the given value |
 | `networks` | list of CIDR | The client address |
 | `not_subjects`, `not_groups`, `not_networks` | list | "Everybody but". Separate keys rather than a `!` prefix, because a group name can begin with anything |
@@ -6414,6 +6880,90 @@ never locks in.
 
 `low`, `normal` (default), `high` or `critical`. Put health checks, login
 and payment on `critical` or `high`; search, feeds and exports on `low`.
+
+### routes[].client_priority
+
+`ignore` (default) or `lower`: what to do with a client's RFC 9218
+`Priority` request header.
+
+A client knows things about its own requests that this proxy cannot see —
+that one fetch is a prefetch for a page nobody has asked for yet, that
+another is blocking the render — and RFC 9218 is how it says so: a
+`Priority` field carrying an urgency from 0 (most urgent) to 7, default 3,
+and an `i` flag for a response that can be used as it arrives.
+
+With `lower`, a stated urgency above the default moves the request **down**
+the shedding order: 4 or 5 gives up one class, 6 or 7 goes to `low`, and
+0 to 3 change nothing. It can only ever lower. A header that could raise a
+request's class would be a promotion anybody can ask for, and the first
+thing a client under pressure would do is claim urgency 0 — which would
+make shedding protect whoever asked loudest instead of whatever the
+operator called important. Lowering is safe in a way raising is not,
+because it can only cost the client that asked for it.
+
+The header is forwarded to the upstream unchanged either way, and a
+malformed one is ignored rather than refused: a hint that only ever lowers
+its own request is not worth failing a request over. `priority_urgency`
+appears in the access log when a request stated one, with
+`priority_class` beside it when it changed the class. Nothing sheds
+without a `shedding` section, and validation says so.
+
+### routes[].early_hints
+
+`pass` (default) or `strip`: what to do with the upstream's 1xx
+informational responses, of which 103 Early Hints (RFC 8297) is the one in
+use. A 103 lets a server tell the browser which stylesheets and scripts to
+start fetching while the real response is still being assembled.
+
+`pass` relays them, which is what a browser wants. `strip` drops them, for
+a deployment whose clients or middleboxes mishandle them.
+
+At most eight informational responses are relayed per exchange either way:
+each one is a header block the upstream can make this proxy write to the
+client, and a flood of them is a response that never ends.
+
+A 1xx is not the final status, and this proxy no longer records it as one —
+before, a response preceded by 103 was logged with status 103 and reached
+the client only because `net/http` sent an implicit 200 with the
+accumulated headers.
+
+### routes[].early_data
+
+`safe_methods` (default), `allow` or `reject`: what to do with a request
+that arrived as unconfirmed TLS 1.3 early data.
+
+Early data saves a round trip and gives up what a completed handshake
+provided: an attacker who captured those bytes can send them again, and the
+server cannot tell the copy from the original. RFC 8470 is how the hops say
+so — the request carries `Early-Data: 1` while it is unconfirmed, and a
+server that cannot decide whether a replay is safe answers **425 Too
+Early**, which tells the client to send it again on the finished
+connection.
+
+`safe_methods` serves `GET`, `HEAD`, `OPTIONS` and `TRACE` and answers 425
+to everything else, which is RFC 8470's advice for a proxy: this one cannot
+know what a second `POST` would do. `reject` answers 425 to all of it, for
+a route where even a repeated read matters. `allow` passes it through, and
+validation says what that means.
+
+This proxy's own TLS server never accepts early data, so the header only
+arrives from a terminator in front — and only from a peer inside
+`trusted_proxies` does it count. A client's own `Early-Data: 1` decides
+nothing and is removed before the upstream sees it, because the upstream
+cannot tell the proxy's copy from the client's. `early_data` appears in the
+access log for a request that arrived on it, and a refusal is logged as
+`early_data`.
+
+### routes[].trailers
+
+`pass` (default) or `strip`: the fields an upstream sends after the body —
+a checksum, a signature, gRPC's status.
+
+`strip` removes both the announcement and the fields. An announced trailer
+with nothing behind it leaves a client waiting for a field that never
+arrives, so the two go together. It is refused on a gRPC route: gRPC
+carries its status in the trailers, and a route that strips them answers
+every call with no status at all.
 
 ## maintenance
 

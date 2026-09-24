@@ -19,8 +19,10 @@ import (
 	_ "github.com/rom/xproxy/internal/filters/mfagate"      // mfa
 	_ "github.com/rom/xproxy/internal/filters/oidc"         // oidc
 	_ "github.com/rom/xproxy/internal/filters/openapi"      // openapi
+	_ "github.com/rom/xproxy/internal/filters/samlsp"       // saml_sp
 	_ "github.com/rom/xproxy/internal/filters/sensitive"    // sensitive_data
 	_ "github.com/rom/xproxy/internal/filters/uploadguard"  // upload_guard
 	_ "github.com/rom/xproxy/internal/filters/wasm"         // wasm
+	_ "github.com/rom/xproxy/internal/filters/xmlguard"     // xml_guard
 	_ "github.com/rom/xproxy/internal/filters/yarascan"     // yara
 )

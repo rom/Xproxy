@@ -1,0 +1,51 @@
+# Filters example: an XML/SOAP endpoint in front of a legacy application.
+#
+# XML is the format with the oldest parser attacks: an external entity that
+# reads /etc/passwd or makes requests from inside the network, entity
+# expansion that turns a kilobyte into gigabytes inside the application's
+# parser, external DTD fetches. All of them arrive as a document type
+# declaration or an entity reference in the body, and the gateway cannot
+# know how the application's parser is configured -- so it refuses those
+# shapes before the parser sees them.
+#
+# The shape policy below is a positive model without a schema language:
+# the envelope must be a SOAP envelope, and the elements inside it must be
+# ones this service uses. Schema validation is deliberately not
+# implemented; see docs/CONFIG.md for why.
+# Validate: xproxy -config examples/filters/soap-api.yaml -validate
+version: 1
+server:
+  listeners:
+    - {name: main, address: "0.0.0.0:8080"}
+management:
+  socket: /run/xproxy/mgmt.sock
+logging:
+  directory: /var/log/xproxy
+filters:
+  - name: soap
+    kind: xml_guard
+    options:
+      content_types: [application/soap+xml, text/xml]
+      require_root: Envelope
+      require_root_namespace: http://schemas.xmlsoap.org/soap/envelope/
+      # A hand-written request stays well inside these; a bomb does not.
+      max_bytes: 262144
+      max_depth: 32
+      max_elements: 5000
+      max_attributes: 32
+      max_text_bytes: 32768
+      allow_processing_instructions: false
+      # Turn this on first in front of traffic nobody has read yet: it
+      # logs xml_would_refuse and refuses nothing.
+      report: false
+rate_limits:
+  - {name: soap-calls, key: client_ip, rate: 20, burst: 100}
+upstreams:
+  - name: legacy
+    endpoints: [{address: "10.0.7.20:8080"}]
+routes:
+  - name: soap
+    hosts: [soap.example.com]
+    filters: [soap]
+    rate_limits: [soap-calls]
+    upstream: legacy

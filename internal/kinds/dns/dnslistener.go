@@ -2,6 +2,7 @@ package dns
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -20,8 +21,40 @@ import (
 // compileDNSRecord turns one configured record into its wire form.
 func compileDNSRecord(r config.DNSRecord) (wire.LocalRecord, error) {
 	out := wire.LocalRecord{Name: r.Name, Type: wire.TypeHTTPS, TTL: 300}
-	if r.Type == "svcb" {
+	switch r.Type {
+	case "svcb":
 		out.Type = wire.TypeSVCB
+	case "a", "aaaa":
+		addr, err := netip.ParseAddr(r.Address)
+		if err != nil {
+			return wire.LocalRecord{}, fmt.Errorf("address: %q is not an address", r.Address)
+		}
+		out.Type, out.Addr = wire.TypeA, addr.Unmap()
+		if r.Type == "aaaa" {
+			out.Type = wire.TypeAAAA
+		}
+		if r.TTL > 0 {
+			out.TTL = uint32(r.TTL) //nolint:gosec // validated range
+		}
+		// An A record of an IPv6 address (or the reverse) is a record no
+		// client can read, so it is a load error rather than a record
+		// that is silently skipped at answer time.
+		if _, err := out.Rdata(); err != nil {
+			return wire.LocalRecord{}, err
+		}
+		return out, nil
+	case "txt", "ptr":
+		out.Type, out.Text = wire.TypeTXT, r.Text
+		if r.Type == "ptr" {
+			out.Type = wire.TypePTR
+		}
+		if r.TTL > 0 {
+			out.TTL = uint32(r.TTL) //nolint:gosec // validated range
+		}
+		if _, err := out.Rdata(); err != nil {
+			return wire.LocalRecord{}, err
+		}
+		return out, nil
 	}
 	if r.TTL > 0 {
 		out.TTL = uint32(r.TTL) //nolint:gosec // validated range
@@ -53,6 +86,52 @@ func sortedParamNames(m map[string]string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// compileView turns a view's configuration into the answer set it
+// selects. A view with nothing in it is a load error rather than a view
+// that quietly does nothing: an operator who wrote the section meant to
+// get something for it.
+func compileView(vc config.DNSView) (*wire.View, error) {
+	v := &wire.View{Name: vc.Name, Clients: netutil.ParsePrefixes(vc.Clients), Action: vc.BlockAction}
+	if len(v.Clients) == 0 {
+		return nil, errors.New("clients: at least one network is required")
+	}
+	if len(vc.Records) > 0 {
+		recs := make([]wire.LocalRecord, 0, len(vc.Records))
+		for i, r := range vc.Records {
+			rec, err := compileDNSRecord(r)
+			if err != nil {
+				return nil, fmt.Errorf("records[%d]: %w", i, err)
+			}
+			recs = append(recs, rec)
+		}
+		v.Local = wire.NewLocalRecords(recs)
+	}
+	if len(vc.Block) > 0 || vc.BlockFile != "" {
+		block, err := wire.NewBlockList(vc.Block)
+		if err != nil {
+			return nil, err
+		}
+		if vc.BlockFile != "" {
+			if _, err := block.LoadBlockFile(vc.BlockFile); err != nil {
+				return nil, fmt.Errorf("block_file: %w", err)
+			}
+		}
+		v.Block = block
+	}
+	if a, err := netip.ParseAddr(vc.SinkholeIPv4); err == nil {
+		b := a.As4()
+		v.Sinkhole4 = b[:]
+	}
+	if a, err := netip.ParseAddr(vc.SinkholeIPv6); err == nil {
+		b := a.As16()
+		v.Sinkhole6 = b[:]
+	}
+	if v.Local == nil && v.Block == nil && v.Action == "" {
+		return nil, errors.New("a view must change something: records, block, block_file or block_action")
+	}
+	return v, nil
 }
 
 // dnsPolicy compiles a listener configuration into the DNS server's
@@ -123,6 +202,34 @@ func dnsPolicy(cfg *config.DNSListener) (*wire.Policy, error) {
 		local = append(local, rec)
 	}
 	p.Local = wire.NewLocalRecords(local)
+	for i, vc := range cfg.Views {
+		v, err := compileView(vc)
+		if err != nil {
+			return nil, fmt.Errorf("views[%d]: %w", i, err)
+		}
+		p.Views = append(p.Views, v)
+	}
+	if ds := cfg.DNSSEC; ds != nil && ds.IsEnabled() && ds.AggressiveNSEC {
+		entries := ds.NSECEntries
+		if entries == 0 {
+			entries = 8192
+		}
+		p.Denials = wire.NewDenials(entries)
+	}
+	if d := cfg.DNS64; d != nil {
+		prefix := d.Prefix
+		if prefix == "" {
+			prefix = wire.WellKnownPrefix
+		}
+		pfx, err := netip.ParsePrefix(prefix)
+		if err != nil {
+			return nil, fmt.Errorf("dns64.prefix: %w", err)
+		}
+		p.DNS64 = &wire.DNS64{Prefix: pfx.Masked(), Clients: netutil.ParsePrefixes(d.Clients)}
+		if d.TTL > 0 {
+			p.DNS64.TTL = uint32(d.TTL) //nolint:gosec // validated range
+		}
+	}
 	if rl := cfg.RateLimit; rl != nil {
 		p.RateLimit = limits.NewKeyedLimiter(rl.QPS, rl.Burst, 65536)
 	}

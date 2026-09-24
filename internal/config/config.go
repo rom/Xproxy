@@ -1394,10 +1394,19 @@ type DNSListener struct {
 	// _dns.resolver.arpa (RFC 9462), so a client handed this address by
 	// DHCP can upgrade itself from plaintext DNS.
 	Discovery []DNSDesignated `yaml:"discovery"`
-	// Records are SVCB and HTTPS records this resolver answers itself,
-	// most usefully the ECH configuration of a name this proxy
-	// terminates.
+	// Records are records this resolver answers itself: SVCB and HTTPS
+	// (most usefully the ECH configuration of a name this proxy
+	// terminates), and A, AAAA, TXT and PTR.
 	Records []DNSRecord `yaml:"records"`
+	// DNS64 synthesises AAAA answers for IPv4-only names (RFC 6147), so
+	// an IPv6-only client can reach an IPv4-only service through a
+	// translator.
+	DNS64 *DNS64 `yaml:"dns64"`
+	// Views answer the same name differently by who asked: split
+	// horizon. The first view whose networks contain the client wins; a
+	// client in none of them gets this listener's own records and block
+	// list.
+	Views []DNSView `yaml:"views"`
 	// TunnelDetection watches for data leaving inside the query names.
 	TunnelDetection *DNSTunnel `yaml:"tunnel_detection"`
 	// AnswerPolicy screens where an upstream answer points, which is
@@ -1577,8 +1586,20 @@ type DNSDesignated struct {
 type DNSRecord struct {
 	// Name the record is published for.
 	Name string `yaml:"name"`
-	// Type is https (default) or svcb.
+	// Type is https (default), svcb, a, aaaa, txt or ptr.
+	//
+	// a and aaaa are what a split-horizon view needs: the same name
+	// answered with an internal address inside the estate and left to
+	// the upstream everywhere else. A name in this set is answered
+	// authoritatively for the types it holds and NODATA for the ones it
+	// does not, and is never forwarded -- an upstream answer would
+	// contradict the local one.
 	Type string `yaml:"type"`
+	// Address is the address of an a or aaaa record.
+	Address string `yaml:"address"`
+	// Text is the string of a txt record, or the target name of a ptr
+	// record.
+	Text string `yaml:"text"`
 	// Priority 0 makes it an alias record, which takes no parameters.
 	Priority int `yaml:"priority"`
 	// Target is the endpoint name; "." means the owner name itself.
@@ -1588,6 +1609,66 @@ type DNSRecord struct {
 	// Params are service parameters in presentation form:
 	// {alpn: "h2,h3", port: "443", ech: "AEr+DQ...", ipv4hint: "..."}.
 	Params map[string]string `yaml:"params"`
+}
+
+// DNS64 is RFC 6147 address synthesis on a dns listener: an AAAA query
+// for a name that has only an A record is answered with that IPv4 address
+// embedded in a prefix (RFC 6052) routed to a translator.
+//
+// The answer is one this resolver invented, which is why the address
+// policy sees the IPv4 address before it is embedded rather than the
+// synthesised address afterwards: 64:ff9b::7f00:1 is not inside
+// 127.0.0.0/8 and no prefix list would catch it, but it is 127.0.0.1 to
+// everything past the translator. A synthesised answer also carries no
+// AD bit, because there is nothing signed about it.
+type DNS64 struct {
+	// Prefix is the translation prefix. Default 64:ff9b::/96, the
+	// well-known prefix of RFC 6052; a network-specific prefix must be a
+	// /32, /40, /48, /56, /64 or /96, which are the only lengths with a
+	// defined place to put the address.
+	Prefix string `yaml:"prefix"`
+	// Clients are the networks this applies to; empty is every client of
+	// the listener. Name the IPv6-only networks: a dual-stack client
+	// handed a synthesised address reaches the service the long way
+	// round, through the translator, for no reason.
+	Clients []string `yaml:"clients"`
+	// TTL overrides the TTL of a synthesised record; 0 keeps the A
+	// record's own, which is what RFC 6147 prefers.
+	TTL int `yaml:"ttl"`
+}
+
+// DNSView is a client-scoped answer set on a dns listener: split
+// horizon. One name with two answers is an ordinary requirement -- a
+// private address inside the estate and a public one outside, a
+// laboratory network pointed at the test system, a guest network held to
+// a stricter list.
+//
+// A view decides only what this resolver settles before it asks anything:
+// the records it answers itself and the names it refuses. It has no
+// upstream of its own on purpose: two views with different upstreams
+// would answer the same question differently out of one shared cache,
+// and a cache per view is a second resolver -- which is a second
+// listener, said plainly, rather than hidden inside a view.
+type DNSView struct {
+	// Name identifies the view in the access log (as `view`) and in the
+	// status view.
+	Name string `yaml:"name"`
+	// Clients are the networks this view serves. Required: a view that
+	// matched everybody would be the listener's own policy with another
+	// name.
+	Clients []string `yaml:"clients"`
+	// Records replace the listener's own record set while this view is
+	// selected; empty keeps it.
+	Records []DNSRecord `yaml:"records"`
+	// Block, BlockFile and BlockAction replace the listener's block
+	// list and what a block answers; empty keeps them.
+	Block       []string `yaml:"block"`
+	BlockFile   string   `yaml:"block_file"`
+	BlockAction string   `yaml:"block_action"`
+	// SinkholeIPv4 and SinkholeIPv6 replace the sinkhole addresses of
+	// this view's own block_action.
+	SinkholeIPv4 string `yaml:"sinkhole_ipv4"`
+	SinkholeIPv6 string `yaml:"sinkhole_ipv6"`
 }
 
 // DNSSEC configures validation on a dns listener: answers are fetched
@@ -1604,6 +1685,24 @@ type DNSSEC struct {
 	TrustAnchorsFile string `yaml:"trust_anchors_file"`
 	// MaxLookups bounds DNSKEY and DS queries per answer. Default 48.
 	MaxLookups int `yaml:"max_lookups"`
+	// AggressiveNSEC answers a name that a validated NSEC record already
+	// placed inside an empty gap without asking the upstream again
+	// (RFC 8198). Default false.
+	//
+	// The traffic it saves is the traffic that produces it:
+	// random-subdomain floods and junk top-level queries, where every
+	// name is a sibling of the last and one signed proof covers them all.
+	//
+	// It is narrowed on purpose. A proof is reused only for a sibling of
+	// the name it was collected for -- same parent, therefore the same
+	// closest encloser and the same wildcard denial the validator already
+	// checked -- and only for a client that did not set DO, since a
+	// synthesised NXDOMAIN carries no signatures and a client that asked
+	// for them should get them.
+	AggressiveNSEC bool `yaml:"aggressive_nsec"`
+	// NSECEntries bounds the parents whose proofs are remembered.
+	// Default 8192.
+	NSECEntries int `yaml:"nsec_entries"`
 }
 
 // IsEnabled reports whether validation is on.
@@ -2295,8 +2394,9 @@ type Limits struct {
 	// MaxBufferedBodyBytes is the process-wide ceiling on request bodies
 	// held in memory at once by the features that materialise one
 	// (upload_guard, sensitive_data, account_guard, openapi, graphql,
-	// body_rewrite, wasm, the WAF's body inspection, a virtual patch's
-	// body pattern, a mirrored request). Default 512 MiB; 0 is
+	// body_rewrite, wasm, the SAML assertion consumer endpoint, the WAF's
+	// body inspection, a virtual patch's body pattern, a mirrored
+	// request). Default 512 MiB; 0 is
 	// unbounded.
 	//
 	// Each of those is bounded per request, and the product was the real
@@ -3215,6 +3315,30 @@ type Route struct {
 	// PriorityClass is low, normal, high or critical (never shed). Default
 	// normal.
 	PriorityClass string `yaml:"priority_class"`
+	// ClientPriority says what to do with a client's RFC 9218 Priority
+	// header: ignore (default) or lower, which lets a stated urgency
+	// above the default move this request down the shedding order. It
+	// can only ever lower: a header that could raise a request's class
+	// would be a promotion anybody can ask for, and shedding would then
+	// protect whoever claimed urgency rather than whatever the operator
+	// called important.
+	ClientPriority string `yaml:"client_priority"`
+	// EarlyHints says what to do with the upstream's 1xx informational
+	// responses, of which 103 Early Hints (RFC 8297) is the one in use:
+	// pass (default) relays them to the client, strip drops them.
+	EarlyHints string `yaml:"early_hints"`
+	// EarlyData says what to do with a request that arrived as
+	// unconfirmed TLS early data, which a terminating proxy in front
+	// marks with Early-Data: 1 (RFC 8470): safe_methods (default) answers
+	// 425 Too Early to anything but a safe method, reject answers 425 to
+	// all of it, allow passes it through. Early data can be replayed by
+	// whoever captured it, and this proxy cannot know what a second POST
+	// would do.
+	EarlyData string `yaml:"early_data"`
+	// Trailers says what to do with the response's trailers: pass
+	// (default) or strip. gRPC carries its status in them, so a gRPC
+	// route cannot strip them.
+	Trailers string `yaml:"trailers"`
 	// Challenge gates unverified clients with the browser challenge.
 	Challenge *RouteChallenge `yaml:"challenge"`
 	// JWT requires or accepts a validated token from a provider.
@@ -4834,6 +4958,9 @@ type JWTProvider struct {
 	// backend (RFC 8693), so what is forwarded is not a credential that
 	// works at the front door.
 	TokenExchange *TokenExchange `yaml:"token_exchange"`
+	// CertificateBinding requires the client to present the certificate
+	// its token is bound to (RFC 8705).
+	CertificateBinding *CertificateBinding `yaml:"certificate_binding"`
 }
 
 // TokenExchange is an RFC 8693 exchange at the token endpoint.
@@ -4938,6 +5065,36 @@ type DPoP struct {
 	// because a client that can set that header could otherwise choose
 	// which URI its proof has to match.
 	ExternalURL string `yaml:"external_url"`
+}
+
+// CertificateBinding is RFC 8705 mutual-TLS client certificate bound
+// access tokens: the token carries the SHA-256 thumbprint of the
+// client's certificate in cnf["x5t#S256"], and a request presenting it on
+// a connection with another certificate -- or none -- is not the client
+// the token was issued to.
+//
+// It is the cheaper sibling of DPoP and the more limited one: no proof is
+// signed per request, because the TLS handshake already proved possession
+// of the key, but only a client that can present a certificate can use
+// it. The two can be on together; a token bound both ways must satisfy
+// both.
+type CertificateBinding struct {
+	// Mode is off (default), allow or require.
+	//
+	// allow checks the binding whenever the token carries one, and
+	// refuses a bound token presented on the wrong connection, while
+	// leaving an ordinary bearer token alone.
+	//
+	// require additionally refuses a token with no cnf["x5t#S256"]: on
+	// that route, only certificate-bound tokens are accepted.
+	Mode string `yaml:"mode"`
+	// TrustForwardedHeader reads the certificate from the RFC 9440
+	// Client-Cert request header when the immediate peer is inside
+	// trusted_proxies, for a deployment where TLS is terminated in front
+	// of this proxy. Without trusted_proxies it never fires: a client
+	// that could set the header would otherwise choose which certificate
+	// its own token is checked against.
+	TrustForwardedHeader bool `yaml:"trust_forwarded_header"`
 }
 
 // TokenIntrospection is an RFC 7662 introspection endpoint.

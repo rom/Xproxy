@@ -314,10 +314,47 @@ func (s SVCB) String() string {
 type LocalRecord struct {
 	// Name the record is published for, lower case, no trailing dot.
 	Name string
-	// Type is TypeHTTPS or TypeSVCB.
+	// Type is TypeHTTPS, TypeSVCB, TypeA, TypeAAAA, TypeTXT or TypePTR.
 	Type uint16
 	TTL  uint32
+	// SVCB carries the parameters of an SVCB or HTTPS record.
 	SVCB SVCB
+	// Addr is the address of an A or AAAA record.
+	Addr netip.Addr
+	// Text is the string of a TXT record or the name of a PTR record.
+	Text string
+}
+
+// Rdata encodes the record's own data, in wire form. It is exported so
+// that a record which cannot be encoded -- an A record holding an IPv6
+// address, a TXT string over 255 bytes -- is a load error rather than a
+// record silently skipped when a client asks for it.
+func (r LocalRecord) Rdata() ([]byte, error) {
+	switch r.Type {
+	case TypeA:
+		if !r.Addr.Is4() {
+			return nil, errors.New("an A record needs an IPv4 address")
+		}
+		b := r.Addr.As4()
+		return b[:], nil
+	case TypeAAAA:
+		if !r.Addr.Is6() || r.Addr.Is4In6() {
+			return nil, errors.New("an AAAA record needs an IPv6 address")
+		}
+		b := r.Addr.As16()
+		return b[:], nil
+	case TypeTXT:
+		// One character string, which is what fits in 255 bytes and what
+		// every reader of a single-string TXT record expects.
+		if len(r.Text) > 255 {
+			return nil, errors.New("a TXT string longer than 255 bytes")
+		}
+		return append([]byte{byte(len(r.Text))}, r.Text...), nil
+	case TypePTR:
+		return packName(r.Text)
+	default:
+		return r.SVCB.Encode()
+	}
 }
 
 // LocalRecords answers queries from a small static set. A name in the
@@ -471,7 +508,7 @@ func AnswerLocal(query []byte, qEnd int, h Header, q Question, recs []LocalRecor
 	}
 	count := 0
 	for _, r := range recs {
-		rdata, err := r.SVCB.Encode()
+		rdata, err := r.Rdata()
 		if err != nil || len(rdata) > 65535 {
 			continue
 		}

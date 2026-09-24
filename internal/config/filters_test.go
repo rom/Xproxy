@@ -57,7 +57,7 @@ func TestFiltersConfig(t *testing.T) {
 	for name, y := range cases {
 		if _, err := config.Parse([]byte(y)); err == nil {
 			t.Errorf("%s: accepted", name)
-		} else if name == "unknown kind" && !strings.Contains(err.Error(), "registered: account_guard, api_key, authz, basic_auth, body_rewrite, bot_score, form_guard, graphql, grpc_guard, header_guard, ldap_auth, mfa, oidc, openapi, sensitive_data, upload_guard, wasm, yara") {
+		} else if name == "unknown kind" && !strings.Contains(err.Error(), "registered: account_guard, api_key, authz, basic_auth, body_rewrite, bot_score, form_guard, graphql, grpc_guard, header_guard, ldap_auth, mfa, oidc, openapi, saml_sp, sensitive_data, upload_guard, wasm, xml_guard, yara") {
 			t.Errorf("%s: error does not list kinds: %v", name, err)
 		}
 	}

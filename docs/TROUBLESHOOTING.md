@@ -1157,6 +1157,9 @@ to the cause:
 | `dpop_binding` | The proof is valid and signed by a *different* key than the token names |
 | `dpop_replay` | That proof's `jti` has been used inside its window |
 | `dpop_proof` | The proof itself: the type, the algorithm, the signature, `htm`, `htu`, `iat`, `ath`, or its shape |
+| `cert_missing` | The token is bound to a certificate (`cnf["x5t#S256"]`) and the request presented none |
+| `cert_binding` | The token is bound to a *different* certificate than the one presented |
+| `cert_unbound` | `certificate_binding.mode: require` and the token carries no `cnf["x5t#S256"]` |
 
 `keys_unavailable` is the one to escalate: check `jwks_url`,
 `jwks_ca_file` and egress from the proxy to the provider.
@@ -1222,6 +1225,34 @@ be fresh per request), or a retry is re-sending the same proof after a
 timeout — which is the same thing from the proxy's side, and correct to
 refuse. `replay_entries` does not cause this: over its bound the table
 drops entries, which loses protection rather than adding refusals.
+
+**Everything fails with `cert_missing` after `certificate_binding` went
+on.** The proxy sees no client certificate. Either the listener does not
+ask for one — `server.listeners[].tls.client_auth` must be `request` or
+`require`, and validation warns at every load when nothing does — or TLS is
+terminated in front of this proxy, in which case the certificate is not on
+this connection at all: set `trust_forwarded_header` and have the
+terminating proxy send RFC 9440's `Client-Cert`, and name that proxy in
+`trusted_proxies`. Without `trusted_proxies` the header is never read, and
+validation warns about that too.
+
+**`cert_binding` for one client only.** That client's token names another
+certificate than the one it is presenting. The usual cause is a renewal:
+the client rotated its certificate and is still holding tokens issued
+against the old one, which expire on their own. If it persists, the client
+is presenting a certificate the authorization server never saw — check
+which certificate it authenticates to the token endpoint with, since that
+is the one the binding names. The access log's `cert_thumbprint` is
+present on success and absent on a refusal, so comparing a working
+client's value with the token's `cnf["x5t#S256"]` settles it.
+
+**`cert_unbound` on tokens that used to work.** That is `require` doing its
+job: the authorization server is issuing tokens without a confirmation
+claim for this client. Either the client is not authenticating to the token
+endpoint with mutual TLS (the server only binds a token when it is), or the
+server is not configured to bind for it. `mode: allow` is the setting for a
+route where some clients are there yet and some are not: it refuses a bound
+token on the wrong connection and leaves the rest alone.
 
 **Introspection accepts nothing.** A missing `iss` or `aud` in the
 introspection response fails, the same as on the JWT path. If your
@@ -1445,6 +1476,40 @@ non-negative number. A variable with a schema default the filter never
 sees, or one the client omits, is scored as `max_list`, which is usually
 the surprise. The other half is that a larger literal beside a smaller
 variable still wins.
+
+**A security key is refused and the page just says it was not accepted.**
+By design: which step refused a key is what an attacker probes for, so the
+page says one thing and the error log says which. Look for
+`webauthn ceremony refused` with its `step` field. The common causes in
+order: `origin` — `webauthn.origins` does not list the origin the browser
+is actually on, which includes the port (`https://app.example.test:8443`
+is not `https://app.example.test`); `challenge` — the page was open longer
+than three minutes, or was reloaded and posted an old one; `assertion`
+with an rp-id complaint — `webauthn.rp_id` is not the page's domain or a
+parent of it, and the browser refuses before the request is even made.
+
+**Registration answers 401 `verify_first`.** Registering a key needs a
+factor already verified, which is the point: an endpoint that trusted only
+the password would let somebody who has just stolen one add their own
+second factor. Enter a code first, then register. For a user with no code
+either, bootstrap with `xproxyctl mfa enrol` (or the GUI) and have them
+register the key afterwards.
+
+**A key that worked stops working, with a clone complaint in the log.**
+The authenticator's sign count did not move forward. Two real causes: the
+credential was copied (which is what the check is for), or the credential
+file was restored from a backup taken after some logins, so the stored
+count is ahead of the authenticator. In the second case remove that
+credential line and register the key again. Note that many authenticators
+do not count at all and report zero forever; that is permitted and is not
+this.
+
+**The credential file is not being written.** The proxy writes it on every
+registration *and* on every login, to record the sign count, so the
+directory must be writable by the proxy user — the file is replaced by a
+rename, so the directory matters and not only the file. A login whose count
+cannot be stored is refused with a 503 rather than allowed, because a
+forgotten count is a clone check that passes.
 
 **`account_guard` blocks a real user.** `xproxyctl accounts` shows the
 ladder state per key. Counts keyed on the account belong to the person
@@ -1917,6 +1982,101 @@ authoritative for the whole name, not for one type of it.
 serves; compare it with the `ech` value here. A mismatch means clients
 fall back to the public name on every attempt, which looks healthy and
 encrypts nothing.
+
+## DNS64
+
+**Nothing is synthesised.** Four things to check, in order. `clients` may
+not contain the client (it is empty by default, meaning every client;
+narrow it deliberately). The name may have a real AAAA record, which is
+answered with, never over. The name may not exist at all, which stays
+NXDOMAIN — synthesising over either would be this resolver inventing an
+answer. Or the A address is one `answer_policy` denies, which is the check
+working: see below.
+
+**A private address is not synthesised.** That is deliberate and it is the
+reason DNS64 is safe to have here. `64:ff9b::7f00:1` is not inside
+`127.0.0.0/8` and no prefix list would catch it, but it is `127.0.0.1` to
+everything past the translator — so the IPv4 address is screened before it
+is embedded. If the estate really does translate to private space, exempt
+the name with `answer_policy.allow_names` or carve the range out with
+`answer_policy.allow`.
+
+**Dual-stack clients are reaching services through the translator.** They
+are in `clients`. A client that has IPv4 does not need DNS64, and a
+synthesised address sends it the long way round for nothing. Name only the
+IPv6-only networks — an IPv4 network in that list is refused at load for
+the same reason.
+
+**A validating client rejects the answer.** It should: a synthesised answer
+is not signed and does not carry AD (RFC 6147 section 5.5). A client that
+validates for itself has to ask for A and do its own synthesis, which is
+what RFC 6147 expects of it.
+
+**`queries_synthesised` is far below the AAAA query count.** Most names
+have AAAA records of their own, which is the healthy case. Compare with the
+access log: a synthesised answer's `source` ends in `:dns64`.
+
+## DNS views (split horizon)
+
+**A client gets the wrong view's answer.** The first view whose networks
+contain the client wins, so a narrow network listed after a wide one that
+contains it never matches. Put `10.9.0.0/16` before `10.0.0.0/8`. The
+access log line carries `view`, which says which one answered.
+
+**A client in a view still gets the public answer.** The view has no
+record for that name, so the listener's own set answers and, failing that,
+the upstream does. A view replaces the record set rather than adding to it:
+a name that both sets should answer has to be in both.
+
+**One client's answer reached another.** It cannot come from the cache: a
+local answer is never cached and a block is decided before the cache is
+read. What looks like it usually is not a view at all — check whether the
+name is in the listener's `records` as well, and whether the client's
+address is what you think it is (`client_ip` in the access log is the
+address the query came from, which behind a forwarder is the forwarder).
+
+**A view with an upstream of its own is refused.** It is not a supported
+shape, for the reason in CONFIG.md: two views with different upstreams
+answering out of one cache would answer the same question differently. Use
+a second listener.
+
+**`queries_viewed` is zero.** No query matched a view. Either the networks
+do not contain the clients, or the clients reach this resolver through a
+forwarder whose address is what the view sees.
+
+## DNS aggressive NSEC caching
+
+**`queries_nsec` is zero although `aggressive_nsec` is on.** Nothing has
+been learned, or nothing asked was covered. Check in this order:
+
+1. `denials_held` in `xproxyctl dns`. Zero means no proof was stored. Only
+   a **validated** NXDOMAIN is learned, so the zone has to be signed and
+   the answer has to come back secure — `bogus` and `insecure` counts
+   rising instead is the answer. A zone signed with NSEC3 stores nothing
+   either: NSEC3 gaps are not used, on purpose (a hashed owner name says
+   nothing about which names it holds, and an opt-out gap denies nothing).
+2. The client's flags. A query with DO or CD set always goes upstream,
+   because a synthesised NXDOMAIN carries no signatures. A validating
+   resolver or a `dig +dnssec` behind this one sets DO on everything, so
+   the feature does nothing for it — which is correct, not broken.
+3. What was asked. A gap answers only a **sibling** of the name it was
+   collected for. `a.b.example.net` does not reuse a proof collected for
+   `x.example.net`, and neither does `example.net` itself.
+
+**A name that exists is answered NXDOMAIN.** A gap is held for the shorter
+of its NSEC record's TTL and `cache.max_ttl`, so a name added to the zone
+inside that window is denied until the gap expires, exactly as a cached
+NXDOMAIN would be. `xproxyctl dns purge` empties the store with the
+caches. If it outlives the TTL, or a name outside the gap is denied, that
+is a bug: the gap's own owner and next name exist by construction and must
+never be denied.
+
+**Memory.** `nsec_entries` bounds the number of **parent names** held, not
+the number of names denied — one entry can deny an unbounded number of
+siblings, which is the point. Each entry holds at most eight gaps. The
+oldest entry is dropped when the bound is reached, so a flood across many
+parents costs bounded memory and loses the older proofs rather than
+growing.
 
 ## DNS tunnel detection
 
@@ -2760,6 +2920,85 @@ use `xproxyctl rotate` so the old key stays in the ring.
 once in place of a code, at which point it is spent for good; re-enrol
 the user afterwards with `xproxyctl mfa enrol` and replace their line.
 
+## SAML single sign-on
+
+**Every login ends at the consumer service with `signature`.** The
+response did not verify against `idp_cert_file`. Three causes, in order
+of likelihood. The provider rotated its signing certificate — export it
+again, or point `idp_metadata_file` at the file the provider publishes
+and let the proxy read it. The certificate configured is the encryption
+certificate rather than the signing one: providers publish both, and
+only a `KeyDescriptor` with `use="signing"` (or none) is read from
+metadata. Or the provider signs the response and `signed_element` asks
+for the assertion — set `signed_element: response`, or `either` if the
+provider is inconsistent. `KeyInfo` in the document is never consulted,
+so "the response carries its own certificate" is not a reason it should
+have worked.
+
+**`profile` on every login.** The response is outside the accepted
+profile, and the proxy's log line says which part. The three that come
+up in practice: the provider encrypts assertions (turn that off for this
+service provider — TLS already covers the hop, and this profile does not
+decrypt); it signs with SHA-1 (raise it to SHA-256); or it emits a
+transform this profile does not take, which for a provider that offers a
+choice means selecting exclusive canonicalization with the
+enveloped-signature transform. A document type declaration in the
+response is also `profile`, and there is nothing to configure: no
+identity provider needs one.
+
+**`refused`, with a good signature.** A check that is not about the
+signature failed, and the warning in the error log names it: another
+audience (`entity_id` here must be exactly what the provider has as the
+service provider's entity ID), another `Destination` or `Recipient`
+(`external_url` + `acs_path` must be exactly the consumer URL registered
+at the provider — a trailing slash or a port is a different URL), an
+expired window (check the clocks; `clock_skew` is 30 seconds by default),
+or a name identifier format outside `name_id_formats`.
+
+**`state_missing` on a login that looked fine.** The browser did not send
+the state cookie back to the consumer service. It is `SameSite=Lax`,
+which a top-level POST from the provider does carry, so the usual cause
+is a different host: the login started on `app.example.com` and the
+provider posts to `www.app.example.com`, or `cookie_domain` is set to
+something the consumer path is not under. It is also what a response
+nobody asked for looks like — a provider configured for
+provider-initiated single sign-on will always land here, because this
+profile has no state to bind such a response to.
+
+**`replay` on a second attempt.** The same assertion was presented twice:
+a reloaded consumer page, a browser retry, or an actual replay. The
+assertion identifier is remembered until the assertion would have expired
+anyway. Start the login again rather than reloading; a reload of a POST
+cannot succeed by design.
+
+**Logins loop: the provider sends the browser back and it starts
+again.** The session cookie is not coming back, or it is expiring
+immediately. It is `Secure`, so on a plaintext listener no browser
+returns it; and the session is capped by the assertion, so a provider
+issuing assertions valid for one minute gives one-minute sessions
+whatever `session_ttl` says. `xproxyctl filters` shows `accepted` rising
+with `logins` if the responses are being accepted, which separates "the
+login fails" from "the session does not stick".
+
+**The provider rejects the authentication request.** Compare what it
+expects with `/saml/metadata` from this proxy, which is generated from the
+running configuration: the entity ID, the consumer URL and the binding.
+The request is unsigned — it carries no secret, and the response is
+checked against this proxy's own state whatever the request looked like —
+so a provider configured to require signed requests must have that
+turned off for this service provider.
+
+**Signing out here does not sign out at the provider.** It cannot:
+single logout is not implemented (see CONFIG.md for why). `logout_path`
+forgets the session at this proxy; the provider's own sign-out page ends
+the session there. Keep `session_ttl` short if that gap matters, and note
+that the provider's `SessionNotOnOrAfter` already caps it.
+
+**The log says the identity provider certificate has expired.** It is a
+warning, not a refusal: a pinned key is its own trust anchor, so
+signatures still verify. It is there because nothing else would mention
+it and because the provider is about to rotate.
+
 ## YARA scanning
 
 **The listener will not start and names a line in the rule file.** The
@@ -3356,6 +3595,76 @@ Under attack, a full table is the design working. In ordinary traffic it
 means a key that never repeats — a header value with a timestamp in it,
 a path with an id — and the fix is the key, not the bound.
 
+## XML and SOAP bodies
+
+**Everything is refused with `xml_doctype`.** The client is sending a
+document type declaration. That is refused whole and on purpose: it is
+where an external entity, an external DTD and entity expansion live, and
+this proxy cannot know what the application's parser would do with one.
+Most XML libraries emit a `<!DOCTYPE>` only when asked to; the fix is on
+the client side. There is no option to allow it.
+
+**`xml_entity` on documents that look fine.** The body references an entity
+that is not one of the five XML predefines (`&lt;` `&gt;` `&amp;` `&quot;`
+`&apos;`). Anything else is a reference to something the document did not
+carry, which is the external entity attack. A client that means a literal
+character should send a character reference (`&#233;`) or the character
+itself.
+
+**`xml_size` where the body is not that large.** `max_bytes` bounds the
+document, and an oversize body is refused rather than passed uninspected —
+otherwise a large document would be the way past the filter. Raise
+`max_bytes` for an API that genuinely sends them; do not turn the filter
+off for that route.
+
+**`xml_root` after a deployment.** The service moved namespace or the
+client is posting to the wrong endpoint. `require_root_namespace` compares
+the root's own declarations, so a client that dropped the `xmlns` on the
+envelope fails here even though the local name is right.
+
+**`xml_malformed` on documents the application used to accept.** Some
+parsers accept mismatched tags, duplicate attributes and unquoted values;
+this does not, because two parsers disagreeing about a malformed document
+is where the interesting bugs are. The detail says which rule and at which
+byte.
+
+**Turning the filter on without breaking anybody.** `report: true` logs
+`xml_would_refuse` with the rule and refuses nothing. Leave it on for a
+day, read the access log, then turn it off.
+
+## Early hints, early data and trailers
+
+**Clients get a 425 on POSTs and nothing else changed.** A terminating
+proxy in front started sending `Early-Data: 1`, which means those requests
+arrived in the TLS handshake and can be replayed by whoever captured them.
+That is `early_data: safe_methods` -- the default -- doing what RFC 8470
+asks of a proxy, and the client is expected to send the request again on the
+finished connection. If the route can genuinely take a replay, set
+`early_data: allow` on it; if even a repeated read matters, `reject`. Note
+that the marker counts only from a peer inside `trusted_proxies`.
+
+**The access log shows status 103.** It should not any more: a 1xx is
+recorded as informational and the final status is what the line carries. A
+103 in that field means an older build.
+
+**Early hints do not reach the browser.** Three places to look. The route
+may have `early_hints: strip`. There may be more than eight of them from
+the upstream, and the ninth onwards are dropped on purpose. Or the client
+is not HTTP/1.1 or later -- `net/http` does not relay informational
+responses to an HTTP/1.0 client.
+
+**A client waits forever for a trailer.** Something announced one and sent
+nothing: either an upstream bug, or a proxy in the chain that removed the
+fields and left the announcement. This proxy removes both together, and
+`trailers: strip` is refused on a gRPC route because the status lives
+there.
+
+**Requests are shed that used to be served.** Check whether the route has
+`client_priority: lower` and the client sends `Priority: u=6` or `u=7`. The
+client is asking to be shed first, and on that route the answer is yes. The
+access log carries `priority_urgency`, and `priority_class` when it changed
+the class.
+
 ## Deny reasons and details
 
 **One refusal has three spellings, and they are not interchangeable.**
@@ -3403,6 +3712,7 @@ innocent.
 | `webtransport` | A WebTransport session on a route without `webtransport` | no |
 | `cors` | The route's CORS policy | no |
 | `maintenance` | The maintenance gate | no |
+| `early_data` | A request that arrived as unconfirmed TLS early data on a route that will not take one (425 Too Early, RFC 8470) | no (the client did nothing wrong; it retries on the finished connection) |
 | `policy` | The route's positive-security policy | no |
 | `virtual_patch` | A virtual patch (`detail` is the patch id) | no |
 | `waf` | A WAF rule | yes |

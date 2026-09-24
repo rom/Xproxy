@@ -73,6 +73,13 @@ type validator struct {
 	// that names one is told at load rather than at the first file it
 	// tries to scan.
 	icapNames map[string]bool
+	// clientCertAsked is set when any listener asks for a client
+	// certificate, so a certificate binding that can never fire is
+	// pointed out. Listeners are validated before the JWT providers.
+	clientCertAsked bool
+	// trustedProxies is set when trusted_proxies names anything, which is
+	// what decides whether a forwarded client certificate is ever read.
+	trustedProxies bool
 }
 
 // transferICAP checks a scanning section on a kind that moves files.
@@ -187,6 +194,8 @@ func (v *validator) config(c *Config) {
 			v.errf("trusted_proxies[%d]: %q would trust every client; list the load balancer networks", i, cidr)
 		}
 	}
+
+	v.trustedProxies = len(c.TrustedProxies) > 0
 
 	rateLimits := map[string]bool{}
 	for i := range c.RateLimits {
@@ -482,6 +491,35 @@ func (v *validator) config(c *Config) {
 		case "low", "normal", "high", "critical":
 		default:
 			v.errf("routes[%d].priority_class: must be low, normal, high or critical", i)
+		}
+		switch c.Routes[i].ClientPriority {
+		case "", "ignore", "lower":
+		default:
+			v.errf("routes[%d].client_priority: must be ignore or lower", i)
+		}
+		switch c.Routes[i].EarlyHints {
+		case "", "pass", "strip":
+		default:
+			v.errf("routes[%d].early_hints: must be pass or strip", i)
+		}
+		switch c.Routes[i].EarlyData {
+		case "", "safe_methods", "allow", "reject":
+		default:
+			v.errf("routes[%d].early_data: must be safe_methods, allow or reject", i)
+		}
+		if c.Routes[i].EarlyData == "allow" && len(c.TrustedProxies) > 0 {
+			v.warnf("routes[%d].early_data: allow accepts a request that can be replayed by whoever captured it; only the route knows whether that is safe", i)
+		}
+		switch c.Routes[i].Trailers {
+		case "", "pass", "strip":
+		default:
+			v.errf("routes[%d].trailers: must be pass or strip", i)
+		}
+		if c.Routes[i].Trailers == "strip" && c.Routes[i].GRPC != nil {
+			v.errf("routes[%d].trailers: gRPC carries its status in the trailers, so they cannot be stripped", i)
+		}
+		if c.Routes[i].ClientPriority == "lower" && c.Shedding == nil {
+			v.warnf("routes[%d].client_priority: nothing sheds without server.shedding, so a client's urgency changes nothing", i)
 		}
 		if ri := c.Routes[i].ICAP; ri != nil {
 			p := fmt.Sprintf("routes[%d].icap", i)
@@ -872,6 +910,9 @@ func (v *validator) tls(p string, t *TLS) {
 	case "1.2", "1.3":
 	default:
 		v.errf("%s.min_version: must be \"1.2\" or \"1.3\" (TLS 1.0 and 1.1 are never allowed)", p)
+	}
+	if t.ClientAuth == "request" || t.ClientAuth == "require" {
+		v.clientCertAsked = true
 	}
 	switch t.ClientAuth {
 	case "none":
@@ -1318,9 +1359,9 @@ func (v *validator) rateLimit(i int, r *RateLimit, seen map[string]bool) {
 	case r.Key == "identity":
 	case strings.HasPrefix(r.Key, "identity:") && len(r.Key) > len("identity:"):
 		switch r.Key[len("identity:"):] {
-		case "jwt", "oidc", "api_key", "basic", "ldap":
+		case "jwt", "oidc", "saml", "api_key", "basic", "ldap":
 		default:
-			v.errf("%s.key: identity kind must be jwt, oidc, api_key, basic or ldap", p)
+			v.errf("%s.key: identity kind must be jwt, oidc, saml, api_key, basic or ldap", p)
 		}
 	default:
 		v.errf("%s.key: must be client_ip, client_net, route, country, endpoint, ja4, device, identity, identity:<kind>, header:<name>, cookie:<name> or jwt:<claim>", p)
@@ -4284,6 +4325,32 @@ func (v *validator) dpop(p string, d *DPoP, source string) {
 	}
 }
 
+// certificateBinding checks an RFC 8705 certificate binding. Both things
+// it warns about are configurations that load and can never fire, which
+// is worse than an error: the operator believes the control is on.
+func (v *validator) certificateBinding(p string, c *CertificateBinding) {
+	if c == nil {
+		return
+	}
+	switch c.Mode {
+	case "", "off":
+		if c.TrustForwardedHeader {
+			v.warnf("%s.trust_forwarded_header: set with mode off, so no certificate is ever compared", p)
+		}
+		return
+	case "allow", "require":
+	default:
+		v.errf("%s.mode: must be off, allow or require", p)
+		return
+	}
+	if c.TrustForwardedHeader && !v.trustedProxies {
+		v.warnf("%s.trust_forwarded_header: needs trusted_proxies naming the peers that terminate TLS; without it the header is never read", p)
+	}
+	if !c.TrustForwardedHeader && !v.clientCertAsked {
+		v.warnf("%s: no listener asks for a client certificate (tls.client_auth), so there is none to compare a bound token against", p)
+	}
+}
+
 // dnsAnswerPolicy checks the answer screen. An answer policy that denies
 // nothing is the one shape worth refusing at load: it reads like
 // rebinding protection and is not, and an operator who wrote the section
@@ -4452,29 +4519,64 @@ func (v *validator) dnsDiscovery(p string, d *DNSListener) {
 	}
 }
 
-// dnsRecords checks the locally served SVCB and HTTPS records.
+// dnsRecords checks the records this resolver answers itself.
 func (v *validator) dnsRecords(p string, d *DNSListener) {
-	for i := range d.Records {
-		r := &d.Records[i]
+	v.dnsRecordSet(p, d.Records)
+	v.dnsViews(p, d)
+	v.dns64(p+".dns64", d.DNS64)
+	v.dnssecAggressive(p+".dnssec", d.DNSSEC)
+}
+
+func (v *validator) dnsRecordSet(p string, recs []DNSRecord) {
+	for i := range recs {
+		r := &recs[i]
 		rp := fmt.Sprintf("%s.records[%d]", p, i)
 		if r.Name == "" || !hostPatternOK(strings.ToLower(strings.TrimSuffix(r.Name, "."))) {
 			v.errf("%s.name: %q is not a name", rp, r.Name)
+		}
+		if r.TTL < 0 || r.TTL > 604800 {
+			v.errf("%s.ttl: must be between 0 and 604800", rp)
 		}
 		switch r.Type {
 		case "", "https":
 			r.Type = "https"
 		case "svcb":
+		case "a", "aaaa":
+			// The address family has to match the type, or the record is
+			// one no client can read.
+			switch addr, err := netip.ParseAddr(r.Address); {
+			case err != nil:
+				v.errf("%s.address: %q is not an address", rp, r.Address)
+			case r.Type == "a" && !addr.Unmap().Is4():
+				v.errf("%s.address: %q is not an IPv4 address, which an a record needs", rp, r.Address)
+			case r.Type == "aaaa" && addr.Unmap().Is4():
+				v.errf("%s.address: %q is not an IPv6 address, which an aaaa record needs", rp, r.Address)
+			}
+			v.dnsRecordNoSVCB(rp, r)
+			continue
+		case "txt":
+			if r.Text == "" || len(r.Text) > 255 {
+				v.errf("%s.text: a txt record needs a string of 1 to 255 bytes", rp)
+			}
+			v.dnsRecordNoSVCB(rp, r)
+			continue
+		case "ptr":
+			if r.Text == "" || !hostPatternOK(strings.ToLower(strings.TrimSuffix(r.Text, "."))) {
+				v.errf("%s.text: a ptr record needs the name it points to", rp)
+			}
+			v.dnsRecordNoSVCB(rp, r)
+			continue
 		default:
-			v.errf("%s.type: must be https or svcb", rp)
+			v.errf("%s.type: must be https, svcb, a, aaaa, txt or ptr", rp)
+		}
+		if r.Address != "" || r.Text != "" {
+			v.errf("%s: address and text belong to a, aaaa, txt and ptr records", rp)
 		}
 		if r.Priority < 0 || r.Priority > 65535 {
 			v.errf("%s.priority: must be between 0 and 65535", rp)
 		}
 		if r.Priority == 0 && len(r.Params) > 0 {
 			v.errf("%s: priority 0 is an alias record and takes no params", rp)
-		}
-		if r.TTL < 0 || r.TTL > 604800 {
-			v.errf("%s.ttl: must be between 0 and 604800", rp)
 		}
 		if r.Target != "" && r.Target != "." && !hostPatternOK(strings.ToLower(strings.TrimSuffix(r.Target, "."))) {
 			v.errf("%s.target: %q is not a name", rp, r.Target)
@@ -4484,6 +4586,115 @@ func (v *validator) dnsRecords(p string, d *DNSListener) {
 				v.errf("%s.params.%s: %v", rp, name, err)
 			}
 		}
+	}
+}
+
+// dnsRecordNoSVCB refuses the SVCB fields on a record type that has none,
+// so a record that reads as if it carried parameters does not load
+// ignoring them.
+func (v *validator) dnsRecordNoSVCB(rp string, r *DNSRecord) {
+	if r.Target != "" || len(r.Params) > 0 || r.Priority != 0 {
+		v.errf("%s: target, params and priority belong to svcb and https records", rp)
+	}
+}
+
+// dnssecAggressive checks the RFC 8198 settings, which only mean
+// something with validation on.
+func (v *validator) dnssecAggressive(p string, d *DNSSEC) {
+	if d == nil {
+		return
+	}
+	if d.AggressiveNSEC && !d.IsEnabled() {
+		v.errf("%s.aggressive_nsec: needs validation; a proof this resolver has not validated is an attacker choosing which names do not exist", p)
+	}
+	if d.NSECEntries < 0 || d.NSECEntries > 1_000_000 {
+		v.errf("%s.nsec_entries: must be between 0 and 1000000", p)
+	}
+	if d.NSECEntries > 0 && !d.AggressiveNSEC {
+		v.warnf("%s.nsec_entries: set without aggressive_nsec, so nothing is remembered", p)
+	}
+}
+
+// dns64 checks the address synthesis section.
+func (v *validator) dns64(p string, d *DNS64) {
+	if d == nil {
+		return
+	}
+	prefix := d.Prefix
+	if prefix == "" {
+		prefix = dns.WellKnownPrefix
+	}
+	switch pfx, err := netip.ParsePrefix(prefix); {
+	case err != nil:
+		v.errf("%s.prefix: %q is not a CIDR", p, d.Prefix)
+	case !pfx.Addr().Is6() || pfx.Addr().Is4In6():
+		v.errf("%s.prefix: %q is not an IPv6 prefix", p, prefix)
+	case !dns.PrefixLengthOK(pfx.Bits()):
+		v.errf("%s.prefix: /%d has no defined place for the address; RFC 6052 defines /32, /40, /48, /56, /64 and /96", p, pfx.Bits())
+	case pfx.Masked().Addr() != pfx.Addr():
+		v.errf("%s.prefix: %q has bits set past its length", p, prefix)
+	}
+	for i, c := range d.Clients {
+		pfx, err := netip.ParsePrefix(c)
+		if err != nil {
+			v.errf("%s.clients[%d]: %q is not a CIDR", p, i, c)
+			continue
+		}
+		// A synthesised answer is for a client that has no IPv4 at all;
+		// handing one to an IPv4 client would send it through a
+		// translator to reach an address it could have dialled directly.
+		if pfx.Addr().Unmap().Is4() {
+			v.errf("%s.clients[%d]: %q is an IPv4 network, and DNS64 answers clients that have no IPv4", p, i, c)
+		}
+	}
+	if d.TTL < 0 || d.TTL > 604800 {
+		v.errf("%s.ttl: must be between 0 and 604800", p)
+	}
+}
+
+// dnsViews checks the split-horizon views.
+func (v *validator) dnsViews(p string, d *DNSListener) {
+	seen := map[string]bool{}
+	for i := range d.Views {
+		w := &d.Views[i]
+		vp := fmt.Sprintf("%s.views[%d]", p, i)
+		if !nameRE.MatchString(w.Name) {
+			v.errf("%s.name: %q is not a name", vp, w.Name)
+		}
+		if seen[w.Name] {
+			v.errf("%s.name: %q is used twice", vp, w.Name)
+		}
+		seen[w.Name] = true
+		if len(w.Clients) == 0 {
+			v.errf("%s.clients: at least one network is required; a view that matched everybody is this listener's own policy under another name", vp)
+		}
+		for j, c := range w.Clients {
+			if _, err := netip.ParsePrefix(c); err != nil {
+				v.errf("%s.clients[%d]: %q is not a CIDR", vp, j, c)
+			}
+		}
+		switch w.BlockAction {
+		case "", "nxdomain", "refuse", "sinkhole":
+		default:
+			v.errf("%s.block_action: must be nxdomain, refuse or sinkhole", vp)
+		}
+		for _, pair := range [][2]string{{"sinkhole_ipv4", w.SinkholeIPv4}, {"sinkhole_ipv6", w.SinkholeIPv6}} {
+			if pair[1] == "" {
+				continue
+			}
+			if _, err := netip.ParseAddr(pair[1]); err != nil {
+				v.errf("%s.%s: %q is not an address", vp, pair[0], pair[1])
+			}
+		}
+		if w.BlockFile != "" {
+			v.file(vp+".block_file", w.BlockFile)
+		}
+		// A view that changes nothing is a section an operator wrote
+		// expecting something for it.
+		if len(w.Records) == 0 && len(w.Block) == 0 && w.BlockFile == "" && w.BlockAction == "" {
+			v.errf("%s: a view must change something: records, block, block_file or block_action", vp)
+		}
+		v.dnsRecordSet(vp, w.Records)
 	}
 }
 
@@ -4824,6 +5035,7 @@ func (v *validator) jwt(j *JWT, seen map[string]bool) {
 		}
 		v.dpop(pp+".dpop", p.DPoP, p.Source)
 		v.tokenExchange(pp+".token_exchange", p.TokenExchange)
+		v.certificateBinding(pp+".certificate_binding", p.CertificateBinding)
 		switch {
 		case p.Source == "bearer":
 		case strings.HasPrefix(p.Source, "header:") && headerNameOK(p.Source[7:]):

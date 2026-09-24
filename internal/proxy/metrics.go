@@ -305,6 +305,10 @@ func (s *Server) Collect(e metrics.Collector) {
 		e.Counter("xproxy_dns_cookies_total", "DNS cookies issued to clients.", L{"listener": d.Listener, "result": "issued"}, float64(d.CookiesIssued))
 		e.Counter("xproxy_dns_cookies_total", "DNS cookies issued to clients.", L{"listener": d.Listener, "result": "verified"}, float64(d.CookiesVerified))
 		e.Counter("xproxy_dns_cookies_total", "DNS cookies issued to clients.", L{"listener": d.Listener, "result": "refused"}, float64(d.CookiesRefused))
+		e.Counter("xproxy_dns_viewed_total", "DNS queries answered by a split-horizon view.", l, float64(d.QueriesViewed))
+		e.Counter("xproxy_dns_synthesised_total", "AAAA answers synthesised from an A record for a DNS64 client (RFC 6147).", l, float64(d.QueriesSynthesised))
+		e.Counter("xproxy_dns_nsec_denied_total", "NXDOMAIN answers taken from a validated NSEC gap instead of the upstream (RFC 8198).", l, float64(d.QueriesNSEC))
+		e.Gauge("xproxy_dns_denials_held", "Parent names whose validated NSEC gaps are held.", l, float64(d.DenialsHeld))
 	}
 	e.Counter("xproxy_mirror_total", "Mirror copies by outcome.", L{"outcome": "sent"}, float64(sn.MirrorSent))
 	e.Counter("xproxy_mirror_total", "Mirror copies by outcome.", L{"outcome": "dropped"}, float64(sn.MirrorDropped))

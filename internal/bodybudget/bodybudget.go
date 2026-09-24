@@ -3,6 +3,7 @@
 //
 // A dozen features materialise a whole request body — upload_guard,
 // sensitive_data, account_guard, openapi, graphql, body_rewrite, wasm,
+// the SAML assertion consumer endpoint,
 // the WAF's body inspection, a virtual patch's body pattern, a mirrored
 // request — and each one was bounded only per request. The product was
 // the real ceiling: max_connections_per_ip (256 by default) times

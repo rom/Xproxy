@@ -442,6 +442,302 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **DNS64: an AAAA answer for a name that has only an A record**
+  (`server.listeners[].dns.dns64`; RFC 6147 with RFC 6052 addressing).
+
+  An IPv6-only client asks for AAAA, the name has none, and this resolver
+  asks for A instead and answers with that address embedded in a prefix
+  routed to a translator. Nothing on the client changes -- it believes it is
+  speaking IPv6 throughout, which is the point. The address placement is
+  RFC 6052's, at all six defined prefix lengths, and the test checks it
+  against the worked example in the RFC's own section 2.4 rather than
+  against this implementation.
+
+  Two things about it are security decisions rather than protocol.
+
+  The address policy sees the **IPv4** address, before it is embedded.
+  `64:ff9b::7f00:1` is not inside `127.0.0.0/8` and no prefix list would
+  catch it, but it is 127.0.0.1 to everything past the translator -- so the
+  A lookup runs through the ordinary path, which screens and caches it, and
+  a cached address is screened again before it is embedded, for the same
+  reason a cache hit is re-screened on the way out: a reload may have
+  denied the range the entry was stored under. Without that, DNS64 would be
+  a way around rebinding protection rather than a feature beside it.
+
+  A synthesised answer is never signed and never claims to be: the reply is
+  built from the client's question, so the AD bit is clear by construction
+  (RFC 6147 section 5.5).
+
+  A name with an AAAA record of its own is answered with it, a name that
+  does not exist stays NXDOMAIN, and at most 32 records are synthesised
+  from one A answer so that an upstream does not decide the size of this
+  listener's reply. `clients` names the IPv6-only networks, and an IPv4
+  network there is a load error: a client with IPv4 does not need the
+  translation. Thirteen deliberate weakenings were each caught, four only
+  after the tests were extended -- including the one that read a TXT record
+  with three characters in it as an address, because its rdata is four
+  bytes long.
+
+- **Split horizon: the same name answered by who asked**
+  (`server.listeners[].dns.views`), and the record types it needed
+  (`dns.records` now takes `a`, `aaaa`, `txt` and `ptr`).
+
+  One name with two answers is an ordinary requirement:
+  `app.example.com` is a private address from inside the estate and a
+  public one from outside, a laboratory network resolves a name to the
+  test system, a guest network is held to a stricter list. The resolver
+  could not do any of it, for a simple reason -- its local record set held
+  only SVCB and HTTPS records, so it could not answer an A record at all.
+  It can now, along with AAAA, TXT and PTR, and a record whose address
+  does not match its type (an `a` holding an IPv6 address) is a load error
+  rather than a record silently skipped when a client asks for it.
+
+  A view selects the records this resolver answers itself, the names it
+  refuses, and what a refusal answers. The first view whose networks
+  contain the client wins, so the order of the list is the policy, and a
+  view that matched everybody is refused because that is the listener's
+  own policy under another name.
+
+  **A view has no upstream of its own, deliberately**, and CONFIG.md says
+  why: two views with different upstreams would answer the same question
+  differently out of one shared cache, and a cache per view is a second
+  resolver with a second memory -- which is a second listener, said plainly
+  in the configuration rather than hidden inside a view. It is also what
+  makes the feature safe without touching the cache: a view decides only
+  what happens before the cache is read, a local answer is never cached,
+  and a test asks both clients in both orders to prove neither can see the
+  other's answer.
+
+  `queries_viewed` counts them, `xproxyctl dns` lists the views, and the
+  access log line carries `view`. Twelve deliberate weakenings were each
+  caught by the tests.
+
+- **Aggressive NSEC caching: a proof answers more than one question**
+  (`server.listeners[].dns.dnssec.aggressive_nsec`, RFC 8198).
+
+  A validated NXDOMAIN is not just an answer to the name that was asked:
+  the NSEC record that proved it names a gap in the zone, and no name in
+  that gap exists either. The resolver keeps the gap and answers the next
+  name inside it from the proof it already holds. The traffic that saves
+  is the traffic that produces it -- a random-subdomain flood aimed at an
+  authoritative server through this resolver, or junk queries under a
+  top-level name -- where every name is a sibling of the last and one
+  signed proof covers them all.
+
+  It is narrowed twice, on purpose, and CONFIG.md says why. A gap is
+  reused only for a **sibling** of the name it was collected for: the same
+  parent, therefore the same closest encloser, therefore the same wildcard
+  denial the validator already checked -- a name deeper in the zone could
+  be covered by a wildcard that the collected name was not. And only for a
+  client that did **not** set DO: a synthesised NXDOMAIN carries no
+  signatures, and a client that asked for the proof gets the upstream
+  lookup, as does one that set CD.
+
+  Only NSEC is used, never NSEC3: a hashed owner name says nothing about
+  which names its gap holds without re-hashing every candidate, and an
+  opt-out gap denies nothing at all. A gap lives for the shorter of its
+  NSEC record's TTL and `cache.max_ttl`; `nsec_entries` parents are held at
+  most (8192 by default), oldest dropped first. `queries_nsec` counts the
+  answers served from a held proof and `denials_held` the size of the
+  store. Fifteen deliberate weakenings were each caught, two only after the
+  tests were extended -- among them the gap endpoints themselves, which the
+  proof names as existing and which a comparison one character loose would
+  have denied.
+
+- **XML bodies get what JSON already had** (`xml_guard` filter,
+  `internal/xmlsafe`).
+
+  The WAF reads bodies as text and the `openapi` filter validates JSON;
+  between them sat every XML and SOAP API with neither. XML is also the
+  format with the oldest and most reliable parser attacks -- an external
+  entity that reads a file off the machine or makes requests from inside
+  the network, entity expansion that turns a kilobyte into gigabytes of
+  heap, parameter entity loops, external DTD fetches -- and every one of
+  them arrives as a document type declaration or an entity reference in the
+  body. A gateway cannot know how the application's parser is configured,
+  and the defaults of most XML libraries were unsafe for years, so this
+  refuses those shapes before that parser sees them and names which shape
+  it refused: `xml_doctype`, `xml_entity`, and eleven more.
+
+  `internal/xmlsafe` is a scanner rather than a parser: it reads the
+  document once, keeps a stack of open element names and nothing else, and
+  reports the first rule broken. Nothing is built, so a document that would
+  have expanded to gigabytes is refused at the declaration that would have
+  done it, in the bytes it arrived as, and a hundred thousand levels of
+  nesting is refused by the depth bound rather than by this process running
+  out of stack.
+
+  Bounds on size, depth, elements, attributes, name length and text length;
+  CDATA, comments and processing instructions each allowed or not; and a
+  document shape policy -- `require_root`, `require_root_namespace`,
+  `allow_elements`, `deny_elements` -- which is a positive model without a
+  schema language. A body over `max_bytes` is refused rather than passed
+  uninspected, because an oversize document must not be the way past the
+  filter, and the body is replayed byte for byte so the application reads
+  exactly what the client sent. `report: true` says what it would have
+  refused and refuses nothing.
+
+  **XSD validation is deliberately not implemented**, and the reason is in
+  CONFIG.md: it is a language with its own parser, its own imports and its
+  own denial-of-service history, and a gateway that fetched and interpreted
+  one would add a larger attack surface than it removed. The application
+  has the schema already.
+
+  Thirty-six deliberate weakenings across the scanner and the filter were
+  each caught by the tests, two only after the tests were extended for
+  them: that a document type declaration is refused *as one* rather than as
+  a generic declaration, and that the root-name check is not doing the
+  namespace check's work.
+
+- **The four HTTP gateway controls the batch asked for, and one real bug
+  among them** (`routes[].early_hints`, `early_data`, `trailers`,
+  `client_priority`).
+
+  *Early Hints (RFC 8297) went through and the status did not.* A 1xx is
+  informational: it does not end the header phase, and the real status
+  still follows. The response writer recorded it as the status and marked
+  the response written, so the final header was dropped -- and the client
+  still saw 200, because `net/http` sends an implicit one with the
+  accumulated headers when the body is written. Every record of such an
+  exchange was wrong: the access log said 103 for a page that returned 200,
+  and so did everything downstream of the recorded status. Now a 1xx is
+  relayed and the final status is the one recorded, with a test that reads
+  the access line rather than the client's view, because the client's view
+  was the half that already looked right. At most eight informational
+  responses are relayed per exchange: each is a header block an upstream
+  can make this proxy write. `early_hints: strip` drops them where clients
+  or middleboxes mishandle them.
+
+  *Early data (RFC 8470).* A request that arrived in the TLS handshake can
+  be replayed by whoever captured it. `early_data` decides what that means
+  per route: `safe_methods` (the default) serves GET, HEAD, OPTIONS and
+  TRACE and answers 425 Too Early to everything else, which is the RFC's
+  own advice for a proxy that cannot know what a second POST would do;
+  `reject` answers 425 to all of it; `allow` passes it through. The marker
+  counts only from a peer inside `trusted_proxies`, and a client's own is
+  removed before the upstream sees it -- the upstream cannot tell the
+  proxy's copy from the client's, which is the whole reason the field is
+  a hop's statement rather than a request's.
+
+  *Trailers.* `trailers: strip` removes the announcement and the fields
+  both, because an announced trailer with nothing behind it leaves a client
+  waiting. It has to happen at the end of the body rather than on the
+  response header: the transport fills the trailer map after everything
+  that inspects a response has run, and the reverse proxy forwards whatever
+  is in it, announced or not. Refused on a gRPC route, which carries its
+  status there.
+
+  *Priorities (RFC 9218).* `client_priority: lower` reads a client's
+  `Priority` urgency and may move that request **down** the shedding order
+  -- 4 or 5 gives up a class, 6 or 7 goes to `low` -- and never up. A header
+  that could raise a class would be a promotion anybody can ask for, and
+  the first thing a client under pressure would do is claim urgency 0,
+  which would make shedding protect whoever asked loudest rather than
+  whatever the operator called important. Lowering is safe in a way raising
+  is not, because it can only cost the client that asked. A malformed field
+  is ignored rather than refused, and the field is forwarded either way.
+
+  Thirteen deliberate weakenings of the four controls were each caught by
+  the tests.
+
+- **The other answer to a stolen bearer token: the certificate it names**
+  (`jwt.providers[].certificate_binding`; RFC 8705 section 3).
+
+  DPoP landed in this batch and has the client sign a proof per request.
+  This is the cheaper half of the same idea, for the clients that can do
+  it: the client already proved possession of its private key in the TLS
+  handshake, the authorization server recorded the certificate's SHA-256
+  thumbprint in the token as `cnf["x5t#S256"]`, and the check is a
+  comparison against the certificate on this connection. A token lifted
+  out of a log or a crash dump is then useless anywhere else, with nothing
+  for the client to implement.
+
+  `mode: allow` compares whenever a token carries a binding and leaves an
+  ordinary bearer token alone, so it can go on before every client is
+  issuing bound tokens; `require` additionally refuses a token with no
+  binding at all. Both can run beside `dpop`, and a token carrying both
+  confirmations must satisfy both -- checked by a test that fails the
+  right key on the wrong connection and the right connection with no
+  proof.
+
+  The certificate compared is the one from the handshake this proxy
+  terminated. Where TLS is terminated in front, `trust_forwarded_header`
+  reads RFC 9440's `Client-Cert` instead, and only from a peer inside
+  `trusted_proxies`: a client that could set that header would otherwise
+  choose which certificate its own token is checked against, which is the
+  whole of the check. A certificate on the connection always wins over a
+  header, the header is parsed as a certificate before it is hashed rather
+  than after, and one over 16 KiB is refused before it is decoded.
+
+  Both ways this can be configured so that it loads and never fires are
+  warnings at every load -- no listener asking for a client certificate,
+  and a forwarded header with no trusted proxies -- because a control the
+  operator believes is on and is not is worse than one that refuses to
+  load.
+
+- **A SAML 2.0 service provider, with a profile narrow enough to be
+  readable** (`saml_sp` filter, `internal/saml`).
+
+  The last identity protocol this proxy could not speak, and the one that
+  needed the most deciding. SAML's failure mode is not the crypto: it is
+  that a response is an XML document, and XML gives an attacker a dozen
+  ways to make the reader that verifies the signature and the reader that
+  consumes the assertion disagree about what was signed. Signature
+  wrapping is the whole family. So the answer here is not a more careful
+  check on a general parser — it is a parser and a profile with no room
+  for the ambiguity.
+
+  The XML reader refuses a document type declaration, an entity
+  declaration, any entity reference but the five predefines, a processing
+  instruction, a CDATA section, a name outside ASCII, an undeclared
+  prefix and a duplicate attribute. There is no external entity
+  resolution to turn off, because there is no entity resolution. It keeps
+  prefixes as written, because Exclusive Canonical XML renders them and
+  the signature is over that rendering — a parser that resolves prefixes
+  away (`encoding/xml` does) cannot reproduce the bytes the signer
+  hashed, which is why this one exists.
+
+  The signature profile is one `Reference` whose URI is `#` plus the `ID`
+  of the element the signature is enveloped in, the enveloped-signature
+  transform followed by exclusive canonicalization and nothing else,
+  SHA-256 and above, RSA or ECDSA (as the concatenated `r` and `s` of RFC
+  4051, not the ASN.1 sequence), and the key from the configuration.
+  `KeyInfo` is not read at all. Wrapping is answered structurally rather
+  than by a check: every signature in the document must verify, each
+  against its own parent, a response may carry exactly one assertion, and
+  two elements sharing an `ID` refuse the document.
+
+  Encryption is refused by name. XML Encryption in a SAML responder has
+  been a decryption oracle more than once, TLS already covers the hop,
+  and a provider configured to encrypt should get a message saying so
+  rather than "no assertion found".
+
+  Everything else is checked completely: the issuer, `Destination`,
+  `InResponseTo` on the envelope *and* on the subject confirmation, the
+  `Recipient`, the audience, both condition windows, the confirmation
+  window, `SessionNotOnOrAfter`, the status code, the name identifier
+  format, `max_assertion_age` over all of it, and a bounded one-time
+  table on the assertion identifier — an assertion is a bearer credential
+  until it expires, so the same one twice is not a second login. A
+  session never outlives the earliest expiry the assertion declared.
+  Provider-initiated sign-on is not supported and single logout is not
+  implemented, both on purpose and both documented with the reason.
+
+  Around it: the HTTP Redirect binding for requests, the POST binding for
+  responses (only `POST` with a form body, because a response in a query
+  string is a response in a browser history and a `Referer`), a metadata
+  endpoint, a metadata reader so the provider can be named by the file it
+  publishes, and the same encrypted session cookie as `oidc`, sealed
+  under both entity identifiers.
+
+  Every check is pinned by a test that fails when the check is removed:
+  thirty-nine deliberate weakenings of the package were each caught,
+  including four that were caught only after the tests were extended for
+  them. The canonical form itself is asserted against bytes written out
+  from the specification by hand, because a wrong canonicalizer agrees
+  with itself, and it found the first real bug: the default namespace
+  rendered where no element used it.
+
 - **A DNS answer is now screened by where it points, not only by the
   name that was asked.** The block list decides by name, and the name is
   the part an attacker picks last: blocking one costs them a
@@ -477,6 +773,48 @@ Open findings of the earlier rounds:
   answer section is screened, and the proxy's own answers -- `records`,
   `discovery`, the sinkhole addresses -- are not, which is why
   `sinkhole_ipv4: 0.0.0.0` still works inside a denied range.
+
+- **A security key beside the one-time code** (`mfa` filter,
+  `webauthn`; WebAuthn level 2, `internal/webauthn`).
+
+  A code is a shared secret typed into whatever page asked for it, so a
+  convincing copy of that page collects codes that work. WebAuthn does not
+  have that failure: the assertion is bound to the origin the ceremony ran
+  on, so a look-alike site gets a signature naming its own origin, which
+  this refuses. That is the reason to have it.
+
+  The two live side by side. A code is how somebody gets in from a machine
+  with no key attached, and it is how a key is registered: registration
+  requires a factor the user already has, because a registration endpoint
+  that trusts only the first factor is a way to add a second factor to an
+  account whose password has just been stolen.
+
+  Verified on every assertion, each for a reason the signature alone does
+  not give: the ceremony type, so a registration signature cannot be
+  replayed as an authentication; the challenge, issued to that account,
+  short-lived, and spent on first use whether the ceremony succeeded or
+  not; the origin, exactly; the relying party hash, which the
+  authenticator computes itself and a page cannot choose; user presence,
+  and verification when asked, including at registration so a key cannot
+  be enrolled under the weaker rule and used under the stronger one; the
+  signature, under the stored key and the algorithm stored with it; and the
+  sign count, which must move forward for an authenticator that counts,
+  written to the credential file before the cookie is issued because a
+  count kept only in memory is a clone check a restart forgets.
+
+  A credential identifier is public -- it travels in the allow list on
+  every login page -- so the store looks one up by account *and*
+  identifier. Attestation is deliberately not verified, and the package
+  comment says why: it identifies an authenticator model, not a person, and
+  here a credential is trusted because the registration was authenticated
+  by a factor the user already had.
+
+  Everything runs on the standard library: a CBOR reader for the shapes the
+  specification uses (definite lengths only, no tags, no floats, bounded
+  depth, items and strings, duplicate map keys refused), COSE keys for
+  ES256/384/512, EdDSA, RS256 and PS256 with the curve checked against the
+  algorithm, and a credential file the proxy writes atomically and re-reads
+  when it changes.
 
 - **The backend no longer receives a credential that works at the front
   door** (`jwt.providers[].token_exchange`, RFC 8693).

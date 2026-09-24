@@ -15,7 +15,17 @@ server:
         block_file: /etc/xproxy/dns-blocklist.txt
         block_action: sinkhole
         sinkhole_ipv4: 10.255.255.254
-        dnssec: {enabled: true}
+        dnssec:
+          enabled: true
+          # One validated NSEC record denies a whole range of names, so
+          # the next query for a sibling in that range is answered from
+          # the proof already held rather than asked again (RFC 8198).
+          # That is what answers a random-subdomain flood without the
+          # upstream seeing it. A client that set DO still gets the
+          # upstream lookup: a synthesised NXDOMAIN carries no
+          # signatures.
+          aggressive_nsec: true
+          nsec_entries: 16384
         cache:
           max_entries: 50000
           max_ttl: 6h
@@ -41,6 +51,36 @@ server:
         # for, which is what makes its security events attributable and
         # bannable. respond never refuses a client that has no cookies.
         cookies: respond
+        # An IPv6-only network reaches IPv4-only services through a
+        # translator: the AAAA answer is synthesised from the A record.
+        # The A address is screened by answer_policy above *before* it is
+        # embedded, so a private address is not laundered into a prefix
+        # no list would recognise.
+        dns64:
+          prefix: "64:ff9b::/96"
+          clients: ["2001:db8:6::/48"]
+        # Split horizon: the same name, a different answer by who asked.
+        # Order is the policy -- the laboratory is inside 10.0.0.0/8 too,
+        # so it is listed first or it never matches.
+        views:
+          - name: lab
+            clients: [10.9.0.0/16]
+            records:
+              - {name: app.example.com, type: a, address: 10.9.0.20, ttl: 60}
+          - name: estate
+            clients: [10.0.0.0/8, 192.168.0.0/16]
+            records:
+              - {name: app.example.com, type: a, address: 10.0.5.10}
+              - {name: app.example.com, type: aaaa, address: "2001:db8::5"}
+              - {name: app.example.com, type: txt, text: "owner=platform"}
+          # The guest network is held to a stricter list than the staff
+          # network, and sinkholed rather than told NXDOMAIN so that a
+          # captive portal has somewhere to answer.
+          - name: guest
+            clients: [192.168.50.0/24]
+            block: ["*.social.example", "tracker.example"]
+            block_action: sinkhole
+            sinkhole_ipv4: 192.0.2.1
 management:
   socket: /run/xproxy/mgmt.sock
 logging:

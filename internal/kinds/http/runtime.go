@@ -170,17 +170,28 @@ type compiledRoute struct {
 	redirectTo      *tmpl.Template
 	errPages        *errorPages
 	class           shed.Class
-	challenge       *config.RouteChallenge // nil or mode off means no gate
-	counts          [5]atomic.Uint64       // 2xx, 3xx, 4xx, 5xx, denied
-	hist            *metrics.Histogram     // request duration per route
-	bytesIn         atomic.Uint64
-	bytesOut        atomic.Uint64
-	rateLimited     atomic.Uint64
-	geoAllow        map[string]bool
-	geoDeny         map[string]bool
-	geoUnknown      string
-	policy          *compiledPolicy
-	policyDenied    atomic.Uint64
+	// lowerByClient honours a client's RFC 9218 urgency, downwards only.
+	lowerByClient bool
+	// stripEarlyHints drops the upstream's 1xx informational responses
+	// instead of relaying them.
+	stripEarlyHints bool
+	// earlyData is what to do with a request that arrived as unconfirmed
+	// TLS early data.
+	earlyData string
+	// stripTrailers drops the response's trailers instead of relaying
+	// them.
+	stripTrailers bool
+	challenge     *config.RouteChallenge // nil or mode off means no gate
+	counts        [5]atomic.Uint64       // 2xx, 3xx, 4xx, 5xx, denied
+	hist          *metrics.Histogram     // request duration per route
+	bytesIn       atomic.Uint64
+	bytesOut      atomic.Uint64
+	rateLimited   atomic.Uint64
+	geoAllow      map[string]bool
+	geoDeny       map[string]bool
+	geoUnknown    string
+	policy        *compiledPolicy
+	policyDenied  atomic.Uint64
 	// inventory marks a route whose requests feed the API inventory;
 	// describers are its OpenAPI filters.
 	inventory  bool
@@ -415,7 +426,8 @@ func newRuntime(cfg *config.Config, generation uint64, pools map[string]*upstrea
 			hist:  metrics.NewHistogram(metrics.DurationBuckets),
 			allow: netutil.ParsePrefixes(r.AllowCIDRs),
 			deny:  netutil.ParsePrefixes(r.DenyCIDRs),
-			class: shed.ParseClass(r.PriorityClass),
+			class: shed.ParseClass(r.PriorityClass), lowerByClient: r.ClientPriority == "lower",
+			stripEarlyHints: r.EarlyHints == "strip", earlyData: r.EarlyData, stripTrailers: r.Trailers == "strip",
 		}
 		cr.policy = compilePolicy(r.Policy)
 

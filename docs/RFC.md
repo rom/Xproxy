@@ -44,6 +44,9 @@ and "refused" are different promises.
 | 9111 | HTTP Caching | Partial | The response cache honours `Cache-Control`, `Vary`, `Age` and freshness; it does not implement shared-cache revalidation with `stale-while-revalidate` (RFC 5861) |
 | 9112 | HTTP/1.1 | Full | Framing is decided once, in one parser; a message with both `Content-Length` and `Transfer-Encoding`, an obfuscated `chunked`, or a second framing header is refused rather than resolved |
 | 9113 | HTTP/2 | Full | Through Go's `net/http2`, with the proxy's own bounds on concurrent streams and header size |
+| 9218 | Extensible Prioritization Scheme for HTTP | Partial | A client's `Priority` urgency may move its own request down the load-shedding order on a route that reads it, and never up; the field is forwarded unchanged. Stream reprioritisation frames are not implemented — the proxy does not schedule the upstream's streams |
+| 8297 | An HTTP Status Code for Indicating Hints (103 Early Hints) | Full | Relayed to the client, at most eight informational responses per exchange, or stripped per route |
+| 8470 | Using Early Data in HTTP | Full | A request a terminating proxy marked `Early-Data: 1` is answered 425 Too Early unless the route says otherwise; a client's own marker decides nothing and is not forwarded. This proxy's own TLS server does not accept early data |
 | 7541 | HPACK | Full | With HTTP/2 |
 | 8441 | Bootstrapping WebSockets with HTTP/2 | Full | Extended `CONNECT`; the `:protocol` pseudo-header is claimed whole on a forward listener, and an unimplemented value is answered `501` rather than falling through to a TCP tunnel |
 | 6265 | HTTP State Management (cookies) | Full | Including the `__Host-` and `__Secure-` prefixes for the cookies this proxy issues |
@@ -135,7 +138,10 @@ named here so nobody has to guess:
 | 5155 | DNS Security (DNSSEC) Hashed Authenticated Denial of Existence | Full | NSEC3 closest-encloser proofs |
 | 9276 | Guidance for NSEC3 Parameter Settings | Full | Iteration counts above the guidance are refused rather than computed |
 | 6840 | Clarifications and Implementation Notes for DNSSEC | Full | |
+| 8198 | Aggressive Use of DNSSEC-Validated Cache | Partial | `dnssec.aggressive_nsec`: a validated NSEC gap answers NXDOMAIN for a sibling of the name it was collected for, and only for a client that set neither DO nor CD. NSEC3 gaps are not used, and a validated NODATA or wildcard answer is not reused |
 | 3110 | RSA/SHA-1 SIGs and RSA KEYs in the Domain Name System | Full | The DNSKEY exponent and modulus form |
+| 6147 | DNS64: DNS Extensions for Network Address Translation from IPv6 Clients to IPv4 Servers | Partial | AAAA synthesis for a name with only an A record, per client network, with the IPv4 address screened by `answer_policy` before it is embedded and no AD bit on a synthesised answer. PTR synthesis for the prefix, and the prefix discovery of RFC 7050, are not implemented |
+| 6052 | IPv6 Addressing of IPv4/IPv6 Translators | Full | The address placement at all six defined prefix lengths, checked against the RFC's own worked example |
 | 2606 | Reserved Top Level DNS Names | Full | Used throughout the decoys and tests, so nothing in them resolves |
 
 ## Mail
@@ -199,8 +205,18 @@ HAProxy's specification, versions 1 and 2, both implemented.
 | 7518 | JSON Web Algorithms | Partial | The signature algorithms a token may use; `none` is refused, and a key's type must match the algorithm |
 | 7638 | JSON Web Key Thumbprint | Full | Key identification |
 | 8725 | JSON Web Token Best Current Practices | Full | Issuer, audience, expiry and algorithm pinned rather than read from the token |
-| 6749 | The OAuth 2.0 Authorization Framework | Partial | The authorization code flow, as a relying party. PKCE (RFC 7636) is not implemented: the flow runs server side with a client secret and a state cookie |
+| 6749 | The OAuth 2.0 Authorization Framework | Partial | The authorization code flow, as a relying party, with PKCE, a nonce and a state cookie |
 | 7662 | OAuth 2.0 Token Introspection | Full | |
+| 7636 | Proof Key for Code Exchange | Full | The `oidc` filter sends `code_challenge` with `S256` and the verifier from its state cookie |
+| 9449 | OAuth 2.0 Demonstrating Proof of Possession (DPoP) | Full | The proof, its claims, the RFC 7638 thumbprint and the `cnf.jkt` binding, with a bounded replay cache for `jti` |
+| 8693 | OAuth 2.0 Token Exchange | Partial | As a client: a verified token is exchanged for one the backend can use, narrowed by audience, resource or scope. This proxy is not an exchange endpoint |
+| 8707 | Resource Indicators for OAuth 2.0 | Full | The `resource` parameter of an exchange |
+| 8705 | OAuth 2.0 Mutual-TLS Client Authentication and Certificate-Bound Access Tokens | Partial | The certificate-bound access token half (section 3): `cnf["x5t#S256"]` is compared with the client certificate of the connection, or with an RFC 9440 header from a trusted peer. Mutual-TLS *client authentication* to a token endpoint (section 2) is not implemented: this proxy is not one |
+| 9440 | Client-Cert HTTP Header Fields | Full | `Client-Cert` and `Client-Cert-Chain` as RFC 8941 byte sequences, sent to the upstream and stripped from an untrusted peer |
+| 8941 | Structured Field Values for HTTP | Partial | The byte sequence form the client certificate headers use |
+| 8949 | Concise Binary Object Representation (CBOR) | Partial | The canonical (CTAP2) subset a WebAuthn attestation and COSE key use; indefinite lengths, tags, floats and duplicate keys are refused |
+| 9052 | CBOR Object Signing and Encryption (COSE) | Partial | `COSE_Key` for ES256/384/512, EdDSA, RS256 and PS256, as WebAuthn credentials carry them |
+| 4051 | Additional XML Security Uniform Resource Identifiers | Partial | The signature and digest algorithm identifiers the SAML profile accepts, including ECDSA as concatenated `r` and `s` |
 | 4226 | HOTP: An HMAC-Based One-Time Password Algorithm | Full | Checked against every vector in appendix D |
 | 6238 | TOTP: Time-Based One-Time Password Algorithm | Full | Checked against every vector in appendix B, for all three hashes |
 | 4511 | Lightweight Directory Access Protocol (LDAP): The Protocol | Full | Bind and search, as a client |
@@ -211,7 +227,9 @@ HAProxy's specification, versions 1 and 2, both implemented.
 
 OpenID Connect Core 1.0 is an OpenID Foundation specification rather
 than an RFC; the discovery document, the authorization code flow, the
-ID token checks and front-channel logout are implemented.
+ID token checks and front-channel logout are implemented. SAML 2.0 and
+WebAuthn are not RFCs either; both are in the table at the end of this
+document, with the parts of each that are implemented.
 
 ## Content, encoding and data formats
 
@@ -227,6 +245,7 @@ ID token checks and front-channel logout are implemented.
 | 9530 | Digest Fields | Full | The body digest an origin signature covers |
 | 3507 | Internet Content Adaptation Protocol (ICAP) | Full | `REQMOD` and `RESPMOD` with preview and `204 No Content` |
 | 2046 | MIME Part Two: Media Types | Full | Multipart parsing |
+| 4918 / 3023 | XML Media Types | Partial | An XML request body is scanned before the application parses it: no document type declaration, no entity reference but the five predefines, bounded depth, elements, attributes, names and text. XSD validation is deliberately not implemented; see CONFIG.md |
 
 ## Addressing, logging and operations
 
@@ -261,13 +280,17 @@ not mistaken for an omission:
 | pcapng | `draft-ietf-opsawg-pcapng` | The capture file format |
 | WebTransport over HTTP/3 | W3C and `draft-ietf-webtrans-http3` | |
 | OpenID Connect Core 1.0 | OpenID Foundation | |
+| SAML 2.0 Core, Bindings and Profiles | OASIS | As a service provider: the web browser single sign-on profile with the HTTP Redirect binding for requests and HTTP POST for responses. A deliberately narrow profile -- one unencrypted assertion, exclusive canonicalization, SHA-256 and above, the signing key from the configuration -- and no single logout. [CONFIG.md](CONFIG.md) lists every refusal and the reason for it |
+| XML Signature Syntax and Processing | W3C | Verification only, of one enveloped signature per element: one `Reference` naming its own parent, the enveloped-signature transform and canonicalization and no other, no `KeyInfo` trust. No signature generation |
+| Exclusive XML Canonicalization 1.0 | W3C | Full, without comments, including an `InclusiveNamespaces` prefix list. The inclusive canonicalization of `REC-xml-c14n-20010315` is refused rather than approximated |
+| Web Authentication (WebAuthn) level 2 | W3C | Registration and authentication as a relying party; attestation is parsed but deliberately not verified (it identifies a model, not a person) |
 | Content Security Policy, CORS | W3C and WHATWG Fetch | The response header policy and the CORS policy |
 | Prometheus exposition format | Prometheus project | `/metrics` |
 | OpenTelemetry Protocol (OTLP) | CNCF | Traces, metrics and logs |
 | YARA | VirusTotal | A documented subset; see [CONFIG.md](CONFIG.md) for exactly which |
 | ModSecurity SecLang, OWASP CRS | Coraza, OWASP | The WAF rule language |
 | XCLIENT | Postfix | The SMTP extension that tells a mail server the real client |
-| `X-Forwarded-Client-Cert` | Envoy | The client certificate identity passed to the upstream; RFC 9440's `Client-Cert` field is not implemented |
+| `X-Forwarded-Client-Cert` | Envoy | One of the two forms of client certificate identity passed to the upstream; RFC 9440's `Client-Cert` is the other; `client_cert_headers` chooses, and the default is to send neither |
 | OpenSSH file formats | OpenSSH | `authorized_keys`, `known_hosts`, private keys |
 | WebAssembly, WASI preview 1 | W3C, Bytecode Alliance | The filter ABI |
 | Gateway API, Ingress | Kubernetes SIG Network | The ingress translator |
