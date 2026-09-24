@@ -1007,7 +1007,7 @@ templating, an operation policy and YARA over what is written. Sessions
 are recorded to asciicast files (`internal/asciicast`) bounded by count
 and size, and a second factor can be demanded after the key.
 
-### The relay: SMTP, MQTT, FTP, syslog, Modbus, NTP
+### The relay: SMTP, MQTT, FTP, syslog, Modbus, NTP and NTS
 
 The relay kinds (`internal/kinds/{smtp,mqtt,ftp,syslog,modbus,ntp,ntske}`)
 share a shape:

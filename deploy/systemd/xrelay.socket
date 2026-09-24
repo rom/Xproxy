@@ -5,7 +5,11 @@
 # One [Socket] unit can carry several ports, but only one
 # FileDescriptorName, so a relay with more than one listener wants one
 # unit per listener: copy this file, change the port and the name, and
-# list each in Requires= of xrelay.service.
+# list each in Requires= of xrelay.service. A datagram listener takes
+# ListenDatagram rather than ListenStream -- the time gateway is
+# ListenDatagram=0.0.0.0:123 with FileDescriptorName=time, and its key
+# establishment relay is an ordinary ListenStream on 4460; a Modbus
+# listener is ListenStream=0.0.0.0:502.
 [Unit]
 Description=xrelay listening sockets
 

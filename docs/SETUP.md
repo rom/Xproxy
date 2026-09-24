@@ -116,7 +116,7 @@ only.
 | `/etc/systemd/system/xproxy-admin.service`, `/etc/polkit-1/rules.d/50-xproxy-admin.rules` | web GUI service (disabled until you enable it) and the polkit rule that lets it restart the data plane |
 | `/etc/systemd/system/xproxy.socket`, `xproxy-https.socket`, `xproxy-h3.socket` | listening sockets on TCP 80, TCP 443 and UDP 443 |
 | `/etc/systemd/system/xgate.service`, `xgate.socket` | the gate daemon and its socket on TCP 22 (disabled until you enable it; read the note in the socket unit first) |
-| `/etc/systemd/system/xrelay.service`, `xrelay.socket` | the relay daemon and its socket on TCP 25 (disabled until you enable it) |
+| `/etc/systemd/system/xrelay.service`, `xrelay.socket` | the relay daemon and its socket on TCP 25 (disabled until you enable it; copy the socket unit per listener -- `ListenStream` for Modbus on 502 or NTS key establishment on 4460, `ListenDatagram` for the time gateway on UDP 123) |
 | `/usr/lib/tmpfiles.d/xproxy-cluster.conf` | `/run/xproxy-cluster`, `0770 root:xproxy-cluster`, where the daemons' local cluster sockets live |
 | `/etc/sysctl.d/90-xproxy.conf` | kernel profile |
 | `/etc/logrotate.d/xproxy`, `xgate`, `xrelay` | rotation calling `xproxyctl reopen-logs` on each daemon's socket |

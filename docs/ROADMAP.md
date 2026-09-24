@@ -300,10 +300,11 @@ of them is a flaw in front of all of them.
 - A listener whose kind this binary did not link is refused by name
   rather than falling through to the HTTP data plane: delivered
   (`TestUnlinkedKindRefused`)
-- Three daemons — `xproxy` (edge: http, forward, tcp, dns), `xgate`
-  (gate: ssh), `xrelay` (relay: smtp, mqtt, ftp, syslog) — sharing one
-  module, one configuration format and one control plane, with the
-  common body in `internal/daemon`: delivered
+- Three daemons — `xproxy` (edge: http, forward, tcp, udp, dns),
+  `xgate` (gate: ssh, telnet, vnc, rdp), `xrelay` (relay: smtp, mqtt,
+  ftp, syslog, modbus, ntp, ntske) — sharing one module, one
+  configuration format and one control plane, with the common body in
+  `internal/daemon`: delivered
 - Each daemon validates the whole configuration and binds only its own
   role's listeners, so an estate shares a set of includes: delivered
 - A cluster over Unix sockets for the daemons of one machine, with no
@@ -333,13 +334,27 @@ of them is a flaw in front of all of them.
   `internal/kinds/ftp` 54 % to 70 %, `internal/kinds/dns` 58 % to
   89 %), and `test/covergate` now excludes every `main` package by
   where it lives rather than by a list that goes stale
+- The kinds the split was for, each costing only the daemon that serves
+  it: the remote access gateways `telnet`, `vnc` (RFB 3.3 to 3.8,
+  VeNCrypt and the vendor security types) and `rdp` (TLS, network level
+  authentication or the protocol's own encryption), all three with
+  session recording and the shared second factor: delivered
+- A generic datagram relay (`kind: udp`) for the services with no parser
+  here, with a session table in place of a connection, bounds per source
+  as well as in total, and a connected socket towards the endpoint:
+  delivered
+- The operational technology kinds: `modbus` in both directions, with
+  the policy in the protocol's own terms, Modbus/TCP Security and
+  learning mode; and `ntp` with `ntske` — a time gateway that reads
+  every packet, compares its servers and passes NTS through without
+  pretending to have verified it: delivered
 
 ## After 1.4 (candidates, unranked)
 
-- The remote access protocols (VNC, RDP, Telnet, Citrix ICA, PCoIP,
-  NX) as gate kinds, and the operational technology ones (Modbus/TCP,
-  OPC UA) as relay kinds. The split exists so that adding them costs
-  the daemon that serves them and nothing else.
+- The remote access protocols this release did not take (Citrix ICA,
+  PCoIP, NX) as gate kinds, and OPC UA as a relay kind beside Modbus.
+  The split exists so that adding them costs the daemon that serves
+  them and nothing else.
 - WinRM and WS-Management as HTTP filters rather than a kind: they are
   SOAP over HTTP, so the edge already terminates them.
 - WireGuard and IPSec are not planned here. MASQUE already is the TLS

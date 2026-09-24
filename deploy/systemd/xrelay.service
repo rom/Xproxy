@@ -1,6 +1,8 @@
-# xrelay, the relay daemon: SMTP and submission, MQTT, FTP and syslog.
-# Pairs with xrelay.socket for socket activation so the service never
-# needs root or CAP_NET_BIND_SERVICE.
+# xrelay, the relay daemon: SMTP and submission, MQTT, FTP, syslog,
+# Modbus, and the NTP and NTS time gateway. Pairs with xrelay.socket for
+# socket activation so the service never needs root or
+# CAP_NET_BIND_SERVICE -- which the relay ports need: 25, 502 and 123 are
+# all privileged.
 #
 # Install:  cp xrelay.service xrelay.socket /etc/systemd/system/
 #           systemctl daemon-reload && systemctl enable --now xrelay.socket
