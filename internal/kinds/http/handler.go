@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -1254,13 +1255,14 @@ func authKind(r *http.Request) string {
 }
 
 func mediaType(ct string) string {
-	if ct == "" {
+	if ct == "" || len(ct) > apiinv.MaxMediaTypeBytes {
 		return ""
 	}
-	if i := strings.IndexByte(ct, ';'); i >= 0 {
-		ct = ct[:i]
+	mt, _, err := mime.ParseMediaType(ct)
+	if err != nil || len(mt) > apiinv.MaxMediaTypeBytes {
+		return ""
 	}
-	return strings.ToLower(strings.TrimSpace(ct))
+	return strings.ToLower(mt)
 }
 
 // deny writes a minimal error response and a security log entry.

@@ -79,6 +79,10 @@ const (
 	shards        = 64
 	maxSetEntries = 6
 	defaultMax    = 10000
+	// MaxMediaTypeBytes bounds strings retained for every inventory endpoint.
+	// It is exported so protocol handlers can reject oversized values before
+	// parsing them, while Observe enforces the bound at the storage boundary.
+	MaxMediaTypeBytes = 256
 )
 
 type entry struct {
@@ -224,7 +228,7 @@ func shardOf(k string) int {
 }
 
 func addSet(set []string, v string) []string {
-	if v == "" {
+	if v == "" || len(v) > MaxMediaTypeBytes {
 		return set
 	}
 	for _, s := range set {

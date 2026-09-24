@@ -1123,7 +1123,9 @@ func TestMediaTypeNormalises(t *testing.T) {
 		"APPLICATION/JSON; charset=x": "application/json",
 		"  text/plain  ":              "text/plain",
 		";":                           "",
-		"text/plain;":                 "text/plain",
+		"text/plain;":                 "",
+		"not a media type":            "",
+		"application/" + strings.Repeat("x", apiinv.MaxMediaTypeBytes): "",
 	}
 	for in, want := range cases {
 		if got := mediaType(in); got != want {
