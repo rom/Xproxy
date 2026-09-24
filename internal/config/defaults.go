@@ -197,6 +197,8 @@ func applyDefaults(c *Config) {
 			if d.Cache.NegativeTTL == 0 {
 				d.Cache.NegativeTTL = Duration(60 * time.Second)
 			}
+			setDur(&d.Cache.StaleTTL, 30*time.Second)
+			setFloat(&d.Cache.PrefetchThreshold, 0.1)
 			setInt(&d.MaxInFlight, 1024)
 			setStr(&d.ECS, "strip")
 			if ap := d.AnswerPolicy; ap != nil {

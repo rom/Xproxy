@@ -602,6 +602,10 @@ browsers should use it) side by side.
 | `cache.min_ttl` | duration | `5s` | Floor applied to upstream TTLs |
 | `cache.max_ttl` | duration | `1h` | Ceiling applied to upstream TTLs; at most 168h |
 | `cache.negative_ttl` | duration | `60s` | NXDOMAIN and empty answers; 0 disables |
+| `cache.serve_stale` | duration | `0` (off) | Keep an expired entry this much longer and serve it when the upstream has nothing (RFC 8767); at most 24h |
+| `cache.stale_ttl` | duration | `30s` | The TTL a stale answer carries, so the client comes back soon; at most 5m |
+| `cache.prefetch` | bool | `false` | Refresh a nearly expired entry when a query arrives for it |
+| `cache.prefetch_threshold` | float | `0.1` | The share of the TTL that must be left for a query to start a refresh; at most 0.5 |
 | `rate_limit` | `{qps, burst}` | none | Per client token bucket (defaults 50 and 100 when the section is present); over it queries are dropped, not answered |
 | `max_in_flight` | int | `1024` | Queries being handled at once; beyond it UDP queries are dropped |
 | `log_queries` | bool | `false` | One `dns` access log line per query (client, name, type, rcode, source, bytes, duration). Query logs are personal data; leave off unless needed |
@@ -613,6 +617,59 @@ browsers should use it) side by side.
 | `tunnel_detection` | object | none | Watch for data leaving inside the query names; see below |
 | `answer_policy` | object | none | Screen where an answer points, not only what was asked; see below |
 | `ecs` | `strip`, `forward` | `strip` | What happens to a client's EDNS Client Subnet option on the way upstream |
+
+#### server.listeners[].dns.cache: serve-stale and prefetch
+
+Two settings about what happens at the edges of a TTL, and neither
+changes what is cached -- only when the cache is allowed to answer.
+
+**`serve_stale`** (RFC 8767) keeps an expired entry for that much longer
+and serves it when the upstream has nothing to say. It is the difference
+between a resolver outage taking the network with it and a resolver
+outage nobody notices for an hour: the answer is out of date by
+definition, and a name almost always still resolves where it did a
+minute ago, while a client that cannot be told anything cannot reach the
+upstream itself either. A stale answer carries `stale_ttl` (30 seconds by
+default, RFC 8767's recommendation) rather than the TTL the zone
+published, so the client comes back soon instead of keeping an answer
+this resolver already knows is old. It is counted as
+`xproxy_dns_stale_total` and logged with `source=stale`, so an operator
+can see that a resolver is running on stale answers rather than
+discovering it later.
+
+A stale entry is not a cache hit: the upstream is asked first, every
+time, and the expired answer is used only when that produced nothing.
+This proxy waits out the whole upstream budget before falling back,
+rather than RFC 8767's optional short client-response timeout -- a
+slower answer that is current beats a fast one that is not.
+
+"Nothing to say" means no answer at all, and also a SERVFAIL when
+`dnssec` is off. With validation on a SERVFAIL is the code a resolver
+returns for an answer it *rejected*, and covering that with an expired
+answer of our own would undo the validation: the client would be handed,
+as a last resort, exactly the answer somebody decided not to trust. So
+with `dnssec` on, only an upstream that answers nothing at all falls
+back to stale.
+
+**`prefetch`** refreshes an entry when a query arrives for it and less
+than `prefetch_threshold` of its TTL is left, so a popular name is
+answered from the cache continuously instead of one client per TTL
+waiting for the upstream. The client that triggered it is answered from
+the cache immediately and waits for nothing.
+
+The refresh is claimed on the cache entry itself, so a burst of queries
+for the same nearly-expired name starts one refresh and not a hundred --
+which is the stampede this setting exists to prevent and would otherwise
+cause. Refreshes have a budget of their own (64 at a time) rather than a
+share of `max_in_flight`: a resolver that answered clients more slowly
+because it was busy refreshing would have the feature backwards. A
+refresh that comes back with nothing, or with an answer validation
+rejects, leaves the entry as it was to expire or be served stale on its
+own terms. `xproxy_dns_prefetch_total` counts the refreshes started.
+
+The two work well together: `prefetch` keeps the names that are in use
+current, and `serve_stale` covers the ones that are not when the
+upstream goes away.
 
 #### server.listeners[].dns.answer_policy
 

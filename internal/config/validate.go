@@ -4134,6 +4134,18 @@ func (v *validator) dnsListener(p string, d *DNSListener) {
 		if c.NegativeTTL < 0 || c.NegativeTTL > Duration(24*time.Hour) {
 			v.errf("%s.cache.negative_ttl: must be between 0 and 24h", p)
 		}
+		// A stale window longer than a day stops being a resolver outage
+		// this resolver rides out and starts being a resolver that
+		// answers from last week.
+		if c.ServeStale < 0 || c.ServeStale > Duration(24*time.Hour) {
+			v.errf("%s.cache.serve_stale: must be between 0 and 24h", p)
+		}
+		if c.StaleTTL <= 0 || c.StaleTTL > Duration(5*time.Minute) {
+			v.errf("%s.cache.stale_ttl: must be positive and at most 5m", p)
+		}
+		if c.PrefetchThreshold <= 0 || c.PrefetchThreshold > 0.5 {
+			v.errf("%s.cache.prefetch_threshold: must be between 0 and 0.5", p)
+		}
 	}
 	if rl := d.RateLimit; rl != nil {
 		if rl.QPS <= 0 || rl.QPS > 1_000_000 || rl.Burst < 1 {

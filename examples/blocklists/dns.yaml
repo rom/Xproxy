@@ -16,7 +16,15 @@ server:
         block_action: sinkhole
         sinkhole_ipv4: 10.255.255.254
         dnssec: {enabled: true}
-        cache: {max_entries: 50000, max_ttl: 6h}
+        cache:
+          max_entries: 50000
+          max_ttl: 6h
+          # An upstream outage should not take the network with it: an
+          # expired answer is worth more than a SERVFAIL for an hour.
+          serve_stale: 1h
+          # And the names in use stay current without a client waiting
+          # for the upstream once per TTL.
+          prefetch: true
         # Where an answer may point. A block list cannot express this:
         # rebinding and the cloud metadata endpoint are ordinary names
         # answering an address they have no business answering.

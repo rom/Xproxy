@@ -1793,6 +1793,49 @@ using this listener at all, which is a network policy question rather
 than a detector one: block outbound 853 and the known DoH endpoints, or
 serve the discovery records so clients upgrade to this resolver instead.
 
+## DNS serve-stale and prefetch
+
+**`xproxyctl dns` shows `stale` climbing.** The listener is answering
+from expired entries because the upstream resolvers are not answering.
+That is `serve_stale` doing its job and it is also an outage: the
+answers are out of date and getting older. Check `upstream_failures` in
+the same view and the upstreams themselves. `source=stale` in the access
+log names the queries affected.
+
+**A name that changed address keeps resolving to the old one for up to
+30 seconds after the upstream came back.** That is `stale_ttl`: a stale
+answer is served with a short TTL so the client comes back soon, and
+until it does the client's own cache holds what it was given. Nothing is
+wrong; lower `stale_ttl` if 30 seconds is too long for a failover, at
+the cost of more queries during an outage.
+
+**A stale answer was not served even though the entry should still be in
+the window.** Three reasons, in order of likelihood. The entry was
+evicted: the cache is an LRU and a stale entry occupies a slot like any
+other, so a busy resolver with a small `max_entries` loses the least
+recently used ones first. The window had passed — `serve_stale` is
+measured from expiry, not from the last query. Or the upstream *did*
+answer, with SERVFAIL, on a listener with `dnssec` on: that is not
+treated as an outage, because with validation on a SERVFAIL is the code
+for an answer that was *rejected*, and standing in for it with an
+expired answer of our own would hand the client exactly what validation
+refused.
+
+**Prefetch does not seem to do anything.** It only fires on a query for
+an entry that is already in the cache and already past
+`prefetch_threshold` of its TTL — a name queried once per hour with a
+five minute TTL is never in that state and is not what the setting is
+for. `xproxy_dns_prefetch_total` counts the refreshes started; if it is
+zero on a busy resolver, raise `prefetch_threshold` (0.1 is the default,
+0.5 the maximum) or check that the names in question are actually being
+re-queried before they expire.
+
+**Upstream traffic went up after turning prefetch on.** Some increase is
+the point: a refreshed entry is an upstream query that used to happen on
+a client's clock instead. A large increase means `prefetch_threshold` is
+too high for the TTLs in play — refreshing an entry with half its life
+left does twice the upstream traffic for the same coverage.
+
 ## DNS answer policy and the client subnet
 
 **A name that works everywhere else returns NXDOMAIN here.** Look for

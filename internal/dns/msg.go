@@ -295,6 +295,18 @@ func AdjustTTL(b []byte, qEnd int, h Header, elapsed uint32) {
 	})
 }
 
+// SetTTL writes one TTL into every record (OPT excluded), for an answer
+// whose own TTLs have run out: a stale answer carries the short TTL
+// RFC 8767 asks for rather than the one the zone published.
+func SetTTL(b []byte, qEnd int, h Header, ttl uint32) {
+	_ = rrWalk(b, qEnd, h, func(ttlOff int, typ uint16, _ uint32) {
+		if typ == TypeOPT {
+			return
+		}
+		binary.BigEndian.PutUint32(b[ttlOff:], ttl)
+	})
+}
+
 // maxEDNSUDP caps the UDP payload size honoured from a client's OPT record
 // (RFC 9715's recommended 1232): larger advertised sizes fragment on the
 // path and, on a listener reachable by spoofed sources, turn the resolver

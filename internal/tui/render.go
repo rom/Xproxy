@@ -279,6 +279,11 @@ func renderOverview(d Data, sty Style, w int) []string {
 		if l.AnswerDenied+l.AnswerStripped+l.ECSStripped > 0 {
 			out = append(out, fmt.Sprintf("  %-12s answers denied %d stripped %d, client subnet stripped %d", "", l.AnswerDenied, l.AnswerStripped, l.ECSStripped))
 		}
+		// A resolver running on expired answers is in an outage, so this
+		// line appears the moment one does.
+		if l.Stale+l.Prefetched > 0 {
+			out = append(out, fmt.Sprintf("  %-12s stale %d prefetched %d", "", l.Stale, l.Prefetched))
+		}
 	}
 	if d.Series != nil && len(d.Series.Points) > 1 {
 		out = append(out, "", "  "+sparkRow("req/s", seriesValues(d.Series, "requests"), w-12, sty))

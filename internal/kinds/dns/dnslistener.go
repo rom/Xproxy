@@ -85,6 +85,8 @@ func dnsPolicy(cfg *config.DNSListener) (*wire.Policy, error) {
 		Resolver:     resolver,
 		MinTTL:       cc.MinTTL.D(), MaxTTL: cc.MaxTTL.D(), NegativeTTL: cc.NegativeTTL.D(),
 		LogQueries: cfg.LogQueries,
+		ServeStale: cc.ServeStale.D(), StaleTTL: cc.StaleTTL.D(),
+		Prefetch: cc.Prefetch, PrefetchThreshold: cc.PrefetchThreshold,
 	}
 	if a, err := netip.ParseAddr(cfg.SinkholeIPv4); err == nil {
 		b := a.As4()

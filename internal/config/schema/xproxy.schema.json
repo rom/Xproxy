@@ -1092,6 +1092,24 @@
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "prefetch": {
+          "description": "Prefetch refreshes a nearly expired entry when a query arrives for it, instead of making one client per TTL wait for the upstream. Default false.",
+          "type": "boolean"
+        },
+        "prefetch_threshold": {
+          "description": "PrefetchThreshold is the share of the TTL that must be left for a query to start a refresh. Default 0.1; at most 0.5, because refreshing an entry with half its life left is a resolver doing twice the upstream traffic for nothing.",
+          "type": "number"
+        },
+        "serve_stale": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "stale_ttl": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
         }
       },
       "additionalProperties": false

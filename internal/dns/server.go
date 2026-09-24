@@ -47,6 +47,28 @@ type Policy struct {
 	// ECS is strip (the default) or forward: what happens to a client's
 	// EDNS Client Subnet option on the way upstream.
 	ECS string
+	// ServeStale is how long past its TTL an answer is kept so it can
+	// be served when the upstream has nothing (RFC 8767). 0 disables.
+	ServeStale time.Duration
+	// StaleTTL is the TTL a stale answer carries. Default 30s, which is
+	// what RFC 8767 section 4 recommends.
+	StaleTTL time.Duration
+	// Prefetch refreshes an entry that is nearly expired when a query
+	// arrives for it, so a popular name is answered from the cache
+	// rather than waiting on the upstream once per TTL.
+	Prefetch bool
+	// PrefetchThreshold is the share of the TTL that must be left for a
+	// query to trigger a refresh. Default 0.1.
+	PrefetchThreshold float64
+}
+
+// staleSeconds is the TTL a stale answer carries, in seconds.
+func staleSeconds(p *Policy) uint32 {
+	d := p.StaleTTL
+	if d <= 0 {
+		d = 30 * time.Second
+	}
+	return uint32(d / time.Second) //nolint:gosec // bounded by validation
 }
 
 // Hooks connect the server to the proxy's logs and ban list.
@@ -82,6 +104,9 @@ type Server struct {
 	policy atomic.Pointer[Policy]
 	hooks  Hooks
 	sem    chan struct{}
+	// prefetch bounds the refreshes running at once, separately from
+	// sem: a refresh is work nobody is waiting for.
+	prefetch chan struct{}
 	// Encrypted marks a TLS listener; DoHPath is the RFC 8484 path.
 	Encrypted bool
 	// QUIC marks a listener that also answers DNS over QUIC beside the
@@ -111,6 +136,10 @@ type Server struct {
 	// AnswerStripped those that had records removed; ECSStripped counts
 	// the queries whose client subnet option was not forwarded.
 	AnswerDenied, AnswerStripped, ECSStripped atomic.Uint64
+	// Stale counts answers served after they expired because the
+	// upstream had nothing, and Prefetched the refreshes started before
+	// an entry expired.
+	Stale, Prefetched atomic.Uint64
 	// dropNotice warns when queries are dropped for lack of workers.
 	dropNotice bound.Notice
 }
@@ -177,6 +206,10 @@ type Status struct {
 	AnswerDenied   uint64 `json:"answer_denied"`
 	AnswerStripped uint64 `json:"answer_stripped"`
 	ECSStripped    uint64 `json:"ecs_stripped"`
+	// Stale reports the answers served past their TTL (RFC 8767) and
+	// Prefetched the refreshes started before an entry expired.
+	Stale      uint64 `json:"stale"`
+	Prefetched uint64 `json:"prefetched"`
 	// LocalNames are the names answered from the local record set.
 	LocalNames []string `json:"local_names,omitempty"`
 	// DoQ reports whether DNS over QUIC is served on this listener.
@@ -199,8 +232,10 @@ type TunnelStatus struct {
 // cache of cacheEntries and at most inFlight queries being handled.
 func New(name string, udp net.PacketConn, tcp net.Listener, cacheEntries, inFlight int, p *Policy, hooks Hooks) *Server {
 	s := &Server{Name: name, udp: udp, tcp: tcp, cache: NewCache(cacheEntries), hooks: hooks,
-		sem: make(chan struct{}, max(inFlight, 1)), cons: map[net.Conn]struct{}{}, done: make(chan struct{})}
+		sem: make(chan struct{}, max(inFlight, 1)), prefetch: make(chan struct{}, maxPrefetch),
+		cons: map[net.Conn]struct{}{}, done: make(chan struct{})}
 	s.policy.Store(p)
+	s.cache.SetStale(p.ServeStale)
 	return s
 }
 
@@ -208,6 +243,7 @@ func New(name string, udp net.PacketConn, tcp net.Listener, cacheEntries, inFlig
 func (s *Server) Apply(p *Policy, cacheEntries int) {
 	old := s.policy.Swap(p)
 	s.cache.Resize(cacheEntries)
+	s.cache.SetStale(p.ServeStale)
 	if old != nil && old.Resolver != nil && old.Resolver != p.Resolver {
 		old.Resolver.Close() // idle encrypted connections of the previous policy
 	}
@@ -230,7 +266,8 @@ func (s *Server) Status() Status {
 		Blocked: s.Blocked.Load(), Refused: s.Refused.Load(), Dropped: s.Dropped.Load(), ServFail: s.ServFail.Load(),
 		Truncated: s.Truncated.Load(), FormErr: s.FormErr.Load(), Encrypted: s.Encrypted, DoQ: s.QUIC,
 		QueriesUDP: s.UDP.Load(), QueriesTCP: s.TCP.Load(), QueriesDoT: s.DoT.Load(), QueriesDoH: s.DoH.Load(), QueriesDoQ: s.DoQ.Load(), QueriesLocal: s.Local.Load(),
-		AnswerDenied: s.AnswerDenied.Load(), AnswerStripped: s.AnswerStripped.Load(), ECSStripped: s.ECSStripped.Load()}
+		AnswerDenied: s.AnswerDenied.Load(), AnswerStripped: s.AnswerStripped.Load(), ECSStripped: s.ECSStripped.Load(),
+		Stale: s.Stale.Load(), Prefetched: s.Prefetched.Load()}
 	if p != nil {
 		st.LocalNames = p.Local.Names()
 	}
@@ -581,6 +618,7 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 				return s.finish(query, qEnd, h, q, client, proto, start, "cache:answer:"+sc.action,
 					s.fit(query, qEnd, h, sc.resp, sc.rEnd, tcp))
 			}
+			s.maybePrefetch(p, q, now)
 			if qm != nil {
 				resp = s.finalizeDNSSEC(resp, qm, h)
 				if _, e, err := ParseQuestion(resp); err == nil {
@@ -614,17 +652,192 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 			s.ECSStripped.Add(1)
 		}
 	}
-	resp, err := p.Resolver.Exchange(ctx, upQuery, qEnd, q, len(query) > maxUDP)
-	if err != nil {
-		s.ServFail.Add(1)
-		return s.finish(query, qEnd, h, q, client, proto, start, "servfail", Reply(query, qEnd, h, RcodeServFail))
+	lk := s.ask(ctx, p, query, upQuery, qEnd, h, q, client, proto, now, len(query) > maxUDP)
+	if lk.failed(p) {
+		// The upstream has nothing to say. An expired answer this
+		// resolver already holds is worth more than a SERVFAIL
+		// (RFC 8767): the name almost certainly still resolves where it
+		// did a minute ago, and a client that cannot be told that
+		// cannot reach the upstream itself either.
+		if resp, rEnd := s.cache.Stale(q, h.ID, now, staleSeconds(p)); resp != nil {
+			s.Stale.Add(1)
+			return s.finish(query, qEnd, h, q, client, proto, start, "stale", s.fit(query, qEnd, h, resp, rEnd, tcp))
+		}
+		if lk.err != nil {
+			s.ServFail.Add(1)
+			return s.finish(query, qEnd, h, q, client, proto, start, "servfail", Reply(query, qEnd, h, RcodeServFail))
+		}
 	}
-	source := "upstream"
+	if lk.bogus {
+		s.ServFail.Add(1)
+		if s.hooks.Event != nil {
+			s.hooks.Event(client, "dns_bogus", proto != "udp", "listener", s.Name, "name", q.Name, "type", TypeName(q.Type), "proto", proto)
+		}
+		return s.finish(query, qEnd, h, q, client, proto, start, lk.source, lk.resp)
+	}
+	resp, rEnd := lk.resp, lk.rEnd
+	if lk.synthetic {
+		qm = nil // a synthetic answer carries no signatures to shape
+	}
+	if qm != nil {
+		resp = s.finalizeDNSSEC(resp, qm, h)
+		if _, e, err := ParseQuestion(resp); err == nil {
+			rEnd = e
+		}
+	}
+	return s.finish(query, qEnd, h, q, client, proto, start, lk.source, s.fit(query, qEnd, h, resp, rEnd, tcp))
+}
+
+// maxPrefetch bounds the refreshes running at once. A prefetch is work
+// nobody is waiting for, so it gets a budget of its own rather than a
+// share of max_in_flight: a resolver that answered clients more slowly
+// because it was busy refreshing would have the feature backwards.
+const maxPrefetch = 64
+
+// defaultPrefetchThreshold is the share of the TTL below which a query
+// triggers a refresh.
+const defaultPrefetchThreshold = 0.1
+
+// maybePrefetch refreshes an entry that a query has just been answered
+// from and that is nearly expired, so the name stays answered from the
+// cache instead of one client per TTL waiting on the upstream.
+//
+// The refresh is claimed on the cache entry, so a burst of queries for
+// the same nearly-expired name starts one refresh and not a hundred --
+// which is the stampede this feature exists to prevent and would
+// otherwise cause.
+func (s *Server) maybePrefetch(p *Policy, q Question, now time.Time) {
+	if !p.Prefetch || q.Class != ClassIN {
+		return
+	}
+	threshold := p.PrefetchThreshold
+	if threshold <= 0 {
+		threshold = defaultPrefetchThreshold
+	}
+	left, ok := s.cache.Remaining(q, now)
+	if !ok || left > threshold {
+		return
+	}
+	select {
+	case <-s.done:
+		return
+	default:
+	}
+	// The claim is taken before the slot, so a full prefetch budget does
+	// not leave a claim behind that nothing will release.
+	if !s.cache.Refreshing(q) {
+		return
+	}
+	select {
+	case s.prefetch <- struct{}{}:
+	default:
+		s.cache.Refreshed(q)
+		return
+	}
+	s.Prefetched.Add(1)
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		defer func() { <-s.prefetch }()
+		defer safe.Guard("dns prefetch")
+		s.refresh(p, q)
+	}()
+}
+
+// refresh asks the upstream for a question already in the cache and
+// lets ask store what comes back. The query is this proxy's own: a
+// fresh id, the same question, and no client to answer.
+func (s *Server) refresh(p *Policy, q Question) {
+	query, err := Query(0, q.Name, q.Type)
+	if err != nil {
+		s.cache.Refreshed(q)
+		return
+	}
+	_, qEnd, err := ParseQuestion(query)
+	if err != nil {
+		s.cache.Refreshed(q)
+		return
+	}
+	qh, err := ParseHeader(query)
+	if err != nil {
+		s.cache.Refreshed(q)
+		return
+	}
+	upQuery := query
+	if p.DNSSEC != nil {
+		upQuery = withDO(query)
+	}
+	budget := p.Resolver.timeout * time.Duration(max(len(p.Resolver.servers), 1))
+	if p.DNSSEC != nil {
+		budget *= 4
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+	// No client and no proto: a refusal here is not somebody's query
+	// being refused, and attributing it to the client whose query
+	// happened to trigger the refresh would put a security event against
+	// an address that did nothing.
+	lk := s.ask(ctx, p, query, upQuery, qEnd, qh, q, netip.Addr{}, "prefetch", time.Now(), false)
+	if lk.err != nil || lk.bogus {
+		// A refresh that came back with nothing leaves the entry as it
+		// was, to expire or be served stale on its own terms, and
+		// releases the claim so the next query may try again.
+		s.cache.Refreshed(q)
+	}
+}
+
+// lookup is what one upstream exchange came to: the answer to send, the
+// label for the log, and the two outcomes the caller has to act on.
+type lookup struct {
+	resp   []byte
+	rEnd   int
+	source string
+	// err is an upstream that answered nothing at all.
+	err error
+	// bogus says validation rejected the answer and the client did not
+	// ask to see it anyway.
+	bogus bool
+	// synthetic says resp is this proxy's own answer rather than the
+	// upstream's, so there are no signatures in it to shape.
+	synthetic bool
+	// rcode is the upstream answer's code, or -1 when there was none.
+	rcode int
+}
+
+// failed reports a lookup a stale answer may stand in for: no answer at
+// all, or a SERVFAIL on a listener that is not validating.
+//
+// A SERVFAIL counts only without validation, deliberately. With
+// validation on it is the code a resolver returns for an answer it
+// rejected, and covering that with an expired answer of our own would
+// undo the validation: the client would be handed, as a last resort, the
+// very answer somebody decided not to trust. Without validation a
+// SERVFAIL is what a broken or overloaded upstream says, which is
+// exactly the outage RFC 8767 is about.
+func (lk lookup) failed(p *Policy) bool {
+	if lk.err != nil {
+		return true
+	}
+	return p.DNSSEC == nil && lk.rcode == RcodeServFail
+}
+
+// ask exchanges with the upstream, validates, screens where the answer
+// points and caches what is left. Everything the client sees -- the
+// bogus refusal, the DNSSEC shaping, truncation -- stays with the
+// caller, which is what lets a prefetch and a client's query take the
+// same path into the cache and a different one back out.
+func (s *Server) ask(ctx context.Context, p *Policy, query, upQuery []byte, qEnd int, h Header,
+	q Question, client netip.Addr, proto string, now time.Time, stream bool) lookup {
+	resp, err := p.Resolver.Exchange(ctx, upQuery, qEnd, q, stream)
+	if err != nil {
+		return lookup{err: err}
+	}
+	out := lookup{source: "upstream", rcode: -1}
 	cacheable := true
 	if p.DNSSEC != nil {
 		var res Result
 		res, resp = p.DNSSEC.Validate(ctx, query, qEnd, h, resp)
-		source = "upstream:" + res.String()
+		out.source = "upstream:" + res.String()
 		// The cache is shared by every client of the listener and its
 		// key records nothing about CD, DO or the validation result, so
 		// only an answer this node stands behind may enter it. A client
@@ -634,14 +847,12 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 		// undone by one bit from any client that can reach the port.
 		cacheable = res == Secure || res == Insecure
 		if res == Bogus && h.Flags&flagCD == 0 {
-			s.ServFail.Add(1)
-			if s.hooks.Event != nil {
-				s.hooks.Event(client, "dns_bogus", proto != "udp", "listener", s.Name, "name", q.Name, "type", TypeName(q.Type), "proto", proto)
-			}
-			return s.finish(query, qEnd, h, q, client, proto, start, source, resp)
+			out.resp, out.rEnd, out.bogus = resp, qEnd, true
+			return out
 		}
 	}
 	rh, _ := ParseHeader(resp)
+	out.rcode = rh.Rcode()
 	_, rEnd, qerr := ParseQuestion(resp)
 	// Where the answer points is screened before it is cached, so an
 	// answer this listener refuses never becomes one it serves.
@@ -649,7 +860,8 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 		if sc := s.screen(p, query, qEnd, h, q, resp, rEnd); sc.action != "" {
 			s.answerEvent(client, proto, q, sc)
 			resp, rEnd = sc.resp, sc.rEnd
-			source += ":answer:" + sc.action
+			out.source += ":answer:" + sc.action
+			out.synthetic = true
 			if sc.action == AnswerStrip {
 				// What is left is what this listener stands behind, so
 				// it is what the cache keeps.
@@ -657,7 +869,6 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 			} else {
 				cacheable = false
 			}
-			qm = nil // a synthetic answer carries no signatures to shape
 		}
 	}
 	if qerr == nil && !rh.Truncated() && h.RecursionDesired() {
@@ -679,13 +890,8 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 	if qerr != nil {
 		rEnd = qEnd
 	}
-	if qm != nil {
-		resp = s.finalizeDNSSEC(resp, qm, h)
-		if _, e, err := ParseQuestion(resp); err == nil {
-			rEnd = e
-		}
-	}
-	return s.finish(query, qEnd, h, q, client, proto, start, source, s.fit(query, qEnd, h, resp, rEnd, tcp))
+	out.resp, out.rEnd = resp, rEnd
+	return out
 }
 
 // finalizeDNSSEC shapes a validated response for the client: AD only

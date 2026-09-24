@@ -1595,6 +1595,29 @@ type DNSCache struct {
 	// NegativeTTL caches NXDOMAIN and empty answers. Default 60s; 0
 	// disables.
 	NegativeTTL Duration `yaml:"negative_ttl"`
+	// ServeStale keeps an expired entry this much longer so it can be
+	// served when the upstream has nothing (RFC 8767). Default 0, which
+	// keeps nothing; 1h is a reasonable window.
+	//
+	// It is the difference between a resolver outage taking the network
+	// with it and a resolver outage nobody notices for an hour. The
+	// answer is out of date by definition, and a name almost always
+	// still resolves where it did a minute ago -- while a client that
+	// cannot be told anything cannot reach the upstream itself either.
+	ServeStale Duration `yaml:"serve_stale"`
+	// StaleTTL is the TTL a stale answer carries, so the client comes
+	// back soon rather than keeping an answer this resolver already
+	// knows is old. Default 30s, which is what RFC 8767 recommends.
+	StaleTTL Duration `yaml:"stale_ttl"`
+	// Prefetch refreshes a nearly expired entry when a query arrives
+	// for it, instead of making one client per TTL wait for the
+	// upstream. Default false.
+	Prefetch bool `yaml:"prefetch"`
+	// PrefetchThreshold is the share of the TTL that must be left for a
+	// query to start a refresh. Default 0.1; at most 0.5, because
+	// refreshing an entry with half its life left is a resolver doing
+	// twice the upstream traffic for nothing.
+	PrefetchThreshold float64 `yaml:"prefetch_threshold"`
 }
 
 // DNSRateLimit is a per client token bucket.

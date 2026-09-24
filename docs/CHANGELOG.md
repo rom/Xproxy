@@ -478,6 +478,42 @@ Open findings of the earlier rounds:
   `discovery`, the sinkhole addresses -- are not, which is why
   `sinkhole_ipv4: 0.0.0.0` still works inside a denied range.
 
+- **A DNS listener can ride out an upstream outage and refresh what is in
+  use before it expires** (`dns.cache.serve_stale`,
+  `dns.cache.stale_ttl`, `dns.cache.prefetch`,
+  `dns.cache.prefetch_threshold`).
+
+  `serve_stale` (RFC 8767) keeps an expired entry that much longer and
+  serves it when the upstream has nothing to say, which is the
+  difference between a resolver outage taking the network with it and
+  one nobody notices for an hour. The answer is out of date by
+  definition, and a name almost always still resolves where it did a
+  minute ago -- while a client that cannot be told anything cannot reach
+  the upstream itself either. A stale answer carries `stale_ttl` (30
+  seconds, RFC 8767's recommendation) rather than the TTL the zone
+  published, so the client comes back soon; it is counted as
+  `xproxy_dns_stale_total` and logged with `source=stale`, so a resolver
+  running on expired answers says so rather than being discovered later.
+  A stale entry is never a cache hit: the upstream is asked first every
+  time. "Nothing to say" means no answer at all, and a SERVFAIL when
+  `dnssec` is off -- with validation on, a SERVFAIL is the code for an
+  answer that was *rejected*, and standing in for it with an expired
+  answer of our own would hand the client, as a last resort, exactly
+  what validation refused.
+
+  `prefetch` refreshes an entry when a query arrives for it and less
+  than `prefetch_threshold` of its TTL is left, so a popular name is
+  answered from the cache continuously instead of one client per TTL
+  waiting for the upstream; that client is answered from the cache and
+  waits for nothing. The claim lives on the cache entry, so a burst of
+  queries for the same nearly-expired name starts one refresh and not a
+  hundred -- the stampede the feature exists to prevent and would
+  otherwise cause. Refreshes have a budget of their own (64 at a time)
+  rather than a share of `max_in_flight`, since a resolver that answered
+  clients more slowly because it was busy refreshing would have it
+  backwards, and a refresh belongs to nobody: it raises no security
+  event against the client whose query happened to trigger it.
+
 - **What the SSH certificate authority said is now enforced.** A user
   certificate is not only a signature over a key and a list of
   principals; it carries the CA's own restrictions, and the gateway
