@@ -60,6 +60,11 @@ type Policy struct {
 	// PrefetchThreshold is the share of the TTL that must be left for a
 	// query to trigger a refresh. Default 0.1.
 	PrefetchThreshold float64
+	// Cookies is off, respond (the default) or require: what this
+	// listener does with DNS cookies (RFC 7873).
+	Cookies string
+	// CookieLifetime is how long a server cookie stays valid. Default 1h.
+	CookieLifetime time.Duration
 }
 
 // staleSeconds is the TTL a stale answer carries, in seconds.
@@ -107,6 +112,10 @@ type Server struct {
 	// prefetch bounds the refreshes running at once, separately from
 	// sem: a refresh is work nobody is waiting for.
 	prefetch chan struct{}
+	// jar issues the DNS cookies. Its secret belongs to the process
+	// rather than to the policy, so a reload does not invalidate every
+	// cookie the listener has handed out.
+	jar *cookieJar
 	// Encrypted marks a TLS listener; DoHPath is the RFC 8484 path.
 	Encrypted bool
 	// QUIC marks a listener that also answers DNS over QUIC beside the
@@ -140,6 +149,10 @@ type Server struct {
 	// upstream had nothing, and Prefetched the refreshes started before
 	// an entry expired.
 	Stale, Prefetched atomic.Uint64
+	// CookiesIssued counts the cookies handed out, CookiesVerified the
+	// UDP queries whose source a cookie proved, and CookiesRefused the
+	// queries turned back for the want of one.
+	CookiesIssued, CookiesVerified, CookiesRefused atomic.Uint64
 	// dropNotice warns when queries are dropped for lack of workers.
 	dropNotice bound.Notice
 }
@@ -210,6 +223,10 @@ type Status struct {
 	// Prefetched the refreshes started before an entry expired.
 	Stale      uint64 `json:"stale"`
 	Prefetched uint64 `json:"prefetched"`
+	// Cookies reports the DNS cookie exchange (RFC 7873).
+	CookiesIssued   uint64 `json:"cookies_issued"`
+	CookiesVerified uint64 `json:"cookies_verified"`
+	CookiesRefused  uint64 `json:"cookies_refused"`
 	// LocalNames are the names answered from the local record set.
 	LocalNames []string `json:"local_names,omitempty"`
 	// DoQ reports whether DNS over QUIC is served on this listener.
@@ -236,6 +253,13 @@ func New(name string, udp net.PacketConn, tcp net.Listener, cacheEntries, inFlig
 		cons: map[net.Conn]struct{}{}, done: make(chan struct{})}
 	s.policy.Store(p)
 	s.cache.SetStale(p.ServeStale)
+	// A jar the listener cannot make is a listener without cookies
+	// rather than a listener that will not start: the only way this
+	// fails is the system random source, and the rest of the resolver
+	// works without it.
+	if jar, err := newCookieJar(p.CookieLifetime); err == nil {
+		s.jar = jar
+	}
 	return s
 }
 
@@ -267,7 +291,8 @@ func (s *Server) Status() Status {
 		Truncated: s.Truncated.Load(), FormErr: s.FormErr.Load(), Encrypted: s.Encrypted, DoQ: s.QUIC,
 		QueriesUDP: s.UDP.Load(), QueriesTCP: s.TCP.Load(), QueriesDoT: s.DoT.Load(), QueriesDoH: s.DoH.Load(), QueriesDoQ: s.DoQ.Load(), QueriesLocal: s.Local.Load(),
 		AnswerDenied: s.AnswerDenied.Load(), AnswerStripped: s.AnswerStripped.Load(), ECSStripped: s.ECSStripped.Load(),
-		Stale: s.Stale.Load(), Prefetched: s.Prefetched.Load()}
+		Stale: s.Stale.Load(), Prefetched: s.Prefetched.Load(),
+		CookiesIssued: s.CookiesIssued.Load(), CookiesVerified: s.CookiesVerified.Load(), CookiesRefused: s.CookiesRefused.Load()}
 	if p != nil {
 		st.LocalNames = p.Local.Names()
 	}
@@ -511,6 +536,10 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 	case "doq":
 		// counted by the DoQ server, which sees the stream
 	}
+	// A stream transport has already proved the peer's address by
+	// getting here; a datagram has proved nothing until a cookie says
+	// otherwise.
+	a := &asked{client: client, proto: proto, start: start, stream: tcp, verified: tcp}
 	h, err := ParseHeader(query)
 	if err != nil || h.Response() {
 		s.drop(DropMalformed)
@@ -528,22 +557,62 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 	if h.QDCount != 1 {
 		s.FormErr.Add(1)
 		s.refuse("formerr")
-		return s.finish(query, headerLen, h, Question{}, client, proto, start, "formerr", Reply(query[:headerLen], headerLen, h, RcodeFormErr))
+		return s.finish(a, Question{}, "formerr", Reply(query[:headerLen], headerLen, h, RcodeFormErr))
 	}
 	q, qEnd, err := ParseQuestion(query)
 	if err != nil {
 		s.FormErr.Add(1)
 		s.refuse("formerr")
-		return s.finish(query, headerLen, h, Question{}, client, proto, start, "formerr", Reply(query[:headerLen], headerLen, h, RcodeFormErr))
+		return s.finish(a, Question{}, "formerr", Reply(query[:headerLen], headerLen, h, RcodeFormErr))
 	}
 	if len(p.AllowClients) > 0 && !netutil.Contains(p.AllowClients, client) {
 		s.Refused.Add(1)
 		s.refuse("client_not_allowed")
-		return s.finish(query, qEnd, h, q, client, proto, start, "refused", Reply(query, qEnd, h, RcodeRefused))
+		return s.finish(a, q, "refused", Reply(query, qEnd, h, RcodeRefused))
 	}
 	if h.Opcode() != 0 {
 		s.refuse("opcode")
-		return s.finish(query, qEnd, h, q, client, proto, start, "notimp", Reply(query, qEnd, h, RcodeNotImp))
+		return s.finish(a, q, "notimp", Reply(query, qEnd, h, RcodeNotImp))
+	}
+	// The cookie is settled before any work is done for this query,
+	// because the work is what a spoofed source is trying to buy: a
+	// large answer for somebody else's link, a lookup at this proxy's
+	// expense, a security event against an address it does not hold.
+	verdict, cookie := s.cookies(p, query, qEnd, h, client, tcp, time.Now())
+	a.cookie = cookie
+	switch verdict {
+	case cookieOK:
+		a.verified = true
+		if !tcp {
+			s.CookiesVerified.Add(1)
+		}
+	case cookieNew:
+		s.CookiesIssued.Add(1)
+	case cookieBad:
+		// BADCOOKIE carries the cookie to come back with, so a
+		// cookie-aware client retries once and succeeds. Nothing is
+		// looked up for it: that is the whole saving.
+		s.CookiesIssued.Add(1)
+		s.CookiesRefused.Add(1)
+		s.Refused.Add(1)
+		s.refuse("cookie_required")
+		// The reply is built here rather than left to finish, because
+		// the extended rcode lives in the OPT record the cookie goes
+		// into and has to be written after it.
+		resp := badCookieReply(query, qEnd, h, cookie)
+		a.cookie = nil
+		return s.finish(a, q, "badcookie", resp)
+	case cookieAbsent:
+		// Nothing to echo, so there is no retry to invite: this client
+		// does not speak cookies and this listener requires them.
+		s.CookiesRefused.Add(1)
+		s.Refused.Add(1)
+		s.refuse("cookie_missing")
+		return s.finish(a, q, "refused", Reply(query, qEnd, h, RcodeRefused))
+	case cookieMalformed:
+		s.FormErr.Add(1)
+		s.refuse("cookie_malformed")
+		return s.finish(a, q, "formerr", Reply(query, qEnd, h, RcodeFormErr))
 	}
 	// An ANY query over UDP is an amplifier's favourite: one small
 	// question, every record the name has. RFC 8482 lets a resolver
@@ -553,7 +622,7 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 	if q.Type == TypeANY && !tcp {
 		s.Truncated.Add(1)
 		s.refuse("any_over_udp")
-		return s.finish(query, qEnd, h, q, client, proto, start, "any_truncated", Truncate(Reply(query, qEnd, h, RcodeNoError), qEnd))
+		return s.finish(a, q, "any_truncated", Truncate(Reply(query, qEnd, h, RcodeNoError), qEnd))
 	}
 	// A name this resolver owns is answered from the local set and
 	// never forwarded: an upstream answer would contradict it, and for
@@ -561,14 +630,14 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 	// truthfully at all.
 	if recs, owned := p.Local.Lookup(q); owned {
 		s.Local.Add(1)
-		return s.finish(query, qEnd, h, q, client, proto, start, "local",
-			s.fit(query, qEnd, h, AnswerLocal(query, qEnd, h, q, recs), len(query), tcp))
+		return s.finish(a, q, "local",
+			s.fit(a, query, qEnd, h, AnswerLocal(query, qEnd, h, q, recs), len(query)))
 	}
 	if p.Block != nil && p.Block.Match(q.Name) {
 		s.Blocked.Add(1)
 		s.refuse("blocked")
 		if s.hooks.Event != nil {
-			s.hooks.Event(client, "dns_blocked", proto != "udp", "listener", s.Name, "name", q.Name, "type", TypeName(q.Type), "proto", proto)
+			s.hooks.Event(client, "dns_blocked", a.verified, "listener", s.Name, "name", q.Name, "type", TypeName(q.Type), "proto", proto)
 		}
 		var resp []byte
 		switch p.BlockAction {
@@ -583,7 +652,7 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 		default:
 			resp = Reply(query, qEnd, h, RcodeNXDomain)
 		}
-		return s.finish(query, qEnd, h, q, client, proto, start, "blocked", resp)
+		return s.finish(a, q, "blocked", resp)
 	}
 	// A domain this client was caught tunnelling under stays refused
 	// for the cooldown. It is checked here rather than after the answer
@@ -594,10 +663,10 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 		s.Blocked.Add(1)
 		s.refuse("tunnel")
 		if s.hooks.Event != nil {
-			s.hooks.Event(client, "dns_tunnel", proto != "udp", "listener", s.Name,
+			s.hooks.Event(client, "dns_tunnel", a.verified, "listener", s.Name,
 				"domain", dom, "name", q.Name, "type", TypeName(q.Type), "proto", proto, "detail", "cooldown")
 		}
-		return s.finish(query, qEnd, h, q, client, proto, start, "tunnel", Reply(query, qEnd, h, RcodeNXDomain))
+		return s.finish(a, q, "tunnel", Reply(query, qEnd, h, RcodeNXDomain))
 	}
 	now := time.Now()
 	var qm *Message // parsed client query, only with validation on
@@ -615,8 +684,8 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 			if sc := s.screen(p, query, qEnd, h, q, resp, rEnd); sc.action != "" {
 				s.cache.Drop(q)
 				s.answerEvent(client, proto, q, sc)
-				return s.finish(query, qEnd, h, q, client, proto, start, "cache:answer:"+sc.action,
-					s.fit(query, qEnd, h, sc.resp, sc.rEnd, tcp))
+				return s.finish(a, q, "cache:answer:"+sc.action,
+					s.fit(a, query, qEnd, h, sc.resp, sc.rEnd))
 			}
 			s.maybePrefetch(p, q, now)
 			if qm != nil {
@@ -625,7 +694,7 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 					rEnd = e
 				}
 			}
-			return s.finish(query, qEnd, h, q, client, proto, start, source, s.fit(query, qEnd, h, resp, rEnd, tcp))
+			return s.finish(a, q, source, s.fit(a, query, qEnd, h, resp, rEnd))
 		}
 	}
 	// Upstream transport is the resolver's business: UDP first with TCP
@@ -661,19 +730,19 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 		// cannot reach the upstream itself either.
 		if resp, rEnd := s.cache.Stale(q, h.ID, now, staleSeconds(p)); resp != nil {
 			s.Stale.Add(1)
-			return s.finish(query, qEnd, h, q, client, proto, start, "stale", s.fit(query, qEnd, h, resp, rEnd, tcp))
+			return s.finish(a, q, "stale", s.fit(a, query, qEnd, h, resp, rEnd))
 		}
 		if lk.err != nil {
 			s.ServFail.Add(1)
-			return s.finish(query, qEnd, h, q, client, proto, start, "servfail", Reply(query, qEnd, h, RcodeServFail))
+			return s.finish(a, q, "servfail", Reply(query, qEnd, h, RcodeServFail))
 		}
 	}
 	if lk.bogus {
 		s.ServFail.Add(1)
 		if s.hooks.Event != nil {
-			s.hooks.Event(client, "dns_bogus", proto != "udp", "listener", s.Name, "name", q.Name, "type", TypeName(q.Type), "proto", proto)
+			s.hooks.Event(client, "dns_bogus", a.verified, "listener", s.Name, "name", q.Name, "type", TypeName(q.Type), "proto", proto)
 		}
-		return s.finish(query, qEnd, h, q, client, proto, start, lk.source, lk.resp)
+		return s.finish(a, q, lk.source, lk.resp)
 	}
 	resp, rEnd := lk.resp, lk.rEnd
 	if lk.synthetic {
@@ -685,7 +754,7 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 			rEnd = e
 		}
 	}
-	return s.finish(query, qEnd, h, q, client, proto, start, lk.source, s.fit(query, qEnd, h, resp, rEnd, tcp))
+	return s.finish(a, q, lk.source, s.fit(a, query, qEnd, h, resp, rEnd))
 }
 
 // maxPrefetch bounds the refreshes running at once. A prefetch is work
@@ -911,20 +980,50 @@ func (s *Server) finalizeDNSSEC(resp []byte, qm *Message, h Header) []byte {
 }
 
 // fit truncates a UDP response that exceeds what the client can take.
-func (s *Server) fit(query []byte, qEnd int, h Header, resp []byte, rEnd int, tcp bool) []byte {
-	if tcp || len(resp) <= EDNSSize(query, qEnd, h) {
+//
+// A cookie the answer still owes is reserved against the budget rather
+// than added past it: the cookie goes on after the fit, and a datagram
+// that fits only until the cookie is appended does not fit.
+func (s *Server) fit(a *asked, query []byte, qEnd int, h Header, resp []byte, rEnd int) []byte {
+	if a.stream {
+		return resp
+	}
+	budget := EDNSSize(query, qEnd, h) - cookieRoom(a.cookie)
+	if len(resp) <= budget {
 		return resp
 	}
 	s.Truncated.Add(1)
 	return Truncate(resp, rEnd)
 }
 
-func (s *Server) finish(_ []byte, _ int, _ Header, q Question, client netip.Addr, proto string, start time.Time, source string, resp []byte) []byte {
-	p := s.policy.Load()
-	rcode := -1
-	if rh, err := ParseHeader(resp); err == nil {
-		rcode = rh.Rcode()
+// asked is the per-query state that more than one step needs: who
+// asked, over what, whether the address has been proved, and the cookie
+// the answer owes them.
+type asked struct {
+	client netip.Addr
+	proto  string
+	start  time.Time
+	// stream says the transport is a stream, so the answer is not
+	// truncated to a datagram size.
+	stream bool
+	// verified says the client address completed a round trip: a stream
+	// transport, or a UDP query carrying a DNS cookie this listener
+	// issued. It decides whether a security event may be attributed to
+	// the address the datagram claims.
+	verified bool
+	// cookie is the COOKIE option value the answer carries, or nil.
+	cookie []byte
+}
+
+func (s *Server) finish(a *asked, q Question, source string, resp []byte) []byte {
+	client, proto, start := a.client, a.proto, a.start
+	if len(a.cookie) > 0 {
+		resp = AddCookie(resp, a.cookie)
 	}
+	p := s.policy.Load()
+	// The extended form, so a BADCOOKIE is logged as 23 rather than as
+	// the seven the header alone carries.
+	rcode := ExtendedRcode(resp)
 	// Every answered query is measured, whatever answered it: a tunnel
 	// whose names were cached, or refused, or failed upstream, is still
 	// a tunnel, and a detector that only saw the queries that reached an
@@ -935,7 +1034,7 @@ func (s *Server) finish(_ []byte, _ int, _ Header, q Question, client netip.Addr
 		if det, ok := p.Tunnel.Observe(client, q, rcode, start); ok {
 			s.Tunnels.Add(1)
 			if s.hooks.Event != nil {
-				s.hooks.Event(client, "dns_tunnel", proto != "udp", "listener", s.Name,
+				s.hooks.Event(client, "dns_tunnel", a.verified, "listener", s.Name,
 					"domain", det.Domain, "signals", strings.Join(det.Reasons, ","),
 					"queries", det.Queries, "payload_bytes", det.Payload, "proto", proto)
 			}

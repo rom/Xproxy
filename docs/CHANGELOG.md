@@ -478,6 +478,50 @@ Open findings of the earlier rounds:
   `discovery`, the sinkhole addresses -- are not, which is why
   `sinkhole_ipv4: 0.0.0.0` still works inside a denied range.
 
+- **A DNS listener answers and requires DNS cookies** (`dns.cookies`,
+  `dns.cookie_lifetime`; RFC 7873 with RFC 9018's server cookie layout).
+
+  A UDP datagram proves nothing about where it came from, and everything
+  unpleasant about an open resolver follows from that: an answer sent to
+  an address that did not ask, a small question drawing a large reply for
+  somebody else's link, a cache poisoned by a race the attacker enters
+  with no packets of their own to lose, and a security event recorded
+  against an address chosen by whoever sent the packet. A cookie fixes
+  the one thing underneath all of them -- it makes the client prove it
+  can *receive* what it asked for.
+
+  `respond` (the default) answers a client that sent a cookie with one
+  and never refuses a query for the want of one, so a client that has
+  never heard of cookies is unaffected. `require` answers a UDP query
+  without a valid cookie with BADCOOKIE and a fresh cookie, so a
+  cookie-aware client retries once and succeeds while nothing is looked
+  up for the first attempt -- the whole saving; a client that sends no
+  option at all gets REFUSED, because there is nothing to echo, which
+  breaks most stub resolvers and is warned about at load on a listener
+  with no `allow_clients`. Stream transports are exempt from `require`,
+  since the handshake is the proof a cookie exists to provide, but they
+  still hand one out so a client can collect it over TCP and use it over
+  UDP.
+
+  The part that matters beyond amplification: **a verified cookie makes a
+  UDP client's security events attributable.** Events from a bare
+  datagram are aggregated and attributed to nobody, because counting them
+  towards a ban would let anybody have a third party banned by spoofing
+  them. A UDP query carrying a cookie this listener issued has completed
+  a round trip, so `dns_blocked` and `dns_tunnel` from it drive bans like
+  a TCP client's. Cookies are the prerequisite for the ban ladder working
+  over UDP at all.
+
+  The server cookie binds the client's eight bytes to the client's
+  address under a per-listener secret that is never written anywhere, so
+  a cookie replayed from another address does not verify, a restart costs
+  each client one round trip, and two cluster nodes do not accept each
+  other's. `cookie_lifetime` is an hour by default and a cookie past half
+  its life is replaced in the answer, so a client that keeps asking never
+  reaches the end of one. BADCOOKIE is written as RFC 6891 requires -- the
+  low four bits of rcode 23 in the header and the high eight in the OPT
+  record -- and logged as 23.
+
 - **A DNS listener can ride out an upstream outage and refresh what is in
   use before it expires** (`dns.cache.serve_stale`,
   `dns.cache.stale_ttl`, `dns.cache.prefetch`,

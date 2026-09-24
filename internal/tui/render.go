@@ -284,6 +284,10 @@ func renderOverview(d Data, sty Style, w int) []string {
 		if l.Stale+l.Prefetched > 0 {
 			out = append(out, fmt.Sprintf("  %-12s stale %d prefetched %d", "", l.Stale, l.Prefetched))
 		}
+		if l.CookiesIssued+l.CookiesVerified+l.CookiesRefused > 0 {
+			out = append(out, fmt.Sprintf("  %-12s cookies issued %d verified %d refused %d", "",
+				l.CookiesIssued, l.CookiesVerified, l.CookiesRefused))
+		}
 	}
 	if d.Series != nil && len(d.Series.Points) > 1 {
 		out = append(out, "", "  "+sparkRow("req/s", seriesValues(d.Series, "requests"), w-12, sty))

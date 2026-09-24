@@ -302,6 +302,9 @@ func (s *Server) Collect(e metrics.Collector) {
 		e.Counter("xproxy_dns_ecs_stripped_total", "DNS queries whose client subnet option was not forwarded upstream.", l, float64(d.ECSStripped))
 		e.Counter("xproxy_dns_stale_total", "DNS answers served after their TTL expired because the upstream had nothing (RFC 8767).", l, float64(d.Stale))
 		e.Counter("xproxy_dns_prefetch_total", "DNS cache entries refreshed before they expired.", l, float64(d.Prefetched))
+		e.Counter("xproxy_dns_cookies_total", "DNS cookies issued to clients.", L{"listener": d.Listener, "result": "issued"}, float64(d.CookiesIssued))
+		e.Counter("xproxy_dns_cookies_total", "DNS cookies issued to clients.", L{"listener": d.Listener, "result": "verified"}, float64(d.CookiesVerified))
+		e.Counter("xproxy_dns_cookies_total", "DNS cookies issued to clients.", L{"listener": d.Listener, "result": "refused"}, float64(d.CookiesRefused))
 	}
 	e.Counter("xproxy_mirror_total", "Mirror copies by outcome.", L{"outcome": "sent"}, float64(sn.MirrorSent))
 	e.Counter("xproxy_mirror_total", "Mirror copies by outcome.", L{"outcome": "dropped"}, float64(sn.MirrorDropped))

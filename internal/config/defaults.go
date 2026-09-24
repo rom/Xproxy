@@ -201,6 +201,8 @@ func applyDefaults(c *Config) {
 			setFloat(&d.Cache.PrefetchThreshold, 0.1)
 			setInt(&d.MaxInFlight, 1024)
 			setStr(&d.ECS, "strip")
+			setStr(&d.Cookies, "respond")
+			setDur(&d.CookieLifetime, time.Hour)
 			if ap := d.AnswerPolicy; ap != nil {
 				setStr(&ap.Action, "nxdomain")
 				// A section written at all is written to deny the

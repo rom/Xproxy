@@ -617,6 +617,8 @@ browsers should use it) side by side.
 | `tunnel_detection` | object | none | Watch for data leaving inside the query names; see below |
 | `answer_policy` | object | none | Screen where an answer points, not only what was asked; see below |
 | `ecs` | `strip`, `forward` | `strip` | What happens to a client's EDNS Client Subnet option on the way upstream |
+| `cookies` | `off`, `respond`, `require` | `respond` | DNS cookies (RFC 7873): see below |
+| `cookie_lifetime` | duration | `1h` | How long a server cookie stays valid; at most 24h |
 
 #### server.listeners[].dns.cache: serve-stale and prefetch
 
@@ -765,6 +767,75 @@ an answer.
 The screen also runs on the way out of the cache, not only on the way
 in, because a reload can deny a range that an entry already in the cache
 points into. Such an entry is dropped rather than served.
+
+#### server.listeners[].dns.cookies
+
+A UDP datagram proves nothing about where it came from, and everything
+unpleasant about an open resolver follows from that: an answer sent to an
+address that did not ask, a small question drawing a large reply for
+somebody else's link, a cache poisoned by a race the attacker enters with
+no packets of their own to lose, and a security event recorded against an
+address chosen by whoever sent the packet.
+
+A DNS cookie (RFC 7873, with RFC 9018's server cookie layout) fixes the
+one thing underneath all of them: it makes the client prove it can
+*receive* what it asked for. The client sends eight bytes of its own; the
+server returns them with a keyed hash over the client's address and those
+bytes, and expects that back next time. Nothing about it is secret and
+nothing about it is authentication — an on-path attacker sees the cookie
+— but an off-path one cannot produce it for an address it does not hold,
+which is exactly the attacker every item above depends on.
+
+- `respond` (the default) answers a client that sent a cookie with one,
+  and treats a cookie this listener issued as proof of the address. It
+  never refuses a query for the want of one, so a client that has never
+  heard of cookies is unaffected.
+- `require` additionally refuses a UDP query that carries no valid
+  cookie: BADCOOKIE (rcode 23) with a fresh cookie, so a cookie-aware
+  client retries once and succeeds, and nothing is looked up for the
+  first attempt — which is the whole saving. A client that sends no
+  COOKIE option at all gets REFUSED, because there is nothing to echo and
+  no retry to invite. **That breaks every client that does not implement
+  cookies, which is most stub resolvers**; validation warns about it on a
+  listener with no `allow_clients`. It belongs on a listener whose
+  clients are known.
+- `off` ignores cookies entirely, which is also how to avoid the small
+  cost below.
+
+A stream transport is exempt from `require`: the peer completed a
+handshake to get here, which is what a cookie exists to establish (RFC
+7873 section 5.2.3). A cookie is still echoed over TCP, DoT, DoH and
+DoQ, so a client can collect one there and use it over UDP.
+
+**What a verified cookie buys.** A security event from a UDP query is
+normally not attributed to the address the datagram claims — counting it
+towards a ban would let anybody have a third party banned by spoofing
+them, and logging one per datagram is a log flood at packet rate — so
+those events are aggregated and attributed to nobody. A UDP query
+carrying a cookie this listener issued *has* completed a round trip, so
+its events are attributed and can drive a ban like a TCP client's.
+Turning cookies on is therefore what makes `dns_blocked` and
+`dns_tunnel` bans work for UDP clients.
+
+`cookie_lifetime` (1h by default) is how long a server cookie stays
+valid. A cookie past half its life is replaced in the answer, so a client
+that keeps asking never reaches the end of one. The secret is per
+listener and per process: it is never written anywhere, so a restart
+costs each client one extra round trip, and two nodes of a cluster do not
+accept each other's cookies — a client moving between them also costs one
+BADCOOKIE round trip and then works.
+
+`xproxy_dns_cookies_total` counts the exchange by result (`issued`,
+`verified`, `refused`), and the refusals appear as `cookie_required`,
+`cookie_missing` and `cookie_malformed`.
+
+**The cost.** Putting a cookie into a response means rebuilding the
+message, which loses the name compression the upstream used, so a
+cookie-carrying client's answers are a little larger and a large answer
+is a little more likely to be truncated into a TCP retry. The cookie's
+own space is reserved before that decision, so the datagram is never
+oversize — but on a listener where this matters, `cookies: off` is the
+setting.
 
 #### server.listeners[].dns.ecs
 

@@ -1404,6 +1404,31 @@ type DNSListener struct {
 	// what a name list cannot do: rebinding and the cloud metadata
 	// endpoint are good names pointing somewhere they should not.
 	AnswerPolicy *DNSAnswerPolicy `yaml:"answer_policy"`
+	// Cookies is what this listener does with DNS cookies (RFC 7873):
+	// off, respond (the default) or require.
+	//
+	// A UDP datagram proves nothing about where it came from, and
+	// everything unpleasant about an open resolver follows from that: an
+	// answer sent to an address that did not ask, a small question
+	// drawing a large reply for somebody else's link, a cache poisoned
+	// by a race the attacker enters with no packets of their own to
+	// lose, and a security event recorded against an address chosen by
+	// whoever sent the packet. A cookie makes the client prove it can
+	// receive what it asked for, which is the one thing underneath all
+	// of them.
+	//
+	// respond answers a client that sent a cookie with one and never
+	// refuses a query for the want of one, so a client that has never
+	// heard of cookies is unaffected. require refuses a UDP query
+	// without a valid cookie, which is the amplification defence and
+	// also breaks every client that does not implement them: it belongs
+	// on a listener whose clients are known.
+	Cookies string `yaml:"cookies"`
+	// CookieLifetime is how long a server cookie stays valid before the
+	// client has to take a fresh one. Default 1h; a cookie past half its
+	// life is replaced in the answer, so a client that keeps asking
+	// never reaches the end of one.
+	CookieLifetime Duration `yaml:"cookie_lifetime"`
 	// ECS is what happens to a client's EDNS Client Subnet option on
 	// the way upstream: strip (the default) or forward.
 	//

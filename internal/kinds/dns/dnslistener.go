@@ -149,6 +149,7 @@ func dnsPolicy(cfg *config.DNSListener) (*wire.Policy, error) {
 	}
 	p.Answers = answers
 	p.ECS = cfg.ECS
+	p.Cookies, p.CookieLifetime = cfg.Cookies, cfg.CookieLifetime.D()
 	if d := cfg.DNSSEC; d.IsEnabled() {
 		var anchors []wire.TrustAnchor
 		lines := append([]string(nil), d.TrustAnchors...)

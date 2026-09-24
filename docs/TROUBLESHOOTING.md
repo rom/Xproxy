@@ -1836,6 +1836,52 @@ a client's clock instead. A large increase means `prefetch_threshold` is
 too high for the TTLs in play — refreshing an entry with half its life
 left does twice the upstream traffic for the same coverage.
 
+## DNS cookies
+
+**A client stopped resolving after `cookies: require` went on.** That is
+the setting doing what it says. Two shapes, and the refusal reason tells
+them apart. `cookie_missing` (REFUSED) is a client that sends no COOKIE
+option at all — most stub resolvers — and there is nothing to invite it
+back with. `cookie_required` (BADCOOKIE) is a client that sent one and
+should be retrying with what it was handed; a client stuck in a loop of
+those is one that is not storing the server cookie, which is a bug at its
+end. Either way, `require` belongs on a listener whose clients are known;
+`respond` gets the verification benefit without refusing anybody.
+
+**Rcode 7 in a capture where BADCOOKIE was expected.** That is
+BADCOOKIE. Rcode 23 does not fit in the four bits the header has, so RFC
+6891 keeps the low four there (7) and the high eight in the OPT record's
+TTL. `dig` and `kdig` reassemble it; a tool that reads only the header
+says YXRRSET. The access log says 23.
+
+**`cookies_verified` stays at zero on a busy listener.** Either the
+clients do not implement cookies, or they are not sending back what they
+were given. Check `cookies_issued` in the same view: issued climbing with
+verified flat is clients that ignore the cookie; both flat means no
+client is asking for one.
+
+**Bans still do not fire for UDP clients.** A security event from a bare
+UDP datagram is attributed to nobody on purpose — counting it towards a
+ban would let anybody have a third party banned by spoofing them — so it
+is aggregated into one `dns security events from unverified sources are
+aggregated` warning instead. Cookies are what change that: a UDP query
+carrying one this listener issued has completed a round trip, so its
+events are attributed and drive bans like a TCP client's. If bans matter
+for UDP clients, `cookies: respond` is the prerequisite.
+
+**Every client had to redo the exchange after a restart or a failover.**
+The cookie secret is per listener and per process and is never written
+anywhere, so a restart invalidates the cookies it issued and two nodes
+do not accept each other's. The cost is one BADCOOKIE round trip per
+client, once. It is not worth engineering around.
+
+**Answers got bigger, or a name that used to fit in a datagram now
+truncates.** Putting a cookie into a response means rebuilding the
+message, which loses the upstream's name compression. The cookie's own
+space is reserved before the truncation decision, so the datagram is
+never oversize — the answer is a little smaller than it could have been
+instead. On a listener where this matters, `cookies: off`.
+
 ## DNS answer policy and the client subnet
 
 **A name that works everywhere else returns NXDOMAIN here.** Look for
@@ -3257,7 +3303,7 @@ actually being refused. What each kind can say:
 | `tcp` | `max_connections`, `no_route`, `banned`, and for an intercepting listener `destination_not_allowed` and `no_original_destination`; QUIC flows add `quic_max_flows` |
 | `udp` | `client_not_allowed`, `datagram_too_large`, `rate_limit`, `max_sessions`, `max_sessions_per_ip`, `banned`, `upstream_datagram_too_large` |
 | `forward` | the destination policy (`not_allowed`, `deny`, `private`, `host`, `port`, `resolve`), the request shape (`not_absolute`, `scheme`, `authority`), `auth`, `tunnel_limit`, interception (`sni_mismatch`, `upstream_tls`, `client_tls`), SOCKS UDP (`udp_malformed`, `udp_unsolicited`, `udp_wrong_source`, `udp_peer_table_full`, `udp_disabled`) and MASQUE (`masque_target`, `masque_session_limit`, `masque_context`, `masque_spoofed`, `masque_unsolicited`) |
-| `dns` | `workers_busy` (`max_in_flight`), `rate_limit`, `banned`, `malformed`, `client_not_allowed`, `blocked`, `tunnel`, `any_over_udp`, `formerr`, `opcode`, `answer_denied`, `answer_stripped` |
+| `dns` | `workers_busy` (`max_in_flight`), `rate_limit`, `banned`, `malformed`, `client_not_allowed`, `blocked`, `tunnel`, `any_over_udp`, `formerr`, `opcode`, `answer_denied`, `answer_stripped`, `cookie_required`, `cookie_missing`, `cookie_malformed` |
 | `ssh` | `client_not_allowed`, `max_sessions`, `max_sessions_per_principal`, `max_forwards`, `auth_failed`, `mfa_failed`, `mfa_not_enrolled`, the channel and request policy (`channel_refused`, `request_refused`, `subsystem_refused`, `env_refused`, `command_refused`, `shell_syntax`, `file_transfer_refused`, `forward_refused`, `remote_forward_refused`), what the certificate did not grant (`cert_no_port_forwarding`, `cert_pty_refused`, `cert_X11_forwarding_refused`, `cert_agent_forwarding_refused`), and SFTP (`sftp_refused`, `sftp_malformed`, `sftp_identity_refused`, `sftp_icap`) |
 | `telnet` | `client_refused`, `banned`, `option_refused`, `subnegotiation_refused`, `malformed`, `mfa_failed`, `prompt` |
 | `vnc` | `client_refused`, `banned`, `version`, `auth_failed`, `mfa_failed`, `view_only`, the security negotiation (`security_not_offered`, `security_not_usable`, `security_not_mediated`, `subtype_not_offered`, `vencrypt_subtype_not_mediated`, `tight_auth_not_offered`), the variants' own parameters (`tls`, `mslogon_parameters`, `ard_parameters`, `rsaaes_key`, `rsaaes_random`, `rsaaes_transcript`), and the picture (`framebuffer_too_large`, `rectangle_too_large`, `rectangle_outside_framebuffer`, `too_many_rectangles`, `encoded_rectangle_too_large`, `decode_ratio`, `cut_text_too_large`, `unframable`, `pixel_format`, `pixel_format_changed`, `resize_refused`, `resize_too_large`, `clipboard_to_client`, `clipboard_to_target`, and `encoding_<name>` for each encoding taken out of a client's list) |

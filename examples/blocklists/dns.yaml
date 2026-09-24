@@ -37,6 +37,10 @@ server:
         # the question alone, so a per-subnet answer would be served to
         # every client of this listener.
         ecs: strip
+        # A cookie makes a UDP client prove it can receive what it asked
+        # for, which is what makes its security events attributable and
+        # bannable. respond never refuses a client that has no cookies.
+        cookies: respond
 management:
   socket: /run/xproxy/mgmt.sock
 logging:

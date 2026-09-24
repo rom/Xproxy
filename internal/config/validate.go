@@ -4160,6 +4160,22 @@ func (v *validator) dnsListener(p string, d *DNSListener) {
 	default:
 		v.errf("%s.ecs: must be strip or forward", p)
 	}
+	switch d.Cookies {
+	case "", "off", "respond", "require":
+	default:
+		v.errf("%s.cookies: must be off, respond or require", p)
+	}
+	if d.CookieLifetime <= 0 || d.CookieLifetime > Duration(24*time.Hour) {
+		v.errf("%s.cookie_lifetime: must be positive and at most 24h", p)
+	}
+	// require refuses every client that does not implement cookies,
+	// which is most stub resolvers. On a listener open to the internet
+	// that is a resolver nobody can use; on one with a client list it is
+	// a deliberate choice about known clients.
+	if d.Cookies == "require" && len(d.AllowClients) == 0 {
+		v.warnf("%s.cookies: require refuses any UDP client that does not implement DNS cookies (RFC 7873), "+
+			"which most stub resolvers do not; name the clients in allow_clients, or use respond", p)
+	}
 	v.dnsAnswerPolicy(p+".answer_policy", d.AnswerPolicy)
 	v.dnsDiscovery(p, d)
 	v.dnsRecords(p, d)

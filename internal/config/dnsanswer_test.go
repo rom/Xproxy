@@ -3,6 +3,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func answerConfig(section string) string {
@@ -62,6 +63,64 @@ func TestAnswerPolicyRejectsNonsense(t *testing.T) {
 		{"        answer_policy: {allow: [\"10.0.0.1\"]}\n", "is not a CIDR"},
 		{"        answer_policy: {allow_names: [\"not a name\"]}\n", "is not a name"},
 		{"        ecs: maybe\n", "must be strip or forward"},
+	} {
+		_, err := ParseWith([]byte(answerConfig(tc.section)), false)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: error %v, want one containing %q", strings.TrimSpace(tc.section), err, tc.want)
+		}
+	}
+}
+
+// Cookies default to respond: a client that sends one gets one and a
+// client that has never heard of them is unaffected.
+func TestCookieDefaults(t *testing.T) {
+	cfg, err := ParseWith([]byte(answerConfig("")), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := cfg.Server.Listeners[0].DNS
+	if d.Cookies != "respond" {
+		t.Fatalf("cookies defaulted to %q, want respond", d.Cookies)
+	}
+	if d.CookieLifetime.D() != time.Hour {
+		t.Fatalf("cookie_lifetime defaulted to %v, want 1h", d.CookieLifetime.D())
+	}
+}
+
+// require refuses every client that does not implement cookies, which is
+// most stub resolvers. On a listener with no client list that is a
+// resolver nobody can use, so it is warned about rather than passed over.
+func TestRequiringCookiesWithoutAClientListIsWarnedAbout(t *testing.T) {
+	cfg, err := ParseWith([]byte(answerConfig("        cookies: require\n")), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, w := range cfg.Advice() {
+		if strings.Contains(w, "DNS cookies") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no warning about requiring cookies: %v", cfg.Advice())
+	}
+	// With a client list it is a deliberate choice about known clients.
+	quiet, err := ParseWith([]byte(answerConfig("        cookies: require\n        allow_clients: [10.0.0.0/8]\n")), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range quiet.Advice() {
+		if strings.Contains(w, "DNS cookies") {
+			t.Fatalf("warned about require on a listener with a client list: %s", w)
+		}
+	}
+}
+
+func TestCookiesRejectNonsense(t *testing.T) {
+	for _, tc := range []struct{ section, want string }{
+		{"        cookies: maybe\n", "must be off, respond or require"},
+		{"        cookie_lifetime: 48h\n", "must be positive and at most 24h"},
+		{"        cookie_lifetime: -1s\n", "must be positive and at most 24h"},
 	} {
 		_, err := ParseWith([]byte(answerConfig(tc.section)), false)
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
