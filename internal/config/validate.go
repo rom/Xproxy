@@ -4218,6 +4218,9 @@ func (v *validator) jwt(j *JWT, seen map[string]bool) {
 		if p.Issuer == "" || len(p.Issuer) > 512 {
 			v.errf("%s.issuer: required (at most 512 characters)", pp)
 		}
+		if len(p.Audiences) == 0 {
+			v.errf("%s.audiences: at least one audience is required", pp)
+		}
 		hmac := false
 		for j, a := range p.Algorithms {
 			if !jwtAlgorithms[a] {

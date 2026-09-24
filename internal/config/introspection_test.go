@@ -21,6 +21,7 @@ jwt:
   providers:
     - name: as
       issuer: https://as.test
+      audiences: [api]
       %s
 upstreams:
   - {name: u, endpoints: [{address: "127.0.0.1:1"}]}
@@ -47,5 +48,10 @@ routes:
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%q: got %v want %q", c, err, want)
 		}
+	}
+	withoutAudience := strings.Replace(base, "      audiences: [api]\n", "", 1)
+	_, err = parseNoFiles([]byte(strings.Replace(withoutAudience, "%s", "introspection: {url: https://as.test/introspect, client_id: rp, client_secret_file: "+secret+"}", 1)))
+	if err == nil || !strings.Contains(err.Error(), "audiences: at least one audience is required") {
+		t.Fatalf("missing audiences: got %v", err)
 	}
 }

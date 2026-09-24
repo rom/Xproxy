@@ -59,8 +59,8 @@ shedding: {target_latency: 200ms, window: 10s}
 challenge: {secret_file: /ch, difficulty: 16, ttl: 10m, cookie_name: xc, exempt_cidrs: [10.0.0.0/8], title: Checking}
 jwt:
   providers:
-    - {name: hs, issuer: https://issuer.example, algorithms: [HS256], hmac_secret_file: /hs, source: "header:X-Token", forward_claims: {X-User: sub}}
-    - {name: rs, issuer: https://issuer.example, algorithms: [RS256], jwks_url: https://issuer.example/jwks, jwks_refresh: 5m, clock_skew: 30s}
+    - {name: hs, issuer: https://issuer.example, audiences: [api], algorithms: [HS256], hmac_secret_file: /hs, source: "header:X-Token", forward_claims: {X-User: sub}}
+    - {name: rs, issuer: https://issuer.example, audiences: [api], algorithms: [RS256], jwks_url: https://issuer.example/jwks, jwks_refresh: 5m, clock_skew: 30s}
 icap:
   services:
     - {name: av, url: "icaps://scan.example:11344/avscan", tls: {ca_file: /ca.pem}, preview: 4096}

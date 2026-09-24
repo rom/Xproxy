@@ -100,7 +100,7 @@ logging: {access: {enabled: false}}
 trusted_proxies: [127.0.0.0/8]
 jwt:
   providers:
-    - {name: hs, issuer: test, algorithms: [HS256], hmac_secret_file: %s}
+    - {name: hs, issuer: test, audiences: [api], algorithms: [HS256], hmac_secret_file: %s}
 rate_limits:
   - {name: per-sub, key: "identity:jwt", algorithm: sliding_window, limit: 1, window: 1m}
 upstreams:
@@ -111,7 +111,7 @@ routes:
 	_, url := startServer(t, yaml)
 	token := func(sub string) string {
 		hdr := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
-		payload, _ := json.Marshal(map[string]any{"sub": sub, "iss": "test", "iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix()})
+		payload, _ := json.Marshal(map[string]any{"sub": sub, "iss": "test", "aud": "api", "iat": time.Now().Unix(), "exp": time.Now().Add(time.Hour).Unix()})
 		body := hdr + "." + base64.RawURLEncoding.EncodeToString(payload)
 		mac := hmac.New(sha256.New, []byte(secret))
 		mac.Write([]byte(body))

@@ -2418,7 +2418,7 @@
           }
         },
         "audiences": {
-          "description": "Audiences: the token's aud must contain at least one. Empty accepts any audience (not recommended).",
+          "description": "Audiences: the token's aud must contain at least one. At least one expected audience is required.",
           "type": "array",
           "items": {
             "type": "string"

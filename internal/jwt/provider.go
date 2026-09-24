@@ -118,11 +118,6 @@ func NewProvider(cfg config.JWTProvider, log *slog.Logger) (*Provider, error) {
 	if p.keys.Load() == nil && p.secret == nil && p.fetch == nil && p.intro == nil {
 		return nil, fmt.Errorf("jwt provider %s: no keys", cfg.Name)
 	}
-	if len(cfg.Audiences) == 0 {
-		// RFC 8725 §3.8: without an audience check any token the issuer
-		// minted for another relying party is accepted here.
-		p.log.Warn("jwt provider accepts tokens of any audience; set audiences to the values this proxy is issued for")
-	}
 	return p, nil
 }
 
@@ -278,7 +273,7 @@ func (p *Provider) introspect(token string, now time.Time) (Claims, error) {
 	if p.cfg.Issuer != "" && iss != p.cfg.Issuer {
 		return nil, ErrIssuer
 	}
-	if len(p.cfg.Audiences) > 0 && !audienceMatches(claims["aud"], p.cfg.Audiences) {
+	if !audienceMatches(claims["aud"], p.cfg.Audiences) {
 		return nil, ErrAudience
 	}
 	for _, name := range p.cfg.RequiredClaims {
@@ -501,10 +496,8 @@ func (p *Provider) checkClaims(c Claims, now time.Time) error {
 	if iss, _ := c["iss"].(string); iss != p.cfg.Issuer {
 		return ErrIssuer
 	}
-	if len(p.cfg.Audiences) > 0 {
-		if !audienceMatches(c["aud"], p.cfg.Audiences) {
-			return ErrAudience
-		}
+	if !audienceMatches(c["aud"], p.cfg.Audiences) {
+		return ErrAudience
 	}
 	for _, name := range p.cfg.RequiredClaims {
 		if _, ok := c[name]; !ok {

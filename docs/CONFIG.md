@@ -4156,7 +4156,7 @@ accepted.
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Referenced by routes |
 | `issuer` | string | required | Must equal the token's `iss` |
-| `audiences` | list | `[]` (any) | The token's `aud` must contain one; set it |
+| `audiences` | list | required | The token's `aud` must contain one; at least one expected audience is required |
 | `algorithms` | list | `[RS256, ES256, EdDSA]` | Allow list from RS256/384/512, PS256/384/512, ES256/384/512, EdDSA, HS256/384/512 |
 | `jwks_file` | path | | Key set on disk, re-read on reload |
 | `jwks_url` | https URL | | Key set fetched at start, every `jwks_refresh`, and on an unknown key id (at most once a minute) |

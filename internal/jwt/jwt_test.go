@@ -128,6 +128,9 @@ func provider(t *testing.T, cfg config.JWTProvider) *Provider {
 	if cfg.Issuer == "" {
 		cfg.Issuer = "https://issuer.test/"
 	}
+	if len(cfg.Audiences) == 0 {
+		cfg.Audiences = []string{"api"}
+	}
 	if cfg.ClockSkew == 0 {
 		cfg.ClockSkew = config.Duration(30 * time.Second)
 	}
@@ -210,6 +213,15 @@ func TestVerifyRejections(t *testing.T) {
 		if c.want != nil && !errors.Is(err, c.want) {
 			t.Errorf("%s: got %v want %v", c.name, err, c.want)
 		}
+	}
+}
+
+func TestVerifyRejectsAudienceWhenNoneConfigured(t *testing.T) {
+	rs, _, _, _ := keys(t)
+	p := provider(t, config.JWTProvider{Algorithms: []string{"RS256"}, JWKSFile: writeJWKS(t, t.TempDir(), rs)})
+	p.cfg.Audiences = nil // Exercise the runtime guard independently of config validation.
+	if _, err := p.Verify(rs.sign(t, base(nil))); !errors.Is(err, ErrAudience) {
+		t.Fatalf("got %v, want %v", err, ErrAudience)
 	}
 }
 

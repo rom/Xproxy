@@ -4228,8 +4228,8 @@ type JWTProvider struct {
 	Name string `yaml:"name"`
 	// Issuer must equal the token's iss claim.
 	Issuer string `yaml:"issuer"`
-	// Audiences: the token's aud must contain at least one. Empty accepts
-	// any audience (not recommended).
+	// Audiences: the token's aud must contain at least one. At least one
+	// expected audience is required.
 	Audiences []string `yaml:"audiences"`
 	// Algorithms allowed, from RS256, RS384, RS512, PS256, PS384, PS512,
 	// ES256, ES384, ES512, EdDSA, HS256, HS384, HS512. "none" is never
