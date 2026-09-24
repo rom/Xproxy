@@ -32,15 +32,30 @@ func (c *Concurrency) Max() int64 { return c.max.Load() }
 // Acquire tries to admit one request. The returned release function must be
 // called exactly once when ok is true.
 func (c *Concurrency) Acquire() (release func(), ok bool) {
-	if c.current.Add(1) > c.max.Load() {
-		c.current.Add(-1)
-		c.Rejected.Add(1)
-		return nil, false
+	return c.AcquireN(1)
+}
+
+// AcquireN atomically reserves n slots. It is used where one admitted object
+// can create a known number of units of work before the individual work is
+// visible to the normal request admission path.
+func (c *Concurrency) AcquireN(n int64) (release func(), ok bool) {
+	if n <= 0 {
+		return func() {}, true
+	}
+	for {
+		cur := c.current.Load()
+		if cur > c.max.Load()-n {
+			c.Rejected.Add(1)
+			return nil, false
+		}
+		if c.current.CompareAndSwap(cur, cur+n) {
+			break
+		}
 	}
 	var done atomic.Bool
 	return func() {
 		if done.CompareAndSwap(false, true) {
-			c.current.Add(-1)
+			c.current.Add(-n)
 		}
 	}, true
 }
