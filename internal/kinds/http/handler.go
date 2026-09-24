@@ -285,6 +285,13 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The provisioning endpoint, answered before routing for the same
+	// reason: it must not depend on a route, and a route must not be
+	// able to take it.
+	if s.serveSCIM(rw, r, st, h.ln.Name) {
+		return
+	}
+
 	match := rt.router.MatchRequest(st.host, st.path, r.Method, st.grpc, r.Header, &tvars{r: r, st: st, rt: rt})
 	if match == nil {
 		s.stats.DeniedNoRoute.Add(1)

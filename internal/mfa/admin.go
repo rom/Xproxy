@@ -60,6 +60,28 @@ func stampOf(path string) fileStamp {
 	return fileStamp{info: fi}
 }
 
+// LoadProvisioning reads an enrolment file that is going to be written
+// as well as read -- the file behind the provisioning endpoint and the
+// administration commands.
+//
+// It differs from Load in one way: an empty or missing file is accepted.
+// Load refuses one because a *verifying* store pointed at an empty file
+// is almost certainly pointed at the wrong file, and everybody it was
+// meant to hold would then be let through unchallenged. A store that
+// provisions starts empty by definition -- the first joiner is what puts
+// a line in it -- so the same check there would mean nobody could ever be
+// enrolled through it.
+func LoadProvisioning(path string) (*Store, error) {
+	byUser, stamp, err := readFile(path, true)
+	if errors.Is(err, os.ErrNotExist) {
+		return &Store{path: path, byUser: map[string]*Enrolment{}, checked: time.Now()}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &Store{path: path, byUser: byUser, stat: stamp, checked: time.Now()}, nil
+}
+
 // Path is the file this store reads.
 func (s *Store) Path() string {
 	if s == nil {

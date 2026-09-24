@@ -271,6 +271,8 @@ func (s *Server) Collect(e metrics.Collector) {
 	e.Counter("xproxy_threat_intel_total", "Requests an imported threat intelligence list matched, by what was done.", L{"result": "logged"}, float64(sn.ThreatIntelMatched-sn.ThreatIntelBlocked-sn.ThreatIntelChallenged))
 	e.Counter("xproxy_threat_intel_total", "Requests an imported threat intelligence list matched, by what was done.", L{"result": "blocked"}, float64(sn.ThreatIntelBlocked))
 	e.Counter("xproxy_threat_intel_total", "Requests an imported threat intelligence list matched, by what was done.", L{"result": "challenged"}, float64(sn.ThreatIntelChallenged))
+	e.Counter("xproxy_scim_requests_total", "Requests the SCIM provisioning endpoint acted on, by outcome.", L{"result": "answered"}, float64(sn.SCIMRequests-sn.SCIMDenied))
+	e.Counter("xproxy_scim_requests_total", "Requests the SCIM provisioning endpoint acted on, by outcome.", L{"result": "refused"}, float64(sn.SCIMDenied))
 	e.Counter("xproxy_ranges_total", "Byte range requests the range policy acted on.", L{"result": "dropped"}, float64(sn.RangesDropped))
 	e.Counter("xproxy_ranges_total", "Byte range requests the range policy acted on.", L{"result": "refused"}, float64(sn.RangesRefused))
 	e.Counter("xproxy_static_responses_total", "Requests answered by static routes.", L{"result": "served"}, float64(sn.StaticServed))

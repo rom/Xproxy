@@ -142,6 +142,15 @@ none
 T}	T{
 pcapng capture of the exchanges the proxy handled;\: see \fBcapture\fR
 T}
+T{
+\fBscim\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+A SCIM 2.0 provisioning endpoint for the second factor and the API keys;\: see \fBscim\fR
+T}
 .TE
 .SH "server"
 .PP
@@ -9812,7 +9821,7 @@ list
 T}	T{
 \fB[]\fR (all)
 T}	T{
-Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBudp_\:denied\fR,\: \fByara\fR
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBudp_\:denied\fR,\: \fByara\fR
 T}
 T{
 \fBthreshold\fR
@@ -13043,6 +13052,248 @@ T}
 Field values may not contain a line break or a control character: a newline would end the field and begin another, so a value carrying one could add a \fBContact\fR of somebody else\(aqs choosing to the document this proxy serves. The response is \fBtext/plain; charset=utf\-8\fR with \fBX\-Content\-Type\-Options: nosniff\fR, and only \fBGET\fR and \fBHEAD\fR are answered \[u2014] a \fBsecurity.txt\fR is a file and nothing else.
 .PP
 The signed form is worth the trouble on a public document: sign it once, put it in \fBbody_file\fR, and a reload picks up a re\-signed file without a restart. \fBvalid_for\fR cannot refresh a signed document, so give a signed one an explicit \fBExpires\fR inside the signature and re\-sign before it lapses; \fBxproxyctl stats\fR reports how many requests each entry answered, which is how you notice a document nobody reads.
+.SH "scim"
+.PP
+A SCIM 2.0 provisioning endpoint (RFC 7644), so the directory that owns the joiner and leaver process provisions and deprovisions the credentials this proxy holds: a second\-factor enrolment and an API key.
+.PP
+The point is the leaver. An account closed in the directory and not here is access that still works, and every estate has a story about the contractor whose key kept opening the door for a year. Doing it by hand needs somebody to remember at exactly the moment nobody is thinking about it; doing it over SCIM means the same event that closes the mailbox closes this.
+.PP
+.RS 4
+.nf
+.ft CR
+scim:
+  # Where the provider reaches it. The endpoints are this plus /Users,
+  # /ServiceProviderConfig, /ResourceTypes and /Schemas.
+  path: /scim/v2
+  external_url: https://admin.example.com/scim/v2
+
+  # Who may reach it at all. An endpoint that creates and destroys
+  # credentials is not left to a route's access list.
+  hosts: [admin.example.com]
+  listeners: [edge]
+  client_cidrs: [203.0.113.0/24]
+
+  token_file: /etc/xproxy/scim.token       # the bearer token, >= 16 characters
+  state_file: /var/lib/xproxy/scim\-users   # the resources, not the credentials
+
+  mfa_users_file: /etc/xproxy/mfa.users    # a second factor is enrolled here
+  keys_file: /etc/xproxy/api\-keys          # a key is issued and revoked here
+  key_scopes: [orders:read]
+  key_ttl: 8760h
+  issuer: example\-estate                   # named in the otpauth URI
+
+  return_secrets: false                    # see below
+  max_results: 100
+.ft
+.fi
+.RE
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.9i) lbw(1.0i) lbx
+lw(1.0i) lw(0.9i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBpath\fR
+T}	T{
+string
+T}	T{
+\fB/\:scim/\:v2\fR
+T}	T{
+The base the endpoints hang off,\: absolute and without a trailing slash
+T}
+T{
+\fBhosts\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (every host)
+T}	T{
+Exact names or \fB*.\:example.\:com\fR patterns the endpoint answers on
+T}
+T{
+\fBlisteners\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (every listener)
+T}	T{
+Listener names it answers on
+T}
+T{
+\fBclient_\:cidrs\fR
+T}	T{
+list of CIDR
+T}	T{
+\fB[]\fR (every client)
+T}	T{
+Networks the provider connects from
+T}
+T{
+\fBtoken_\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+The bearer token,\: one line,\: at least 16 characters. Compared in constant time against a SHA\-256
+T}
+T{
+\fBstate_\:file\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+Where the provisioned resources are kept. Written by the proxy;\: it need not exist yet
+T}
+T{
+\fBmfa_\:users_\:file\fR
+T}	T{
+path
+T}	T{
+none
+T}	T{
+The enrolment file a second factor is provisioned in \[u2014] the same file the \fBmfa\fR filter and the gate listeners read
+T}
+T{
+\fBkeys_\:file\fR
+T}	T{
+path
+T}	T{
+none
+T}	T{
+The API key file a key is issued in and revoked in \[u2014] the same file the \fBapi_\:key\fR filter reads
+T}
+T{
+\fBkey_\:scopes\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Scopes an issued key gets when the request names none
+T}
+T{
+\fBkey_\:ttl\fR
+T}	T{
+duration
+T}	T{
+none
+T}	T{
+Expiry of an issued key,\: 1h to 10 years
+T}
+T{
+\fBissuer\fR
+T}	T{
+string
+T}	T{
+\fBxproxy\fR
+T}	T{
+Names this estate in the \fBotpauth:\:/\:/\fR enrolment URI
+T}
+T{
+\fBreturn_\:secrets\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Whether a response may carry the credentials it just made
+T}
+T{
+\fBmax_\:results\fR
+T}	T{
+int
+T}	T{
+\fB100\fR
+T}	T{
+Page bound,\: reported in the service provider configuration
+T}
+T{
+\fBexternal_\:url\fR
+T}	T{
+URL
+T}	T{
+none
+T}	T{
+The base the provider reaches this endpoint at;\: what \fBmeta.\:location\fR and the \fBLocation\fR header are built from
+T}
+.TE
+.PP
+At least one of \fBmfa_users_file\fR and \fBkeys_file\fR is required: with neither there is nothing to provision.
+.PP
+\fBWhat is implemented\fR, and deliberately nothing else \[u2014] an endpoint that half\-understands an operation is worse than one that refuses it, because the directory believes the change landed:
+.PP
+.TS
+allbox;
+lbw(2.3i) lbx
+lw(2.3i) lx.
+T{
+Request
+T}	T{
+What happens
+T}
+T{
+\fBPOST /\:Users\fR
+T}	T{
+Creates the resource,\: enrols a second factor,\: issues a key
+T}
+T{
+\fBGET /\:Users\fR
+T}	T{
+Lists,\: with \fBfilter=\:userName eq "name"\fR,\: \fBstartIndex\fR and \fBcount\fR
+T}
+T{
+\fBGET /\:Users/\:{id}\fR
+T}	T{
+Reads one,\: with what is \fIcurrently\fR in place rather than what was provisioned once
+T}
+T{
+\fBPUT /\:Users/\:{id}\fR
+T}	T{
+Replaces \fBexternalId\fR,\: \fBdisplayName\fR and \fBactive\fR
+T}
+T{
+\fBPATCH /\:Users/\:{id}\fR
+T}	T{
+\fBreplace\fR of \fBactive\fR,\: \fBexternalId\fR or \fBdisplayName\fR,\: by path or as a value object
+T}
+T{
+\fBDELETE /\:Users/\:{id}\fR
+T}	T{
+Deprovisions and forgets the resource
+T}
+T{
+\fBGET /\:ServiceProviderConfig\fR,\: \fB/\:ResourceTypes\fR,\: \fB/\:Schemas\fR
+T}	T{
+What a provider fetches before it provisions anything
+T}
+.TE
+.PP
+Everything else answers a SCIM error object (\fBurn:ietf:params:scim:api:messages:2.0:Error\fR) with the \fBscimType\fR RFC 7644 section 3.12 gives it: a filter on another attribute is \fBinvalidFilter\fR, a \fBuserName\fR that would be changed is \fBmutability\fR, an attribute this endpoint does not keep is \fBinvalidSyntax\fR, a second create of one name is \fBuniqueness\fR (409).
+.PP
+\fB\fBactive: false\fR and \fBDELETE\fR do the same thing to the credentials\fR: every API key of that user is \fIrevoked\fR \[u2014] kept in the file as the record of what it reached and when it stopped \[u2014] and the enrolment is removed. The difference is the resource: a deactivated user is still there to be read, which is what \fBstate_file\fR is for, and a deleted one is not. There is no "disabled enrolment" in the enrolment file, so a suspension that left one in place would be a suspension in name only.
+.PP
+Which makes one setting elsewhere load\-bearing: \fB\fBrequire_enrolment\fR must be on\fR wherever the enrolment file this endpoint writes is used \[u2014] on a gate listener\(aqs \fBmfa\fR section and on the \fBmfa\fR filter alike. With it off, a user with no enrolment is let through \fIunchallenged\fR, so removing an enrolment opens the door instead of closing it, and a deprovisioning would be the opposite of what the directory asked for.
+.PP
+Which means \fBreactivating mints new credentials.\fR The old secret is gone and cannot be handed back, so \fBactive: true\fR on a deactivated user enrols again and issues a new key; with \fBreturn_secrets: false\fR nobody can read them, and the operator delivers a fresh enrolment with \fBxproxyctl mfa enrol\fR and a fresh key with \fBxproxyctl apikey rotate\fR.
+.PP
+\fB\fBreturn_secrets\fR is off by default.\fR With it on, the response to a create or a reactivation carries the \fBotpauth://\fR URI, the recovery codes and the key plaintext under the extension attribute \fBsecrets\fR \[u2014] which is what an automated onboarding needs, and which puts them in the provider\(aqs response logs and in whatever it stores. Validation says so at load. With it off the credentials are still made; they are simply not in the answer.
+.PP
+\fBWhat is not changed here.\fR \fBuserName\fR is immutable, because it is what the credentials are keyed on: a rename is a new user and the old one deprovisioned, said in the directory rather than inferred here. The scopes of an issued key cannot be changed either \[u2014] that is a new credential, and this endpoint does not replace one nobody asked it to replace.
+.PP
+\fBWhere it runs.\fR Before routing, like the virtual \fBsecurity.txt\fR: the provider needs no route, and no route can take the endpoint away by matching the path first. A request on the endpoint\(aqs path that the selectors refuse is answered 404 and \fBnot\fR routed on \[u2014] passing it to a proxied application would hand it a request meant for the control plane.
+.PP
+\fBscim\fR and \fBscim_user\fR are in the access log, every change writes a security event (\fBscim\fR with the operation), a refusal writes a deny event with \fBscim\fR as the reason \[u2014] which a ban trigger can name, and a bad token feeds it, because somebody trying tokens against a provisioning endpoint is not a client making a mistake twice. \fBscim_requests\fR and \fBscim_denied\fR are in \fBxproxyctl stats\fR, and \fBxproxy_scim_requests_total{result="answered"|"refused"}\fR in the metrics.
 .SH "virtual_patches[]"
 .PP
 A virtual patch blocks a known vulnerability by the shape of the requests that exploit it, while the application is being fixed, and records how often it fired. Patches run right after route matching, before rate limits, filters and the WAF, so they cost nothing for other traffic and need no \fBwaf\fR section. Every listed condition must hold for a patch to apply; at least one of \fBpaths\fR, \fBpath_regex\fR, \fBquery\fR, \fBheaders\fR, \fBcookies\fR or \fBbody\fR is required. A match with \fBaction: block\fR answers \fBstatus\fR with reason \fBvirtual_patch\fR and the id as \fBdetail\fR (ban category \fBvirtual_patch\fR); with \fBaction: log\fR the request continues and the security event and the access log carry \fBvirtual_patch: <id>\fR. \fBxproxyctl patches\fR and \fBGET /v1/patches\fR list the patches with hits, last hit, expiry and state; \fBxproxy_virtual_patch_hits_total{patch}\fR counts per patch and hits survive reloads.

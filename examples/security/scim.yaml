@@ -1,0 +1,137 @@
+# SCIM provisioning: the leaver problem, handled by the directory.
+#
+# An account closed in the directory and not here is access that still
+# works. Every estate has the story: the contractor whose API key kept
+# opening the door for a year, because closing it was somebody's job to
+# remember at exactly the moment nobody was thinking about it.
+#
+# This endpoint lets the identity provider do it. The same event that
+# closes the mailbox removes the second-factor enrolment and revokes the
+# API keys, because the provider sends one PATCH and this proxy does both.
+#
+# What the provider is given:
+#
+#   base URL   https://admin.example.com/scim/v2
+#   token      the contents of /etc/xproxy/scim.token
+#
+# and it discovers the rest from /ServiceProviderConfig.
+#
+# Validate: xproxy -config examples/security/scim.yaml -validate
+version: 1
+server:
+  listeners:
+    - name: edge
+      address: "0.0.0.0:443"
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/certs/site.pem, key_file: /etc/xproxy/certs/site.key}
+
+scim:
+  # The provider reaches the endpoint here. external_url is what the
+  # responses' locations are built from: behind a terminator this proxy
+  # is not, the request alone cannot say whether it was https, and this
+  # proxy will not believe a client's own X-Forwarded-Proto for
+  # something a provider follows.
+  path: /scim/v2
+  external_url: https://admin.example.com/scim/v2
+
+  # Three independent locks, and all three are the point: an endpoint
+  # that creates and destroys credentials must not be reachable from the
+  # internet because a route somewhere allows it.
+  hosts: [admin.example.com]
+  listeners: [edge]
+  client_cidrs:
+    # The provider's published egress ranges. Narrow these to what your
+    # own provider documents.
+    - 203.0.113.0/24
+
+  # The bearer token, one line, at least 16 characters. Generate it with
+  # something that is not a person's idea of a random string:
+  #   head -c 32 /dev/urandom | base64 > /etc/xproxy/scim.token
+  #   chmod 600 /etc/xproxy/scim.token
+  token_file: /etc/xproxy/scim.token
+
+  # The resources. Not the credentials: those live in the two files
+  # below, and a deactivated user has to survive losing both.
+  state_file: /var/lib/xproxy/scim-users
+
+  # The credentials. These are the same files the rest of this
+  # configuration reads, which is the whole point -- a provisioned user
+  # is a user the mfa filter and the api_key filter already know.
+  mfa_users_file: /etc/xproxy/mfa
+  keys_file: /etc/xproxy/api-keys
+  key_scopes: [orders:read]
+  key_ttl: 8760h
+  issuer: example-estate
+
+  # Off, deliberately. With it on, the response to a create carries the
+  # otpauth URI, the recovery codes and the key plaintext -- which an
+  # automated onboarding needs, and which puts them in the provider's
+  # response logs. Turn it on when the provider's handling of them is
+  # something you have actually looked at.
+  return_secrets: false
+
+# The credentials the endpoint provisions, in use. A user provisioned
+# over SCIM can log in here, and a user deprovisioned cannot.
+challenge:
+  secret_file: /etc/xproxy/challenge.key
+
+filters:
+  - name: staff-auth
+    kind: basic_auth
+    options:
+      users_file: /etc/xproxy/staff.htpasswd
+      realm: staff
+      forward_user_header: X-Remote-User
+  - name: staff-mfa
+    kind: mfa
+    options:
+      # The same file the scim section provisions into.
+      file: /etc/xproxy/mfa
+      cookie_secret_file: /etc/xproxy/mfa.cookie
+      issuer: example-estate
+      ttl: 12h
+      identity: [basic]
+      # true is what makes removing an enrolment a deprovisioning: a
+      # user with no enrolment is refused rather than let through. With
+      # false, taking the enrolment away would mean no factor is asked
+      # for -- the opposite of what the directory asked for.
+      require_enrolment: true
+  - name: partners
+    kind: api_key
+    options:
+      keys_file: /etc/xproxy/api-keys
+      required_scopes: [orders:read]
+
+upstreams:
+  - name: app
+    endpoints:
+      - {address: 10.0.0.11:8080}
+
+routes:
+  # The internal application: a person, a password and a code.
+  - name: intranet
+    hosts: [admin.example.com]
+    paths: ["/"]
+    upstream: app
+    filters: [staff-auth, staff-mfa]
+
+  # The partner API: a provisioned key with the scope it was issued for.
+  - name: partner-api
+    hosts: [api.example.com]
+    paths: ["/partner/"]
+    upstream: app
+    filters: [partners]
+
+# Somebody trying tokens against a provisioning endpoint is not a client
+# making a mistake twice.
+bans:
+  state_file: /var/lib/xproxy/bans.db
+  triggers:
+    - name: scim-probing
+      reasons: [scim]
+      threshold: 5
+      window: 5m
+      duration: 1h
+      escalation: 2
+      max_duration: 24h

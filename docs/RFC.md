@@ -228,6 +228,9 @@ HAProxy's specification, versions 1 and 2, both implemented.
 | 4514 | LDAP: String Representation of Distinguished Names | Full | |
 | 4515 | LDAP: String Representation of Search Filters | Full | Filters are parsed and re-encoded, never concatenated from user input |
 | 2253 | UTF-8 String Representation of Distinguished Names | Full | The certificate subject form in identity headers |
+| 7642 | System for Cross-domain Identity Management: Definitions, Overview, Concepts, and Requirements | Full | The provisioning model the `scim` endpoint implements: the directory is authoritative and pushes changes |
+| 7643 | System for Cross-domain Identity Management: Core Schema | Partial | The `User` resource in the attributes this proxy keeps -- `userName`, `externalId`, `displayName`, `active`, `meta` -- plus an extension for what was provisioned. Groups, `Enterprise User`, names, e-mails, phone numbers and the other multi-valued attributes are not kept: this endpoint provisions credentials, and an attribute it stored and never read would be a directory nobody maintains |
+| 7644 | System for Cross-domain Identity Management: Protocol | Partial | `GET`, `POST`, `PUT`, `PATCH` and `DELETE` on `/Users`, the three discovery endpoints, the error object with its `scimType`, and pagination. The filter grammar is the `userName eq "value"` subset and anything else is refused as `invalidFilter` rather than answered with the whole list; bulk, sort, ETags and `/Groups` are not implemented and the service provider configuration says so |
 
 OpenID Connect Core 1.0 is an OpenID Foundation specification rather
 than an RFC; the discovery document, the authorization code flow, the

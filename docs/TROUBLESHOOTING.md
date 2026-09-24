@@ -181,6 +181,8 @@ compute it.
 | 429 with `Retry-After` | A rate limit. `denied` names the policy |
 | 429 with `reason: account_abuse` | `account_guard` acted. `xproxyctl accounts` |
 | 403 with `reason: api_abuse` | The `api_abuse` filter flagged this caller on this endpoint; `detail` names the signals (`enumeration`, `sequential`, `refused`) |
+| 404 on `/scim/v2/...` with `denied: scim:not_allowed` | The provisioning endpoint's `hosts`, `listeners` or `client_cidrs` do not admit this request; see [SCIM provisioning](#scim-provisioning) |
+| 401 on `/scim/v2/...` | The bearer token does not match `token_file`. Repeated attempts feed the ban list under `scim` |
 | 502 | The upstream connection failed. `upstream_error` in the access line, more in the error log |
 | 502 with `detail: reqmod_unavailable` | The ICAP service failed or timed out with `fail: closed` |
 | 503 with `Retry-After: 1` | The concurrency ceiling. `in_flight` against `max_concurrent_requests` |
@@ -2146,6 +2148,71 @@ section: with none — or for a client the challenge section exempts — the
 verdict falls through to the refusal, so the caller gets the 403 that
 `block` would have given rather than a page it can answer.
 
+## SCIM provisioning
+
+**The provider gets 404 on every request.** Three things answer 404
+here, and they are told apart by the access line. `denied:
+scim:not_allowed` means the endpoint was reached and its selectors
+refused: the `Host` is not in `hosts`, the listener is not in
+`listeners`, or the client is not in `client_cidrs` — check the source
+address the proxy sees rather than the one the provider documents, since
+a NAT in between changes it. A line with `route: -` and `denied:
+no_route` means the path never reached the endpoint at all, so `path`
+and what the provider was given do not match. And a SCIM error object
+with `"status":"404"` is the endpoint answering properly: no such user,
+or no such endpoint under the base (`/Groups` is not implemented).
+
+**401 on everything.** The token does not match `token_file`. The file
+is read at load, so a token changed on disk needs a reload; the
+comparison is of the whole line with the surrounding whitespace trimmed,
+and a file under 16 characters fails the load rather than serving a
+guessable endpoint. Repeated attempts are deny events with the reason
+`scim`, which a ban trigger can name.
+
+**A create answers 409 `uniqueness`.** That name is already provisioned.
+It is the right answer: a second create that quietly re-enrolled would
+replace the secret of somebody who is using it.
+
+**A deactivation answers 200 and the user can still log in.** Look at
+what the factor is actually doing. Deprovisioning removes the enrolment,
+and that only *refuses* a user where the guard requires one —
+`require_enrolment: true`, on a gate listener's `mfa` section and on
+the `mfa` filter alike. With it off, a user with no enrolment is let
+through unchallenged, so removing the enrolment opens the door rather
+than closing it. Where the same file is written by SCIM, require the
+enrolment.
+
+**A reactivation answers 200 and the user has no credentials they can
+use.** Expected, and documented: the old secret is gone, so `active:
+true` mints a new enrolment and a new key. With `return_secrets: false`
+nobody can read them — deliver a fresh enrolment with `xproxyctl mfa
+enrol` and a fresh key with `xproxyctl apikey rotate`.
+
+**A scope change answers 400 `mutability`.** The scopes of an issued key
+are what it was issued for; changing them is a new credential, and this
+endpoint does not replace one nobody asked it to replace. Deprovision
+and provision again, or rotate the key with `xproxyctl apikey rotate`
+after editing its scopes.
+
+**A filter on `externalId` answers 400 `invalidFilter`.** Only
+`userName eq "value"` is read. This is deliberate and it matters: a
+provider whose filter was ignored would read the first user of the whole
+list as its match and deprovision somebody else's account.
+
+**500 with no detail.** The endpoint could not read or write one of its
+files — the state file, the enrolment file, the keys file. The reason is
+in the error log rather than the response, because a provisioning client
+has no business learning which file could not be written. Check the
+directory exists and that the proxy's user owns it; the state file is
+written as 0600 and replaced atomically.
+
+**The state file and the credential files disagree.** They can: an
+operator who removes an enrolment with `xproxyctl mfa` has changed the
+credential and not the resource. A read reports what is *currently* in
+place (`mfaEnrolled`, `apiKeyIds`) rather than what was provisioned
+once, so `GET /Users/{id}` is the honest view. The state file is only
+the resource.
+
 ## Byte ranges
 
 **A client's `Range` header does not reach the upstream.** A route with a
@@ -3955,6 +4022,7 @@ innocent.
 | `sensitive_data` | The DLP filter | no |
 | `account_abuse` | `account_guard` | yes |
 | `api_abuse` | `api_abuse`: the caller's *sequence* on one endpoint -- distinct objects past `max_objects`, consecutive identifiers, or a refused share (`detail` names the signals) | yes |
+| `scim` | The provisioning endpoint: a client the selectors do not admit, a missing or wrong bearer token, or a request it refused. `detail` is `not_allowed`, `no_token`, `bad_token`, `not_found`, `method` or `bad_request` | yes |
 | `shed` | Load shedding (`detail` is the class) | no |
 | `filter` | Any other filter (`detail` is the filter name) | no |
 | `forward_denied`, `forward_auth` | The forward proxy | yes |

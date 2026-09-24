@@ -191,6 +191,14 @@
         }
       ]
     },
+    "scim": {
+      "description": "SCIM serves a SCIM 2.0 provisioning endpoint (RFC 7644) so the directory that owns the joiner and leaver process provisions and deprovisions the credentials this proxy holds.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/SCIM"
+        }
+      ]
+    },
     "security_txt": {
       "description": "SecurityTxt serves a virtual security.txt (RFC 9116) for the hosts each entry names, before routing.",
       "type": "array",
@@ -4925,6 +4933,82 @@
       },
       "additionalProperties": false
     },
+    "SCIM": {
+      "description": "SecurityTxt is one virtual security.txt document (RFC 9116) and the requests it answers. The proxy serves it at /.well-known/security.txt and at the legacy /security.txt, before routing, so a host with no route of its own still has one — which is the parked name a finder tries first. Entries are tried in order and the first whose selectors all match answers, so an entry with no selectors placed last is the fallback for every other host. A request that matches no entry is routed as usual, so an origin serving its own file keeps doing so. SCIM is the provisioning endpoint. It is answered before routing, like the virtual security.txt, so the endpoint needs no route of its own and cannot be taken away by one. The endpoint is an administrative interface with the power to create and destroy credentials, which is why it carries its own token and its own address list rather than borrowing a route's: a provisioning endpoint reachable from the internet is an account factory.",
+      "type": "object",
+      "properties": {
+        "client_cidrs": {
+          "description": "ClientCIDRs restrict it to clients inside these networks. Empty allows every client, which validation advises against.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "external_url": {
+          "description": "ExternalURL is the base the provider reaches this endpoint at, with scheme and host. Locations in the responses are built from it; without it they are built from the request, which is wrong behind a terminator this proxy is not.",
+          "type": "string"
+        },
+        "hosts": {
+          "description": "Hosts are exact names or wildcard patterns the endpoint answers on. Empty answers on every host, which validation advises against.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "issuer": {
+          "description": "Issuer names this estate in the otpauth enrolment URI. Default \"xproxy\".",
+          "type": "string"
+        },
+        "key_scopes": {
+          "description": "KeyScopes are the scopes an issued key gets when the request names none.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "key_ttl": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "keys_file": {
+          "description": "KeysFile is the API key file a key is issued in and revoked in, the same file the api_key filter reads.",
+          "type": "string"
+        },
+        "listeners": {
+          "description": "Listeners restrict the endpoint to these listener names.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_results": {
+          "description": "MaxResults bounds a page and is reported in the service provider configuration. Default 100.",
+          "type": "integer"
+        },
+        "mfa_users_file": {
+          "description": "MFAUsersFile is the enrolment file a second factor is provisioned in, the same file the mfa filter and the gate listeners read.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Path is the base the endpoints hang off. Default \"/scim/v2\"; the provider is given this plus \"/Users\".",
+          "type": "string"
+        },
+        "return_secrets": {
+          "description": "ReturnSecrets lets a response carry the credentials it just made: the enrolment URI, the recovery codes and the key plaintext. Off by default, because they then exist wherever the provider keeps its logs.",
+          "type": "boolean"
+        },
+        "state_file": {
+          "description": "StateFile holds the provisioned resources. It is not the credentials: those live in the enrolment and key files, and a resource has to survive a deactivation that takes both away.",
+          "type": "string"
+        },
+        "token_file": {
+          "description": "TokenFile holds the bearer token the provider presents, one line. Required: this endpoint is never open.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "SFTPPolicy": {
       "description": "SFTPPolicy inspects the SFTP protocol inside an sftp subsystem channel. Refused requests are answered with a permission-denied status, so the session continues and the client is told which operation was refused rather than losing its connection.",
       "type": "object",
@@ -5648,7 +5732,6 @@
       "additionalProperties": false
     },
     "SecurityTxt": {
-      "description": "SecurityTxt is one virtual security.txt document (RFC 9116) and the requests it answers. The proxy serves it at /.well-known/security.txt and at the legacy /security.txt, before routing, so a host with no route of its own still has one — which is the parked name a finder tries first. Entries are tried in order and the first whose selectors all match answers, so an entry with no selectors placed last is the fallback for every other host. A request that matches no entry is routed as usual, so an origin serving its own file keeps doing so.",
       "type": "object",
       "properties": {
         "acknowledgments": {

@@ -697,6 +697,78 @@ Open findings of the earlier rounds:
   does not find the refusal they are watching, and concludes the proxy
   cannot ban on it. A test now compares the two.
 
+- **The leaver, handled by the directory** (`scim`, RFC 7643 and RFC 7644).
+
+  A SCIM 2.0 provisioning endpoint, so the directory that owns the joiner
+  and leaver process provisions and deprovisions the credentials this
+  proxy holds: the second-factor enrolment and the API keys. An account
+  closed in the directory and not here is access that still works, and
+  every estate has the story about the contractor whose key kept opening
+  the door for a year -- because closing it was somebody's job to
+  remember at exactly the moment nobody was thinking about it. Until now
+  the only ways in were `xproxyctl mfa`, `xproxyctl apikey` and the GUI:
+  all of them a person, doing it on purpose, afterwards.
+
+  A create enrols a factor and issues a key; `active: false` and `DELETE`
+  **revoke** every key of that user -- kept in the file as the record of
+  what it reached and when it stopped -- and remove the enrolment. The
+  resources live in a file of their own (`state_file`), because they are
+  not the credentials: a deactivated user has to survive losing both, and
+  a read reports what is *currently* in place rather than what was
+  provisioned once, so an enrolment an operator removed by hand shows as
+  removed.
+
+  **One setting elsewhere is load-bearing, and CONFIG.md says so twice:**
+  `require_enrolment` must be on wherever that enrolment file is used.
+  Removing an enrolment refuses a user only where one is required; with
+  it off the same removal means no factor is asked for, and a
+  deprovisioning that opens the door is worse than none.
+
+  What is implemented is the subset a provider drives -- `GET`, `POST`,
+  `PUT`, `PATCH` and `DELETE` on `/Users`, the three discovery endpoints,
+  the error object with its `scimType`, pagination -- and **nothing
+  else**, because an endpoint that half-understands an operation is worse
+  than one that refuses it: the directory believes the change landed. So
+  a filter on anything but `userName` is `invalidFilter` rather than
+  answered with the whole list (a provider whose filter was ignored would
+  read the first user as its match and deprovision somebody else's
+  account), a `userName` that would change is `mutability` (it is what
+  the credentials are keyed on), an attribute this endpoint does not keep
+  is refused rather than stored and never read, and the scopes of an
+  issued key cannot be edited into something else.
+
+  It is an administrative interface with the power to create and destroy
+  credentials, so it carries its own locks rather than borrowing a
+  route's: a bearer token of at least 16 characters compared in constant
+  time, and `hosts`, `listeners` and `client_cidrs` -- validation says so
+  when none of the three is set. It answers **before routing**, like the
+  virtual `security.txt`, so the provider needs no route and no route can
+  take the endpoint away; a request on its path that the selectors refuse
+  is answered 404 and *not* routed on, because handing a proxied
+  application a request meant for the control plane is how a control
+  plane leaks. A refusal is a deny event with the `scim` reason, which a
+  ban trigger can name, and a bad token feeds it: somebody trying tokens
+  against a provisioning endpoint is not a client making a mistake twice.
+
+  `return_secrets` is off by default. With it on, the response to a
+  create or a reactivation carries the `otpauth://` URI, the recovery
+  codes and the key plaintext -- which is what an automated onboarding
+  needs and what puts them in the provider's logs; validation says that
+  too. With it off the credentials are still made, and a reactivation
+  mints fresh ones because the old secret is gone and cannot be handed
+  back.
+
+  `internal/mfa` gained `LoadProvisioning` for this: `Load` refuses an
+  empty enrolment file, because a *verifying* store pointed at one is
+  almost certainly pointed at the wrong file and would let everybody
+  through unchallenged -- while a store that provisions starts empty by
+  definition, and the same check there would mean nobody could ever be
+  enrolled through it. `scim_requests` and `scim_denied` are in
+  `xproxyctl stats`, `xproxy_scim_requests_total{result}` in the metrics.
+  Thirty-six deliberate weakenings were each caught, five only after the
+  tests were extended -- among them a compound filter, which the first
+  version read as its first comparison and ignored the rest of.
+
 - **Fixed: a DNS listener stopped the moment it started raced its own
   WaitGroup.** `Serve` registered each goroutine with `wg.Add` outside any
   lock while `Shutdown` called `wg.Wait`, and it published the DoH server

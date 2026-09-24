@@ -301,6 +301,9 @@ func (v *validator) config(c *Config) {
 		v.ingress(c.Ingress, byName)
 	}
 	v.securityTxt(c)
+	if c.SCIM != nil {
+		v.scim(c)
+	}
 	if c.Challenge != nil {
 		for _, r := range c.Routes {
 			if len(r.Hosts) > 0 {
@@ -2317,7 +2320,7 @@ var denyReasons = map[string]bool{
 	"acl": true, "rate_limit": true, "waf": true, "body_size": true, "uri_length": true,
 	"bad_host": true, "no_route": true, "websocket": true, "concurrency": true, "challenge": true, "jwt": true, "icap": true,
 	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true, "honeypot": true, "dns_blocked": true, "dns_bogus": true,
-	"account_abuse": true, "api_abuse": true, "honeytoken": true, "threat_intel": true, "smtp_denied": true, "mqtt_denied": true, "ssh_denied": true, "ftp_denied": true, "syslog_denied": true, "yara": true,
+	"account_abuse": true, "api_abuse": true, "honeytoken": true, "scim": true, "threat_intel": true, "smtp_denied": true, "mqtt_denied": true, "ssh_denied": true, "ftp_denied": true, "syslog_denied": true, "yara": true,
 	"forward_sni_mismatch": true, "dns_tunnel": true, "dns_answer_denied": true,
 	"telnet_denied": true, "vnc_denied": true, "rdp_denied": true, "sftp_icap": true, "udp_denied": true,
 }
@@ -7001,6 +7004,130 @@ func (v *validator) sshCommandRules(p string, rules []SSHCommandRule, hasSFTP, e
 // threatIntel checks the imported lists. Every file is read at load by
 // the server itself, so what is checked here is what a file cannot say:
 // the name, the kind, the action and the refresh interval.
+// scimFile checks a path the provisioning endpoint writes: absolute, and
+// noted rather than refused when it is not there yet.
+func (v *validator) scimFile(p, path string) {
+	if path == "" {
+		return
+	}
+	if !strings.HasPrefix(path, "/") {
+		v.errf("%s: must be an absolute path", p)
+		return
+	}
+	if !v.fileCheck {
+		return
+	}
+	st, err := os.Stat(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		v.warnf("%s: %s does not exist yet; the first provisioning creates it, so check the path is the one the rest of this file reads", p, path)
+	case err != nil:
+		v.errf("%s: %v", p, errors.Unwrap(err))
+	case st.IsDir():
+		v.errf("%s: %s is a directory", p, path)
+	}
+}
+
+// scim checks the provisioning endpoint. Every check here is about the
+// same thing: this endpoint creates and destroys credentials, so a
+// mistake in its configuration is not a feature that does not work but a
+// door somebody else can open.
+func (v *validator) scim(c *Config) {
+	t := c.SCIM
+	base := t.Base()
+	switch {
+	case !strings.HasPrefix(base, "/"):
+		v.errf("scim.path: %q must start with /", base)
+	case base == "/":
+		v.errf("scim.path: cannot be the root; the endpoint would answer every request")
+	case strings.HasSuffix(base, "/") && base != "/":
+		v.errf("scim.path: %q must not end with /", base)
+	case len(base) > 128:
+		v.errf("scim.path: at most 128 characters")
+	case strings.ContainsAny(base, "?# "):
+		v.errf("scim.path: %q is a path, not a URL", base)
+	}
+	if t.TokenFile == "" {
+		v.errf("scim.token_file: required; this endpoint is never open")
+	} else {
+		v.file("scim.token_file", t.TokenFile)
+	}
+	if t.StateFile == "" {
+		v.errf("scim.state_file: required; it holds the provisioned users")
+	} else if !strings.HasPrefix(t.StateFile, "/") {
+		// Unlike the others this file is written, and need not exist yet:
+		// the first provisioning creates it.
+		v.errf("scim.state_file: must be an absolute path")
+	}
+	if t.MFAUsersFile == "" && t.KeysFile == "" {
+		v.errf("scim.mfa_users_file, scim.keys_file: name at least one; with neither there is nothing to provision")
+	}
+	// The two credential files are written by this endpoint, so unlike
+	// every other file in the configuration they need not exist yet: a
+	// provisioned estate starts with no enrolments and no keys, and the
+	// first joiner is what creates them. A path that does not exist is
+	// still worth saying out loud, because the other way to get one is a
+	// typo, and then the credentials the rest of the proxy reads are in
+	// the other file.
+	v.scimFile("scim.mfa_users_file", t.MFAUsersFile)
+	v.scimFile("scim.keys_file", t.KeysFile)
+	listeners := map[string]bool{}
+	for _, l := range c.Server.Listeners {
+		listeners[l.Name] = true
+	}
+	for i, l := range t.Listeners {
+		if !listeners[l] {
+			v.errf("scim.listeners[%d]: unknown listener %q", i, l)
+		}
+	}
+	for i, h := range t.Hosts {
+		if !hostPatternOK(h) {
+			v.errf("scim.hosts[%d]: %q is not a valid host pattern", i, h)
+		}
+	}
+	for i, cidr := range t.ClientCIDRs {
+		if _, err := netip.ParsePrefix(cidr); err != nil {
+			v.errf("scim.client_cidrs[%d]: %q is not a CIDR", i, cidr)
+		}
+	}
+	if t.MaxResults != 0 && (t.MaxResults < 1 || t.MaxResults > 1000) {
+		v.errf("scim.max_results: must be between 1 and 1000")
+	}
+	if t.KeyTTL != nil && (t.KeyTTL.D() < time.Hour || t.KeyTTL.D() > Duration(10*365*24*time.Hour).D()) {
+		v.errf("scim.key_ttl: must be between 1h and 10 years")
+	}
+	if t.Issuer != "" && (len(t.Issuer) > 64 || strings.ContainsAny(t.Issuer, ":?&= ")) {
+		v.errf("scim.issuer: at most 64 characters and none of \":?&= \", which the enrolment URI is made of")
+	}
+	for i, sc := range t.KeyScopes {
+		if sc == "" || len(sc) > 64 || strings.ContainsAny(sc, ", ") {
+			v.errf("scim.key_scopes[%d]: %q is not a scope name", i, sc)
+		}
+	}
+	if u := t.ExternalURL; u != "" {
+		switch {
+		case !strings.HasPrefix(u, "https://") && !strings.HasPrefix(u, "http://"):
+			v.errf("scim.external_url: must begin with https:// or http://")
+		case strings.ContainsAny(u, "?# "):
+			v.errf("scim.external_url: %q must be a base URL with no query or fragment", u)
+		case strings.HasPrefix(u, "http://"):
+			v.warnf("scim.external_url is http://, so the provider is told to send its token in the clear")
+		}
+	}
+	// The advice. Each of these loads, and each of them is a
+	// provisioning endpoint with one fewer lock on it than it should
+	// have.
+	if len(t.ClientCIDRs) == 0 && len(t.Hosts) == 0 && len(t.Listeners) == 0 {
+		v.warnf("scim has no hosts, listeners or client_cidrs, so the provisioning endpoint answers on every listener and every host: name at least the provider's networks")
+	}
+	if t.Secrets() {
+		v.warnf("scim.return_secrets is on, so the enrolment secret, the recovery codes and the key plaintext are in the provider's responses and wherever it logs them")
+	}
+	if t.KeysFile != "" && len(t.KeyScopes) == 0 {
+		v.warnf("scim.key_scopes is empty, so a provisioned key carries no scopes: it passes an api_key filter that requires none and fails every one that requires any")
+	}
+}
+
 func (v *validator) threatIntel(t *ThreatIntel) {
 	if len(t.Lists) == 0 {
 		v.errf("threat_intel: no lists, so the section does nothing; list them or drop it")

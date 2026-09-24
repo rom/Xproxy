@@ -49,6 +49,7 @@ on the first line of the file to enable it.
 | `compression` | object | none | gzip of eligible responses; see `compression` |
 | `tracing` | object | none | W3C trace context and span export; see `tracing` |
 | `capture` | object | none | pcapng capture of the exchanges the proxy handled; see `capture` |
+| `scim` | object | none | A SCIM 2.0 provisioning endpoint for the second factor and the API keys; see `scim` |
 
 ## server
 
@@ -4274,7 +4275,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `yara` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |
@@ -5348,6 +5349,136 @@ without a restart. `valid_for` cannot refresh a signed document, so
 give a signed one an explicit `Expires` inside the signature and
 re-sign before it lapses; `xproxyctl stats` reports how many requests
 each entry answered, which is how you notice a document nobody reads.
+
+## scim
+
+A SCIM 2.0 provisioning endpoint (RFC 7644), so the directory that owns
+the joiner and leaver process provisions and deprovisions the
+credentials this proxy holds: a second-factor enrolment and an API key.
+
+The point is the leaver. An account closed in the directory and not here
+is access that still works, and every estate has a story about the
+contractor whose key kept opening the door for a year. Doing it by hand
+needs somebody to remember at exactly the moment nobody is thinking
+about it; doing it over SCIM means the same event that closes the
+mailbox closes this.
+
+```yaml
+scim:
+  # Where the provider reaches it. The endpoints are this plus /Users,
+  # /ServiceProviderConfig, /ResourceTypes and /Schemas.
+  path: /scim/v2
+  external_url: https://admin.example.com/scim/v2
+
+  # Who may reach it at all. An endpoint that creates and destroys
+  # credentials is not left to a route's access list.
+  hosts: [admin.example.com]
+  listeners: [edge]
+  client_cidrs: [203.0.113.0/24]
+
+  token_file: /etc/xproxy/scim.token       # the bearer token, >= 16 characters
+  state_file: /var/lib/xproxy/scim-users   # the resources, not the credentials
+
+  mfa_users_file: /etc/xproxy/mfa.users    # a second factor is enrolled here
+  keys_file: /etc/xproxy/api-keys          # a key is issued and revoked here
+  key_scopes: [orders:read]
+  key_ttl: 8760h
+  issuer: example-estate                   # named in the otpauth URI
+
+  return_secrets: false                    # see below
+  max_results: 100
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `path` | string | `/scim/v2` | The base the endpoints hang off, absolute and without a trailing slash |
+| `hosts` | list | `[]` (every host) | Exact names or `*.example.com` patterns the endpoint answers on |
+| `listeners` | list | `[]` (every listener) | Listener names it answers on |
+| `client_cidrs` | list of CIDR | `[]` (every client) | Networks the provider connects from |
+| `token_file` | path | required | The bearer token, one line, at least 16 characters. Compared in constant time against a SHA-256 |
+| `state_file` | path | required | Where the provisioned resources are kept. Written by the proxy; it need not exist yet |
+| `mfa_users_file` | path | none | The enrolment file a second factor is provisioned in — the same file the `mfa` filter and the gate listeners read |
+| `keys_file` | path | none | The API key file a key is issued in and revoked in — the same file the `api_key` filter reads |
+| `key_scopes` | list | `[]` | Scopes an issued key gets when the request names none |
+| `key_ttl` | duration | none | Expiry of an issued key, 1h to 10 years |
+| `issuer` | string | `xproxy` | Names this estate in the `otpauth://` enrolment URI |
+| `return_secrets` | bool | `false` | Whether a response may carry the credentials it just made |
+| `max_results` | int | `100` | Page bound, reported in the service provider configuration |
+| `external_url` | URL | none | The base the provider reaches this endpoint at; what `meta.location` and the `Location` header are built from |
+
+At least one of `mfa_users_file` and `keys_file` is required: with
+neither there is nothing to provision.
+
+**What is implemented**, and deliberately nothing else — an endpoint
+that half-understands an operation is worse than one that refuses it,
+because the directory believes the change landed:
+
+| Request | What happens |
+|---------|--------------|
+| `POST /Users` | Creates the resource, enrols a second factor, issues a key |
+| `GET /Users` | Lists, with `filter=userName eq "name"`, `startIndex` and `count` |
+| `GET /Users/{id}` | Reads one, with what is *currently* in place rather than what was provisioned once |
+| `PUT /Users/{id}` | Replaces `externalId`, `displayName` and `active` |
+| `PATCH /Users/{id}` | `replace` of `active`, `externalId` or `displayName`, by path or as a value object |
+| `DELETE /Users/{id}` | Deprovisions and forgets the resource |
+| `GET /ServiceProviderConfig`, `/ResourceTypes`, `/Schemas` | What a provider fetches before it provisions anything |
+
+Everything else answers a SCIM error object (`urn:ietf:params:scim:api:messages:2.0:Error`)
+with the `scimType` RFC 7644 section 3.12 gives it: a filter on another
+attribute is `invalidFilter`, a `userName` that would be changed is
+`mutability`, an attribute this endpoint does not keep is
+`invalidSyntax`, a second create of one name is `uniqueness` (409).
+
+**`active: false` and `DELETE` do the same thing to the credentials**:
+every API key of that user is *revoked* — kept in the file as the record
+of what it reached and when it stopped — and the enrolment is removed.
+The difference is the resource: a deactivated user is still there to be
+read, which is what `state_file` is for, and a deleted one is not. There
+is no "disabled enrolment" in the enrolment file, so a suspension that
+left one in place would be a suspension in name only.
+
+Which makes one setting elsewhere load-bearing: **`require_enrolment`
+must be on** wherever the enrolment file this endpoint writes is used —
+on a gate listener's `mfa` section and on the `mfa` filter alike. With it
+off, a user with no enrolment is let through *unchallenged*, so removing
+an enrolment opens the door instead of closing it, and a deprovisioning
+would be the opposite of what the directory asked for.
+
+Which means **reactivating mints new credentials.** The old secret is
+gone and cannot be handed back, so `active: true` on a deactivated user
+enrols again and issues a new key; with `return_secrets: false` nobody
+can read them, and the operator delivers a fresh enrolment with
+`xproxyctl mfa enrol` and a fresh key with `xproxyctl apikey rotate`.
+
+**`return_secrets` is off by default.** With it on, the response to a
+create or a reactivation carries the `otpauth://` URI, the recovery
+codes and the key plaintext under the extension attribute `secrets` —
+which is what an automated onboarding needs, and which puts them in the
+provider's response logs and in whatever it stores. Validation says so
+at load. With it off the credentials are still made; they are simply not
+in the answer.
+
+**What is not changed here.** `userName` is immutable, because it is
+what the credentials are keyed on: a rename is a new user and the old
+one deprovisioned, said in the directory rather than inferred here. The
+scopes of an issued key cannot be changed either — that is a new
+credential, and this endpoint does not replace one nobody asked it to
+replace.
+
+**Where it runs.** Before routing, like the virtual `security.txt`: the
+provider needs no route, and no route can take the endpoint away by
+matching the path first. A request on the endpoint's path that the
+selectors refuse is answered 404 and **not** routed on — passing it to a
+proxied application would hand it a request meant for the control plane.
+
+`scim` and `scim_user` are in the access log, every change writes a
+security event (`scim` with the operation), a refusal writes a deny
+event with `scim` as the reason — which a ban trigger can name, and a
+bad token feeds it, because somebody trying tokens against a
+provisioning endpoint is not a client making a mistake twice.
+`scim_requests` and `scim_denied` are in `xproxyctl stats`, and
+`xproxy_scim_requests_total{result="answered"|"refused"}` in the
+metrics.
 
 ## virtual_patches[]
 

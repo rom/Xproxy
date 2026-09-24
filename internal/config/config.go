@@ -67,6 +67,10 @@ type Config struct {
 	// SecurityTxt serves a virtual security.txt (RFC 9116) for the hosts
 	// each entry names, before routing.
 	SecurityTxt []SecurityTxt `yaml:"security_txt"`
+	// SCIM serves a SCIM 2.0 provisioning endpoint (RFC 7644) so the
+	// directory that owns the joiner and leaver process provisions and
+	// deprovisions the credentials this proxy holds.
+	SCIM *SCIM `yaml:"scim"`
 	// Honeytokens are planted credentials. A request presenting one has
 	// read something it should not have.
 	Honeytokens []Honeytoken `yaml:"honeytokens"`
@@ -4017,6 +4021,94 @@ func (h *Honeypot) MarkFor() time.Duration {
 // answers, so an entry with no selectors placed last is the fallback for
 // every other host. A request that matches no entry is routed as usual,
 // so an origin serving its own file keeps doing so.
+// SCIM is the provisioning endpoint. It is answered before routing, like
+// the virtual security.txt, so the endpoint needs no route of its own and
+// cannot be taken away by one.
+//
+// The endpoint is an administrative interface with the power to create
+// and destroy credentials, which is why it carries its own token and its
+// own address list rather than borrowing a route's: a provisioning
+// endpoint reachable from the internet is an account factory.
+type SCIM struct {
+	// Path is the base the endpoints hang off. Default "/scim/v2"; the
+	// provider is given this plus "/Users".
+	Path string `yaml:"path"`
+	// Hosts are exact names or wildcard patterns the endpoint answers
+	// on. Empty answers on every host, which validation advises
+	// against.
+	Hosts []string `yaml:"hosts"`
+	// Listeners restrict the endpoint to these listener names.
+	Listeners []string `yaml:"listeners"`
+	// ClientCIDRs restrict it to clients inside these networks. Empty
+	// allows every client, which validation advises against.
+	ClientCIDRs []string `yaml:"client_cidrs"`
+
+	// TokenFile holds the bearer token the provider presents, one line.
+	// Required: this endpoint is never open.
+	TokenFile string `yaml:"token_file"`
+	// StateFile holds the provisioned resources. It is not the
+	// credentials: those live in the enrolment and key files, and a
+	// resource has to survive a deactivation that takes both away.
+	StateFile string `yaml:"state_file"`
+	// MFAUsersFile is the enrolment file a second factor is provisioned
+	// in, the same file the mfa filter and the gate listeners read.
+	MFAUsersFile string `yaml:"mfa_users_file"`
+	// KeysFile is the API key file a key is issued in and revoked in,
+	// the same file the api_key filter reads.
+	KeysFile string `yaml:"keys_file"`
+	// KeyScopes are the scopes an issued key gets when the request
+	// names none.
+	KeyScopes []string `yaml:"key_scopes"`
+	// KeyTTL expires an issued key. Unset never expires it.
+	KeyTTL *Duration `yaml:"key_ttl"`
+	// Issuer names this estate in the otpauth enrolment URI. Default
+	// "xproxy".
+	Issuer string `yaml:"issuer"`
+	// ReturnSecrets lets a response carry the credentials it just made:
+	// the enrolment URI, the recovery codes and the key plaintext. Off
+	// by default, because they then exist wherever the provider keeps
+	// its logs.
+	ReturnSecrets *bool `yaml:"return_secrets"`
+	// MaxResults bounds a page and is reported in the service provider
+	// configuration. Default 100.
+	MaxResults int `yaml:"max_results"`
+	// ExternalURL is the base the provider reaches this endpoint at,
+	// with scheme and host. Locations in the responses are built from
+	// it; without it they are built from the request, which is wrong
+	// behind a terminator this proxy is not.
+	ExternalURL string `yaml:"external_url"`
+}
+
+// SCIMPath is the base path when none is configured.
+const SCIMPath = "/scim/v2"
+
+// Base returns the configured base path, or the default.
+func (s *SCIM) Base() string {
+	if s == nil || s.Path == "" {
+		return SCIMPath
+	}
+	return s.Path
+}
+
+// Secrets says whether a response may carry the credentials it made.
+func (s *SCIM) Secrets() bool { return s != nil && s.ReturnSecrets != nil && *s.ReturnSecrets }
+
+// Results is the page bound.
+func (s *SCIM) Results() int {
+	if s == nil || s.MaxResults == 0 {
+		return 100
+	}
+	return s.MaxResults
+}
+
+// TTL is the expiry an issued key gets, and zero for none.
+func (s *SCIM) TTL() time.Duration {
+	if s == nil || s.KeyTTL == nil {
+		return 0
+	}
+	return s.KeyTTL.D()
+}
+
 type SecurityTxt struct {
 	// Name identifies the entry in the status view and the access log.
 	Name string `yaml:"name"`
