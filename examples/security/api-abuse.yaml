@@ -1,0 +1,129 @@
+# API abuse: the attack that is a sequence of valid requests.
+#
+# Every request below is correct on its own -- the right method, the
+# right path, an authenticated caller, a well formed identifier -- and
+# together they are somebody reading the customer table one row at a
+# time:
+#
+#   GET /api/orders/1041   200
+#   GET /api/orders/1042   403
+#   GET /api/orders/1043   403
+#   GET /api/orders/1044   200   <- somebody else's order
+#
+# That is broken object level authorisation, the first item on the OWASP
+# API Security Top 10. A WAF reads one request and sees nothing wrong
+# with any of these, because nothing is wrong with any of these. What is
+# wrong is the shape of the sequence, and that is what api_abuse counts:
+# per caller, per endpoint, over a window.
+#
+# The filter goes AFTER the identity filters. A caller is then an
+# account rather than an address, so an attacker who spreads the walk
+# over a hundred addresses is still one caller, and a thousand
+# colleagues behind one office address are not.
+#
+# Validate: xproxy -config examples/security/api-abuse.yaml -validate
+version: 1
+server:
+  listeners:
+    - name: edge
+      address: "0.0.0.0:443"
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/certs/api.pem, key_file: /etc/xproxy/certs/api.key}
+
+# challenge is what an api_abuse action of challenge uses. It is the
+# proportionate answer on an endpoint people also use: a browser or an
+# app with a session gets through, a script walking identifiers does
+# not.
+challenge:
+  secret_file: /etc/xproxy/challenge.key
+
+# The identity the filter counts against. Without one, api_abuse falls
+# back to the client address, which is the weaker signal.
+jwt:
+  providers:
+    - name: customers
+      issuer: https://login.example.com
+      algorithms: [RS256]
+      jwks_url: https://login.example.com/.well-known/jwks.json
+      forward_claims: {X-User: sub}
+
+upstreams:
+  - name: api
+    endpoints:
+      - {address: 10.0.0.11:8080}
+      - {address: 10.0.0.12:8080}
+
+filters:
+  # The customer facing API. A person reads their own orders and their
+  # own invoices; the bounds are set from what that looks like, not from
+  # what the database holds.
+  - name: customer-abuse
+    kind: api_abuse
+    options:
+      window: 5m
+      # More than 200 distinct identifiers on one endpoint in five
+      # minutes is not a person reading their own records.
+      max_objects: 200
+      # Consecutive identifiers are a different fact from many
+      # identifiers: 20 of them filling 80% of the span they cover is a
+      # walk, however slowly it is taken.
+      sequential: {min: 20, density: 0.8}
+      # And the answers are the other half. Half of twenty requests
+      # refused means the caller is asking for objects that are not
+      # theirs -- which is what probing looks like and little else does.
+      refused: {min_requests: 20, share: 0.5}
+      action: challenge
+      paths: ["/api/"]
+
+  # The partner API is machine to machine, so a challenge has nobody to
+  # answer it: the action is block, and the bounds are wider because a
+  # nightly reconciliation legitimately reads a lot.
+  - name: partner-abuse
+    kind: api_abuse
+    options:
+      window: 15m
+      max_objects: 5000
+      # A partner pulling a report DOES read consecutive identifiers,
+      # so that signal is off here; the refused share is the one that
+      # still means something.
+      sequential: {min: 0}
+      refused: {min_requests: 50, share: 0.5}
+      action: block
+      max_subjects: 1024
+      paths: ["/partner/"]
+
+routes:
+  - name: customer-api
+    hosts: [api.example.com]
+    paths: ["/api/"]
+    upstream: api
+    filters: [customer-abuse]
+
+  - name: partner-api
+    hosts: [api.example.com]
+    paths: ["/partner/"]
+    upstream: api
+    filters: [partner-abuse]
+
+  # The status endpoint an operator watches an incident with is not
+  # under either prefix, so neither filter counts it. A path with no
+  # identifier in it has no object to count anyway.
+  - name: health
+    hosts: [api.example.com]
+    paths: ["/healthz"]
+    upstream: api
+
+# A caller that keeps walking after being refused is one to stop at the
+# edge rather than in the filter: api_abuse is a ban reason, so a trigger
+# can turn repeated refusals into a ban that applies before routing.
+bans:
+  state_file: /var/lib/xproxy/bans.db
+  triggers:
+    - name: object-walkers
+      reasons: [api_abuse]
+      threshold: 5
+      window: 10m
+      duration: 1h
+      escalation: 2
+      max_duration: 24h

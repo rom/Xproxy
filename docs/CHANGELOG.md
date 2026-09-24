@@ -634,6 +634,69 @@ Open findings of the earlier rounds:
   `xproxy_ranges_total` counts what was dropped and what was refused.
   Twenty-five deliberate weakenings were each caught.
 
+- **The attack that is a sequence of valid requests** (`api_abuse` filter).
+
+  Every request in this sequence is correct on its own -- the right method,
+  the right path, an authenticated caller, a well formed identifier -- and
+  the attack is the sequence:
+
+  ```
+  GET /api/orders/1041   200
+  GET /api/orders/1042   403
+  GET /api/orders/1043   403
+  GET /api/orders/1044   200   <- somebody else's order
+  ```
+
+  That is broken object level authorisation, the first item on the OWASP
+  API Security Top 10, and nothing in this proxy could see it: the WAF
+  reads one request and finds nothing wrong with any of these, because
+  nothing is wrong with any of these. `account_guard` watches the
+  credential endpoints, a rate limit counts requests without caring what
+  they asked for, and a caller reading a hundred *different* objects at a
+  perfectly ordinary rate was invisible to both.
+
+  So the filter counts the shape of the sequence, per caller and per
+  endpoint, over a window: how many **distinct** objects were touched
+  (`enumeration`), whether their numeric identifiers are consecutive
+  enough to be a walk rather than a busy afternoon (`sequential`), and
+  what share of the answers said the object was not theirs
+  (`refused` -- 401, 403 or 404, which is what probing looks like and
+  little else does). A caller is the authenticated identity when the chain
+  established one and the client address otherwise, so an attacker who
+  spreads a walk over a hundred addresses is one caller, and the filter
+  belongs after the identity filters for exactly that reason.
+
+  **Objects, not requests**: a caller re-reading its own order fifty times
+  has touched one object, which is what keeps a page refresh out of the
+  `sequential` signal -- the first version of this counted requests and
+  would have called forty reads of one identifier a walk of forty. An
+  endpoint is the method and the path template with identifiers folded out
+  (`GET /api/orders/*`), so one busy endpoint never flags a caller on
+  another, and a collection endpoint with no identifier in it has no object
+  to count. Identifiers are held per caller and endpoint up to 1024 and the
+  excess is counted rather than forgotten silently, so a distinct count is
+  never quietly wrong.
+
+  Which request the action lands on follows from where the signal came
+  from: a bound crossed on the way in refuses *that* request, while the
+  `refused` share is raised by an answer already sent and applies from the
+  next one. `log` is the default, `challenge` lets a person through and
+  stops a script, and `block` answers 403 with the `api_abuse` reason --
+  which a ban trigger can now name, so a caller that keeps walking is
+  stopped before routing instead of at the filter. Per filter,
+  `xproxy_api_abuse_requests_total`, `_flagged_total`, `_blocked_total`,
+  `_challenged_total` and `_dropped_total` count what it did, and
+  `xproxy_api_abuse_subjects`, `_objects` and `_overflowed` say how much it
+  is holding. Forty deliberate weakenings were each caught, eight of them
+  only after the tests were extended.
+
+  Also fixed while the ban reasons were being read: `bans.triggers[].reasons`
+  in CONFIG.md had fallen three reasons behind the table the validator
+  checks against (`threat_intel`, `dns_answer_denied` and this one), which
+  is the worst shape of documentation bug -- an operator reads the list,
+  does not find the refusal they are watching, and concludes the proxy
+  cannot ban on it. A test now compares the two.
+
 - **Fixed: a DNS listener stopped the moment it started raced its own
   WaitGroup.** `Serve` registered each goroutine with `wg.Add` outside any
   lock while `Shutdown` called `wg.Wait`, and it published the DoH server

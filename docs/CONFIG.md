@@ -4274,7 +4274,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `honeytoken`, `account_abuse`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `sftp_icap`, `udp_denied`, `yara` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |
@@ -5765,7 +5765,7 @@ the binary; [EXTENDING.md](EXTENDING.md) describes how to add one.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Referenced by routes; the default deny reason |
-| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `ldap_auth`, `api_key`, `openapi`, `graphql`, `grpc_guard`, `authz`, `upload_guard`, `sensitive_data`, `account_guard`, `body_rewrite`, `bot_score`, `form_guard`, `oidc`, `wasm`, or one added to `internal/filters` |
+| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `ldap_auth`, `api_key`, `api_abuse`, `openapi`, `graphql`, `grpc_guard`, `authz`, `upload_guard`, `sensitive_data`, `account_guard`, `body_rewrite`, `bot_score`, `form_guard`, `oidc`, `wasm`, or one added to `internal/filters` |
 | `stage` | `before_auth`, `after_auth`, `after_waf`, `after_scan` | `after_auth` | Position relative to the built-in JWT, WAF and ICAP filters |
 | `options` | mapping | | Kind specific; unknown keys are rejected |
 
@@ -6392,6 +6392,102 @@ or 100 distinct paths per address, challenges at 400 or 200 and blocks
 1h at 1000. Tables are bounded per endpoint (65536 keys each, oldest
 evicted with a throttled warning). A delay holds a request slot, so
 keep `max_delayed` under the route's concurrency.
+
+### Kind `api_abuse`
+
+Watches what a caller does with an API rather than what it sends.
+
+Every request in this sequence is valid on its own — the right method, the
+right path, an authenticated caller, a well formed identifier — and the
+attack is the sequence:
+
+```
+GET /api/orders/1041   200
+GET /api/orders/1042   403
+GET /api/orders/1043   403
+GET /api/orders/1044   200   <- somebody else's order
+```
+
+That is broken object level authorisation, the first item on the OWASP API
+Security Top 10, and nothing that reads one request at a time can see it.
+What it is visible in is the shape of the sequence, per caller and per
+endpoint, over a window:
+
+| Signal | What was observed |
+|--------|-------------------|
+| `enumeration` | The caller touched more than `max_objects` **distinct** identifiers on one endpoint. A person reads their own orders; a script reads everybody's |
+| `sequential` | The numeric identifiers are consecutive: `sequential.min` of them covering a span they fill to `sequential.density`. A catalogue read in order is a scrape, and that is a different fact from having read a lot |
+| `refused` | Of `refused.min_requests`, at least `refused.share` were answered 401, 403 or 404. Probing for objects that are not yours looks exactly like this and little else does |
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `window` | duration | `5m` | The observation period; 1s to 24h. A caller flagged in one window is flagged until it ends, and the counts start again with the next |
+| `max_objects` | int | `200` | Distinct identifiers per caller per endpoint; 0 turns the signal off |
+| `sequential.min` | int | `20` | Numeric identifiers needed before the density is judged; 0 turns the signal off |
+| `sequential.density` | float | `0.8` | Distinct identifiers over the span they cover: 1.0 is a perfect walk |
+| `refused.min_requests` | int | `20` | Requests needed before the share is judged; 0 turns the signal off |
+| `refused.share` | float | `0.5` | The fraction refused that raises the signal |
+| `action` | `log`, `challenge`, `block` | `log` | What a flagged caller gets. `challenge` needs a `challenge` section; without one the verdict falls through to the refusal `block` would have given |
+| `paths` | list | `[]` (every path) | Limits the filter to request paths under one of these prefixes |
+| `max_subjects` | int | `8192` | (caller, endpoint) pairs held at once; the oldest is dropped and the drops are counted |
+
+```yaml
+filters:
+  - name: abuse
+    kind: api_abuse
+    options:
+      window: 5m
+      max_objects: 200
+      sequential: {min: 20, density: 0.8}
+      refused: {min_requests: 20, share: 0.5}
+      action: challenge
+      paths: ["/api/"]
+routes:
+  - name: api
+    hosts: [api.example.com]
+    upstream: api
+    # After the identity filters, so a caller is an account rather than
+    # an address.
+    filters: [jwt-auth, abuse]
+```
+
+What it counts, and what it does not:
+
+- **A caller is the authenticated identity when the chain established
+  one, and the client address otherwise.** An API abused through one
+  account is one caller however many addresses it arrives from, which is
+  why this filter belongs *after* the identity filters in the chain.
+- **Objects, not requests.** A caller re-reading its own order fifty times
+  has touched one object. That is what keeps an ordinary page refresh out
+  of the `sequential` signal, which counts distinct identifiers over the
+  span they cover.
+- **An endpoint is the method and the path template**, with identifiers
+  folded out (`GET /api/orders/*`), so one busy endpoint never flags a
+  caller on another. A path with no identifier in it — a collection
+  endpoint — has no object to count.
+- **Identifiers are held per (caller, endpoint) up to 1024**, and past
+  that the count continues as a lower bound rather than the memory:
+  `xproxy_api_abuse_objects` and `xproxy_api_abuse_overflowed` say which.
+  An identifier longer than 128 characters is not counted at all.
+- **The response is the other half of the probing signal**, so the filter
+  reads both phases, and which request the action lands on follows from
+  that. A bound crossed on the way in — one object too many, a walk long
+  enough to judge — refuses *that* request. The `refused` signal is raised
+  by the answer instead, so it applies from the caller's next request: the
+  answer that revealed the probing has already been sent.
+
+A flagged request adds `api_abuse` to the access log with the signals that
+were raised; `block` and `challenge` also write a security event with the
+`api_abuse` reason, which a ban trigger can name — a caller that keeps
+walking after a refusal is one to stop at the edge rather than at the
+filter.
+
+Per filter, `xproxy_api_abuse_requests_total`, `_flagged_total`,
+`_blocked_total`, `_challenged_total` and `_dropped_total` count what it
+did, and `xproxy_api_abuse_subjects`, `xproxy_api_abuse_objects` and
+`xproxy_api_abuse_overflowed` say how much it is holding: a `subjects`
+gauge pinned at `max_subjects` with `_dropped_total` climbing is a filter
+watching more callers than it was given room for.
 
 ### Kind `api_key`
 

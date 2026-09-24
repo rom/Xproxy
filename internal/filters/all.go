@@ -6,6 +6,7 @@ package filters
 
 import (
 	_ "github.com/rom/xproxy/internal/filters/accountguard" // account_guard
+	_ "github.com/rom/xproxy/internal/filters/apiabuse"     // api_abuse
 	_ "github.com/rom/xproxy/internal/filters/apikey"       // api_key
 	_ "github.com/rom/xproxy/internal/filters/authz"        // authz
 	_ "github.com/rom/xproxy/internal/filters/basicauth"    // basic_auth

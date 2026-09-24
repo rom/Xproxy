@@ -180,6 +180,7 @@ compute it.
 | 413 with `detail: larger than a signed body digest covers` | `origin_signature.body_digest` is on and the body is over 8 MiB |
 | 429 with `Retry-After` | A rate limit. `denied` names the policy |
 | 429 with `reason: account_abuse` | `account_guard` acted. `xproxyctl accounts` |
+| 403 with `reason: api_abuse` | The `api_abuse` filter flagged this caller on this endpoint; `detail` names the signals (`enumeration`, `sequential`, `refused`) |
 | 502 | The upstream connection failed. `upstream_error` in the access line, more in the error log |
 | 502 with `detail: reqmod_unavailable` | The ICAP service failed or timed out with `fail: closed` |
 | 503 with `Retry-After: 1` | The concurrency ceiling. `in_flight` against `max_concurrent_requests` |
@@ -2090,6 +2091,61 @@ office network before the broad feed keeps the office out of it. And
 `threat_intel: false` on a route exempts it entirely, which is what a
 health endpoint wants.
 
+## API abuse (object enumeration and probing)
+
+**A legitimate caller is flagged.** Read `detail`: it names the signals,
+and each one has a different answer.
+
+- `enumeration` — the caller touched more than `max_objects` **distinct**
+  identifiers on one endpoint inside `window`. A support console, a
+  reconciliation job or a mobile client that prefetches a list does this
+  honestly. Raise the bound for that route, or scope the filter with
+  `paths` so the endpoint is not watched at all.
+- `sequential` — the identifiers were consecutive. A report that walks a
+  catalogue in order is indistinguishable from a scrape by this signal,
+  because it is the same traffic; turn it off for that route
+  (`sequential: {min: 0}`) rather than widening it until it says nothing.
+- `refused` — more than `refused.share` of the caller's answers were 401,
+  403 or 404. A client following stale links or a UI that probes for
+  optional resources produces this. Fix the caller if you can; otherwise
+  raise `refused.min_requests` so a short burst is not judged.
+
+**Everybody behind one address is flagged together.** The filter has no
+identity to count against, so it fell back to the client address, and an
+office or a mobile carrier is one address. Put the filter **after** the
+identity filters in the route's `filters` list (`[jwt-auth, abuse]`, not
+the other way round) and check that the chain establishes an identity at
+all — `api_key`, `jwt`, `oidc`, `basic_auth` and `saml_sp` each do.
+
+**An attacker is not flagged although the log clearly shows a walk.**
+Three things to check, in this order. Is the endpoint's path template what
+you think it is? `GET /api/orders/1041` folds to `/api/orders/*`, but an
+identifier that does not look like one — a short slug, a word — is part of
+the template, so each value is a *different* endpoint with one object
+each. Is the caller one caller? Without an identity, a walk spread over a
+hundred addresses is a hundred callers. And is `window` long enough? A
+walk paced slower than the window resets the count every time.
+
+**`xproxy_api_abuse_subjects` sits at `max_subjects` and
+`xproxy_api_abuse_dropped_total` climbs.** The table is full and the
+oldest caller is being dropped to make room, which means a caller can be
+forgotten before it is judged. Either the filter is watching far more
+endpoints than expected — narrow it with `paths` — or the estate is
+larger than the default 8192 pairs and `max_subjects` should be raised.
+
+**`xproxy_api_abuse_overflowed` is not zero.** One caller went past the
+1024 identifiers held per endpoint. The distinct count continues as a
+lower bound, so the `enumeration` signal still fires (it is already past
+any sane `max_objects`); what is lost is the exact number. Nothing to fix.
+
+**The filter says nothing at all.** `action: log` is the default: a
+flagged request is served, with `api_abuse` and the signals in the access
+line. That is the mode to run first — the bounds above are guesses until
+this proxy has measured the traffic. `challenge` needs a `challenge`
+section: with none — or for a client the challenge section exempts — the
+verdict falls through to the refusal, so the caller gets the 403 that
+`block` would have given rather than a page it can answer.
+
 ## Byte ranges
 
 **A client's `Range` header does not reach the upstream.** A route with a
@@ -3898,6 +3954,7 @@ innocent.
 | `challenge` | The challenge gate | yes (only the client's own mistakes) |
 | `sensitive_data` | The DLP filter | no |
 | `account_abuse` | `account_guard` | yes |
+| `api_abuse` | `api_abuse`: the caller's *sequence* on one endpoint -- distinct objects past `max_objects`, consecutive identifiers, or a refused share (`detail` names the signals) | yes |
 | `shed` | Load shedding (`detail` is the class) | no |
 | `filter` | Any other filter (`detail` is the filter name) | no |
 | `forward_denied`, `forward_auth` | The forward proxy | yes |

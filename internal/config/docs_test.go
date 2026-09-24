@@ -135,3 +135,43 @@ func TestRFCReferenceIsWellFormed(t *testing.T) {
 		}
 	}
 }
+
+// TestBanReasonReferenceComplete keeps the reason list on the
+// bans.triggers[].reasons row in step with the table the validator
+// checks against. Three reasons had drifted out of the document by the
+// time this test was written -- one the day it was added -- and the
+// shape of the mistake is the worst kind: an operator reads the list,
+// does not find the refusal they are watching, and concludes the proxy
+// cannot ban on it.
+func TestBanReasonReferenceComplete(t *testing.T) {
+	doc, err := os.ReadFile("../../docs/CONFIG.md")
+	if err != nil {
+		t.Skip("docs not available:", err)
+	}
+	var row string
+	for _, l := range strings.Split(string(doc), "\n") {
+		if strings.Contains(l, "Deny categories that count") {
+			row = l
+			break
+		}
+	}
+	if row == "" {
+		t.Fatal("docs/CONFIG.md no longer lists the deny categories a trigger may name")
+	}
+	listed := map[string]bool{}
+	for _, m := range regexp.MustCompile("`([a-z0-9_]+)`").FindAllStringSubmatch(row, -1) {
+		if m[1] != "reasons" {
+			listed[m[1]] = true
+		}
+	}
+	for reason := range denyReasons {
+		if !listed[reason] {
+			t.Errorf("a trigger may name %q, which the reference does not list", reason)
+		}
+	}
+	for reason := range listed {
+		if !denyReasons[reason] {
+			t.Errorf("the reference lists %q, which no trigger may name", reason)
+		}
+	}
+}

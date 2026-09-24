@@ -9812,7 +9812,7 @@ list
 T}	T{
 \fB[]\fR (all)
 T}	T{
-Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBsftp_\:icap\fR,\: \fBudp_\:denied\fR,\: \fByara\fR
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBudp_\:denied\fR,\: \fByara\fR
 T}
 T{
 \fBthreshold\fR
@@ -14166,7 +14166,7 @@ name
 T}	T{
 required
 T}	T{
-A registered kind: \fBheader_\:guard\fR,\: \fBbasic_\:auth\fR,\: \fBldap_\:auth\fR,\: \fBapi_\:key\fR,\: \fBopenapi\fR,\: \fBgraphql\fR,\: \fBgrpc_\:guard\fR,\: \fBauthz\fR,\: \fBupload_\:guard\fR,\: \fBsensitive_\:data\fR,\: \fBaccount_\:guard\fR,\: \fBbody_\:rewrite\fR,\: \fBbot_\:score\fR,\: \fBform_\:guard\fR,\: \fBoidc\fR,\: \fBwasm\fR,\: or one added to \fBinternal/\:filters\fR
+A registered kind: \fBheader_\:guard\fR,\: \fBbasic_\:auth\fR,\: \fBldap_\:auth\fR,\: \fBapi_\:key\fR,\: \fBapi_\:abuse\fR,\: \fBopenapi\fR,\: \fBgraphql\fR,\: \fBgrpc_\:guard\fR,\: \fBauthz\fR,\: \fBupload_\:guard\fR,\: \fBsensitive_\:data\fR,\: \fBaccount_\:guard\fR,\: \fBbody_\:rewrite\fR,\: \fBbot_\:score\fR,\: \fBform_\:guard\fR,\: \fBoidc\fR,\: \fBwasm\fR,\: or one added to \fBinternal/\:filters\fR
 T}
 T{
 \fBstage\fR
@@ -16030,6 +16030,199 @@ T}
 .TE
 .PP
 Default ladders (thresholds reached within the window): \fBlogin\fR delays 2s at 5 address, 3 account or 3 pair failures, challenges at 15 address, 5 account, 5 pair, 10 accounts per address, 5 addresses per account or 10 accounts per device, blocks 15m at 50 address, 20 account, 10 pair, 30 accounts per address, 20 addresses per account, 50 events or 30 accounts per device; \fBregister\fR delays 2s at 2 requests per address, challenges at 3 per address or device or 2 per identity, blocks 1h at 10 per address or device or 5 per identity; \fBreset\fR delays 2s at 3 per address or 2 per account, challenges at 5 per address or device or 3 per account, blocks 1h at 20 or 10; \fBcart\fR delays 1s at 30, challenges at 60 and blocks 30m at 150 requests per address, identity or device; \fBscrape\fR delays 1s at 200 requests or 100 distinct paths per address, challenges at 400 or 200 and blocks 1h at 1000. Tables are bounded per endpoint (65536 keys each, oldest evicted with a throttled warning). A delay holds a request slot, so keep \fBmax_delayed\fR under the route\(aqs concurrency.
+.SS "Kind \fBapi_abuse\fR"
+.PP
+Watches what a caller does with an API rather than what it sends.
+.PP
+Every request in this sequence is valid on its own \[u2014] the right method, the right path, an authenticated caller, a well formed identifier \[u2014] and the attack is the sequence:
+.PP
+.RS 4
+.nf
+.ft CR
+GET /api/orders/1041   200
+GET /api/orders/1042   403
+GET /api/orders/1043   403
+GET /api/orders/1044   200   <\- somebody else's order
+.ft
+.fi
+.RE
+.PP
+That is broken object level authorisation, the first item on the OWASP API Security Top 10, and nothing that reads one request at a time can see it. What it is visible in is the shape of the sequence, per caller and per endpoint, over a window:
+.PP
+.TS
+allbox;
+lbw(1.2i) lbx
+lw(1.2i) lx.
+T{
+Signal
+T}	T{
+What was observed
+T}
+T{
+\fBenumeration\fR
+T}	T{
+The caller touched more than \fBmax_\:objects\fR \fBdistinct\fR identifiers on one endpoint. A person reads their own orders;\: a script reads everybody\(aqs
+T}
+T{
+\fBsequential\fR
+T}	T{
+The numeric identifiers are consecutive: \fBsequential.\:min\fR of them covering a span they fill to \fBsequential.\:density\fR. A catalogue read in order is a scrape,\: and that is a different fact from having read a lot
+T}
+T{
+\fBrefused\fR
+T}	T{
+Of \fBrefused.\:min_\:requests\fR,\: at least \fBrefused.\:share\fR were answered 401,\: 403 or 404. Probing for objects that are not yours looks exactly like this and little else does
+T}
+.TE
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(1.1i) lbw(0.8i) lbx
+lw(1.2i) lw(1.1i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBwindow\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+The observation period;\: 1s to 24h. A caller flagged in one window is flagged until it ends,\: and the counts start again with the next
+T}
+T{
+\fBmax_\:objects\fR
+T}	T{
+int
+T}	T{
+\fB200\fR
+T}	T{
+Distinct identifiers per caller per endpoint;\: 0 turns the signal off
+T}
+T{
+\fBsequential.\:min\fR
+T}	T{
+int
+T}	T{
+\fB20\fR
+T}	T{
+Numeric identifiers needed before the density is judged;\: 0 turns the signal off
+T}
+T{
+\fBsequential.\:density\fR
+T}	T{
+float
+T}	T{
+\fB0.\:8\fR
+T}	T{
+Distinct identifiers over the span they cover: 1.0 is a perfect walk
+T}
+T{
+\fBrefused.\:min_\:requests\fR
+T}	T{
+int
+T}	T{
+\fB20\fR
+T}	T{
+Requests needed before the share is judged;\: 0 turns the signal off
+T}
+T{
+\fBrefused.\:share\fR
+T}	T{
+float
+T}	T{
+\fB0.\:5\fR
+T}	T{
+The fraction refused that raises the signal
+T}
+T{
+\fBaction\fR
+T}	T{
+\fBlog\fR,\: \fBchallenge\fR,\: \fBblock\fR
+T}	T{
+\fBlog\fR
+T}	T{
+What a flagged caller gets. \fBchallenge\fR needs a \fBchallenge\fR section;\: without one the verdict falls through to the refusal \fBblock\fR would have given
+T}
+T{
+\fBpaths\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (every path)
+T}	T{
+Limits the filter to request paths under one of these prefixes
+T}
+T{
+\fBmax_\:subjects\fR
+T}	T{
+int
+T}	T{
+\fB8192\fR
+T}	T{
+(caller,\: endpoint) pairs held at once;\: the oldest is dropped and the drops are counted
+T}
+.TE
+.PP
+.RS 4
+.nf
+.ft CR
+filters:
+  \- name: abuse
+    kind: api_abuse
+    options:
+      window: 5m
+      max_objects: 200
+      sequential: {min: 20, density: 0.8}
+      refused: {min_requests: 20, share: 0.5}
+      action: challenge
+      paths: ["/api/"]
+routes:
+  \- name: api
+    hosts: [api.example.com]
+    upstream: api
+    # After the identity filters, so a caller is an account rather than
+    # an address.
+    filters: [jwt\-auth, abuse]
+.ft
+.fi
+.RE
+.PP
+What it counts, and what it does not:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBA caller is the authenticated identity when the chain established one, and the client address otherwise.\fR An API abused through one account is one caller however many addresses it arrives from, which is why this filter belongs \fIafter\fR the identity filters in the chain.
+.PP
+.ti -3n
+\(bu
+\fBObjects, not requests.\fR A caller re\-reading its own order fifty times has touched one object. That is what keeps an ordinary page refresh out of the \fBsequential\fR signal, which counts distinct identifiers over the span they cover.
+.PP
+.ti -3n
+\(bu
+\fBAn endpoint is the method and the path template\fR, with identifiers folded out (\fBGET /api/orders/*\fR), so one busy endpoint never flags a caller on another. A path with no identifier in it \[u2014] a collection endpoint \[u2014] has no object to count.
+.PP
+.ti -3n
+\(bu
+\fBIdentifiers are held per (caller, endpoint) up to 1024\fR, and past that the count continues as a lower bound rather than the memory: \fBxproxy_api_abuse_objects\fR and \fBxproxy_api_abuse_overflowed\fR say which. An identifier longer than 128 characters is not counted at all.
+.PP
+.ti -3n
+\(bu
+\fBThe response is the other half of the probing signal\fR, so the filter reads both phases, and which request the action lands on follows from that. A bound crossed on the way in \[u2014] one object too many, a walk long enough to judge \[u2014] refuses \fIthat\fR request. The \fBrefused\fR signal is raised by the answer instead, so it applies from the caller\(aqs next request: the answer that revealed the probing has already been sent.
+.RE
+.PP
+.PP
+A flagged request adds \fBapi_abuse\fR to the access log with the signals that were raised; \fBblock\fR and \fBchallenge\fR also write a security event with the \fBapi_abuse\fR reason, which a ban trigger can name \[u2014] a caller that keeps walking after a refusal is one to stop at the edge rather than at the filter.
+.PP
+Per filter, \fBxproxy_api_abuse_requests_total\fR, \fB_flagged_total\fR, \fB_blocked_total\fR, \fB_challenged_total\fR and \fB_dropped_total\fR count what it did, and \fBxproxy_api_abuse_subjects\fR, \fBxproxy_api_abuse_objects\fR and \fBxproxy_api_abuse_overflowed\fR say how much it is holding: a \fBsubjects\fR gauge pinned at \fBmax_subjects\fR with \fB_dropped_total\fR climbing is a filter watching more callers than it was given room for.
 .SS "Kind \fBapi_key\fR"
 .PP
 API keys with a life cycle: issued by \fBxproxyctl apikey add\fR (the plaintext \fBxpk_<id>_<secret>\fR is printed once; the file keeps a SHA\-256), scoped, expiring, rotated with a grace period for the previous secret (\fBapikey rotate \-grace 24h\fR) and revoked (\fBapikey revoke\fR, kept in the file so the id is never reused). The filter re\-reads the file when its contents change, at most every \fBreload\fR, and keeps the previous table when the new file does not parse.

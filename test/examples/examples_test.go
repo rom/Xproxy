@@ -1182,3 +1182,42 @@ func checkOneDaemon(t *testing.T, cfg *config.Config) {
 		t.Errorf("listeners span %d daemons and cannot be one file: %v", len(owners), owners)
 	}
 }
+
+// TestEveryExampleIsInTheIndex keeps examples/README.md naming every
+// configuration under examples/. The index is how somebody finds an
+// example at all -- nothing links to these files from the code -- so one
+// that is not named is one nobody reads, and twelve of them had
+// accumulated by the time this test was written.
+//
+// Only the YAML configurations are checked by name. The rule files, the
+// error pages and the fleet fragments are described in prose and by glob
+// in the same table, which is the right level for a directory of
+// forty SecLang rules.
+func TestEveryExampleIsInTheIndex(t *testing.T) {
+	index, err := os.ReadFile("../../examples/README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(index)
+	err = filepath.WalkDir("../../examples", func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		name := d.Name()
+		if !strings.HasSuffix(name, ".yaml") && !strings.HasSuffix(name, ".yml") {
+			return nil
+		}
+		// The fleet example is a controller's tree of fragments, named
+		// in the index by its two directories.
+		if strings.Contains(filepath.ToSlash(p), "/examples/fleet/") {
+			return nil
+		}
+		if !strings.Contains(text, "`"+name+"`") && !strings.Contains(text, "/"+name+"`") {
+			t.Errorf("examples/README.md does not name %s", filepath.ToSlash(strings.TrimPrefix(p, "../../")))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
