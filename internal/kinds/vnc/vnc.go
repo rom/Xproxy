@@ -19,6 +19,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -91,6 +92,13 @@ func newServer(engine proxy.Host, cfg config.Listener, ln net.Listener, tc *tls.
 	var err error
 	if t.password, err = readSecret(c.PasswordFile); err != nil {
 		return nil, fmt.Errorf("vnc password_file: %w", err)
+	}
+	if slices.Contains(t.offered, rfb.SecVeNCrypt) {
+		for _, subtype := range t.subtypes {
+			if rfb.AuthAfterTLS(subtype) == rfb.SecVNCAuth && t.password == "" {
+				return nil, errors.New("vnc password_file: a non-empty password is required for VNC-authenticated VeNCrypt subtypes")
+			}
+		}
 	}
 	if t.upPassword, err = readSecret(c.UpstreamPasswordFile); err != nil {
 		return nil, fmt.Errorf("vnc upstream_password_file: %w", err)

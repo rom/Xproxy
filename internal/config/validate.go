@@ -6359,7 +6359,7 @@ func (v *validator) vncListener(p string, c *VNCListener, hasTLS bool) {
 	if c.Upstream == "" {
 		v.errf("%s.upstream: required", p)
 	}
-	mediated, wantsTLS, wantsPassword := false, false, false
+	mediated, wantsTLS, wantsPassword, wantsVeNCrypt := false, false, false, false
 	namesUser, wantsRSA := false, false
 	for _, name := range c.SecurityTypes {
 		n := strings.ToLower(strings.TrimSpace(name))
@@ -6373,6 +6373,9 @@ func (v *validator) vncListener(p string, c *VNCListener, hasTLS bool) {
 			mediated = true
 			if t == rfb.SecVeNCrypt || t == rfb.SecTLS {
 				wantsTLS = true
+			}
+			if t == rfb.SecVeNCrypt {
+				wantsVeNCrypt = true
 			}
 			if t == rfb.SecVNCAuth {
 				wantsPassword = true
@@ -6416,9 +6419,6 @@ func (v *validator) vncListener(p string, c *VNCListener, hasTLS bool) {
 	default:
 		v.errf("%s.tls_mode: must be negotiated or wrap", p)
 	}
-	if wantsPassword && c.PasswordFile == "" {
-		v.errf("%s.password_file: required with the vncauth security type; a challenge nobody can answer is not authentication", p)
-	}
 	if c.PasswordFile != "" {
 		v.file(p+".password_file", c.PasswordFile)
 	}
@@ -6427,9 +6427,13 @@ func (v *validator) vncListener(p string, c *VNCListener, hasTLS bool) {
 	}
 	for _, name := range c.VeNCryptSubtypes {
 		n := strings.ToLower(strings.TrimSpace(name))
-		if _, ok := rfb.SubtypeByName(n); !ok {
+		subtype, ok := rfb.SubtypeByName(n)
+		if !ok {
 			v.errf("%s.vencrypt_subtypes: %q is not a VeNCrypt subtype", p, name)
 			continue
+		}
+		if wantsVeNCrypt && rfb.AuthAfterTLS(subtype) == rfb.SecVNCAuth {
+			wantsPassword = true
 		}
 		if n == "plain" {
 			v.errf("%s.vencrypt_subtypes: the bare plain subtype sends the credential with no TLS around it; use x509-plain", p)
@@ -6437,6 +6441,9 @@ func (v *validator) vncListener(p string, c *VNCListener, hasTLS bool) {
 		if strings.HasPrefix(n, "tls-") {
 			v.warnf("%s.vencrypt_subtypes: %s is anonymous TLS with no certificate to check; the x509 subtypes are the ones that authenticate the gateway", p, n)
 		}
+	}
+	if wantsPassword && c.PasswordFile == "" {
+		v.errf("%s.password_file: required with VNC authentication; a challenge with no password is not authentication", p)
 	}
 	if c.UpstreamSecurity != "" {
 		t, ok := rfb.SecurityByName(strings.ToLower(strings.TrimSpace(c.UpstreamSecurity)))
