@@ -1793,6 +1793,55 @@ using this listener at all, which is a network policy question rather
 than a detector one: block outbound 853 and the known DoH endpoints, or
 serve the discovery records so clients upgrade to this resolver instead.
 
+## DNS answer policy and the client subnet
+
+**A name that works everywhere else returns NXDOMAIN here.** Look for
+`dns_answer_denied` in the security log: it names the address that
+tripped the screen. If the address is one this network really uses, the
+fix is `answer_policy.allow` (a range) or `answer_policy.allow_names` (a
+name), not turning the screen off. The common honest cases are an
+internal zone served from private space, a name that points at a host on
+the carrier NAT range `100.64.0.0/10`, and a split-horizon name whose
+public half is what this client needed — that last one is what
+`action: strip` is for.
+
+**The screen never fires, on a network where it should.** Two causes.
+The section may deny nothing that the answers actually contain: check
+what the name resolves to with `kdig` against the upstream directly
+rather than through the proxy. Or the answers are coming out of the
+cache from before the policy was added — the screen does run on cache
+hits, and drops the entry when it fires, so this only looks like a miss
+for names whose entries predate the reload *and* are not being queried.
+`xproxyctl dns purge` settles it either way.
+
+**The whole answer went away and the client needed one address of it.**
+That is `nxdomain` or `refuse` on a name with both a public and a
+private address. `action: strip` keeps the public one. The stripped form
+is what the cache stores, so the removed address does not reappear on
+the next query.
+
+**A validating client calls a stripped answer bogus.** It is not bogus,
+it is unsigned: a signature over a record set one member short does not
+verify, so the RRSIGs of a set that lost records are removed with them.
+A client that must validate every answer and a listener that rewrites
+answers are two incompatible requirements; use `nxdomain` there, or
+exempt the name.
+
+**Sinkhole answers are not screened, and 0.0.0.0 is a denied range.**
+Deliberately: `records`, `discovery` and `sinkhole_ipv4` are this
+proxy's own answers, and screening them would have a sinkhole refuse
+itself.
+
+**Geolocated names resolve to the wrong region after an upgrade.**
+`ecs: strip` is the default now: the client's EDNS Client Subnet option
+is not forwarded, because the cache here is keyed by the question alone
+and a per-subnet answer would be served to every client. The upstream
+resolver still adds its own option describing this proxy, so the answers
+are the ones nearest the *proxy*. That is correct for a resolver serving
+one site and wrong for one serving many; `ecs: forward` restores the old
+behaviour and accepts that a client can then choose what the cache
+holds. `xproxy_dns_ecs_stripped_total` counts the queries affected.
+
 ## Forward proxy, layer 4 and QUIC
 
 **`CONNECT` refused with `forward_denied`.** The destination is not in
@@ -3113,6 +3162,7 @@ innocent.
 | `tcp_no_route` | A layer 4 listener with no route and no default | yes |
 | `udp_denied` | The datagram relay: a client outside `allow_clients`, a datagram over `max_datagram_bytes`, the rate limit, or a session table that is full (`detail` says which). A datagram is dropped rather than answered, because a reply to a forged source is traffic aimed at whoever was named | yes |
 | `dns_blocked`, `dns_bogus` | The DNS listener | yes |
+| `dns_answer_denied` | An upstream answer pointed into a range `answer_policy` denies (rebinding, a metadata endpoint), or had such records stripped | yes |
 | `dns_tunnel` | A client's queries under one domain agreed on enough tunnelling signals, or a query was refused during the cooldown after that | yes |
 | `smtp_denied` | The SMTP listener: a client outside `allow_clients`, an overlong line, a bare newline, or data pipelined across STARTTLS (`detail` says which) | yes |
 | `yara` | A YARA rule fired on a layer 4 stream with `action: close` | yes |
@@ -3164,7 +3214,7 @@ actually being refused. What each kind can say:
 | `tcp` | `max_connections`, `no_route`, `banned`, and for an intercepting listener `destination_not_allowed` and `no_original_destination`; QUIC flows add `quic_max_flows` |
 | `udp` | `client_not_allowed`, `datagram_too_large`, `rate_limit`, `max_sessions`, `max_sessions_per_ip`, `banned`, `upstream_datagram_too_large` |
 | `forward` | the destination policy (`not_allowed`, `deny`, `private`, `host`, `port`, `resolve`), the request shape (`not_absolute`, `scheme`, `authority`), `auth`, `tunnel_limit`, interception (`sni_mismatch`, `upstream_tls`, `client_tls`), SOCKS UDP (`udp_malformed`, `udp_unsolicited`, `udp_wrong_source`, `udp_peer_table_full`, `udp_disabled`) and MASQUE (`masque_target`, `masque_session_limit`, `masque_context`, `masque_spoofed`, `masque_unsolicited`) |
-| `dns` | `workers_busy` (`max_in_flight`), `rate_limit`, `banned`, `malformed`, `client_not_allowed`, `blocked`, `tunnel`, `any_over_udp`, `formerr`, `opcode` |
+| `dns` | `workers_busy` (`max_in_flight`), `rate_limit`, `banned`, `malformed`, `client_not_allowed`, `blocked`, `tunnel`, `any_over_udp`, `formerr`, `opcode`, `answer_denied`, `answer_stripped` |
 | `ssh` | `client_not_allowed`, `max_sessions`, `max_sessions_per_principal`, `max_forwards`, `auth_failed`, `mfa_failed`, `mfa_not_enrolled`, the channel and request policy (`channel_refused`, `request_refused`, `subsystem_refused`, `env_refused`, `command_refused`, `shell_syntax`, `file_transfer_refused`, `forward_refused`, `remote_forward_refused`), what the certificate did not grant (`cert_no_port_forwarding`, `cert_pty_refused`, `cert_X11_forwarding_refused`, `cert_agent_forwarding_refused`), and SFTP (`sftp_refused`, `sftp_malformed`, `sftp_identity_refused`, `sftp_icap`) |
 | `telnet` | `client_refused`, `banned`, `option_refused`, `subnegotiation_refused`, `malformed`, `mfa_failed`, `prompt` |
 | `vnc` | `client_refused`, `banned`, `version`, `auth_failed`, `mfa_failed`, `view_only`, the security negotiation (`security_not_offered`, `security_not_usable`, `security_not_mediated`, `subtype_not_offered`, `vencrypt_subtype_not_mediated`, `tight_auth_not_offered`), the variants' own parameters (`tls`, `mslogon_parameters`, `ard_parameters`, `rsaaes_key`, `rsaaes_random`, `rsaaes_transcript`), and the picture (`framebuffer_too_large`, `rectangle_too_large`, `rectangle_outside_framebuffer`, `too_many_rectangles`, `encoded_rectangle_too_large`, `decode_ratio`, `cut_text_too_large`, `unframable`, `pixel_format`, `pixel_format_changed`, `resize_refused`, `resize_too_large`, `clipboard_to_client`, `clipboard_to_target`, and `encoding_<name>` for each encoding taken out of a client's list) |

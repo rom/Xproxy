@@ -122,6 +122,17 @@ func (c *Cache) Get(q Question, id uint16, now time.Time) ([]byte, int) {
 	return out, qEnd
 }
 
+// Drop removes one entry, for an answer the policy no longer allows.
+func (c *Cache) Drop(q Question) {
+	k := cacheKey{q.Name, q.Type, q.Class}
+	c.mu.Lock()
+	if e, ok := c.entries[k]; ok {
+		delete(c.entries, k)
+		c.lru.Remove(e.elem)
+	}
+	c.mu.Unlock()
+}
+
 // Purge drops every entry.
 func (c *Cache) Purge() int {
 	c.mu.Lock()

@@ -2252,7 +2252,7 @@ var denyReasons = map[string]bool{
 	"bad_host": true, "no_route": true, "websocket": true, "concurrency": true, "challenge": true, "jwt": true, "icap": true,
 	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true, "honeypot": true, "dns_blocked": true, "dns_bogus": true,
 	"account_abuse": true, "honeytoken": true, "smtp_denied": true, "mqtt_denied": true, "ssh_denied": true, "ftp_denied": true, "syslog_denied": true, "yara": true,
-	"forward_sni_mismatch": true, "dns_tunnel": true,
+	"forward_sni_mismatch": true, "dns_tunnel": true, "dns_answer_denied": true,
 	"telnet_denied": true, "vnc_denied": true, "rdp_denied": true, "sftp_icap": true, "udp_denied": true,
 }
 
@@ -4143,9 +4143,49 @@ func (v *validator) dnsListener(p string, d *DNSListener) {
 	if d.MaxInFlight < 1 || d.MaxInFlight > 1_000_000 {
 		v.errf("%s.max_in_flight: must be between 1 and 1000000", p)
 	}
+	switch d.ECS {
+	case "", "strip", "forward":
+	default:
+		v.errf("%s.ecs: must be strip or forward", p)
+	}
+	v.dnsAnswerPolicy(p+".answer_policy", d.AnswerPolicy)
 	v.dnsDiscovery(p, d)
 	v.dnsRecords(p, d)
 	v.dnsTunnel(p+".tunnel_detection", d.TunnelDetection)
+}
+
+// dnsAnswerPolicy checks the answer screen. An answer policy that denies
+// nothing is the one shape worth refusing at load: it reads like
+// rebinding protection and is not, and an operator who wrote the section
+// meant to get something for it.
+func (v *validator) dnsAnswerPolicy(p string, a *DNSAnswerPolicy) {
+	if a == nil {
+		return
+	}
+	switch a.Action {
+	case "", "nxdomain", "refuse", "servfail", "strip":
+	default:
+		v.errf("%s.action: must be nxdomain, refuse, servfail or strip", p)
+	}
+	for i, c := range a.Deny {
+		if _, err := netip.ParsePrefix(c); err != nil {
+			v.errf("%s.deny[%d]: %q is not a CIDR", p, i, c)
+		}
+	}
+	for i, c := range a.Allow {
+		if _, err := netip.ParsePrefix(c); err != nil {
+			v.errf("%s.allow[%d]: %q is not a CIDR", p, i, c)
+		}
+	}
+	for i, n := range a.AllowNames {
+		name := strings.TrimPrefix(strings.TrimPrefix(n, "*."), "=")
+		if !hostPatternOK(strings.ToLower(strings.TrimSuffix(name, "."))) {
+			v.errf("%s.allow_names[%d]: %q is not a name, *.suffix or =name", p, i, n)
+		}
+	}
+	if len(a.Deny) == 0 && (a.DenyPrivate == nil || !*a.DenyPrivate) {
+		v.errf("%s: denies nothing; set deny_private or name ranges in deny", p)
+	}
 }
 
 // dnsTunnel checks the tunnelling detector. The bounds here are not

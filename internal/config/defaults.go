@@ -198,6 +198,16 @@ func applyDefaults(c *Config) {
 				d.Cache.NegativeTTL = Duration(60 * time.Second)
 			}
 			setInt(&d.MaxInFlight, 1024)
+			setStr(&d.ECS, "strip")
+			if ap := d.AnswerPolicy; ap != nil {
+				setStr(&ap.Action, "nxdomain")
+				// A section written at all is written to deny the
+				// unroutable ranges; an operator who wants only their
+				// own list says deny_private: false.
+				if ap.DenyPrivate == nil {
+					ap.DenyPrivate = ptr(true)
+				}
+			}
 			if td := d.TunnelDetection; td != nil {
 				setDur(&td.Window, 5*time.Minute)
 				setInt(&td.MinQueries, 50)

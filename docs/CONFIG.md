@@ -611,6 +611,131 @@ browsers should use it) side by side.
 | `records` | list | `[]` | SVCB and HTTPS records this resolver answers itself; see below |
 | `dnssec` | object | none | Validate answers; see below |
 | `tunnel_detection` | object | none | Watch for data leaving inside the query names; see below |
+| `answer_policy` | object | none | Screen where an answer points, not only what was asked; see below |
+| `ecs` | `strip`, `forward` | `strip` | What happens to a client's EDNS Client Subnet option on the way upstream |
+
+#### server.listeners[].dns.answer_policy
+
+A block list decides by name, and the name is the part an attacker picks
+last: blocking one costs them a registration. The address in the answer
+is the part they cannot move, because it is where they want the client to
+go. Two attacks live entirely in that gap, and neither is a bad name.
+
+**DNS rebinding.** A name the attacker owns answers with a public
+address while the page loads and with `127.0.0.1` or `10.0.0.5` a second
+later. The browser's same-origin policy keeps treating the two answers
+as one origin, so the page reads whatever is listening on the loopback
+interface of the machine that opened it — a development server, a
+printer's admin page, a container's unauthenticated API.
+
+**The metadata endpoint.** Every cloud provider serves instance
+credentials at `169.254.169.254` to any process that can make an HTTP
+request. A name that resolves there turns "fetch this URL for me" into
+"read my keys", which is how a server-side request forgery becomes a key
+compromise. Blocking the name does nothing: the next one is free.
+
+`answer_policy` screens the answer section of every upstream reply and
+of every cache hit, before the answer is cached and before it is sent.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `deny_private` | bool | `true` | Deny every range RFC 6890 calls not globally reachable, and the IPv4-mapped IPv6 range with them (see the list below) |
+| `deny` | list of CIDR | `[]` | Further ranges to refuse, in either family |
+| `allow` | list of CIDR | `[]` | Carved back out of the denied set: the ranges this network really does resolve names into |
+| `allow_names` | list | `[]` | Names allowed to point into a denied range, in the forms `block` takes |
+| `action` | `nxdomain`, `refuse`, `servfail`, `strip` | `nxdomain` | What a denied answer becomes |
+
+A section that denies nothing — `deny_private: false` with an empty
+`deny` — is refused at load. It reads like rebinding protection and is
+not one, and the operator who wrote it meant to get something for it.
+
+`deny_private` stands for `0.0.0.0/8`, `10.0.0.0/8`, `100.64.0.0/10`,
+`127.0.0.0/8`, `169.254.0.0/16`, `172.16.0.0/12`, `192.0.0.0/24`,
+`192.0.2.0/24`, `192.168.0.0/16`, `198.18.0.0/15`, `198.51.100.0/24`,
+`203.0.113.0/24`, `224.0.0.0/4`, `240.0.0.0/4`, `255.255.255.255/32`,
+`::/128`, `::1/128`, `::ffff:0:0/96`, `100::/64`, `2001:db8::/32`,
+`fc00::/7`, `fe80::/10` and `ff00::/8`.
+
+The IPv4-mapped range earns its place: an AAAA record may hold
+`::ffff:127.0.0.1`, which is not inside `::1/128` and which every socket
+API connects to `127.0.0.1` anyway. Screening unmaps an address before
+testing it and keeps the range denied as well, so the address is caught
+whichever way it was written. 6to4 (`2002::/16`) and Teredo
+(`2001::/32`) embed an IPv4 address the same way and are deliberately
+not in the list: reaching the embedded address takes a relay most
+networks do not have, and denying them by default would refuse names
+that resolve legitimately. Add the two prefixes to `deny` on a network
+that does carry them.
+
+Both the name asked for and the owner name of the record are matched
+against `allow_names`, so a public name that is a CNAME into an internal
+zone is covered by exempting either end.
+
+`action` is about what the client is left with:
+
+- `nxdomain` (the default) and `refuse` say the name has no answer here.
+  Nothing is cached, so the policy is re-applied to the next query
+  rather than frozen into the cache.
+- `servfail` says the resolver would not stand behind the answer, which
+  is what a resolver says about an answer it rejected.
+- `strip` removes the denied records and keeps the rest, for the name
+  that legitimately has a public address as well as an internal one: a
+  split-horizon zone seen from the wrong side, an appliance that
+  publishes its management address beside its service address. What is
+  left may be an answer with no addresses in it, which is a NODATA and
+  the correct thing to say — the name exists and has nothing this client
+  may be told. The stripped answer is what the cache keeps, so the
+  removed address does not come back on the next query. Records whose
+  set lost a member have their RRSIGs removed with them: a signature
+  over a set one record short does not verify, and a client that checked
+  it would call the answer bogus rather than short.
+
+Only the answer section is screened. Glue in the additional section is a
+resolver's business — a stub client connects to what it was answered,
+not to what the delegation mentioned — and a delegation whose name
+servers sit on private addresses is ordinary in a split network, so
+screening glue would refuse names that work. Names this listener answers
+itself (`records`, `discovery`) and sinkhole answers are not screened
+either: they are this proxy's own answers, and `sinkhole_ipv4: 0.0.0.0`
+is deliberately inside a denied range.
+
+A denied answer raises the `dns_answer_denied` security event with the
+address that tripped it, counts `xproxy_dns_answer_denied_total`, and is
+available as a ban reason. `strip` counts
+`xproxy_dns_answer_stripped_total` and is not a refusal: the client got
+an answer.
+
+The screen also runs on the way out of the cache, not only on the way
+in, because a reload can deny a range that an entry already in the cache
+points into. Such an entry is dropped rather than served.
+
+#### server.listeners[].dns.ecs
+
+EDNS Client Subnet (RFC 7871) lets a resolver tell an authoritative
+server which network a query is really for, so the answer can be the one
+nearest the client. It exists for a recursive resolver talking to a
+content network, and this listener is neither: it forwards to a resolver
+that adds its own option describing this proxy, which is the correct
+thing for that resolver to describe.
+
+Forwarding a client's own option breaks the cache instead. The cache key
+here is the question — name, type and class — and nothing else, as it is
+in every forwarder of this shape. An answer tailored to one client's
+subnet is therefore stored for every client of the listener: one client
+asking for a name on behalf of `203.0.113.0/24` decides which address
+the next thousand get. A client that can pick the subnet can pick the
+answer, which is cache poisoning with no spoofing and no race in it, and
+it is also a way to have this proxy ask an upstream about somebody
+else's network a query at a time.
+
+So `ecs: strip` (the default) removes the option from the forwarded
+query and counts `xproxy_dns_ecs_stripped_total`. The rest of the OPT
+record — a cookie, padding, anything else the client sent — is kept:
+dropping the record wholesale would forward a different query than the
+one the client asked. `ecs: forward` passes the option through, and is
+for the deployment whose clients are one network. With `dnssec` on the
+option is gone regardless, because validation replaces the OPT record
+with one of its own.
 
 #### server.listeners[].dns.tunnel_detection
 

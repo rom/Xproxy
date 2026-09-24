@@ -274,6 +274,11 @@ func renderOverview(d Data, sty Style, w int) []string {
 		if t := l.Tunnel; t != nil {
 			out = append(out, fmt.Sprintf("  %-12s tunnel %s detections %d blocked %d tracked %d evicted %d", "", t.Action, t.Detections, t.Blocked, t.Tracked, t.Evicted))
 		}
+		// Only when the screen has something to say: a line of zeroes on
+		// every listener would push the ones that matter off the pane.
+		if l.AnswerDenied+l.AnswerStripped+l.ECSStripped > 0 {
+			out = append(out, fmt.Sprintf("  %-12s answers denied %d stripped %d, client subnet stripped %d", "", l.AnswerDenied, l.AnswerStripped, l.ECSStripped))
+		}
 	}
 	if d.Series != nil && len(d.Series.Points) > 1 {
 		out = append(out, "", "  "+sparkRow("req/s", seriesValues(d.Series, "requests"), w-12, sty))

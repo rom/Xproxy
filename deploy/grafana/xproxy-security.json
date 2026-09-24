@@ -1575,6 +1575,117 @@
       ],
       "title": "Protocol refusals by reason",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Upstream answers pointing into a range answer_policy denies: DNS rebinding and cloud metadata endpoints. The name is innocent in every one of these; the address is not. A steady rate on a network that has never seen one is usually an internal zone that needs allow_names.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 40,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal"
+            }
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 80
+      },
+      "id": 29,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum(rate(xproxy_dns_answer_denied_total{instance=~\"$instance\"}[$__rate_interval]))",
+          "legendFormat": "denied",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum(rate(xproxy_dns_answer_stripped_total{instance=~\"$instance\"}[$__rate_interval]))",
+          "legendFormat": "stripped",
+          "refId": "B"
+        }
+      ],
+      "title": "DNS answers screened by where they pointed",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Queries whose EDNS Client Subnet option was not forwarded (dns.ecs: strip). The cache is keyed by the question alone, so a forwarded per-subnet answer would be served to every client of the listener.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 40,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal"
+            }
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 80
+      },
+      "id": 30,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum(rate(xproxy_dns_ecs_stripped_total{instance=~\"$instance\"}[$__rate_interval]))",
+          "legendFormat": "stripped",
+          "refId": "A"
+        }
+      ],
+      "title": "DNS client subnet options stripped",
+      "type": "timeseries"
     }
   ],
   "refresh": "30s",

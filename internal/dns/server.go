@@ -41,6 +41,12 @@ type Policy struct {
 	Local *LocalRecords
 	// Tunnel watches for data leaving in the query names themselves.
 	Tunnel *Detector
+	// Answers screens where an upstream answer points, which is where
+	// rebinding and the metadata endpoint live. nil allows anything.
+	Answers *AnswerPolicy
+	// ECS is strip (the default) or forward: what happens to a client's
+	// EDNS Client Subnet option on the way upstream.
+	ECS string
 }
 
 // Hooks connect the server to the proxy's logs and ban list.
@@ -101,6 +107,10 @@ type Server struct {
 	// Tunnels counts detections and TunnelBlocked the queries refused
 	// because of one.
 	Tunnels, TunnelBlocked atomic.Uint64
+	// AnswerDenied counts answers refused for where they pointed and
+	// AnswerStripped those that had records removed; ECSStripped counts
+	// the queries whose client subnet option was not forwarded.
+	AnswerDenied, AnswerStripped, ECSStripped atomic.Uint64
 	// dropNotice warns when queries are dropped for lack of workers.
 	dropNotice bound.Notice
 }
@@ -162,6 +172,11 @@ type Status struct {
 	QueriesDoH   uint64   `json:"queries_doh"`
 	QueriesDoQ   uint64   `json:"queries_doq"`
 	QueriesLocal uint64   `json:"queries_local"`
+	// AnswerDenied and AnswerStripped report the answer policy, and
+	// ECSStripped the client subnet options removed.
+	AnswerDenied   uint64 `json:"answer_denied"`
+	AnswerStripped uint64 `json:"answer_stripped"`
+	ECSStripped    uint64 `json:"ecs_stripped"`
 	// LocalNames are the names answered from the local record set.
 	LocalNames []string `json:"local_names,omitempty"`
 	// DoQ reports whether DNS over QUIC is served on this listener.
@@ -214,7 +229,8 @@ func (s *Server) Status() Status {
 	st := Status{Listener: s.Name, Queries: s.Queries.Load(), CacheHits: s.Hits.Load(), CacheEntries: s.cache.Len(),
 		Blocked: s.Blocked.Load(), Refused: s.Refused.Load(), Dropped: s.Dropped.Load(), ServFail: s.ServFail.Load(),
 		Truncated: s.Truncated.Load(), FormErr: s.FormErr.Load(), Encrypted: s.Encrypted, DoQ: s.QUIC,
-		QueriesUDP: s.UDP.Load(), QueriesTCP: s.TCP.Load(), QueriesDoT: s.DoT.Load(), QueriesDoH: s.DoH.Load(), QueriesDoQ: s.DoQ.Load(), QueriesLocal: s.Local.Load()}
+		QueriesUDP: s.UDP.Load(), QueriesTCP: s.TCP.Load(), QueriesDoT: s.DoT.Load(), QueriesDoH: s.DoH.Load(), QueriesDoQ: s.DoQ.Load(), QueriesLocal: s.Local.Load(),
+		AnswerDenied: s.AnswerDenied.Load(), AnswerStripped: s.AnswerStripped.Load(), ECSStripped: s.ECSStripped.Load()}
 	if p != nil {
 		st.LocalNames = p.Local.Names()
 	}
@@ -554,13 +570,24 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 	if h.RecursionDesired() {
 		if resp, rEnd := s.cache.Get(q, h.ID, now); resp != nil {
 			s.Hits.Add(1)
+			source := "cache"
+			// The policy is screened again on the way out, not only on
+			// the way in. A reload may deny a range the entry was stored
+			// under, and an entry the policy would refuse must not
+			// outlive the reload that refused it.
+			if sc := s.screen(p, query, qEnd, h, q, resp, rEnd); sc.action != "" {
+				s.cache.Drop(q)
+				s.answerEvent(client, proto, q, sc)
+				return s.finish(query, qEnd, h, q, client, proto, start, "cache:answer:"+sc.action,
+					s.fit(query, qEnd, h, sc.resp, sc.rEnd, tcp))
+			}
 			if qm != nil {
 				resp = s.finalizeDNSSEC(resp, qm, h)
 				if _, e, err := ParseQuestion(resp); err == nil {
 					rEnd = e
 				}
 			}
-			return s.finish(query, qEnd, h, q, client, proto, start, "cache", s.fit(query, qEnd, h, resp, rEnd, tcp))
+			return s.finish(query, qEnd, h, q, client, proto, start, source, s.fit(query, qEnd, h, resp, rEnd, tcp))
 		}
 	}
 	// Upstream transport is the resolver's business: UDP first with TCP
@@ -575,6 +602,17 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 	upQuery := query
 	if p.DNSSEC != nil {
 		upQuery = withDO(query) // the upstream must return signatures
+	}
+	// The client's subnet, if it sent one, does not go upstream: the
+	// cache key has no subnet in it, so a per-subnet answer would be
+	// stored for every client of this listener. withDO has already
+	// replaced the OPT record, so this only has work to do without
+	// validation.
+	if p.ECS != ECSForward && HasECS(upQuery, qEnd, h) {
+		if stripped := StripECS(upQuery); len(stripped) > 0 {
+			upQuery = stripped
+			s.ECSStripped.Add(1)
+		}
 	}
 	resp, err := p.Resolver.Exchange(ctx, upQuery, qEnd, q, len(query) > maxUDP)
 	if err != nil {
@@ -605,6 +643,23 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 	}
 	rh, _ := ParseHeader(resp)
 	_, rEnd, qerr := ParseQuestion(resp)
+	// Where the answer points is screened before it is cached, so an
+	// answer this listener refuses never becomes one it serves.
+	if qerr == nil {
+		if sc := s.screen(p, query, qEnd, h, q, resp, rEnd); sc.action != "" {
+			s.answerEvent(client, proto, q, sc)
+			resp, rEnd = sc.resp, sc.rEnd
+			source += ":answer:" + sc.action
+			if sc.action == AnswerStrip {
+				// What is left is what this listener stands behind, so
+				// it is what the cache keeps.
+				rh, _ = ParseHeader(resp)
+			} else {
+				cacheable = false
+			}
+			qm = nil // a synthetic answer carries no signatures to shape
+		}
+	}
 	if qerr == nil && !rh.Truncated() && h.RecursionDesired() {
 		var ttl time.Duration
 		switch rh.Rcode() {

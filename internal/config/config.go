@@ -1400,6 +1400,57 @@ type DNSListener struct {
 	Records []DNSRecord `yaml:"records"`
 	// TunnelDetection watches for data leaving inside the query names.
 	TunnelDetection *DNSTunnel `yaml:"tunnel_detection"`
+	// AnswerPolicy screens where an upstream answer points, which is
+	// what a name list cannot do: rebinding and the cloud metadata
+	// endpoint are good names pointing somewhere they should not.
+	AnswerPolicy *DNSAnswerPolicy `yaml:"answer_policy"`
+	// ECS is what happens to a client's EDNS Client Subnet option on
+	// the way upstream: strip (the default) or forward.
+	//
+	// strip, because the cache is keyed by the question and nothing
+	// else. An answer tailored to one client's subnet would be stored
+	// for every client of the listener, so a client that chooses the
+	// subnet chooses what the next thousand are told. Forward it only
+	// where the clients of this listener are one network.
+	ECS string `yaml:"ecs"`
+}
+
+// DNSAnswerPolicy screens the addresses an upstream answer carries.
+//
+// A block list decides by name, and the name is the part an attacker
+// picks last: blocking one costs them a registration. The address is
+// what they cannot move, because it is where they want the client to
+// go, and two attacks live entirely there.
+//
+// DNS rebinding answers a name the attacker owns with a public address
+// while the page loads and with 127.0.0.1 a moment later, and a browser
+// keeps calling the two one origin. The cloud metadata endpoint at
+// 169.254.169.254 hands instance credentials to any process that can
+// make an HTTP request, so a name resolving there turns "fetch this
+// URL" into "read my keys". Neither is a name a list could hold.
+type DNSAnswerPolicy struct {
+	// DenyPrivate denies every range RFC 6890 calls not globally
+	// reachable, and the IPv4-mapped IPv6 range with them. Default
+	// true: a section written at all is written to deny these.
+	DenyPrivate *bool `yaml:"deny_private"`
+	// Deny are further CIDRs to refuse, in either family.
+	Deny []string `yaml:"deny"`
+	// Allow are carved back out of the denied set: the ranges this
+	// network really does resolve names into. An operator writes
+	// deny_private and names their own /16 here rather than
+	// enumerating what is left of RFC 6890.
+	Allow []string `yaml:"allow"`
+	// AllowNames are the names allowed to point into a denied range,
+	// in the forms block takes. A split-horizon zone belongs here;
+	// both the name asked for and the owner name of the record are
+	// matched, so exempting either end of a CNAME is enough.
+	AllowNames []string `yaml:"allow_names"`
+	// Action is nxdomain (default), refuse, servfail or strip. strip
+	// removes the denied records and keeps the rest, for a name that
+	// legitimately has a public address as well as an internal one;
+	// what is left may be an empty answer, which is the correct thing
+	// to say.
+	Action string `yaml:"action"`
 }
 
 // DNSTunnel configures detection of data leaving inside DNS queries.

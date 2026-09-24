@@ -442,6 +442,42 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **A DNS answer is now screened by where it points, not only by the
+  name that was asked.** The block list decides by name, and the name is
+  the part an attacker picks last: blocking one costs them a
+  registration. Two attacks live entirely in that gap, and neither is a
+  name a list can hold. DNS rebinding answers a name the attacker owns
+  with a public address while the page loads and `127.0.0.1` a second
+  later, and the browser keeps treating the two as one origin, so the
+  page reads whatever is listening on the loopback interface of the
+  machine that opened it. The cloud metadata endpoint at
+  `169.254.169.254` hands instance credentials to any process that can
+  make an HTTP request, so a name resolving there turns "fetch this URL
+  for me" into "read my keys".
+
+  `dns.answer_policy` screens the answer section of every upstream reply
+  *and of every cache hit*, before the answer is cached and before it is
+  sent. `deny_private` stands for the twenty-three ranges RFC 6890 calls
+  not globally reachable plus `::ffff:0:0/96`, and an address is unmapped
+  before it is tested, so an AAAA record holding `::ffff:127.0.0.1` --
+  which is not inside `::1/128` and which every socket API connects to
+  `127.0.0.1` anyway -- is caught either way. `allow` carves ranges back
+  out for the network that really does resolve names into private space,
+  and `allow_names` exempts a name at either end of a CNAME. The action
+  is `nxdomain`, `refuse`, `servfail` or `strip`; `strip` keeps the
+  public address of a name that also has an internal one, drops the
+  RRSIGs of any set it shortened (a signature over a set one record short
+  does not verify, and a client would call the answer bogus rather than
+  short), and is what the cache then stores. The refusing actions cache
+  nothing at all, so the screen is re-applied to the next query rather
+  than frozen into the cache. A denied answer is a `dns_answer_denied`
+  security event naming the address, a ban reason, and
+  `xproxy_dns_answer_denied_total`; a stripped one counts
+  `xproxy_dns_answer_stripped_total` and is not a refusal. Only the
+  answer section is screened, and the proxy's own answers -- `records`,
+  `discovery`, the sinkhole addresses -- are not, which is why
+  `sinkhole_ipv4: 0.0.0.0` still works inside a denied range.
+
 - **What the SSH certificate authority said is now enforced.** A user
   certificate is not only a signature over a key and a list of
   principals; it carries the CA's own restrictions, and the gateway
@@ -1385,6 +1421,24 @@ Open findings of the earlier rounds:
   rather than at the first file it tries to scan.
 
 ### Changed (1.4)
+
+- **A DNS listener no longer forwards a client's EDNS Client Subnet
+  option** (`dns.ecs`, default `strip`). The option exists for a
+  recursive resolver telling a content network which network a query is
+  really for, and this listener is not one: it forwards to a resolver
+  that adds its own option describing this proxy, which is the correct
+  thing for that resolver to describe. Forwarding the client's instead
+  broke the cache, whose key here is the question and nothing else -- so
+  an answer tailored to one client's subnet was stored for every client
+  of the listener, and a client that could choose the subnet could
+  choose what the next thousand were told, with no spoofing and no race
+  in it. The rest of the OPT record is kept: a cookie or padding the
+  client sent still goes upstream, because dropping the record wholesale
+  would forward a different query than the one that was asked.
+  `ecs: forward` restores the previous behaviour for a listener whose
+  clients are one network, and `xproxy_dns_ecs_stripped_total` counts
+  what was removed. With `dnssec` on the option was already gone, since
+  validation replaces the OPT record with one of its own.
 
 - **Session recording is a package of its own** (`internal/sessionrec`),
   lifted out of the ssh bastion: the policy, the file, the byte bound,

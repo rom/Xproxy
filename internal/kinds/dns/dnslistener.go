@@ -141,6 +141,12 @@ func dnsPolicy(cfg *config.DNSListener) (*wire.Policy, error) {
 		}
 		p.Tunnel = wire.NewDetector(tp)
 	}
+	answers, err := answerPolicy(cfg.AnswerPolicy)
+	if err != nil {
+		return nil, err
+	}
+	p.Answers = answers
+	p.ECS = cfg.ECS
 	if d := cfg.DNSSEC; d.IsEnabled() {
 		var anchors []wire.TrustAnchor
 		lines := append([]string(nil), d.TrustAnchors...)
@@ -169,6 +175,28 @@ func dnsPolicy(cfg *config.DNSListener) (*wire.Policy, error) {
 		p.DNSSEC = v
 	}
 	return p, nil
+}
+
+// answerPolicy compiles the answer screen: where an upstream answer may
+// point, and which names are excused from it.
+func answerPolicy(a *config.DNSAnswerPolicy) (*wire.AnswerPolicy, error) {
+	if a == nil {
+		return nil, nil
+	}
+	out := &wire.AnswerPolicy{Action: a.Action}
+	if a.DenyPrivate == nil || *a.DenyPrivate {
+		out.Deny = wire.PrivateRanges()
+	}
+	out.Deny = append(out.Deny, netutil.ParsePrefixes(a.Deny)...)
+	out.Allow = netutil.ParsePrefixes(a.Allow)
+	if len(a.AllowNames) > 0 {
+		ex, err := wire.NewBlockList(a.AllowNames)
+		if err != nil {
+			return nil, fmt.Errorf("answer_policy.allow_names: %w", err)
+		}
+		out.Exempt = ex
+	}
+	return out, nil
 }
 
 // newDNSServer binds the hooks of a kind: dns listener to the proxy's

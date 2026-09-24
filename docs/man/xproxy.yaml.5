@@ -1422,7 +1422,132 @@ none
 T}	T{
 Watch for data leaving inside the query names;\: see below
 T}
+T{
+\fBanswer_\:policy\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Screen where an answer points,\: not only what was asked;\: see below
+T}
+T{
+\fBecs\fR
+T}	T{
+\fBstrip\fR,\: \fBforward\fR
+T}	T{
+\fBstrip\fR
+T}	T{
+What happens to a client\(aqs EDNS Client Subnet option on the way upstream
+T}
 .TE
+.SS "server.listeners[].dns.answer_policy"
+.PP
+A block list decides by name, and the name is the part an attacker picks last: blocking one costs them a registration. The address in the answer is the part they cannot move, because it is where they want the client to go. Two attacks live entirely in that gap, and neither is a bad name.
+.PP
+\fBDNS rebinding.\fR A name the attacker owns answers with a public address while the page loads and with \fB127.0.0.1\fR or \fB10.0.0.5\fR a second later. The browser\(aqs same\-origin policy keeps treating the two answers as one origin, so the page reads whatever is listening on the loopback interface of the machine that opened it \[u2014] a development server, a printer\(aqs admin page, a container\(aqs unauthenticated API.
+.PP
+\fBThe metadata endpoint.\fR Every cloud provider serves instance credentials at \fB169.254.169.254\fR to any process that can make an HTTP request. A name that resolves there turns "fetch this URL for me" into "read my keys", which is how a server\-side request forgery becomes a key compromise. Blocking the name does nothing: the next one is free.
+.PP
+\fBanswer_policy\fR screens the answer section of every upstream reply and of every cache hit, before the answer is cached and before it is sent.
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(1.0i) lbw(0.9i) lbx
+lw(0.8i) lw(1.0i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBdeny_\:private\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Deny every range RFC 6890 calls not globally reachable,\: and the IPv4\-mapped IPv6 range with them (see the list below)
+T}
+T{
+\fBdeny\fR
+T}	T{
+list of CIDR
+T}	T{
+\fB[]\fR
+T}	T{
+Further ranges to refuse,\: in either family
+T}
+T{
+\fBallow\fR
+T}	T{
+list of CIDR
+T}	T{
+\fB[]\fR
+T}	T{
+Carved back out of the denied set: the ranges this network really does resolve names into
+T}
+T{
+\fBallow_\:names\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Names allowed to point into a denied range,\: in the forms \fBblock\fR takes
+T}
+T{
+\fBaction\fR
+T}	T{
+\fBnxdomain\fR,\: \fBrefuse\fR,\: \fBservfail\fR,\: \fBstrip\fR
+T}	T{
+\fBnxdomain\fR
+T}	T{
+What a denied answer becomes
+T}
+.TE
+.PP
+A section that denies nothing \[u2014] \fBdeny_private: false\fR with an empty \fBdeny\fR \[u2014] is refused at load. It reads like rebinding protection and is not one, and the operator who wrote it meant to get something for it.
+.PP
+\fBdeny_private\fR stands for \fB0.0.0.0/8\fR, \fB10.0.0.0/8\fR, \fB100.64.0.0/10\fR, \fB127.0.0.0/8\fR, \fB169.254.0.0/16\fR, \fB172.16.0.0/12\fR, \fB192.0.0.0/24\fR, \fB192.0.2.0/24\fR, \fB192.168.0.0/16\fR, \fB198.18.0.0/15\fR, \fB198.51.100.0/24\fR, \fB203.0.113.0/24\fR, \fB224.0.0.0/4\fR, \fB240.0.0.0/4\fR, \fB255.255.255.255/32\fR, \fB::/128\fR, \fB::1/128\fR, \fB::ffff:0:0/96\fR, \fB100::/64\fR, \fB2001:db8::/32\fR, \fBfc00::/7\fR, \fBfe80::/10\fR and \fBff00::/8\fR.
+.PP
+The IPv4\-mapped range earns its place: an AAAA record may hold \fB::ffff:127.0.0.1\fR, which is not inside \fB::1/128\fR and which every socket API connects to \fB127.0.0.1\fR anyway. Screening unmaps an address before testing it and keeps the range denied as well, so the address is caught whichever way it was written. 6to4 (\fB2002::/16\fR) and Teredo (\fB2001::/32\fR) embed an IPv4 address the same way and are deliberately not in the list: reaching the embedded address takes a relay most networks do not have, and denying them by default would refuse names that resolve legitimately. Add the two prefixes to \fBdeny\fR on a network that does carry them.
+.PP
+Both the name asked for and the owner name of the record are matched against \fBallow_names\fR, so a public name that is a CNAME into an internal zone is covered by exempting either end.
+.PP
+\fBaction\fR is about what the client is left with:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBnxdomain\fR (the default) and \fBrefuse\fR say the name has no answer here. Nothing is cached, so the policy is re\-applied to the next query rather than frozen into the cache.
+.PP
+.ti -3n
+\(bu
+\fBservfail\fR says the resolver would not stand behind the answer, which is what a resolver says about an answer it rejected.
+.PP
+.ti -3n
+\(bu
+\fBstrip\fR removes the denied records and keeps the rest, for the name that legitimately has a public address as well as an internal one: a split\-horizon zone seen from the wrong side, an appliance that publishes its management address beside its service address. What is left may be an answer with no addresses in it, which is a NODATA and the correct thing to say \[u2014] the name exists and has nothing this client may be told. The stripped answer is what the cache keeps, so the removed address does not come back on the next query. Records whose set lost a member have their RRSIGs removed with them: a signature over a set one record short does not verify, and a client that checked it would call the answer bogus rather than short.
+.RE
+.PP
+.PP
+Only the answer section is screened. Glue in the additional section is a resolver\(aqs business \[u2014] a stub client connects to what it was answered, not to what the delegation mentioned \[u2014] and a delegation whose name servers sit on private addresses is ordinary in a split network, so screening glue would refuse names that work. Names this listener answers itself (\fBrecords\fR, \fBdiscovery\fR) and sinkhole answers are not screened either: they are this proxy\(aqs own answers, and \fBsinkhole_ipv4: 0.0.0.0\fR is deliberately inside a denied range.
+.PP
+A denied answer raises the \fBdns_answer_denied\fR security event with the address that tripped it, counts \fBxproxy_dns_answer_denied_total\fR, and is available as a ban reason. \fBstrip\fR counts \fBxproxy_dns_answer_stripped_total\fR and is not a refusal: the client got an answer.
+.PP
+The screen also runs on the way out of the cache, not only on the way in, because a reload can deny a range that an entry already in the cache points into. Such an entry is dropped rather than served.
+.SS "server.listeners[].dns.ecs"
+.PP
+EDNS Client Subnet (RFC 7871) lets a resolver tell an authoritative server which network a query is really for, so the answer can be the one nearest the client. It exists for a recursive resolver talking to a content network, and this listener is neither: it forwards to a resolver that adds its own option describing this proxy, which is the correct thing for that resolver to describe.
+.PP
+Forwarding a client\(aqs own option breaks the cache instead. The cache key here is the question \[u2014] name, type and class \[u2014] and nothing else, as it is in every forwarder of this shape. An answer tailored to one client\(aqs subnet is therefore stored for every client of the listener: one client asking for a name on behalf of \fB203.0.113.0/24\fR decides which address the next thousand get. A client that can pick the subnet can pick the answer, which is cache poisoning with no spoofing and no race in it, and it is also a way to have this proxy ask an upstream about somebody else\(aqs network a query at a time.
+.PP
+So \fBecs: strip\fR (the default) removes the option from the forwarded query and counts \fBxproxy_dns_ecs_stripped_total\fR. The rest of the OPT record \[u2014] a cookie, padding, anything else the client sent \[u2014] is kept: dropping the record wholesale would forward a different query than the one the client asked. \fBecs: forward\fR passes the option through, and is for the deployment whose clients are one network. With \fBdnssec\fR on the option is gone regardless, because validation replaces the OPT record with one of its own.
 .SS "server.listeners[].dns.tunnel_detection"
 .PP
 DNS tunnelling is the oldest way out of a network that filters everything else, and it still works, because a resolver is usually the one thing every host may talk to. The payload goes up in the query name \[u2014] a few dozen encoded characters per label \[u2014] and comes back down in the answer, most often TXT. The tunnel\(aqs domain is delegated to the other end, so every query reaches them whatever this resolver forwards to: blocking the upstream does nothing, and a block list only helps if somebody already knew the name.
