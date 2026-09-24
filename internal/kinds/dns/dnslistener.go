@@ -209,6 +209,13 @@ func dnsPolicy(cfg *config.DNSListener) (*wire.Policy, error) {
 		}
 		p.Views = append(p.Views, v)
 	}
+	if ds := cfg.DNSSEC; ds != nil && ds.IsEnabled() && ds.AggressiveNSEC {
+		entries := ds.NSECEntries
+		if entries == 0 {
+			entries = 8192
+		}
+		p.Denials = wire.NewDenials(entries)
+	}
 	if d := cfg.DNS64; d != nil {
 		prefix := d.Prefix
 		if prefix == "" {

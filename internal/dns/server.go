@@ -65,6 +65,10 @@ type Policy struct {
 	Cookies string
 	// CookieLifetime is how long a server cookie stays valid. Default 1h.
 	CookieLifetime time.Duration
+	// Denials remembers validated non-existence so a name in a gap an
+	// NSEC already proved empty is answered without asking again
+	// (RFC 8198). nil disables it; it needs DNSSEC.
+	Denials *Denials
 	// DNS64 answers an AAAA query for an IPv4-only name with the address
 	// embedded in a translation prefix (RFC 6147). nil disables it.
 	DNS64 *DNS64
@@ -148,6 +152,9 @@ type Server struct {
 	// listener's own policy. Synthesised counts the AAAA answers DNS64
 	// built from an A record.
 	Local, Viewed, Synthesised atomic.Uint64
+	// NSECDenied counts the NXDOMAIN answers synthesised from a
+	// validated NSEC gap (RFC 8198).
+	NSECDenied atomic.Uint64
 	// Tunnels counts detections and TunnelBlocked the queries refused
 	// because of one.
 	Tunnels, TunnelBlocked atomic.Uint64
@@ -229,8 +236,11 @@ type Status struct {
 	Views         []string `json:"views,omitempty"`
 	QueriesViewed uint64   `json:"queries_viewed"`
 	// QueriesSynthesised counts the AAAA answers DNS64 built from an A
-	// record.
+	// record, and QueriesNSEC the NXDOMAIN answers taken from a
+	// validated NSEC gap; DenialsHeld is the size of that store.
 	QueriesSynthesised uint64 `json:"queries_synthesised"`
+	QueriesNSEC        uint64 `json:"queries_nsec"`
+	DenialsHeld        int    `json:"denials_held"`
 	// AnswerDenied and AnswerStripped report the answer policy, and
 	// ECSStripped the client subnet options removed.
 	AnswerDenied   uint64 `json:"answer_denied"`
@@ -298,7 +308,13 @@ func (s *Server) Close() {
 }
 
 // Purge empties the cache.
-func (s *Server) Purge() int { return s.cache.Purge() }
+func (s *Server) Purge() int {
+	n := s.cache.Purge()
+	if p := s.policy.Load(); p != nil {
+		n += p.Denials.Purge()
+	}
+	return n
+}
 
 // Status reports counters.
 func (s *Server) Status() Status {
@@ -310,10 +326,12 @@ func (s *Server) Status() Status {
 		AnswerDenied: s.AnswerDenied.Load(), AnswerStripped: s.AnswerStripped.Load(), ECSStripped: s.ECSStripped.Load(),
 		Stale: s.Stale.Load(), Prefetched: s.Prefetched.Load(),
 		CookiesIssued: s.CookiesIssued.Load(), CookiesVerified: s.CookiesVerified.Load(), CookiesRefused: s.CookiesRefused.Load(),
-		QueriesViewed: s.Viewed.Load(), QueriesSynthesised: s.Synthesised.Load()}
+		QueriesViewed: s.Viewed.Load(), QueriesSynthesised: s.Synthesised.Load(),
+		QueriesNSEC: s.NSECDenied.Load()}
 	if p != nil {
 		st.LocalNames = p.Local.Names()
 		st.Views = p.ViewNames()
+		st.DenialsHeld = p.Denials.Len()
 	}
 	if s.Encrypted {
 		st.DoHPath = s.DoHPath
@@ -729,6 +747,16 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 			return s.finish(a, q, source, s.fit(a, query, qEnd, h, resp, rEnd))
 		}
 	}
+	// A name a validated NSEC already put inside an empty gap needs no
+	// upstream query at all (RFC 8198). Only for a client that did not
+	// ask for signatures: a synthesised NXDOMAIN carries none, and a
+	// client that set DO asked for something this cannot give.
+	if p.Denials != nil && qm != nil && h.RecursionDesired() && h.Flags&flagCD == 0 {
+		if do, _ := clientDO(qm); !do && p.Denials.Covers(q, now) {
+			s.NSECDenied.Add(1)
+			return s.finish(a, q, "nsec", s.fit(a, query, qEnd, h, Reply(query, qEnd, h, RcodeNXDomain), qEnd))
+		}
+	}
 	// Upstream transport is the resolver's business: UDP first with TCP
 	// on truncation for plain servers whatever the client used, so a
 	// stream client (TCP, DoH) does not force a TCP dial per query.
@@ -956,6 +984,15 @@ func (s *Server) ask(ctx context.Context, p *Policy, query, upQuery []byte, qEnd
 			out.resp, out.rEnd, out.bogus = resp, qEnd, true
 			return out
 		}
+		// A validated NXDOMAIN carries the NSEC records that prove it, and
+		// they prove more than the one name that was asked for (RFC 8198).
+		// Learned here and nowhere else: the proof is only worth keeping
+		// because this is the point at which it has been validated.
+		if res == Secure && p.Denials != nil && rcodeOf(resp) == RcodeNXDomain {
+			if m, perr := ParseMessage(resp); perr == nil {
+				p.Denials.Learn(q, m, now, p.MaxTTL)
+			}
+		}
 	}
 	rh, _ := ParseHeader(resp)
 	out.rcode = rh.Rcode()
@@ -998,6 +1035,15 @@ func (s *Server) ask(ctx context.Context, p *Policy, query, upQuery []byte, qEnd
 	}
 	out.resp, out.rEnd = resp, rEnd
 	return out
+}
+
+// rcodeOf is the response code of a message, or -1 when it has no header.
+func rcodeOf(resp []byte) int {
+	h, err := ParseHeader(resp)
+	if err != nil {
+		return -1
+	}
+	return h.Rcode()
 }
 
 // finalizeDNSSEC shapes a validated response for the client: AD only

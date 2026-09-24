@@ -1062,8 +1062,9 @@ A name with an AAAA record of its own is answered with it, and a name that
 does not exist stays NXDOMAIN: synthesising over either would be this
 resolver inventing a second answer. At most 32 records are synthesised from
 one A answer, so an upstream with hundreds of addresses does not decide the
-size of this listener's reply. `queries_synthesised` counts them and the
-access log source ends in `:dns64`.
+size of this listener's reply. `queries_synthesised` counts them
+(`xproxy_dns_synthesised_total`) and the access log source ends in
+`:dns64`.
 
 #### server.listeners[].dns.views
 
@@ -1118,8 +1119,9 @@ views:
     sinkhole_ipv4: 192.0.2.1
 ```
 
-`queries_viewed` counts the queries a view answered, and the access log
-line carries `view` for them (and nothing for a client in no view).
+`queries_viewed` counts the queries a view answered
+(`xproxy_dns_viewed_total`), and the access log line carries `view` for
+them (and nothing for a client in no view).
 
 #### server.listeners[].dns.dnssec
 
@@ -1147,6 +1149,39 @@ indeterminate counts, the key cache size and lookups.
 | `trust_anchors` | list | the IANA root keys (KSK-2017 20326, KSK-2024 38696) | DS records as `zone keytag algorithm digesttype digest` (`IN DS` accepted); setting any replaces the built-in list |
 | `trust_anchors_file` | path | none | More DS lines from a file (`#` comments), read at load and reload |
 | `max_lookups` | int | `48` | DNSKEY and DS queries per answer (4 to 1000); beyond it the answer is bogus |
+| `aggressive_nsec` | bool | `false` | Answer a sibling of a name a validated NSEC record already placed in an empty gap without asking the upstream again (RFC 8198) |
+| `nsec_entries` | int | `8192` | Parents whose proofs are remembered (0 to 1000000); the oldest is dropped past it |
+
+With `aggressive_nsec` a validated NXDOMAIN is not just an answer to one
+question: the NSEC record that proved it names a gap in the zone, and
+every name in that gap does not exist either. The resolver keeps the gap
+and answers the next name inside it from the proof it already has, which
+is what RFC 8198 is for. The traffic it saves is the traffic that
+produces it -- a random-subdomain flood, or junk queries under a
+top-level name -- where each name is a sibling of the last and one signed
+proof covers them all.
+
+It is narrowed twice on purpose:
+
+- A gap is reused only for a **sibling** of the name it was collected
+  for: the same parent, therefore the same closest encloser, therefore
+  the same wildcard denial the validator already checked. A name deeper
+  or elsewhere in the zone needs its own proof, because a wildcard that
+  covers it may exist without covering the name the gap came from.
+- Only for a client that did **not** set DO. A synthesised NXDOMAIN
+  carries no signatures, and a client that asked for the proof should
+  get the proof; it goes upstream. A client that set CD does too.
+
+Only NSEC is used. NSEC3 hashes the owner names, so the gap says nothing
+about which names it holds without re-hashing each candidate, and an
+opt-out gap does not deny existence at all. Gaps are held for the
+shorter of the NSEC record's TTL and `cache.max_ttl`, keyed by the
+parent name, and `nsec_entries` parents are kept at most; `xproxyctl dns
+purge` empties the store with the caches, since a gap left behind would
+deny a name the cache no longer has anything to say about. `xproxyctl
+dns` shows `queries_nsec` (answers served from a held proof) and
+`denials_held`; the metrics are `xproxy_dns_nsec_denied_total` and
+`xproxy_dns_denials_held`.
 
 `GET /v1/dns` and `xproxyctl dns` show per listener counters (queries,
 cache hits and entries, blocked, refused, dropped, SERVFAIL, truncated,

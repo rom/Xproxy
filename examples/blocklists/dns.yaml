@@ -15,7 +15,17 @@ server:
         block_file: /etc/xproxy/dns-blocklist.txt
         block_action: sinkhole
         sinkhole_ipv4: 10.255.255.254
-        dnssec: {enabled: true}
+        dnssec:
+          enabled: true
+          # One validated NSEC record denies a whole range of names, so
+          # the next query for a sibling in that range is answered from
+          # the proof already held rather than asked again (RFC 8198).
+          # That is what answers a random-subdomain flood without the
+          # upstream seeing it. A client that set DO still gets the
+          # upstream lookup: a synthesised NXDOMAIN carries no
+          # signatures.
+          aggressive_nsec: true
+          nsec_entries: 16384
         cache:
           max_entries: 50000
           max_ttl: 6h

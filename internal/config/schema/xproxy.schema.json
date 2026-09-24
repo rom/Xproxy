@@ -1400,12 +1400,20 @@
       "description": "DNSSEC configures validation on a dns listener: answers are fetched with the DO bit, signatures and denial proofs are checked up to a trust anchor, secure answers carry AD, bogus answers become SERVFAIL (unless the client set CD), insecure answers pass without AD.",
       "type": "object",
       "properties": {
+        "aggressive_nsec": {
+          "description": "AggressiveNSEC answers a name that a validated NSEC record already placed inside an empty gap without asking the upstream again (RFC 8198). Default false. The traffic it saves is the traffic that produces it: random-subdomain floods and junk top-level queries, where every name is a sibling of the last and one signed proof covers them all. It is narrowed on purpose. A proof is reused only for a sibling of the name it was collected for -- same parent, therefore the same closest encloser and the same wildcard denial the validator already checked -- and only for a client that did not set DO, since a synthesised NXDOMAIN carries no signatures and a client that asked for them should get them.",
+          "type": "boolean"
+        },
         "enabled": {
           "description": "Enabled defaults to true when the section is present.",
           "type": "boolean"
         },
         "max_lookups": {
           "description": "MaxLookups bounds DNSKEY and DS queries per answer. Default 48.",
+          "type": "integer"
+        },
+        "nsec_entries": {
+          "description": "NSECEntries bounds the parents whose proofs are remembered. Default 8192.",
           "type": "integer"
         },
         "trust_anchors": {

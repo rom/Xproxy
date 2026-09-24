@@ -1685,6 +1685,24 @@ type DNSSEC struct {
 	TrustAnchorsFile string `yaml:"trust_anchors_file"`
 	// MaxLookups bounds DNSKEY and DS queries per answer. Default 48.
 	MaxLookups int `yaml:"max_lookups"`
+	// AggressiveNSEC answers a name that a validated NSEC record already
+	// placed inside an empty gap without asking the upstream again
+	// (RFC 8198). Default false.
+	//
+	// The traffic it saves is the traffic that produces it:
+	// random-subdomain floods and junk top-level queries, where every
+	// name is a sibling of the last and one signed proof covers them all.
+	//
+	// It is narrowed on purpose. A proof is reused only for a sibling of
+	// the name it was collected for -- same parent, therefore the same
+	// closest encloser and the same wildcard denial the validator already
+	// checked -- and only for a client that did not set DO, since a
+	// synthesised NXDOMAIN carries no signatures and a client that asked
+	// for them should get them.
+	AggressiveNSEC bool `yaml:"aggressive_nsec"`
+	// NSECEntries bounds the parents whose proofs are remembered.
+	// Default 8192.
+	NSECEntries int `yaml:"nsec_entries"`
 }
 
 // IsEnabled reports whether validation is on.

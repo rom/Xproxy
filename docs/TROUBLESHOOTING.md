@@ -2044,6 +2044,40 @@ a second listener.
 do not contain the clients, or the clients reach this resolver through a
 forwarder whose address is what the view sees.
 
+## DNS aggressive NSEC caching
+
+**`queries_nsec` is zero although `aggressive_nsec` is on.** Nothing has
+been learned, or nothing asked was covered. Check in this order:
+
+1. `denials_held` in `xproxyctl dns`. Zero means no proof was stored. Only
+   a **validated** NXDOMAIN is learned, so the zone has to be signed and
+   the answer has to come back secure — `bogus` and `insecure` counts
+   rising instead is the answer. A zone signed with NSEC3 stores nothing
+   either: NSEC3 gaps are not used, on purpose (a hashed owner name says
+   nothing about which names it holds, and an opt-out gap denies nothing).
+2. The client's flags. A query with DO or CD set always goes upstream,
+   because a synthesised NXDOMAIN carries no signatures. A validating
+   resolver or a `dig +dnssec` behind this one sets DO on everything, so
+   the feature does nothing for it — which is correct, not broken.
+3. What was asked. A gap answers only a **sibling** of the name it was
+   collected for. `a.b.example.net` does not reuse a proof collected for
+   `x.example.net`, and neither does `example.net` itself.
+
+**A name that exists is answered NXDOMAIN.** A gap is held for the shorter
+of its NSEC record's TTL and `cache.max_ttl`, so a name added to the zone
+inside that window is denied until the gap expires, exactly as a cached
+NXDOMAIN would be. `xproxyctl dns purge` empties the store with the
+caches. If it outlives the TTL, or a name outside the gap is denied, that
+is a bug: the gap's own owner and next name exist by construction and must
+never be denied.
+
+**Memory.** `nsec_entries` bounds the number of **parent names** held, not
+the number of names denied — one entry can deny an unbounded number of
+siblings, which is the point. Each entry holds at most eight gaps. The
+oldest entry is dropped when the bound is reached, so a flood across many
+parents costs bounded memory and loses the older proofs rather than
+growing.
+
 ## DNS tunnel detection
 
 **Nothing is ever detected.** Check `tracked` in `xproxyctl status`: if

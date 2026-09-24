@@ -478,42 +478,6 @@ Open findings of the earlier rounds:
   with three characters in it as an address, because its rdata is four
   bytes long.
 
-- **DNS64: an AAAA answer for a name that has only an A record**
-  (`server.listeners[].dns.dns64`; RFC 6147 with RFC 6052 addressing).
-
-  An IPv6-only client asks for AAAA, the name has none, and this resolver
-  asks for A instead and answers with that address embedded in a prefix
-  routed to a translator. Nothing on the client changes -- it believes it is
-  speaking IPv6 throughout, which is the point. The address placement is
-  RFC 6052's, at all six defined prefix lengths, and the test checks it
-  against the worked example in the RFC's own section 2.4 rather than
-  against this implementation.
-
-  Two things about it are security decisions rather than protocol.
-
-  The address policy sees the **IPv4** address, before it is embedded.
-  `64:ff9b::7f00:1` is not inside `127.0.0.0/8` and no prefix list would
-  catch it, but it is 127.0.0.1 to everything past the translator -- so the
-  A lookup runs through the ordinary path, which screens and caches it, and
-  a cached address is screened again before it is embedded, for the same
-  reason a cache hit is re-screened on the way out: a reload may have
-  denied the range the entry was stored under. Without that, DNS64 would be
-  a way around rebinding protection rather than a feature beside it.
-
-  A synthesised answer is never signed and never claims to be: the reply is
-  built from the client's question, so the AD bit is clear by construction
-  (RFC 6147 section 5.5).
-
-  A name with an AAAA record of its own is answered with it, a name that
-  does not exist stays NXDOMAIN, and at most 32 records are synthesised
-  from one A answer so that an upstream does not decide the size of this
-  listener's reply. `clients` names the IPv6-only networks, and an IPv4
-  network there is a load error: a client with IPv4 does not need the
-  translation. Thirteen deliberate weakenings were each caught, four only
-  after the tests were extended -- including the one that read a TXT record
-  with three characters in it as an address, because its rdata is four
-  bytes long.
-
 - **Split horizon: the same name answered by who asked**
   (`server.listeners[].dns.views`), and the record types it needed
   (`dns.records` now takes `a`, `aaaa`, `txt` and `ptr`).
@@ -547,6 +511,38 @@ Open findings of the earlier rounds:
   `queries_viewed` counts them, `xproxyctl dns` lists the views, and the
   access log line carries `view`. Twelve deliberate weakenings were each
   caught by the tests.
+
+- **Aggressive NSEC caching: a proof answers more than one question**
+  (`server.listeners[].dns.dnssec.aggressive_nsec`, RFC 8198).
+
+  A validated NXDOMAIN is not just an answer to the name that was asked:
+  the NSEC record that proved it names a gap in the zone, and no name in
+  that gap exists either. The resolver keeps the gap and answers the next
+  name inside it from the proof it already holds. The traffic that saves
+  is the traffic that produces it -- a random-subdomain flood aimed at an
+  authoritative server through this resolver, or junk queries under a
+  top-level name -- where every name is a sibling of the last and one
+  signed proof covers them all.
+
+  It is narrowed twice, on purpose, and CONFIG.md says why. A gap is
+  reused only for a **sibling** of the name it was collected for: the same
+  parent, therefore the same closest encloser, therefore the same wildcard
+  denial the validator already checked -- a name deeper in the zone could
+  be covered by a wildcard that the collected name was not. And only for a
+  client that did **not** set DO: a synthesised NXDOMAIN carries no
+  signatures, and a client that asked for the proof gets the upstream
+  lookup, as does one that set CD.
+
+  Only NSEC is used, never NSEC3: a hashed owner name says nothing about
+  which names its gap holds without re-hashing every candidate, and an
+  opt-out gap denies nothing at all. A gap lives for the shorter of its
+  NSEC record's TTL and `cache.max_ttl`; `nsec_entries` parents are held at
+  most (8192 by default), oldest dropped first. `queries_nsec` counts the
+  answers served from a held proof and `denials_held` the size of the
+  store. Fifteen deliberate weakenings were each caught, two only after the
+  tests were extended -- among them the gap endpoints themselves, which the
+  proof names as existing and which a comparison one character loose would
+  have denied.
 
 - **XML bodies get what JSON already had** (`xml_guard` filter,
   `internal/xmlsafe`).

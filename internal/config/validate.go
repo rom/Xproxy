@@ -4524,6 +4524,7 @@ func (v *validator) dnsRecords(p string, d *DNSListener) {
 	v.dnsRecordSet(p, d.Records)
 	v.dnsViews(p, d)
 	v.dns64(p+".dns64", d.DNS64)
+	v.dnssecAggressive(p+".dnssec", d.DNSSEC)
 }
 
 func (v *validator) dnsRecordSet(p string, recs []DNSRecord) {
@@ -4594,6 +4595,23 @@ func (v *validator) dnsRecordSet(p string, recs []DNSRecord) {
 func (v *validator) dnsRecordNoSVCB(rp string, r *DNSRecord) {
 	if r.Target != "" || len(r.Params) > 0 || r.Priority != 0 {
 		v.errf("%s: target, params and priority belong to svcb and https records", rp)
+	}
+}
+
+// dnssecAggressive checks the RFC 8198 settings, which only mean
+// something with validation on.
+func (v *validator) dnssecAggressive(p string, d *DNSSEC) {
+	if d == nil {
+		return
+	}
+	if d.AggressiveNSEC && !d.IsEnabled() {
+		v.errf("%s.aggressive_nsec: needs validation; a proof this resolver has not validated is an attacker choosing which names do not exist", p)
+	}
+	if d.NSECEntries < 0 || d.NSECEntries > 1_000_000 {
+		v.errf("%s.nsec_entries: must be between 0 and 1000000", p)
+	}
+	if d.NSECEntries > 0 && !d.AggressiveNSEC {
+		v.warnf("%s.nsec_entries: set without aggressive_nsec, so nothing is remembered", p)
 	}
 }
 

@@ -2048,7 +2048,7 @@ Two things about it are security decisions rather than protocol, and both are wo
 .PP
 \fBA synthesised answer is never signed and never says it is.\fR The reply is built from the client\(aqs question, so the AD bit is clear by construction (RFC 6147 section 5.5). A validating client that wants the truth about the name asks for A itself, which this resolver answers and validates normally.
 .PP
-A name with an AAAA record of its own is answered with it, and a name that does not exist stays NXDOMAIN: synthesising over either would be this resolver inventing a second answer. At most 32 records are synthesised from one A answer, so an upstream with hundreds of addresses does not decide the size of this listener\(aqs reply. \fBqueries_synthesised\fR counts them and the access log source ends in \fB:dns64\fR.
+A name with an AAAA record of its own is answered with it, and a name that does not exist stays NXDOMAIN: synthesising over either would be this resolver inventing a second answer. At most 32 records are synthesised from one A answer, so an upstream with hundreds of addresses does not decide the size of this listener\(aqs reply. \fBqueries_synthesised\fR counts them (\fBxproxy_dns_synthesised_total\fR) and the access log source ends in \fB:dns64\fR.
 .SS "server.listeners[].dns.views"
 .PP
 Split horizon: the same name answered differently by who asked.
@@ -2151,15 +2151,15 @@ views:
 .fi
 .RE
 .PP
-\fBqueries_viewed\fR counts the queries a view answered, and the access log line carries \fBview\fR for them (and nothing for a client in no view).
+\fBqueries_viewed\fR counts the queries a view answered (\fBxproxy_dns_viewed_total\fR), and the access log line carries \fBview\fR for them (and nothing for a client in no view).
 .SS "server.listeners[].dns.dnssec"
 .PP
 With the section present the listener is a validating resolver in front of its upstreams: every upstream query carries the DO bit, and each answer is checked before it reaches the client or the cache. Positive answers need a verified RRSIG on every RRset, chained through DNSKEY and DS records up to a trust anchor; negative answers need a verified NSEC or NSEC3 proof (NXDOMAIN, NODATA, wildcard, opt\-out); an insecure delegation proven by the parent makes answers below it insecure. The outcome shapes the answer: secure answers carry AD when the client set AD or DO, bogus answers become SERVFAIL (a \fBdns_bogus\fR security event) unless the client set CD, insecure and indeterminate answers pass without AD. Clients without DO never receive RRSIG, NSEC or NSEC3 records. Algorithms 5, 7, 8, 10, 13, 14 and 15 and DS digests 1, 2 and 4 are supported; a zone signed only with others counts as insecure (RFC 4035). DNSKEY and DS lookups go to the same upstreams and are cached per zone until the shorter of their TTL and signature validity, bounded to 10000 zones. \fBxproxyctl dns\fR shows secure, insecure, bogus and indeterminate counts, the key cache size and lookups.
 .PP
 .TS
 allbox;
-lbw(0.9i) lbw(0.6i) lbw(1.0i) lbx
-lw(0.9i) lw(0.6i) lw(1.0i) lx.
+lbw(1.2i) lbw(0.6i) lbw(1.0i) lbx
+lw(1.2i) lw(0.6i) lw(1.0i) lx.
 T{
 Key
 T}	T{
@@ -2205,7 +2205,42 @@ T}	T{
 T}	T{
 DNSKEY and DS queries per answer (4 to 1000);\: beyond it the answer is bogus
 T}
+T{
+\fBaggressive_\:nsec\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Answer a sibling of a name a validated NSEC record already placed in an empty gap without asking the upstream again (RFC 8198)
+T}
+T{
+\fBnsec_\:entries\fR
+T}	T{
+int
+T}	T{
+\fB8192\fR
+T}	T{
+Parents whose proofs are remembered (0 to 1000000);\: the oldest is dropped past it
+T}
 .TE
+.PP
+With \fBaggressive_nsec\fR a validated NXDOMAIN is not just an answer to one question: the NSEC record that proved it names a gap in the zone, and every name in that gap does not exist either. The resolver keeps the gap and answers the next name inside it from the proof it already has, which is what RFC 8198 is for. The traffic it saves is the traffic that produces it \-\- a random\-subdomain flood, or junk queries under a top\-level name \-\- where each name is a sibling of the last and one signed proof covers them all.
+.PP
+It is narrowed twice on purpose:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+A gap is reused only for a \fBsibling\fR of the name it was collected for: the same parent, therefore the same closest encloser, therefore the same wildcard denial the validator already checked. A name deeper or elsewhere in the zone needs its own proof, because a wildcard that covers it may exist without covering the name the gap came from.
+.PP
+.ti -3n
+\(bu
+Only for a client that did \fBnot\fR set DO. A synthesised NXDOMAIN carries no signatures, and a client that asked for the proof should get the proof; it goes upstream. A client that set CD does too.
+.RE
+.PP
+.PP
+Only NSEC is used. NSEC3 hashes the owner names, so the gap says nothing about which names it holds without re\-hashing each candidate, and an opt\-out gap does not deny existence at all. Gaps are held for the shorter of the NSEC record\(aqs TTL and \fBcache.max_ttl\fR, keyed by the parent name, and \fBnsec_entries\fR parents are kept at most; \fBxproxyctl dns purge\fR empties the store with the caches, since a gap left behind would deny a name the cache no longer has anything to say about. \fBxproxyctl dns\fR shows \fBqueries_nsec\fR (answers served from a held proof) and \fBdenials_held\fR; the metrics are \fBxproxy_dns_nsec_denied_total\fR and \fBxproxy_dns_denials_held\fR.
 .PP
 \fBGET /v1/dns\fR and \fBxproxyctl dns\fR show per listener counters (queries, cache hits and entries, blocked, refused, dropped, SERVFAIL, truncated, upstream failures); \fBDELETE /v1/dns\fR and \fBxproxyctl dns purge\fR empty the caches. Metrics: \fBxproxy_dns_*{listener}\fR.
 .SS "server.listeners[].smtp (kind: smtp)"
