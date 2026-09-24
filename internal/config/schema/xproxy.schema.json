@@ -209,6 +209,14 @@
         }
       ]
     },
+    "threat_intel": {
+      "description": "ThreatIntel imports lists of client addresses and TLS fingerprints somebody else attributed, with what to do about a match.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/ThreatIntel"
+        }
+      ]
+    },
     "tracing": {
       "description": "Tracing gives requests a W3C trace context and exports spans.",
       "allOf": [
@@ -1323,6 +1331,10 @@
         "upstream_ca_file": {
           "description": "UpstreamCAFile pins the CA of tls:// and https:// upstreams. Default: system pool.",
           "type": "string"
+        },
+        "upstream_resumption": {
+          "description": "UpstreamResumption keeps TLS session tickets for encrypted upstreams, so a reconnect resumes instead of running a full handshake. Default true. It is most of the cost of DoT and DoQ on a resolver that reconnects whenever an idle connection is dropped. Nothing is replayable: the client sends no early data, and DoQ keeps 0-RTT off. Turn it off for an upstream whose tickets are broken, or for a policy that forbids resumption.",
+          "type": "boolean"
         },
         "upstreams": {
           "description": "Upstreams are resolvers tried in turn: host:port (UDP with TCP fallback), tls://host:port (DNS over TLS) or https://host/path (DNS over HTTPS). Required.",
@@ -4405,6 +4417,14 @@
           "description": "PriorityClass is low, normal, high or critical (never shed). Default normal.",
           "type": "string"
         },
+        "ranges": {
+          "description": "Ranges bounds byte range requests on this route. Without the section a Range header is relayed as it arrived.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/RouteRanges"
+            }
+          ]
+        },
         "rate_limits": {
           "type": "array",
           "items": {
@@ -4458,6 +4478,10 @@
         "tenant": {
           "description": "Tenant is a free label that groups routes for quota reporting (GET /v1/quotas, xproxyctl quotas) and the per route metrics.",
           "type": "string"
+        },
+        "threat_intel": {
+          "description": "ThreatIntel applies the imported lists to this route. Default true; false exempts it, which is what a health endpoint or a status page wants -- a list with one wrong line in it should not take the thing an operator watches the outage with.",
+          "type": "boolean"
         },
         "timeout": {
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
@@ -4801,6 +4825,25 @@
         "require_content_type": {
           "description": "RequireContentType refuses a body without a Content-Type header.",
           "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "RouteRanges": {
+      "description": "RouteRanges bounds byte range requests (RFC 9110 section 14). A Range header is a small request that asks for a large answer, and a set of ranges is a small request that asks for many: each range costs the origin a read and the response a multipart part, so a few hundred of them in one header is the oldest amplification bug in HTTP. RFC 9110 section 14.2 leaves the decision to the server, which may coalesce overlapping and adjacent ranges in any order, or ignore a set it will not satisfy -- so this rewrites the set rather than inventing a rule: the same bytes, fewer parts.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "Action is what happens to a set still over MaxRanges after that: ignore (default) drops the header, so the whole representation is served, which is what RFC 9110 permits a server that will not satisfy the set to do; refuse answers 416 with Accept-Ranges, so a client can ask again for fewer.",
+          "type": "string"
+        },
+        "coalesce": {
+          "description": "Coalesce merges overlapping and adjacent ranges into the fewest that cover the same bytes, and sorts them. Default true. It is explicitly a server's right (RFC 9110 section 14.2), and it is what turns most oversized sets into one range rather than a refusal.",
+          "type": "boolean"
+        },
+        "max_ranges": {
+          "description": "MaxRanges is how many ranges a set may still hold after coalescing. Default 4, which is a resuming download or a media player seeking; 0 means the default, and up to 1024 is accepted for a route that really serves such clients.",
+          "type": "integer"
         }
       },
       "additionalProperties": false
@@ -6328,6 +6371,51 @@
         },
         "upstream": {
           "description": "Upstream is the pool of targets. Required.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ThreatIntel": {
+      "description": "ThreatIntel imports lists of client addresses and TLS fingerprints, each with its own action. It is deliberately not the ban list. A ban is earned here -- this proxy watched a client do something and decided -- while a list is imported and says nothing about what the client did *here*. That is why the default action is the careful one: a feed whose provenance an operator cannot check, with one wrong line in it, is an outage nobody can explain from the logs.",
+      "type": "object",
+      "properties": {
+        "lists": {
+          "description": "Lists are the lists, in order. The first one that matches decides, so a narrow list belongs before the broad one it softens.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ThreatList"
+          }
+        },
+        "log_matches": {
+          "description": "LogMatches writes a security event for every match, including the ones whose action is log. Default true: a list nobody can see matching is a list nobody can tune.",
+          "type": "boolean"
+        },
+        "refresh": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ThreatList": {
+      "description": "ThreatList is one imported list.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "Action is log (record it and serve the request), challenge (make the client prove it is a browser, which needs the challenge section) or block. Default log.",
+          "type": "string"
+        },
+        "file": {
+          "description": "File holds the entries: one per line, with #, ; and // comments and a trailing comment after whitespace. A network may be written with host bits set; it is masked.",
+          "type": "string"
+        },
+        "kind": {
+          "description": "Kind is cidr (client addresses and networks) or ja4 (TLS client fingerprints). Default cidr.",
+          "type": "string"
+        },
+        "name": {
           "type": "string"
         }
       },

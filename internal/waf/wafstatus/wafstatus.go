@@ -20,11 +20,24 @@ type RuleStat struct {
 	// Matches counts transactions in which the rule matched. Blocks counts
 	// those the WAF denied (block mode); Detects counts those detect mode
 	// would have denied.
-	Matches  uint64    `json:"matches"`
-	Blocks   uint64    `json:"blocks"`
-	Detects  uint64    `json:"detects"`
-	LastSeen time.Time `json:"last_seen"`
-	LastURI  string    `json:"last_uri,omitempty"`
+	Matches uint64 `json:"matches"`
+	Blocks  uint64 `json:"blocks"`
+	Detects uint64 `json:"detects"`
+	// Alone counts the matches where this was the only attack rule that
+	// matched the request, and Agreement the share of matches where at
+	// least one other did, rounded to two places.
+	//
+	// It is a measurement of this traffic, not a claim about the rule. A
+	// rule that only ever fires alone is either the only thing noticing
+	// something or the one thing crying wolf, and which of those it is
+	// takes a person -- but a rule set has hundreds of rules and this
+	// says which few are worth that person's afternoon. The CRS's own
+	// paranoia level is a statement about how aggressive a rule is; this
+	// is a statement about what it did here.
+	Alone     uint64    `json:"alone"`
+	Agreement float64   `json:"agreement"`
+	LastSeen  time.Time `json:"last_seen"`
+	LastURI   string    `json:"last_uri,omitempty"`
 }
 
 // Report is the management view (GET /v1/waf).
@@ -66,9 +79,13 @@ type Proposal struct {
 	Route   string `json:"route,omitempty"`
 	// Path is the route's path prefix when known, used to scope the
 	// generated exclusion; "" scopes it to the whole profile.
-	Path      string    `json:"path,omitempty"`
-	Hits      uint64    `json:"hits"`
-	Clients   int       `json:"clients"`
+	Path    string `json:"path,omitempty"`
+	Hits    uint64 `json:"hits"`
+	Clients int    `json:"clients"`
+	// Agreement is the rule's agreement share across all its matches (see
+	// RuleStat): a proposal for a rule nothing else ever agreed with is
+	// the safest exclusion to make, so the proposals are ordered by it.
+	Agreement float64   `json:"agreement"`
 	LastSeen  time.Time `json:"last_seen"`
 	LastURI   string    `json:"last_uri,omitempty"`
 	Sample    string    `json:"sample,omitempty"`

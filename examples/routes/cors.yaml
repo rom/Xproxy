@@ -32,3 +32,13 @@ routes:
     cors:
       allow_origins: ["*"]
       allow_methods: [GET, HEAD]
+    # A content delivery route is where byte ranges arrive, and a set of
+    # them is a small request asking for many answers: each range is a
+    # read at the origin and a part in the response, so two hundred of
+    # them in one header asks one machine to assemble a body dozens of
+    # times the size of the file. Overlapping and adjacent ranges are
+    # merged first (RFC 9110 section 14.2 says a server may), and a set
+    # still over the bound has its header dropped -- the whole file is
+    # served, which is what the RFC allows a server that will not satisfy
+    # the set to do.
+    ranges: {max_ranges: 4}

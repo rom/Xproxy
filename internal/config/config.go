@@ -53,6 +53,10 @@ type Config struct {
 
 	// Bans enables the ban list when present.
 	Bans *Bans `yaml:"bans"`
+	// ThreatIntel imports lists of client addresses and TLS
+	// fingerprints somebody else attributed, with what to do about a
+	// match.
+	ThreatIntel *ThreatIntel `yaml:"threat_intel"`
 	// WAF enables the web application firewall when present.
 	WAF *WAF `yaml:"waf"`
 	// Cluster enables sharing of rate limit consumption and bans between
@@ -1365,6 +1369,16 @@ type DNSListener struct {
 	// UpstreamCAFile pins the CA of tls:// and https:// upstreams.
 	// Default: system pool.
 	UpstreamCAFile string `yaml:"upstream_ca_file"`
+	// UpstreamResumption keeps TLS session tickets for encrypted
+	// upstreams, so a reconnect resumes instead of running a full
+	// handshake. Default true.
+	//
+	// It is most of the cost of DoT and DoQ on a resolver that
+	// reconnects whenever an idle connection is dropped. Nothing is
+	// replayable: the client sends no early data, and DoQ keeps 0-RTT
+	// off. Turn it off for an upstream whose tickets are broken, or for
+	// a policy that forbids resumption.
+	UpstreamResumption *bool `yaml:"upstream_resumption"`
 	// Timeout bounds one upstream attempt. Default 2s.
 	Timeout Duration `yaml:"timeout"`
 	// AllowClients restricts clients to these CIDRs (others get
@@ -3345,6 +3359,14 @@ type Route struct {
 	// whoever captured it, and this proxy cannot know what a second POST
 	// would do.
 	EarlyData string `yaml:"early_data"`
+	// Ranges bounds byte range requests on this route. Without the
+	// section a Range header is relayed as it arrived.
+	Ranges *RouteRanges `yaml:"ranges"`
+	// ThreatIntel applies the imported lists to this route. Default
+	// true; false exempts it, which is what a health endpoint or a
+	// status page wants -- a list with one wrong line in it should not
+	// take the thing an operator watches the outage with.
+	ThreatIntel *bool `yaml:"threat_intel"`
 	// Trailers says what to do with the response's trailers: pass
 	// (default) or strip. gRPC carries its status in them, so a gRPC
 	// route cannot strip them.
@@ -3845,6 +3867,35 @@ type ErrorPages struct {
 	// replaced by the matching page (typically 502, 503, 504). Default
 	// none: upstream bodies pass through.
 	InterceptUpstream []int `yaml:"intercept_upstream"`
+}
+
+// RouteRanges bounds byte range requests (RFC 9110 section 14).
+//
+// A Range header is a small request that asks for a large answer, and a
+// set of ranges is a small request that asks for many: each range costs
+// the origin a read and the response a multipart part, so a few hundred
+// of them in one header is the oldest amplification bug in HTTP. RFC 9110
+// section 14.2 leaves the decision to the server, which may coalesce
+// overlapping and adjacent ranges in any order, or ignore a set it will
+// not satisfy -- so this rewrites the set rather than inventing a rule:
+// the same bytes, fewer parts.
+type RouteRanges struct {
+	// MaxRanges is how many ranges a set may still hold after
+	// coalescing. Default 4, which is a resuming download or a media
+	// player seeking; 0 means the default, and up to 1024 is accepted
+	// for a route that really serves such clients.
+	MaxRanges int `yaml:"max_ranges"`
+	// Coalesce merges overlapping and adjacent ranges into the fewest
+	// that cover the same bytes, and sorts them. Default true. It is
+	// explicitly a server's right (RFC 9110 section 14.2), and it is what
+	// turns most oversized sets into one range rather than a refusal.
+	Coalesce *bool `yaml:"coalesce"`
+	// Action is what happens to a set still over MaxRanges after that:
+	// ignore (default) drops the header, so the whole representation is
+	// served, which is what RFC 9110 permits a server that will not
+	// satisfy the set to do; refuse answers 416 with Accept-Ranges, so a
+	// client can ask again for fewer.
+	Action string `yaml:"action"`
 }
 
 // Redirect is a static redirect action. To may use the request variables
@@ -4434,6 +4485,64 @@ type SandboxCapabilities struct {
 
 // On reports whether the sandbox applies.
 func (s *Sandbox) On() bool { return s.Enabled == nil || *s.Enabled }
+
+// ThreatIntel imports lists of client addresses and TLS fingerprints,
+// each with its own action.
+//
+// It is deliberately not the ban list. A ban is earned here -- this proxy
+// watched a client do something and decided -- while a list is imported
+// and says nothing about what the client did *here*. That is why the
+// default action is the careful one: a feed whose provenance an operator
+// cannot check, with one wrong line in it, is an outage nobody can
+// explain from the logs.
+type ThreatIntel struct {
+	// Lists are the lists, in order. The first one that matches decides,
+	// so a narrow list belongs before the broad one it softens.
+	Lists []ThreatList `yaml:"lists"`
+	// Refresh is how often the files are checked for changes; only a
+	// file whose size or modification time moved is re-read. Default 5m,
+	// minimum 10s, 0 for never (a reload of the configuration still
+	// re-reads them). A pointer so that 0 is a decision rather than an
+	// unset field.
+	Refresh *Duration `yaml:"refresh"`
+	// LogMatches writes a security event for every match, including the
+	// ones whose action is log. Default true: a list nobody can see
+	// matching is a list nobody can tune.
+	LogMatches *bool `yaml:"log_matches"`
+}
+
+// RefreshInterval is how often the files are re-checked, with the
+// default filled in. A section that says 0 means never, and a reload of
+// the configuration still re-reads every list.
+func (t *ThreatIntel) RefreshInterval() Duration {
+	switch {
+	case t == nil:
+		return 0
+	case t.Refresh == nil:
+		return Duration(5 * time.Minute)
+	default:
+		return *t.Refresh
+	}
+}
+
+// Logs reports whether a match is written to the security log.
+func (t *ThreatIntel) Logs() bool { return t == nil || t.LogMatches == nil || *t.LogMatches }
+
+// ThreatList is one imported list.
+type ThreatList struct {
+	Name string `yaml:"name"`
+	// Kind is cidr (client addresses and networks) or ja4 (TLS client
+	// fingerprints). Default cidr.
+	Kind string `yaml:"kind"`
+	// File holds the entries: one per line, with #, ; and // comments
+	// and a trailing comment after whitespace. A network may be written
+	// with host bits set; it is masked.
+	File string `yaml:"file"`
+	// Action is log (record it and serve the request), challenge (make
+	// the client prove it is a browser, which needs the challenge
+	// section) or block. Default log.
+	Action string `yaml:"action"`
+}
 
 // WAF configures the web application firewall engine.
 type WAF struct {

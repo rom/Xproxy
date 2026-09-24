@@ -425,3 +425,130 @@ func TestProfilesWithoutCRS(t *testing.T) {
 		t.Fatalf("proposals %+v", rep.Learning.Proposals)
 	}
 }
+
+// The agreement measurement: the share of a rule's matches where another
+// attack rule matched the same request. It is a fact about this traffic,
+// which is what makes it worth showing an operator -- a rule set has
+// hundreds of rules and this says which few fire on their own.
+func TestARulesAgreementIsMeasuredNotAsserted(t *testing.T) {
+	st := NewStats()
+	e, err := New(wafConfig(nil), Need{"default": {ModeBlock: true, ModeDetect: true}}, st, nolog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqli := func() *http.Request {
+		return httptest.NewRequest("GET", "http://example.com/items?id=1%27%20OR%20%271%27=%271", nil)
+	}
+	both := func() *http.Request {
+		return httptest.NewRequest("GET", "http://example.com/items?id=1%27%20OR%20%271%27=%271&q=<script>alert(1)</script>", nil)
+	}
+	// One attack rule on its own: nothing agreed with it.
+	runInfo(t, e, ModeBlock, sqli(), info())
+	rep := st.Report(50, nil)
+	solo := findRule(rep, 942100)
+	if solo == nil || solo.Matches != 1 || solo.Alone != 1 || solo.Agreement != 0 {
+		t.Fatalf("a rule that matched alone reports %+v", solo)
+	}
+	// Two attack rules on one request: each has the other.
+	st.Reset()
+	runInfo(t, e, ModeBlock, both(), info())
+	rep = st.Report(50, nil)
+	for _, id := range []int{942100, 941100} {
+		r := findRule(rep, id)
+		if r == nil || r.Matches != 1 || r.Alone != 0 || r.Agreement != 1 {
+			t.Errorf("rule %d matched beside another and reports %+v", id, r)
+		}
+	}
+	// The share is over all of a rule's matches, so one of each is a half.
+	st.Reset()
+	runInfo(t, e, ModeBlock, sqli(), info())
+	runInfo(t, e, ModeBlock, both(), info())
+	rep = st.Report(50, nil)
+	half := findRule(rep, 942100)
+	if half == nil || half.Matches != 2 || half.Alone != 1 || half.Agreement != 0.5 {
+		t.Errorf("one alone and one corroborated reports %+v", half)
+	}
+	// The scoring rules are the rule set's own arithmetic, not evidence,
+	// so they are never counted as somebody agreeing -- and never as
+	// having matched alone either.
+	if score := findRule(rep, 949110); score != nil && score.Alone != 0 {
+		t.Errorf("the blocking evaluation rule was counted as a lone attack rule: %+v", score)
+	}
+}
+
+// The arithmetic itself, including the shapes a counter can be in
+// between a reset and a read.
+func TestAgreementArithmetic(t *testing.T) {
+	for _, tc := range []struct {
+		matches, alone uint64
+		want           float64
+	}{
+		{0, 0, 0},    // nothing measured
+		{10, 0, 1},   // always corroborated
+		{10, 10, 0},  // always alone
+		{4, 1, 0.75}, // three of four
+		{3, 1, 0.67}, // rounded to two places
+		{10, 11, 0},  // a reset between the two reads, not a negative share
+	} {
+		if got := agreement(tc.matches, tc.alone); got != tc.want {
+			t.Errorf("agreement(%d, %d) = %v, want %v", tc.matches, tc.alone, got, tc.want)
+		}
+	}
+	// A rule with no counters at all has no measurement.
+	st := NewStats()
+	if got := st.agreementOf(942100); got != 0 {
+		t.Errorf("a rule nobody recorded reports %v", got)
+	}
+}
+
+// A proposal carries its rule's agreement, and the proposals are ordered
+// by it: an exclusion for a rule nothing ever agreed with is the safest
+// one to make, so it leads the list -- even when another rule has more
+// hits, which is the order the list had before.
+func TestProposalsLeadWithTheRuleNothingAgreedWith(t *testing.T) {
+	st := NewStats()
+	cfg := wafConfig(&config.WAFLearning{Enabled: true, MinHits: 1, MaxEntries: 1000})
+	e, err := New(cfg, Need{"default": {ModeBlock: true, ModeDetect: true}}, st, nolog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := &filter.Info{RequestID: "r1", ClientIP: info().ClientIP, Route: "app", Host: "example.com", Path: "/app/search"}
+	// The sqli rule fires once, and at this paranoia level it is the only
+	// attack rule that matches: nothing agreed with it.
+	runInfo(t, e, ModeDetect, httptest.NewRequest("GET", "http://example.com/app/search?id=1%27%20OR%20%271%27=%271", nil), in)
+	// A script tag trips several of the xss rules at once, twice over: more
+	// hits, and full agreement. So hit count and agreement disagree about
+	// which proposal matters most.
+	for i := 0; i < 2; i++ {
+		runInfo(t, e, ModeDetect, httptest.NewRequest("GET", "http://example.com/app/search?q=<script>alert(1)</script>", nil), in)
+	}
+	props := st.Proposals(map[string]string{"app": "/app"})
+	var sqli, xss *Proposal
+	for i := range props {
+		switch props[i].Rule {
+		case 942100:
+			sqli = &props[i]
+		case 941100:
+			xss = &props[i]
+		}
+	}
+	if sqli == nil || xss == nil {
+		t.Fatalf("expected a proposal for each rule, got %+v", props)
+	}
+	if sqli.Agreement != 0 || sqli.Hits != 1 {
+		t.Errorf("the sqli proposal reports %+v, want one lone hit", sqli)
+	}
+	if xss.Agreement != 1 || xss.Hits != 2 {
+		t.Errorf("the xss proposal reports %+v, want two corroborated hits", xss)
+	}
+	// Ordered by agreement, so the lone rule leads although it has fewer
+	// hits than the corroborated one.
+	for i := 1; i < len(props); i++ {
+		if props[i-1].Agreement > props[i].Agreement {
+			t.Fatalf("proposals out of order at %d: %v then %v", i, props[i-1].Agreement, props[i].Agreement)
+		}
+	}
+	if props[0].Rule != 942100 {
+		t.Errorf("the least corroborated proposal is not first: %+v", props[0])
+	}
+}

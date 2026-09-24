@@ -512,6 +512,168 @@ Open findings of the earlier rounds:
   access log line carries `view`. Twelve deliberate weakenings were each
   caught by the tests.
 
+- **The target's own host certificate** (`upstream_known_hosts`).
+
+  The bastion read only the plain entries of its `known_hosts` file, so a
+  target presenting a **host certificate** was refused -- and signing each
+  new host key with a host CA is exactly how an estate that rebuilds
+  machines avoids editing that file everywhere. An `@cert-authority` line
+  is now honoured, with the certificate checked as OpenSSH checks it: the
+  signature against that authority, that it is a host certificate and not
+  a user one, the validity window, and that its principals cover the host
+  being reached. An authority is trusted only for the hosts its own line
+  names.
+
+  `@revoked` also does what it says now. It was being read as "not a
+  trusted entry", which is silence: a key listed as revoked *and* trusted
+  elsewhere in the file was accepted on the other line. It is a refusal
+  before any other line is consulted, and for a certificate it covers the
+  key inside it and the authority that signed it -- one line takes back
+  every certificate that CA ever issued. A file that trusts nothing at all
+  fails at bind rather than refusing every session afterwards.
+
+  Ten deliberate weakenings were each caught, three after a test was added
+  for an authority scoped to another host and one duplicate check removed:
+  revocation was decided in two places, so neither was covered on its own.
+
+- **Which WAF rules are noise on this traffic, measured** (`xproxyctl waf`,
+  `GET /v1/waf`).
+
+  Beside each rule's matches the statistics now carry `alone` -- the
+  matches where no other attack rule matched the same request -- and
+  `agreement`, the share where at least one other did. A rule set has
+  hundreds of rules and a false positive hunt has an afternoon; this says
+  which few rules fire on their own, which is where that afternoon goes.
+
+  It is a measurement of this traffic, deliberately not a verdict about
+  the rule: a rule that only ever fires alone is either the one thing
+  noticing something or the one thing crying wolf, and which of those it
+  is takes a person. The CRS's paranoia level says how aggressive a rule
+  is; this says what it did here. The scoring and reporting rules (949110
+  and its kin) are excluded from the arithmetic on both sides, because the
+  rule set's own bookkeeping is not a second opinion.
+
+  The learned exclusion proposals carry the same number and are ordered by
+  it, least agreement first: an exclusion for a rule nothing ever agreed
+  with is the safest one to write. Twelve deliberate weakenings were each
+  caught, two after the ordering test was made to discriminate -- hit count
+  and agreement happened to agree in the first version of it, which proved
+  nothing.
+
+- **Imported threat intelligence** (`threat_intel`, `routes[].threat_intel`).
+
+  Named lists of client addresses and TLS fingerprints, read from files,
+  each with its own action: `log`, `challenge` or `block`. A feed of
+  scanner networks, of exit nodes, of addresses seen attacking somebody
+  else -- the estate has the files already, and until now the only place
+  to put them was `deny_cidrs` on every route, edited by hand and reloaded
+  for every change.
+
+  **It is deliberately not the ban list.** A ban is earned here: this proxy
+  watched a client do something and decided. A list is imported, and says
+  nothing about what the client did *here*. So `log` is the default action,
+  `block` warns at load, and the check runs **after** routing, which is what
+  lets `threat_intel: false` exempt a route -- a feed with one wrong line in
+  it must not take the health endpoint an operator watches the outage with.
+  The ban list is still checked before routing, because a ban is this
+  proxy's own finding and applies to everything.
+
+  A list that cannot be read fails the load, and a reload that cannot read
+  one is refused whole: an imported list that silently matches nothing is
+  worse than no list, because the operator believes it works. A file that
+  disappears or stops parsing *after* the load keeps the entries already
+  read and says so in the error log, because a feed being rewritten in
+  place must not empty the policy for the moment that takes. Files are
+  re-read on their own (`refresh`, 5m by default, `0` for never) rather
+  than needing a reload, and only a file whose size or modification time
+  moved is read again.
+
+  A `block` hands the ban list the `threat_intel` reason, so a trigger can
+  escalate a client that keeps arriving from a listed network into a real
+  ban. `challenge` with nothing to challenge with serves the request
+  rather than blocking, since that would be a policy nobody wrote;
+  validation refuses the combination at load. `xproxyctl status` lists
+  every list with its entries, hits and when it was last read, and says
+  whether the files are being watched at all. Twenty-eight deliberate
+  weakenings were each caught, five after the tests were extended or two
+  redundant guards removed -- among them a `refresh: 0` that could not be
+  told from an unset field, which is now a pointer and means never.
+
+- **A set of byte ranges is a decision, not a relay**
+  (`routes[].ranges`, RFC 9110 section 14).
+
+  A `Range` header is a small request asking for a large answer, and a set
+  of ranges is a small request asking for many: each range costs the origin
+  a read and the response a multipart part, so a header naming two hundred
+  of them asks one machine to assemble a response dozens of times the size
+  of the resource, from a packet. That is the oldest amplification bug in
+  HTTP, and until now this proxy relayed the header and left it to the
+  origin.
+
+  RFC 9110 section 14.2 puts the decision exactly where a gateway can make
+  it: a server **may** coalesce ranges that overlap or are separated by a
+  gap smaller than the overhead of another part, "regardless of the order
+  in which the corresponding byte-range-spec appeared", and one that will
+  not satisfy a set may ignore the header and serve the whole
+  representation. So a route with the section rewrites the set rather than
+  inventing a rule -- the same bytes, fewer parts -- and what is still over
+  `max_ranges` (4 by default) is either dropped, which serves the whole
+  representation, or refused with 416 and `Accept-Ranges: bytes` so the
+  client can ask again for fewer.
+
+  What it does not do is guess. Another range unit is passed through, since
+  an origin ignores a unit it does not implement and this proxy has nothing
+  to say about one it cannot read. A value that is not a range set -- a
+  spec with no dash, a descending range, more specs than are worth reading
+  -- is dropped once, here, so this proxy and the origin read the request
+  the same way. A suffix range (`-500`) is kept as it is, because how it
+  overlaps `0-99` depends on a length the proxy does not know; the largest
+  suffix covers the smaller ones and nothing else about them is assumed.
+
+  `ranges` and `ranges_sent` appear in the access log, and
+  `xproxy_ranges_total` counts what was dropped and what was refused.
+  Twenty-five deliberate weakenings were each caught.
+
+- **Fixed: a DNS listener stopped the moment it started raced its own
+  WaitGroup.** `Serve` registered each goroutine with `wg.Add` outside any
+  lock while `Shutdown` called `wg.Wait`, and it published the DoH server
+  where `Shutdown` read it unsynchronised. A listener that starts and stops
+  at once -- which is what a test does, and what a reload of a
+  misconfigured listener does -- then counted one thing or the other by the
+  scheduler's whim. Every goroutine is now registered under the lock
+  `Shutdown` takes before it waits, and `Serve` after a `Shutdown` starts
+  nothing at all. Found by a new test doing exactly that, which fails under
+  the race detector on the old code.
+
+- **Encrypted DNS upstreams resume their sessions**
+  (`server.listeners[].dns.upstream_resumption`, default on).
+
+  A resolver's DoT and DoQ connections do not last: the upstream's idle
+  timeout is usually shorter than the gap between queries for a quiet
+  name, so the connection is dropped and the next query dials again. Each
+  of those dials was a full handshake -- which on DoQ is most of what the
+  transport costs. The client now keeps session tickets, so a redial
+  resumes. Nothing is replayable by it: the Go client offers no early
+  data, and the DoQ dialler keeps `Allow0RTT` false. Tickets are cached
+  per upstream name, so two upstreams never see each other's.
+
+  `upstream_resumed` counts the connections that resumed and
+  `upstream_resumption` reports whether they may
+  (`xproxy_dns_upstream_resumed_total`); DoH resumption happens inside
+  the HTTP transport, which does not report it. Six deliberate weakenings
+  were each caught, two after the tests were extended -- the DoQ counter
+  and the listener's own switch.
+
+- **RFC 9156 (QNAME minimisation) is documented as not applicable**, with
+  the reason, and RFC.md gains that status word: minimisation is what
+  keeps the root and the TLD from seeing a whole name while a *recursive*
+  resolver walks the delegation chain, and this listener is a validating
+  forwarder -- one upstream is asked the question and does the recursion.
+  There is no chain here to walk. "We did not build it" and "it does not
+  apply" are different promises, and the table now says which one this is;
+  a row with either status and no reason fails the test that reads the
+  document.
+
 - **SSH command policy reads the command instead of matching it**
   (`server.listeners[].ssh.command_rules`, `internal/sshcmd`).
 

@@ -1,0 +1,96 @@
+# Imported threat intelligence: the lists somebody else attributed, and
+# what to do about a match.
+#
+# Every estate has these files already -- a feed of scanner networks, of
+# exit nodes, of addresses seen attacking somebody else -- and the usual
+# place to put them is deny_cidrs on every route, edited by hand and
+# reloaded for each change. A list here is read from its file, re-read
+# when the file changes, and has an action of its own.
+#
+# The thing to understand before turning it on: this is NOT the ban list.
+# A ban is earned here -- the proxy watched a client do something and
+# decided -- while a list is imported and says nothing about what the
+# client did on this estate. A feed with one wrong line in it is an
+# outage nobody can explain from the logs, which is why log is the
+# default action, why block warns at load, and why a route can be
+# exempt.
+#
+# Validate: xproxy -config examples/security/threat-intel.yaml -validate
+version: 1
+server:
+  listeners:
+    - name: edge
+      address: "0.0.0.0:443"
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/certs/site.pem, key_file: /etc/xproxy/certs/site.key}
+
+# A challenge is what most lists should ask for: it lets a browser
+# through and stops everything that is not one, which is the honest
+# response to "somebody else says this address is trouble".
+challenge:
+  secret_file: /etc/xproxy/challenge.key
+
+threat_intel:
+  # The files are re-read on their own; only one whose size or
+  # modification time moved is read again. 0 would mean never, and then
+  # a reload is what picks a feed up.
+  refresh: 15m
+  lists:
+    # Order is the policy: the first list that matches decides, so the
+    # networks this estate owns come first and nothing below can take
+    # them out.
+    - name: our-own
+      file: /etc/xproxy/intel/office-networks.txt
+      action: log
+
+    # Exit nodes are not attackers, they are anonymity. A challenge is
+    # the proportionate answer: a person browsing through one gets in,
+    # a script does not.
+    - name: tor-exits
+      file: /etc/xproxy/intel/tor-exits.txt
+      action: challenge
+
+    # A fingerprint list catches the tool rather than the address, which
+    # is what survives a client moving to another network. It needs TLS,
+    # so a plaintext listener never matches one.
+    - name: scanner-tools
+      kind: ja4
+      file: /etc/xproxy/intel/scanner-ja4.txt
+      action: challenge
+
+    # Block only on a feed somebody here maintains and can be asked
+    # about. This one is written by the estate's own incident process,
+    # so a wrong line has an owner.
+    - name: incident-deny
+      file: /etc/xproxy/intel/incident-deny.txt
+      action: block
+
+# A block is a deny event, so the ladder that answers a real attack
+# applies to a client that keeps arriving from a listed network.
+bans:
+  triggers:
+    - name: intel-persistent
+      reasons: [threat_intel]
+      threshold: 5
+      window: 10m
+      duration: 24h
+
+upstreams:
+  - name: app
+    endpoints: [{address: "10.0.0.10:8080"}, {address: "10.0.0.11:8080"}]
+
+routes:
+  - name: app
+    upstream: app
+
+  # The endpoint an operator watches the outage with is exempt. A list is
+  # an import; it must not be able to take the thing that says whether
+  # the estate is up.
+  - name: health
+    paths: ["/healthz", "/readyz"]
+    upstream: app
+    threat_intel: false
+
+logging:
+  access: {enabled: true}

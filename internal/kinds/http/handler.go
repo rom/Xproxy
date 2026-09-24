@@ -427,6 +427,14 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		st.chalTier, st.device, st.automation = ck.Tier, ck.Device, ck.Automation
 	}
 
+	// Imported threat intelligence: a list somebody else attributed this
+	// address or fingerprint to, and what the operator asked for about
+	// it. After routing, so a route can be exempt, and before the
+	// challenge gate, so a list that asks for a challenge gets one.
+	if s.threatIntel(rw, r, st, !cr.intel) {
+		return
+	}
+
 	// Browser challenge gate: unverified clients get the page instead of
 	// the route. In load mode only while the shedder reports pressure.
 	if cr.challenge != nil {
@@ -455,6 +463,29 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if tooEarly(cr.earlyData, r.Method) {
 			st.denied = "early_data"
 			s.plainStatus(rw, r, http.StatusTooEarly)
+			return
+		}
+	}
+
+	// Byte ranges (RFC 9110 section 14). A set of ranges is a small
+	// request asking for many answers, and the gateway is where it can be
+	// judged before the origin assembles any of them.
+	if cr.ranges != nil {
+		switch outcome, value, asked := cr.ranges.apply(r.Header.Get("Range")); outcome {
+		case rangeKeep:
+		case rangeRewrite:
+			st.extra = append(st.extra, "ranges", asked, "ranges_sent", value)
+			r.Header.Set("Range", value)
+		case rangeDrop:
+			st.extra = append(st.extra, "ranges", asked, "ranges_sent", "none")
+			r.Header.Del("Range")
+			s.stats.RangesDropped.Add(1)
+		case rangeDeny:
+			st.extra = append(st.extra, "ranges", asked)
+			st.denied = "ranges"
+			s.stats.RangesRefused.Add(1)
+			rangeDenied(rw)
+			s.plainStatus(rw, r, http.StatusRequestedRangeNotSatisfiable)
 			return
 		}
 	}

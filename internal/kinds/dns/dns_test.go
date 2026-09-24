@@ -253,3 +253,38 @@ routes:
 		t.Fatalf("listener status: %+v", st)
 	}
 }
+
+// upstream_resumption reaches the resolver: a listener that turns it off
+// runs a full handshake for every encrypted upstream connection, and the
+// status says which it is doing.
+func TestUpstreamResumptionIsWired(t *testing.T) {
+	for _, tc := range []struct {
+		section string
+		want    bool
+	}{
+		{"", true},
+		{"        upstream_resumption: true\n", true},
+		{"        upstream_resumption: false\n", false},
+	} {
+		yaml := `
+version: 1
+server:
+  listeners:
+    - name: resolver
+      address: "127.0.0.1:0"
+      kind: dns
+      dns:
+        upstreams: ["tls://9.9.9.9:853"]
+` + tc.section + `
+logging: {access: {enabled: false}}
+`
+		s := proxytest.Start(t, yaml)
+		st := s.DNS()
+		if len(st) != 1 {
+			t.Fatalf("%q: %d listeners in the status", tc.section, len(st))
+		}
+		if st[0].UpstreamResumption != tc.want {
+			t.Errorf("%q: resumption %v, want %v", tc.section, st[0].UpstreamResumption, tc.want)
+		}
+	}
+}

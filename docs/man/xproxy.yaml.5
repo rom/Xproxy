@@ -1213,8 +1213,8 @@ With \fBtls\fR (certificates only, no ACME) the listener is encrypted: no plain 
 .PP
 .TS
 allbox;
-lbw(1.0i) lbw(1.0i) lbw(0.9i) lbx
-lw(1.0i) lw(1.0i) lw(0.9i) lx.
+lbw(1.1i) lbw(1.0i) lbw(0.9i) lbx
+lw(1.1i) lw(1.0i) lw(0.9i) lx.
 T{
 Key
 T}	T{
@@ -1241,6 +1241,15 @@ T}	T{
 system pool
 T}	T{
 Pins the CA of \fBtls:\:/\:/\fR and \fBhttps:\:/\:/\fR upstreams;\: the host in the upstream string is the name verified
+T}
+T{
+\fBupstream_\:resumption\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Keep TLS session tickets for encrypted upstreams,\: so a reconnect resumes instead of running a full handshake. That handshake is most of what DoT and DoQ cost a resolver whose idle connection is dropped between queries. Nothing is replayable: the client offers no early data and DoQ keeps 0\-RTT off. Turn it off for an upstream whose tickets are broken,\: or for a policy that forbids resumption. \fBupstream_\:resumed\fR counts the connections that resumed (\fBxproxy_\:dns_\:upstream_\:resumed_\:total\fR);\: DoH resumption happens inside the HTTP transport and is not counted separately
 T}
 T{
 \fBtimeout\fR
@@ -4586,6 +4595,10 @@ The two connections are the point. A jump host that forwards the stream cannot s
 .PP
 It also means the target never sees the client\(aqs key. The client authenticates to the proxy; the proxy authenticates to the target with a credential the client never holds, so a key that leaves the estate is not a key that opens a server in it. \fBupstream_known_hosts\fR is what makes the bastion the one place that can notice a machine in the middle.
 .PP
+\fBHost certificates.\fR An estate that rebuilds machines signs each new host key with a host CA precisely so that nobody has to edit \fBknown_hosts\fR everywhere, and an \fB@cert\-authority\fR line is how the file says so. The certificate is then checked as OpenSSH checks it: the signature against that authority, that it is a \fBhost\fR certificate rather than a user one, its validity window, and that its principals cover the host being reached (the name without the port, as OpenSSH does). An authority is trusted only for the hosts its own line names.
+.PP
+\fBRevocation wins.\fR \fB@revoked\fR refuses the key it names whatever else the file says \[u2014] the case the marker exists for is a key that is still listed as trusted somewhere \[u2014] and for a certificate it covers the key inside it and the authority that signed it.
+.PP
 An ssh listener takes \fBaddress\fR and \fBssh\fR and no \fBtls\fR: SSH carries its own transport security. Bans and the global connection limits apply at accept. Changing the \fBssh\fR section rebinds the listener on reload, and the credentials are read then \[u2014] not per connection, so a key added to \fBauthorized_keys\fR takes effect on reload rather than mid\-session.
 .PP
 .TS
@@ -4887,7 +4900,7 @@ path
 T}	T{
 required unless insecure
 T}	T{
-OpenSSH known_hosts the target\(aqs key is checked against. \fBrevoked\fR entries are not trusted
+OpenSSH known_hosts the target\(aqs key is checked against,\: read once at bind. All three kinds of line are honoured: a plain entry trusts that key,\: an \fB@cert\-\:authority\fR entry trusts a host CA (so a target presenting a host certificate that CA signed is accepted without its own key being listed),\: and an \fB@revoked\fR entry refuses the key it names before any other line is consulted \[u2014] including the authority,\: which takes back every certificate that CA ever signed. A file that trusts nothing is a bind error
 T}
 T{
 \fBupstream_\:insecure_\:host_\:key\fR
@@ -9876,6 +9889,149 @@ T}
 .TE
 .PP
 Manual bans (\fBxproxyctl ban\fR) accept addresses, CIDRs no wider than /8 (IPv4) or /32 (IPv6) and fingerprints as \fBja4:<fp>\fR; loopback and unspecified addresses are refused. A network overlapping an exempt range is never banned, by trigger, operator or peer; a fingerprint ban is not applied to clients in exempt ranges. Fingerprint bans apply at the request stage (the fingerprint is known after the TLS handshake), not at accept; at most 4096 are held.
+.SH "threat_intel"
+.PP
+Imported lists of client addresses and TLS fingerprints somebody else attributed, and what to do about a match.
+.PP
+\fBIt is deliberately not the ban list beside it.\fR A ban is earned here: this proxy watched a client do something and decided. A list is imported \[u2014] a feed of scanner networks, of exit nodes, of addresses seen attacking somebody else \[u2014] and it says nothing about what the client did \fIhere\fR. A feed with one wrong line in it is an outage nobody can explain from the logs, which is why \fBlog\fR is the default action and why \fBblock\fR warns.
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.9i) lbw(0.9i) lbx
+lw(0.8i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBlists\fR
+T}	T{
+list
+T}	T{
+required
+T}	T{
+The lists,\: in order. \fBThe first list that matches decides\fR,\: so a narrow list belongs before the broad one it softens
+T}
+T{
+\fBrefresh\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+How often the files are checked;\: only a file whose size or modification time moved is re\-read. At least \fB10s\fR,\: or 0 for never \[u2014] a reload of the configuration still re\-reads every list
+T}
+T{
+\fBlog_\:matches\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Write a security event for a match whose action is \fBlog\fR as well. A list nobody can see matching is a list nobody can tune
+T}
+.TE
+.SS "threat_intel.lists[]"
+.PP
+.TS
+allbox;
+lbw(0.7i) lbw(1.1i) lbw(0.9i) lbx
+lw(0.7i) lw(1.1i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+name
+T}	T{
+required
+T}	T{
+What the security event,\: the counters and \fBxproxyctl status\fR call this list
+T}
+T{
+\fBkind\fR
+T}	T{
+\fBcidr\fR,\: \fBja4\fR
+T}	T{
+\fBcidr\fR
+T}	T{
+Client addresses and networks,\: or TLS client fingerprints
+T}
+T{
+\fBfile\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+The entries. One per line,\: with \fB#\fR,\: \fB;\fR and \fB/\:/\fR comment lines and a trailing comment after whitespace;\: a network may be written with host bits set and is masked. An address list matches IPv4 and its IPv6\-mapped form alike
+T}
+T{
+\fBaction\fR
+T}	T{
+\fBlog\fR,\: \fBchallenge\fR,\: \fBblock\fR
+T}	T{
+\fBlog\fR
+T}	T{
+Record it and serve the request;\: make the client prove it is a browser (needs the \fBchallenge\fR section);\: or refuse it with 403
+T}
+.TE
+.PP
+.RS 4
+.nf
+.ft CR
+threat_intel:
+  refresh: 15m
+  lists:
+    # The office first, so nothing below can take it out.
+    \- {name: known\-good, file: /etc/xproxy/intel/office.txt, action: log}
+    \- {name: tor\-exits, file: /etc/xproxy/intel/tor\-exits.txt, action: challenge}
+    \- {name: scanner\-fingerprints, kind: ja4, file: /etc/xproxy/intel/scanners.txt, action: challenge}
+    # A feed this estate maintains itself, so blocking on it is a
+    # decision somebody here can be asked about.
+    \- {name: internal\-deny, file: /etc/xproxy/intel/deny.txt, action: block}
+.ft
+.fi
+.RE
+.PP
+What follows from the shape:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBA list that cannot be read fails the load\fR, and a reload that cannot read one is refused whole. An imported list that silently matches nothing is worse than no list, because the operator believes it works. A file that disappears \fIafter\fR the load keeps the entries already read: a feed being rewritten in place must not empty the policy for the moment that takes.
+.PP
+.ti -3n
+\(bu
+\fBThe check runs after routing\fR, so \fBthreat_intel: false\fR on a route exempts it \[u2014] which is what a health endpoint or a status page wants. The ban list is checked earlier and applies to everything, because a ban is this proxy\(aqs own finding.
+.PP
+.ti -3n
+\(bu
+\fB\fBchallenge\fR with nothing to challenge with serves the request.\fR A list that asks for a challenge on a listener without the \fBchallenge\fR section, or a client that has already proved itself, is not turned into a block: that would be a policy the operator did not write. Validation refuses the combination at load, so it only arises if the section is removed later.
+.PP
+.ti -3n
+\(bu
+\fBAn entry is a whole match or nothing.\fR \fBcidr\fR matches the client address the proxy decided on (so behind a trusted proxy chain, the forwarded one), and \fBja4\fR the fingerprint of the TLS handshake, which a plaintext listener does not have.
+.PP
+.ti -3n
+\(bu
+\fBA block hands the ban list \fBthreat_intel\fR\fR, so a trigger can escalate a client that keeps arriving from a listed network into a real ban. \fBlog\fR and \fBchallenge\fR do not.
+.RE
+.PP
+.PP
+\fBthreat_intel_matched\fR, \fBthreat_intel_blocked\fR, \fBthreat_intel_challenged\fR and \fBthreat_intel_reloads\fR are in \fBxproxyctl status\fR, which also lists every list with its entry count, hits and when it was last read; \fBxproxy_threat_intel_total{result="logged"|"blocked"|"challenged"}\fR is the metric. A match adds \fBthreat_list\fR to the access log line.
 .SH "waf"
 .PP
 Present means enabled. Routes without a \fBwaf\fR block use \fBdefault_mode\fR and \fBdefault_profile\fR. Profiles compile at load and at reload; a broken rule set fails the reload.
@@ -10029,6 +10185,12 @@ T}	T{
 Bound on distinct (rule,\: variable,\: route) entries;\: further ones are counted as dropped;\: 100 to 1000000
 T}
 .TE
+.PP
+\fBWhich rules are noise on \fIthis\fR traffic\fR is a question the statistics can answer, and the rule set cannot. Beside each rule\(aqs matches, \fBxproxyctl waf\fR shows \fBALONE\fR and \fBAGREED\fR: how many of those matches happened with no other attack rule matching the same request, and the share where at least one other did.
+.PP
+It is a measurement, not a verdict. A rule that only ever fires alone is either the one thing noticing something or the one thing crying wolf, and which of those it is takes a person \[u2014] but a rule set has hundreds of rules and this says which few are worth that person\(aqs afternoon. The CRS\(aqs paranoia level is a statement about how aggressive a rule is; this is a statement about what it did here.
+.PP
+The scoring and reporting rules are left out of the arithmetic on both sides: rule 949110 evaluating the anomaly score is the rule set\(aqs own bookkeeping, not a second opinion about the request. And the exclusion proposals are ordered by the same number, least agreement first: an exclusion for a rule nothing ever agreed with is the safest one to write.
 .SS "waf.anomaly"
 .PP
 The rules judge one request at a time. Anomaly detection judges clients: every WAF protected request is attributed to its client address, and at the end of each window a client with at least \fBmin_requests\fR becomes a feature vector (request rate, share of requests that matched a rule, share that ended in an error or a deny, spread over distinct paths). The population\(aqs mean and variance per feature form a baseline that follows drift across windows; a client whose largest positive z\-score against the previous baseline reaches \fBthreshold\fR is flagged and its next requests get \fBaction\fR, until a later window scores it normal or it stays away for three windows. A window with fewer than eight scored clients updates nothing, so a quiet site never flags its only visitor. Flags, the baseline and the counters show under \fBxproxyctl waf anomalies\fR and \fBGET /v1/waf\fR.
@@ -17756,6 +17918,96 @@ Early data saves a round trip and gives up what a completed handshake provided: 
 \fBsafe_methods\fR serves \fBGET\fR, \fBHEAD\fR, \fBOPTIONS\fR and \fBTRACE\fR and answers 425 to everything else, which is RFC 8470\(aqs advice for a proxy: this one cannot know what a second \fBPOST\fR would do. \fBreject\fR answers 425 to all of it, for a route where even a repeated read matters. \fBallow\fR passes it through, and validation says what that means.
 .PP
 This proxy\(aqs own TLS server never accepts early data, so the header only arrives from a terminator in front \[u2014] and only from a peer inside \fBtrusted_proxies\fR does it count. A client\(aqs own \fBEarly\-Data: 1\fR decides nothing and is removed before the upstream sees it, because the upstream cannot tell the proxy\(aqs copy from the client\(aqs. \fBearly_data\fR appears in the access log for a request that arrived on it, and a refusal is logged as \fBearly_data\fR.
+.SS "routes[].ranges"
+.PP
+Bounds byte range requests (RFC 9110 section 14). Without the section a \fBRange\fR header is relayed as it arrived.
+.PP
+A \fBRange\fR header is a small request asking for a large answer, and a \fIset\fR of ranges is a small request asking for many: each range costs the origin a read and the response a multipart part, so a header naming two hundred of them asks one machine to assemble a response dozens of times the size of the resource from a packet. That is the oldest amplification bug in HTTP, and the gateway is where it can be judged \[u2014] before any of that work is done.
+.PP
+RFC 9110 section 14.2 leaves the decision here: a server \fBmay\fR coalesce ranges that overlap or are separated by a gap smaller than the overhead of another part, "regardless of the order in which the corresponding byte\-range\-spec appeared", and a server that will not satisfy a range set may ignore the header and answer the whole representation. So this rewrites the set rather than inventing a rule: the same bytes, fewer parts.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.8i) lbw(0.8i) lbx
+lw(0.9i) lw(0.8i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBmax_\:ranges\fR
+T}	T{
+int
+T}	T{
+\fB4\fR
+T}	T{
+How many ranges a set may still hold \fBafter\fR coalescing;\: 0 means the default,\: up to 1024
+T}
+T{
+\fBcoalesce\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Merge overlapping and adjacent ranges into the fewest that cover the same bytes,\: and sort them. Off,\: a set is counted as it arrived,\: so a client that overlaps its ranges is refused for asking twice for the same bytes (validation says so)
+T}
+T{
+\fBaction\fR
+T}	T{
+\fBignore\fR,\: \fBrefuse\fR
+T}	T{
+\fBignore\fR
+T}	T{
+What happens to a set still over the bound: \fBignore\fR drops the header,\: so the whole representation is served,\: which is what RFC 9110 permits;\: \fBrefuse\fR answers \fB416\fR with \fBAccept\-\:Ranges:\: bytes\fR,\: so a client can ask again for fewer
+T}
+.TE
+.PP
+.RS 4
+.nf
+.ft CR
+routes:
+  \- name: downloads
+    paths: ["/downloads/"]
+    upstream: files
+    ranges: {max_ranges: 4}
+  \- name: media
+    paths: ["/media/"]
+    upstream: files
+    # A player seeks; it does not ask for a hundred pieces at once.
+    ranges: {max_ranges: 8, action: refuse}
+.ft
+.fi
+.RE
+.PP
+What is not guessed at:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBAnother unit is left alone.\fR \fBRange: items=0\-9\fR is passed through: an origin that does not implement a unit ignores the header, and this proxy has nothing to say about a unit it cannot read.
+.PP
+.ti -3n
+\(bu
+\fBA header that is not a range set is dropped\fR, once, here \[u2014] a malformed value, a spec with no dash, a descending range, more specs than are worth reading (256). RFC 9110 says a recipient that cannot parse the header ignores it; deciding that in one place is what keeps this proxy and the origin reading the request the same way.
+.PP
+.ti -3n
+\(bu
+\fBA suffix range is kept as it is.\fR \fB\-500\fR means the last 500 bytes, and how that overlaps \fB0\-99\fR depends on a length this proxy does not know. The largest suffix covers the smaller ones; nothing else about them is assumed.
+.RE
+.PP
+.PP
+\fBranges\fR and \fBranges_sent\fR appear in the access log for a request the policy acted on, a refusal is logged as \fBranges\fR, and \fBxproxy_ranges_total{result="dropped"|"refused"}\fR counts them (\fBranges_dropped\fR and \fBranges_refused\fR in \fBxproxyctl status\fR).
+.SS "routes[].threat_intel"
+.PP
+\fBtrue\fR (default) or \fBfalse\fR: whether the imported \fBthreat_intel\fR lists apply to this route.
+.PP
+\fBfalse\fR exempts it. A list is an import, and an import with one wrong line in it must not take the health endpoint an operator watches the outage with, or the status page they diagnose it from. The ban list is a separate decision and still applies: a ban is this proxy\(aqs own finding about that client.
 .SS "routes[].trailers"
 .PP
 \fBpass\fR (default) or \fBstrip\fR: the fields an upstream sends after the body \[u2014] a checksum, a signature, gRPC\(aqs status.

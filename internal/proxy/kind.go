@@ -15,6 +15,7 @@ import (
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/dns"
 	"github.com/rom/xproxy/internal/icap"
+	"github.com/rom/xproxy/internal/intel"
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/listener"
 	"github.com/rom/xproxy/internal/logging"
@@ -44,6 +45,9 @@ type Host interface {
 	Counters() *Stats
 	// Bans is the ban list, or nil when the configuration has none.
 	Bans() *ban.List
+	// ThreatIntel is the imported lists of addresses and fingerprints,
+	// or nil when the configuration has none.
+	ThreatIntel() *intel.Set
 	// Pool returns a configured upstream pool by name, or nil.
 	Pool(name string) *upstream.Pool
 	// ICAPService returns a scanning service from icap.services by

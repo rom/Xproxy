@@ -2044,6 +2044,105 @@ a second listener.
 do not contain the clients, or the clients reach this resolver through a
 forwarder whose address is what the view sees.
 
+## Threat intelligence lists
+
+**A list matches nothing.** `xproxyctl status` shows every list with the
+number of entries read: zero means the file held no entries the proxy
+could use (all comments, or all blank). A `cidr` list is matched against
+the client address the proxy decided on, so behind a trusted proxy chain
+it is the forwarded address, not the peer's; a `ja4` list needs a TLS
+handshake, so a plaintext listener never matches one.
+
+**A feed changed and nothing happened.** The status says whether the files
+are being watched (`threat_intel_watching`): `refresh: 0` means nothing
+is, and only a reload re-reads them. Otherwise a file is re-read when its
+size or modification time moves — a rewrite that preserves both looks
+unchanged. `threat_intel_reloads` counts the re-reads.
+
+**The proxy will not start after a feed was updated.** A list that cannot
+be read, or that holds an entry which is not an address, fails the load,
+and a reload that cannot read one is refused whole. The error names the
+list and the line. That is deliberate: a list silently matching nothing is
+worse than no list. A file that goes missing or stops parsing *while the
+proxy runs* keeps the entries already loaded and writes a warning to the
+error log instead.
+
+**A client on a `challenge` list is served normally.** There is nothing
+to challenge with — no `challenge` section on this configuration — or the
+client already holds a solved challenge cookie. A list that asks for a
+challenge is never turned into a block; validation refuses that
+combination at load, so this only arises when the challenge section is
+removed later.
+
+**A blocked client is not banned.** Only `block` hands the ban list the
+`threat_intel` reason; `log` and `challenge` do not. A trigger naming
+that reason escalates a client that keeps arriving from a listed network:
+
+```yaml
+bans:
+  triggers:
+    - {name: intel, reasons: [threat_intel], threshold: 5, window: 10m, duration: 24h}
+```
+
+**A list took out something it should not have.** Put the narrow list
+first: the first list that matches decides, so a `log` list naming the
+office network before the broad feed keeps the office out of it. And
+`threat_intel: false` on a route exempts it entirely, which is what a
+health endpoint wants.
+
+## Byte ranges
+
+**A client's `Range` header does not reach the upstream.** A route with a
+`ranges` section decides it. Three things it can do, and the access log
+says which: `ranges_sent` carries the value forwarded, or `none` when the
+header was dropped. A dropped header means the set was still over
+`max_ranges` after coalescing and `action` is `ignore` (the default), so
+the whole representation is served — which is what RFC 9110 permits a
+server that will not satisfy a set to do. `ranges_dropped` counts them.
+
+**A download manager gets the whole file instead of the part it asked
+for.** The same thing: it asked for more ranges than the route allows.
+Raise `max_ranges` for that route, or set `action: refuse` so the client
+is told (416) rather than handed a body it did not want. Refusing is the
+better answer for a route whose clients can adapt; ignoring is the better
+answer for a route whose clients cannot.
+
+**416 where the resource exists.** `action: refuse` with a set over the
+bound answers 416 with `Accept-Ranges: bytes`, which tells the client
+ranges are supported and this set was not. It is not the origin's 416
+about an unsatisfiable range; `ranges_refused` counts the proxy's.
+
+**The upstream receives a different set from the one the client sent.**
+That is the coalescing, and it is deliberate: overlapping and adjacent
+ranges are merged and the set is sorted, which RFC 9110 section 14.2
+allows explicitly and which is what turns most oversized sets into one
+range rather than a refusal. The bytes asked for are the same. `coalesce:
+false` turns it off, and then a client that overlaps its ranges is
+counted as asking for each of them.
+
+**A `Range` header with another unit is passed through.** `items=0-9`
+is not this proxy's to interpret: an origin ignores a unit it does not
+implement. Only `bytes=` is read.
+
+## DNS upstream resumption
+
+**`upstream_resumed` stays at zero with `tls://` or `quic://`
+upstreams.** Either the connection is never dropped (resumption only
+shows when a redial happens) or the upstream issues no session tickets,
+which some resolvers do not. Neither is a fault: a connection that stays
+up costs nothing to resume. `upstream_resumption` in `xproxyctl dns`
+says whether tickets are kept at all — `false` there means
+`upstream_resumption: false` is set on the listener.
+
+**A DoH upstream never reports a resumption.** It happens inside the
+HTTP transport, which does not tell the caller, so nothing is counted for
+`https://` upstreams. The resumption still happens.
+
+**Turning resumption off changes nothing immediately.** The idle
+connections already open keep their sessions until they are dropped; the
+setting applies to the next dial. A reload that changes it closes the
+idle HTTP connections, so a DoH upstream picks it up at once.
+
 ## DNS aggressive NSEC caching
 
 **`queries_nsec` is zero although `aggressive_nsec` is on.** Nothing has
@@ -2811,6 +2910,29 @@ transfer. Where the requirement is a rule per file, sftp is the protocol
 that can carry one — and an `sftp_server` rule with
 `enforce_sftp_policy: true` is how an exec of the sftp server binary is
 held to it.
+
+**The bastion cannot reach a target whose host key is signed by a CA.**
+`known_hosts` needs an `@cert-authority` line naming that CA and the hosts
+it signs for; a plain entry trusts one key and says nothing about a
+certificate. The refusal names what failed — `no authorities for hostname`
+means no `@cert-authority` line covers the host being dialled, and
+`ssh: principal "x" not in the set of valid principals` means the
+certificate was signed for another name. The principal checked is the
+host without the port, as OpenSSH does it, so a certificate for
+`db1.example.net` covers `db1.example.net:22` and `db1.example.net:2222`
+alike.
+
+**A revoked key is still being accepted.** Check the marker: it is
+`@revoked`, and a line without the `@` is read as a host pattern. A
+correct `@revoked` line refuses that key before any other line in the file
+is consulted, and for a certificate it also refuses the key inside it and
+the authority that signed it.
+
+**The listener will not bind: "no host keys in the file".** The
+`known_hosts` file holds no plain entry and no `@cert-authority` line —
+only revocations, comments or nothing. That is refused at bind rather than
+at the first session, because a file that trusts nothing refuses every
+target.
 
 **Port forwarding is refused.** Two separate gates: `direct-tcpip` must
 be in `allow_channels`, and the destination must be in `forward`.

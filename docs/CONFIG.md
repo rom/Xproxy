@@ -591,6 +591,7 @@ browsers should use it) side by side.
 |-----|------|---------|-------------|
 | `upstreams` | list | required | Resolvers tried in turn, rotating the first choice per query: `host:port` (UDP, TCP on truncation), `tls://host:port` (DNS over TLS, connections reused), `quic://host:port` (DNS over QUIC, RFC 9250, connection reused, id 0), `https://host[:port]/path` (DNS over HTTPS, POST `application/dns-message` with id 0) |
 | `upstream_ca_file` | path | system pool | Pins the CA of `tls://` and `https://` upstreams; the host in the upstream string is the name verified |
+| `upstream_resumption` | bool | `true` | Keep TLS session tickets for encrypted upstreams, so a reconnect resumes instead of running a full handshake. That handshake is most of what DoT and DoQ cost a resolver whose idle connection is dropped between queries. Nothing is replayable: the client offers no early data and DoQ keeps 0-RTT off. Turn it off for an upstream whose tickets are broken, or for a policy that forbids resumption. `upstream_resumed` counts the connections that resumed (`xproxy_dns_upstream_resumed_total`); DoH resumption happens inside the HTTP transport and is not counted separately |
 | `timeout` | duration | `2s` | One upstream attempt; at most 30s |
 | `allow_clients` | list of CIDR | `[]` (any) | Other clients get REFUSED |
 | `block` | list | `[]` | `name` blocks the name and its subdomains, `*.suffix` subdomains only, `=name` that name only |
@@ -2393,6 +2394,21 @@ credential the client never holds, so a key that leaves the estate is
 not a key that opens a server in it. `upstream_known_hosts` is what makes
 the bastion the one place that can notice a machine in the middle.
 
+**Host certificates.** An estate that rebuilds machines signs each new
+host key with a host CA precisely so that nobody has to edit
+`known_hosts` everywhere, and an `@cert-authority` line is how the file
+says so. The certificate is then checked as OpenSSH checks it: the
+signature against that authority, that it is a **host** certificate
+rather than a user one, its validity window, and that its principals
+cover the host being reached (the name without the port, as OpenSSH
+does). An authority is trusted only for the hosts its own line names.
+
+**Revocation wins.** `@revoked` refuses the key it names whatever else
+the file says — the case the marker exists for is a key that is still
+listed as trusted somewhere — and for a certificate it covers the key
+inside it and the authority that signed it.
+
+
 An ssh listener takes `address` and `ssh` and no `tls`: SSH carries its
 own transport security. Bans and the global connection limits apply at
 accept. Changing the `ssh` section rebinds the listener on reload, and
@@ -2432,7 +2448,7 @@ the credentials are read then — not per connection, so a key added to
 | `remote_forward` | bool | `false` | Accept `tcpip-forward`, which asks the target to listen on the client's behalf and turns the session into an inbound path |
 | `upstream_user` | name | the authenticated name | The account on the target |
 | `upstream_key_file` | path | required | The private key the proxy authenticates to the target with |
-| `upstream_known_hosts` | path | required unless insecure | OpenSSH known_hosts the target's key is checked against. `revoked` entries are not trusted |
+| `upstream_known_hosts` | path | required unless insecure | OpenSSH known_hosts the target's key is checked against, read once at bind. All three kinds of line are honoured: a plain entry trusts that key, an `@cert-authority` entry trusts a host CA (so a target presenting a host certificate that CA signed is accepted without its own key being listed), and an `@revoked` entry refuses the key it names before any other line is consulted — including the authority, which takes back every certificate that CA ever signed. A file that trusts nothing is a bind error |
 | `upstream_insecure_host_key` | bool | `false` | Accept any host key from the target. Refused unless `allow_insecure` is also set, and warned about: it is the one setting here that leaves nothing to notice a machine in the middle |
 | `recording` | object | none | Record what a session showed, to a file per channel; see below |
 | `mfa` | object | none | Require a second factor after the key or the password; see below |
@@ -4276,6 +4292,78 @@ is not applied to clients in exempt ranges. Fingerprint bans apply at
 the request stage (the fingerprint is known after the TLS handshake),
 not at accept; at most 4096 are held.
 
+## threat_intel
+
+Imported lists of client addresses and TLS fingerprints somebody else
+attributed, and what to do about a match.
+
+**It is deliberately not the ban list beside it.** A ban is earned here:
+this proxy watched a client do something and decided. A list is imported
+— a feed of scanner networks, of exit nodes, of addresses seen attacking
+somebody else — and it says nothing about what the client did *here*. A
+feed with one wrong line in it is an outage nobody can explain from the
+logs, which is why `log` is the default action and why `block` warns.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `lists` | list | required | The lists, in order. **The first list that matches decides**, so a narrow list belongs before the broad one it softens |
+| `refresh` | duration | `5m` | How often the files are checked; only a file whose size or modification time moved is re-read. At least `10s`, or 0 for never — a reload of the configuration still re-reads every list |
+| `log_matches` | bool | `true` | Write a security event for a match whose action is `log` as well. A list nobody can see matching is a list nobody can tune |
+
+### threat_intel.lists[]
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | name | required | What the security event, the counters and `xproxyctl status` call this list |
+| `kind` | `cidr`, `ja4` | `cidr` | Client addresses and networks, or TLS client fingerprints |
+| `file` | path | required | The entries. One per line, with `#`, `;` and `//` comment lines and a trailing comment after whitespace; a network may be written with host bits set and is masked. An address list matches IPv4 and its IPv6-mapped form alike |
+| `action` | `log`, `challenge`, `block` | `log` | Record it and serve the request; make the client prove it is a browser (needs the `challenge` section); or refuse it with 403 |
+
+```yaml
+threat_intel:
+  refresh: 15m
+  lists:
+    # The office first, so nothing below can take it out.
+    - {name: known-good, file: /etc/xproxy/intel/office.txt, action: log}
+    - {name: tor-exits, file: /etc/xproxy/intel/tor-exits.txt, action: challenge}
+    - {name: scanner-fingerprints, kind: ja4, file: /etc/xproxy/intel/scanners.txt, action: challenge}
+    # A feed this estate maintains itself, so blocking on it is a
+    # decision somebody here can be asked about.
+    - {name: internal-deny, file: /etc/xproxy/intel/deny.txt, action: block}
+```
+
+What follows from the shape:
+
+- **A list that cannot be read fails the load**, and a reload that cannot
+  read one is refused whole. An imported list that silently matches
+  nothing is worse than no list, because the operator believes it works.
+  A file that disappears *after* the load keeps the entries already read:
+  a feed being rewritten in place must not empty the policy for the
+  moment that takes.
+- **The check runs after routing**, so `threat_intel: false` on a route
+  exempts it — which is what a health endpoint or a status page wants.
+  The ban list is checked earlier and applies to everything, because a
+  ban is this proxy's own finding.
+- **`challenge` with nothing to challenge with serves the request.** A
+  list that asks for a challenge on a listener without the `challenge`
+  section, or a client that has already proved itself, is not turned into
+  a block: that would be a policy the operator did not write. Validation
+  refuses the combination at load, so it only arises if the section is
+  removed later.
+- **An entry is a whole match or nothing.** `cidr` matches the client
+  address the proxy decided on (so behind a trusted proxy chain, the
+  forwarded one), and `ja4` the fingerprint of the TLS handshake, which a
+  plaintext listener does not have.
+- **A block hands the ban list `threat_intel`**, so a trigger can
+  escalate a client that keeps arriving from a listed network into a real
+  ban. `log` and `challenge` do not.
+
+`threat_intel_matched`, `threat_intel_blocked`, `threat_intel_challenged`
+and `threat_intel_reloads` are in `xproxyctl status`, which also lists
+every list with its entry count, hits and when it was last read;
+`xproxy_threat_intel_total{result="logged"|"blocked"|"challenged"}` is
+the metric. A match adds `threat_list` to the access log line.
+
 ## waf
 
 Present means enabled. Routes without a `waf` block use `default_mode` and
@@ -4310,6 +4398,25 @@ and survive reloads; `POST /v1/waf/reset` clears them.
 | `enabled` | bool | `false` | Collect matched variables |
 | `min_hits` | int | `5` | Matches before a proposal appears; 1 to 1000000 |
 | `max_entries` | int | `10000` | Bound on distinct (rule, variable, route) entries; further ones are counted as dropped; 100 to 1000000 |
+
+**Which rules are noise on *this* traffic** is a question the statistics
+can answer, and the rule set cannot. Beside each rule's matches,
+`xproxyctl waf` shows `ALONE` and `AGREED`: how many of those matches
+happened with no other attack rule matching the same request, and the
+share where at least one other did.
+
+It is a measurement, not a verdict. A rule that only ever fires alone is
+either the one thing noticing something or the one thing crying wolf, and
+which of those it is takes a person — but a rule set has hundreds of rules
+and this says which few are worth that person's afternoon. The CRS's
+paranoia level is a statement about how aggressive a rule is; this is a
+statement about what it did here.
+
+The scoring and reporting rules are left out of the arithmetic on both
+sides: rule 949110 evaluating the anomaly score is the rule set's own
+bookkeeping, not a second opinion about the request. And the exclusion
+proposals are ordered by the same number, least agreement first: an
+exclusion for a rule nothing ever agreed with is the safest one to write.
 
 ### waf.anomaly
 
@@ -7067,6 +7174,76 @@ nothing and is removed before the upstream sees it, because the upstream
 cannot tell the proxy's copy from the client's. `early_data` appears in the
 access log for a request that arrived on it, and a refusal is logged as
 `early_data`.
+
+### routes[].ranges
+
+Bounds byte range requests (RFC 9110 section 14). Without the section a
+`Range` header is relayed as it arrived.
+
+A `Range` header is a small request asking for a large answer, and a *set*
+of ranges is a small request asking for many: each range costs the origin
+a read and the response a multipart part, so a header naming two hundred
+of them asks one machine to assemble a response dozens of times the size
+of the resource from a packet. That is the oldest amplification bug in
+HTTP, and the gateway is where it can be judged — before any of that work
+is done.
+
+RFC 9110 section 14.2 leaves the decision here: a server **may** coalesce
+ranges that overlap or are separated by a gap smaller than the overhead of
+another part, "regardless of the order in which the corresponding
+byte-range-spec appeared", and a server that will not satisfy a range set
+may ignore the header and answer the whole representation. So this rewrites
+the set rather than inventing a rule: the same bytes, fewer parts.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `max_ranges` | int | `4` | How many ranges a set may still hold **after** coalescing; 0 means the default, up to 1024 |
+| `coalesce` | bool | `true` | Merge overlapping and adjacent ranges into the fewest that cover the same bytes, and sort them. Off, a set is counted as it arrived, so a client that overlaps its ranges is refused for asking twice for the same bytes (validation says so) |
+| `action` | `ignore`, `refuse` | `ignore` | What happens to a set still over the bound: `ignore` drops the header, so the whole representation is served, which is what RFC 9110 permits; `refuse` answers **416** with `Accept-Ranges: bytes`, so a client can ask again for fewer |
+
+```yaml
+routes:
+  - name: downloads
+    paths: ["/downloads/"]
+    upstream: files
+    ranges: {max_ranges: 4}
+  - name: media
+    paths: ["/media/"]
+    upstream: files
+    # A player seeks; it does not ask for a hundred pieces at once.
+    ranges: {max_ranges: 8, action: refuse}
+```
+
+What is not guessed at:
+
+- **Another unit is left alone.** `Range: items=0-9` is passed through:
+  an origin that does not implement a unit ignores the header, and this
+  proxy has nothing to say about a unit it cannot read.
+- **A header that is not a range set is dropped**, once, here — a
+  malformed value, a spec with no dash, a descending range, more specs
+  than are worth reading (256). RFC 9110 says a recipient that cannot
+  parse the header ignores it; deciding that in one place is what keeps
+  this proxy and the origin reading the request the same way.
+- **A suffix range is kept as it is.** `-500` means the last 500 bytes,
+  and how that overlaps `0-99` depends on a length this proxy does not
+  know. The largest suffix covers the smaller ones; nothing else about
+  them is assumed.
+
+`ranges` and `ranges_sent` appear in the access log for a request the
+policy acted on, a refusal is logged as `ranges`, and
+`xproxy_ranges_total{result="dropped"|"refused"}` counts them
+(`ranges_dropped` and `ranges_refused` in `xproxyctl status`).
+
+### routes[].threat_intel
+
+`true` (default) or `false`: whether the imported `threat_intel` lists
+apply to this route.
+
+`false` exempts it. A list is an import, and an import with one wrong
+line in it must not take the health endpoint an operator watches the
+outage with, or the status page they diagnose it from. The ban list is a
+separate decision and still applies: a ban is this proxy's own finding
+about that client.
 
 ### routes[].trailers
 

@@ -268,6 +268,11 @@ func (s *Server) Collect(e metrics.Collector) {
 		e.Counter("xproxy_capture_truncated_total", "Captured bodies cut short at max_body_bytes.", nil, float64(cs.Truncated))
 		e.Counter("xproxy_capture_bytes_total", "Bytes written to capture files.", nil, float64(cs.Bytes))
 	}
+	e.Counter("xproxy_threat_intel_total", "Requests an imported threat intelligence list matched, by what was done.", L{"result": "logged"}, float64(sn.ThreatIntelMatched-sn.ThreatIntelBlocked-sn.ThreatIntelChallenged))
+	e.Counter("xproxy_threat_intel_total", "Requests an imported threat intelligence list matched, by what was done.", L{"result": "blocked"}, float64(sn.ThreatIntelBlocked))
+	e.Counter("xproxy_threat_intel_total", "Requests an imported threat intelligence list matched, by what was done.", L{"result": "challenged"}, float64(sn.ThreatIntelChallenged))
+	e.Counter("xproxy_ranges_total", "Byte range requests the range policy acted on.", L{"result": "dropped"}, float64(sn.RangesDropped))
+	e.Counter("xproxy_ranges_total", "Byte range requests the range policy acted on.", L{"result": "refused"}, float64(sn.RangesRefused))
 	e.Counter("xproxy_static_responses_total", "Requests answered by static routes.", L{"result": "served"}, float64(sn.StaticServed))
 	e.Counter("xproxy_static_responses_total", "Requests answered by static routes.", L{"result": "not_found"}, float64(sn.StaticNotFound))
 	e.Counter("xproxy_compressed_responses_total", "Responses the proxy compressed with gzip.", nil, float64(sn.Compressed))
@@ -288,6 +293,7 @@ func (s *Server) Collect(e metrics.Collector) {
 		e.Counter("xproxy_dns_servfail_total", "DNS queries answered SERVFAIL (no upstream answer).", l, float64(d.ServFail))
 		e.Counter("xproxy_dns_truncated_total", "DNS answers truncated for UDP clients.", l, float64(d.Truncated))
 		e.Counter("xproxy_dns_upstream_failures_total", "DNS upstream attempts without an answer.", l, float64(d.UpstreamFail))
+		e.Counter("xproxy_dns_upstream_resumed_total", "Encrypted DNS upstream connections that resumed a TLS session instead of a full handshake.", l, float64(d.UpstreamResumed))
 		// Per transport, which is how an operator sees an encrypted
 		// rollout happening: the plaintext share is the number that has
 		// to fall.

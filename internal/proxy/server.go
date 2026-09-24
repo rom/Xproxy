@@ -21,6 +21,7 @@ import (
 	"github.com/rom/xproxy/internal/cluster"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/dns"
+	"github.com/rom/xproxy/internal/intel"
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/metrics"
@@ -63,6 +64,7 @@ type Server struct {
 	// port".
 	acceptRate atomic.Pointer[limits.AcceptRate]
 	bans       atomic.Pointer[ban.List]
+	intel      atomic.Pointer[intel.Set]
 	cluster    atomic.Pointer[cluster.Node]
 	sampler    *metrics.Sampler
 	acme       *acme.Manager
@@ -165,6 +167,13 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 	// Server before any listener accepts.
 	safe.Report = func(what string, value any, stack []byte) {
 		logs.Error.Error("panic contained", "where", what, "panic", fmt.Sprint(value), "stack", string(stack))
+	}
+	if ti := cfg.ThreatIntel; ti != nil {
+		set, err := newIntel(ti)
+		if err != nil {
+			return nil, err
+		}
+		s.intel.Store(set)
 	}
 	if st := cfg.Server.SessionTickets; st != nil {
 		tk, err := tlsconf.NewTickets(st, logs.Error.With("component", "tickets"))
@@ -297,6 +306,10 @@ func banStore(bl *ban.List) cluster.BanStore {
 	return bl
 }
 
+// ThreatIntel returns the imported lists, or nil when the section is
+// absent.
+func (s *Server) ThreatIntel() *intel.Set { return s.intel.Load() }
+
 // Bans returns the ban list, or nil when bans are not configured.
 func (s *Server) Bans() *ban.List { return s.bans.Load() }
 
@@ -328,6 +341,11 @@ func (s *Server) Stats() Snapshot {
 	s.dnsTotals(&snap)
 	if bl := s.bans.Load(); bl != nil {
 		snap.BansActive, snap.BansTotal = bl.Stats()
+	}
+	if set := s.intel.Load(); set != nil {
+		snap.ThreatLists = set.Status()
+		snap.ThreatIntelReloads = set.Reloads.Load()
+		snap.ThreatIntelWatching = set.Refreshing()
 	}
 	if node := s.cluster.Load(); node != nil {
 		snap.ClusterPeers = len(node.Status().Peers)
@@ -527,6 +545,11 @@ func (s *Server) Start() error {
 		pl.Start()
 	}
 	s.sampler.Start()
+	if set := s.intel.Load(); set != nil {
+		set.Refresh(cfg.ThreatIntel.RefreshInterval().D(), func(err error) {
+			s.logs.Error.Warn("threat intel list", "err", err.Error())
+		})
+	}
 	if s.acme != nil {
 		s.acme.Start()
 	}
@@ -763,6 +786,21 @@ func (s *Server) Reload(cfg *config.Config) error {
 		}
 		newBans = bl
 	}
+	// The imported lists, read before the switch: a file that has gone
+	// missing aborts the reload rather than leaving a section that
+	// matches nothing.
+	var newIntelSet *intel.Set
+	if cfg.ThreatIntel != nil {
+		set, err := newIntel(cfg.ThreatIntel)
+		if err != nil {
+			discardPlane()
+			rt.stop()
+			s.stats.ReloadFailures.Add(1)
+			return err
+		}
+		newIntelSet = set
+	}
+
 	// Bind and build the added and replaced listeners, then reload the
 	// certificates of the kept ones, before switching, so a port that
 	// cannot be bound or a bad certificate aborts the reload as a whole.
@@ -840,6 +878,17 @@ func (s *Server) Reload(cfg *config.Config) error {
 		s.bans.Store(newBans)
 		if oldBans != nil {
 			defer oldBans.Close()
+		}
+	}
+	// The imported lists are swapped whole, and the old set's refresh
+	// loop stops with it: two loops re-reading the same files would
+	// each be right and one of them pointless.
+	if old := s.intel.Swap(newIntelSet); old != newIntelSet {
+		old.Stop()
+		if newIntelSet != nil {
+			newIntelSet.Refresh(cfg.ThreatIntel.RefreshInterval().D(), func(err error) {
+				s.logs.Error.Warn("threat intel list", "err", err.Error())
+			})
 		}
 	}
 	s.rt.Store(rt)
@@ -1121,6 +1170,7 @@ func (s *Server) SetCapture(on bool, d time.Duration) (capture.Stats, error) {
 // signature because callers should keep checking one.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.tickets.Stop()
+	s.intel.Load().Stop()
 	// The capture file is flushed and closed here: a truncated pcapng is
 	// readable, but the last exchange in it would be the one that is
 	// missing, which is the one being investigated.

@@ -197,9 +197,13 @@ func (v *validator) config(c *Config) {
 
 	v.trustedProxies = len(c.TrustedProxies) > 0
 
+	// Set once, before anything reads it: a configuration with a
+	// challenge section and no rate limits used to leave this false, so
+	// a later check would say there was nothing to challenge with.
+	v.hasChallenge = c.Challenge != nil
+
 	rateLimits := map[string]bool{}
 	for i := range c.RateLimits {
-		v.hasChallenge = c.Challenge != nil
 		v.rateLimit(i, &c.RateLimits[i], rateLimits)
 	}
 	upstreams := map[string]bool{}
@@ -208,6 +212,9 @@ func (v *validator) config(c *Config) {
 	}
 	if c.Bans != nil {
 		v.bans(c.Bans)
+	}
+	if c.ThreatIntel != nil {
+		v.threatIntel(c.ThreatIntel)
 	}
 	profiles := map[string]bool{}
 	if c.WAF != nil {
@@ -509,6 +516,19 @@ func (v *validator) config(c *Config) {
 		}
 		if c.Routes[i].EarlyData == "allow" && len(c.TrustedProxies) > 0 {
 			v.warnf("routes[%d].early_data: allow accepts a request that can be replayed by whoever captured it; only the route knows whether that is safe", i)
+		}
+		if rg := c.Routes[i].Ranges; rg != nil {
+			switch rg.Action {
+			case "", "ignore", "refuse":
+			default:
+				v.errf("routes[%d].ranges.action: must be ignore or refuse", i)
+			}
+			if rg.MaxRanges < 0 || rg.MaxRanges > 1024 {
+				v.errf("routes[%d].ranges.max_ranges: must be between 0 (the default of 4) and 1024", i)
+			}
+			if rg.Coalesce != nil && !*rg.Coalesce {
+				v.warnf("routes[%d].ranges.coalesce: off, so a set of overlapping ranges is counted as it arrived rather than as the bytes it asks for; RFC 9110 section 14.2 allows the merge, and without it a client that overlaps its ranges is refused for asking twice for the same bytes", i)
+			}
 		}
 		switch c.Routes[i].Trailers {
 		case "", "pass", "strip":
@@ -2297,7 +2317,7 @@ var denyReasons = map[string]bool{
 	"acl": true, "rate_limit": true, "waf": true, "body_size": true, "uri_length": true,
 	"bad_host": true, "no_route": true, "websocket": true, "concurrency": true, "challenge": true, "jwt": true, "icap": true,
 	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true, "honeypot": true, "dns_blocked": true, "dns_bogus": true,
-	"account_abuse": true, "honeytoken": true, "smtp_denied": true, "mqtt_denied": true, "ssh_denied": true, "ftp_denied": true, "syslog_denied": true, "yara": true,
+	"account_abuse": true, "honeytoken": true, "threat_intel": true, "smtp_denied": true, "mqtt_denied": true, "ssh_denied": true, "ftp_denied": true, "syslog_denied": true, "yara": true,
 	"forward_sni_mismatch": true, "dns_tunnel": true, "dns_answer_denied": true,
 	"telnet_denied": true, "vnc_denied": true, "rdp_denied": true, "sftp_icap": true, "udp_denied": true,
 }
@@ -6975,5 +6995,52 @@ func (v *validator) sshCommandRules(p string, rules []SSHCommandRule, hasSFTP, e
 		if len(r.Paths) == 0 && r.Command != "sftp_server" && len(dirs) > 0 {
 			v.warnf("%s.paths: empty, so every path on the target is in reach of this %s rule", q, r.Command)
 		}
+	}
+}
+
+// threatIntel checks the imported lists. Every file is read at load by
+// the server itself, so what is checked here is what a file cannot say:
+// the name, the kind, the action and the refresh interval.
+func (v *validator) threatIntel(t *ThreatIntel) {
+	if len(t.Lists) == 0 {
+		v.errf("threat_intel: no lists, so the section does nothing; list them or drop it")
+	}
+	if t.Refresh != nil && *t.Refresh != 0 && t.Refresh.D() < 10*time.Second {
+		v.errf("threat_intel.refresh: must be at least 10s, or 0 for never; a feed nobody rewrites that often is a feed this would only stat")
+	}
+	seen := map[string]bool{}
+	challenges := false
+	for i := range t.Lists {
+		l := &t.Lists[i]
+		q := fmt.Sprintf("threat_intel.lists[%d]", i)
+		if !nameRE.MatchString(l.Name) {
+			v.errf("%s.name: %q is not a valid name; it is what the security event and the counters call this list", q, l.Name)
+		} else if seen[l.Name] {
+			v.errf("%s.name: duplicate %q", q, l.Name)
+		}
+		seen[l.Name] = true
+		switch l.Kind {
+		case "", "cidr", "ja4":
+		default:
+			v.errf("%s.kind: must be cidr (addresses and networks) or ja4 (TLS client fingerprints)", q)
+		}
+		switch l.Action {
+		case "", "log", "block":
+		case "challenge":
+			challenges = true
+		default:
+			v.errf("%s.action: must be log, challenge or block", q)
+		}
+		if l.File == "" {
+			v.errf("%s.file: required; the entries come from a file so that a feed can be rewritten without a reload", q)
+		} else {
+			v.file(q+".file", l.File)
+		}
+		if l.Action == "block" {
+			v.warnf("%s.action: block refuses every request from an address this feed names, and a feed with one wrong line in it is an outage nobody can explain from the logs. challenge lets a browser through and stops everything else", q)
+		}
+	}
+	if challenges && !v.hasChallenge {
+		v.errf("threat_intel: a list asks for a challenge and there is no challenge section, so there is nothing to challenge with")
 	}
 }

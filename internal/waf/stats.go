@@ -3,6 +3,7 @@ package waf
 import (
 	"fmt"
 	"hash/fnv"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -81,6 +82,9 @@ type ruleCounter struct {
 	matches  atomic.Uint64
 	blocks   atomic.Uint64
 	detects  atomic.Uint64
+	// alone counts the matches where no other attack rule matched the
+	// same request. See wafstatus.RuleStat.
+	alone    atomic.Uint64
 	lastSeen atomic.Int64
 	lastURI  atomic.Pointer[string]
 }
@@ -197,6 +201,16 @@ func (s *Stats) record(in *instance) {
 		return
 	}
 	cfg := s.config()
+	// How many attack rules this request matched, which is what makes a
+	// single rule's match corroborated or solitary. Scoring and reporting
+	// rules are not evidence about anything: they are the rule set's own
+	// arithmetic.
+	attacks := 0
+	for _, m := range rules {
+		if relevant(m) && isAttackRule(m.Rule()) {
+			attacks++
+		}
+	}
 	for _, m := range rules {
 		if !relevant(m) {
 			continue
@@ -207,6 +221,9 @@ func (s *Stats) record(in *instance) {
 			continue
 		}
 		rc.matches.Add(1)
+		if attacks == 1 && isAttackRule(r) {
+			rc.alone.Add(1)
+		}
 		if blocked {
 			rc.blocks.Add(1)
 		}
@@ -323,7 +340,8 @@ func (s *Stats) Report(top int, paths map[string]string) Report {
 	s.rules.Range(func(_, v any) bool {
 		rc := v.(*ruleCounter)
 		st := RuleStat{ID: rc.id, Message: rc.message, Severity: rc.severity, Tags: append([]string(nil), rc.tags...),
-			Matches: rc.matches.Load(), Blocks: rc.blocks.Load(), Detects: rc.detects.Load()}
+			Matches: rc.matches.Load(), Blocks: rc.blocks.Load(), Detects: rc.detects.Load(), Alone: rc.alone.Load()}
+		st.Agreement = agreement(st.Matches, st.Alone)
 		if ns := rc.lastSeen.Load(); ns != 0 {
 			st.LastSeen = time.Unix(0, ns)
 		}
@@ -362,11 +380,18 @@ func (s *Stats) Proposals(paths map[string]string) []Proposal {
 				continue
 			}
 			out = append(out, Proposal{Rule: k.rule, Message: e.message, Target: k.target, Route: k.route, Path: paths[k.route],
-				Hits: e.hits, Clients: len(e.clients), LastSeen: e.lastSeen, LastURI: e.lastURI, Sample: e.sample})
+				Hits: e.hits, Clients: len(e.clients), LastSeen: e.lastSeen, LastURI: e.lastURI, Sample: e.sample,
+				Agreement: s.agreementOf(k.rule)})
 		}
 		sh.mu.Unlock()
 	}
 	sort.Slice(out, func(i, j int) bool {
+		// A rule nothing else ever agreed with is the safest exclusion to
+		// make, so those come first; within the same agreement the
+		// busiest target is the one worth excluding.
+		if out[i].Agreement != out[j].Agreement {
+			return out[i].Agreement < out[j].Agreement
+		}
 		if out[i].Hits != out[j].Hits {
 			return out[i].Hits > out[j].Hits
 		}
@@ -450,3 +475,25 @@ type (
 	LearningReport = wafstatus.LearningReport
 	Proposal       = wafstatus.Proposal
 )
+
+// agreement is the share of a rule's matches where at least one other
+// attack rule matched the same request, rounded to two places. A rule
+// with no matches has no measurement, which is reported as zero rather
+// than invented: the matches count beside it says which it is.
+func agreement(matches, alone uint64) float64 {
+	if matches == 0 || alone > matches {
+		return 0
+	}
+	return math.Round(float64(matches-alone)/float64(matches)*100) / 100
+}
+
+// agreementOf is one rule's agreement share, or 0 for a rule with no
+// counters (a table that filled up, or a reset between the two reads).
+func (s *Stats) agreementOf(id int) float64 {
+	v, ok := s.rules.Load(id)
+	if !ok {
+		return 0
+	}
+	rc := v.(*ruleCounter)
+	return agreement(rc.matches.Load(), rc.alone.Load())
+}

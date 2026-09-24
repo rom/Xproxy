@@ -17,7 +17,10 @@ passing the bytes on and hoping.
 proxy are implemented and tested. *Partial* means a named subset, with
 the omission stated. *Refused* means the proxy recognises the thing and
 declines it on purpose; the reason is given, because "not implemented"
-and "refused" are different promises.
+and "refused" are different promises. *Not applicable* means the
+specification describes a role this proxy does not play, so there is
+nothing here for it to implement; that reason is given too, since "we
+did not build it" and "it does not apply" are different promises again.
 
 ## Contents
 
@@ -128,8 +131,9 @@ named here so nobody has to guess:
 | 7766 | DNS Transport over TCP | Full | Fallback on truncation, and the TCP listener |
 | 9715 | IP Fragmentation Avoidance in DNS over UDP | Full | Answers are capped at 1232 octets so a spoofed source cannot draw a large reply |
 | 8482 | Providing Minimal-Sized Responses to DNS Queries with QTYPE=ANY | Full | `ANY` is answered minimally rather than expanded |
-| 7858 | DNS over TLS | Full | ALPN `dot` |
+| 7858 | DNS over TLS | Full | ALPN `dot`, with session resumption to upstreams so a reconnect is not a full handshake (`upstream_resumption`) |
 | 8484 | DNS Queries over HTTPS | Full | POST `application/dns-message` with id 0 |
+| 9156 | DNS Query Name Minimisation | Not applicable | Minimisation is a recursive resolver's: it is what stops the root and the TLD seeing the whole name while the resolver walks the delegation chain. This listener is a validating **forwarder** -- one upstream is asked the question and does the recursion -- so there is no chain here to walk and nothing the minimisation would hide from anyone who is not already being asked. Its own DNSKEY and DS lookups are for the zone being validated, not a walk of the name |
 | 9250 | DNS over Dedicated QUIC Connections | Full | |
 | 9460 | Service Binding and Parameter Specification (SVCB and HTTPS RRs) | Full | Canonical parameter encoding; a record that is not in canonical form is refused |
 | 9461 | Service Binding Mapping for DNS Servers | Full | `alpn`, `port`, `dohpath` |

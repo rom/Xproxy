@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"testing"
@@ -104,5 +105,58 @@ func TestEncryptedListener(t *testing.T) {
 	}
 	if _, _, reason := DoHRequest(&http.Request{Method: http.MethodPost, Header: http.Header{"Content-Type": {"application/dns-message"}}, Body: io.NopCloser(strings.NewReader("short"))}); reason != "doh:short" {
 		t.Fatalf("short body reason %q", reason)
+	}
+}
+
+// A reconnect to an encrypted upstream resumes the session instead of
+// running a full handshake, which is most of what DoT costs a resolver
+// whose idle connection is dropped between queries.
+func TestAnEncryptedUpstreamReconnectResumes(t *testing.T) {
+	up := newFakeUpstream(t)
+	dir := t.TempDir()
+	ca := testutil.WriteCA(t, dir)
+	cert, key := ca.Issue(t, dir, "dns.test")
+	dot := serveDoT(t, up, cert, key)
+	_, port, _ := net.SplitHostPort(dot)
+
+	ask := func(r *Resolver, times int) {
+		t.Helper()
+		r.servers[0].host = "dns.test"
+		q := mustQuery(t, 1, "a.example.test", TypeA)
+		qu, qEnd, _ := ParseQuestion(q)
+		for i := 0; i < times; i++ {
+			if _, err := r.Exchange(context.Background(), q, qEnd, qu, true); err != nil {
+				t.Fatalf("exchange %d: %v", i, err)
+			}
+			// Drop the idle connection, which is what an upstream idle
+			// timeout does: the next query has to dial again.
+			r.Close()
+		}
+	}
+	r, err := NewResolverTLS([]string{"tls://127.0.0.1:" + port}, 2*time.Second, ca.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ask(r, 3)
+	if r.Resumed.Load() == 0 {
+		t.Error("no upstream connection resumed a session")
+	}
+	// With resumption off every connection is a full handshake, so the
+	// counter does not move at all.
+	off, err := NewResolverTLS([]string{"tls://127.0.0.1:" + port}, 2*time.Second, ca.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	off.SetSessionResumption(false)
+	ask(off, 3)
+	if got := off.Resumed.Load(); got != 0 {
+		t.Errorf("%d connections resumed although resumption is off", got)
+	}
+	// And it is a setting rather than a rebuild: turning it back on
+	// resumes again.
+	off.SetSessionResumption(true)
+	ask(off, 3)
+	if off.Resumed.Load() == 0 {
+		t.Error("resumption did not come back on")
 	}
 }
