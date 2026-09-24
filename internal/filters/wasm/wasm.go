@@ -171,11 +171,16 @@ type bodyState struct {
 
 // bufferBody reads at most limit bytes of body; over the limit the
 // stream is restored with what was read in front of the rest.
-func bufferBody(rc io.ReadCloser, limit int64) (*bodyState, io.ReadCloser) {
+func bufferBody(ctx context.Context, rc io.ReadCloser, limit int64) (*bodyState, io.ReadCloser) {
 	if rc == nil || rc == http.NoBody {
 		return &bodyState{}, rc
 	}
+	// A body read is network I/O performed from a wazero host function.
+	// Closing an HTTP request or response body interrupts its underlying
+	// transport read, so connect it to the same deadline as the guest call.
+	stop := context.AfterFunc(ctx, func() { _ = rc.Close() })
 	buf, err := io.ReadAll(io.LimitReader(rc, limit+1))
+	stop()
 	if err != nil {
 		return &bodyState{tooLarge: true}, io.NopCloser(io.MultiReader(bytes.NewReader(buf), &errReader{err}))
 	}
@@ -195,16 +200,16 @@ type errReader struct{ err error }
 
 func (e *errReader) Read([]byte) (int, error) { return 0, e.err }
 
-func (c *call) requestBody() *bodyState {
+func (c *call) requestBody(ctx context.Context) *bodyState {
 	if c.reqBody == nil {
-		c.reqBody, c.req.Body = bufferBody(c.req.Body, c.f.cfg.bodyLimit)
+		c.reqBody, c.req.Body = bufferBody(ctx, c.req.Body, c.f.cfg.bodyLimit)
 	}
 	return c.reqBody
 }
 
-func (c *call) responseBody() *bodyState {
+func (c *call) responseBody(ctx context.Context) *bodyState {
 	if c.respBody == nil && c.resp != nil {
-		c.respBody, c.resp.Body = bufferBody(c.resp.Body, c.f.cfg.bodyLimit)
+		c.respBody, c.resp.Body = bufferBody(ctx, c.resp.Body, c.f.cfg.bodyLimit)
 	}
 	if c.respBody == nil {
 		return &bodyState{}
@@ -425,13 +430,13 @@ func hostGet(ctx context.Context, m api.Module, kind, ptr, n uint32) uint64 {
 		}
 	case getRequestBody:
 		if c.f.cfg.bodyLimit > 0 {
-			if b := c.requestBody(); !b.tooLarge {
+			if b := c.requestBody(ctx); !b.tooLarge {
 				return writeBytes(ctx, m, b.data)
 			}
 		}
 	case getResponseBody:
 		if c.f.cfg.bodyLimit > 0 && c.resp != nil {
-			if b := c.responseBody(); !b.tooLarge {
+			if b := c.responseBody(ctx); !b.tooLarge {
 				return writeBytes(ctx, m, b.data)
 			}
 		}
@@ -439,7 +444,7 @@ func hostGet(ctx context.Context, m api.Module, kind, ptr, n uint32) uint64 {
 		switch {
 		case c.f.cfg.bodyLimit == 0:
 			v = "disabled"
-		case c.resp != nil && c.responseBody().tooLarge, c.resp == nil && c.requestBody().tooLarge:
+		case c.resp != nil && c.responseBody(ctx).tooLarge, c.resp == nil && c.requestBody(ctx).tooLarge:
 			v = "too_large"
 		default:
 			v = "ok"
