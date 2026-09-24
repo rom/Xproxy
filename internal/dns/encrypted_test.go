@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -34,6 +35,9 @@ func TestEncryptedListener(t *testing.T) {
 	s.Encrypted = true
 	s.DoHPath = "/dns"
 	s.Serve()
+	if got := s.dohSrv.HTTP2.MaxConcurrentStreams; got != cap(s.sem) {
+		t.Fatalf("HTTP/2 streams = %d, want in-flight limit %d", got, cap(s.sem))
+	}
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
@@ -105,4 +109,35 @@ func TestEncryptedListener(t *testing.T) {
 	if _, _, reason := DoHRequest(&http.Request{Method: http.MethodPost, Header: http.Header{"Content-Type": {"application/dns-message"}}, Body: io.NopCloser(strings.NewReader("short"))}); reason != "doh:short" {
 		t.Fatalf("short body reason %q", reason)
 	}
+}
+
+func TestDoHAdmissionPrecedesBodyRead(t *testing.T) {
+	s := New("doh", nil, nil, 1, 1, &Policy{}, Hooks{})
+	s.sem <- struct{}{}
+	body := &countingReader{Reader: strings.NewReader("partial")}
+	req := httptest.NewRequest(http.MethodPost, DefaultDoHPath, body)
+	req.Header.Set("Content-Type", "application/dns-message")
+	w := httptest.NewRecorder()
+
+	s.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusServiceUnavailable)
+	}
+	if body.reads != 0 {
+		t.Fatalf("body was read %d times before admission", body.reads)
+	}
+	if s.Dropped.Load() != 1 {
+		t.Fatalf("dropped = %d, want 1", s.Dropped.Load())
+	}
+}
+
+type countingReader struct {
+	io.Reader
+	reads int
+}
+
+func (r *countingReader) Read(p []byte) (int, error) {
+	r.reads++
+	return r.Reader.Read(p)
 }

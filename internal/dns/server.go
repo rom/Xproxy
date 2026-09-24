@@ -222,7 +222,8 @@ func (s *Server) Serve() {
 		if s.Encrypted {
 			s.doh = newChanListener(s.tcp.Addr())
 			s.dohSrv = &http.Server{Handler: s, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
-				WriteTimeout: 30 * time.Second, IdleTimeout: 120 * time.Second, MaxHeaderBytes: 16 << 10}
+				WriteTimeout: 30 * time.Second, IdleTimeout: 120 * time.Second, MaxHeaderBytes: 16 << 10,
+				HTTP2: &http.HTTP2Config{MaxConcurrentStreams: cap(s.sem)}}
 			s.wg.Add(1)
 			go func() {
 				defer s.wg.Done()

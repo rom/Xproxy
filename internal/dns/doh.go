@@ -91,6 +91,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// Admit the request before reading its body. In particular, an HTTP/2
+	// client must not be able to occupy unbounded handlers with partial POSTs
+	// while bypassing the listener's in-flight limit.
+	select {
+	case s.sem <- struct{}{}:
+		defer func() { <-s.sem }()
+	default:
+		s.drop()
+		http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
+		return
+	}
 	query, status, _ := DoHRequest(r)
 	if status != 0 {
 		if status == http.StatusMethodNotAllowed {
@@ -103,15 +114,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if ap, err := netip.ParseAddrPort(r.RemoteAddr); err == nil {
 		client = ap.Addr().Unmap()
 	}
-	select {
-	case s.sem <- struct{}{}:
-	default:
-		s.drop()
-		http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
-		return
-	}
 	resp := s.handle(query, client, true, "doh")
-	<-s.sem
 	if resp == nil {
 		http.Error(w, http.StatusText(http.StatusForbidden), http.StatusForbidden)
 		return
