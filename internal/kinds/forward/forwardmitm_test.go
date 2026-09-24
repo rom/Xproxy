@@ -67,6 +67,105 @@ func connectTunnel(t *testing.T, proxyAddr, target string) net.Conn {
 	return c
 }
 
+// TestForwardInterceptH2 verifies that choosing HTTP/2 for the connection to
+// the proxy does not turn an intercepted CONNECT into an opaque tunnel.
+func TestForwardInterceptH2(t *testing.T) {
+	dir := t.TempDir()
+	mitmDir := t.TempDir()
+	originCA := testutil.WriteCA(t, dir)
+	proxyCA := testutil.WriteCA(t, mitmDir)
+	proxyKey := proxyCA.WriteKey(t, mitmDir)
+	proxyCert, proxyTLSKey := proxyCA.Issue(t, mitmDir, "proxy.test")
+	origin := tlsOrigin(t, "localhost", originCA, dir)
+	_, originPort, _ := net.SplitHostPort(strings.TrimPrefix(origin.URL, "https://"))
+
+	yaml := fmt.Sprintf(`
+version: 1
+server:
+  listeners:
+    - name: mitm-h2
+      address: "127.0.0.1:0"
+      kind: forward
+      protocols: [h1, h2]
+      tls: {certificates: [{cert_file: %s, key_file: %s}]}
+      forward:
+        ports: [%s]
+        allow_private: true
+        intercept:
+          ca_cert_file: %s
+          ca_key_file: %s
+          ca_file: %s
+          hosts: ["localhost"]
+logging: {access: {enabled: false}}
+upstreams:
+  - name: unused
+    endpoints: [{address: 127.0.0.1:1}]
+routes: []
+`, proxyCert, proxyTLSKey, originPort, proxyCA.Path, proxyKey, originCA.Path)
+	s := proxytest.Start(t, yaml)
+
+	outerRoots := x509.NewCertPool()
+	outerRoots.AddCert(proxyCA.Cert)
+	tr := &http.Transport{
+		TLSClientConfig:   &tls.Config{RootCAs: outerRoots, ServerName: "proxy.test", MinVersion: tls.VersionTLS12},
+		ForceAttemptHTTP2: true,
+	}
+	t.Cleanup(tr.CloseIdleConnections)
+	pr, pw := io.Pipe()
+	req := &http.Request{
+		Method: http.MethodConnect,
+		URL:    &url.URL{Scheme: "https", Host: s.Addrs()["mitm-h2"]},
+		Host:   "localhost:" + originPort,
+		Body:   pr,
+		Header: http.Header{},
+	}
+	resp, err := tr.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK || resp.ProtoMajor != 2 {
+		t.Fatalf("connect over h2: %d %s", resp.StatusCode, resp.Proto)
+	}
+	tunnel := &h2TestConn{r: resp.Body, w: pw}
+	t.Cleanup(func() { _ = tunnel.Close() })
+	inner := tls.Client(tunnel, &tls.Config{RootCAs: outerRoots, ServerName: "localhost", MinVersion: tls.VersionTLS12})
+	if err := inner.Handshake(); err != nil {
+		t.Fatalf("inner TLS handshake: %v", err)
+	}
+	if err := (&http.Request{Method: http.MethodGet, URL: &url.URL{Path: "/seen"}, Host: "localhost"}).Write(inner); err != nil {
+		t.Fatal(err)
+	}
+	got, err := http.ReadResponse(bufio.NewReader(inner), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := io.ReadAll(got.Body)
+	_ = got.Body.Close()
+	if !strings.Contains(string(data), "seen") {
+		t.Fatalf("intercepted response: %q", data)
+	}
+	if sn := s.Stats(); sn.Intercepted != 1 {
+		t.Fatalf("HTTP/2 CONNECT was not intercepted: %+v", sn)
+	}
+}
+
+type h2TestConn struct {
+	r io.ReadCloser
+	w *io.PipeWriter
+}
+
+func (c *h2TestConn) Read(p []byte) (int, error)       { return c.r.Read(p) }
+func (c *h2TestConn) Write(p []byte) (int, error)      { return c.w.Write(p) }
+func (c *h2TestConn) LocalAddr() net.Addr              { return h2StreamAddr("client") }
+func (c *h2TestConn) RemoteAddr() net.Addr             { return h2StreamAddr("proxy") }
+func (c *h2TestConn) SetDeadline(time.Time) error      { return nil }
+func (c *h2TestConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *h2TestConn) SetWriteDeadline(time.Time) error { return nil }
+func (c *h2TestConn) Close() error {
+	_ = c.w.Close()
+	return c.r.Close()
+}
+
 // TestForwardIntercept covers the whole of TLS interception: a client
 // that trusts the proxy's CA reaches a real origin through it, the same
 // client trusting only the origin's CA does not (which is the proof
