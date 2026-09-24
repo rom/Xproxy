@@ -18,6 +18,9 @@ other protocols an estate actually runs:
   directions for equipment that cannot be patched, and an NTP and NTS
   time gateway that compares its sources rather than believing one.
 
+Sixteen listener kinds, thirty-six configuration sections and
+twenty-one request filters, one configuration format for all of them.
+
 It is not one binary but three, split by who is on the other end of the
 socket: **xproxy** faces the internet, **xgate** faces people, **xrelay**
 faces machines. They share one repository, one configuration format and
@@ -33,6 +36,21 @@ Status: 1.4 in development on top of the **1.0.0** release
 cut](docs/RELEASING.md)). [docs/ROADMAP.md](docs/ROADMAP.md) lists what
 each version delivered and what is planned;
 [docs/CHANGELOG.md](docs/CHANGELOG.md) has the details.
+
+## Contents
+
+- [The idea](#the-idea) — why it terminates rather than forwards
+- [How it works](#how-it-works) — listeners, the pipeline, the three daemons
+- [Try it in a minute](#try-it-in-a-minute)
+- [Every protocol it speaks](#every-protocol-it-speaks)
+- [Every listener kind](#every-listener-kind) — what each one decides about
+- [Features](#features) — transport, routing, defence, identity, deception, operations
+- [The configuration surface](#the-configuration-surface) — every section and every filter
+- [Setup](#setup) — install, run, configure
+- [Deployment shapes](#deployment-shapes) — every supported way to run it
+- [Operating it](#operating-it) — the CLI, the TUI, the GUI, metrics, logs
+- [Documentation](#documentation)
+- [Development](#development)
 
 ## The idea
 
@@ -117,198 +135,60 @@ in atomically. Every deny, ban, challenge and upstream error is a
 structured event in one of four log streams, and every request carries
 an identifier from the access log to the upstream.
 
-## Feature set
+## Try it in a minute
 
-**Termination and transport**
+```sh
+make build
+cat > x.yaml <<'EOF2'
+version: 1
+server:
+  listeners: [{name: main, address: "127.0.0.1:8080"}]
+management: {socket: /tmp/xproxy.sock, socket_mode: "0600"}
+logging: {directory: /tmp/xproxy-logs}
+upstreams:
+  - name: app
+    endpoints: [{address: 127.0.0.1:3000}]
+routes:
+  - name: all
+    upstream: app
+EOF2
+mkdir -p /tmp/xproxy-logs
+./bin/xproxy -config x.yaml &
+curl -i http://127.0.0.1:8080/
+./bin/xproxyctl -socket /tmp/xproxy.sock status
+```
 
-- TLS 1.2 and 1.3 with hardened defaults, SNI, hot reload of
-  certificates, OCSP stapling, Certificate Transparency checks, client
-  certificates (request or require), ACME issuance and renewal (HTTP-01
-  and TLS-ALPN-01)
-- Post-quantum key exchange as an explicit setting: `X25519MLKEM768`
-  leads the default list, because a session recorded today is a session
-  decrypted later — and naming any group at all used to replace the
-  whole list, which is how a configuration written to prefer X25519
-  silently dropped the hybrid
-- Encrypted Client Hello: the server name is not on the wire, keys
-  rotate with a fallback to the public name that keeps rotation safe,
-  and `require` refuses the fallback where the name itself is the
-  secret; `xproxyctl ech` generates the keys and the HTTPS record
-- HTTP/1.1, HTTP/2 (ALPN, or `h2c` on trusted networks) and HTTP/3 over
-  QUIC with address validation and Alt-Svc advertisement; HTTP/3 to
-  upstreams with a TCP fallback, gRPC-web translation for browsers and
-  WebTransport relays (streams and datagrams) to HTTP/3 upstreams
-- Mutual TLS and public key pinning to upstreams; PROXY protocol
-  towards layer 4 upstreams
+That is the shape of every configuration in this repository: one file,
+validated in full before anything binds. The rest of this document is
+what else it can be told to do, and [Setup](#setup) is how it is
+installed, run and kept.
 
-**Routing and upstreams**
+## Every protocol it speaks
 
-- Routes by host (exact or wildcard), path prefix or regular
-  expression, method, header and cookie conditions, priority and gRPC
-  service or method; redirects, static responses, path rewriting,
-  header operations, per route timeouts and body limits
-- Upstream pools with round robin, weighted, least connections,
-  consistent hashing, power-of-two-choices and latency-aware balancing;
-  active HTTP, gRPC or datagram health checks, passive outlier ejection,
-  a circuit breaker with half open probing, concurrency limits with a
-  bounded queue, retries on connection errors and chosen statuses within
-  a **retry budget**, **hedged requests** for the tail, signed cookie
-  affinity, canary endpoints selected by header, cookie or share
-- Endpoints from static addresses, hostnames re-resolved on a timer, DNS
-  SRV records, or a **Consul** registry; **Unix domain sockets** as
-  endpoints; priority tiers with a backup pool and locality preference
-  that spills over rather than pinning; **drain** and maintenance state
-  per endpoint, a connection age bound, a per-endpoint connection limit,
-  slow start for a cold instance, and an explicit address-family policy
-  for dual-stack endpoints (**Happy Eyeballs**, or restricted on purpose)
-- **Transparent interception** where the network does the redirecting:
-  `IP_TRANSPARENT` with the original destination read from the socket, so
-  a layer 4 listener can front traffic that was never addressed to it
-- Response caching with per route key policies, `Vary` and conditional
-  requests; gzip, brotli and zstd compression of eligible responses,
-  negotiated with the client; request mirroring
-  of sampled traffic to a candidate upstream, bounded and invisible to
-  clients
-- Static file serving from a directory with index files, listings and a
-  single page application fallback, confined to the root
-- gRPC: errors answered as gRPC statuses, `grpc-timeout` honoured,
-  trailers relayed, per code counters
-- The gateway behaviours a modern client expects, each with a policy
-  rather than a default: **Early Hints** (103) from a route's own list or
-  an upstream's, **early data** accepted, refused or accepted only for
-  safe methods (a 0-RTT request is replayable by definition), HTTP/2 and
-  HTTP/3 **priority** signals honoured or ignored deliberately, a
-  **trailers** policy per route, and a **Range** policy that bounds how
-  many ranges a request may ask for and how small they may be, because a
-  thousand one-byte ranges is an amplifier rather than a download
-- **API version routing**: a version taken from the path, a header, a
-  query parameter or a media type, so one route set can front several
-  API versions and the inventory knows which is which
+Grouped by family, with the listener kind or filter that speaks it.
+[docs/RFC.md](docs/RFC.md) is the authority: it names every standard
+with a verdict — full, a named subset, or refused — and has a section of
+its own for what is deliberately *not* implemented and why.
 
-**Defence**
+| Family | What is spoken here | Where |
+|--------|---------------------|-------|
+| HTTP | HTTP/1.1, HTTP/2 (ALPN or `h2c`), HTTP/3 over QUIC v1; extended CONNECT; WebSocket (RFC 6455) with permessage-deflate; WebTransport over HTTP/3; gRPC and gRPC-web; Early Hints, trailers, ranges and priority signals | `http` |
+| TLS | 1.2 and 1.3, SNI, ALPN, mutual TLS in both directions, SPKI pinning, session tickets with rotating keys, OCSP stapling, Certificate Transparency, ACME (HTTP-01 and TLS-ALPN-01), Encrypted Client Hello, the `X25519MLKEM768` hybrid key exchange, JA3 and JA4 fingerprints | every TLS listener |
+| Layer 4 | TLS and QUIC passthrough routed by server name; any datagram protocol; PROXY protocol v1 and v2, read and written; `IP_TRANSPARENT` with the original destination read from the socket | `tcp`, `udp` |
+| DNS | UDP, TCP, DoT (RFC 7858), DoH (RFC 8484) and DoQ (RFC 9250); DNSSEC validation with aggressive NSEC and NSEC3 caching (RFC 8198); response policy zones; DNS64 (RFC 6147); designated-resolver discovery (RFC 9462); SVCB and HTTPS records (RFC 9460); DNS cookies; EDNS client subnet policy | `dns` |
+| Forward and tunnelling | HTTP CONNECT, SOCKS5 (RFC 1928, 1929, 1961) with UDP associations, CONNECT-UDP (RFC 9298), CONNECT-IP (RFC 9484), and TLS interception inside a tunnel | `forward` |
+| Mail | SMTP (RFC 5321) and submission (RFC 6409), STARTTLS (RFC 3207), implicit TLS (RFC 8314), `SIZE`, `AUTH`, enhanced status codes, and Postfix's `XCLIENT` so the mail server still sees the real client | `smtp` |
+| Messaging | MQTT 3.1.1 (also ISO/IEC 20922) and MQTT 5.0 | `mqtt` |
+| File transfer | FTP and FTPS (`AUTH TLS`) with the data connection mediated at both ends; SFTP version 3 inside the SSH subsystem channel | `ftp`, `ssh` |
+| Logging | Syslog RFC 5424 and RFC 3164 over UDP, TCP (RFC 6587 framing) and TLS, re-emitted in one dialect | `syslog` |
+| Time | NTP v1 to v4 (RFC 5905), SNTP (RFC 4330), extension fields (RFC 7822), AES-CMAC authentication (RFC 8573), NTS (RFC 8915) passed through whole, and NTS key establishment relayed on TCP 4460 | `ntp`, `ntske` |
+| Industrial | Modbus/TCP (MBAP), Modbus over Serial Line RTU and ASCII tunnelled over TCP, and Modbus/TCP Security with the role in the client certificate | `modbus` |
+| Remote access | SSH (RFC 4251–4254) with OpenSSH user and host certificates; telnet's NVT (RFC 854); RFB 3.3 to 3.8 (RFC 6143) with VeNCrypt; RDP (MS-RDPBCGR) over TLS, CredSSP over NTLMv2 towards the desktop, or the protocol's own encryption | `ssh`, `telnet`, `vnc`, `rdp` |
+| Identity | OpenID Connect Core 1.0, OAuth 2.0 (RFC 6749) with introspection (RFC 7662), PKCE (RFC 7636) and token exchange (RFC 8693); JWT, JWS and JWKS (RFC 7515–7519); DPoP (RFC 9449); certificate-bound tokens (RFC 8705); SAML 2.0 as a service provider; SCIM 2.0 (RFC 7642–7644); WebAuthn level 2; LDAP (RFC 4511–4515); TOTP (RFC 6238); HTTP Basic (RFC 7617); client certificate identity as `Client-Cert` (RFC 9440) or Envoy's `X-Forwarded-Client-Cert` | filters |
+| Inspection | ModSecurity SecLang with the OWASP Core Rule Set through Coraza; a documented subset of YARA; ICAP (RFC 3507); OpenAPI 3 descriptions; GraphQL; XML and XSD with exclusive canonicalization; protobuf structure without a schema; WebAssembly with WASI preview 1 | filters |
+| Operations | Prometheus exposition; OpenTelemetry OTLP for traces, metrics and logs; SIEM export as NDJSON, Splunk HEC, CEF or LEEF; pcapng capture files; asciicast v2 session recordings; journald and syslog log sinks; the Consul catalogue; Kubernetes Ingress and Gateway API | the control plane |
 
-- Connection limits at accept (global and per address), concurrency
-  ceiling, header, body and idle timeouts, URI and body size limits
-- WebSockets opt in per route, and where they are allowed the messages
-  are inspected in both directions: RFC 6455 framing
-  (reserved bits and opcodes, masking, control frame size and
-  fragmentation, continuation state, close codes, UTF-8), bounds on
-  frame, message and rate, and an expression list over the messages
-  themselves — the upgraded connection used to be the one place this
-  proxy stopped looking, which is where applications put their real API
-- YARA rules over streams and bodies: a subset of the language
-  implemented in Go, applied to a layer 4 connection as it passes or to
-  a request or response body before it is forwarded, with a rule
-  reported the first time its condition is true rather than after the
-  transfer
-- Keyed rate limits (address, network, route, endpoint, country, TLS
-  fingerprint, header, cookie, token claim) with reject or tarpit; CIDR
-  allow and deny lists; trusted proxy handling for forwarded addresses
-- API inventory discovered from traffic, with shadow, zombie and
-  superseded endpoints against OpenAPI descriptions; **API abuse
-  detection** per identity over a window — distinct objects touched,
-  consecutive identifiers, the share of requests refused — which is what
-  enumeration looks like when every single request is allowed
-- **Threat intelligence lists**: imported CIDR and JA4 lists with an
-  action each (log, challenge, deny), refreshed on disk, with routes
-  that can be exempt from them — because a feed nobody can exempt is a
-  feed that eventually blocks the payment provider
-- Origin lock: per request signatures the origin verifies, mutual TLS
-  and network rules so an application accepts only proxied traffic
-- Sensitive data detection in both directions: cards, identity numbers,
-  IBANs, e-mail, tokens, keys and query credentials, logged, masked or
-  blocked per route
-- Upload protection: extension chains, content sniffing against name and
-  declared type, executable and web shell detection, size and count
-  bounds, combinable with ICAP scanning
-- Positive security model per route (methods, media types, typed query
-  parameters, size bounds) and virtual patches that block a published
-  vulnerability by request shape, with counters and expiry
-- Web application firewall on the bundled OWASP Core Rule Set through
-  Coraza: block or detect per route, custom rules, plugins and
-  exclusions, bounded request and response inspection, the encodings a
-  body can hide in decoded before the rules run, **learning mode** that
-  proposes exclusions from real traffic, per-rule statistics with a
-  **measured confidence** so a rule's own history decides whether it
-  blocks, and gradual enforcement by block share or canary client
-- **XML and SOAP bodies**: entity expansion, external entities and
-  nesting bounded before the application's parser sees them, with schema
-  validation where a schema exists; **GraphQL** depth, breadth,
-  complexity and introspection bounds; **OpenAPI** descriptions used as
-  an allow list, read from a file or a URL and re-read when they change
-- Ban list: repeated denies of any category become escalating temporary
-  bans dropped at accept, persisted across restarts, shared across a
-  cluster and managed from the CLI; triggers aggregate by network or
-  TLS fingerprint against distributed attacks
-- Fleet operation: a controller pushes configuration bundles to many
-  nodes over mutual TLS and collects their status; SIEM export in
-  NDJSON, Splunk HEC, CEF or LEEF
-- Adaptive load shedding by priority class from upstream latency and
-  in-flight load; browser proof of work challenge, always or under load,
-  with a CAPTCHA tier (Turnstile, hCaptcha, reCAPTCHA) for escalation
-  and device identifiers for logs and rate limits
-- Account protection: credential stuffing, brute force, registration,
-  reset, hoarding and scraping abuse with progressive delay, challenge
-  and block, and campaign detection across many addresses
-- Bot classification from JA3 and JA4 fingerprints, headers and
-  behaviour, with log, challenge and deny thresholds; country policy
-  from a local MaxMind or CSV database
-- Honeypot routes with 138 built-in decoys — from
-  a WordPress login to a cloud metadata document, a container registry
-  catalogue, a Werkzeug debugger, an IP camera, a Postfix `main.cf`, a
-  broker ACL file and an `authorized_keys` — that mark probing
-  clients and feed the ban list; honeytokens that trip when a planted
-  credential is used; hidden-field and timing honeypots on forms;
-  graduated degradation and deceptive answers instead of a refusal a
-  scanner can tune against ([docs/DECEPTION.md](docs/DECEPTION.md));
-  ICAP scanning of uploads and downloads with preview, block pages and
-  fail policies
-
-**Identity**
-
-- JWT validation at the edge with JWKS rotation, algorithm allow lists
-  and claim forwarding; OAuth 2.0 token introspection (RFC 7662) for the
-  opaque tokens a JWT check cannot see inside, with a bounded cache
-- **Sender-constrained tokens**, so a stolen bearer token is not enough:
-  DPoP proof of possession (RFC 9449) with a replay window, and
-  certificate-bound access tokens (RFC 8705) checked against the
-  client certificate on the connection
-- OpenID Connect login (the authorization code flow) with sealed
-  session cookies, required claims, identity headers for applications
-  and logout through the provider, front channel included
-- SAML 2.0 as a service provider: the web browser single sign-on
-  profile in a deliberately narrow shape — one unencrypted assertion,
-  exclusive canonicalization, SHA-256 and above, the signing key from
-  the configuration — because every widened option in a SAML
-  implementation is a signature-wrapping bug waiting to be found
-- HTTP Basic authentication from a file of PBKDF2 hashes, LDAP bind
-  against a directory, API keys with scopes and a lifecycle, and client
-  certificate identity passed to applications as RFC 9440's
-  `Client-Cert` or Envoy's `X-Forwarded-Client-Cert` — your choice, and
-  neither by default
-- **WebAuthn** as a relying party: passkeys for registration and
-  authentication, with attestation parsed and deliberately not trusted
-  (it identifies a model, not a person)
-- **SCIM 2.0** provisioning, so an identity provider can create and
-  disable the second-factor enrolments and API keys this proxy holds
-  rather than somebody doing it by hand
-- A second factor shared by every protocol that can ask for one: TOTP
-  against one enrolment file, over keyboard-interactive on the SSH
-  bastion, in a prompt the telnet gateway writes, in VeNCrypt's plain
-  credential on the VNC gateway, carried in the password field on the
-  RDP gateway (which has nowhere else to ask) and stripped before the
-  password travels on, before an FTP session is brokered, and through a
-  filter in front of a web application. One implementation on purpose —
-  a second factor that means different things on different ports is not
-  a second factor, because the weakest door decides. A code is spent
-  when used, every failure gets the same answer, and guessing is bounded
-  by a lockout
-- **Authorisation as one policy**: every authenticating filter answers
-  "who"; `authz` answers "what may they do", deciding on the subject,
-  groups, scopes and claims those filters verified — default deny, first
-  match wins, and nothing a client sent can reach a rule
-
-**Every listener kind**
+## Every listener kind
 
 `kind: http` is the pipeline above. The others reuse its accept limits,
 bans, logs, upstream pools and management plane, and each reads its own
@@ -473,15 +353,17 @@ protocol so that a policy can be written in that protocol's own terms:
   before the target is dialled
 - `kind: vnc`: a VNC gateway that terminates RFB on both legs, which is
   what lets it decide anything: **which security type** a viewer may
-  use (the specified ones only — the vendors' own are a configuration
-  error, with the reason in the docs), **whose credential opens the
-  desktop** (the gateway's, never the viewer's), **whether the session
-  can be driven or only watched**, and what the **recording** holds.
+  use — the ones with a published specification are mediated, and the
+  vendors' own (TightVNC, Apple, UltraVNC, RealVNC) are reimplemented
+  from the shapes their sources agree on and warned about at load, with
+  what each is actually worth written down rather than implied by its
+  name — **whose credential opens the desktop** (the gateway's, never
+  the viewer's), **whether the session can be driven or only watched**,
+  and what the **recording** holds.
   Versions 3.3 to 3.8 on each leg independently; VeNCrypt with X.509,
   a TLS-wrapped socket, or an SSH tunnel the gateway opens itself with
   the host key pinned; MFA carried in VeNCrypt's plain credential,
   which is the only place RFB names a person
-
 - `kind: rdp`: a Remote Desktop gateway that terminates the connection
   sequence on both legs, because everything worth deciding about an RDP
   session is settled there before a pixel moves. **Which virtual
@@ -504,30 +386,272 @@ protocol so that a policy can be written in that protocol's own terms:
   the policy still applies, the factor is still checked and the
   recording holds the session rather than ciphertext
 
-**Extensibility and platforms**
+## Features
 
+Everything below is configuration, not a plugin to find: one YAML file
+describes it, validation refuses what cannot work, and
+[docs/USAGE.md](docs/USAGE.md) has a worked example of each.
+
+### Termination and transport
+
+- TLS 1.2 and 1.3 with hardened defaults, SNI, hot reload of
+  certificates, OCSP stapling, Certificate Transparency checks, client
+  certificates (request or require), ACME issuance and renewal (HTTP-01
+  and TLS-ALPN-01)
+- Post-quantum key exchange as an explicit setting: `X25519MLKEM768`
+  leads the default list, because a session recorded today is a session
+  decrypted later — and naming any group at all used to replace the
+  whole list, which is how a configuration written to prefer X25519
+  silently dropped the hybrid
+- Encrypted Client Hello: the server name is not on the wire, keys
+  rotate with a fallback to the public name that keeps rotation safe,
+  and `require` refuses the fallback where the name itself is the
+  secret; `xproxyctl ech` generates the keys and the HTTPS record
+- HTTP/1.1, HTTP/2 (ALPN, or `h2c` on trusted networks) and HTTP/3 over
+  QUIC with address validation and Alt-Svc advertisement; HTTP/3 to
+  upstreams with a TCP fallback, gRPC-web translation for browsers and
+  WebTransport relays (streams and datagrams) to HTTP/3 upstreams
+- Mutual TLS and public key pinning to upstreams; PROXY protocol
+  towards layer 4 upstreams
+
+### Routing, load balancing and traffic management
+
+- Routes by host (exact or wildcard), path prefix or regular
+  expression, method, header and cookie conditions, priority and gRPC
+  service or method; redirects, static responses, path rewriting,
+  header operations, per route timeouts and body limits
+- Upstream pools with round robin, weighted, least connections,
+  consistent hashing, power-of-two-choices and latency-aware balancing;
+  active HTTP, gRPC or datagram health checks, passive outlier ejection,
+  a circuit breaker with half open probing, concurrency limits with a
+  bounded queue, retries on connection errors and chosen statuses within
+  a **retry budget**, **hedged requests** for the tail, signed cookie
+  affinity, canary endpoints selected by header, cookie or share
+- Endpoints from static addresses, hostnames re-resolved on a timer, DNS
+  SRV records, or a **Consul** registry; **Unix domain sockets** as
+  endpoints; priority tiers with a backup pool and locality preference
+  that spills over rather than pinning; **drain** and maintenance state
+  per endpoint, a connection age bound, a per-endpoint connection limit,
+  slow start for a cold instance, and an explicit address-family policy
+  for dual-stack endpoints (**Happy Eyeballs**, or restricted on purpose)
+- **Transparent interception** where the network does the redirecting:
+  `IP_TRANSPARENT` with the original destination read from the socket, so
+  a layer 4 listener can front traffic that was never addressed to it
+- An expression language for routes and header operations: `when`
+  conditions over addresses, headers, cookies, query parameters,
+  patterns, captures and the time of day, checked at load
+- A **structured maintenance gate** (a window, the clients exempt from
+  it, the page it serves) and **traffic shadowing** to a candidate
+  upstream with the two responses diffed, so a migration is measured
+  before it is switched
+
+### Content, caching and the gateway behaviours
+
+- Response caching with per route key policies, `Vary` and conditional
+  requests; gzip, brotli and zstd compression of eligible responses,
+  negotiated with the client; request mirroring
+  of sampled traffic to a candidate upstream, bounded and invisible to
+  clients
+- Static file serving from a directory with index files, listings and a
+  single page application fallback, confined to the root
+- gRPC: errors answered as gRPC statuses, `grpc-timeout` honoured,
+  trailers relayed, per code counters
+- The gateway behaviours a modern client expects, each with a policy
+  rather than a default: **Early Hints** (103) from a route's own list or
+  an upstream's, **early data** accepted, refused or accepted only for
+  safe methods (a 0-RTT request is replayable by definition), HTTP/2 and
+  HTTP/3 **priority** signals honoured or ignored deliberately, a
+  **trailers** policy per route, and a **Range** policy that bounds how
+  many ranges a request may ask for and how small they may be, because a
+  thousand one-byte ranges is an amplifier rather than a download
+- **API version routing**: a version taken from the path, a header, a
+  query parameter or a media type, so one route set can front several
+  API versions and the inventory knows which is which
+- Custom **error pages** by exact status, by class or as a default, read
+  at load and chosen per listener or per route — a JSON document for the
+  API routes and a page for the rest; a general **CORS policy** per
+  route; and header operations templated from the request, the route and
+  the connection
+
+### Bounds, abuse and the ban list
+
+- Connection limits at accept (global and per address), concurrency
+  ceiling, header, body and idle timeouts, URI and body size limits
+- The **request normalisation guard**, before routing, rate limits,
+  filters or the WAF look at a request: control characters, invalid or
+  overlong UTF-8, double encoding, encoded separators, backslashes,
+  path parameters and dot segments, and HTTP/1 requests whose framing
+  is ambiguous — the forms that make a proxy and an application read
+  one request two ways
+- Keyed rate limits (address, network, route, endpoint, country, TLS
+  fingerprint, header, cookie, token claim) with reject or tarpit; CIDR
+  allow and deny lists; trusted proxy handling for forwarded addresses
+- Ban list: repeated denies of any category become escalating temporary
+  bans dropped at accept, persisted across restarts, shared across a
+  cluster and managed from the CLI; triggers aggregate by network or
+  TLS fingerprint against distributed attacks
+- Adaptive load shedding by priority class from upstream latency and
+  in-flight load; browser proof of work challenge, always or under load,
+  with a CAPTCHA tier (Turnstile, hCaptcha, reCAPTCHA) for escalation
+  and device identifiers for logs and rate limits
+- Account protection: credential stuffing, brute force, registration,
+  reset, hoarding and scraping abuse with progressive delay, challenge
+  and block, and campaign detection across many addresses
+- Bot classification from JA3 and JA4 fingerprints, headers and
+  behaviour, with log, challenge and deny thresholds; country policy
+  from a local MaxMind or CSV database
+- **Threat intelligence lists**: imported CIDR and JA4 lists with an
+  action each (log, challenge, deny), refreshed on disk, with routes
+  that can be exempt from them — because a feed nobody can exempt is a
+  feed that eventually blocks the payment provider
+- API inventory discovered from traffic, with shadow, zombie and
+  superseded endpoints against OpenAPI descriptions; **API abuse
+  detection** per identity over a window — distinct objects touched,
+  consecutive identifiers, the share of requests refused — which is what
+  enumeration looks like when every single request is allowed
+- Origin lock: per request signatures the origin verifies, mutual TLS
+  and network rules so an application accepts only proxied traffic
+- **Refusal in the ClientHello** for a client already known to be
+  unwelcome: a ban or a fingerprint answered with a failed
+  negotiation rather than a key exchange spent on a refusal, which
+  also gives a scanner nothing to read — no status, no page, no
+  header set, no cipher list
+
+### Message and body inspection
+
+- WebSockets opt in per route, and where they are allowed the messages
+  are inspected in both directions: RFC 6455 framing
+  (reserved bits and opcodes, masking, control frame size and
+  fragmentation, continuation state, close codes, UTF-8), bounds on
+  frame, message and rate, and an expression list over the messages
+  themselves — the upgraded connection used to be the one place this
+  proxy stopped looking, which is where applications put their real API
+- YARA rules over streams and bodies: a subset of the language
+  implemented in Go, applied to a layer 4 connection as it passes or to
+  a request or response body before it is forwarded, with a rule
+  reported the first time its condition is true rather than after the
+  transfer
 - **gRPC message inspection**: the framing, a bound on one message
   rather than the whole stream, the protobuf structure (nesting depth,
   field count) and patterns over the strings inside — without a schema,
   because a check that is only as current as its schema is a check that
   quietly stops applying
-- A stable middleware interface for compiled-in filters (header
-  policy, basic authentication, body rewriting, bot scoring, OpenID
-  Connect), and a WebAssembly ABI that runs sandboxed modules per
-  request with memory and time bounds
+- Sensitive data detection in both directions: cards, identity numbers,
+  IBANs, e-mail, tokens, keys and query credentials, logged, masked or
+  blocked per route
+- Upload protection: extension chains, content sniffing against name and
+  declared type, executable and web shell detection, size and count
+  bounds, combinable with ICAP scanning
+- Positive security model per route (methods, media types, typed query
+  parameters, size bounds) and virtual patches that block a published
+  vulnerability by request shape, with counters and expiry
+- Web application firewall on the bundled OWASP Core Rule Set through
+  Coraza: block or detect per route, custom rules, plugins and
+  exclusions, bounded request and response inspection, the encodings a
+  body can hide in decoded before the rules run, **learning mode** that
+  proposes exclusions from real traffic, per-rule statistics with a
+  **measured confidence** so a rule's own history decides whether it
+  blocks, and gradual enforcement by block share or canary client
+- **XML and SOAP bodies**: entity expansion, external entities and
+  nesting bounded before the application's parser sees them, with schema
+  validation where a schema exists; **GraphQL** depth, breadth,
+  complexity and introspection bounds; **OpenAPI** descriptions used as
+  an allow list, read from a file or a URL and re-read when they change
+- **ICAP** scanning of uploads and downloads against an external
+  service, with preview, block pages and an explicit policy for what
+  a scanner being down means; the SFTP and FTP transfers a gateway
+  brokers go through the same services
+
+### Deception
+
+- Honeypot routes with 138 built-in decoys — from
+  a WordPress login to a cloud metadata document, a container registry
+  catalogue, a Werkzeug debugger, an IP camera, a Postfix `main.cf`, a
+  broker ACL file and an `authorized_keys` — that mark probing
+  clients and feed the ban list; honeytokens that trip the moment a
+  planted credential is used, wherever it was planted; hidden-field and
+  timing honeypots on forms
+- **Graduated degradation** instead of a refusal: a client that has
+  done something wrong but not enough to ban is served correctly and
+  slowly, so there is nothing to report as broken and nothing to tune
+  against, and a crawl that cost nothing now costs the one thing a
+  scanner has least of
+- **Deceptive answers on real routes**: a wrong but plausible response
+  where a refusal would tell a scanner it had found something, and a
+  virtual `security.txt` per host. The whole family — what each piece
+  costs an attacker, how the signals chain and the order to build them
+  in — is [docs/DECEPTION.md](docs/DECEPTION.md)
+
+### Identity and authorisation
+
+- JWT validation at the edge with JWKS rotation, algorithm allow lists
+  and claim forwarding; OAuth 2.0 token introspection (RFC 7662) for the
+  opaque tokens a JWT check cannot see inside, with a bounded cache
+- **Sender-constrained tokens**, so a stolen bearer token is not enough:
+  DPoP proof of possession (RFC 9449) with a replay window, and
+  certificate-bound access tokens (RFC 8705) checked against the
+  client certificate on the connection
+- OpenID Connect login (the authorization code flow) with sealed
+  session cookies, required claims, identity headers for applications
+  and logout through the provider, front channel included
+- SAML 2.0 as a service provider: the web browser single sign-on
+  profile in a deliberately narrow shape — one unencrypted assertion,
+  exclusive canonicalization, SHA-256 and above, the signing key from
+  the configuration — because every widened option in a SAML
+  implementation is a signature-wrapping bug waiting to be found
+- HTTP Basic authentication from a file of PBKDF2 hashes, LDAP bind
+  against a directory, API keys with scopes and a lifecycle, and client
+  certificate identity passed to applications as RFC 9440's
+  `Client-Cert` or Envoy's `X-Forwarded-Client-Cert` — your choice, and
+  neither by default
+- **WebAuthn** as a relying party: passkeys for registration and
+  authentication, with attestation parsed and deliberately not trusted
+  (it identifies a model, not a person)
+- **SCIM 2.0** provisioning, so an identity provider can create and
+  disable the second-factor enrolments and API keys this proxy holds
+  rather than somebody doing it by hand
+- A second factor shared by every protocol that can ask for one: TOTP
+  against one enrolment file, over keyboard-interactive on the SSH
+  bastion, in a prompt the telnet gateway writes, in VeNCrypt's plain
+  credential on the VNC gateway, carried in the password field on the
+  RDP gateway (which has nowhere else to ask) and stripped before the
+  password travels on, before an FTP session is brokered, and through a
+  filter in front of a web application. One implementation on purpose —
+  a second factor that means different things on different ports is not
+  a second factor, because the weakest door decides. A code is spent
+  when used, every failure gets the same answer, and guessing is bounded
+  by a lockout
+- **Authorisation as one policy**: every authenticating filter answers
+  "who"; `authz` answers "what may they do", deciding on the subject,
+  groups, scopes and claims those filters verified — default deny, first
+  match wins, and nothing a client sent can reach a rule
+
+### The estate: clusters, fleets and Kubernetes
+
+- A **cluster** in either of two shapes. Networked: every node dials
+  every peer over mutual TLS, with no leader, sharing rate limit
+  consumption, bans, honeypot marks and session ticket keys — and a
+  limit that must hold exactly cluster wide is decided by one owner
+  per key. Local: the three daemons of one host over a Unix socket,
+  where the socket's permissions and the kernel's own report of the
+  caller are the authentication, so there is no certificate to issue
+  and none to rotate
+- **Fleet operation**: `xproxy-fleet` holds the bundles and each node
+  long polls for its own over mutual TLS, applies it through the
+  ordinary reload — validated, checked against the sandbox, rolled back
+  if it is refused — and reports its version, generation and counters
+  back. The controller never connects to a node
 - Kubernetes ingress controller mode: Ingress and Gateway API resources
   become routes, upstreams and certificates, reloaded within a second
   of a change through watches; manifests and a container build
   included
-- Fedora is the reference platform (RPM, systemd, SELinux); macOS is
-  supported with launchd jobs, a Seatbelt profile, a pf anchor and an
-  installer, cross compiled by the same build
 
-**Operations**
+### Observability and control
 
 - Four JSON log streams (access, error, security, audit) to files,
   journald or syslog, with per stream redaction of personal data and
-  a request identifier end to end
+  a request identifier end to end; SIEM export in NDJSON, Splunk HEC,
+  CEF or LEEF
 - `xproxyctl` over a Unix socket with kernel verified caller identity:
   status, upstreams, quotas per tenant and route, WAF rule statistics,
   learned exclusions and flagged clients, reload with dry run,
@@ -543,13 +667,11 @@ protocol so that a policy can be written in that protocol's own terms:
   path, client network, status, deny reason or a sample, switched on
   for a bounded window with `xproxyctl capture start` and redacted so
   the file does not carry the headers that should not be on disk
-- An expression language for routes and header operations: `when`
-  conditions over addresses, headers, cookies, query parameters,
-  patterns, captures and the time of day, checked at load
-- A **structured maintenance gate** (a window, the clients exempt from
-  it, the page it serves) and **traffic shadowing** to a candidate
-  upstream with the two responses diffed, so a migration is measured
-  before it is switched
+- **Session recording and replay** on every gateway that terminates an
+  interactive protocol: asciicast v2 files, one per channel, output by
+  default and keystrokes only where a configuration says so, with
+  every control sequence filtered on the way out so replaying a
+  recording cannot drive the reviewer's terminal
 - Shell completion for bash, zsh and fish, manual pages and a JSON
   schema of the configuration that gives editors completion and inline
   documentation
@@ -566,38 +688,256 @@ protocol so that a policy can be written in that protocol's own terms:
   privileges, non dumpable; on macOS debugger denial plus the Seatbelt
   profile; its state visible in `xproxyctl sandbox`
 
-## Quick start
+### Extensibility and platforms
+
+- A stable middleware interface for compiled-in filters (header
+  policy, basic authentication, body rewriting, bot scoring, OpenID
+  Connect), and a WebAssembly ABI that runs sandboxed modules per
+  request with memory and time bounds
+- Fedora is the reference platform (RPM, systemd, SELinux); macOS is
+  supported with launchd jobs, a Seatbelt profile, a pf anchor and an
+  installer, cross compiled by the same build
+
+## The configuration surface
+
+One file describes the estate; every daemon validates all of it and
+binds only its own listeners. These are the top-level sections, each
+with the one line that says what it is for.
+[docs/CONFIG.md](docs/CONFIG.md) documents every key with its default,
+and the shipped JSON schema gives an editor completion and inline
+documentation for the same thing.
+
+| Section | What it holds |
+|---------|---------------|
+| `version` | The schema version. `1` |
+| `includes` | Globs of fragment files whose `upstreams`, `routes`, `rate_limits` and `filters` are appended in lexical order, so an estate shares what it agrees on |
+| `server` | Listeners — their kind, address, TLS and per-protocol section — with the global limits, the request normalisation guard, the error pages and the session ticket policy |
+| `management` | The local control socket that `xproxyctl`, the terminal UI and the web GUI speak to, with kernel-verified caller identity |
+| `logging` | The four JSON streams (access, error, security, audit) and where they go: files, journald, syslog, OTLP, a SIEM, with per-stream redaction |
+| `trusted_proxies` | Whose `X-Forwarded-For` is believed and whose PROXY protocol header is parsed. Empty means never |
+| `rate_limits` | Named policies keyed by address, network, route, endpoint, country, fingerprint, header, cookie, token claim or device, local or cluster wide |
+| `upstreams` | Endpoint pools: balancing, health checks, outlier ejection, retries and budgets, hedging, circuit breaking, affinity, discovery, TLS and origin signatures |
+| `routes` | What matches and what happens: the action, the filters, caching, CORS, ranges, honeypots, deception, mirroring, WebSocket inspection and a DoH endpoint |
+| `bans` | Escalating temporary bans, dropped at accept, persisted and shared, with the triggers that place them |
+| `threat_intel` | Imported CIDR and JA4 lists, refreshed on disk, with an action each and routes that can be exempt |
+| `waf` | Coraza with the bundled Core Rule Set: profiles per route, learning mode, anomaly scoring, per-rule confidence and JSON body schemas |
+| `cluster` | Peers on other machines over mutual TLS, or the sibling daemons of one host over a Unix socket, sharing limits, bans, marks and ticket keys |
+| `virtual_patches` | Published vulnerabilities blocked by request shape, with counters and an expiry |
+| `security_txt` | A virtual `/.well-known/security.txt` per host |
+| `scim` | A SCIM 2.0 provisioning endpoint for the second-factor enrolments and API keys this proxy holds |
+| `honeytokens` | Planted credentials that trip the moment one is used |
+| `handshake` | Refusing a client inside the ClientHello — by ban list or fingerprint — before a key exchange is spent on it |
+| `degradation` | Serving a suspect client correctly but slowly, instead of handing a scanner a refusal to tune against |
+| `capture` | pcapng capture of the exchanges the proxy handled, by rule, for a bounded window |
+| `fleet` | The agent that long polls a controller for configuration bundles, applies them through the ordinary reload and reports status |
+| `api_inventory` | The endpoints discovered from traffic, with shadow, zombie and superseded ones named against OpenAPI descriptions |
+| `shedding` | Load shedding by priority class from upstream latency and in-flight load |
+| `maintenance` | A window, the clients exempt from it and the page it serves |
+| `challenge` | The proof-of-work page, its cookie and the CAPTCHA tier above it |
+| `jwt` | Token providers: JWKS with rotation, algorithm allow lists, claims, introspection, DPoP and certificate binding |
+| `metrics` | Prometheus exposition on the socket or a hardened TCP endpoint, per-route series and the in-process buffer the graphs read |
+| `icap` | External scanning services and what a failure means |
+| `filters` | Named request and response filters, by kind — the table below |
+| `geoip` | The MaxMind or CSV database behind country policy and the `country` rate limit key |
+| `ingress` | Kubernetes ingress controller mode: the class, the API server and the watches |
+| `sandbox` | The in-process sandbox applied after start: Landlock rules, the seccomp deny list, capabilities |
+| `cache` | The response cache: sizes, TTLs and the per-route key policy |
+| `compression` | gzip, brotli and zstd of eligible responses, negotiated with the client |
+| `tracing` | W3C trace context and span export, with the sampling and redaction |
+| `acme` | Certificate issuance and renewal, and where the account and keys live |
+
+Filters are the per-route extension surface. Each is named in `filters`
+and referenced by routes, in the order the route lists them:
+
+| Filter | What it does |
+|--------|--------------|
+| `header_guard` | Required and denied request headers, and the security headers on the way back |
+| `basic_auth` | HTTP Basic against a file of PBKDF2 hashes, with the user forwarded |
+| `mfa` | A second factor in front of a web application, from the same TOTP enrolment file the gateways use |
+| `yara` | YARA rules over request and response bodies, per file rather than per stream |
+| `ldap_auth` | A directory bind, in bind or search-then-bind mode, with a group requirement |
+| `oidc` | OpenID Connect login with sealed session cookies, required claims and logout |
+| `saml_sp` | SAML 2.0 single sign-on as a service provider, in a deliberately narrow profile |
+| `xml_guard` | XML and SOAP bodies bounded — entities, expansion, nesting — with schema validation where there is a schema |
+| `wasm` | A sandboxed WebAssembly module per request, with memory and time bounds |
+| `bot_score` | Fingerprints, header consistency and behaviour into a score that logs, challenges or denies |
+| `form_guard` | Hidden-field and timing honeypots on forms |
+| `account_guard` | Credential stuffing, brute force, registration, reset, hoarding and scraping, with campaign detection |
+| `api_abuse` | What one identity does with an API over a window: distinct objects, consecutive identifiers, the share refused |
+| `api_key` | API keys with scopes and a lifecycle |
+| `openapi` | An OpenAPI description used as an allow list, read from a file or a URL and re-read when it changes |
+| `graphql` | Depth, breadth, complexity and introspection bounds, per operation |
+| `upload_guard` | Multipart uploads: extension chains, content against the declared type, executables and web shells, counts and sizes |
+| `authz` | What an authenticated subject may do: default deny, first match wins, nothing a client sent reaches a rule |
+| `grpc_guard` | gRPC framing, message bounds and protobuf structure, without a schema |
+| `sensitive_data` | Cards, identity numbers, IBANs, tokens and keys in either direction: logged, masked or blocked |
+| `body_rewrite` | Literal and regular expression rewriting of request and response bodies |
+
+## Setup
+
+### Install
+
+**From source.** Go 1.25 or newer, no cgo, no C toolchain:
 
 ```sh
-make build
-cat > x.yaml <<'EOF2'
-version: 1
-server:
-  listeners: [{name: main, address: "127.0.0.1:8080"}]
-management: {socket: /tmp/xproxy.sock, socket_mode: "0600"}
-logging: {directory: /tmp/xproxy-logs}
-upstreams:
-  - name: app
-    endpoints: [{address: 127.0.0.1:3000}]
-routes:
-  - name: all
-    upstream: app
-EOF2
-mkdir -p /tmp/xproxy-logs
-./bin/xproxy -config x.yaml &
-curl -i http://127.0.0.1:8080/
-./bin/xproxyctl -socket /tmp/xproxy.sock status
+make build      # bin/{xproxy,xgate,xrelay,xproxyctl,xproxy-admin,xproxy-fleet}, static and stripped
+make check      # fmt, vet, race tests, lint — what CI runs
+sudo make install                 # PREFIX=/usr/local: binaries, units, man pages,
+                                  # completions, the JSON schema, Grafana and Prometheus assets
 ```
 
-[docs/SETUP.md](docs/SETUP.md) covers the RPM, the systemd units, SELinux
-and the web GUI; [docs/USAGE.md](docs/USAGE.md) has a worked example for
-every feature above, and [examples/](examples/) has complete
-configurations — a three daemon estate with a shared ban list, a
+**From RPM on Fedora**, which is the reference platform. Six packages
+come out of `make rpm`, one per thing you can choose to run: `xproxy`
+(the edge daemon, `xproxyctl`, four units, the sysctl profile, logrotate,
+sysusers and tmpfiles entries, dashboards and alert rules),
+`xproxy-xgate`, `xproxy-xrelay`, `xproxy-admin` (the web GUI and its
+polkit rule), `xproxy-fleet` (the controller for a fleet's management
+host) and `xproxy-selinux` (the policy module, loaded and relabelled on
+install). Installing only the base package gives an edge-only host,
+which is the common case; a bastion host adds `xproxy-xgate`, a plant
+relay adds `xproxy-xrelay`. [docs/SETUP.md](docs/SETUP.md) has the
+commands, the users and directories the packages create, and the upgrade
+path.
+
+**On macOS**, cross compiled by the same build: `make install-macos`
+runs the installer from `deploy/macos/`, which places the binaries,
+launchd jobs, a Seatbelt profile, a pf anchor and a newsyslog
+configuration. `make dist-darwin` builds the arm64 and amd64 tarballs
+(the edge daemon, the control tool, the GUI and the fleet controller).
+See [docs/SETUP_MACOS.md](docs/SETUP_MACOS.md) and
+[docs/HARDENING_MACOS.md](docs/HARDENING_MACOS.md).
+
+**As a container.** `deploy/kubernetes/Containerfile` builds a `scratch`
+image carrying `xproxy` and `xproxyctl` and nothing else, running as an
+unprivileged user id, with a manifest beside it.
+
+### Run
+
+Each daemon takes four flags and no more: `-config` (the file),
+`-validate` (check and exit, whole file, advice included), `-version`
+and `-allow-root` (which the shipped units do not need — a daemon
+refuses to start as uid 0 without it).
+
+The units run each daemon as its own unprivileged user, with socket
+activation for the privileged ports, so nothing needs
+`CAP_NET_BIND_SERVICE` and nothing runs as root:
+
+| Unit | Sockets |
+|------|---------|
+| `xproxy.service` | `xproxy.socket` (TCP 80), `xproxy-https.socket` (TCP 443), `xproxy-h3.socket` (UDP 443) |
+| `xgate.service` | `xgate.socket` (TCP 22 — read the note in the unit before enabling it) |
+| `xrelay.service` | `xrelay.socket` (TCP 25); copy it per listener — `ListenStream` for Modbus on 502 or NTS key establishment on 4460, `ListenDatagram` for the time gateway on UDP 123 |
+| `xproxy-admin.service` | the web GUI |
+| `xproxy-fleet.service` | the fleet controller |
+
+`Type=notify-reload` with `SIGHUP`, so `systemctl reload` waits for the
+new generation to be live. The socket stays open across a restart or an
+upgrade, so no connection is refused. Also shipped: a sysctl profile, a
+logrotate configuration per daemon calling `xproxyctl reopen-logs`, the
+sysusers and tmpfiles entries that create the users and the two shared
+directories, an SELinux policy module, and a polkit rule that lets the
+GUI restart the data plane. After start each daemon
+sandboxes itself — Landlock rules derived from the configuration, a
+seccomp deny list, no capabilities, no new privileges, not dumpable —
+and `xproxyctl sandbox` says what took effect.
+
+### Configure
+
+One YAML file, or a file plus a directory of fragments:
+
+```yaml
+version: 1
+includes: [/etc/xproxy/conf.d/*.yaml]   # upstreams, routes, rate_limits, filters
+server:
+  listeners:
+    - {name: main, address: "0.0.0.0:80"}
+```
+
+Every daemon validates the whole file, including the listeners its
+siblings will bind, and says how much of it is its own — so one set of
+includes describes the estate rather than three drifting copies.
+Validation is a hard gate for what cannot work and an advice channel for
+what merely weakens the deployment: both are printed by `-validate` and
+written to the security log at every start.
+
+```sh
+xproxy -config /etc/xproxy/xproxy.yaml -validate   # or xgate, or xrelay
+xproxyctl reload -dry-run                          # build the generation without swapping it in
+xproxyctl diff                                     # file against what is running
+xproxyctl reload                                   # atomic swap, no connection dropped
+xproxyctl history && xproxyctl rollback            # previous generations, and back to one
+```
+
+A reload builds a new immutable generation and swaps it in atomically;
+listeners can be added and removed without a restart, and what does need
+one is named in [docs/CONFIG.md](docs/CONFIG.md)'s reload semantics.
+Editors get completion and inline documentation from the shipped JSON
+schema (`xproxyctl schema`), and there are man pages for each daemon,
+for `xproxyctl` and for the configuration format itself
+(`xproxy.yaml(5)`).
+
+## Deployment shapes
+
+Every shape below is a configuration of the same three binaries, with a
+complete example in [examples/](examples/).
+
+| Shape | What it is | Where to start |
+|-------|------------|----------------|
+| Reverse proxy | One `xproxy` in front of applications: TLS, routes, pools, the WAF, the ban list | `examples/routing/`, `examples/waf/` |
+| Three daemons on one host | The edge, the bastion and the relay side by side — a file each for what only one process can own, one include for what they agree on, and a Unix socket cluster so an address the bastion refuses is refused at the edge too | `examples/estate/` |
+| A cluster of machines | Every node dials every peer over mutual TLS; no leader. Rate limit consumption, bans, honeypot marks and session ticket keys are shared, and a limit can be made exact cluster wide with one owner per key | `cluster:` in [docs/CONFIG.md](docs/CONFIG.md) |
+| A fleet | `xproxy-fleet` holds the configuration bundles; each node long polls for its own, applies it through the ordinary reload (validated, sandbox checked, rolled back on refusal) and reports status. The controller never connects to a node | `examples/fleet/` |
+| Kubernetes ingress | Ingress and Gateway API resources of one class become routes, upstreams and certificates, watched and applied within a second; the file's own routes are kept | `deploy/kubernetes/`, `ingress:` |
+| Behind another proxy | PROXY protocol v1 and v2 from trusted peers, `trusted_proxies` for forwarded addresses, and the same limits, bans and logs keyed on the real client | `proxy_protocol`, `trusted_proxies` |
+| Transparent interception | The network does the redirecting: `IP_TRANSPARENT` with the original destination read from the socket, so a layer 4 listener can front traffic that was never addressed to it | `examples/layer4/` |
+| Explicit egress proxy | CONNECT, SOCKS5 and MASQUE on one port with a destination policy, credentials and optional TLS interception of the tunnel | `examples/forward/` |
+| Bastion host | `xgate` with the SSH, telnet, VNC and RDP gateways, each recorded, each able to demand a second factor, none of them handing the client's credential to the target | `examples/bastion/`, `examples/mfa/` |
+| Machine-to-machine relay | `xrelay` in front of what cannot be patched or reached directly: mail submission, an MQTT fleet, an FTP intake, a syslog collector, a Modbus line, a time service | `examples/mail/`, `examples/iot/`, `examples/files/`, `examples/logs/`, `examples/ot/` |
+| Encrypted DNS resolver | One certificate serving DoT, DoH and DoQ, advertising itself through RFC 9462 discovery, with DNSSEC, block lists, response policy zones and tunnelling detection | `examples/blocklists/` |
+
+[examples/](examples/) is the full set, each file validated by a test
+that runs on every build: a three daemon estate with a shared ban list, a
 submission proxy, an MQTT fleet, an FTP intake, a syslog relay, a Modbus
 policy in front of a production line, an NTP and NTS time gateway, an SSH
 bastion with RDP, VNC and telnet gateways beside it, an encrypted
-resolver, an egress proxy with SOCKS5 and MASQUE, YARA rules, honeypots —
-each one validated by a test that runs on every build.
+resolver, an egress proxy with SOCKS5 and MASQUE, WAF rule sets, YARA
+rules, honeypots, filters and rewriting.
+[docs/USAGE.md](docs/USAGE.md) has a worked example of every feature;
+[docs/SETUP.md](docs/SETUP.md) covers the RPM, the units, SELinux and the
+web GUI.
+
+Two things are worth saying plainly about the operational-technology
+shapes. A relay in front of equipment is a policy point, not an air gap:
+it reads every frame and refuses in the protocol's own terms, and that is
+the whole of what it claims. And a one-way data diode cannot carry NTP or
+any other request-and-response protocol at all — time needs the round
+trip — so the time gateway belongs beside its consumers, not behind a
+diode.
+
+## Operating it
+
+`xproxyctl` talks to the management socket, whose caller identity the
+kernel verifies, and everything it shows is also a JSON endpoint for a
+script:
+
+| Area | Commands |
+|------|----------|
+| State | `status`, `stats`, `upstreams`, `quotas` (per tenant, route and policy), `cluster`, `fleet`, `sandbox`, `series`, `metrics`, `otlp`, `telemetry` |
+| Configuration | `validate`, `config`, `reload` (with `-dry-run`), `diff`, `history`, `rollback`, `schema`, `completion` |
+| Certificates and keys | `tls`, `reload-certs`, `acme`, `spki`, `ech`, `rotate-secret`, `origin-check` |
+| Defence | `bans`, `ban`, `unban`, `waf`, `botscore`, `accounts`, `patches`, `honeypot`, `filters`, `api` |
+| Traffic | `drain`, `maintenance`, `cache`, `dns`, `ingress`, `icap`, `geoip` |
+| Identity | `mfa`, `apikey`, `htpasswd` |
+| Records | `tail`, `session` (list, show, play), `capture` (start, stop, status), `reopen-logs` |
+| Views | `tui` — a full screen terminal view; the web GUI is `xproxy-admin`, with viewer and operator roles, validated configuration editing, graphs and live logs |
+
+Four JSON log streams (access, error, security, audit) go to files,
+journald or syslog with per-stream redaction; a request identifier ties
+a line to the upstream request and back. Prometheus exposition,
+Grafana dashboards and Prometheus alert rules are shipped with the
+product, and OpenTelemetry export covers metrics, traces and logs.
+[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) has a symptom index,
+the stages a request can die at and every deny reason.
 
 ## Documentation
 

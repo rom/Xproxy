@@ -2774,6 +2774,38 @@ Open findings of the earlier rounds:
 
 ### Changed (1.4)
 
+- **README.md is reorganised around the three questions it was being
+  asked**: what does this speak, what can it do, and how is it run. It
+  had grown by accretion -- every release appending bullets to one
+  "Feature set" heading -- so the answer to each was spread across it.
+
+  Now: a contents list; a protocol map of fifteen families, each naming
+  the versions and the standards it speaks and the listener kind or
+  filter that speaks it; the feature list split into ten named groups
+  with the ones that had never reached it added (the request
+  normalisation guard, refusal in the ClientHello, ICAP, graduated
+  degradation, deceptive answers, the cluster in both its shapes,
+  session recording and replay); a **configuration surface** table of
+  all thirty-six top-level sections and all twenty-one filter kinds,
+  one line each, so the whole of what can be configured is visible in
+  two screens rather than inferred from CONFIG.md's eight thousand
+  lines; and a **Setup** section that was previously a single quick
+  start -- the four ways to install, the units and their sockets with
+  the privileged ports each one opens, the flags each daemon takes, how
+  a configuration is validated, reloaded, diffed and rolled back, and a
+  table of the eleven **deployment shapes** the product supports, from a
+  single reverse proxy to a fleet, with the example that shows each.
+
+  Two corrections fell out of writing it. The VNC gateway's vendor
+  security types were described as a configuration error; they are
+  reimplemented, warned about at load, and documented for what they are
+  actually worth. And RFC.md, which promises that every standard is
+  listed so an absence is not mistaken for an omission, had no rows for
+  the three protocols the gateways terminate: telnet (RFC 854 and 855
+  with a row per option, including the two that are refused and why),
+  RFB (RFC 6143), and RDP with CredSSP over NTLMv2 and the RFB vendor
+  types in the non-IETF table.
+
 - **Every list of listener kinds now says all sixteen of them.** The
   kinds arrived one release at a time and the documentation that
   enumerates them did not always follow: the `kind:` row in CONFIG.md
