@@ -324,6 +324,13 @@ type findings struct {
 // scanText finds every detector's validated matches in text; when mask
 // is set the matches are replaced and the new text returned.
 func (g *guard) scanText(text string, request bool, mask bool) (string, findings) {
+	return g.scanTextFixed(text, request, mask, false)
+}
+
+// scanTextFixed optionally keeps each masked match the same byte length. A
+// streaming scan needs that property to split the rewritten window at the
+// same boundary as the original input.
+func (g *guard) scanTextFixed(text string, request bool, mask, fixed bool) (string, findings) {
 	f := findings{kinds: map[string]int{}}
 	for _, d := range g.detectors {
 		if d.queryNames || (d.requestOnly && !request) {
@@ -336,7 +343,16 @@ func (g *guard) scanText(text string, request bool, mask bool) (string, findings
 				}
 				f.kinds[d.name]++
 				f.n++
-				return d.mask(m)
+				masked := d.mask(m)
+				if fixed {
+					switch {
+					case len(masked) < len(m):
+						masked += strings.Repeat("*", len(m)-len(masked))
+					case len(masked) > len(m):
+						masked = masked[:len(m)]
+					}
+				}
+				return masked
 			})
 			continue
 		}

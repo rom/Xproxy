@@ -465,3 +465,42 @@ func TestOversizeStreams(t *testing.T) {
 		}
 	}
 }
+
+func TestOversizeStreamFindingAcrossFlushBoundary(t *testing.T) {
+	build := func(action string) filter.Filter {
+		phase := map[string]any{"action": action, "max_bytes": 1024}
+		f, err := filtertest.Build("sensitive_data", "dlp", filter.Options{
+			"detectors": []any{"card"}, "request": phase, "response": phase,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+
+	// A 32 KiB source read makes the first emission boundary 28 KiB. Put
+	// the card across that boundary to exercise the scanner's overlap.
+	body := strings.Repeat("x", (28<<10)-6) + "4111111111111111" + strings.Repeat("y", 2*hold)
+
+	f := build("block")
+	r := httptest.NewRequest("POST", "http://a/x", strings.NewReader(body))
+	r.Header.Set("Content-Type", "text/plain")
+	in := f.Begin(context.Background(), &filter.Info{})
+	if v := in.Request(r); v.Deny {
+		t.Fatalf("block stream denied at request time: %+v", v)
+	}
+	if _, err := io.ReadAll(r.Body); !errors.Is(err, ErrBlocked) {
+		t.Fatalf("boundary-spanning card was not blocked: %v", err)
+	}
+
+	f = build("mask")
+	resp := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body))}
+	in = f.Begin(context.Background(), &filter.Info{})
+	if v := in.Response(resp); v.Deny {
+		t.Fatalf("mask stream denied: %+v", v)
+	}
+	out, err := io.ReadAll(resp.Body)
+	if err != nil || len(out) != len(body) || strings.Contains(string(out), "4111111111111111") {
+		t.Fatalf("boundary-spanning card was not masked: %v len %d", err, len(out))
+	}
+}
