@@ -58,7 +58,14 @@ type captcha struct {
 	hostnames     map[string]bool // allowed provider hostnames; empty means check the request host
 	checkHostname bool
 	client        *http.Client
+	verifySlots   chan struct{}
 }
+
+// captchaVerifyConcurrency keeps a slow or unavailable provider from tying up
+// the proxy's process-wide request slots. The queue is deliberately zero: a
+// request that cannot start verification immediately fails closed instead of
+// waiting while it holds a global slot.
+const captchaVerifyConcurrency = 4
 
 // loadCaptcha reads the provider secret; a missing or empty secret file
 // is an error because the widget would render but never verify.
@@ -79,7 +86,7 @@ func loadCaptcha(cfg *config.Captcha) (*captcha, error) {
 	if verify == "" {
 		verify = p.verify
 	}
-	c := &captcha{provider: p, siteKey: cfg.SiteKey, secret: secret, verify: verify, minScore: cfg.MinScore, always: cfg.Mode == "always", checkHostname: cfg.ChecksHostname(), hostnames: map[string]bool{}}
+	c := &captcha{provider: p, siteKey: cfg.SiteKey, secret: secret, verify: verify, minScore: cfg.MinScore, always: cfg.Mode == "always", checkHostname: cfg.ChecksHostname(), hostnames: map[string]bool{}, verifySlots: make(chan struct{}, captchaVerifyConcurrency)}
 	for _, h := range cfg.Hostnames {
 		c.hostnames[h] = true
 	}
@@ -87,7 +94,7 @@ func loadCaptcha(cfg *config.Captcha) (*captcha, error) {
 	// response.
 	c.client = &http.Client{Timeout: cfg.Timeout.D(), Transport: &http.Transport{
 		DialContext:         (&net.Dialer{Timeout: cfg.Timeout.D()}).DialContext,
-		TLSHandshakeTimeout: cfg.Timeout.D(), MaxIdleConns: 4, IdleConnTimeout: time.Minute, ForceAttemptHTTP2: true,
+		TLSHandshakeTimeout: cfg.Timeout.D(), MaxIdleConns: captchaVerifyConcurrency, MaxConnsPerHost: captchaVerifyConcurrency, IdleConnTimeout: time.Minute, ForceAttemptHTTP2: true,
 	}}
 	return c, nil
 }
@@ -105,6 +112,12 @@ type siteverifyResponse struct {
 func (c *captcha) check(ctx context.Context, token string, routeHosts map[string]bool, ip netip.Addr) (bool, string) {
 	if token == "" || len(token) > 8192 {
 		return false, "captcha token"
+	}
+	select {
+	case c.verifySlots <- struct{}{}:
+		defer func() { <-c.verifySlots }()
+	default:
+		return false, "captcha busy"
 	}
 	form := url.Values{"secret": {c.secret}, "response": {token}}
 	if ip.IsValid() {
