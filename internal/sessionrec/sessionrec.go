@@ -105,6 +105,7 @@ type Recording struct {
 	bw        *bufio.Writer
 	w         *asciicast.Writer
 	written   int64
+	charged   int64
 	truncated bool
 	err       error
 }
@@ -223,13 +224,14 @@ func (rec *Recording) event(kind string, b []byte) {
 	// The bound is on the session's bytes rather than the file's, which
 	// is the number an operator can reason about: the file is somewhat
 	// larger, by the escaping and the timestamps.
-	if rec.written+int64(len(b)) > rec.p.cfg.MaxFileBytes {
+	if rec.charged+int64(len(b)) > rec.p.cfg.MaxFileBytes {
 		rec.truncated = true
 		_ = rec.w.Mark("xproxy: recording stopped at max_file_bytes; the session continued")
 		_ = rec.bw.Flush()
 		return
 	}
 	rec.written += int64(len(b))
+	rec.charged += int64(len(b))
 	if err := rec.w.Event(kind, b); err != nil {
 		rec.failLocked(err)
 	}
@@ -255,7 +257,7 @@ func (rec *Recording) Mark(text string) {
 
 // Resize records a new terminal or framebuffer size.
 func (rec *Recording) Resize(cols, rows int) {
-	if rec == nil {
+	if rec == nil || cols <= 0 || rows <= 0 {
 		return
 	}
 	rec.mu.Lock()
@@ -263,6 +265,17 @@ func (rec *Recording) Resize(cols, rows int) {
 	if rec.f == nil || rec.truncated {
 		return
 	}
+	// Unlike marks, resize events come directly from the peer and may be
+	// sent without bound. Charge their payload so a stream of window-change
+	// requests cannot bypass max_file_bytes.
+	n := int64(len(fmt.Sprintf("%dx%d", cols, rows)))
+	if rec.charged+n > rec.p.cfg.MaxFileBytes {
+		rec.truncated = true
+		_ = rec.w.Mark("xproxy: recording stopped at max_file_bytes; the session continued")
+		_ = rec.bw.Flush()
+		return
+	}
+	rec.charged += n
 	if err := rec.w.Resized(cols, rows); err != nil {
 		rec.failLocked(err)
 	}
