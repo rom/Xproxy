@@ -54,6 +54,15 @@ type server struct {
 	// caKeys are the user certificate authorities, when one is
 	// configured.
 	caKeys map[string]bool
+	// perPrincipal counts the sessions each principal holds, against
+	// max_sessions_per_principal.
+	principalMu  sync.Mutex
+	perPrincipal map[string]int
+	// revoked are the keys refused whatever else says otherwise: the key
+	// itself, a certificate carrying it, and a certificate signed by it.
+	// It is the one list that overrides the CA, which is what makes a
+	// certificate revocable before it expires.
+	revoked map[string]bool
 
 	// mfaGuard is the second factor, when one is configured. It is
 	// shared with every other listener reading the same enrolment file
@@ -87,8 +96,9 @@ type sshForward struct {
 func newServer(engine proxy.Host, cfg config.Listener, ln net.Listener) (*server, error) {
 	h := cfg.SSH
 	t := &server{engine: engine, cfg: cfg, h: h, ln: ln,
-		keys: map[string]bool{}, caKeys: map[string]bool{},
-		cons: map[net.Conn]struct{}{}, done: make(chan struct{})}
+		keys: map[string]bool{}, caKeys: map[string]bool{}, revoked: map[string]bool{},
+		perPrincipal: map[string]int{},
+		cons:         map[net.Conn]struct{}{}, done: make(chan struct{})}
 	base, err := compileSSHPolicy(&config.SSHPolicy{
 		Recording:       h.Recording,
 		UpstreamUser:    h.UpstreamUser,
@@ -202,6 +212,25 @@ func (t *server) loadCredentials() error {
 			return errors.New("ssh trusted_user_ca_keys: no keys in the file")
 		}
 	}
+	if h.RevokedKeys != "" {
+		raw, err := os.ReadFile(h.RevokedKeys) //nolint:gosec // a path from the configuration
+		if err != nil {
+			return fmt.Errorf("ssh revoked_keys: %w", err)
+		}
+		for len(raw) > 0 {
+			key, _, _, rest, err := cssh.ParseAuthorizedKey(raw)
+			if err != nil {
+				return fmt.Errorf("ssh revoked_keys: %w", err)
+			}
+			t.revoked[string(key.Marshal())] = true
+			raw = rest
+		}
+		if len(t.revoked) == 0 {
+			// An empty revocation list is almost certainly a file that
+			// was meant to have something in it.
+			return errors.New("ssh revoked_keys: no keys in the file")
+		}
+	}
 	if h.UsersFile != "" {
 		users, err := passwd.LoadUsers(h.UsersFile)
 		if err != nil {
@@ -236,6 +265,11 @@ func (t *server) buildServerConfig() error {
 		ServerVersion: h.ServerVersion,
 		MaxAuthTries:  h.MaxAuthTries,
 	}
+	if h.RekeyBytes > 0 {
+		// A session that never rekeys uses one key for however long it
+		// lasts, and a bastion session lasts a working day.
+		cfg.RekeyThreshold = uint64(h.RekeyBytes) //nolint:gosec // validated positive
+	}
 	if h.Banner != "" {
 		banner := h.Banner
 		if !strings.HasSuffix(banner, "\n") {
@@ -245,7 +279,7 @@ func (t *server) buildServerConfig() error {
 	}
 	if len(t.keys) > 0 || len(t.caKeys) > 0 {
 		cfg.PublicKeyCallback = func(c cssh.ConnMetadata, key cssh.PublicKey) (*cssh.Permissions, error) {
-			kind, err := t.acceptKey(c, key)
+			kind, cert, err := t.acceptKey(c, key)
 			if err != nil {
 				return nil, err
 			}
@@ -265,6 +299,16 @@ func (t *server) buildServerConfig() error {
 			}
 			if pr != nil {
 				ext["principal"] = pr.name
+			}
+			// What the certificate authority said, carried into the
+			// session: Permissions is the only thing the crypto library
+			// hands from the authentication to the connection.
+			if cert.grants != nil {
+				ext[permCertGrants] = encodeGrants(cert.grants)
+				ext[permCertID] = cert.id
+			}
+			if cert.forceCommand != "" {
+				ext[permForceCommand] = cert.forceCommand
 			}
 			if t.mfaGuard != nil {
 				// The key is right and the session is not authorised
@@ -339,6 +383,7 @@ func (t *server) serve() {
 		if t.open.Add(1) > int64(t.h.MaxSessions) {
 			t.open.Add(-1)
 			t.engine.Counters().SSHRejected.Add(1)
+			t.engine.Counters().Refuse("ssh", "max_sessions")
 			_ = c.Close()
 			continue
 		}
@@ -413,6 +458,7 @@ func (t *server) allowed(ip netip.Addr) bool {
 }
 
 func (t *server) deny(ip netip.Addr, what, detail string) {
+	t.engine.Counters().Refuse("ssh", what)
 	attrs := []any{"listener", t.cfg.Name, "client_ip", ip.String(), "proto", "ssh"}
 	if detail != "" {
 		attrs = append(attrs, "detail", detail)
@@ -441,6 +487,13 @@ type session struct {
 	channels atomic.Int64
 	opened   atomic.Uint64
 	refused  atomic.Uint64
+	// cert is what the certificate authority allowed, empty for a
+	// session that authenticated with a plain key.
+	cert certDecision
+	// forceCommand is the command the CA fixed, if it did.
+	forceCommand string
+	// forwards is the port forwards open now, against max_forwards.
+	forwards atomic.Int64
 	wg       sync.WaitGroup
 }
 
@@ -477,6 +530,8 @@ func (t *server) handle(raw net.Conn) {
 	if sconn.Permissions != nil {
 		se.auth = sconn.Permissions.Extensions["auth"]
 		se.principal = sconn.Permissions.Extensions["principal"]
+		se.cert = certGrants(sconn.Permissions)
+		se.forceCommand, _ = forcedCommand(sconn.Permissions)
 	}
 	if se.principal != "" {
 		for _, pr := range t.principals {
@@ -485,6 +540,18 @@ func (t *server) handle(raw net.Conn) {
 				break
 			}
 		}
+	}
+	// max_sessions is the listener's, which is the whole fleet's: a bound
+	// of five hundred is five hundred for one key as much as for
+	// everybody. This is the one per principal, so a robot looping
+	// connections cannot take the bastion from the people.
+	if release, ok := t.admitPrincipal(se.principalKey()); !ok {
+		s.Counters().SSHRejected.Add(1)
+		t.deny(ip, "max_sessions_per_principal", se.principalKey())
+		t.log(se, start, "max_sessions_per_principal")
+		return
+	} else if release != nil {
+		defer release()
 	}
 	if t.h.SessionTimeout > 0 {
 		timer := time.AfterFunc(t.h.SessionTimeout.D(), func() { _ = sconn.Close() })
@@ -602,7 +669,8 @@ func (se *session) globalRequests(reqs <-chan *cssh.Request) {
 		switch {
 		case r.Type == "keepalive@openssh.com":
 			_ = r.Reply(true, nil)
-		case (r.Type == "tcpip-forward" || r.Type == "cancel-tcpip-forward") && se.policy.remoteForward:
+		case (r.Type == "tcpip-forward" || r.Type == "cancel-tcpip-forward") && se.policy.remoteForward &&
+			se.cert.allows(extPortFwd):
 			ok, payload, err := se.client.SendRequest(r.Type, r.WantReply, r.Payload)
 			if err != nil {
 				_ = r.Reply(false, nil)
@@ -631,6 +699,13 @@ func (se *session) channel(nc cssh.NewChannel) {
 	}
 	extra := nc.ExtraData()
 	if kind == "direct-tcpip" {
+		// The CA's own permission first: a certificate issued without
+		// permit-port-forwarding is a certificate that may not forward,
+		// whatever this listener would otherwise allow.
+		if !se.cert.allows(extPortFwd) {
+			se.refuse(nc, "cert_no_port_forwarding", se.cert.id, cssh.Prohibited, "the certificate does not permit port forwarding")
+			return
+		}
 		host, port, err := parseDirectTCPIP(extra)
 		if err != nil {
 			se.refuse(nc, "malformed_channel", kind, cssh.ConnectionFailed, "malformed channel request")
@@ -640,6 +715,14 @@ func (se *session) channel(nc cssh.NewChannel) {
 			se.refuse(nc, "forward_refused", net.JoinHostPort(host, strconv.Itoa(port)), cssh.Prohibited, "destination not allowed")
 			return
 		}
+		// A session that may forward at all can otherwise open one per
+		// descriptor the proxy has.
+		if max := int64(se.t.h.MaxForwards); max > 0 && se.forwards.Add(1) > max {
+			se.forwards.Add(-1)
+			se.refuse(nc, "max_forwards", strconv.FormatInt(max, 10), cssh.ResourceShortage, "too many forwards open")
+			return
+		}
+		defer se.forwards.Add(-1)
 	}
 	// The channel is opened on the target first: a client that is told
 	// its channel is open and then finds it is not has to guess why,
@@ -807,6 +890,15 @@ func (se *session) answerRequest(clientCh, upCh cssh.Channel, r *cssh.Request, s
 		se.refuseRequest(r, "request_refused", r.Type)
 		return true
 	}
+	// What the certificate authority allowed. An extension absent from a
+	// certificate is a denial, which is how "ssh-keygen -O clear -O
+	// permit-pty" is meant to work, and a gateway reading only its own
+	// allow_requests would hand the session everything the listener
+	// permits instead.
+	if ext, want := certRequestGrant(r.Type); want && !se.cert.allows(ext) {
+		se.refuseRequest(r, "cert_"+strings.ReplaceAll(strings.TrimPrefix(ext, "permit-"), "-", "_")+"_refused", se.cert.id)
+		return true
+	}
 	switch r.Type {
 	case "env":
 		name, ok := sshEnvRequest(r.Payload)
@@ -847,8 +939,35 @@ func (se *session) answerRequest(clientCh, upCh cssh.Channel, r *cssh.Request, s
 			se.relaySFTP(clientCh, upCh, sp)
 			return false
 		}
+	case "shell":
+		// A certificate with force-command runs that command instead of
+		// a shell, which is what OpenSSH does and what issuing one is
+		// for. The request is rewritten rather than refused: the CA's
+		// intent is that whatever the client asks becomes this.
+		if se.forceCommand != "" {
+			return se.runForced(clientCh, upCh, r, startPump, st)
+		}
 	case "exec":
 		cmd := sshStringPayload(r.Payload)
+		if se.forceCommand != "" {
+			if cmd != se.forceCommand {
+				t.engine.Logs().SecurityEvent(context.Background(), "allow", "ssh_force_command",
+					"listener", t.cfg.Name, "client_ip", se.ip.String(), "user", textsafe.Clip64(se.user),
+					"target", se.target, "asked", textsafe.Clip256(cmd),
+					"ran", textsafe.Clip256(se.forceCommand), "certificate", se.cert.id)
+			}
+			return se.runForced(clientCh, upCh, r, startPump, st)
+		}
+		if reason := shellSyntax(cmd); reason != "" && !se.t.h.AllowShellSyntax {
+			// allow_commands is a list of regular expressions over the
+			// command line, and a regular expression is a weak thing to
+			// hold a shell to: "^journalctl .*$" matches "journalctl -u
+			// x; rm -rf /" as happily as what it was written for. So the
+			// line is read as a shell would split it, and one carrying an
+			// operator is refused before any pattern is tried.
+			se.refuseRequest(r, "shell_syntax", reason+" in "+textsafe.Clip256(cmd))
+			return true
+		}
 		if !se.policy.transfers && fileTransferCommand(cmd) {
 			// scp and rsync move files without ever opening the
 			// sftp subsystem, so every path and operation rule

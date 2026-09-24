@@ -33,7 +33,7 @@ type runtime struct {
 
 // newRuntime opens this generation's pools. A pool that cannot be built
 // fails the generation, so a bad upstream never reaches the swap.
-func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger) (*runtime, error) {
+func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger, drains *upstream.Drains) (*runtime, error) {
 	rt := &runtime{
 		cfg:        cfg,
 		generation: generation,
@@ -46,6 +46,12 @@ func newRuntime(cfg *config.Config, generation uint64, log *slog.Logger) (*runti
 		if err != nil {
 			rt.stop()
 			return nil, err
+		}
+		// The pool follows the operator decisions this process holds,
+		// which outlive a configuration generation: somebody who drained
+		// a machine to patch it did not mean "until the next reload".
+		if drains != nil {
+			p.UseDrains(drains)
 		}
 		rt.pools[u.Name] = p
 	}

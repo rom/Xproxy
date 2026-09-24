@@ -163,6 +163,12 @@ func (m *Metrics) PerRouteEnabled() bool { return m.PerRoute == nil || *m.PerRou
 type Server struct {
 	Listeners []Listener `yaml:"listeners"`
 	Limits    Limits     `yaml:"limits"`
+	// Zone names the failure domain this node is in -- an availability
+	// zone, a rack, a site. It is what an upstream's locality policy
+	// compares an endpoint's zone against, so a node prefers the
+	// endpoints beside it. Empty means the node does not know where it
+	// is, and a locality policy then prefers nothing.
+	Zone string `yaml:"zone"`
 	// Normalization checks and canonicalises the request target before
 	// routing and analysis.
 	Normalization Normalization `yaml:"normalization"`
@@ -224,8 +230,18 @@ type Listener struct {
 	// URI requests to destinations the policy allows), dns (a DNS
 	// proxy) or smtp (a protocol-aware SMTP and submission proxy).
 	Kind string `yaml:"kind"`
+	// ConnectionRate and ConnectionRatePerSource bound how fast this
+	// listener accepts, replacing server.limits' own for it. See
+	// server.limits.connection_rate: it is the bound max_connections
+	// does not give, and it matters most on the listeners that do
+	// expensive work before they know who is calling -- a key exchange,
+	// a TLS handshake -- which is every access gateway.
+	ConnectionRate          *ConnectionRate `yaml:"connection_rate"`
+	ConnectionRatePerSource *SourceRate     `yaml:"connection_rate_per_source"`
 	// TCP configures a kind: tcp listener.
 	TCP *TCPListener `yaml:"tcp"`
+	// UDP configures a kind: udp listener.
+	UDP *UDPListener `yaml:"udp"`
 	// Forward configures a kind: forward listener.
 	Forward *ForwardListener `yaml:"forward"`
 	// DNS configures a kind: dns listener.
@@ -626,6 +642,37 @@ type VNCListener struct {
 	// ViewOnly drops the client's pointer and keyboard messages, so a
 	// session can be watched and not driven.
 	ViewOnly bool `yaml:"view_only"`
+	// PixelStream says whether the gateway reads the desktop's picture.
+	//
+	// framed (the default) reads every message the desktop sends and
+	// every rectangle inside it, which is what makes Bounds possible:
+	// an image protocol's numbers are the viewer's allocations, and a
+	// gateway that forwards them unread cannot refuse one that is a
+	// bomb. It also decides what a client may ask for, because framing
+	// needs every encoding in play to be one the gateway can measure,
+	// so the encodings it cannot are removed from the client's list and
+	// the desktop never uses them -- tight among them.
+	//
+	// opaque forwards the desktop's bytes without reading them, which
+	// is what a listener that must have tight sets. Only the announced
+	// framebuffer size is then bounded; the rest of Bounds cannot be.
+	// The client's own messages are framed either way, because that is
+	// what lets a gateway refuse one and forward the next.
+	PixelStream string `yaml:"pixel_stream"`
+	// Bounds bound what the desktop may ask the viewer to allocate.
+	Bounds *VNCBounds `yaml:"bounds"`
+	// Clipboard says which way a clipboard transfer may travel: both
+	// (the default), to_client, to_target or none. A bastion whose
+	// sessions are recorded usually wants to_client at most: a
+	// clipboard into the desktop is an upload with no name and no size
+	// in the log.
+	Clipboard string `yaml:"clipboard"`
+	// AllowResize lets a client ask the desktop to change size
+	// (SetDesktopSize). Default true. The size asked for is bounded by
+	// Bounds.MaxFramebufferPixels whatever this says, because a client
+	// asking a desktop to allocate a framebuffer is the same attack in
+	// the other direction.
+	AllowResize *bool `yaml:"allow_resize"`
 	// Recording writes the RFB stream to a file.
 	Recording *SessionRecording `yaml:"recording"`
 	// MFA asks for a login name and a one-time code before the target
@@ -646,6 +693,54 @@ type VNCListener struct {
 	// AllowClients restricts clients to these CIDRs.
 	AllowClients []string `yaml:"allow_clients"`
 }
+
+// VNCBounds bound the pixel stream: what the desktop may declare, and
+// therefore what the viewer at the other end is asked to allocate.
+//
+// Image protocols are where a decompression bomb is cheapest to send. A
+// rectangle's header is twelve bytes and says how many pixels it
+// covers; a viewer sizes its decode buffer from that. A desktop that
+// says 4096x4096 in twelve bytes of zlib is asking for sixty-four
+// megabytes, and it can ask again immediately. None of these bounds
+// requires decompressing anything: they compare what was declared with
+// what arrived.
+//
+// A zero field is no bound.
+type VNCBounds struct {
+	// MaxFramebufferPixels bounds the desktop size, in pixels: the one
+	// the target announces, the one a resize changes it to, and the one
+	// a client asks for. Default 33177600, which is 7680x4320.
+	MaxFramebufferPixels int `yaml:"max_framebuffer_pixels"`
+	// MaxRectanglesPerUpdate bounds one framebuffer update's
+	// rectangles. Default 4096. A thousand one-pixel rectangles cost
+	// the viewer a thousand decode calls for one screen.
+	MaxRectanglesPerUpdate int `yaml:"max_rectangles_per_update"`
+	// MaxEncodedRectangle bounds one rectangle's encoded payload in
+	// bytes. Default 16777216.
+	MaxEncodedRectangle int `yaml:"max_encoded_rectangle"`
+	// MaxDecodeRatio bounds the declared picture over the bytes that
+	// carry it, for the compressed encodings. Default 1000: a
+	// thousandfold is past any real screen and well short of what a
+	// bomb needs to be worth sending.
+	MaxDecodeRatio int `yaml:"max_decode_ratio"`
+	// MaxCutText bounds one clipboard transfer in either direction, in
+	// bytes. Default 1048576.
+	MaxCutText int `yaml:"max_cut_text"`
+}
+
+// VNCClipboard directions.
+const (
+	VNCClipboardBoth     = "both"
+	VNCClipboardToClient = "to_client"
+	VNCClipboardToTarget = "to_target"
+	VNCClipboardNone     = "none"
+)
+
+// VNCPixelStream modes.
+const (
+	VNCPixelsFramed = "framed"
+	VNCPixelsOpaque = "opaque"
+)
 
 // VNCOverSSH reaches a VNC target through an SSH connection the
 // gateway makes itself.
@@ -857,6 +952,47 @@ type SSHListener struct {
 	// to it. A certificate that has expired, is not yet valid, or does
 	// not list the name the client is connecting as is refused.
 	TrustedUserCAKeys string `yaml:"trusted_user_ca_keys"`
+	// MaxCertificateLifetime refuses a user certificate whose validity
+	// window is longer than this. Default 0, no bound.
+	//
+	// The point of certificates over authorized_keys is that they
+	// expire; a CA that issues for a year has made a credential nobody
+	// can take back for a year, and a bastion is entitled to say how
+	// soon. A certificate with no expiry at all is refused whenever
+	// this is set.
+	MaxCertificateLifetime Duration `yaml:"max_certificate_lifetime"`
+	// RevokedKeys is a file of public keys, in authorized_keys format,
+	// that are refused whatever else says otherwise: the key itself, a
+	// certificate whose key it is, and a certificate signed by it. It is
+	// the one list that overrides the CA, which is what makes a
+	// certificate revocable before it expires.
+	RevokedKeys string `yaml:"revoked_keys"`
+	// MaxForwards bounds the port forwards one session may hold open at
+	// once. Default 8. A session that may forward at all can otherwise
+	// open one per file descriptor the proxy has.
+	MaxForwards int `yaml:"max_forwards"`
+	// MaxSessionsPerPrincipal bounds the sessions one principal may hold
+	// at once, which max_sessions cannot: a listener bounded at five
+	// hundred is five hundred for one key as much as for the fleet.
+	// Default 0, no bound.
+	MaxSessionsPerPrincipal int `yaml:"max_sessions_per_principal"`
+	// RekeyBytes is how many bytes pass before the transport agrees a
+	// fresh key. Default 0, which leaves the crypto library's own
+	// threshold (1 GiB, or 1 << 32 for a 64 bit block cipher).
+	RekeyBytes int64 `yaml:"rekey_bytes"`
+	// AllowShellSyntax lets an exec command carry shell metacharacters.
+	// Default false.
+	//
+	// allow_commands is a list of regular expressions over the command
+	// line, and a regular expression is a weak thing to hold a shell to:
+	// "^journalctl .*$" matches "journalctl -u x; rm -rf /" exactly as
+	// happily as it matches what it was written for. So the command line
+	// is read as a shell would split it first, and one carrying an
+	// operator -- a semicolon, a pipe, an ampersand, a redirection, a
+	// backquote, a $( -- is refused before any pattern is tried. A
+	// listener that genuinely needs shell syntax sets this and writes
+	// its patterns accordingly.
+	AllowShellSyntax bool `yaml:"allow_shell_syntax"`
 	// Principals give one key or one certificate principal its own
 	// policy. Without them the listener's policy is the same for
 	// everyone who gets past authentication, which is the policy a jump
@@ -1684,12 +1820,44 @@ type TCPListener struct {
 	// IdleTimeout closes a connection with no bytes in either direction.
 	// Default 10m.
 	IdleTimeout Duration `yaml:"idle_timeout"`
+	// SessionTimeout bounds a whole connection however active. Default
+	// 0, no bound. A listener with no parser in the path has only time
+	// and bytes to bound a session with, because nothing here can say
+	// what the connection is doing.
+	SessionTimeout Duration `yaml:"session_timeout"`
+	// MaxBytesIn bounds what one connection relays from the client and
+	// MaxBytesOut what it relays back. Past either the connection is
+	// closed, rather than the stream being truncated: a relay that
+	// silently stopped forwarding would look to both peers like a
+	// network that had gone quiet. Both default 0, no bound.
+	MaxBytesIn  int64 `yaml:"max_bytes_in"`
+	MaxBytesOut int64 `yaml:"max_bytes_out"`
 	// ProxyProtocol sends a PROXY protocol v2 header to the upstream with
 	// the client address.
 	ProxyProtocol bool `yaml:"proxy_protocol"`
 	// MaxConnections bounds open connections on this listener (in
 	// addition to the global limits). Default 10000.
 	MaxConnections int `yaml:"max_connections"`
+	// Transparent makes the upstream connection carry the client's own
+	// source address, for an upstream that must see the client and has
+	// no PROXY protocol to read it from.
+	Transparent bool `yaml:"transparent"`
+	// OriginalDestination takes the target from the socket rather than
+	// from routes or default: a transparently intercepted connection was
+	// addressed to some service and a routing rule put it on this
+	// listener, so which upstream is not a configuration question.
+	//
+	// With it, allow_destinations is required: a listener that dials
+	// whatever the firewall hands it, with nothing to say where that may
+	// be, is a relay to anywhere for anyone who can reach the port.
+	OriginalDestination bool `yaml:"original_destination"`
+	// AllowDestinations are the CIDRs an original destination may be in,
+	// and DestinationPorts the ports; empty ports allow any.
+	AllowDestinations []string `yaml:"allow_destinations"`
+	DestinationPorts  []int    `yaml:"destination_ports"`
+	// ConnectTimeout bounds the dial to an original destination, which
+	// has no upstream pool to take a timeout from. Default 10s.
+	ConnectTimeout Duration `yaml:"connect_timeout"`
 	// QUIC also relays QUIC (UDP on the same address): the ClientHello
 	// of each flow is read from the Initial packet and routed by server
 	// name to the same upstreams. Default false.
@@ -1701,6 +1869,75 @@ type TCPListener struct {
 	// apply to QUIC flows: those are encrypted, and a rule over
 	// ciphertext matches nothing.
 	YARA *YARAPolicy `yaml:"yara"`
+}
+
+// UDPListener is a generic datagram relay: the symmetric primitive to
+// kind: tcp for services whose protocol this proxy does not parse.
+//
+// A datagram has no connection, so the relay keeps a session table
+// instead. The first datagram from a client address picks an endpoint
+// through the pool's balancer and opens a connected socket towards it;
+// every later datagram from that address goes to the same endpoint, and
+// what the endpoint sends back goes to that address. The session ends
+// when it has been idle, when it hits a bound, or at shutdown. Nothing
+// in the payload is read: a kind: udp listener is a router and a set of
+// bounds, not a parser.
+//
+// The thing to get right about a UDP relay is that it is a reflector.
+// Anyone can put anybody's address in a datagram's source, so an open
+// relay answers a victim with traffic the victim never asked for, at
+// whatever gain the service behind it provides. That is why
+// allow_clients and rate_limit exist here and why validation insists on
+// one of them for a listener on a public address. The session table is
+// bounded for the same reason: spoofed sources must not be able to fill
+// it, which is what max_sessions_per_ip is for.
+type UDPListener struct {
+	// Upstream is the pool of endpoints. Required.
+	Upstream string `yaml:"upstream"`
+	// IdleTimeout ends a session with no datagram in either direction.
+	// Default 30s. It is what stands in for a connection close, since
+	// nothing in the protocol says a client has finished.
+	IdleTimeout Duration `yaml:"idle_timeout"`
+	// SessionTimeout bounds a whole session however active. Default 0,
+	// no bound.
+	SessionTimeout Duration `yaml:"session_timeout"`
+	// MaxSessions bounds the session table. Default 10000. A datagram
+	// from a new client when the table is full is dropped and counted:
+	// there is no way to refuse a datagram, because a refusal would be
+	// a datagram to an address that may not have sent anything.
+	MaxSessions int `yaml:"max_sessions"`
+	// MaxSessionsPerIP bounds sessions from one address, which is what
+	// keeps a single source -- or a single forged source -- from
+	// filling the table. Default 64; 0 removes the bound.
+	MaxSessionsPerIP int `yaml:"max_sessions_per_ip"`
+	// MaxDatagramBytes is the largest datagram relayed in either
+	// direction. Default 65535, which is the largest a UDP socket
+	// carries. A larger one is dropped and counted rather than
+	// truncated, because half a datagram is not a shorter datagram.
+	MaxDatagramBytes int `yaml:"max_datagram_bytes"`
+	// MaxDatagrams bounds the datagrams of one session, both directions
+	// together. MaxBytesIn bounds what the session relays from the
+	// client and MaxBytesOut what it relays back, the same two names a
+	// kind: tcp listener uses. Past any of them the session ends and is
+	// counted. All default 0, no bound.
+	MaxDatagrams int64 `yaml:"max_datagrams"`
+	MaxBytesIn   int64 `yaml:"max_bytes_in"`
+	MaxBytesOut  int64 `yaml:"max_bytes_out"`
+	// RateLimit bounds datagrams per second from one source address.
+	// Without it a single source can drive the whole relay.
+	RateLimit *UDPRateLimit `yaml:"rate_limit"`
+	// AllowClients restricts clients to these CIDRs. On a public
+	// address this or rate_limit is what stops the listener being
+	// somebody else's amplifier.
+	AllowClients []string `yaml:"allow_clients"`
+}
+
+// UDPRateLimit bounds datagrams per second from one source address.
+type UDPRateLimit struct {
+	// PPS is datagrams per second. Required when the section is set.
+	PPS float64 `yaml:"pps"`
+	// Burst is how many may arrive at once. Default is PPS rounded up.
+	Burst int `yaml:"burst"`
 }
 
 // YARAPolicy applies YARA rules to a stream. The engine is a subset of
@@ -1969,6 +2206,45 @@ type Limits struct {
 	// enough to stay inside read_timeout. A request that does not fit
 	// the budget is refused with 503 rather than buffered.
 	MaxBufferedBodyBytes int64 `yaml:"max_buffered_body_bytes"`
+	// ConnectionRate bounds how fast connections are accepted across
+	// every listener, and ConnectionRatePerSource how fast from one
+	// source network. Both are off by default.
+	//
+	// They are the bound max_connections does not give. A concurrency
+	// limit says how many connections may be open at once and nothing
+	// about churn: a client that connects, makes the server do the
+	// expensive half of a handshake and disconnects never holds two
+	// connections and can still cost a core. A listener sets its own in
+	// its connection_rate sections, which replace these for it.
+	ConnectionRate          *ConnectionRate `yaml:"connection_rate"`
+	ConnectionRatePerSource *SourceRate     `yaml:"connection_rate_per_source"`
+}
+
+// ConnectionRate bounds accepts per second.
+type ConnectionRate struct {
+	// PerSecond is the sustained rate. Required when the section is set.
+	PerSecond float64 `yaml:"per_second"`
+	// Burst is how many may arrive at once. Default is PerSecond
+	// rounded up, which is one second's worth.
+	Burst int `yaml:"burst"`
+}
+
+// SourceRate bounds accepts per second from one source network.
+//
+// The key is a network rather than an address on purpose: an attacker
+// with a /64 of IPv6 has more addresses than any table could hold, so a
+// per address bound is no bound at all, while a per address table is
+// itself the thing that fills up.
+type SourceRate struct {
+	PerSecond float64 `yaml:"per_second"`
+	Burst     int     `yaml:"burst"`
+	// IPv4Prefix and IPv6Prefix are the network sizes the rate is
+	// counted over. Defaults 32 and 64: one IPv4 address, and the
+	// smallest IPv6 block an operator is normally given.
+	IPv4Prefix int `yaml:"ipv4_prefix"`
+	IPv6Prefix int `yaml:"ipv6_prefix"`
+	// MaxSources bounds the table of tracked networks. Default 65536.
+	MaxSources int `yaml:"max_sources"`
 }
 
 // Management configures the control plane listener used by xproxyctl.
@@ -2285,6 +2561,61 @@ type Upstream struct {
 	// endpoints and discovered ones coexist; a pool needs at least one
 	// of the two.
 	Discovery *Discovery `yaml:"discovery"`
+	// Locality prefers the endpoints in this node's own zone.
+	Locality *Locality `yaml:"locality"`
+	// AddressFamily decides which of a dual-stack endpoint's addresses
+	// may be dialled: any (the default), ipv4 or ipv6.
+	//
+	// With any, the two families are raced as RFC 8305 describes -- the
+	// first family is tried, and after FallbackDelay the other is tried
+	// in parallel, with whichever connects first winning. That is what
+	// keeps a host whose IPv6 route is broken from costing a connect
+	// timeout on every request, and it is the default because an estate
+	// that has just turned IPv6 on should not have to know about it.
+	//
+	// ipv4 or ipv6 is for the estate where one family is the only one
+	// that works: it dials that family only, so a name with both kinds
+	// of record does not silently use the one the policy meant to
+	// exclude.
+	AddressFamily string `yaml:"address_family"`
+	// FallbackDelay is how long the second family is held back in the
+	// race. Default 300ms, the value RFC 8305 recommends; a negative
+	// value disables the race, so the families are tried in order.
+	// Ignored when AddressFamily names one family.
+	FallbackDelay Duration `yaml:"fallback_delay"`
+	// NodeZone is server.zone, copied here when defaults are applied so
+	// that a pool knows where it is running without being handed the
+	// whole configuration. It is not a key of its own: an upstream's
+	// zone is the node's, and two answers to that question would be one
+	// too many.
+	NodeZone string `yaml:"-"`
+	// MaxConnectionAge bounds how long one upstream connection is kept,
+	// so that a pool's traffic follows its endpoints rather than
+	// sticking to whichever ones were there when the connections were
+	// made: a keep-alive connection can outlive a deploy, a scale-out
+	// and an endpoint's whole useful life, and every request on it goes
+	// where that connection goes.
+	//
+	// It does not close anything mid-exchange. A connection past the
+	// age is closed at the end of the exchange that found it, so it is
+	// never reused and nothing in flight is cut.
+	//
+	// That end only exists for HTTP/1.1, where a connection carries one
+	// exchange at a time; an HTTP/2 or HTTP/3 connection carries many
+	// streams at once and is never between exchanges, so the bound does
+	// not apply to one and validation warns where it would be ignored.
+	// 0 is no bound.
+	MaxConnectionAge Duration `yaml:"max_connection_age"`
+	// MaxConnectionsPerEndpoint is the default for every endpoint's own
+	// max_connections. An endpoint that names one uses that instead.
+	MaxConnectionsPerEndpoint int `yaml:"max_connections_per_endpoint"`
+	// Maintenance takes the whole pool out of rotation: it offers no
+	// endpoint, so a route over it answers as it does when everything
+	// is unhealthy. For the planned outage of a whole service, where
+	// draining each endpoint would be a list to keep in step with the
+	// pool. As with an endpoint's drain, the management API overrides
+	// this until the daemon restarts.
+	Maintenance bool `yaml:"maintenance"`
 	// OriginSignature signs every forwarded request with a key shared
 	// with the origin, so the origin can refuse traffic that did not pass
 	// through the proxy.
@@ -2380,14 +2711,51 @@ type Endpoint struct {
 	// Canary marks the endpoint as the pool's canary: it receives the
 	// requests the pool's canary policy selects and no others.
 	Canary bool `yaml:"canary"`
+	// MaxConnections bounds the requests or connections in flight to
+	// this endpoint at once. Past it the endpoint is passed over as if
+	// it were unavailable, and the pool's other endpoints take the
+	// work; when every endpoint is at its bound the caller sees what it
+	// sees when every endpoint is unhealthy.
+	//
+	// It is for the endpoint that cannot take what the pool can give
+	// it: a small instance beside large ones, a database-bound service
+	// with a connection pool of its own, a machine that answers slowly
+	// under load rather than refusing. 0 is no bound, and
+	// upstreams[].max_connections_per_endpoint sets it for a whole pool
+	// at once.
+	MaxConnections int `yaml:"max_connections"`
+	// Priority tiers the endpoint. The pool uses the endpoints of the
+	// lowest priority number that has an available member and ignores
+	// the rest; when every endpoint of that tier is unavailable, the
+	// next tier takes the traffic. 0 is the first tier.
+	//
+	// It is how a failover pool is written: the endpoints that should
+	// carry the traffic at priority 0, the ones that should carry it
+	// only when those are gone at priority 1. A backup endpoint is
+	// simply one in a later tier.
+	Priority int `yaml:"priority"`
+	// Zone names the failure domain this endpoint is in, for a pool with
+	// a locality policy. An endpoint with no zone is neutral: it is
+	// preferred wherever the node is, because "somewhere unknown" is not
+	// a reason to send traffic across a site.
+	Zone string `yaml:"zone"`
+	// Drain takes the endpoint out of rotation while leaving it in the
+	// pool: no new work, and what is already running finishes. It is
+	// the declarative form of what the management API sets, for a
+	// machine that is out of service for long enough to be written
+	// down. A decision made through the API overrides this one until
+	// the daemon restarts, because the person who made it knew
+	// something the file did not.
+	Drain bool `yaml:"drain"`
 }
 
 // Discovery resolves a pool's endpoints from DNS or an HTTP registry.
 type Discovery struct {
 	// Type is dns (A and AAAA records of Name, each with Port), srv (SRV
 	// records of Name; targets and ports come from the records, the lowest
-	// priority group is used and record weights become endpoint weights)
-	// or http (Name is a URL polled on the interval; see Format).
+	// priority group is used and record weights become endpoint weights),
+	// http (Name is a URL polled on the interval; see Format) or consul
+	// (a Consul agent asked about a service; see Consul).
 	Type string `yaml:"type"`
 	// Name is the DNS name to resolve (for srv the full _service._proto
 	// name), or, for type http, the registry URL to poll.
@@ -2416,6 +2784,50 @@ type Discovery struct {
 	// Timeout of one resolution and of the initial synchronous one at
 	// start. Default 5s.
 	Timeout Duration `yaml:"timeout"`
+	// Consul configures type consul.
+	Consul *ConsulDiscovery `yaml:"consul"`
+}
+
+// ConsulDiscovery asks a Consul agent which instances of a service are
+// healthy, and -- this being the point of a native type rather than a
+// polled URL -- uses Consul's blocking queries, so a change is learned
+// when it happens rather than at the next interval.
+//
+// A blocking query is an ordinary request that the agent holds open until
+// something changes or the wait expires, and answers with an index the
+// next request carries. The effect is a long poll: an instance that goes
+// away is out of the pool in about the time it takes Consul to notice,
+// instead of up to an interval later. The interval is still there as the
+// period between attempts when the agent is unreachable, and as a
+// ceiling on how long one query may be held.
+type ConsulDiscovery struct {
+	// Address is the agent, host:port. Default 127.0.0.1:8500 -- a
+	// Consul deployment runs an agent on every node, and asking the
+	// local one is both faster and what survives a partition.
+	Address string `yaml:"address"`
+	// Service is the name to ask about. Required.
+	Service string `yaml:"service"`
+	// Tag narrows it to the instances carrying that tag, which is how a
+	// Consul estate usually separates environments or versions.
+	Tag string `yaml:"tag"`
+	// Datacenter asks about another datacenter than the agent's own.
+	Datacenter string `yaml:"datacenter"`
+	// TokenFile holds the ACL token, sent as X-Consul-Token. A token is
+	// a credential, so it lives in a file the proxy user can read and
+	// not in this document -- which is dumped by the management API and
+	// kept in the configuration history.
+	TokenFile string `yaml:"token_file"`
+	// TLS reaches an agent over HTTPS. Without it the scheme is http,
+	// which for a local agent over loopback is the usual arrangement.
+	TLS *UpstreamTLS `yaml:"tls"`
+	// AllowStale lets the agent answer from its own state without asking
+	// a server, which is faster and may be a moment behind. Off by
+	// default: a load balancer acting on stale membership sends traffic
+	// to an instance that has gone.
+	AllowStale bool `yaml:"allow_stale"`
+	// Wait is how long one blocking query may be held open. Default 5m,
+	// which is Consul's own; the agent adds jitter of its own accord.
+	Wait Duration `yaml:"wait"`
 }
 
 // Canary routes selected requests to the pool's canary endpoints: those
@@ -2484,8 +2896,16 @@ type UpstreamTLS struct {
 
 // HealthCheck configures active health probing of an upstream.
 type HealthCheck struct {
-	// Type is http (GET path, expected_status) or grpc (the standard
-	// grpc.health.v1 Check over HTTP/2, needs h2c or https). Default http.
+	// Type is http (GET path, expected_status), grpc (the standard
+	// grpc.health.v1 Check over HTTP/2, needs h2c or https), tcp (the
+	// connect succeeds) or udp (a datagram is sent and an answer comes
+	// back). Default http.
+	//
+	// The last two are for the pools a layer 4 listener uses, where
+	// there is no request to make. tcp proves the port accepts; udp has
+	// to prove more than that, because a UDP socket accepts nothing and
+	// a closed port is only sometimes reported -- so a udp check sends
+	// something the service answers, and silence is the failure.
 	Type string `yaml:"type"`
 	// GRPCService is the service name asked in a grpc check. Default ""
 	// (the server as a whole).
@@ -2509,6 +2929,39 @@ type HealthCheck struct {
 	// anywhere in it. Both may be set; both must hold.
 	BodyContains string `yaml:"body_contains"`
 	BodyRegex    string `yaml:"body_regex"`
+	// Send is what a udp probe sends, as text; SendHex the same as
+	// hexadecimal, for the services whose smallest question is not text
+	// (a DNS query, a RADIUS request, a game server's ping). Exactly one
+	// is required for type udp: a probe that sends nothing learns
+	// nothing, because a UDP service answers a question and there is no
+	// handshake to observe instead.
+	Send    string `yaml:"send"`
+	SendHex string `yaml:"send_hex"`
+	// Expect requires the answer to contain this text, ExpectHex the
+	// same as hexadecimal. Both empty accepts any answer at all, which
+	// is already much more than silence proves.
+	Expect    string `yaml:"expect"`
+	ExpectHex string `yaml:"expect_hex"`
+}
+
+// Locality prefers the endpoints in the node's own zone (server.zone)
+// over the ones elsewhere, which is what keeps traffic off the links
+// between sites and away from their latency -- while still using the
+// other sites when this one has nothing left.
+//
+// It is expressed as a preference rather than a restriction on purpose:
+// an estate that pinned traffic to one zone would lose a service
+// entirely when that zone lost it, which is the opposite of what zones
+// are for.
+type Locality struct {
+	// PreferZone turns the preference on. Without server.zone set there
+	// is nothing to compare against, and validation says so.
+	PreferZone bool `yaml:"prefer_zone"`
+	// MinLocal is how many endpoints of this node's own zone must be
+	// available before the others are ignored. Below it the pool uses
+	// every endpoint, so a zone with one surviving endpoint does not
+	// take the whole load alone. Default 1.
+	MinLocal int `yaml:"min_local"`
 }
 
 // UpstreamTimeout bounds each phase of an upstream exchange.

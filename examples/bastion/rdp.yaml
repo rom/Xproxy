@@ -1,0 +1,199 @@
+# A Remote Desktop gateway that is inside the session rather than
+# beside it: the connection sequence of MS-RDPBCGR is terminated on
+# both legs, so the proxy is an RDP server to the client and an RDP
+# client to the desktop.
+#
+# Everything worth deciding about an RDP session is settled before a
+# pixel moves. Which security protocol is used, which virtual channels
+# exist, who is connecting and with what credential -- all of it is in
+# the connection sequence, and a relay that does not sit in it decides
+# none of it. The channel list is the part to look at twice: drives,
+# printers, serial and parallel ports, smart cards, the clipboard and
+# audio each ride a channel, and nothing can be used that was not both
+# announced and granted.
+#
+# A client asking for network level authentication is answered with
+# TLS. That is how a gateway works at all: verifying CredSSP from a
+# client would mean holding every person's Windows password, which is
+# the one credential a gateway should never hold. Authentication then
+# happens after the connection is established rather than before it,
+# so the listener must be reachable only by the people who should
+# reach it -- allow_clients below, and a network that agrees.
+#
+# Validate: xgate -config examples/bastion/rdp.yaml -validate
+version: 1
+server:
+  listeners:
+    # The estate's desktops: seen and driven, and nothing else moves.
+    - name: desktops
+      address: "0.0.0.0:3389"
+      kind: rdp
+      # The connection sequence and its TLS handshake are paid for
+      # before the gateway knows who is calling.
+      connection_rate: {per_second: 20, burst: 40}
+      connection_rate_per_source: {per_second: 2, burst: 5}
+      # The certificate the client checks. It is the only server
+      # authentication on that leg, so it is a certificate a client
+      # can actually verify, not a self-signed one nobody looks at.
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/certs/rdp.pem, key_file: /etc/xproxy/certs/rdp-key.pem}
+        min_version: "1.2"
+      rdp:
+        upstream: desktops
+
+        # TLS towards the client, and network level authentication
+        # towards the desktop, which is what a current Windows install
+        # requires by default. The credential proved there is this
+        # gateway's own -- the exchange happens before the person has
+        # sent anything, which is the whole reason NLA exists.
+        security: [tls]
+        upstream_security: nla
+        upstream_tls:
+          server_name: desktops.internal
+          ca_file: /etc/xproxy/certs/internal-ca.pem
+        upstream_user: rdp-gateway
+        upstream_domain: LAB
+        upstream_password_file: /etc/xproxy/rdp/gateway.pass
+
+        # The person's own credential stops here: the desktop is
+        # opened with the account above. An estate that wants its own
+        # logins audited on the desktop leaves the three settings out,
+        # and what the person typed is forwarded as it arrived.
+        #
+        # Either way the gateway sees the credential. That is the
+        # price of being able to check anything about it.
+
+        # A one-time code before the credential reaches the desktop.
+        # RDP has nowhere to ask a question -- no prompt, and the
+        # client is waiting for a desktop rather than a dialogue -- so
+        # the code travels with the password after a comma:
+        #
+        #   Password: hunter2,492013
+        #
+        # and is taken off before the password goes anywhere. A
+        # recovery code from the enrolment goes in the same place.
+        mfa:
+          file: /etc/xproxy/mfa
+          issuer: example.com
+          skew: 1
+          require_enrolment: true
+          max_failures: 5
+          window: 5m
+          lockout: 15m
+
+        # What a session may have. The default is none: a desktop to
+        # look at and a keyboard to drive it with. Each name added
+        # here is a road out of the session.
+        channels:
+          # rdpdr carries device redirection, and on its own carries
+          # nothing: the devices list below decides that. cliprdr is
+          # the clipboard, which copies files as well as text, so it
+          # stays out. drdynvc is left out too -- dynamic channels
+          # carry more redirection inside them, and what rides one is
+          # decided by the two ends rather than by this list.
+          allow: [rdpdr, rdpsnd]
+
+        devices:
+          # Printing, and nothing that moves a file: drive redirection
+          # is upload and download in both directions. smartcard is
+          # left out as well, since a redirected reader signs on the
+          # desktop's behalf with a card the gateway never sees.
+          allow: [printer]
+
+        # What the desktop showed, with the timing of it. The event
+        # data is the RDP stream rather than video, so replaying it
+        # needs a player that speaks RDP -- which is the deliberate
+        # choice: decoding at capture time would mean implementing
+        # every graphics encoding a desktop might pick, and silently
+        # losing whatever was not implemented.
+        recording:
+          directory: /var/log/xproxy/sessions
+          max_file_bytes: 268435456
+          max_files: 2000
+
+        handshake_timeout: 30s
+        idle_timeout: 15m
+        session_timeout: 12h
+        max_connections: 400
+
+        # The gateway holds no server authentication towards a client
+        # beyond the certificate above, and the credential arrives
+        # after the connection rather than before it. So say who may
+        # open a connection at all.
+        allow_clients: ["10.10.0.0/16"]
+
+    # A console that speaks nothing but the protocol's own encryption:
+    # an appliance, an embedded KVM, a Windows install too old to
+    # offer TLS. It is here because such equipment exists.
+    - name: legacy-consoles
+      address: "0.0.0.0:3390"
+      kind: rdp
+      rdp:
+        upstream: consoles
+
+        # Both directions on RC4 under keys derived from two randoms,
+        # with MD5 and SHA-1 doing the derivation. The listener draws
+        # a 512-bit RSA key -- the size the protocol carries, not a
+        # choice -- and signs its certificate with the Terminal
+        # Services key Microsoft published in MS-RDPBCGR 5.3.3.1.1.
+        #
+        # That signature authenticates nothing: the private key is
+        # public, so a client verifying it has learned that the other
+        # end read the specification. There is no server
+        # authentication on such a leg and nowhere in the protocol to
+        # put any.
+        #
+        # What being inside that encryption buys is the three things
+        # this file is about: the channel policy still applies, the
+        # factor is still checked, and the recording holds the session
+        # instead of ciphertext. A console reached through here is
+        # better off than one reached directly. It is not better off
+        # because the connection is protected.
+        #
+        # No tls section: a listener offering only rdp needs none.
+        # Offering [rdp, tls] instead would serve both kinds of client
+        # on one port, with TLS preferred whenever the client asks.
+        security: [rdp]
+        upstream_security: rdp
+
+        mfa: {file: /etc/xproxy/mfa, issuer: example.com}
+
+        recording:
+          directory: /var/log/xproxy/sessions
+          max_file_bytes: 268435456
+          max_files: 500
+
+        # Nothing redirected at all: channels and devices are both
+        # left at their default of none.
+        idle_timeout: 15m
+        session_timeout: 4h
+        max_connections: 50
+        # The network is the only thing protecting this leg, so the
+        # range is narrow and it is the operators' own.
+        allow_clients: ["10.10.4.0/24"]
+
+upstreams:
+  - name: desktops
+    endpoints:
+      - {address: "10.40.1.10:3389"}
+      - {address: "10.40.1.11:3389"}
+    balancer: least_conn
+    timeouts: {connect: 5s}
+  - name: consoles
+    endpoints:
+      - {address: "10.40.9.10:3389"}
+    timeouts: {connect: 5s}
+
+bans:
+  triggers:
+    # A failed code, a refused channel, a refused device and a client
+    # from outside allow_clients are all rdp_denied.
+    - name: rdp-abuse
+      reasons: [rdp_denied]
+      threshold: 8
+      window: 10m
+      duration: 2h
+
+logging:
+  access: {enabled: true}

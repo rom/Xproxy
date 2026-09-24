@@ -1,0 +1,64 @@
+# Reaching a service that lives beside the proxy: a Unix domain socket
+# as an endpoint.
+#
+# An application server on the same host does not need a port. A port is
+# reachable by everything else on the machine, shows up in a scan, and
+# needs its own rules to keep the rest of the host away from it. A socket
+# is a file: permissions decide who may open it, nothing about it is
+# routable, and there is no address for anything to connect to from
+# anywhere else.
+#
+# Socket and host:port endpoints mix in one pool, which is what a service
+# moving from one to the other needs, and everything else about a pool
+# applies unchanged -- the balancer, weights, health checks, ejection.
+#
+# Validate: xproxy -config examples/upstreams/sockets.yaml -validate
+version: 1
+server:
+  listeners:
+    - name: edge
+      address: "0.0.0.0:443"
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/certs/site.pem, key_file: /etc/xproxy/certs/site-key.pem}
+      protocols: [h1, h2]
+
+routes:
+  - name: app
+    hosts: ["app.example.com"]
+    paths: ["/"]
+    upstream: app
+
+  - name: admin
+    hosts: ["app.example.com"]
+    paths: ["/internal/"]
+    upstream: admin-tool
+
+upstreams:
+  # The application, on two sockets because it runs as two processes on
+  # this host. The balancer, the weights and the ejection all behave as
+  # they would over a network; only the transport differs.
+  - name: app
+    endpoints:
+      - {address: "unix:/run/app/web-1.sock"}
+      - {address: "unix:/run/app/web-2.sock"}
+    balancer: least_conn
+    timeouts: {connect: 2s, response_header: 30s}
+    # A tcp check connects to the socket itself. It proves the process is
+    # accepting, which for a socket is most of what there is to know: a
+    # path that is gone, a process that has died and a socket nobody is
+    # listening on are all found.
+    health_check: {type: tcp, interval: 5s, timeout: 1s}
+    outlier_ejection: {consecutive_failures: 3, base_ejection_time: 30s}
+
+  # A migration in progress: one process still on a port, one already on
+  # a socket. Both take traffic, which is the point of allowing the mix.
+  - name: admin-tool
+    endpoints:
+      - {address: "unix:/run/admin/admin.sock", weight: 3}
+      - {address: "127.0.0.1:9180", weight: 1}
+    balancer: weighted
+    health_check: {type: tcp, interval: 10s, timeout: 2s}
+
+logging:
+  access: {enabled: true}

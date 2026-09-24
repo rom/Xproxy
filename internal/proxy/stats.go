@@ -66,17 +66,33 @@ type Stats struct {
 	MirrorSkipped       atomic.Uint64
 	MirrorFailed        atomic.Uint64
 	// Mirror shadow diff outcomes.
-	MirrorDiffMatch        atomic.Uint64
-	MirrorDiffStatus       atomic.Uint64
-	MirrorDiffHeader       atomic.Uint64
-	MirrorDiffBody         atomic.Uint64
-	TCPConnections         atomic.Uint64
-	TCPRejected            atomic.Uint64
-	TCPErrors              atomic.Uint64
-	TCPBytesIn             atomic.Uint64
-	TCPBytesOut            atomic.Uint64
-	QUICFlows              atomic.Uint64
-	QUICRejected           atomic.Uint64
+	MirrorDiffMatch  atomic.Uint64
+	MirrorDiffStatus atomic.Uint64
+	MirrorDiffHeader atomic.Uint64
+	MirrorDiffBody   atomic.Uint64
+	TCPConnections   atomic.Uint64
+	TCPRejected      atomic.Uint64
+	TCPErrors        atomic.Uint64
+	// TCPBounded counts connections a listener bound ended rather than
+	// a peer: the session lifetime or a byte bound. The access log's
+	// closed field says which.
+	TCPBounded   atomic.Uint64
+	TCPBytesIn   atomic.Uint64
+	TCPBytesOut  atomic.Uint64
+	QUICFlows    atomic.Uint64
+	QUICRejected atomic.Uint64
+	// The generic datagram relay. Dropped counts datagrams the relay
+	// would not forward and could not refuse -- there is nothing to
+	// refuse a datagram with -- with the reason in the security log.
+	UDPSessions            atomic.Uint64
+	UDPSessionsOpen        atomic.Int64
+	UDPDatagramsIn         atomic.Uint64
+	UDPDatagramsOut        atomic.Uint64
+	UDPBytesIn             atomic.Uint64
+	UDPBytesOut            atomic.Uint64
+	UDPDropped             atomic.Uint64
+	UDPRejected            atomic.Uint64
+	UDPErrors              atomic.Uint64
 	ForwardRequests        atomic.Uint64
 	ForwardTunnels         atomic.Uint64
 	ForwardTunnelsOpen     atomic.Int64
@@ -205,6 +221,19 @@ type Stats struct {
 	// KeyExchangePQ counts the share that used a post-quantum group,
 	// which is the number a rollout is actually measured by.
 	KeyExchangePQ atomic.Uint64
+
+	// refusals counts what each listener kind refused and why. HTTP
+	// has a counter per reason on this struct; the other protocols
+	// have one aggregate each ("SSH channels and requests refused by
+	// the bastion's policy"), which says that something was refused
+	// but not what an operator has to change. This holds the same
+	// breakdown for them, keyed by the kind and the reason the kind
+	// already logs.
+	refusals refusals
+	// RefusalsUntracked counts refusals named under a kind the roster
+	// does not have or beyond a kind's reason bound. Zero in a healthy
+	// process; anything else is a bug in a listener kind.
+	RefusalsUntracked atomic.Uint64
 }
 
 // KeyExchange records one completed handshake's group.
@@ -313,11 +342,21 @@ type Snapshot struct {
 	TCPConnections         uint64            `json:"tcp_connections"`
 	TCPRejected            uint64            `json:"tcp_rejected"`
 	TCPErrors              uint64            `json:"tcp_errors"`
+	TCPBounded             uint64            `json:"tcp_bounded"`
 	TCPBytesIn             uint64            `json:"tcp_bytes_in"`
 	TCPBytesOut            uint64            `json:"tcp_bytes_out"`
 	QUICFlows              uint64            `json:"quic_flows"`
 	QUICRejected           uint64            `json:"quic_rejected"`
 	QUICFlowsOpen          int               `json:"quic_flows_open"`
+	UDPSessions            uint64            `json:"udp_sessions"`
+	UDPSessionsOpen        int64             `json:"udp_sessions_open"`
+	UDPDatagramsIn         uint64            `json:"udp_datagrams_in"`
+	UDPDatagramsOut        uint64            `json:"udp_datagrams_out"`
+	UDPBytesIn             uint64            `json:"udp_bytes_in"`
+	UDPBytesOut            uint64            `json:"udp_bytes_out"`
+	UDPDropped             uint64            `json:"udp_dropped"`
+	UDPRejected            uint64            `json:"udp_rejected"`
+	UDPErrors              uint64            `json:"udp_errors"`
 	ForwardRequests        uint64            `json:"forward_requests"`
 	ForwardTunnels         uint64            `json:"forward_tunnels"`
 	ForwardTunnelsOpen     int64             `json:"forward_tunnels_open"`
@@ -456,7 +495,13 @@ type Snapshot struct {
 	ReloadFailures         uint64            `json:"reload_failures"`
 	OpenConnections        int64             `json:"open_connections"`
 	RejectedConns          uint64            `json:"rejected_connections"`
+	RateRefusedConns       uint64            `json:"rate_refused_connections"`
 	InFlight               int64             `json:"in_flight"`
+	// Refusals is what each listener kind refused, kind to reason to
+	// count. Omitted when nothing has been refused, so a quiet
+	// process's snapshot does not carry an empty object per kind.
+	Refusals          map[string]map[string]uint64 `json:"refusals,omitempty"`
+	RefusalsUntracked uint64                       `json:"refusals_untracked"`
 }
 
 func (s *Stats) snapshot() Snapshot {
@@ -499,6 +544,8 @@ func (s *Stats) snapshot() Snapshot {
 		HoneytokenHits:         s.HoneytokenHits.Load(),
 		HandshakesRefused:      s.HandshakesRefused.Load(),
 		KeyExchange:            s.KeyExchangeCounts(),
+		Refusals:               s.RefusalCounts(),
+		RefusalsUntracked:      s.RefusalsUntracked.Load(),
 		KeyExchangePQ:          s.KeyExchangePQ.Load(),
 		Degraded:               s.Degraded.Load(),
 		Deceived:               s.Deceived.Load(),
@@ -518,9 +565,19 @@ func (s *Stats) snapshot() Snapshot {
 		TCPConnections:         s.TCPConnections.Load(),
 		TCPRejected:            s.TCPRejected.Load(),
 		TCPErrors:              s.TCPErrors.Load(),
+		TCPBounded:             s.TCPBounded.Load(),
 		TCPBytesIn:             s.TCPBytesIn.Load(),
 		TCPBytesOut:            s.TCPBytesOut.Load(),
 		QUICFlows:              s.QUICFlows.Load(),
+		UDPSessions:            s.UDPSessions.Load(),
+		UDPSessionsOpen:        s.UDPSessionsOpen.Load(),
+		UDPDatagramsIn:         s.UDPDatagramsIn.Load(),
+		UDPDatagramsOut:        s.UDPDatagramsOut.Load(),
+		UDPBytesIn:             s.UDPBytesIn.Load(),
+		UDPBytesOut:            s.UDPBytesOut.Load(),
+		UDPDropped:             s.UDPDropped.Load(),
+		UDPRejected:            s.UDPRejected.Load(),
+		UDPErrors:              s.UDPErrors.Load(),
 		QUICRejected:           s.QUICRejected.Load(),
 		ForwardRequests:        s.ForwardRequests.Load(),
 		ForwardTunnels:         s.ForwardTunnels.Load(),

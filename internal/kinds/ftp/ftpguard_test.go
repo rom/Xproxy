@@ -369,3 +369,67 @@ func TestUnenrolledUserIsRefused(t *testing.T) {
 		t.Errorf("an unenrolled user reached PWD: %d", rc)
 	}
 }
+
+// TestARecoveryCodeOpensTheSession is the seventh round's sweep of the
+// finding the sixth round made on RDP: the bound on what could be
+// split off a password was sixteen characters and a recovery code is
+// seventeen, so the recovery path did not work on either of the two
+// protocols that carry a code that way. Fixed in both; this is the
+// half that holds it here.
+//
+// It is driven through a real enrolment written by the control plane,
+// so the code under test is the one an operator would be handed.
+func TestARecoveryCodeOpensTheSession(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "mfa")
+	if err := os.WriteFile(file, []byte("# empty\nplaceholder:JBSWY3DPEHPK3PXPJBSWY3DPEH\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := mfa.Load(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, codes, err := store.Enrol("alice", mfa.Params{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(codes) == 0 {
+		t.Fatal("no recovery codes")
+	}
+
+	s, addr, tg := ftpBastion(t, "        mfa: {file: "+file+"}")
+	c := dialFTP(t, addr)
+	if rc, _ := c.cmd("USER alice"); rc != 331 {
+		t.Fatalf("USER was %d", rc)
+	}
+	// The recovery code rides the password, which is the arrangement
+	// that was refusing it for being one character too long.
+	if rc, text := c.cmd("PASS her-password,%s", codes[0]); rc != 230 {
+		t.Fatalf("a recovery code was refused: %d %q", rc, text)
+	}
+	if rc, _ := c.cmd("PWD"); rc != 257 {
+		t.Errorf("PWD after the recovery code was %d", rc)
+	}
+	for _, line := range tg.commands() {
+		if strings.HasPrefix(line, "PASS ") && strings.Contains(line, ",") {
+			t.Errorf("the target was given the recovery code: %q", line)
+		}
+	}
+	if n := s.Stats().FTPMFAOK; n != 1 {
+		t.Errorf("ftp_mfa_ok %d, want 1", n)
+	}
+
+	// And it is single use: the same code again is refused.
+	c2 := dialFTP(t, addr)
+	if rc, _ := c2.cmd("USER alice"); rc != 331 {
+		t.Fatalf("USER was %d", rc)
+	}
+	// A code that came in on the password is verified there, so a
+	// spent one is refused outright rather than asked for again.
+	if rc, _ := c2.cmd("PASS her-password,%s", codes[0]); rc != 530 {
+		t.Errorf("a replayed recovery code was %d, want 530", rc)
+	}
+	if rc, _ := c2.cmd("PWD"); rc != 530 {
+		t.Errorf("a replayed recovery code reached PWD: %d", rc)
+	}
+}

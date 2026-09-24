@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"github.com/rom/xproxy/internal/dns"
 	"github.com/rom/xproxy/internal/expr"
 	"github.com/rom/xproxy/internal/filter"
@@ -12,6 +13,7 @@ import (
 	"github.com/rom/xproxy/internal/syslog"
 	"github.com/rom/xproxy/internal/telnet"
 	"github.com/rom/xproxy/internal/tmpl"
+	"github.com/rom/xproxy/internal/transparent"
 	"github.com/rom/xproxy/internal/yara"
 	"mime"
 	"path/filepath"
@@ -600,6 +602,18 @@ func (v *validator) server(s *Server) {
 			} else {
 				v.tcpListener(p+".tcp", ln.TCP)
 			}
+		case "udp":
+			if ln.TLS != nil || len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.H2C {
+				v.errf("%s: a udp listener takes only address and udp (there is no handshake on a datagram to secure or a protocol to negotiate)", p)
+			}
+			if ln.ProxyProtocol {
+				v.errf("%s.proxy_protocol: a PROXY protocol header cannot be sent on a datagram flow", p)
+			}
+			if ln.UDP == nil {
+				v.errf("%s.udp: required for kind udp", p)
+			} else {
+				v.udpListener(p+".udp", ln.UDP, ln.Address)
+			}
 		case "dns":
 			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.H2C {
 				v.errf("%s: a dns listener takes only address, dns and tls", p)
@@ -708,6 +722,10 @@ func (v *validator) server(s *Server) {
 		default:
 			v.errf("%s.kind: must be one of %s", p, strings.Join(listener.Kinds(), ", "))
 		}
+		v.connectionRate(p, ln.ConnectionRate, ln.ConnectionRatePerSource)
+		if ln.UDP != nil && ln.Kind != "udp" {
+			v.errf("%s.udp: set on a %s listener (kind: udp)", p, ln.Kind)
+		}
 		if ln.Syslog != nil && ln.Kind != "syslog" {
 			v.errf("%s.syslog: set on a %s listener (kind: syslog)", p, ln.Kind)
 		}
@@ -800,6 +818,7 @@ func (v *validator) server(s *Server) {
 	if b := l.MaxBufferedBodyBytes; b > 0 && b < l.MaxBodyBytes {
 		v.warnf("server.limits.max_buffered_body_bytes (%d) is below max_body_bytes (%d): a single request on a route that inspects bodies cannot fit the budget and is refused", b, l.MaxBodyBytes)
 	}
+	v.connectionRate("server.limits", l.ConnectionRate, l.ConnectionRatePerSource)
 }
 
 func (v *validator) tls(p string, t *TLS) {
@@ -1381,9 +1400,19 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 		}
 	}
 	switch u.Balancer {
-	case "round_robin", "weighted", "least_conn", "hash":
+	case "round_robin", "weighted", "least_conn", "hash", "p2c":
+	case "ewma":
+		// The latency it reads is the same smoothed time to first byte
+		// outlier detection uses, and it is recorded per response. A
+		// pool that never sees a response -- a layer 4 relay's -- has
+		// nothing for this balancer to read, and p2c is the one that
+		// reads what such a pool does have.
+		if u.HealthCheck != nil && (u.HealthCheck.Type == "tcp" || u.HealthCheck.Type == "udp") {
+			v.warnf("%s.balancer: ewma weighs endpoints by the time to first byte of a response, which a pool checked with "+
+				"type %s has none of; p2c reads the in-flight count instead", p, u.HealthCheck.Type)
+		}
 	default:
-		v.errf("%s.balancer: must be round_robin, weighted, least_conn or hash", p)
+		v.errf("%s.balancer: must be round_robin, weighted, least_conn, hash, p2c or ewma", p)
 	}
 	if u.Balancer == "hash" {
 		switch {
@@ -1438,8 +1467,45 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 			if d.Resolver != "" {
 				v.errf("%s.resolver: only for dns and srv discovery", dp)
 			}
+		case "consul":
+			if c := d.Consul; c == nil {
+				v.errf("%s.consul: required for type consul", dp)
+			} else {
+				if c.Service == "" {
+					v.errf("%s.consul.service: required", dp)
+				}
+				if _, _, err := net.SplitHostPort(c.Address); err != nil {
+					v.errf("%s.consul.address: %q must be host:port", dp, c.Address)
+				}
+				if c.TokenFile != "" && !strings.HasPrefix(c.TokenFile, "/") {
+					v.errf("%s.consul.token_file: must be an absolute path", dp)
+				}
+				if c.TokenFile != "" {
+					v.file(dp+".consul.token_file", c.TokenFile)
+					if st, err := os.Stat(c.TokenFile); err == nil && st.Mode().Perm()&0o077 != 0 {
+						v.errf("%s.consul.token_file: %s is readable by more than its owner (mode %04o); "+
+							"an ACL token is a credential", dp, c.TokenFile, st.Mode().Perm())
+					}
+				}
+				if c.Wait < Duration(time.Second) || c.Wait > Duration(10*time.Minute) {
+					v.errf("%s.consul.wait: must be between 1s and 10m", dp)
+				}
+				if c.TLS != nil {
+					v.upstreamTLS(dp+".consul.tls", c.TLS)
+				}
+				if c.AllowStale {
+					v.warnf("%s.consul.allow_stale: the agent answers from its own state, which may be a moment behind; "+
+						"a balancer acting on stale membership sends traffic to an instance that has gone", dp)
+				}
+			}
+			if d.Name != "" {
+				v.errf("%s.name: not used by type consul; the service is consul.service", dp)
+			}
+			if d.Resolver != "" {
+				v.errf("%s.resolver: only for dns and srv discovery", dp)
+			}
 		default:
-			v.errf("%s.type: must be dns, srv or http", dp)
+			v.errf("%s.type: must be dns, srv, http or consul", dp)
 		}
 		if d.Interval < Duration(time.Second) || d.Interval > Duration(time.Hour) {
 			v.errf("%s.interval: must be between 1s and 1h", dp)
@@ -1459,18 +1525,83 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 			v.errf("%s.canary: set without a canary section", dp)
 		}
 	}
+	switch u.AddressFamily {
+	case "", "any", "ipv4", "ipv6":
+	default:
+		v.errf("%s.address_family: must be any, ipv4 or ipv6", p)
+	}
+	if u.FallbackDelay > Duration(10*time.Second) {
+		v.errf("%s.fallback_delay: at most 10s; it is the pause before the second address family is tried, not a timeout", p)
+	}
+	if u.FallbackDelay != 0 && (u.AddressFamily == "ipv4" || u.AddressFamily == "ipv6") {
+		v.warnf("%s.fallback_delay: address_family %s dials one family, so there is no second one to hold back", p, u.AddressFamily)
+	}
+	if u.MaxConnectionAge < 0 || u.MaxConnectionAge > Duration(24*time.Hour) {
+		v.errf("%s.max_connection_age: must not be negative and at most 24h", p)
+	}
+	if u.MaxConnectionAge > 0 {
+		if u.MaxConnectionAge < Duration(time.Second) {
+			v.errf("%s.max_connection_age: must be at least 1s; below that a connection is retired before it is useful", p)
+		}
+		// An HTTP/2 or HTTP/3 connection carries many streams at once, so
+		// it is never between exchanges and there is no safe moment to
+		// retire it. Saying so beats a setting that quietly does nothing.
+		switch {
+		case u.H3:
+			v.errf("%s.max_connection_age: not with h3; an HTTP/3 connection carries many streams and is never between exchanges", p)
+		case u.H2C:
+			v.errf("%s.max_connection_age: not with h2c; an HTTP/2 connection carries many streams and is never between exchanges", p)
+		case u.Scheme == "https":
+			v.warnf("%s.max_connection_age: an https pool may negotiate HTTP/2, and the age applies only to HTTP/1.1 connections, "+
+				"which carry one exchange at a time; on a connection carrying many streams it is ignored", p)
+		}
+	}
+	if l := u.Locality; l != nil {
+		if l.MinLocal < 0 || l.MinLocal > 1000 {
+			v.errf("%s.locality.min_local: must be 0..1000", p)
+		}
+		switch {
+		case !l.PreferZone && l.MinLocal > 0:
+			v.errf("%s.locality.min_local: set without prefer_zone, which is the thing it qualifies", p)
+		case l.PreferZone && u.NodeZone == "":
+			v.errf("%s.locality.prefer_zone: needs server.zone, or there is nothing for an endpoint's zone to be compared against", p)
+		case l.PreferZone && !v.anyEndpointZone(u):
+			v.warnf("%s.locality.prefer_zone: no endpoint of this pool names a zone, and an endpoint with no zone is local to every "+
+				"zone, so this prefers nothing", p)
+		}
+	}
+	if u.MaxConnectionsPerEndpoint < 0 {
+		v.errf("%s.max_connections_per_endpoint: must not be negative", p)
+	}
 	if u.SlowStart < 0 || u.SlowStart > Duration(time.Hour) {
 		v.errf("%s.slow_start: must be between 0 and 1h", p)
 	}
 	addrs := map[string]bool{}
+	sockets := 0
 	for j, e := range u.Endpoints {
 		ep := fmt.Sprintf("%s.endpoints[%d]", p, j)
+		if path, ok := UnixSocket(e.Address); ok {
+			sockets++
+			switch {
+			case path == "":
+				v.errf("%s.address: %q names no socket path", ep, e.Address)
+			case !strings.HasPrefix(path, "/"):
+				v.errf("%s.address: the socket path %q must be absolute", ep, path)
+			case addrs[e.Address]:
+				v.errf("%s.address: duplicate %q", ep, e.Address)
+			}
+			addrs[e.Address] = true
+			if e.Weight < 1 || e.Weight > 1000 {
+				v.errf("%s.weight: must be between 1 and 1000", ep)
+			}
+			continue
+		}
 		host, port, err := net.SplitHostPort(e.Address)
 		pn, perr := strconv.Atoi(port)
 		switch {
 		case !v.hostPortOK(ep+".address", e.Address):
 		case err != nil || host == "" || port == "":
-			v.errf("%s.address: %q must be host:port", ep, e.Address)
+			v.errf("%s.address: %q must be host:port, or unix:/path for a socket", ep, e.Address)
 		case addrs[e.Address]:
 			v.errf("%s.address: duplicate %q", ep, e.Address)
 		case perr != nil || pn < 1 || pn > 65535:
@@ -1479,6 +1610,33 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 		addrs[e.Address] = true
 		if e.Weight < 1 || e.Weight > 1000 {
 			v.errf("%s.weight: must be between 1 and 1000", ep)
+		}
+		if e.MaxConnections < 0 {
+			v.errf("%s.max_connections: must not be negative", ep)
+		}
+		if e.Priority < 0 || e.Priority > 99 {
+			v.errf("%s.priority: must be 0..99", ep)
+		}
+		if e.Zone != "" && !nameRE.MatchString(e.Zone) {
+			v.errf("%s.zone: %q is not a name", ep, e.Zone)
+		}
+	}
+	if sockets > 0 {
+		// A socket endpoint's URL carries a synthetic authority, so
+		// there is no name in it for TLS to verify and nothing sensible
+		// for the handshake to ask for.
+		if u.Scheme == "https" && (u.TLS == nil || u.TLS.ServerName == "") {
+			v.errf("%s: a unix: endpoint with scheme https needs tls.server_name, because a socket has no name for the certificate to match", p)
+		}
+		if u.H3 {
+			v.errf("%s.h3: HTTP/3 needs UDP to a host; a unix: endpoint has neither", p)
+		}
+		if u.Discovery != nil {
+			v.errf("%s.discovery: discovery produces host:port endpoints and cannot produce a socket path", p)
+		}
+		if hc := u.HealthCheck; hc != nil && hc.Type == "grpc" {
+			v.warnf("%s.health_check: a grpc check over a socket works, but the authority it sends is the synthetic one, "+
+				"so a server that routes on :authority may not answer it", p)
 		}
 	}
 	if u.Timeouts.Connect <= 0 || u.Timeouts.ResponseHeader <= 0 || u.Timeouts.Total <= 0 {
@@ -1599,11 +1757,46 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 			if len(hc.GRPCService) > 253 || strings.ContainsAny(hc.GRPCService, " /\r\n") {
 				v.errf("%s.health_check.grpc_service: %q is not a service name", p, hc.GRPCService)
 			}
+		case "tcp":
+			// A connect probe. Nothing is sent, so nothing about the
+			// service behind the port is proved -- only that something
+			// is listening, which for a relayed protocol this proxy does
+			// not speak is often all there is to know.
+			if hc.Send != "" || hc.SendHex != "" || hc.Expect != "" || hc.ExpectHex != "" {
+				v.errf("%s.health_check: send and expect need type udp; a tcp check only connects", p)
+			}
+		case "udp":
+			if (hc.Send == "") == (hc.SendHex == "") {
+				v.errf("%s.health_check: type udp needs exactly one of send or send_hex; a probe that sends nothing is answered by nothing", p)
+			}
+			if hc.SendHex != "" {
+				if _, err := hex.DecodeString(hc.SendHex); err != nil {
+					v.errf("%s.health_check.send_hex: %v", p, err)
+				}
+			}
+			if hc.Expect != "" && hc.ExpectHex != "" {
+				v.errf("%s.health_check: expect and expect_hex are two spellings of one requirement; set one", p)
+			}
+			if hc.ExpectHex != "" {
+				if _, err := hex.DecodeString(hc.ExpectHex); err != nil {
+					v.errf("%s.health_check.expect_hex: %v", p, err)
+				}
+			}
 		default:
-			v.errf("%s.health_check.type: must be http or grpc", p)
+			v.errf("%s.health_check.type: must be http, grpc, tcp or udp", p)
 		}
-		if !strings.HasPrefix(hc.Path, "/") {
-			v.errf("%s.health_check.path: must start with /", p)
+		if hc.Type == "http" || hc.Type == "grpc" {
+			if !strings.HasPrefix(hc.Path, "/") {
+				v.errf("%s.health_check.path: must start with /", p)
+			}
+		} else if hc.Path != DefaultHealthCheckPath {
+			v.errf("%s.health_check.path: not used by type %s", p, hc.Type)
+		}
+		if hc.Type != "udp" && (hc.Send != "" || hc.SendHex != "" || hc.Expect != "" || hc.ExpectHex != "") && hc.Type != "tcp" {
+			v.errf("%s.health_check: send and expect need type udp", p)
+		}
+		if len(hc.Send) > 4096 || len(hc.SendHex) > 8192 || len(hc.Expect) > 4096 || len(hc.ExpectHex) > 8192 {
+			v.errf("%s.health_check: send and expect are limited to 4096 bytes", p)
 		}
 		if hc.Interval < Duration(500_000_000) {
 			v.errf("%s.health_check.interval: must be at least 500ms", p)
@@ -1621,6 +1814,9 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 			if st < 100 || st > 599 {
 				v.errf("%s.health_check.expected_status: %d is not an HTTP status", p, st)
 			}
+		}
+		if hc.GRPCService != "" && hc.Type != "grpc" && hc.Type != "http" {
+			v.errf("%s.health_check.grpc_service: only for type grpc", p)
 		}
 		if (hc.BodyContains != "" || hc.BodyRegex != "") && hc.Type != "http" {
 			v.errf("%s.health_check: body_contains and body_regex need type http", p)
@@ -2057,6 +2253,7 @@ var denyReasons = map[string]bool{
 	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true, "honeypot": true, "dns_blocked": true, "dns_bogus": true,
 	"account_abuse": true, "honeytoken": true, "smtp_denied": true, "mqtt_denied": true, "ssh_denied": true, "ftp_denied": true, "syslog_denied": true, "yara": true,
 	"forward_sni_mismatch": true, "dns_tunnel": true,
+	"telnet_denied": true, "vnc_denied": true, "rdp_denied": true, "sftp_icap": true, "udp_denied": true,
 }
 
 // securityTxtFieldRE bounds an extra field name to the token RFC 9116
@@ -2759,7 +2956,10 @@ func (v *validator) filter(i int, f *FilterConfig, seen map[string]bool) {
 // tcpListener validates an L4 listener; upstream references are checked
 // after the upstreams are known (see validate).
 func (v *validator) tcpListener(p string, t *TCPListener) {
-	if len(t.Routes) == 0 && t.Default == "" {
+	// An intercepting listener takes its destination from the socket, so
+	// it needs no route and may not have one; transparentTCP below says
+	// so the other way round.
+	if len(t.Routes) == 0 && t.Default == "" && !t.OriginalDestination {
 		v.errf("%s: routes or default is required", p)
 	}
 	seen := map[string]bool{}
@@ -2787,9 +2987,22 @@ func (v *validator) tcpListener(p string, t *TCPListener) {
 	if t.MaxConnections < 1 {
 		v.errf("%s.max_connections: must be positive", p)
 	}
+	if t.SessionTimeout < 0 || t.SessionTimeout > Duration(7*24*time.Hour) {
+		v.errf("%s.session_timeout: must not be negative and at most 168h", p)
+	}
+	if t.SessionTimeout > 0 && t.SessionTimeout < t.IdleTimeout {
+		v.errf("%s.session_timeout: must not be shorter than idle_timeout, which would end every connection at the same moment", p)
+	}
+	if t.MaxBytesIn < 0 || t.MaxBytesOut < 0 {
+		v.errf("%s: max_bytes_in and max_bytes_out must not be negative", p)
+	}
 	if t.QUICIdleTimeout <= 0 || t.QUICIdleTimeout > Duration(time.Hour) {
 		v.errf("%s.quic_idle_timeout: must be positive and at most 1h", p)
 	}
+	if t.ConnectTimeout <= 0 || t.ConnectTimeout > Duration(2*time.Minute) {
+		v.errf("%s.connect_timeout: must be positive and at most 2m", p)
+	}
+	v.transparentTCP(p, t)
 	if t.YARA != nil {
 		v.yaraPolicy(p+".yara", t.YARA)
 		if t.QUIC {
@@ -2798,6 +3011,163 @@ func (v *validator) tcpListener(p string, t *TCPListener) {
 	}
 	if t.QUIC && t.ProxyProtocol {
 		v.errf("%s.quic: the PROXY protocol header cannot be sent on a datagram flow; disable proxy_protocol or quic", p)
+	}
+}
+
+// anyEndpointZone reports whether any endpoint of a pool names a zone,
+// including the ones discovery will produce (which cannot be known, so a
+// discovery section counts as "maybe").
+func (v *validator) anyEndpointZone(u *Upstream) bool {
+	if u.Discovery != nil {
+		return true
+	}
+	for _, e := range u.Endpoints {
+		if e.Zone != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// connectionRate validates an accept rate wherever one is set: on
+// server.limits, or on one listener.
+func (v *validator) connectionRate(p string, r *ConnectionRate, sr *SourceRate) {
+	if r != nil {
+		if r.PerSecond <= 0 {
+			v.errf("%s.connection_rate.per_second: must be positive", p)
+		}
+		if r.Burst < 1 {
+			v.errf("%s.connection_rate.burst: must be positive", p)
+		}
+	}
+	if sr == nil {
+		return
+	}
+	q := p + ".connection_rate_per_source"
+	if sr.PerSecond <= 0 {
+		v.errf("%s.per_second: must be positive", q)
+	}
+	if sr.Burst < 1 {
+		v.errf("%s.burst: must be positive", q)
+	}
+	if sr.IPv4Prefix < 8 || sr.IPv4Prefix > 32 {
+		v.errf("%s.ipv4_prefix: must be 8..32", q)
+	}
+	if sr.IPv6Prefix < 16 || sr.IPv6Prefix > 128 {
+		v.errf("%s.ipv6_prefix: must be 16..128", q)
+	}
+	if sr.MaxSources < 1 || sr.MaxSources > 1<<22 {
+		v.errf("%s.max_sources: must be 1..4194304", q)
+	}
+	// A /128 counts one address, and an attacker with a /64 has more of
+	// those than any table can hold: the bound then costs memory and
+	// stops nothing.
+	if sr.IPv6Prefix > 96 {
+		v.warnf("%s.ipv6_prefix: /%d counts single addresses, and a single attacker is normally given a /64 or more, "+
+			"so this bounds nothing while filling the table", q, sr.IPv6Prefix)
+	}
+}
+
+// transparentTCP validates the interception settings of a layer 4
+// listener: the two socket tricks, and the destination policy without
+// which the second is an open relay.
+func (v *validator) transparentTCP(p string, t *TCPListener) {
+	if (t.Transparent || t.OriginalDestination) && !transparent.Available() {
+		v.errf("%s: transparent and original_destination need Linux (IP_TRANSPARENT and SO_ORIGINAL_DST)", p)
+	}
+	if t.OriginalDestination {
+		if len(t.Routes) > 0 || t.Default != "" {
+			v.errf("%s.original_destination: the destination comes from the socket, so routes and default would be ignored; remove them", p)
+		}
+		if len(t.AllowDestinations) == 0 {
+			v.errf("%s.allow_destinations: required with original_destination, or the listener relays to anywhere "+
+				"for anyone who can reach the port", p)
+		}
+		if t.QUIC {
+			v.errf("%s.quic: a QUIC flow has no original destination to read; the option is for the stream half", p)
+		}
+	} else if len(t.AllowDestinations) > 0 || len(t.DestinationPorts) > 0 {
+		v.errf("%s: allow_destinations and destination_ports are for original_destination, which is not set", p)
+	}
+	for i, c := range t.AllowDestinations {
+		if _, err := netip.ParsePrefix(c); err != nil {
+			v.errf("%s.allow_destinations[%d]: %q is not a CIDR: %v", p, i, c, err)
+		}
+	}
+	for i, port := range t.DestinationPorts {
+		if port < 1 || port > 65535 {
+			v.errf("%s.destination_ports[%d]: %d is not a port", p, i, port)
+		}
+	}
+	if t.Transparent {
+		// The capability is a property of the process, not of the file,
+		// so this is the one check that has to be made at load: a
+		// listener that cannot set the option would fail every dial
+		// with something that looks like a dead upstream.
+		if err := transparent.Check(); err != nil {
+			v.errf("%s.transparent: this process cannot set IP_TRANSPARENT (%v); it needs CAP_NET_ADMIN", p, err)
+		}
+		v.warnf("%s.transparent: the upstream will see the client's address, so the return traffic must be routed back to "+
+			"this host by the firewall; without that every connection fails in a way that looks like a dead upstream", p)
+		if t.ProxyProtocol {
+			v.errf("%s.transparent: with proxy_protocol as well, the upstream is told the client's address twice, "+
+				"in the header and in the source; set one", p)
+		}
+	}
+}
+
+// udpListener validates a generic datagram relay.
+func (v *validator) udpListener(p string, u *UDPListener, address string) {
+	if u.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	if u.IdleTimeout <= 0 || u.IdleTimeout > Duration(time.Hour) {
+		v.errf("%s.idle_timeout: must be positive and at most 1h", p)
+	}
+	if u.SessionTimeout < 0 || u.SessionTimeout > Duration(24*time.Hour) {
+		v.errf("%s.session_timeout: must not be negative and at most 24h", p)
+	}
+	if u.SessionTimeout > 0 && u.SessionTimeout < u.IdleTimeout {
+		v.errf("%s.session_timeout: must not be shorter than idle_timeout, which would end every session at the same moment", p)
+	}
+	if u.MaxSessions < 1 {
+		v.errf("%s.max_sessions: must be positive", p)
+	}
+	if u.MaxSessionsPerIP < 0 {
+		v.errf("%s.max_sessions_per_ip: must not be negative", p)
+	}
+	if u.MaxSessionsPerIP > u.MaxSessions {
+		v.errf("%s.max_sessions_per_ip: %d is above max_sessions (%d), so it bounds nothing", p, u.MaxSessionsPerIP, u.MaxSessions)
+	}
+	if u.MaxDatagramBytes < 1 || u.MaxDatagramBytes > 65535 {
+		v.errf("%s.max_datagram_bytes: must be 1..65535", p)
+	}
+	if u.MaxDatagrams < 0 {
+		v.errf("%s.max_datagrams: must not be negative", p)
+	}
+	if u.MaxBytesIn < 0 || u.MaxBytesOut < 0 {
+		v.errf("%s: max_bytes_in and max_bytes_out must not be negative", p)
+	}
+	if u.RateLimit != nil {
+		if u.RateLimit.PPS <= 0 {
+			v.errf("%s.rate_limit.pps: must be positive", p)
+		}
+		if u.RateLimit.Burst < 1 {
+			v.errf("%s.rate_limit.burst: must be positive", p)
+		}
+	}
+	for i, c := range u.AllowClients {
+		if _, err := netip.ParsePrefix(c); err != nil {
+			v.errf("%s.allow_clients[%d]: %q is not a CIDR: %v", p, i, c, err)
+		}
+	}
+	// A datagram relay answers whatever address the datagram claimed to
+	// come from, so an open one reflects traffic at a victim who never
+	// asked for it, amplified by whatever is behind it. Neither control
+	// removes spoofing; each bounds who can make this node do it.
+	if !loopbackListen(address) && len(u.AllowClients) == 0 && u.RateLimit == nil {
+		v.warnf("%s: a udp listener on a non-loopback address with neither allow_clients nor rate_limit relays for anyone "+
+			"who can reach it, and a datagram's source can be forged, which makes this node an amplifier", p)
 	}
 }
 
@@ -3072,8 +3442,12 @@ func (v *validator) sshListener(p string, h *SSHListener) {
 	for i, f := range h.HostKeys {
 		v.file(fmt.Sprintf("%s.host_keys[%d]", p, i), f)
 	}
-	if h.AuthorizedKeys == "" && h.UsersFile == "" {
-		v.errf("%s: authorized_keys or users_file is required; a bastion that authenticates nobody forwards everybody", p)
+	// Three ways to authenticate, not two: a fleet that has moved to
+	// certificates has no authorized_keys to write, which is the point
+	// of moving. The check below repeats this because it is the one an
+	// operator reading the file finds first.
+	if h.AuthorizedKeys == "" && h.UsersFile == "" && h.TrustedUserCAKeys == "" {
+		v.errf("%s: authorized_keys, users_file or trusted_user_ca_keys is required; a bastion that authenticates nobody forwards everybody", p)
 	}
 	if h.AuthorizedKeys != "" {
 		v.file(p+".authorized_keys", h.AuthorizedKeys)
@@ -3185,6 +3559,7 @@ func (v *validator) sshListener(p string, h *SSHListener) {
 	if h.TrustedUserCAKeys != "" {
 		v.file(p+".trusted_user_ca_keys", h.TrustedUserCAKeys)
 	}
+	v.sshCertPolicy(p, h)
 	if h.AuthorizedKeys == "" && h.UsersFile == "" && h.TrustedUserCAKeys == "" {
 		// Stated again here because trusted_user_ca_keys is the third
 		// way to authenticate and the earlier check knows only two.
@@ -5609,10 +5984,98 @@ func (v *validator) vncListener(p string, c *VNCListener, hasTLS bool) {
 	if c.MaxConnections < 1 {
 		v.errf("%s.max_connections: must be positive", p)
 	}
+	v.vncPixels(p, c)
 	for i, cidr := range c.AllowClients {
 		if _, err := netip.ParsePrefix(cidr); err != nil {
 			v.errf("%s.allow_clients[%d]: %q is not a CIDR: %v", p, i, cidr, err)
 		}
+	}
+}
+
+// vncPixels checks the pixel stream mode, the clipboard direction and
+// the bounds on what a desktop may declare.
+func (v *validator) vncPixels(p string, c *VNCListener) {
+	switch c.PixelStream {
+	case VNCPixelsFramed:
+	case VNCPixelsOpaque:
+		v.warnf("%s.pixel_stream: opaque forwards the desktop's picture without reading it, so only max_framebuffer_pixels applies and a rectangle that declares more than it carries is not refused. It is the setting for a desktop that must use the tight encoding; framed is the one that bounds what a viewer is asked to allocate", p)
+	default:
+		v.errf("%s.pixel_stream: must be framed or opaque", p)
+	}
+	switch c.Clipboard {
+	case VNCClipboardBoth, VNCClipboardToClient, VNCClipboardToTarget, VNCClipboardNone:
+	default:
+		v.errf("%s.clipboard: must be both, to_client, to_target or none", p)
+	}
+	b := c.Bounds
+	if b == nil {
+		return
+	}
+	q := p + ".bounds"
+	// 640x480 is the smallest desktop anything serves; a bound under it
+	// is a listener where nothing can connect, which is worth saying at
+	// load rather than discovering per session.
+	if b.MaxFramebufferPixels < 0 {
+		v.errf("%s.max_framebuffer_pixels: must not be negative", q)
+	} else if b.MaxFramebufferPixels > 0 && b.MaxFramebufferPixels < 640*480 {
+		v.errf("%s.max_framebuffer_pixels: %d is smaller than a 640x480 desktop, so no session could start", q, b.MaxFramebufferPixels)
+	}
+	if b.MaxRectanglesPerUpdate < 0 {
+		v.errf("%s.max_rectangles_per_update: must not be negative", q)
+	} else if b.MaxRectanglesPerUpdate > 0 && b.MaxRectanglesPerUpdate < 16 {
+		v.errf("%s.max_rectangles_per_update: %d is fewer than an ordinary screen redraw, which is tens", q, b.MaxRectanglesPerUpdate)
+	}
+	if b.MaxEncodedRectangle < 0 {
+		v.errf("%s.max_encoded_rectangle: must not be negative", q)
+	} else if b.MaxEncodedRectangle > 0 && b.MaxEncodedRectangle < 64<<10 {
+		v.errf("%s.max_encoded_rectangle: %d is smaller than one tile of a raw update", q, b.MaxEncodedRectangle)
+	}
+	if b.MaxDecodeRatio < 0 {
+		v.errf("%s.max_decode_ratio: must not be negative", q)
+	} else if b.MaxDecodeRatio > 0 && b.MaxDecodeRatio < 4 {
+		v.errf("%s.max_decode_ratio: %d would refuse ordinary compression; a screen of flat colour compresses far better than fourfold", q, b.MaxDecodeRatio)
+	}
+	if b.MaxCutText < 0 {
+		v.errf("%s.max_cut_text: must not be negative", q)
+	}
+	if c.PixelStream == VNCPixelsOpaque && (b.MaxRectanglesPerUpdate > 0 || b.MaxEncodedRectangle > 0 || b.MaxDecodeRatio > 0) {
+		v.warnf("%s: max_rectangles_per_update, max_encoded_rectangle and max_decode_ratio need the pixel stream read, and pixel_stream is opaque, so they do nothing here. max_framebuffer_pixels and max_cut_text still apply", q)
+	}
+}
+
+// sshCertPolicy checks what the listener says about certificates, the
+// bounds on what one session may hold, and the two knobs that make a
+// command policy weaker than it looks.
+func (v *validator) sshCertPolicy(p string, h *SSHListener) {
+	if h.RevokedKeys != "" {
+		v.file(p+".revoked_keys", h.RevokedKeys)
+	}
+	switch life := h.MaxCertificateLifetime.D(); {
+	case life < 0:
+		v.errf("%s.max_certificate_lifetime: must not be negative", p)
+	case life > 0 && h.TrustedUserCAKeys == "":
+		v.warnf("%s.max_certificate_lifetime: set with no trusted_user_ca_keys, so no certificate ever reaches it", p)
+	case life > 0 && life < time.Minute:
+		v.errf("%s.max_certificate_lifetime: %s is shorter than any certificate is issued for", p, life)
+	}
+	if h.MaxForwards < 0 {
+		v.errf("%s.max_forwards: must not be negative", p)
+	}
+	if h.MaxSessionsPerPrincipal < 0 {
+		v.errf("%s.max_sessions_per_principal: must not be negative", p)
+	}
+	if h.MaxSessionsPerPrincipal > 0 && h.MaxSessions > 0 && h.MaxSessionsPerPrincipal > h.MaxSessions {
+		v.errf("%s.max_sessions_per_principal: %d is more than max_sessions (%d), so it can never apply",
+			p, h.MaxSessionsPerPrincipal, h.MaxSessions)
+	}
+	switch {
+	case h.RekeyBytes < 0:
+		v.errf("%s.rekey_bytes: must not be negative", p)
+	case h.RekeyBytes > 0 && h.RekeyBytes < 1<<20:
+		v.errf("%s.rekey_bytes: %d would rekey every few packets; a megabyte is the smallest useful threshold", p, h.RekeyBytes)
+	}
+	if h.AllowShellSyntax && len(h.AllowCommands) > 0 {
+		v.warnf("%s.allow_shell_syntax: allow_commands is a list of regular expressions over the command line, and with shell syntax allowed one of them can match a line the shell will read as two commands (\"^journalctl .*$\" matches \"journalctl -u x; rm -rf /\"). Write the patterns knowing that, or leave the operators refused", p)
 	}
 }
 

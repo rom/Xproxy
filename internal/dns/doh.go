@@ -106,7 +106,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	select {
 	case s.sem <- struct{}{}:
 	default:
-		s.drop()
+		s.drop(DropWorkersBusy)
 		http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
 		return
 	}

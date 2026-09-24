@@ -186,6 +186,15 @@ T}	T{
 Value of the \fBServer\fR response header. Empty removes it.
 T}
 T{
+\fBzone\fR
+T}	T{
+name
+T}	T{
+\fB""\fR
+T}	T{
+The failure domain this node is in \[u2014] an availability zone,\: a rack,\: a site. It is what an upstream\(aqs \fBlocality\fR policy compares an endpoint\(aqs \fBzone\fR against,\: so a node prefers the endpoints beside it. Empty means the node does not know where it is,\: and a locality policy then prefers nothing
+T}
+T{
 \fBerror_\:pages\fR
 T}	T{
 object
@@ -253,8 +262,8 @@ The key set\(aqs fingerprint is shown by \fBxproxyctl tls tickets\fR and \fBGET 
 .PP
 .TS
 allbox;
-lbw(1.0i) lbw(1.0i) lbw(1.0i) lbx
-lw(1.0i) lw(1.0i) lw(1.0i) lx.
+lbw(1.2i) lbw(1.0i) lbw(1.0i) lbx
+lw(1.2i) lw(1.0i) lw(1.0i) lx.
 T{
 Key
 T}	T{
@@ -330,11 +339,11 @@ T}
 T{
 \fBkind\fR
 T}	T{
-\fBhttp\fR,\: \fBtcp\fR,\: \fBforward\fR,\: \fBdns\fR,\: \fBsmtp\fR,\: \fBmqtt\fR,\: \fBftp\fR,\: \fBsyslog\fR,\: \fBssh\fR
+\fBhttp\fR,\: \fBtcp\fR,\: \fBudp\fR,\: \fBforward\fR,\: \fBdns\fR,\: \fBsmtp\fR,\: \fBmqtt\fR,\: \fBftp\fR,\: \fBsyslog\fR,\: \fBssh\fR,\: \fBtelnet\fR,\: \fBvnc\fR,\: \fBrdp\fR
 T}	T{
 \fBhttp\fR
 T}	T{
-\fBtcp\fR is a layer 4 listener,\: \fBforward\fR an explicit proxy for clients,\: \fBdns\fR a DNS proxy,\: \fBsmtp\fR a protocol\-aware SMTP and submission proxy,\: \fBmqtt\fR an MQTT proxy,\: \fBftp\fR an FTP proxy,\: \fBsyslog\fR a syslog relay and \fBssh\fR an SSH bastion;\: see below. The kind also decides which daemon serves the listener: \fBhttp\fR,\: \fBforward\fR,\: \fBtcp\fR and \fBdns\fR are xproxy\(aqs,\: \fBssh\fR is xgate\(aqs,\: and \fBsmtp\fR,\: \fBmqtt\fR,\: \fBftp\fR and \fBsyslog\fR are xrelay\(aqs. A daemon handed a listener of another kind validates it and leaves it alone;\: it is never served by the wrong data plane
+\fBtcp\fR is a layer 4 stream listener and \fBudp\fR its datagram counterpart,\: \fBforward\fR an explicit proxy for clients,\: \fBdns\fR a DNS proxy,\: \fBsmtp\fR a protocol\-aware SMTP and submission proxy,\: \fBmqtt\fR an MQTT proxy,\: \fBftp\fR an FTP proxy,\: \fBsyslog\fR a syslog relay,\: and \fBssh\fR,\: \fBtelnet\fR,\: \fBvnc\fR and \fBrdp\fR the access gateways;\: see below. The kind also decides which daemon serves the listener: \fBhttp\fR,\: \fBforward\fR,\: \fBtcp\fR,\: \fBudp\fR and \fBdns\fR are xproxy\(aqs,\: \fBssh\fR,\: \fBtelnet\fR,\: \fBvnc\fR and \fBrdp\fR are xgate\(aqs,\: and \fBsmtp\fR,\: \fBmqtt\fR,\: \fBftp\fR and \fBsyslog\fR are xrelay\(aqs. A daemon handed a listener of another kind validates it and leaves it alone;\: it is never served by the wrong data plane
 T}
 T{
 \fBredirect_\:to_\:https\fR
@@ -345,6 +354,24 @@ T}	T{
 T}	T{
 Answer every request with 308 to \fBhttps:\:/\:/\:host/\:path?query\fR. Plaintext listeners only.
 T}
+T{
+\fBconnection_\:rate\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+\fB{per_\:second,\: burst}\fR: how fast this listener accepts,\: replacing \fBserver.\:limits.\:connection_\:rate\fR for it. See below
+T}
+T{
+\fBconnection_\:rate_\:per_\:source\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+\fB{per_\:second,\: burst,\: ipv4_\:prefix,\: ipv6_\:prefix,\: max_\:sources}\fR: how fast one source network may connect to this listener
+T}
 .TE
 .SS "server.listeners[].tcp (kind: tcp)"
 .PP
@@ -352,8 +379,8 @@ A \fBkind: tcp\fR listener forwards connections at layer 4. TLS connections are 
 .PP
 .TS
 allbox;
-lbw(1.2i) lbw(1.0i) lbw(0.8i) lbx
-lw(1.2i) lw(1.0i) lw(0.8i) lx.
+lbw(1.3i) lbw(1.0i) lbw(0.8i) lbx
+lw(1.3i) lw(1.0i) lw(0.8i) lx.
 T{
 Key
 T}	T{
@@ -388,7 +415,34 @@ duration
 T}	T{
 \fB10m\fR
 T}	T{
-Close after no bytes in either direction;\: at most 24h
+Close after no bytes in either direction;\: at most 24h. It is a property of the connection,\: not of one direction: a connection whose server side speaks rarely while the client is busy is not idle
+T}
+T{
+\fBsession_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR
+T}	T{
+Close after this long however active;\: at most 168h,\: and not shorter than \fBidle_\:timeout\fR
+T}
+T{
+\fBmax_\:bytes_\:in\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Bytes one connection may relay from the client;\: \fB0\fR is no bound
+T}
+T{
+\fBmax_\:bytes_\:out\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Bytes it may relay back;\: \fB0\fR is no bound. Past either the connection is closed,\: not truncated: a relay that kept the socket open and stopped forwarding would look to both peers like a network that had gone quiet
 T}
 T{
 \fBproxy_\:protocol\fR
@@ -427,6 +481,51 @@ T}	T{
 End a QUIC flow with no datagrams either way;\: at most 1h
 T}
 T{
+\fBconnect_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB10s\fR
+T}	T{
+Bound on the dial to an original destination,\: which has no pool to take one from
+T}
+T{
+\fBtransparent\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Dial the upstream \fBas the client\fR: \fBIP_\:TRANSPARENT\fR on the outgoing socket and a bind to the client\(aqs address,\: so an upstream with no PROXY protocol still sees who is calling. Linux,\: and needs \fBCAP_\:NET_\:ADMIN\fR;\: see below
+T}
+T{
+\fBoriginal_\:destination\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Take the destination from the socket rather than from \fBroutes\fR or \fBdefault\fR,\: for a transparently intercepted connection. Linux;\: requires \fBallow_\:destinations\fR
+T}
+T{
+\fBallow_\:destinations\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+CIDRs an original destination may be in. Required with \fBoriginal_\:destination\fR,\: and an empty list allows nothing
+T}
+T{
+\fBdestination_\:ports\fR
+T}	T{
+list of int
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Ports an original destination may have
+T}
+T{
 \fByara\fR
 T}	T{
 object
@@ -437,7 +536,35 @@ Apply YARA rules to the bytes of each connection;\: see below
 T}
 .TE
 .PP
-Endpoints are picked with the upstream\(aqs balancer (hash on the client address for \fBhash\fR), dial failures try the next endpoint and feed outlier ejection; active health checks run as configured on the upstream. Every connection writes one \fBtcp\fR line to the access log with the name, upstream, endpoint, bytes and duration (\fBproto: quic\fR for QUIC flows). Counters: \fBtcp_connections\fR, \fBtcp_rejected\fR, \fBtcp_errors\fR, \fBtcp_bytes_in\fR, \fBtcp_bytes_out\fR, \fBquic_flows\fR, \fBquic_rejected\fR, \fBquic_flows_open\fR; \fBxproxy_tcp_*\fR and \fBxproxy_quic_*\fR metrics. QUIC flows are keyed by client address, so a client that migrates to a new address starts a new flow (its first packet is not an Initial and is dropped; the client falls back or retries); QUIC versions other than 1 are dropped. Changing a tcp listener needs a restart.
+Endpoints are picked with the upstream\(aqs balancer (hash on the client address for \fBhash\fR), dial failures try the next endpoint and feed outlier ejection; active health checks run as configured on the upstream \[u2014] for a pool with no HTTP behind it, \fBhealth_check.type: tcp\fR is the probe that fits.
+.PP
+\fBA server that speaks first is relayed.\fR The listener waits about a second for a ClientHello before deciding there is not one, so SSH, SMTP, FTP, MySQL and PostgreSQL \[u2014] all of which greet the client before it says anything \[u2014] reach their client rather than deadlocking against a peek that is waiting for bytes the client is waiting to be greeted before sending. Every connection writes one \fBtcp\fR line to the access log with the name, upstream, endpoint, bytes and duration (\fBproto: quic\fR for QUIC flows). Counters: \fBtcp_connections\fR, \fBtcp_rejected\fR, \fBtcp_errors\fR, \fBtcp_bounded\fR (ended by \fBsession_timeout\fR or a byte bound rather than by a peer; the access log\(aqs \fBclosed\fR field says which), \fBtcp_bytes_in\fR, \fBtcp_bytes_out\fR, \fBquic_flows\fR, \fBquic_rejected\fR, \fBquic_flows_open\fR; \fBxproxy_tcp_*\fR and \fBxproxy_quic_*\fR metrics. QUIC flows are keyed by client address, so a client that migrates to a new address starts a new flow (its first packet is not an Initial and is dropped; the client falls back or retries); QUIC versions other than 1 are dropped. Changing a tcp listener needs a restart.
+.SS "Transparent interception"
+.PP
+Two socket tricks for the deployment where the client does not know the proxy is there. Both are \fBLinux only\fR and refused at load elsewhere, and \fBtransparent\fR needs \fBCAP_NET_ADMIN\fR, which is checked at load rather than discovered on the first connection.
+.PP
+\fB\fBoriginal_destination\fR\fR answers "which upstream" from the socket. The client dialled some service and a routing rule put the packets on this listener, so there is no configuration question to answer:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+With \fBTPROXY\fR the socket keeps the original destination as its own local address.
+.PP
+.ti -3n
+\(bu
+With \fBiptables REDIRECT\fR the kernel rewrote it, and the original is read with \fBgetsockopt SO_ORIGINAL_DST\fR.
+.RE
+.PP
+.PP
+The proxy reads REDIRECT\(aqs first and falls back to the local address, so it covers both without an operator having to tell it which rule they wrote \[u2014] and keep that in step with the firewall. The option is read for \fBIPv4\fR only; IPv6 interception is done with TPROXY in practice, where the destination is the socket\(aqs own address and no option is read at all. An IPv6 REDIRECT therefore falls through to that path, reads the listener\(aqs own address, and is refused by the loop check below rather than relayed somewhere wrong \[u2014] incomplete in the safe direction.
+.PP
+Three checks run before such a connection is relayed, cheapest first:
+.PP
+1. \fBThere is a destination to read.\fR Without one the connection arrived by some other route (\fBno_original_destination\fR). 2. \fBIt is not this listener\(aqs own address.\fR A firewall rule that sends a listener\(aqs port to itself makes a loop that consumes descriptors until the process dies, from one client packet. This is the only place in the proxy with a destination it did not choose, so it is the only place that needs the check; it counts in \fBtcp_errors\fR and warns in the error log, because the client did nothing wrong and an operator hunting a misconfiguration should not have to find it in a deny log full of real refusals (\fBdestination_loop\fR). 3. \fBIt is inside \fBallow_destinations\fR\fR (and \fBdestination_ports\fR, when set). An empty policy allows nothing, so forgetting the list means "nothing works" rather than "everything does"; it is required at load for the same reason (\fBdestination_not_allowed\fR, a \fBtcp_no_route\fR deny event, so bans apply).
+.PP
+\fB\fBtransparent\fR\fR makes the upstream see the client\(aqs own address, for a service that needs it and has no PROXY protocol to read it from: the outgoing socket gets \fBIP_TRANSPARENT\fR (and \fBIP_FREEBIND\fR, because the address being bound is not this machine\(aqs) and binds the client\(aqs address.
+.PP
+The return traffic then has to be routed back to this host, which is the firewall\(aqs business and not something the proxy can check \[u2014] so the listener \fBwarns at load\fR, because without it every connection fails in a way that looks exactly like a dead upstream. \fBtransparent\fR together with \fBproxy_protocol\fR is refused: the upstream would be told the client\(aqs address twice, in the header and in the source, and the two can disagree.
 .SS "server.listeners[].tcp.yara"
 .PP
 YARA rules over the bytes a layer 4 listener relays. The engine is a subset of the language implemented in Go \[u2014] this proxy links no C library into the data plane, and \fBCGO_ENABLED=0\fR is a property worth more here than the last few features of the grammar. What is supported:
@@ -533,6 +660,153 @@ T}
 Nothing is held back waiting for a verdict: the bytes scanned are the bytes forwarded, because a stream cannot be paused without the peer noticing. What a match decides is whether the connection continues. QUIC flows on the same listener are not scanned and validation says so: they are encrypted, and a rule over ciphertext matches nothing.
 .PP
 Counters: \fByara_matches\fR, \fByara_scanned\fR; \fBxproxy_yara_matches_total\fR and \fBxproxy_yara_bytes_total\fR. A match is a \fByara_match\fR security event with the rules, their tags and the offset.
+.SS "server.listeners[].udp (kind: udp)"
+.PP
+A \fBkind: udp\fR listener is a generic datagram relay: the symmetric primitive to \fBkind: tcp\fR for services this proxy has no parser for. Nothing in the payload is read. What it provides is an endpoint pool with a balancer and health checks in front of a UDP service, a set of bounds, and the telemetry the rest of the proxy has.
+.PP
+\fBThere is no connection, so there is a session table.\fR The first datagram from a client address picks an endpoint through the pool\(aqs balancer and opens a connected socket towards it; every later datagram from that address takes the same path, and what the endpoint answers goes back to that address. A session ends when it has been idle for \fBidle_timeout\fR, when it reaches one of its bounds, or at shutdown. The socket towards the endpoint is \fIconnected\fR, so the kernel drops anything arriving from another address: an answer forged by a third party never reaches the client.
+.PP
+\fBA datagram cannot be refused.\fR There is no reply that means "no", and an error sent to a source address that did not really send anything is itself an attack on whoever owns that address. So everything this relay will not forward is \fBdropped\fR, counted in \fBudp_dropped\fR and written to the security log as \fBudp_denied\fR with the reason in \fBdetail\fR \[u2014] which means bans apply to it. That is the whole difference in feel from \fBkind: tcp\fR, where a refusal is a closed connection the client sees.
+.PP
+\fBA source address is whatever the sender wrote\fR, which is why this listener needs an admission policy more than a stream one does:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBallow_clients\fR, or \fBrate_limit\fR, or both. Validation \fBwarns\fR when a listener on a non\-loopback address has neither, because an open datagram relay is somebody else\(aqs amplifier: it answers a victim with traffic the victim never asked for, at whatever gain the service behind it provides.
+.PP
+.ti -3n
+\(bu
+\fBmax_sessions_per_ip\fR as well as \fBmax_sessions\fR. Without the per source bound, a few forged datagrams a second fill the table and the service stops for every client that is real.
+.RE
+.PP
+.PP
+\fBNo accept socket at all.\fR This is the one kind that binds only a datagram socket, so nothing holds the matching TCP port and a client that connects to it is refused by the kernel rather than left hanging. Everything that applies to accepted connections therefore does not apply here \[u2014] the shared connection limiter, \fBproxy_protocol\fR (which has no datagram form and is refused at load), a \fBtls\fR section (there is no handshake on a datagram to secure) \[u2014] and the bounds below are the whole of the admission policy. Any change to such a listener restarts the daemon rather than being applied in place, as it does for every listener that owns a UDP socket.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.9i) lbw(0.9i) lbx
+lw(1.0i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBupstream\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+The pool of endpoints
+T}
+T{
+\fBidle_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+No datagram in either direction ends the session. It stands in for a connection close,\: since nothing in the protocol says a client has finished
+T}
+T{
+\fBsession_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR
+T}	T{
+Bound on a whole session however active. Must not be shorter than \fBidle_\:timeout\fR
+T}
+T{
+\fBmax_\:sessions\fR
+T}	T{
+int
+T}	T{
+\fB10000\fR
+T}	T{
+The session table. A datagram from a new client when it is full is dropped and counted in \fBudp_\:rejected\fR
+T}
+T{
+\fBmax_\:sessions_\:per_\:ip\fR
+T}	T{
+int
+T}	T{
+\fB64\fR
+T}	T{
+Sessions from one address;\: \fB0\fR removes the bound. This is what keeps one source,\: or one forged source,\: from filling the table
+T}
+T{
+\fBmax_\:datagram_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB65535\fR
+T}	T{
+The largest datagram relayed either way. A larger one is dropped whole rather than truncated,\: because half a datagram is not a shorter datagram
+T}
+T{
+\fBmax_\:datagrams\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Datagrams in one session,\: both directions;\: \fB0\fR is no bound
+T}
+T{
+\fBmax_\:bytes_\:in\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Bytes one session relays from the client;\: \fB0\fR is no bound
+T}
+T{
+\fBmax_\:bytes_\:out\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Bytes it relays back;\: \fB0\fR is no bound
+T}
+T{
+\fBrate_\:limit.\:pps\fR
+T}	T{
+float
+T}	T{
+none
+T}	T{
+Datagrams per second from one source address
+T}
+T{
+\fBrate_\:limit.\:burst\fR
+T}	T{
+int
+T}	T{
+\fBpps\fR rounded up
+T}	T{
+How many may arrive at once
+T}
+T{
+\fBallow_\:clients\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+CIDRs a client must come from
+T}
+.TE
+.PP
+Counters: \fBudp_sessions\fR, \fBudp_sessions_open\fR, \fBudp_datagrams_in\fR, \fBudp_datagrams_out\fR, \fBudp_bytes_in\fR, \fBudp_bytes_out\fR, \fBudp_dropped\fR (a datagram the policy would not relay), \fBudp_rejected\fR (a new client the table bounds refused) and \fBudp_errors\fR (a session that found no reachable endpoint); the matching \fBxproxy_udp_*\fR metrics. Every session writes one \fBudp\fR access line with the client, the endpoint, the datagrams and bytes each way and how it ended. Refusals are \fBudp_denied\fR deny events, so bans apply.
 .SS "server.listeners[].forward (kind: forward)"
 .PP
 A \fBkind: forward\fR listener is an explicit proxy that clients configure in their browser or \fBHTTPS_PROXY\fR. \fBCONNECT host:port\fR opens a tunnel (TLS stays end to end between the client and the destination; nothing is inspected) and absolute \fBhttp://\fR request lines are relayed with hop\-by\-hop headers removed and \fBVia: 1.1 xproxy\fR added. Requests that are neither (an ordinary origin\-form request, an \fBhttps://\fR URI) get 400. Every destination passes the policy below before a connection is made: the port must be listed, the name is resolved, the resolved addresses must not be private unless \fBallow_private\fR is set, \fBdeny\fR wins, and a non\-empty \fBallow\fR must match. The address that passed the check is the one dialled, so a name cannot rebind between check and connect. Refusals answer 403, are logged as security events (\fBforward_port\fR, \fBforward_private\fR, \fBforward_deny\fR, \fBforward_not_allowed\fR, \fBforward_resolve\fR) and count towards the \fBforward_denied\fR ban reason. A forward listener may terminate TLS from the client (\fBtls\fR), and with TLS may list \fBh2\fR so clients tunnel \fBCONNECT\fR over an HTTP/2 stream (the stream carries the tunnel, one per request, ending when the destination closes or the client resets); it takes no \fBtcp\fR, \fBredirect_to_https\fR, \fBh3\fR or \fBh2c\fR. Bans, the connection limits and the header timeouts apply as on every listener.
@@ -2658,6 +2932,42 @@ T}	T{
 Drop the client\(aqs key,\: pointer and cut\-text messages,\: so a session is watched and not driven
 T}
 T{
+\fBpixel_\:stream\fR
+T}	T{
+string
+T}	T{
+\fBframed\fR
+T}	T{
+\fBframed\fR reads the desktop\(aqs picture and applies \fBbounds\fR;\: \fBopaque\fR forwards it unread,\: which is what a desktop that must use the \fBtight\fR encoding needs. See below
+T}
+T{
+\fBbounds\fR
+T}	T{
+object
+T}	T{
+see below
+T}	T{
+What the desktop may ask the viewer to allocate
+T}
+T{
+\fBclipboard\fR
+T}	T{
+string
+T}	T{
+\fBboth\fR
+T}	T{
+Which way a clipboard transfer may travel: \fBboth\fR,\: \fBto_\:client\fR,\: \fBto_\:target\fR or \fBnone\fR
+T}
+T{
+\fBallow_\:resize\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Let a client ask the desktop to change size. The size asked for is bounded by \fBbounds.\:max_\:framebuffer_\:pixels\fR whatever this says
+T}
+T{
 \fBrecording\fR
 T}	T{
 object
@@ -2730,6 +3040,83 @@ T}	T{
 CIDRs a client must come from
 T}
 .TE
+.SS "Reading the picture: \fBpixel_stream\fR and \fBbounds\fR"
+.PP
+An image protocol\(aqs numbers are the viewer\(aqs allocations. A \fBServerInit\fR says the desktop is so many pixels wide and high, and the viewer allocates a framebuffer from it; a rectangle\(aqs twelve byte header says how much of the screen it covers, and the viewer sizes a decode buffer from that. A desktop that says 4096x4096 in twelve bytes of zlib is not sending a picture, it is asking the machine on somebody\(aqs desk for sixty\-four megabytes, and it can ask again immediately. This is what makes an image protocol the cheapest place to aim a decompression bomb.
+.PP
+With \fBpixel_stream: framed\fR (the default) the gateway reads every message the desktop sends and every rectangle inside it, so it can refuse one. Nothing is decompressed to do this: each bound compares what was declared with what arrived.
+.PP
+.TS
+allbox;
+lbw(1.3i) lbw(0.6i) lbw(1.2i) lbx
+lw(1.3i) lw(0.6i) lw(1.2i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Meaning
+T}
+T{
+\fBbounds.\:max_\:framebuffer_\:pixels\fR
+T}	T{
+int
+T}	T{
+\fB33177600\fR (7680x4320)
+T}	T{
+The desktop size in pixels: the one the target announces,\: the one a resize changes it to,\: and the one a client asks for
+T}
+T{
+\fBbounds.\:max_\:rectangles_\:per_\:update\fR
+T}	T{
+int
+T}	T{
+\fB4096\fR
+T}	T{
+Rectangles in one framebuffer update. A thousand one\-pixel rectangles cost the viewer a thousand decode calls for one screen
+T}
+T{
+\fBbounds.\:max_\:encoded_\:rectangle\fR
+T}	T{
+int
+T}	T{
+\fB16777216\fR
+T}	T{
+One rectangle\(aqs encoded payload,\: in bytes
+T}
+T{
+\fBbounds.\:max_\:decode_\:ratio\fR
+T}	T{
+int
+T}	T{
+\fB1000\fR
+T}	T{
+The declared picture over the bytes that carry it,\: for the compressed encodings. A thousandfold is past any real screen
+T}
+T{
+\fBbounds.\:max_\:cut_\:text\fR
+T}	T{
+int
+T}	T{
+\fB1048576\fR
+T}	T{
+One clipboard transfer,\: in either direction
+T}
+.TE
+.PP
+A zero is no bound. Two checks apply whatever \fBbounds\fR says: a rectangle must lie inside the framebuffer it belongs to (a viewer writes a rectangle\(aqs pixels at the offset the rectangle gives, and one reaching past the end is a write past the end of the buffer the viewer made for it), and a pixel format must be 8, 16 or 32 bits, because every length in the picture is measured in whole pixels.
+.PP
+\fBFraming decides what a client may ask for.\fR A gateway can only frame an encoding whose payload length it can compute, so the encodings it cannot are removed from the client\(aqs \fBSetEncodings\fR list and the desktop never uses one. What survives: \fBraw\fR, \fBcopyrect\fR, \fBrre\fR, \fBcorre\fR, \fBhextile\fR, \fBzlib\fR, \fBzrle\fR, the cursor and desktop\-size pseudo\-encodings, the compression and quality hints, \fBfence\fR, continuous updates and the extended clipboard. What is removed: \fB\fBtight\fR\fR and \fBtrle\fR, whose lengths depend on a filter, a palette size and a pixel width that is not the pixel format\(aqs; \fBcursor\-with\-alpha\fR; and anything unregistered. A client asks for every encoding it has, so a filtered list still leaves a session that draws \-\- \fBzrle\fR is the usual survivor, and \fBraw\fR is added if nothing else is left.
+.PP
+A listener that must have \fBtight\fR sets \fBpixel_stream: opaque\fR. The desktop\(aqs bytes are then forwarded unread: \fBmax_framebuffer_pixels\fR and \fBmax_cut_text\fR still apply, and the three bounds that need the stream read do not. Validation warns, because that is the trade.
+.PP
+The \fBclient\(aqs\fR messages are framed either way. A message is only as long as its type says, so framing is what lets a gateway drop one and forward the next \-\- which is how \fBview_only\fR and \fBclipboard\fR work \-\- and a message type whose length the gateway does not know cannot be forwarded at all without losing the stream after it. \fBThat is why a file transfer cannot cross this gateway\fR: TightVNC\(aqs and UltraVNC\(aqs transfers are client messages 252 and 255, whose lengths are the vendors\(aq own, so a session that sends one ends. It is a consequence of framing rather than a rule, which is the strongest kind.
+.PP
+One restriction comes with framing: a \fBSetPixelFormat\fR is allowed before the first framebuffer update request and refused after it. RFB has no message that says "the next rectangle is in the new format", so a gateway that kept framing past a mid\-stream change would be guessing where the rectangles are. Viewers that re\-negotiate colour depth automatically (TigerVNC\(aqs automatic mode) need a fixed depth configured, or \fBpixel_stream: opaque\fR.
+.PP
+Every refusal on this path is counted under \fBxproxy_refusals_total{kind="vnc"}\fR with a reason of its own (\fBframebuffer_too_large\fR, \fBdecode_ratio\fR, \fBtoo_many_rectangles\fR, \fBencoded_rectangle_too_large\fR, \fBrectangle_outside_framebuffer\fR, \fBunframable\fR, \fBcut_text_too_large\fR, \fBresize_refused\fR, \fBpixel_format_changed\fR) and logged as a \fBvnc_denied\fR security event with the numbers that caused it.
 .SS "VNC over TLS, and VNC over SSH"
 .PP
 Three ways to stop the session crossing a network in clear. The two that encrypt the client\(aqs leg are alternatives; the third is the target\(aqs leg and composes with either.
@@ -3616,7 +4003,68 @@ T}
 .PP
 A control line that is not exactly CRLF\-terminated is refused, and so is one carrying a telnet \fBIAC\fR. Each of them is a way for the proxy and the target to disagree about where a command ends, which is how one command becomes two: the proxy reads \fBNOOP\fR and the target reads \fBNOOP\fR and the \fBDELE\fR hidden after a bare newline.
 .PP
-Only the side that arranged a data connection may use it: a passive connection has to come from the client\(aqs own address, an active one from the target\(aqs. \fBPROT P\fR is terminated on both sides rather than tunnelled, so a protected transfer is still a transfer this proxy can hold to \fBmax_file_bytes\fR and to its rules. \fBCCC\fR is refused: clearing the control channel after \fBAUTH TLS\fR puts the rest of the session, including every path, back in clear on the wire.
+Only the side that arranged a data connection may use it: a passive connection has to come from the client\(aqs own address, an active one from the target\(aqs. The address in a passive reply is \fInot\fR used: the proxy dials the target it already has a control connection to, with the port from the reply, so a server that answers with somebody else\(aqs address cannot redirect it. \fBPROT P\fR is terminated on both sides rather than tunnelled, so a protected transfer is still a transfer this proxy can hold to \fBmax_file_bytes\fR and to its rules. \fBCCC\fR is refused twice over: it is not in the default \fBcommands\fR list, and a listener whose operator adds it still gets a 534, because clearing the control channel after \fBAUTH TLS\fR puts the rest of the session, including every path, back in clear on the wire.
+.PP
+##### The commands that are only half a decision
+.PP
+Two FTP commands mean nothing on their own, and a proxy that read each command in isolation would hold a policy over both halves and miss what the pair does.
+.PP
+\fB\fBREST\fR\fR sets a byte offset for the next transfer. \fBREST 1000\fR then \fBSTOR /pub/x\fR is not an upload of the bytes that arrive: it is an edit of a file at an offset, and the bytes that arrive are a fragment. Two consequences, both of which this proxy acts on:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+A scanner sees what crosses the proxy. With an offset, that is a fragment, so \fByara\fR or \fBicap\fR rules that would match the whole file never see it \-\- upload the first half, \fBREST\fR to the middle, upload the second, and each half passes. A resumed transfer on a listener with either is refused with 451 (\fBrest_unscannable\fR): the proxy cannot scan bytes it will never be shown, and pretending otherwise would be a hole in the rule set rather than a limitation of it.
+.PP
+.ti -3n
+\(bu
+\fBmax_file_bytes\fR is about the file, so the offset counts towards it. A resumed upload of ten bytes at offset sixty is seventy bytes against the bound, not ten.
+.RE
+.PP
+.PP
+The marker must be a plain non\-negative decimal (RFC 3659 lets a server define its own marker format, which is a value this proxy cannot reason about and will not carry), it is bounded at 2^40, and it is spent by the transfer it was for \-\- refused or not \-\- and cleared by any command outside the transfer setup (\fBPASV\fR, \fBEPSV\fR, \fBPORT\fR, \fBEPRT\fR, \fBTYPE\fR, \fBMODE\fR, \fBSTRU\fR, \fBPBSZ\fR, \fBPROT\fR), which is what a server does too.
+.PP
+\fB\fBRNFR\fR\fR names a file to rename and \fBRNTO\fR the new name. An \fBRNTO\fR without an \fBRNFR\fR the server accepted with 350 is half a decision, so it is refused with 503 (\fBrename_out_of_order\fR) rather than forwarded \-\- and an \fBRNFR\fR the path policy refused never reaches the server, so the \fBRNTO\fR that would have completed it is refused too. Anything in between breaks the pair, as RFC 959 requires.
+.PP
+##### Path shapes the proxy will not guess about
+.PP
+A path argument is refused outright, before the allow and deny lists are consulted, when the proxy and the server would read it differently. Each of these is a way for the path the policy matched and the path the server opened to be two different files:
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(1.0i) lbx
+lw(1.0i) lw(1.0i) lx.
+T{
+Refused
+T}	T{
+Reason
+T}	T{
+Why
+T}
+T{
+A backslash anywhere
+T}	T{
+\fBpath_\:separator\fR
+T}	T{
+A separator on a Windows server and an ordinary character in a pattern here,\: so \fB/\:srv/\:exports\e.\:.\:\e.\:.\:\eetc\fR is inside the allowed tree as far as this proxy can tell and outside it as far as the server is concerned. There is no escaping that works for both
+T}
+T{
+A control character
+T}	T{
+\fBpath_\:control\fR
+T}	T{
+Not part of a name anybody needs,\: and a carriage return is the first half of a command the server reads and the proxy did not (a telnet \fBIAC\fR is already refused by the line reader)
+T}
+T{
+Bytes that are not valid UTF\-8
+T}	T{
+\fBpath_\:encoding\fR
+T}	T{
+An overlong sequence decodes to \fB/\fR on a lenient decoder and is not a separator to a strict one;\: a truncated one is a different name depending on who reads it. \fBOPTS UTF8 ON\fR is relayed,\: and matching is on bytes either way,\: so a path that is valid UTF\-8 means the same thing on both sides
+T}
+.TE
+.PP
+Paths in other scripts are unaffected: this refuses the shapes that cannot be compared, not everything above ASCII.
 .SS "server.listeners[].ftp.recording"
 .PP
 Writes the control channel \-\- every command and every reply \-\- to one file per session, in the asciicast v2 format the ssh bastion uses, so the same player replays it. The fields are the ones documented under \fBserver.listeners[].ssh.recording\fR: \fBenabled\fR, \fBdirectory\fR, \fBfile_prefix\fR, \fBmax_file_bytes\fR, \fBmax_files\fR. (\fBinput\fR and \fBcommands\fR are ssh\(aqs and are ignored here: an ftp dialogue has one stream, and the proxy already sees both halves of it.)
@@ -3705,8 +4153,8 @@ An ssh listener takes \fBaddress\fR and \fBssh\fR and no \fBtls\fR: SSH carries 
 .PP
 .TS
 allbox;
-lbw(1.2i) lbw(0.9i) lbw(1.4i) lbx
-lw(1.2i) lw(0.9i) lw(1.4i) lx.
+lbw(1.3i) lbw(0.9i) lbw(1.4i) lbx
+lw(1.3i) lw(0.9i) lw(1.4i) lx.
 T{
 Key
 T}	T{
@@ -3750,7 +4198,61 @@ path
 T}	T{
 
 T}	T{
-OpenSSH public keys,\: one per line,\: that may sign user certificates. A client offering a certificate is accepted when the signature verifies,\: the validity window covers now and the principal list names the login it is connecting as;\: without this key a certificate is refused rather than treated as a plain key
+OpenSSH public keys,\: one per line,\: that may sign user certificates. A client offering a certificate is accepted when the signature verifies,\: the validity window covers now and the principal list names the login it is connecting as;\: without this key a certificate is refused rather than treated as a plain key. What else the certificate says is read too: see below
+T}
+T{
+\fBrevoked_\:keys\fR
+T}	T{
+path
+T}	T{
+
+T}	T{
+Public keys,\: in authorized_keys format,\: refused whatever else says otherwise: the key itself,\: a certificate carrying it,\: and every certificate signed by it. It is the one list that overrides the CA,\: which is what makes a certificate revocable before it expires
+T}
+T{
+\fBmax_\:certificate_\:lifetime\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR (none)
+T}	T{
+Refuse a user certificate whose validity window is longer than this,\: and any that never expires. The point of certificates over \fBauthorized_\:keys\fR is that they expire;\: a CA issuing for a year has made a credential nobody can take back for a year
+T}
+T{
+\fBmax_\:forwards\fR
+T}	T{
+int
+T}	T{
+\fB8\fR
+T}	T{
+Port forwards one connection may hold open at once. A session that may forward at all can otherwise open one per descriptor the proxy has
+T}
+T{
+\fBmax_\:sessions_\:per_\:principal\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (none)
+T}	T{
+Connections one principal (or,\: with no \fBprincipals\fR,\: one login) may hold at once. \fBmax_\:sessions\fR is the whole fleet\(aqs: a bound of a thousand is a thousand for one key as much as for everybody
+T}
+T{
+\fBrekey_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Bytes before the transport agrees a fresh key;\: the crypto library\(aqs own threshold when unset. A bastion session lasts a working day on one key otherwise
+T}
+T{
+\fBallow_\:shell_\:syntax\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Let an \fBexec\fR command carry shell operators. See below: \fBallow_\:commands\fR is a list of patterns,\: and a pattern is a weak thing to hold a shell to
 T}
 T{
 \fBusers_\:file\fR
@@ -4095,6 +4597,39 @@ A denied principal never reaches the target: the refusal is at authentication, b
 A principal\(aqs \fBrecording\fR replaces the listener\(aqs, which is how one entry is recorded and another is not; \fBrecording: {enabled: false}\fR is how a principal is spared where the listener records.
 .PP
 An entry that brings its own \fBsftp\fR section to a listener that has none also inherits the default that section implies: file transfer helpers are refused for that principal, because \fBscp\fR beside a careful \fBsftp\fR policy is the policy with a door next to it.
+.PP
+##### What the certificate says, beyond the signature
+.PP
+A user certificate is not only a signature over a key and a list of principals. It carries the CA\(aqs own restrictions, and a gateway that checks the signature and ignores the rest is a gateway where those restrictions do not exist. All of these are enforced:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fB\fBsource\-address\fR\fR, the critical option naming the networks the certificate may be used from. It is enforced here because it is the one option whose check needs the client\(aqs address, which is why the Go library deliberately leaves it to the caller. A list this gateway cannot parse refuses the certificate rather than being treated as absent.
+.PP
+.ti -3n
+\(bu
+\fB\fBforce\-command\fR\fR, the critical option fixing what the session runs. The client\(aqs command is \fIreplaced\fR by it, as OpenSSH does \[u2014] a certificate issued to run one thing is issued for a reason \[u2014] and a \fBshell\fR request becomes that command too. Both are written to the security log as \fBssh_force_command\fR, with what was asked and what ran.
+.PP
+.ti -3n
+\(bu
+\fBThe extensions are permissions, and their absence is a denial.\fR \fBpermit\-pty\fR, \fBpermit\-port\-forwarding\fR, \fBpermit\-agent\-forwarding\fR, \fBpermit\-X11\-forwarding\fR. A certificate made with \fBssh\-keygen \-O clear \-O permit\-pty\fR grants a terminal and nothing else, whatever this listener\(aqs \fBallow_channels\fR and \fBallow_requests\fR would otherwise allow. A certificate issued the ordinary way carries all five, so nothing changes for one.
+.PP
+.ti -3n
+\(bu
+\fBAny other critical option refuses the certificate.\fR A critical option is critical: the CA meant it to be honoured or the credential refused, so an option this gateway does not implement must not be quietly ignored.
+.RE
+.PP
+.PP
+Both policies apply and the narrower wins: the CA says what this credential may do, the listener says what anybody may do here. A session authenticated by a plain key is restricted by the listener alone.
+.PP
+##### \fBallow_commands\fR is patterns, and a shell is not
+.PP
+\fBallow_commands\fR is a list of RE2 patterns over the command line, and a pattern is a weak thing to hold a shell to: \fB^journalctl .*$\fR matches \fBjournalctl \-u x; rm \-rf /\fR exactly as happily as what it was written for. So the line is read the way a shell would split it \fIfirst\fR, and one carrying an operator \[u2014] \fB;\fR \fB&\fR \fB|\fR \fB<\fR \fB>\fR a backquote, a \fB$(\fR, a brace, a glob, a control character, an unbalanced quote \[u2014] is refused with \fBshell_syntax\fR before any pattern is tried.
+.PP
+This is deliberately crude and deliberately broad. A bastion does not need to know what a line would do; it needs to know that the line is a command with arguments, which is the only shape a list of patterns can be written against. \fBallow_shell_syntax: true\fR turns the check off for a listener that genuinely needs shell syntax, and warns, because the patterns then have to be written knowing it.
+.PP
+The strong form of a command policy is \fBforce\-command\fR on the certificate: the CA fixes the command and the client\(aqs own is replaced, so there is no line to pattern\-match at all.
 .SS "server.listeners[].ssh.recording"
 .PP
 The access log says a session happened. It cannot say what was done in it, because what was done is a stream of control sequences inside the channel. This writes that stream to a file per channel, in the asciicast v2 format, so "what did they actually run" is a question with an answer that is watched rather than reconstructed:
@@ -4102,12 +4637,12 @@ The access log says a session happened. It cannot say what was done in it, becau
 .RS 4
 .nf
 .ft CR
-asciinema play /var/log/xproxy/sessions/session\-20260921\-143022.100\-alice.cast
+xproxyctl session show /var/log/xproxy/sessions/session\-20260921\-143022.100\-alice.cast
 .ft
 .fi
 .RE
 .PP
-The format is line oriented, so a recording cut short by a crash or by \fBmax_file_bytes\fR still plays up to where it stops, and it is text, so the usual tools work on it. It is a stream, not a transcript: what the person saw is what a terminal makes of it, which means reading one is replaying it.
+The format is line oriented, so a recording cut short by a crash or by \fBmax_file_bytes\fR still plays up to where it stops, and it is text, so the usual tools work on it. It is a stream, not a transcript: what the person saw is what a terminal makes of it, which means \fBreading one is replaying it\fR \[u2014] a terminal is an interpreter, and the bytes in the file were written by the person recorded. \fBxproxyctl session show\fR, \fBshow \-safe\fR and \fBplay\fR read one with the sequences that reach outside the replay taken out: the clipboard writes, the title changes, and the device reports a terminal answers on its own input, which a shell then reads as a command line. \fBasciinema play\fR and \fBcat\fR do not. See USAGE.md.
 .PP
 .TS
 allbox;
@@ -4975,7 +5510,118 @@ T}	T{
 T}	T{
 Ceiling on request bodies held in memory at once across the process;\: a request on a route that inspects bodies and does not fit is refused with \fB503\fR and reason \fBbody_\:budget\fR
 T}
+T{
+\fBconnection_\:rate\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+
+T}	T{
+\fB{per_\:second,\: burst}\fR: accepts per second across every listener. See below
+T}
+T{
+\fBconnection_\:rate_\:per_\:source\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+
+T}	T{
+\fB{per_\:second,\: burst,\: ipv4_\:prefix,\: ipv6_\:prefix,\: max_\:sources}\fR: accepts per second from one source network
+T}
 .TE
+.SS "Connection rate: the bound \fBmax_connections\fR does not give"
+.PP
+\fBmax_connections\fR and \fBmax_connections_per_ip\fR say how many connections may be \fBopen at once\fR. They say nothing about churn, and churn is what most attacks on a service look like: a client that connects, makes the server do the expensive half of a handshake and disconnects never holds two connections and can still spend a core. It is also what an accidental flood looks like \[u2014] a restarting client fleet reconnecting in lock\-step.
+.PP
+That matters most exactly where the handshake is dearest and happens \fBbefore\fR the proxy knows who is calling: an SSH key exchange, a TLS handshake, an RDP connection sequence. Those listeners should have a rate.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.6i) lbw(0.9i) lbx
+lw(1.2i) lw(0.6i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBconnection_\:rate.\:per_\:second\fR
+T}	T{
+float
+T}	T{
+required
+T}	T{
+Sustained accepts per second
+T}
+T{
+\fBconnection_\:rate.\:burst\fR
+T}	T{
+int
+T}	T{
+\fBper_\:second\fR rounded up
+T}	T{
+How many may arrive at once
+T}
+T{
+\fBconnection_\:rate_\:per_\:source.\:per_\:second\fR
+T}	T{
+float
+T}	T{
+required
+T}	T{
+Sustained accepts per second from one source network
+T}
+T{
+\fBconnection_\:rate_\:per_\:source.\:burst\fR
+T}	T{
+int
+T}	T{
+\fBper_\:second\fR rounded up
+T}	T{
+
+T}
+T{
+\fBconnection_\:rate_\:per_\:source.\:ipv4_\:prefix\fR
+T}	T{
+int
+T}	T{
+\fB32\fR
+T}	T{
+The network the rate is counted over;\: 8 to 32
+T}
+T{
+\fBconnection_\:rate_\:per_\:source.\:ipv6_\:prefix\fR
+T}	T{
+int
+T}	T{
+\fB64\fR
+T}	T{
+16 to 128,\: and a warning above /\:96
+T}
+T{
+\fBconnection_\:rate_\:per_\:source.\:max_\:sources\fR
+T}	T{
+int
+T}	T{
+\fB65536\fR
+T}	T{
+Networks tracked at once;\: 1 to 4194304
+T}
+.TE
+.PP
+Two bounds, because they answer different attackers. The \fBtotal\fR rate protects the accept path itself whatever the traffic is spread across. The \fBper source\fR rate protects everyone else from one source, and it is keyed by a \fBnetwork rather than an address\fR on purpose: an attacker with a /64 of IPv6 has more addresses than any table could hold, so a per address bound would be no bound at all while the per address table would itself be the thing that filled up. The default /64 is the smallest block an operator is normally given; above /96 validation warns, because counting single addresses costs memory and stops nothing.
+.PP
+A refused connection is \fBclosed immediately after accept, before a byte is read\fR, which is all a listener can do about a connection the kernel has already handed it, and it is cheap. Refusals are counted in \fBrate_refused_connections\fR and \fBxproxy_connections_rate_refused_total\fR, and reported in the error log through the same aggregation as the other accept refusals \[u2014] a client looping connections must not make each refusal cost a synchronous log write.
+.PP
+A listener\(aqs own \fBconnection_rate\fR sections \fBreplace\fR these for that listener rather than adding to them, so one number is the answer to "what bounds this port". A rate change on reload rebinds no socket.
 .PP
 \fBmax_buffered_body_bytes\fR covers every feature that materialises a whole request body: \fBupload_guard\fR, \fBsensitive_data\fR, \fBaccount_guard\fR, \fBopenapi\fR, \fBgraphql\fR, \fBbody_rewrite\fR, \fBwasm\fR, the WAF\(aqs body inspection, ICAP, a virtual patch\(aqs body pattern and a mirrored request. Each of those is bounded per request, and the product was the real ceiling: \fBmax_connections_per_ip\fR (256) times \fBmax_body_bytes\fR (10 MiB) is about 2.5 GiB of heap from one address, sent slowly enough to stay inside \fBread_timeout\fR. A request whose body cannot be charged is refused before it is read; \fBxproxyctl stats\fR shows what is held, the high\-water mark and the refusals.
 .SS "server.normalization"
@@ -6269,8 +6915,8 @@ Memory: at most 64 x 8192 buckets per policy.
 .PP
 .TS
 allbox;
-lbw(1.1i) lbw(1.0i) lbw(1.2i) lbx
-lw(1.1i) lw(1.0i) lw(1.2i) lx.
+lbw(1.3i) lbw(1.0i) lbw(1.2i) lbx
+lw(1.3i) lw(1.0i) lw(1.2i) lx.
 T{
 Key
 T}	T{
@@ -6292,11 +6938,11 @@ T}
 T{
 \fBbalancer\fR
 T}	T{
-\fBround_\:robin\fR,\: \fBweighted\fR,\: \fBleast_\:conn\fR,\: \fBhash\fR
+\fBround_\:robin\fR,\: \fBweighted\fR,\: \fBleast_\:conn\fR,\: \fBhash\fR,\: \fBp2c\fR,\: \fBewma\fR
 T}	T{
 \fBround_\:robin\fR
 T}	T{
-
+See below for the last two
 T}
 T{
 \fBhash_\:on\fR
@@ -6314,7 +6960,61 @@ list
 T}	T{
 required,\: at least one
 T}	T{
-\fB{address:\: host:\:port,\: weight:\: 1.\:.\:1000,\: canary:\: bool}\fR;\: \fBcanary\fR marks the endpoints the \fBcanary\fR policy selects
+\fB{address:\: host:\:port,\: weight:\: 1.\:.\:1000,\: canary:\: bool,\: drain:\: bool,\: max_\:connections:\: int,\: priority:\: 0.\:.\:99,\: zone:\: name}\fR;\: \fBcanary\fR marks the endpoints the \fBcanary\fR policy selects,\: \fBdrain\fR takes one out of rotation,\: \fBmax_\:connections\fR bounds what is in flight to it,\: and \fBpriority\fR and \fBzone\fR tier it \[u2014] see below. An address may instead be \fBunix:\:/\:path/\:to/\:socket\fR
+T}
+T{
+\fBlocality\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+\fB{prefer_\:zone:\: bool,\: min_\:local:\: int}\fR: prefer the endpoints of this node\(aqs own \fBserver.\:zone\fR
+T}
+T{
+\fBaddress_\:family\fR
+T}	T{
+\fBany\fR,\: \fBipv4\fR,\: \fBipv6\fR
+T}	T{
+\fBany\fR
+T}	T{
+Which of a dual\-stack endpoint\(aqs addresses may be dialled. \fBany\fR races the two families as RFC 8305 describes
+T}
+T{
+\fBfallback_\:delay\fR
+T}	T{
+duration
+T}	T{
+\fB300ms\fR
+T}	T{
+How long the second family is held back in that race;\: at most 10s,\: and a negative value tries the families in order instead
+T}
+T{
+\fBmax_\:connections_\:per_\:endpoint\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (none)
+T}	T{
+Default for every endpoint\(aqs own \fBmax_\:connections\fR
+T}
+T{
+\fBmax_\:connection_\:age\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR (none)
+T}	T{
+How long one upstream connection is kept;\: at least 1s,\: at most 24h. See below
+T}
+T{
+\fBmaintenance\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Take the whole pool out of rotation: it offers no endpoint,\: so a route over it answers as it does when everything is unhealthy
 T}
 T{
 \fBcanary\fR
@@ -6551,6 +7251,117 @@ T}	T{
 Sends staggered copies of a slow idempotent request to other endpoints and keeps the first usable answer;\: see below
 T}
 .TE
+.SS "Dual\-stack endpoints: the race, and restricting it"
+.PP
+An endpoint name with both an A and an AAAA record has two ways to be reached, and the one that is broken costs a connect timeout on every request that tries it first. With \fBaddress_family: any\fR (the default) the families are \fBraced\fR as RFC 8305 describes: the first is tried, the other follows after \fBfallback_delay\fR (300ms, the value the RFC recommends), and whichever connects first wins. An estate that has just turned IPv6 on does not have to know about any of this.
+.PP
+\fBipv4\fR or \fBipv6\fR dials that family \fBonly\fR. It is for the estate where one family is the only one that works, and naming it means a name that also has the other kind of record cannot quietly use the family the policy meant to exclude \[u2014] which is the failure a preference would hide.
+.PP
+A negative \fBfallback_delay\fR turns the race off, so the families are tried in order; naming one family makes the delay meaningless and warns.
+.SS "Two balancers that read what the endpoints are doing"
+.PP
+\fBleast_conn\fR scans every endpoint and takes the best, which has a failure mode of its own: every proxy in a fleet sees the same "best" endpoint at the same moment and they all send to it together, so the herd moves from one endpoint to the next.
+.PP
+\fB\fBp2c\fR\fR \[u2014] power of two choices \[u2014] takes two endpoints at random and uses the better of those, by in\-flight count per unit of weight. One comparison is enough to avoid the worst endpoint, and the randomness means two proxies rarely agree on where to send, so load spreads instead of sloshing. It is the one to reach for when the endpoints are equal and the load varies, and it is the one that fits a pool with no responses to measure \[u2014] a layer 4 relay\(aqs.
+.PP
+\fB\fBewma\fR\fR weighs endpoints by the smoothed time to first byte the pool already keeps for outlier detection, times the queue a request would join: an estimate of how long a request sent now would take. An endpoint answering slowly gets less work \fBlong before\fR it is slow enough to fail a health check or be ejected, which is the difference between shedding load away from a struggling machine and waiting for it to break.
+.PP
+An endpoint with no latency sample yet costs nothing, so a new or recovered one is tried rather than starved by the fact that nothing is known about it; \fBslow_start\fR is what keeps that from being a flood. On a quiet pool, where nothing distinguishes the endpoints, both balancers spread uniformly rather than settling on the first.
+.SS "Tiers: priority, backup and locality"
+.PP
+\fBendpoints[].priority\fR tiers a pool. The endpoints of the \fBlowest priority number that has an available member\fR carry the traffic and the rest are ignored; when that tier has nothing left, the next one takes over, and hands it back when the first returns. A retry that has used up a tier falls to the next one too.
+.PP
+That is how a failover pool is written, and a \fBbackup endpoint is simply one in a later tier\fR \[u2014] not a special kind of endpoint:
+.PP
+.RS 4
+.nf
+.ft CR
+upstreams:
+  \- name: app
+    endpoints:
+      \- {address: "10.0.1.10:8080"}               # priority 0
+      \- {address: "10.0.1.11:8080"}
+      \- {address: "10.9.9.9:8080", priority: 1}   # only when both are gone
+.ft
+.fi
+.RE
+.PP
+\fBlocality\fR prefers the endpoints in this node\(aqs own \fBserver.zone\fR over the ones elsewhere, which keeps traffic off the links between sites and away from their latency:
+.PP
+.RS 4
+.nf
+.ft CR
+server:
+  zone: east
+upstreams:
+  \- name: app
+    locality: {prefer_zone: true, min_local: 2}
+    endpoints:
+      \- {address: "10.0.1.10:8080", zone: east}
+      \- {address: "10.0.1.11:8080", zone: east}
+      \- {address: "10.1.1.10:8080", zone: west}
+.ft
+.fi
+.RE
+.PP
+It is a \fBpreference, not a pin\fR. An estate that pinned traffic to one zone would lose the service when the zone lost it, which is the opposite of what zones are for \[u2014] so when the local endpoints are gone, the others take the traffic. \fBmin_local\fR is how many local endpoints must be available before the remote ones are ignored: below it everything is used, so a zone down to one surviving endpoint does not take the whole load alone.
+.PP
+An endpoint with \fBno zone is local to every zone\fR: "somewhere unknown" is not a reason to send traffic across a site. \fBprefer_zone\fR without \fBserver.zone\fR is refused at load \[u2014] there would be nothing to compare against \[u2014] and a pool where no endpoint names a zone warns, because it would prefer nothing.
+.PP
+Tiering is applied by leaving the other endpoints out of the choice rather than by shortening the list the balancer sees, which matters for \fBhash\fR: shortening it would move every key, while leaving endpoints out moves only theirs.
+.SS "Taking something out of rotation: drain and maintenance"
+.PP
+Draining is \fBnot\fR the same as unhealthy, and the difference is the point. An unhealthy endpoint is one the proxy found broken; a drained one is one a person decided to stop sending work to. So it is set from outside \[u2014] \fBxproxyctl drain POOL [ADDRESS]\fR, \fBPOST /v1/drain\fR, the GUI \[u2014] and it \fBsurvives a reload\fR, because a reload builds new pools and an operator who drained a machine to patch it did not mean "until the next configuration change".
+.PP
+Nothing is closed. New work stops; the requests, sessions and connections already there run to their own end. That is what makes it usable for a rolling restart, and it is why draining is a separate idea from the connection bounds, which do end things.
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBAn endpoint\fR: \fBendpoints[].drain: true\fR, or \fBxproxyctl drain POOL ADDRESS\fR. It is passed over by every balancer and shows as \fBdraining\fR in \fBxproxyctl upstreams\fR, still \fBhealthy\fR, so the two stay distinguishable.
+.PP
+.ti -3n
+\(bu
+\fBA pool\fR: \fBmaintenance: true\fR, or \fBxproxyctl drain POOL\fR. The pool offers nothing at all.
+.PP
+.ti -3n
+\(bu
+\fBBack in\fR: \fBxproxyctl drain \-restore POOL [ADDRESS]\fR.
+.RE
+.PP
+.PP
+A decision made through the API \fBoverrides the file\fR until the daemon restarts, because the person who made it knew something the file did not. \fBxproxyctl drain\fR with no argument lists what has been decided, including an explicit restore of something the file drains.
+.PP
+A decision about a pool or an address that is not there is recorded rather than refused, and the answer says so: an endpoint may be about to arrive from discovery.
+.SS "Bounding one endpoint, and the age of a connection"
+.PP
+\fBendpoints[].max_connections\fR (or \fBmax_connections_per_endpoint\fR for a whole pool) bounds what is in flight to one endpoint. Past it the endpoint is \fBpassed over\fR rather than queued behind: the pool has others, and holding work for one while they are idle is the opposite of balancing. When every endpoint is at its bound the pool offers nothing, which is what its own \fBqueue\fR and \fBcircuit_breaker\fR are there to answer. It is for the endpoint that cannot take what the pool can give it \[u2014] a small instance beside large ones, a service with a database connection pool of its own, a machine that answers slowly under load rather than refusing.
+.PP
+\fBmax_connection_age\fR bounds how long one upstream connection is kept, so a pool\(aqs traffic follows its endpoints instead of sticking to whichever ones were there when the connections were made: a keep\-alive connection can outlive a deploy, a scale\-out and an endpoint\(aqs whole useful life, and every request on it goes where that connection goes.
+.PP
+\fBIt does not close anything mid\-exchange.\fR Closing a connection at its age would cut a request that has done nothing wrong, and from inside a socket there is no way to tell an exchange in progress from an idle connection \[u2014] both are a blocked read. So the age marks the connection, and the layer that does know where an exchange ends closes it once that exchange is over. The connection is never reused past its age and nothing in flight is disturbed; \fBxproxyctl upstreams\fR counts the retirements.
+.PP
+That end only exists for \fBHTTP/1.1\fR, where a connection carries one exchange at a time. An HTTP/2 or HTTP/3 connection carries many streams and is never between exchanges, so the bound does not apply to one: \fBh2c\fR and \fBh3\fR refuse it at load, and an \fBhttps\fR pool (which may negotiate HTTP/2) warns.
+.SS "A Unix domain socket as an endpoint"
+.PP
+\fBaddress: unix:/run/app.sock\fR reaches a service that lives beside the proxy rather than across a network: an application server on the same host, a local scanner, a sidecar. A socket is the better way to reach one \[u2014] there is no port for anything else on the machine to connect to, file permissions decide who may open it, and nothing about it is routable.
+.PP
+The path must be absolute. Socket and \fBhost:port\fR endpoints mix in one pool, which is what a service moving from a port to a socket needs, and everything else about a pool applies unchanged: the balancer, weights, canaries, affinity, outlier ejection, and the \fBtcp\fR health check (which connects to the socket, because a probe to a port would be proving something about a path nothing uses).
+.PP
+Two things do not work with one, and are refused at load rather than discovered later:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fB\fBscheme: https\fR without \fBtls.server_name\fR.\fR A URL has a host and a socket has a path, so the proxy gives a socket endpoint a synthetic authority for the URL \[u2014] which is not a name a certificate can match. Naming the one the backend presents makes it verifiable again.
+.PP
+.ti -3n
+\(bu
+\fB\fBh3\fR, and \fBdiscovery\fR.\fR HTTP/3 needs UDP to a host, and discovery produces \fBhost:port\fR records; neither has anything to say about a path.
+.RE
+.PP
+.PP
+The synthetic authority ends in \fB.socket.invalid\fR, a name that must never resolve, so a dialler that somehow ignored the socket fails immediately instead of reaching a machine on the network. It is never sent to the backend: the \fBHost\fR header is the client\(aqs own, as with any other endpoint, so a service that routes on it keeps working.
 .SS "upstreams[].retry_budget"
 .PP
 A retry (or a hedged copy) is only sent while the retries in flight to the pool stay below \fBpercent\fR of the requests in flight, with \fBmin_concurrency\fR always allowed so a low\-traffic pool can still retry. As live traffic falls the allowance falls with it, so retries cannot amplify an outage.
@@ -6738,11 +7549,11 @@ T}
 T{
 \fBtype\fR
 T}	T{
-\fBdns\fR,\: \fBsrv\fR,\: \fBhttp\fR
+\fBdns\fR,\: \fBsrv\fR,\: \fBhttp\fR,\: \fBconsul\fR
 T}	T{
 \fBdns\fR
 T}	T{
-\fBdns\fR resolves the A and AAAA records of \fBname\fR,\: one endpoint per address on \fBport\fR;\: \fBsrv\fR resolves SRV records,\: uses the lowest priority group,\: and takes target,\: port and weight from each record;\: \fBhttp\fR polls the registry URL in \fBname\fR on the interval (see \fBformat\fR)
+\fBdns\fR resolves the A and AAAA records of \fBname\fR,\: one endpoint per address on \fBport\fR;\: \fBsrv\fR resolves SRV records,\: uses the lowest priority group,\: and takes target,\: port and weight from each record;\: \fBhttp\fR polls the registry URL in \fBname\fR on the interval (see \fBformat\fR);\: \fBconsul\fR asks a Consul agent about a service with \fBblocking queries\fR \[u2014] see below
 T}
 T{
 \fBname\fR
@@ -6825,7 +7636,110 @@ T}	T{
 T}	T{
 Bound on one resolution,\: including the synchronous first one at start and reload;\: a failed resolution keeps the previous endpoint set and is counted in \fBxproxyctl upstreams\fR
 T}
+T{
+\fBconsul\fR
+T}	T{
+object
+T}	T{
+required for \fBconsul\fR
+T}	T{
+See below
+T}
 .TE
+.SS "upstreams[].discovery.consul"
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(1.0i) lbw(0.9i) lbx
+lw(1.1i) lw(1.0i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBservice\fR
+T}	T{
+name
+T}	T{
+required
+T}	T{
+The Consul service to ask about
+T}
+T{
+\fBaddress\fR
+T}	T{
+host:port
+T}	T{
+\fB127.\:0.\:0.\:1:\:8500\fR
+T}	T{
+The agent. A Consul deployment runs one on every node,\: and asking the local one is both faster and what survives a partition
+T}
+T{
+\fBtag\fR
+T}	T{
+string
+T}	T{
+none
+T}	T{
+Only the instances carrying that tag,\: which is how a Consul estate usually separates environments or versions
+T}
+T{
+\fBdatacenter\fR
+T}	T{
+name
+T}	T{
+the agent\(aqs own
+T}	T{
+Ask about another datacenter
+T}
+T{
+\fBtoken_\:file\fR
+T}	T{
+path
+T}	T{
+none
+T}	T{
+File holding the ACL token,\: sent as \fBX\-\:Consul\-\:Token\fR. A token is a credential,\: so it lives in a file rather than in this document,\: which the management API dumps and the history keeps;\: the file must not be readable by more than its owner
+T}
+T{
+\fBtls\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Reach the agent over HTTPS (CA,\: server name,\: pins \[u2014] as \fBupstreams[].\:tls\fR). Without it the scheme is \fBhttp\fR,\: which over loopback to a local agent is the usual arrangement
+T}
+T{
+\fBallow_\:stale\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Let the agent answer from its own state without asking a server. Faster,\: and may be a moment behind,\: so it warns: a balancer acting on stale membership sends traffic to an instance that has gone
+T}
+T{
+\fBwait\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+How long one blocking query may be held open;\: 1s to 10m
+T}
+.TE
+.PP
+\fBWhy a type of its own rather than \fBhttp\fR with \fBformat: consul\fR.\fR The polled form is still there and still works. What this adds is Consul\(aqs \fBblocking query\fR: the agent holds the request open until the answer changes and returns an index the next request carries, so the proxy learns about an instance that went away in about the time Consul takes to notice it, instead of up to a polling interval later. For a load balancer that gap is the whole point \[u2014] a polled registry keeps sending traffic to a machine that is already gone for as long as the interval lasts.
+.PP
+The loop therefore waits on the agent rather than on a ticker: after an answer it asks again at once, because the next answer \fIis\fR the next change. \fBinterval\fR becomes the pause after a \fBfailure\fR \[u2014] without one, an agent that is down or answering 403 would be asked again immediately and forever, which is a loop against somebody else\(aqs machine. An index that goes backwards (a Consul server restart) resets to 1 rather than blocking against an index that will never be reached.
+.PP
+Only instances whose checks all pass are used, and the check is made here as well as asked for in the query: the filter in the query is the agent\(aqs opinion, and this one is the proxy\(aqs. \fBWeights.Passing\fR becomes the endpoint weight, and a blank service address falls back to the node\(aqs.
 .SS "upstreams[].health_check"
 .PP
 .TS
@@ -6844,11 +7758,11 @@ T}
 T{
 \fBtype\fR
 T}	T{
-\fBhttp\fR,\: \fBgrpc\fR
+\fBhttp\fR,\: \fBgrpc\fR,\: \fBtcp\fR,\: \fBudp\fR
 T}	T{
 \fBhttp\fR
 T}	T{
-\fBgrpc\fR calls the standard \fBgrpc.\:health.\:v1.\:Health/\:Check\fR over HTTP/\:2 and needs \fBh2c\fR or \fBscheme:\: https\fR;\: \fBpath\fR and \fBexpected_\:status\fR are not used
+\fBgrpc\fR calls the standard \fBgrpc.\:health.\:v1.\:Health/\:Check\fR over HTTP/\:2 and needs \fBh2c\fR or \fBscheme:\: https\fR;\: \fBpath\fR and \fBexpected_\:status\fR are not used. \fBtcp\fR and \fBudp\fR are the layer 4 probes,\: for the pools a \fBkind:\: tcp\fR or \fBkind:\: udp\fR listener uses,\: where there is no request to make \[u2014] see below
 T}
 T{
 \fBgrpc_\:service\fR
@@ -6949,7 +7863,65 @@ none
 T}	T{
 The first 64 KiB must match this pattern anywhere (anchor with \fB^\fR and \fB$\fR);\: may be combined with \fBbody_\:contains\fR,\: both must hold. At most 4096 bytes each
 T}
+T{
+\fBsend\fR
+T}	T{
+string
+T}	T{
+none
+T}	T{
+What a \fBudp\fR probe sends. Exactly one of \fBsend\fR or \fBsend_\:hex\fR is required for that type
+T}
+T{
+\fBsend_\:hex\fR
+T}	T{
+hex
+T}	T{
+none
+T}	T{
+The same as hexadecimal,\: for a service whose smallest question is not text
+T}
+T{
+\fBexpect\fR
+T}	T{
+string
+T}	T{
+none
+T}	T{
+The answer must contain this text. Empty accepts any answer
+T}
+T{
+\fBexpect_\:hex\fR
+T}	T{
+hex
+T}	T{
+none
+T}	T{
+The same as hexadecimal;\: exclusive with \fBexpect\fR
+T}
 .TE
+.SS "The layer 4 probes"
+.PP
+\fBtype: http\fR and \fBtype: grpc\fR make a request and read a reply, which is how an HTTP backend proves it is working rather than merely running. A pool behind a \fBkind: tcp\fR or \fBkind: udp\fR listener has no request to make, so there are two narrower probes \[u2014] and they are not equally narrow, which is the thing to understand before choosing one.
+.PP
+\fB\fBtype: tcp\fR connects and closes.\fR It proves that something accepted, and nothing about what. For a protocol this proxy does not speak that is usually all there is to know without speaking it, and it is a real signal: a process that has died, a host that has gone, a port that was never opened are all found.
+.PP
+\fB\fBtype: udp\fR has to prove more, because a UDP socket accepts nothing.\fR There is no connect to succeed. A datagram sent to a port with no listener produces an ICMP port unreachable that the sender may or may not be told about, that anything on the path may filter, and that says nothing at all about a process which is bound but wedged \[u2014] which is the failure that matters most, because it is the one that keeps taking traffic. So a \fBudp\fR check \fBsends a question the service answers\fR, and silence is the failure:
+.PP
+.RS 4
+.nf
+.ft CR
+health_check:
+  type: udp
+  send_hex: "abcd0100000100000000000000"   # a DNS query header
+  expect_hex: "abcd8180"                   # the same id, answered
+  interval: 5s
+  timeout: 1s
+.ft
+.fi
+.RE
+.PP
+The probe socket is \fIconnected\fR, so the kernel drops an answer from any address but the endpoint\(aqs: a third party cannot vouch for a backend. With no \fBexpect\fR any answer is accepted, which is still far more than silence proves; with one, the answer has to contain it, so a service that has started listening but is still loading fails the check instead of taking traffic.
 .SS "upstreams[].outlier_ejection"
 .PP
 .TS
@@ -7934,7 +8906,7 @@ T}
 .PP
 The OTLP exporter sends the same families as OTLP/HTTP with JSON encoding: counters as cumulative monotonic sums since process start, gauges as gauges, histograms as cumulative explicit bucket histograms; labels become data point attributes. \fBGET /v1/otlp\fR and \fBxproxyctl otlp\fR show pushes, failures, the last error and the size of the last request.
 .PP
-Exposed families: \fBxproxy_requests_total\fR, \fBxproxy_responses_total{class}\fR, \fBxproxy_denied_total{reason}\fR, \fBxproxy_bytes_in_total\fR, \fBxproxy_bytes_out_total\fR, \fBxproxy_waf_detected_total\fR, \fBxproxy_upstream_errors_total\fR, \fBxproxy_upstream_timeouts_total\fR, \fBxproxy_upstream_no_healthy_total\fR, \fBxproxy_client_aborts_total\fR, \fBxproxy_connections_rejected_total\fR, \fBxproxy_reloads_total{result}\fR, \fBxproxy_bans_total\fR, \fBxproxy_challenges_total{result}\fR (\fBissued\fR, \fBpassed\fR, \fBfailed\fR, \fBcaptcha_passed\fR), \fBxproxy_sensitive_findings_total{kind}\fR, \fBxproxy_sensitive_messages_total{direction,outcome}\fR, \fBxproxy_account_actions_total{class,action}\fR, \fBxproxy_account_events_total\fR, \fBxproxy_account_blocks_total\fR, \fBxproxy_account_campaigns_total\fR, \fBxproxy_account_disposable_total\fR, \fBxproxy_account_blocks_active\fR, \fBxproxy_log_sent_total{sink}\fR, \fBxproxy_log_dropped_total{sink}\fR, \fBxproxy_connections_open\fR, \fBxproxy_requests_in_flight\fR, \fBxproxy_bans_active\fR, \fBxproxy_load_level\fR, \fBxproxy_upstream_latency_seconds\fR, \fBxproxy_shedding{class}\fR, \fBxproxy_cluster_peers\fR, \fBxproxy_cluster_peers_connected\fR, \fBxproxy_cluster_messages_total{direction,type}\fR, \fBxproxy_cluster_rejected_total\fR, \fBxproxy_request_duration_seconds\fR (histogram), \fBxproxy_upstream_ttfb_seconds\fR (histogram), \fBxproxy_upstream_endpoint_{healthy,ejected,active}{upstream,endpoint}\fR, \fBxproxy_upstream_endpoint_{requests,errors}_total{upstream,endpoint}\fR, \fBxproxy_route_requests_total{route,outcome}\fR, \fBxproxy_build_info\fR, \fBxproxy_uptime_seconds\fR, \fBxproxy_config_generation\fR, \fBxproxy_panics_total\fR (panics contained on a connection or datagram goroutine; zero in a healthy process, and anything else is a bug worth a report).
+Exposed families: \fBxproxy_requests_total\fR, \fBxproxy_responses_total{class}\fR, \fBxproxy_denied_total{reason}\fR, \fBxproxy_refusals_total{kind,reason}\fR (the same breakdown for the protocols that are not HTTP: the listener kind that refused and the reason it logged, described in TROUBLESHOOTING.md), \fBxproxy_refusals_untracked_total\fR, \fBxproxy_bytes_in_total\fR, \fBxproxy_bytes_out_total\fR, \fBxproxy_waf_detected_total\fR, \fBxproxy_upstream_errors_total\fR, \fBxproxy_upstream_timeouts_total\fR, \fBxproxy_upstream_no_healthy_total\fR, \fBxproxy_client_aborts_total\fR, \fBxproxy_connections_rejected_total\fR, \fBxproxy_reloads_total{result}\fR, \fBxproxy_bans_total\fR, \fBxproxy_challenges_total{result}\fR (\fBissued\fR, \fBpassed\fR, \fBfailed\fR, \fBcaptcha_passed\fR), \fBxproxy_sensitive_findings_total{kind}\fR, \fBxproxy_sensitive_messages_total{direction,outcome}\fR, \fBxproxy_account_actions_total{class,action}\fR, \fBxproxy_account_events_total\fR, \fBxproxy_account_blocks_total\fR, \fBxproxy_account_campaigns_total\fR, \fBxproxy_account_disposable_total\fR, \fBxproxy_account_blocks_active\fR, \fBxproxy_log_sent_total{sink}\fR, \fBxproxy_log_dropped_total{sink}\fR, \fBxproxy_connections_open\fR, \fBxproxy_requests_in_flight\fR, \fBxproxy_bans_active\fR, \fBxproxy_load_level\fR, \fBxproxy_upstream_latency_seconds\fR, \fBxproxy_shedding{class}\fR, \fBxproxy_cluster_peers\fR, \fBxproxy_cluster_peers_connected\fR, \fBxproxy_cluster_messages_total{direction,type}\fR, \fBxproxy_cluster_rejected_total\fR, \fBxproxy_request_duration_seconds\fR (histogram), \fBxproxy_upstream_ttfb_seconds\fR (histogram), \fBxproxy_upstream_endpoint_{healthy,ejected,active}{upstream,endpoint}\fR, \fBxproxy_upstream_endpoint_{requests,errors}_total{upstream,endpoint}\fR, \fBxproxy_route_requests_total{route,outcome}\fR, \fBxproxy_build_info\fR, \fBxproxy_uptime_seconds\fR, \fBxproxy_config_generation\fR, \fBxproxy_panics_total\fR (panics contained on a connection or datagram goroutine; zero in a healthy process, and anything else is a bug worth a report).
 .PP
 Series (per\-second rates for counters, current values for gauges): \fBrequests\fR, \fBresponses_2xx\fR, \fBresponses_4xx\fR, \fBresponses_5xx\fR, \fBdenied\fR, \fBshed\fR, \fBbytes_in\fR, \fBbytes_out\fR, \fBupstream_errors\fR, \fBopen_connections\fR, \fBin_flight\fR, \fBload_level\fR, \fBupstream_latency_ms\fR, \fBbans_active\fR, \fBcluster_connected\fR.
 .SH "api_inventory"
@@ -8137,7 +9109,7 @@ list
 T}	T{
 \fB[]\fR (all)
 T}	T{
-Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fByara\fR
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBsftp_\:icap\fR,\: \fBudp_\:denied\fR,\: \fByara\fR
 T}
 T{
 \fBthreshold\fR

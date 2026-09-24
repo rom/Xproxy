@@ -1,0 +1,192 @@
+# A VNC gateway that terminates the RFB handshake on both legs: the
+# proxy is an RFB server to the viewer and an RFB client to the
+# desktop, following RFC 6143 on each.
+#
+# RFB's whole policy surface is in the handshake. Which security type
+# is used, whether the session is encrypted and how, what the desktop
+# is called -- all of it is settled in the first few hundred bytes, and
+# a proxy that does not sit in that negotiation can decide none of it
+# and record none of what follows.
+#
+# Terminating both legs is also what separates the two credentials. A
+# VNC password is a property of a machine, not of a person: everyone
+# who uses the desktop shares it, and it cannot be revoked for one of
+# them. Here the person proves something to the gateway and the gateway
+# opens the desktop with its own password, which nobody else holds.
+#
+# Validate: xgate -config examples/bastion/vnc.yaml -validate
+version: 1
+server:
+  listeners:
+    # The one to point a modern viewer at: VeNCrypt with a certificate,
+    # a name and a code, and the desktop reached over SSH.
+    - name: desktops
+      address: "0.0.0.0:5900"
+      kind: vnc
+      # The VeNCrypt handshake and its TLS are paid for before the
+      # gateway knows who is calling.
+      connection_rate: {per_second: 20, burst: 40}
+      connection_rate_per_source: {per_second: 2, burst: 5}
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/certs/vnc.pem, key_file: /etc/xproxy/certs/vnc-key.pem}
+        min_version: "1.2"
+      vnc:
+        upstream: desktops
+
+        # negotiated (the default) leaves the socket plain RFB and
+        # presents the certificate inside the handshake, which is what
+        # a viewer offering VeNCrypt does by itself. wrap would make
+        # the socket TLS from the first byte instead -- an stunnel
+        # port. A listener is one or the other, because the first byte
+        # a client sends is either a TLS record or "RFB 003.008".
+        tls_mode: negotiated
+
+        # vencrypt only. none would be a desktop anyone can open, and
+        # vncauth is the DES challenge of RFC 6143: it proves
+        # knowledge of one shared password and says nothing about who
+        # is holding it, which is also why no enrolment can be looked
+        # up for it.
+        security_types: [vencrypt]
+        # x509-plain carries a user name as well as a password, which
+        # is what the second factor below needs; both are inside the
+        # TLS tunnel. The tls-* subtypes are anonymous Diffie-Hellman
+        # with no certificate to check, so they stop a reader and not
+        # an active attacker, and are left out.
+        vencrypt_subtypes: [x509-plain, x509-vnc]
+
+        # The factor needs a security type whose credential carries a
+        # name; with a plain subtype the name identifies the person and
+        # the password field carries their code. It is checked inside
+        # the handshake, before the security result is sent, so a wrong
+        # code is a failed authentication the viewer can show rather
+        # than a session that succeeds and then closes. The desktop is
+        # not dialled either way.
+        mfa:
+          file: /etc/xproxy/mfa
+          issuer: example.com
+          skew: 1
+          require_enrolment: true
+          max_failures: 5
+          window: 5m
+          lockout: 15m
+
+        # The desktop's own leg. VNC servers bind to loopback and are
+        # reached over SSH -- the usual "ssh -L", done once here rather
+        # than by every operator, so the RFB never crosses the network
+        # in clear even though the server speaks only RFB.
+        ssh:
+          user: vnc-gateway
+          key_file: /etc/xproxy/ssh/vnc_id_ed25519
+          # Without this the tunnel authenticates nothing, which is the
+          # whole reason for the tunnel.
+          known_hosts: /etc/xproxy/ssh/known_hosts
+          target: "127.0.0.1:5901"
+        # The desktop's shared password, which no person needs to know.
+        upstream_password_file: /etc/xproxy/vnc/desktop.pass
+        upstream_security: vncauth
+
+        # What the screen showed, with the timing of it: the RFB
+        # stream in the asciicast v2 container, named *.rfb.cast. It is
+        # not a video -- replaying it needs a player that speaks RFB.
+        # Recording the protocol is what keeps the cost bounded and
+        # loses nothing, since a decoder can be written against the
+        # file afterwards while one that decoded at capture time would
+        # silently lose every encoding it did not implement.
+        recording:
+          directory: /var/log/xproxy/sessions
+          max_file_bytes: 268435456
+          max_files: 2000
+
+        # The picture is read, not forwarded blind. An image protocol's
+        # numbers are the viewer's allocations -- a framebuffer is width
+        # times height times bytes per pixel, and a rectangle's twelve
+        # byte header is what a decode buffer is sized from -- so a
+        # desktop that says 4096x4096 in twelve bytes of zlib is asking
+        # the machine on somebody's desk for sixty-four megabytes, and
+        # it can ask again immediately.
+        #
+        # Reading also decides what the viewer may ask for: the
+        # encodings this gateway cannot measure are taken out of its
+        # list, so the desktop never uses one. tight is the notable
+        # absence, which is the cost of the bounds; a listener that must
+        # have it sets pixel_stream: opaque instead.
+        pixel_stream: framed
+        bounds:
+          # 4K, which is larger than any desktop here.
+          max_framebuffer_pixels: 8294400
+          max_rectangles_per_update: 2048
+          max_encoded_rectangle: 8388608
+          # Nothing decompresses to check this: the picture a rectangle
+          # declares against the bytes that carry it.
+          max_decode_ratio: 500
+          max_cut_text: 262144
+
+        # Out of the desktop only. A clipboard into it is an upload with
+        # no name and no size in the log, on a session whose whole point
+        # is that what was done is on record.
+        clipboard: to_client
+        # A viewer asking the desktop to resize is ordinary; the size it
+        # asks for is bounded by max_framebuffer_pixels either way.
+        allow_resize: true
+
+        handshake_timeout: 30s
+        idle_timeout: 15m
+        session_timeout: 12h
+        max_connections: 200
+        allow_clients: ["10.10.0.0/16"]
+
+    # Watching, not driving: support looks over a shoulder and cannot
+    # touch the keyboard. The recording says the same thing afterwards.
+    - name: shadow
+      address: "0.0.0.0:5901"
+      kind: vnc
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/certs/vnc.pem, key_file: /etc/xproxy/certs/vnc-key.pem}
+      vnc:
+        upstream: desktops
+        security_types: [vencrypt]
+        vencrypt_subtypes: [x509-plain]
+        mfa: {file: /etc/xproxy/mfa, issuer: example.com}
+        # Key, pointer and cut-text messages from the viewer are
+        # dropped. Cut text is in that list on purpose: a clipboard
+        # that only travels one way is still a way in.
+        view_only: true
+        # Nothing in either direction: a shoulder to look over has no
+        # clipboard.
+        clipboard: none
+        allow_resize: false
+        ssh:
+          user: vnc-gateway
+          key_file: /etc/xproxy/ssh/vnc_id_ed25519
+          known_hosts: /etc/xproxy/ssh/known_hosts
+          target: "127.0.0.1:5901"
+        upstream_password_file: /etc/xproxy/vnc/desktop.pass
+        recording:
+          directory: /var/log/xproxy/sessions
+          max_files: 500
+        idle_timeout: 15m
+        max_connections: 50
+        allow_clients: ["10.10.3.0/24"]
+
+upstreams:
+  - name: desktops
+    endpoints:
+      - {address: "10.40.2.10:5900"}
+      - {address: "10.40.2.11:5900"}
+    balancer: least_conn
+    timeouts: {connect: 5s}
+
+bans:
+  triggers:
+    # A refused security type, a failed authentication and a failed
+    # code are all vnc_denied.
+    - name: vnc-abuse
+      reasons: [vnc_denied]
+      threshold: 8
+      window: 10m
+      duration: 2h
+
+logging:
+  access: {enabled: true}

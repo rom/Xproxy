@@ -21,6 +21,28 @@ import (
 
 // Pool is a named, load balanced set of endpoints with a shared transport.
 type Pool struct {
+	// tiered is set when any endpoint names a priority or the pool has a
+	// locality policy, so the ordinary pool pays nothing for either;
+	// zone, preferZone and minLocal are the locality policy itself. See
+	// tiers.go.
+	tiered     bool
+	preferZone bool
+	minLocal   int
+	zone       string
+
+	// Retired counts connections closed for outliving
+	// max_connection_age.
+	Retired atomic.Uint64
+
+	// maintenance takes the whole pool out of rotation: no endpoint is
+	// offered at all, so a route over it answers as it does when
+	// everything is unhealthy. Set from the configuration and from the
+	// management API; see drain.go.
+	maintenance atomic.Bool
+	// drains is the registry of operator decisions this pool follows,
+	// nil where nothing set one (tests).
+	drains *Drains
+
 	Name      string
 	Cfg       *config.Upstream
 	Transport *http.Transport
@@ -89,6 +111,10 @@ func (p *Pool) newBalancer(eps []*Endpoint) balancer {
 		return &leastConn{}
 	case "hash":
 		return newRing(eps)
+	case "p2c":
+		return newP2C()
+	case "ewma":
+		return newEWMA()
 	default:
 		return &roundRobin{}
 	}
@@ -98,6 +124,23 @@ func (p *Pool) newBalancer(eps []*Endpoint) balancer {
 // epMu.
 func (p *Pool) newEndpoint(address string, weight int, canary, discovered bool) *Endpoint {
 	ep := &Endpoint{Address: address, Weight: weight, Canary: canary, Discovered: discovered, index: p.nextIndex, slowStart: p.Cfg.SlowStart.D()}
+	if path, ok := SocketPath(address); ok {
+		ep.socket, ep.urlHost = path, urlAuthority(path)
+	}
+	// The per endpoint policy: the pool's default, then whatever the
+	// endpoint's own entry says. A discovered endpoint matches no entry
+	// and keeps the pool's default, which is the only sensible reading --
+	// nothing in a registry record says how much this one can take.
+	ep.maxActive = int64(p.Cfg.MaxConnectionsPerEndpoint)
+	for _, ec := range p.Cfg.Endpoints {
+		if ec.Address != address {
+			continue
+		}
+		if ec.MaxConnections > 0 {
+			ep.maxActive = int64(ec.MaxConnections)
+		}
+		ep.priority, ep.zone = ec.Priority, ec.Zone
+	}
 	p.nextIndex++
 	// Without active checks every endpoint starts healthy. With checks,
 	// endpoints start healthy too so that a restart does not drop all
@@ -170,6 +213,11 @@ func (p *Pool) setDiscovered(specs []endpointSpec) (added, removed int) {
 		}
 		c.count = n
 	}
+	// An endpoint discovery just produced may be one an operator already
+	// drained by address -- a machine taken out of service that the
+	// registry has not caught up with -- so the decisions are applied to
+	// the new set rather than only at attach.
+	p.drains.apply(p)
 	return added, removed
 }
 
@@ -205,9 +253,13 @@ func (p *Pool) Status() PoolStatus {
 	if p.disc != nil {
 		st.Discovery = p.disc.status()
 	}
+	st.Maintenance = p.maintenance.Load()
 	for _, e := range eps {
 		if e.Available(now) {
 			st.Available++
+		}
+		if e.draining.Load() {
+			st.Draining++
 		}
 		st.Active += e.active.Load()
 	}
@@ -230,6 +282,14 @@ func (p *Pool) Status() PoolStatus {
 // checks and Stop to release resources.
 func NewPool(cfg *config.Upstream, log *slog.Logger) (*Pool, error) {
 	p := &Pool{Name: cfg.Name, Cfg: cfg, Scheme: cfg.Scheme, log: log.With("upstream", cfg.Name), now: time.Now, randFloat: rand.Float64}
+	for _, e := range cfg.Endpoints {
+		if e.Priority != 0 {
+			p.tiered = true
+		}
+	}
+	if l := cfg.Locality; l != nil && l.PreferZone {
+		p.tiered, p.preferZone, p.minLocal, p.zone = true, true, max(l.MinLocal, 1), cfg.NodeZone
+	}
 	eps := make([]*Endpoint, 0, len(cfg.Endpoints))
 	for _, e := range cfg.Endpoints {
 		eps = append(eps, p.newEndpoint(e.Address, e.Weight, e.Canary, false))
@@ -237,7 +297,11 @@ func NewPool(cfg *config.Upstream, log *slog.Logger) (*Pool, error) {
 	p.eps.Store(&eps)
 	p.bal.Store(&balHolder{b: p.newBalancer(eps)})
 	if cfg.Discovery != nil {
-		p.disc = newDiscoverer(cfg.Discovery, p)
+		disc, err := newDiscoverer(cfg.Discovery, p)
+		if err != nil {
+			return nil, fmt.Errorf("upstream %s: %w", cfg.Name, err)
+		}
+		p.disc = disc
 	}
 	if cfg.CircuitBreaker != nil {
 		p.breaker = newBreaker(cfg.CircuitBreaker, p.now)
@@ -280,10 +344,58 @@ func NewPool(cfg *config.Upstream, log *slog.Logger) (*Pool, error) {
 			return nil, fmt.Errorf("upstream %s: %w", cfg.Name, err)
 		}
 	}
-	dialer := &net.Dialer{Timeout: cfg.Timeouts.Connect.D(), KeepAlive: 30 * time.Second}
+	dialer := &net.Dialer{Timeout: cfg.Timeouts.Connect.D(), KeepAlive: 30 * time.Second,
+		FallbackDelay: cfg.FallbackDelay.D()}
+	// The network the dialler is given decides which of a dual-stack
+	// endpoint's addresses may be used. "tcp" tries both, racing them as
+	// RFC 8305 describes; "tcp4" and "tcp6" are for the estate where one
+	// family is the only one that works, and naming it means a name with
+	// both kinds of record cannot quietly use the other.
+	family := familyNetwork(cfg.AddressFamily)
+	// A socket endpoint's URL carries a synthetic authority, so the
+	// dialler is the one place that knows a request is going to a path
+	// rather than to a host. Anything that is not a known authority is
+	// dialled as it arrives, which is every ordinary endpoint.
+	sockets := map[string]string{}
+	for _, e := range cfg.Endpoints {
+		if path, ok := SocketPath(e.Address); ok {
+			sockets[urlAuthority(path)] = path
+		}
+	}
+	dial := dialer.DialContext
+	if family != "tcp" {
+		inner := dial
+		dial = func(ctx context.Context, network, address string) (net.Conn, error) {
+			if network == "tcp" { // a socket endpoint's "unix" is left alone
+				network = family
+			}
+			return inner(ctx, network, address)
+		}
+	}
+	if len(sockets) > 0 {
+		inner := dial
+		dial = func(ctx context.Context, network, address string) (net.Conn, error) {
+			if path, ok := sockets[address]; ok {
+				return inner(ctx, "unix", path)
+			}
+			return inner(ctx, network, address)
+		}
+	}
+	if age := cfg.MaxConnectionAge.D(); age > 0 {
+		// Every connection remembers when it was made. Nothing closes it
+		// here: see connage.go for why the round trip does that instead.
+		inner := dial
+		dial = func(ctx context.Context, network, address string) (net.Conn, error) {
+			c, err := inner(ctx, network, address)
+			if err != nil {
+				return nil, err
+			}
+			return &agedConn{Conn: c, born: p.now(), age: age}, nil
+		}
+	}
 	p.Transport = &http.Transport{
 		Proxy:                  nil, // never honour HTTP_PROXY from the environment
-		DialContext:            dialer.DialContext,
+		DialContext:            dial,
 		TLSClientConfig:        tc,
 		ForceAttemptHTTP2:      cfg.Scheme == "https",
 		MaxIdleConns:           cfg.MaxIdleConnsPerHost * max(len(cfg.Endpoints), 1),
@@ -320,6 +432,17 @@ func NewPool(cfg *config.Upstream, log *slog.Logger) (*Pool, error) {
 	}
 	return p, nil
 }
+
+// UseDrains makes the pool follow a registry of operator decisions, and
+// applies whatever it already holds. A generation calls this once, after
+// the pool is built and before it serves.
+func (p *Pool) UseDrains(d *Drains) {
+	p.drains = d
+	d.Attach(p)
+}
+
+// Maintenance reports whether the whole pool is out of rotation.
+func (p *Pool) Maintenance() bool { return p.maintenance.Load() }
 
 // Start launches active health checking and discovery if configured.
 // With discovery the first resolution runs synchronously (bounded by the
@@ -366,6 +489,7 @@ func (p *Pool) StopChecks() {
 // when a reload retired the generation that built the pool, while the
 // TCP transports beside it dropped only what was unused.
 func (p *Pool) Stop() {
+	p.drains.Detach(p)
 	p.StopChecks()
 	p.Transport.CloseIdleConnections()
 	if p.h2c != nil {
@@ -462,8 +586,17 @@ func (p *Pool) AffinityCookie() string {
 // The second result is a fresh cookie value to set on the response, or
 // "" when none is needed.
 func (p *Pool) Pick(hashKey, cookie string, exclude map[*Endpoint]bool, mode CanaryMode) (*Endpoint, string) {
+	if p.maintenance.Load() {
+		// A pool in maintenance offers nothing. The caller sees what it
+		// sees when every endpoint is unhealthy, which is the honest
+		// answer: there is nowhere to send this.
+		return nil, ""
+	}
 	now := p.now()
 	eps := p.endpoints()
+	// Tiering first: priority and locality decide which endpoints are
+	// candidates at all, and the balancer then chooses among those.
+	exclude = p.tierExclude(eps, exclude, now)
 	if p.aff != nil && cookie != "" {
 		if i := p.aff.verify(cookie, now); i >= 0 {
 			if e := p.byIndex(eps, i); e != nil && available(e, exclude, now) {
@@ -630,4 +763,16 @@ func (p *Pool) Stats() []Stats {
 		out = append(out, e.stats(now))
 	}
 	return out
+}
+
+// familyNetwork maps an address_family to the network a dialler takes.
+func familyNetwork(family string) string {
+	switch family {
+	case "ipv4":
+		return "tcp4"
+	case "ipv6":
+		return "tcp6"
+	default:
+		return "tcp"
+	}
 }

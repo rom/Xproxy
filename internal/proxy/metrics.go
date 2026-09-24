@@ -87,6 +87,7 @@ func (s *Server) Collect(e metrics.Collector) {
 	e.Counter("xproxy_upstream_queue_refused_total", "Requests refused by a pool's queue.", L{"reason": "timeout"}, float64(sn.UpstreamQueueTimeouts))
 	e.Counter("xproxy_client_aborts_total", "Requests abandoned by the client.", nil, float64(sn.ClientAborts))
 	e.Counter("xproxy_connections_rejected_total", "Connections closed at accept by limits or bans.", nil, float64(sn.RejectedConns))
+	e.Counter("xproxy_connections_rate_refused_total", "Connections closed at accept for arriving faster than the configured rate.", nil, float64(sn.RateRefusedConns))
 	e.Counter("xproxy_reloads_total", "Configuration reloads.", L{"result": "ok"}, float64(sn.Reloads))
 	e.Counter("xproxy_reloads_total", "Configuration reloads.", L{"result": "failed"}, float64(sn.ReloadFailures))
 	e.Counter("xproxy_bans_total", "Bans applied.", nil, float64(sn.BansTotal))
@@ -146,14 +147,46 @@ func (s *Server) Collect(e metrics.Collector) {
 			e.Gauge("xproxy_certificate_expiry_seconds", "Seconds until the earliest file certificate of the listener expires.", L{"listener": n}, time.Until(exp[n]).Seconds())
 		}
 	}
+	// The non-HTTP protocols' equivalent of xproxy_denied_total: each
+	// kind has an aggregate counter below ("SSH channels and requests
+	// refused"), and this is the breakdown that says which policy did
+	// it. The reasons are the same strings the security log carries, so
+	// a spike here names the log line to go and read.
+	refusals := sn.Refusals
+	kinds := make([]string, 0, len(refusals))
+	for k := range refusals {
+		kinds = append(kinds, k)
+	}
+	sort.Strings(kinds)
+	for _, k := range kinds {
+		reasons := make([]string, 0, len(refusals[k]))
+		for r := range refusals[k] {
+			reasons = append(reasons, r)
+		}
+		sort.Strings(reasons)
+		for _, r := range reasons {
+			e.Counter("xproxy_refusals_total", "Connections, sessions, datagrams, commands and channels refused by a protocol listener, by kind and reason.", L{"kind": k, "reason": r}, float64(refusals[k][r]))
+		}
+	}
+	e.Counter("xproxy_refusals_untracked_total", "Refusals a listener kind named under an unknown kind or beyond its reason bound, so they carry no reason label. Always zero in a healthy process.", nil, float64(sn.RefusalsUntracked))
 	e.Counter("xproxy_tcp_connections_total", "Connections accepted on tcp listeners.", nil, float64(sn.TCPConnections))
 	e.Counter("xproxy_tcp_rejected_total", "Connections on tcp listeners closed without a route or over the listener bound.", nil, float64(sn.TCPRejected))
 	e.Counter("xproxy_tcp_errors_total", "tcp listener connections that found no reachable endpoint.", nil, float64(sn.TCPErrors))
+	e.Counter("xproxy_tcp_bounded_total", "tcp listener connections ended by the session lifetime or a byte bound rather than by a peer.", nil, float64(sn.TCPBounded))
 	e.Counter("xproxy_tcp_bytes_total", "Bytes relayed by tcp listeners.", L{"direction": "in"}, float64(sn.TCPBytesIn))
 	e.Counter("xproxy_tcp_bytes_total", "Bytes relayed by tcp listeners.", L{"direction": "out"}, float64(sn.TCPBytesOut))
 	e.Counter("xproxy_quic_flows_total", "QUIC flows relayed by tcp listeners.", nil, float64(sn.QUICFlows))
 	e.Counter("xproxy_quic_rejected_total", "QUIC flows without a route or over the listener bound.", nil, float64(sn.QUICRejected))
 	e.Gauge("xproxy_quic_flows_open", "Open QUIC flows.", nil, float64(sn.QUICFlowsOpen))
+	e.Counter("xproxy_udp_sessions_total", "Sessions opened on udp listeners.", nil, float64(sn.UDPSessions))
+	e.Gauge("xproxy_udp_sessions_open", "Open udp listener sessions.", nil, float64(sn.UDPSessionsOpen))
+	e.Counter("xproxy_udp_datagrams_total", "Datagrams relayed by udp listeners.", L{"direction": "in"}, float64(sn.UDPDatagramsIn))
+	e.Counter("xproxy_udp_datagrams_total", "Datagrams relayed by udp listeners.", L{"direction": "out"}, float64(sn.UDPDatagramsOut))
+	e.Counter("xproxy_udp_bytes_total", "Bytes relayed by udp listeners.", L{"direction": "in"}, float64(sn.UDPBytesIn))
+	e.Counter("xproxy_udp_bytes_total", "Bytes relayed by udp listeners.", L{"direction": "out"}, float64(sn.UDPBytesOut))
+	e.Counter("xproxy_udp_dropped_total", "Datagrams a udp listener would not relay (a refused client, the rate limit, an oversize datagram).", nil, float64(sn.UDPDropped))
+	e.Counter("xproxy_udp_rejected_total", "Datagrams from a new client refused by the session table bounds.", nil, float64(sn.UDPRejected))
+	e.Counter("xproxy_udp_errors_total", "udp listener sessions that found no reachable endpoint.", nil, float64(sn.UDPErrors))
 	e.Counter("xproxy_honeypot_hits_total", "Requests answered by a honeypot route.", nil, float64(sn.HoneypotHits))
 	e.Gauge("xproxy_honeypot_marked", "Clients currently marked by a honeypot.", nil, float64(sn.HoneypotMarked))
 	e.Counter("xproxy_tls_handshakes_refused_total", "TLS handshakes refused in the ClientHello.", nil, float64(sn.HandshakesRefused))

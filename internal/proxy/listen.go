@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/unixsock"
@@ -138,3 +139,34 @@ func sameAddress(a, b string) bool {
 	}
 	return norm(ah) == norm(bh)
 }
+
+// datagramListener stands in for the accept socket of a kind that has
+// none. The engine's listener machinery is written around a
+// net.Listener -- it names a listener by the address it reports and
+// stops one by closing it -- and a datagram kind has a socket that
+// answers neither call, so this reports the datagram socket's address
+// and blocks in Accept until it is closed. Nothing ever accepts from
+// it, which is the point: no TCP port is held.
+type datagramListener struct {
+	addr net.Addr
+	done chan struct{}
+	once sync.Once
+}
+
+func newDatagramListener(addr net.Addr) *datagramListener {
+	return &datagramListener{addr: addr, done: make(chan struct{})}
+}
+
+// Accept blocks until Close. Returning an error immediately instead
+// would spin the acceptor's loop.
+func (d *datagramListener) Accept() (net.Conn, error) {
+	<-d.done
+	return nil, &net.OpError{Op: "accept", Net: "udp", Addr: d.addr, Err: net.ErrClosed}
+}
+
+func (d *datagramListener) Close() error {
+	d.once.Do(func() { close(d.done) })
+	return nil
+}
+
+func (d *datagramListener) Addr() net.Addr { return d.addr }

@@ -169,6 +169,8 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 	})
 	mux.HandleFunc("POST /v1/reload-certs", s.reloadCerts)
 	mux.HandleFunc("POST /v1/logs/reopen", s.reopenLogs)
+	mux.HandleFunc("GET /v1/drain", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.Drains()) })
+	mux.HandleFunc("POST /v1/drain", s.setDrain)
 	mux.HandleFunc("GET /v1/bans", s.listBans)
 	mux.HandleFunc("POST /v1/bans", s.addBan)
 	mux.HandleFunc("DELETE /v1/bans", s.removeBan)
@@ -443,6 +445,9 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 type result struct {
 	OK    bool   `json:"ok"`
 	Error string `json:"error,omitempty"`
+	// Note carries a remark about an action that succeeded but may not
+	// have done what the caller assumed.
+	Note string `json:"note,omitempty"`
 }
 
 // healthResult is what /v1/health answers. The process is serving, so
@@ -646,6 +651,55 @@ func (s *Server) setMaintenance(w http.ResponseWriter, r *http.Request) {
 	peer := peerFromContext(r.Context())
 	s.logs.Audit.Info("management action", "action", "maintenance", "on", on, "peer_uid", peer.UID, "peer_gid", peer.GID, "peer_pid", peer.PID, "peer_known", peer.OK)
 	writeJSON(w, 200, MaintenanceStatus{Configured: true, On: on})
+}
+
+// DrainRequest takes an endpoint out of rotation, or a whole pool, or
+// puts one back. Naming an address drains that endpoint; naming only the
+// pool puts the pool into maintenance.
+type DrainRequest struct {
+	Pool    string `json:"pool"`
+	Address string `json:"address,omitempty"`
+	// Drain false restores. The field is explicit rather than two
+	// endpoints, because "drain" and "undrain" as separate verbs is how
+	// an operator ends up not knowing which state something is in.
+	Drain bool `json:"drain"`
+}
+
+// setDrain records an operator's decision to stop sending new work to an
+// endpoint or a pool. Nothing is closed: what is already running
+// finishes, which is what makes this usable for a rolling restart.
+func (s *Server) setDrain(w http.ResponseWriter, r *http.Request) {
+	var req DrainRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
+		writeJSON(w, 400, result{Error: "bad request body"})
+		return
+	}
+	if req.Pool == "" {
+		writeJSON(w, 400, result{Error: "pool is required"})
+		return
+	}
+	if len(req.Pool) > 256 || len(req.Address) > 256 {
+		writeJSON(w, 400, result{Error: "pool or address too long"})
+		return
+	}
+	peer := peerFromContext(r.Context())
+	action := "pool_maintenance"
+	if req.Address != "" {
+		action = "endpoint_drain"
+	}
+	found := s.proxy.SetDrain(req.Pool, req.Address, req.Drain)
+	attrs := []any{"action", action, "pool", req.Pool, "address", req.Address, "drain", req.Drain,
+		"peer_uid", peer.UID, "peer_gid", peer.GID, "peer_pid", peer.PID, "peer_known", peer.OK}
+	s.logs.Audit.Info("management action", attrs...)
+	if !found {
+		// The decision is recorded anyway: an endpoint may be about to
+		// arrive from discovery, and a pool may be about to be added by
+		// a reload. Saying so is more useful than either refusing or
+		// pretending.
+		writeJSON(w, 200, result{OK: true, Note: "recorded; no live pool or endpoint of that name yet"})
+		return
+	}
+	writeJSON(w, 200, result{OK: true})
 }
 
 func (s *Server) addBan(w http.ResponseWriter, r *http.Request) {

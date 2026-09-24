@@ -167,6 +167,7 @@ func (f *forwardServer) masqueUDP(w http.ResponseWriter, r *http.Request, p *for
 			if fa, err := netip.ParseAddrPort(from.String()); err != nil ||
 				fa.Addr().Unmap() != ips[0] || int(fa.Port()) != target.Port {
 				h.Counters().MasqueDropped.Add(1)
+				h.Counters().Refuse("forward", "masque_unsolicited")
 				continue
 			}
 			if err := masque.WriteCapsule(w, masque.Datagram(0, buf[:n])); err != nil {
@@ -193,6 +194,7 @@ func (f *forwardServer) masqueUDP(w http.ResponseWriter, r *http.Request, p *for
 			// Context 0 is the raw payload; a registered extension
 			// would use another, and this proxy registers none.
 			h.Counters().MasqueDropped.Add(1)
+			h.Counters().Refuse("forward", "masque_context")
 			continue
 		}
 		_ = pc.SetWriteDeadline(time.Now().Add(masqueUDPTimeout))
@@ -291,6 +293,7 @@ func (f *forwardServer) masqueIP(w http.ResponseWriter, r *http.Request, p *forw
 			ctx, payload, err := masque.SplitDatagram(c)
 			if err != nil || ctx != 0 || len(payload) < 20 {
 				f.host.Counters().MasqueDropped.Add(1)
+				f.host.Counters().Refuse("forward", "masque_context")
 				continue
 			}
 			if !dev.Allowed(payload) {
@@ -298,6 +301,7 @@ func (f *forwardServer) masqueIP(w http.ResponseWriter, r *http.Request, p *forw
 				// was assigned, or whose destination is outside the
 				// advertised routes, is spoofing.
 				f.host.Counters().MasqueDropped.Add(1)
+				f.host.Counters().Refuse("forward", "masque_spoofed")
 				continue
 			}
 			if _, err := dev.Write(payload); err != nil {

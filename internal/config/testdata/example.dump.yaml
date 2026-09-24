@@ -12,7 +12,10 @@ server:
           h3: null
           h2c: false
           kind: http
+          connection_rate: null
+          connection_rate_per_source: null
           tcp: null
+          udp: null
           forward: null
           dns: null
           smtp: null
@@ -54,7 +57,10 @@ server:
             webtransport: false
           h2c: false
           kind: http
+          connection_rate: null
+          connection_rate_per_source: null
           tcp: null
+          udp: null
           forward: null
           dns: null
           smtp: null
@@ -78,6 +84,9 @@ server:
         max_concurrent_requests: 16384
         max_tarpits: 1024
         max_buffered_body_bytes: 536870912
+        connection_rate: null
+        connection_rate_per_source: null
+    zone: ""
     normalization:
         reject_control_chars: null
         reject_invalid_utf8: null
@@ -215,10 +224,24 @@ upstreams:
         - address: 10.0.1.10:8080
           weight: 1
           canary: false
+          max_connections: 0
+          priority: 0
+          zone: ""
+          drain: false
         - address: 10.0.1.11:8080
           weight: 1
           canary: false
+          max_connections: 0
+          priority: 0
+          zone: ""
+          drain: false
       discovery: null
+      locality: null
+      address_family: ""
+      fallback_delay: 0s
+      max_connection_age: 0s
+      max_connections_per_endpoint: 0
+      maintenance: false
       origin_signature: null
       slow_start: 0s
       scheme: http
@@ -240,6 +263,10 @@ upstreams:
         keep_alive: false
         body_contains: ""
         body_regex: ""
+        send: ""
+        send_hex: ""
+        expect: ""
+        expect_hex: ""
       timeouts:
         connect: 5s
         response_header: 30s
@@ -272,10 +299,24 @@ upstreams:
         - address: 10.0.2.10:8443
           weight: 1
           canary: false
+          max_connections: 0
+          priority: 0
+          zone: ""
+          drain: false
         - address: 10.0.2.11:8443
           weight: 1
           canary: false
+          max_connections: 0
+          priority: 0
+          zone: ""
+          drain: false
       discovery: null
+      locality: null
+      address_family: ""
+      fallback_delay: 0s
+      max_connection_age: 0s
+      max_connections_per_endpoint: 0
+      maintenance: false
       origin_signature: null
       slow_start: 0s
       scheme: https

@@ -1,0 +1,129 @@
+# A telnet gateway for the equipment that speaks nothing else: the
+# proxy is a telnet server to the operator and a telnet client to the
+# device, reading the NVT protocol of RFC 854 in both directions.
+#
+# Telnet carries everything in clear. The session, every password
+# typed into the device's own login, and the one-time code this
+# listener asks for all cross the network as plain bytes. The tls
+# section below is the only thing that changes that -- it is what
+# "telnets" on 992 is -- and validation warns every time it is left
+# off. This listener exists because the equipment exists, not because
+# telnet is acceptable.
+#
+# Why this is not a tcp listener: telnet's options are commands
+# escaped into the byte stream (IAC, 255, begins one). A proxy that
+# does not parse that cannot tell a window-size negotiation from the
+# characters a person typed -- which it has to, to record the session
+# as it was seen, to decide which options may be turned on, and to ask
+# its own question before the device is dialled.
+#
+# Validate: xgate -config examples/bastion/telnet.yaml -validate
+version: 1
+server:
+  listeners:
+    # Switches, PDUs and consoles: reached over TLS, after a code,
+    # with the session on disk.
+    - name: equipment
+      address: "0.0.0.0:992"
+      kind: telnet
+      # Little equipment reconnects in a hurry, and nothing legitimate
+      # here connects twice a second.
+      connection_rate: {per_second: 10, burst: 20}
+      connection_rate_per_source: {per_second: 1, burst: 3}
+      # telnets. Without it the code this listener asks for travels in
+      # clear to anyone on the path, which makes the factor theatre.
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/certs/telnet.pem, key_file: /etc/xproxy/certs/telnet-key.pem}
+        min_version: "1.2"
+      telnet:
+        upstream: equipment
+
+        # Naming the equipment here would save an attacker a question.
+        banner: |
+          Access to this system is logged. Disconnect now if you are
+          not authorised to use it.
+
+        # Telnet has no authentication for a proxy to read, so this is
+        # a prompt the gateway writes into the stream and an answer it
+        # reads back, before the device is dialled at all: a client
+        # that cannot answer never reaches the equipment. The name is
+        # only what the enrolment is looked up by -- the device's own
+        # login happens afterwards and is untouched.
+        mfa:
+          file: /etc/xproxy/mfa
+          issuer: example.com
+          skew: 1
+          require_enrolment: true
+          max_failures: 5
+          window: 5m
+          lockout: 15m
+
+        # The default list is what an interactive session needs and
+        # nothing else, restated here so the omissions are visible.
+        # Left out, each for its own reason:
+        #
+        #   environ, new-environ  carry variables of the client's
+        #                         choosing to the device, which is how
+        #                         a login shell is handed a different
+        #                         PATH
+        #   x-display             names an X display the device will
+        #                         try to reach: a connection back out
+        #   authentication        negotiated differently by every
+        #                         implementation that has it
+        #   encryption            would encrypt the session end to end,
+        #                         so the gateway could neither record
+        #                         it nor hold it to a policy
+        #
+        # An option the proxy has no name for is refused whatever this
+        # says, and a refusal is answered to the side that asked
+        # rather than dropped -- a refusal the asker never hears is a
+        # negotiation that repeats forever.
+        allow_options: [echo, suppress-go-ahead, binary, terminal-type, naws,
+                        terminal-speed, end-of-record, timing-mark, status]
+
+        # A peer that sends IAC SB and never sends IAC SE is cut off
+        # here rather than allowed to grow a buffer.
+        max_subnegotiation: 4096
+
+        # What the device showed, in the asciicast v2 format the ssh
+        # bastion writes, so the same player replays it. naws gives it
+        # the window size and a resize during the session is recorded
+        # as one.
+        #
+        # input is off. On telnet it would mean recording every
+        # password typed into the device's own login -- which the
+        # gateway does not otherwise see -- so the difference between
+        # watching over a shoulder and running a keylogger is sharper
+        # here than anywhere else in this estate.
+        recording:
+          directory: /var/log/xproxy/sessions
+          max_file_bytes: 33554432
+          max_files: 2000
+
+        idle_timeout: 10m
+        session_timeout: 4h
+        max_connections: 200
+        allow_clients: ["10.10.0.0/16"]
+
+upstreams:
+  - name: equipment
+    endpoints:
+      - {address: "10.50.1.10:23"}
+      - {address: "10.50.1.11:23"}
+    timeouts: {connect: 5s}
+
+bans:
+  triggers:
+    # A failed code, a refused option and a client from outside
+    # allow_clients are all telnet_denied. The threshold is low: this
+    # is a port with a handful of legitimate users on a network that
+    # should not be carrying strangers.
+    - name: telnet-abuse
+      reasons: [telnet_denied]
+      threshold: 5
+      window: 10m
+      duration: 4h
+
+logging:
+  access: {enabled: true}

@@ -170,6 +170,11 @@ T}	T{
 Virtual patches with state (active,\: disabled,\: expired),\: action,\: hits,\: last hit and expiry
 T}
 T{
+\fBsession\fR \fBlist\fR \fIDIR\fR |\: \fBshow\fR [\fB\-\:safe\fR] [\fB\-\:input\fR] \fIFILE\fR |\: \fBplay\fR [\fB\-\:speed\fR \fIN\fR] [\fB\-\:plain\fR] \fIFILE\fR
+T}	T{
+Read a recorded gate session back. \fBlist\fR names the recordings in a directory with their size,\: start,\: dimensions and title;\: \fBshow\fR prints what the session showed,\: and \fBplay\fR replays it with its timing. The escape sequences that reach outside the window a replay is drawn in are never forwarded: a recording is the bytes a session sent,\: and a terminal is an interpreter of exactly those bytes,\: so writing one out unfiltered lets a recorded session set the reviewer\(aqs clipboard (OSC 52),\: retitle their window,\: or ask for a device report \[u2014] which the terminal answers on its own input,\: and a shell reads as a command line. \fBshow\fR keeps the text and drops every sequence;\: \fB\-\:safe\fR keeps the colours and cursor movement and writes the rest out inert;\: \fBplay\fR is \fB\-\:safe\fR by default and \fB\-\:plain\fR is the reading view. The file itself is never rewritten
+T}
+T{
 \fBcapture\fR [\fBstatus\fR|\:\fBstart\fR [\fB\-\:duration\fR \fID\fR]|\:\fBstop\fR]
 T}	T{
 Packet capture of the exchanges the proxy handled,\: written as pcapng: whether it is recording,\: when the window ends,\: the current file and the per rule counters;\: \fBstart\fR opens a window (\fID\fR,\: bounded by \fBcapture.\:max_\:duration\fR),\: \fBstop\fR closes it. The files hold decrypted request and response bytes

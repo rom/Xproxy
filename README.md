@@ -229,6 +229,14 @@ an identifier from the access log to the upstream.
 - `kind: tcp`: layer 4 TLS and QUIC passthrough routed by server name
   without terminating TLS, with PROXY protocol v2 to TCP upstreams and
   optional YARA rules over the bytes it relays
+- `kind: udp`: the datagram counterpart, for services with no parser
+  here. A session table keyed by client address in place of a
+  connection, bounded per source as well as in total because a
+  datagram's source can be forged, a connected socket towards the
+  endpoint so no third party can answer for it, and bounds on the
+  datagram size, the session's length and what it may cost. It binds no
+  TCP port, and what it will not relay it drops rather than answering,
+  since a reply to a forged source is an attack on whoever was named
 - `kind: forward`: an explicit proxy for clients with CONNECT tunnels,
   a destination policy that refuses private ranges by default, and
   proxy credentials. It also speaks **SOCKS5** on the same port (one

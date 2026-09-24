@@ -239,6 +239,7 @@ func (se *session) readServerChannels(resp *rdp.Connect) string {
 			"listener", se.t.cfg.Name, "client_ip", se.ip.String(), "target", se.target,
 			"detail", "the desktop's conference response did not name the channel the session runs on")
 		se.t.engine.Counters().RDPRefused.Add(1)
+		se.t.engine.Counters().Refuse("rdp", "no_io_channel")
 		return "upstream_no_io_channel"
 	}
 	return ""

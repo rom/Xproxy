@@ -35,12 +35,42 @@ type server struct {
 	yara   *streamscan.Guard // when the listener scans the bytes it relays
 	cons   map[net.Conn]struct{}
 	done   chan struct{}
+	// allowDst are the destinations an intercepted connection may be
+	// relayed to, parsed once; see intercept.go.
+	allowDst []netip.Prefix
 }
 
-const helloPeekTimeout = 10 * time.Second
+const (
+	// helloPeekTimeout bounds the whole peek: a client that has started
+	// sending a ClientHello and never finishes it holds a connection,
+	// so there is a hard stop.
+	helloPeekTimeout = 10 * time.Second
+	// helloSettleTimeout is how long a connection that has sent nothing
+	// at all is waited on before it is taken to be a protocol where the
+	// server speaks first.
+	//
+	// Plenty of what a layer 4 listener carries is server-first: SSH
+	// sends its banner before the client says anything, and so do SMTP,
+	// FTP, MySQL and PostgreSQL. Waiting for a ClientHello from such a
+	// client is waiting for something that will never come while the
+	// client waits for a greeting that this proxy has not gone to fetch
+	// -- a deadlock broken only by the hard bound above, and then by an
+	// error. So silence is an answer: after this, the connection is
+	// relayed on the default route with nothing peeked.
+	helloSettleTimeout = time.Second
+)
 
 func newServer(engine proxy.Host, cfg config.Listener, ln net.Listener) (*server, error) {
 	t := &server{engine: engine, cfg: cfg, ln: ln, cons: map[net.Conn]struct{}{}, done: make(chan struct{})}
+	if cfg.TCP != nil {
+		for _, c := range cfg.TCP.AllowDestinations {
+			pfx, err := netip.ParsePrefix(c)
+			if err != nil {
+				return nil, err
+			}
+			t.allowDst = append(t.allowDst, pfx)
+		}
+	}
 	if cfg.TCP != nil && cfg.TCP.YARA != nil {
 		g, err := streamscan.New(cfg.TCP.YARA)
 		if err != nil {
@@ -74,6 +104,7 @@ func (t *server) serve() {
 		if t.open.Add(1) > int64(t.cfg.TCP.MaxConnections) {
 			t.open.Add(-1)
 			t.engine.Counters().TCPRejected.Add(1)
+			t.engine.Counters().Refuse("tcp", "max_connections")
 			_ = c.Close()
 			continue
 		}
@@ -178,10 +209,18 @@ func (t *server) handle(client net.Conn) {
 	clientIP := addrOf(client.RemoteAddr().String())
 	// Peek the first record without terminating TLS. Non-TLS traffic and
 	// hellos without a name take the default route.
-	_ = client.SetReadDeadline(time.Now().Add(helloPeekTimeout))
+	hard := time.Now().Add(helloPeekTimeout)
 	buf := make([]byte, 0, 4096)
 	sni := ""
 	for {
+		// A connection that has said nothing yet is given the settle
+		// timeout; once it has started speaking it gets the hard bound,
+		// because a ClientHello split across packets is ordinary.
+		deadline := time.Now().Add(helloSettleTimeout)
+		if len(buf) > 0 || deadline.After(hard) {
+			deadline = hard
+		}
+		_ = client.SetReadDeadline(deadline)
 		tmp := make([]byte, 4096)
 		n, err := client.Read(tmp)
 		buf = append(buf, tmp[:n]...)
@@ -197,14 +236,24 @@ func (t *server) handle(client net.Conn) {
 			}
 		}
 		if err != nil {
+			var ne net.Error
+			if errors.As(err, &ne) && ne.Timeout() && len(buf) == 0 {
+				// Nothing at all: a server-first protocol. Relay it.
+				break
+			}
 			t.finish(client, clientIP, start, sni, "", "", "read_error", 0, 0)
 			return
 		}
 	}
 	_ = client.SetReadDeadline(time.Time{})
+	if t.cfg.TCP.OriginalDestination {
+		t.intercepted(client, clientIP, start, sni, buf)
+		return
+	}
 	upName, ok := t.resolve(sni)
 	if !ok {
 		s.Counters().TCPRejected.Add(1)
+		s.Counters().Refuse("tcp", "no_route")
 		t.finish(client, clientIP, start, sni, "", "", "no_route", 0, 0)
 		return
 	}
@@ -223,7 +272,8 @@ func (t *server) handle(client net.Conn) {
 		}
 		tried[e] = true
 		d := net.Dialer{Timeout: pool.Cfg.Timeouts.Connect.D()}
-		c, err := d.DialContext(context.Background(), "tcp", e.Address)
+		network, address := e.Dial()
+		c, err := d.DialContext(context.Background(), network, address)
 		pool.Begin(e)
 		if err != nil {
 			pool.End(e, true, 0)
@@ -252,11 +302,14 @@ func (t *server) handle(client net.Conn) {
 		t.finish(client, clientIP, start, sni, upName, ep.Address, "upstream_write", 0, 0)
 		return
 	}
-	in, out := t.spliceScanned(client, up, clientIP, sni)
+	in, out, end := t.spliceScanned(client, up, clientIP, sni)
 	pool.End(ep, false, 0)
 	s.Counters().TCPBytesIn.Add(uint64(in + int64(len(buf)))) //nolint:gosec // non-negative
 	s.Counters().TCPBytesOut.Add(uint64(out))                 //nolint:gosec // non-negative
-	t.finish(client, clientIP, start, sni, upName, ep.Address, "", in+int64(len(buf)), out)
+	if end != "" {
+		s.Counters().TCPBounded.Add(1)
+	}
+	t.finish(client, clientIP, start, sni, upName, ep.Address, end, in+int64(len(buf)), out)
 }
 
 func (t *server) finish(client net.Conn, ip netip.Addr, start time.Time, sni, up, endpoint, reason string, in, out int64) {
@@ -280,9 +333,10 @@ func (t *server) finish(client net.Conn, ip netip.Addr, start time.Time, sni, up
 // scanned: nothing is held back waiting for a verdict, because a stream
 // cannot be paused without the peer noticing, so what a match decides
 // is whether the connection continues.
-func (t *server) spliceScanned(client, up net.Conn, ip netip.Addr, sni string) (in, out int64) {
+func (t *server) spliceScanned(client, up net.Conn, ip netip.Addr, sni string) (in, out int64, end string) {
+	limits := t.relayLimits()
 	if t.yara == nil {
-		return relay.Splice(client, up, t.cfg.TCP.IdleTimeout.D())
+		return relay.Bounded(client, up, limits, nil, nil)
 	}
 	toUpstream := t.yara.Stream("client")
 	toClient := t.yara.Stream("upstream")
@@ -306,7 +360,7 @@ func (t *server) spliceScanned(client, up net.Conn, ip netip.Addr, sni string) (
 			return false
 		}
 	}
-	return relay.Watch(client, up, t.cfg.TCP.IdleTimeout.D(), watch(toUpstream), watch(toClient))
+	return relay.Bounded(client, up, limits, watch(toUpstream), watch(toClient))
 }
 
 // proxyV2Header is netutil.ProxyV2Header under the name the engine has

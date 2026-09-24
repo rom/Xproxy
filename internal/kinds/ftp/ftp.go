@@ -201,6 +201,7 @@ func (t *server) serve() {
 		if t.open.Add(1) > int64(t.f.MaxConnections) {
 			t.open.Add(-1)
 			t.engine.Counters().FTPRejected.Add(1)
+			t.engine.Counters().Refuse("ftp", "max_connections")
 			_, _ = c.Write(wire.Line(421, "too many connections, try again later"))
 			_ = c.Close()
 			continue
@@ -261,6 +262,7 @@ func (t *server) shutdown(ctx context.Context) {
 }
 
 func (t *server) deny(ip netip.Addr, what, detail string) {
+	t.engine.Counters().Refuse("ftp", what)
 	attrs := []any{"listener", t.cfg.Name, "client_ip", ip.String(), "proto", "ftp"}
 	if detail != "" {
 		attrs = append(attrs, "detail", detail)
@@ -310,6 +312,17 @@ type session struct {
 	// pending is a code taken off a PASS argument, waiting for the
 	// target to accept the password it came with.
 	pending string
+	// restart is the offset a REST the server accepted set, and
+	// pendingRestart the one a REST asked for while its reply is still
+	// in flight. A marker applies to the next transfer only (RFC 3659
+	// section 5), so both are cleared by the command that uses one and
+	// by any command that is not a transfer.
+	restart        int64
+	pendingRestart int64
+	// renameFrom is the path an RNFR the server accepted named. RNTO
+	// without one is half a decision, and a proxy that relayed it would
+	// be forwarding a rename it never saw the source of.
+	renameFrom string
 	// preLogin holds the dialogue until there is a login to name the
 	// recording after; preLoginDropped counts what did not fit.
 	preLogin        []preLoginEvent
@@ -337,6 +350,7 @@ func (t *server) handle(client net.Conn) {
 	}
 	if bl := s.Bans(); bl != nil && se.ip.IsValid() && bl.Banned(se.ip) {
 		s.Counters().FTPRejected.Add(1)
+		s.Counters().Refuse("ftp", "banned")
 		_, _ = client.Write(wire.Line(421, "refused"))
 		_ = client.Close()
 		return
@@ -605,6 +619,17 @@ func (se *session) command(c wire.Command) (bool, string) {
 		}
 		return false, ""
 	}
+	// A restart marker applies to the transfer that follows it and to
+	// nothing else, and an RNFR to the RNTO that follows it. Anything
+	// else in between clears them, which is what the server does too:
+	// the alternative is a proxy holding half a pair that the server has
+	// already forgotten.
+	if !restartKeeps[c.Verb] && !wire.Transfers[c.Verb] {
+		se.restart, se.pendingRestart = 0, 0
+	}
+	if c.Verb != "RNFR" && c.Verb != "RNTO" {
+		se.renameFrom = ""
+	}
 	switch c.Verb {
 	case "AUTH":
 		return se.auth(c)
@@ -622,6 +647,17 @@ func (se *session) command(c wire.Command) (bool, string) {
 	case "PORT", "EPRT":
 		return se.active(c)
 	}
+	// The path shape is read before the path policy, because a shape the
+	// proxy and the server would disagree about makes the policy's answer
+	// meaningless rather than wrong.
+	if wire.Paths[c.Verb] && c.Arg != "" {
+		if reason := pathShape(c.Arg); reason != "" {
+			if !se.refuse(550, "the path cannot be used here", reason, textsafe.Clip256(c.Arg)) {
+				return true, "too_many_errors"
+			}
+			return false, ""
+		}
+	}
 	if wire.Paths[c.Verb] && c.Arg != "" {
 		if reason := se.pathAllowed(c); reason != "" {
 			if !se.refuse(550, "refused by policy", "path_refused", reason+" "+textsafe.Clip256(c.Arg)) {
@@ -630,8 +666,27 @@ func (se *session) command(c wire.Command) (bool, string) {
 			return false, ""
 		}
 	}
+	if c.Verb == "REST" {
+		return se.restartCmd(c)
+	}
+	if c.Verb == "RNTO" {
+		return se.renameTo(c)
+	}
 	if wire.Transfers[c.Verb] {
-		return se.transfer(c)
+		// A marker is spent by the transfer it was for, refused or not: a
+		// client whose resumed upload was turned down has to ask again,
+		// rather than the next transfer inheriting an offset.
+		if reason := se.restartAllowed(c); reason != "" {
+			detail := c.Verb + " at " + strconv.FormatInt(se.restart, 10)
+			se.restart, se.pendingRestart = 0, 0
+			if !se.refuse(451, "a resumed transfer cannot be inspected here", reason, detail) {
+				return true, "too_many_errors"
+			}
+			return false, ""
+		}
+		done, reason := se.transfer(c)
+		se.restart, se.pendingRestart = 0, 0
+		return done, reason
 	}
 	if c.Verb == "PASS" && se.t.mfaGuard != nil {
 		// A client with no ACCT of its own appends the code to the
@@ -712,6 +767,19 @@ func (se *session) follow(c wire.Command, rep wire.Reply) {
 			se.t.engine.Counters().FTPAuthFailed.Add(1)
 			se.t.deny(se.ip, "auth_failed", textsafe.Clip64(se.user))
 		}
+	case "REST":
+		// 350 is the server saying it will honour the marker. Until it
+		// does, the offset changes nothing about the next transfer.
+		if rep.Code == 350 {
+			se.restart = se.pendingRestart
+		}
+		se.pendingRestart = 0
+	case "RNFR":
+		if rep.Code == 350 {
+			se.renameFrom = se.cleanArg(c.Arg)
+		}
+	case "RNTO":
+		se.renameFrom = ""
 	case "CWD", "XCWD":
 		if rep.Code >= 200 && rep.Code < 300 {
 			se.cwd = se.resolve(c.Arg)
@@ -1265,12 +1333,18 @@ func (se *session) moveData(d *dataConn, c wire.Command, upload bool) (int64, st
 func (se *session) copyData(dst io.Writer, src io.Reader, scan *streamscan.Stream) (int64, string) {
 	buf := make([]byte, 32<<10)
 	var total int64
+	// The bound is about the file, so a resumed transfer is measured from
+	// its offset: the file ends up the offset plus what crosses here, and
+	// a bound on the bytes relayed would let two REST-offset halves each
+	// be inside it. total itself stays the bytes this proxy carried,
+	// which is what the log and the counters mean by it.
 	max := se.policy.maxFile
+	offset := se.restart
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {
 			total += int64(n)
-			if max > 0 && total > max {
+			if max > 0 && offset+total > max {
 				return total, "max_file_bytes"
 			}
 			if scan != nil && scan.Feed(buf[:n]) {

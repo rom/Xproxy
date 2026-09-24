@@ -990,6 +990,51 @@ and gets ejected after a few such answers. Only replayable requests
 when every endpoint fails the last answer is passed through unchanged.
 `upstream_retries` and `upstream_status_retries` count the attempts.
 
+### Taking a backend out of service without dropping anything
+
+A machine has to be patched, restarted or removed. The thing you do not
+want is to take it out by stopping it and letting the proxy discover
+that: the requests in flight on it are lost, and the ones that arrive in
+the second before the health check notices are lost too.
+
+Drain it first:
+
+```console
+$ xproxyctl drain app 10.0.1.12:8080     # no new work here
+$ xproxyctl upstreams | grep 10.0.1.12   # watch ACTIVE fall to 0
+$ # ... patch, restart, whatever ...
+$ xproxyctl drain -restore app 10.0.1.12:8080
+```
+
+Draining stops new work and ends nothing: what is already on the endpoint
+runs to its own end, which is why `ACTIVE` falling to zero is the signal
+that the machine is yours. The endpoint stays `healthy` in the listing
+and shows `draining`, so nobody reading the status confuses "somebody
+took this out" with "the proxy found this broken".
+
+For a whole service, name only the pool:
+
+```console
+$ xproxyctl drain reports                # the pool offers nothing
+$ xproxyctl drain                        # what is currently out
+POOL     ENDPOINT       STATE
+reports  (whole pool)   maintenance
+app      10.0.1.12:8080 draining
+```
+
+The decision survives a reload, on purpose: a reload builds new pools,
+and somebody who drained a machine to patch it did not mean "until the
+next configuration change". The declarative forms —
+`endpoints[].drain: true` and a pool's `maintenance: true` — are for an
+outage long enough to write down; an API decision overrides the file
+until the daemon restarts.
+
+**A rolling restart, then, is:** drain one endpoint, wait for its
+`ACTIVE` to reach zero, do the work, restore it, move to the next. No
+request is refused at any point as long as the rest of the pool can
+carry the load — which is what `max_connections` on an endpoint is for if
+one of them cannot.
+
 ### Protecting a slow upstream: concurrency, queue and circuit breaker
 
 ```yaml
@@ -2856,14 +2901,57 @@ the asciicast v2 format:
           max_files: 2000
 ```
 
-`asciinema play` replays a file; the format is line oriented, so one cut
-short by a crash or by the bound still plays up to where it stops. The
-header carries the terminal size, the login and the target, and for an
-`exec` the command; a `window-change` becomes a resize event; stderr is
-recorded with stdout, because a terminal does not keep them apart and a
-recording without stderr is missing exactly the errors. An `sftp`
+`xproxyctl session` reads one back; the format is line oriented, so one
+cut short by a crash or by the bound still plays up to where it stops.
+The header carries the terminal size, the login and the target, and for
+an `exec` the command; a `window-change` becomes a resize event; stderr
+is recorded with stdout, because a terminal does not keep them apart and
+a recording without stderr is missing exactly the errors. An `sftp`
 channel is not recorded — it is not a terminal, and its own log line
 already says what each request did.
+
+### Reading a recording without running it
+
+**A recording is a program for a terminal, and the person recorded
+wrote it.** That is not a flaw in the format; it is what a faithful
+record of a terminal session *is*. A terminal is an interpreter of
+exactly those bytes, and some of what it will do on request reaches
+outside the window a replay is drawn in:
+
+- `OSC 52` writes the reviewer's clipboard, and waits to be pasted.
+- `OSC 0`, `OSC 2` and `OSC 7` retitle the window and change what it
+  says the working directory is; `OSC 8` makes a hyperlink whose text
+  and target need not agree.
+- The device reports — `CSI c`, `CSI n`, `DECRQSS`, the window
+  manipulation sequences — make the terminal **write back on its own
+  input**. What a terminal writes on its input, a shell reads as a
+  command line. This is the one that turns reading a log into running
+  one.
+- The mouse and focus reporting modes make the terminal send on every
+  movement; `CSI t` resizes and moves the window.
+- A bidirectional override reorders a line, so what is on the screen and
+  what is in the file disagree.
+
+So read one with the tool rather than with `cat` or a player:
+
+```sh
+xproxyctl session list /var/log/xproxy/sessions
+xproxyctl session show /var/log/xproxy/sessions/ssh-alice-20260924T101500.cast
+xproxyctl session show -safe FILE      # keep the colours, name the rest
+xproxyctl session play -speed 2 FILE   # with the timing it had
+```
+
+`show` keeps the text and drops every sequence, which is what reading a
+session wants. `-safe` keeps the ones that draw inside the window —
+colour, cursor movement, erasing — and writes the rest out in a form no
+terminal acts on, so a sequence the session sent appears as
+`\e]52;c;cHduZWQ=\x07` rather than silently doing something or silently
+going missing. `play` is `-safe` by default. The file is never
+rewritten: what is on disk is what happened, because a record an
+operator cannot trust is not a record.
+
+The same filtering is on everything `xproxyctl` prints, since most of
+what its tables carry came off the network as well.
 
 `input: false` is the default and stays that way unless you mean it: a
 terminal's input stream carries what the screen never showed, which
@@ -4592,7 +4680,9 @@ xproxyctl series -since 30m -last 12
 ```
 
 Useful expressions: `rate(xproxy_denied_total[5m])` by `reason` for attack
-activity, `histogram_quantile(0.99, rate(xproxy_upstream_ttfb_seconds_bucket[5m]))`
+activity, `rate(xproxy_refusals_total[5m])` by `kind` and `reason` for
+the same thing on the protocols that are not HTTP (an SSH bastion, an
+FTP relay, a datagram listener), `histogram_quantile(0.99, rate(xproxy_upstream_ttfb_seconds_bucket[5m]))`
 for backend health, `xproxy_shedding` to alert on load shedding,
 `xproxy_upstream_endpoint_healthy == 0` for dead endpoints,
 `xproxy_log_dropped_total` for a collector problem. The `series` command
@@ -4614,15 +4704,17 @@ Two Grafana dashboards and a Prometheus rule file ship with the product
   detect mode hits, bans, challenges, rate limit decisions per policy,
   filter denials, connections rejected at accept, honeypot and ICAP
   results, forward proxy policy, DNS filtering, log delivery per sink,
-  cluster peers.
+  cluster peers, and protocol refusals by kind and by reason for the
+  listeners that are not HTTP.
 - `xproxy-alerts.yaml`: availability rules (node down, no healthy
   endpoint, unhealthy endpoint, circuit open, 5xx ratio, p99 latency,
   shedding, queue refusals), operations rules (failed reload,
   certificate expiring at 14 and 3 days, log drops and write errors,
   cluster peer down, ICAP unreachable) and security rules (denies at
-  ten times the hourly baseline, WAF block spike, ban wave, honeypot
-  activity, saturated rate limit policy), each with a severity label
-  and a description that names the command to look at.
+  ten times the hourly baseline, a protocol listener's refusals at ten
+  times theirs, WAF block spike, ban wave, honeypot activity, saturated
+  rate limit policy, refusals exported without a reason), each with a
+  severity label and a description that names the command to look at.
 
 Import the dashboards (Dashboards > New > Import) and pick the
 Prometheus data source; both have an `instance` variable and link to

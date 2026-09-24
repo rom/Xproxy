@@ -2,10 +2,12 @@ package config
 
 import (
 	"fmt"
-	"github.com/rom/xproxy/internal/paths"
+	"math"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/rom/xproxy/internal/paths"
 )
 
 // Default values. They are deliberately conservative: an operator has to
@@ -116,15 +118,36 @@ func applyDefaults(c *Config) {
 	setInt(&l.MaxTarpits, DefaultMaxTarpits)
 	setInt64(&l.MaxBufferedBodyBytes, DefaultMaxBufferedBody)
 	setStr(&c.Server.Normalization.Unicode, "off")
+	connectionRateDefaults(l.ConnectionRate, l.ConnectionRatePerSource)
 
+	for i := range c.Upstreams {
+		c.Upstreams[i].NodeZone = s.Zone
+		if d := c.Upstreams[i].Discovery; d != nil && d.Consul != nil {
+			setStr(&d.Consul.Address, "127.0.0.1:8500")
+			setDur(&d.Consul.Wait, 5*time.Minute)
+		}
+	}
 	for i := range s.Listeners {
 		setStr(&s.Listeners[i].Kind, "http")
+		connectionRateDefaults(s.Listeners[i].ConnectionRate, s.Listeners[i].ConnectionRatePerSource)
 		if t := s.Listeners[i].TCP; t != nil {
 			setDur(&t.IdleTimeout, 10*time.Minute)
 			setInt(&t.MaxConnections, 10000)
 			setDur(&t.QUICIdleTimeout, 30*time.Second)
+			setDur(&t.ConnectTimeout, 10*time.Second)
 			if t.YARA != nil {
 				yaraDefaults(t.YARA)
+			}
+		}
+		if u := s.Listeners[i].UDP; u != nil {
+			setDur(&u.IdleTimeout, 30*time.Second)
+			setInt(&u.MaxSessions, 10000)
+			if u.MaxSessionsPerIP == 0 {
+				u.MaxSessionsPerIP = 64
+			}
+			setInt(&u.MaxDatagramBytes, 65535)
+			if u.RateLimit != nil && u.RateLimit.Burst == 0 {
+				u.RateLimit.Burst = int(math.Ceil(u.RateLimit.PPS))
 			}
 		}
 		if f := s.Listeners[i].Forward; f != nil {
@@ -276,6 +299,7 @@ func applyDefaults(c *Config) {
 			setInt(&h.MaxAuthTries, 3)
 			setInt(&h.MaxSessions, 1000)
 			setInt(&h.MaxChannels, 16)
+			setInt(&h.MaxForwards, 8)
 			setDur(&h.HandshakeTimeout, 30*time.Second)
 			setDur(&h.IdleTimeout, 30*time.Minute)
 			if len(h.AllowChannels) == 0 {
@@ -363,6 +387,24 @@ func applyDefaults(c *Config) {
 			setInt(&c.MaxConnections, 200)
 			setDur(&c.IdleTimeout, 5*time.Minute)
 			setDur(&c.HandshakeTimeout, 30*time.Second)
+			setStr(&c.PixelStream, VNCPixelsFramed)
+			setStr(&c.Clipboard, VNCClipboardBoth)
+			if c.AllowResize == nil {
+				t := true
+				c.AllowResize = &t
+			}
+			// The bounds apply whether or not the section is written,
+			// because a listener with no bounds is the case they exist
+			// for. The section is filled in so the dump and the
+			// management view show the numbers in force.
+			if c.Bounds == nil {
+				c.Bounds = &VNCBounds{}
+			}
+			setInt(&c.Bounds.MaxFramebufferPixels, 33177600)
+			setInt(&c.Bounds.MaxRectanglesPerUpdate, 4096)
+			setInt(&c.Bounds.MaxEncodedRectangle, 16<<20)
+			setInt(&c.Bounds.MaxDecodeRatio, 1000)
+			setInt(&c.Bounds.MaxCutText, 1<<20)
 			if c.SSH != nil {
 				setStr(&c.SSH.Target, "127.0.0.1:5900")
 			}
@@ -1201,5 +1243,28 @@ func yaraDefaults(y *YARAPolicy) {
 	}
 	if len(y.Directions) == 0 {
 		y.Directions = []string{"client", "upstream"}
+	}
+}
+
+// connectionRateDefaults fills in the burst and the network sizes of an
+// accept rate, wherever one is set.
+func connectionRateDefaults(r *ConnectionRate, sr *SourceRate) {
+	if r != nil && r.Burst == 0 {
+		r.Burst = int(math.Ceil(r.PerSecond))
+	}
+	if sr == nil {
+		return
+	}
+	if sr.Burst == 0 {
+		sr.Burst = int(math.Ceil(sr.PerSecond))
+	}
+	if sr.IPv4Prefix == 0 {
+		sr.IPv4Prefix = 32
+	}
+	if sr.IPv6Prefix == 0 {
+		sr.IPv6Prefix = 64
+	}
+	if sr.MaxSources == 0 {
+		sr.MaxSources = 65536
 	}
 }

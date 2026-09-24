@@ -18,6 +18,7 @@ var sections = map[string]string{
 	"tcp":     "tcp: {default: u}",
 	"forward": "forward: {ports: [443]}",
 	"dns":     `dns: {upstreams: ["127.0.0.1:53"]}`,
+	"udp":     "udp: {upstream: u}",
 	"ssh":     "ssh: {upstream: u, host_keys: [/dev/null], authorized_keys: /dev/null, upstream_key_file: /dev/null, upstream_known_hosts: /dev/null}",
 	"telnet":  "telnet: {upstream: u}",
 	"vnc":     "vnc: {upstream: u, security_types: [none]}",

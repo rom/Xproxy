@@ -385,6 +385,15 @@ func (f *forwardServer) deny(w http.ResponseWriter, r *http.Request, ip netip.Ad
 	if r.Method == http.MethodConnect {
 		dest = r.Host
 	}
+	// Every refusal is counted by its reason, whatever it was answered
+	// with: 403 for a destination the policy refuses, 407 for a missing
+	// credential, 400 for a request that is not a proxy request, 503
+	// for a bound. The 500 and 502 paths are errors rather than
+	// refusals — a failed dial, a hijack the server would not allow —
+	// and they belong to the error counters instead.
+	if status < 500 || status == http.StatusServiceUnavailable {
+		h.Counters().Refuse("forward", reason)
+	}
 	switch status {
 	case http.StatusForbidden:
 		h.Counters().ForwardDenied.Add(1)

@@ -213,8 +213,17 @@ func (tg *targetFTP) serve(c net.Conn) {
 			tg.stored = string(b)
 			tg.mu <- struct{}{}
 			write("226 transfer complete\r\n")
-		case "DELE", "MKD", "RMD", "RNFR", "RNTO":
+		case "DELE", "MKD", "RMD", "RNTO":
 			write("250 done\r\n")
+		case "RNFR":
+			// RFC 959: a rename waits for the RNTO, which is what 350
+			// says. A server answering 250 here would be claiming it had
+			// renamed something to nothing.
+			write("350 ready for the new name\r\n")
+		case "REST":
+			write("350 restarting at " + arg + "\r\n")
+		case "MLST":
+			write("250-Listing " + arg + "\r\n type=file;size=23; " + arg + "\r\n250 End\r\n")
 		case "SIZE":
 			write(fmt.Sprintf("213 %d\r\n", len(tg.content)))
 		case "AUTH":
@@ -661,5 +670,51 @@ func TestFTPMaxFileBytes(t *testing.T) {
 	}
 	if got := tg.lastStored(); len(got) > 4096 {
 		t.Fatalf("the target received %d octets", len(got))
+	}
+}
+
+// Every FTP refusal has a reason of its own in the counters.
+// xproxy_ftp_refused_total says the proxy answered a command the target
+// never heard; this says whether that was the command policy, the path
+// policy or a login, which is the difference between an operator
+// widening a list and an operator looking for an intruder.
+func TestFTPRefusalsAreCountedByReason(t *testing.T) {
+	s, addr, _ := ftpBastion(t, "        commands: [USER, PASS, QUIT, NOOP, SYST, RETR]\n        deny_paths: [\"/etc/**\"]")
+	c := dialFTP(t, addr)
+	c.login("alice", "secret")
+	if code, _ := c.cmd("SITE CHMOD 777 /etc"); code != 502 {
+		t.Errorf("SITE was allowed")
+	}
+	if code, _ := c.cmd("XYZZY"); code != 502 {
+		t.Errorf("an unknown verb was allowed")
+	}
+	if code, _ := c.cmd("RETR /etc/passwd"); code != 550 {
+		t.Errorf("a denied path was allowed")
+	}
+	want := map[string]uint64{"command_refused": 1, "unknown_command": 1, "path_refused": 1}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		got := s.Stats().Refusals["ftp"]
+		ok := true
+		for r, n := range want {
+			if got[r] != n {
+				ok = false
+			}
+		}
+		if ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("refusal counters are %v, want %v", got, want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// The aggregate still agrees with the breakdown: three refusals,
+	// three reasons, and nothing counted twice.
+	if sn := s.Stats(); sn.FTPRefused != 3 {
+		t.Errorf("xproxy_ftp_refused_total is %d for three refusals", sn.FTPRefused)
+	}
+	if sn := s.Stats(); sn.RefusalsUntracked != 0 {
+		t.Errorf("%d refusals carried no reason", sn.RefusalsUntracked)
 	}
 }

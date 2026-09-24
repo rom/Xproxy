@@ -153,6 +153,7 @@ func (t *server) shutdown(ctx context.Context) {
 
 // deny feeds the ban ladder.
 func (t *server) deny(ip netip.Addr, what, detail string) {
+	t.engine.Counters().Refuse("telnet", what)
 	if bl := t.engine.Bans(); bl != nil && ip.IsValid() {
 		bl.Observe(ip, "telnet_denied")
 	}
@@ -211,6 +212,7 @@ func (t *server) handle(client net.Conn) {
 	}
 	if bl := s.Bans(); bl != nil && se.ip.IsValid() && bl.Banned(se.ip) {
 		s.Counters().TelnetRejected.Add(1)
+		s.Counters().Refuse("telnet", "banned")
 		_ = client.Close()
 		return
 	}
@@ -396,6 +398,7 @@ func (se *session) decide(p *wire.Parser, b []byte, src net.Conn, fromClient boo
 				// asker never hears is a negotiation that repeats.
 				se.refused.Add(1)
 				t.engine.Counters().TelnetOptionsRefused.Add(1)
+				t.engine.Counters().Refuse("telnet", "option_refused")
 				if ref, ok := wire.Refusal(e.Cmd, e.Opt); ok {
 					if _, werr := src.Write(ref); werr != nil {
 						return werr
@@ -409,6 +412,7 @@ func (se *session) decide(p *wire.Parser, b []byte, src net.Conn, fromClient boo
 			if !t.options[e.Opt] {
 				se.refused.Add(1)
 				t.engine.Counters().TelnetOptionsRefused.Add(1)
+				t.engine.Counters().Refuse("telnet", "subnegotiation_refused")
 				se.markRefusedOption(wire.SB, e.Opt)
 				return nil
 			}

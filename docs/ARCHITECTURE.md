@@ -95,6 +95,7 @@ internal/proxy      the engine: accept path, listener lifecycle and reload, the
 internal/kinds/http    kind: http -- routing, filters, the WAF, the cache, the
                        whole request path, as the process's data plane
 internal/kinds/tcp     kind: tcp -- layer 4 relay, SNI and QUIC routing, YARA
+internal/kinds/udp     kind: udp -- generic datagram relay, session table, bounds
 internal/kinds/dns     kind: dns -- resolver, cache, block list, DoT/DoH/DoQ
 internal/kinds/forward kind: forward -- CONNECT, SOCKS5, MASQUE, interception
 internal/kinds/ssh     kind: ssh -- bastion, policy, SFTP mediation, recording
@@ -826,7 +827,7 @@ cluster event `ticket_keys` on start and after every rotation; a peer's
 fingerprint that differs is recorded and warned about through a bounded
 notice.
 
-### Layer 4 passthrough
+### Layer 4 passthrough (streams and datagrams)
 
 A `kind: tcp` listener (`internal/kinds/tcp`) accepts through the same
 limiter as every listener (bans, per address and global connection
@@ -847,6 +848,18 @@ datagrams, the server name is read with the same ClientHello parser,
 and the relay keeps one flow per client address (an upstream UDP
 socket and a pump goroutine) until it is idle. Datagrams after the
 Initial are forwarded without being read.
+
+A `kind: udp` listener (`internal/kinds/udp`) is the datagram half, and
+the one listener kind with no accept socket at all: `proxy.Kind.Datagram`
+tells the engine to bind only the packet socket and hand it to the kind,
+so no TCP port is held where a connecting client would hang. In place of
+a connection it keeps a session table keyed by the client's address,
+bounded in total and per source address, with a connected socket towards
+the endpoint so the kernel drops answers from anywhere else. Each
+session is accounted on the pool like a TCP connection, so ejection and
+health apply; a sweeper ends the idle ones. Nothing it will not forward
+is answered -- a reply to a forged source is traffic aimed at whoever was
+named -- so a refusal is a drop, a counter and a `udp_denied` deny event.
 
 ### Metrics collection and export
 

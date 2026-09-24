@@ -258,6 +258,7 @@ func (se *session) decide(pdu rdp.PDU) (out []byte, drop bool, reason string) {
 		// under a name nothing speaks, so this would go nowhere
 		// anyway; dropping it keeps it off the wire entirely.
 		se.t.engine.Counters().RDPChannelsRefused.Add(1)
+		se.t.engine.Counters().Refuse("rdp", "channel_inert")
 		return nil, true, ""
 	case data.Channel == se.ioChannel:
 		return se.decideIO(data)

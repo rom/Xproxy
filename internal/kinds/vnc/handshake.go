@@ -45,7 +45,7 @@ func (se *session) clientHandshake() string {
 	// prefers. A 3.3 client cannot choose, so it is told one.
 	offered := se.offerable()
 	if len(offered) == 0 {
-		se.refuseClient("no security type this gateway offers is usable here")
+		se.refuseClient("security_not_usable", "no security type this gateway offers is usable here")
 		return "no_security"
 	}
 	if !v.AtLeast(rfb.V37) {
@@ -83,7 +83,7 @@ func (se *session) client33(offered []uint8) string {
 		}
 	}
 	if pick == rfb.SecInvalid {
-		se.refuseClient("this gateway offers no security type a 3.3 client can use")
+		se.refuseClient("security_not_usable_33", "this gateway offers no security type a 3.3 client can use")
 		return "no_security_33"
 	}
 	if _, err := se.client.Write(rfb.Security33(pick)); err != nil {
@@ -156,7 +156,7 @@ func (se *session) clientAuth() string {
 	case rfb.SecARD:
 		return se.clientARD()
 	}
-	se.refuseClient("that security type is not mediated by this gateway")
+	se.refuseClient("security_not_mediated", "that security type is not mediated by this gateway")
 	return "security_unsupported"
 }
 
@@ -239,7 +239,7 @@ func (se *session) clientVeNCrypt() string {
 	case rfb.SecPlain:
 		return se.clientPlain()
 	}
-	se.refuseClient("that VeNCrypt subtype is not mediated by this gateway")
+	se.refuseClient("vencrypt_subtype_not_mediated", "that VeNCrypt subtype is not mediated by this gateway")
 	return "subtype_unsupported"
 }
 
@@ -422,7 +422,15 @@ func (se *session) upstreamHandshake(ci rfb.ClientInit) string {
 	if err != nil {
 		return "upstream_init"
 	}
+	se.si = si
 	se.desktop, se.width, se.height = si.Name, si.Width, si.Height
+	// The desktop's own size is the first number a viewer allocates
+	// from, so it is bounded before it is forwarded: a client that
+	// never sees 65535x65535 never makes room for it.
+	if err := se.t.px.limits.CheckFramebuffer(si.Width, si.Height); err != nil {
+		se.pixelDeny("framebuffer_too_large", err)
+		return "framebuffer_too_large"
+	}
 	if _, err := se.client.Write(si.Encode()); err != nil {
 		return "write"
 	}

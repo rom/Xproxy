@@ -1,0 +1,98 @@
+# What a pool can be told about its endpoints: which ones to prefer,
+# which to keep in reserve, which cannot take much, and how long a
+# connection to one may live.
+#
+# The theme is that a balancer alone is not an answer. Round robin over
+# equal machines in one rack is fine; an estate with two sites, a backup
+# in a third, one small instance among large ones and a keep-alive
+# connection that outlives a deploy needs to say more than "spread it
+# evenly".
+#
+# Validate: xproxy -config examples/upstreams/pools.yaml -validate
+version: 1
+server:
+  # Where this node is. It is what locality compares an endpoint's zone
+  # against, so a node prefers the endpoints beside it; without it a
+  # locality policy has nothing to compare and is refused at load.
+  zone: east
+  listeners:
+    - name: edge
+      address: "0.0.0.0:80"
+
+routes:
+  - name: app
+    paths: ["/"]
+    upstream: app
+  - name: reports
+    paths: ["/reports/"]
+    upstream: reports
+
+upstreams:
+  # The application: two sites and a backup, with the traffic staying in
+  # this one until it cannot.
+  - name: app
+    # Power of two choices: two endpoints at random, the better of them.
+    # least_conn would have every proxy in the fleet pick the same "best"
+    # endpoint at the same moment, so the herd moves from one endpoint to
+    # the next; p2c spreads instead of sloshing.
+    balancer: p2c
+
+    # Prefer this node's zone, but do not pin to it: a pool pinned to a
+    # zone loses the service when the zone loses it, which is the
+    # opposite of what zones are for. min_local says two local endpoints
+    # must be available before the remote ones are ignored, so a site
+    # down to its last machine does not carry everything alone.
+    locality: {prefer_zone: true, min_local: 2}
+
+    endpoints:
+      - {address: "10.0.1.10:8080", zone: east}
+      - {address: "10.0.1.11:8080", zone: east}
+      - {address: "10.0.1.12:8080", zone: east}
+      # The other site: used when this one is short, by the rule above.
+      - {address: "10.1.1.10:8080", zone: west}
+      - {address: "10.1.1.11:8080", zone: west}
+      # The backup, in a tier of its own: it takes nothing at all while
+      # any endpoint above is available. A backup endpoint is not a
+      # special kind of endpoint, only one in a later tier.
+      - {address: "10.9.9.9:8080", priority: 1}
+
+    # A keep-alive connection can outlive a deploy and a scale-out, and
+    # every request on it goes where it goes. This retires one at the end
+    # of the exchange that finds it too old -- nothing in flight is cut.
+    max_connection_age: 10m
+
+    # Both families are raced (RFC 8305) by default; this estate's IPv6
+    # is not finished, so say so rather than paying a connect timeout on
+    # half the requests.
+    address_family: ipv4
+
+    health_check: {path: /healthz, interval: 5s, timeout: 1s}
+    outlier_ejection: {consecutive_failures: 3, base_ejection_time: 30s, latency_factor: 3}
+    slow_start: 30s
+
+  # A report generator: slow by nature, and one of its machines is
+  # smaller than the others.
+  - name: reports
+    # Latency, not depth: an endpoint answering slowly sheds work long
+    # before it is slow enough to be ejected.
+    balancer: ewma
+    # What every endpoint may hold at once, and the exception.
+    max_connections_per_endpoint: 20
+    endpoints:
+      - {address: "10.0.2.10:9000"}
+      - {address: "10.0.2.11:9000"}
+      # Half the memory of the others: it is passed over at its own bound
+      # rather than queued behind, and the others take the work.
+      - {address: "10.0.2.12:9000", max_connections: 5}
+      # Out of service while its disk is replaced. The declarative form
+      # of what xproxyctl drain does, for an outage long enough to write
+      # down; a decision made through the API overrides this until the
+      # daemon restarts.
+      - {address: "10.0.2.13:9000", drain: true}
+    # The pool's own bound, for when every endpoint is at its.
+    max_concurrent: 50
+    queue: {size: 100, timeout: 5s}
+    health_check: {path: /healthz, interval: 10s, timeout: 2s}
+
+logging:
+  access: {enabled: true}

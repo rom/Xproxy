@@ -163,6 +163,14 @@ compute it.
 | 403 with `reason: honeytoken` | The client presented a planted credential. `detail` names the plant; see [Honeytokens](#honeytokens) |
 | 403 on a form submission with `form_guard` in the line | `form_guard` fired. `detail` says which half: `field:<name>` is the hidden field, `too_fast`/`too_old`/`no_form_fetch` is the clock; see [Form honeypots](#form-honeypots) |
 | An endpoint returns empty or wrong data for one client only | A `deceive` block on that route admitted it; see [Deceptive answers](#deceptive-answers) |
+| A VNC session looks slower, or the viewer says it is using ZRLE rather than Tight | Intended on a framed listener: the encodings a gateway cannot measure are removed from the viewer's list, `tight` among them, which is what makes `bounds` possible. `xproxy_refusals_total{kind="vnc",reason="encoding_tight"}` counts it. `pixel_stream: opaque` gets Tight back and gives the bounds up; see [CONFIG.md](CONFIG.md#reading-the-picture-pixel_stream-and-bounds) |
+| A VNC session ends as soon as it starts, with `vnc_denied` and `pixel_format_changed` | The viewer re-negotiated colour depth mid-stream (TigerVNC's automatic mode). RFB has no point where that takes effect, so a framing gateway cannot follow it: fix the viewer's depth, or set `pixel_stream: opaque` |
+| An SSH session is refused with `ssh_denied` and `shell_syntax` | The `exec` command carried a shell operator (`;`, `&&`, a pipe, a backquote, a `$(`, a redirection). `allow_commands` is a list of patterns, and a pattern cannot hold a shell: the line is refused before the patterns are tried. `allow_shell_syntax: true` turns the check off; `force-command` on the certificate is the strong form |
+| An SSH session with a valid certificate cannot open a port forward or get a terminal | The certificate does not carry the extension that permits it. `ssh-keygen -L -f cert.pub` lists them; a certificate made with `-O clear` grants only what was named after it. The refusal is `cert_no_port_forwarding` or `cert_pty_refused`, and the listener's own `allow_channels` is not the reason |
+| A certificate is refused although its signature is good and its window covers now | One of: `source-address` does not cover this client, the window is longer than `max_certificate_lifetime`, the key or its CA is in `revoked_keys`, or it carries a critical option this gateway does not implement (which refuses rather than being ignored). The security log's `detail` says which |
+| An FTP client's resumed upload is answered `451 a resumed transfer cannot be inspected here` | Intended on a listener with `yara` or `icap`: the bytes a resumed transfer carries are a fragment of the file, so a rule set that would match the whole never sees it. The client has to upload from the start. `xproxy_refusals_total{kind="ftp",reason="rest_unscannable"}` counts it |
+| An FTP path is answered `550` although it is inside `allow_paths` | The argument's *shape* was refused before the lists were consulted: a backslash, a control character, or bytes that are not valid UTF-8. The security log's `what` says which (`path_separator`, `path_control`, `path_encoding`); see [CONFIG.md](CONFIG.md#path-shapes-the-proxy-will-not-guess-about) |
+| A VNC session ends with `vnc_denied` and `unframable` | The desktop or the viewer used a message type this gateway does not know the length of, which is where the vendors put file transfer. `detail` names it |
 | A client reports the site is slow and is not banned | A `degradation` level admitted it; the access line says `degraded: <level>`. See [The slow lane](#the-slow-lane-degradation) |
 | A TLS error at the client and no access log line | `handshake` refused the connection before it became a request; see [Refusal at the TLS handshake](#refusal-at-the-tls-handshake) |
 | 403 with `reason: cors` | The `Origin` is not allowed by the route's `cors` block |
@@ -3049,6 +3057,7 @@ This trips people up more than anything else in the logs:
 | The access log | `denied` | `allow_cidrs`, `rate_limit:per-ip`, `virtual_patch:cve-2026-1` |
 | The security log | `reason`, plus `detail` | `reason: acl_allow`; `reason: virtual_patch`, `detail: cve-2026-1` |
 | `bans.triggers[].reasons` | the ban category | `acl`, `rate_limit` |
+| The metrics endpoint | `reason` on a counter | `xproxy_denied_total{reason="acl"}`, `xproxy_refusals_total{kind="ftp",reason="path_refused"}` |
 
 The access log's `denied` is the narrow form, joined with a colon. The
 security log splits it into `reason` and `detail`. The ban category
@@ -3102,6 +3111,7 @@ innocent.
 | `forward_sni_mismatch` | TLS interception: the handshake inside a tunnel named a host the `CONNECT` did not | yes |
 | `forward_upstream_tls` | TLS interception: the destination's own certificate did not verify, so nothing was forged for it | no (it is the destination's fault, not the client's) |
 | `tcp_no_route` | A layer 4 listener with no route and no default | yes |
+| `udp_denied` | The datagram relay: a client outside `allow_clients`, a datagram over `max_datagram_bytes`, the rate limit, or a session table that is full (`detail` says which). A datagram is dropped rather than answered, because a reply to a forged source is traffic aimed at whoever was named | yes |
 | `dns_blocked`, `dns_bogus` | The DNS listener | yes |
 | `dns_tunnel` | A client's queries under one domain agreed on enough tunnelling signals, or a query was refused during the cooldown after that | yes |
 | `smtp_denied` | The SMTP listener: a client outside `allow_clients`, an overlong line, a bare newline, or data pipelined across STARTTLS (`detail` says which) | yes |
@@ -3110,10 +3120,74 @@ innocent.
 | `ftp_denied` | The FTP proxy: a refused command, path, extension or address, a failed login, a malformed control line, a bounce attempt, or a transfer cut by a bound or a rule (`detail` says which) | yes |
 | `ssh_denied` | The SSH bastion: a failed authentication, a refused channel, request, subsystem, command, environment variable, file transfer helper or forward, or a refused SFTP request (`detail` says which) | yes |
 | `mqtt_denied` | The MQTT listener: a refused CONNECT, a topic or filter outside the policy, a malformed packet, or a client outside `allow_clients` (`detail` says which) | yes |
+| `telnet_denied` | The telnet gateway: a client outside `allow_clients`, a refused option, a failed factor, or a session it could not open (`detail` says which) | yes |
+| `vnc_denied` | The VNC gateway: a security type outside the policy, a failed VNC authentication or factor, a target that offered nothing mediable, a client outside `allow_clients`, or a bound on the picture -- a framebuffer, a rectangle or a clipboard transfer past what `bounds` allows (`what` says which, and `detail` carries the numbers) | yes |
+| `rdp_denied` | The RDP gateway: a refused channel or device, a failed factor, a connection sequence it could not read, or a client outside `allow_clients` (`detail` says which) | yes |
+| `sftp_icap` | The SFTP scanner refused a file. The security event beside it is `sftp_icap_blocked`; the ban trigger names the observation | yes |
 
 A trigger naming a reason that is not in the Ban column fails
 validation with the list of the ones that are, so this is not something
 you can get wrong silently.
+
+### Counting refusals, by protocol and reason
+
+The Ban column's reasons are deliberately coarse: `ftp_denied` is one
+category so that one trigger can ban a client walking the policy,
+whatever part of it they are walking. That is the wrong grain for an
+operator asking *what should I change*, and the per-protocol counters
+are no better on their own — `xproxy_ftp_refused_total` says the proxy
+answered commands the server never heard, not whether that was the
+command list, the path list or a login.
+
+`xproxy_refusals_total{kind, reason}` is the breakdown, and it is what
+`xproxy_denied_total{reason}` is for HTTP:
+
+```sh
+xproxyctl metrics | grep xproxy_refusals_total
+xproxyctl stats | jq .refusals            # the same numbers, per kind
+```
+
+`kind` is the listener kind that refused — the same word a `kind:` in
+the configuration says. `reason` is the security log's own `reason` or
+`what` for that refusal with the kind's own prefix taken off, because
+the label already carries it: a `reason: vnc_version` event is
+`xproxy_refusals_total{kind="vnc",reason="version"}`. So the series
+name the log line to go and read, and the vocabulary is whatever the
+protocol has rather than a second list to keep in step with the first.
+
+A series appears when that refusal first happens, so a quiet process
+exports few of them; `grep` on a busy one is the list of what is
+actually being refused. What each kind can say:
+
+| Kind | The refusals it counts |
+|------|------------------------|
+| `tcp` | `max_connections`, `no_route`, `banned`, and for an intercepting listener `destination_not_allowed` and `no_original_destination`; QUIC flows add `quic_max_flows` |
+| `udp` | `client_not_allowed`, `datagram_too_large`, `rate_limit`, `max_sessions`, `max_sessions_per_ip`, `banned`, `upstream_datagram_too_large` |
+| `forward` | the destination policy (`not_allowed`, `deny`, `private`, `host`, `port`, `resolve`), the request shape (`not_absolute`, `scheme`, `authority`), `auth`, `tunnel_limit`, interception (`sni_mismatch`, `upstream_tls`, `client_tls`), SOCKS UDP (`udp_malformed`, `udp_unsolicited`, `udp_wrong_source`, `udp_peer_table_full`, `udp_disabled`) and MASQUE (`masque_target`, `masque_session_limit`, `masque_context`, `masque_spoofed`, `masque_unsolicited`) |
+| `dns` | `workers_busy` (`max_in_flight`), `rate_limit`, `banned`, `malformed`, `client_not_allowed`, `blocked`, `tunnel`, `any_over_udp`, `formerr`, `opcode` |
+| `ssh` | `client_not_allowed`, `max_sessions`, `max_sessions_per_principal`, `max_forwards`, `auth_failed`, `mfa_failed`, `mfa_not_enrolled`, the channel and request policy (`channel_refused`, `request_refused`, `subsystem_refused`, `env_refused`, `command_refused`, `shell_syntax`, `file_transfer_refused`, `forward_refused`, `remote_forward_refused`), what the certificate did not grant (`cert_no_port_forwarding`, `cert_pty_refused`, `cert_X11_forwarding_refused`, `cert_agent_forwarding_refused`), and SFTP (`sftp_refused`, `sftp_malformed`, `sftp_identity_refused`, `sftp_icap`) |
+| `telnet` | `client_refused`, `banned`, `option_refused`, `subnegotiation_refused`, `malformed`, `mfa_failed`, `prompt` |
+| `vnc` | `client_refused`, `banned`, `version`, `auth_failed`, `mfa_failed`, `view_only`, the security negotiation (`security_not_offered`, `security_not_usable`, `security_not_mediated`, `subtype_not_offered`, `vencrypt_subtype_not_mediated`, `tight_auth_not_offered`), the variants' own parameters (`tls`, `mslogon_parameters`, `ard_parameters`, `rsaaes_key`, `rsaaes_random`, `rsaaes_transcript`), and the picture (`framebuffer_too_large`, `rectangle_too_large`, `rectangle_outside_framebuffer`, `too_many_rectangles`, `encoded_rectangle_too_large`, `decode_ratio`, `cut_text_too_large`, `unframable`, `pixel_format`, `pixel_format_changed`, `resize_refused`, `resize_too_large`, `clipboard_to_client`, `clipboard_to_target`, and `encoding_<name>` for each encoding taken out of a client's list) |
+| `rdp` | `client_refused`, `banned`, `mfa_failed`, `negotiate`, `no_protocol`, `tls`, `channels`, `channel_inert`, `channel_message`, `channel_chunk`, `channel_compressed`, `device_announce`, `client_info`, `info_encrypted`, `client_security`, `client_encryption`, `no_encryption_method`, `security_exchange`, `conference`, `no_io_channel`, `fast_path`, `data_unit` |
+| `smtp` | `client_not_allowed`, `max_connections`, the command policy (`unknown_command`, `command_refused`, `ehlo_required`, `mail_required`, `mail_and_rcpt_required`, `transaction_open`, `already_authenticated`), TLS and authentication (`encryption_required`, `encryption_required_for_auth`, `authentication_required`, `tls_unavailable`, `tls_already_active`), the bounds (`message_too_large`, `too_many_recipients`, `line_too_long`) and the protocol abuse (`bare_newline`, `smuggling`, `starttls_injection`) |
+| `mqtt` | `client_not_allowed`, `max_connections`, `not_connect`, `second_connect`, `version_refused`, the client id policy (`empty_client_id`, `client_id_too_long`, `client_id_refused`), `no_username`, `keep_alive_refused`, the topic policy (`publish_topic_refused`, `subscribe_refused`, `retain_refused`, `will_topic_refused`, `will_retain_refused`), `packet_too_large`, `malformed` |
+| `ftp` | `client_refused`, `banned`, `max_connections`, `auth_failed`, `identity_refused`, `mfa_required`, `mfa_failed`, the command and path policy (`unknown_command`, `command_refused`, `path_refused`, `read_only`, `active_refused`, `no_data_connection`), the path shapes it will not guess about (`path_separator`, `path_control`, `path_encoding`), the commands that are half a decision (`rest_invalid`, `rest_unscannable`, `rename_out_of_order`), TLS (`tls_required`, `auth_refused`, `ccc_refused`, `tls_pipelined`), the data channel (`bounce_refused`, `malformed_address`, `data_stranger`, `upstream_address`, `transfer_cut`) and the line discipline (`line_too_long`, `malformed_line`, `malformed_command`) |
+| `syslog` | `sender_refused`, `max_connections`, `rate_limit`, `too_large`, `framing`, `malformed`, the message policy (`facility`, `severity`, `pattern`) and `queue_full` when the collector is behind |
+
+Two things are deliberately *not* in this family. Refusals by the
+server-wide accept path — `server.limits.max_connections`,
+`max_connections_per_ip`, `connection_rate` — happen before any kind
+sees the connection and stay in `xproxy_connections_rejected_total` and
+`xproxy_connections_rate_refused_total`. And failures that are not
+refusals — an upstream that would not answer, a read that died — stay in
+each kind's error counter, because an operator hunting a policy should
+not have to read past a broken backend to find it.
+
+`xproxy_refusals_untracked_total` must be zero. Anything else is a bug
+in a listener kind (a refusal named under an unknown kind, or past the
+bound on one kind's reason set): the refusals still happened and the
+security log still has them, but they are missing from the breakdown.
+Worth a report.
 
 ## When to escalate, and with what
 

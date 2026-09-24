@@ -171,6 +171,7 @@ func (f *forwardServer) intercept(client, dst net.Conn, host string,
 	_, addrErr := netip.ParseAddr(host)
 	if addrErr != nil && !strings.EqualFold(name, host) {
 		f.host.Counters().InterceptRefused.Add(1)
+		f.host.Counters().Refuse("forward", "sni_mismatch")
 		f.host.Logs().SecurityEvent(context.Background(), "deny", "forward_sni_mismatch",
 			"listener", f.name, "client_ip", ip.String(), "connect", host, "sni", textsafe.Clip256(name))
 		if bl := f.host.Bans(); bl != nil && ip.IsValid() {
@@ -185,6 +186,7 @@ func (f *forwardServer) intercept(client, dst net.Conn, host string,
 		// forged certificate for it: the tunnel ends here, which is
 		// what would have happened without a proxy in the way.
 		f.host.Counters().InterceptRefused.Add(1)
+		f.host.Counters().Refuse("forward", "upstream_tls")
 		f.host.Logs().SecurityEvent(context.Background(), "deny", "forward_upstream_tls",
 			"listener", f.name, "client_ip", ip.String(), "dest", host, "err", err.Error())
 		return 0, 0, "upstream_tls"
@@ -213,6 +215,7 @@ func (f *forwardServer) intercept(client, dst net.Conn, host string,
 		// Usually the client does not trust the CA, which is the
 		// client behaving correctly.
 		f.host.Counters().InterceptRefused.Add(1)
+		f.host.Counters().Refuse("forward", "client_tls")
 		return 0, 0, "client_tls"
 	}
 	f.host.Counters().Intercepted.Add(1)

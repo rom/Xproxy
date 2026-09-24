@@ -75,7 +75,23 @@ routes:
 	}{
 		// The list itself grows with the roster, so the expectation is
 		// the part of the message that does not.
-		{"unknown kind", "    - {name: x, address: \":1\", kind: udp}\n", "kind: must be one of"},
+		{"unknown kind", "    - {name: x, address: \":1\", kind: sctp}\n", "kind: must be one of"},
+		{"udp needs its section", "    - {name: x, address: \":1\", kind: udp}\n", "udp: required for kind udp"},
+		{"udp takes no tls", "    - {name: x, address: \":1\", kind: udp, udp: {upstream: u}, tls: {certificates: [{cert_file: /c, key_file: /k}]}}\n", "a udp listener takes only"},
+		{"udp upstream", "    - {name: x, address: \"127.0.0.1:1\", kind: udp, udp: {}}\n", "udp.upstream: required"},
+		{"udp idle", "    - {name: x, address: \"127.0.0.1:1\", kind: udp, udp: {upstream: u, idle_timeout: 2h}}\n", "udp.idle_timeout"},
+		{"udp session bound", "    - {name: x, address: \"127.0.0.1:1\", kind: udp, udp: {upstream: u, idle_timeout: 30s, session_timeout: 5s}}\n", "session_timeout: must not be shorter"},
+		{"udp datagram bound", "    - {name: x, address: \"127.0.0.1:1\", kind: udp, udp: {upstream: u, max_datagram_bytes: 70000}}\n", "max_datagram_bytes"},
+		{"udp per ip bound", "    - {name: x, address: \"127.0.0.1:1\", kind: udp, udp: {upstream: u, max_sessions: 4, max_sessions_per_ip: 8}}\n", "max_sessions_per_ip"},
+		{"udp rate", "    - {name: x, address: \"127.0.0.1:1\", kind: udp, udp: {upstream: u, rate_limit: {pps: 0}}}\n", "rate_limit.pps"},
+		{"udp allow clients", "    - {name: x, address: \"127.0.0.1:1\", kind: udp, udp: {upstream: u, allow_clients: [nope]}}\n", "allow_clients[0]"},
+		{"udp proxy protocol", "    - {name: x, address: \"127.0.0.1:1\", kind: udp, proxy_protocol: true, udp: {upstream: u}}\n", "proxy_protocol: a PROXY protocol header cannot"},
+		{"rate per second", "    - {name: x, address: \":1\", connection_rate: {per_second: 0}}\n", "connection_rate.per_second"},
+		{"rate burst", "    - {name: x, address: \":1\", connection_rate: {per_second: 5, burst: -1}}\n", "connection_rate.burst"},
+		{"source rate v4 prefix", "    - {name: x, address: \":1\", connection_rate_per_source: {per_second: 5, ipv4_prefix: 4}}\n", "ipv4_prefix"},
+		{"source rate v6 prefix", "    - {name: x, address: \":1\", connection_rate_per_source: {per_second: 5, ipv6_prefix: 200}}\n", "ipv6_prefix"},
+		{"source rate table", "    - {name: x, address: \":1\", connection_rate_per_source: {per_second: 5, max_sources: -1}}\n", "max_sources"},
+		{"udp section elsewhere", "    - {name: x, address: \":1\", kind: http, udp: {upstream: u}}\n", "udp: set on a http listener"},
 		{"tcp block on http", "    - {name: x, address: \":1\", tcp: {default: app}}\n", "set on an http listener"},
 		{"forward block on http", "    - {name: x, address: \":1\", forward: {}}\n", "set on an http listener"},
 		{"proxy protocol needs trusted proxies", "    - {name: x, address: \":1\", proxy_protocol: true}\n", "needs trusted_proxies"},
@@ -174,7 +190,15 @@ routes:
 		{"grpc check path", "", "h2c: true\n    health_check: {type: grpc, path: /x}", "not used by type grpc"},
 		{"grpc service on http check", "", "health_check: {grpc_service: a}", "only for type grpc"},
 		{"bad grpc service", "", "h2c: true\n    health_check: {type: grpc, grpc_service: \"a b\"}", "not a service name"},
-		{"check type", "", "health_check: {type: tcp}", "must be http or grpc"},
+		{"check type", "", "health_check: {type: sctp}", "must be http, grpc, tcp or udp"},
+		{"udp check needs a question", "", "health_check: {type: udp}", "needs exactly one of send or send_hex"},
+		{"udp check one spelling", "", "health_check: {type: udp, send: PING, send_hex: 4142}", "needs exactly one of send or send_hex"},
+		{"udp check bad hex", "", "health_check: {type: udp, send_hex: nothex}", "send_hex"},
+		{"udp check two expectations", "", "health_check: {type: udp, send: PING, expect: a, expect_hex: 4142}", "two spellings of one requirement"},
+		{"udp check bad expect hex", "", "health_check: {type: udp, send: PING, expect_hex: zz}", "expect_hex"},
+		{"tcp check sends nothing", "", "health_check: {type: tcp, send: PING}", "a tcp check only connects"},
+		{"send needs udp", "", "health_check: {type: http, send: PING}", "send and expect need type udp"},
+		{"path on a tcp check", "", "health_check: {type: tcp, path: /x}", "not used by type tcp"},
 	}
 	for _, tc := range cases {
 		_, err := Parse([]byte(fmt.Sprintf(base, tc.listener, tc.upstream)))

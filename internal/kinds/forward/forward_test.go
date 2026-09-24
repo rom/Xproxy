@@ -280,9 +280,14 @@ routes: []
 		}
 	})
 	t.Run("tunnel bound and early data", func(t *testing.T) {
-		for i := 0; i < 100 && s.Stats().ForwardTunnelsOpen != 0; i++ {
-			time.Sleep(20 * time.Millisecond) // earlier subtests' tunnels wind down
-		}
+		// The bound this subtest is about is two tunnels, so it can
+		// only mean anything once the earlier subtests' tunnels have
+		// wound down. Waiting a fixed span and carrying on regardless
+		// is how that becomes a flake: under load the bound is
+		// already spent, the first open() is refused, and the failure
+		// names the wrong thing.
+		eventually(t, 15*time.Second, "the earlier subtests' tunnels to wind down",
+			func() bool { return s.Stats().ForwardTunnelsOpen == 0 })
 		open := func() net.Conn {
 			conn, err := net.Dial("tcp", fwd)
 			if err != nil {
@@ -388,9 +393,8 @@ routes: []
 		t.Fatalf("through the h2 tunnel: %q", data)
 	}
 	_ = pw.Close()
-	for i := 0; i < 100 && s.Stats().ForwardTunnelsOpen != 0; i++ {
-		time.Sleep(20 * time.Millisecond)
-	}
+	eventually(t, 15*time.Second, "the h2 tunnel to be counted closed",
+		func() bool { return s.Stats().ForwardTunnelsOpen == 0 })
 	if sn := s.Stats(); sn.ForwardTunnels != 1 || sn.ForwardTunnelsOpen != 0 || sn.ForwardBytesOut == 0 {
 		t.Fatalf("counters: %+v", sn)
 	}
@@ -403,5 +407,27 @@ routes: []
 	_ = resp.Body.Close()
 	if resp.StatusCode != 403 {
 		t.Fatalf("refused over h2: %d", resp.StatusCode)
+	}
+}
+
+// eventually retries ok until it holds or d passes. A tunnel's close is
+// recorded by the goroutine that was pumping it, after the client has
+// already seen the connection end, so a test that reads the counter the
+// instant it closes its end is racing that goroutine. On an idle
+// machine it wins; under the load of the whole suite it does not, which
+// is what a flake is. Waiting for the condition rather than for a fixed
+// span is the fix, and saying what was waited for is what makes the
+// failure readable when the condition never holds.
+func eventually(t *testing.T, d time.Duration, what string, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for {
+		if ok() {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("waited %s for %s and it did not happen", d, what)
+		}
+		time.Sleep(2 * time.Millisecond)
 	}
 }

@@ -208,6 +208,7 @@ func newServer(host proxy.Host, lc config.Listener, udp net.PacketConn, tcp net.
 			bl := host.Bans()
 			return bl != nil && bl.Banned(client)
 		},
+		Refuse: func(reason string) { host.Counters().Refuse("dns", reason) },
 	}
 	return wire.New(lc.Name, udp, tcp, lc.DNS.Cache.MaxEntries, lc.DNS.MaxInFlight, p, hooks), nil
 }

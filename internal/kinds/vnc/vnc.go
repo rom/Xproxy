@@ -53,8 +53,10 @@ type server struct {
 	password   string
 	upPassword string
 	recorder   *sessionrec.Policy
-	mfaGuard   *mfa.Guard
-	ssh        *sshDialer
+	// px is the policy over the pixel stream, built once.
+	px       pixelPolicy
+	mfaGuard *mfa.Guard
+	ssh      *sshDialer
 	// rsaKey is this listener's own key for the rsa-aes types.
 	rsaKey *rsa.PrivateKey
 
@@ -111,6 +113,7 @@ func newServer(engine proxy.Host, cfg config.Listener, ln net.Listener, tc *tls.
 		}
 	}
 	t.recorder = sessionrec.New(c.Recording)
+	t.px = newPixelPolicy(c)
 	if c.MFA != nil {
 		store, err := mfa.Load(c.MFA.File)
 		if err != nil {
@@ -207,6 +210,7 @@ func (t *server) shutdown(ctx context.Context) {
 }
 
 func (t *server) deny(ip netip.Addr, what, detail string) {
+	t.engine.Counters().Refuse("vnc", what)
 	if bl := t.engine.Bans(); bl != nil && ip.IsValid() {
 		bl.Observe(ip, "vnc_denied")
 	}
@@ -264,15 +268,20 @@ type session struct {
 	// recording's title.
 	desktop       string
 	width, height uint16
-	rec           *sessionrec.Recording
-	pool          *upstream.Pool
-	ep            *upstream.Endpoint
+	// si is the target's ServerInit, whose pixel format is what every
+	// length in the picture is measured in.
+	si rfb.ServerInit
+	// px is this session's state on the two pump goroutines.
+	px   *pixels
+	rec  *sessionrec.Recording
+	pool *upstream.Pool
+	ep   *upstream.Endpoint
 }
 
 func (t *server) handle(client net.Conn) {
 	s := t.engine
 	start := time.Now()
-	se := &session{t: t, client: client, ip: netutil.AddrOf(client.RemoteAddr().String())}
+	se := &session{t: t, client: client, ip: netutil.AddrOf(client.RemoteAddr().String()), px: newPixels()}
 	s.Counters().VNCSessions.Add(1)
 	s.Counters().VNCSessionsOpen.Add(1)
 	defer s.Counters().VNCSessionsOpen.Add(-1)
@@ -286,6 +295,7 @@ func (t *server) handle(client net.Conn) {
 	}
 	if bl := s.Bans(); bl != nil && se.ip.IsValid() && bl.Banned(se.ip) {
 		s.Counters().VNCRejected.Add(1)
+		s.Counters().Refuse("vnc", "banned")
 		_ = client.Close()
 		return
 	}
@@ -456,10 +466,12 @@ func (se *session) relay() string {
 	return "closed"
 }
 
-// refused counts a refusal and tells the client why, in the form the
-// version it settled on allows.
-func (se *session) refuseClient(reason string) {
+// refuseClient counts a refusal and tells the client why, in the form
+// the version it settled on allows. what is the counter's label; reason
+// is the sentence the client is shown.
+func (se *session) refuseClient(what, reason string) {
 	se.t.engine.Counters().VNCRefused.Add(1)
+	se.t.engine.Counters().Refuse("vnc", what)
 	if se.clientVersion.AtLeast(rfb.V37) {
 		_, _ = se.client.Write(rfb.SecurityFailure(reason))
 		return

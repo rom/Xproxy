@@ -144,9 +144,11 @@ routes:
 	if resp.StatusCode != 200 {
 		t.Fatal("client affected by a dead mirror")
 	}
-	for i := 0; i < 100 && s.Stats().MirrorFailed == 0; i++ {
-		time.Sleep(10 * time.Millisecond)
-	}
+	// The mirror copy is made after the client has its response, so
+	// the counter lands on another goroutine's schedule: wait for it
+	// rather than for a span that happens to be long enough here.
+	eventually(t, 15*time.Second, "the failed mirror copy to be counted",
+		func() bool { return s.Stats().MirrorFailed != 0 })
 	if s.Stats().MirrorFailed != 1 {
 		t.Fatalf("failed copies: %d", s.Stats().MirrorFailed)
 	}

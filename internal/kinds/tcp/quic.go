@@ -127,6 +127,7 @@ func (q *quicRelay) datagram(client netip.AddrPort, b []byte) {
 		return
 	}
 	if bl := s.Bans(); bl != nil && bl.Banned(client.Addr()) {
+		s.Counters().Refuse("tcp", "banned")
 		return
 	}
 	frames, err := netutil.QUICCryptoData(b)
@@ -144,6 +145,7 @@ func (q *quicRelay) datagram(client netip.AddrPort, b []byte) {
 		if len(q.flows) >= q.t.cfg.TCP.MaxConnections || q.incomplete >= min(maxIncompleteQUICFlows, q.t.cfg.TCP.MaxConnections) {
 			q.mu.Unlock()
 			s.Counters().QUICRejected.Add(1)
+			s.Counters().Refuse("tcp", "quic_max_flows")
 			return
 		}
 		f = &quicFlow{client: client, start: now, hello: &netutil.QUICHelloAssembler{}}
@@ -169,6 +171,7 @@ func (q *quicRelay) datagram(client netip.AddrPort, b []byte) {
 	upName, ok := q.t.resolve(sni)
 	if !ok {
 		s.Counters().QUICRejected.Add(1)
+		s.Counters().Refuse("tcp", "no_route")
 		q.drop(f, "no_route")
 		return
 	}

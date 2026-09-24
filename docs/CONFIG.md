@@ -57,6 +57,7 @@ on the first line of the file to enable it.
 | `listeners` | list | required, at least one | See below |
 | `limits` | object | | Global protections |
 | `server_header` | string | `""` | Value of the `Server` response header. Empty removes it. |
+| `zone` | name | `""` | The failure domain this node is in — an availability zone, a rack, a site. It is what an upstream's `locality` policy compares an endpoint's `zone` against, so a node prefers the endpoints beside it. Empty means the node does not know where it is, and a locality policy then prefers nothing |
 | `error_pages` | object | none | Replace the proxy's plain status bodies (denials, unknown routes, upstream failures, static misses) with documents; see "server.error_pages" below |
 | `session_tickets` | object | none (keys per process, rotated by the Go runtime) | Derive the TLS session ticket keys of every TLS listener from a shared secret file so that a ticket issued by one node resumes on every node; see "server.session_tickets" below. Changing the section needs a restart |
 | `shutdown_timeout` | duration | `30s` | Drain time on stop, and the minimum an old generation is kept for after a reload. A generation still serving a request when it expires is kept until that request ends, so a long upload or an SSE stream is not cut; a hard cap of ten times this (at least five minutes) bounds one that never ends |
@@ -84,8 +85,10 @@ off) logs a warning and lists them under `mismatched_peers`.
 | `h2c` | bool | `false` | Accept HTTP/2 without TLS (prior knowledge and Upgrade) on a plaintext listener, for gRPC clients inside a trusted network |
 | `tls` | object | none | TLS termination; see below |
 | `proxy_protocol` | bool | `false` | Read a PROXY protocol v1 or v2 header at the start of every connection from a peer in `trusted_proxies`: the client address it carries becomes the peer for limits, bans, ACLs, logs and forwarding headers, and the per address connection count moves to it. A trusted peer that sends no header, or a malformed one, is dropped without a response (`drop_connection` with reason `proxy_protocol`, counted in `rejected_connections`); `LOCAL` headers keep the balancer's address; connections from other peers are served unchanged, so a client cannot choose its own address. Requires `trusted_proxies`; read on `kind:` `http`, `forward`, `ssh`, `smtp`, `mqtt`, `ftp` and `syslog`, and not on `tcp` (which reads the first bytes itself to route by server name, and forwards a header instead) or `dns`. |
-| `kind` | `http`, `tcp`, `forward`, `dns`, `smtp`, `mqtt`, `ftp`, `syslog`, `ssh` | `http` | `tcp` is a layer 4 listener, `forward` an explicit proxy for clients, `dns` a DNS proxy, `smtp` a protocol-aware SMTP and submission proxy, `mqtt` an MQTT proxy, `ftp` an FTP proxy, `syslog` a syslog relay and `ssh` an SSH bastion; see below. The kind also decides which daemon serves the listener: `http`, `forward`, `tcp` and `dns` are xproxy's, `ssh` is xgate's, and `smtp`, `mqtt`, `ftp` and `syslog` are xrelay's. A daemon handed a listener of another kind validates it and leaves it alone; it is never served by the wrong data plane |
+| `kind` | `http`, `tcp`, `udp`, `forward`, `dns`, `smtp`, `mqtt`, `ftp`, `syslog`, `ssh`, `telnet`, `vnc`, `rdp` | `http` | `tcp` is a layer 4 stream listener and `udp` its datagram counterpart, `forward` an explicit proxy for clients, `dns` a DNS proxy, `smtp` a protocol-aware SMTP and submission proxy, `mqtt` an MQTT proxy, `ftp` an FTP proxy, `syslog` a syslog relay, and `ssh`, `telnet`, `vnc` and `rdp` the access gateways; see below. The kind also decides which daemon serves the listener: `http`, `forward`, `tcp`, `udp` and `dns` are xproxy's, `ssh`, `telnet`, `vnc` and `rdp` are xgate's, and `smtp`, `mqtt`, `ftp` and `syslog` are xrelay's. A daemon handed a listener of another kind validates it and leaves it alone; it is never served by the wrong data plane |
 | `redirect_to_https` | bool | `false` | Answer every request with 308 to `https://host/path?query`. Plaintext listeners only. |
+| `connection_rate` | object | none | `{per_second, burst}`: how fast this listener accepts, replacing `server.limits.connection_rate` for it. See below |
+| `connection_rate_per_source` | object | none | `{per_second, burst, ipv4_prefix, ipv6_prefix, max_sources}`: how fast one source network may connect to this listener |
 
 ### server.listeners[].tcp (kind: tcp)
 
@@ -102,25 +105,100 @@ accept as on every listener.
 |-----|------|---------|-------------|
 | `routes` | list of `{sni: [names], upstream}` | | Names are exact or `*.suffix`; first match wins |
 | `default` | upstream | none | Upstream for unmatched and non-TLS connections; without it they are closed and logged as `tcp_no_route` (a ban category) |
-| `idle_timeout` | duration | `10m` | Close after no bytes in either direction; at most 24h |
+| `idle_timeout` | duration | `10m` | Close after no bytes in either direction; at most 24h. It is a property of the connection, not of one direction: a connection whose server side speaks rarely while the client is busy is not idle |
+| `session_timeout` | duration | `0` | Close after this long however active; at most 168h, and not shorter than `idle_timeout` |
+| `max_bytes_in` | int | `0` | Bytes one connection may relay from the client; `0` is no bound |
+| `max_bytes_out` | int | `0` | Bytes it may relay back; `0` is no bound. Past either the connection is closed, not truncated: a relay that kept the socket open and stopped forwarding would look to both peers like a network that had gone quiet |
 | `proxy_protocol` | bool | `false` | Send a PROXY protocol v2 header with the client address to the upstream |
 | `max_connections` | int | `10000` | Open connections on this listener; also bounds QUIC flows |
 | `quic` | bool | `false` | Also relay QUIC: UDP on the same address, the ClientHello read from the version 1 Initial packet (decrypted with the Initial keys every observer can derive), the flow routed by server name to the same upstreams and every later datagram of that client address forwarded unread; not with `proxy_protocol` |
 | `quic_idle_timeout` | duration | `30s` | End a QUIC flow with no datagrams either way; at most 1h |
+| `connect_timeout` | duration | `10s` | Bound on the dial to an original destination, which has no pool to take one from |
+| `transparent` | bool | `false` | Dial the upstream **as the client**: `IP_TRANSPARENT` on the outgoing socket and a bind to the client's address, so an upstream with no PROXY protocol still sees who is calling. Linux, and needs `CAP_NET_ADMIN`; see below |
+| `original_destination` | bool | `false` | Take the destination from the socket rather than from `routes` or `default`, for a transparently intercepted connection. Linux; requires `allow_destinations` |
+| `allow_destinations` | list | `[]` | CIDRs an original destination may be in. Required with `original_destination`, and an empty list allows nothing |
+| `destination_ports` | list of int | `[]` (any) | Ports an original destination may have |
 | `yara` | object | none | Apply YARA rules to the bytes of each connection; see below |
 
 Endpoints are picked with the upstream's balancer (hash on the client
 address for `hash`), dial failures try the next endpoint and feed outlier
-ejection; active health checks run as configured on the upstream. Every
+ejection; active health checks run as configured on the upstream — for a
+pool with no HTTP behind it, `health_check.type: tcp` is the probe that
+fits.
+
+**A server that speaks first is relayed.** The listener waits about a
+second for a ClientHello before deciding there is not one, so SSH, SMTP,
+FTP, MySQL and PostgreSQL — all of which greet the client before it says
+anything — reach their client rather than deadlocking against a peek
+that is waiting for bytes the client is waiting to be greeted before
+sending. Every
 connection writes one `tcp` line to the access log with the name,
 upstream, endpoint, bytes and duration (`proto: quic` for QUIC flows).
 Counters: `tcp_connections`, `tcp_rejected`, `tcp_errors`,
-`tcp_bytes_in`, `tcp_bytes_out`, `quic_flows`, `quic_rejected`,
-`quic_flows_open`; `xproxy_tcp_*` and `xproxy_quic_*` metrics. QUIC
+`tcp_bounded` (ended by `session_timeout` or a byte bound rather than by
+a peer; the access log's `closed` field says which), `tcp_bytes_in`,
+`tcp_bytes_out`, `quic_flows`, `quic_rejected`, `quic_flows_open`;
+`xproxy_tcp_*` and `xproxy_quic_*` metrics. QUIC
 flows are keyed by client address, so a client that migrates to a new
 address starts a new flow (its first packet is not an Initial and is
 dropped; the client falls back or retries); QUIC versions other than 1
 are dropped. Changing a tcp listener needs a restart.
+
+#### Transparent interception
+
+Two socket tricks for the deployment where the client does not know the
+proxy is there. Both are **Linux only** and refused at load elsewhere,
+and `transparent` needs `CAP_NET_ADMIN`, which is checked at load rather
+than discovered on the first connection.
+
+**`original_destination`** answers "which upstream" from the socket. The
+client dialled some service and a routing rule put the packets on this
+listener, so there is no configuration question to answer:
+
+- With **TPROXY** the socket keeps the original destination as its own
+  local address.
+- With **iptables REDIRECT** the kernel rewrote it, and the original is
+  read with `getsockopt SO_ORIGINAL_DST`.
+
+The proxy reads REDIRECT's first and falls back to the local address, so
+it covers both without an operator having to tell it which rule they
+wrote — and keep that in step with the firewall. The option is read for
+**IPv4** only; IPv6 interception is done with TPROXY in practice, where
+the destination is the socket's own address and no option is read at all.
+An IPv6 REDIRECT therefore falls through to that path, reads the
+listener's own address, and is refused by the loop check below rather
+than relayed somewhere wrong — incomplete in the safe direction.
+
+Three checks run before such a connection is relayed, cheapest first:
+
+1. **There is a destination to read.** Without one the connection arrived
+   by some other route (`no_original_destination`).
+2. **It is not this listener's own address.** A firewall rule that sends
+   a listener's port to itself makes a loop that consumes descriptors
+   until the process dies, from one client packet. This is the only place
+   in the proxy with a destination it did not choose, so it is the only
+   place that needs the check; it counts in `tcp_errors` and warns in the
+   error log, because the client did nothing wrong and an operator
+   hunting a misconfiguration should not have to find it in a deny log
+   full of real refusals (`destination_loop`).
+3. **It is inside `allow_destinations`** (and `destination_ports`, when
+   set). An empty policy allows nothing, so forgetting the list means
+   "nothing works" rather than "everything does"; it is required at load
+   for the same reason (`destination_not_allowed`, a `tcp_no_route` deny
+   event, so bans apply).
+
+**`transparent`** makes the upstream see the client's own address, for a
+service that needs it and has no PROXY protocol to read it from: the
+outgoing socket gets `IP_TRANSPARENT` (and `IP_FREEBIND`, because the
+address being bound is not this machine's) and binds the client's
+address.
+
+The return traffic then has to be routed back to this host, which is the
+firewall's business and not something the proxy can check — so the
+listener **warns at load**, because without it every connection fails in
+a way that looks exactly like a dead upstream. `transparent` together
+with `proxy_protocol` is refused: the upstream would be told the client's
+address twice, in the header and in the source, and the two can disagree.
 
 #### server.listeners[].tcp.yara
 
@@ -168,6 +246,79 @@ they are encrypted, and a rule over ciphertext matches nothing.
 Counters: `yara_matches`, `yara_scanned`; `xproxy_yara_matches_total`
 and `xproxy_yara_bytes_total`. A match is a `yara_match` security event
 with the rules, their tags and the offset.
+
+### server.listeners[].udp (kind: udp)
+
+A `kind: udp` listener is a generic datagram relay: the symmetric
+primitive to `kind: tcp` for services this proxy has no parser for.
+Nothing in the payload is read. What it provides is an endpoint pool
+with a balancer and health checks in front of a UDP service, a set of
+bounds, and the telemetry the rest of the proxy has.
+
+**There is no connection, so there is a session table.** The first
+datagram from a client address picks an endpoint through the pool's
+balancer and opens a connected socket towards it; every later datagram
+from that address takes the same path, and what the endpoint answers
+goes back to that address. A session ends when it has been idle for
+`idle_timeout`, when it reaches one of its bounds, or at shutdown. The
+socket towards the endpoint is *connected*, so the kernel drops anything
+arriving from another address: an answer forged by a third party never
+reaches the client.
+
+**A datagram cannot be refused.** There is no reply that means "no", and
+an error sent to a source address that did not really send anything is
+itself an attack on whoever owns that address. So everything this relay
+will not forward is **dropped**, counted in `udp_dropped` and written to
+the security log as `udp_denied` with the reason in `detail` — which
+means bans apply to it. That is the whole difference in feel from
+`kind: tcp`, where a refusal is a closed connection the client sees.
+
+**A source address is whatever the sender wrote**, which is why this
+listener needs an admission policy more than a stream one does:
+
+- `allow_clients`, or `rate_limit`, or both. Validation **warns** when a
+  listener on a non-loopback address has neither, because an open
+  datagram relay is somebody else's amplifier: it answers a victim with
+  traffic the victim never asked for, at whatever gain the service
+  behind it provides.
+- `max_sessions_per_ip` as well as `max_sessions`. Without the per
+  source bound, a few forged datagrams a second fill the table and the
+  service stops for every client that is real.
+
+**No accept socket at all.** This is the one kind that binds only a
+datagram socket, so nothing holds the matching TCP port and a client
+that connects to it is refused by the kernel rather than left hanging.
+Everything that applies to accepted connections therefore does not apply
+here — the shared connection limiter, `proxy_protocol` (which has no
+datagram form and is refused at load), a `tls` section (there is no
+handshake on a datagram to secure) — and the bounds below are the whole
+of the admission policy. Any change to such a listener restarts the
+daemon rather than being applied in place, as it does for every listener
+that owns a UDP socket.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | string | required | The pool of endpoints |
+| `idle_timeout` | duration | `30s` | No datagram in either direction ends the session. It stands in for a connection close, since nothing in the protocol says a client has finished |
+| `session_timeout` | duration | `0` | Bound on a whole session however active. Must not be shorter than `idle_timeout` |
+| `max_sessions` | int | `10000` | The session table. A datagram from a new client when it is full is dropped and counted in `udp_rejected` |
+| `max_sessions_per_ip` | int | `64` | Sessions from one address; `0` removes the bound. This is what keeps one source, or one forged source, from filling the table |
+| `max_datagram_bytes` | int | `65535` | The largest datagram relayed either way. A larger one is dropped whole rather than truncated, because half a datagram is not a shorter datagram |
+| `max_datagrams` | int | `0` | Datagrams in one session, both directions; `0` is no bound |
+| `max_bytes_in` | int | `0` | Bytes one session relays from the client; `0` is no bound |
+| `max_bytes_out` | int | `0` | Bytes it relays back; `0` is no bound |
+| `rate_limit.pps` | float | none | Datagrams per second from one source address |
+| `rate_limit.burst` | int | `pps` rounded up | How many may arrive at once |
+| `allow_clients` | list | `[]` (any) | CIDRs a client must come from |
+
+Counters: `udp_sessions`, `udp_sessions_open`, `udp_datagrams_in`,
+`udp_datagrams_out`, `udp_bytes_in`, `udp_bytes_out`, `udp_dropped`
+(a datagram the policy would not relay), `udp_rejected` (a new client
+the table bounds refused) and `udp_errors` (a session that found no
+reachable endpoint); the matching `xproxy_udp_*` metrics. Every session
+writes one `udp` access line with the client, the endpoint, the
+datagrams and bytes each way and how it ended. Refusals are
+`udp_denied` deny events, so bans apply.
 
 ### server.listeners[].forward (kind: forward)
 
@@ -1068,6 +1219,10 @@ proxy does not hold.
 | `upstream_tls` | object | none | CA and name for the target's leg |
 | `ssh` | object | none | Reach the target through an SSH connection the gateway makes; see below |
 | `view_only` | bool | `false` | Drop the client's key, pointer and cut-text messages, so a session is watched and not driven |
+| `pixel_stream` | string | `framed` | `framed` reads the desktop's picture and applies `bounds`; `opaque` forwards it unread, which is what a desktop that must use the `tight` encoding needs. See below |
+| `bounds` | object | see below | What the desktop may ask the viewer to allocate |
+| `clipboard` | string | `both` | Which way a clipboard transfer may travel: `both`, `to_client`, `to_target` or `none` |
+| `allow_resize` | bool | `true` | Let a client ask the desktop to change size. The size asked for is bounded by `bounds.max_framebuffer_pixels` whatever this says |
 | `recording` | object | none | As `server.listeners[].ssh.recording`; see below for the format |
 | `mfa` | object | none | See below: it needs `x509-plain` |
 | `idle_timeout` | duration | `5m` | No traffic in either direction |
@@ -1076,6 +1231,82 @@ proxy does not hold.
 | `max_connections` | int | `200` | Sessions on this listener |
 | `proxy_protocol` | bool | `false` | PROXY protocol v2 header to the target |
 | `allow_clients` | list | `[]` (any) | CIDRs a client must come from |
+
+#### Reading the picture: `pixel_stream` and `bounds`
+
+An image protocol's numbers are the viewer's allocations. A
+`ServerInit` says the desktop is so many pixels wide and high, and the
+viewer allocates a framebuffer from it; a rectangle's twelve byte
+header says how much of the screen it covers, and the viewer sizes a
+decode buffer from that. A desktop that says 4096x4096 in twelve bytes
+of zlib is not sending a picture, it is asking the machine on somebody's
+desk for sixty-four megabytes, and it can ask again immediately. This is
+what makes an image protocol the cheapest place to aim a decompression
+bomb.
+
+With `pixel_stream: framed` (the default) the gateway reads every
+message the desktop sends and every rectangle inside it, so it can
+refuse one. Nothing is decompressed to do this: each bound compares what
+was declared with what arrived.
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `bounds.max_framebuffer_pixels` | int | `33177600` (7680x4320) | The desktop size in pixels: the one the target announces, the one a resize changes it to, and the one a client asks for |
+| `bounds.max_rectangles_per_update` | int | `4096` | Rectangles in one framebuffer update. A thousand one-pixel rectangles cost the viewer a thousand decode calls for one screen |
+| `bounds.max_encoded_rectangle` | int | `16777216` | One rectangle's encoded payload, in bytes |
+| `bounds.max_decode_ratio` | int | `1000` | The declared picture over the bytes that carry it, for the compressed encodings. A thousandfold is past any real screen |
+| `bounds.max_cut_text` | int | `1048576` | One clipboard transfer, in either direction |
+
+A zero is no bound. Two checks apply whatever `bounds` says: a
+rectangle must lie inside the framebuffer it belongs to (a viewer
+writes a rectangle's pixels at the offset the rectangle gives, and one
+reaching past the end is a write past the end of the buffer the viewer
+made for it), and a pixel format must be 8, 16 or 32 bits, because every
+length in the picture is measured in whole pixels.
+
+**Framing decides what a client may ask for.** A gateway can only frame
+an encoding whose payload length it can compute, so the encodings it
+cannot are removed from the client's `SetEncodings` list and the desktop
+never uses one. What survives: `raw`, `copyrect`, `rre`, `corre`,
+`hextile`, `zlib`, `zrle`, the cursor and desktop-size pseudo-encodings,
+the compression and quality hints, `fence`, continuous updates and the
+extended clipboard. What is removed: **`tight`** and `trle`, whose
+lengths depend on a filter, a palette size and a pixel width that is not
+the pixel format's; `cursor-with-alpha`; and anything unregistered. A
+client asks for every encoding it has, so a filtered list still leaves a
+session that draws -- `zrle` is the usual survivor, and `raw` is added
+if nothing else is left.
+
+A listener that must have `tight` sets `pixel_stream: opaque`. The
+desktop's bytes are then forwarded unread: `max_framebuffer_pixels` and
+`max_cut_text` still apply, and the three bounds that need the stream
+read do not. Validation warns, because that is the trade.
+
+The **client's** messages are framed either way. A message is only as
+long as its type says, so framing is what lets a gateway drop one and
+forward the next -- which is how `view_only` and `clipboard` work -- and
+a message type whose length the gateway does not know cannot be
+forwarded at all without losing the stream after it. **That is why a
+file transfer cannot cross this gateway**: TightVNC's and UltraVNC's
+transfers are client messages 252 and 255, whose lengths are the
+vendors' own, so a session that sends one ends. It is a consequence of
+framing rather than a rule, which is the strongest kind.
+
+One restriction comes with framing: a `SetPixelFormat` is allowed before
+the first framebuffer update request and refused after it. RFB has no
+message that says "the next rectangle is in the new format", so a
+gateway that kept framing past a mid-stream change would be guessing
+where the rectangles are. Viewers that re-negotiate colour depth
+automatically (TigerVNC's automatic mode) need a fixed depth configured,
+or `pixel_stream: opaque`.
+
+Every refusal on this path is counted under
+`xproxy_refusals_total{kind="vnc"}` with a reason of its own
+(`framebuffer_too_large`, `decode_ratio`, `too_many_rectangles`,
+`encoded_rectangle_too_large`, `rectangle_outside_framebuffer`,
+`unframable`, `cut_text_too_large`, `resize_refused`,
+`pixel_format_changed`) and logged as a `vnc_denied` security event with
+the numbers that caused it.
 
 #### VNC over TLS, and VNC over SSH
 
@@ -1603,11 +1834,68 @@ becomes two: the proxy reads `NOOP` and the target reads `NOOP` and the
 
 Only the side that arranged a data connection may use it: a passive
 connection has to come from the client's own address, an active one from
-the target's. `PROT P` is terminated on both sides rather than tunnelled,
-so a protected transfer is still a transfer this proxy can hold to
-`max_file_bytes` and to its rules. `CCC` is refused: clearing the
-control channel after `AUTH TLS` puts the rest of the session, including
-every path, back in clear on the wire.
+the target's. The address in a passive reply is *not* used: the proxy
+dials the target it already has a control connection to, with the port
+from the reply, so a server that answers with somebody else's address
+cannot redirect it. `PROT P` is terminated on both sides rather than
+tunnelled, so a protected transfer is still a transfer this proxy can
+hold to `max_file_bytes` and to its rules. `CCC` is refused twice over:
+it is not in the default `commands` list, and a listener whose operator
+adds it still gets a 534, because clearing the control channel after
+`AUTH TLS` puts the rest of the session, including every path, back in
+clear on the wire.
+
+##### The commands that are only half a decision
+
+Two FTP commands mean nothing on their own, and a proxy that read each
+command in isolation would hold a policy over both halves and miss what
+the pair does.
+
+**`REST`** sets a byte offset for the next transfer. `REST 1000` then
+`STOR /pub/x` is not an upload of the bytes that arrive: it is an edit of
+a file at an offset, and the bytes that arrive are a fragment. Two
+consequences, both of which this proxy acts on:
+
+- A scanner sees what crosses the proxy. With an offset, that is a
+  fragment, so `yara` or `icap` rules that would match the whole file
+  never see it -- upload the first half, `REST` to the middle, upload the
+  second, and each half passes. A resumed transfer on a listener with
+  either is refused with 451 (`rest_unscannable`): the proxy cannot scan
+  bytes it will never be shown, and pretending otherwise would be a hole
+  in the rule set rather than a limitation of it.
+- `max_file_bytes` is about the file, so the offset counts towards it. A
+  resumed upload of ten bytes at offset sixty is seventy bytes against
+  the bound, not ten.
+
+The marker must be a plain non-negative decimal (RFC 3659 lets a server
+define its own marker format, which is a value this proxy cannot reason
+about and will not carry), it is bounded at 2^40, and it is spent by the
+transfer it was for -- refused or not -- and cleared by any command
+outside the transfer setup (`PASV`, `EPSV`, `PORT`, `EPRT`, `TYPE`,
+`MODE`, `STRU`, `PBSZ`, `PROT`), which is what a server does too.
+
+**`RNFR`** names a file to rename and `RNTO` the new name. An `RNTO`
+without an `RNFR` the server accepted with 350 is half a decision, so it
+is refused with 503 (`rename_out_of_order`) rather than forwarded -- and
+an `RNFR` the path policy refused never reaches the server, so the
+`RNTO` that would have completed it is refused too. Anything in between
+breaks the pair, as RFC 959 requires.
+
+##### Path shapes the proxy will not guess about
+
+A path argument is refused outright, before the allow and deny lists are
+consulted, when the proxy and the server would read it differently.
+Each of these is a way for the path the policy matched and the path the
+server opened to be two different files:
+
+| Refused | Reason | Why |
+|---------|--------|-----|
+| A backslash anywhere | `path_separator` | A separator on a Windows server and an ordinary character in a pattern here, so `/srv/exports\..\..\etc` is inside the allowed tree as far as this proxy can tell and outside it as far as the server is concerned. There is no escaping that works for both |
+| A control character | `path_control` | Not part of a name anybody needs, and a carriage return is the first half of a command the server reads and the proxy did not (a telnet `IAC` is already refused by the line reader) |
+| Bytes that are not valid UTF-8 | `path_encoding` | An overlong sequence decodes to `/` on a lenient decoder and is not a separator to a strict one; a truncated one is a different name depending on who reads it. `OPTS UTF8 ON` is relayed, and matching is on bytes either way, so a path that is valid UTF-8 means the same thing on both sides |
+
+Paths in other scripts are unaffected: this refuses the shapes that
+cannot be compared, not everything above ASCII.
 
 #### server.listeners[].ftp.recording
 
@@ -1724,7 +2012,13 @@ the credentials are read then — not per connection, so a key added to
 | `upstream` | upstream | required | The pool of target hosts, picked with the upstream's balancer |
 | `host_keys` | list of paths | required | The bastion's own host keys, OpenSSH or PEM. Clients pin these |
 | `authorized_keys` | path | | OpenSSH authorized_keys of the clients that may connect. Options in the file are ignored; the policy lives here. A line that does not parse fails the load rather than silently shortening the list |
-| `trusted_user_ca_keys` | path | | OpenSSH public keys, one per line, that may sign user certificates. A client offering a certificate is accepted when the signature verifies, the validity window covers now and the principal list names the login it is connecting as; without this key a certificate is refused rather than treated as a plain key |
+| `trusted_user_ca_keys` | path | | OpenSSH public keys, one per line, that may sign user certificates. A client offering a certificate is accepted when the signature verifies, the validity window covers now and the principal list names the login it is connecting as; without this key a certificate is refused rather than treated as a plain key. What else the certificate says is read too: see below |
+| `revoked_keys` | path | | Public keys, in authorized_keys format, refused whatever else says otherwise: the key itself, a certificate carrying it, and every certificate signed by it. It is the one list that overrides the CA, which is what makes a certificate revocable before it expires |
+| `max_certificate_lifetime` | duration | `0` (none) | Refuse a user certificate whose validity window is longer than this, and any that never expires. The point of certificates over `authorized_keys` is that they expire; a CA issuing for a year has made a credential nobody can take back for a year |
+| `max_forwards` | int | `8` | Port forwards one connection may hold open at once. A session that may forward at all can otherwise open one per descriptor the proxy has |
+| `max_sessions_per_principal` | int | `0` (none) | Connections one principal (or, with no `principals`, one login) may hold at once. `max_sessions` is the whole fleet's: a bound of a thousand is a thousand for one key as much as for everybody |
+| `rekey_bytes` | int | `0` | Bytes before the transport agrees a fresh key; the crypto library's own threshold when unset. A bastion session lasts a working day on one key otherwise |
+| `allow_shell_syntax` | bool | `false` | Let an `exec` command carry shell operators. See below: `allow_commands` is a list of patterns, and a pattern is a weak thing to hold a shell to |
 | `users_file` | path | | A users file (as in `forward.auth`) for password authentication. Warned about on its own: a bastion behind one guessable secret is one guess from the estate |
 | `banner` | string | none | Sent before authentication. A legal notice belongs here; a version string does not |
 | `server_version` | string | `SSH-2.0-xproxy` | The identification string; must begin with `SSH-2.0-` |
@@ -1800,6 +2094,61 @@ also inherits the default that section implies: file transfer helpers
 are refused for that principal, because `scp` beside a careful `sftp`
 policy is the policy with a door next to it.
 
+##### What the certificate says, beyond the signature
+
+A user certificate is not only a signature over a key and a list of
+principals. It carries the CA's own restrictions, and a gateway that
+checks the signature and ignores the rest is a gateway where those
+restrictions do not exist. All of these are enforced:
+
+- **`source-address`**, the critical option naming the networks the
+  certificate may be used from. It is enforced here because it is the
+  one option whose check needs the client's address, which is why the
+  Go library deliberately leaves it to the caller. A list this gateway
+  cannot parse refuses the certificate rather than being treated as
+  absent.
+- **`force-command`**, the critical option fixing what the session runs.
+  The client's command is *replaced* by it, as OpenSSH does — a
+  certificate issued to run one thing is issued for a reason — and a
+  `shell` request becomes that command too. Both are written to the
+  security log as `ssh_force_command`, with what was asked and what ran.
+- **The extensions are permissions, and their absence is a denial.**
+  `permit-pty`, `permit-port-forwarding`, `permit-agent-forwarding`,
+  `permit-X11-forwarding`. A certificate made with `ssh-keygen -O clear
+  -O permit-pty` grants a terminal and nothing else, whatever this
+  listener's `allow_channels` and `allow_requests` would otherwise
+  allow. A certificate issued the ordinary way carries all five, so
+  nothing changes for one.
+- **Any other critical option refuses the certificate.** A critical
+  option is critical: the CA meant it to be honoured or the credential
+  refused, so an option this gateway does not implement must not be
+  quietly ignored.
+
+Both policies apply and the narrower wins: the CA says what this
+credential may do, the listener says what anybody may do here. A session
+authenticated by a plain key is restricted by the listener alone.
+
+##### `allow_commands` is patterns, and a shell is not
+
+`allow_commands` is a list of RE2 patterns over the command line, and a
+pattern is a weak thing to hold a shell to: `^journalctl .*$` matches
+`journalctl -u x; rm -rf /` exactly as happily as what it was written
+for. So the line is read the way a shell would split it *first*, and one
+carrying an operator — `;` `&` `|` `<` `>` a backquote, a `$(`, a brace,
+a glob, a control character, an unbalanced quote — is refused with
+`shell_syntax` before any pattern is tried.
+
+This is deliberately crude and deliberately broad. A bastion does not
+need to know what a line would do; it needs to know that the line is a
+command with arguments, which is the only shape a list of patterns can be
+written against. `allow_shell_syntax: true` turns the check off for a
+listener that genuinely needs shell syntax, and warns, because the
+patterns then have to be written knowing it.
+
+The strong form of a command policy is `force-command` on the
+certificate: the CA fixes the command and the client's own is replaced,
+so there is no line to pattern-match at all.
+
 #### server.listeners[].ssh.recording
 
 The access log says a session happened. It cannot say what was done in
@@ -1809,14 +2158,20 @@ asciicast v2 format, so "what did they actually run" is a question with
 an answer that is watched rather than reconstructed:
 
 ```
-asciinema play /var/log/xproxy/sessions/session-20260921-143022.100-alice.cast
+xproxyctl session show /var/log/xproxy/sessions/session-20260921-143022.100-alice.cast
 ```
 
 The format is line oriented, so a recording cut short by a crash or by
 `max_file_bytes` still plays up to where it stops, and it is text, so
 the usual tools work on it. It is a stream, not a transcript: what the
-person saw is what a terminal makes of it, which means reading one is
-replaying it.
+person saw is what a terminal makes of it, which means **reading one is
+replaying it** — a terminal is an interpreter, and the bytes in the file
+were written by the person recorded. `xproxyctl session show`, `show
+-safe` and `play` read one with the sequences that reach outside the
+replay taken out: the clipboard writes, the title changes, and the
+device reports a terminal answers on its own input, which a shell then
+reads as a command line. `asciinema play` and `cat` do not. See
+[USAGE.md](USAGE.md#reading-a-recording-without-running-it).
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -2198,6 +2553,55 @@ public CA).
 | `max_concurrent_requests` | int | `16384` | positive | In-flight requests; 503 above |
 | `max_tarpits` | int | `1024` | 1 to 1000000 | Requests held in a tarpit at once. A tarpitted request releases its concurrency slot; above this bound it is rejected with 429 immediately (`tarpit_overflow` counts those) |
 | `max_buffered_body_bytes` | bytes | `536870912` | 0 (unbounded) or 1 MiB to 64 GiB | Ceiling on request bodies held in memory at once across the process; a request on a route that inspects bodies and does not fit is refused with `503` and reason `body_budget` |
+| `connection_rate` | object | none | | `{per_second, burst}`: accepts per second across every listener. See below |
+| `connection_rate_per_source` | object | none | | `{per_second, burst, ipv4_prefix, ipv6_prefix, max_sources}`: accepts per second from one source network |
+
+#### Connection rate: the bound `max_connections` does not give
+
+`max_connections` and `max_connections_per_ip` say how many connections
+may be **open at once**. They say nothing about churn, and churn is what
+most attacks on a service look like: a client that connects, makes the
+server do the expensive half of a handshake and disconnects never holds
+two connections and can still spend a core. It is also what an
+accidental flood looks like — a restarting client fleet reconnecting in
+lock-step.
+
+That matters most exactly where the handshake is dearest and happens
+**before** the proxy knows who is calling: an SSH key exchange, a TLS
+handshake, an RDP connection sequence. Those listeners should have a
+rate.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `connection_rate.per_second` | float | required | Sustained accepts per second |
+| `connection_rate.burst` | int | `per_second` rounded up | How many may arrive at once |
+| `connection_rate_per_source.per_second` | float | required | Sustained accepts per second from one source network |
+| `connection_rate_per_source.burst` | int | `per_second` rounded up | |
+| `connection_rate_per_source.ipv4_prefix` | int | `32` | The network the rate is counted over; 8 to 32 |
+| `connection_rate_per_source.ipv6_prefix` | int | `64` | 16 to 128, and a warning above /96 |
+| `connection_rate_per_source.max_sources` | int | `65536` | Networks tracked at once; 1 to 4194304 |
+
+Two bounds, because they answer different attackers. The **total** rate
+protects the accept path itself whatever the traffic is spread across.
+The **per source** rate protects everyone else from one source, and it
+is keyed by a **network rather than an address** on purpose: an attacker
+with a /64 of IPv6 has more addresses than any table could hold, so a
+per address bound would be no bound at all while the per address table
+would itself be the thing that filled up. The default /64 is the
+smallest block an operator is normally given; above /96 validation warns,
+because counting single addresses costs memory and stops nothing.
+
+A refused connection is **closed immediately after accept, before a byte
+is read**, which is all a listener can do about a connection the kernel
+has already handed it, and it is cheap. Refusals are counted in
+`rate_refused_connections` and `xproxy_connections_rate_refused_total`,
+and reported in the error log through the same aggregation as the other
+accept refusals — a client looping connections must not make each
+refusal cost a synchronous log write.
+
+A listener's own `connection_rate` sections **replace** these for that
+listener rather than adding to them, so one number is the answer to
+"what bounds this port". A rate change on reload rebinds no socket.
 
 `max_buffered_body_bytes` covers every feature that materialises a
 whole request body: `upload_guard`, `sensitive_data`, `account_guard`,
@@ -2538,9 +2942,15 @@ Memory: at most 64 x 8192 buckets per policy.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | |
-| `balancer` | `round_robin`, `weighted`, `least_conn`, `hash` | `round_robin` | |
+| `balancer` | `round_robin`, `weighted`, `least_conn`, `hash`, `p2c`, `ewma` | `round_robin` | See below for the last two |
 | `hash_on` | `client_ip`, `header:<Name>`, `cookie:<Name>` | `client_ip` | For `hash`; missing input falls back to the client address |
-| `endpoints` | list | required, at least one | `{address: host:port, weight: 1..1000, canary: bool}`; `canary` marks the endpoints the `canary` policy selects |
+| `endpoints` | list | required, at least one | `{address: host:port, weight: 1..1000, canary: bool, drain: bool, max_connections: int, priority: 0..99, zone: name}`; `canary` marks the endpoints the `canary` policy selects, `drain` takes one out of rotation, `max_connections` bounds what is in flight to it, and `priority` and `zone` tier it — see below. An address may instead be `unix:/path/to/socket` |
+| `locality` | object | none | `{prefer_zone: bool, min_local: int}`: prefer the endpoints of this node's own `server.zone` |
+| `address_family` | `any`, `ipv4`, `ipv6` | `any` | Which of a dual-stack endpoint's addresses may be dialled. `any` races the two families as RFC 8305 describes |
+| `fallback_delay` | duration | `300ms` | How long the second family is held back in that race; at most 10s, and a negative value tries the families in order instead |
+| `max_connections_per_endpoint` | int | `0` (none) | Default for every endpoint's own `max_connections` |
+| `max_connection_age` | duration | `0` (none) | How long one upstream connection is kept; at least 1s, at most 24h. See below |
+| `maintenance` | bool | `false` | Take the whole pool out of rotation: it offers no endpoint, so a route over it answers as it does when everything is unhealthy |
 | `canary` | object | none | Route selected requests to the canary endpoints; see below |
 | `scheme` | `http`, `https` | `http` | |
 | `h2c` | bool | `false` | Speak HTTP/2 without TLS to `http` endpoints (gRPC backends); `https` negotiates HTTP/2 with ALPN on its own |
@@ -2567,6 +2977,205 @@ Memory: at most 64 x 8192 buckets per policy.
 | `retry_on` | list | `[]` | Response statuses treated as a failed attempt: `5xx`, `500`, `502`, `503`, `504`, `429`. The response is discarded, the endpoint marked as failed for outlier ejection, and the next endpoint tried within the `retries` budget; the last attempt's response is returned as it is. Needs `retries` above 0 |
 | `retry_budget` | object | none | Caps retries (and hedged copies) against live traffic so a struggling pool is not buried under a retry storm; see below. Without it, every retry `retries` allows is sent |
 | `hedge` | object | none | Sends staggered copies of a slow idempotent request to other endpoints and keeps the first usable answer; see below |
+
+#### Dual-stack endpoints: the race, and restricting it
+
+An endpoint name with both an A and an AAAA record has two ways to be
+reached, and the one that is broken costs a connect timeout on every
+request that tries it first. With `address_family: any` (the default) the
+families are **raced** as RFC 8305 describes: the first is tried, the
+other follows after `fallback_delay` (300ms, the value the RFC
+recommends), and whichever connects first wins. An estate that has just
+turned IPv6 on does not have to know about any of this.
+
+`ipv4` or `ipv6` dials that family **only**. It is for the estate where
+one family is the only one that works, and naming it means a name that
+also has the other kind of record cannot quietly use the family the
+policy meant to exclude — which is the failure a preference would hide.
+
+A negative `fallback_delay` turns the race off, so the families are tried
+in order; naming one family makes the delay meaningless and warns.
+
+#### Two balancers that read what the endpoints are doing
+
+`least_conn` scans every endpoint and takes the best, which has a failure
+mode of its own: every proxy in a fleet sees the same "best" endpoint at
+the same moment and they all send to it together, so the herd moves from
+one endpoint to the next.
+
+**`p2c`** — power of two choices — takes two endpoints at random and uses
+the better of those, by in-flight count per unit of weight. One
+comparison is enough to avoid the worst endpoint, and the randomness
+means two proxies rarely agree on where to send, so load spreads instead
+of sloshing. It is the one to reach for when the endpoints are equal and
+the load varies, and it is the one that fits a pool with no responses to
+measure — a layer 4 relay's.
+
+**`ewma`** weighs endpoints by the smoothed time to first byte the pool
+already keeps for outlier detection, times the queue a request would
+join: an estimate of how long a request sent now would take. An endpoint
+answering slowly gets less work **long before** it is slow enough to fail
+a health check or be ejected, which is the difference between shedding
+load away from a struggling machine and waiting for it to break.
+
+An endpoint with no latency sample yet costs nothing, so a new or
+recovered one is tried rather than starved by the fact that nothing is
+known about it; `slow_start` is what keeps that from being a flood. On a
+quiet pool, where nothing distinguishes the endpoints, both balancers
+spread uniformly rather than settling on the first.
+
+#### Tiers: priority, backup and locality
+
+`endpoints[].priority` tiers a pool. The endpoints of the **lowest
+priority number that has an available member** carry the traffic and the
+rest are ignored; when that tier has nothing left, the next one takes
+over, and hands it back when the first returns. A retry that has used up
+a tier falls to the next one too.
+
+That is how a failover pool is written, and a **backup endpoint is simply
+one in a later tier** — not a special kind of endpoint:
+
+```yaml
+upstreams:
+  - name: app
+    endpoints:
+      - {address: "10.0.1.10:8080"}               # priority 0
+      - {address: "10.0.1.11:8080"}
+      - {address: "10.9.9.9:8080", priority: 1}   # only when both are gone
+```
+
+`locality` prefers the endpoints in this node's own `server.zone` over
+the ones elsewhere, which keeps traffic off the links between sites and
+away from their latency:
+
+```yaml
+server:
+  zone: east
+upstreams:
+  - name: app
+    locality: {prefer_zone: true, min_local: 2}
+    endpoints:
+      - {address: "10.0.1.10:8080", zone: east}
+      - {address: "10.0.1.11:8080", zone: east}
+      - {address: "10.1.1.10:8080", zone: west}
+```
+
+It is a **preference, not a pin**. An estate that pinned traffic to one
+zone would lose the service when the zone lost it, which is the opposite
+of what zones are for — so when the local endpoints are gone, the others
+take the traffic. `min_local` is how many local endpoints must be
+available before the remote ones are ignored: below it everything is
+used, so a zone down to one surviving endpoint does not take the whole
+load alone.
+
+An endpoint with **no zone is local to every zone**: "somewhere unknown"
+is not a reason to send traffic across a site. `prefer_zone` without
+`server.zone` is refused at load — there would be nothing to compare
+against — and a pool where no endpoint names a zone warns, because it
+would prefer nothing.
+
+Tiering is applied by leaving the other endpoints out of the choice
+rather than by shortening the list the balancer sees, which matters for
+`hash`: shortening it would move every key, while leaving endpoints out
+moves only theirs.
+
+#### Taking something out of rotation: drain and maintenance
+
+Draining is **not** the same as unhealthy, and the difference is the
+point. An unhealthy endpoint is one the proxy found broken; a drained one
+is one a person decided to stop sending work to. So it is set from
+outside — `xproxyctl drain POOL [ADDRESS]`, `POST /v1/drain`, the GUI —
+and it **survives a reload**, because a reload builds new pools and an
+operator who drained a machine to patch it did not mean "until the next
+configuration change".
+
+Nothing is closed. New work stops; the requests, sessions and
+connections already there run to their own end. That is what makes it
+usable for a rolling restart, and it is why draining is a separate idea
+from the connection bounds, which do end things.
+
+- **An endpoint**: `endpoints[].drain: true`, or
+  `xproxyctl drain POOL ADDRESS`. It is passed over by every balancer
+  and shows as `draining` in `xproxyctl upstreams`, still `healthy`, so
+  the two stay distinguishable.
+- **A pool**: `maintenance: true`, or `xproxyctl drain POOL`. The pool
+  offers nothing at all.
+- **Back in**: `xproxyctl drain -restore POOL [ADDRESS]`.
+
+A decision made through the API **overrides the file** until the daemon
+restarts, because the person who made it knew something the file did
+not. `xproxyctl drain` with no argument lists what has been decided,
+including an explicit restore of something the file drains.
+
+A decision about a pool or an address that is not there is recorded
+rather than refused, and the answer says so: an endpoint may be about to
+arrive from discovery.
+
+#### Bounding one endpoint, and the age of a connection
+
+`endpoints[].max_connections` (or `max_connections_per_endpoint` for a
+whole pool) bounds what is in flight to one endpoint. Past it the
+endpoint is **passed over** rather than queued behind: the pool has
+others, and holding work for one while they are idle is the opposite of
+balancing. When every endpoint is at its bound the pool offers nothing,
+which is what its own `queue` and `circuit_breaker` are there to answer.
+It is for the endpoint that cannot take what the pool can give it — a
+small instance beside large ones, a service with a database connection
+pool of its own, a machine that answers slowly under load rather than
+refusing.
+
+`max_connection_age` bounds how long one upstream connection is kept, so
+a pool's traffic follows its endpoints instead of sticking to whichever
+ones were there when the connections were made: a keep-alive connection
+can outlive a deploy, a scale-out and an endpoint's whole useful life,
+and every request on it goes where that connection goes.
+
+**It does not close anything mid-exchange.** Closing a connection at its
+age would cut a request that has done nothing wrong, and from inside a
+socket there is no way to tell an exchange in progress from an idle
+connection — both are a blocked read. So the age marks the connection,
+and the layer that does know where an exchange ends closes it once that
+exchange is over. The connection is never reused past its age and
+nothing in flight is disturbed; `xproxyctl upstreams` counts the
+retirements.
+
+That end only exists for **HTTP/1.1**, where a connection carries one
+exchange at a time. An HTTP/2 or HTTP/3 connection carries many streams
+and is never between exchanges, so the bound does not apply to one:
+`h2c` and `h3` refuse it at load, and an `https` pool (which may
+negotiate HTTP/2) warns.
+
+#### A Unix domain socket as an endpoint
+
+`address: unix:/run/app.sock` reaches a service that lives beside the
+proxy rather than across a network: an application server on the same
+host, a local scanner, a sidecar. A socket is the better way to reach
+one — there is no port for anything else on the machine to connect to,
+file permissions decide who may open it, and nothing about it is
+routable.
+
+The path must be absolute. Socket and `host:port` endpoints mix in one
+pool, which is what a service moving from a port to a socket needs, and
+everything else about a pool applies unchanged: the balancer, weights,
+canaries, affinity, outlier ejection, and the `tcp` health check (which
+connects to the socket, because a probe to a port would be proving
+something about a path nothing uses).
+
+Two things do not work with one, and are refused at load rather than
+discovered later:
+
+- **`scheme: https` without `tls.server_name`.** A URL has a host and a
+  socket has a path, so the proxy gives a socket endpoint a synthetic
+  authority for the URL — which is not a name a certificate can match.
+  Naming the one the backend presents makes it verifiable again.
+- **`h3`, and `discovery`.** HTTP/3 needs UDP to a host, and discovery
+  produces `host:port` records; neither has anything to say about a path.
+
+The synthetic authority ends in `.socket.invalid`, a name that must never
+resolve, so a dialler that somehow ignored the socket fails immediately
+instead of reaching a machine on the network. It is never sent to the
+backend: the `Host` header is the client's own, as with any other
+endpoint, so a service that routes on it keeps working.
 
 ### upstreams[].retry_budget
 
@@ -2612,7 +3221,7 @@ beyond the first is gated by `retry_budget` when one is set.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `type` | `dns`, `srv`, `http` | `dns` | `dns` resolves the A and AAAA records of `name`, one endpoint per address on `port`; `srv` resolves SRV records, uses the lowest priority group, and takes target, port and weight from each record; `http` polls the registry URL in `name` on the interval (see `format`) |
+| `type` | `dns`, `srv`, `http`, `consul` | `dns` | `dns` resolves the A and AAAA records of `name`, one endpoint per address on `port`; `srv` resolves SRV records, uses the lowest priority group, and takes target, port and weight from each record; `http` polls the registry URL in `name` on the interval (see `format`); `consul` asks a Consul agent about a service with **blocking queries** — see below |
 | `name` | DNS name or URL | required | The name to resolve; for `srv` the full `_service._proto.domain` name; for `http` the registry URL to GET |
 | `port` | int | required for `dns` | Endpoint port for `dns`, and the default port for `http` entries that omit one |
 | `format` | `list`, `consul` | `list` | Response shape for `http`: `list` is a JSON array of `{address｜host,port, weight?, canary?}`; `consul` is the Consul `/v1/health/service` response (only instances whose checks all pass are used, `Weights.Passing` becomes the weight, a blank service address falls back to the node address) |
@@ -2622,12 +3231,48 @@ beyond the first is gated by `retry_budget` when one is set.
 | `weight` | int | `1` | Weight of discovered endpoints that do not carry their own (`dns`, and `http` `list` entries without a `weight`) |
 | `canary` | bool | `false` | Mark discovered endpoints as canaries (needs the pool's `canary` section) |
 | `timeout` | duration | `5s` | Bound on one resolution, including the synchronous first one at start and reload; a failed resolution keeps the previous endpoint set and is counted in `xproxyctl upstreams` |
+| `consul` | object | required for `consul` | See below |
+
+#### upstreams[].discovery.consul
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `service` | name | required | The Consul service to ask about |
+| `address` | host:port | `127.0.0.1:8500` | The agent. A Consul deployment runs one on every node, and asking the local one is both faster and what survives a partition |
+| `tag` | string | none | Only the instances carrying that tag, which is how a Consul estate usually separates environments or versions |
+| `datacenter` | name | the agent's own | Ask about another datacenter |
+| `token_file` | path | none | File holding the ACL token, sent as `X-Consul-Token`. A token is a credential, so it lives in a file rather than in this document, which the management API dumps and the history keeps; the file must not be readable by more than its owner |
+| `tls` | object | none | Reach the agent over HTTPS (CA, server name, pins — as `upstreams[].tls`). Without it the scheme is `http`, which over loopback to a local agent is the usual arrangement |
+| `allow_stale` | bool | `false` | Let the agent answer from its own state without asking a server. Faster, and may be a moment behind, so it warns: a balancer acting on stale membership sends traffic to an instance that has gone |
+| `wait` | duration | `5m` | How long one blocking query may be held open; 1s to 10m |
+
+**Why a type of its own rather than `http` with `format: consul`.** The
+polled form is still there and still works. What this adds is Consul's
+**blocking query**: the agent holds the request open until the answer
+changes and returns an index the next request carries, so the proxy
+learns about an instance that went away in about the time Consul takes to
+notice it, instead of up to a polling interval later. For a load balancer
+that gap is the whole point — a polled registry keeps sending traffic to
+a machine that is already gone for as long as the interval lasts.
+
+The loop therefore waits on the agent rather than on a ticker: after an
+answer it asks again at once, because the next answer *is* the next
+change. `interval` becomes the pause after a **failure** — without one,
+an agent that is down or answering 403 would be asked again immediately
+and forever, which is a loop against somebody else's machine. An index
+that goes backwards (a Consul server restart) resets to 1 rather than
+blocking against an index that will never be reached.
+
+Only instances whose checks all pass are used, and the check is made here
+as well as asked for in the query: the filter in the query is the agent's
+opinion, and this one is the proxy's. `Weights.Passing` becomes the
+endpoint weight, and a blank service address falls back to the node's.
 
 ### upstreams[].health_check
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `type` | `http`, `grpc` | `http` | `grpc` calls the standard `grpc.health.v1.Health/Check` over HTTP/2 and needs `h2c` or `scheme: https`; `path` and `expected_status` are not used |
+| `type` | `http`, `grpc`, `tcp`, `udp` | `http` | `grpc` calls the standard `grpc.health.v1.Health/Check` over HTTP/2 and needs `h2c` or `scheme: https`; `path` and `expected_status` are not used. `tcp` and `udp` are the layer 4 probes, for the pools a `kind: tcp` or `kind: udp` listener uses, where there is no request to make — see below |
 | `grpc_service` | string | `""` | Service asked in a grpc check; empty asks about the server as a whole |
 | `path` | path | `/` | GET target |
 | `interval` | duration | `5s` | At least 500ms; start is jittered |
@@ -2639,6 +3284,49 @@ beyond the first is gated by `retry_budget` when one is set.
 | `keep_alive` | bool | `false` | Reuse pooled connections for probes. Off opens a fresh connection per probe (verifies the whole connect path, no descriptor held between probes); on saves the handshake at the cost of one idle connection per endpoint |
 | `body_contains` | string | none | The first 64 KiB of the probe response must contain this text (type `http`); a status in `expected_status` alone is not enough |
 | `body_regex` | RE2 | none | The first 64 KiB must match this pattern anywhere (anchor with `^` and `$`); may be combined with `body_contains`, both must hold. At most 4096 bytes each |
+| `send` | string | none | What a `udp` probe sends. Exactly one of `send` or `send_hex` is required for that type |
+| `send_hex` | hex | none | The same as hexadecimal, for a service whose smallest question is not text |
+| `expect` | string | none | The answer must contain this text. Empty accepts any answer |
+| `expect_hex` | hex | none | The same as hexadecimal; exclusive with `expect` |
+
+#### The layer 4 probes
+
+`type: http` and `type: grpc` make a request and read a reply, which is
+how an HTTP backend proves it is working rather than merely running.
+A pool behind a `kind: tcp` or `kind: udp` listener has no request to
+make, so there are two narrower probes — and they are not equally
+narrow, which is the thing to understand before choosing one.
+
+**`type: tcp` connects and closes.** It proves that something accepted,
+and nothing about what. For a protocol this proxy does not speak that is
+usually all there is to know without speaking it, and it is a real
+signal: a process that has died, a host that has gone, a port that was
+never opened are all found.
+
+**`type: udp` has to prove more, because a UDP socket accepts nothing.**
+There is no connect to succeed. A datagram sent to a port with no
+listener produces an ICMP port unreachable that the sender may or may
+not be told about, that anything on the path may filter, and that says
+nothing at all about a process which is bound but wedged — which is the
+failure that matters most, because it is the one that keeps taking
+traffic. So a `udp` check **sends a question the service answers**, and
+silence is the failure:
+
+```yaml
+health_check:
+  type: udp
+  send_hex: "abcd0100000100000000000000"   # a DNS query header
+  expect_hex: "abcd8180"                   # the same id, answered
+  interval: 5s
+  timeout: 1s
+```
+
+The probe socket is *connected*, so the kernel drops an answer from any
+address but the endpoint's: a third party cannot vouch for a backend.
+With no `expect` any answer is accepted, which is still far more than
+silence proves; with one, the answer has to contain it, so a service
+that has started listening but is still loading fails the check instead
+of taking traffic.
 
 ### upstreams[].outlier_ejection
 
@@ -2922,7 +3610,12 @@ otlp` show pushes, failures, the last error and the size of the last
 request.
 
 Exposed families: `xproxy_requests_total`, `xproxy_responses_total{class}`,
-`xproxy_denied_total{reason}`, `xproxy_bytes_in_total`,
+`xproxy_denied_total{reason}`,
+`xproxy_refusals_total{kind,reason}` (the same breakdown for the
+protocols that are not HTTP: the listener kind that refused and the
+reason it logged, described in
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md#counting-refusals-by-protocol-and-reason)),
+`xproxy_refusals_untracked_total`, `xproxy_bytes_in_total`,
 `xproxy_bytes_out_total`, `xproxy_waf_detected_total`,
 `xproxy_upstream_errors_total`, `xproxy_upstream_timeouts_total`,
 `xproxy_upstream_no_healthy_total`, `xproxy_client_aborts_total`,
@@ -3023,7 +3716,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `honeytoken`, `account_abuse`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `yara` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `honeytoken`, `account_abuse`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `sftp_icap`, `udp_denied`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |

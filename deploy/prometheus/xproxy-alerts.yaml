@@ -138,6 +138,21 @@ groups:
         annotations:
           summary: "More than 100 bans in 15 minutes on {{ $labels.instance }}"
           description: "A distributed attack or a misfiring trigger; xproxyctl bans lists the reasons."
+      - alert: XproxyProtocolRefusalSurge
+        expr: |
+          sum by (instance, kind) (rate(xproxy_refusals_total[5m]))
+            > 10 * clamp_min(sum by (instance, kind) (rate(xproxy_refusals_total[1h] offset 1h)), 0.1)
+        for: 10m
+        labels: {severity: warn}
+        annotations:
+          summary: "{{ $labels.kind }} refusals on {{ $labels.instance }} are ten times the hourly baseline"
+          description: "XproxyAttackSurge for the protocols that are not HTTP: a bastion or relay listener refusing far more than usual. sum by (reason) (rate(xproxy_refusals_total{kind=\"{{ $labels.kind }}\"}[5m])) names the policy, and the security log carries the client and the detail behind each one."
+      - alert: XproxyUntrackedRefusals
+        expr: sum by (instance) (increase(xproxy_refusals_untracked_total[1h])) > 0
+        labels: {severity: warn}
+        annotations:
+          summary: "Refusals on {{ $labels.instance }} carried no reason label"
+          description: "A bug rather than an attack: a listener kind named a refusal under an unknown kind or past its reason bound, so it is missing from xproxy_refusals_total. The refusals themselves still happened and the security log still has them. Worth a report."
       - alert: XproxyHoneypotActivity
         expr: sum by (instance) (increase(xproxy_honeypot_hits_total[1h])) > 20
         labels: {severity: warn}
