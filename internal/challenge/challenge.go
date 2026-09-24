@@ -670,6 +670,15 @@ func (c *Challenger) Verify(w http.ResponseWriter, r *http.Request, ip netip.Add
 	}
 	c.mu.Lock()
 	key, nonceExp, err := c.checkNonce(nonce, ip, r.Host, now)
+	// A CAPTCHA attempt can cause an outbound request, so consume its nonce
+	// before contacting the provider. This makes rejection, timeout and
+	// concurrent replay single-use too. Proof-of-work keeps its old behaviour:
+	// a wrong local proof does not burn a nonce the browser is still solving.
+	nonceUsed := false
+	if err == nil && token != "" {
+		err = c.markUsed(key, ip, nonceExp, now)
+		nonceUsed = err == nil
+	}
 	c.mu.Unlock()
 	if err != nil {
 		c.fail(w, err.Error())
@@ -693,10 +702,12 @@ func (c *Challenger) Verify(w http.ResponseWriter, r *http.Request, ip netip.Add
 		return false, "proof"
 	}
 	c.mu.Lock()
-	if err := c.markUsed(key, ip, nonceExp, now); err != nil {
-		c.mu.Unlock()
-		c.fail(w, err.Error())
-		return false, err.Error()
+	if !nonceUsed {
+		if err := c.markUsed(key, ip, nonceExp, now); err != nil {
+			c.mu.Unlock()
+			c.fail(w, err.Error())
+			return false, err.Error()
+		}
 	}
 	c.Passed++
 	if tier == TierCaptcha {
