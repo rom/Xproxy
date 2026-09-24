@@ -135,3 +135,56 @@ upstreams:
 		t.Fatal("relay address")
 	}
 }
+
+// TestQUICPassthroughConnectionLimit verifies that UDP flows use the same
+// process-wide and per-client admission control as accepted TCP connections.
+func TestQUICPassthroughConnectionLimit(t *testing.T) {
+	dir := t.TempDir()
+	ca := testutil.WriteCA(t, dir)
+	cert, key := ca.Issue(t, dir, "q.test")
+	origin := quicEcho(t, cert, key)
+	s := proxytest.Start(t, fmt.Sprintf(`
+version: 1
+server:
+  limits: {max_connections: 2, max_connections_per_ip: 1}
+  listeners:
+    - name: l4
+      address: "127.0.0.1:0"
+      kind: tcp
+      tcp:
+        quic: true
+        quic_idle_timeout: 1s
+        routes:
+          - {sni: [q.test], upstream: q}
+logging:
+  access: {enabled: false}
+upstreams:
+  - name: q
+    endpoints: [{address: %s}]
+`, origin))
+	pool := x509.NewCertPool()
+	pool.AddCert(ca.Cert)
+	dial := func() (*quic.Conn, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		return quic.DialAddr(ctx, s.Addrs()["l4"], &tls.Config{ServerName: "q.test", RootCAs: pool, NextProtos: []string{"echo"}, MinVersion: tls.VersionTLS13}, &quic.Config{HandshakeIdleTimeout: time.Second})
+	}
+	conn, err := dial()
+	if err != nil {
+		t.Fatalf("first flow: %v", err)
+	}
+	if _, err := dial(); err == nil {
+		t.Fatal("second flow from the same IP bypassed max_connections_per_ip")
+	}
+	if sn := s.Stats(); sn.OpenConnections != 1 || sn.QUICFlowsOpen != 1 || sn.QUICRejected == 0 {
+		t.Fatalf("limited flow counters: %+v", sn)
+	}
+	_ = conn.CloseWithError(0, "bye")
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) && s.Stats().OpenConnections != 0 {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if sn := s.Stats(); sn.OpenConnections != 0 || sn.QUICFlowsOpen != 0 {
+		t.Fatalf("released flow counters: %+v", sn)
+	}
+}
