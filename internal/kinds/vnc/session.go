@@ -232,6 +232,7 @@ func (se *session) copyViewOnly() string {
 			// goes with them, since pasting into the desktop is
 			// driving it.
 			se.t.engine.Counters().VNCRefused.Add(1)
+			se.t.engine.Counters().Refuse("vnc", "view_only")
 			continue
 		}
 		if _, err := se.up.Write(msg); err != nil {

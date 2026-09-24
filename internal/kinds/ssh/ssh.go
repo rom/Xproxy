@@ -339,6 +339,7 @@ func (t *server) serve() {
 		if t.open.Add(1) > int64(t.h.MaxSessions) {
 			t.open.Add(-1)
 			t.engine.Counters().SSHRejected.Add(1)
+			t.engine.Counters().Refuse("ssh", "max_sessions")
 			_ = c.Close()
 			continue
 		}
@@ -413,6 +414,7 @@ func (t *server) allowed(ip netip.Addr) bool {
 }
 
 func (t *server) deny(ip netip.Addr, what, detail string) {
+	t.engine.Counters().Refuse("ssh", what)
 	attrs := []any{"listener", t.cfg.Name, "client_ip", ip.String(), "proto", "ssh"}
 	if detail != "" {
 		attrs = append(attrs, "detail", detail)

@@ -249,6 +249,7 @@ func (se *session) finishHeld(svc *icap.Service, f *sftpFile,
 		se.reportBlocked(svc, f.path, blocked)
 		se.refused.Add(1)
 		se.t.engine.Counters().SFTPRefused.Add(1)
+		se.t.engine.Counters().Refuse("ssh", "sftp_icap")
 		// The writes are dropped rather than replayed, so the file the
 		// scanner refused never reaches the server. The empty file the
 		// OPEN created does remain: the proxy cannot unmake it without

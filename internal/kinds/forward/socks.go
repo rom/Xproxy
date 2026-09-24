@@ -308,6 +308,7 @@ func (f *forwardServer) socksConnect(c net.Conn, p *forwardPolicy, ip netip.Addr
 	if reason != "" {
 		_ = socksReply(c, socksDenyCode(reason), netip.AddrPort{})
 		h.Counters().ForwardDenied.Add(1)
+		h.Counters().Refuse("forward", reason)
 		h.Logs().SecurityEvent(context.Background(), "deny", "forward_"+reason,
 			"listener", f.name, "protocol", "socks5", "client_ip", ip.String(), "user", user, "destination", dest)
 		if bl := h.Bans(); bl != nil {
@@ -326,6 +327,7 @@ func (f *forwardServer) socksConnect(c net.Conn, p *forwardPolicy, ip netip.Addr
 	if f.open.Add(1) > int64(p.cfg.MaxTunnels) {
 		f.open.Add(-1)
 		h.Counters().ForwardRejected.Add(1)
+		h.Counters().Refuse("forward", "tunnel_limit")
 		_ = socksReply(c, socksReplyGeneralFailure, netip.AddrPort{})
 		f.logSOCKS(ip, user, dest, 0, 0, start, "tunnel_limit")
 		return
@@ -489,12 +491,14 @@ func (f *forwardServer) socksUDP(c net.Conn, p *forwardPolicy, ip netip.Addr, us
 	h := f.host
 	if !p.cfg.SOCKSUDP {
 		_ = socksReply(c, socksReplyCmdNotSupported, netip.AddrPort{})
+		h.Counters().Refuse("forward", "udp_disabled")
 		f.logSOCKS(ip, user, "", 0, 0, start, "udp_disabled")
 		return
 	}
 	if f.open.Add(1) > int64(p.cfg.MaxTunnels) {
 		f.open.Add(-1)
 		h.Counters().ForwardRejected.Add(1)
+		h.Counters().Refuse("forward", "tunnel_limit")
 		_ = socksReply(c, socksReplyGeneralFailure, netip.AddrPort{})
 		f.logSOCKS(ip, user, "", 0, 0, start, "tunnel_limit")
 		return
@@ -602,6 +606,7 @@ func (a *socksAssoc) relay(done <-chan struct{}) (in, out int64) {
 		// actually sent to, and only once the client address is known.
 		if !a.knownPeer(src) {
 			a.f.host.Counters().ForwardUDPDropped.Add(1)
+			a.f.host.Counters().Refuse("forward", "udp_unsolicited")
 			continue
 		}
 		msg := socksUDPHeader(src)
@@ -624,6 +629,7 @@ func (a *socksAssoc) fromClient(src netip.AddrPort) bool {
 	// control connection; its port is whatever the client chose.
 	if src.Addr().Unmap() != a.client {
 		a.f.host.Counters().ForwardUDPDropped.Add(1)
+		a.f.host.Counters().Refuse("forward", "udp_wrong_source")
 		return false
 	}
 	a.clientAddr = src
@@ -653,6 +659,7 @@ func (a *socksAssoc) toDestination(msg []byte, _ netip.AddrPort) (int64, bool) {
 	host, port, payload, err := parseSOCKSUDP(msg)
 	if err != nil {
 		a.f.host.Counters().ForwardUDPDropped.Add(1)
+		a.f.host.Counters().Refuse("forward", "udp_malformed")
 		return 0, false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), a.p.cfg.ConnectTimeout.D())
@@ -661,6 +668,7 @@ func (a *socksAssoc) toDestination(msg []byte, _ netip.AddrPort) (int64, bool) {
 	if reason != "" {
 		a.f.host.Counters().ForwardDenied.Add(1)
 		a.f.host.Counters().ForwardUDPDropped.Add(1)
+		a.f.host.Counters().Refuse("forward", reason)
 		a.f.host.Logs().SecurityEvent(ctx, "deny", "forward_"+reason,
 			"listener", a.f.name, "protocol", "socks5-udp", "client_ip", a.client.String(),
 			"user", a.user, "destination", net.JoinHostPort(host, strconv.Itoa(port)))
@@ -682,6 +690,7 @@ func (a *socksAssoc) toDestination(msg []byte, _ netip.AddrPort) (int64, bool) {
 		if len(a.peers) >= maxAssocPeers {
 			a.mu.Unlock()
 			a.f.host.Counters().ForwardUDPDropped.Add(1)
+			a.f.host.Counters().Refuse("forward", "udp_peer_table_full")
 			return 0, false
 		}
 	}

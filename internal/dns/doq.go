@@ -152,7 +152,7 @@ func (q *DoQServer) serveConn(conn *quic.Conn) {
 		select {
 		case q.s.sem <- struct{}{}:
 		default:
-			q.s.drop()
+			q.s.drop(DropWorkersBusy)
 			st.CancelRead(doqExcessiveLoad)
 			st.CancelWrite(doqExcessiveLoad)
 			continue

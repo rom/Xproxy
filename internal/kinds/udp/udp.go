@@ -168,6 +168,7 @@ func (s *server) admitted(client netip.AddrPort, size int) bool {
 	}
 	if bl := s.engine.Bans(); bl != nil && bl.Banned(client.Addr()) {
 		c.UDPDropped.Add(1) // a banned client is already a logged decision
+		c.Refuse("udp", "banned")
 		return false
 	}
 	if len(s.allow) > 0 {
@@ -361,6 +362,7 @@ func (s *server) finish(se *session, reason string) {
 // answering the source -- would make the relay a weapon pointed at
 // whoever the source claimed to be.
 func (s *server) deny(client netip.AddrPort, reason string) {
+	s.engine.Counters().Refuse("udp", reason)
 	s.engine.Logs().SecurityEvent(context.Background(), "deny", "udp_denied",
 		"listener", s.cfg.Name, "proto", "udp", "client_ip", client.Addr().String(), "detail", reason)
 	if bl := s.engine.Bans(); bl != nil && client.Addr().IsValid() {

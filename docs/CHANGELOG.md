@@ -442,6 +442,54 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **A refusal reason per protocol, not one number per protocol.** HTTP
+  had twenty-two named refusal counters behind
+  `xproxy_denied_total{reason}`; every other protocol had one aggregate
+  each. `xproxy_ssh_refused_total` covered a refused channel type, a
+  refused command, an environment variable outside the list, a port
+  forward to the wrong place and a failed second factor, and an
+  operator watching it climb could not tell which of those to widen.
+  The DNS listener was the plainest case: `xproxy_dns_dropped_total`
+  was documented as "banned, rate limited, malformed, over the
+  in-flight bound" -- four causes wanting four different answers, in
+  one number.
+
+  `xproxy_refusals_total{kind, reason}` is the breakdown, for `tcp`,
+  `udp`, `forward`, `dns`, `ssh`, `telnet`, `vnc`, `rdp`, `smtp`,
+  `mqtt`, `ftp` and `syslog`. The reason is the one each kind already
+  put in its security log, with the kind's own prefix removed because
+  the label carries it, so the series names the log line to go and
+  read and there is no second vocabulary to keep in step with the
+  first. The aggregates stay: this is the detail under them, and
+  `xproxyctl stats | jq .refusals` is the same table.
+
+  Some of those reasons were being thrown away rather than merely
+  lumped together. The syslog relay computed why it dropped a message
+  -- the facility list, the severity floor, a pattern -- and dropped
+  the reason with the message. SMTP's command refusals and VNC's
+  security-negotiation refusals answered the client and counted
+  nothing an operator could read. The DNS listener's four drop causes
+  are now four reasons and the one an operator can act on
+  (`workers_busy`, meaning `max_in_flight` is too low) is the only one
+  that still warns.
+
+  Deliberately outside the family: refusals by the server-wide accept
+  path, which happen before any kind sees the connection and stay in
+  `xproxy_connections_rejected_total` and
+  `xproxy_connections_rate_refused_total`; and failures that are not
+  refusals (an upstream that would not answer, a read that died),
+  which stay in each kind's error counter, because an operator hunting
+  a policy should not have to read past a broken backend to find it.
+
+  A test reads the source of every kind and fails one that refuses
+  connections without naming a reason, or that reports under a
+  sibling's name, so a kind added tomorrow arrives with its telemetry.
+  `xproxy_refusals_untracked_total` is zero in a healthy process and is
+  what a refusal falls into if a kind ever names one the table cannot
+  hold; it has an alert of its own, because a bounded table that
+  dropped what it could not hold would lose exactly the refusals
+  somebody is looking for.
+
 - **Consul as a discovery type of its own, with blocking queries.**
   Discovery already reached Consul by polling its HTTP API
   (`type: http, format: consul`), and DNS A/AAAA and SRV were already

@@ -4637,7 +4637,9 @@ xproxyctl series -since 30m -last 12
 ```
 
 Useful expressions: `rate(xproxy_denied_total[5m])` by `reason` for attack
-activity, `histogram_quantile(0.99, rate(xproxy_upstream_ttfb_seconds_bucket[5m]))`
+activity, `rate(xproxy_refusals_total[5m])` by `kind` and `reason` for
+the same thing on the protocols that are not HTTP (an SSH bastion, an
+FTP relay, a datagram listener), `histogram_quantile(0.99, rate(xproxy_upstream_ttfb_seconds_bucket[5m]))`
 for backend health, `xproxy_shedding` to alert on load shedding,
 `xproxy_upstream_endpoint_healthy == 0` for dead endpoints,
 `xproxy_log_dropped_total` for a collector problem. The `series` command
@@ -4659,15 +4661,17 @@ Two Grafana dashboards and a Prometheus rule file ship with the product
   detect mode hits, bans, challenges, rate limit decisions per policy,
   filter denials, connections rejected at accept, honeypot and ICAP
   results, forward proxy policy, DNS filtering, log delivery per sink,
-  cluster peers.
+  cluster peers, and protocol refusals by kind and by reason for the
+  listeners that are not HTTP.
 - `xproxy-alerts.yaml`: availability rules (node down, no healthy
   endpoint, unhealthy endpoint, circuit open, 5xx ratio, p99 latency,
   shedding, queue refusals), operations rules (failed reload,
   certificate expiring at 14 and 3 days, log drops and write errors,
   cluster peer down, ICAP unreachable) and security rules (denies at
-  ten times the hourly baseline, WAF block spike, ban wave, honeypot
-  activity, saturated rate limit policy), each with a severity label
-  and a description that names the command to look at.
+  ten times the hourly baseline, a protocol listener's refusals at ten
+  times theirs, WAF block spike, ban wave, honeypot activity, saturated
+  rate limit policy, refusals exported without a reason), each with a
+  severity label and a description that names the command to look at.
 
 Import the dashboards (Dashboards > New > Import) and pick the
 Prometheus data source; both have an `instance` variable and link to

@@ -3406,7 +3406,12 @@ otlp` show pushes, failures, the last error and the size of the last
 request.
 
 Exposed families: `xproxy_requests_total`, `xproxy_responses_total{class}`,
-`xproxy_denied_total{reason}`, `xproxy_bytes_in_total`,
+`xproxy_denied_total{reason}`,
+`xproxy_refusals_total{kind,reason}` (the same breakdown for the
+protocols that are not HTTP: the listener kind that refused and the
+reason it logged, described in
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md#counting-refusals-by-protocol-and-reason)),
+`xproxy_refusals_untracked_total`, `xproxy_bytes_in_total`,
 `xproxy_bytes_out_total`, `xproxy_waf_detected_total`,
 `xproxy_upstream_errors_total`, `xproxy_upstream_timeouts_total`,
 `xproxy_upstream_no_healthy_total`, `xproxy_client_aborts_total`,

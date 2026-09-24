@@ -110,6 +110,7 @@ func (t *server) serve() {
 		if t.open.Add(1) > int64(t.m.MaxConnections) {
 			t.open.Add(-1)
 			t.host.Counters().MQTTRejected.Add(1)
+			t.host.Counters().Refuse("mqtt", "max_connections")
 			// MQTT has no reply before CONNECT, so the only honest
 			// answer to a connection over the bound is to close it.
 			_ = c.Close()
@@ -252,6 +253,7 @@ func (t *server) allowed(ip netip.Addr) bool {
 }
 
 func (t *server) deny(ip netip.Addr, what, detail string) {
+	t.host.Counters().Refuse("mqtt", what)
 	attrs := []any{"listener", t.cfg.Name, "client_ip", ip.String(), "proto", "mqtt"}
 	if detail != "" {
 		attrs = append(attrs, "detail", detail)

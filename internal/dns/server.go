@@ -57,6 +57,12 @@ type Hooks struct {
 	Event func(client netip.Addr, reason string, verified bool, attrs ...any)
 	// Banned reports clients whose datagrams are dropped.
 	Banned func(client netip.Addr) bool
+	// Refuse records one refused or dropped query by its reason. The
+	// per-listener counters say how many queries a listener refused;
+	// this says which policy did it, which is the difference between
+	// knowing that queries are being dropped and knowing that they are
+	// being dropped because every worker slot is busy.
+	Refuse func(reason string)
 }
 
 // Server answers DNS over one UDP socket and one TCP listener. When the
@@ -99,11 +105,38 @@ type Server struct {
 	dropNotice bound.Notice
 }
 
-// drop counts and warns about a query refused because every worker slot
-// was taken.
-func (s *Server) drop() {
+// drop counts a query that is not answered at all, by reason. The
+// warning is for the one reason an operator can act on by changing the
+// configuration: a listener out of worker slots is a listener whose
+// max_in_flight is too low for its traffic.
+func (s *Server) drop(reason string) {
 	s.Dropped.Add(1)
-	s.dropNotice.Hit(nil, "dns listener dropping queries: every worker slot is busy", "table", "dns_workers", "listener", s.Name)
+	s.refuse(reason)
+	if reason == DropWorkersBusy {
+		s.dropNotice.Hit(nil, "dns listener dropping queries: every worker slot is busy", "table", "dns_workers", "listener", s.Name)
+	}
+}
+
+// The reasons a query is dropped without an answer. They are named
+// because they are also metric label values: a spelling change here is
+// visible in somebody's dashboard.
+const (
+	// DropWorkersBusy is max_in_flight: every worker slot was taken.
+	DropWorkersBusy = "workers_busy"
+	// DropMalformed is a datagram that is not a question: an
+	// unparseable header, or a response sent to a resolver.
+	DropMalformed = "malformed"
+	// DropBanned is a client the ban list holds.
+	DropBanned = "banned"
+	// DropRateLimit is the per-client query rate.
+	DropRateLimit = "rate_limit"
+)
+
+// refuse records one refusal by reason, for the operational counters.
+func (s *Server) refuse(reason string) {
+	if s.hooks.Refuse != nil {
+		s.hooks.Refuse(reason)
+	}
 }
 
 // Status is the management view of a listener.
@@ -262,7 +295,7 @@ func (s *Server) serveUDP() {
 		select {
 		case s.sem <- struct{}{}:
 		default:
-			s.drop()
+			s.drop(DropWorkersBusy)
 			continue
 		}
 		query := make([]byte, n)
@@ -331,7 +364,7 @@ func (s *Server) serveConn(c net.Conn) {
 		select {
 		case s.sem <- struct{}{}:
 		default:
-			s.drop()
+			s.drop(DropWorkersBusy)
 			return
 		}
 		resp := s.handle(query, client, true, proto)
@@ -427,32 +460,36 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 	}
 	h, err := ParseHeader(query)
 	if err != nil || h.Response() {
-		s.drop()
+		s.drop(DropMalformed)
 		return nil
 	}
 	if s.hooks.Banned != nil && s.hooks.Banned(client) {
-		s.drop()
+		s.drop(DropBanned)
 		return nil
 	}
 	p := s.policy.Load()
 	if p.RateLimit != nil && !p.RateLimit.Allow(client.String()) {
-		s.drop()
+		s.drop(DropRateLimit)
 		return nil
 	}
 	if h.QDCount != 1 {
 		s.FormErr.Add(1)
+		s.refuse("formerr")
 		return s.finish(query, headerLen, h, Question{}, client, proto, start, "formerr", Reply(query[:headerLen], headerLen, h, RcodeFormErr))
 	}
 	q, qEnd, err := ParseQuestion(query)
 	if err != nil {
 		s.FormErr.Add(1)
+		s.refuse("formerr")
 		return s.finish(query, headerLen, h, Question{}, client, proto, start, "formerr", Reply(query[:headerLen], headerLen, h, RcodeFormErr))
 	}
 	if len(p.AllowClients) > 0 && !netutil.Contains(p.AllowClients, client) {
 		s.Refused.Add(1)
+		s.refuse("client_not_allowed")
 		return s.finish(query, qEnd, h, q, client, proto, start, "refused", Reply(query, qEnd, h, RcodeRefused))
 	}
 	if h.Opcode() != 0 {
+		s.refuse("opcode")
 		return s.finish(query, qEnd, h, q, client, proto, start, "notimp", Reply(query, qEnd, h, RcodeNotImp))
 	}
 	// An ANY query over UDP is an amplifier's favourite: one small
@@ -462,6 +499,7 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 	// real client almost nothing.
 	if q.Type == TypeANY && !tcp {
 		s.Truncated.Add(1)
+		s.refuse("any_over_udp")
 		return s.finish(query, qEnd, h, q, client, proto, start, "any_truncated", Truncate(Reply(query, qEnd, h, RcodeNoError), qEnd))
 	}
 	// A name this resolver owns is answered from the local set and
@@ -475,6 +513,7 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 	}
 	if p.Block != nil && p.Block.Match(q.Name) {
 		s.Blocked.Add(1)
+		s.refuse("blocked")
 		if s.hooks.Event != nil {
 			s.hooks.Event(client, "dns_blocked", proto != "udp", "listener", s.Name, "name", q.Name, "type", TypeName(q.Type), "proto", proto)
 		}
@@ -500,6 +539,7 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 	if dom, blocked := p.Tunnel.Blocks(client, q.Name, start); blocked {
 		s.TunnelBlocked.Add(1)
 		s.Blocked.Add(1)
+		s.refuse("tunnel")
 		if s.hooks.Event != nil {
 			s.hooks.Event(client, "dns_tunnel", proto != "udp", "listener", s.Name,
 				"domain", dom, "name", q.Name, "type", TypeName(q.Type), "proto", proto, "detail", "cooldown")

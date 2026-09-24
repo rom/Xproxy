@@ -201,6 +201,7 @@ func (t *server) serve() {
 		if t.open.Add(1) > int64(t.f.MaxConnections) {
 			t.open.Add(-1)
 			t.engine.Counters().FTPRejected.Add(1)
+			t.engine.Counters().Refuse("ftp", "max_connections")
 			_, _ = c.Write(wire.Line(421, "too many connections, try again later"))
 			_ = c.Close()
 			continue
@@ -261,6 +262,7 @@ func (t *server) shutdown(ctx context.Context) {
 }
 
 func (t *server) deny(ip netip.Addr, what, detail string) {
+	t.engine.Counters().Refuse("ftp", what)
 	attrs := []any{"listener", t.cfg.Name, "client_ip", ip.String(), "proto", "ftp"}
 	if detail != "" {
 		attrs = append(attrs, "detail", detail)
@@ -337,6 +339,7 @@ func (t *server) handle(client net.Conn) {
 	}
 	if bl := s.Bans(); bl != nil && se.ip.IsValid() && bl.Banned(se.ip) {
 		s.Counters().FTPRejected.Add(1)
+		s.Counters().Refuse("ftp", "banned")
 		_, _ = client.Write(wire.Line(421, "refused"))
 		_ = client.Close()
 		return

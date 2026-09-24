@@ -104,6 +104,7 @@ func (t *server) serve() {
 		if t.open.Add(1) > int64(t.cfg.TCP.MaxConnections) {
 			t.open.Add(-1)
 			t.engine.Counters().TCPRejected.Add(1)
+			t.engine.Counters().Refuse("tcp", "max_connections")
 			_ = c.Close()
 			continue
 		}
@@ -252,6 +253,7 @@ func (t *server) handle(client net.Conn) {
 	upName, ok := t.resolve(sni)
 	if !ok {
 		s.Counters().TCPRejected.Add(1)
+		s.Counters().Refuse("tcp", "no_route")
 		t.finish(client, clientIP, start, sni, "", "", "no_route", 0, 0)
 		return
 	}

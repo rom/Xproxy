@@ -207,6 +207,7 @@ func (t *server) shutdown(ctx context.Context) {
 }
 
 func (t *server) deny(ip netip.Addr, what, detail string) {
+	t.engine.Counters().Refuse("vnc", what)
 	if bl := t.engine.Bans(); bl != nil && ip.IsValid() {
 		bl.Observe(ip, "vnc_denied")
 	}
@@ -286,6 +287,7 @@ func (t *server) handle(client net.Conn) {
 	}
 	if bl := s.Bans(); bl != nil && se.ip.IsValid() && bl.Banned(se.ip) {
 		s.Counters().VNCRejected.Add(1)
+		s.Counters().Refuse("vnc", "banned")
 		_ = client.Close()
 		return
 	}
@@ -456,10 +458,12 @@ func (se *session) relay() string {
 	return "closed"
 }
 
-// refused counts a refusal and tells the client why, in the form the
-// version it settled on allows.
-func (se *session) refuseClient(reason string) {
+// refuseClient counts a refusal and tells the client why, in the form
+// the version it settled on allows. what is the counter's label; reason
+// is the sentence the client is shown.
+func (se *session) refuseClient(what, reason string) {
 	se.t.engine.Counters().VNCRefused.Add(1)
+	se.t.engine.Counters().Refuse("vnc", what)
 	if se.clientVersion.AtLeast(rfb.V37) {
 		_, _ = se.client.Write(rfb.SecurityFailure(reason))
 		return

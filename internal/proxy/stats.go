@@ -221,6 +221,19 @@ type Stats struct {
 	// KeyExchangePQ counts the share that used a post-quantum group,
 	// which is the number a rollout is actually measured by.
 	KeyExchangePQ atomic.Uint64
+
+	// refusals counts what each listener kind refused and why. HTTP
+	// has a counter per reason on this struct; the other protocols
+	// have one aggregate each ("SSH channels and requests refused by
+	// the bastion's policy"), which says that something was refused
+	// but not what an operator has to change. This holds the same
+	// breakdown for them, keyed by the kind and the reason the kind
+	// already logs.
+	refusals refusals
+	// RefusalsUntracked counts refusals named under a kind the roster
+	// does not have or beyond a kind's reason bound. Zero in a healthy
+	// process; anything else is a bug in a listener kind.
+	RefusalsUntracked atomic.Uint64
 }
 
 // KeyExchange records one completed handshake's group.
@@ -484,6 +497,11 @@ type Snapshot struct {
 	RejectedConns          uint64            `json:"rejected_connections"`
 	RateRefusedConns       uint64            `json:"rate_refused_connections"`
 	InFlight               int64             `json:"in_flight"`
+	// Refusals is what each listener kind refused, kind to reason to
+	// count. Omitted when nothing has been refused, so a quiet
+	// process's snapshot does not carry an empty object per kind.
+	Refusals          map[string]map[string]uint64 `json:"refusals,omitempty"`
+	RefusalsUntracked uint64                       `json:"refusals_untracked"`
 }
 
 func (s *Stats) snapshot() Snapshot {
@@ -526,6 +544,8 @@ func (s *Stats) snapshot() Snapshot {
 		HoneytokenHits:         s.HoneytokenHits.Load(),
 		HandshakesRefused:      s.HandshakesRefused.Load(),
 		KeyExchange:            s.KeyExchangeCounts(),
+		Refusals:               s.RefusalCounts(),
+		RefusalsUntracked:      s.RefusalsUntracked.Load(),
 		KeyExchangePQ:          s.KeyExchangePQ.Load(),
 		Degraded:               s.Degraded.Load(),
 		Deceived:               s.Deceived.Load(),

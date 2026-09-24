@@ -147,6 +147,28 @@ func (s *Server) Collect(e metrics.Collector) {
 			e.Gauge("xproxy_certificate_expiry_seconds", "Seconds until the earliest file certificate of the listener expires.", L{"listener": n}, time.Until(exp[n]).Seconds())
 		}
 	}
+	// The non-HTTP protocols' equivalent of xproxy_denied_total: each
+	// kind has an aggregate counter below ("SSH channels and requests
+	// refused"), and this is the breakdown that says which policy did
+	// it. The reasons are the same strings the security log carries, so
+	// a spike here names the log line to go and read.
+	refusals := sn.Refusals
+	kinds := make([]string, 0, len(refusals))
+	for k := range refusals {
+		kinds = append(kinds, k)
+	}
+	sort.Strings(kinds)
+	for _, k := range kinds {
+		reasons := make([]string, 0, len(refusals[k]))
+		for r := range refusals[k] {
+			reasons = append(reasons, r)
+		}
+		sort.Strings(reasons)
+		for _, r := range reasons {
+			e.Counter("xproxy_refusals_total", "Connections, sessions, datagrams, commands and channels refused by a protocol listener, by kind and reason.", L{"kind": k, "reason": r}, float64(refusals[k][r]))
+		}
+	}
+	e.Counter("xproxy_refusals_untracked_total", "Refusals a listener kind named under an unknown kind or beyond its reason bound, so they carry no reason label. Always zero in a healthy process.", nil, float64(sn.RefusalsUntracked))
 	e.Counter("xproxy_tcp_connections_total", "Connections accepted on tcp listeners.", nil, float64(sn.TCPConnections))
 	e.Counter("xproxy_tcp_rejected_total", "Connections on tcp listeners closed without a route or over the listener bound.", nil, float64(sn.TCPRejected))
 	e.Counter("xproxy_tcp_errors_total", "tcp listener connections that found no reachable endpoint.", nil, float64(sn.TCPErrors))

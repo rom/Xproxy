@@ -3049,6 +3049,7 @@ This trips people up more than anything else in the logs:
 | The access log | `denied` | `allow_cidrs`, `rate_limit:per-ip`, `virtual_patch:cve-2026-1` |
 | The security log | `reason`, plus `detail` | `reason: acl_allow`; `reason: virtual_patch`, `detail: cve-2026-1` |
 | `bans.triggers[].reasons` | the ban category | `acl`, `rate_limit` |
+| The metrics endpoint | `reason` on a counter | `xproxy_denied_total{reason="acl"}`, `xproxy_refusals_total{kind="ftp",reason="path_refused"}` |
 
 The access log's `denied` is the narrow form, joined with a colon. The
 security log splits it into `reason` and `detail`. The ban category
@@ -3119,6 +3120,66 @@ innocent.
 A trigger naming a reason that is not in the Ban column fails
 validation with the list of the ones that are, so this is not something
 you can get wrong silently.
+
+### Counting refusals, by protocol and reason
+
+The Ban column's reasons are deliberately coarse: `ftp_denied` is one
+category so that one trigger can ban a client walking the policy,
+whatever part of it they are walking. That is the wrong grain for an
+operator asking *what should I change*, and the per-protocol counters
+are no better on their own — `xproxy_ftp_refused_total` says the proxy
+answered commands the server never heard, not whether that was the
+command list, the path list or a login.
+
+`xproxy_refusals_total{kind, reason}` is the breakdown, and it is what
+`xproxy_denied_total{reason}` is for HTTP:
+
+```sh
+xproxyctl metrics | grep xproxy_refusals_total
+xproxyctl stats | jq .refusals            # the same numbers, per kind
+```
+
+`kind` is the listener kind that refused — the same word a `kind:` in
+the configuration says. `reason` is the security log's own `reason` or
+`what` for that refusal with the kind's own prefix taken off, because
+the label already carries it: a `reason: vnc_version` event is
+`xproxy_refusals_total{kind="vnc",reason="version"}`. So the series
+name the log line to go and read, and the vocabulary is whatever the
+protocol has rather than a second list to keep in step with the first.
+
+A series appears when that refusal first happens, so a quiet process
+exports few of them; `grep` on a busy one is the list of what is
+actually being refused. What each kind can say:
+
+| Kind | The refusals it counts |
+|------|------------------------|
+| `tcp` | `max_connections`, `no_route`, `banned`, and for an intercepting listener `destination_not_allowed` and `no_original_destination`; QUIC flows add `quic_max_flows` |
+| `udp` | `client_not_allowed`, `datagram_too_large`, `rate_limit`, `max_sessions`, `max_sessions_per_ip`, `banned`, `upstream_datagram_too_large` |
+| `forward` | the destination policy (`not_allowed`, `deny`, `private`, `host`, `port`, `resolve`), the request shape (`not_absolute`, `scheme`, `authority`), `auth`, `tunnel_limit`, interception (`sni_mismatch`, `upstream_tls`, `client_tls`), SOCKS UDP (`udp_malformed`, `udp_unsolicited`, `udp_wrong_source`, `udp_peer_table_full`, `udp_disabled`) and MASQUE (`masque_target`, `masque_session_limit`, `masque_context`, `masque_spoofed`, `masque_unsolicited`) |
+| `dns` | `workers_busy` (`max_in_flight`), `rate_limit`, `banned`, `malformed`, `client_not_allowed`, `blocked`, `tunnel`, `any_over_udp`, `formerr`, `opcode` |
+| `ssh` | `client_not_allowed`, `max_sessions`, `auth_failed`, `mfa_failed`, `mfa_not_enrolled`, the channel and request policy (`channel_refused`, `request_refused`, `subsystem_refused`, `env_refused`, `command_refused`, `file_transfer_refused`, `forward_refused`, `remote_forward_refused`), and SFTP (`sftp_refused`, `sftp_malformed`, `sftp_identity_refused`, `sftp_icap`) |
+| `telnet` | `client_refused`, `banned`, `option_refused`, `subnegotiation_refused`, `malformed`, `mfa_failed`, `prompt` |
+| `vnc` | `client_refused`, `banned`, `version`, `auth_failed`, `mfa_failed`, `view_only`, the security negotiation (`security_not_offered`, `security_not_usable`, `security_not_mediated`, `subtype_not_offered`, `vencrypt_subtype_not_mediated`, `tight_auth_not_offered`), and the variants' own parameters (`tls`, `mslogon_parameters`, `ard_parameters`, `rsaaes_key`, `rsaaes_random`, `rsaaes_transcript`) |
+| `rdp` | `client_refused`, `banned`, `mfa_failed`, `negotiate`, `no_protocol`, `tls`, `channels`, `channel_inert`, `channel_message`, `channel_chunk`, `channel_compressed`, `device_announce`, `client_info`, `info_encrypted`, `client_security`, `client_encryption`, `no_encryption_method`, `security_exchange`, `conference`, `no_io_channel`, `fast_path`, `data_unit` |
+| `smtp` | `client_not_allowed`, `max_connections`, the command policy (`unknown_command`, `command_refused`, `ehlo_required`, `mail_required`, `mail_and_rcpt_required`, `transaction_open`, `already_authenticated`), TLS and authentication (`encryption_required`, `encryption_required_for_auth`, `authentication_required`, `tls_unavailable`, `tls_already_active`), the bounds (`message_too_large`, `too_many_recipients`, `line_too_long`) and the protocol abuse (`bare_newline`, `smuggling`, `starttls_injection`) |
+| `mqtt` | `client_not_allowed`, `max_connections`, `not_connect`, `second_connect`, `version_refused`, the client id policy (`empty_client_id`, `client_id_too_long`, `client_id_refused`), `no_username`, `keep_alive_refused`, the topic policy (`publish_topic_refused`, `subscribe_refused`, `retain_refused`, `will_topic_refused`, `will_retain_refused`), `packet_too_large`, `malformed` |
+| `ftp` | `client_refused`, `banned`, `max_connections`, `auth_failed`, `identity_refused`, `mfa_required`, `mfa_failed`, the command and path policy (`unknown_command`, `command_refused`, `path_refused`, `read_only`, `active_refused`, `no_data_connection`), TLS (`tls_required`, `auth_refused`, `ccc_refused`, `tls_pipelined`), the data channel (`bounce_refused`, `malformed_address`, `data_stranger`, `upstream_address`, `transfer_cut`) and the line discipline (`line_too_long`, `malformed_line`, `malformed_command`) |
+| `syslog` | `sender_refused`, `max_connections`, `rate_limit`, `too_large`, `framing`, `malformed`, the message policy (`facility`, `severity`, `pattern`) and `queue_full` when the collector is behind |
+
+Two things are deliberately *not* in this family. Refusals by the
+server-wide accept path — `server.limits.max_connections`,
+`max_connections_per_ip`, `connection_rate` — happen before any kind
+sees the connection and stay in `xproxy_connections_rejected_total` and
+`xproxy_connections_rate_refused_total`. And failures that are not
+refusals — an upstream that would not answer, a read that died — stay in
+each kind's error counter, because an operator hunting a policy should
+not have to read past a broken backend to find it.
+
+`xproxy_refusals_untracked_total` must be zero. Anything else is a bug
+in a listener kind (a refusal named under an unknown kind, or past the
+bound on one kind's reason set): the refusals still happened and the
+security log still has them, but they are missing from the breakdown.
+Worth a report.
 
 ## When to escalate, and with what
 

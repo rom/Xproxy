@@ -191,6 +191,7 @@ func (t *server) serve() {
 		if t.open.Add(1) > int64(t.l.MaxConnections) {
 			t.open.Add(-1)
 			t.host.Counters().SyslogRejected.Add(1)
+			t.host.Counters().Refuse("syslog", "max_connections")
 			_ = c.Close()
 			continue
 		}
@@ -348,6 +349,7 @@ func (t *server) take(raw []byte, from netip.Addr) {
 	}
 	if t.limiter != nil && !t.limiter.allow(from) {
 		t.host.Counters().SyslogRateLimited.Add(1)
+		t.host.Counters().Refuse("syslog", "rate_limit")
 		return
 	}
 	m, err := wire.Parse(raw)
@@ -360,6 +362,13 @@ func (t *server) take(raw []byte, from netip.Addr) {
 	}
 	if reason := t.filter(m); reason != "" {
 		t.host.Counters().SyslogDropped.Add(1)
+		// The reason the message was dropped was until now thrown away
+		// with it: a relay dropping half its traffic could not say
+		// whether that was the facility list, the severity floor or a
+		// pattern. It is not a security event — a sender saying
+		// something this relay does not carry is ordinary — so it is
+		// counted rather than logged.
+		t.host.Counters().Refuse("syslog", reason)
 		return
 	}
 	t.rewrite(&m, from)
@@ -370,6 +379,7 @@ func (t *server) take(raw []byte, from netip.Addr) {
 		// collector from blocking every sender, and it is counted so
 		// the gap is visible rather than guessed at.
 		t.host.Counters().SyslogQueueDropped.Add(1)
+		t.host.Counters().Refuse("syslog", "queue_full")
 	}
 }
 
@@ -433,6 +443,7 @@ func (t *server) rewrite(m *wire.Message, from netip.Addr) {
 
 func (t *server) refuse(ip netip.Addr, what, detail string) {
 	t.host.Counters().SyslogRefused.Add(1)
+	t.host.Counters().Refuse("syslog", what)
 	attrs := []any{"listener", t.cfg.Name, "client_ip", ip.String(), "proto", "syslog"}
 	if detail != "" {
 		attrs = append(attrs, "detail", detail)

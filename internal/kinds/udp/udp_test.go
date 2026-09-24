@@ -1,6 +1,7 @@
 package udp_test
 
 import (
+	"bytes"
 	"fmt"
 	"net"
 	"strings"
@@ -389,5 +390,66 @@ upstreams:
 	// accepted on it.
 	eventually(t, 5*time.Second, "the session to be counted", func() bool {
 		return s.Stats().UDPSessions == 1
+	})
+}
+
+// Every refusal has a reason, and the reason reaches the metrics
+// endpoint. xproxy_udp_dropped_total says a datagram was not relayed;
+// this says which policy did it, which is the difference between
+// noticing drops and knowing whether to raise max_datagram_bytes or
+// widen allow_clients.
+func TestUDPRefusalsAreCountedByReason(t *testing.T) {
+	e := startEchoUDP(t, "echo:")
+	s, addr := relay(t, e, "        max_datagram_bytes: 64\n        rate_limit: {pps: 1, burst: 2}\n        allow_clients: [\"127.0.0.0/8\"]")
+	c := dialUDP(t, addr)
+
+	// Over the datagram bound.
+	if _, err := c.Write([]byte(strings.Repeat("x", 200))); err != nil {
+		t.Fatal(err)
+	}
+	// Over the rate.
+	for i := 0; i < 10; i++ {
+		_, _ = c.Write([]byte("flood"))
+	}
+	want := map[string]bool{"datagram_too_large": false, "rate_limit": false}
+	eventually(t, 10*time.Second, "both refusal reasons to be counted", func() bool {
+		got := s.Stats().Refusals["udp"]
+		for r := range want {
+			want[r] = got[r] > 0
+		}
+		return want["datagram_too_large"] && want["rate_limit"]
+	})
+	var buf bytes.Buffer
+	if err := s.WriteMetrics(&buf); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	for _, w := range []string{
+		`xproxy_refusals_total{kind="udp",reason="datagram_too_large"}`,
+		`xproxy_refusals_total{kind="udp",reason="rate_limit"}`,
+		"xproxy_refusals_untracked_total 0",
+	} {
+		if !strings.Contains(out, w) {
+			t.Errorf("the exposition does not carry %s", w)
+		}
+	}
+	// A reason the listener cannot have must not appear: the family is
+	// what this process refused, not a catalogue of what it could.
+	if strings.Contains(out, `reason="client_not_allowed"`) {
+		t.Error("a refusal that never happened was exported")
+	}
+}
+
+// A client outside allow_clients is refused under its own reason, on a
+// listener that relays for everybody else.
+func TestUDPClientPolicyRefusalHasItsOwnReason(t *testing.T) {
+	e := startEchoUDP(t, "echo:")
+	s, addr := relay(t, e, "        allow_clients: [\"10.99.0.0/16\"]")
+	c := dialUDP(t, addr)
+	if _, err := c.Write([]byte("let me in")); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 10*time.Second, "the refusal to name the client policy", func() bool {
+		return s.Stats().Refusals["udp"]["client_not_allowed"] == 1
 	})
 }

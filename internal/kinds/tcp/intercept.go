@@ -36,6 +36,7 @@ func (t *server) intercepted(client net.Conn, ip netip.Addr, start time.Time, sn
 	dst, err := transparent.Destination(client)
 	if err != nil {
 		s.Counters().TCPRejected.Add(1)
+		s.Counters().Refuse("tcp", "no_original_destination")
 		t.finish(client, ip, start, sni, "", "", "no_original_destination", 0, 0)
 		return
 	}
@@ -86,6 +87,7 @@ func (t *server) intercepted(client net.Conn, ip netip.Addr, start time.Time, sn
 // and a ban observation: a client choosing where an intercepting proxy
 // sends its traffic is exactly what the policy is there to stop.
 func (t *server) deny(ip netip.Addr, dst netip.AddrPort) {
+	t.engine.Counters().Refuse("tcp", "destination_not_allowed")
 	t.engine.Logs().SecurityEvent(context.Background(), "deny", "tcp_no_route",
 		"listener", t.cfg.Name, "proto", "tcp", "client_ip", ip.String(),
 		"destination", dst.String(), "detail", "destination_not_allowed")

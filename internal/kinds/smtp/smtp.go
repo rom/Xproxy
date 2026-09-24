@@ -111,6 +111,7 @@ func (t *server) serve() {
 		if t.open.Add(1) > int64(t.m.MaxConnections) {
 			t.open.Add(-1)
 			t.engine.Counters().SMTPRejected.Add(1)
+			t.engine.Counters().Refuse("smtp", "max_connections")
 			// 421 is the one refusal a mail client retries later
 			// instead of bouncing the message.
 			_, _ = c.Write([]byte("421 4.3.2 too many connections, try again later\r\n"))
@@ -275,6 +276,7 @@ func (t *server) allowed(ip netip.Addr) bool {
 }
 
 func (t *server) deny(ip netip.Addr, what, detail string) {
+	t.engine.Counters().Refuse("smtp", what)
 	attrs := []any{"listener", t.cfg.Name, "client_ip", ip.String(), "proto", "smtp"}
 	if detail != "" {
 		attrs = append(attrs, "detail", detail)
@@ -493,10 +495,13 @@ func (se *session) toClient(rep wire.Reply) error {
 }
 
 // refuse answers the client without asking the upstream, and counts
-// towards max_errors.
-func (se *session) refuse(code int, text string) error {
+// towards max_errors. reason is the counter's label: the reply text is
+// what the client is told, which is deliberately vaguer than what an
+// operator needs to see.
+func (se *session) refuse(code int, text, reason string) error {
 	se.errors++
 	se.t.engine.Counters().SMTPRefused.Add(1)
+	se.t.engine.Counters().Refuse("smtp", reason)
 	if se.errors >= se.t.m.MaxErrors {
 		se.closeSess = true
 		_ = se.toClient(wire.Reply{Code: code, Lines: []string{text}})
@@ -538,7 +543,7 @@ func (se *session) loop() string {
 		}
 		cmd, perr := wire.ParseCommand(line)
 		if perr != nil {
-			if err := se.refuse(500, "5.5.2 command not recognised"); err != nil {
+			if err := se.refuse(500, "5.5.2 command not recognised", "unknown_command"); err != nil {
 				return "write_error"
 			}
 			if se.closeSess {
@@ -564,7 +569,7 @@ func (se *session) loop() string {
 func (se *session) command(cmd wire.Command) (string, error) {
 	t := se.t
 	if !t.verbs[cmd.Verb] {
-		return "", se.refuse(502, "5.5.1 command not available here")
+		return "", se.refuse(502, "5.5.1 command not available here", "command_refused")
 	}
 	switch cmd.Verb {
 	case "QUIT":
@@ -668,10 +673,10 @@ func (se *session) hello(cmd wire.Command) (string, error) {
 func (se *session) startTLS(wire.Command) (string, error) {
 	t := se.t
 	if se.secure {
-		return "", se.refuse(503, "5.5.1 TLS is already active")
+		return "", se.refuse(503, "5.5.1 TLS is already active", "tls_already_active")
 	}
 	if t.tlsCfg == nil || t.m.TLSMode != "starttls" {
-		return "", se.refuse(454, "4.7.0 TLS not available")
+		return "", se.refuse(454, "4.7.0 TLS not available", "tls_unavailable")
 	}
 	// Anything already buffered was written before the client could have
 	// seen the 220, so it was meant to be read as plaintext by one side
@@ -715,13 +720,13 @@ func (se *session) startTLS(wire.Command) (string, error) {
 func (se *session) auth(cmd wire.Command) (string, error) {
 	t := se.t
 	if !se.greeted {
-		return "", se.refuse(503, "5.5.1 send EHLO first")
+		return "", se.refuse(503, "5.5.1 send EHLO first", "ehlo_required")
 	}
 	if t.m.RequireTLS && !se.secure {
-		return "", se.refuse(538, "5.7.11 encryption required for authentication")
+		return "", se.refuse(538, "5.7.11 encryption required for authentication", "encryption_required_for_auth")
 	}
 	if se.authed {
-		return "", se.refuse(503, "5.5.1 already authenticated")
+		return "", se.refuse(503, "5.5.1 already authenticated", "already_authenticated")
 	}
 	if err := se.writeUp(cmd.Raw); err != nil {
 		return "upstream_write", nil
@@ -757,16 +762,16 @@ func (se *session) auth(cmd wire.Command) (string, error) {
 func (se *session) mail(cmd wire.Command) (string, error) {
 	t := se.t
 	if !se.greeted {
-		return "", se.refuse(503, "5.5.1 send EHLO first")
+		return "", se.refuse(503, "5.5.1 send EHLO first", "ehlo_required")
 	}
 	if t.m.RequireTLS && !se.secure {
-		return "", se.refuse(530, "5.7.0 encryption required")
+		return "", se.refuse(530, "5.7.0 encryption required", "encryption_required")
 	}
 	if t.m.RequireAuth && !se.authed {
-		return "", se.refuse(530, "5.7.0 authentication required")
+		return "", se.refuse(530, "5.7.0 authentication required", "authentication_required")
 	}
 	if se.inMail {
-		return "", se.refuse(503, "5.5.1 a transaction is already open")
+		return "", se.refuse(503, "5.5.1 a transaction is already open", "transaction_open")
 	}
 	if se.messages >= t.m.MaxMessages {
 		_ = se.toClient(wire.Reply{Code: 421, Lines: []string{"4.7.0 too many messages on one connection"}})
@@ -775,7 +780,7 @@ func (se *session) mail(cmd wire.Command) (string, error) {
 	if size, ok := smtpSizeParam(cmd.Arg); ok && t.m.MaxMessageSize > 0 && size > t.m.MaxMessageSize {
 		// Refusing the declared size here is the only refusal that
 		// costs nobody the message body.
-		return "", se.refuse(552, "5.3.4 message size exceeds "+strconv.FormatInt(t.m.MaxMessageSize, 10))
+		return "", se.refuse(552, "5.3.4 message size exceeds "+strconv.FormatInt(t.m.MaxMessageSize, 10), "message_too_large")
 	}
 	reason, err := se.relay(cmd)
 	if reason == "" && err == nil {
@@ -786,10 +791,10 @@ func (se *session) mail(cmd wire.Command) (string, error) {
 
 func (se *session) rcpt(cmd wire.Command) (string, error) {
 	if !se.inMail {
-		return "", se.refuse(503, "5.5.1 send MAIL first")
+		return "", se.refuse(503, "5.5.1 send MAIL first", "mail_required")
 	}
 	if se.rcpts >= se.t.m.MaxRecipients {
-		return "", se.refuse(452, "4.5.3 too many recipients")
+		return "", se.refuse(452, "4.5.3 too many recipients", "too_many_recipients")
 	}
 	reason, err := se.relay(cmd)
 	if reason == "" && err == nil {
@@ -804,7 +809,7 @@ func (se *session) rcpt(cmd wire.Command) (string, error) {
 func (se *session) data() (string, error) {
 	t := se.t
 	if !se.inMail || se.rcpts == 0 {
-		return "", se.refuse(503, "5.5.1 send MAIL and RCPT first")
+		return "", se.refuse(503, "5.5.1 send MAIL and RCPT first", "mail_and_rcpt_required")
 	}
 	if err := se.writeUp("DATA"); err != nil {
 		return "upstream_write", nil

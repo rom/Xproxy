@@ -229,6 +229,7 @@ func (t *server) shutdown(ctx context.Context) {
 }
 
 func (t *server) deny(ip netip.Addr, what, detail string) {
+	t.engine.Counters().Refuse("rdp", what)
 	if bl := t.engine.Bans(); bl != nil && ip.IsValid() {
 		bl.Observe(ip, "rdp_denied")
 	}
@@ -315,6 +316,7 @@ func (t *server) handle(client net.Conn) {
 	}
 	if bl := s.Bans(); bl != nil && se.ip.IsValid() && bl.Banned(se.ip) {
 		s.Counters().RDPRejected.Add(1)
+		s.Counters().Refuse("rdp", "banned")
 		_ = client.Close()
 		return
 	}

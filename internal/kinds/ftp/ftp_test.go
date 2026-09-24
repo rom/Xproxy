@@ -663,3 +663,49 @@ func TestFTPMaxFileBytes(t *testing.T) {
 		t.Fatalf("the target received %d octets", len(got))
 	}
 }
+
+// Every FTP refusal has a reason of its own in the counters.
+// xproxy_ftp_refused_total says the proxy answered a command the target
+// never heard; this says whether that was the command policy, the path
+// policy or a login, which is the difference between an operator
+// widening a list and an operator looking for an intruder.
+func TestFTPRefusalsAreCountedByReason(t *testing.T) {
+	s, addr, _ := ftpBastion(t, "        commands: [USER, PASS, QUIT, NOOP, SYST, RETR]\n        deny_paths: [\"/etc/**\"]")
+	c := dialFTP(t, addr)
+	c.login("alice", "secret")
+	if code, _ := c.cmd("SITE CHMOD 777 /etc"); code != 502 {
+		t.Errorf("SITE was allowed")
+	}
+	if code, _ := c.cmd("XYZZY"); code != 502 {
+		t.Errorf("an unknown verb was allowed")
+	}
+	if code, _ := c.cmd("RETR /etc/passwd"); code != 550 {
+		t.Errorf("a denied path was allowed")
+	}
+	want := map[string]uint64{"command_refused": 1, "unknown_command": 1, "path_refused": 1}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		got := s.Stats().Refusals["ftp"]
+		ok := true
+		for r, n := range want {
+			if got[r] != n {
+				ok = false
+			}
+		}
+		if ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("refusal counters are %v, want %v", got, want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// The aggregate still agrees with the breakdown: three refusals,
+	// three reasons, and nothing counted twice.
+	if sn := s.Stats(); sn.FTPRefused != 3 {
+		t.Errorf("xproxy_ftp_refused_total is %d for three refusals", sn.FTPRefused)
+	}
+	if sn := s.Stats(); sn.RefusalsUntracked != 0 {
+		t.Errorf("%d refusals carried no reason", sn.RefusalsUntracked)
+	}
+}
