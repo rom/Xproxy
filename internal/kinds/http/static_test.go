@@ -2,12 +2,22 @@ package http
 
 import (
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/rom/xproxy/internal/config"
 )
+
+type staticListingEntry string
+
+func (e staticListingEntry) Name() string             { return string(e) }
+func (staticListingEntry) IsDir() bool                { return true }
+func (staticListingEntry) Type() fs.FileMode          { return fs.ModeDir }
+func (staticListingEntry) Info() (fs.FileInfo, error) { return nil, nil }
 
 func TestStaticFiles(t *testing.T) {
 	root := t.TempDir()
@@ -23,6 +33,10 @@ func TestStaticFiles(t *testing.T) {
 	must(os.WriteFile(filepath.Join(root, ".env"), []byte("SECRET=1"), 0o600))
 	must(os.WriteFile(filepath.Join(root, "big.bin"), make([]byte, 100), 0o600))
 	must(os.MkdirAll(filepath.Join(root, "sub", ".git"), 0o700))
+	must(os.Mkdir(filepath.Join(root, "huge"), 0o700))
+	for i := 0; i <= staticListingMaxEntries; i++ {
+		must(os.WriteFile(filepath.Join(root, "huge", fmt.Sprintf("%04x", i)), nil, 0o600))
+	}
 	must(os.WriteFile(filepath.Join(root, "sub", "a.txt"), []byte("aaa"), 0o600))
 	must(os.WriteFile(filepath.Join(root, "sub", ".git", "config"), []byte("[core]"), 0o600))
 	must(os.WriteFile(filepath.Join(outside, "secret"), []byte("outside"), 0o600))
@@ -118,6 +132,9 @@ routes:
 	if resp, body := get(t, url+"/list/sub/"); resp.StatusCode != 200 || !strings.Contains(body, `href="../"`) || strings.Contains(body, ".git") {
 		t.Fatalf("sub listing: %d %q", resp.StatusCode, body)
 	}
+	if resp, _ := get(t, url+"/list/huge/"); resp.StatusCode != 404 {
+		t.Fatalf("oversized listing: %d", resp.StatusCode)
+	}
 	// Size bound.
 	if resp, _ := get(t, url+"/small/big.bin"); resp.StatusCode != 404 {
 		t.Fatalf("max_file_bytes: %d", resp.StatusCode)
@@ -139,5 +156,16 @@ routes:
 	}
 	if resp, _ := get(t, url+"/site/"); resp.StatusCode != 200 {
 		t.Fatalf("after failed reload: %d", resp.StatusCode)
+	}
+}
+
+func TestStaticListingResponseIsBounded(t *testing.T) {
+	entries := make([]fs.DirEntry, staticListingMaxEntries)
+	for i := range entries {
+		entries[i] = staticListingEntry(strings.Repeat("x", 255) + fmt.Sprint(i))
+	}
+	ss := &staticSite{cfg: &config.RouteStatic{Listing: true}}
+	if body, ok := ss.listing("/", entries); ok || body != nil {
+		t.Fatalf("oversized listing was built: ok=%v bytes=%d", ok, len(body))
 	}
 }
