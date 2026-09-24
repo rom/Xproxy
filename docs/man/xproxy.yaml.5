@@ -9303,6 +9303,48 @@ T}	T{
 Browser origins (\fBhttps:\:/\:/\:app.\:example.\:com\fR,\: or \fB*\fR) whose CORS preflights are answered (\fBPOST\fR,\: the requested headers,\: ten minutes) and whose responses get \fBAccess\-\:Control\-\:Allow\-\:Origin\fR and the exposed \fBgrpc\-\:status\fR and \fBgrpc\-\:message\fR;\: needs \fBweb:\: true\fR. Empty leaves CORS to the upstream or to header operations
 T}
 .TE
+.PP
+\fBRouting by API version.\fR There is no \fBversion\fR key, because every way a version is actually expressed is already a matcher here, and a dedicated key would only cover one of them:
+.PP
+.RS 4
+.nf
+.ft CR
+routes:
+  # In the path, which is most APIs.
+  \- {name: api\-v1, hosts: [api.example.com], paths: ["/v1/"], upstream: orders\-v1}
+  \- {name: api\-v2, hosts: [api.example.com], paths: ["/v2/"], upstream: orders\-v2}
+
+  # In a media type, the "vendor versioning" style. A conditioned route
+  # is tried before the plain route on the same path, so this takes the
+  # requests that ask for v2 and the unconditioned route below keeps the
+  # rest.
+  \- name: api\-accept\-v2
+    hosts: [api.example.com]
+    paths: ["/orders/"]
+    headers: [{name: Accept, regex: ".*vnd\e\e.example\e\e.v2(\e\e+json)?"}]
+    upstream: orders\-v2
+
+  # In a header, with a default. `priority` decides only ties; the
+  # condition count already puts the conditioned route first.
+  \- name: api\-header\-v2
+    hosts: [api.example.com]
+    paths: ["/orders/"]
+    headers: [{name: X\-API\-Version, exact: "2"}]
+    upstream: orders\-v2
+  \- {name: api\-default, hosts: [api.example.com], paths: ["/orders/"], upstream: orders\-v1}
+
+  # Anything else \-\- a query parameter, a version pinned per client
+  # network, a date\-based version \-\- is an expression.
+  \- name: api\-pinned
+    hosts: [api.example.com]
+    paths: ["/orders/"]
+    when: 'query("api\-version") == "2024\-11\-01" || client_ip in cidr("10.9.0.0/16")'
+    upstream: orders\-v2
+.ft
+.fi
+.RE
+.PP
+A version that has to be \fIremoved\fR before the backend sees it is \fBstrip_prefix: /v2\fR or a \fBrequest_headers.remove\fR; one that has to be \fIadded\fR is \fBrequest_headers.set\fR. The deprecation of an old version is a \fBresponse_headers.add\fR of \fBDeprecation\fR and \fBSunset\fR on the old route, and \fBmaintenance\fR on it when the day comes.
 .SH "ingress"
 .PP
 Kubernetes ingress controller mode. When enabled, the proxy reads the Ingress, Service, EndpointSlice and TLS Secret resources of one ingress class, and the Gateway API resources (Gateway, HTTPRoute) of the same class when the cluster has them, from the API server with the pod\(aqs service account (no client library), translates them and appends the result to this file\(aqs routes, upstreams and certificates: the running configuration is the file plus the cluster. The file\(aqs own routes and upstreams are kept and a name collision is an error. Watch streams on the resources trigger a sync within \fBdebounce\fR of a change, with a full poll every \fBresync\fR as the fallback; a change reloads the proxy like a SIGHUP, and a SIGHUP or \fBxproxyctl reload\fR re\-reads the file and merges the latest snapshot. The API server being unreachable at start is a warning, not a failure: the file configuration serves until the first successful sync.
@@ -10149,6 +10191,20 @@ T}	T{
 Behavioural anomaly detection per client;\: see below
 T}
 .TE
+.PP
+\fBWhat decodes a body, and what does not.\fR There is no list of content decoders here, deliberately. Decoding is SecLang\(aqs own, per rule and per target: \fBt:urlDecodeUni\fR, \fBt:base64Decode\fR, \fBt:base64DecodeExt\fR, \fBt:hexDecode\fR, \fBt:jsDecode\fR, \fBt:cssDecode\fR, \fBt:cmdLine\fR, \fBt:utf8toUnicode\fR, \fBt:removeNulls\fR and the rest, which is how the Core Rule Set already reads a payload hidden inside an encoding \[u2014] and which is right, because a rule knows which of its targets can be encoded and a gateway\-wide decoder does not. Writing one is a rule:
+.PP
+.RS 4
+.nf
+.ft CR
+SecRule ARGS:payload "@rx (?i)union\es+select" \e
+    "id:9100,phase:2,t:none,t:urlDecodeUni,t:base64Decode,deny,status:403,\e
+     msg:'SQL injection inside a base64 parameter'"
+.ft
+.fi
+.RE
+.PP
+The bodies the rules see are parsed by content type \[u2014] urlencoded, multipart, JSON and XML \[u2014] up to \fBrequest_body_limit\fR. What they do \fBnot\fR see is a body wrapped in a \fItransfer\fR encoding: a \fBContent\-Encoding: gzip\fR request body is inspected as the compressed bytes it arrived as, not expanded first. That is a deliberate line, and the reason is amplification: a decoder at the gateway, applied to every body before any rule has decided anything, is a second parser and a decompression bomb away from being the outage. Where a compressed body has to be read, the \fBsensitive_data\fR filter decodes \fBgzip\fR, \fBdeflate\fR, \fBbr\fR and \fBzstd\fR under an expansion\-ratio bound, and ICAP or \fByara\fR scan the stream \[u2014] each of them a decision about one route rather than a default for all of them.
 .SS "waf.learning"
 .PP
 Learning aggregates every match of a detection rule by rule id, matched variable (for example \fBARGS:q\fR) and route, in block and detect mode alike. A triple seen \fBmin_hits\fR times becomes a proposal with a ready to review SecLang exclusion, scoped to the route\(aqs path prefix when it has one (\fBGET /v1/waf\fR, \fBGET /v1/waf/exclusions\fR, \fBxproxyctl waf proposals\fR). The table and the per rule statistics live for the process and survive reloads; \fBPOST /v1/waf/reset\fR clears them.

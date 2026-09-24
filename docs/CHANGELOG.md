@@ -769,6 +769,34 @@ Open findings of the earlier rounds:
   tests were extended -- among them a compound filter, which the first
   version read as its first comparison and ignored the rest of.
 
+- **Two things documented instead of built** (`docs/CONFIG.md`), each with
+  the configuration it replaces and a test that drives it.
+
+  *Content decoding in the WAF* is SecLang's own transformations --
+  `t:urlDecodeUni`, `t:base64Decode`, `t:hexDecode`, `t:jsDecode`,
+  `t:cmdLine` and the rest -- applied per rule and per target, which is
+  how the Core Rule Set already reads a payload hidden inside an
+  encoding. A gateway-wide list of decoders would be worse than nothing:
+  a rule knows which of its targets can be encoded and a decoder applied
+  to every body before any rule has decided anything is a second parser
+  and a decompression bomb away from being the outage. What the rules do
+  *not* see is a body wrapped in a transfer encoding -- a
+  `Content-Encoding: gzip` request body is inspected as the bytes it
+  arrived as -- and the reference now says so, and says where a
+  compressed body is read instead: `sensitive_data`, which decodes gzip,
+  deflate, br and zstd under an expansion-ratio bound, and ICAP or
+  `yara` over the stream.
+
+  *API version routing* needs no key of its own, because every way a
+  version is actually spelled is already a matcher: `paths` for `/v1/`,
+  a `headers` regex for `Accept: application/vnd.example.v2+json`, a
+  `headers` exact for `X-API-Version`, and `when` for a query parameter
+  or a pinned client network -- with the conditioned routes tried before
+  the plain route on the same path, which is what makes a default work. A
+  dedicated key would have covered one of those four. The reference shows
+  all of them, plus where a version is stripped before the backend sees
+  it and how an old one is deprecated and then held.
+
 - **Fixed: a DNS listener stopped the moment it started raced its own
   WaitGroup.** `Serve` registered each goroutine with `wg.Add` outside any
   lock while `Shutdown` called `wg.Wait`, and it published the DoH server

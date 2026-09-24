@@ -4053,6 +4053,50 @@ not match is skipped and the next candidate is tried.
 | `grpc.web` | bool | `false` | Accept gRPC-web requests (`application/grpc-web`, `grpc-web+proto`, `grpc-web-text`, `grpc-web-text+proto`, over HTTP/1.1 or HTTP/2) on this gRPC route and translate them: the upstream sees plain gRPC, the response trailers come back as a trailer frame in the body and the text variants are base64. Without it a gRPC-web request is refused with gRPC status 2 |
 | `grpc.web_origins` | list | `[]` | Browser origins (`https://app.example.com`, or `*`) whose CORS preflights are answered (`POST`, the requested headers, ten minutes) and whose responses get `Access-Control-Allow-Origin` and the exposed `grpc-status` and `grpc-message`; needs `web: true`. Empty leaves CORS to the upstream or to header operations |
 
+**Routing by API version.** There is no `version` key, because every way
+a version is actually expressed is already a matcher here, and a
+dedicated key would only cover one of them:
+
+```yaml
+routes:
+  # In the path, which is most APIs.
+  - {name: api-v1, hosts: [api.example.com], paths: ["/v1/"], upstream: orders-v1}
+  - {name: api-v2, hosts: [api.example.com], paths: ["/v2/"], upstream: orders-v2}
+
+  # In a media type, the "vendor versioning" style. A conditioned route
+  # is tried before the plain route on the same path, so this takes the
+  # requests that ask for v2 and the unconditioned route below keeps the
+  # rest.
+  - name: api-accept-v2
+    hosts: [api.example.com]
+    paths: ["/orders/"]
+    headers: [{name: Accept, regex: ".*vnd\\.example\\.v2(\\+json)?"}]
+    upstream: orders-v2
+
+  # In a header, with a default. `priority` decides only ties; the
+  # condition count already puts the conditioned route first.
+  - name: api-header-v2
+    hosts: [api.example.com]
+    paths: ["/orders/"]
+    headers: [{name: X-API-Version, exact: "2"}]
+    upstream: orders-v2
+  - {name: api-default, hosts: [api.example.com], paths: ["/orders/"], upstream: orders-v1}
+
+  # Anything else -- a query parameter, a version pinned per client
+  # network, a date-based version -- is an expression.
+  - name: api-pinned
+    hosts: [api.example.com]
+    paths: ["/orders/"]
+    when: 'query("api-version") == "2024-11-01" || client_ip in cidr("10.9.0.0/16")'
+    upstream: orders-v2
+```
+
+A version that has to be *removed* before the backend sees it is
+`strip_prefix: /v2` or a `request_headers.remove`; one that has to be
+*added* is `request_headers.set`. The deprecation of an old version is a
+`response_headers.add` of `Deprecation` and `Sunset` on the old route,
+and `maintenance` on it when the day comes.
+
 ## ingress
 
 Kubernetes ingress controller mode. When enabled, the proxy reads the
@@ -4383,6 +4427,33 @@ set fails the reload.
 | `response_mime_types` | list | text and JSON/XML types | Bodies with other content types are not inspected |
 | `learning` | object | none | Exclusion learning; see below |
 | `anomaly` | object | none | Behavioural anomaly detection per client; see below |
+
+**What decodes a body, and what does not.** There is no list of content
+decoders here, deliberately. Decoding is SecLang's own, per rule and per
+target: `t:urlDecodeUni`, `t:base64Decode`, `t:base64DecodeExt`,
+`t:hexDecode`, `t:jsDecode`, `t:cssDecode`, `t:cmdLine`,
+`t:utf8toUnicode`, `t:removeNulls` and the rest, which is how the Core
+Rule Set already reads a payload hidden inside an encoding — and which is
+right, because a rule knows which of its targets can be encoded and a
+gateway-wide decoder does not. Writing one is a rule:
+
+```
+SecRule ARGS:payload "@rx (?i)union\s+select" \
+    "id:9100,phase:2,t:none,t:urlDecodeUni,t:base64Decode,deny,status:403,\
+     msg:'SQL injection inside a base64 parameter'"
+```
+
+The bodies the rules see are parsed by content type — urlencoded,
+multipart, JSON and XML — up to `request_body_limit`. What they do **not**
+see is a body wrapped in a *transfer* encoding: a `Content-Encoding:
+gzip` request body is inspected as the compressed bytes it arrived as,
+not expanded first. That is a deliberate line, and the reason is
+amplification: a decoder at the gateway, applied to every body before any
+rule has decided anything, is a second parser and a decompression bomb
+away from being the outage. Where a compressed body has to be read, the
+`sensitive_data` filter decodes `gzip`, `deflate`, `br` and `zstd` under
+an expansion-ratio bound, and ICAP or `yara` scan the stream — each of
+them a decision about one route rather than a default for all of them.
 
 ### waf.learning
 
