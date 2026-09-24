@@ -5600,8 +5600,109 @@ to twenty `details` naming the offending path.
 | `base_path` | path | from `servers[0].url` | Prefix under which the paths are served |
 | `unknown_paths` | `deny`, `allow` | `deny` | `deny` answers 404 for a path the description lacks |
 | `strict_query` | bool | `false` | Refuse query parameters the operation does not declare |
-| `validate_body` | bool | `true` | Parse and validate JSON bodies; off checks only the media type |
-| `max_body_bytes` | int | `1048576` | A JSON body above this is refused with 413 rather than parsed (1 to 64 MiB) |
+| `validate_body` | bool | `true` | Parse and validate JSON and urlencoded form bodies; off checks only the media type |
+| `max_body_bytes` | int | `1048576` | A body above this is refused with 413 rather than parsed (1 to 64 MiB) |
+| `require_security` | bool | `false` | Refuse a request that carries none of the credentials the operation's `security` asks for; see below |
+| `read_only` | `allow`, `log`, `deny` | `allow` | What to do with a body carrying a property the description marks `readOnly`; see below |
+
+A **form body** declared as `application/x-www-form-urlencoded` is
+validated against its schema like a JSON one. A form carries strings, so
+each field is coerced by what its property schema says it is — the same
+coercion the query and path parameters get, and for the same reason:
+`limit=abc` against `type: integer` has to be a type error rather than a
+string that happens not to be a number. A repeated field becomes an array
+when the schema says the property is one and stays the last value
+otherwise, which is what a form parser behind the proxy does with it. The
+body reaches the application byte for byte as the client sent it: it is
+validated, not re-encoded. `multipart/form-data` is not validated here —
+that is `upload_guard`'s job, and it buffers the parts already.
+
+#### `require_security`: the part of the description that is a control
+
+An operation says which credential it needs — `security: [{bearerAuth:
+[]}]` — and `components.securitySchemes` says where that credential lives:
+a named header, a query parameter, a cookie, or an `Authorization` header
+with a particular scheme. That is a statement about every request the
+operation accepts, and it is the one statement a gateway can act on
+without knowing anything about the credential itself.
+
+Acting on it catches the failure that keeps happening: an endpoint that
+was meant to be authenticated and is not, because the middleware was
+registered for one router and not another, or the annotation was left
+off, or the check sits behind a flag somebody turned off. The description
+already says the endpoint needs a credential; the application is the
+thing that might forget.
+
+What is checked is **presence and shape** — the header is there, the
+scheme is the declared one, there is something after it — and never
+validity. Deciding whether a token is real belongs to the identity
+provider and the application, and this filter has no business guessing. A
+request with a forged bearer token still reaches the API and is still
+refused there; a request with no credential at all does not reach it.
+
+- `apiKey`: the declared header, query parameter or cookie must be
+  present and non-empty.
+- `http`: `Authorization` must carry the declared scheme (matched
+  case-insensitively, as RFC 9110 requires) with something after it.
+  `basic` is additionally checked for the shape RFC 7617 defines —
+  base64 of something containing a colon — because a value that is not
+  that is not a credential the application can read either.
+- `oauth2` and `openIdConnect`: `Authorization: Bearer <token>`, which is
+  the binding RFC 6750 defines.
+- `mutualTLS`: not checked here. Whether the client presented a
+  certificate was settled by the listener's `client_auth` before this
+  filter ran, and second-guessing it from here would be guessing, so such
+  a requirement counts as met.
+
+The alternatives are an OR of ANDs, as OpenAPI defines them: any one
+alternative satisfies the operation, and every scheme named inside one
+must be present. An operation's own `security` replaces the global one
+entirely, `security: []` on an operation means it needs nothing, and an
+empty object among the alternatives (`security: [{}, {bearerAuth: []}]`)
+is how OpenAPI says the credential is optional. A description whose
+`security` names a scheme `components.securitySchemes` never defined is
+refused at load, because such a section means nothing and an operator
+should find out before the gateway is relied on.
+
+A refusal is 401 with `WWW-Authenticate` naming the scheme where there is
+a registered challenge to name (`Bearer`, `Basic`); an API key has none,
+and inventing one would tell a client to do something no client
+understands. The security log carries `security_schemes` with the names.
+
+The default is off, because turning it on refuses whatever was reaching
+the API without a credential — which is the point, and is also a change
+worth making deliberately. A description that declares security on any
+operation while this is off logs a warning naming the count at every
+load, so the control is not silently read as documentation. One ordering
+note: if an authentication filter earlier in the chain *consumes* the
+credential header rather than leaving it in place, put this filter before
+it, or `require_security` will refuse the requests that filter just
+authenticated.
+
+#### `read_only`: the fields the client is not supposed to choose
+
+OpenAPI says a `readOnly: true` property "MUST NOT be sent as part of the
+request", and the reason is mass assignment: an object with `id`, `owner`
+and `role` marked read-only is an object whose server-controlled fields a
+client is not supposed to pick. An application that binds the whole body
+onto its model — which is what every framework's convenience path does —
+lets the client pick them anyway, and the description already names which
+fields those are.
+
+The walk follows `properties`, array `items`, `additionalProperties` and
+`allOf`, and deliberately does **not** follow `anyOf` or `oneOf`. `allOf`
+is a conjunction, so a `readOnly` there applies to the value whatever else
+matches; `anyOf` and `oneOf` are alternatives, and a property that is
+read-only in one branch and writable in another says nothing certain
+about the value in hand — refusing on the strength of a branch the value
+may not even be matching would refuse correct requests.
+
+`allow` is the default because a client that GETs an object and PUTs it
+back sends the server's own fields, and a great many REST clients are
+written exactly that way. `log` lets the request through and records
+`openapi_read_only` in the access log with the properties, which is how
+to find out whether `deny` would break the clients before turning it on.
+`deny` answers 400 with detail `read_only:body.<field>`.
 
 ### Kind `graphql`
 

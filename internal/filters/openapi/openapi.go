@@ -64,8 +64,15 @@ type Config struct {
 	StrictQuery  bool   `json:"strict_query"`
 	ValidateBody *bool  `json:"validate_body"`
 	MaxBodyBytes int64  `json:"max_body_bytes"`
-	refresh      time.Duration
-	timeout      time.Duration
+	// RequireSecurity refuses a request that does not carry a credential
+	// the operation's security section asks for. Default false, because
+	// turning it on refuses whatever was reaching the API without one.
+	RequireSecurity bool `json:"require_security"`
+	// ReadOnly is what to do with a body that carries a property the
+	// description marks readOnly: allow (default), log or deny.
+	ReadOnly string `json:"read_only"`
+	refresh  time.Duration
+	timeout  time.Duration
 }
 
 const (
@@ -95,6 +102,11 @@ func parse(opts filter.Options) (*Config, error) {
 	default:
 		errs = append(errs, errors.New("spec_file or spec_url is required"))
 	}
+	switch c.ReadOnly {
+	case "", "allow", "log", "deny":
+	default:
+		errs = append(errs, errors.New("read_only: must be allow, log or deny"))
+	}
 	if c.CAFile != "" && !strings.HasPrefix(c.CAFile, "/") {
 		errs = append(errs, errors.New("ca_file: must be an absolute path"))
 	}
@@ -121,6 +133,9 @@ func parse(opts filter.Options) (*Config, error) {
 		} else {
 			c.timeout = d
 		}
+	}
+	if c.ReadOnly == "" {
+		c.ReadOnly = "allow"
 	}
 	switch c.UnknownPaths {
 	case "":
@@ -178,6 +193,10 @@ type api struct {
 	basePath string
 	exact    map[string]*pathItem
 	templ    []*pathItem // templated paths, longest literal prefix first
+	// secured is the number of operations the description asks for a
+	// credential on, so an operator can be told when the description
+	// carries a control the filter is not being asked to apply.
+	secured int
 }
 
 type pathItem struct {
@@ -191,6 +210,12 @@ type operation struct {
 	params   []parameter
 	body     *requestBody
 	declared map[string]bool // query parameter names
+	// security is the credential alternatives the description asks for,
+	// any one of which satisfies the operation; anonymous says one of
+	// them was the empty object, which is how OpenAPI says the
+	// credential is optional.
+	security  []requirement
+	anonymous bool
 }
 
 type parameter struct {
@@ -248,6 +273,14 @@ func compileSpec(data []byte, basePath string) (*api, error) {
 			}
 		}
 	}
+	schemes, err := compileSchemes(spec)
+	if err != nil {
+		return nil, err
+	}
+	globalSec, globalAnon, err := compileRequirements(spec["security"], schemes, "security")
+	if err != nil {
+		return nil, err
+	}
 	paths, _ := spec["paths"].(map[string]any)
 	if len(paths) == 0 {
 		return nil, errors.New("no paths")
@@ -287,6 +320,20 @@ func compileSpec(data []byte, basePath string) (*api, error) {
 				if prm.in == "query" {
 					op.declared[prm.name] = true
 				}
+			}
+			// An operation's own security replaces the global one
+			// entirely, and an explicit empty list means this operation
+			// needs nothing -- which is different from not saying.
+			op.security, op.anonymous = globalSec, globalAnon
+			if _, declared := opm["security"]; declared {
+				reqs, anon, err := compileRequirements(opm["security"], schemes, m+" "+p)
+				if err != nil {
+					return nil, err
+				}
+				op.security, op.anonymous = reqs, anon
+			}
+			if len(op.security) > 0 && !op.anonymous {
+				a.secured++
 			}
 			if rb := a.v.Resolve(opm["requestBody"]); rb != nil && len(rb.Raw) > 0 {
 				req, _ := rb.Raw["required"].(bool)
@@ -456,6 +503,9 @@ func (g *guard) Operations() []apiinv.Operation {
 type instance struct {
 	g   *guard
 	api *api // the description current when the request began
+	// readOnlySeen are the readOnly properties a body carried under
+	// read_only: log, reported through End.
+	readOnlySeen []string
 }
 
 func (in *instance) Request(r *http.Request) filter.Verdict {
@@ -486,6 +536,20 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 		v := in.deny(http.StatusMethodNotAllowed, "method", nil)
 		v.Headers = map[string]string{"Allow": strings.Join(allowed, ", ")}
 		return v
+	}
+	// The credential the description asks for, before anything else is
+	// read: an operation the application forgot to protect is refused
+	// here rather than answered there, and a request with nothing to
+	// authenticate with is not worth validating a body for.
+	if g.cfg.RequireSecurity {
+		if want, ok := op.credential(r); !ok {
+			v := in.deny(http.StatusUnauthorized, "security", nil)
+			v.Attrs = []any{"security_schemes", describe(want)}
+			if ch := challenge(want); ch != "" {
+				v.Headers = map[string]string{"WWW-Authenticate": ch}
+			}
+			return v
+		}
 	}
 	rep := &jsonschema.Report{}
 	query := r.URL.Query()
@@ -586,8 +650,11 @@ func (in *instance) checkBody(r *http.Request, body *requestBody, rep *jsonschem
 		v := in.deny(http.StatusUnsupportedMediaType, "media_type", nil)
 		return &v
 	}
-	if !strings.HasSuffix(ct, "json") && !strings.HasSuffix(ct, "+json") {
-		return nil // only JSON bodies are inspected
+	if !isJSON(ct) && !isForm(ct) {
+		// Everything else is somebody else's filter: a multipart upload
+		// is upload_guard's, and an opaque media type has no schema to
+		// check it against.
+		return nil
 	}
 	if r.ContentLength > g.cfg.MaxBodyBytes {
 		v := in.deny(http.StatusRequestEntityTooLarge, "body_size", nil)
@@ -606,12 +673,44 @@ func (in *instance) checkBody(r *http.Request, body *requestBody, rep *jsonschem
 	if schema == nil {
 		return nil
 	}
-	value, err := jsonschema.Decode(data)
-	if err != nil {
-		rep.Add("body", "%s", err.Error())
-		return nil
+	var value any
+	if isForm(ct) {
+		// A form carries strings, so each field is coerced by what the
+		// schema says it is -- the same treatment the query parameters
+		// get, and for the same reason.
+		form, ok := formValue(data, schema, in.api.v)
+		if !ok {
+			rep.Add("body", "is not a readable form")
+			return nil
+		}
+		value = form
+	} else {
+		v, err := jsonschema.Decode(data)
+		if err != nil {
+			rep.Add("body", "%s", err.Error())
+			return nil
+		}
+		value = v
 	}
 	in.api.v.Validate(schema, value, "body", rep, 0)
+	if g.cfg.ReadOnly != "allow" {
+		ro := &jsonschema.Report{}
+		visits := 0
+		in.api.readOnly(schema, value, "body", ro, &visits, 0)
+		switch {
+		case len(ro.Issues) == 0:
+		case g.cfg.ReadOnly == "deny":
+			v := in.deny(http.StatusBadRequest, "read_only", ro.Issues)
+			return &v
+		default:
+			// log: the request goes on and the access log says what was
+			// sent, which is how an operator finds out whether deny
+			// would break their clients before turning it on.
+			for _, iss := range ro.Issues {
+				in.readOnlySeen = append(in.readOnlySeen, iss.Path)
+			}
+		}
+	}
 	return nil
 }
 
@@ -632,7 +731,12 @@ func (in *instance) deny(status int, detail string, issues []jsonschema.Issue) f
 
 func (in *instance) Response(*http.Response) filter.Verdict { return filter.Continue }
 
-func (in *instance) End() []any { return nil }
+func (in *instance) End() []any {
+	if len(in.readOnlySeen) == 0 {
+		return nil
+	}
+	return []any{"openapi_read_only", strings.Join(in.readOnlySeen, ",")}
+}
 
 func init() {
 	filter.Register(filter.Kind{

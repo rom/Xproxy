@@ -478,6 +478,52 @@ Open findings of the earlier rounds:
   `discovery`, the sinkhole addresses -- are not, which is why
   `sinkhole_ipv4: 0.0.0.0` still works inside a denied range.
 
+- **The OpenAPI filter enforces the parts of a description it was reading
+  as documentation** (`require_security`, `read_only`, and form bodies).
+
+  - **`security` was ignored.** An operation says which credential it
+    needs and `components.securitySchemes` says where that credential
+    lives -- a named header, a query parameter, a cookie, an
+    `Authorization` header with a particular scheme -- and the filter
+    checked none of it. `require_security: true` refuses a request that
+    carries none of the alternatives the operation asks for, with 401 and
+    `WWW-Authenticate` where there is a registered challenge to name.
+    That catches the failure that keeps happening: an endpoint meant to
+    be authenticated and not, because the middleware was registered for
+    one router and not another. Presence and shape are checked, never
+    validity -- a forged token still reaches the API and is still refused
+    there; a request with no credential does not reach it. The
+    alternatives are OpenAPI's OR of ANDs, an operation's own `security`
+    replaces the global one, `security: []` opts an operation out, and an
+    empty object among the alternatives is how the specification says the
+    credential is optional. A description whose `security` names a scheme
+    `securitySchemes` never defined is refused at load, since such a
+    section means nothing. `mutualTLS` is left to the listener's
+    `client_auth`, which settled it before this filter ran. The default
+    is off because turning it on refuses whatever was reaching the API
+    without a credential, and a description that declares security while
+    it is off now logs a warning at every load naming the count.
+  - **`readOnly` was ignored.** OpenAPI says such a property "MUST NOT be
+    sent as part of the request", and the reason is mass assignment: an
+    object with `id`, `owner` and `role` marked read-only is one whose
+    server-owned fields a client is not supposed to pick, and an
+    application that binds the whole body onto its model lets them.
+    `read_only: deny` refuses those bodies and `log` records
+    `openapi_read_only` in the access log without refusing, which is how
+    to find out whether `deny` would break the clients. The walk follows
+    `properties`, `items`, `additionalProperties` and `allOf` and
+    deliberately not `anyOf` or `oneOf`: those are alternatives, and a
+    property read-only in a branch the value may not be matching says
+    nothing certain about the value in hand.
+  - **A form body declared with a schema was forwarded unvalidated.**
+    `application/x-www-form-urlencoded` is now checked against its
+    schema, with each field coerced by what the schema says it is -- the
+    same coercion the query parameters get, so `limit=abc` against
+    `type: integer` is a type error rather than a string that happens not
+    to be a number. The body reaches the application byte for byte as
+    sent: it is validated, not re-encoded. `multipart/form-data` stays
+    with `upload_guard`, which buffers the parts already.
+
 - **A DNS listener answers and requires DNS cookies** (`dns.cookies`,
   `dns.cookie_lifetime`; RFC 7873 with RFC 9018's server cookie layout).
 

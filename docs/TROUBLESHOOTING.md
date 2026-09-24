@@ -1271,6 +1271,42 @@ is the contract here. `strict_query` refuses undeclared parameters; a
 repeated parameter is validated for *every* value, not just the first.
 Update the description or relax the filter.
 
+**`openapi` answers 401 with detail `security` for requests that used to
+work.** `require_security` is enforcing the description's own `security`
+section. Three causes worth checking in order. The credential is going to
+a different place than the description says — compare
+`components.securitySchemes` against what the client actually sends. An
+authentication filter earlier in the same chain *consumed* the header, so
+by the time this filter looks there is nothing there; put this filter
+before that one. Or the description is wrong: an operation inherited the
+global requirement when it should have declared `security: []`. The
+security log line carries `security_schemes` with the names of the
+alternative that was expected.
+
+**A warning at every load: "openapi description asks for a credential
+that is not being enforced".** The description declares `security` on
+that many operations and `require_security` is off, so the section is
+being read as documentation. Either turn it on, or — if authentication is
+terminated somewhere else entirely — the warning is the reminder that
+this filter is not the thing enforcing it.
+
+**`openapi` answers 400 with detail `read_only:body.<field>`.** The body
+carries a property the description marks `readOnly`, which OpenAPI says
+must not be sent. The usual innocent cause is a client that GETs an
+object and PUTs the whole thing back, server-owned fields included. Use
+`read_only: log` for a while: the request goes through and the access log
+carries `openapi_read_only` with the properties, which is how to see
+whether `deny` would break the clients before it does.
+
+**A form body started being refused.** `application/x-www-form-urlencoded`
+bodies are validated against their declared schema now, where they used
+to be forwarded unchecked. The detail is `schema:body.<field>` as it is
+for JSON. Fields are coerced by what the schema says they are, so
+`remember=perhaps` against `type: boolean` is a type error — which is
+what the application would have made of it too, less predictably.
+`validate_body: false` turns the whole body check off if the schema and
+the clients disagree and the schema is the one that is wrong.
+
 **`graphql` refuses with `expansion`.** The query's fragments expand
 past the visit budget. A legitimate query does not; a generated one
 might, and should be simplified.

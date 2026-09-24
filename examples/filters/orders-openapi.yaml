@@ -1,7 +1,14 @@
 openapi: 3.0.3
 info: {title: Orders, version: "1.0"}
 servers: [{url: https://api.example.com/v1}]
+# Where the credential lives, and which operations need it.
+# require_security reads this and refuses a request that carries none,
+# which catches the endpoint somebody forgot to protect.
+security:
+  - bearerAuth: []
 components:
+  securitySchemes:
+    bearerAuth: {type: http, scheme: bearer}
   schemas:
     Item:
       type: object
@@ -14,6 +21,11 @@ components:
       type: object
       required: [customer, items]
       properties:
+        # The server owns these two, so a client must not send them.
+        # read_only in the filter decides whether that is refused,
+        # logged or allowed.
+        id: {type: string, format: uuid, readOnly: true}
+        createdAt: {type: string, format: date-time, readOnly: true}
         customer: {type: string, format: email}
         items: {type: array, minItems: 1, maxItems: 50, items: {$ref: "#/components/schemas/Item"}}
         priority: {type: string, enum: [low, normal, high]}
@@ -33,3 +45,8 @@ paths:
       - {name: id, in: path, required: true, schema: {type: string, format: uuid}}
     get: {}
     delete: {}
+  /health:
+    # An operation that needs nothing: an explicit empty list, which is
+    # different from saying nothing at all.
+    get:
+      security: []

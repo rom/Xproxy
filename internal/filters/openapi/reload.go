@@ -132,6 +132,15 @@ func (g *guard) install(data []byte) error {
 		g.Reloads.Add(1)
 		g.log.Info("openapi description reloaded", "filter", g.name, "paths", len(a.exact)+len(a.templ))
 	}
+	// A description that names the credential each operation needs is
+	// carrying a control, and a filter that was not asked to apply it is
+	// reading that control as documentation. Saying so once per load is
+	// the difference between an operator choosing not to enforce it and
+	// an operator not knowing it was there.
+	if a.secured > 0 && !g.cfg.RequireSecurity {
+		g.log.Warn("openapi description asks for a credential that is not being enforced",
+			"filter", g.name, "operations", a.secured, "setting", "require_security")
+	}
 	g.api.Store(a)
 	g.digest = sum
 	return nil

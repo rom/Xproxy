@@ -14723,7 +14723,7 @@ bool
 T}	T{
 \fBtrue\fR
 T}	T{
-Parse and validate JSON bodies;\: off checks only the media type
+Parse and validate JSON and urlencoded form bodies;\: off checks only the media type
 T}
 T{
 \fBmax_\:body_\:bytes\fR
@@ -14732,9 +14732,68 @@ int
 T}	T{
 \fB1048576\fR
 T}	T{
-A JSON body above this is refused with 413 rather than parsed (1 to 64 MiB)
+A body above this is refused with 413 rather than parsed (1 to 64 MiB)
+T}
+T{
+\fBrequire_\:security\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse a request that carries none of the credentials the operation\(aqs \fBsecurity\fR asks for;\: see below
+T}
+T{
+\fBread_\:only\fR
+T}	T{
+\fBallow\fR,\: \fBlog\fR,\: \fBdeny\fR
+T}	T{
+\fBallow\fR
+T}	T{
+What to do with a body carrying a property the description marks \fBreadOnly\fR;\: see below
 T}
 .TE
+.PP
+A \fBform body\fR declared as \fBapplication/x\-www\-form\-urlencoded\fR is validated against its schema like a JSON one. A form carries strings, so each field is coerced by what its property schema says it is \[u2014] the same coercion the query and path parameters get, and for the same reason: \fBlimit=abc\fR against \fBtype: integer\fR has to be a type error rather than a string that happens not to be a number. A repeated field becomes an array when the schema says the property is one and stays the last value otherwise, which is what a form parser behind the proxy does with it. The body reaches the application byte for byte as the client sent it: it is validated, not re\-encoded. \fBmultipart/form\-data\fR is not validated here \[u2014] that is \fBupload_guard\fR\(aqs job, and it buffers the parts already.
+.SS "\fBrequire_security\fR: the part of the description that is a control"
+.PP
+An operation says which credential it needs \[u2014] \fBsecurity: [{bearerAuth: []}]\fR \[u2014] and \fBcomponents.securitySchemes\fR says where that credential lives: a named header, a query parameter, a cookie, or an \fBAuthorization\fR header with a particular scheme. That is a statement about every request the operation accepts, and it is the one statement a gateway can act on without knowing anything about the credential itself.
+.PP
+Acting on it catches the failure that keeps happening: an endpoint that was meant to be authenticated and is not, because the middleware was registered for one router and not another, or the annotation was left off, or the check sits behind a flag somebody turned off. The description already says the endpoint needs a credential; the application is the thing that might forget.
+.PP
+What is checked is \fBpresence and shape\fR \[u2014] the header is there, the scheme is the declared one, there is something after it \[u2014] and never validity. Deciding whether a token is real belongs to the identity provider and the application, and this filter has no business guessing. A request with a forged bearer token still reaches the API and is still refused there; a request with no credential at all does not reach it.
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBapiKey\fR: the declared header, query parameter or cookie must be present and non\-empty.
+.PP
+.ti -3n
+\(bu
+\fBhttp\fR: \fBAuthorization\fR must carry the declared scheme (matched case\-insensitively, as RFC 9110 requires) with something after it. \fBbasic\fR is additionally checked for the shape RFC 7617 defines \[u2014] base64 of something containing a colon \[u2014] because a value that is not that is not a credential the application can read either.
+.PP
+.ti -3n
+\(bu
+\fBoauth2\fR and \fBopenIdConnect\fR: \fBAuthorization: Bearer <token>\fR, which is the binding RFC 6750 defines.
+.PP
+.ti -3n
+\(bu
+\fBmutualTLS\fR: not checked here. Whether the client presented a certificate was settled by the listener\(aqs \fBclient_auth\fR before this filter ran, and second\-guessing it from here would be guessing, so such a requirement counts as met.
+.RE
+.PP
+.PP
+The alternatives are an OR of ANDs, as OpenAPI defines them: any one alternative satisfies the operation, and every scheme named inside one must be present. An operation\(aqs own \fBsecurity\fR replaces the global one entirely, \fBsecurity: []\fR on an operation means it needs nothing, and an empty object among the alternatives (\fBsecurity: [{}, {bearerAuth: []}]\fR) is how OpenAPI says the credential is optional. A description whose \fBsecurity\fR names a scheme \fBcomponents.securitySchemes\fR never defined is refused at load, because such a section means nothing and an operator should find out before the gateway is relied on.
+.PP
+A refusal is 401 with \fBWWW\-Authenticate\fR naming the scheme where there is a registered challenge to name (\fBBearer\fR, \fBBasic\fR); an API key has none, and inventing one would tell a client to do something no client understands. The security log carries \fBsecurity_schemes\fR with the names.
+.PP
+The default is off, because turning it on refuses whatever was reaching the API without a credential \[u2014] which is the point, and is also a change worth making deliberately. A description that declares security on any operation while this is off logs a warning naming the count at every load, so the control is not silently read as documentation. One ordering note: if an authentication filter earlier in the chain \fIconsumes\fR the credential header rather than leaving it in place, put this filter before it, or \fBrequire_security\fR will refuse the requests that filter just authenticated.
+.SS "\fBread_only\fR: the fields the client is not supposed to choose"
+.PP
+OpenAPI says a \fBreadOnly: true\fR property "MUST NOT be sent as part of the request", and the reason is mass assignment: an object with \fBid\fR, \fBowner\fR and \fBrole\fR marked read\-only is an object whose server\-controlled fields a client is not supposed to pick. An application that binds the whole body onto its model \[u2014] which is what every framework\(aqs convenience path does \[u2014] lets the client pick them anyway, and the description already names which fields those are.
+.PP
+The walk follows \fBproperties\fR, array \fBitems\fR, \fBadditionalProperties\fR and \fBallOf\fR, and deliberately does \fBnot\fR follow \fBanyOf\fR or \fBoneOf\fR. \fBallOf\fR is a conjunction, so a \fBreadOnly\fR there applies to the value whatever else matches; \fBanyOf\fR and \fBoneOf\fR are alternatives, and a property that is read\-only in one branch and writable in another says nothing certain about the value in hand \[u2014] refusing on the strength of a branch the value may not even be matching would refuse correct requests.
+.PP
+\fBallow\fR is the default because a client that GETs an object and PUTs it back sends the server\(aqs own fields, and a great many REST clients are written exactly that way. \fBlog\fR lets the request through and records \fBopenapi_read_only\fR in the access log with the properties, which is how to find out whether \fBdeny\fR would break the clients before turning it on. \fBdeny\fR answers 400 with detail \fBread_only:body.<field>\fR.
 .SS "Kind \fBgraphql\fR"
 .PP
 Bounds GraphQL requests (\fBPOST\fR with \fBapplication/json\fR or \fBapplication/graphql\fR, \fBGET\fR with \fBquery\fR) before they reach the API: depth (nesting of selection sets, fragments expanded, a fragment cycle fails), complexity (each field costs 1 times the product of the list arguments of its ancestors; a variable in a list argument counts as \fBmax_list\fR), aliases, operations per batch, query size and introspection. Nothing is executed or forwarded to a schema. Denials are 400 with a GraphQL \fBerrors\fR body and the detail \fBdepth\fR, \fBcomplexity\fR, \fBaliases\fR, \fBbatch\fR, \fBsize\fR, \fBsyntax\fR or \fBintrospection\fR.
