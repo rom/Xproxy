@@ -26,6 +26,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rom/xproxy/internal/apiinv"
 	"github.com/rom/xproxy/internal/cluster"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/filter"
@@ -1134,8 +1135,13 @@ func TestMediaTypeNormalises(t *testing.T) {
 		"APPLICATION/JSON; charset=x": "application/json",
 		"  text/plain  ":              "text/plain",
 		";":                           "",
-		"text/plain;":                 "",
-		"not a media type":            "",
+		// Go's own parser tolerates a trailing semicolon with no
+		// parameter after it, and normalising it to the bare type is
+		// what an inventory wants: every server accepts the header, so
+		// refusing to record it would lose an endpoint rather than
+		// catching an attack.
+		"text/plain;":      "text/plain",
+		"not a media type": "",
 		"application/" + strings.Repeat("x", apiinv.MaxMediaTypeBytes): "",
 	}
 	for in, want := range cases {
