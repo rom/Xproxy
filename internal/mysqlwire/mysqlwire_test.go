@@ -65,7 +65,8 @@ func TestAPacketOutOfSequenceIsRefused(t *testing.T) {
 	}
 	// And a continuation with a gap.
 	big := bytes.Repeat([]byte{'c'}, MaxPayload)
-	bad := append(Frame(0, big)[:4+MaxPayload], 0, 0, 0, 9)
+	bad := append([]byte(nil), Frame(0, big)[:4+MaxPayload]...)
+	bad = append(bad, 0, 0, 0, 9)
 	rd = NewReader(bytes.NewReader(bad), MaxMessage)
 	if _, err := rd.Next(); !errors.Is(err, ErrSequence) {
 		t.Fatalf("continuation: %v", err)

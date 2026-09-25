@@ -606,10 +606,7 @@ func (r *RPC) Procedure() string {
 // name length in characters or the 0xffff marker introducing a procedure
 // identifier.
 func ParseRPC(b []byte) (*RPC, error) {
-	rest, err := skipAllHeaders(b)
-	if err != nil {
-		return nil, err
-	}
+	rest := skipAllHeaders(b)
 	if len(rest) < 2 {
 		return nil, ErrTruncated
 	}
@@ -692,24 +689,23 @@ func ParseRPC(b []byte) (*RPC, error) {
 // reader guess; guessing wrong in the safe direction means reading a name from
 // slightly the wrong place and failing to match a policy, which is a refusal
 // rather than a pass.
-func skipAllHeaders(b []byte) ([]byte, error) {
+func skipAllHeaders(b []byte) []byte {
 	if len(b) < 4 {
-		return b, nil
+		return b
 	}
+	// Compared in 64 bits: the declared total is a peer's four octets and the
+	// body's length is an int, and narrowing either to meet the other is how a
+	// bounds check gets skipped on the value that was chosen to skip it.
 	total := binary.LittleEndian.Uint32(b[:4])
-	if total < 4 || total > uint32(len(b)) {
-		return b, nil
+	if total < 4 || uint64(total) > uint64(len(b)) {
+		return b
 	}
-	return b[total:], nil
+	return b[total:]
 }
 
 // SQLText is the T-SQL of a SQLBATCH message.
 func SQLText(b []byte) (string, error) {
-	rest, err := skipAllHeaders(b)
-	if err != nil {
-		return "", err
-	}
-	return UCS2(rest)
+	return UCS2(skipAllHeaders(b))
 }
 
 // UCS2 decodes a little-endian UTF-16 string.

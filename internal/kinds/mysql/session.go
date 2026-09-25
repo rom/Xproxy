@@ -1,6 +1,7 @@
 package mysql
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"net"
@@ -142,14 +143,10 @@ func (se *session) upgrade(cfg *tls.Config, short wire.Packet, hs time.Duration)
 			up.ServerName = host
 		}
 		tc := tls.Client(se.up, up)
-		if hs > 0 {
-			_ = tc.SetDeadline(time.Now().Add(hs))
-		}
-		if err := tc.Handshake(); err != nil {
+		ctx, cancel := handshakeContext(hs)
+		defer cancel()
+		if err := tc.HandshakeContext(ctx); err != nil {
 			return err
-		}
-		if hs > 0 {
-			_ = tc.SetDeadline(time.Time{})
 		}
 		se.up = tc
 	}
@@ -157,14 +154,10 @@ func (se *session) upgrade(cfg *tls.Config, short wire.Packet, hs time.Duration)
 	se.cmu.Lock()
 	defer se.cmu.Unlock()
 	tc := tls.Server(se.client, cfg)
-	if hs > 0 {
-		_ = tc.SetDeadline(time.Now().Add(hs))
-	}
-	if err := tc.Handshake(); err != nil {
+	cctx, ccancel := handshakeContext(hs)
+	defer ccancel()
+	if err := tc.HandshakeContext(cctx); err != nil {
 		return err
-	}
-	if hs > 0 {
-		_ = tc.SetDeadline(time.Time{})
 	}
 	se.client = tc
 	se.mu.Lock()
@@ -175,4 +168,16 @@ func (se *session) upgrade(cfg *tls.Config, short wire.Packet, hs time.Duration)
 	se.srvReader = wire.NewReader(se.up, se.t.policy.MaxMessage())
 	se.srvReader.Lax()
 	return nil
+}
+
+// handshakeContext bounds a TLS handshake.
+//
+// A context rather than a deadline on the connection: a deadline would have to be
+// cleared afterwards, and a relay that forgot would kill a live session at an hour
+// that looked like a network fault.
+func handshakeContext(hs time.Duration) (context.Context, context.CancelFunc) {
+	if hs <= 0 {
+		return context.Background(), func() {}
+	}
+	return context.WithTimeout(context.Background(), hs)
 }

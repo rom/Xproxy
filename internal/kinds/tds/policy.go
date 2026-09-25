@@ -47,7 +47,7 @@ type Decision struct {
 	Rule string
 }
 
-func deny(reason, detail string) Decision { return Decision{Reason: reason, Detail: detail} }
+func deny(reason string) Decision { return Decision{Reason: reason} }
 func hardDeny(reason, detail string) Decision {
 	return Decision{Reason: reason, Detail: detail, Hard: true}
 }
@@ -364,13 +364,13 @@ func (p *policy) Login(se *Session, l *wire.Login7) Decision {
 // identity applies the user, database and app lists and finds the rule.
 func (p *policy) identity(se *Session) Decision {
 	if se.User != "" && !permitted(strings.ToLower(se.User), p.allowUsers, p.denyUsers) {
-		return deny("user_not_allowed", "")
+		return deny("user_not_allowed")
 	}
 	if se.Database != "" && !permitted(strings.ToLower(se.Database), p.allowDBs, p.denyDBs) {
-		return deny("database_not_allowed", "")
+		return deny("database_not_allowed")
 	}
 	if len(p.allowApps) > 0 && !matchAny(se.App, p.allowApps) {
-		return deny("app_not_allowed", "")
+		return deny("app_not_allowed")
 	}
 	r := p.match(se)
 	if r == nil {

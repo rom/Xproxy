@@ -1030,7 +1030,7 @@ and size, and a second factor can be demanded after the key.
 
 ### The relay: SMTP, MQTT, FTP, syslog, Modbus, IEC 104, SNMP, LDAP, PostgreSQL, MySQL, NTP and NTS
 
-The relay kinds (`internal/kinds/{smtp,mqtt,ftp,syslog,modbus,iec104,snmp,ldap,tftp,dhcp,postgres,mysql,ntp,ntske}`)
+The relay kinds (`internal/kinds/{smtp,mqtt,ftp,syslog,modbus,iec104,snmp,ldap,tftp,dhcp,postgres,mysql,tds,ntp,ntske}`)
 share a shape:
 each parses its protocol rather than forwarding bytes, holds a policy in
 that protocol's own terms, and bounds what a peer may say.
@@ -1212,6 +1212,45 @@ that protocol's own terms, and bounds what a peer may say.
   its own, so its reader desynchronises exactly when it is doing its job, and the
   server enforces the numbering anyway -- but mis-reassembling a chain would
   build a message neither peer sent.
+- `tds` reads TDS 7.x for SQL Server (`internal/tdswire` for the framing,
+  the PRELOGIN option table, LOGIN7 and the RPC parameters,
+  `internal/kinds/tds` for the policy, `internal/sqlkind` with the T-SQL
+  dialect for the statements). Three things shape the code.
+
+  The **encryption negotiation is answered rather than forwarded**, as on the
+  postgres kind: the ENCRYPTION option is one unsigned octet in an option table
+  and anything on the path can rewrite either side's, so the relay negotiates
+  with each leg separately and answers the client ENCRYPT_REQ when
+  `require_tls` is on. The answer it sends back is the *server's* option table
+  with that one option replaced, so the client still reads the real server's
+  version and instance name rather than something the relay invented -- which
+  is why the upstream leg is negotiated first.
+
+  The **policy has a procedure half** the other two database kinds do not,
+  because this protocol's dangerous operations are stored procedures and a
+  statement classifier sees every one of them as an EXECUTE. Refusing one of
+  the set that leads out of the database is never shadowed, on the reasoning the
+  mysql kind applies to replication.
+
+  The **statement policy reaches into an RPC**. `internal/tdswire/rpc.go` reads
+  the one parameter that *is* a statement, on the six procedures whose
+  documented signature has one, and measures the others without decoding them:
+  without that, a T-SQL statement policy would inspect the SET statements a
+  driver emits on connect and nothing an application runs, because every client
+  library that uses parameters sends `sp_executesql`.
+
+  And `tunnel.go` exists because **the TLS handshake is carried inside TDS
+  packets and then is not**. For the length of the handshake TDS wraps TLS;
+  afterwards TLS wraps TDS. Where exactly it inverts is the hard part, and TLS
+  1.3 made it harder by moving the session ticket to *after* the handshake, so a
+  peer whose handshake has completed may still have encapsulated octets coming.
+  So writes flip when this side's handshake finishes and reads pass through a
+  window in which either framing is accepted -- which is not a guess, because the
+  tag spaces are disjoint: an encapsulated packet begins 0x12 and a TLS record
+  begins with a content type, 20 to 25. Anything else is refused. The tunnel
+  holds no lock across its underlying read, because a relay reads one direction
+  while writing the other and a lock there deadlocks every answer behind a
+  request that has not arrived.
 - `ntske` is NTS key establishment, TCP 4460, relayed rather than
   terminated: it reads the server name and the application protocol from
   the ClientHello, refuses what is not an NTS client, bounds the

@@ -248,7 +248,7 @@ func dial(t *testing.T, addr string, kv ...string) *client {
 }
 
 func startupPacket(kv ...string) []byte {
-	var body []byte
+	body := make([]byte, 0, 64)
 	for _, s := range kv {
 		body = append(body, s...)
 		body = append(body, 0)

@@ -81,7 +81,8 @@ func (t *server) serve() {
 			if t.closed.Load() {
 				return
 			}
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			var ne net.Error
+			if errors.As(err, &ne) && ne.Timeout() {
 				continue
 			}
 			return
@@ -346,7 +347,12 @@ func (t *server) upgradeUpstream(c net.Conn, address string) (net.Conn, error) {
 			cfg.ServerName = host
 		}
 		tc := tls.Client(c, cfg)
-		if err := tc.Handshake(); err != nil {
+		// A context rather than a deadline on the connection: a deadline would
+		// have to be cleared afterwards, and a relay that forgot would kill a
+		// live session at an hour that looked like a network fault.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := tc.HandshakeContext(ctx); err != nil {
 			return nil, err
 		}
 		return tc, nil

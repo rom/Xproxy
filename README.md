@@ -112,7 +112,7 @@ estate — and binds only the kinds of its own role:
 |--------|-------|----------------|
 | `xproxy` | the open internet | `http`, `forward`, `tcp`, `udp`, `dns` |
 | `xgate` | people | `ssh`, `telnet`, `vnc`, `rdp` |
-| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `snmp`, `ldap`, `tftp`, `dhcp`, `postgres`, `mysql`, `ntp`, `ntske` |
+| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `snmp`, `ldap`, `tftp`, `dhcp`, `postgres`, `mysql`, `tds`, `ntp`, `ntske` |
 
 A kind a binary did not link is never bound and never falls through to
 the HTTP data plane: it is an error naming the daemon that serves it.
@@ -188,7 +188,7 @@ its own for what is deliberately *not* implemented and why.
 | Directory | LDAP v3 (RFC 4511–4515, 4517, 4519) with LDAPS and the StartTLS of RFC 4513, as a relay: the bind methods, the search filter's shape, distinguished names compared per relative name, the attribute lists in both directions | `ldap`, filters |
 | Addressing | DHCP (RFC 2131) with its options (RFC 2132), relay agent information (RFC 3046), long options (RFC 3396) and classless static routes (RFC 3442), as a relay agent that reads what it relays: the server a reply came from, and the configuration the reply carries | `dhcp` |
 | Provisioning | TFTP (RFC 1350) with the option extension (RFC 2347), block size (RFC 2348), timeout and transfer size (RFC 2349) and windowed transfer (RFC 7440), as a relay: the filename read as a path, the direction of the transfer, and the bounds on what comes back | `tftp` |
-| Databases | PostgreSQL frontend/backend protocol version 3, with the SSL and GSSAPI encryption requests, the cancel request, the simple and extended query protocols, and the authentication methods of pg_hba.conf; the MySQL and MariaDB client/server protocol with handshake v10, the capability negotiation, the command set and the authentication plugins | `postgres`, `mysql` |
+| Databases | PostgreSQL frontend/backend protocol version 3, with the SSL and GSSAPI encryption requests, the cancel request, the simple and extended query protocols, and the authentication methods of pg_hba.conf; the MySQL and MariaDB client/server protocol with handshake v10, the capability negotiation, the command set and the authentication plugins; TDS 7.x (MS-TDS) with the PRELOGIN option table, the LOGIN7 identity, the SQLBATCH and RPC message types, and the TLS handshake carried inside TDS packets | `postgres`, `mysql`, `tds` |
 | Remote access | SSH (RFC 4251–4254) with OpenSSH user and host certificates; telnet's NVT (RFC 854); RFB 3.3 to 3.8 (RFC 6143) with VeNCrypt; RDP (MS-RDPBCGR) over TLS, CredSSP over NTLMv2 towards the desktop, or the protocol's own encryption | `ssh`, `telnet`, `vnc`, `rdp` |
 | Identity | OpenID Connect Core 1.0, OAuth 2.0 (RFC 6749) with introspection (RFC 7662), PKCE (RFC 7636) and token exchange (RFC 8693); JWT, JWS and JWKS (RFC 7515–7519); DPoP (RFC 9449); certificate-bound tokens (RFC 8705); SAML 2.0 as a service provider; SCIM 2.0 (RFC 7642–7644); WebAuthn level 2; LDAP (RFC 4511–4515); TOTP (RFC 6238); HTTP Basic (RFC 7617); client certificate identity as `Client-Cert` (RFC 9440) or Envoy's `X-Forwarded-Client-Cert` | filters |
 | Inspection | ModSecurity SecLang with the OWASP Core Rule Set through Coraza; a documented subset of YARA; ICAP (RFC 3507); OpenAPI 3 descriptions; GraphQL; XML and XSD with exclusive canonicalization; protobuf structure without a schema; WebAssembly with WASI preview 1 | filters |
@@ -222,6 +222,7 @@ protocol so that a policy can be written in that protocol's own terms:
 | `dhcp` | `xrelay` | DHCPv4 with RFC 2132 options, RFC 3046 relay agent information, RFC 3442 routes | The server a reply came from, the options and addresses a reply may carry, the boot file, the lease bounds, the hardware-address rate |
 | `postgres` | `xrelay` | PostgreSQL protocol v3, both query protocols, the cleartext TLS negotiation | Whether the connection may be unencrypted at all, which role and database may be claimed, which authentication methods may cross, which *shapes* of statement are allowed, replication, the fast-path call, cancel requests |
 | `mysql` | `xrelay` | MySQL and MariaDB protocol, handshake v10, the capability flags, the command set | The capability bits a client may even see offered, which of the protocol's commands may cross, whether the connection may be unencrypted, which user and database may be claimed (re-checked on COM_CHANGE_USER), which authentication plugins, which statement shapes, LOAD DATA in either form |
+| `tds` | `xrelay` | TDS 7.x for SQL Server: the PRELOGIN negotiation, LOGIN7, SQLBATCH and RPC, and the TLS handshake carried inside TDS packets | Whether the connection may be unencrypted at all -- and the relay answers the negotiation itself rather than forwarding the server's octet -- whether a password may cross in the clear, which login, database and application name may be claimed, whether a login carrying no user name is admitted, which message types, which stored procedures, and which statement shapes, applied to a batch and to the SQL inside an sp_executesql alike |
 | `tftp` | `xrelay` | TFTP with RFC 2347–2349 options and RFC 7440 windows | The client list, the direction, the transfer mode, the filename read as a path and refused by class, the directories, and the block, window and transfer bounds |
 | `ntp` | `xrelay` | NTP v1–v4, SNTP, NTS-protected NTP | Versions, modes, extension fields, authentication, and whether the servers agree |
 | `ntske` | `xrelay` | NTS key establishment (TLS on 4460) | The application protocol, the server name, the handshakes in flight |
@@ -518,6 +519,36 @@ protocol so that a policy can be written in that protocol's own terms:
   control somebody switches off. `CLIENT_SSL` is the one bit that cannot be
   stripped, because stripping it would perform the downgrade the kind exists to
   prevent
+
+- `kind: tds`: a **SQL Server relay**, where three things are different again.
+  **The password is an encoding, not a secret**: a `LOGIN7` carries it with the
+  nibbles swapped and XORed with 0xA5, with no key, so anybody who read the
+  packet has the password -- which makes `require_tls` here not hardening but the
+  difference between a reusable credential on the wire and none. The negotiation
+  that decides it is one unsigned octet in a `PRELOGIN` option table, where `off`
+  means "I would rather not" and `not_supported` means "I cannot", and their wire
+  consequence is identical -- so a client that asked for `off` and hears
+  `not_supported` carries on in the clear without complaint. **The relay answers
+  the negotiation itself** rather than forwarding the server's octet, making every
+  client one the downgrade cannot touch, and logs each connection whose
+  negotiation it raised so the clients that would have gone in the clear can be
+  read off a list before the setting is turned on. **The dangerous operations are
+  procedures**: `xp_cmdshell` is a shell command as the service account, the
+  `sp_OA` family is arbitrary COM, the registry procedures are the host's
+  configuration, `sp_addlinkedserver` turns one compromised database into a route
+  to another, and `sp_configure` is how the first of those gets switched back on
+  -- and to a statement classifier every one of them is an `EXECUTE`, so a
+  statement policy strict enough to catch them would refuse every stored
+  procedure in the estate. Hence a procedure allow list defaulting to what a
+  driver calls, with that set refused even in monitor mode. And **the statement an
+  application runs is not a statement**: every client library that uses parameters
+  sends `sp_executesql` with the SQL in a parameter, so a relay reading only
+  `SQLBATCH` would inspect the `SET` statements a driver emits on connect and
+  nothing else. The relay reads that one parameter -- and only that one, because
+  the rest are the caller's data -- and runs the same statement policy on it.
+  The structural oddity is the **TLS handshake, which happens inside TDS packets
+  and then stops**: for the length of the handshake TDS wraps TLS, afterwards TLS
+  wraps TDS, and the nesting inverts once part way through a connection
 
 - `kind: tftp`: a **TFTP** relay in front of the servers that move firmware,
   configurations and boot images. This is the protocol under provisioning: a

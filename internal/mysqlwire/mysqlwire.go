@@ -168,7 +168,7 @@ func CapName(bit uint32) string {
 
 func trailingZeros(v uint32) int {
 	for i := 0; i < 32; i++ {
-		if v&(1<<uint(i)) != 0 {
+		if v&(1<<i) != 0 {
 			return i
 		}
 	}
@@ -839,7 +839,7 @@ func StripCaps(greeting []byte, deny uint32) (cleared uint32, err error) {
 func CapList(mask uint32) []string {
 	var out []string
 	for i := 0; i < 32; i++ {
-		bit := uint32(1) << uint(i)
+		bit := uint32(1) << i
 		if mask&bit != 0 {
 			out = append(out, CapName(bit))
 		}

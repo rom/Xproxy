@@ -71,7 +71,8 @@ func (t *server) serve() {
 			if t.closed.Load() {
 				return
 			}
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			var ne net.Error
+			if errors.As(err, &ne) && ne.Timeout() {
 				continue
 			}
 			return
@@ -290,14 +291,13 @@ func (t *server) upgradeClient(se *session, hs time.Duration) error {
 	}
 	tun := newTunnel(se.client, se.spid, se.size, t.policy.MaxMessage())
 	tc := tls.Server(tun, t.tlsCfg)
-	if hs > 0 {
-		_ = tc.SetDeadline(time.Now().Add(hs))
-	}
-	if err := tc.Handshake(); err != nil {
+	// The handshake carries its own deadline rather than borrowing the
+	// connection's, so the bound applies to the handshake alone and there is no
+	// deadline left set on a connection that goes on to be relayed.
+	ctx, cancel := handshakeContext(hs)
+	defer cancel()
+	if err := tc.HandshakeContext(ctx); err != nil {
 		return err
-	}
-	if hs > 0 {
-		_ = tc.SetDeadline(time.Time{})
 	}
 	// The nesting inverts here: from now on TLS wraps TDS rather than the other
 	// way round.
@@ -323,14 +323,10 @@ func (t *server) upgradeUpstream(se *session, hs time.Duration) error {
 	}
 	tun := newTunnel(se.up, 0, se.size, t.policy.MaxMessage())
 	tc := tls.Client(tun, cfg)
-	if hs > 0 {
-		_ = tc.SetDeadline(time.Now().Add(hs))
-	}
-	if err := tc.Handshake(); err != nil {
+	ctx, cancel := handshakeContext(hs)
+	defer cancel()
+	if err := tc.HandshakeContext(ctx); err != nil {
 		return err
-	}
-	if hs > 0 {
-		_ = tc.SetDeadline(time.Time{})
 	}
 	tun.HandshakeDone()
 	se.umu.Lock()
@@ -340,6 +336,18 @@ func (t *server) upgradeUpstream(se *session, hs time.Duration) error {
 	se.upSecure = true
 	se.mu.Unlock()
 	return nil
+}
+
+// handshakeContext bounds a TLS handshake.
+//
+// A context rather than a deadline on the connection: a deadline would have to
+// be cleared afterwards, and a relay that forgot would kill a live session at an
+// hour that looked like a network fault.
+func handshakeContext(hs time.Duration) (context.Context, context.CancelFunc) {
+	if hs <= 0 {
+		return context.Background(), func() {}
+	}
+	return context.WithTimeout(context.Background(), hs)
 }
 
 // dial opens the connection to the server.

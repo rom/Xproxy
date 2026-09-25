@@ -95,10 +95,11 @@ routes:
 	if got := s.Addrs()["web"]; got != addr || s.Addrs()["main"] != "" {
 		t.Fatalf("rename: %v", s.Addrs())
 	}
-	// The shared transport may still hold a keep-alive connection served
-	// by the redirecting generation, which drains asynchronously.
-	http.DefaultTransport.(*http.Transport).CloseIdleConnections()
-	if _, body := get(t, url+"/"); body != "a:/" {
+	// On its own connection again, for the reason above: a pooled one may
+	// have been served by the redirecting generation, which drains
+	// asynchronously, and closing idle connections first is a race with the
+	// transport handing one out rather than a fix.
+	if _, body := freshGet(t, url+"/"); body != "a:/" {
 		t.Fatal(body)
 	}
 
@@ -162,6 +163,14 @@ routes:
 // for the answer.
 func fresh(t *testing.T, url string) int {
 	t.Helper()
+	code, _ := freshGet(t, url)
+	return code
+}
+
+// freshGet is fresh, with the body, for the assertions about which
+// generation answered rather than only how.
+func freshGet(t *testing.T, url string) (int, string) {
+	t.Helper()
 	c := &http.Client{
 		Transport:     &http.Transport{DisableKeepAlives: true},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
@@ -184,7 +193,7 @@ func fresh(t *testing.T, url string) int {
 	if err != nil {
 		t.Fatalf("get %s: %v", url, err)
 	}
-	_, _ = io.Copy(io.Discard, resp.Body)
+	b, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
-	return resp.StatusCode
+	return resp.StatusCode, string(b)
 }

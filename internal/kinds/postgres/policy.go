@@ -56,8 +56,8 @@ type Decision struct {
 	Rule string
 }
 
-func deny(reason, detail string) Decision {
-	return Decision{Reason: reason, Detail: detail}
+func deny(reason string) Decision {
+	return Decision{Reason: reason}
 }
 
 func hardDeny(reason, detail string) Decision {
@@ -328,13 +328,13 @@ func (p *policy) Startup(se *Session, s *wire.Startup) Decision {
 	if u := strings.ToLower(s.User()); u == "" {
 		return hardDeny("no_user", "")
 	} else if !permitted(u, p.allowUsers, p.denyUsers) {
-		return deny("user_not_allowed", "")
+		return deny("user_not_allowed")
 	}
 	if db := strings.ToLower(s.Database()); !permitted(db, p.allowDBs, p.denyDBs) {
-		return deny("database_not_allowed", "")
+		return deny("database_not_allowed")
 	}
 	if len(p.allowApps) > 0 && !matchAny(s.Get("application_name"), p.allowApps) {
-		return deny("application_not_allowed", "")
+		return deny("application_not_allowed")
 	}
 	r := p.match(se)
 	if r == nil {
@@ -501,7 +501,7 @@ func (p *policy) Cancel(se *Session) Decision {
 		return hardDeny("client_not_allowed", "")
 	}
 	if !p.allowCancel {
-		return deny("cancel_not_allowed", "")
+		return deny("cancel_not_allowed")
 	}
 	return Decision{Allow: true}
 }

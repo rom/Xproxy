@@ -323,7 +323,6 @@ func TestTheEncryptionOptionCanBeRewrittenAndAddedInOrder(t *testing.T) {
 
 // login7 builds a LOGIN7 body.
 func login7(host, user, pass, app, srv, lib, lang, db string, integrated bool) []byte {
-	type f struct{ s string }
 	fields := []string{host, user, pass, app, srv, "", lib, lang, db}
 	const fixed = 36
 	head := fixed + len(fields)*4

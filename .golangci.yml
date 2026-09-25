@@ -21,6 +21,11 @@ linters:
       ignore-rules:
         # Eclipse Mosquitto is a product name, spelled with two t's.
         - mosquitto
+        # `SEL/**/ECT` and `SEL--x\nECT` are a keyword cut in half on purpose:
+        # the sqlkind classifier's whole claim is that a comment is whitespace
+        # rather than nothing, so those two halves must not rejoin. `ECT` is the
+        # second half, not a typo for `ETC`.
+        - ect
   exclusions:
     rules:
       - path: _test\.go

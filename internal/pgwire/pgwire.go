@@ -306,7 +306,10 @@ func ParseStartup(b []byte) (*Startup, error) {
 	if n != len(b) {
 		return nil, ErrTruncated
 	}
-	s := &Startup{Code: int32(binary.BigEndian.Uint32(b[4:8]))}
+	// The code, the process identifier and the secret are signed 32-bit
+	// integers in the protocol itself, so the whole unsigned range is a value
+	// the peer may legitimately send and reinterpreting it is the correct read.
+	s := &Startup{Code: int32(binary.BigEndian.Uint32(b[4:8]))} //nolint:gosec // a signed protocol field
 	body := b[8:]
 	switch s.Code {
 	case SSLRequest, GSSEncRequest:
@@ -321,8 +324,8 @@ func ParseStartup(b []byte) (*Startup, error) {
 		if len(body) != 8 {
 			return nil, ErrTruncated
 		}
-		s.PID = int32(binary.BigEndian.Uint32(body[:4]))
-		s.Secret = int32(binary.BigEndian.Uint32(body[4:8]))
+		s.PID = int32(binary.BigEndian.Uint32(body[:4]))     //nolint:gosec // a signed protocol field
+		s.Secret = int32(binary.BigEndian.Uint32(body[4:8])) //nolint:gosec // a signed protocol field
 		return s, nil
 	case Version3:
 		params, err := parseParams(body)
@@ -563,7 +566,9 @@ func (m Message) AuthRequest() (int32, error) {
 	if len(m.Body) < 4 {
 		return 0, ErrTruncated
 	}
-	return int32(binary.BigEndian.Uint32(m.Body[:4])), nil
+	// A signed 32-bit integer in the protocol itself, so the whole unsigned
+	// range is a value the server may legitimately send.
+	return int32(binary.BigEndian.Uint32(m.Body[:4])), nil //nolint:gosec // a signed protocol field
 }
 
 // BackendKey is the process identifier and secret of a BackendKeyData message,
@@ -575,8 +580,9 @@ func (m Message) BackendKey() (pid, secret int32, err error) {
 	if len(m.Body) != 8 {
 		return 0, 0, ErrTruncated
 	}
-	return int32(binary.BigEndian.Uint32(m.Body[:4])),
-		int32(binary.BigEndian.Uint32(m.Body[4:8])), nil
+	// Both are signed 32-bit integers in the protocol itself.
+	return int32(binary.BigEndian.Uint32(m.Body[:4])), //nolint:gosec // a signed protocol field
+		int32(binary.BigEndian.Uint32(m.Body[4:8])), nil //nolint:gosec // a signed protocol field
 }
 
 // ErrorField is one field of an ErrorResponse or NoticeResponse.

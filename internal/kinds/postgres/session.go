@@ -1,10 +1,10 @@
 package postgres
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/netip"
 	"sync"
@@ -216,14 +216,16 @@ func (se *session) upgrade(cfg *tls.Config, timeout time.Duration) error {
 		return err
 	}
 	tc := tls.Server(se.client, cfg)
+	// A context rather than a deadline on the connection: a deadline would have
+	// to be cleared afterwards, and a relay that forgot would kill a live
+	// session at an hour that looked like a network fault.
+	ctx, cancel := context.Background(), func() {}
 	if timeout > 0 {
-		_ = tc.SetDeadline(time.Now().Add(timeout))
+		ctx, cancel = context.WithTimeout(ctx, timeout)
 	}
-	if err := tc.Handshake(); err != nil {
+	defer cancel()
+	if err := tc.HandshakeContext(ctx); err != nil {
 		return err
-	}
-	if timeout > 0 {
-		_ = tc.SetDeadline(time.Time{})
 	}
 	se.client = tc
 	se.secure = true
@@ -235,7 +237,3 @@ func (se *session) writeClient0(b []byte) error {
 	_, err := se.client.Write(b)
 	return err
 }
-
-// copyTo streams the rest of a connection one way, for the phases a policy has
-// nothing to say about.
-func copyTo(dst io.Writer, src io.Reader) (int64, error) { return io.Copy(dst, src) }
