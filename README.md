@@ -112,7 +112,7 @@ estate — and binds only the kinds of its own role:
 |--------|-------|----------------|
 | `xproxy` | the open internet | `http`, `forward`, `tcp`, `udp`, `dns` |
 | `xgate` | people | `ssh`, `telnet`, `vnc`, `rdp` |
-| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `snmp`, `ldap`, `tftp`, `dhcp`, `ntp`, `ntske` |
+| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `snmp`, `ldap`, `tftp`, `dhcp`, `postgres`, `ntp`, `ntske` |
 
 A kind a binary did not link is never bound and never falls through to
 the HTTP data plane: it is an error naming the daemon that serves it.
@@ -188,6 +188,7 @@ its own for what is deliberately *not* implemented and why.
 | Directory | LDAP v3 (RFC 4511–4515, 4517, 4519) with LDAPS and the StartTLS of RFC 4513, as a relay: the bind methods, the search filter's shape, distinguished names compared per relative name, the attribute lists in both directions | `ldap`, filters |
 | Addressing | DHCP (RFC 2131) with its options (RFC 2132), relay agent information (RFC 3046), long options (RFC 3396) and classless static routes (RFC 3442), as a relay agent that reads what it relays: the server a reply came from, and the configuration the reply carries | `dhcp` |
 | Provisioning | TFTP (RFC 1350) with the option extension (RFC 2347), block size (RFC 2348), timeout and transfer size (RFC 2349) and windowed transfer (RFC 7440), as a relay: the filename read as a path, the direction of the transfer, and the bounds on what comes back | `tftp` |
+| Databases | PostgreSQL frontend/backend protocol version 3, with the SSL and GSSAPI encryption requests, the cancel request, the simple and extended query protocols, and the authentication methods of pg_hba.conf | `postgres` |
 | Remote access | SSH (RFC 4251–4254) with OpenSSH user and host certificates; telnet's NVT (RFC 854); RFB 3.3 to 3.8 (RFC 6143) with VeNCrypt; RDP (MS-RDPBCGR) over TLS, CredSSP over NTLMv2 towards the desktop, or the protocol's own encryption | `ssh`, `telnet`, `vnc`, `rdp` |
 | Identity | OpenID Connect Core 1.0, OAuth 2.0 (RFC 6749) with introspection (RFC 7662), PKCE (RFC 7636) and token exchange (RFC 8693); JWT, JWS and JWKS (RFC 7515–7519); DPoP (RFC 9449); certificate-bound tokens (RFC 8705); SAML 2.0 as a service provider; SCIM 2.0 (RFC 7642–7644); WebAuthn level 2; LDAP (RFC 4511–4515); TOTP (RFC 6238); HTTP Basic (RFC 7617); client certificate identity as `Client-Cert` (RFC 9440) or Envoy's `X-Forwarded-Client-Cert` | filters |
 | Inspection | ModSecurity SecLang with the OWASP Core Rule Set through Coraza; a documented subset of YARA; ICAP (RFC 3507); OpenAPI 3 descriptions; GraphQL; XML and XSD with exclusive canonicalization; protobuf structure without a schema; WebAssembly with WASI preview 1 | filters |
@@ -219,6 +220,7 @@ protocol so that a policy can be written in that protocol's own terms:
 | `snmp` | `xrelay` | SNMP v1, v2c and v3 (USM), UDP and TCP, RFC 6353 TLS | Versions, community strings and USM users, security levels, operations, object subtrees, the amplification bounds |
 | `ldap` | `xrelay` | LDAP v3, LDAPS, StartTLS | Bind methods, the bound identity, operations, naming contexts and subtrees, scopes, attributes in both directions, filter and entry bounds |
 | `dhcp` | `xrelay` | DHCPv4 with RFC 2132 options, RFC 3046 relay agent information, RFC 3442 routes | The server a reply came from, the options and addresses a reply may carry, the boot file, the lease bounds, the hardware-address rate |
+| `postgres` | `xrelay` | PostgreSQL protocol v3, both query protocols, the cleartext TLS negotiation | Whether the connection may be unencrypted at all, which role and database may be claimed, which authentication methods may cross, which *shapes* of statement are allowed, replication, the fast-path call, cancel requests |
 | `tftp` | `xrelay` | TFTP with RFC 2347–2349 options and RFC 7440 windows | The client list, the direction, the transfer mode, the filename read as a path and refused by class, the directories, and the block, window and transfer bounds |
 | `ntp` | `xrelay` | NTP v1–v4, SNTP, NTS-protected NTP | Versions, modes, extension fields, authentication, and whether the servers agree |
 | `ntske` | `xrelay` | NTS key establishment (TLS on 4460) | The application protocol, the server name, the handshakes in flight |
@@ -446,6 +448,45 @@ protocol so that a policy can be written in that protocol's own terms:
   discovers with a made-up address in each and a limit keyed on the source
   address would see one sender doing nothing unusual. DHCPv6 is a different
   protocol and is not pretended to be this one
+
+- `kind: postgres`: a **PostgreSQL relay**, which is deliberately **not a SQL
+  firewall**. Knowing which tables a statement touches means parsing SQL
+  properly -- every alias, subquery, CTE, view, function body and `search_path`
+  interaction -- and a relay that got that 95% right would have a policy with a
+  hole in exactly the place somebody is looking; restricting a role's tables
+  stays the database's own job, done properly, with `GRANT`. What a relay can do
+  is four things. It **refuses the encryption downgrade**, which is the whole
+  reason to put one in front of this protocol: TLS is negotiated *in cleartext*
+  -- eight octets ask, one unsigned octet answers -- and libpq's default
+  `sslmode` is `prefer`, meaning "carry on in the clear if refused, without
+  telling anybody", so the most widely deployed client in the world downgrades
+  silently when something on the path rewrites one byte. The relay answers that
+  request itself rather than letting the server's answer decide, and one line
+  fixes for every client at once what ten thousand connection strings will not.
+  It **refuses the authentication methods whose credential an observer can
+  reuse**: `password` is the password in cleartext, and `md5` is worse than it
+  looks, because the stored verifier is `md5(password+username)` -- the hash *is*
+  a password-equivalent, so anybody who reads `pg_authid` authenticates without
+  cracking anything. It **refuses what is not a statement at all**:
+  `replication=true` is a startup *parameter* that turns the connection into a
+  byte-for-byte copy of every database including the role passwords, so no
+  statement policy would ever see it; the legacy fast-path call names a function
+  by object identifier and bypasses the parser; and a cancel request arrives on
+  a connection of its own which the server acts on with **no authentication
+  whatsoever**, the whole credential being a process identifier and 32 bits. And
+  it **decides by the shape of a statement**: an allow list of *kinds*, where a
+  statement the classifier cannot name is refused. That inverts the deny-list
+  problem -- searching for `DROP` is beaten by `DR/**/OP`, by a quoted
+  identifier, and by an innocent statement that mentions the word in a string,
+  whereas an allow list of shapes fails closed on a spelling nobody thought of.
+  The classifier strips comments and quoting *properly* (PostgreSQL's block
+  comments nest, dollar-quoted strings have no escaping at all, and a comment is
+  whitespace rather than nothing so `SEL/**/ECT` does not become `SELECT`), and
+  is conservative in the one direction that is safe: a data-modifying CTE is the
+  write it contains rather than the `SELECT` it opens with, `EXPLAIN ANALYZE` is
+  the statement it runs because `ANALYZE` executes it, and `COPY` carries which
+  of its three operations it is -- because `COPY ... FROM PROGRAM` runs a shell
+  command as the server's own user, and no rule in any mode can allow it
 
 - `kind: tftp`: a **TFTP** relay in front of the servers that move firmware,
   configurations and boot images. This is the protocol under provisioning: a

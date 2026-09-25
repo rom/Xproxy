@@ -1028,9 +1028,9 @@ templating, an operation policy and YARA over what is written. Sessions
 are recorded to asciicast files (`internal/asciicast`) bounded by count
 and size, and a second factor can be demanded after the key.
 
-### The relay: SMTP, MQTT, FTP, syslog, Modbus, IEC 104, SNMP, LDAP, NTP and NTS
+### The relay: SMTP, MQTT, FTP, syslog, Modbus, IEC 104, SNMP, LDAP, PostgreSQL, NTP and NTS
 
-The relay kinds (`internal/kinds/{smtp,mqtt,ftp,syslog,modbus,iec104,snmp,ldap,tftp,dhcp,ntp,ntske}`)
+The relay kinds (`internal/kinds/{smtp,mqtt,ftp,syslog,modbus,iec104,snmp,ldap,tftp,dhcp,postgres,ntp,ntske}`)
 share a shape:
 each parses its protocol rather than forwarding bytes, holds a policy in
 that protocol's own terms, and bounds what a peer may say.
@@ -1165,6 +1165,28 @@ that protocol's own terms, and bounds what a peer may say.
   outstanding requests -- and measures every expiry on the monotonic
   clock, because it is the relay for the protocol that moves the wall
   clock.
+- `postgres` reads the PostgreSQL frontend/backend protocol (`internal/pgwire`
+  for the wire format and the statement classifier, `internal/kinds/postgres`
+  for the policy). A connection has three phases and the relay's job differs in
+  each. *Before encryption*: the client may send an eight-octet SSL request, and
+  the relay answers it **itself** rather than forwarding -- forwarding would mean
+  the server's one unsigned octet decided whether the connection is readable by
+  anybody on the path, and that octet is exactly what a man in the middle
+  rewrites. *Before authentication*: the startup packet carries the user,
+  database and application name, which is the only identity this protocol has
+  before a credential is checked and is a claim rather than a credential; it is
+  forwarded as the octets the client sent, because re-encoding would mean
+  deciding about one message and forwarding another. *After authentication*:
+  statements, in both the simple protocol (Query) and the extended one
+  (Parse/Bind/Execute) that every driver written this century actually uses -- a
+  relay that read only Query would inspect nothing. The relay also reads the
+  *server's* authentication request, because `pg_hba.conf` is what chooses the
+  method, and a Bind is decided again for the prepared statement it names, which
+  is what catches a pooled connection executing a statement another application
+  left behind. Its policy is an allow list of statement *kinds* rather than a SQL
+  parser, and the refusal is an ErrorResponse with SQLSTATE 42501 followed by
+  ReadyForQuery, because a client in the simple protocol will not send anything
+  else until it sees the second one.
 - `ntske` is NTS key establishment, TCP 4460, relayed rather than
   terminated: it reads the server name and the application protocol from
   the ClientHello, refuses what is not an NTS client, bounds the
