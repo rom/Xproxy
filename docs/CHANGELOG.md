@@ -605,6 +605,12 @@ Open findings of the earlier rounds:
   when they have no way to learn a name, rather than failing closed on the first
   evening. A grant naming one machine **pins the dial to it**.
 
+  Each gate's access log line names the grant the session was opened under,
+  and the ledger's use record names the session, so an investigation holding a
+  recording can find the approval and one holding an approval can find the
+  recordings. Without both directions a reviewer has to guess which window
+  produced the session in front of them.
+
   The exposition carries it: `xproxy_access_grants{state}` with every state
   present even at zero (a gauge that disappears when it reaches zero is a gauge
   an alert cannot be written against), the acts as counters, and

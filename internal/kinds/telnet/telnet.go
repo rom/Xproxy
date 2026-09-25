@@ -404,9 +404,10 @@ func (se *session) connect() error {
 }
 
 func (t *server) log(se *session, start time.Time, reason string) {
-	t.engine.Logs().Access.Info("telnet", "listener", t.cfg.Name, "client_ip", se.ip.String(),
+	attrs := []any{"listener", t.cfg.Name, "client_ip", se.ip.String(),
 		"user", textsafe.Clip64(se.user), "target", se.target, "reason", reason,
-		"refused_options", se.refused.Load(), "duration_ms", time.Since(start).Milliseconds())
+		"refused_options", se.refused.Load(), "duration_ms", time.Since(start).Milliseconds()}
+	t.engine.Logs().Access.Info("telnet", append(attrs, access.LogAttrs(se.grant)...)...)
 }
 
 // relay copies both directions, deciding every option and recording

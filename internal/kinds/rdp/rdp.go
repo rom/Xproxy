@@ -417,14 +417,15 @@ func (se *session) run(start time.Time) string {
 }
 
 func (t *server) log(se *session, start time.Time, reason string) {
-	t.engine.Logs().Access.Info("rdp", "listener", t.cfg.Name, "client_ip", se.ip.String(),
+	attrs := []any{"listener", t.cfg.Name, "client_ip", se.ip.String(),
 		"user", textsafe.Clip64(se.user), "domain", textsafe.Clip64(se.domain),
 		"cookie", textsafe.Clip64(se.cookie), "target", se.target,
 		"client_security", rdp.ProtocolName(se.clientProtocol),
 		"upstream_security", rdp.ProtocolName(se.upProtocol),
 		"channels_asked", strings.Join(se.asked, ","),
 		"channels_granted", strings.Join(se.granted, ","),
-		"reason", reason, "duration_ms", time.Since(start).Milliseconds())
+		"reason", reason, "duration_ms", time.Since(start).Milliseconds()}
+	t.engine.Logs().Access.Info("rdp", append(attrs, access.LogAttrs(se.grant)...)...)
 }
 
 // connect dials the desktop.

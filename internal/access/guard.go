@@ -117,6 +117,20 @@ func CloseAtExpiry(g *Grant, closeSession func()) (stop func()) {
 	return func() { t.Stop() }
 }
 
+// LogAttrs is the grant's identifier as a log attribute pair, or nothing when
+// the session was admitted without one.
+//
+// It is what ties a recording to the approval that allowed it: the ledger's use
+// record names the session, and the session's access log line names the grant,
+// so an investigation can start at either end. Without both directions somebody
+// reading a recording has to guess which window it was opened under.
+func LogAttrs(g *Grant) []any {
+	if g == nil {
+		return nil
+	}
+	return []any{"grant", g.ID}
+}
+
 // Deadline is when a session under this grant must end, or the zero time when
 // there is no grant. A gate takes the earlier of this and its own session
 // timeout, so a window closing ends the session that is running rather than

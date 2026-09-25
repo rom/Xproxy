@@ -11007,6 +11007,15 @@ A request nobody approved before its window closed is expired rather than
 pending: it cannot come into force any more, and leaving it in the queue
 would hide the ones that still can.
 
+### Tying a session to its approval
+
+Each gate's access log line carries `grant` -- the identifier of the grant the
+session was opened under -- and the ledger's `use` record carries the session's
+identifier. So an investigation holding a recording can find the approval that
+allowed it, and one holding an approval can find every session opened under it.
+One direction alone leaves a reviewer guessing which window produced the
+session in front of them.
+
 ### The trail
 
 Every act is one line of the ledger, and each line carries a hash over the

@@ -439,13 +439,14 @@ func (se *session) run(start time.Time) string {
 }
 
 func (t *server) log(se *session, start time.Time, reason string) {
-	t.engine.Logs().Access.Info("vnc", "listener", t.cfg.Name, "client_ip", se.ip.String(),
+	attrs := []any{"listener", t.cfg.Name, "client_ip", se.ip.String(),
 		"user", textsafe.Clip64(se.user), "target", se.target,
 		"desktop", textsafe.Clip64(se.desktop),
 		"client_version", se.clientVersion.String(), "client_security", rfb.SecurityName(se.clientSec),
 		"upstream_version", se.upVersion.String(), "upstream_security", rfb.SecurityName(se.upSec),
 		"width", se.width, "height", se.height, "view_only", t.v.ViewOnly,
-		"reason", reason, "duration_ms", time.Since(start).Milliseconds())
+		"reason", reason, "duration_ms", time.Since(start).Milliseconds()}
+	t.engine.Logs().Access.Info("vnc", append(attrs, access.LogAttrs(se.grant)...)...)
 }
 
 // connect dials the target: through SSH where one is configured, and

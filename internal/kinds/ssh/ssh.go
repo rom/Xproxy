@@ -713,6 +713,7 @@ func (t *server) log(se *session, start time.Time, reason string) {
 		"user", textsafe.Clip64(se.user), "auth", se.auth, "principal", se.principal, "target", se.target,
 		"channels", se.opened.Load(), "refused", se.refused.Load(),
 		"duration_ms", float64(time.Since(start).Microseconds()) / 1000}
+	attrs = append(attrs, access.LogAttrs(se.grant)...)
 	if reason != "" {
 		attrs = append(attrs, "closed", reason)
 	}

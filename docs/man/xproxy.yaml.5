@@ -27874,6 +27874,9 @@ Every grant carries a window, checked against the policy when the request is mad
 The window ends the session \fBthat is running\fR, not only the next one somebody opens: a gate sets the session\(aqs deadline to the earlier of its own \fBsession_timeout\fR and the end of the window. Without that, a four\-hour grant used at the last minute is a session that lasts as long as the operator likes.
 .PP
 A request nobody approved before its window closed is expired rather than pending: it cannot come into force any more, and leaving it in the queue would hide the ones that still can.
+.SS "Tying a session to its approval"
+.PP
+Each gate\(aqs access log line carries \fBgrant\fR \-\- the identifier of the grant the session was opened under \-\- and the ledger\(aqs \fBuse\fR record carries the session\(aqs identifier. So an investigation holding a recording can find the approval that allowed it, and one holding an approval can find every session opened under it. One direction alone leaves a reviewer guessing which window produced the session in front of them.
 .SS "The trail"
 .PP
 Every act is one line of the ledger, and each line carries a hash over the previous one. A removed, edited, reordered or forged line is found when the file is read at start, and the daemon refuses to serve a trail it cannot stand behind rather than presenting it as intact. One process holds the file exclusively \-\- two daemons appending would interleave their chains \-\- so a second daemon pointed at the same path fails to start and says so.

@@ -628,3 +628,16 @@ func TestAPrefixNamesAGrantUnlessItIsAmbiguous(t *testing.T) {
 		t.Errorf("the approval landed on the wrong grant: %d and %d", len(first.Approvals), len(second.Approvals))
 	}
 }
+
+// The log attribute is what ties a recording to the approval that allowed it.
+// The ledger's use record names the session and the session's access log line
+// names the grant, so an investigation can start at either end.
+func TestTheGrantIsALogAttribute(t *testing.T) {
+	if got := LogAttrs(nil); got != nil {
+		t.Errorf("a session with no grant carries %v", got)
+	}
+	got := LogAttrs(&Grant{ID: "beefcafe"})
+	if len(got) != 2 || got[0] != "grant" || got[1] != "beefcafe" {
+		t.Errorf("%v, want the id under a grant key", got)
+	}
+}

@@ -471,6 +471,7 @@ func (t *server) log(se *session, start time.Time, reason string) {
 	attrs := []any{"listener", t.cfg.Name, "client_ip", se.ip.String(),
 		"user", textsafe.Clip64(se.user), "target", se.target, "tls", se.secure,
 		"duration_ms", float64(time.Since(start).Microseconds()) / 1000}
+	attrs = append(attrs, access.LogAttrs(se.grant)...)
 	if reason != "" {
 		attrs = append(attrs, "closed", reason)
 	}

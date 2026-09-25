@@ -1,6 +1,7 @@
 package ssh_test
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,8 @@ import (
 	cssh "golang.org/x/crypto/ssh"
 
 	"github.com/rom/xproxy/internal/access"
+	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/proxytest"
 )
@@ -310,5 +313,114 @@ access:
 	}
 	if got := a.seen(); len(got) != 0 {
 		t.Errorf("the machine the grant did not name saw %v", got)
+	}
+}
+
+// The session's access log line names the grant it was opened under. Without it
+// a reviewer holding a recording has to guess which window produced it, and the
+// tie between the two records -- the ledger's use naming the session, the log
+// line naming the grant -- only works in one direction.
+func TestTheAccessLogLineNamesTheGrant(t *testing.T) {
+	dir := t.TempDir()
+	hostKeyPath, _, _ := sshKey(t, dir, "host")
+	upKeyPath, _, _ := sshKey(t, dir, "upstream")
+	_, clientSigner, clientAuthorized := sshKey(t, dir, "client")
+	_, targetHostKey, _ := sshKey(t, dir, "target_host")
+	tg := startTargetSSH(t, targetHostKey)
+
+	authorized := filepath.Join(dir, "authorized_keys")
+	if err := os.WriteFile(authorized, []byte(clientAuthorized), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	known := filepath.Join(dir, "known_hosts")
+	line := fmt.Sprintf("%s %s\n", tg.addr(),
+		strings.TrimSpace(string(cssh.MarshalAuthorizedKey(targetHostKey.PublicKey()))))
+	if err := os.WriteFile(known, []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	logs := filepath.Join(dir, "logs")
+	if err := os.MkdirAll(logs, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// proxytest discards the logs, so this one builds the server itself with
+	// the streams open on files: the claim is about what is written.
+	cfg, err := config.Parse([]byte(fmt.Sprintf(`
+version: 1
+server:
+  listeners:
+    - name: bastion
+      address: "127.0.0.1:0"
+      kind: ssh
+      ssh:
+        upstream: hosts
+        require_grant: true
+        host_keys: [%s]
+        authorized_keys: %s
+        upstream_key_file: %s
+        upstream_known_hosts: %s
+        upstream_user: operator
+logging:
+  directory: %s
+  access: {enabled: true}
+upstreams:
+  - name: hosts
+    endpoints: [{address: %s}]
+access:
+  ledger: %s
+`, hostKeyPath, authorized, upKeyPath, known, logs, tg.addr(), filepath.Join(dir, "access.log"))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	streams, err := logging.Open(cfg.Logging)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := proxy.New(cfg, streams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = s.Shutdown(ctx)
+		streams.Close()
+	})
+
+	g := ask(t, s, "alice", "hosts", time.Hour)
+	c := dialBastion(t, s.Addrs()["bastion"], clientSigner)
+	sess, err := c.NewSession()
+	if err != nil {
+		t.Fatalf("with a grant: %v", err)
+	}
+	if _, err := sess.Output("uptime"); err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	// The line is written when the *connection* ends, which is the moment
+	// the gateway knows what the session did.
+	_ = c.Close()
+
+	// Waited for rather than assumed: the write happens on another
+	// goroutine.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		found := false
+		if entries, err := os.ReadDir(logs); err == nil {
+			for _, e := range entries {
+				raw, err := os.ReadFile(filepath.Join(logs, e.Name()))
+				if err == nil && strings.Contains(string(raw), g.ID) {
+					found = true
+				}
+			}
+		}
+		if found {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no access log line names the grant %s", g.ID)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
