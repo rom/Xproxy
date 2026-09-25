@@ -278,11 +278,7 @@ func TestAPopularNameIsRefreshedBeforeItExpires(t *testing.T) {
 	if s.Hits.Load() != 1 {
 		t.Fatalf("cache hits %d, want 1: the client should not have waited on the upstream", s.Hits.Load())
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for up.queries.Load() <= before && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if up.queries.Load() <= before {
+	if !waitFor(func() bool { return up.queries.Load() > before }) {
 		t.Fatal("no refresh reached the upstream")
 	}
 	if s.Prefetched.Load() != 1 {
@@ -320,7 +316,12 @@ func TestABurstOnANearlyExpiredNameRefreshesOnce(t *testing.T) {
 	up := newFailing(t, 2)
 	p := stalePolicy(up, 0, 30*time.Second)
 	p.Prefetch, p.PrefetchThreshold = true, 0.9
-	s, addr := startServer(t, p, Hooks{})
+	// Room for the whole burst. With the usual worker budget the
+	// listener would drop most of it for want of a slot, and a burst
+	// that never arrived would say nothing about the claim on the cache
+	// entry -- it would only say that eight queries fit through eight
+	// slots.
+	s, addr := startServerInFlight(t, p, Hooks{}, 32)
 	_ = udpQuery(t, addr, mustQuery(t, 1, "a.test", TypeA))
 	// Far enough into the two second TTL that every query in the burst
 	// is past the threshold and would each start a refresh of its own.
@@ -372,22 +373,14 @@ func TestARefreshIsNobodysQuery(t *testing.T) {
 	_ = udpQuery(t, addr, mustQuery(t, 1, "rebind.test", TypeA))
 	time.Sleep(800 * time.Millisecond)
 	_ = udpQuery(t, addr, mustQuery(t, 2, "rebind.test", TypeA))
-	deadline := time.Now().Add(2 * time.Second)
-	for s.Prefetched.Load() == 0 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if s.Prefetched.Load() != 1 {
+	if !waitFor(func() bool { return s.Prefetched.Load() != 0 }) {
 		t.Fatalf("prefetched %d, want 1", s.Prefetched.Load())
 	}
-	for i := 0; i < 100; i++ {
-		mu.Lock()
-		n := len(clients)
-		mu.Unlock()
-		if n >= 2 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	// The refresh's own event comes after the counter: the prefetch is
+	// counted when it starts, and the answer it screens is denied when it
+	// lands, so the second event is a separate wait rather than the same
+	// one.
+	waitFor(func() bool { mu.Lock(); defer mu.Unlock(); return len(clients) >= 2 })
 	mu.Lock()
 	defer mu.Unlock()
 	if len(clients) != 2 {
