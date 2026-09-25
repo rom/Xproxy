@@ -3081,6 +3081,133 @@ link carries on: refusing a command is not refusing a link, and a control
 room that lost its telemetry because one command was refused would be an
 outage.
 
+### SNMP in front of the estate's own equipment
+
+The other protocol that runs on unpatchable hardware, except that this one
+runs on *all* of it: every switch, router, printer, uninterruptible supply
+and building controller answers SNMP, and v1 and v2c authenticate with a
+community string -- a cleartext password in every datagram. One datagram
+reads a device's whole configuration; one changes it.
+
+```yaml
+server:
+  listeners:
+    - name: poll
+      address: "10.50.0.10:161"
+      kind: snmp
+      snmp:
+        upstream: switches
+        allow_clients: ["10.50.1.0/24"]  # the monitoring system, and nothing else
+
+        versions: [v2c, v3]              # v1 has no reason to be here
+        communities: [wJ8kq2vP]          # not "public"
+        users: [monitor]
+        min_security_level: authNoPriv   # noAuthNoPriv is v2c with more fields
+
+        read_only: true                  # the line that matters most
+
+        max_repetitions: 50              # the amplification factor
+        max_response_bytes: 8192
+        max_response_ratio: 40
+
+        default_action: deny
+        rules:
+          - name: mib-2
+            action: allow
+            access: [read]
+            oids: ["1.3.6.1.2.1"]
+            deny_oids: ["1.3.6.1.2.1.4.22"]   # not the ARP table
+          - name: vendor
+            action: allow
+            access: [read]
+            oids: ["1.3.6.1.4.1.9"]
+            max_repetitions: 200              # this subtree is walked
+upstreams:
+  - {name: switches, endpoints: [{address: "10.50.2.10:161"}]}
+```
+
+`examples/ot/snmp.yaml` is the complete file, with a trap listener that
+downgrades v3 notifications for a legacy collector, an RFC 6353 TLS
+listener, and a shadow-mode trial beside them.
+
+**`read_only: true` is the whole of "nobody reconfigures anything through
+this relay".** SNMP has exactly one writing operation, so one line covers
+it, and no rule can override that line. If some client genuinely has to
+write, give it its own listener with its own `allow_clients` and
+`write_oids` rather than opening a hole in this one.
+
+**`allow_clients` is the second line, and on this protocol it is nearly the
+first.** A community string is not a secret in any useful sense: it travels
+in clear in every datagram, it is the same on every device in a fleet, and
+the defaults are scanned for constantly. Treat the network list as the
+credential and the community string as a label.
+
+**Write `oids` in subtrees and read the comparison carefully.** The
+comparison is per sub-identifier, so `1.3.6.1.2.1` covers `1.3.6.1.2.1.1.1.0`
+and does *not* cover `1.3.6.1.2.11`. A policy written with string prefixes
+elsewhere allows a subtree nobody named. `deny_oids` is the exception inside
+an allowed subtree -- all of mib-2 except the ARP table, which is a map of
+the network -- and `write_oids` replaces the read list for a SetRequest, so
+one rule can allow a wide read and a narrow write.
+
+**`max_repetitions` is the number to check after reading about an SNMP
+amplification attack.** A forty-octet GETBULK with a repetition count of ten
+thousand asks for a response of megabytes, sent to whatever address the
+datagram claimed to come from. A count past the bound is *lowered* rather
+than the request refused, so a poller nobody can reconfigure still gets an
+answer -- `snmp_truncated` counts how often. `max_response_bytes` and
+`max_response_ratio` are the other half, applied to what comes back: the
+ratio is the one about reflection rather than size, because a large answer
+to a large question is a walk and a large answer to a tiny question is an
+amplifier.
+
+**The secure upgrade runs downwards only, and the reason is worth knowing.**
+
+```yaml
+# A modern device sends v3 traps; the collector understands v2c and never will.
+- name: traps
+  address: "10.50.0.10:162"
+  kind: snmp
+  snmp:
+    upstream: collector
+    traps: true
+    versions: [v3]
+    min_security_level: authNoPriv
+    upgrade_version: v2c
+    upstream_community: kM4tz9Lq
+    default_action: allow
+```
+
+That works end to end because a notification has no answer. A v3 *request*
+does, and its answer would have to be authenticated with the user's key --
+which this relay does not hold and will not invent -- so a v3 request on a
+listener with `upgrade_version` is refused rather than half-translated.
+Producing v3 is refused at load for the same reason. Between v1 and v2c the
+rewrite works in both directions: neither has any integrity to invalidate,
+and the answer is rebuilt in the version the question used.
+
+**RFC 6353 TLS is the stream half.** `transport: tcp` with `tls_mode:
+implicit` gives a management station TLS from the first octet on port 10161
+while the relay speaks plain v2c to the switch. DTLS on 10162 is not
+implemented, so a listener that is TLS throughout is `transport: tcp`; with
+the default `transport: udp` the datagram socket stays plaintext and
+validation says so.
+
+**Read the counters by what an operator asks about.** `snmp_writes` is the
+number to alert on, not `snmp_messages`: a write through a read-only relay
+is either a misconfigured tool or somebody trying. `snmp_amplified` says the
+response bounds are doing something, `snmp_truncated` says the repetition
+bound is, and `snmp_unsolicited` says an answer arrived that no request
+matched -- on UDP that is what a response-spoofing attempt looks like.
+`log_writes` (the default) writes an access line for every SetRequest and
+every refusal and leaves the polling alone, which is what makes the access
+log readable when a poller asks the same questions every thirty seconds.
+
+**A community string never appears in a log.** It is a credential, and a
+log of guessed ones would be a list of the estate's passwords with a
+timestamp beside each. The v3 user name *is* logged, because it is an
+identity rather than a secret.
+
 ### Time: an NTP and NTS gateway
 
 ```yaml

@@ -30,6 +30,7 @@ server:
           ntp: null
           ntske: null
           iec104: null
+          snmp: null
           policy: null
         - name: public
           address: :443
@@ -81,6 +82,7 @@ server:
           ntp: null
           ntske: null
           iec104: null
+          snmp: null
           policy: null
     limits:
         max_header_bytes: 65536

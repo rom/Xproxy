@@ -1,0 +1,284 @@
+# SNMP relay: the management protocol that runs every switch, printer and
+# building controller in an estate, put behind something that can refuse a
+# write.
+#
+# The problem this configuration solves is the oldest one in network
+# management. SNMP v1 and v2c authenticate with a community string: a
+# cleartext password in every datagram, "public" to read and "private" to
+# write on anything nobody reconfigured, with no integrity, no replay
+# protection and no confidentiality. One datagram reads a device's whole
+# configuration; one changes it. v3 has a real security model and also has
+# noAuthNoPriv, which is v2c with more fields.
+#
+# The devices cannot be fixed. They are switches, printers and building
+# controllers with firmware nobody ships updates for, so the relay is the
+# only place a policy can live:
+#   - which addresses may send at all (allow_clients) — on this protocol
+#     the network list is the credential and the community string is a label
+#   - which versions, credentials and security levels are accepted
+#   - that nothing writes (read_only), which no rule can override
+#   - which objects may be named at all (rules, oids, deny_oids)
+#   - that a GETBULK cannot be used as an amplifier (max_repetitions,
+#     max_response_bytes, max_response_ratio)
+#   - that an answer nobody asked for never reaches a manager
+#
+# Validate with: xproxyctl -config examples/ot/snmp.yaml validate
+version: 1
+
+logging:
+  directory: /var/log/xproxy
+  access: {file: access.log}
+  security: {file: security.log}
+  audit: {file: audit.log}
+
+management:
+  socket: /run/xproxy/mgmt.sock
+  socket_mode: "0660"
+
+server:
+  listeners:
+    # ---------------------------------------------------------------
+    # The polling front: the monitoring system sends here, the relay
+    # forwards to the switches.
+    #
+    # This listener takes datagrams (transport: udp, the default, which is
+    # what every poller and every agent actually speaks) and also the
+    # streams of RFC 3430 on the same port.
+    # ---------------------------------------------------------------
+    - name: poll
+      address: "10.50.0.10:161"
+      kind: snmp
+      snmp:
+        upstream: switches
+
+        # The monitoring system, and nothing else. This is the second most
+        # valuable line in the file, and on a protocol whose credential
+        # travels in clear it is very nearly the first.
+        allow_clients: ["10.50.1.0/24"]
+
+        # v1 has no reason to exist on a network built this decade: it
+        # cannot even report "you may not" without saying "no such object".
+        versions: [v2c, v3]
+        communities: [wJ8kq2vPzR]
+        users: [monitor]
+        # noAuthNoPriv is v2c with more fields, so a listener that went to
+        # the trouble of requiring v3 asks for authentication with it.
+        min_security_level: authNoPriv
+
+        # The single most valuable line in the file. SNMP has exactly one
+        # writing operation, so this covers the whole of "nobody
+        # reconfigures anything through this relay" — and no rule below can
+        # open a hole in it.
+        read_only: true
+
+        # The amplification bounds. A forty-octet GETBULK with a repetition
+        # count of ten thousand asks for a response of megabytes, sent to
+        # whatever address the datagram claimed to come from. A count past
+        # this is *lowered* rather than the request refused, so a poller
+        # nobody can reconfigure still gets an answer.
+        max_repetitions: 50
+        max_var_binds: 64
+        # And the other half, on the way back: an agent that ignores the
+        # repetition count still cannot get past a size bound, and the
+        # ratio is the one that is about reflection rather than size.
+        max_response_bytes: 8192
+        max_response_ratio: 40
+
+        # A poll is periodic and its rate is known, which makes this the
+        # one protocol where a rate limit is easy to set correctly.
+        rate_limit: 200
+        rate_burst: 400
+
+        max_message_bytes: 1472    # what fits an Ethernet datagram
+        max_pending: 64
+        request_timeout: 3s
+
+        default_action: deny
+        rules:
+          # mib-2, which is what a monitoring system actually reads: system,
+          # interfaces, ip, tcp, udp. The comparison is per sub-identifier,
+          # so this covers 1.3.6.1.2.1.1.1.0 and does *not* cover
+          # 1.3.6.1.2.11 — a policy written with string prefixes would.
+          - name: mib-2
+            action: allow
+            access: [read]
+            oids: ["1.3.6.1.2.1"]
+            # Except the ARP table, which is a map of the network, and the
+            # TCP connection table, which is a map of who talks to whom.
+            deny_oids: ["1.3.6.1.2.1.4.22", "1.3.6.1.2.1.6.13"]
+
+          # The vendor subtree the switches' own dashboards need, walked
+          # rather than polled object by object, so it gets a higher
+          # repetition bound of its own.
+          - name: vendor-enterprise
+            action: allow
+            access: [read]
+            oids: ["1.3.6.1.4.1.9"]
+            max_repetitions: 200
+
+          # Named so the security log says which one it was rather than
+          # "default deny". The interface table's ifAdminStatus is a write
+          # that takes a link down; the system group's sysName and
+          # sysContact are writes that change what every other tool
+          # believes about the device.
+          - {name: no-interface-writes, action: deny, access: [write], oids: ["1.3.6.1.2.1.2"]}
+          - {name: no-identity-writes, action: deny, access: [write], oids: ["1.3.6.1.2.1.1"]}
+
+    # ---------------------------------------------------------------
+    # The change window: one operator, one subtree, one shift.
+    #
+    # A listener of its own rather than a rule on the one above, because
+    # read_only cannot be overridden by a rule and should not be: a
+    # read-only listener that one rule could write through is not a
+    # read-only listener. Giving the write its own address, its own client
+    # list and its own credential is the shape that stays true.
+    # ---------------------------------------------------------------
+    - name: change
+      address: "10.50.0.10:1161"
+      kind: snmp
+      snmp:
+        upstream: switches
+        allow_clients: ["10.50.1.10/32"]   # the one workstation
+        versions: [v3]
+        users: [netops]
+        min_security_level: authPriv       # a write, so the payload is sealed too
+        read_only: false
+        max_repetitions: 25
+        default_action: deny
+        rules:
+          - name: descriptions
+            action: allow
+            # A wide read and a narrow write in one rule: write_oids
+            # replaces the read list for a SetRequest rather than adding to
+            # it.
+            oids: ["1.3.6.1.2.1"]
+            write_oids: ["1.3.6.1.2.1.1.5", "1.3.6.1.2.1.1.6", "1.3.6.1.2.1.31.1.1.1.18"]
+            schedule: {days: [tue, thu], from: "09:00", to: "17:00", timezone: Europe/Stockholm}
+
+    # ---------------------------------------------------------------
+    # Traps, and the one version rewrite that works end to end.
+    #
+    # A modern device sends v3 notifications; the collector understands v2c
+    # and never will. A notification has no answer, so downgrading it is a
+    # complete translation rather than half of one — unlike a v3 *request*,
+    # whose answer would have to be authenticated with a key this relay
+    # does not hold, and which is therefore refused rather than
+    # half-translated.
+    # ---------------------------------------------------------------
+    - name: traps
+      address: "10.50.0.10:162"
+      kind: snmp
+      snmp:
+        upstream: collector
+        traps: true
+        allow_clients: ["10.50.2.0/23"]    # the equipment networks
+        versions: [v3]
+        min_security_level: authNoPriv
+        upgrade_version: v2c
+        # The collector's community string, which the devices never learn.
+        upstream_community: kM4tz9LqXb
+        max_var_binds: 128
+        rate_limit: 500                    # an alarm storm is still bounded
+        default_action: allow
+        rules:
+          # A link going up and down is telemetry; a device announcing a
+          # cold start is an event somebody reads. Both pass; naming them
+          # is what puts them in the access log with a rule beside them.
+          - {name: standard-traps, action: allow, oids: ["1.3.6.1.6.3.1.1.5"]}
+          - {name: vendor-traps, action: allow, oids: ["1.3.6.1.4.1"]}
+
+    # ---------------------------------------------------------------
+    # RFC 6353: TLS from the first octet on the stream side, for the
+    # management station that can do it. This is the half of the secure
+    # upgrade that faces the manager — plain v2c goes on towards a switch
+    # whose firmware has neither TLS nor v3.
+    #
+    # transport: tcp, because RFC 6353 puts TLS on TCP 10161; DTLS on
+    # 10162 is not implemented, and a listener that claimed to be
+    # encrypted while half of it was plaintext would be worse than one
+    # that says which half.
+    # ---------------------------------------------------------------
+    - name: poll-tls
+      address: "10.50.0.10:10161"
+      kind: snmp
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/tls/snmp.crt, key_file: /etc/xproxy/tls/snmp.key}
+        min_version: "1.3"
+        client_auth: require
+        client_ca_file: /etc/xproxy/tls/nms-ca.pem
+      snmp:
+        upstream: switches
+        transport: tcp
+        tls_mode: implicit
+        allow_clients: ["10.50.1.0/24"]
+        read_only: true
+        # Arriving as v2c inside TLS with a client certificate, leaving as
+        # v2c with the community string the switches expect.
+        upgrade_version: v2c
+        upstream_community: wJ8kq2vPzR
+        max_repetitions: 50
+        max_connections: 8
+        idle_timeout: 300s
+        default_action: deny
+        rules:
+          - {name: mib-2, action: allow, access: [read], oids: ["1.3.6.1.2.1"]}
+
+    # ---------------------------------------------------------------
+    # A shadow-mode trial of a narrower policy, on a copy of the traffic's
+    # own address. Nothing is refused for policy here: the ledger records
+    # what enforcing would have cost, which is the only honest way to find
+    # out before an estate's monitoring breaks.
+    #
+    # The bounds are not part of that. A malformed message, a message past
+    # max_message_bytes, an amplified response, an answer nobody asked for
+    # and the rate limit are refused whatever the mode says — a relay whose
+    # amplification bounds were in shadow mode would be a working
+    # amplifier.
+    # ---------------------------------------------------------------
+    - name: poll-trial
+      address: "10.50.0.11:161"
+      kind: snmp
+      policy: {mode: shadow}
+      snmp:
+        upstream: switches
+        allow_clients: ["10.50.1.0/24"]
+        versions: [v3]
+        min_security_level: authPriv
+        read_only: true
+        max_repetitions: 25
+        default_action: deny
+        rules:
+          - {name: system-only, action: allow, access: [read], oids: ["1.3.6.1.2.1.1"]}
+
+upstreams:
+  - name: switches
+    endpoints:
+      - {address: "10.50.2.10:161"}
+      - {address: "10.50.2.11:161"}
+    # The datagram path picks one endpoint per message, and a health check
+    # is what keeps it from picking a switch that is not answering. A UDP
+    # probe has to send something an agent will answer, so it sends a real
+    # v2c GET for sysDescr.0 with the community above.
+    health_check:
+      type: udp
+      interval: 15s
+      timeout: 3s
+      send_hex: "302a020101040a774a386b713276507a52a019020101020100020100300e300c06082b060102010101000500"
+  - name: collector
+    endpoints: [{address: "10.50.3.10:162"}]
+    # A trap collector answers nothing at all -- a notification has no
+    # response -- so there is nothing to probe it with. A TCP check would
+    # test a port it does not listen on. Left out on purpose.
+
+# Repeated refusals from one address are a probe, and on this protocol a
+# probe is somebody trying community strings: the defaults first, then a
+# list. Ten refusals in five minutes is not a misconfigured tool.
+bans:
+  action: drop
+  triggers:
+    - name: snmp-community-guessing
+      reasons: [snmp_denied]
+      threshold: 10
+      window: 5m
+      duration: 1h

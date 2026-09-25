@@ -22,7 +22,7 @@ the shape. Decision records are in [AMR.md](AMR.md); requirements in
  +----------v----------+  +----------v----------+  +------------v----------+
  |       xproxy        |  |        xgate        |  |        xrelay         |
  |  http tcp udp       |  |   ssh telnet        |  | smtp mqtt ftp syslog  |
- |  forward dns        |  |   vnc rdp           |  | modbus iec104         |
+ |  forward dns        |  |   vnc rdp           |  | modbus iec104 snmp    |
  |                     |  |                     |  | ntp ntske             |
  |  user: xproxy       |  |  user: xgate        |  |  user: xrelay         |
  +--+---------------+--+  +--+---------------+--+  +--+----------------+---+
@@ -83,7 +83,7 @@ authority a cluster peer has by design.
 cmd/xproxy          edge daemon: links the http, forward, tcp and dns kinds
 cmd/xgate           gate daemon: links the ssh, telnet, vnc and rdp kinds
 cmd/xrelay          relay daemon: links the smtp, mqtt, ftp, syslog, modbus,
-                    iec104, ntp and ntske kinds
+                    iec104, snmp, ntp and ntske kinds
 cmd/xproxyctl       management CLI and TUI (talks to any of the three)
 cmd/xproxy-admin    web GUI process (users, sessions, embedded assets)
 cmd/xproxy-fleet    fleet controller
@@ -110,6 +110,9 @@ internal/kinds/modbus  kind: modbus -- Modbus/TCP, RTU and ASCII relay with a
 internal/kinds/iec104  kind: iec104 -- IEC 60870-5-104 relay: command policy by
                        type identification and cause, enforced
                        select-before-operate, sequence checks both ways
+internal/kinds/snmp    kind: snmp -- SNMP relay: policy by version, credential,
+                       operation and object subtree; the amplification bounds;
+                       the version rewritten downwards
 internal/kinds/ntp     kind: ntp -- NTP and NTS gateway: policy, source
                        comparison, learning, traces
 internal/kinds/ntske   kind: ntske -- NTS key establishment relay on 4460
@@ -154,7 +157,7 @@ internal/geoip      MaxMind DB reader and CSV prefix table
 internal/cache      in-memory response cache (LRU, byte bound, Vary)
 internal/dns        DNS wire codec, cache, block list, resolver, servers
 internal/smtp internal/mqtt internal/ftp internal/syslog internal/sftp
-internal/modbus internal/iec104 internal/ntp
+internal/modbus internal/iec104 internal/snmp internal/ntp
                     the wire codecs of the relay and gate protocols
 internal/masque internal/mitm internal/grpcmsg internal/asciicast
                     the wire formats the kinds above are built on
@@ -201,7 +204,7 @@ cmd/xrelay ─┘             metrics, ingress, listener, paths, version}
     │
     └─ blank imports of its own kinds, and nothing else:
          kinds/{http,tcp,udp,dns,forward} | kinds/{ssh,telnet,vnc,rdp} |
-         kinds/{smtp,mqtt,ftp,syslog,modbus,iec104,ntp,ntske}
+         kinds/{smtp,mqtt,ftp,syslog,modbus,iec104,snmp,ntp,ntske}
 
 kinds/<k> -> {proxy, config, listener, and that protocol's wire package}
 proxy     -> {listener, router, upstream, limits, netutil, tlsconf, logging,
@@ -237,7 +240,7 @@ So the binary is split by who is on the other end of the socket:
 |--------|-------|----------------|
 | `xproxy` | the open internet | `http`, `forward`, `tcp`, `udp`, `dns` |
 | `xgate` | people | `ssh`, `telnet`, `vnc`, `rdp` |
-| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `ntp`, `ntske` |
+| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `snmp`, `ntp`, `ntske` |
 
 One repository, one module, one version and one configuration format;
 three programs, three users, three systemd units, three sandboxes, three
@@ -1011,9 +1014,9 @@ templating, an operation policy and YARA over what is written. Sessions
 are recorded to asciicast files (`internal/asciicast`) bounded by count
 and size, and a second factor can be demanded after the key.
 
-### The relay: SMTP, MQTT, FTP, syslog, Modbus, NTP and NTS
+### The relay: SMTP, MQTT, FTP, syslog, Modbus, IEC 104, SNMP, NTP and NTS
 
-The relay kinds (`internal/kinds/{smtp,mqtt,ftp,syslog,modbus,iec104,ntp,ntske}`)
+The relay kinds (`internal/kinds/{smtp,mqtt,ftp,syslog,modbus,iec104,snmp,ntp,ntske}`)
 share a shape:
 each parses its protocol rather than forwarding bytes, holds a policy in
 that protocol's own terms, and bounds what a peer may say.
@@ -1058,6 +1061,29 @@ that protocol's own terms, and bounds what a peer may say.
   routing, because the first frame of an association carries no address to
   route on.
 
+- `snmp` is the third of the unpatchable-equipment kinds, and the one
+  whose traffic is *management* rather than process: every switch,
+  printer and building controller in an estate answers it, and v1 and
+  v2c authenticate with a cleartext community string in every datagram.
+  Its policy is version, credential, operation and object-subtree shaped,
+  with `read_only` above the rules because SNMP has exactly one writing
+  operation. Three things are particular to it. It is the only kind that
+  **bounds an amplification in both directions**: a GETBULK's repetition
+  count is *lowered* rather than refused, because refusing would break a
+  poller nobody can reconfigure while lowering removes the amplifier, and
+  a response disproportionate to its request is refused outright. It
+  **matches every answer to its question** by request identifier, which on
+  a datagram transport is the only way to recognise a response nobody
+  asked for -- the shape of a spoofing attack on the manager -- and the
+  table that does so is bounded and refuses rather than forgetting,
+  because forgetting would make the check unreliable. And it **rewrites
+  the version downwards**, rebuilding the envelope around the PDU that
+  arrived: v3 or RFC 6353 TLS facing the manager, v2c facing the switch.
+  What it will not do is forge one: producing v3 is refused at load, and
+  a v3 request is refused rather than downgraded, because its answer
+  would have to carry a digest this relay has no key to compute. It
+  serves datagrams and streams at once, like `syslog`, because the
+  protocol is used both ways.
 - `ntp` is the time gateway, and the one kind whose interesting half is
   not the forwarding: it probes every server in the pool with its own
   transactions, compares them with each other, and can refuse an answer
@@ -1075,7 +1101,7 @@ that protocol's own terms, and bounds what a peer may say.
   handshakes in flight, and leaves the cryptography to the servers whose
   keys it is.
 
-All seven reach the engine through `Host` alone, which is why they link
+All of them reach the engine through `Host` alone, which is why they link
 into `xrelay` and nowhere else.
 
 ### WebAssembly filters

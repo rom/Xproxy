@@ -13,6 +13,7 @@ import (
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/rdp"
 	"github.com/rom/xproxy/internal/rfb"
+	snmpwire "github.com/rom/xproxy/internal/snmp"
 	"github.com/rom/xproxy/internal/syslog"
 	"github.com/rom/xproxy/internal/telnet"
 	"github.com/rom/xproxy/internal/tmpl"
@@ -819,6 +820,15 @@ func (v *validator) server(s *Server) {
 				v.errf("%s.modbus: required for kind modbus", p)
 			} else {
 				v.modbusListener(p+".modbus", ln.Modbus, ln.TLS != nil)
+			}
+		case "snmp":
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
+				v.errf("%s: an snmp listener takes only address, snmp and tls", p)
+			}
+			if ln.SNMP == nil {
+				v.errf("%s.snmp: required for kind snmp", p)
+			} else {
+				v.snmpListener(p+".snmp", ln.SNMP, ln.TLS != nil)
 			}
 		case "iec104":
 			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
@@ -2426,6 +2436,7 @@ var denyReasons = map[string]bool{
 	"forward_sni_mismatch": true, "dns_tunnel": true, "dns_answer_denied": true,
 	"telnet_denied": true, "vnc_denied": true, "rdp_denied": true, "sftp_icap": true, "udp_denied": true,
 	"modbus_denied": true, "iec104_denied": true, "ntp_denied": true, "ntske_denied": true,
+	"snmp_denied": true,
 }
 
 // securityTxtFieldRE bounds an extra field name to the token RFC 9116
@@ -6905,6 +6916,252 @@ func (v *validator) ftpListener(p string, f *FTPListener, hasTLS bool) {
 // same thing: this listener sits in front of equipment that does what it
 // is told, so a rule that does not do what its author thought is a rule
 // that lets somebody write a setpoint.
+func (v *validator) snmpListener(p string, m *SNMPListener, hasTLS bool) {
+	switch m.Mode {
+	case "", "reverse", "forward":
+	default:
+		v.errf("%s.mode: must be reverse or forward", p)
+	}
+	if m.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	switch m.Transport {
+	case "", "udp", "tcp":
+	default:
+		v.errf("%s.transport: must be udp or tcp", p)
+	}
+	udp := m.Transport == "" || m.Transport == "udp"
+	switch m.TLSMode {
+	case "", "implicit", "none":
+	default:
+		v.errf("%s.tls_mode: must be implicit or none", p)
+	}
+	if m.TLSMode == "implicit" {
+		if !hasTLS {
+			v.errf("%s.tls_mode: implicit needs the listener's tls section", p)
+		}
+		if udp {
+			// RFC 6353 puts TLS on TCP 10161 and DTLS on UDP 10162. This
+			// relay speaks the TLS half, so with transport udp the stream
+			// half of this listener is protected and the datagram half is
+			// not. Saying so is better than implying a whole listener is
+			// encrypted when half of it is plaintext.
+			v.warnf("%s.tls_mode: implicit protects the stream half only; the datagram socket transport udp adds stays plaintext (RFC 6353 DTLS on 10162 is not implemented). Set transport: tcp for a listener that is TLS throughout", p)
+		}
+	}
+	switch m.UpstreamTLSMode {
+	case "", "none", "implicit":
+	default:
+		v.errf("%s.upstream_tls_mode: must be none or implicit", p)
+	}
+	if m.UpstreamTLSMode == "implicit" && udp {
+		v.warnf("%s.upstream_tls_mode: implicit applies to the stream half only; datagrams go to the agent as plain UDP", p)
+	}
+	if m.UpstreamTLS != nil {
+		v.upstreamTLS(p+".upstream_tls", m.UpstreamTLS)
+	}
+	v.modbusCIDRs(p+".allow_clients", m.AllowClients)
+	v.modbusCIDRs(p+".deny_clients", m.DenyClients)
+	if len(m.AllowClients) == 0 {
+		v.warnf("%s.allow_clients: empty, so any address may poll the agents behind this relay; a community string is not a secret in any useful sense", p)
+	}
+	// Which versions this listener takes, which the upgrade rules below are
+	// written against: a v3 message carries no community string to forward,
+	// and its answer cannot be authenticated by a relay with no keys.
+	v3only, takesV3 := len(m.Versions) > 0, len(m.Versions) == 0
+	for i, name := range m.Versions {
+		ver, ok := snmpwire.VersionOf(name)
+		if !ok {
+			v.errf("%s.versions[%d]: %q must be v1, v2c or v3", p, i, name)
+			continue
+		}
+		if ver == snmpwire.V3 {
+			takesV3 = true
+		} else {
+			v3only = false
+		}
+	}
+	if len(m.Versions) == 0 {
+		v.warnf("%s.versions: empty, so v1 and v2c are accepted; their credential is a cleartext community string in every datagram", p)
+	}
+	for i, c := range m.Communities {
+		switch {
+		case c == "":
+			v.errf("%s.communities[%d]: empty", p, i)
+		case len(c) > 255:
+			v.errf("%s.communities[%d]: longer than 255 octets", p, i)
+		case c == "public" || c == "private":
+			v.warnf("%s.communities[%d]: %q is a default that is scanned for constantly", p, i, c)
+		}
+	}
+	for i, u := range m.Users {
+		if u == "" || len(u) > 255 {
+			v.errf("%s.users[%d]: must be 1 to 255 octets", p, i)
+		}
+	}
+	if m.MinSecurityLevel != "" {
+		lvl, ok := snmpwire.LevelOf(m.MinSecurityLevel)
+		if !ok {
+			v.errf("%s.min_security_level: must be noAuthNoPriv, authNoPriv or authPriv", p)
+		} else if lvl == snmpwire.NoAuthNoPriv {
+			v.warnf("%s.min_security_level: noAuthNoPriv refuses nothing; it is version 2c with more fields", p)
+		}
+	}
+	if m.UpgradeVersion != "" {
+		up, ok := snmpwire.VersionOf(m.UpgradeVersion)
+		if !ok {
+			v.errf("%s.upgrade_version: must be v1, v2c or v3", p)
+		} else if up != snmpwire.V3 && m.UpstreamCommunity == "" && !v3only {
+			// Upgrading down to v1 or v2c needs a community string to send,
+			// and a v3 message has none to carry over. Refusing here is the
+			// difference between a misconfiguration and every request being
+			// forwarded with an empty credential.
+			v.errf("%s.upstream_community: required with upgrade_version %s, because a v3 message carries no community string to forward", p, m.UpgradeVersion)
+		}
+		if up == snmpwire.V3 {
+			v.errf("%s.upgrade_version: v3 cannot be produced from a v1 or v2c message, because there is no user, engine or key to authenticate it with; put the v3 listener in front and upgrade downwards", p)
+		}
+		if up != snmpwire.V3 && takesV3 && !m.Traps {
+			// A v3 request downgraded to v2c gets a v2c answer, and giving
+			// that to a v3 manager would mean authenticating it with a key
+			// this relay does not hold. The relay refuses such a request
+			// rather than half-translating it, and saying so here is the
+			// difference between a design decision and a surprise.
+			v.warnf("%s.upgrade_version: a v3 *request* cannot be downgraded -- its answer would have to be authenticated, and this relay holds no USM keys -- so v3 requests on this listener are refused. The downgrade that works end to end is a v3 notification to a legacy collector: traps: true", p)
+		}
+	}
+	if m.UpstreamCommunity != "" && len(m.UpstreamCommunity) > 255 {
+		v.errf("%s.upstream_community: longer than 255 octets", p)
+	}
+	if m.Traps && m.ReadOnly {
+		v.warnf("%s.read_only: a trap listener carries no SetRequest, so read_only refuses nothing here", p)
+	}
+	switch m.DefaultAction {
+	case "", "deny", "allow":
+	default:
+		v.errf("%s.default_action: must be deny or allow", p)
+	}
+	if m.DefaultAction == "allow" && len(m.Rules) == 0 && !m.ReadOnly {
+		v.warnf("%s: default_action allow with no rules and without read_only relays every SetRequest to the equipment", p)
+	}
+	switch m.DenyResponse {
+	case "", "error", "drop", "close":
+	default:
+		v.errf("%s.deny_response: must be error, drop or close", p)
+	}
+	if m.DenyResponse == "close" && udp {
+		v.warnf("%s.deny_response: close ends a stream session; on the datagram half there is no connection to end, so it reads as drop and the manager sees a timeout", p)
+	}
+	if m.MaxRepetitions < 0 || m.MaxRepetitions > 1<<20 {
+		v.errf("%s.max_repetitions: must be between 0 and 1048576", p)
+	}
+	if m.MaxRepetitions == 0 && !m.Traps {
+		v.warnf("%s.max_repetitions: 0 leaves a GETBULK's repetition count unbounded, which is the amplification factor of the best-known SNMP reflection attack", p)
+	}
+	if m.MaxVarBinds < 0 || m.MaxVarBinds > snmpwire.MaxVarBinds {
+		v.errf("%s.max_var_binds: must be between 0 and %d", p, snmpwire.MaxVarBinds)
+	}
+	if m.MaxResponseBytes < 0 || m.MaxResponseBytes > snmpwire.MaxMessage {
+		v.errf("%s.max_response_bytes: must be between 0 and %d", p, snmpwire.MaxMessage)
+	}
+	if m.MaxResponseRatio < 0 || m.MaxResponseRatio > 1<<16 {
+		v.errf("%s.max_response_ratio: must be between 0 and 65536", p)
+	}
+	if m.MaxPending < 0 || m.MaxPending > 1<<16 {
+		v.errf("%s.max_pending: must be between 0 and 65536", p)
+	}
+	if m.MaxConnections < 0 || m.MaxConnections > 4096 {
+		v.errf("%s.max_connections: must be between 0 and 4096", p)
+	}
+	for _, d := range []struct {
+		key    string
+		val    Duration
+		lo, hi time.Duration
+	}{
+		{"idle_timeout", m.IdleTimeout, time.Second, time.Hour},
+		{"request_timeout", m.RequestTimeout, 100 * time.Millisecond, time.Minute},
+		{"connect_timeout", m.ConnectTimeout, 100 * time.Millisecond, time.Minute},
+	} {
+		if d.val != 0 && (d.val.D() < d.lo || d.val.D() > d.hi) {
+			v.errf("%s.%s: must be between %s and %s", p, d.key, d.lo, d.hi)
+		}
+	}
+	if m.MaxMessageBytes != 0 && (m.MaxMessageBytes < 484 || m.MaxMessageBytes > snmpwire.MaxMessage) {
+		v.errf("%s.max_message_bytes: must be between 484 (the protocol's own floor) and %d", p, snmpwire.MaxMessage)
+	}
+	if m.RateLimit < 0 || m.RateLimit > 1<<20 {
+		v.errf("%s.rate_limit: must be between 0 and 1048576", p)
+	}
+	if m.RateBurst < 0 || m.RateBurst > 1<<20 {
+		v.errf("%s.rate_burst: must be between 0 and 1048576", p)
+	}
+	if m.RateLimit == 0 && m.RateBurst > 0 {
+		v.warnf("%s.rate_burst: a burst without a rate_limit bounds nothing", p)
+	}
+	names := map[string]bool{}
+	for i := range m.Rules {
+		r := &m.Rules[i]
+		q := fmt.Sprintf("%s.rules[%d]", p, i)
+		if !nameRE.MatchString(r.Name) {
+			v.errf("%s.name: %q is not a valid name", q, r.Name)
+		} else if names[r.Name] {
+			v.errf("%s.name: duplicate %q", q, r.Name)
+		}
+		names[r.Name] = true
+		switch r.Action {
+		case "", "allow", "deny", "observe":
+		default:
+			v.errf("%s.action: must be allow, deny or observe", q)
+		}
+		v.modbusCIDRs(q+".clients", r.Clients)
+		for j, name := range r.Versions {
+			if _, ok := snmpwire.VersionOf(name); !ok {
+				v.errf("%s.versions[%d]: %q must be v1, v2c or v3", q, j, name)
+			}
+		}
+		for j, name := range r.PDUs {
+			if _, ok := snmpwire.PDUTypeOf(name); !ok {
+				v.errf("%s.pdus[%d]: %q is not an operation (get, get_next, get_bulk, set, trap, trap_v1, inform, response, report)", q, j, name)
+			}
+		}
+		for j, a := range r.Access {
+			switch a {
+			case "read", "write", "notify":
+			default:
+				v.errf("%s.access[%d]: %q must be read, write or notify", q, j, a)
+			}
+		}
+		for _, set := range []struct {
+			key  string
+			oids []string
+		}{{"oids", r.OIDs}, {"deny_oids", r.DenyOIDs}, {"write_oids", r.WriteOIDs}} {
+			for j, o := range set.oids {
+				if _, err := snmpwire.ParseOID(o); err != nil {
+					v.errf("%s.%s[%d]: %v", q, set.key, j, err)
+				}
+			}
+		}
+		if r.MinSecurityLevel != "" {
+			if _, ok := snmpwire.LevelOf(r.MinSecurityLevel); !ok {
+				v.errf("%s.min_security_level: must be noAuthNoPriv, authNoPriv or authPriv", q)
+			}
+		}
+		if r.MaxRepetitions < 0 || r.MaxRepetitions > 1<<20 {
+			v.errf("%s.max_repetitions: must be between 0 and 1048576", q)
+		}
+		if r.Schedule != nil {
+			v.modbusSchedule(q+".schedule", r.Schedule)
+		}
+		if r.Action == "allow" && len(r.Clients) == 0 && len(r.OIDs) == 0 && len(r.PDUs) == 0 &&
+			len(r.Access) == 0 && len(r.Communities) == 0 && len(r.Users) == 0 && len(r.Versions) == 0 {
+			v.warnf("%s: an allow rule that names no client, version, credential, operation or object identifier allows everything", q)
+		}
+		if r.Action == "observe" && len(r.WriteOIDs) > 0 {
+			v.warnf("%s: an observe rule records the message and decides nothing, so write_oids are not applied", q)
+		}
+	}
+}
+
 func (v *validator) iec104Listener(p string, m *IEC104Listener, hasTLS bool) {
 	switch m.Mode {
 	case "", "reverse", "forward":

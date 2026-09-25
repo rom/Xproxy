@@ -238,6 +238,13 @@ T}	T{
 malformed frames,\: the frame bound,\: rate limits (frame and command),\: a station commanding its own control centre,\: bans
 T}
 T{
+\fBsnmp\fR
+T}	T{
+every rule: version,\: community or user,\: security level,\: operation,\: access class,\: object subtree and context;\: \fBversions\fR,\: \fBcommunities\fR,\: \fBusers\fR,\: \fBmin_\:security_\:level\fR;\: \fBread_\:only\fR;\: the message direction
+T}	T{
+malformed messages,\: the message and response bounds,\: the GETBULK repetition bound,\: the response ratio,\: an answer nobody asked for,\: rate limits,\: the client list,\: bans
+T}
+T{
 \fBntp\fR
 T}	T{
 the client list and every request rule (versions,\: modes,\: extension fields,\: the identity it demands),\: and every answer rule (stratum,\: distances,\: timestamps,\: identifier,\: leap)
@@ -4795,6 +4802,477 @@ T}
 \fBThe metric payloads are never decoded.\fR A measurement\(aqs scaled value, quality descriptor and timestamp are forwarded untouched. Decoding every one of the hundred\-odd type identifications would be a second implementation of the standard, and a relay that got one wrong would corrupt a reading nobody could trace. What is read is the ASDU header, the object addresses and a command\(aqs qualifier \-\- which is what a policy is written about. On a \fIsequence\fR ASDU only the first information object address is on the wire, so that is the one an \fBaddresses\fR rule checks.
 .PP
 Counters: \fBiec104_sessions\fR, \fBiec104_sessions_open\fR, \fBiec104_frames\fR, \fBiec104_commands\fR, \fBiec104_system_commands\fR, \fBiec104_denied\fR, \fBiec104_would_deny\fR, \fBiec104_malformed\fR, \fBiec104_rejected\fR, \fBiec104_rate_limited\fR, \fBiec104_selects\fR, \fBiec104_executes\fR, \fBiec104_unselected\fR, \fBiec104_selects_held\fR, \fBiec104_sequence_gaps\fR, \fBiec104_window_full\fR, \fBiec104_upstream_failed\fR. Refusals are \fBiec104_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBtls_handshake\fR, \fBmalformed\fR, \fBframe_too_long\fR, \fBmax_connections\fR, \fBrate_limited\fR, \fBcommand_rate_limited\fR, \fBmonitor_only\fR, \fBcommon_address\fR, \fBrule\fR, \fBdefault_deny\fR, \fBcontrol\fR, \fBstation_command\fR, \fBsequence\fR, \fBwindow\fR, \fBack_ahead\fR, \fBunselected\fR, \fBselect_unavailable\fR.
+.SS "server.listeners[].snmp (kind: snmp)"
+.PP
+SNMP runs every switch, router, printer, uninterruptible supply and building controller in an estate, and versions 1 and 2c authenticate with a community string: a cleartext password in every datagram, \fBpublic\fR to read and \fBprivate\fR to write on anything nobody reconfigured, with no integrity, no replay protection and no confidentiality. One datagram reads a device\(aqs whole configuration; one changes it. Version 3 has a real security model and also has \fBnoAuthNoPriv\fR, which is version 2c with more fields.
+.PP
+The devices cannot be fixed \-\- they are switches and printers and building controllers with firmware nobody ships updates for \-\- so the relay is the only place a policy can live.
+.PP
+Five things are deliberate in the data path.
+.PP
+\fBEvery message is parsed whole.\fR A relay that forwarded what it could not read would be forwarding what it could not decide about, and the agent behind it will read those octets somehow.
+.PP
+\fBThe amplification is bounded in two directions.\fR SNMP is a classic reflection vector: a forty\-octet GETBULK with a repetition count of ten thousand asks for a response of megabytes, to whatever address the datagram claimed to come from. So a repetition count past \fBmax_repetitions\fR is \fIlowered\fR rather than refused \-\- a poller asking for more than it should get still gets an answer, which is what keeps the bound deployable in an estate whose pollers nobody can reconfigure \-\- and a response past \fBmax_response_bytes\fR, or more than \fBmax_response_ratio\fR times the size of the request that asked for it, is refused outright.
+.PP
+\fBA response is matched to its request.\fR The request identifier is the only thing in the protocol that pairs them, so an answer nobody asked for is recognisable \-\- and on UDP that is the shape of a response\-spoofing attack on the manager: an answer to a question it did ask, from somewhere else, arriving first. The table of outstanding requests is bounded by \fBmax_pending\fR, and a full table refuses the new request rather than forgetting an old one, because forgetting would make that pairing unreliable.
+.PP
+\fBThe version can be rewritten downwards.\fR \fBupgrade_version\fR is the secure upgrade: a manager speaks v3 with authentication to this relay, or TLS on the stream side, and the relay speaks v2c to a switch whose firmware has neither, with an \fBupstream_community\fR the manager never needs to know. A response is rebuilt in the version its request arrived in, so the manager sees the version it spoke.
+.PP
+Two rewrites this relay will not do, both because it holds no USM keys and will not forge an authentication that did not happen. It cannot \fIproduce\fR v3, which is refused at load. And it cannot downgrade a v3 \fBrequest\fR: the answer would come back as v2c and handing that to a v3 manager means authenticating it with a key that is not here, so such a request is refused rather than half\-translated. A v3 \fBnotification\fR downgrades cleanly, because nothing comes back \-\- a modern device sending v3 traps to a collector that understands only v2c is exactly what \fBtraps: true\fR with \fBupgrade_version: v2c\fR is for.
+.PP
+\fBThe values are not interpreted.\fR A binding\(aqs type and extent are read; what a \fBCounter64\fR \fImeans\fR is not. A policy about values would need a MIB per estate, and a relay that mis\-decoded one would corrupt a reading nobody could trace.
+.PP
+A listener always accepts the streams of RFC 3430 on its port, and \fBtransport: udp\fR (the default) adds the datagram socket every poller and every agent actually speaks. RFC 6353 TLS is the stream half, on port 10161; DTLS on 10162 is not implemented, so a listener that is TLS throughout is \fBtransport: tcp\fR.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(1.4i) lbw(1.3i) lbx
+lw(1.2i) lw(1.4i) lw(1.3i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBmode\fR
+T}	T{
+\fBreverse\fR,\: \fBforward\fR
+T}	T{
+\fBreverse\fR
+T}	T{
+\fBreverse\fR: managers send here and the relay forwards to the agents. \fBforward\fR: this listener is the controlled egress a management station uses to reach agents elsewhere
+T}
+T{
+\fBupstream\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+The agent pool a request goes to
+T}
+T{
+\fBtransport\fR
+T}	T{
+\fBudp\fR,\: \fBtcp\fR
+T}	T{
+\fBudp\fR
+T}	T{
+Whether the datagram socket is opened as well as the stream one. Streams are always accepted
+T}
+T{
+\fBtraps\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+A trap listener rather than an agent front: the messages arrive from agents and go to a collector,\: which is the opposite direction and a different policy. Port 162 rather than 161
+T}
+T{
+\fBtls_\:mode\fR
+T}	T{
+\fBimplicit\fR,\: \fBnone\fR
+T}	T{
+\fBimplicit\fR with a \fBtls\fR section
+T}	T{
+RFC 6353: TLS from the first octet on the stream side. This is the half of the secure upgrade that faces the management station
+T}
+T{
+\fBupstream_\:tls_\:mode\fR
+T}	T{
+\fBnone\fR,\: \fBimplicit\fR
+T}	T{
+\fBnone\fR
+T}	T{
+Whether this listener speaks RFC 6353 TLS to the agent
+T}
+T{
+\fBupstream_\:tls\fR
+T}	T{
+object
+T}	T{
+
+T}	T{
+Verification of the agent when \fBupstream_\:tls_\:mode\fR is not \fBnone\fR
+T}
+T{
+\fBallow_\:clients\fR
+T}	T{
+list of CIDR
+T}	T{
+all
+T}	T{
+Networks a manager may send from. On this protocol this is the most valuable line in the file after \fBread_\:only\fR,\: because a community string is not a secret in any useful sense
+T}
+T{
+\fBdeny_\:clients\fR
+T}	T{
+list of CIDR
+T}	T{
+
+T}	T{
+Evaluated before \fBallow_\:clients\fR
+T}
+T{
+\fBversions\fR
+T}	T{
+list
+T}	T{
+all
+T}	T{
+\fBv1\fR,\: \fBv2c\fR,\: \fBv3\fR. "v3 only" is the single most useful line an operator can write here
+T}
+T{
+\fBcommunities\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+The community strings v1 and v2c may use. Empty allows any,\: which validation warns about: the defaults are known to everyone and scanned for constantly
+T}
+T{
+\fBusers\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+The v3 USM user names
+T}
+T{
+\fBmin_\:security_\:level\fR
+T}	T{
+\fBnoAuthNoPriv\fR,\: \fBauthNoPriv\fR,\: \fBauthPriv\fR
+T}	T{
+\fBnoAuthNoPriv\fR
+T}	T{
+The lowest v3 level accepted. \fBnoAuthNoPriv\fR refuses nothing,\: so a listener that went to the trouble of requiring v3 usually wants \fBauthNoPriv\fR at least
+T}
+T{
+\fBread_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse every SetRequest,\: for every client,\: before any rule is read. SNMP has exactly one writing operation,\: so this is a one\-line policy covering the whole of "nobody reconfigures anything through this relay". \fBNo rule can override it\fR
+T}
+T{
+\fBupgrade_\:version\fR
+T}	T{
+\fBv1\fR,\: \fBv2c\fR
+T}	T{
+
+T}	T{
+Rewrite the version a message is forwarded in. \fBv3\fR is refused at load
+T}
+T{
+\fBupstream_\:community\fR
+T}	T{
+string
+T}	T{
+the arriving one
+T}	T{
+The community string sent to the agent,\: which is what lets the manager stop knowing it
+T}
+T{
+\fBrules\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+Per\-message rules,\: first match wins;\: see below
+T}
+T{
+\fBdefault_\:action\fR
+T}	T{
+\fBdeny\fR,\: \fBallow\fR
+T}	T{
+\fBdeny\fR
+T}	T{
+What a message no rule matched gets
+T}
+T{
+\fBdeny_\:response\fR
+T}	T{
+\fBerror\fR,\: \fBdrop\fR,\: \fBclose\fR
+T}	T{
+\fBerror\fR
+T}	T{
+\fBerror\fR sends the Response PDU an agent would send \-\- \fBnoAccess\fR on v2c and v3,\: \fBnoSuchName\fR on v1,\: which is the only word v1 has for it \-\- and every manager already knows how to display that. \fBdrop\fR is a timeout to the manager,\: and a timeout is what a dead device looks like. \fBclose\fR ends a stream session
+T}
+T{
+\fBmax_\:repetitions\fR
+T}	T{
+int
+T}	T{
+\fB100\fR
+T}	T{
+A GETBULK\(aqs repetition count,\: which is the amplification factor of the best\-known SNMP reflection attack. \fB0\fR leaves it unbounded,\: which validation warns about
+T}
+T{
+\fBmax_\:var_\:binds\fR
+T}	T{
+int
+T}	T{
+\fB128\fR
+T}	T{
+Variable bindings one message may carry
+T}
+T{
+\fBmax_\:response_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB8192\fR
+T}	T{
+One response. The other half of the amplification bound: \fBmax_\:repetitions\fR bounds what was asked for and this bounds what came back,\: and an agent that ignores the first still cannot get past the second
+T}
+T{
+\fBmax_\:response_\:ratio\fR
+T}	T{
+int
+T}	T{
+\fB50\fR
+T}	T{
+Refuse a response more than this many times the size of its request. The bound that is about \fIreflection\fR rather than size: a large answer to a large question is a walk,\: and a large answer to a tiny question is an amplifier
+T}
+T{
+\fBmax_\:pending\fR
+T}	T{
+int
+T}	T{
+\fB32\fR
+T}	T{
+Requests outstanding towards agents,\: per datagram listener and per stream session
+T}
+T{
+\fBmax_\:connections\fR
+T}	T{
+int
+T}	T{
+\fB32\fR
+T}	T{
+Live stream sessions
+T}
+T{
+\fBidle_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB60s\fR
+T}	T{
+A stream session that says nothing
+T}
+T{
+\fBrequest_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB5s\fR
+T}	T{
+How long the agent has to answer before its answer is too late to forward
+T}
+T{
+\fBconnect_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB5s\fR
+T}	T{
+Dialling the agent on the stream path
+T}
+T{
+\fBmax_\:message_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB8192\fR
+T}	T{
+One message;\: the protocol\(aqs own floor is 484 octets and 1472 is what fits an Ethernet datagram. A message past this is refused unread
+T}
+T{
+\fBrate_\:limit\fR,\: \fBrate_\:burst\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Messages per second per client address. An SNMP poll is periodic and its rate is known,\: so this bound is unusually easy to set correctly
+T}
+T{
+\fBlog_\:messages\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+An access line per message. A poller asks the same questions every thirty seconds,\: so this is a lot of lines
+T}
+T{
+\fBlog_\:writes\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+An access line for every SetRequest and every refusal,\: leaving the polling alone: what was \fIchanged\fR through this relay is the record an estate is asked for
+T}
+T{
+\fBalert_\:on_\:deny\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A security event per refusal
+T}
+T{
+\fBproxy_\:protocol\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Send a PROXY protocol v2 header to the agent on the stream path
+T}
+.TE
+.SS "server.listeners[].snmp.rules[]"
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.8i) lbx
+lw(1.2i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+string
+T}	T{
+Required;\: names the rule in the logs and the counters
+T}
+T{
+\fBaction\fR
+T}	T{
+\fBallow\fR,\: \fBdeny\fR,\: \fBobserve\fR
+T}	T{
+Default \fBallow\fR. \fBobserve\fR records the message and keeps looking,\: which is how a rule is tried on live traffic before it decides anything
+T}
+T{
+\fBclients\fR
+T}	T{
+list of CIDR
+T}	T{
+Networks the manager is in
+T}
+T{
+\fBversions\fR
+T}	T{
+list
+T}	T{
+The protocol versions this rule covers
+T}
+T{
+\fBcommunities\fR
+T}	T{
+list
+T}	T{
+The community strings (v1 and v2c) this rule covers. A rule naming communities cannot match a v3 message,\: and one naming users cannot match a v2c one: letting either cross over would make a rule written about one authentication scheme apply to another
+T}
+T{
+\fBusers\fR
+T}	T{
+list
+T}	T{
+The v3 USM user names this rule covers
+T}
+T{
+\fBmin_\:security_\:level\fR
+T}	T{
+string
+T}	T{
+The lowest v3 level this rule covers,\: so that "this subtree only with authPriv" is one rule
+T}
+T{
+\fBpdus\fR
+T}	T{
+list
+T}	T{
+Operations by name: \fBget\fR,\: \fBget_\:next\fR,\: \fBget_\:bulk\fR,\: \fBset\fR,\: \fBtrap\fR,\: \fBtrap_\:v1\fR,\: \fBinform\fR,\: \fBresponse\fR,\: \fBreport\fR
+T}
+T{
+\fBaccess\fR
+T}	T{
+list
+T}	T{
+\fBread\fR,\: \fBwrite\fR,\: \fBnotify\fR: what the operation \fIdoes\fR. The durable way to write a policy,\: because it does not change when a later revision adds an operation
+T}
+T{
+\fBoids\fR
+T}	T{
+list
+T}	T{
+Object identifier subtrees,\: as \fB1.\:3.\:6.\:1.\:2.\:1\fR or a single object. A message naming an object outside all of them does not match. The comparison is per sub\-identifier,\: so \fB1.\:3.\:6.\:1.\:2.\:1\fR does not cover \fB1.\:3.\:6.\:1.\:2.\:11\fR \-\- a policy written with string prefixes allows a subtree nobody named
+T}
+T{
+\fBdeny_\:oids\fR
+T}	T{
+list
+T}	T{
+Subtrees this rule does not cover even when \fBoids\fR would match,\: which is how an exception inside an allowed subtree is written: all of mib\-2 except the ARP table
+T}
+T{
+\fBwrite_\:oids\fR
+T}	T{
+list
+T}	T{
+Apply instead of \fBoids\fR to a SetRequest,\: so one rule can allow a wide read and a narrow write. The write list \fIreplaces\fR the read list rather than adding to it
+T}
+T{
+\fBmax_\:repetitions\fR
+T}	T{
+int
+T}	T{
+This rule\(aqs own GETBULK bound. A rule does not cover traffic past its own bound,\: so the next rule \-\- or the default \-\- decides;\: matching and then allowing would make the bound a suggestion
+T}
+T{
+\fBcontexts\fR
+T}	T{
+list
+T}	T{
+The v3 context names this rule covers,\: for an engine that fronts several agents
+T}
+T{
+\fBschedule\fR
+T}	T{
+object
+T}	T{
+\fB{days,\: from,\: to,\: timezone}\fR;\: a window whose \fBto\fR is before its \fBfrom\fR spans midnight
+T}
+.TE
+.PP
+\fBWhat is checked before the rules, and cannot be shadowed.\fR A message the relay could not parse is refused whether or not the listener is enforcing: forwarding what it cannot decide about would hand the agent octets it will read somehow. So are the message and response bounds, the repetition bound, the response ratio, an answer no request matched, a message arriving from the agent side that is not an answer, the rate limit and the client list. A relay whose amplification bounds were in shadow mode would be a working amplifier.
+.PP
+\fB\fBread_only\fR is checked before any rule and cannot be overridden by one.\fR A read\-only listener that a single rule could write through is not a read\-only listener.
+.PP
+\fBAn encrypted v3 payload is decided about, not inspected.\fR When the security level is \fBauthPriv\fR the scoped PDU is ciphertext: the header parses, the user and the level are checked, and there is no operation and no object identifier to decide about. The decision says \fBsnmp_encrypted\fR rather than refusing traffic the listener was configured to carry or pretending it was inspected.
+.PP
+\fBA community string is never written to a log.\fR It is a credential, and an access log or security event that printed every guessed one would be a list of the estate\(aqs passwords with a timestamp beside each. The v3 user name \fIis\fR logged, because it is an identity rather than a secret.
+.PP
+Counters: \fBsnmp_messages\fR, \fBsnmp_sessions\fR, \fBsnmp_sessions_open\fR, \fBsnmp_reads\fR, \fBsnmp_writes\fR, \fBsnmp_traps\fR, \fBsnmp_denied\fR, \fBsnmp_would_deny\fR, \fBsnmp_malformed\fR, \fBsnmp_rejected\fR, \fBsnmp_rate_limited\fR, \fBsnmp_amplified\fR, \fBsnmp_truncated\fR, \fBsnmp_upgraded\fR, \fBsnmp_timed_out\fR, \fBsnmp_upstream_failed\fR, \fBsnmp_unsolicited\fR. Refusals are \fBsnmp_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBtls_handshake\fR, \fBmalformed\fR, \fBmalformed_response\fR, \fBmessage_too_large\fR, \fBframing\fR, \fBmax_connections\fR, \fBrate_limited\fR, \fBversion\fR, \fBcommunity\fR, \fBuser\fR, \fBsecurity_level\fR, \fBread_only\fR, \fBdirection\fR, \fBvar_binds\fR, \fBrule\fR, \fBdefault_deny\fR, \fBmax_repetitions\fR, \fBresponse_too_large\fR, \fBresponse_ratio\fR, \fBresponse_too_late\fR, \fBunsolicited_response\fR, \fBencrypted_response\fR, \fBwrong_direction\fR, \fBtoo_many_pending\fR, \fBupgrade_failed\fR.
 .SS "server.listeners[].ntp (kind: ntp)"
 .PP
 A \fBkind: ntp\fR listener is an NTP and NTS security gateway: it reads every packet, decides about it in the protocol\(aqs own terms, and compares the servers behind it with each other.
@@ -12593,7 +13071,7 @@ list
 T}	T{
 \fB[]\fR (all)
 T}	T{
-Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fByara\fR
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fByara\fR
 T}
 T{
 \fBthreshold\fR

@@ -282,6 +282,8 @@ type Listener struct {
 	NTSKE *NTSKEListener `yaml:"ntske"`
 	// IEC104 configures a kind: iec104 listener.
 	IEC104 *IEC104Listener `yaml:"iec104"`
+	// SNMP configures a kind: snmp listener.
+	SNMP *SNMPListener `yaml:"snmp"`
 	// Policy is whether this listener enforces its policy or only
 	// evaluates it. It overrides the estate's own policy section.
 	Policy *ListenerPolicy `yaml:"policy"`
@@ -591,6 +593,222 @@ type IEC104Listener struct {
 	AlertOnDeny *bool `yaml:"alert_on_deny"`
 	// ProxyProtocol sends a PROXY protocol v2 header to the station.
 	ProxyProtocol bool `yaml:"proxy_protocol"`
+}
+
+// SNMPListener configures a kind: snmp listener: an SNMP relay in front of
+// the equipment that management protocol actually manages.
+//
+// SNMP runs every switch, router, printer, UPS and building controller in an
+// estate, and versions 1 and 2c authenticate with a *community string*: a
+// cleartext password in every datagram, "public" to read and "private" to
+// write on anything nobody reconfigured. No integrity, no replay protection,
+// no confidentiality. One datagram with the right string reads a device's
+// whole configuration; one with the write string changes it. Version 3 has a
+// real security model and also has noAuthNoPriv, which is version 2c with
+// more fields.
+//
+// The devices cannot be fixed, so the policy lives here. What it is written
+// about is what the protocol says out loud: the version, the credential, the
+// operation, and the object identifiers being read or written.
+type SNMPListener struct {
+	// Mode is reverse (the default: managers connect here and the listener
+	// forwards to the agents) or forward (this listener is the controlled
+	// egress a management station uses to reach agents elsewhere).
+	Mode string `yaml:"mode"`
+	// Upstream is the agent pool a request goes to. Required in reverse
+	// mode.
+	Upstream string `yaml:"upstream"`
+	// Transport is udp (the default) or tcp, and it decides whether this
+	// listener takes datagrams as well as streams. It always takes
+	// streams: SNMP over TCP is what RFC 3430 defines and what the TLS
+	// transport of RFC 6353 runs over, and a bound port nothing accepts on
+	// would leave a client hanging instead of being decided about. udp adds
+	// the datagram socket every poller and every agent actually speaks.
+	Transport string `yaml:"transport"`
+	// Traps makes this a trap listener rather than an agent front: the
+	// datagrams arrive from agents and go to a manager, which is the
+	// opposite direction and a different policy. Port 162 rather than 161.
+	Traps bool `yaml:"traps"`
+	// TLSMode is implicit (RFC 6353, TLS from the first octet on TCP
+	// 10161) or none. Default implicit when the listener has a tls
+	// section. This is the half of the secure upgrade that faces the
+	// manager: TLS and a certificate towards the management station, plain
+	// v2c towards a switch that will never speak either.
+	TLSMode string `yaml:"tls_mode"`
+	// UpstreamTLSMode is none or implicit: whether this listener speaks
+	// RFC 6353 TLS to the agent.
+	UpstreamTLSMode string `yaml:"upstream_tls_mode"`
+	// UpstreamTLS verifies the agent when upstream_tls_mode is not none.
+	UpstreamTLS *UpstreamTLS `yaml:"upstream_tls"`
+	// AllowClients and DenyClients are the networks a manager may send
+	// from. Deny is evaluated first. On this protocol the client list is
+	// the most valuable line in the file after read_only, because a
+	// community string is not a secret in any useful sense.
+	AllowClients []string `yaml:"allow_clients"`
+	DenyClients  []string `yaml:"deny_clients"`
+	// Versions is the allow list of protocol versions: v1, v2c, v3. Empty
+	// allows all three, which validation advises against. "v3 only" is the
+	// single most useful line an operator can write here.
+	Versions []string `yaml:"versions"`
+	// Communities is the allow list of community strings for v1 and v2c.
+	// Empty allows any, which validation warns about: the defaults are
+	// known to everyone and scanned for constantly.
+	Communities []string `yaml:"communities"`
+	// Users is the allow list of v3 USM user names. Empty allows any.
+	Users []string `yaml:"users"`
+	// MinSecurityLevel refuses a v3 message below a level:
+	// noAuthNoPriv (the default, which refuses nothing), authNoPriv or
+	// authPriv. noAuthNoPriv is v2c with more fields, so a listener that
+	// went to the trouble of requiring v3 usually wants authNoPriv at
+	// least.
+	MinSecurityLevel string `yaml:"min_security_level"`
+	// ReadOnly refuses every SetRequest, for every client, before any rule
+	// is read, and no rule can override it. SNMP has exactly one writing
+	// operation, so this is a one-line policy that covers the whole of
+	// "nobody reconfigures anything through this relay" -- and a read-only
+	// listener that one rule could write through is not a read-only
+	// listener.
+	ReadOnly bool `yaml:"read_only"`
+	// UpgradeVersion rewrites the version a message is forwarded in.
+	// Empty forwards the version that arrived.
+	//
+	// It is a relay of intent rather than a translation of credentials:
+	// the community string sent upstream is upstream_community, and the
+	// manager never needs to know it. A response is rebuilt in the version
+	// its request arrived in, so the manager sees the version it spoke.
+	//
+	// Two things it cannot do, both for the same reason -- this relay holds
+	// no USM keys and will not forge an authentication that did not happen.
+	// It cannot produce v3, which is refused at load. And it cannot
+	// downgrade a v3 *request*, because the answer would have to come back
+	// as v3 and there is no key to authenticate it with; such a request is
+	// refused rather than half-translated. A v3 *notification* downgrades
+	// cleanly, because nothing comes back: that is the modern-device,
+	// legacy-collector case, and it is what traps: true plus
+	// upgrade_version: v2c is for.
+	UpgradeVersion string `yaml:"upgrade_version"`
+	// UpstreamCommunity is the community string sent to the agent, which
+	// is what lets the manager stop knowing it. Required with
+	// upgrade_version v1 or v2c when the arriving message is v3, because
+	// there is no community string in a v3 message to carry over.
+	UpstreamCommunity string `yaml:"upstream_community"`
+	// Rules decide each message, in order, first match wins. A message
+	// that matches no rule takes DefaultAction.
+	Rules []SNMPRule `yaml:"rules"`
+	// DefaultAction is deny (the default) or allow.
+	DefaultAction string `yaml:"default_action"`
+	// DenyResponse is how a refused request is answered: error (the
+	// default: a Response PDU carrying the noAccess error, which is what
+	// an agent sends and what every manager already displays), drop (no
+	// answer, which the manager reads as a timeout) or close (end the
+	// connection, on a TCP listener only).
+	DenyResponse string `yaml:"deny_response"`
+	// MaxRepetitions bounds a GETBULK's max-repetitions field, which is
+	// the amplification factor of the best-known SNMP reflection attack: a
+	// request of forty octets asking for a response of megabytes. Default
+	// 100. Zero leaves the protocol's own absence of a bound, which
+	// validation warns about.
+	MaxRepetitions int `yaml:"max_repetitions"`
+	// MaxVarBinds bounds the variable bindings one message may carry.
+	// Default 128.
+	MaxVarBinds int `yaml:"max_var_binds"`
+	// MaxResponseBytes bounds one response. Default 8192. It is the other
+	// half of the amplification bound: max_repetitions bounds what was
+	// asked for and this bounds what came back, and an agent that ignores
+	// the first still cannot get past the second.
+	MaxResponseBytes int `yaml:"max_response_bytes"`
+	// MaxResponseRatio refuses a response more than this many times the
+	// size of the request that asked for it. Default 50. It is the bound
+	// that is about *reflection* rather than about size: a large response
+	// to a large request is a walk, and a large response to a tiny request
+	// is an amplifier.
+	MaxResponseRatio int `yaml:"max_response_ratio"`
+	// MaxPending bounds the requests this listener has outstanding towards
+	// agents on the datagram path, where the request identifier is what
+	// pairs an answer with its question. Default 32. A full table refuses
+	// the new request rather than forgetting an old one, because forgetting
+	// would make that pairing -- which is the check that finds an
+	// unsolicited response -- unreliable.
+	MaxPending int `yaml:"max_pending"`
+	// MaxConnections bounds live TCP sessions. Default 32; ignored on a
+	// UDP listener.
+	MaxConnections int `yaml:"max_connections"`
+	// IdleTimeout closes a TCP session that says nothing, and expires a
+	// UDP client's association. Default 60s.
+	IdleTimeout Duration `yaml:"idle_timeout"`
+	// RequestTimeout bounds how long the agent has to answer. Default 5s.
+	RequestTimeout Duration `yaml:"request_timeout"`
+	// ConnectTimeout bounds dialling the agent on a TCP listener.
+	// Default 5s.
+	ConnectTimeout Duration `yaml:"connect_timeout"`
+	// MaxMessageBytes bounds one message. Default 8192; the protocol's own
+	// floor is 484 octets and 1472 is what fits an Ethernet datagram.
+	MaxMessageBytes int `yaml:"max_message_bytes"`
+	// RateLimit and RateBurst bound messages per second per client
+	// address. Zero disables them. An SNMP poll is periodic and its rate
+	// is known, so this bound is unusually easy to set correctly.
+	RateLimit int `yaml:"rate_limit"`
+	RateBurst int `yaml:"rate_burst"`
+	// LogMessages writes an access line per message rather than per
+	// session. A poller asks the same questions every thirty seconds, so
+	// this is a lot of lines; LogWrites is usually what an operator wants.
+	LogMessages bool `yaml:"log_messages"`
+	// LogWrites writes an access line for every SetRequest and every
+	// refusal, and leaves the polling alone. Default true: what was
+	// *changed* through this relay is the record an estate is asked for.
+	LogWrites *bool `yaml:"log_writes"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
+	// ProxyProtocol sends a PROXY protocol v2 header to the agent on a TCP
+	// listener.
+	ProxyProtocol bool `yaml:"proxy_protocol"`
+}
+
+// SNMPRule decides one message.
+type SNMPRule struct {
+	// Name identifies the rule in the logs and the counters. Required.
+	Name string `yaml:"name"`
+	// Action is allow, deny or observe. observe logs and counts and then
+	// keeps looking, which is how a rule is tried on live traffic before it
+	// decides anything.
+	Action string `yaml:"action"`
+	// Clients are the networks the manager is in.
+	Clients []string `yaml:"clients"`
+	// Versions are the protocol versions this rule covers.
+	Versions []string `yaml:"versions"`
+	// Communities are the community strings (v1 and v2c) this rule covers.
+	Communities []string `yaml:"communities"`
+	// Users are the v3 USM user names this rule covers.
+	Users []string `yaml:"users"`
+	// MinSecurityLevel is the lowest v3 security level this rule covers, so
+	// that "this subtree only with authPriv" is one rule.
+	MinSecurityLevel string `yaml:"min_security_level"`
+	// PDUs are the operations by name: get, get_next, get_bulk, set, trap,
+	// trap_v1, inform, response, report.
+	PDUs []string `yaml:"pdus"`
+	// Access matches what the operation does: read, write or notify. It is
+	// the durable way to write a policy, because it does not change when a
+	// later revision adds an operation.
+	Access []string `yaml:"access"`
+	// OIDs are the object identifier subtrees the message may name, as
+	// "1.3.6.1.2.1" or a single object. A message naming an object outside
+	// all of them does not match. The comparison is per sub-identifier, so
+	// 1.3.6.1.2.1 does not cover 1.3.6.1.2.11.
+	OIDs []string `yaml:"oids"`
+	// DenyOIDs are subtrees this rule does not cover even when OIDs would
+	// match, which is how an exception inside an allowed subtree is
+	// written: all of mib-2 except the ARP table.
+	DenyOIDs []string `yaml:"deny_oids"`
+	// WriteOIDs apply instead of OIDs to a SetRequest when set, so one
+	// rule can allow a wide read and a narrow write.
+	WriteOIDs []string `yaml:"write_oids"`
+	// MaxRepetitions overrides the listener's GETBULK bound for this rule.
+	MaxRepetitions int `yaml:"max_repetitions"`
+	// Contexts are the v3 context names this rule covers, for an engine
+	// that fronts several agents.
+	Contexts []string `yaml:"contexts"`
+	// Schedule limits the rule to a time window.
+	Schedule *ModbusSchedule `yaml:"schedule"`
 }
 
 // IEC104Rule decides one frame.
