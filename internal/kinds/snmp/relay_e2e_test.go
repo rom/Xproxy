@@ -863,10 +863,9 @@ func TestTheConnectionBoundHolds(t *testing.T) {
 // is either a device sending to the wrong port or something walking the
 // relay's own socket.
 func TestANotificationFromTheAgentSideOfADatagramRelayIsRefused(t *testing.T) {
-	a := startAgent(t, &agent{})
-	a.reply = func(m *wire.Message) []byte {
+	a := startAgent(t, &agent{reply: func(m *wire.Message) []byte {
 		return v2c(m.Community, trap(1, 1, 3, 6, 1, 6, 3, 1, 1, 5, 3))
-	}
+	}})
 	s, addr := snmpServer(t, `        upstream: agents
         allow_clients: ["127.0.0.0/8"]
         default_action: allow`, a.udpAddr())
