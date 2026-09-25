@@ -5975,6 +5975,110 @@ answering with a certificate the client rejects for itself. Alert on the
 do not expect the refusal to save a pair of nodes whose certificates
 expired together.
 
+### PostgreSQL: refusing the downgrade, and deciding by shape
+
+The single most valuable thing a relay does for this protocol is refuse the
+encryption downgrade, and it is one line -- because it is on by default:
+
+```yaml
+- name: db
+  address: "10.0.0.10:5432"
+  kind: postgres
+  tls:
+    certificates: [{cert_file: /etc/xproxy/tls/db.pem, key_file: /etc/xproxy/tls/db-key.pem}]
+  postgres:
+    upstream: pg
+    allow_auth: [scram]
+```
+
+Why that matters more than it looks: TLS here is negotiated *in cleartext*.
+The client sends eight octets asking, the server answers with one unsigned
+octet, and nothing signs it. libpq's default `sslmode` is `prefer`, which
+means "ask for TLS and carry on in the clear if refused, without telling
+anybody". So anybody on the path turns `S` into `N` and the connection --
+including the role name, the database name and, with `md5`, a
+password-equivalent -- crosses in the open. The relay answers that request
+itself rather than forwarding it, so the decision is made where it can be
+configured once instead of in ten thousand connection strings.
+
+Then narrow by shape. This is the reporting listener from
+`examples/databases/postgres.yaml`, and it is worth reading as one
+sentence: from the analytics network, as one of two roles, into one
+database, over TLS, with SCRAM, reading only.
+
+```yaml
+postgres:
+  upstream: pg
+  allow_clients: ["10.0.8.0/24"]
+  allow_users: [reporting, dashboards]
+  deny_users: [postgres, replicator]
+  allow_databases: [sales]
+  allow_auth: [scram]
+  read_only: true
+  allow_statements: [select, explain, show, set, begin, commit, rollback, declare, fetch, close_cursor, empty]
+  allow_copy: []
+  max_statements: 1
+```
+
+Two of those lines are less obvious than the rest. `set` and `empty` are
+there because client libraries send them on connect -- `timezone`,
+`client_encoding`, and an empty query as a liveness test -- and a policy
+that refuses them refuses every connection before the application runs a
+statement of its own. `max_statements: 1` is there because the simple query
+protocol allows several statements separated by semicolons, which is how
+every injection ending in `; DROP TABLE` is delivered.
+
+What a refusal looks like from the client's side:
+
+```
+$ psql "host=10.0.0.10 dbname=sales user=reporting sslmode=verify-full"
+psql (17.2)
+sales=> DELETE FROM orders WHERE id = 1;
+ERROR:  refused by xproxy: read_only (delete) on delete
+```
+
+SQLSTATE 42501 is `insufficient_privilege`, which is what the database
+itself would answer, so an application's existing error handling works --
+and the message says the proxy refused it, so nobody spends an afternoon
+looking for a `GRANT` that would not have helped.
+
+Where the relay stops, deliberately: it does not know which *tables* a
+statement touches. That needs a real SQL parser, and a relay that got it 95%
+right would have a hole in exactly the place somebody is looking. Table
+privileges stay the database's job:
+
+```sql
+GRANT USAGE ON SCHEMA public TO reporting;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO reporting;
+```
+
+The two are complements. `GRANT` says which rows a role may see; the relay
+says the connection must be encrypted, the credential must be SCRAM, the
+statement must be one of eleven shapes, and `COPY ... FROM PROGRAM` will
+never happen no matter what any role is granted.
+
+Start with a trial rather than a policy. `monitor_only: true` evaluates
+everything and enforces nothing, except the decisions that cannot honestly
+be observed:
+
+```
+$ xproxyctl policy
+KIND      LISTENER  REASON                  RULE  COUNT  SAMPLE
+postgres  trial     statement_not_allowed         1841   insert
+postgres  trial     statement_not_allowed         312    ddl
+postgres  trial     read_only                     44     update
+```
+
+That is the list to write the allow list from. What shadow mode still
+refuses, because relaying it and writing it down is not a trial of
+anything: an address that may not connect, a connection that will not
+encrypt, a weak authentication method, a replication connection, a
+statement the classifier could not read, and `COPY ... FROM PROGRAM`.
+
+`examples/databases/postgres.yaml` has all three listeners: the reporting
+front above, an application front where a rule lets the migration account
+change the schema on two nights a week and nothing else ever, and the trial.
+
 ### The device inventory: finding out what is on the network
 
 An estate that cannot be scanned can still be inventoried, because the

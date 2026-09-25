@@ -442,6 +442,103 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **`kind: postgres`: a PostgreSQL relay that is deliberately not a SQL
+  firewall.** Knowing which tables a statement touches means parsing SQL
+  properly -- every alias, subquery, CTE, view, function body and `search_path`
+  interaction -- and a relay that got that 95% right would have a policy with a
+  hole in exactly the place somebody is looking. Restricting a role's tables
+  stays the database's own job, done properly, with `GRANT`. What this does
+  instead is the four things a relay can do that the database either cannot or
+  reliably has not.
+
+  **It refuses the encryption downgrade, which is the whole reason to put a
+  relay in front of this protocol.** TLS here is negotiated *in cleartext*: the
+  client sends eight octets asking, the server answers with one unsigned octet,
+  and nothing signs it. libpq's default `sslmode` is `prefer`, which means "ask
+  for TLS and carry on in the clear if refused, without telling anybody" -- so
+  the default configuration of the most widely deployed client in the world
+  downgrades silently when anything on the path rewrites one byte. The relay
+  answers that request itself rather than forwarding it, because forwarding
+  would mean the server's answer decided; `require_tls` is on by default, and a
+  listener that sets it without a certificate is refused at load rather than at
+  every handshake. The leg to the server defaults to `require` as well: a relay
+  that terminated TLS from the client and then spoke plaintext onward would have
+  moved the exposure rather than removed it. MySQL's `CLIENT_SSL` capability
+  flag and TDS's PRELOGIN encryption option are the same shape, and will get the
+  same answer.
+
+  **It refuses the authentication methods whose credential an observer can
+  reuse.** The relay reads the *server's* authentication request, because
+  `pg_hba.conf` is what chooses the method, and this is where somebody notices
+  that the line which matched says `md5`. `password` is the password in
+  cleartext; `md5` is worse than it looks, because the stored verifier is
+  `md5(password+username)` -- the hash *is* a password-equivalent, so anybody
+  who reads `pg_authid` authenticates without cracking anything. PostgreSQL has
+  shipped SCRAM since version 10.
+
+  **It refuses what is not a statement at all.** `replication=true` is a startup
+  *parameter*, so no statement policy would ever see it, and it turns the
+  connection into a byte-for-byte copy of every database on the server including
+  the role passwords. The legacy fast-path function call names a function by
+  object identifier and bypasses the parser; nothing written this century sends
+  it. A cancel request arrives on a connection of its own and the server acts on
+  it with **no authentication whatsoever** -- the whole credential is a backend
+  process identifier and a 32-bit secret -- so the relay refuses one from an
+  address that is not an admitted client and counts the rest, which is what
+  turns a quiet brute force of 32 bits into something somebody sees.
+
+  **It decides by the shape of a statement, not its contents.** An allow list of
+  statement *kinds*, where a statement the classifier cannot name is `unknown`
+  and refused -- and `unknown` is not a kind a configuration may write. That
+  inverts the deny-list problem the TFTP kind ran into: searching a statement
+  for `DROP` is beaten by `DR/**/OP`, by a quoted identifier, and by an innocent
+  statement that mentions the word in a string literal, whereas an allow list of
+  shapes fails *closed* on a spelling nobody thought of. The classifier strips
+  comments and quoting properly -- PostgreSQL's block comments nest, unlike the
+  SQL standard's; dollar-quoted strings have no escaping at all; and a comment is
+  whitespace rather than nothing, so `SEL/**/ECT` does not reassemble -- and it
+  is conservative in the one direction that is safe, because when a classifier
+  must be wrong it must be wrong towards the more restricted answer: a
+  data-modifying CTE is the write it contains rather than the `SELECT` it opens
+  with, `EXPLAIN ANALYZE` is the statement it runs because `ANALYZE` executes it,
+  and `COPY` carries which of its three operations it is. Text that cannot be
+  lexed at all is refused rather than classified, because the relay and the
+  server would disagree about where the statement ends, and disagreeing about
+  that is how a statement gets past a relay that read a different one.
+
+  `COPY ... FROM PROGRAM` runs a shell command as the server's operating-system
+  user. It is nameable by no rule in any mode, and validation refuses a
+  configuration that tries: a setting that could switch remote code execution on
+  through a relay is one somebody switches on by accident.
+
+  `read_only` includes `call` and `do`, because a procedure and an anonymous
+  block can do anything the role can, and a relay that counted them reads would
+  have a `read_only` that is decorative.
+
+  Both query protocols are read. Every driver written this century sends
+  Parse/Bind/Execute and no Query at all, so a relay that inspected only Query
+  would be inspecting nothing -- and a Bind is decided again for the prepared
+  statement it names, which is what catches a pooled connection in transaction
+  mode executing a statement another application left behind. The startup packet
+  is forwarded as the octets the client sent, because re-encoding it would mean
+  deciding about one message and forwarding another. A statement sent before the
+  server has said AuthenticationOk is refused: there is no legitimate one.
+
+  The log carries the statement kind and never the statement text. A `WHERE`
+  clause names the row and an `INSERT` carries the value, and a security log is
+  read by more people than the database is. The one exception is the leading
+  keyword of a statement the classifier could not read, because "something
+  unreadable was refused" with no hint of what is a line nobody can act on --
+  and it goes through `textsafe`, since a verb off the network can carry an
+  escape sequence.
+
+  Refusals are `postgres_denied` for the ban triggers, with the fine-grained
+  reason in the security log. Shadow mode never shadows: the client list, the
+  TLS requirement, the authentication methods, a replication connection, a
+  statement the classifier could not read, `COPY ... FROM PROGRAM`, the
+  fast-path call, or a bound. `examples/databases/postgres.yaml`;
+  docs/CONFIG.md `postgres`, docs/USAGE.md and docs/TROUBLESHOOTING.md.
+
 - **A device inventory built from traffic rather than from scanning
   (`asset_inventory`).** An operational estate's oldest problem is that nobody
   knows what is on the network: the drawings are from commissioning, the

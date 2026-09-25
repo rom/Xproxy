@@ -1,0 +1,267 @@
+# PostgreSQL relay: the database in front of something that can refuse a
+# statement, and refuse a connection that will not encrypt.
+#
+# The first thing to say is what this is *not*. It is not a SQL firewall.
+# Knowing which tables a statement touches means parsing SQL properly --
+# every alias, subquery, CTE, view, function body and search_path
+# interaction -- and a relay that got that 95% right would have a policy
+# with a hole in exactly the place somebody is looking. Restricting a
+# role's tables is the database's own job, done properly, with GRANT.
+#
+# What a relay does that the database cannot, or reliably has not:
+#
+#   - Refuses the encryption downgrade. The protocol negotiates TLS in
+#     cleartext: eight octets ask, one unsigned octet answers. Nothing
+#     signs it, and libpq's default sslmode is `prefer`, which means "ask
+#     for TLS and carry on in the clear if refused, without telling
+#     anybody". So the default configuration of the most widely deployed
+#     client in the world downgrades silently when something on the path
+#     rewrites one byte. One line here fixes it for every client at once,
+#     which is not true of ten thousand connection strings.
+#
+#   - Refuses the authentication methods whose credential an observer can
+#     reuse. pg_hba.conf can do this too, and on every estate that has
+#     been audited, it does not.
+#
+#   - Refuses what is not a statement at all: a replication connection (a
+#     startup *parameter*, so no statement policy would ever see it), the
+#     legacy fast-path function call, a cancel request from an address
+#     that has no business sending one.
+#
+#   - Decides by the *shape* of a statement -- an allow list of kinds,
+#     where anything the classifier cannot name is refused. That is a much
+#     smaller claim than a SQL firewall, and it is one that holds.
+#
+# Validate with: xproxyctl -config examples/databases/postgres.yaml validate
+version: 1
+
+logging:
+  directory: /var/log/xproxy
+  access: {file: access.log}
+  security: {file: security.log}
+  audit: {file: audit.log}
+
+management:
+  socket: /run/xproxy/mgmt.sock
+  socket_mode: "0660"
+
+server:
+  listeners:
+    # ---------------------------------------------------------------
+    # The reporting front: dashboards and analysts read, and nothing
+    # else happens here at all.
+    #
+    # This is the listener worth copying. Every line of it narrows
+    # something, and together they say a sentence a reviewer can check:
+    # "from the analytics network, as one of two roles, into one
+    # database, over TLS, with SCRAM, reading only."
+    # ---------------------------------------------------------------
+    - name: reporting
+      address: "10.0.0.10:5432"
+      kind: postgres
+
+      # The protocol has no separate port for an encrypted connection: a
+      # client connects in the clear and asks to upgrade. So the listener
+      # needs a certificate, and the relay answers that request itself
+      # rather than letting the server's answer decide.
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/tls/db.pem, key_file: /etc/xproxy/tls/db-key.pem}
+
+      postgres:
+        upstream: pg
+
+        # The analytics network. Not a credential, and still the cheapest
+        # line in the file.
+        allow_clients: ["10.0.8.0/24"]
+
+        # require_tls defaults to true; it is written out because the
+        # reader of this file should see that the decision was made
+        # rather than inherited.
+        require_tls: true
+
+        # And the leg to the server. The default is `require` rather than
+        # "match the client" on purpose: a relay that terminated TLS from
+        # the client and then spoke plaintext onward would have moved the
+        # exposure rather than removed it.
+        upstream_tls_mode: require
+        upstream_tls:
+          ca_file: /etc/xproxy/tls/pg-ca.pem
+
+        # Which roles may be *claimed*. It is a claim rather than a
+        # credential -- the client says who it wants to be and the server
+        # decides -- so this says which attempts may be made at all,
+        # which is smaller and still useful: an estate where nothing
+        # should ever connect as `postgres` can say so here and have it
+        # hold before a single password is guessed at.
+        allow_users: [reporting, dashboards]
+        deny_users: [postgres, replicator]
+        allow_databases: [sales]
+
+        # SCRAM only. `password` is the password in cleartext; `md5` is
+        # worse than it looks -- the stored verifier is
+        # md5(password+username), so the hash *is* a password-equivalent
+        # and anybody who reads pg_authid can authenticate without
+        # cracking anything. PostgreSQL has shipped SCRAM since 10.
+        allow_auth: [scram]
+
+        # Nothing here changes data. read_only covers `call` and `do` as
+        # well as the obvious ones, because a procedure and an anonymous
+        # block can do anything the role can -- a relay that counted them
+        # reads would have a read_only that is decorative.
+        read_only: true
+
+        # And then the allow list, which is narrower than read_only on
+        # its own: a reporting connection needs cursors and transactions,
+        # and needs nothing else.
+        allow_statements:
+          - select
+          - explain          # without ANALYZE; with it, it is the statement it runs
+          - show
+          - set              # a client library sets timezone and encoding on connect
+          - begin
+          - commit
+          - rollback
+          - declare
+          - fetch
+          - move
+          - close_cursor
+          - empty            # libpq sends an empty query to test a connection
+
+        # No COPY at all on this listener. An analyst who needs a bulk
+        # extract gets it from a job, not from a dashboard's connection.
+        allow_copy: []
+
+        max_statements: 1     # one statement per message: a semicolon is how
+                              # every injection is delivered
+        max_statement_bytes: 32768
+        idle_timeout: 30m
+        session_duration: 12h
+        max_sessions: 200
+        max_sessions_per_client: 20
+
+        default_action: deny
+
+    # ---------------------------------------------------------------
+    # The application front: the thing that actually runs the business,
+    # which needs to write and must not be able to change the schema.
+    #
+    # The interesting line is the rule. One listener serves both the
+    # application and the migration tool, because a rule *widens* the
+    # listener for its own traffic -- and the migration window is a
+    # schedule, so the one account that may change the schema may only
+    # do it at night.
+    # ---------------------------------------------------------------
+    - name: app
+      address: "10.0.0.11:5432"
+      kind: postgres
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/tls/db.pem, key_file: /etc/xproxy/tls/db-key.pem}
+      postgres:
+        upstream: pg
+        allow_clients: ["10.0.2.0/24"]
+        allow_databases: [sales]
+        allow_auth: [scram]
+
+        # The ordinary application: data in and out, no schema changes,
+        # no grants, no maintenance.
+        allow_statements:
+          - select
+          - insert
+          - update
+          - delete
+          - merge
+          - explain
+          - show
+          - set
+          - begin
+          - commit
+          - rollback
+          - savepoint
+          - prepare
+          - execute
+          - deallocate
+          - declare
+          - fetch
+          - close_cursor
+          - empty
+
+        # ddl and grant are on the deny list as well as absent from the
+        # allow list, because a deny list cannot be overridden by a rule
+        # and an allow list can. That is the difference between "not
+        # normally" and "not ever", and the schema is the second one --
+        # except in the window below.
+        deny_statements: [grant, two_phase]
+
+        # COPY in and out, which is how a nightly load works. `file`
+        # would let COPY read and write the server's own filesystem, and
+        # `program` cannot be named here at all: it runs a shell command
+        # as the server's operating-system user, which is remote code
+        # execution with a SQL keyword in front of it.
+        allow_copy: [in, out]
+
+        max_statements: 4
+        max_statement_bytes: 262144
+
+        rules:
+          # The migration tool, at night, may change the schema. Note
+          # what makes this work: the rule's allow_statements *widens*
+          # the listener for this account's traffic. ddl is not on the
+          # listener's deny list, so a rule can add it; grant is, so no
+          # rule can.
+          - name: migrations
+            users: [migrator]
+            applications: [flyway*, liquibase*]
+            schedule: {days: [tue, thu], from: "01:00", to: "03:00", timezone: Europe/Stockholm}
+            allow_statements: [ddl, select, insert, update, delete, begin, commit, rollback, set, lock]
+            max_statements: 64
+
+          # The application's own account, so the log line says which
+          # rule decided rather than "no rule matched".
+          - name: application
+            users: [app]
+
+        default_action: deny
+
+    # ---------------------------------------------------------------
+    # A shadow-mode trial, for working out what a policy would refuse
+    # before it refuses anything.
+    #
+    # monitor_only evaluates everything and enforces nothing -- except
+    # the decisions marked hard, which are never shadowed: the client
+    # list, the TLS requirement, the authentication methods, a
+    # replication connection, a statement the classifier could not read,
+    # and COPY ... FROM PROGRAM. Relaying remote code execution and
+    # writing it down is not a trial of anything.
+    #
+    # Read the result with: xproxyctl policy
+    # ---------------------------------------------------------------
+    - name: trial
+      address: "10.0.0.12:5432"
+      kind: postgres
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/tls/db.pem, key_file: /etc/xproxy/tls/db-key.pem}
+      postgres:
+        upstream: pg
+        allow_clients: ["10.0.2.0/24", "10.0.8.0/24"]
+        read_only: true
+        allow_statements: [select, show, set, begin, commit, rollback]
+        monitor_only: true
+        default_action: deny
+
+upstreams:
+  - name: pg
+    endpoints:
+      - {address: "10.0.16.10:5432"}
+      - {address: "10.0.16.11:5432"}
+    # A TCP connect is all a check can do without a credential: the
+    # protocol's own "are you there" is a startup packet, and one of those
+    # needs a role to claim.
+    health_check:
+      type: tcp
+      interval: 10s
+      timeout: 2s
+      unhealthy_threshold: 3
+      healthy_threshold: 2

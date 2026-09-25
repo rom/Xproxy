@@ -4423,6 +4423,88 @@ growing. An application that puts an id in the path without the proxy
 deriving a template is the usual cause, and the fix is the description,
 not the bound.
 
+## PostgreSQL
+
+**Every connection fails and the listener will not start.** `require_tls`
+defaults to true and the protocol upgrades an existing connection rather
+than using a second port, so the listener needs a `tls` section with a
+certificate. Refusing at load is deliberate: the alternative is every
+connection failing at handshake with a message in a log nobody is reading
+yet.
+
+**A client connects but the relay says `tls_required`.** The client did not
+ask to upgrade. That is `sslmode=disable`, or a driver that was never
+configured for TLS -- and it is the case this setting exists for. Note what
+it catches that the server cannot: with `sslmode=prefer` (libpq's default)
+the client *does* ask, and accepts a refusal silently, so the server saying
+"TLS please" in `pg_hba.conf` is not the same protection.
+
+**`upstream_tls_mode: require` refuses every endpoint.** The server answered
+`N` to the relay's SSL request, which means the server is not built with
+TLS support or `ssl = off` in `postgresql.conf`. Fixing the server is the
+right answer; `prefer` is the honest workaround and says in the
+configuration that the leg is unencrypted.
+
+**Everything is refused with `statement_unreadable`.** The classifier could
+not name the statement's leading keyword. Two causes. A verb it does not
+know -- send the log line's `detail`, which carries the verb -- or text it
+could not lex, which means an unterminated quote, block comment or dollar
+quote. The second is refused rather than guessed at because the relay and
+the server would disagree about where the statement ends, and disagreeing
+about that is how a statement gets past a relay that read a different one.
+
+**A `SELECT` was refused as a write.** It is a `WITH` whose CTE contains an
+`INSERT`, `UPDATE`, `DELETE` or `MERGE`, which PostgreSQL has allowed since
+9.1 and which is a write wearing a SELECT's leading keyword. The classifier
+scans the statement at top level rather than parsing the CTE list, so it can
+call a read a write -- a CTE that merely mentions `delete` as an identifier
+at top level -- and can never call a write a read. When a classifier must be
+wrong it must be wrong towards the more restricted answer.
+
+**An `EXPLAIN` was refused.** `EXPLAIN ANALYZE` *executes* the statement it
+explains, so it is classified as that statement. Plain `EXPLAIN` is
+`explain` and does not execute.
+
+**`read_only: true` refuses something that does not look like a write.**
+`call` and `do` are writes here: a procedure and an anonymous block can do
+anything the role can, and `DO $$ ... $$` runs plpgsql by default. A
+`read_only` that counted them reads would be decorative.
+
+**A driver's connection fails at startup with nothing in the log.** Set
+`allow_statements` to include `empty` and `set`: libpq sends an empty query
+to test a liveness and most client libraries set `timezone`,
+`client_encoding` and `extra_float_digits` on connect. A policy that
+refuses those refuses every connection before the application runs a single
+statement of its own.
+
+**Statements are refused only on some connections.** A rule matched. Rules
+select on client network, role, database and application name, and a rule's
+`allow_statements` **widens** the listener for its traffic while a deny list
+on either does not. `xproxyctl policy` in shadow mode shows which rule
+decided; the security log carries `rule` on every refusal.
+
+**A prepared statement is refused at Bind rather than Parse.** That is the
+pooled-connection case: the Bind names a prepared statement this relay did
+not see being parsed on this connection, so it is decided again. It is worth
+knowing that a connection pooler in transaction mode can make one
+application execute a statement another one prepared.
+
+**`asset_unexpected_role` from a postgres listener.** The listener
+contributes the role and the application name to the device inventory, which
+classifies the client machine, not the database.
+
+**Nothing about replication in the logs, and replication is failing.** It is
+refused at the startup packet (`replication_not_allowed`), before any
+statement exists -- `replication=true` is a startup *parameter*. A physical
+stream is a byte-for-byte copy of every database on the server including
+the role passwords, which is why it is off by default.
+
+**The statement text is not in the log.** Deliberately. A `WHERE` clause
+names the row and an `INSERT` carries the value, and a security log is read
+by more people than the database is. The kind, the verb and the rule are
+what a decision was made on; the text is the data. The one exception is the
+leading keyword of a statement the classifier could not read.
+
 ## The device inventory
 
 **It is empty.** Two causes, in this order. The section is off by default,
