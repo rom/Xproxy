@@ -208,6 +208,13 @@ func Derive(cfg *config.Config, cfgPath string) Rules {
 			addWrite(value, true)
 		case "state_file", "file":
 			addWrite(value, false)
+		case "ledger":
+			// The access ledger is appended to for the life of the
+			// process, so its directory is writable rather than merely
+			// readable. A key that fell through to the read rule would
+			// give a daemon that refuses every session until somebody
+			// works out that the sandbox, not the policy, is the reason.
+			addWrite(value, false)
 		case "root", "dir":
 			addRead(value, true)
 		default:

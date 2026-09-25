@@ -10,11 +10,16 @@ import (
 
 // pathKey matches the YAML keys of configuration fields that name files
 // or directories: cert_file, directive_files, state_dir, root, database,
-// csv, module. Keys ending in path or paths are URL paths (routes[].paths,
-// doh_path, rewrite_path, health check path) and are deliberately absent;
-// the sockets the process connects to (journald) need no rule and the one
-// it binds (management) is added explicitly.
-var pathKey = regexp.MustCompile(`(^|_)(file|files|dir|root|database|csv|module)$`)
+// csv, module, ledger. Keys ending in path or paths are URL paths
+// (routes[].paths, doh_path, rewrite_path, health check path) and are
+// deliberately absent; the sockets the process connects to (journald) need
+// no rule and the one it binds (management) is added explicitly.
+//
+// `ledger` is here rather than being spelt `ledger_file` because the access
+// trail is a ledger rather than a setting that happens to be a file -- and a
+// key that named a path and was not in this list would be a path the sandbox
+// did not know about, which is why the list and the naming have to agree.
+var pathKey = regexp.MustCompile(`(^|_)(file|files|dir|root|database|csv|module|ledger)$`)
 
 // walk visits every string field of the configuration whose YAML key names
 // a file or directory, including entries of string slices and the
