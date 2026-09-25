@@ -3178,6 +3178,307 @@
       },
       "additionalProperties": false
     },
+    "LDAPListener": {
+      "description": "LDAPListener is a kind: ldap listener: an LDAP and LDAPS relay in front of a directory.",
+      "type": "object",
+      "properties": {
+        "alert_on_deny": {
+          "description": "AlertOnDeny writes a security event for every refusal. Default true.",
+          "type": "boolean"
+        },
+        "allow_clients": {
+          "description": "AllowClients and DenyClients are the networks a client may connect from. Deny is evaluated first.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_leading_wildcard": {
+          "description": "AllowLeadingWildcard permits a substring filter whose first component is a wildcard -- (cn=*smith) -- which no index can serve and which is therefore a scan of the subtree. Default true, because every address book does it; set it false on a listener that fronts a large directory.",
+          "type": "boolean"
+        },
+        "base_dns": {
+          "description": "BaseDNs are the suffixes any request may name at all: the naming contexts this relay fronts. A request naming an object outside all of them is refused before the rules and whatever default_action says, which is what stops one listener from being a way into a directory's other trees. Empty allows any, which validation advises against. The comparison is per relative name from the root, so dc=example,dc=com does not cover dc=notexample,dc=com -- which a string suffix test would.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "bind_rate_burst": {
+          "type": "integer"
+        },
+        "bind_rate_limit": {
+          "description": "BindRateLimit and BindRateBurst bound *binds* per second per client address, separately, because a rate loose enough for an application's searches says nothing about somebody trying passwords. Zero disables them.",
+          "type": "integer"
+        },
+        "connect_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "default_action": {
+          "description": "DefaultAction is deny (the default) or allow.",
+          "type": "string"
+        },
+        "deny_attributes": {
+          "description": "DenyAttributes are the attributes this relay will not carry: it refuses a request that names one and removes it from an answer that carries it anyway. Both halves are needed, because a search that asks for \"*\" gets every user attribute without naming one. Unset means the built-in list, which is the password and key material of the directories people actually run: userPassword, unicodePwd, dBCSPwd, ntPwdHistory, lmPwdHistory, pwdHistory, supplementalCredentials, msDS-ManagedPassword, ms-Mcs-AdmPwd, ms-Mcs-AdmPwdExpirationTime, krbPrincipalKey, sambaNTPassword, sambaLMPassword, sambaPasswordHistory and userPKCS12. Setting the list replaces it; validation warns if the replacement drops userPassword.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_clients": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_controls": {
+          "description": "DenyControls are control OIDs this relay refuses to carry. Empty carries any control, which is the right default: a control this relay does not know is one the directory decides about, and RFC 4511 already says an unrecognised critical control is refused there.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_response": {
+          "description": "DenyResponse is how a refused request is answered: insufficient (the default: result code 50, insufficientAccessRights, which is what a directory sends and what every client already displays), unwilling (53), drop (no answer, which the client reads as a hang) or close (end the connection).",
+          "type": "string"
+        },
+        "extended_operations": {
+          "description": "ExtendedOperations is the allow list of extended operation OIDs. Empty allows only StartTLS, which this relay terminates rather than forwards. The two worth naming if you allow more are 1.3.6.1.4.1.4203.1.11.1 (password modify) and 1.3.6.1.4.1.4203.1.11.3 (who am I).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "idle_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "log_binds": {
+          "description": "LogBinds writes an access line for every bind and its outcome. Default true: who authenticated, from where, as whom, and whether it worked is the record an estate is asked for.",
+          "type": "boolean"
+        },
+        "log_requests": {
+          "description": "LogRequests writes an access line per request. A directory front carries a great many searches, so this is a lot of lines.",
+          "type": "boolean"
+        },
+        "log_writes": {
+          "description": "LogWrites writes an access line for every operation that changes the directory, and for every refusal. Default true.",
+          "type": "boolean"
+        },
+        "max_connections": {
+          "description": "MaxConnections bounds live sessions. Default 256.",
+          "type": "integer"
+        },
+        "max_entries": {
+          "description": "MaxEntries bounds the entries one search may return. Default 500. It is this protocol's amplification bound: an unbounded subtree search with (objectClass=*) is how a directory is copied, and the client's own size limit is a request rather than a bound.",
+          "type": "integer"
+        },
+        "max_filter_depth": {
+          "type": "integer"
+        },
+        "max_filter_terms": {
+          "description": "MaxFilterTerms and MaxFilterDepth bound a search filter's shape. Defaults 64 and 12. A filter is the one part of a request whose size the client chooses and whose cost the directory pays.",
+          "type": "integer"
+        },
+        "max_message_bytes": {
+          "description": "MaxMessageBytes bounds one message. Default 262144: a directory entry with a photograph or a certificate in it is real.",
+          "type": "integer"
+        },
+        "max_outstanding": {
+          "description": "MaxOutstanding bounds the requests one connection may have in flight. Default 32. LDAP is asynchronous and multiplexed, so this is what keeps the table that pairs a response with its request bounded.",
+          "type": "integer"
+        },
+        "methods": {
+          "description": "Methods is the allow list of bind methods: anonymous, unauthenticated, simple, sasl. Empty allows simple and sasl, which is to say it refuses the two that are anonymous binds wearing a name. unauthenticated is the one to read twice. A simple bind with a name and an *empty* password is an anonymous bind by RFC 4513 §5.1.2, and a great many directories answer it with success -- which the application behind them reads as \"the password was right\". Allowing it is almost never what anyone means.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "min_version": {
+          "description": "MinVersion is the lowest LDAP version accepted. Default 3. LDAPv2 is a different protocol wearing the same tags and its bind has no SASL; a directory that still answers it is one nobody has looked at.",
+          "type": "integer"
+        },
+        "mode": {
+          "description": "Mode is reverse (the default: clients connect here and the listener forwards to the directory) or forward (this listener is the controlled egress an application uses to reach a directory elsewhere).",
+          "type": "string"
+        },
+        "on_denied_attribute": {
+          "description": "OnDeniedAttribute is strip (the default: remove it from the answer and carry the rest) or deny (refuse the whole operation). strip is the useful one: an application that asked for everything still works and no longer receives a password hash.",
+          "type": "string"
+        },
+        "proxy_protocol": {
+          "description": "ProxyProtocol sends a PROXY protocol v2 header to the directory.",
+          "type": "boolean"
+        },
+        "rate_burst": {
+          "type": "integer"
+        },
+        "rate_limit": {
+          "description": "RateLimit and RateBurst bound requests per second per client address. Zero disables them.",
+          "type": "integer"
+        },
+        "read_only": {
+          "description": "ReadOnly refuses every operation that changes the directory -- add, delete, modify, modifyDN -- for every client, before any rule is read, and no rule can override it.",
+          "type": "boolean"
+        },
+        "request_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "require_tls": {
+          "description": "RequireTLS refuses a simple bind that carries a password on an unprotected connection. Default true, and it is the most valuable line in the file: LDAP on port 389 with a simple bind puts a directory password in the clear on the wire, and the client library that did it will not tell anyone.",
+          "type": "boolean"
+        },
+        "rules": {
+          "description": "Rules decide each request, in order, first match wins.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LDAPRule"
+          }
+        },
+        "sasl_mechanisms": {
+          "description": "SASLMechanisms is the allow list of SASL mechanisms by name (GSSAPI, DIGEST-MD5, EXTERNAL, PLAIN). Empty allows any. PLAIN puts a password in the clear exactly as a simple bind does, which is why naming the mechanisms is worth doing.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tls_mode": {
+          "description": "TLSMode is implicit (LDAPS: TLS from the first octet, port 636), starttls (the extended operation of RFC 4513 on port 389, which this relay terminates itself) or none. Default implicit when the listener has a tls section and starttls is not asked for.",
+          "type": "string"
+        },
+        "upstream": {
+          "description": "Upstream is the directory pool. Required.",
+          "type": "string"
+        },
+        "upstream_tls": {
+          "description": "UpstreamTLS verifies the directory when upstream_tls_mode is not none.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/UpstreamTLS"
+            }
+          ]
+        },
+        "upstream_tls_mode": {
+          "description": "UpstreamTLSMode is none, implicit or starttls: how this listener reaches the directory. Together with tls_mode this is the secure upgrade -- TLS towards the client, whatever the directory will take towards the directory, or the reverse for a client library nobody can reconfigure.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "LDAPRule": {
+      "description": "LDAPRule decides one request.",
+      "type": "object",
+      "properties": {
+        "access": {
+          "description": "Access matches what the operation does: read, write, bind. It is the durable way to write a policy, because it does not change when a later revision adds an operation.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "action": {
+          "description": "Action is allow, deny or observe. observe logs and counts and then keeps looking, which is how a rule is tried on live traffic before it decides anything.",
+          "type": "string"
+        },
+        "allow_leading_wildcard": {
+          "description": "AllowLeadingWildcard overrides the listener's setting for this rule's traffic.",
+          "type": "boolean"
+        },
+        "attributes": {
+          "description": "Attributes are the attributes a request may name and an answer may carry. Empty allows any that the listener's deny_attributes does not refuse.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "base_dns": {
+          "description": "BaseDNs are the suffixes the request may name. A request naming an object outside all of them does not match. The comparison is per relative name.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "bind_dns": {
+          "description": "BindDNs are the identities this rule covers, as distinguished names. A name here covers itself and everything below it, so ou=services,dc=example,dc=com covers every service account in that container. An empty name matches an unbound or anonymous connection, which is how \"before you authenticate, you may do this and no more\" is written.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "clients": {
+          "description": "Clients are the networks the client is in.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_attributes": {
+          "description": "DenyAttributes are refused or stripped for the traffic this rule covers, in addition to the listener's own list.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_dns": {
+          "description": "DenyDNs are suffixes this rule does not cover even when BaseDNs would match, which is how an exception inside an allowed subtree is written: all of the directory except the administrators container.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_entries": {
+          "description": "MaxEntries overrides the listener's bound on entries returned, for the searches this rule covers.",
+          "type": "integer"
+        },
+        "max_filter_depth": {
+          "type": "integer"
+        },
+        "max_filter_terms": {
+          "description": "MaxFilterTerms and MaxFilterDepth override the listener's filter bounds. A rule does not cover a filter past its own bound, so the next rule -- or the default -- decides; matching and then allowing would make the bound a suggestion.",
+          "type": "integer"
+        },
+        "methods": {
+          "description": "Methods are the bind methods this rule covers, for a rule about how the connection authenticated rather than as whom.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "description": "Name identifies the rule in the logs and the counters. Required.",
+          "type": "string"
+        },
+        "operations": {
+          "description": "Operations are the operations by name: bind, search, compare, modify, add, delete, modify_dn, extended, abandon, unbind.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "schedule": {
+          "description": "Schedule limits the rule to a time window.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/ModbusSchedule"
+            }
+          ]
+        },
+        "scopes": {
+          "description": "Scopes are the search scopes this rule covers: base, one, sub. A rule that omits them covers any scope, which on a wide base is usually not what was meant: a subtree search from a naming context is a request for the whole tree.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "Limits": {
       "description": "Limits are the global resource protections of the data plane. Every limit has a conservative default and can only be raised deliberately.",
       "type": "object",
@@ -3316,6 +3617,14 @@
             "tcp",
             "forward",
             "dns"
+          ]
+        },
+        "ldap": {
+          "description": "LDAP configures a kind: ldap listener.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/LDAPListener"
+            }
           ]
         },
         "modbus": {

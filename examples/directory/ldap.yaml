@@ -1,0 +1,303 @@
+# LDAP relay: a directory put behind something that can refuse a bind with an
+# empty password, and remove a password hash from an answer.
+#
+# A directory is the one service in an estate that knows who everybody is, and
+# LDAP is how everything asks. That makes it two things at once: the
+# authentication path for every application that has not moved to OIDC, and
+# the most complete map of an organisation that exists anywhere on its
+# network — every person, every group, every service account, with the
+# memberships that say who is an administrator.
+#
+# Two defaults of the protocol are the reason this file exists.
+#
+#   A simple bind with a name and an EMPTY PASSWORD is an anonymous bind
+#   (RFC 4513 §5.1.2), and most directories answer it with *success*. An
+#   application written as "bind as the user; if it worked, the password was
+#   right" is then bypassed with an empty string, and the directory cannot
+#   tell the difference. methods: [simple, sasl] — the default — refuses it.
+#
+#   A simple bind on port 389 puts a directory password on the wire in
+#   plaintext, and the client library that did it does not say so.
+#   require_tls (the default) refuses it, and that refusal holds even in
+#   shadow mode: by the time a policy could be consulted the password has
+#   already gone past.
+#
+# Validate with: xproxyctl -config examples/directory/ldap.yaml validate
+version: 1
+
+logging:
+  directory: /var/log/xproxy
+  access: {file: access.log}
+  security: {file: security.log}
+  audit: {file: audit.log}
+
+management:
+  socket: /run/xproxy/mgmt.sock
+  socket_mode: "0660"
+
+server:
+  listeners:
+    # ---------------------------------------------------------------
+    # LDAPS on 636: TLS from the first octet, which is what almost every
+    # client library actually uses.
+    #
+    # The identity is the directory's to grant: the relay watches the bind
+    # *response*, so the bind_dns a rule names take effect only once the
+    # directory has said the credential was right. Believing the request
+    # would let anyone be anybody by binding with the wrong password.
+    # ---------------------------------------------------------------
+    - name: directory
+      address: "10.60.0.10:636"
+      kind: ldap
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/tls/ldap.crt, key_file: /etc/xproxy/tls/ldap.key}
+        min_version: "1.2"
+      ldap:
+        upstream: directories
+        tls_mode: implicit
+
+        # The applications that are allowed to ask at all.
+        allow_clients: ["10.60.1.0/24", "10.60.2.0/24"]
+
+        # The naming context this listener fronts. A request naming an object
+        # outside it is refused before the rules and before default_action —
+        # so this listener cannot become a way into the directory's other
+        # trees. The comparison is per relative name, so dc=notexample,dc=com
+        # does not pass: a string suffix test would let it.
+        base_dns: ["dc=example,dc=com"]
+
+        # Nothing changes the directory through this relay, and no rule below
+        # can open a hole in it. Changes go through the change listener.
+        read_only: true
+
+        # Only the two methods that actually authenticate. This is the
+        # default; it is written out because it is the line that matters.
+        methods: [simple, sasl]
+        sasl_mechanisms: [GSSAPI, EXTERNAL]
+        min_version: 3
+
+        # The entry bound is this protocol's amplification bound: an
+        # unbounded subtree search with (objectClass=*) is how a directory is
+        # copied. The search is *cut* with the directory's own
+        # sizeLimitExceeded rather than refused, so a client knows it got
+        # part of an answer instead of hanging.
+        max_entries: 500
+
+        # A filter is the one part of a request whose size the client chooses
+        # and whose cost the directory pays.
+        max_filter_terms: 64
+        max_filter_depth: 12
+
+        # A bind rate, separately from the request rate, because a rate loose
+        # enough for an application's searches says nothing about somebody
+        # working through a password list.
+        rate_limit: 200
+        bind_rate_limit: 5
+        bind_rate_burst: 10
+
+        max_connections: 256
+        max_outstanding: 32
+        idle_timeout: 300s
+
+        default_action: deny
+        rules:
+          # Before anyone authenticates, they may bind and nothing else. The
+          # empty bind_dn is the unbound connection.
+          - {name: pre-auth, action: allow, bind_dns: [""], operations: [bind]}
+
+          # The service accounts: the phone book, and only the phone book.
+          # Naming attributes turns the answer policy inside out — anything
+          # not named is removed from an entry, so a search for "*" gets
+          # these four and nothing else.
+          - name: phonebook
+            action: allow
+            bind_dns: ["ou=services,dc=example,dc=com"]
+            access: [read]
+            base_dns: ["ou=people,dc=example,dc=com"]
+            deny_dns: ["ou=admins,ou=people,dc=example,dc=com"]
+            scopes: [one, sub]
+            attributes: [cn, mail, telephoneNumber, displayName]
+
+          # The group membership an application needs to authorise with. A
+          # narrower subtree, a narrower attribute list, and no wildcard
+          # searching: this is a lookup, not a browse.
+          - name: groups
+            action: allow
+            bind_dns: ["ou=services,dc=example,dc=com"]
+            access: [read]
+            base_dns: ["ou=groups,dc=example,dc=com"]
+            attributes: [cn, member, memberOf, objectClass]
+            allow_leading_wildcard: false
+            max_entries: 100
+
+          # The help desk's own tooling, from its own network, may read more
+          # of a person's record — and still not a password hash, which the
+          # built-in deny_attributes list removes from every answer.
+          - name: helpdesk
+            action: allow
+            clients: ["10.60.2.0/24"]
+            bind_dns: ["ou=staff,dc=example,dc=com"]
+            access: [read]
+            base_dns: ["ou=people,dc=example,dc=com"]
+            max_filter_terms: 128
+            schedule: {days: [mon, tue, wed, thu, fri], from: "07:00", to: "19:00"}
+
+          # Named so the security log says which case it was rather than
+          # "default deny". The administrators container is not readable
+          # through this listener by anyone.
+          - {name: no-admins, action: deny, base_dns: ["ou=admins,dc=example,dc=com"]}
+
+    # ---------------------------------------------------------------
+    # StartTLS on 389, for the client library nobody can reconfigure.
+    #
+    # This is the secure upgrade: the relay terminates StartTLS itself and
+    # speaks LDAPS to the directory, so a legacy client gets TLS on the leg
+    # it can be made to use and the directory never sees a plaintext
+    # connection. An anonymous bind is allowed in the clear because it
+    # carries nothing; a password is not.
+    # ---------------------------------------------------------------
+    - name: legacy
+      address: "10.60.0.10:389"
+      kind: ldap
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/tls/ldap.crt, key_file: /etc/xproxy/tls/ldap.key}
+      ldap:
+        upstream: directories
+        tls_mode: starttls
+        upstream_tls_mode: implicit
+        upstream_tls:
+          server_name: dc1.example.com
+          ca_file: /etc/xproxy/tls/ad-ca.pem
+          min_version: "1.2"
+        allow_clients: ["10.60.1.0/24"]
+        base_dns: ["dc=example,dc=com"]
+        read_only: true
+        # An anonymous bind to read the root DSE is how a client discovers the
+        # naming contexts, and it carries no credential.
+        methods: [anonymous, simple, sasl]
+        max_entries: 200
+        bind_rate_limit: 5
+        default_action: deny
+        rules:
+          - {name: pre-auth, action: allow, bind_dns: [""], operations: [bind, extended]}
+          - name: phonebook
+            action: allow
+            bind_dns: ["ou=services,dc=example,dc=com"]
+            access: [read]
+            base_dns: ["ou=people,dc=example,dc=com"]
+            attributes: [cn, mail, telephoneNumber]
+
+    # ---------------------------------------------------------------
+    # The change window: one network, one identity, one subtree, one shift.
+    #
+    # A listener of its own rather than a rule on the one above, because
+    # read_only cannot be overridden by a rule and should not be: a
+    # read-only listener that one rule could write through is not a
+    # read-only listener.
+    #
+    # The password-modify extended operation is named here rather than
+    # allowed generally, because it is the one extended operation that
+    # changes a credential.
+    # ---------------------------------------------------------------
+    - name: change
+      address: "10.60.0.10:1636"
+      kind: ldap
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/tls/ldap.crt, key_file: /etc/xproxy/tls/ldap.key}
+        min_version: "1.3"
+        client_auth: require
+        client_ca_file: /etc/xproxy/tls/admin-ca.pem
+      ldap:
+        upstream: directories
+        tls_mode: implicit
+        allow_clients: ["10.60.3.10/32"]
+        base_dns: ["dc=example,dc=com"]
+        read_only: false
+        methods: [sasl, simple]
+        sasl_mechanisms: [GSSAPI, EXTERNAL]
+        extended_operations: ["1.3.6.1.4.1.4203.1.11.1"]
+        max_entries: 100
+        bind_rate_limit: 2
+        default_action: deny
+        rules:
+          - {name: pre-auth, action: allow, bind_dns: [""], operations: [bind]}
+          - name: user-admin
+            action: allow
+            bind_dns: ["cn=useradmin,ou=admins,dc=example,dc=com"]
+            operations: [search, compare, modify, add, delete, extended]
+            base_dns: ["ou=people,dc=example,dc=com"]
+            deny_dns: ["ou=admins,ou=people,dc=example,dc=com"]
+            schedule: {days: [mon, tue, wed, thu, fri], from: "09:00", to: "17:00", timezone: Europe/Stockholm}
+          # Group membership is privilege, so it is a separate rule with a
+          # separate identity: the account that can add a person cannot make
+          # that person an administrator.
+          - name: group-admin
+            action: allow
+            bind_dns: ["cn=groupadmin,ou=admins,dc=example,dc=com"]
+            operations: [search, modify]
+            base_dns: ["ou=groups,dc=example,dc=com"]
+            deny_dns: ["cn=domain admins,ou=groups,dc=example,dc=com"]
+
+    # ---------------------------------------------------------------
+    # A shadow-mode trial of a narrower policy. Nothing is refused for
+    # policy here: the ledger records what enforcing would have cost, which
+    # is the only honest way to find out before an estate's logins break.
+    #
+    # The bounds are not part of that. A malformed message, a message past
+    # max_message_bytes, message identifier zero, the rate limits, the client
+    # list — and a bind carrying a password in the clear — are refused
+    # whatever the mode says.
+    # ---------------------------------------------------------------
+    - name: trial
+      address: "10.60.0.11:636"
+      kind: ldap
+      policy: {mode: shadow}
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/tls/ldap.crt, key_file: /etc/xproxy/tls/ldap.key}
+      ldap:
+        upstream: directories
+        tls_mode: implicit
+        allow_clients: ["10.60.1.0/24"]
+        base_dns: ["ou=people,dc=example,dc=com"]
+        read_only: true
+        max_entries: 50
+        allow_leading_wildcard: false
+        bind_rate_limit: 5
+        default_action: deny
+        rules:
+          - {name: pre-auth, action: allow, bind_dns: [""], operations: [bind]}
+          - name: strict-phonebook
+            action: allow
+            bind_dns: ["ou=services,dc=example,dc=com"]
+            access: [read]
+            scopes: [one]
+            attributes: [cn, mail]
+
+upstreams:
+  - name: directories
+    endpoints:
+      - {address: "10.60.4.10:636"}
+      - {address: "10.60.4.11:636"}
+    # A directory front holds long-lived pooled connections, so the balance
+    # that matters is how many are in flight rather than how many were
+    # opened. p2c reads that; ewma would want a time to first byte, which a
+    # pool checked with a plain TCP probe has none of.
+    balancer: p2c
+    health_check: {type: tcp, interval: 15s, timeout: 3s}
+
+# A wrong password is a typo; forty from one address in five minutes is a
+# password list. The relay counts the directory's own invalidCredentials, so
+# this trigger fires on what the directory decided rather than on what the
+# relay guessed.
+bans:
+  action: drop
+  triggers:
+    - name: ldap-password-spraying
+      reasons: [ldap_denied]
+      threshold: 20
+      window: 5m
+      duration: 1h

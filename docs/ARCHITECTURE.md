@@ -23,7 +23,7 @@ the shape. Decision records are in [AMR.md](AMR.md); requirements in
  |       xproxy        |  |        xgate        |  |        xrelay         |
  |  http tcp udp       |  |   ssh telnet        |  | smtp mqtt ftp syslog  |
  |  forward dns        |  |   vnc rdp           |  | modbus iec104 snmp    |
- |                     |  |                     |  | ntp ntske             |
+ |                     |  |                     |  | ldap ntp ntske        |
  |  user: xproxy       |  |  user: xgate        |  |  user: xrelay         |
  +--+---------------+--+  +--+---------------+--+  +--+----------------+---+
     |               |        |               |        |                |
@@ -83,7 +83,7 @@ authority a cluster peer has by design.
 cmd/xproxy          edge daemon: links the http, forward, tcp and dns kinds
 cmd/xgate           gate daemon: links the ssh, telnet, vnc and rdp kinds
 cmd/xrelay          relay daemon: links the smtp, mqtt, ftp, syslog, modbus,
-                    iec104, snmp, ntp and ntske kinds
+                    iec104, snmp, ldap, ntp and ntske kinds
 cmd/xproxyctl       management CLI and TUI (talks to any of the three)
 cmd/xproxy-admin    web GUI process (users, sessions, embedded assets)
 cmd/xproxy-fleet    fleet controller
@@ -113,6 +113,9 @@ internal/kinds/iec104  kind: iec104 -- IEC 60870-5-104 relay: command policy by
 internal/kinds/snmp    kind: snmp -- SNMP relay: policy by version, credential,
                        operation and object subtree; the amplification bounds;
                        the version rewritten downwards
+internal/kinds/ldap    kind: ldap -- LDAP relay: the bind methods, the bound
+                       identity, subtree and attribute policy in both
+                       directions, StartTLS terminated here
 internal/kinds/ntp     kind: ntp -- NTP and NTS gateway: policy, source
                        comparison, learning, traces
 internal/kinds/ntske   kind: ntske -- NTS key establishment relay on 4460
@@ -158,6 +161,9 @@ internal/cache      in-memory response cache (LRU, byte bound, Vary)
 internal/dns        DNS wire codec, cache, block list, resolver, servers
 internal/smtp internal/mqtt internal/ftp internal/syslog internal/sftp
 internal/modbus internal/iec104 internal/snmp internal/ntp
+internal/ldap       the LDAP wire format, shared: the client the identity
+                    filter authenticates with and the message reader the
+                    relay kind decides about, over one BER codec
                     the wire codecs of the relay and gate protocols
 internal/masque internal/mitm internal/grpcmsg internal/asciicast
                     the wire formats the kinds above are built on
@@ -204,7 +210,7 @@ cmd/xrelay ─┘             metrics, ingress, listener, paths, version}
     │
     └─ blank imports of its own kinds, and nothing else:
          kinds/{http,tcp,udp,dns,forward} | kinds/{ssh,telnet,vnc,rdp} |
-         kinds/{smtp,mqtt,ftp,syslog,modbus,iec104,snmp,ntp,ntske}
+         kinds/{smtp,mqtt,ftp,syslog,modbus,iec104,snmp,ldap,ntp,ntske}
 
 kinds/<k> -> {proxy, config, listener, and that protocol's wire package}
 proxy     -> {listener, router, upstream, limits, netutil, tlsconf, logging,
@@ -240,7 +246,7 @@ So the binary is split by who is on the other end of the socket:
 |--------|-------|----------------|
 | `xproxy` | the open internet | `http`, `forward`, `tcp`, `udp`, `dns` |
 | `xgate` | people | `ssh`, `telnet`, `vnc`, `rdp` |
-| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `snmp`, `ntp`, `ntske` |
+| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `snmp`, `ldap`, `ntp`, `ntske` |
 
 One repository, one module, one version and one configuration format;
 three programs, three users, three systemd units, three sandboxes, three
@@ -1014,9 +1020,9 @@ templating, an operation policy and YARA over what is written. Sessions
 are recorded to asciicast files (`internal/asciicast`) bounded by count
 and size, and a second factor can be demanded after the key.
 
-### The relay: SMTP, MQTT, FTP, syslog, Modbus, IEC 104, SNMP, NTP and NTS
+### The relay: SMTP, MQTT, FTP, syslog, Modbus, IEC 104, SNMP, LDAP, NTP and NTS
 
-The relay kinds (`internal/kinds/{smtp,mqtt,ftp,syslog,modbus,iec104,snmp,ntp,ntske}`)
+The relay kinds (`internal/kinds/{smtp,mqtt,ftp,syslog,modbus,iec104,snmp,ldap,ntp,ntske}`)
 share a shape:
 each parses its protocol rather than forwarding bytes, holds a policy in
 that protocol's own terms, and bounds what a peer may say.
@@ -1084,6 +1090,24 @@ that protocol's own terms, and bounds what a peer may say.
   would have to carry a digest this relay has no key to compute. It
   serves datagrams and streams at once, like `syslog`, because the
   protocol is used both ways.
+- `ldap` is the one relay kind whose traffic is *identity*, and it is the
+  only one that shares its wire package with a filter: `internal/ldap` holds
+  both the client the `ldap_auth` filter authenticates with and the message
+  reader this kind decides about, over one BER codec, because two readings
+  of the same bytes in one binary is the class of bug a relay exists to
+  remove. Four things are particular to it. It is the only kind with a
+  refusal that is **not shadowable by design and not a bound**: a simple
+  bind carrying a password on an unprotected connection, refused because by
+  the time a policy could be consulted the password has travelled. Its
+  policy is keyed on an identity the *peer* grants -- the relay watches bind
+  responses and adopts the name only when the directory answers success --
+  which makes it the one kind whose state machine is about authentication
+  rather than framing. It **rewrites answers**: a denied attribute is
+  removed from a search result entry and the entry is re-encoded, which no
+  other kind does to a payload. And it is asynchronous and multiplexed, like
+  nothing else here: several requests in flight on one connection, answers
+  keyed by message identifier, so a per-connection table of outstanding
+  requests is what makes an answer decidable at all.
 - `ntp` is the time gateway, and the one kind whose interesting half is
   not the forwarding: it probes every server in the pool with its own
   transactions, compares them with each other, and can refuse an answer

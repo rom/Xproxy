@@ -33,6 +33,7 @@ did not build it" and "it does not apply" are different promises again.
 - [Messaging](#messaging)
 - [Industrial control](#industrial-control)
 - [Network management](#network-management)
+- [Directory](#directory)
 - [Time](#time)
 - [Secure Shell and file transfer](#secure-shell-and-file-transfer)
 - [Remote desktop and terminal access](#remote-desktop-and-terminal-access)
@@ -239,6 +240,41 @@ relay does not hold, and a relay that produced an unauthenticated v3
 message, or handed a v3 manager a v2c answer, would be telling somebody
 their traffic was authenticated when nobody had checked. A v3
 **notification** downgrades cleanly, because nothing comes back.
+
+## Directory
+
+LDAP is IETF work and its version 3 core is a tidy set of documents. What the
+table says is which parts of them a *relay* implements, which it deliberately
+does not, and where it makes a decision the standard leaves to a server.
+
+| RFC | Title | Status | Notes |
+|-----|-------|--------|-------|
+| 4511 | LDAP: The Protocol | Partial, as a relay | The LDAPMessage envelope and every operation's shape: bind (simple and SASL), unbind, search, modify, add, delete, modifyDN, compare, abandon, extended, and the responses and entries that answer them, with controls read by OID and criticality. The framing is the message's own BER length, decided about before the octets it claims are read; indefinite length is refused, because it would make a message's extent depend on finding an end-of-contents pair inside a value this relay does not interpret. Message identifier 0 from a client is refused: it is reserved for the server's unsolicited notification |
+| 4512 | Directory Information Models | Not applicable, by design | This relay has no schema and no subschema subentry. It reads *attribute descriptions* -- names, with the transfer option after a semicolon stripped for comparison -- and never an attribute's syntax, matching rules or values. Interpreting values would need the estate's schema, and a relay that mis-decoded one would corrupt what an application reads |
+| 4513 | Authentication Methods and Security Mechanisms | Partial, and the reason for the kind | §5.1.1 anonymous bind, §5.1.2 **unauthenticated bind** and §5.1.3 name/password bind are read as three different statements, and the middle one is refused by default: a name with an empty password is an anonymous bind the directory answers with success, and the application behind it reads that success as a correct password. §5.1.3's own warning about the password travelling in the clear is `require_tls`, on by default and not shadowable. §3 StartTLS is implemented on the client's side and terminated here rather than forwarded, and §5.1.7's rule that the authentication state is discarded on an upgrade is enforced. SASL itself is **not implemented**: the mechanism name is policy and the exchange is relayed, because a relay that terminated GSSAPI would need the estate's Kerberos keys |
+| 4514 | String Representation of Distinguished Names | Partial | The escaping, the quoted form RFC 1779 left behind, the hex escapes, and the insignificant space -- enough to split a name into its relative names and compare one against another from the root, which is what a subtree policy is. Full normalisation needs the schema (which attributes are case-sensitive, which are numeric or telephone strings), so the value is folded to lower case instead: a *deny* by name cannot be evaded with a capital letter, and an *allow* may admit a name the directory itself then says does not exist |
+| 4515 | String Representation of Search Filters | Partial | The string form is parsed for the `ldap_auth` filter's own templates. The relay reads filters in their **BER** form and as a *shape* rather than a query: the depth, the term count, the attributes named, and whether any substring term begins with a wildcard no index can serve. The assertion values are not read -- what a client is looking for is the estate's business; what it is looking in, and how hard the looking is, is the relay's |
+| 4517 | Syntaxes and Matching Rules | Not applicable | See RFC 4512: values are not interpreted. Extensible match assertions are recognised by shape and their matching rule OID is not evaluated -- which is why Active Directory's bit-and rule (`1.2.840.113556.1.4.803`) can be *named* in a filter this relay carries and is not computed here |
+| 4519 | Schema for User Applications | Reference only | The names in the built-in `deny_attributes` list come from this and from the Active Directory and Samba schemas. They are strings to match, not schema this relay holds |
+| 4532 | "Who am I?" extended operation | Recognised | `1.3.6.1.4.1.4203.1.11.3`, allowed or refused by OID like any extended operation, and not interpreted |
+| 3062 | LDAP Password Modify extended operation | Recognised | `1.3.6.1.4.1.4203.1.11.1`, named separately in the documentation because it is the one extended operation that changes a credential, and refused unless a listener names it |
+| 4533 | Content Synchronization Operation | Recognised, not interpreted | The control is carried unless a listener refuses it. A relay that decided about a replication stream would be a replica |
+| 2696 | Simple Paged Results Control | Carried | `1.2.840.113556.1.4.319` is a control like any other. The relay's own `max_entries` is counted **per search**, not per page, because a client that pages through a directory has still copied it |
+| 4370 | Proxied Authorization Control | Carried, and worth refusing | `2.16.840.1.113730.3.4.18` lets a bound identity act as another, which is exactly the thing a policy keyed on the bound identity is about. It is carried by default because the directory decides about it, and `deny_controls` is where a listener that keys its rules on identity should name it |
+| 2849 / 2891 | LDIF, Server Side Sorting | Not applicable / carried | LDIF is a file format nothing here reads. The sort control is carried |
+| 3673 | `+` for all operational attributes | Read | `*`, `+` and an empty attribute list are the three ways a search asks for attributes it did not name, which is why the attribute policy has to apply to the answer as well as to the question |
+| 2830 | StartTLS (obsoleted by 4511/4513) | Historical | The OID `1.3.6.1.4.1.1466.20037` is from here, and the notice of disconnection's `1.3.6.1.4.1.1466.20036` with it |
+| 1777 / 1779 | LDAPv2 | Refused by default | Version 2 is a different protocol wearing the same tags: no SASL bind, a different string syntax. `min_version` defaults to 3, and a directory that still answers version 2 is one nobody has looked at |
+
+Two things this relay decides that the standard leaves to a server, said
+plainly because they change what a client sees. A refused request is answered
+with `insufficientAccessRights` (50) or `unwillingToPerform` (53) -- a
+*refused bind* always with `invalidCredentials` (49), because that is the only
+code a client treats as a failed login rather than a server fault. And a
+search that reaches the relay's entry bound is completed with
+`sizeLimitExceeded` (4), which is exactly what a directory with an
+administrative limit sends: the client knows it has part of an answer, rather
+than hanging on a connection that will say nothing more.
 
 ## Time
 

@@ -7,6 +7,7 @@ import (
 	"github.com/rom/xproxy/internal/filter"
 	"github.com/rom/xproxy/internal/ftp"
 	"github.com/rom/xproxy/internal/iec104"
+	ldapwire "github.com/rom/xproxy/internal/ldap"
 	"github.com/rom/xproxy/internal/listener"
 	"github.com/rom/xproxy/internal/modbus"
 	mqttwire "github.com/rom/xproxy/internal/mqtt"
@@ -830,6 +831,15 @@ func (v *validator) server(s *Server) {
 			} else {
 				v.snmpListener(p+".snmp", ln.SNMP, ln.TLS != nil)
 			}
+		case "ldap":
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
+				v.errf("%s: an ldap listener takes only address, ldap and tls", p)
+			}
+			if ln.LDAP == nil {
+				v.errf("%s.ldap: required for kind ldap", p)
+			} else {
+				v.ldapListener(p+".ldap", ln.LDAP, ln.TLS != nil)
+			}
 		case "iec104":
 			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
 				v.errf("%s: an iec104 listener takes only address, iec104 and tls", p)
@@ -905,6 +915,18 @@ func (v *validator) server(s *Server) {
 		}
 		if ln.MQTT != nil && ln.Kind != "mqtt" {
 			v.errf("%s.mqtt: set on a %s listener (kind: mqtt)", p, ln.Kind)
+		}
+		// The three newest relay kinds. A section on the wrong kind is
+		// silently ignored otherwise, which means a policy somebody wrote
+		// and believes is in force.
+		if ln.IEC104 != nil && ln.Kind != "iec104" {
+			v.errf("%s.iec104: set on a %s listener (kind: iec104)", p, ln.Kind)
+		}
+		if ln.SNMP != nil && ln.Kind != "snmp" {
+			v.errf("%s.snmp: set on a %s listener (kind: snmp)", p, ln.Kind)
+		}
+		if ln.LDAP != nil && ln.Kind != "ldap" {
+			v.errf("%s.ldap: set on a %s listener (kind: ldap)", p, ln.Kind)
 		}
 		if ln.TLS == nil {
 			for _, proto := range ln.Protocols {
@@ -2436,7 +2458,7 @@ var denyReasons = map[string]bool{
 	"forward_sni_mismatch": true, "dns_tunnel": true, "dns_answer_denied": true,
 	"telnet_denied": true, "vnc_denied": true, "rdp_denied": true, "sftp_icap": true, "udp_denied": true,
 	"modbus_denied": true, "iec104_denied": true, "ntp_denied": true, "ntske_denied": true,
-	"snmp_denied": true,
+	"snmp_denied": true, "ldap_denied": true,
 }
 
 // securityTxtFieldRE bounds an extra field name to the token RFC 9116
@@ -6916,6 +6938,264 @@ func (v *validator) ftpListener(p string, f *FTPListener, hasTLS bool) {
 // same thing: this listener sits in front of equipment that does what it
 // is told, so a rule that does not do what its author thought is a rule
 // that lets somebody write a setpoint.
+// oidRE is a dotted-decimal object identifier, which is how LDAP names an
+// extended operation and a control.
+var oidRE = regexp.MustCompile(`^[0-9]+(\.[0-9]+)+$`)
+
+// DefaultLDAPDenyAttributes is the password and key material of the
+// directories people actually run. It is the built-in deny list an ldap
+// listener uses when it names none of its own, because the useful default on
+// this protocol is "a relay does not carry password hashes" -- and an
+// operator who needs one of these carried can say so.
+var DefaultLDAPDenyAttributes = []string{
+	"userpassword", "unicodepwd", "dbcspwd", "ntpwdhistory", "lmpwdhistory",
+	"pwdhistory", "supplementalcredentials", "msds-managedpassword",
+	"ms-mcs-admpwd", "ms-mcs-admpwdexpirationtime", "krbprincipalkey",
+	"sambantpassword", "sambalmpassword", "sambapasswordhistory", "userpkcs12",
+}
+
+func (v *validator) ldapListener(p string, m *LDAPListener, hasTLS bool) {
+	switch m.Mode {
+	case "", "reverse", "forward":
+	default:
+		v.errf("%s.mode: must be reverse or forward", p)
+	}
+	if m.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	switch m.TLSMode {
+	case "", "implicit", "starttls", "none":
+	default:
+		v.errf("%s.tls_mode: must be implicit, starttls or none", p)
+	}
+	if (m.TLSMode == "implicit" || m.TLSMode == "starttls") && !hasTLS {
+		v.errf("%s.tls_mode: %s needs the listener's tls section", p, m.TLSMode)
+	}
+	switch m.UpstreamTLSMode {
+	case "", "none", "implicit", "starttls":
+	default:
+		v.errf("%s.upstream_tls_mode: must be none, implicit or starttls", p)
+	}
+	if m.UpstreamTLS != nil {
+		v.upstreamTLS(p+".upstream_tls", m.UpstreamTLS)
+	}
+	v.modbusCIDRs(p+".allow_clients", m.AllowClients)
+	v.modbusCIDRs(p+".deny_clients", m.DenyClients)
+	if len(m.AllowClients) == 0 {
+		v.warnf("%s.allow_clients: empty, so any address may reach the directory behind this relay", p)
+	}
+	requireTLS := m.RequireTLS == nil || *m.RequireTLS
+	if !requireTLS && m.TLSMode != "implicit" {
+		v.warnf("%s.require_tls: false on a listener that is not TLS throughout, so a simple bind may put a directory password in the clear on the wire", p)
+	}
+	if m.MinVersion != 0 && (m.MinVersion < 2 || m.MinVersion > 3) {
+		v.errf("%s.min_version: must be 2 or 3", p)
+	}
+	if m.MinVersion == 2 {
+		v.warnf("%s.min_version: 2 accepts LDAPv2, which is a different protocol wearing the same tags and has no SASL bind", p)
+	}
+	methods := v.ldapMethods(p+".methods", m.Methods)
+	if methods[ldapwire.MethodUnauthenticated] {
+		// This is the one warning on this kind worth reading twice.
+		v.warnf("%s.methods: unauthenticated is a simple bind with a name and an *empty* password, which RFC 4513 calls an anonymous bind and most directories answer with success -- the application behind it then reads that success as a correct password", p)
+	}
+	for i, mech := range m.SASLMechanisms {
+		switch {
+		case mech == "":
+			v.errf("%s.sasl_mechanisms[%d]: empty", p, i)
+		case len(mech) > 20:
+			v.errf("%s.sasl_mechanisms[%d]: longer than 20 characters", p, i)
+		case mech == "PLAIN" && !requireTLS:
+			v.warnf("%s.sasl_mechanisms[%d]: PLAIN carries a password exactly as a simple bind does", p, i)
+		}
+	}
+	v.ldapDNs(p+".base_dns", m.BaseDNs)
+	if len(m.BaseDNs) == 0 {
+		v.warnf("%s.base_dns: empty, so a request may name any object in the directory, including the naming contexts this listener is not for", p)
+	}
+	if len(m.DenyAttributes) > 0 {
+		named := map[string]bool{}
+		for i, a := range m.DenyAttributes {
+			if a == "" {
+				v.errf("%s.deny_attributes[%d]: empty", p, i)
+				continue
+			}
+			named[strings.ToLower(a)] = true
+		}
+		if !named["userpassword"] {
+			v.warnf("%s.deny_attributes: set without userPassword, which replaces the built-in list and lets password hashes through", p)
+		}
+	}
+	switch m.OnDeniedAttribute {
+	case "", "strip", "deny":
+	default:
+		v.errf("%s.on_denied_attribute: must be strip or deny", p)
+	}
+	if m.MaxEntries < 0 || m.MaxEntries > 1<<20 {
+		v.errf("%s.max_entries: must be between 0 and 1048576", p)
+	}
+	if m.MaxEntries == 0 {
+		v.warnf("%s.max_entries: 0 leaves the entries one search may return unbounded, and an unbounded subtree search is how a directory is copied", p)
+	}
+	if m.MaxFilterTerms < 0 || m.MaxFilterTerms > ldapwire.MaxFilterTerms {
+		v.errf("%s.max_filter_terms: must be between 0 and %d", p, ldapwire.MaxFilterTerms)
+	}
+	if m.MaxFilterDepth < 0 || m.MaxFilterDepth > ldapwire.MaxFilterDepth {
+		v.errf("%s.max_filter_depth: must be between 0 and %d", p, ldapwire.MaxFilterDepth)
+	}
+	for i, oid := range m.ExtendedOperations {
+		if !oidRE.MatchString(oid) {
+			v.errf("%s.extended_operations[%d]: %q is not an object identifier", p, i, oid)
+		}
+	}
+	for i, oid := range m.DenyControls {
+		if !oidRE.MatchString(oid) {
+			v.errf("%s.deny_controls[%d]: %q is not an object identifier", p, i, oid)
+		}
+	}
+	switch m.DefaultAction {
+	case "", "deny", "allow":
+	default:
+		v.errf("%s.default_action: must be deny or allow", p)
+	}
+	if m.DefaultAction == "allow" && len(m.Rules) == 0 && !m.ReadOnly {
+		v.warnf("%s: default_action allow with no rules and without read_only relays every modification to the directory", p)
+	}
+	switch m.DenyResponse {
+	case "", "insufficient", "unwilling", "drop", "close":
+	default:
+		v.errf("%s.deny_response: must be insufficient, unwilling, drop or close", p)
+	}
+	if m.MaxOutstanding < 0 || m.MaxOutstanding > 1<<16 {
+		v.errf("%s.max_outstanding: must be between 0 and 65536", p)
+	}
+	if m.MaxConnections < 0 || m.MaxConnections > 65536 {
+		v.errf("%s.max_connections: must be between 0 and 65536", p)
+	}
+	for _, d := range []struct {
+		key    string
+		val    Duration
+		lo, hi time.Duration
+	}{
+		{"idle_timeout", m.IdleTimeout, time.Second, 24 * time.Hour},
+		{"request_timeout", m.RequestTimeout, time.Second, 10 * time.Minute},
+		{"connect_timeout", m.ConnectTimeout, 100 * time.Millisecond, time.Minute},
+	} {
+		if d.val != 0 && (d.val.D() < d.lo || d.val.D() > d.hi) {
+			v.errf("%s.%s: must be between %s and %s", p, d.key, d.lo, d.hi)
+		}
+	}
+	if m.MaxMessageBytes != 0 && (m.MaxMessageBytes < 1024 || m.MaxMessageBytes > ldapwire.MaxMessage) {
+		v.errf("%s.max_message_bytes: must be between 1024 and %d", p, ldapwire.MaxMessage)
+	}
+	for _, r := range []struct {
+		key         string
+		rate, burst int
+	}{
+		{"rate", m.RateLimit, m.RateBurst},
+		{"bind_rate", m.BindRateLimit, m.BindRateBurst},
+	} {
+		if r.rate < 0 || r.rate > 1<<20 {
+			v.errf("%s.%s_limit: must be between 0 and 1048576", p, r.key)
+		}
+		if r.burst < 0 || r.burst > 1<<20 {
+			v.errf("%s.%s_burst: must be between 0 and 1048576", p, r.key)
+		}
+		if r.rate == 0 && r.burst > 0 {
+			v.warnf("%s.%s_burst: a burst without a %s_limit bounds nothing", p, r.key, r.key)
+		}
+	}
+	if m.BindRateLimit == 0 {
+		v.warnf("%s.bind_rate_limit: 0 leaves binds unbounded, and a bind rate is the one signal that says somebody is trying passwords against the directory", p)
+	}
+	names := map[string]bool{}
+	for i := range m.Rules {
+		r := &m.Rules[i]
+		q := fmt.Sprintf("%s.rules[%d]", p, i)
+		if !nameRE.MatchString(r.Name) {
+			v.errf("%s.name: %q is not a valid name", q, r.Name)
+		} else if names[r.Name] {
+			v.errf("%s.name: duplicate %q", q, r.Name)
+		}
+		names[r.Name] = true
+		switch r.Action {
+		case "", "allow", "deny", "observe":
+		default:
+			v.errf("%s.action: must be allow, deny or observe", q)
+		}
+		v.modbusCIDRs(q+".clients", r.Clients)
+		v.ldapMethods(q+".methods", r.Methods)
+		v.ldapDNs(q+".base_dns", r.BaseDNs)
+		v.ldapDNs(q+".deny_dns", r.DenyDNs)
+		for j, dn := range r.BindDNs {
+			if dn == "" {
+				// The empty name is the unbound connection, which is a
+				// thing a rule may legitimately be about.
+				continue
+			}
+			if _, err := ldapwire.ParseDN(dn); err != nil {
+				v.errf("%s.bind_dns[%d]: %v", q, j, err)
+			}
+		}
+		for j, name := range r.Operations {
+			if _, ok := ldapwire.OpOf(name); !ok {
+				v.errf("%s.operations[%d]: %q is not an operation (bind, search, compare, modify, add, delete, modify_dn, extended, abandon, unbind)", q, j, name)
+			}
+		}
+		for j, a := range r.Access {
+			switch a {
+			case "read", "write", "bind":
+			default:
+				v.errf("%s.access[%d]: %q must be read, write or bind", q, j, a)
+			}
+		}
+		for j, sc := range r.Scopes {
+			switch sc {
+			case "base", "one", "sub":
+			default:
+				v.errf("%s.scopes[%d]: %q must be base, one or sub", q, j, sc)
+			}
+		}
+		if r.MaxEntries < 0 || r.MaxEntries > 1<<20 {
+			v.errf("%s.max_entries: must be between 0 and 1048576", q)
+		}
+		if r.MaxFilterTerms < 0 || r.MaxFilterTerms > ldapwire.MaxFilterTerms {
+			v.errf("%s.max_filter_terms: must be between 0 and %d", q, ldapwire.MaxFilterTerms)
+		}
+		if r.MaxFilterDepth < 0 || r.MaxFilterDepth > ldapwire.MaxFilterDepth {
+			v.errf("%s.max_filter_depth: must be between 0 and %d", q, ldapwire.MaxFilterDepth)
+		}
+		v.modbusSchedule(q+".schedule", r.Schedule)
+	}
+}
+
+// ldapMethods checks a bind-method list and returns it as a set.
+func (v *validator) ldapMethods(p string, in []string) map[ldapwire.Method]bool {
+	out := map[ldapwire.Method]bool{}
+	for i, name := range in {
+		m, ok := ldapwire.MethodOf(name)
+		if !ok {
+			v.errf("%s[%d]: %q must be anonymous, unauthenticated, simple or sasl", p, i, name)
+			continue
+		}
+		out[m] = true
+	}
+	return out
+}
+
+// ldapDNs checks a list of distinguished names.
+func (v *validator) ldapDNs(p string, in []string) {
+	for i, dn := range in {
+		if dn == "" {
+			v.errf("%s[%d]: empty; the root is not a suffix worth naming, because it is every suffix", p, i)
+			continue
+		}
+		if _, err := ldapwire.ParseDN(dn); err != nil {
+			v.errf("%s[%d]: %v", p, i, err)
+		}
+	}
+}
+
 func (v *validator) snmpListener(p string, m *SNMPListener, hasTLS bool) {
 	switch m.Mode {
 	case "", "reverse", "forward":
@@ -7657,6 +7937,11 @@ func (v *validator) modbusCIDRs(p string, in []string) {
 // IEC 104 rules, because "during the day shift" does not change with the
 // protocol.
 func (v *validator) modbusSchedule(p string, s *ModbusSchedule) {
+	if s == nil {
+		// A rule with no window is in force always, which is the common
+		// case; every caller used to have to remember to check.
+		return
+	}
 	for j, d := range s.Days {
 		if !modbusDay(d) {
 			v.errf("%s.days[%d]: %q is not a day (mon to sun)", p, j, d)

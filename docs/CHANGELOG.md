@@ -442,6 +442,105 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **`kind: ldap`: an LDAP and LDAPS relay, so a directory can be put behind
+  something that refuses a bind with an empty password.** A directory is the
+  one service in an estate that knows who everybody is, and LDAP is how
+  everything asks -- which makes it two things at once: the authentication
+  path for every application that has not moved to OIDC, and the most
+  complete map of an organisation that exists anywhere on its network.
+
+  Two defaults of the protocol are the reason this kind exists.
+
+  **A simple bind with a name and an empty password is an anonymous bind**
+  (RFC 4513 §5.1.2), and a great many directories answer it with *success*.
+  A great many applications are written as "bind as the user, and if it
+  worked the password was right" -- so that application is bypassed with an
+  empty string, and the directory cannot tell that login from a correct one.
+  The relay can: `methods` defaults to `[simple, sasl]`, the two that
+  actually authenticate, and naming `unauthenticated` is an operator saying
+  they mean it, with a validation warning that says what it means.
+
+  **A simple bind on port 389 puts a directory password in the clear on the
+  wire**, and the client library that did it does not mention it.
+  `require_tls` is on by default, and it is the one refusal on this protocol
+  that **holds even in shadow mode**: by the time a policy could be
+  consulted the password has already travelled, so a listener that
+  "evaluates and does not enforce" would be a listener that leaked a
+  credential. SASL `PLAIN` counts, because it is a simple bind with extra
+  steps.
+
+  The policy is written in LDAP's own terms: who bound and how, which naming
+  context and subtree a request may name, which operation and access class,
+  which scope, and which attributes. Two of those are unusual enough to name.
+
+  **Subtrees are compared one relative name at a time.** A string suffix test
+  admits `dc=notexample,dc=com` under `example,dc=com` and a prefix test
+  admits `ou=peoplex` under `ou=people`; distinguished names are a tree and
+  are compared as one, with RFC 4514's escaping resolved, the quoted form
+  understood, the attribute type folded and the insignificant space removed.
+  Full normalisation would need the estate's schema, so the value is folded
+  to lower case -- a deliberate choice on the safe side: a *deny* cannot be
+  evaded with a capital letter, and an *allow* may admit a name the directory
+  itself then says does not exist.
+
+  **The attribute policy applies to the answer, not only to the question.** A
+  search that asks for `*` never names `userPassword` and the directory sends
+  it anyway, so a denied attribute is **removed from the entry on its way
+  back** -- which is the half a request-side access list cannot do -- and the
+  entry is re-encoded without it while its name, its other attributes and the
+  search's completion survive. A request that names one *plainly* is refused
+  instead, because stripping it would answer a plain question with a silence
+  the client cannot distinguish from an empty directory. And a *filter* that
+  tests one is refused, because `(userPassword=a*)` is a password oracle one
+  character at a time. The built-in list is the password and key material of
+  the directories people actually run, from OpenLDAP's `userPassword` to
+  Active Directory's `unicodePwd` and LAPS's `ms-Mcs-AdmPwd`.
+
+  **The identity is the directory's to grant.** The relay watches the bind
+  *response*, not the request, and adopts the name only when the directory
+  answers success -- believing the request would let anyone be anybody by
+  binding with the wrong password. So `bind_dns` on a rule means what it
+  says: "this service account, from this network, may read this subtree". An
+  empty name in that list is the unbound connection, which is how "before you
+  authenticate, you may bind and nothing else" is written. A StartTLS upgrade
+  discards the identity, as RFC 4513 §5.1.7 requires and because keeping it
+  would let a client bind in the clear and then hide behind TLS with what
+  that bind gave it.
+
+  **This protocol's amplification is a search.** An unbounded subtree search
+  with `(objectClass=*)` is how a directory is copied, so the entries are
+  counted per *search* -- not per page, because a client that pages through a
+  directory has still copied it -- and the search is **cut** with the
+  directory's own `sizeLimitExceeded` rather than refused: the client knows it
+  got part of an answer instead of hanging. The filter is bounded too, in
+  depth, in term count and in leading wildcards, because a filter is the one
+  part of a request whose size the client chooses and whose cost the
+  directory pays: a hundred substring terms with leading wildcards is a
+  hundred full scans from two hundred octets.
+
+  **StartTLS is terminated here** rather than forwarded, which is what makes
+  it a secure upgrade: a client library that can be pointed at a host and
+  nothing else gets TLS on the leg it can be made to use, and
+  `upstream_tls_mode` decides the other leg separately. A listener with no
+  TLS to offer says so in the protocol's own terms rather than forwarding a
+  request whose answer would apply to the wrong half of the connection.
+
+  Binds are counted apart from requests and failures apart from binds,
+  because those three numbers are what say whether somebody is working
+  through a password list -- and the failure counted is the *directory's* own
+  `invalidCredentials`, so a ban trigger fires on what the directory decided
+  rather than on what the relay guessed. A password never reaches a log, and
+  neither does a filter's assertion values: the filter's shape is logged and
+  what it was looking for is not, because a search for a person's name is
+  that person's business and a log of every one is a surveillance record the
+  estate did not ask for.
+
+  The wire format lives in `internal/ldap`, beside the client the `ldap_auth`
+  filter already authenticated with, over one BER codec -- because two
+  readings of the same bytes in one binary is the class of bug a relay exists
+  to remove. `examples/directory/ldap.yaml`, `docs/RFC.md` for which parts of
+  the LDAP documents are read and which deliberately are not.
+
 - **`kind: snmp`: an SNMP relay, so the estate's own equipment can be
   managed through something that refuses a write.** SNMP runs every switch,
   router, printer, uninterruptible supply and building controller there is,
