@@ -180,3 +180,48 @@ func TestEveryGateKindCanRequireAGrant(t *testing.T) {
 		t.Errorf("max_duration default %s", DefaultAccessMaxDuration)
 	}
 }
+
+// A grant names a person, so a listener that requires one has to learn a name.
+// Two kinds cannot always: telnet has no identity of its own, and VNC only
+// carries one with certain security types. Both are refused at load rather than
+// failing closed on the first evening -- an empty subject matches no grant, so
+// the listener would refuse every session and say nothing about why.
+func TestAListenerThatCannotLearnANameIsRefused(t *testing.T) {
+	base := `
+version: 1
+server:
+  listeners:
+    - name: gate
+      address: "127.0.0.1:0"
+      kind: %s
+      %s:
+        upstream: hosts
+        require_grant: true
+%s
+upstreams:
+  - name: hosts
+    endpoints: [{address: "10.0.0.1:23"}]
+access:
+  ledger: /var/lib/xgate/access.log
+`
+	cfg := func(kind, extra string) []byte {
+		return []byte(strings.Replace(strings.Replace(strings.Replace(base, "%s", kind, 1), "%s", kind, 1), "%s", extra, 1))
+	}
+
+	if _, err := parseNoFiles(cfg("telnet", "")); err == nil {
+		t.Error("telnet require_grant without a factor prompt was accepted")
+	}
+	if _, err := parseNoFiles(cfg("telnet", `        mfa: {file: /etc/xgate/mfa}`)); err != nil {
+		t.Errorf("telnet require_grant with a factor prompt: %v", err)
+	}
+	// VNC: a DES challenge proves a shared password and names nobody, so
+	// require_grant needs a security type that carries a user -- or a factor.
+	if _, err := parseNoFiles(cfg("vnc", `        security_types: [vncauth]
+        password_file: /etc/xgate/vnc.pass`)); err == nil {
+		t.Error("vnc require_grant with a nameless security type was accepted")
+	}
+	if _, err := parseNoFiles(cfg("vnc", `        security_types: [mslogon2]
+        password_file: /etc/xgate/vnc.pass`)); err != nil {
+		t.Errorf("vnc require_grant with a security type that names a user: %v", err)
+	}
+}

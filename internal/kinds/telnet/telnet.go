@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/acceptgroup"
+	"github.com/rom/xproxy/internal/access"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/mfa"
 	"github.com/rom/xproxy/internal/netutil"
@@ -45,6 +46,9 @@ type server struct {
 	options  map[byte]bool
 	recorder *sessionrec.Policy
 	mfaGuard *mfa.Guard
+	// grants is the just-in-time access guard, nil unless this listener
+	// sets require_grant.
+	grants *access.Guard
 
 	// sessions is what a shutdown waits for. It is acceptgroup rather than
 	// a bare WaitGroup because a connection can be accepted at the moment
@@ -90,6 +94,7 @@ func newServer(engine proxy.Host, cfg config.Listener, ln net.Listener, tc *tls.
 			MaxUsers:    c.MFA.MaxUsers,
 		})
 	}
+	t.grants = access.NewGuard(engine.Access(), cfg.Name, c.RequireGrant, engine.Logs().Error)
 	return t, nil
 }
 
@@ -217,11 +222,50 @@ type session struct {
 	live *sessions.Session
 	pool *upstream.Pool
 	ep   *upstream.Endpoint
+	// grant is the access grant this session was admitted under, and
+	// pinned the one machine it names, when it names one rather than the
+	// pool.
+	grant  *access.Grant
+	pinned string
 	// cols and rows are the last window size the client announced,
 	// which is what a player needs to draw the session at the width it
 	// was seen.
 	cols, rows int
 	refused    atomic.Int64
+}
+
+// sessionID is the live table's identifier for this session, or empty when the
+// table refused to register it.
+func (se *session) sessionID() string {
+	if se.live == nil {
+		return ""
+	}
+	return se.live.ID
+}
+
+// admitByGrant is the just-in-time access decision: the reason to refuse, or
+// empty to carry on. A shadowed listener records what it would have refused and
+// carries on, which is how an estate turns this on without locking its
+// operators out on the first evening.
+func (se *session) admitByGrant() string {
+	t := se.t
+	if t.grants == nil {
+		return ""
+	}
+	var addrs []string
+	if pool := t.engine.Pool(t.t.Upstream); pool != nil {
+		addrs = pool.Addresses()
+	}
+	adm := t.grants.Check(se.user, t.t.Upstream, addrs)
+	if adm.Reason == "" {
+		se.grant, se.pinned = adm.Grant, adm.Pinned
+		return ""
+	}
+	if t.shadowed(se.ip, adm.Reason, textsafe.Clip64(se.user)) {
+		return ""
+	}
+	t.deny(se.ip, adm.Reason, textsafe.Clip64(se.user))
+	return adm.Reason
 }
 
 func (t *server) handle(client net.Conn) {
@@ -281,6 +325,16 @@ func (t *server) handle(client net.Conn) {
 			return
 		}
 	}
+	// And the grant is checked after the factor, so the subject is the name
+	// the factor was checked against. Telnet carries no identity of its own,
+	// which is why require_grant needs the factor prompt.
+	if reason := se.admitByGrant(); reason != "" {
+		s.Counters().TelnetRejected.Add(1)
+		_, _ = se.client.Write(wire.EscapeData([]byte("no access grant is in force\r\n")))
+		t.log(se, start, reason)
+		return
+	}
+	defer access.CloseAtExpiry(se.grant, func() { _ = se.client.Close() })()
 	if err := se.connect(); err != nil {
 		s.Logs().Error.Warn("telnet target unavailable", "listener", t.cfg.Name, "err", err.Error())
 		_, _ = se.client.Write(wire.EscapeData([]byte("the target is unavailable\r\n")))
@@ -315,6 +369,11 @@ func (se *session) connect() error {
 			break
 		}
 		tried[ep] = true
+		if se.pinned != "" && !strings.EqualFold(ep.Address, se.pinned) {
+			// The grant names one machine, and this is another.
+			lastErr = fmt.Errorf("the grant is for %s", se.pinned)
+			continue
+		}
 		d := net.Dialer{Timeout: pool.Cfg.Timeouts.Connect.D()}
 		conn, err := d.DialContext(context.Background(), "tcp", ep.Address)
 		pool.Begin(ep)
@@ -333,6 +392,9 @@ func (se *session) connect() error {
 		}
 		se.up, se.ep, se.target = conn, ep, ep.Address
 		se.live.Annotate(se.user, se.target, "")
+		// The window is spent once a machine was actually reached: a
+		// session that never got there did not use the access.
+		t.grants.Use(se.grant, se.sessionID())
 		return nil
 	}
 	if lastErr == nil {

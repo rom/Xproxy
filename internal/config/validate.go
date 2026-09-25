@@ -6700,6 +6700,13 @@ func (v *validator) vncListener(p string, c *VNCListener, hasTLS bool) {
 			v.errf("%s.mfa: needs a security type whose credential carries a user name -- a plain VeNCrypt subtype (x509-plain), or mslogon2 -- since a DES challenge proves a shared desktop password and says nothing about who holds it", p)
 		}
 	}
+	// A grant names a person, so this listener has to learn one. RFB carries
+	// a name in the same two places the factor needs, and without either the
+	// subject would be empty -- which fails closed, refusing every session,
+	// and is better said here than discovered in a change window.
+	if c.RequireGrant && c.MFA == nil && !hasPlain(c.VeNCryptSubtypes) && !namesUser {
+		v.errf("%s.require_grant: needs a security type whose credential carries a user name -- a plain VeNCrypt subtype (x509-plain), or mslogon2 -- or an mfa section, because a grant names a person and there would be nobody to match it against", p)
+	}
 	if up, ok := rfb.SecurityByName(strings.ToLower(strings.TrimSpace(c.UpstreamSecurity))); ok && rfb.RSAAESFamily[up] {
 		wantsRSA = true
 		if c.UpstreamRSAFingerprint == "" {
@@ -6840,6 +6847,16 @@ func (v *validator) sshCertPolicy(p string, h *SSHListener) {
 
 // telnetListener checks a telnet gateway.
 func (v *validator) telnetListener(p string, c *TelnetListener, hasTLS bool) {
+	// Telnet carries no identity of its own for a proxy to read: the login
+	// the target asks for is between the client and the target, and this
+	// gateway never sees it. The name a grant is matched against is the one
+	// the factor prompt asks for, so require_grant needs that prompt --
+	// without it the subject would be empty, every session would be refused,
+	// and the operator would find out in a change window.
+	if c.RequireGrant && c.MFA == nil {
+		v.errf("%s.require_grant: needs an mfa section on this kind: telnet has no identity of its own, and the login the "+
+			"factor prompt asks for is the name a grant is matched against", p)
+	}
 	if c.Upstream == "" {
 		v.errf("%s.upstream: required", p)
 	}

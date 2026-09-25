@@ -101,6 +101,22 @@ func (g *Guard) Use(grant *Grant, session string) {
 	}
 }
 
+// CloseAtExpiry closes a session when its window ends, and returns the stop to
+// defer. Without a grant it does nothing and the stop is a no-op, so a kind
+// writes one line either way.
+//
+// A timer rather than a check on the next byte: a session that goes quiet at
+// 17:55 must still be gone at 18:00, and a gateway that only notices when the
+// next packet arrives leaves an idle shell open for as long as the operator
+// leaves the window open.
+func CloseAtExpiry(g *Grant, closeSession func()) (stop func()) {
+	if g == nil || closeSession == nil {
+		return func() {}
+	}
+	t := time.AfterFunc(time.Until(g.Expires), closeSession)
+	return func() { t.Stop() }
+}
+
 // Deadline is when a session under this grant must end, or the zero time when
 // there is no grant. A gate takes the earlier of this and its own session
 // timeout, so a window closing ends the session that is running rather than

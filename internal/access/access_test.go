@@ -561,3 +561,30 @@ func TestTheDeadlineTakesTheEarlierBound(t *testing.T) {
 		t.Errorf("without a grant: %s, want the listener's own bound", got)
 	}
 }
+
+// CloseAtExpiry is the other half of the time box, for a kind whose session is
+// a pair of sockets rather than a connection with a deadline: the window ending
+// closes it, even if it has been idle since it opened.
+func TestCloseAtExpiryClosesTheSession(t *testing.T) {
+	closed := make(chan struct{})
+	stop := CloseAtExpiry(&Grant{Expires: time.Now().Add(30 * time.Millisecond)}, func() { close(closed) })
+	defer stop()
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Error("the window closed and the session did not")
+	}
+
+	// Stopping it before the window ends leaves the session alone, which is
+	// what the deferred stop is for when a session ends first.
+	again := make(chan struct{})
+	CloseAtExpiry(&Grant{Expires: time.Now().Add(time.Hour)}, func() { close(again) })()
+	select {
+	case <-again:
+		t.Error("a stopped timer closed the session")
+	default:
+	}
+	// And without a grant there is nothing to stop.
+	CloseAtExpiry(nil, func() { t.Error("a session with no grant was closed") })()
+	CloseAtExpiry(&Grant{}, nil)()
+}
