@@ -36,6 +36,10 @@ type fileServer struct {
 	// grantTSize puts a transfer size in the acknowledgement, which on a
 	// read is the server declaring how large the file is.
 	grantTSize int64
+	// sendBlock makes the server send data packets of a size other than the
+	// one the transfer negotiated, which is a server sending more than was
+	// asked for. Zero sends the negotiated size.
+	sendBlock int
 	// silent answers nothing at all.
 	silent bool
 	// errorCode answers with an error packet instead of the file.
@@ -95,7 +99,7 @@ func (s *fileServer) transfer(t *testing.T, p *wire.Packet, peer *net.UDPAddr) {
 	defer func() { _ = tid.Close() }()
 	s.mu.Lock()
 	code, grantBlock, grantWindow, tsize, stray := s.errorCode, s.grantBlock, s.grantWindow, s.grantTSize, s.stray
-	file := s.file
+	file, sendBlock := s.file, s.sendBlock
 	s.mu.Unlock()
 	if code != 0 {
 		_, _ = tid.WriteTo(wire.EncodeError(uint16(code), "refused by the server"), peer)
@@ -132,6 +136,9 @@ func (s *fileServer) transfer(t *testing.T, p *wire.Packet, peer *net.UDPAddr) {
 		}
 		s.receive(tid, peer, block)
 		return
+	}
+	if sendBlock > 0 {
+		block = sendBlock
 	}
 	s.send(tid, peer, file, block, oacked, stray)
 }
@@ -576,6 +583,28 @@ func TestAServerThatAcceptsMoreThanItWasOfferedEndsTheTransfer(t *testing.T) {
 	if errp == nil {
 		t.Fatal("the transfer survived a server that overshot the block size")
 	}
+}
+
+// TestADataPacketLargerThanTheNegotiatedBlockEndsTheTransfer is the same
+// finding as the option acknowledgement, one step later: the server agreed to
+// a block size and then sent more than it. A relay that forwarded it would be
+// forwarding octets the transfer's own negotiation says are not there.
+func TestADataPacketLargerThanTheNegotiatedBlockEndsTheTransfer(t *testing.T) {
+	// No options are granted, so the transfer runs at RFC 1350's 512 -- and
+	// the server sends 1024.
+	fs := startFileServer(t, &fileServer{file: content(4096), sendBlock: 1024})
+	s, addr := tftpRelay(t, "        upstream: servers\n        default_action: allow\n", fs.addr())
+	c := dial(t, addr)
+	got, errp := c.read("boot.bin")
+	if errp == nil {
+		t.Fatal("an oversize data packet was forwarded")
+	}
+	if len(got) != 0 {
+		t.Fatalf("%d octets went through before the refusal", len(got))
+	}
+	awaitCounter(t, s, func(sn proxy.Snapshot) bool {
+		return sn.Refusals["tftp"]["block_too_large"] > 0
+	}, "the oversize block was counted")
 }
 
 // TestADatagramFromAThirdAddressIsDropped is the injection this protocol has
