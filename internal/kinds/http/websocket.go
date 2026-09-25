@@ -219,8 +219,11 @@ type wsConn struct {
 	// readBuf and writeBuf hold bytes that arrived split across calls:
 	// a frame header can straddle any boundary, so the guard buffers
 	// until it can parse.
-	readBuf  []byte
-	writeBuf []byte
+	readBuf   []byte
+	readHold  []byte
+	readReady []byte
+	readErr   error
+	writeBuf  []byte
 }
 
 // maxPendingFrame bounds the header-and-payload buffer the guard keeps
@@ -235,6 +238,9 @@ func (s *engine) newWSConn(inner net.Conn, g *wsGuard, st *reqState) net.Conn {
 }
 
 func (c *wsConn) Read(p []byte) (int, error) {
+	if c.g.cfg.Action != "log" {
+		return c.readEnforced(p)
+	}
 	n, err := c.Conn.Read(p)
 	if n > 0 {
 		if verr := c.scan(&c.readBuf, p[:n], c.fromCli); verr != nil {
@@ -242,6 +248,72 @@ func (c *wsConn) Read(p []byte) (int, error) {
 		}
 	}
 	return n, err
+}
+
+// readEnforced does not expose client bytes until the complete message that
+// contains them has passed inspection. In particular, returning rejected
+// bytes together with an error is not sufficient: io.Copy writes a positive
+// byte count before it observes the error.
+func (c *wsConn) readEnforced(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	for {
+		c.mu.Lock()
+		if len(c.readReady) > 0 {
+			n := copy(p, c.readReady)
+			c.readReady = c.readReady[n:]
+			c.mu.Unlock()
+			return n, nil
+		}
+		if c.closed {
+			err := c.closeErr
+			c.mu.Unlock()
+			return 0, err
+		}
+		if len(c.readBuf) > 0 {
+			consumed, violation := c.fromCli.parse(c.readBuf, c)
+			if violation != nil {
+				c.readBuf = nil
+				c.readHold = nil
+				c.mu.Unlock()
+				return 0, c.fail(violation)
+			}
+			if consumed > 0 {
+				c.readHold = append(c.readHold, c.readBuf[:consumed]...)
+				c.readBuf = c.readBuf[consumed:]
+				if !c.fromCli.fragging {
+					c.readReady = append(c.readReady, c.readHold...)
+					c.readHold = nil
+				}
+				c.mu.Unlock()
+				continue
+			}
+			if int64(len(c.readBuf)) > c.maxPending() {
+				c.readBuf = nil
+				c.readHold = nil
+				c.mu.Unlock()
+				return 0, c.fail(&wsViolation{"frame_size", "a frame header or payload larger than max_frame_bytes", wsCloseTooBig})
+			}
+		}
+		if c.readErr != nil {
+			err := c.readErr
+			c.readErr = nil
+			c.mu.Unlock()
+			return 0, err
+		}
+		c.mu.Unlock()
+
+		// It is safe to use p as scratch space: no bytes are reported to
+		// the caller until they have moved through readReady.
+		n, err := c.Conn.Read(p)
+		c.mu.Lock()
+		c.readBuf = append(c.readBuf, p[:n]...)
+		if err != nil {
+			c.readErr = err
+		}
+		c.mu.Unlock()
+	}
 }
 
 func (c *wsConn) Write(p []byte) (int, error) {

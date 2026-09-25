@@ -280,6 +280,7 @@ func init() {
 	filter.Register(filter.Kind{
 		Name:        "yara",
 		Description: "YARA rules over request and response bodies.",
+		BuffersBody: true,
 		Validate: func(opts filter.Options) error {
 			c, err := parse(opts)
 			if err != nil {

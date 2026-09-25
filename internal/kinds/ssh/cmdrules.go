@@ -104,7 +104,21 @@ func compileCmdRules(list []config.SSHCommandRule) (*cmdRules, error) {
 
 // decide applies the rules to one parsed command.
 func (rs *cmdRules) decide(c *sshcmd.Command) cmdDecision {
-	if rs == nil || c == nil || c.Kind == sshcmd.KindOther {
+	if rs == nil || c == nil {
+		return cmdDecision{}
+	}
+	if c.Kind == sshcmd.KindOther {
+		// Wrappers are deliberately not parsed as the family they carry:
+		// allowing an "env scp" line under an scp rule would pretend we
+		// had inspected env's semantics. They must not, however, fall
+		// through to the older and possibly permissive command gates. Use
+		// the shell-normalized words so spellings such as s''cp cannot hide
+		// a transfer helper from this conservative check.
+		for _, word := range c.Words {
+			if looksLikeTransfer(word.Text) {
+				return cmdDecision{matched: true, reason: refuseNoRule, detail: c.Name}
+			}
+		}
 		return cmdDecision{}
 	}
 	r := rs.byKind[c.Kind]

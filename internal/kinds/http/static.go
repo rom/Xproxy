@@ -26,6 +26,14 @@ type staticSite struct {
 	root *os.Root
 }
 
+const (
+	// Directory indexes are generated in memory so that they have a
+	// deterministic order and Content-Length. Keep both inputs and output
+	// bounded: listings are reachable before an application server is.
+	staticListingMaxEntries = 4096
+	staticListingMaxBytes   = 1 << 20
+)
+
 func openStatic(rc *config.RouteStatic) (*staticSite, error) {
 	root, err := os.OpenRoot(rc.Root)
 	if err != nil {
@@ -90,14 +98,25 @@ func (s *engine) static(rw *responseWriter, r *http.Request, st *reqState, cr *c
 				s.plainStatus(rw, r, http.StatusNotFound)
 				return
 			}
-			entries, rerr := f.ReadDir(-1)
+			entries, rerr := f.ReadDir(staticListingMaxEntries + 1)
 			_ = f.Close()
 			if rerr != nil {
 				s.plainStatus(rw, r, http.StatusInternalServerError)
 				return
 			}
+			if len(entries) > staticListingMaxEntries {
+				s.stats.StaticNotFound.Add(1)
+				s.plainStatus(rw, r, http.StatusNotFound)
+				return
+			}
+			body, ok := ss.listing(rel, entries)
+			if !ok {
+				s.stats.StaticNotFound.Add(1)
+				s.plainStatus(rw, r, http.StatusNotFound)
+				return
+			}
 			s.stats.StaticServed.Add(1)
-			ss.listing(rw, r, rel, entries)
+			writeListing(rw, r, body)
 			return
 		}
 	}
@@ -218,9 +237,10 @@ func staticContentType(name string) string {
 	return "" // ServeContent decides from the extension registry or sniffs
 }
 
-// listing writes a plain directory index. Names are escaped; hidden
-// entries stay hidden unless dot_files is set.
-func (ss *staticSite) listing(rw http.ResponseWriter, r *http.Request, rel string, entries []fs.DirEntry) {
+// listing builds a plain directory index. Names are escaped; hidden
+// entries stay hidden unless dot_files is set. False means that the
+// rendered response exceeded the hard allocation bound.
+func (ss *staticSite) listing(rel string, entries []fs.DirEntry) ([]byte, bool) {
 	sort.Slice(entries, func(i, j int) bool {
 		if entries[i].IsDir() != entries[j].IsDir() {
 			return entries[i].IsDir()
@@ -230,6 +250,9 @@ func (ss *staticSite) listing(rw http.ResponseWriter, r *http.Request, rel strin
 	var b strings.Builder
 	title := html.EscapeString(rel)
 	b.WriteString("<!doctype html><html><head><meta charset=\"utf-8\"><title>Index of " + title + "</title></head><body><h1>Index of " + title + "</h1><ul>")
+	if b.Len() > staticListingMaxBytes {
+		return nil, false
+	}
 	if rel != "/" {
 		b.WriteString(`<li><a href="../">../</a></li>`)
 	}
@@ -246,16 +269,28 @@ func (ss *staticSite) listing(rw http.ResponseWriter, r *http.Request, rel strin
 		if info, err := e.Info(); err == nil && !e.IsDir() {
 			size = " <small>" + strconv.FormatInt(info.Size(), 10) + " bytes, " + info.ModTime().UTC().Format(time.RFC3339) + "</small>"
 		}
-		fmt.Fprintf(&b, `<li><a href="%s">%s</a>%s</li>`, esc, esc, size)
+		line := fmt.Sprintf(`<li><a href="%s">%s</a>%s</li>`, esc, esc, size)
+		if len(line) > staticListingMaxBytes-b.Len() {
+			return nil, false
+		}
+		b.WriteString(line)
 	}
-	b.WriteString("</ul></body></html>\n")
+	const closing = "</ul></body></html>\n"
+	if len(closing) > staticListingMaxBytes-b.Len() {
+		return nil, false
+	}
+	b.WriteString(closing)
+	return []byte(b.String()), true
+}
+
+func writeListing(rw http.ResponseWriter, r *http.Request, body []byte) {
 	h := rw.Header()
 	h.Set("Content-Type", "text/html; charset=utf-8")
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Cache-Control", "no-store")
-	h.Set("Content-Length", strconv.Itoa(b.Len()))
+	h.Set("Content-Length", strconv.Itoa(len(body)))
 	rw.WriteHeader(http.StatusOK)
 	if r.Method != http.MethodHead {
-		_, _ = rw.Write([]byte(b.String()))
+		_, _ = rw.Write(body)
 	}
 }

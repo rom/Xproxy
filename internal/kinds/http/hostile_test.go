@@ -142,6 +142,9 @@ func TestTemplateVarsResolveEveryName(t *testing.T) {
 		cr: &compiledRoute{cfg: &config.Route{Tenant: "acme"}},
 	}
 	full := &tvars{r: r, st: st, status: 404, reason: "not_found"}
+	if got, ok := full.Resolve("capture", "leader"); got != "first" || !ok {
+		t.Errorf("capture(leader) = %q, %v, want first, true", got, ok)
+	}
 	for name, want := range map[string]string{
 		"client_ip": "198.51.100.9", "request_id": "rid", "host": "shop.test",
 		"route": "api", "upstream": "pool-a", "tenant": "acme", "country": "SE",
@@ -387,7 +390,7 @@ func TestCacheKeyRefusesUncacheableRequests(t *testing.T) {
 	rc := &config.RouteCache{Methods: []string{"GET", "HEAD"}, Query: "all"}
 	base := func() *http.Request { return httptest.NewRequest("GET", "http://shop.test/p", nil) }
 
-	if cacheKey(rc, base(), "shop.test", "/p") == "" {
+	if cacheKey(rc, base(), "shop.test", "/p", false) == "" {
 		t.Fatal("a plain GET has no key")
 	}
 	cases := map[string]func(*http.Request){
@@ -403,7 +406,7 @@ func TestCacheKeyRefusesUncacheableRequests(t *testing.T) {
 	for name, mangle := range cases {
 		r := base()
 		mangle(r)
-		if k := cacheKey(rc, r, "shop.test", "/p"); k != "" {
+		if k := cacheKey(rc, r, "shop.test", "/p", false); k != "" {
 			t.Errorf("%s still produced the key %q", name, k)
 		}
 	}
@@ -412,8 +415,16 @@ func TestCacheKeyRefusesUncacheableRequests(t *testing.T) {
 	withCookies := &config.RouteCache{Methods: []string{"GET"}, Query: "all", Cookies: true}
 	r := base()
 	r.Header.Set("Cookie", "sid=1")
-	if cacheKey(withCookies, r, "shop.test", "/p") == "" {
+	if cacheKey(withCookies, r, "shop.test", "/p", true) == "" {
 		t.Error("cookies: true still refused a request with a cookie")
+	}
+
+	// Authentication filters can strip their cookie before the cache lookup.
+	// The cookie's presence on the original client request must still bypass a
+	// shared cache when cookies are disabled.
+	r.Header.Del("Cookie")
+	if k := cacheKey(rc, r, "shop.test", "/p", true); k != "" {
+		t.Errorf("a stripped client cookie still produced the key %q", k)
 	}
 }
 
@@ -424,7 +435,7 @@ func TestCacheKeySeparatesVariants(t *testing.T) {
 		if mangle != nil {
 			mangle(r)
 		}
-		return cacheKey(rc, r, "shop.test", "/p")
+		return cacheKey(rc, r, "shop.test", "/p", false)
 	}
 	base := key(nil)
 
@@ -460,22 +471,22 @@ func TestCacheKeySeparatesVariants(t *testing.T) {
 	none := &config.RouteCache{Methods: []string{"GET"}, Query: "none"}
 	r1 := httptest.NewRequest("GET", "http://shop.test/p?a=1", nil)
 	r2 := httptest.NewRequest("GET", "http://shop.test/p?a=2&b=3", nil)
-	if cacheKey(none, r1, "shop.test", "/p") != cacheKey(none, r2, "shop.test", "/p") {
+	if cacheKey(none, r1, "shop.test", "/p", false) != cacheKey(none, r2, "shop.test", "/p", false) {
 		t.Error("query: none still split the entries")
 	}
 	listed := &config.RouteCache{Methods: []string{"GET"}, Query: "listed", QueryParams: []string{"b", "a"}}
 	r3 := httptest.NewRequest("GET", "http://shop.test/p?b=3&a=2", nil)
 	r4 := httptest.NewRequest("GET", "http://shop.test/p?a=2&b=3", nil)
-	if cacheKey(listed, r3, "shop.test", "/p") != cacheKey(listed, r4, "shop.test", "/p") {
+	if cacheKey(listed, r3, "shop.test", "/p", false) != cacheKey(listed, r4, "shop.test", "/p", false) {
 		t.Error("query: listed depends on the order the client sent")
 	}
 	r5 := httptest.NewRequest("GET", "http://shop.test/p?a=2&b=3&utm=track", nil)
-	if cacheKey(listed, r5, "shop.test", "/p") != cacheKey(listed, r4, "shop.test", "/p") {
+	if cacheKey(listed, r5, "shop.test", "/p", false) != cacheKey(listed, r4, "shop.test", "/p", false) {
 		t.Error("an unlisted parameter reached the key")
 	}
 	// A value whose separators would otherwise run together is escaped.
 	r6 := httptest.NewRequest("GET", "http://shop.test/p?a=2%26b%3D9", nil)
-	if cacheKey(listed, r6, "shop.test", "/p") == cacheKey(listed, r4, "shop.test", "/p") {
+	if cacheKey(listed, r6, "shop.test", "/p", false) == cacheKey(listed, r4, "shop.test", "/p", false) {
 		t.Error("an escaped separator collided with two real parameters")
 	}
 }
@@ -1123,7 +1134,9 @@ func TestMediaTypeNormalises(t *testing.T) {
 		"APPLICATION/JSON; charset=x": "application/json",
 		"  text/plain  ":              "text/plain",
 		";":                           "",
-		"text/plain;":                 "text/plain",
+		"text/plain;":                 "",
+		"not a media type":            "",
+		"application/" + strings.Repeat("x", apiinv.MaxMediaTypeBytes): "",
 	}
 	for in, want := range cases {
 		if got := mediaType(in); got != want {

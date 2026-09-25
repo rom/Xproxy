@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	coreruleset "github.com/corazawaf/coraza-coreruleset/v4"
@@ -227,6 +228,31 @@ func TestLearningTableBound(t *testing.T) {
 	rep := st.Report(10, nil)
 	if rep.Learning.Entries != 2 || rep.Learning.Dropped == 0 {
 		t.Fatalf("bound not applied: %+v", rep.Learning)
+	}
+}
+
+func TestLearningRejectsOversizedTargets(t *testing.T) {
+	st := NewStats()
+	e, err := New(wafConfig(&config.WAFLearning{Enabled: true, MinHits: 1, MaxEntries: 100}), Need{"default": {ModeDetect: true}}, st, nolog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := strings.Repeat("a", maxLearnTargetBytes)
+	r := httptest.NewRequest("GET", "http://example.com/?"+name+"=<script>alert(1)</script>", nil)
+	runInfo(t, e, ModeDetect, r, info())
+	rep := st.Report(10, nil)
+	if rep.Learning.Entries != 0 || rep.Learning.Dropped == 0 {
+		t.Fatalf("oversized target retained: %+v", rep.Learning)
+	}
+}
+
+func TestReserveBytes(t *testing.T) {
+	var used atomic.Int64
+	if !reserveBytes(&used, 6, 10) || reserveBytes(&used, 5, 10) || used.Load() != 6 {
+		t.Fatalf("budget reservation used=%d", used.Load())
+	}
+	if !reserveBytes(&used, 4, 10) || used.Load() != 10 {
+		t.Fatalf("exact budget reservation used=%d", used.Load())
 	}
 }
 

@@ -1,6 +1,7 @@
 package challenge
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -480,13 +482,23 @@ func TestCaptcha(t *testing.T) {
 	if w, reason := post(url.Values{"cf-turnstile-response": {"tok1"}}); w.Code != 403 || reason != "captcha rejected" {
 		t.Fatalf("rejected token: %d %s", w.Code, reason)
 	}
+	// CAPTCHA attempts consume their nonce before the outbound call, including
+	// rejected tokens, so one signed nonce cannot drive repeated provider calls.
+	if w, reason := post(url.Values{"cf-turnstile-response": {"replay"}}); w.Code != 403 || reason != "nonce already used" {
+		t.Fatalf("rejected-token replay: %d %s", w.Code, reason)
+	}
+	rec = httptest.NewRecorder()
+	c.ServeTier(rec, httptest.NewRequest("GET", "http://example.com/login", nil), ip, true)
+	nonce = extractNonce(t, rec.Body.String())
 	answer = `{"success":true,"score":0.1}`
 	if w, reason := post(url.Values{"cf-turnstile-response": {"tok2"}}); w.Code != 403 || reason != "captcha score" {
 		t.Fatalf("low score: %d %s", w.Code, reason)
 	}
+	rec = httptest.NewRecorder()
+	c.ServeTier(rec, httptest.NewRequest("GET", "http://example.com/login", nil), ip, true)
+	nonce = extractNonce(t, rec.Body.String())
 	answer = `{"success":true,"score":0.9,"hostname":"example.com"}`
-	// A token without a counter is not a proof attempt (no 400), and a
-	// nonce is not burnt by a provider failure.
+	// A token without a counter is not a proof attempt (no 400).
 	w, reason := post(url.Values{"cf-turnstile-response": {"tok3"}, "device": {strings.Repeat("ef", 32)}})
 	if w.Code != 303 || reason != "" {
 		t.Fatalf("captcha pass: %d %s", w.Code, reason)
@@ -512,7 +524,7 @@ func TestCaptcha(t *testing.T) {
 		t.Fatalf("proof with captcha configured: %d %s", w.Code, reason)
 	}
 	issued, passed, failed, captcha := c.Stats()
-	if issued != 3 || passed != 2 || failed != 3 || captcha != 1 {
+	if issued != 5 || passed != 2 || failed != 4 || captcha != 1 {
 		t.Fatalf("stats %d %d %d %d", issued, passed, failed, captcha)
 	}
 	// Hostname binding: a token the provider says was solved on another
@@ -621,6 +633,43 @@ func TestCaptcha(t *testing.T) {
 	if _, err := New(conf); err == nil {
 		t.Fatal("empty secret accepted")
 	}
+}
+
+func TestCaptchaVerificationConcurrencyBound(t *testing.T) {
+	started := make(chan struct{}, captchaVerifyConcurrency)
+	release := make(chan struct{})
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		started <- struct{}{}
+		<-release
+		_, _ = io.WriteString(w, `{"success":false}`)
+	}))
+	defer provider.Close()
+	secretFile := filepath.Join(t.TempDir(), "captcha.secret")
+	if err := os.WriteFile(secretFile, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	off := false
+	cp, err := loadCaptcha(&config.Captcha{Provider: "turnstile", SiteKey: "site", SecretFile: secretFile, VerifyURL: provider.URL, Timeout: config.Duration(2 * time.Second), HostnameCheck: &off})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < captchaVerifyConcurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cp.check(context.Background(), "token", nil, netip.Addr{})
+		}()
+	}
+	for i := 0; i < captchaVerifyConcurrency; i++ {
+		<-started
+	}
+	if ok, reason := cp.check(context.Background(), "overflow", nil, netip.Addr{}); ok || reason != "captcha busy" {
+		t.Fatalf("verification above concurrency bound: ok=%v reason=%q", ok, reason)
+	}
+	close(release)
+	wg.Wait()
 }
 
 // With cookie_scope: host a pass covers only the host that issued it.

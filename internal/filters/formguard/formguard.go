@@ -332,6 +332,7 @@ func init() {
 	filter.Register(filter.Kind{
 		Name:        "form_guard",
 		Description: "Catch form bots with a hidden field and the time between the form and its submission.",
+		BuffersBody: true,
 		Validate: func(opts filter.Options) error {
 			_, err := parse(opts)
 			return err

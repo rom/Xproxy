@@ -95,7 +95,8 @@ func newListener(su *proxy.Setup) (proxy.Instance, error) {
 	port, _ := strconv.Atoi(portStr)
 	h3srv, err := h3.New(h3.Options{
 		Conn: pc, Port: port, TLS: su.TLS, Handler: h, Limits: lim, H3: *lc.H3, WebTransport: lc.H3.WebTransport,
-		Limiter: su.Host.ConnLimiter(), Log: su.Host.Logs().Error.With("listener", lc.Name, "proto", "h3"),
+		Limiter: su.Host.ConnLimiter(), HeaderLimiter: e.h3Headers,
+		Log: su.Host.Logs().Error.With("listener", lc.Name, "proto", "h3"),
 	})
 	if err != nil {
 		_ = pc.Close()

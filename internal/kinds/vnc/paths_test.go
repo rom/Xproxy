@@ -188,6 +188,7 @@ func TestAThreeThreeClientIsRefusedWhenOnlyVeNCryptIsOffered(t *testing.T) {
 	tg := startTarget(t, &target{})
 	s, addr := gateway(t, tg, fmt.Sprintf(
 		"        security_types: [vencrypt]\n"+
+			"        vencrypt_subtypes: [x509-none]\n"+
 			"      tls: {certificates: [{cert_file: %s, key_file: %s}]}", cert, key))
 	cl := dial(t, addr)
 	cl.version(rfb.V33)

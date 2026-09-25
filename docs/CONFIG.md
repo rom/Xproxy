@@ -178,12 +178,14 @@ ejection; active health checks run as configured on the upstream — for a
 pool with no HTTP behind it, `health_check.type: tcp` is the probe that
 fits.
 
-**A server that speaks first is relayed.** The listener waits about a
-second for a ClientHello before deciding there is not one, so SSH, SMTP,
-FTP, MySQL and PostgreSQL — all of which greet the client before it says
-anything — reach their client rather than deadlocking against a peek
-that is waiting for bytes the client is waiting to be greeted before
-sending. Every
+**A server that speaks first is relayed on a default-only listener.** When
+no SNI routes are configured, the listener waits about a second for a
+ClientHello before selecting the default, so SSH, SMTP, FTP, MySQL and
+PostgreSQL — all of which greet the client before it says anything —
+reach their client rather than deadlocking against a peek that is waiting
+for bytes the client is waiting to be greeted before sending. A listener
+with SNI routes waits for the ClientHello hard timeout instead: initial
+silence cannot select the default and bypass those routes. Every
 connection writes one `tcp` line to the access log with the name,
 upstream, endpoint, bytes and duration (`proto: quic` for QUIC flows).
 Counters: `tcp_connections`, `tcp_rejected`, `tcp_errors`,
@@ -2333,11 +2335,11 @@ server chooses, MD5 of the shared secret as an AES-128 key, and a
 fixed credential blob encrypted under it in ECB. Apple's own servers
 offer a **512-bit** prime, the key derivation is MD5 and the mode is
 ECB, so the credential is protected against very little; the warning
-at load says so. In the server role this gateway generates a 1024-bit
-prime instead — the length is on the wire and a client reads it, but a
-client that assumes 512 would not interoperate. Its credential carries
-a name, so `mfa` works with it and `upstream_user` is required to use
-it towards a target.
+at load says so. In the server role this gateway uses the fixed 1024-bit
+Oakley group 2 prime instead — the length is on the wire and a client
+reads it, but a client that assumes 512 would not interoperate. Its
+credential carries a name, so `mfa` works with it and `upstream_user`
+is required to use it towards a target.
 
 **RealVNC's RSA-AES**, types 129, 130 and 133, is reimplemented on the
 same terms and with a different balance of risk. Each end sends an RSA

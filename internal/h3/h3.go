@@ -48,7 +48,11 @@ type Options struct {
 	Limits  config.Limits
 	H3      config.H3
 	Limiter *limits.ConnLimiter
-	Log     *slog.Logger
+	// HeaderLimiter bounds request streams which can be waiting for headers.
+	// A connection reserves its entire advertised stream allowance because
+	// quic-go doesn't expose a request until its HEADERS frame is complete.
+	HeaderLimiter *limits.Concurrency
+	Log           *slog.Logger
 	// WebTransport enables WebTransport sessions on this endpoint
 	// (extended CONNECT, HTTP/3 datagrams); Upgrade accepts them.
 	WebTransport bool
@@ -66,7 +70,7 @@ type Server struct {
 
 // New prepares a server. Serve starts it.
 func New(o Options) (*Server, error) {
-	if o.Conn == nil || o.TLS == nil || o.Handler == nil || o.Limiter == nil {
+	if o.Conn == nil || o.TLS == nil || o.Handler == nil || o.Limiter == nil || o.HeaderLimiter == nil {
 		return nil, errors.New("h3: incomplete options")
 	}
 	var resetKey quic.StatelessResetKey
@@ -75,6 +79,10 @@ func New(o Options) (*Server, error) {
 	}
 	lim := o.Limiter
 	maxConns := int64(o.Limits.MaxConnections)
+	maxStreams := int64(o.H3.MaxStreams)
+	if ceiling := o.HeaderLimiter.Max(); maxStreams > ceiling {
+		maxStreams = ceiling
+	}
 	always := o.H3.ValidateAddresses != "under_load"
 	tr := &quic.Transport{
 		Conn:              o.Conn,
@@ -88,14 +96,22 @@ func New(o Options) (*Server, error) {
 			if release == nil {
 				return ctx, fmt.Errorf("refused: %s", reason)
 			}
-			context.AfterFunc(ctx, release)
+			releaseHeaders, ok := o.HeaderLimiter.AcquireN(maxStreams)
+			if !ok {
+				release()
+				return ctx, errors.New("refused: HTTP/3 pre-header stream limit")
+			}
+			context.AfterFunc(ctx, func() {
+				releaseHeaders()
+				release()
+			})
 			return ctx, nil
 		},
 	}
 	qc := &quic.Config{
 		HandshakeIdleTimeout:  o.Limits.ReadHeaderTimeout.D(),
 		MaxIdleTimeout:        o.Limits.IdleTimeout.D(),
-		MaxIncomingStreams:    int64(o.H3.MaxStreams),
+		MaxIncomingStreams:    maxStreams,
 		MaxIncomingUniStreams: 16,
 		Allow0RTT:             false,
 		KeepAlivePeriod:       0,

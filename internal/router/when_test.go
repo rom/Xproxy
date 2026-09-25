@@ -54,3 +54,23 @@ func TestWhen(t *testing.T) {
 		}
 	}
 }
+
+func TestWhenUsesCandidatePathRegexCaptures(t *testing.T) {
+	r := New([]config.Route{
+		{Name: "protected", PathRegex: []string{`/(?P<section>admin|public)`}, When: `capture("section") == "admin"`, Upstream: "a"},
+		{Name: "fallback", Paths: []string{"/"}, Upstream: "b"},
+	})
+
+	for _, tc := range []struct {
+		path string
+		want string
+	}{
+		{path: "/admin", want: "protected"},
+		{path: "/public", want: "fallback"},
+	} {
+		match := r.MatchRequest("h", tc.path, "GET", false, nil, testEnv{})
+		if match == nil || match.Cfg.Name != tc.want {
+			t.Errorf("MatchRequest(%q) = %v, want route %q", tc.path, match, tc.want)
+		}
+	}
+}

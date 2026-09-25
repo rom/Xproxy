@@ -59,6 +59,8 @@ type quicFlow struct {
 	pending [][]byte // datagrams held while the ClientHello is incomplete
 	// pendingBytes is the size of pending, bounded by maxQUICPending.
 	pendingBytes int
+	// release returns this routed flow's slot to the server-wide limiter.
+	release func()
 }
 
 func (f *quicFlow) touch() { f.last.Store(time.Now().UnixNano()) }
@@ -175,6 +177,13 @@ func (q *quicRelay) datagram(client netip.AddrPort, b []byte) {
 		q.drop(f, "no_route")
 		return
 	}
+	release, _ := s.ConnLimiter().Admit(client.Addr())
+	if release == nil {
+		s.Counters().QUICRejected.Add(1)
+		q.drop(f, "connection_limit")
+		return
+	}
+	f.release = release
 	pool := s.Pool(upName)
 	if pool == nil {
 		q.drop(f, "no_pool")
@@ -273,6 +282,9 @@ func (q *quicRelay) finish(f *quicFlow, reason string) {
 		f.pool.End(f.endpoint, false, 0)
 		s.Counters().TCPBytesIn.Add(uint64(in))   //nolint:gosec // non-negative
 		s.Counters().TCPBytesOut.Add(uint64(out)) //nolint:gosec // non-negative
+	}
+	if f.release != nil {
+		f.release()
 	}
 	ep := ""
 	if f.endpoint != nil {

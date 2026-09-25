@@ -3,6 +3,7 @@ package limits
 import (
 	"net"
 	"net/netip"
+	"sync"
 	"sync/atomic"
 )
 
@@ -33,6 +34,7 @@ import (
 // read: that is all a listener can do about a connection it has already
 // been handed, and it is cheap.
 type AcceptRate struct {
+	mu     sync.Mutex
 	total  *KeyedLimiter // keyed by "" -- one bucket for the listener
 	source *KeyedLimiter
 	v4, v6 int
@@ -74,14 +76,25 @@ func (a *AcceptRate) Allow(addr netip.Addr) (ok bool, reason string) {
 	if !a.Active() {
 		return true, ""
 	}
-	if a.total != nil && !a.total.Allow("") {
-		a.reject(addr, ReasonRate)
-		return false, ReasonRate
+	a.mu.Lock()
+	totalTaken := false
+	if a.total != nil {
+		if !a.total.Allow("") {
+			a.mu.Unlock()
+			a.reject(addr, ReasonRate)
+			return false, ReasonRate
+		}
+		totalTaken = true
 	}
 	if a.source != nil && !a.source.Allow(a.key(addr)) {
+		if totalTaken {
+			a.total.refund("", 1)
+		}
+		a.mu.Unlock()
 		a.reject(addr, ReasonRateSource)
 		return false, ReasonRateSource
 	}
+	a.mu.Unlock()
 	return true, ""
 }
 

@@ -39,12 +39,26 @@ const (
 	// ARDMaxPrimeBytes bounds the arithmetic an unauthenticated peer
 	// can ask for.
 	ARDMaxPrimeBytes = 512
-	// ardServerPrimeBits is what this proxy generates in the server
-	// role. Larger than Apple's own, since the length is on the wire
-	// and a client reads it; docs/CONFIG.md says so in case a client
-	// turns out to assume 512.
-	ardServerPrimeBits = 1024
 )
+
+// ardServerPrime is the 1024-bit Oakley group 2 modulus from RFC 2409,
+// section 6.2. The modulus is public and may be shared by every session;
+// generating one for an unauthenticated handshake would let a client make
+// the server perform expensive prime generation merely by selecting ARD.
+// Each handshake still gets a fresh private exponent below.
+var ardServerPrime = func() *big.Int {
+	prime, ok := new(big.Int).SetString(
+		"FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD1"+
+			"29024E088A67CC74020BBEA63B139B22514A08798E3404DD"+
+			"EF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245"+
+			"E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7ED"+
+			"EE386BFB5A899FA5AE9F24117C4B1FE649286651ECE65381"+
+			"FFFFFFFFFFFFFFFF", 16)
+	if !ok {
+		panic("rfb: invalid built-in ARD prime")
+	}
+	return prime
+}()
 
 // ErrARD says the other end's parameters are ones no shared secret
 // should be derived from.
@@ -106,13 +120,11 @@ func (p ARDParams) check() error {
 	return nil
 }
 
-// NewARDParams generates a server's side and returns the parameters to
-// send with the private value to keep.
+// NewARDParams creates a server's side and returns the parameters to send
+// with the private value to keep. The public modulus is fixed, but the
+// private exponent and consequently the public value are fresh.
 func NewARDParams() (ARDParams, *big.Int, error) {
-	prime, err := rand.Prime(rand.Reader, ardServerPrimeBits)
-	if err != nil {
-		return ARDParams{}, nil, err
-	}
+	prime := ardServerPrime
 	p := ARDParams{Gen: 2, Prime: prime.Bytes()}
 	priv, err := ardPrivate(prime)
 	if err != nil {
