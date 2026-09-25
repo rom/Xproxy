@@ -442,6 +442,38 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **MQTT: the bounds belong to the topic, and Sparkplug's commands belong
+  to somebody.** Three things about a publication are properties of the
+  *topic* rather than of the listener -- how large a payload it may carry,
+  which qualities of service it may use, and whether it may be retained --
+  and a single bound for a listener has to be the loosest of them, which is
+  the same as no bound. `topics[]` gives each set of filters its own:
+  `max_payload_bytes`, a `min_qos`/`max_qos` window and `allow_retain`,
+  with the listener's `max_payload_bytes` and `max_qos` as the fallback. Of
+  those, `min_qos` is the one that is not about the transport: a command
+  that may be lost is not a command.
+
+  Then Sparkplug B, because of its message types two are not telemetry:
+  `NCMD` and `DCMD` are commands to equipment, the MQTT equivalent of a
+  Modbus write, and the topic says which is which -- a broker's own topic
+  ACLs usually cannot tell a command from a reading. `command_clients`
+  names the publishers that may send one. `allow_message_types` bounds the
+  rest, `require_namespace` declares a listener to carry nothing but
+  Sparkplug, and two checks enforce what the convention states and the
+  broker does not: `require_birth_before_data` refuses data from an edge
+  node no birth has been seen from, and `check_sequence` refuses a message
+  whose sequence is not the next one -- a gap or a repeat is a lost
+  message, a duplicated publisher, or somebody replaying one.
+
+  **The metrics are not decoded.** A Sparkplug payload is protobuf and the
+  metric set is the plant's own; carrying a schema per estate is not this
+  proxy's business. The two top-level fields -- the timestamp and the
+  sequence, two varints at a fixed place in every payload -- are read in
+  place, and the rest is forwarded untouched. A payload with no sequence is
+  not checked rather than refused, the edge-node table is bounded
+  (`max_nodes`), and past the bound the two stateful checks are skipped for
+  a node it does not hold rather than the node being refused.
+
 - **Modbus values are changes, not only numbers.** A range says what may
   be written. The rules a plant actually asks for are about what may
   *happen*, and four of them are new: `max_delta` bounds how far one write

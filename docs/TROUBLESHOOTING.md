@@ -2786,6 +2786,60 @@ this bound.
 broker sent something this proxy would not parse. It is not passed
 through: its framing is what the client's next read depends on.
 
+## MQTT topic bounds and Sparkplug
+
+**A publication is refused with `payload_too_large` although
+`max_packet_size` is generous.** Two different bounds: `max_packet_size` is
+the packet, `max_payload_bytes` is what the device sent, and a `topics`
+rule's own bound overrides the listener's for the topics it names. The
+refusal's detail carries the rule's name, so the event says which bound it
+was.
+
+**`qos_too_low`.** A `topics` rule set `min_qos`, and the publication asked
+for less. It is the one bound here that is about the process rather than
+the transport: a command that may be lost is not a command. At QoS 0 there
+is no acknowledgement to refuse with, so the client hears nothing and the
+counter is where the refusal is visible.
+
+**`retain_refused` on one topic and not another.** `allow_retain` on a
+`topics` rule overrides the listener's own policy for those topics, in both
+directions: a listener that refuses retain can still let a configuration
+topic keep it, which is the case where a retained message is the point.
+
+**`sparkplug_not_sparkplug`.** `require_namespace` is on and the topic is
+not a Sparkplug B topic at all. The shapes are strict on purpose: four
+levels for a node message and five for a device one, no empty levels, and a
+message type the convention defines — a topic that is nearly a Sparkplug
+topic is not one, and treating it as one would mean guessing which level
+was the node.
+
+**`sparkplug_command_refused`.** `NCMD` or `DCMD` from a publisher outside
+`command_clients`. This is what the section is for: those two are commands
+to equipment, and the rest of Sparkplug is telemetry going up. With the
+list empty the check does not run and validation warns.
+
+**`sparkplug_no_birth` after a broker restart or a proxy reload.** The
+birth state is this process's own: it knows a node was born because it saw
+the birth. A node that was born before this process started has to be born
+again for the check to pass, which is what `NBIRTH` on reconnect does in
+every Sparkplug implementation — but a node that never reconnects will keep
+being refused until it does. Turn `require_birth_before_data` off if the
+estate has publishers that never re-announce.
+
+**`sparkplug_sequence` on a fleet that is working.** The convention's
+sequence increments by one per message from an edge node and wraps at 255,
+with a birth resetting it to zero. A gap means a message was lost between
+the publisher and this relay, two publishers are using one node
+identifier, or somebody is replaying messages. One gap is one refusal: the
+state moves to what arrived, so the whole fleet does not fall over after a
+single lost packet. A payload carrying no sequence number is not checked
+rather than refused.
+
+**`max_nodes`.** Past the bound, the birth and sequence checks are not made
+for a node the table does not hold — the message is forwarded rather than
+refused, because refusing every message from a node because a table is full
+would be an outage caused by a bound.
+
 ## Authorisation
 
 **Everything is refused with `rule:unauthenticated`.** The policy ran
@@ -4569,7 +4623,7 @@ actually being refused. What each kind can say:
 | `vnc` | `client_refused`, `banned`, `version`, `auth_failed`, `mfa_failed`, `view_only`, the security negotiation (`security_not_offered`, `security_not_usable`, `security_not_mediated`, `subtype_not_offered`, `vencrypt_subtype_not_mediated`, `tight_auth_not_offered`), the variants' own parameters (`tls`, `mslogon_parameters`, `ard_parameters`, `rsaaes_key`, `rsaaes_random`, `rsaaes_transcript`), and the picture (`framebuffer_too_large`, `rectangle_too_large`, `rectangle_outside_framebuffer`, `too_many_rectangles`, `encoded_rectangle_too_large`, `decode_ratio`, `cut_text_too_large`, `unframable`, `pixel_format`, `pixel_format_changed`, `resize_refused`, `resize_too_large`, `clipboard_to_client`, `clipboard_to_target`, and `encoding_<name>` for each encoding taken out of a client's list) |
 | `rdp` | `client_refused`, `banned`, `mfa_failed`, `negotiate`, `no_protocol`, `tls`, `channels`, `channel_inert`, `channel_message`, `channel_chunk`, `channel_compressed`, `device_announce`, `client_info`, `info_encrypted`, `client_security`, `client_encryption`, `no_encryption_method`, `security_exchange`, `conference`, `no_io_channel`, `fast_path`, `data_unit` |
 | `smtp` | `client_not_allowed`, `max_connections`, the command policy (`unknown_command`, `command_refused`, `ehlo_required`, `mail_required`, `mail_and_rcpt_required`, `transaction_open`, `already_authenticated`), TLS and authentication (`encryption_required`, `encryption_required_for_auth`, `authentication_required`, `tls_unavailable`, `tls_already_active`), the bounds (`message_too_large`, `too_many_recipients`, `line_too_long`) and the protocol abuse (`bare_newline`, `smuggling`, `starttls_injection`) |
-| `mqtt` | `client_not_allowed`, `max_connections`, `not_connect`, `second_connect`, `version_refused`, the client id policy (`empty_client_id`, `client_id_too_long`, `client_id_refused`), `no_username`, `keep_alive_refused`, the topic policy (`publish_topic_refused`, `subscribe_refused`, `retain_refused`, `will_topic_refused`, `will_retain_refused`), `packet_too_large`, `malformed` |
+| `mqtt` | `client_not_allowed`, `max_connections`, `not_connect`, `second_connect`, `version_refused`, the client id policy (`empty_client_id`, `client_id_too_long`, `client_id_refused`), `no_username`, `keep_alive_refused`, the topic policy (`publish_topic_refused`, `subscribe_refused`, `retain_refused`, `will_topic_refused`, `will_retain_refused`), `packet_too_large`, `malformed`, the per-topic bounds (`payload_too_large`, `qos_too_high`, `qos_too_low`, `retain_refused`) and the Sparkplug policy (`sparkplug_not_sparkplug`, `sparkplug_namespace`, `sparkplug_message_type`, `sparkplug_command_refused`, `sparkplug_no_birth`, `sparkplug_sequence`) |
 | `ftp` | `client_refused`, `banned`, `max_connections`, `auth_failed`, `identity_refused`, `mfa_required`, `mfa_failed`, the command and path policy (`unknown_command`, `command_refused`, `path_refused`, `read_only`, `active_refused`, `no_data_connection`), the path shapes it will not guess about (`path_separator`, `path_control`, `path_encoding`), the commands that are half a decision (`rest_invalid`, `rest_unscannable`, `rename_out_of_order`), TLS (`tls_required`, `auth_refused`, `ccc_refused`, `tls_pipelined`), the data channel (`bounce_refused`, `malformed_address`, `data_stranger`, `upstream_address`, `transfer_cut`) and the line discipline (`line_too_long`, `malformed_line`, `malformed_command`) |
 | `syslog` | `sender_refused`, `max_connections`, `rate_limit`, `too_large`, `framing`, `malformed`, the message policy (`facility`, `severity`, `pattern`) and `queue_full` when the collector is behind |
 | `modbus` | `client_not_allowed`, `max_connections`, `rate_limit`, `queue_full`, the session's own locks (`tls_handshake`, `no_client_certificate`, `no_role`, `role_not_allowed`, `security_requires_tls`), the framing (`framing`, `frame_too_large`, `malformed`), the policy (`read_only`, `read_only_unknown_function`, `unit_not_allowed`, `rule_deny`, `no_rule`, `value_out_of_range`, `value_delta`, `value_transition`, `value_rate`, `value_no_select`, `value_unknown`, `value_masked_write`, `coil_set_not_allowed`, `coil_clear_not_allowed`), the routing (`no_route_for_unit`) and what the device answered (`malformed_response`, `response_unit_mismatch`) |

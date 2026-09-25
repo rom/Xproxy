@@ -129,7 +129,7 @@ func TestParsePublish(t *testing.T) {
 	body := append(str("sensors/1/temp"), 0, 7)
 	body = append(body, "21.5C"...)
 	p := mqtt.Packet{Type: mqtt.PUBLISH, Flags: 0x02 | 0x01, Body: body} // QoS 1, retain
-	pub, err := mqtt.ParsePublish(p)
+	pub, err := mqtt.ParsePublish(p, mqtt.V311)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestParsePublish(t *testing.T) {
 		"truncated":      {Type: mqtt.PUBLISH, Body: []byte{0, 5, 'a'}},
 	}
 	for name, p := range bad {
-		if _, err := mqtt.ParsePublish(p); err == nil {
+		if _, err := mqtt.ParsePublish(p, mqtt.V311); err == nil {
 			t.Errorf("%s: should not parse", name)
 		}
 	}
@@ -322,4 +322,105 @@ func FuzzParseSubscribe(f *testing.F) {
 			t.Fatal("accepted a subscribe with no filters or no packet id")
 		}
 	})
+}
+
+// Sparkplug B topics and the two payload fields a relay reads. The topic
+// is where the convention says what a message is, and one of those things
+// -- a command to equipment -- is why a proxy reads it at all.
+func TestSparkplugTopicsAreReadByTheirShape(t *testing.T) {
+	for _, tc := range []struct {
+		topic  string
+		ok     bool
+		typ    string
+		node   string
+		device string
+	}{
+		{"spBv1.0/plant/NDATA/edge-1", true, "NDATA", "edge-1", ""},
+		{"spBv1.0/plant/DDATA/edge-1/pump-3", true, "DDATA", "edge-1", "pump-3"},
+		{"spBv1.0/plant/NCMD/edge-1", true, "NCMD", "edge-1", ""},
+		{"spBv1.0/plant/DCMD/edge-1/pump-3", true, "DCMD", "edge-1", "pump-3"},
+		{"spBv1.0/plant/STATE/scada-1", true, "STATE", "scada-1", ""},
+		// A device type without a device, and a node type with one: the
+		// convention's own shapes, and the check that stops a DDATA
+		// missing its device being read as something else.
+		{"spBv1.0/plant/DDATA/edge-1", false, "", "", ""},
+		{"spBv1.0/plant/NDATA/edge-1/pump-3", false, "", "", ""},
+		// Not Sparkplug at all.
+		{"plant/edge-1/temperature", false, "", "", ""},
+		{"spBv1.0/plant/TELEMETRY/edge-1", false, "", "", ""},
+		{"spBv1.0//NDATA/edge-1", false, "", "", ""},
+		{"spBv1.0/plant/NDATA", false, "", "", ""},
+		{"spBv1.0/plant/NDATA/edge-1/pump-3/extra", false, "", "", ""},
+	} {
+		got, ok := mqtt.ParseSparkplug(tc.topic)
+		if ok != tc.ok {
+			t.Errorf("%q: ok %v", tc.topic, ok)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		if got.Type != tc.typ || got.Node != tc.node || got.Device != tc.device {
+			t.Errorf("%q: %+v", tc.topic, got)
+		}
+		if got.Edge() != "plant/"+tc.node && got.Group == "plant" {
+			t.Errorf("%q: edge %q", tc.topic, got.Edge())
+		}
+	}
+	if !mqtt.SparkplugCommand(mqtt.SPNCmd) || !mqtt.SparkplugCommand(mqtt.SPDCmd) || mqtt.SparkplugCommand(mqtt.SPNData) {
+		t.Error("a command is not a command")
+	}
+	if !mqtt.SparkplugBirth(mqtt.SPNBirth) || !mqtt.SparkplugBirth(mqtt.SPDBirth) || mqtt.SparkplugBirth(mqtt.SPNData) {
+		t.Error("a birth is not a birth")
+	}
+	if !mqtt.SparkplugData(mqtt.SPNData) || !mqtt.SparkplugData(mqtt.SPDData) || mqtt.SparkplugData(mqtt.SPNBirth) {
+		t.Error("data is not data")
+	}
+	if mqtt.SparkplugNextSeq(254) != 255 || mqtt.SparkplugNextSeq(255) != 0 {
+		t.Error("the sequence does not wrap at 255")
+	}
+}
+
+// The sequence number is read out of the protobuf payload without
+// decoding the metrics, which are the plant's own and would need a schema
+// per estate.
+func TestTheSparkplugSequenceIsReadWithoutTheMetrics(t *testing.T) {
+	// field 1 (timestamp, varint), field 2 (metrics, length-delimited),
+	// field 3 (seq, varint).
+	payload := []byte{
+		0x08, 0xd0, 0x86, 0x03, // timestamp = 50000
+		0x12, 0x05, 'm', 'e', 't', 'r', 'c', // metrics, skipped by length
+		0x18, 0x2a, // seq = 42
+	}
+	if got, ok := mqtt.SparkplugSeq(payload); !ok || got != 42 {
+		t.Fatalf("seq %d %v", got, ok)
+	}
+	// A payload with no sequence: the checks that need one are simply not
+	// made, rather than the message being refused for a field the
+	// convention allows to be absent.
+	if _, ok := mqtt.SparkplugSeq([]byte{0x08, 0x01}); ok {
+		t.Error("a payload with no sequence reported one")
+	}
+	// An empty payload, and payloads that are cut short in each of the
+	// wire types, must not be read past their end.
+	for _, bad := range [][]byte{
+		{},
+		{0x08},                   // a varint key with no value
+		{0x12, 0x05, 'a'},        // a length past the end
+		{0x09, 0x00},             // 64-bit with four octets
+		{0x15, 0x00},             // 32-bit with one octet
+		{0x1b, 0x01},             // wire type 3, a group, which cannot be skipped
+		{0xff, 0xff, 0xff, 0xff}, // a key that is not a varint
+	} {
+		if _, ok := mqtt.SparkplugSeq(bad); ok {
+			t.Errorf("%x reported a sequence", bad)
+		}
+	}
+	// The sequence after the metrics of a real size: the reader has to
+	// skip a long field rather than search for a byte pattern.
+	long := append([]byte{0x08, 0x01, 0x12, 0x7f}, make([]byte, 127)...)
+	long = append(long, 0x18, 0x07)
+	if got, ok := mqtt.SparkplugSeq(long); !ok || got != 7 {
+		t.Fatalf("seq after a long metric set: %d %v", got, ok)
+	}
 }

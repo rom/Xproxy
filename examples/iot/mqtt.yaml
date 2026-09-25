@@ -67,6 +67,26 @@ server:
         # device that can retain can leave something behind.
         allow_retain: false
 
+        # The payload and the quality of service belong to the topic, not
+        # to the listener: a fleet whose telemetry is two hundred octets
+        # has no business sending a megabyte, and a command that may be
+        # lost is not a command.
+        max_payload_bytes: 65536
+        max_qos: 1
+        topics:
+          - name: telemetry
+            filters: ["devices/+/telemetry"]
+            max_payload_bytes: 512
+            max_qos: 0
+          - name: status
+            filters: ["devices/+/status"]
+            max_payload_bytes: 256
+            allow_retain: true          # the one place a retained message is the point
+          - name: commands
+            filters: ["devices/+/commands"]
+            min_qos: 1                  # a command is acknowledged or it did not happen
+            max_payload_bytes: 256
+
         keep_alive_max: 5m
         connect_timeout: 15s
         idle_timeout: 10m

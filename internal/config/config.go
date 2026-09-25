@@ -2180,6 +2180,26 @@ type MQTTListener struct {
 	// off, and without one it is the difference between a client
 	// reading its own topics and reading the estate's.
 	AllowWildcardSubscribe *bool `yaml:"allow_wildcard_subscribe"`
+	// MaxPayloadBytes bounds the payload of one PUBLISH. It is not
+	// max_packet_size, which bounds the packet: a policy about payloads is
+	// a policy about what a device sends, and a fleet whose telemetry is
+	// two hundred octets has no business sending a megabyte. 0 leaves
+	// max_packet_size to decide.
+	MaxPayloadBytes int `yaml:"max_payload_bytes"`
+	// Topics are per-topic rules: the payload bound, the QoS window and
+	// whether retain is allowed, for the topics each entry names. The
+	// first entry whose filters match the topic decides; a topic no entry
+	// matches is left to the listener's own bounds.
+	Topics []MQTTTopicRule `yaml:"topics"`
+	// MaxQoS is the highest quality of service a publication or a
+	// subscription may ask for, 0 to 2. Default 2. QoS 2 costs a broker
+	// four packets and a stored state per message, which is what makes it
+	// worth bounding on a fleet that does not need it.
+	MaxQoS *int `yaml:"max_qos"`
+	// Sparkplug is the Sparkplug B policy: the convention that turns MQTT
+	// into an industrial protocol, and whose command messages are the
+	// MQTT equivalent of a Modbus write.
+	Sparkplug *MQTTSparkplug `yaml:"sparkplug"`
 	// KeepAliveMax bounds the keep alive a client asks for, so a
 	// session cannot sit idle indefinitely on the broker's side.
 	// 0 accepts any. Default 0.
@@ -2201,6 +2221,89 @@ type MQTTListener struct {
 	ProxyProtocol bool `yaml:"proxy_protocol"`
 	// AllowClients restricts clients to these CIDRs.
 	AllowClients []string `yaml:"allow_clients"`
+}
+
+// MQTTTopicRule is what one set of topics may carry: how large a payload,
+// which qualities of service, and whether a publication may be retained.
+//
+// It exists because those three are properties of the *topic* rather than
+// of the listener. A command topic wants QoS at least 1 and a small
+// payload; a firmware topic wants a large payload and retain; telemetry
+// wants QoS 0 and neither. One bound for the listener would be the loosest
+// of the three, which is the same as no bound.
+type MQTTTopicRule struct {
+	// Name identifies the rule in the logs and the counters. Required.
+	Name string `yaml:"name"`
+	// Filters are MQTT topic filters ("plant/+/control", "spBv1.0/#").
+	// Required.
+	Filters []string `yaml:"filters"`
+	// MaxPayloadBytes bounds the payload of a publication to these
+	// topics. 0 leaves the listener's own bound.
+	MaxPayloadBytes int `yaml:"max_payload_bytes"`
+	// MinQoS and MaxQoS bound the quality of service: min_qos 1 on a
+	// command topic is "a command must be acknowledged", which is a
+	// statement about the process and not about the transport.
+	MinQoS *int `yaml:"min_qos"`
+	MaxQoS *int `yaml:"max_qos"`
+	// AllowRetain overrides the listener's own retain policy for these
+	// topics: a configuration topic is the case where a retained message
+	// is the point, and telemetry is the case where it is a device
+	// leaving something behind.
+	AllowRetain *bool `yaml:"allow_retain"`
+}
+
+// MQTTSparkplug is the Sparkplug B policy.
+//
+// Sparkplug B is the convention that makes MQTT an industrial protocol,
+// and it belongs in a proxy for one reason: two of its message types,
+// NCMD and DCMD, are commands to equipment. Everything else is telemetry
+// going up. In most estates the list of publishers with any business
+// sending a command is short and known, and the topic says which is which
+// -- so a relay can enforce it, and a broker's own topic ACLs usually
+// cannot tell a command from a reading.
+//
+// Two more things the convention states, which a relay can check: data
+// from a node nobody has heard a birth from is out of order, and every
+// message carries a sequence number that increments by one and wraps at
+// 255, with a birth resetting it to zero.
+//
+// The metrics are not decoded. A Sparkplug payload is protobuf and the
+// metric set is the plant's own; only the two top-level fields -- the
+// timestamp and the sequence -- are read, and the rest is forwarded
+// untouched.
+type MQTTSparkplug struct {
+	// Enabled turns the policy on. Without it a Sparkplug topic is an
+	// ordinary topic and the publish and subscribe lists are all that
+	// apply.
+	Enabled bool `yaml:"enabled"`
+	// Namespace is the first topic level. Default spBv1.0. A publication
+	// under another namespace is refused when require_namespace is set.
+	Namespace string `yaml:"namespace"`
+	// RequireNamespace refuses a publication whose topic is not a
+	// Sparkplug topic at all, which is how a listener is declared to
+	// carry nothing but Sparkplug.
+	RequireNamespace bool `yaml:"require_namespace"`
+	// AllowMessageTypes are the types accepted. Empty accepts every type
+	// the convention defines.
+	AllowMessageTypes []string `yaml:"allow_message_types"`
+	// CommandClients are the networks that may publish NCMD and DCMD --
+	// the commands to equipment. Empty leaves commands to the ordinary
+	// publish policy, and validation says so, because a Sparkplug
+	// listener whose commands anybody may send is the case this section
+	// exists for.
+	CommandClients []string `yaml:"command_clients"`
+	// RequireBirthBeforeData refuses NDATA or DDATA from an edge node no
+	// birth has been seen from. It is the convention's own ordering, and
+	// a relay is where it can be checked: the broker forwards whatever
+	// arrives.
+	RequireBirthBeforeData bool `yaml:"require_birth_before_data"`
+	// CheckSequence refuses a message whose sequence number is not the
+	// next one for its edge node. A gap or a repeat is a lost message, a
+	// duplicated publisher, or somebody replaying one.
+	CheckSequence bool `yaml:"check_sequence"`
+	// MaxNodes bounds the edge nodes remembered for the birth and
+	// sequence checks. Default 8192; the identifiers come off the network.
+	MaxNodes int `yaml:"max_nodes"`
 }
 
 // SMTPListener is a protocol-aware SMTP proxy: it speaks the session to

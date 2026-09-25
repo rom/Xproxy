@@ -1487,12 +1487,62 @@ accept. Changing the `mqtt` section rebinds the listener on reload.
 | `action` | `disconnect`, `drop` | `disconnect` | On a refused PUBLISH or SUBSCRIBE. `drop` refuses the one packet and acknowledges it — PUBACK or PUBREC with `0x87` at QoS 1 and 2, a SUBACK of `0x80` for every filter — so a fleet does not fall off the network over one misconfigured device. A PUBREL for a refused QoS 2 publication is answered by the proxy, since the broker never saw the PUBLISH |
 | `proxy_protocol` | bool | `false` | Send a PROXY protocol v2 header with the client address to the broker |
 | `allow_clients` | list of CIDR | `[]` (any) | Others are closed before the CONNECT is read |
+| `max_payload_bytes` | int | `0` (`max_packet_size` decides) | The payload of one PUBLISH. Not the same bound as `max_packet_size`: a policy about payloads is a policy about what a device sends, and a fleet whose telemetry is two hundred octets has no business sending a megabyte |
+| `max_qos` | int | `2` | The highest quality of service a publication or a subscription may ask for. QoS 2 costs a broker four packets and a stored state per message, which is what makes it worth bounding on a fleet that does not need it |
+| `topics` | list | `[]` | Per-topic bounds, below |
+| `sparkplug` | object | | The Sparkplug B policy, below |
+
+**`topics[]`** is where the payload, QoS and retain bounds belong, because
+all three are properties of the *topic* rather than of the listener: a
+command topic wants QoS at least 1 and a payload of tens of octets, a
+firmware topic wants a large payload and retain, telemetry wants QoS 0 and
+neither. One bound for the listener has to be the loosest of the three,
+which is the same as no bound. The first entry whose filters match decides;
+a topic no entry matches falls back to the listener's own bounds.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | name | required, unique | Carried into the logs and the counters when the rule decides |
+| `filters` | list | required | MQTT topic filters (`plant/+/control`, `spBv1.0/#`) |
+| `max_payload_bytes` | int | `0` (the listener's) | The payload of a publication to these topics |
+| `min_qos`, `max_qos` | int | | The quality of service window. `min_qos: 1` on a command topic is "a command must be acknowledged", which is a statement about the process rather than about the transport |
+| `allow_retain` | bool | the listener's | Retain for these topics. `true` overrides a listener that refuses retain, which is how a configuration topic keeps the one case where a retained message is the point |
+
+**`sparkplug`** is the Sparkplug B policy. Sparkplug B is the convention
+that makes MQTT an industrial protocol, and it belongs in a proxy for one
+reason: of its message types, two — `NCMD` and `DCMD` — are **commands to
+equipment**, the MQTT equivalent of a Modbus write, and the topic says
+which is which. In most estates the publishers with any business sending
+one are a short and known list, and a broker's own topic ACLs usually
+cannot tell a command from a reading.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Read Sparkplug topics and apply this section |
+| `namespace` | string | `spBv1.0` | The first topic level |
+| `require_namespace` | bool | `false` | Refuse a publication whose topic is not a Sparkplug topic at all, which is how a listener is declared to carry nothing else |
+| `allow_message_types` | list | `[]` (all) | `NBIRTH`, `NDEATH`, `DBIRTH`, `DDEATH`, `NDATA`, `DDATA`, `NCMD`, `DCMD`, `STATE` |
+| `command_clients` | list of CIDR | `[]` | The networks that may publish `NCMD` and `DCMD`. Empty leaves commands to the ordinary publish policy, and warns: naming them is what this section is for |
+| `require_birth_before_data` | bool | `false` | Refuse `NDATA` or `DDATA` from an edge node no birth has been seen from — the convention's own ordering, which the broker does not enforce |
+| `check_sequence` | bool | `false` | Refuse a message whose sequence number is not the next one for its edge node (it increments by one and wraps at 255, and a birth resets it to zero). A gap or a repeat is a lost message, a duplicated publisher, or somebody replaying one |
+| `max_nodes` | int | `8192` | Edge nodes remembered for the birth and sequence checks; the identifiers come off the network. Past the bound those two checks are not made for a node the table does not hold rather than the node being refused |
+
+**The metrics are not decoded.** A Sparkplug payload is protobuf and the
+metric set is the plant's own; carrying a schema per estate is not this
+proxy's business. The two top-level fields — the timestamp and the sequence
+number, two varints at a fixed place in every payload — are read, and the
+rest is forwarded untouched.
 
 Every session writes one `mqtt` line to the access log with the client
 address, client id, username, version, subscriptions, publications and
 why it closed. Counters: `mqtt_sessions`, `mqtt_sessions_open`,
 `mqtt_published`, `mqtt_subscribed`, `mqtt_refused`, `mqtt_rejected`,
-`mqtt_protocol_errors`; the matching `xproxy_mqtt_*` metrics. Refusals
+`mqtt_protocol_errors`; the matching `xproxy_mqtt_*` metrics. The refusal
+reasons a `topics` rule or the Sparkplug policy adds are
+`payload_too_large`, `qos_too_high`, `qos_too_low`, `retain_refused`,
+`sparkplug_not_sparkplug`, `sparkplug_namespace`,
+`sparkplug_message_type`, `sparkplug_command_refused`,
+`sparkplug_no_birth` and `sparkplug_sequence`. Refusals
 are `mqtt_denied` deny events, so a `bans.triggers` entry on that reason
 turns a device walking the topic tree into a ban.
 

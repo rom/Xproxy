@@ -3449,6 +3449,14 @@
           "description": "MaxPacketSize bounds one control packet including its header, and is what a 5.0 client is told in CONNACK. Default 1048576.",
           "type": "integer"
         },
+        "max_payload_bytes": {
+          "description": "MaxPayloadBytes bounds the payload of one PUBLISH. It is not max_packet_size, which bounds the packet: a policy about payloads is a policy about what a device sends, and a fleet whose telemetry is two hundred octets has no business sending a megabyte. 0 leaves max_packet_size to decide.",
+          "type": "integer"
+        },
+        "max_qos": {
+          "description": "MaxQoS is the highest quality of service a publication or a subscription may ask for, 0 to 2. Default 2. QoS 2 costs a broker four packets and a stored state per message, which is what makes it worth bounding on a fleet that does not need it.",
+          "type": "integer"
+        },
         "max_subscriptions": {
           "description": "MaxSubscriptions bounds live subscriptions per session. Default 64.",
           "type": "integer"
@@ -3481,6 +3489,14 @@
           "description": "RequireAuth refuses a CONNECT without a username. The broker still verifies the password; this only stops an anonymous session reaching it. Default false.",
           "type": "boolean"
         },
+        "sparkplug": {
+          "description": "Sparkplug is the Sparkplug B policy: the convention that turns MQTT into an industrial protocol, and whose command messages are the MQTT equivalent of a Modbus write.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/MQTTSparkplug"
+            }
+          ]
+        },
         "subscribe_allow": {
           "description": "SubscribeAllow and SubscribeDeny are topic filters checked against every filter a client subscribes to. A subscription is allowed only when an entry of the allow list covers everything it could deliver, and refused when it could reach anything denied — a filter is not a topic, and matching it as one would let \"#\" through an allow list of \"sensors/+\".",
           "type": "array",
@@ -3497,6 +3513,13 @@
         "tls_mode": {
           "description": "TLSMode is implicit (TLS from the first octet, as on 8883, and needs the listener's tls section) or none. Default implicit when tls is set.",
           "type": "string"
+        },
+        "topics": {
+          "description": "Topics are per-topic rules: the payload bound, the QoS window and whether retain is allowed, for the topics each entry names. The first entry whose filters match the topic decides; a topic no entry matches is left to the listener's own bounds.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MQTTTopicRule"
+          }
         },
         "upstream": {
           "description": "Upstream is the broker pool. Required.",
@@ -3520,6 +3543,84 @@
           "items": {
             "type": "string"
           }
+        }
+      },
+      "additionalProperties": false
+    },
+    "MQTTSparkplug": {
+      "description": "MQTTSparkplug is the Sparkplug B policy. Sparkplug B is the convention that makes MQTT an industrial protocol, and it belongs in a proxy for one reason: two of its message types, NCMD and DCMD, are commands to equipment. Everything else is telemetry going up. In most estates the list of publishers with any business sending a command is short and known, and the topic says which is which -- so a relay can enforce it, and a broker's own topic ACLs usually cannot tell a command from a reading. Two more things the convention states, which a relay can check: data from a node nobody has heard a birth from is out of order, and every message carries a sequence number that increments by one and wraps at 255, with a birth resetting it to zero. The metrics are not decoded. A Sparkplug payload is protobuf and the metric set is the plant's own; only the two top-level fields -- the timestamp and the sequence -- are read, and the rest is forwarded untouched.",
+      "type": "object",
+      "properties": {
+        "allow_message_types": {
+          "description": "AllowMessageTypes are the types accepted. Empty accepts every type the convention defines.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "check_sequence": {
+          "description": "CheckSequence refuses a message whose sequence number is not the next one for its edge node. A gap or a repeat is a lost message, a duplicated publisher, or somebody replaying one.",
+          "type": "boolean"
+        },
+        "command_clients": {
+          "description": "CommandClients are the networks that may publish NCMD and DCMD -- the commands to equipment. Empty leaves commands to the ordinary publish policy, and validation says so, because a Sparkplug listener whose commands anybody may send is the case this section exists for.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "enabled": {
+          "description": "Enabled turns the policy on. Without it a Sparkplug topic is an ordinary topic and the publish and subscribe lists are all that apply.",
+          "type": "boolean"
+        },
+        "max_nodes": {
+          "description": "MaxNodes bounds the edge nodes remembered for the birth and sequence checks. Default 8192; the identifiers come off the network.",
+          "type": "integer"
+        },
+        "namespace": {
+          "description": "Namespace is the first topic level. Default spBv1.0. A publication under another namespace is refused when require_namespace is set.",
+          "type": "string"
+        },
+        "require_birth_before_data": {
+          "description": "RequireBirthBeforeData refuses NDATA or DDATA from an edge node no birth has been seen from. It is the convention's own ordering, and a relay is where it can be checked: the broker forwards whatever arrives.",
+          "type": "boolean"
+        },
+        "require_namespace": {
+          "description": "RequireNamespace refuses a publication whose topic is not a Sparkplug topic at all, which is how a listener is declared to carry nothing but Sparkplug.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "MQTTTopicRule": {
+      "description": "MQTTTopicRule is what one set of topics may carry: how large a payload, which qualities of service, and whether a publication may be retained. It exists because those three are properties of the *topic* rather than of the listener. A command topic wants QoS at least 1 and a small payload; a firmware topic wants a large payload and retain; telemetry wants QoS 0 and neither. One bound for the listener would be the loosest of the three, which is the same as no bound.",
+      "type": "object",
+      "properties": {
+        "allow_retain": {
+          "description": "AllowRetain overrides the listener's own retain policy for these topics: a configuration topic is the case where a retained message is the point, and telemetry is the case where it is a device leaving something behind.",
+          "type": "boolean"
+        },
+        "filters": {
+          "description": "Filters are MQTT topic filters (\"plant/+/control\", \"spBv1.0/#\"). Required.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_payload_bytes": {
+          "description": "MaxPayloadBytes bounds the payload of a publication to these topics. 0 leaves the listener's own bound.",
+          "type": "integer"
+        },
+        "max_qos": {
+          "type": "integer"
+        },
+        "min_qos": {
+          "description": "MinQoS and MaxQoS bound the quality of service: min_qos 1 on a command topic is \"a command must be acknowledged\", which is a statement about the process and not about the transport.",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Name identifies the rule in the logs and the counters. Required.",
+          "type": "string"
         }
       },
       "additionalProperties": false

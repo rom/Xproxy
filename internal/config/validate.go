@@ -8,6 +8,7 @@ import (
 	"github.com/rom/xproxy/internal/ftp"
 	"github.com/rom/xproxy/internal/listener"
 	"github.com/rom/xproxy/internal/modbus"
+	mqttwire "github.com/rom/xproxy/internal/mqtt"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/rdp"
 	"github.com/rom/xproxy/internal/rfb"
@@ -3505,6 +3506,71 @@ func (v *validator) mqttListener(p string, m *MQTTListener, hasTLS bool) {
 	}
 	if m.MaxTopicLevels < 1 || m.MaxTopicLevels > 1000 {
 		v.errf("%s.max_topic_levels: must be 1..1000", p)
+	}
+	if m.MaxPayloadBytes < 0 || m.MaxPayloadBytes > 268435455 {
+		v.errf("%s.max_payload_bytes: must be between 0 and 268435455", p)
+	}
+	if m.MaxQoS != nil && (*m.MaxQoS < 0 || *m.MaxQoS > 2) {
+		v.errf("%s.max_qos: must be 0, 1 or 2", p)
+	}
+	names := map[string]bool{}
+	for i := range m.Topics {
+		r := &m.Topics[i]
+		q := fmt.Sprintf("%s.topics[%d]", p, i)
+		switch {
+		case r.Name == "":
+			v.errf("%s.name: required", q)
+		case names[r.Name]:
+			v.errf("%s.name: duplicate %q", q, r.Name)
+		}
+		names[r.Name] = true
+		if len(r.Filters) == 0 {
+			v.errf("%s.filters: required", q)
+		}
+		for j, f := range r.Filters {
+			if err := mqttwire.ValidFilter(f); err != nil {
+				v.errf("%s.filters[%d]: %q is not a topic filter: %v", q, j, f, err)
+			}
+		}
+		if r.MaxPayloadBytes < 0 || r.MaxPayloadBytes > 268435455 {
+			v.errf("%s.max_payload_bytes: must be between 0 and 268435455", q)
+		}
+		for _, f := range []struct {
+			key string
+			val *int
+		}{{"min_qos", r.MinQoS}, {"max_qos", r.MaxQoS}} {
+			if f.val != nil && (*f.val < 0 || *f.val > 2) {
+				v.errf("%s.%s: must be 0, 1 or 2", q, f.key)
+			}
+		}
+		if r.MinQoS != nil && r.MaxQoS != nil && *r.MinQoS > *r.MaxQoS {
+			v.errf("%s: min_qos %d is above max_qos %d", q, *r.MinQoS, *r.MaxQoS)
+		}
+		if r.MinQoS == nil && r.MaxQoS == nil && r.MaxPayloadBytes == 0 && r.AllowRetain == nil {
+			v.errf("%s: sets no bound, so the rule decides nothing; drop it or give it one", q)
+		}
+	}
+	if sp := m.Sparkplug; sp != nil && sp.Enabled {
+		for i, name := range sp.AllowMessageTypes {
+			if !mqttwire.SparkplugType(name) {
+				v.errf("%s.sparkplug.allow_message_types[%d]: %q is not a Sparkplug B message type (NBIRTH, NDEATH, DBIRTH, DDEATH, NDATA, DDATA, NCMD, DCMD, STATE)", p, i, name)
+			}
+		}
+		for i, c := range sp.CommandClients {
+			if _, err := netip.ParsePrefix(c); err != nil {
+				v.errf("%s.sparkplug.command_clients[%d]: %q is not a network in CIDR form", p, i, c)
+			}
+		}
+		if sp.MaxNodes < 0 || sp.MaxNodes > 1<<20 {
+			v.errf("%s.sparkplug.max_nodes: must be between 0 and 1048576", p)
+		}
+		if len(sp.CommandClients) == 0 {
+			v.warnf("%s.sparkplug.command_clients is empty, so NCMD and DCMD -- the Sparkplug messages that command equipment -- are left to the ordinary publish policy: naming the publishers that may send one is what this section is for", p)
+		}
+		if !sp.RequireBirthBeforeData && !sp.CheckSequence && len(sp.CommandClients) == 0 &&
+			len(sp.AllowMessageTypes) == 0 && !sp.RequireNamespace {
+			v.warnf("%s.sparkplug is enabled and sets nothing, so it reads topics and decides nothing", p)
+		}
 	}
 	if m.MaxSubscriptions < 1 {
 		v.errf("%s.max_subscriptions: must be positive", p)

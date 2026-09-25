@@ -2641,6 +2641,68 @@ of the session — validation says so rather than leaving it implied.
 `mqtt_denied`: a device does not probe topics, so something walking the
 tree is either broken or not a device.
 
+**Payload, quality of service and retain are properties of the topic.**
+A command topic wants QoS at least 1 and a payload of tens of octets; a
+firmware topic wants a large payload and retain; telemetry wants QoS 0 and
+neither. One bound for the listener has to be the loosest of the three,
+which is the same as no bound:
+
+```yaml
+        max_payload_bytes: 65536         # the listener's own
+        max_qos: 1
+        topics:
+          - {name: telemetry, filters: ["plant/+/telemetry"], max_payload_bytes: 256, max_qos: 0}
+          - {name: control, filters: ["plant/+/control"], min_qos: 1, max_payload_bytes: 64}
+          - {name: firmware, filters: ["plant/+/firmware"], max_payload_bytes: 4194304, allow_retain: true}
+```
+
+`min_qos: 1` on the control topic is the one that is not about the
+transport: **a command that may be lost is not a command**. And
+`allow_retain: true` on the firmware topic overrides a listener that
+refuses retain, which keeps the one case where a retained message is the
+point.
+
+**Sparkplug B, because two of its message types are commands.** Sparkplug
+is the convention that makes MQTT an industrial protocol, and the reason
+it belongs in a proxy is that its topics say what a message is:
+
+```
+spBv1.0/<group>/<message type>/<node>[/<device>]
+```
+
+Most of those types are telemetry going up — a node or device being born
+(`NBIRTH`, `DBIRTH`), dying (`NDEATH`, `DDEATH`) or reporting (`NDATA`,
+`DDATA`). Two go the other way: `NCMD` and `DCMD` are **commands to
+equipment**, the MQTT equivalent of a Modbus write, and in most estates
+the publishers with any business sending one are a short and known list. A
+broker's own topic ACLs usually cannot tell a command from a reading;
+reading the topic can.
+
+```yaml
+        sparkplug:
+          enabled: true
+          require_namespace: true          # this listener carries nothing else
+          allow_message_types: [NBIRTH, NDEATH, DBIRTH, DDEATH, NDATA, DDATA, NCMD, DCMD]
+          command_clients: ["10.30.7.0/24"]   # only SCADA may command
+          require_birth_before_data: true
+          check_sequence: true
+```
+
+Two more things the convention states, which the relay can check and the
+broker does not: data from an edge node nobody has heard a birth from is
+out of order, and every message carries a sequence number that increments
+by one and wraps at 255, with a birth resetting it to zero. A gap or a
+repeat is a lost message, a duplicated publisher, or somebody replaying
+one.
+
+**The metrics are not decoded**, and that is deliberate: a Sparkplug
+payload is protobuf and the metric set is the plant's own, so carrying a
+schema per estate is not this proxy's business. The two top-level fields —
+the timestamp and the sequence, two varints at a fixed place in every
+payload — are read in place, and the rest is forwarded untouched. A payload
+with no sequence number simply does not get the sequence check rather than
+being refused for a field the convention allows to be absent.
+
 ### A syslog relay that reads what it forwards
 
 ```yaml
