@@ -48,6 +48,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // Bounds. Every one is a number a peer chooses.
@@ -769,11 +770,21 @@ func lenEncString(b []byte) (string, []byte, error) {
 }
 
 // Clip bounds a peer-chosen string for a log line or a record.
+//
+// The cut is on a rune boundary. A string sliced mid-rune is invalid UTF-8, and
+// everything downstream mangles it: a JSON log writer replaces the broken octets,
+// a terminal draws a replacement character, and a comparison against a policy's
+// spelling stops matching. Cutting short is the harmless failure; cutting into a
+// character is not.
 func Clip(s string) string {
 	if len(s) <= MaxString {
 		return s
 	}
-	return s[:MaxString] + "..."
+	cut := MaxString
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "..."
 }
 
 // StripCaps clears capability bits from a server greeting, in place, and says

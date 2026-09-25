@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // startup builds a version 3 startup packet from key/value pairs.
@@ -458,5 +460,26 @@ func TestClipBoundsAPeerChosenString(t *testing.T) {
 	}
 	if Clip("short") != "short" {
 		t.Fatal("a short string was changed")
+	}
+}
+
+// A clipped string still has to be a string. The bound is in octets and the
+// data is UTF-8, so a naive slice at the bound cuts a multi-byte character in
+// half -- and the result is invalid UTF-8 that a JSON log writer rewrites, a
+// terminal draws as a replacement character, and a comparison against a
+// policy's spelling no longer matches. Cutting one character short is the
+// harmless failure; cutting into a character is not.
+func TestClipCutsOnARuneBoundary(t *testing.T) {
+	// 3 octets per rune, and the bound is not a multiple of 3, so the octet at
+	// the bound is in the middle of a character.
+	got := Clip(strings.Repeat("\u5b57", MaxString))
+	if !utf8.ValidString(got) {
+		t.Fatalf("Clip produced invalid UTF-8: %q", got)
+	}
+	if len(got) > MaxString+3 {
+		t.Fatalf("Clip returned %d octets, want at most %d", len(got), MaxString+3)
+	}
+	if strings.ContainsRune(got, utf8.RuneError) {
+		t.Fatalf("Clip produced a replacement character: %q", got)
 	}
 }

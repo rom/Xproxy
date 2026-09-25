@@ -1,6 +1,10 @@
 package sqlkind
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"unicode/utf8"
+)
 
 // The classifier's whole claim is that it is beaten by a spelling nobody
 // thought of only in the safe direction. This is the table of spellings a deny
@@ -471,5 +475,26 @@ func TestTSQLBracketsAnIdentifier(t *testing.T) {
 		if !ok || len(got) != 1 || got[0].Kind != tc.want {
 			t.Errorf("%q: %v %+v, want %s", tc.sql, ok, got, tc.want)
 		}
+	}
+}
+
+// A clipped string still has to be a string. The bound is in octets and the
+// data is UTF-8, so a naive slice at the bound cuts a multi-byte character in
+// half -- and the result is invalid UTF-8 that a JSON log writer rewrites, a
+// terminal draws as a replacement character, and a comparison against a
+// policy's spelling no longer matches. Cutting one character short is the
+// harmless failure; cutting into a character is not.
+func TestClipCutsOnARuneBoundary(t *testing.T) {
+	// 3 octets per rune, and the bound is not a multiple of 3, so the octet at
+	// the bound is in the middle of a character.
+	got := Clip(strings.Repeat("\u5b57", MaxVerb))
+	if !utf8.ValidString(got) {
+		t.Fatalf("Clip produced invalid UTF-8: %q", got)
+	}
+	if len(got) > MaxVerb+3 {
+		t.Fatalf("Clip returned %d octets, want at most %d", len(got), MaxVerb+3)
+	}
+	if strings.ContainsRune(got, utf8.RuneError) {
+		t.Fatalf("Clip produced a replacement character: %q", got)
 	}
 }

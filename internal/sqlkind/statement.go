@@ -69,7 +69,10 @@
 //     9.1, so there `'\'` is a complete string containing one backslash.
 package sqlkind
 
-import "strings"
+import (
+	"strings"
+	"unicode/utf8"
+)
 
 type Dialect int
 
@@ -754,11 +757,21 @@ func KindNames() []string {
 const MaxVerb = 64
 
 // Clip bounds a peer-chosen string.
+//
+// The cut is on a rune boundary. A string sliced mid-rune is invalid UTF-8, and
+// everything downstream mangles it: a JSON log writer replaces the broken octets,
+// a terminal draws a replacement character, and a comparison against a policy's
+// spelling stops matching. Cutting short is the harmless failure; cutting into a
+// character is not.
 func Clip(s string) string {
 	if len(s) <= MaxVerb {
 		return s
 	}
-	return s[:MaxVerb] + "..."
+	cut := MaxVerb
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "..."
 }
 
 // execComment says whether a /* at i opens a MySQL executable comment.
