@@ -442,6 +442,107 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **A device inventory built from traffic rather than from scanning
+  (`asset_inventory`).** An operational estate's oldest problem is that nobody
+  knows what is on the network: the drawings are from commissioning, the
+  spreadsheet was abandoned two engineers ago, and the one thing nobody may do
+  is run a scanner -- an active scan is how a programmable controller gets
+  knocked over, and on a safety network it is a thing people lose their jobs
+  for. A security proxy is an unusually good place to solve that, because it
+  already parses the protocols.
+
+  **Six listener kinds contribute what they can honestly see.** `dhcp` the
+  lease, which is the one message where a device states its own hardware
+  address, vendor class, user class, client identifier, host name and boot file
+  together; `modbus` unit identifiers and function codes, bounded at 64 of each,
+  and whether the peer asked or answered; `iec104` common addresses, the same
+  shape over a different protocol; `snmp` the object identifiers a manager asks
+  for and an agent serves -- **not** their values, because the SNMP parser keeps
+  no varbind values by design and changing a hot security parser to carry a
+  string the device chose anyway would be a poor trade; `mqtt` the client
+  identifier on CONNECT; `tftp` the filename and direction of a transfer, which
+  on a boot segment is often the only thing that names a device at all. Every
+  other kind contributes nothing, and an inventory on a daemon that runs none of
+  the six is empty rather than broken.
+
+  **Behaviour outweighs self-description.** A vendor class, a host name and an
+  SNMP description are strings a device chose, and a hardware address is three
+  bytes of vendor prefix anybody can set. What a device *does* -- answering
+  Modbus function 3 on unit 1, carrying IEC 104 interrogations, asking for a
+  firmware image -- is much harder to fake without becoming the thing it is
+  pretending to be, so the rules that fire on behaviour carry more confidence
+  than the rules that fire on a string. Every classification keeps a confidence
+  from 0 to 100 and its evidence, strongest first: an inventory that reports
+  "PLC" with no confidence and no evidence is one an engineer cannot argue with,
+  and being unable to argue with it is how a wrong entry survives for years. Two
+  rules of equal weight that disagree produce an ambiguous verdict with ten
+  points off rather than a silent winner, and an asset no rule matches is
+  `unknown` rather than the nearest thing. Each of the eighteen roles carries its
+  Purdue level, so a segmentation review can ask the question it actually asks:
+  what is on this wire that does not belong at this level.
+
+  **What changes is the finding.** A steady-state inventory is a reference
+  document; the security value is in the deltas, and each is a security event
+  with action `alert` rather than `deny`, because the inventory refuses nothing
+  and an operator filtering the log for what the proxy blocked must not find
+  entries that blocked nothing: `asset_address_taken` (an address that now
+  belongs to a different hardware address -- a device swapped out, or something
+  standing in for one that is switched off), `asset_role_changed` (a controller
+  that started behaving like an engineering station, which is the single most
+  interesting line an inventory can produce), `asset_vendor_changed`,
+  `asset_address_changed` and, once a baseline exists, `asset_new_asset`.
+
+  **One record per device, split where splitting is right.** The merge is by
+  hardware address first -- the identity that survives a lease -- then by
+  address, and a record with no hardware address merges when one arrives. The
+  case that deliberately does not merge is a hardware address nobody has seen at
+  an address another record already holds *with a hardware address of its own*:
+  that is two machines sharing one address over time, and one entry describing
+  both would overwrite the older machine's vendor, role and history with the
+  newer machine's, which is exactly the history an incident needs. The finding
+  goes on the record that *lost* the address, because the new device gets a
+  record of its own and the old one would otherwise simply stop appearing --
+  and "stopped appearing" is not a finding anybody reads.
+
+  **The bound evicts rather than refusing,** which is the opposite of every
+  other bounded table in the proxy and is deliberate: in the relay kinds'
+  pairing tables forgetting an entry makes a decision wrong, so a full table
+  refuses; here forgetting loses *history*, and refusing would stop the
+  inventory noticing the estate at the moment something is filling it up. The
+  count of what went is exported.
+
+  **Three stages of use.** Read it (`xproxyctl assets`, or `-long` for the
+  evidence). Freeze it (`xproxyctl assets baseline`), after which everything
+  that appears is a new device -- the line that turns a reference document into
+  a detection, so freezing and forgetting are both audited with the caller's
+  kernel-reported credentials, like a ban. Then say what belongs
+  (`asset_inventory.roles`), which is the written-down form of "there are no
+  engineering workstations on the process network" and is checked on every
+  observation rather than once at first sighting, because a device that keeps
+  behaving like something it should not be is a thing that keeps happening.
+
+  `GET /v1/assets` with `role`, `listener`, `proto`, `vendor`, `new`, `changed`
+  and `top` filters, or `id` to look a device up by identifier, address or
+  hardware address -- whichever the log line in front of the operator carried. A
+  role that is not a role is refused rather than matching nothing, since an empty
+  list reads as "the estate is clean" and that is the wrong answer to a typo, and
+  a list cut by `top` reports how many matched. `xproxy_assets`,
+  `xproxy_assets_new`, `xproxy_assets_by_role{role}`,
+  `xproxy_asset_unexpected_role_total` and six more, absent rather than zero
+  when there is no inventory. `state_file` is what stops a restart reporting the
+  whole estate as new; a state file that will not read is a warning and the proxy
+  still starts, because an inventory is a record and refusing to carry traffic
+  over one would make the record more important than the traffic, while a
+  malformed `vendor_file` line refuses to start, because that is configuration an
+  operator trusted and a list that silently dropped half its entries is worse
+  than one that would not load.
+
+  Off by default, everywhere. An inventory is a record of somebody's estate, and
+  a proxy that kept one without being told to would be making a decision about
+  their data for them. Nothing in it probes, scans or connects to anything.
+  `examples/ot/inventory.yaml`; docs/CONFIG.md `asset_inventory`, docs/USAGE.md
+  and docs/TROUBLESHOOTING.md.
+
 - **`kind: dhcp`: a DHCP relay agent that reads what it relays, because on this
   protocol answering is the attack.** A client broadcasts "who will configure me"
   and believes whatever answers first: its address, its **default route**, its

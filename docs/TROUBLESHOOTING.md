@@ -4423,6 +4423,75 @@ growing. An application that puts an id in the path without the proxy
 deriving a template is the usual cause, and the fix is the description,
 not the bound.
 
+## The device inventory
+
+**It is empty.** Two causes, in this order. The section is off by default,
+so `xproxyctl status` has no `assets` block unless
+`asset_inventory.enabled` is true. And only six listener kinds contribute
+anything -- `dhcp`, `modbus`, `iec104`, `snmp`, `mqtt` and `tftp` -- so an
+inventory on a daemon that runs none of them is honest rather than broken.
+`xproxy_asset_observations_total` says whether anything is arriving at all.
+
+**Everything is a new device after a restart.** Without
+`asset_inventory.state_file` the inventory is in memory only. With one,
+check `xproxy_asset_save_failures_total` and the error log: a state file
+that cannot be written is a warning, not a refusal to start, so the proxy
+keeps carrying traffic and the record silently stops reaching disk.
+
+**A device appears twice.** One record has a hardware address and the
+other does not, which means only DHCP has seen the first form. They merge
+the moment one observation carries both. Two records that *both* carry
+hardware addresses at the same address are not a duplicate: that is
+`asset_address_taken`, and they are deliberately kept apart, because one
+entry describing two machines would overwrite the older machine's vendor,
+role and history with the newer one's -- which is exactly the history an
+incident needs.
+
+**The role is wrong.** Read `xproxyctl assets show` and argue with the
+evidence, which is why it is kept. The usual cause is a device the proxy
+has only seen do one thing: a controller that has answered three Modbus
+requests looks like very little. Confidence below about 60 means the guess
+rests on a string the device chose -- a vendor prefix, a host name -- and
+those are three bytes and a text field that anybody can set. A device that
+two rules of equal weight disagree about is reported as ambiguous rather
+than one of them winning quietly.
+
+**A role changed and nothing is wrong.** `asset_role_changed` fires when
+the evidence changes, and more evidence is the ordinary reason: a
+controller that had only answered reads starts answering writes and
+matches a stronger rule. The finding worth reading is a device moving
+*between* Purdue levels, above all a controller that started behaving like
+an engineering station.
+
+**`asset_unexpected_role` will not stop.** That is the design: it is one
+event per observation, not one per device, because a device that keeps
+behaving like something it should not be is a thing that keeps happening.
+Either the role belongs on `asset_inventory.roles` or the device does not
+belong on the network.
+
+**Nothing is ever new.** `alert_on_new` does nothing until a baseline
+exists. `xproxyctl assets` says `no baseline` until
+`xproxyctl assets baseline` has been run.
+
+**The count stopped growing.** `xproxy_assets_dropped_total` is rising:
+the inventory is at `max_assets` and evicting the least recently seen. It
+is the one bounded table in the proxy that evicts rather than refusing --
+forgetting here loses history rather than making a decision wrong -- so
+raise the bound, and ask what is producing that many distinct devices
+first.
+
+**A vendor name is missing.** The built-in list is two dozen prefixes
+weighted towards operational equipment. `vendor_file` takes a copy of the
+IEEE registry. A malformed line refuses the whole file and the proxy does
+not start: a list an operator trusted and which silently dropped half its
+entries is worse than one that would not load.
+
+**SNMP contributes no description.** It cannot. The SNMP parser keeps no
+varbind values by design, so `sysDescr` is not available to read, and
+changing a hot security parser to carry data it deliberately discards
+would be a poor trade for a string the device chose anyway. The object
+identifiers a device asks for and serves are what the inventory gets.
+
 ## Kubernetes ingress mode
 
 **No routes appear.** In order: the ingress class on the resource must
@@ -4900,6 +4969,7 @@ last warning, and the totals are in the status views.
 | `honeypot_marks` | Refuses new marks; peer-sourced marks have their own quarter |
 | `challenge_nonces` | Refuses, per client address rather than globally |
 | `bot_score_clients` | Evicts the oldest |
+| `asset_inventory` | Evicts the least recently seen device. Forgetting here loses history rather than making a decision wrong, and refusing would stop the inventory noticing the estate at the moment something is filling it up |
 | `waf_rules`, `waf_learning` | Stops recording new rules |
 | Export queues | Drop, counted |
 

@@ -829,7 +829,8 @@ describes it, validation refuses what cannot work, and
   status, upstreams, quotas per tenant and route, WAF rule statistics,
   learned exclusions and flagged clients, reload with dry run,
   configuration diff, history and rollback, certificates, logs, bans,
-  cache, honeypots, DNS, ingress, cluster, metrics, ECH keys and the
+  cache, honeypots, DNS, ingress, cluster, metrics, the device
+  inventory, ECH keys and the
   HTTPS record to publish, second-factor enrolment, and a full screen
   TUI; a web GUI with
   viewer and operator roles, configuration editing with validation,
@@ -849,6 +850,31 @@ describes it, validation refuses what cannot work, and
   one self-contained page, RDP into the timeline of what the session did,
   and in both cases a plain statement of what it could not decode rather
   than a picture nobody sent
+- **A device inventory built from traffic, not from scanning.** An
+  operational estate's oldest problem is that nobody knows what is on the
+  network: the drawings are from commissioning, the spreadsheet was
+  abandoned, and the one thing nobody may do is run a scanner, because an
+  active scan is how a programmable controller gets knocked over. A
+  security proxy is an unusually good place to solve that, since it
+  already parses the protocols — so the DHCP relay contributes the one
+  message where a device states its own hardware address, vendor class and
+  name; Modbus and IEC 104 contribute unit identifiers, common addresses
+  and, above all, *which side answered*; SNMP the object identifiers asked
+  for (**not** their values — the parser keeps none by design, and
+  changing a hot security parser to carry a string the device chose anyway
+  would be a poor trade); MQTT the client identifier; TFTP the filename,
+  which on a boot segment is often the only thing that names a device at
+  all. Behaviour outweighs self-description, because a vendor class is a
+  string and answering function 3 on unit 1 is most of the way to being a
+  controller, so every guess carries a confidence and the evidence that
+  produced it — an inventory an engineer cannot argue with is one whose
+  wrong entries survive for years. Each role carries its Purdue level, so
+  a segmentation review can ask what is on this wire that does not belong
+  at this level. Freeze it with `xproxyctl assets baseline` and everything
+  that appears afterwards is a new device; list the roles the estate
+  expects and a device behaving like anything else is a finding, which is
+  how "there are no engineering workstations on the process network" gets
+  written down. Nothing here probes, scans or connects to anything
 - Shell completion for bash, zsh and fish, manual pages and a JSON
   schema of the configuration that gives editors completion and inline
   documentation

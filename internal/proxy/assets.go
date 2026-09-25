@@ -123,7 +123,10 @@ func (k *assetKeeper) changed(a *assets.Asset, c assets.Change) {
 	if len(a.Listeners) > 0 {
 		attrs = append(attrs, "listener", a.Listeners[0])
 	}
-	k.srv.logs.SecurityEvent(context.Background(), "deny", "asset_"+c.What, attrs...)
+	// alert, not deny: the inventory refuses nothing. An operator filtering
+	// the security log for what the proxy blocked must not find entries that
+	// blocked nothing.
+	k.srv.logs.SecurityEvent(context.Background(), "alert", "asset_"+c.What, attrs...)
 }
 
 // observe records an observation and checks the role against the estate's own
@@ -146,7 +149,7 @@ func (k *assetKeeper) observe(o assets.Observation) {
 	if k.cfg.AlertOnChange != nil && !*k.cfg.AlertOnChange {
 		return
 	}
-	k.srv.logs.SecurityEvent(context.Background(), "deny", "asset_unexpected_role",
+	k.srv.logs.SecurityEvent(context.Background(), "alert", "asset_unexpected_role",
 		"proto", "assets", "asset", a.ID, "role", string(a.Class.Role),
 		"confidence", a.Class.Confidence, "why", firstWhy(a))
 }

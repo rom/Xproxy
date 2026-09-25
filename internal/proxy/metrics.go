@@ -119,6 +119,24 @@ func (s *Server) Collect(e metrics.Collector) {
 			e.Gauge("xproxy_shedding", "1 while the priority class is being shed.", L{"class": class}, v)
 		}
 	}
+	// The device inventory. The numbers worth alerting on are the last two:
+	// a device nobody accounted for, and a device behaving like something
+	// this estate said it does not have.
+	if a := sn.Assets; a != nil {
+		e.Gauge("xproxy_assets", "Devices in the inventory.", nil, float64(a.Assets))
+		e.Gauge("xproxy_assets_unclassified", "Devices the evidence does not identify.", nil, float64(a.Unknown))
+		e.Gauge("xproxy_assets_baseline_frozen", "1 while a baseline has been taken.", nil, b2f(a.Frozen))
+		e.Gauge("xproxy_assets_new", "Devices seen since the baseline was frozen.", nil, float64(a.New))
+		for role, n := range a.ByRole {
+			e.Gauge("xproxy_assets_by_role", "Devices per classified role.", L{"role": role}, float64(n))
+		}
+		e.Counter("xproxy_asset_observations_total", "Observations folded into the inventory.", nil, float64(sn.AssetObservations))
+		e.Counter("xproxy_asset_findings_total", "Identity changes the inventory noticed.", nil, float64(a.Findings))
+		e.Counter("xproxy_asset_unexpected_role_total", "Observations of a device whose role the estate did not list.", nil, float64(sn.AssetUnexpected))
+		e.Counter("xproxy_assets_dropped_total", "Devices the bound evicted, least recently seen first.", nil, float64(a.Dropped))
+		e.Counter("xproxy_assets_expired_total", "Devices forgotten after ttl.", nil, float64(a.Expired))
+		e.Counter("xproxy_asset_save_failures_total", "Times the inventory could not be written to its state file.", nil, float64(sn.AssetSaveFailures))
+	}
 	if node := s.cluster.Load(); node != nil {
 		st := node.Status()
 		e.Gauge("xproxy_cluster_peers", "Configured cluster peers.", nil, float64(len(st.Peers)))

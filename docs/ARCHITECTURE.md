@@ -1174,6 +1174,55 @@ that protocol's own terms, and bounds what a peer may say.
 All of them reach the engine through `Host` alone, which is why they link
 into `xrelay` and nowhere else.
 
+### The device inventory
+
+`internal/assets` keeps one record per device; `internal/proxy/assets.go`
+owns it on behalf of the process and `ObserveAsset` on `Host` is the whole
+surface a listener kind sees.
+
+It lives in the engine rather than in a kind because it is one record per
+device *across* kinds: a controller seen by the Modbus relay and given its
+address by the DHCP relay is one device, and two listeners cannot merge
+that between themselves. A kind writes observations unconditionally and
+the engine decides whether there is an inventory to put them in, so no
+kind carries a conditional around a call it makes on every exchange.
+
+An `Observation` has every field optional, because a Modbus listener knows
+an address, a unit identifier and which side answered, while a DHCP
+listener knows a hardware address and half a dozen strings. Merging is by
+hardware address first -- the identity that survives a lease -- then by
+address. One case deliberately does *not* merge: an observation with a
+hardware address nobody has seen, at an address another record holds
+*with a hardware address of its own*. That is two devices sharing one
+address over time; merging them would overwrite the older machine's
+vendor, role and history with the newer machine's.
+
+Classification (`internal/assets/fingerprint.go`) is a rule list weighted
+by confidence, and the weighting is the design: rules that fire on
+behaviour outrank rules that fire on a string, because a vendor class is
+a field a device filled in and answering Modbus function 3 on unit 1 is
+most of the way to being a controller. Every classification keeps its
+confidence and its evidence, and two equal-weight rules that disagree
+produce an ambiguous verdict rather than a silent winner. Each role
+carries its Purdue level, so the record can answer a segmentation
+question.
+
+The bound behaves unlike every other table in the proxy: it evicts the
+least recently seen rather than refusing. In the relay kinds' pairing
+tables, forgetting an entry makes a decision wrong, so a full table
+refuses; here forgetting loses *history*, and refusing would stop the
+inventory noticing the estate at the moment something is filling it up.
+
+Changes are the output. `onChange` hands each one to the engine, which
+writes a security event with action `alert` -- the inventory refuses
+nothing, so an operator filtering the log for what the proxy blocked must
+not find these. A frozen baseline turns "not in the record" into a
+finding; `/v1/assets` reads it and audits both freezing and forgetting,
+because deciding what counts as normal on a network is a security
+decision.
+
+Nothing in the package probes, scans or connects to anything.
+
 ### WebAssembly filters
 
 The `wasm` kind (`internal/filters/wasm`) owns one wazero runtime per
