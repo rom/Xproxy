@@ -60,6 +60,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rom/xproxy/internal/acceptgroup"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/proxy"
@@ -76,9 +77,13 @@ type server struct {
 	policy  *Policy
 	limiter *limits.KeyedLimiter
 
-	wg   sync.WaitGroup
-	once sync.Once
-	done chan struct{}
+	// transfers is what a shutdown waits for. It is acceptgroup rather
+	// than a bare WaitGroup because the check and the Add have to happen
+	// under one lock that the close also takes -- otherwise a transfer
+	// admitted as shutdown begins is one nothing waits for.
+	transfers acceptgroup.Group
+	once      sync.Once
+	done      chan struct{}
 
 	// live is the transfer table, keyed by the client's transfer
 	// identifier. It is what makes a retransmitted request recognisable as
@@ -163,24 +168,20 @@ func (t *server) shutdown(ctx context.Context) {
 			_ = t.pc.Close()
 		}
 	})
-	finished := make(chan struct{})
-	go func() {
-		t.wg.Wait()
-		close(finished)
-	}()
-	select {
-	case <-finished:
-	case <-ctx.Done():
-		// A transfer can be minutes long, so a shutdown that waited for one
-		// to finish would be a shutdown that hangs. The sockets are closed
-		// and each transfer ends on the read error that follows.
-		t.mu.Lock()
-		for _, x := range t.live {
-			_ = x.sock.Close()
-		}
-		t.mu.Unlock()
-		<-finished
+	t.transfers.Close()
+	t.transfers.Wait(ctx)
+	if ctx.Err() == nil {
+		return
 	}
+	// A transfer can be minutes long, so a shutdown that waited for one to
+	// finish would be a shutdown that hangs. The sockets are closed and each
+	// transfer ends on the read error that follows.
+	t.mu.Lock()
+	for _, x := range t.live {
+		_ = x.sock.Close()
+	}
+	t.mu.Unlock()
+	t.transfers.Wait(context.Background())
 }
 
 // admit puts a transfer in the table, or says why it may not start.
@@ -194,10 +195,8 @@ func (t *server) shutdown(ctx context.Context) {
 func (t *server) admit(x *transfer) (string, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	select {
-	case <-t.done:
+	if !t.transfers.Enter() {
 		return "shutting_down", false
-	default:
 	}
 	key := x.client.String()
 	if _, dup := t.live[key]; dup {
@@ -205,17 +204,19 @@ func (t *server) admit(x *transfer) (string, bool) {
 		// retransmitted request, which happens whenever the first answer was
 		// lost: the transfer's own socket will answer it, so the duplicate is
 		// dropped rather than started again.
+		t.transfers.Leave()
 		return "duplicate", false
 	}
 	if len(t.live) >= t.maxTransfers() {
+		t.transfers.Leave()
 		return "too_many_transfers", false
 	}
 	if t.perIP[x.ip] >= t.maxPerClient() {
+		t.transfers.Leave()
 		return "too_many_per_client", false
 	}
 	t.live[key] = x
 	t.perIP[x.ip]++
-	t.wg.Add(1)
 	c := t.host.Counters()
 	c.TFTPTransfers.Add(1)
 	c.TFTPTransfersOpen.Add(1)
@@ -236,7 +237,7 @@ func (t *server) release(x *transfer) {
 	}
 	t.mu.Unlock()
 	t.host.Counters().TFTPTransfersOpen.Add(-1)
-	t.wg.Done()
+	t.transfers.Leave()
 }
 
 // transfer is one TFTP transfer in flight: its own socket, the two addresses

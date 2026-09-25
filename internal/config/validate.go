@@ -10024,16 +10024,16 @@ func (v *validator) bacnetListener(p string, m *BACnetListener) {
 		v.warnf("%s.default_action: allow carries every request no rule refuses, on a "+
 			"protocol with no authentication", p)
 	}
-	if bacnetOn(m.AllowBBMD, false) {
+	if bacnetOn(m.AllowBBMD) {
 		v.warnf("%s.allow_bbmd: register-foreign-device asks a BBMD to send the "+
 			"registering address every broadcast on a network it is not on, from one "+
 			"unauthenticated datagram", p)
 	}
-	if bacnetOn(m.AllowRouting, false) && !bacnetOn(m.AllowNetworkMessages, false) {
+	if bacnetOn(m.AllowRouting) && !bacnetOn(m.AllowNetworkMessages) {
 		v.errf("%s.allow_routing: needs allow_network_messages, because a routing "+
 			"message is a network layer message", p)
 	}
-	if bacnetOn(m.AllowForwarded, false) && !bacnetOn(m.AllowBroadcast, false) {
+	if bacnetOn(m.AllowForwarded) && !bacnetOn(m.AllowBroadcast) {
 		v.warnf("%s.allow_forwarded: a forwarded-npdu is a broadcast somebody else "+
 			"relayed, and it carries the originating address inside the payload", p)
 	}
@@ -10067,12 +10067,11 @@ func (v *validator) bacnetListener(p string, m *BACnetListener) {
 
 // bacnetOn reads an optional boolean the way the kind does, so a warning
 // about a setting says what the listener will actually do with it.
-func bacnetOn(p *bool, def bool) bool {
-	if p == nil {
-		return def
-	}
-	return *p
-}
+//
+// Every setting it is asked about defaults to off. The ones that default to
+// on are refusals -- deny_sensitive_writes, refuse_unlocated_objects -- and a
+// warning about those would fire on every well-configured file.
+func bacnetOn(p *bool) bool { return p != nil && *p }
 
 func (v *validator) bacnetServices(p string, names []string) {
 	for _, n := range names {

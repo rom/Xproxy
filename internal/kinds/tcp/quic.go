@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rom/xproxy/internal/acceptgroup"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/safe"
 	"github.com/rom/xproxy/internal/upstream"
@@ -30,9 +31,13 @@ type quicRelay struct {
 	// forge an Initial from a spoofed source, so these are bounded apart
 	// from the connection limit and cannot fill it.
 	incomplete int
-	wg         sync.WaitGroup
-	done       chan struct{}
-	once       sync.Once
+	// running is what shutdown waits for: this loop, the sweeper and the
+	// pump per flow. It is acceptgroup rather than a bare WaitGroup because
+	// a flow can be opened at the moment shutdown begins -- and a
+	// WaitGroup's Add must not race its Wait.
+	running acceptgroup.Group
+	done    chan struct{}
+	once    sync.Once
 }
 
 const (
@@ -74,9 +79,14 @@ func newQUICRelay(t *server, pc net.PacketConn) *quicRelay {
 }
 
 func (q *quicRelay) serve() {
-	q.wg.Add(2) // the sweeper and this loop
-	go q.sweep()
-	defer q.wg.Done()
+	if !q.running.Enter() {
+		// Shut down before it started, which a reload can do.
+		return
+	}
+	defer q.running.Leave()
+	if q.running.Enter() {
+		go q.sweep()
+	}
 	buf := make([]byte, 65535)
 	for {
 		n, addr, err := q.pc.ReadFrom(buf)
@@ -229,13 +239,18 @@ func (q *quicRelay) datagram(client netip.AddrPort, b []byte) {
 		}
 	}
 	f.pending = nil
-	q.wg.Add(1)
+	if !q.running.Enter() {
+		// Shutting down, so nothing will wait for the pump: the flow is
+		// ended rather than left with an upstream nothing reads.
+		q.finish(f, "shutdown")
+		return
+	}
 	go q.pump(f)
 }
 
 // pump copies datagrams from the endpoint back to the client.
 func (q *quicRelay) pump(f *quicFlow) {
-	defer q.wg.Done()
+	defer q.running.Leave()
 	buf := make([]byte, 65535)
 	idle := q.t.cfg.TCP.QUICIdleTimeout.D()
 	client := net.UDPAddrFromAddrPort(f.client)
@@ -306,7 +321,7 @@ func (q *quicRelay) finish(f *quicFlow, reason string) {
 
 // sweep ends idle flows and flows that never completed a ClientHello.
 func (q *quicRelay) sweep() {
-	defer q.wg.Done()
+	defer q.running.Leave()
 	t := time.NewTicker(time.Second)
 	defer t.Stop()
 	for {
@@ -369,7 +384,10 @@ func (q *quicRelay) shutdown() {
 			q.finish(f, "shutdown")
 		}
 	}
-	q.wg.Wait()
+	q.running.Close()
+	// Unbounded, as before: the socket is closed above and each flow ends
+	// on the error that follows, so there is nothing here to be stuck on.
+	q.running.Wait(context.Background())
 }
 
 // serverName is the flow's peeked server name, or "" before the

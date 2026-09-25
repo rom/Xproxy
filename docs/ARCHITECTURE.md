@@ -120,6 +120,9 @@ internal/kinds/ldap    kind: ldap -- LDAP relay: the bind methods, the bound
 internal/kinds/dhcp    kind: dhcp -- DHCP relay agent: the server a reply came
                        from, the configuration it carries, option 82, the
                        starvation bound keyed on the hardware address
+internal/acceptgroup   what a listener's shutdown waits for: the check and
+                       the Add under one lock, because a WaitGroup's Add
+                       must not race its Wait. Fifteen kinds use it
 internal/kinds/bacnet  kind: bacnet -- BACnet/IP relay: the services carried,
                        the objects and properties they may name, the command
                        priority a write may claim, the broadcast and BBMD

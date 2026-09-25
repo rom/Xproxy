@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rom/xproxy/internal/acceptgroup"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/mfa"
 	"github.com/rom/xproxy/internal/netutil"
@@ -62,17 +63,20 @@ type server struct {
 	// rsaKey is this listener's own key for the rsa-aes types.
 	rsaKey *rsa.PrivateKey
 
-	wg   sync.WaitGroup
-	mu   sync.Mutex
-	once sync.Once
-	cons map[net.Conn]struct{}
-	done chan struct{}
+	// sessions is what a shutdown waits for. It is acceptgroup rather than
+	// a bare WaitGroup because a connection can be accepted at the moment
+	// shutdown begins, and a WaitGroup's Add must not race its Wait: the
+	// failure is not a warning but a session that either is or is not
+	// waited for depending on the scheduler.
+	sessions acceptgroup.Group
+	mu       sync.Mutex
+	cons     map[net.Conn]struct{}
 }
 
 func newServer(engine proxy.Host, cfg config.Listener, ln net.Listener, tc *tls.Config) (*server, error) {
 	c := cfg.VNC
 	t := &server{engine: engine, cfg: cfg, v: c, ln: ln, tlsCfg: tc,
-		cons: map[net.Conn]struct{}{}, done: make(chan struct{})}
+		cons: map[net.Conn]struct{}{}}
 	for _, name := range c.SecurityTypes {
 		if s, ok := rfb.SecurityByName(strings.ToLower(strings.TrimSpace(name))); ok {
 			t.offered = append(t.offered, s)
@@ -166,9 +170,8 @@ func (t *server) serve() {
 			_ = c.Close()
 			continue
 		}
-		t.wg.Add(1)
 		go func() {
-			defer t.wg.Done()
+			defer t.sessions.Leave()
 			defer safe.Guard("vnc session")
 			defer t.untrack(c)
 			t.handle(c)
@@ -179,12 +182,13 @@ func (t *server) serve() {
 func (t *server) admit(c net.Conn) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	select {
-	case <-t.done:
+	if !t.sessions.Enter() {
+		// Shutting down. The caller closes the connection rather than
+		// serving it: a session started now is one nothing waits for.
 		return false
-	default:
 	}
 	if len(t.cons) >= t.v.MaxConnections {
+		t.sessions.Leave()
 		t.engine.Counters().VNCRejected.Add(1)
 		return false
 	}
@@ -199,23 +203,26 @@ func (t *server) untrack(c net.Conn) {
 }
 
 func (t *server) shutdown(ctx context.Context) {
-	t.once.Do(func() { close(t.done) })
+	t.sessions.Close()
 	t.mu.Lock()
 	for c := range t.cons {
 		_ = c.SetDeadline(time.Now())
 	}
 	t.mu.Unlock()
-	done := make(chan struct{})
-	go func() { t.wg.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-ctx.Done():
-		t.mu.Lock()
-		for c := range t.cons {
-			_ = c.Close()
-		}
-		t.mu.Unlock()
+	t.sessions.Wait(ctx)
+	if ctx.Err() == nil {
+		return
 	}
+	// Out of time. The deadline above asked the sessions to end and they
+	// have not, so the connections are closed under them -- and this
+	// returns rather than waiting again, which is what it did before the
+	// group replaced the WaitGroup: a shutdown that hangs on one session
+	// is worse than one that stops asking.
+	t.mu.Lock()
+	for c := range t.cons {
+		_ = c.Close()
+	}
+	t.mu.Unlock()
 }
 
 func (t *server) deny(ip netip.Addr, what, detail string) {

@@ -29,6 +29,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rom/xproxy/internal/acceptgroup"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/proxy"
@@ -48,17 +49,37 @@ type server struct {
 	mu       sync.Mutex
 	sessions map[netip.AddrPort]*session
 	perIP    map[netip.Addr]int
-	wg       sync.WaitGroup
-	done     chan struct{}
-	once     sync.Once
+	// running is what a shutdown waits for: the sweep and the pump per
+	// session. It is acceptgroup rather than a bare WaitGroup because the
+	// engine can call Shutdown before serve has run its first Add -- and a
+	// WaitGroup's Add must not race its Wait. The race detector found this
+	// one through test/shutdown.
+	running acceptgroup.Group
+	done    chan struct{}
+	once    sync.Once
 }
 
 // session is one client address relayed to one endpoint.
-type session struct {
-	client   netip.AddrPort
+// leg is a session's upstream: the socket, and the endpoint it was taken
+// from so that the pool can be told when it closes.
+//
+// It is one atomic pointer rather than three fields on the session because
+// the session is put in the table *before* it is dialled -- deliberately,
+// so that a flood of first datagrams cannot each start a dial. That means a
+// second datagram from the same client, the sweeper and a shutdown can all
+// reach the session while open is still choosing an endpoint, and three
+// plain fields written afterwards are three fields written under them. The
+// race detector found exactly that, through test/shutdown.
+type leg struct {
 	up       *net.UDPConn
 	pool     *upstream.Pool
 	endpoint *upstream.Endpoint
+}
+
+type session struct {
+	client netip.AddrPort
+	// dst is the upstream leg, nil until open has dialled one.
+	dst atomic.Pointer[leg]
 	// start carries a monotonic reading, and every elapsed time in this
 	// session is measured from it.
 	start time.Time
@@ -102,8 +123,14 @@ func newServer(engine proxy.Host, cfg config.Listener, pc net.PacketConn) (*serv
 }
 
 func (s *server) serve() {
-	s.wg.Add(1)
-	go s.sweep()
+	if !s.running.Enter() {
+		// Shut down before it started, which a reload can do.
+		return
+	}
+	defer s.running.Leave()
+	if s.running.Enter() {
+		go s.sweep()
+	}
 	buf := make([]byte, 65535)
 	for {
 		n, addr, err := s.pc.ReadFrom(buf)
@@ -152,7 +179,16 @@ func (s *server) datagram(client netip.AddrPort, b []byte) {
 		}
 	}
 	se.touch()
-	n, err := se.up.Write(b)
+	dst := se.dst.Load()
+	if dst == nil {
+		// The session exists and is not dialled yet: another datagram from
+		// this client is still choosing an endpoint. Dropping this one is
+		// what UDP does to a datagram that arrives before the path is up,
+		// and the client's own retry is the recovery.
+		s.engine.Counters().UDPErrors.Add(1)
+		return
+	}
+	n, err := dst.up.Write(b)
 	if err != nil {
 		s.finish(se, "upstream_write")
 		return
@@ -267,25 +303,38 @@ func (s *server) open(client netip.AddrPort) (*session, bool) {
 		s.finish(se, "upstream_unavailable")
 		return nil, false
 	}
-	se.up, se.endpoint, se.pool = uc, ep, pool
+	se.dst.Store(&leg{up: uc, pool: pool, endpoint: ep})
 	c.UDPSessions.Add(1)
 	c.UDPSessionsOpen.Add(1)
-	s.wg.Add(1)
+	if !s.running.Enter() {
+		// Shutting down, so nothing will wait for the pump. The session is
+		// ended rather than left with an upstream nothing reads.
+		s.finish(se, "shutdown")
+		return nil, false
+	}
 	go s.pump(se)
 	return se, true
 }
 
 // pump copies datagrams from the endpoint back to the client.
+//
+// The leg is loaded once: this goroutine is started after open stored it and
+// the session's upstream never changes, so a read per datagram would be an
+// atomic load per datagram for a value that cannot have moved.
 func (s *server) pump(se *session) {
-	defer s.wg.Done()
+	defer s.running.Leave()
 	defer safe.Guard("udp upstream pump")
+	dst := se.dst.Load()
+	if dst == nil {
+		return
+	}
 	c := s.engine.Counters()
 	buf := make([]byte, 65535)
 	idle := s.udp.IdleTimeout.D()
 	client := net.UDPAddrFromAddrPort(se.client)
 	for {
-		_ = se.up.SetReadDeadline(time.Now().Add(idle))
-		n, err := se.up.Read(buf)
+		_ = dst.up.SetReadDeadline(time.Now().Add(idle))
+		n, err := dst.up.Read(buf)
 		if n > 0 {
 			if n > s.udp.MaxDatagramBytes {
 				c.UDPDropped.Add(1)
@@ -349,10 +398,10 @@ func (s *server) finish(se *session, reason string) {
 	}
 	s.mu.Unlock()
 	ep := ""
-	if se.up != nil {
-		_ = se.up.Close()
-		se.pool.End(se.endpoint, false, 0)
-		ep = se.endpoint.Address
+	if dst := se.dst.Load(); dst != nil {
+		_ = dst.up.Close()
+		dst.pool.End(dst.endpoint, false, 0)
+		ep = dst.endpoint.Address
 		s.engine.Counters().UDPSessionsOpen.Add(-1)
 	}
 	attrs := []any{"listener", s.cfg.Name, "proto", "udp", "client_ip", se.client.Addr().String(),
@@ -381,7 +430,7 @@ func (s *server) deny(client netip.AddrPort, reason string) {
 
 // sweep ends idle sessions and sessions past their absolute bound.
 func (s *server) sweep() {
-	defer s.wg.Done()
+	defer s.running.Leave()
 	t := time.NewTicker(time.Second)
 	defer t.Stop()
 	for {
@@ -425,10 +474,6 @@ func (s *server) shutdown(ctx context.Context) {
 	for _, se := range open {
 		s.finish(se, "shutdown")
 	}
-	finished := make(chan struct{})
-	go func() { s.wg.Wait(); close(finished) }()
-	select {
-	case <-finished:
-	case <-ctx.Done():
-	}
+	s.running.Close()
+	s.running.Wait(ctx)
 }

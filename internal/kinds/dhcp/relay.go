@@ -27,18 +27,25 @@ func (s *server) serveMessages() {
 		return
 	}
 	defer func() { _ = up.Close() }()
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
-		defer safe.Guard("dhcp server reader")
-		s.readServers(up)
-	}()
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
-		defer safe.Guard("dhcp pending sweep")
-		s.sweepPending()
-	}()
+	if !s.running.Enter() {
+		// Shut down before it started, which a reload can do.
+		return
+	}
+	defer s.running.Leave()
+	if s.running.Enter() {
+		go func() {
+			defer s.running.Leave()
+			defer safe.Guard("dhcp server reader")
+			s.readServers(up)
+		}()
+	}
+	if s.running.Enter() {
+		go func() {
+			defer s.running.Leave()
+			defer safe.Guard("dhcp pending sweep")
+			s.sweepPending()
+		}()
+	}
 	buf := make([]byte, wire.MaxPacket+1)
 	for {
 		select {

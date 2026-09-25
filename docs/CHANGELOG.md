@@ -440,6 +440,59 @@ Open findings of the earlier rounds:
   defaults. A request that does not fit is refused with 503 before it
   is read.
 
+- **The accept-group race, swept across every listener kind.** One bug that
+  four kinds shared -- found on the Redis kind and fixed there in
+  `internal/acceptgroup` -- turned out to be present in twelve more. Session
+  tracking written as a `sync.WaitGroup` Adds one per accepted connection in the
+  accept loop and Waits in shutdown, and a WaitGroup's Add must not run
+  concurrently with its Wait while the counter is at zero. The engine closes a
+  listener's front socket *before* it calls that listener's Shutdown, which
+  leaves the accept goroutine between a connection it has already accepted and
+  the Add it has not reached yet -- and the same applies to the background
+  goroutines a datagram kind starts in `serve`, which a shutdown arriving early
+  enough Waits for before they are counted.
+
+  What goes wrong is not a detector warning. The session either is or is not
+  waited for depending on the scheduler, so shutdown returns while a session is
+  still reading a connection the process is about to close: on a reload a session
+  dropped mid-command, on a shutdown a log line written after the log file was
+  closed.
+
+  `telnet`, `vnc`, `rdp`, `ntske`, `syslog`, `snmp`, `ntp`, `udp`, `tftp`,
+  `dhcp`, the QUIC relay of `kind: tcp`, the forward proxy's CONNECT and SOCKS
+  paths, and the modbus and NTP learners now use `internal/acceptgroup`, which
+  does the check and the Add under one lock that the close also takes. The eight
+  kinds that already had the pattern -- `ftp`, `iec104`, `ldap`, `modbus`,
+  `mqtt`, `smtp`, `ssh` and the TCP side of `kind: tcp` -- were audited and left
+  alone, and the remaining `wg.Add(2)` calls are local to one function, where Add
+  and Wait are the same goroutine.
+
+  The sweep needed a test that shuts a listener down while clients are still
+  arriving, so `test/shutdown` starts twenty-three kinds through the real engine
+  and does exactly that, under the race detector. It found `ntske` on its first
+  run and `snmp`, `ntp`, `syslog` and `udp` after that. It is honest in its own
+  comment about what it does not do: twenty runs never hit the window from
+  outside on demand, because it is a few instructions wide, so what the test
+  reliably catches is the other half -- a shutdown that *hangs*, which is what an
+  Enter without its Leave produces and the real risk of changing twenty
+  listeners at once.
+
+- **Two races the sweep's own test found on the way.** `proxy.New` installed the
+  process-wide panic sink (`safe.Report`) as a plain package variable, and "set
+  once at start-up" is not quite true: a reload builds a second Server while the
+  first is still serving, so the sink is written while flow goroutines could be
+  reading it. A contained panic during a reload is exactly when an operator most
+  wants the stack, and a torn function pointer is the one way to turn a contained
+  panic back into a process that stops. It is an atomic pointer now, set through
+  `safe.SetReport`.
+
+  And the UDP kind published a session into its table before it dialled the
+  upstream -- deliberately, so that a flood of first datagrams cannot each start
+  a dial -- and then wrote the socket, pool and endpoint as three plain fields,
+  under everything that could already reach the session: a second datagram from
+  the same client, the sweeper, a shutdown. The three are one atomic pointer now,
+  so a reader either sees the upstream or sees that there is not one yet.
+
 ### Added (1.4)
 
 - **`kind: bacnet`: a BACnet/IP relay in front of a building.**

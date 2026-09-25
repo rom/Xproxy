@@ -1,6 +1,7 @@
 package ntp
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rom/xproxy/internal/acceptgroup"
 	wire "github.com/rom/xproxy/internal/ntp"
 )
 
@@ -67,7 +69,11 @@ type Learner struct {
 
 	stop chan struct{}
 	once sync.Once
-	wg   sync.WaitGroup
+	// running is the report loop, and what Stop waits for. It is
+	// acceptgroup rather than a bare WaitGroup because Start and Stop are
+	// called from the listener's own lifecycle: a shutdown that arrives
+	// before serve reached Start would Wait at zero and then be Added to.
+	running acceptgroup.Group
 }
 
 // NewLearner prepares a learner.
@@ -87,9 +93,12 @@ func (l *Learner) Start(onError func(error)) {
 	if l == nil {
 		return
 	}
-	l.wg.Add(1)
+	if !l.running.Enter() {
+		// Stopped before it started.
+		return
+	}
 	go func() {
-		defer l.wg.Done()
+		defer l.running.Leave()
 		t := time.NewTicker(l.interval)
 		defer t.Stop()
 		for {
@@ -113,7 +122,8 @@ func (l *Learner) Stop() error {
 	var err error
 	l.once.Do(func() {
 		close(l.stop)
-		l.wg.Wait()
+		l.running.Close()
+		l.running.Wait(context.Background())
 		err = l.Write()
 	})
 	return err

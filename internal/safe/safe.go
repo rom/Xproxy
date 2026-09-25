@@ -26,11 +26,29 @@ var panics atomic.Uint64
 // Panics reports how many panics have been contained since start.
 func Panics() uint64 { return panics.Load() }
 
-// Report receives a contained panic: what was running, the recovered
-// value and the stack of the goroutine that raised it. It is set once at
-// start-up, before any listener runs. A nil Report drops the detail but
-// still counts the panic.
-var Report func(what string, value any, stack []byte)
+// Reporter receives a contained panic: what was running, the recovered
+// value and the stack of the goroutine that raised it.
+type Reporter func(what string, value any, stack []byte)
+
+// report is the installed sink, held atomically.
+//
+// It is atomic because "set once at start-up" is not quite true: a reload
+// builds a second Server while the first is still serving, so the sink is
+// written while flow goroutines are running and could be reading it. A
+// contained panic during a reload is exactly when an operator most wants
+// the stack, and a torn function pointer is the one way to turn a
+// contained panic back into a process that stops.
+var report atomic.Pointer[Reporter]
+
+// SetReport installs the sink for contained panics. A sink that has not
+// been set drops the detail but still counts the panic.
+func SetReport(f Reporter) {
+	if f == nil {
+		report.Store(nil)
+		return
+	}
+	report.Store(&f)
+}
 
 // Guard recovers a panic on the calling goroutine. Use it as the first
 // deferred call of a goroutine that handles one flow:
@@ -50,10 +68,11 @@ func Guard(what string) {
 		return
 	}
 	panics.Add(1)
-	if Report == nil {
+	f := report.Load()
+	if f == nil {
 		return
 	}
 	buf := make([]byte, 16<<10)
 	buf = buf[:runtime.Stack(buf, false)]
-	Report(what, v, buf)
+	(*f)(what, v, buf)
 }

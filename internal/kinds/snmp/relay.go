@@ -29,12 +29,13 @@ func (t *server) serveDatagrams() {
 		return
 	}
 	defer func() { _ = agent.Close() }()
-	t.wg.Add(1)
-	go func() {
-		defer t.wg.Done()
-		defer safe.Guard("snmp agent reader")
-		t.readAgent(agent)
-	}()
+	if t.running.Enter() {
+		go func() {
+			defer t.running.Leave()
+			defer safe.Guard("snmp agent reader")
+			t.readAgent(agent)
+		}()
+	}
 	buf := make([]byte, t.maxMessage()+1)
 	for {
 		select {
