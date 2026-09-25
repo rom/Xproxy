@@ -75,6 +75,7 @@ var roster = map[string]Role{
 	"dhcp":     RoleRelay,
 	"bacnet":   RoleRelay,
 	"amqp":     RoleRelay,
+	"s7":       RoleRelay,
 	"ntp":      RoleRelay,
 	"ntske":    RoleRelay,
 }

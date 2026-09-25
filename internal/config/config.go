@@ -308,6 +308,8 @@ type Listener struct {
 	BACnet *BACnetListener `yaml:"bacnet"`
 	// AMQP configures a kind: amqp listener.
 	AMQP *AMQPListener `yaml:"amqp"`
+	// S7 configures a kind: s7 listener.
+	S7 *S7Listener `yaml:"s7"`
 	// Policy is whether this listener enforces its policy or only
 	// evaluates it. It overrides the estate's own policy section.
 	Policy *ListenerPolicy `yaml:"policy"`
@@ -1369,6 +1371,201 @@ type RedisRule struct {
 	DenyKeyPrefixes  []string `yaml:"deny_key_prefixes"`
 	ReadOnly         *bool    `yaml:"read_only"`
 	MaxCommands      int      `yaml:"max_commands"`
+}
+
+// S7Listener is the settings of a kind: s7 listener: a relay in front of a
+// Siemens PLC.
+//
+// The protocol is three layers on TCP 102 -- TPKT, COTP and S7comm -- and
+// what matters about it is what it does not have. There is **no
+// authentication worth the name**: the optional password protects a handful
+// of functions on some CPU families and nothing on others, an S7-300 with no
+// password accepts a stop from anybody who can open a socket, and the
+// protocol has no transport security at all, which is why this listener
+// takes no TLS section. An engineering station on the same segment can read
+// and write every byte of memory in every controller on it.
+//
+// So a relay's job here is to know what an operation *is*, and this protocol
+// spreads that across two layers: a function code for reading and writing
+// memory, and a user-data group and subfunction for everything else -- the
+// diagnostic buffer, the block list, the clock, the password, the debugger.
+// `internal/s7` maps both onto one vocabulary of nineteen words, and the
+// policy is written in those words.
+//
+// Four things shape the settings.
+//
+// **The default is what an HMI does.** `operations` defaults to reading
+// memory, reading the system status lists, listing blocks, subscribing to
+// cyclic data, reading the clock and the diagnostic machinery -- and nothing
+// that changes anything. Writing, downloading a program, uploading one,
+// stopping the CPU, setting the clock, the password functions and the
+// programmer commands are each off until named.
+//
+// **The address is the rack and the slot**, and it arrives in the connection
+// request rather than in any request that follows: the called TSAP's two
+// octets hold a connection resource and the rack and slot of the CPU. A
+// listener that named nothing else could still say which controller a client
+// may reach -- and `resources` says *how*, because `pg` is the programming
+// device connection an engineering station opens and `op` is an operator
+// panel.
+//
+// **An upload is a read, and it is the one that takes the plant with it.**
+// Reading a block out of a PLC is how control logic leaves the site, so it
+// is off by default even though nothing about it changes the machine.
+//
+// **The areas and the data blocks are the boundary inside the CPU.**
+// `areas` and `dbs` say which memory a client may reach at all, and
+// `addresses` and `write_addresses` bound it by byte -- which is how an
+// operator thinks about a data block, so the relay divides the protocol's
+// bit address by eight rather than making anybody else do it.
+type S7Listener struct {
+	// Upstream is the PLC pool. Required.
+	Upstream string `yaml:"upstream"`
+	// AllowClients and DenyClients are the networks a client may connect
+	// from. Deny is evaluated first. An empty allow list allows every
+	// client the deny list does not refuse, which validation advises
+	// against on a listener that reaches a controller.
+	AllowClients []string `yaml:"allow_clients"`
+	DenyClients  []string `yaml:"deny_clients"`
+
+	// Racks and Slots are the rack and slot numbers a client may address,
+	// written as numbers or "0-1" ranges. Empty allows any. A rack is 0 to
+	// 7 and a slot 0 to 31, which is what the two octets hold.
+	Racks []string `yaml:"racks"`
+	Slots []string `yaml:"slots"`
+	// Resources are the connection types a client may ask for: pg (the
+	// programming device connection), op (an operator panel) or basic (what
+	// one PLC opens to another). Empty allows any.
+	//
+	// It is the cheapest useful line in this section: a listener that
+	// admits only `op` has said an engineering station may not connect
+	// through it, without naming a single function.
+	Resources []string `yaml:"resources"`
+
+	// ReadOnly refuses every operation that changes the PLC, for every
+	// client, before any rule is read: writing memory, downloading,
+	// controlling, stopping, the mode transitions, setting the clock, the
+	// password functions and the programmer commands. It cannot be
+	// overridden by a rule, because a read-only listener that one rule
+	// could write through is not a read-only listener.
+	ReadOnly bool `yaml:"read_only"`
+	// Operations is the allow list, in the vocabulary above: read, write,
+	// setup, upload, download, control, stop, cpu_services, szl,
+	// diagnostics, blocks, cyclic, time_read, time_write, security,
+	// programmer, mode, pbc, nc. Empty allows what an HMI does.
+	Operations []string `yaml:"operations"`
+	// DenyOperations is the deny list, which no rule can override.
+	DenyOperations []string `yaml:"deny_operations"`
+
+	// Areas is the memory areas a request may name: db, inputs, outputs,
+	// flags, timer, counter, instance_db, local, peripheral and the
+	// 200-family areas. Empty allows any.
+	Areas []string `yaml:"areas"`
+	// DenyAreas is the deny list. `peripheral` is worth putting on it on a
+	// listener that allows writing: it is direct access to the I/O
+	// hardware, past the process image the program reads.
+	DenyAreas []string `yaml:"deny_areas"`
+	// DBs is the data block numbers a request may name, as numbers or
+	// ranges. Empty allows any.
+	DBs []string `yaml:"dbs"`
+	// Addresses is the byte ranges a request may name, as "0-255" or single
+	// numbers. A request whose whole span is not inside one of them is
+	// refused: a read of bytes 0 to 200 against a range of 0 to 99 is a
+	// read of bytes the policy does not name, and splitting it is not this
+	// relay's decision.
+	Addresses []string `yaml:"addresses"`
+	// WriteAddresses applies to writing operations when set, so one
+	// listener can allow a wide read and a narrow write.
+	WriteAddresses []string `yaml:"write_addresses"`
+	// BlockTypes is the block types an upload or a download may name: db,
+	// fb, fc, sdb, sfb, sfc. Empty allows any, which matters only where
+	// upload or download is allowed at all.
+	BlockTypes []string `yaml:"block_types"`
+
+	// MaxItems bounds the items one read or write may carry, 0 for no
+	// bound. A read of a hundred items is one PDU that occupies the CPU
+	// for as long as a hundred reads.
+	MaxItems int `yaml:"max_items"`
+	// MaxReadBytes and MaxWriteBytes bound the octets one request may read
+	// or write across all of its items, 0 for no bound.
+	MaxReadBytes  int `yaml:"max_read_bytes"`
+	MaxWriteBytes int `yaml:"max_write_bytes"`
+	// MaxPDULength bounds the PDU length the two sides negotiate, 0 for no
+	// bound beyond the frame bound. The families in the field negotiate
+	// 240, 480 or 960 octets and an S7-1500 negotiates 2048; a
+	// negotiation above this is refused rather than rewritten, because
+	// rewriting it would make this relay a party to it.
+	MaxPDULength int `yaml:"max_pdu_length"`
+	// MaxFrameBytes bounds one TPKT frame. Default 8 KiB.
+	MaxFrameBytes int `yaml:"max_frame_bytes"`
+	// MaxRequests bounds the requests one connection may send, 0 for no
+	// bound. A plant connection is long-lived, so this is off by default.
+	MaxRequests int `yaml:"max_requests"`
+	// RateLimit and RateBurst bound requests per second per client
+	// address, 0 for no limit.
+	RateLimit int `yaml:"rate_limit"`
+	RateBurst int `yaml:"rate_burst"`
+	// MaxSessions and MaxSessionsPerClient bound concurrent connections.
+	// A CPU has very few connection resources -- an S7-300 has sixteen
+	// altogether -- so a bound here is what stops one client from taking
+	// them all.
+	MaxSessions          int `yaml:"max_sessions"`
+	MaxSessionsPerClient int `yaml:"max_sessions_per_client"`
+	// IdleTimeout, SessionDuration and HandshakeTimeout bound a
+	// connection.
+	IdleTimeout      Duration `yaml:"idle_timeout"`
+	SessionDuration  Duration `yaml:"session_duration"`
+	HandshakeTimeout Duration `yaml:"handshake_timeout"`
+
+	// Rules decide each request, in order, first match wins. A request
+	// that matches no rule takes DefaultAction.
+	Rules []S7Rule `yaml:"rules"`
+	// DefaultAction is deny (the default) or allow.
+	DefaultAction string `yaml:"default_action"`
+	// DenyResponse is error (the default: an S7 acknowledgement carrying
+	// an access-fault error, which is what a protected CPU answers, so the
+	// client's own library reports a refusal), drop or close.
+	DenyResponse string `yaml:"deny_response"`
+	// LogRequests writes an access line per request, which on a plant
+	// polling every second is a great many lines.
+	LogRequests bool `yaml:"log_requests"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
+	// MonitorOnly evaluates and enforces nothing, except the hard
+	// decisions: the client list, the rack and slot, a frame the relay
+	// could not read, the bounds, and every operation that changes the PLC
+	// -- because a write forwarded so that it could be written down is a
+	// moved actuator, and a stop forwarded is a stopped machine.
+	MonitorOnly bool `yaml:"monitor_only"`
+}
+
+// S7Rule is one rule of an s7 listener's policy.
+type S7Rule struct {
+	// Name identifies the rule in the logs and the counters. Required.
+	Name string `yaml:"name"`
+	// Action is allow (the default), deny or observe.
+	Action string `yaml:"action"`
+	// Clients, Racks, Slots and Resources select the traffic.
+	Clients   []string `yaml:"clients"`
+	Racks     []string `yaml:"racks"`
+	Slots     []string `yaml:"slots"`
+	Resources []string `yaml:"resources"`
+	// The rule's own narrowing. The deny lists always win.
+	Operations     []string `yaml:"operations"`
+	DenyOperations []string `yaml:"deny_operations"`
+	Areas          []string `yaml:"areas"`
+	DenyAreas      []string `yaml:"deny_areas"`
+	DBs            []string `yaml:"dbs"`
+	Addresses      []string `yaml:"addresses"`
+	WriteAddresses []string `yaml:"write_addresses"`
+	BlockTypes     []string `yaml:"block_types"`
+	MaxItems       int      `yaml:"max_items"`
+	// Schedule limits the rule to a time window, which is how "the
+	// integrator may download during the shutdown window" is written.
+	Schedule *ModbusSchedule `yaml:"schedule"`
+	// Comment is carried into the logs when the rule decides, for the
+	// change record a plant keeps.
+	Comment string `yaml:"comment"`
 }
 
 // AMQPListener is the settings of a kind: amqp listener: a relay in front of

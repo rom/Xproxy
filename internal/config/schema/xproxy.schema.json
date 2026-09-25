@@ -4762,6 +4762,14 @@
             }
           ]
         },
+        "s7": {
+          "description": "S7 configures a kind: s7 listener.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/S7Listener"
+            }
+          ]
+        },
         "smtp": {
           "description": "SMTP configures a kind: smtp listener.",
           "allOf": [
@@ -8588,6 +8596,293 @@
         },
         "profile": {
           "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "S7Listener": {
+      "description": "S7Listener is the settings of a kind: s7 listener: a relay in front of a Siemens PLC. The protocol is three layers on TCP 102 -- TPKT, COTP and S7comm -- and what matters about it is what it does not have. There is **no authentication worth the name**: the optional password protects a handful of functions on some CPU families and nothing on others, an S7-300 with no password accepts a stop from anybody who can open a socket, and the protocol has no transport security at all, which is why this listener takes no TLS section. An engineering station on the same segment can read and write every byte of memory in every controller on it. So a relay's job here is to know what an operation *is*, and this protocol spreads that across two layers: a function code for reading and writing memory, and a user-data group and subfunction for everything else -- the diagnostic buffer, the block list, the clock, the password, the debugger. `internal/s7` maps both onto one vocabulary of nineteen words, and the policy is written in those words. Four things shape the settings. **The default is what an HMI does.** `operations` defaults to reading memory, reading the system status lists, listing blocks, subscribing to cyclic data, reading the clock and the diagnostic machinery -- and nothing that changes anything. Writing, downloading a program, uploading one, stopping the CPU, setting the clock, the password functions and the programmer commands are each off until named. **The address is the rack and the slot**, and it arrives in the connection request rather than in any request that follows: the called TSAP's two octets hold a connection resource and the rack and slot of the CPU. A listener that named nothing else could still say which controller a client may reach -- and `resources` says *how*, because `pg` is the programming device connection an engineering station opens and `op` is an operator panel. **An upload is a read, and it is the one that takes the plant with it.** Reading a block out of a PLC is how control logic leaves the site, so it is off by default even though nothing about it changes the machine. **The areas and the data blocks are the boundary inside the CPU.** `areas` and `dbs` say which memory a client may reach at all, and `addresses` and `write_addresses` bound it by byte -- which is how an operator thinks about a data block, so the relay divides the protocol's bit address by eight rather than making anybody else do it.",
+      "type": "object",
+      "properties": {
+        "addresses": {
+          "description": "Addresses is the byte ranges a request may name, as \"0-255\" or single numbers. A request whose whole span is not inside one of them is refused: a read of bytes 0 to 200 against a range of 0 to 99 is a read of bytes the policy does not name, and splitting it is not this relay's decision.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "alert_on_deny": {
+          "description": "AlertOnDeny writes a security event for every refusal. Default true.",
+          "type": "boolean"
+        },
+        "allow_clients": {
+          "description": "AllowClients and DenyClients are the networks a client may connect from. Deny is evaluated first. An empty allow list allows every client the deny list does not refuse, which validation advises against on a listener that reaches a controller.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "areas": {
+          "description": "Areas is the memory areas a request may name: db, inputs, outputs, flags, timer, counter, instance_db, local, peripheral and the 200-family areas. Empty allows any.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "block_types": {
+          "description": "BlockTypes is the block types an upload or a download may name: db, fb, fc, sdb, sfb, sfc. Empty allows any, which matters only where upload or download is allowed at all.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dbs": {
+          "description": "DBs is the data block numbers a request may name, as numbers or ranges. Empty allows any.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "default_action": {
+          "description": "DefaultAction is deny (the default) or allow.",
+          "type": "string"
+        },
+        "deny_areas": {
+          "description": "DenyAreas is the deny list. `peripheral` is worth putting on it on a listener that allows writing: it is direct access to the I/O hardware, past the process image the program reads.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_clients": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_operations": {
+          "description": "DenyOperations is the deny list, which no rule can override.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_response": {
+          "description": "DenyResponse is error (the default: an S7 acknowledgement carrying an access-fault error, which is what a protected CPU answers, so the client's own library reports a refusal), drop or close.",
+          "type": "string"
+        },
+        "handshake_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "idle_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "log_requests": {
+          "description": "LogRequests writes an access line per request, which on a plant polling every second is a great many lines.",
+          "type": "boolean"
+        },
+        "max_frame_bytes": {
+          "description": "MaxFrameBytes bounds one TPKT frame. Default 8 KiB.",
+          "type": "integer"
+        },
+        "max_items": {
+          "description": "MaxItems bounds the items one read or write may carry, 0 for no bound. A read of a hundred items is one PDU that occupies the CPU for as long as a hundred reads.",
+          "type": "integer"
+        },
+        "max_pdu_length": {
+          "description": "MaxPDULength bounds the PDU length the two sides negotiate, 0 for no bound beyond the frame bound. The families in the field negotiate 240, 480 or 960 octets and an S7-1500 negotiates 2048; a negotiation above this is refused rather than rewritten, because rewriting it would make this relay a party to it.",
+          "type": "integer"
+        },
+        "max_read_bytes": {
+          "description": "MaxReadBytes and MaxWriteBytes bound the octets one request may read or write across all of its items, 0 for no bound.",
+          "type": "integer"
+        },
+        "max_requests": {
+          "description": "MaxRequests bounds the requests one connection may send, 0 for no bound. A plant connection is long-lived, so this is off by default.",
+          "type": "integer"
+        },
+        "max_sessions": {
+          "description": "MaxSessions and MaxSessionsPerClient bound concurrent connections. A CPU has very few connection resources -- an S7-300 has sixteen altogether -- so a bound here is what stops one client from taking them all.",
+          "type": "integer"
+        },
+        "max_sessions_per_client": {
+          "type": "integer"
+        },
+        "max_write_bytes": {
+          "type": "integer"
+        },
+        "monitor_only": {
+          "description": "MonitorOnly evaluates and enforces nothing, except the hard decisions: the client list, the rack and slot, a frame the relay could not read, the bounds, and every operation that changes the PLC -- because a write forwarded so that it could be written down is a moved actuator, and a stop forwarded is a stopped machine.",
+          "type": "boolean"
+        },
+        "operations": {
+          "description": "Operations is the allow list, in the vocabulary above: read, write, setup, upload, download, control, stop, cpu_services, szl, diagnostics, blocks, cyclic, time_read, time_write, security, programmer, mode, pbc, nc. Empty allows what an HMI does.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "racks": {
+          "description": "Racks and Slots are the rack and slot numbers a client may address, written as numbers or \"0-1\" ranges. Empty allows any. A rack is 0 to 7 and a slot 0 to 31, which is what the two octets hold.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "rate_burst": {
+          "type": "integer"
+        },
+        "rate_limit": {
+          "description": "RateLimit and RateBurst bound requests per second per client address, 0 for no limit.",
+          "type": "integer"
+        },
+        "read_only": {
+          "description": "ReadOnly refuses every operation that changes the PLC, for every client, before any rule is read: writing memory, downloading, controlling, stopping, the mode transitions, setting the clock, the password functions and the programmer commands. It cannot be overridden by a rule, because a read-only listener that one rule could write through is not a read-only listener.",
+          "type": "boolean"
+        },
+        "resources": {
+          "description": "Resources are the connection types a client may ask for: pg (the programming device connection), op (an operator panel) or basic (what one PLC opens to another). Empty allows any. It is the cheapest useful line in this section: a listener that admits only `op` has said an engineering station may not connect through it, without naming a single function.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "rules": {
+          "description": "Rules decide each request, in order, first match wins. A request that matches no rule takes DefaultAction.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/S7Rule"
+          }
+        },
+        "session_duration": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "slots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "upstream": {
+          "description": "Upstream is the PLC pool. Required.",
+          "type": "string"
+        },
+        "write_addresses": {
+          "description": "WriteAddresses applies to writing operations when set, so one listener can allow a wide read and a narrow write.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "S7Rule": {
+      "description": "S7Rule is one rule of an s7 listener's policy.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "Action is allow (the default), deny or observe.",
+          "type": "string"
+        },
+        "addresses": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "areas": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "block_types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "clients": {
+          "description": "Clients, Racks, Slots and Resources select the traffic.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "comment": {
+          "description": "Comment is carried into the logs when the rule decides, for the change record a plant keeps.",
+          "type": "string"
+        },
+        "dbs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_areas": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_operations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_items": {
+          "type": "integer"
+        },
+        "name": {
+          "description": "Name identifies the rule in the logs and the counters. Required.",
+          "type": "string"
+        },
+        "operations": {
+          "description": "The rule's own narrowing. The deny lists always win.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "racks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "resources": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "schedule": {
+          "description": "Schedule limits the rule to a time window, which is how \"the integrator may download during the shutdown window\" is written.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/ModbusSchedule"
+            }
+          ]
+        },
+        "slots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "write_addresses": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false

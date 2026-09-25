@@ -564,6 +564,70 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **`kind: s7`: a relay in front of a Siemens PLC.** `internal/s7` reads the
+  three layers off the wire and `internal/kinds/s7` holds the policy.
+
+  This is the protocol with the least security of any in this project. S7comm is
+  TPKT (RFC 1006), COTP (X.224 class 0) and the S7 layer on TCP 102, and what
+  matters about it is what it does not have. There is no transport security at
+  all -- so the kind registers without a TLS section, because a certificate here
+  would promise something the protocol cannot do -- and no authentication worth
+  the name: the optional password protects a handful of functions on some CPU
+  families and nothing on others, and an S7-300 with no password accepts a stop
+  from anybody who can open a socket to it. The equipment cannot be fixed on a
+  release cycle, so the boundary is the relay.
+
+  **The controller is decided before the PLC is dialled.** Which CPU a client
+  asked for is in the COTP connection request: the called TSAP's two octets hold
+  a connection resource, a rack and a slot. A client that may not reach that
+  controller is answered with a COTP disconnect -- what a CPU with no free
+  connection resources sends -- and never reaches it, which matters because an
+  S7-300 has sixteen connection resources altogether. `resources` is the cheapest
+  line in the section: `pg` is the programming device connection an engineering
+  station opens and `op` is an operator panel, so a listener admitting only `op`
+  has refused every engineering station without naming a function.
+
+  **One vocabulary spans two layers.** The protocol puts memory, blocks and the
+  control service behind function codes, and the diagnostic buffer, the block
+  list, the clock, the password and the debugger behind user-data groups and
+  subfunctions. `internal/s7` maps both onto nineteen words and the policy is
+  written in them -- which is what lets `read_only` mean every operation that
+  changes the controller rather than just a write, one line no rule can override.
+  The default allows what an HMI, a historian and an inventory do and nothing
+  else; an **upload** is off with the writes although it changes nothing, because
+  reading a block out of a PLC is how a plant's control logic leaves the site.
+
+  **The memory is bounded by area, data block and byte range**, checked against
+  the whole span a request covers rather than its first byte: a read of bytes 0
+  to 200 against a range of 0 to 99 is refused rather than clipped, because
+  clipping it would be the relay deciding which half the operator meant. The
+  ranges are written in bytes and the protocol carries bit addresses, so the
+  relay divides by eight rather than making an operator do it. `write_addresses`
+  is separate, so one listener can allow a wide read and a narrow setpoint
+  window, and `peripheral` on `deny_areas` shuts off direct access to the I/O
+  hardware past the process image.
+
+  A refused request is **answered and the session carries on**, which is the
+  modbus kind's choice and for the same reason: a plant connection is a poll loop
+  and dropping it turns a refusal into an outage. The answer is an
+  acknowledgement with error class `0x87`, *access fault* -- what a
+  password-protected CPU answers -- so the client's own library reports a
+  refusal rather than a timeout; a refused user-data request is answered in its
+  own layer, with the same group and subfunction and the error code for a
+  function the CPU does not offer, because that is where a client that asked to
+  set the clock looks. Only the frames the relay could not read at all end the
+  connection. An access fault *from the controller* is logged as
+  `s7_plc_refused`, because that is the case where the two policies disagree --
+  usually a protected CPU and a client with no password.
+
+  What is never logged is a value: a write's payload is a pressure, a temperature
+  or a recipe parameter, and the address is what a policy is written about.
+
+  `examples/ot/s7.yaml` has four listeners: the panels and the historian on a
+  line, the engineering station on a separate address with a change window, a
+  packaging cell that is `read_only`, and a cell nobody has an inventory of in
+  monitor mode. Refusals are `s7_denied` for the ban triggers.
+
 - **`kind: amqp`: a message broker relay that reads both protocols.** `internal/amqpwire`
   reads them off the wire and `internal/kinds/amqp` holds the policy.
 

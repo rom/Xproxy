@@ -136,6 +136,14 @@ internal/kinds/amqp    kind: amqp -- message broker relay: the version a
                        vhost, whether topology may be changed at all, and
                        every exchange, queue, routing key and link address
                        an operation names
+internal/s7            S7comm off the wire: TPKT framing, the COTP connection
+                       request with the rack and slot it addresses, and the
+                       S7 layer -- function codes, user-data groups and item
+                       specifications -- mapped onto one operation vocabulary
+internal/kinds/s7      kind: s7 -- Siemens PLC relay: which controller a
+                       client may reach and as what, which of nineteen
+                       operations it may ask for, and which memory areas,
+                       data blocks and byte ranges it may name
 internal/kinds/tftp    kind: tftp -- TFTP relay: the filename read as a path
                        and refused by class, the direction of the transfer,
                        the amplification bounds, one socket per transfer
@@ -1378,6 +1386,43 @@ that protocol's own terms, and bounds what a peer may say.
   its own messages and never re-renders a peer's, because a proxy that re-encoded
   a frame would be a second implementation of the encoder whose disagreements
   with the first are what an attacker is looking for.
+- `s7` is a relay in front of a Siemens PLC (`internal/s7` for the three layers
+  on TCP 102, `internal/kinds/s7` for the policy). It is the listener for the
+  protocol with the least security of any here: no transport security at all --
+  which is why the kind registers without a TLS section, since a certificate
+  would promise something the protocol cannot do -- and no authentication worth
+  the name, because the optional password protects a handful of functions on
+  some CPU families and nothing on others, and an S7-300 with no password
+  accepts a stop from anybody who can open a socket. The equipment cannot be
+  fixed on a release cycle, so the boundary is the relay.
+
+  Three things shape the code. **The controller is decided before the PLC is
+  dialled.** Which CPU a client asked for is in the COTP connection request --
+  the called TSAP's two octets hold a connection resource, a rack and a slot --
+  so a client that may not reach that controller is refused with a COTP
+  disconnect and never reaches it. That ordering is the point rather than an
+  optimisation: a CPU has very few connection resources, an S7-300 sixteen
+  altogether, and a client that may not reach it should not take one of them.
+
+  **One vocabulary spans two layers.** The protocol puts reading and writing
+  memory behind a function code and the diagnostic buffer, the block list, the
+  clock, the password and the debugger behind a user-data group and subfunction.
+  A policy written against either alone would have nothing to say about half the
+  protocol, so `internal/s7` maps both onto nineteen words and the policy is
+  written in them -- which is also what lets `read_only` mean every operation
+  that changes the controller rather than just a write.
+
+  And **a refused request is answered and the session carries on**, which is the
+  modbus kind's choice and for the same reason: a plant connection is a poll
+  loop, and dropping it because one request was refused turns a refusal into an
+  outage. The answer is an acknowledgement with error class `0x87`, *access
+  fault*, which is what a password-protected CPU answers -- so the client's own
+  library reports a refusal rather than a timeout -- and a refused user-data
+  request is answered in its own layer instead, with the same group and
+  subfunction, because that is where the client looks. Only the frames the relay
+  could not read at all end the connection. As in the amqp kind, `refuse.go` is
+  the one file that writes a frame, and it writes the relay's own messages and
+  never re-renders a peer's.
 - `ntske` is NTS key establishment, TCP 4460, relayed rather than
   terminated: it reads the server name and the application protocol from
   the ClientHello, refuses what is not an NTS client, bounds the

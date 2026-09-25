@@ -40,6 +40,7 @@ server:
           dhcp: null
           bacnet: null
           amqp: null
+          s7: null
           policy: null
         - name: public
           address: :443
@@ -101,6 +102,7 @@ server:
           dhcp: null
           bacnet: null
           amqp: null
+          s7: null
           policy: null
     limits:
         max_header_bytes: 65536

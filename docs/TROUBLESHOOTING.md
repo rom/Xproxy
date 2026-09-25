@@ -5001,6 +5001,113 @@ The bounds that are never shadowed are `command_priority_too_high`,
 policy choice, and monitor mode is for finding out what an estate actually sends
 before refusing any of it.
 
+## S7 (Siemens PLCs)
+
+**The connection is refused before the client says anything, and there is
+nothing in the PLC's own log.** That is the ordering working. The rack and the
+slot arrive in the COTP connection request, so a client asking for a controller
+`racks`/`slots` does not name is answered with a COTP disconnect and the PLC is
+never dialled -- which is the point, because a CPU has very few connection
+resources and an S7-300 has sixteen altogether. Look for
+`s7_rack_not_allowed` or `s7_slot_not_allowed` in the security log; the event
+carries the rack, the slot and the connection resource the client asked for.
+
+```
+xproxyctl -json stats | jq '.refusals.s7'
+```
+
+**Everything from the engineering station is refused with
+`resource_not_allowed`.** `resources` names the connection types, and an
+engineering station opens `pg` -- the programming device connection -- while an
+operator panel opens `op`. A listener with `resources: ["op"]` has refused every
+engineering station by design. Give the station its own listener address with
+`resources: ["pg"]` and the operations it needs, rather than widening the panel
+listener: those are different populations and the log should be able to tell
+them apart.
+
+**The client reports an error the PLC's manual describes as a protection
+fault.** That is this relay's refusal, and it is deliberate. A refused request is
+answered with an acknowledgement carrying error class `0x87`, *access fault*,
+which is what a password-protected CPU answers a client that has not supplied a
+password -- so the client library reports a refusal rather than sitting in a
+timeout. The relay's own log line says which listener, which rule and which
+reason. A refused user-data request (the clock, the diagnostic buffer, the
+password functions) is answered in that layer instead, with the same group and
+subfunction and the error code for a function the CPU does not offer.
+
+**`s7_plc_refused` in the security log.** This is the *controller* refusing
+something this listener allowed. On this protocol it almost always means the CPU
+is password-protected and the client has not supplied one -- which is the case
+where the two policies disagree, and you have to decide which to change. The
+event carries the error class, the error code and the function.
+
+**A write is refused although `write` is in `operations`.** Four things refuse a
+write past the operation list, in this order:
+
+1. `read_only: true` on the listener. It refuses every operation that changes
+   the controller before any rule is read, and **no rule can override it**.
+2. `deny_operations`, on the listener or the rule. The deny lists always win.
+3. `area_not_allowed` or `db_not_allowed` -- the memory, not the operation.
+4. `address_not_allowed`. If `write_addresses` is set it applies to the writing
+   operations *instead of* `addresses`, so a write outside the setpoint window is
+   refused even where a read of the same bytes is allowed.
+
+**A read is refused with `address_not_allowed` and the address looks like it is
+inside my range.** A range applies to the **whole span** a request covers, not
+its first byte: a read of 20 bytes from byte 90 against `addresses: ["0-99"]`
+covers bytes 90 to 109 and is refused. It is not clipped, because clipping it
+would be the relay deciding which half of the request you meant. The ranges are
+written in bytes; the protocol carries a bit address and the relay divides by
+eight, so no configuration needs bit arithmetic.
+
+**An upload is refused and I did not deny it.** `upload` is off by default even
+though it changes nothing, because reading a block out of a PLC is how a plant's
+control logic leaves the site. Name it in `operations`, and name `block_types`
+while you are there.
+
+**The negotiation itself is refused with `pdu_length_too_large`.** The two sides
+agreed a PDU length above `max_pdu_length`. It is refused rather than rewritten,
+because rewriting a negotiation would make this relay a party to it, and a
+session that agreed a length and then had a transfer refused half way through is
+a harder fault to find than one that failed at the start. The families in the
+field negotiate 240, 480 or 960 octets and an S7-1500 negotiates 2048; set the
+bound to what the equipment behind this listener actually uses.
+
+**Requests stop being answered under load, and the session stays open.** A rate
+limit refuses the request and keeps the connection, on purpose: a plant
+connection is a poll loop, and dropping it because one request was refused turns
+a refusal into an outage. `rate_limited` in the counters is the signal. If it is
+a legitimate poller, raise `rate_limit`/`rate_burst`; a bound that a running
+plant trips is a bound set from a guess rather than from the poll rate.
+
+**The connection dropped instead of getting an answer.** Three things end it:
+`deny_response: close`, a COTP PDU type this relay does not know
+(`cotp_type_unknown`), and a data PDU that is not an S7 PDU (`unreadable_pdu`).
+The last two are not configurable -- there is nothing left to be sure of after
+either, and forwarding it would be forwarding something to a controller with no
+policy applied at all.
+
+**Monitor mode carried a read and still refused a write.** That is
+`monitor_only` working as documented. The refusals it never shadows are the
+client and controller lists, the frames the relay could not read, the bounds,
+and **every operation that changes the PLC** -- because a write forwarded so
+that it could be written down is a moved actuator, and a stop forwarded is a
+stopped machine. An operation merely off the allow list is shadowed, which is
+what the mode is for.
+
+**I want to know what a cell actually does before writing a policy.** Run a
+listener with `monitor_only: true` and `log_requests: true`, the policy you
+intend written as if it were enforcing, and read the refusals after a shift.
+Note that `log_requests` on a listener a plant polls every second is a great
+many lines; it belongs on an engineering address, where a person generates a few
+hundred requests a shift.
+
+**There is no `tls` section and the schema rejects mine.** S7comm has no
+transport security and no in-protocol upgrade, so this kind takes no TLS
+section: a certificate here would promise something the protocol cannot do. If
+the traffic has to cross anything the plant does not own, carry it in a tunnel
+whose security is real, and put this listener at the far end of it.
+
 ## The device inventory
 
 **It is empty.** Two causes, in this order. The section is off by default,

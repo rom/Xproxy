@@ -21,6 +21,7 @@ import (
 	"github.com/rom/xproxy/internal/rdp"
 	respwire "github.com/rom/xproxy/internal/respwire"
 	"github.com/rom/xproxy/internal/rfb"
+	s7wire "github.com/rom/xproxy/internal/s7"
 	snmpwire "github.com/rom/xproxy/internal/snmp"
 	"github.com/rom/xproxy/internal/syslog"
 	tdswire "github.com/rom/xproxy/internal/tdswire"
@@ -876,6 +877,18 @@ func (v *validator) server(s *Server) {
 				v.errf("%s.bacnet: required for kind bacnet", p)
 			} else {
 				v.bacnetListener(p+".bacnet", ln.BACnet)
+			}
+		case "s7":
+			// No tls section: S7comm has no transport security of any
+			// kind, and a listener carrying a certificate would be
+			// promising something the protocol cannot do.
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C || ln.TLS != nil {
+				v.errf("%s: an s7 listener takes only address and s7: the protocol has no TLS", p)
+			}
+			if ln.S7 == nil {
+				v.errf("%s.s7: required for kind s7", p)
+			} else {
+				v.s7Listener(p+".s7", ln.S7)
 			}
 		case "amqp":
 			if ln.AMQP == nil {
@@ -2539,7 +2552,7 @@ var denyReasons = map[string]bool{
 	"telnet_denied": true, "vnc_denied": true, "rdp_denied": true, "sftp_icap": true, "udp_denied": true,
 	"modbus_denied": true, "iec104_denied": true, "ntp_denied": true, "ntske_denied": true,
 	"snmp_denied": true, "ldap_denied": true, "tftp_denied": true, "dhcp_denied": true, "postgres_denied": true, "mysql_denied": true, "tds_denied": true, "redis_denied": true,
-	"bacnet_denied": true, "amqp_denied": true,
+	"bacnet_denied": true, "amqp_denied": true, "s7_denied": true,
 }
 
 // securityTxtFieldRE bounds an extra field name to the token RFC 9116
@@ -7643,6 +7656,177 @@ func (v *validator) mysqlLoad(p string, in []string) {
 }
 
 // redisListener validates a kind: redis section.
+// s7Listener validates a kind: s7 section.
+func (v *validator) s7Listener(p string, m *S7Listener) {
+	if m.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	v.modbusCIDRs(p+".allow_clients", m.AllowClients)
+	v.modbusCIDRs(p+".deny_clients", m.DenyClients)
+	if len(m.AllowClients) == 0 {
+		v.warnf("%s.allow_clients: empty, so every client the deny list does not refuse may "+
+			"reach a controller. On a plant network that is the whole segment", p)
+	}
+	// A rack is three bits and a slot five, which is what the one octet
+	// holds: a number outside them is a policy line nothing can match.
+	v.modbusRanges(p+".racks", m.Racks, 7)
+	v.modbusRanges(p+".slots", m.Slots, 31)
+	v.s7Resources(p+".resources", m.Resources)
+	v.s7Operations(p+".operations", m.Operations)
+	v.s7Operations(p+".deny_operations", m.DenyOperations)
+	v.s7Areas(p+".areas", m.Areas)
+	v.s7Areas(p+".deny_areas", m.DenyAreas)
+	v.modbusRanges(p+".dbs", m.DBs, 65535)
+	// A byte address is the protocol's bit address divided by eight, so the
+	// top of the range is a little over two million.
+	v.modbusRanges(p+".addresses", m.Addresses, 1<<21-1)
+	v.modbusRanges(p+".write_addresses", m.WriteAddresses, 1<<21-1)
+	v.s7BlockTypes(p+".block_types", m.BlockTypes)
+
+	for name, val := range map[string]int{
+		"max_items": m.MaxItems, "max_read_bytes": m.MaxReadBytes,
+		"max_write_bytes": m.MaxWriteBytes, "max_pdu_length": m.MaxPDULength,
+		"max_frame_bytes": m.MaxFrameBytes, "max_requests": m.MaxRequests,
+		"rate_limit": m.RateLimit, "rate_burst": m.RateBurst,
+		"max_sessions": m.MaxSessions, "max_sessions_per_client": m.MaxSessionsPerClient,
+	} {
+		if val < 0 {
+			v.errf("%s.%s: must not be negative", p, name)
+		}
+	}
+	if m.MaxFrameBytes != 0 && m.MaxFrameBytes < s7wire.MinFrame {
+		v.errf("%s.max_frame_bytes: %d is below the %d a COTP header needs",
+			p, m.MaxFrameBytes, s7wire.MinFrame)
+	}
+	if m.MaxPDULength > 0 && m.MaxFrameBytes > 0 && m.MaxPDULength > m.MaxFrameBytes {
+		v.warnf("%s.max_pdu_length: %d is above max_frame_bytes (%d), so the frame bound "+
+			"decides and this value never applies", p, m.MaxPDULength, m.MaxFrameBytes)
+	}
+
+	// The operations that change a controller, named where an operator can
+	// see what they have just allowed.
+	if !m.ReadOnly {
+		for i, o := range m.Operations {
+			op, ok := s7wire.OpOf(strings.TrimSpace(o))
+			if !ok || !s7wire.Writes(op) {
+				continue
+			}
+			switch op {
+			case s7wire.OpStop:
+				v.warnf("%s.operations[%d]: stop lets a client stop the CPU, which stops the "+
+					"machine", p, i)
+			case s7wire.OpDownload:
+				v.warnf("%s.operations[%d]: download lets a client change the program the "+
+					"machine runs", p, i)
+			case s7wire.OpProgrammer:
+				v.warnf("%s.operations[%d]: programmer is the debugger -- forcing a variable, "+
+					"setting a breakpoint -- which no application needs", p, i)
+			case s7wire.OpSecurity:
+				v.warnf("%s.operations[%d]: security is the password functions, so a client "+
+					"may unlock a protected CPU through this listener", p, i)
+			default:
+				v.warnf("%s.operations[%d]: %s changes the controller", p, i, op)
+			}
+		}
+	}
+	if len(m.Operations) > 0 && m.ReadOnly {
+		for _, o := range m.Operations {
+			if op, ok := s7wire.OpOf(strings.TrimSpace(o)); ok && s7wire.Writes(op) {
+				v.warnf("%s.operations: %s is named and read_only is set, so it is refused "+
+					"anyway -- read_only is not overridden by a list", p, op)
+			}
+		}
+	}
+
+	switch m.DefaultAction {
+	case "", "allow", "deny":
+	default:
+		v.errf("%s.default_action: %q is not allow or deny", p, m.DefaultAction)
+	}
+	if m.DefaultAction == "allow" && len(m.Rules) == 0 && !m.MonitorOnly && !m.ReadOnly {
+		v.warnf("%s: default_action allow with no rules, without monitor_only and without "+
+			"read_only relays every request to the controller", p)
+	}
+	switch m.DenyResponse {
+	case "", "error", "drop", "close":
+	default:
+		v.errf("%s.deny_response: %q is not error, drop or close", p, m.DenyResponse)
+	}
+
+	for i := range m.Rules {
+		r := &m.Rules[i]
+		rp := fmt.Sprintf("%s.rules[%d]", p, i)
+		if r.Name == "" {
+			v.errf("%s.name: required, because it is what a refusal names", rp)
+		}
+		switch r.Action {
+		case "", "allow", "deny", "observe":
+		default:
+			v.errf("%s.action: %q is not allow, deny or observe", rp, r.Action)
+		}
+		v.modbusCIDRs(rp+".clients", r.Clients)
+		v.modbusRanges(rp+".racks", r.Racks, 7)
+		v.modbusRanges(rp+".slots", r.Slots, 31)
+		v.s7Resources(rp+".resources", r.Resources)
+		v.s7Operations(rp+".operations", r.Operations)
+		v.s7Operations(rp+".deny_operations", r.DenyOperations)
+		v.s7Areas(rp+".areas", r.Areas)
+		v.s7Areas(rp+".deny_areas", r.DenyAreas)
+		v.modbusRanges(rp+".dbs", r.DBs, 65535)
+		v.modbusRanges(rp+".addresses", r.Addresses, 1<<21-1)
+		v.modbusRanges(rp+".write_addresses", r.WriteAddresses, 1<<21-1)
+		v.s7BlockTypes(rp+".block_types", r.BlockTypes)
+		if r.MaxItems < 0 {
+			v.errf("%s.max_items: must not be negative", rp)
+		}
+		if r.Schedule != nil {
+			v.modbusSchedule(rp+".schedule", r.Schedule)
+		}
+	}
+}
+
+// s7Operations checks the operation names.
+func (v *validator) s7Operations(p string, in []string) {
+	for i, o := range in {
+		if _, ok := s7wire.OpOf(strings.TrimSpace(o)); !ok {
+			v.errf("%s[%d]: %q is not an S7 operation (read, write, setup, upload, download, "+
+				"control, stop, cpu_services, szl, diagnostics, blocks, cyclic, time_read, "+
+				"time_write, security, programmer, mode, pbc, nc)", p, i, o)
+		}
+	}
+}
+
+// s7Areas checks the memory area names.
+func (v *validator) s7Areas(p string, in []string) {
+	for i, a := range in {
+		if _, ok := s7wire.AreaOf(strings.TrimSpace(a)); !ok {
+			v.errf("%s[%d]: %q is not a memory area (db, inputs, outputs, flags, timer, "+
+				"counter, instance_db, local, previous_local, peripheral and the 200-family "+
+				"areas)", p, i, a)
+		}
+	}
+}
+
+// s7Resources checks the connection resource names.
+func (v *validator) s7Resources(p string, in []string) {
+	for i, r := range in {
+		if _, ok := s7wire.ResourceOf(strings.TrimSpace(r)); !ok {
+			v.errf("%s[%d]: %q is not a connection resource (pg, op, basic)", p, i, r)
+		}
+	}
+}
+
+// s7BlockTypes checks the block type names.
+func (v *validator) s7BlockTypes(p string, in []string) {
+	for i, b := range in {
+		switch strings.TrimSpace(b) {
+		case "db", "fb", "fc", "sdb", "sfb", "sfc":
+		default:
+			v.errf("%s[%d]: %q is not a block type (db, fb, fc, sdb, sfb, sfc)", p, i, b)
+		}
+	}
+}
+
 // amqpListener validates a kind: amqp section.
 func (v *validator) amqpListener(p string, m *AMQPListener, hasTLS bool) {
 	if m.Upstream == "" {

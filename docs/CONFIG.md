@@ -5991,7 +5991,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `amqp_denied`, `ntp_denied`, `ntske_denied`, `yara` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `amqp_denied`, `s7_denied`, `ntp_denied`, `ntske_denied`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |
@@ -10493,6 +10493,241 @@ above plus `method_not_allowed`, `method_denied`, `method_unknown`,
 `no_ack_not_allowed`, `address_missing`, `administrative_not_allowed`,
 `no_rule_matched`, `rule_denied`, `outside_schedule`, `too_many_sessions`,
 `too_many_sessions_per_client`, `no_protocol_header`, `tls_handshake` and
+`upstream_unavailable`.
+
+## s7
+
+`kind: s7` is a relay in front of a Siemens PLC. It is the listener for the
+protocol with the least security of any in this project.
+
+S7comm is three layers on TCP 102: **TPKT** (RFC 1006, a four-octet length),
+**COTP** (X.224 class 0, whose connection request carries the address of the
+CPU) and **S7comm** itself. What matters about it is what it does not have.
+There is no transport security at all, which is why this listener takes no
+`tls` section -- a certificate here would promise something the protocol cannot
+do. And there is no authentication worth the name: the optional password
+protects a handful of functions on some CPU families and nothing on others, and
+an S7-300 with no password accepts a **stop** from anybody who can open a socket
+to it. An engineering station on the same segment can read and write every byte
+of memory in every controller on that segment.
+
+The equipment cannot be fixed. A controller in a line is replaced on a capital
+cycle, not a release cycle, and its firmware is qualified against the process it
+runs. So the boundary has to be somewhere else, and this is somewhere else.
+
+### The vocabulary
+
+A relay's job here is to know what an operation *is*, and this protocol spreads
+that across two layers: a **function code** for reading and writing memory and
+for the block and control services, and a **user-data group and subfunction**
+for everything else -- the diagnostic buffer, the block list, the clock, the
+password, the debugger. A policy written against function codes would have
+nothing to say about setting the clock; one written against user-data groups
+would have nothing to say about a write.
+
+So both are mapped onto one vocabulary of nineteen words, and every list in this
+section is written in it:
+
+| Word | What it is |
+|------|------------|
+| `read` | Reading memory: a data block, the process image, a timer |
+| `write` | Writing it -- on a plant, the operation that moves something physical |
+| `setup` | The connection negotiation, without which there is no session |
+| `upload` | Reading a block **out** of the PLC: the program, as source an engineering tool can open |
+| `download` | Writing one in, which is changing the program the machine runs |
+| `control` | The control service: a warm restart, inserting or deleting a block, compressing memory |
+| `stop` | Stopping the CPU |
+| `cpu_services` | Function code 0, which the families in the field answer in ways nobody has documented |
+| `szl` | Reading a system status list: the CPU's type, its firmware, its diagnostic buffer |
+| `diagnostics` | The rest of the CPU function group: the message service and the alarm machinery |
+| `blocks` | Listing the blocks and reading their headers |
+| `cyclic` | Subscribing to cyclic data, which is how an HMI reads a screenful of values |
+| `time_read` | Reading the CPU clock |
+| `time_write` | Setting it -- and the clock is what every log line and batch record is stamped with |
+| `security` | The password functions: supplying one, clearing one, asking how protected the CPU is |
+| `programmer` | The debugger: forcing a variable, setting a breakpoint, stepping the program |
+| `mode` | The mode transitions requested through the user-data layer rather than the control service |
+| `pbc` | The programmable block communication a pair of PLCs uses between themselves |
+| `nc` | The numerical control layer of a machine tool |
+
+`operations` defaults to `setup`, `read`, `szl`, `blocks`, `cyclic`,
+`time_read` and `diagnostics`: what an HMI, a historian and an inventory do, and
+nothing that changes anything. **The absences are the policy.** No write, no
+download, no control service, no stop, no mode transition, no clock setting, no
+password function, no programmer command -- and **no upload**, which is the one
+worth pausing on, because an upload changes nothing and is still off. Reading a
+block out of a PLC is how a plant's control logic leaves the site.
+
+An engineering station needs several of those. Naming them in the file is a line
+a reviewer can see.
+
+### The address is the rack and the slot
+
+Which controller a client asked for arrives in the **COTP connection request**,
+before any S7 request exists: the called TSAP's two octets hold a connection
+resource, a rack (0-7) and a slot (0-31). So a client that may not reach that
+CPU is refused **before the PLC is dialled**, and that ordering is the point
+rather than an optimisation -- a CPU has very few connection resources, an
+S7-300 sixteen altogether, and a client that may not reach it should not take
+one of them.
+
+`resources` is the cheapest useful line in this section. `pg` is the programming
+device connection an engineering station opens, `op` is an operator panel and
+`basic` is what one PLC opens to another; a listener that admits only `op` has
+refused every engineering station without naming a single function.
+
+### The memory is the boundary inside the CPU
+
+`areas` and `dbs` say which memory a client may reach at all, and `addresses`
+and `write_addresses` bound it by byte. The areas are `db`, `instance_db`,
+`inputs`, `outputs`, `flags` (Siemens calls them merkers), `timer`, `counter`,
+`local`, `previous_local`, `peripheral`, and the 200-family areas
+`sysinfo_200`, `sysflags_200`, `analog_in_200`, `analog_out_200`,
+`counter_200` and `timer_200`.
+
+`peripheral` is the one worth putting on `deny_areas` on any listener that
+allows writing: it is direct access to the I/O hardware, past the process image
+the program reads.
+
+Two details of how the ranges are applied:
+
+- The protocol carries a **bit** address. The configuration is written in
+  **bytes**, because that is how an operator thinks about a data block, and the
+  relay divides by eight rather than making anybody else do it.
+- A range is checked against the **whole span** a request covers, not its first
+  byte. A read of bytes 0 to 200 against a range of `0-99` is a read of bytes
+  the policy does not name, and it is refused rather than split: splitting it
+  would be this relay deciding which half the operator meant.
+
+```yaml
+- name: line-3-plc
+  address: "0.0.0.0:102"
+  kind: s7
+  s7:
+    upstream: plc-line-3
+    allow_clients: ["10.20.4.0/24"]
+    racks: ["0"]
+    slots: ["2"]
+    resources: ["op"]
+    areas: ["db", "inputs", "outputs", "flags"]
+    deny_areas: ["peripheral"]
+    dbs: ["1-40"]
+    addresses: ["0-511"]
+    write_addresses: ["100-199"]
+    max_items: 20
+    max_read_bytes: 480
+    max_pdu_length: 480
+    max_sessions_per_client: 2
+    rules:
+      - name: hmi
+        clients: ["10.20.4.10"]
+        operations: ["setup", "read", "write", "szl", "cyclic", "time_read"]
+        comment: "line 3 panel: setpoints in DB1 bytes 100-199"
+      - name: integrator
+        clients: ["10.20.9.0/28"]
+        resources: ["pg"]
+        operations: ["setup", "read", "write", "download", "control", "blocks"]
+        schedule: {days: [sat], from: "06:00", to: "14:00"}
+        comment: "change window CR-2291"
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | name | *(required)* | The PLC pool |
+| `allow_clients`, `deny_clients` | list of CIDR | any | Networks a client may connect from; deny first. An empty allow list is allowed and advised against, because this listener reaches a controller |
+| `racks`, `slots` | list of number or range | any | The rack and slot numbers a client may address, read out of the connection request. A rack is 0-7 and a slot 0-31 |
+| `resources` | list | any | `pg`, `op`, `basic`: the connection type a client may ask for |
+| `read_only` | bool | `false` | Refuse every operation that changes the PLC, for every client, before any rule is read. **No rule can override it** -- a read-only listener one rule could write through is not a read-only listener |
+| `operations` | list | the HMI set | The allow list, in the vocabulary above |
+| `deny_operations` | list | `[]` | The deny list, which no rule can override |
+| `areas` | list | any | The memory areas a request may name |
+| `deny_areas` | list | `[]` | The deny list. `peripheral` belongs here on a listener that allows writing |
+| `dbs` | list of number or range | any | The data block numbers a request may name |
+| `addresses` | list of byte range | any | The byte ranges a request may name, as `0-255` or a single number. The whole span must be inside one range |
+| `write_addresses` | list of byte range | `addresses` | Applies to the writing operations when set, so one listener can allow a wide read and a narrow write |
+| `block_types` | list | any | `db`, `fb`, `fc`, `sdb`, `sfb`, `sfc`: the block types an upload or a download may name. It matters only where one of those is allowed at all |
+| `max_items` | int | `0` | Items one read or write may carry, 0 for no bound. A read of a hundred items is one PDU that occupies the CPU for as long as a hundred reads |
+| `max_read_bytes`, `max_write_bytes` | int | `0` | Octets one request may read or write across all of its items |
+| `max_pdu_length` | int | `0` | Bound on the PDU length the two sides negotiate. The families in the field negotiate 240, 480 or 960 and an S7-1500 negotiates 2048. A negotiation above this is **refused rather than rewritten**: rewriting it would make this relay a party to it |
+| `max_frame_bytes` | int | `8192` | Bound on one TPKT frame |
+| `max_requests` | int | `0` | Requests one connection may send. A plant connection is long-lived, so this is off by default |
+| `rate_limit`, `rate_burst` | int | `0` | Requests per second per client address |
+| `max_sessions`, `max_sessions_per_client` | int | `0` | Concurrent connections. A CPU has very few connection resources, so a bound here is what stops one client taking them all |
+| `idle_timeout`, `session_duration`, `handshake_timeout` | duration | `0`, `0`, `30s` | Bounds on a connection. The handshake timeout is what a client that opens a socket and says nothing costs |
+| `rules` | list | `[]` | Per-client rules, first match wins |
+| `default_action` | `deny`, `allow` | `deny` | What a request matching no rule gets |
+| `deny_response` | `error`, `drop`, `close` | `error` | How a refusal is answered. `error` is an S7 acknowledgement carrying an **access fault** -- what a protected CPU answers -- so the client's own library reports a refusal rather than a timeout |
+| `log_requests` | bool | `false` | An access line per request, which on a plant polling every second is a great many lines |
+| `alert_on_deny` | bool | `true` | A security event per refusal |
+| `monitor_only` | bool | `false` | Evaluate and enforce nothing, except the hard decisions below |
+
+### Rules
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `name` | string | Names the rule in logs and counters |
+| `action` | `allow`, `deny`, `observe` | Default `allow` |
+| `clients`, `racks`, `slots`, `resources` | lists | Selectors; AND within a rule, OR within one |
+| `schedule` | object | `days`, `from`, `to`, `timezone`. This is how "the integrator may download during the shutdown window" is written |
+| `operations`, `deny_operations`, `areas`, `deny_areas`, `dbs`, `addresses`, `write_addresses`, `block_types`, `max_items` | | The rule's own narrowing. A rule that names operations **widens** the listener for its own traffic; the deny lists and `read_only` always win |
+| `comment` | string | Carried into every log line the rule decides, for the change record a plant keeps |
+
+### How a refusal is answered
+
+A refused **request** is answered and the connection carries on, which is the
+modbus kind's choice and for the same reason: a plant connection is a poll loop,
+and dropping it because one request was refused turns a refusal into an outage.
+The answer is an acknowledgement with error class `0x87`, *access fault* -- what
+a password-protected CPU answers a client that has not supplied one -- so the
+client library reports the refusal it would have reported from the controller
+itself. A refused **user-data** request is answered in its own layer instead:
+the same group and subfunction, with the error code for a function the CPU does
+not offer, because that is where a client that asked to set the clock looks.
+
+A refused **connection** is answered with a COTP disconnect request, which is
+what a CPU with no free connection resources sends. A silent close reads to an
+engineering station as a network fault, and an engineer chasing a network fault
+that is really a policy is an afternoon wasted.
+
+The exceptions -- the cases that end the connection -- are the frames the relay
+could not read at all: a COTP PDU type it does not know, and a data PDU that is
+not an S7 PDU. There is nothing left to be sure of after either.
+
+### What monitor mode never shadows
+
+| Refusal | Why it is hard |
+|---------|----------------|
+| `client_not_allowed`, `rack_not_allowed`, `slot_not_allowed`, `resource_not_allowed` | An address or a controller a client may not reach. The connection is what would be forwarded |
+| `not_a_connection_request`, `destination_unreadable`, `cotp_type_unknown`, `unreadable_frame`, `unreadable_pdu`, `items_unreadable`, `item_not_addressable`, `unexpected_message` | The relay has no opinion to observe. An operation it cannot read is one it cannot have a policy about |
+| `operation_unknown` | A function code or user-data group with no name is an operation with no policy |
+| `read_only` | The listener said so |
+| `too_many_items`, `too_many_bytes`, `too_many_requests`, `pdu_length_too_large`, `rate_limited`, `too_many_sessions`, `too_many_sessions_per_client` | Bounds |
+| any refusal of `write`, `download`, `control`, `stop`, `mode`, `time_write`, `security` or `programmer` | A write forwarded so that it could be written down is a moved actuator, and a stop forwarded is a stopped machine. A report afterwards undoes none of it |
+
+An operation merely *off* the allow list -- a read of a data block nobody has
+listed, an upload -- is a **soft** refusal, which is what makes monitor mode
+useful on a plant nobody has an inventory of.
+
+### What the PLC itself refuses
+
+One record here is not a refusal by this relay and is the one that matters most
+after an incident: an **access fault from the controller**, logged as
+`s7_plc_refused`. That is the CPU refusing something this listener allowed,
+which on this protocol almost always means the controller is
+password-protected and the client has not supplied a password. It is the case
+where the two policies disagree, and an operator needs to know which one to
+change.
+
+What is never logged is a **value**. A write's payload is a process value, and
+on a plant those are pressures, temperatures and recipe parameters: not secrets,
+but not something a relay should copy into a log file at poll rate either. The
+*address* is logged, because an address is what a policy is written about, and a
+refusal nobody can attribute to a byte range is a refusal nobody can act on.
+
+Refusals are `s7_denied` for the ban triggers, with the reasons in the table
+above plus `operation_not_allowed`, `operation_denied`, `area_not_allowed`,
+`area_denied`, `db_not_allowed`, `address_not_allowed`, `block_type_not_allowed`, `no_rule_matched`,
+`rule_denied`, `outside_schedule`, `no_connection_request` and
 `upstream_unavailable`.
 
 ## asset_inventory

@@ -14480,7 +14480,7 @@ list
 T}	T{
 \fB[]\fR (all)
 T}	T{
-Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBpostgres_\:denied\fR,\: \fBmysql_\:denied\fR,\: \fBtds_\:denied\fR,\: \fBredis_\:denied\fR,\: \fBbacnet_\:denied\fR,\: \fBamqp_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fByara\fR
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBpostgres_\:denied\fR,\: \fBmysql_\:denied\fR,\: \fBtds_\:denied\fR,\: \fBredis_\:denied\fR,\: \fBbacnet_\:denied\fR,\: \fBamqp_\:denied\fR,\: \fBs7_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fByara\fR
 T}
 T{
 \fBthreshold\fR
@@ -26834,6 +26834,559 @@ A method merely \fIoff\fR the allow list is a \fBsoft\fR refusal, which is what 
 The deny lists apply to what the broker hands the client \-\- \fBbasic.deliver\fR, \fBbasic.get\-ok\fR, \fBbasic.return\fR \-\- and the allow lists do not. The difference is deliberate. An allow list says what a client may \fIask for\fR; a delivery names where the message came \fIfrom\fR, which the consumer need not be allowed to name: a queue bound to an exchange by somebody else delivers messages carrying that exchange\(aqs name, and a relay that required it on the allow list would break every ordinary consumer. A deny list says something else \-\- this connection must never see messages from there, whoever routed them \-\- and that one holds in both directions.
 .PP
 Refusals are \fBamqp_denied\fR for the ban triggers, with the reasons in the table above plus \fBmethod_not_allowed\fR, \fBmethod_denied\fR, \fBmethod_unknown\fR, \fBperformative_not_allowed\fR, \fBperformative_denied\fR, \fBperformative_unknown\fR, \fBtopology_not_allowed\fR, \fBpublish_not_allowed\fR, \fBconsume_not_allowed\fR, \fBexchange_not_allowed\fR, \fBexchange_denied\fR, \fBqueue_not_allowed\fR, \fBqueue_denied\fR, \fBrouting_key_not_allowed\fR, \fBrouting_key_denied\fR, \fBaddress_not_allowed\fR, \fBaddress_denied\fR, \fBreply_to_not_allowed\fR, \fBuser_not_allowed\fR, \fBuser_id_missing\fR, \fBuser_id_mismatch\fR, \fBpriority_too_high\fR, \fBno_ack_not_allowed\fR, \fBaddress_missing\fR, \fBadministrative_not_allowed\fR, \fBno_rule_matched\fR, \fBrule_denied\fR, \fBoutside_schedule\fR, \fBtoo_many_sessions\fR, \fBtoo_many_sessions_per_client\fR, \fBno_protocol_header\fR, \fBtls_handshake\fR and \fBupstream_unavailable\fR.
+.SH "s7"
+.PP
+\fBkind: s7\fR is a relay in front of a Siemens PLC. It is the listener for the protocol with the least security of any in this project.
+.PP
+S7comm is three layers on TCP 102: \fBTPKT\fR (RFC 1006, a four\-octet length), \fBCOTP\fR (X.224 class 0, whose connection request carries the address of the CPU) and \fBS7comm\fR itself. What matters about it is what it does not have. There is no transport security at all, which is why this listener takes no \fBtls\fR section \-\- a certificate here would promise something the protocol cannot do. And there is no authentication worth the name: the optional password protects a handful of functions on some CPU families and nothing on others, and an S7\-300 with no password accepts a \fBstop\fR from anybody who can open a socket to it. An engineering station on the same segment can read and write every byte of memory in every controller on that segment.
+.PP
+The equipment cannot be fixed. A controller in a line is replaced on a capital cycle, not a release cycle, and its firmware is qualified against the process it runs. So the boundary has to be somewhere else, and this is somewhere else.
+.SS "The vocabulary"
+.PP
+A relay\(aqs job here is to know what an operation \fIis\fR, and this protocol spreads that across two layers: a \fBfunction code\fR for reading and writing memory and for the block and control services, and a \fBuser\-data group and subfunction\fR for everything else \-\- the diagnostic buffer, the block list, the clock, the password, the debugger. A policy written against function codes would have nothing to say about setting the clock; one written against user\-data groups would have nothing to say about a write.
+.PP
+So both are mapped onto one vocabulary of nineteen words, and every list in this section is written in it:
+.PP
+.TS
+allbox;
+lbw(1.2i) lbx
+lw(1.2i) lx.
+T{
+Word
+T}	T{
+What it is
+T}
+T{
+\fBread\fR
+T}	T{
+Reading memory: a data block,\: the process image,\: a timer
+T}
+T{
+\fBwrite\fR
+T}	T{
+Writing it \-\- on a plant,\: the operation that moves something physical
+T}
+T{
+\fBsetup\fR
+T}	T{
+The connection negotiation,\: without which there is no session
+T}
+T{
+\fBupload\fR
+T}	T{
+Reading a block \fBout\fR of the PLC: the program,\: as source an engineering tool can open
+T}
+T{
+\fBdownload\fR
+T}	T{
+Writing one in,\: which is changing the program the machine runs
+T}
+T{
+\fBcontrol\fR
+T}	T{
+The control service: a warm restart,\: inserting or deleting a block,\: compressing memory
+T}
+T{
+\fBstop\fR
+T}	T{
+Stopping the CPU
+T}
+T{
+\fBcpu_\:services\fR
+T}	T{
+Function code 0,\: which the families in the field answer in ways nobody has documented
+T}
+T{
+\fBszl\fR
+T}	T{
+Reading a system status list: the CPU\(aqs type,\: its firmware,\: its diagnostic buffer
+T}
+T{
+\fBdiagnostics\fR
+T}	T{
+The rest of the CPU function group: the message service and the alarm machinery
+T}
+T{
+\fBblocks\fR
+T}	T{
+Listing the blocks and reading their headers
+T}
+T{
+\fBcyclic\fR
+T}	T{
+Subscribing to cyclic data,\: which is how an HMI reads a screenful of values
+T}
+T{
+\fBtime_\:read\fR
+T}	T{
+Reading the CPU clock
+T}
+T{
+\fBtime_\:write\fR
+T}	T{
+Setting it \-\- and the clock is what every log line and batch record is stamped with
+T}
+T{
+\fBsecurity\fR
+T}	T{
+The password functions: supplying one,\: clearing one,\: asking how protected the CPU is
+T}
+T{
+\fBprogrammer\fR
+T}	T{
+The debugger: forcing a variable,\: setting a breakpoint,\: stepping the program
+T}
+T{
+\fBmode\fR
+T}	T{
+The mode transitions requested through the user\-data layer rather than the control service
+T}
+T{
+\fBpbc\fR
+T}	T{
+The programmable block communication a pair of PLCs uses between themselves
+T}
+T{
+\fBnc\fR
+T}	T{
+The numerical control layer of a machine tool
+T}
+.TE
+.PP
+\fBoperations\fR defaults to \fBsetup\fR, \fBread\fR, \fBszl\fR, \fBblocks\fR, \fBcyclic\fR, \fBtime_read\fR and \fBdiagnostics\fR: what an HMI, a historian and an inventory do, and nothing that changes anything. \fBThe absences are the policy.\fR No write, no download, no control service, no stop, no mode transition, no clock setting, no password function, no programmer command \-\- and \fBno upload\fR, which is the one worth pausing on, because an upload changes nothing and is still off. Reading a block out of a PLC is how a plant\(aqs control logic leaves the site.
+.PP
+An engineering station needs several of those. Naming them in the file is a line a reviewer can see.
+.SS "The address is the rack and the slot"
+.PP
+Which controller a client asked for arrives in the \fBCOTP connection request\fR, before any S7 request exists: the called TSAP\(aqs two octets hold a connection resource, a rack (0\-7) and a slot (0\-31). So a client that may not reach that CPU is refused \fBbefore the PLC is dialled\fR, and that ordering is the point rather than an optimisation \-\- a CPU has very few connection resources, an S7\-300 sixteen altogether, and a client that may not reach it should not take one of them.
+.PP
+\fBresources\fR is the cheapest useful line in this section. \fBpg\fR is the programming device connection an engineering station opens, \fBop\fR is an operator panel and \fBbasic\fR is what one PLC opens to another; a listener that admits only \fBop\fR has refused every engineering station without naming a single function.
+.SS "The memory is the boundary inside the CPU"
+.PP
+\fBareas\fR and \fBdbs\fR say which memory a client may reach at all, and \fBaddresses\fR and \fBwrite_addresses\fR bound it by byte. The areas are \fBdb\fR, \fBinstance_db\fR, \fBinputs\fR, \fBoutputs\fR, \fBflags\fR (Siemens calls them merkers), \fBtimer\fR, \fBcounter\fR, \fBlocal\fR, \fBprevious_local\fR, \fBperipheral\fR, and the 200\-family areas \fBsysinfo_200\fR, \fBsysflags_200\fR, \fBanalog_in_200\fR, \fBanalog_out_200\fR, \fBcounter_200\fR and \fBtimer_200\fR.
+.PP
+\fBperipheral\fR is the one worth putting on \fBdeny_areas\fR on any listener that allows writing: it is direct access to the I/O hardware, past the process image the program reads.
+.PP
+Two details of how the ranges are applied:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+The protocol carries a \fBbit\fR address. The configuration is written in \fBbytes\fR, because that is how an operator thinks about a data block, and the relay divides by eight rather than making anybody else do it.
+.PP
+.ti -3n
+\(bu
+A range is checked against the \fBwhole span\fR a request covers, not its first byte. A read of bytes 0 to 200 against a range of \fB0\-99\fR is a read of bytes the policy does not name, and it is refused rather than split: splitting it would be this relay deciding which half the operator meant.
+.RE
+.PP
+.PP
+.RS 4
+.nf
+.ft CR
+\- name: line\-3\-plc
+  address: "0.0.0.0:102"
+  kind: s7
+  s7:
+    upstream: plc\-line\-3
+    allow_clients: ["10.20.4.0/24"]
+    racks: ["0"]
+    slots: ["2"]
+    resources: ["op"]
+    areas: ["db", "inputs", "outputs", "flags"]
+    deny_areas: ["peripheral"]
+    dbs: ["1\-40"]
+    addresses: ["0\-511"]
+    write_addresses: ["100\-199"]
+    max_items: 20
+    max_read_bytes: 480
+    max_pdu_length: 480
+    max_sessions_per_client: 2
+    rules:
+      \- name: hmi
+        clients: ["10.20.4.10"]
+        operations: ["setup", "read", "write", "szl", "cyclic", "time_read"]
+        comment: "line 3 panel: setpoints in DB1 bytes 100\-199"
+      \- name: integrator
+        clients: ["10.20.9.0/28"]
+        resources: ["pg"]
+        operations: ["setup", "read", "write", "download", "control", "blocks"]
+        schedule: {days: [sat], from: "06:00", to: "14:00"}
+        comment: "change window CR\-2291"
+.ft
+.fi
+.RE
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(0.9i) lbw(1.1i) lbx
+lw(1.1i) lw(0.9i) lw(1.1i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBupstream\fR
+T}	T{
+name
+T}	T{
+\fI(required)\fR
+T}	T{
+The PLC pool
+T}
+T{
+\fBallow_\:clients\fR,\: \fBdeny_\:clients\fR
+T}	T{
+list of CIDR
+T}	T{
+any
+T}	T{
+Networks a client may connect from;\: deny first. An empty allow list is allowed and advised against,\: because this listener reaches a controller
+T}
+T{
+\fBracks\fR,\: \fBslots\fR
+T}	T{
+list of number or range
+T}	T{
+any
+T}	T{
+The rack and slot numbers a client may address,\: read out of the connection request. A rack is 0\-7 and a slot 0\-31
+T}
+T{
+\fBresources\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+\fBpg\fR,\: \fBop\fR,\: \fBbasic\fR: the connection type a client may ask for
+T}
+T{
+\fBread_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse every operation that changes the PLC,\: for every client,\: before any rule is read. \fBNo rule can override it\fR \-\- a read\-only listener one rule could write through is not a read\-only listener
+T}
+T{
+\fBoperations\fR
+T}	T{
+list
+T}	T{
+the HMI set
+T}	T{
+The allow list,\: in the vocabulary above
+T}
+T{
+\fBdeny_\:operations\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The deny list,\: which no rule can override
+T}
+T{
+\fBareas\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+The memory areas a request may name
+T}
+T{
+\fBdeny_\:areas\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The deny list. \fBperipheral\fR belongs here on a listener that allows writing
+T}
+T{
+\fBdbs\fR
+T}	T{
+list of number or range
+T}	T{
+any
+T}	T{
+The data block numbers a request may name
+T}
+T{
+\fBaddresses\fR
+T}	T{
+list of byte range
+T}	T{
+any
+T}	T{
+The byte ranges a request may name,\: as \fB0\-\:255\fR or a single number. The whole span must be inside one range
+T}
+T{
+\fBwrite_\:addresses\fR
+T}	T{
+list of byte range
+T}	T{
+\fBaddresses\fR
+T}	T{
+Applies to the writing operations when set,\: so one listener can allow a wide read and a narrow write
+T}
+T{
+\fBblock_\:types\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+\fBdb\fR,\: \fBfb\fR,\: \fBfc\fR,\: \fBsdb\fR,\: \fBsfb\fR,\: \fBsfc\fR: the block types an upload or a download may name. It matters only where one of those is allowed at all
+T}
+T{
+\fBmax_\:items\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Items one read or write may carry,\: 0 for no bound. A read of a hundred items is one PDU that occupies the CPU for as long as a hundred reads
+T}
+T{
+\fBmax_\:read_\:bytes\fR,\: \fBmax_\:write_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Octets one request may read or write across all of its items
+T}
+T{
+\fBmax_\:pdu_\:length\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Bound on the PDU length the two sides negotiate. The families in the field negotiate 240,\: 480 or 960 and an S7\-1500 negotiates 2048. A negotiation above this is \fBrefused rather than rewritten\fR: rewriting it would make this relay a party to it
+T}
+T{
+\fBmax_\:frame_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB8192\fR
+T}	T{
+Bound on one TPKT frame
+T}
+T{
+\fBmax_\:requests\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Requests one connection may send. A plant connection is long\-lived,\: so this is off by default
+T}
+T{
+\fBrate_\:limit\fR,\: \fBrate_\:burst\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Requests per second per client address
+T}
+T{
+\fBmax_\:sessions\fR,\: \fBmax_\:sessions_\:per_\:client\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Concurrent connections. A CPU has very few connection resources,\: so a bound here is what stops one client taking them all
+T}
+T{
+\fBidle_\:timeout\fR,\: \fBsession_\:duration\fR,\: \fBhandshake_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR,\: \fB0\fR,\: \fB30s\fR
+T}	T{
+Bounds on a connection. The handshake timeout is what a client that opens a socket and says nothing costs
+T}
+T{
+\fBrules\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Per\-client rules,\: first match wins
+T}
+T{
+\fBdefault_\:action\fR
+T}	T{
+\fBdeny\fR,\: \fBallow\fR
+T}	T{
+\fBdeny\fR
+T}	T{
+What a request matching no rule gets
+T}
+T{
+\fBdeny_\:response\fR
+T}	T{
+\fBerror\fR,\: \fBdrop\fR,\: \fBclose\fR
+T}	T{
+\fBerror\fR
+T}	T{
+How a refusal is answered. \fBerror\fR is an S7 acknowledgement carrying an \fBaccess fault\fR \-\- what a protected CPU answers \-\- so the client\(aqs own library reports a refusal rather than a timeout
+T}
+T{
+\fBlog_\:requests\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+An access line per request,\: which on a plant polling every second is a great many lines
+T}
+T{
+\fBalert_\:on_\:deny\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A security event per refusal
+T}
+T{
+\fBmonitor_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Evaluate and enforce nothing,\: except the hard decisions below
+T}
+.TE
+.SS "Rules"
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.8i) lbx
+lw(1.2i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+string
+T}	T{
+Names the rule in logs and counters
+T}
+T{
+\fBaction\fR
+T}	T{
+\fBallow\fR,\: \fBdeny\fR,\: \fBobserve\fR
+T}	T{
+Default \fBallow\fR
+T}
+T{
+\fBclients\fR,\: \fBracks\fR,\: \fBslots\fR,\: \fBresources\fR
+T}	T{
+lists
+T}	T{
+Selectors;\: AND within a rule,\: OR within one
+T}
+T{
+\fBschedule\fR
+T}	T{
+object
+T}	T{
+\fBdays\fR,\: \fBfrom\fR,\: \fBto\fR,\: \fBtimezone\fR. This is how "the integrator may download during the shutdown window" is written
+T}
+T{
+\fBoperations\fR,\: \fBdeny_\:operations\fR,\: \fBareas\fR,\: \fBdeny_\:areas\fR,\: \fBdbs\fR,\: \fBaddresses\fR,\: \fBwrite_\:addresses\fR,\: \fBblock_\:types\fR,\: \fBmax_\:items\fR
+T}	T{
+
+T}	T{
+The rule\(aqs own narrowing. A rule that names operations \fBwidens\fR the listener for its own traffic;\: the deny lists and \fBread_\:only\fR always win
+T}
+T{
+\fBcomment\fR
+T}	T{
+string
+T}	T{
+Carried into every log line the rule decides,\: for the change record a plant keeps
+T}
+.TE
+.SS "How a refusal is answered"
+.PP
+A refused \fBrequest\fR is answered and the connection carries on, which is the modbus kind\(aqs choice and for the same reason: a plant connection is a poll loop, and dropping it because one request was refused turns a refusal into an outage. The answer is an acknowledgement with error class \fB0x87\fR, \fIaccess fault\fR \-\- what a password\-protected CPU answers a client that has not supplied one \-\- so the client library reports the refusal it would have reported from the controller itself. A refused \fBuser\-data\fR request is answered in its own layer instead: the same group and subfunction, with the error code for a function the CPU does not offer, because that is where a client that asked to set the clock looks.
+.PP
+A refused \fBconnection\fR is answered with a COTP disconnect request, which is what a CPU with no free connection resources sends. A silent close reads to an engineering station as a network fault, and an engineer chasing a network fault that is really a policy is an afternoon wasted.
+.PP
+The exceptions \-\- the cases that end the connection \-\- are the frames the relay could not read at all: a COTP PDU type it does not know, and a data PDU that is not an S7 PDU. There is nothing left to be sure of after either.
+.SS "What monitor mode never shadows"
+.PP
+.TS
+allbox;
+lbw(1.3i) lbx
+lw(1.3i) lx.
+T{
+Refusal
+T}	T{
+Why it is hard
+T}
+T{
+\fBclient_\:not_\:allowed\fR,\: \fBrack_\:not_\:allowed\fR,\: \fBslot_\:not_\:allowed\fR,\: \fBresource_\:not_\:allowed\fR
+T}	T{
+An address or a controller a client may not reach. The connection is what would be forwarded
+T}
+T{
+\fBnot_\:a_\:connection_\:request\fR,\: \fBdestination_\:unreadable\fR,\: \fBcotp_\:type_\:unknown\fR,\: \fBunreadable_\:frame\fR,\: \fBunreadable_\:pdu\fR,\: \fBitems_\:unreadable\fR,\: \fBitem_\:not_\:addressable\fR,\: \fBunexpected_\:message\fR
+T}	T{
+The relay has no opinion to observe. An operation it cannot read is one it cannot have a policy about
+T}
+T{
+\fBoperation_\:unknown\fR
+T}	T{
+A function code or user\-data group with no name is an operation with no policy
+T}
+T{
+\fBread_\:only\fR
+T}	T{
+The listener said so
+T}
+T{
+\fBtoo_\:many_\:items\fR,\: \fBtoo_\:many_\:bytes\fR,\: \fBtoo_\:many_\:requests\fR,\: \fBpdu_\:length_\:too_\:large\fR,\: \fBrate_\:limited\fR,\: \fBtoo_\:many_\:sessions\fR,\: \fBtoo_\:many_\:sessions_\:per_\:client\fR
+T}	T{
+Bounds
+T}
+T{
+any refusal of \fBwrite\fR,\: \fBdownload\fR,\: \fBcontrol\fR,\: \fBstop\fR,\: \fBmode\fR,\: \fBtime_\:write\fR,\: \fBsecurity\fR or \fBprogrammer\fR
+T}	T{
+A write forwarded so that it could be written down is a moved actuator,\: and a stop forwarded is a stopped machine. A report afterwards undoes none of it
+T}
+.TE
+.PP
+An operation merely \fIoff\fR the allow list \-\- a read of a data block nobody has listed, an upload \-\- is a \fBsoft\fR refusal, which is what makes monitor mode useful on a plant nobody has an inventory of.
+.SS "What the PLC itself refuses"
+.PP
+One record here is not a refusal by this relay and is the one that matters most after an incident: an \fBaccess fault from the controller\fR, logged as \fBs7_plc_refused\fR. That is the CPU refusing something this listener allowed, which on this protocol almost always means the controller is password\-protected and the client has not supplied a password. It is the case where the two policies disagree, and an operator needs to know which one to change.
+.PP
+What is never logged is a \fBvalue\fR. A write\(aqs payload is a process value, and on a plant those are pressures, temperatures and recipe parameters: not secrets, but not something a relay should copy into a log file at poll rate either. The \fIaddress\fR is logged, because an address is what a policy is written about, and a refusal nobody can attribute to a byte range is a refusal nobody can act on.
+.PP
+Refusals are \fBs7_denied\fR for the ban triggers, with the reasons in the table above plus \fBoperation_not_allowed\fR, \fBoperation_denied\fR, \fBarea_not_allowed\fR, \fBarea_denied\fR, \fBdb_not_allowed\fR, \fBaddress_not_allowed\fR, \fBblock_type_not_allowed\fR, \fBno_rule_matched\fR, \fBrule_denied\fR, \fBoutside_schedule\fR, \fBno_connection_request\fR and \fBupstream_unavailable\fR.
 .SH "asset_inventory"
 .PP
 One record per device, built from traffic the proxy was already carrying.
