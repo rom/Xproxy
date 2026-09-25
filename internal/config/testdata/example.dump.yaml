@@ -33,6 +33,7 @@ server:
           snmp: null
           ldap: null
           tftp: null
+          dhcp: null
           policy: null
         - name: public
           address: :443
@@ -87,6 +88,7 @@ server:
           snmp: null
           ldap: null
           tftp: null
+          dhcp: null
           policy: null
     limits:
         max_header_bytes: 65536

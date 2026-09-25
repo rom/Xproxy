@@ -32,6 +32,7 @@ var sections = map[string]string{
 	"snmp":    "snmp: {upstream: u}",
 	"ldap":    "ldap: {upstream: u}",
 	"tftp":    "tftp: {upstream: u}",
+	"dhcp":    "dhcp: {upstream: u, relay_address: 10.0.0.1}",
 	"ntp":     "ntp: {upstream: u}",
 	"ntske":   "ntske: {upstream: u}",
 }

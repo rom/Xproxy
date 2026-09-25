@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/hex"
+	dhcpwire "github.com/rom/xproxy/internal/dhcp"
 	"github.com/rom/xproxy/internal/dns"
 	"github.com/rom/xproxy/internal/expr"
 	"github.com/rom/xproxy/internal/filter"
@@ -841,6 +842,18 @@ func (v *validator) server(s *Server) {
 				v.errf("%s.ldap: required for kind ldap", p)
 			} else {
 				v.ldapListener(p+".ldap", ln.LDAP, ln.TLS != nil)
+			}
+		case "dhcp":
+			// No tls section: DHCP is UDP and has no transport security of
+			// any kind, so a listener carrying a certificate would be
+			// promising something the protocol cannot do.
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C || ln.TLS != nil {
+				v.errf("%s: a dhcp listener takes only address and dhcp: the protocol is UDP and has no TLS", p)
+			}
+			if ln.DHCP == nil {
+				v.errf("%s.dhcp: required for kind dhcp", p)
+			} else {
+				v.dhcpListener(p+".dhcp", ln.DHCP)
 			}
 		case "tftp":
 			// No tls section: TFTP has no transport security and no
@@ -2473,7 +2486,7 @@ var denyReasons = map[string]bool{
 	"forward_sni_mismatch": true, "dns_tunnel": true, "dns_answer_denied": true,
 	"telnet_denied": true, "vnc_denied": true, "rdp_denied": true, "sftp_icap": true, "udp_denied": true,
 	"modbus_denied": true, "iec104_denied": true, "ntp_denied": true, "ntske_denied": true,
-	"snmp_denied": true, "ldap_denied": true, "tftp_denied": true,
+	"snmp_denied": true, "ldap_denied": true, "tftp_denied": true, "dhcp_denied": true,
 }
 
 // securityTxtFieldRE bounds an extra field name to the token RFC 9116
@@ -7207,6 +7220,232 @@ func (v *validator) ldapDNs(p string, in []string) {
 		}
 		if _, err := ldapwire.ParseDN(dn); err != nil {
 			v.errf("%s[%d]: %v", p, i, err)
+		}
+	}
+}
+
+func (v *validator) dhcpListener(p string, m *DHCPListener) {
+	switch m.Mode {
+	case "", "reverse", "forward":
+	default:
+		v.errf("%s.mode: must be reverse or forward", p)
+	}
+	if m.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	v.modbusCIDRs(p+".allow_clients", m.AllowClients)
+	v.modbusCIDRs(p+".deny_clients", m.DenyClients)
+	v.modbusCIDRs(p+".allow_servers", m.AllowServers)
+	v.modbusCIDRs(p+".allow_routes", m.AllowRoutes)
+	v.dhcpAddrs(p+".allow_gateways", m.AllowGateways)
+	v.dhcpAddrs(p+".allow_resolvers", m.AllowResolvers)
+	v.dhcpAddrs(p+".allow_boot_servers", m.AllowBootServers)
+	v.dhcpTypes(p+".message_types", m.MessageTypes)
+	denied := v.dhcpOptions(p+".deny_options", m.DenyOptions)
+	allowed := v.dhcpOptions(p+".allow_options", m.AllowOptions)
+	v.dhcpOptions(p+".deny_requested_options", m.DenyRequestedOptions)
+	v.dhcpPatterns(p+".boot_files", m.BootFiles)
+	if len(m.DenyOptions) > 0 {
+		// The list replaces the built-in one, so an operator who wrote a
+		// shorter list has quietly allowed what they left out. The two worth
+		// naming are the ones that are a route and a proxy.
+		for _, c := range []uint8{dhcpwire.OptClasslessRoute, dhcpwire.OptWPAD} {
+			if !denied[c] {
+				v.warnf("%s.deny_options: set without %s, which replaces the built-in list and lets it through",
+					p, dhcpwire.OptionName(c))
+			}
+		}
+	}
+	if len(m.AllowOptions) > 0 {
+		// A positive list that leaves out the address's own terms is a list
+		// that hands out an address nothing can use.
+		for _, c := range []uint8{dhcpwire.OptSubnetMask, dhcpwire.OptLeaseTime} {
+			if !allowed[c] {
+				v.warnf("%s.allow_options: does not include %s, so a client would be given an address it cannot use",
+					p, dhcpwire.OptionName(c))
+			}
+		}
+		for _, c := range m.DenyOptions {
+			if code, ok := dhcpwire.OptionOf(c); ok && allowed[code] {
+				v.errf("%s: %s is in both allow_options and deny_options", p, dhcpwire.OptionName(code))
+			}
+		}
+	}
+	switch m.OnDeniedOption {
+	case "", "strip", "deny":
+	default:
+		v.errf("%s.on_denied_option: must be strip or deny", p)
+	}
+	switch m.OnClientAgentOption {
+	case "", "strip", "deny":
+	default:
+		v.errf("%s.on_client_agent_option: must be strip or deny", p)
+	}
+	reverse := m.Mode == "" || m.Mode == "reverse"
+	if m.RelayAddress == "" {
+		if reverse {
+			v.errf("%s.relay_address: required in reverse mode: a relay agent that left giaddr empty would be asking the server to answer a broadcast it never saw", p)
+		}
+	} else if a, err := netip.ParseAddr(m.RelayAddress); err != nil || !a.Is4() {
+		v.errf("%s.relay_address: %q is not an IPv4 address", p, m.RelayAddress)
+	} else if a.IsUnspecified() {
+		v.errf("%s.relay_address: 0.0.0.0 is what an unrelayed message carries, so it is not an address a relay can claim", p)
+	}
+	for _, s := range []struct {
+		key, val string
+	}{{"circuit_id", m.CircuitID}, {"remote_id", m.RemoteID}} {
+		if len(s.val) > 255 {
+			v.errf("%s.%s: longer than the 255 octets a suboption holds", p, s.key)
+		}
+	}
+	if m.MaxHops < 0 || m.MaxHops > 16 {
+		v.errf("%s.max_hops: must be between 0 and 16", p)
+	}
+	for _, d := range []struct {
+		key    string
+		val    Duration
+		lo, hi time.Duration
+	}{
+		{"min_lease_time", m.MinLeaseTime, time.Minute, 365 * 24 * time.Hour},
+		{"max_lease_time", m.MaxLeaseTime, time.Minute, 365 * 24 * time.Hour},
+		{"request_timeout", m.RequestTimeout, time.Second, time.Minute},
+	} {
+		if d.val != 0 && (d.val.D() < d.lo || d.val.D() > d.hi) {
+			v.errf("%s.%s: must be between %s and %s", p, d.key, d.lo, d.hi)
+		}
+	}
+	if m.MinLeaseTime != 0 && m.MaxLeaseTime != 0 && m.MinLeaseTime.D() > m.MaxLeaseTime.D() {
+		v.errf("%s.min_lease_time: longer than max_lease_time", p)
+	}
+	if m.MaxLeaseTime == 0 {
+		v.warnf("%s.max_lease_time: 0 leaves the lease a server may hand out unbounded, and a lease of a year is an address pool exhausted by every device that ever visited", p)
+	}
+	switch m.DefaultAction {
+	case "", "allow", "deny":
+	default:
+		v.errf("%s.default_action: must be allow or deny", p)
+	}
+	switch m.DenyResponse {
+	case "", "drop", "nak":
+	default:
+		v.errf("%s.deny_response: must be drop or nak", p)
+	}
+	if m.MaxPending < 0 || m.MaxPending > 1<<20 {
+		v.errf("%s.max_pending: must be between 0 and 1048576", p)
+	}
+	if m.MaxClients < 0 || m.MaxClients > 1<<20 {
+		v.errf("%s.max_clients: must be between 0 and 1048576", p)
+	}
+	if m.MaxMessageBytes != 0 && (m.MaxMessageBytes < dhcpwire.MinPacket || m.MaxMessageBytes > dhcpwire.MaxPacket) {
+		v.errf("%s.max_message_bytes: must be between %d and %d", p, dhcpwire.MinPacket, dhcpwire.MaxPacket)
+	}
+	if m.RateLimit < 0 || m.RateLimit > 1<<20 {
+		v.errf("%s.rate_limit: must be between 0 and 1048576", p)
+	}
+	if m.RateBurst < 0 || m.RateBurst > 1<<20 {
+		v.errf("%s.rate_burst: must be between 0 and 1048576", p)
+	}
+	if m.RateLimit == 0 && m.RateBurst > 0 {
+		v.warnf("%s.rate_burst: a burst without a rate_limit bounds nothing", p)
+	}
+	if m.RateLimit == 0 {
+		v.warnf("%s.rate_limit: 0 leaves messages per hardware address unbounded, and address pool exhaustion is one client sending thousands of discovers with a made-up address in each", p)
+	}
+	if len(m.AllowGateways) == 0 && len(m.AllowResolvers) == 0 {
+		v.warnf("%s: neither allow_gateways nor allow_resolvers is set, so a reply this listener admits may name any router and any resolver -- which is what a rogue server sends", p)
+	}
+	names := map[string]bool{}
+	for i := range m.Rules {
+		r := &m.Rules[i]
+		q := fmt.Sprintf("%s.rules[%d]", p, i)
+		if !nameRE.MatchString(r.Name) {
+			v.errf("%s.name: %q is not a valid name", q, r.Name)
+		} else if names[r.Name] {
+			v.errf("%s.name: duplicate %q", q, r.Name)
+		}
+		names[r.Name] = true
+		switch r.Action {
+		case "", "allow", "deny", "observe":
+		default:
+			v.errf("%s.action: must be allow, deny or observe", q)
+		}
+		v.modbusCIDRs(q+".clients", r.Clients)
+		v.modbusCIDRs(q+".allow_routes", r.AllowRoutes)
+		v.dhcpTypes(q+".message_types", r.MessageTypes)
+		v.dhcpOptions(q+".deny_options", r.DenyOptions)
+		v.dhcpAddrs(q+".allow_gateways", r.AllowGateways)
+		v.dhcpAddrs(q+".allow_resolvers", r.AllowResolvers)
+		v.dhcpAddrs(q+".allow_boot_servers", r.AllowBootServers)
+		v.dhcpPatterns(q+".boot_files", r.BootFiles)
+		v.dhcpPatterns(q+".vendor_classes", r.VendorClasses)
+		v.dhcpPatterns(q+".user_classes", r.UserClasses)
+		for j, h := range r.HardwareAddresses {
+			if _, err := dhcpwire.ParseHardwareAddr(h); err != nil {
+				v.errf("%s.hardware_addresses[%d]: %q is not a hardware address or a vendor prefix", q, j, h)
+			}
+		}
+		if r.MaxLeaseTime != 0 && (r.MaxLeaseTime.D() < time.Minute || r.MaxLeaseTime.D() > 365*24*time.Hour) {
+			v.errf("%s.max_lease_time: must be between 1m0s and 8760h0m0s", q)
+		}
+		if len(r.CircuitID) > 255 {
+			v.errf("%s.circuit_id: longer than the 255 octets a suboption holds", q)
+		}
+		v.modbusSchedule(q+".schedule", r.Schedule)
+	}
+}
+
+// dhcpTypes checks a message-type list.
+func (v *validator) dhcpTypes(p string, in []string) {
+	for i, name := range in {
+		if _, ok := dhcpwire.TypeOf(name); !ok {
+			v.errf("%s[%d]: %q is not a message type (discover, offer, request, decline, ack, nak, release, inform, force_renew, lease_query)", p, i, name)
+		}
+	}
+}
+
+// dhcpOptions checks an option list and returns it as a set. An option may be
+// named or numbered: an estate's own vendor option has no name here, and
+// refusing to let an operator name it would make the policy incomplete.
+func (v *validator) dhcpOptions(p string, in []string) map[uint8]bool {
+	out := map[uint8]bool{}
+	for i, name := range in {
+		code, ok := dhcpwire.OptionOf(name)
+		if !ok {
+			v.errf("%s[%d]: %q is not an option name or a number from 0 to 255", p, i, name)
+			continue
+		}
+		switch code {
+		case dhcpwire.OptPad, dhcpwire.OptEnd:
+			v.errf("%s[%d]: %q is the option field's framing, not an option", p, i, name)
+			continue
+		case dhcpwire.OptMessageType:
+			v.errf("%s[%d]: the message type is what every rule is written about, so it cannot be stripped; use message_types", p, i)
+			continue
+		}
+		out[code] = true
+	}
+	return out
+}
+
+// dhcpAddrs checks a list of IPv4 addresses.
+func (v *validator) dhcpAddrs(p string, in []string) {
+	for i, s := range in {
+		a, err := netip.ParseAddr(s)
+		if err != nil || !a.Is4() {
+			v.errf("%s[%d]: %q is not an IPv4 address", p, i, s)
+		}
+	}
+}
+
+// dhcpPatterns checks a shell pattern list.
+func (v *validator) dhcpPatterns(p string, in []string) {
+	for i, pat := range in {
+		if pat == "" {
+			v.errf("%s[%d]: empty", p, i)
+			continue
+		}
+		if _, err := path.Match(pat, "x"); err != nil {
+			v.errf("%s[%d]: %q is not a pattern: %v", p, i, pat, err)
 		}
 	}
 }
