@@ -1377,6 +1377,10 @@ func run(args []string, out, errOut io.Writer) int {
 		// The device inventory: what the proxy has worked out is on the
 		// network, from traffic it was carrying anyway.
 		return assetsCommand(c, fs, out, errOut, *asJSON)
+	case "access":
+		// Just-in-time access: the grants a gate listener admits sessions
+		// against, and the four acts on them.
+		return accessCommand(c, fs, out, errOut, *asJSON)
 	case "sessions":
 		// The sessions a daemon is serving now, and the one operation an
 		// operator needs on them. "session" is the recorded ones on

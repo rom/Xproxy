@@ -588,3 +588,43 @@ func TestCloseAtExpiryClosesTheSession(t *testing.T) {
 	CloseAtExpiry(nil, func() { t.Error("a session with no grant was closed") })()
 	CloseAtExpiry(&Grant{}, nil)()
 }
+
+// An operator reads an identifier off a table and types it into an approval, so
+// an unambiguous prefix works -- and an ambiguous one is refused rather than
+// resolved to the first match, because the one thing worse than mistyping a
+// grant's id is approving somebody else's.
+func TestAPrefixNamesAGrantUnlessItIsAmbiguous(t *testing.T) {
+	l, _ := ledger(t, fourEyes())
+	g := ask(t, l, "alice", "carol")
+	if _, err := l.Approve(g.ID[:8], "bob", ""); err != nil {
+		t.Fatalf("an eight character prefix: %v", err)
+	}
+	if v, ok := l.Get(g.ID[:6]); !ok || v.ID != g.ID {
+		t.Error("Get did not resolve a prefix")
+	}
+	// Too short to be an identifier at all.
+	if _, err := l.Approve(g.ID[:3], "erin", ""); !errors.Is(err, ErrUnknownGrant) {
+		t.Errorf("a three character prefix: %v, want ErrUnknownGrant", err)
+	}
+
+	// Two grants sharing a prefix: the shared part names neither.
+	l.mu.Lock()
+	first := &Grant{ID: "beefcafe0000", Subject: "dave", Listener: "bastion", Target: "db-1:22",
+		Reason: "one", By: "carol", At: t0, NotBefore: t0, Expires: t0.Add(time.Hour), NeedApprovals: 1}
+	second := &Grant{ID: "beefcafe1111", Subject: "dave", Listener: "bastion", Target: "db-1:22",
+		Reason: "two", By: "carol", At: t0, NotBefore: t0, Expires: t0.Add(time.Hour), NeedApprovals: 1}
+	l.byID[first.ID], l.byID[second.ID] = first, second
+	l.order = append(l.order, first.ID, second.ID)
+	l.mu.Unlock()
+
+	_, err := l.Approve("beefcafe", "bob", "")
+	if !errors.Is(err, ErrUnknownGrant) || !strings.Contains(err.Error(), "more than one") {
+		t.Errorf("an ambiguous prefix: %v", err)
+	}
+	if _, err := l.Approve("beefcafe1", "bob", ""); err != nil {
+		t.Errorf("the prefix that tells them apart: %v", err)
+	}
+	if len(second.Approvals) != 1 || len(first.Approvals) != 0 {
+		t.Errorf("the approval landed on the wrong grant: %d and %d", len(first.Approvals), len(second.Approvals))
+	}
+}

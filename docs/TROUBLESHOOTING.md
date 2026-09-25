@@ -234,6 +234,7 @@ do not know where to look, start at the top.
 | Who is banned | `xproxyctl bans` |
 | What a policy would refuse if it were enforced | `xproxyctl policy report -top 20` |
 | Who is on the estate right now, and getting them off | `xproxyctl sessions`, `xproxyctl sessions -kill ID` |
+| Who may be on it at all, and until when | `xproxyctl access`, `xproxyctl access show ID`, `xproxyctl access revoke ID` |
 | Which keys are consuming a rate limit | `xproxyctl quotas -top 20` |
 | Which WAF rules fire | `xproxyctl waf -top 20` |
 | Which filters are configured and what they deny | `xproxyctl filters` |

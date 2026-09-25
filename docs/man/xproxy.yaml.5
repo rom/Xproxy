@@ -27879,6 +27879,33 @@ A request nobody approved before its window closed is expired rather than pendin
 Every act is one line of the ledger, and each line carries a hash over the previous one. A removed, edited, reordered or forged line is found when the file is read at start, and the daemon refuses to serve a trail it cannot stand behind rather than presenting it as intact. One process holds the file exclusively \-\- two daemons appending would interleave their chains \-\- so a second daemon pointed at the same path fails to start and says so.
 .PP
 A record is written, flushed and synced \fBbefore\fR the grant it describes is in force. A grant that is in force in memory but not on disk is a grant nobody approved after the next restart, and an approval the caller was told about but that was never written is worse than one that was refused. \fBmax_uses\fR is durable for the same reason: a one\-shot grant that refills itself on restart is not one shot.
+.SS "Asking, approving and taking it back"
+.PP
+A grant is asked for, approved by somebody else, and used \-\- all through the management socket, so the same audit trail covers every step:
+.PP
+.RS 4
+.nf
+.ft CR
+# the person who needs it, or somebody on their behalf
+xproxyctl access ask \-subject alice \-listener bastion \-target prod\-db \e
+    \-reason "incident 4711" \-for 2h
+
+# somebody else \-\- not the requester, not alice
+xproxyctl access approve 9f2c4ab1 \-note "spoke to alice"
+
+# what is in force now, and one grant in full
+xproxyctl access \-state active
+xproxyctl access show 9f2c4ab1
+
+# and taking it back, which needs nobody else
+xproxyctl access revoke 9f2c4ab1 \-note "laptop stolen"
+.ft
+.fi
+.RE
+.PP
+\fB\-by\fR is the name the act is recorded under, and it defaults to the account running the command (\fBSUDO_USER\fR first, because somebody who reached the socket through \fBsudo\fR is still a person and \fBroot\fR is not a name). Four eyes is enforced on that name; the audit log records the caller\(aqs uid, gid and pid beside it. The two can disagree, which is worth seeing: an estate where everybody reaches the socket as one account gets its accountability from the names and from the socket\(aqs group rather than from the kernel, and should know that. An identifier may be given in full or as any unambiguous prefix; an ambiguous one is refused rather than resolved to the first match.
+.PP
+The same five calls are \fBGET /v1/access\fR, \fBPOST /v1/access\fR and \fBPOST /v1/access/{approve,deny,revoke}\fR; see docs/ARCHITECTURE.md.
 .SS "What a refusal says"
 .PP
 A session turned away is counted under its own reason, because an operator answering a call needs to know which. They are the listener\(aqs ordinary refusal counters (\fBxproxyctl status\fR, the \fB_refusals_total\fR metrics) and each is a deny event on the listener\(aqs usual reason (\fBssh_denied\fR and so on), so bans apply as they always did.

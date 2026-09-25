@@ -11023,6 +11023,40 @@ about but that was never written is worse than one that was refused.
 `max_uses` is durable for the same reason: a one-shot grant that refills
 itself on restart is not one shot.
 
+### Asking, approving and taking it back
+
+A grant is asked for, approved by somebody else, and used -- all through the
+management socket, so the same audit trail covers every step:
+
+```
+# the person who needs it, or somebody on their behalf
+xproxyctl access ask -subject alice -listener bastion -target prod-db \
+    -reason "incident 4711" -for 2h
+
+# somebody else -- not the requester, not alice
+xproxyctl access approve 9f2c4ab1 -note "spoke to alice"
+
+# what is in force now, and one grant in full
+xproxyctl access -state active
+xproxyctl access show 9f2c4ab1
+
+# and taking it back, which needs nobody else
+xproxyctl access revoke 9f2c4ab1 -note "laptop stolen"
+```
+
+`-by` is the name the act is recorded under, and it defaults to the account
+running the command (`SUDO_USER` first, because somebody who reached the
+socket through `sudo` is still a person and `root` is not a name). Four eyes
+is enforced on that name; the audit log records the caller's uid, gid and pid
+beside it. The two can disagree, which is worth seeing: an estate where
+everybody reaches the socket as one account gets its accountability from the
+names and from the socket's group rather than from the kernel, and should
+know that. An identifier may be given in full or as any unambiguous prefix;
+an ambiguous one is refused rather than resolved to the first match.
+
+The same five calls are `GET /v1/access`, `POST /v1/access` and
+`POST /v1/access/{approve,deny,revoke}`; see docs/ARCHITECTURE.md.
+
 ### What a refusal says
 
 A session turned away is counted under its own reason, because an operator

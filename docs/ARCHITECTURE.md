@@ -1850,6 +1850,11 @@ Endpoints:
 | DELETE | `/v1/policy` | empty the ledger (audited) |
 | GET | `/v1/sessions` | the sessions this daemon is serving now, oldest first: id, kind, listener, client, login, target, one detail the kind chose, and how long it has been up |
 | DELETE | `/v1/sessions` | close the session named by `id`, or every session matching `kind`, `listener` and `user`; a request naming none of them is refused rather than taken as "all", and every closure is audited |
+| GET | `/v1/access` | the just-in-time access grants, newest first, each with its computed state, and the ledger's own counters; `state=` filters, `id=` reads one. 404 when the daemon has no `access` section |
+| POST | `/v1/access` | ask for a window: `subject`, `listener`, `target`, `reason`, `by`, `duration`, optional `start` and `max_uses`. It is not access until enough other people have approved it (audited) |
+| POST | `/v1/access/approve` | approve the grant `id` as `by`, with an optional `note`. 403 when the approver is the requester or the subject, or has already approved; 409 when the grant is finished (audited) |
+| POST | `/v1/access/deny` | refuse it, which is final and recorded rather than left to expire (audited) |
+| POST | `/v1/access/revoke` | withdraw it, including one in force; no second person is needed (audited) |
 | GET | `/v1/mfa` | every listener that asks for a second factor: its kind, its enrolment file, and who is enrolled with the parameters, recovery codes left, failures and lockout this process remembers |
 | POST | `/v1/mfa/enrol` | enrol `user` on `listener`, optionally with `issuer`, `digits`, `period_seconds` and `algo`; answers with the secret, the `otpauth://` URI, that URI drawn as a QR code (a PNG `data:` URI) and the recovery codes, which exist only in that answer (audited) |
 | POST | `/v1/mfa/recovery` | replace a person's recovery codes and return the new ones (audited) |

@@ -562,6 +562,58 @@ Open findings of the earlier rounds:
   whose datagram side is taken fails with the reason it failed and nothing left
   bound behind it, and a port 0 listener comes up with both sockets.
 
+### Added (1.4, access)
+
+- **Just-in-time access to the gate kinds: `access`, `require_grant`, and a
+  ledger with a hash chain.** A bastion with standing access is a bastion whose
+  accounts are worth as much as the machines behind it: the keys sit in the
+  estate all the time, so whoever reaches a key, a laptop or a session reaches
+  production at a moment of their choosing. The other arrangement is now
+  available -- nobody opens a session unless a live grant names them, the
+  listener and the target; the grant ends by itself; and a second person had to
+  agree to it.
+
+  **Four eyes.** A grant is in force only once `approvals` people have approved
+  it, and neither the person who asked nor the person who gains the access may
+  be one of them. Names are compared trimmed and case-insensitively, so `Alice`
+  approving what `alice` asked for is one person rather than two; one approver
+  cannot count twice; and the approvals a grant needs are fixed when it is
+  requested, so loosening the policy later does not bring a half-approved grant
+  into force. `self_approval` is an explicit, warned-about opt-in for the estate
+  with one operator, where the alternative is switching the requirement off.
+
+  **A time box.** `max_duration` bounds the window and `max_lead` how far ahead
+  it may start, both checked when the request is made rather than left to an
+  approver to notice. The window ends the session **that is running**, not only
+  the next one somebody opens. A request nobody approved before its window
+  closed is expired rather than pending.
+
+  **A written record.** Every request, approval, denial, revocation and use is
+  one line of an append-only trail carrying a hash chain, so a removed, edited,
+  reordered or forged line is found when the file is read and the daemon refuses
+  to serve a trail it cannot stand behind. One process holds the file
+  exclusively. A record is written, flushed and synced *before* the grant it
+  describes is in force, and `max_uses` is durable for the same reason: a
+  one-shot grant that refills itself on restart is not one shot.
+
+  All five gate kinds take `require_grant`, in that one spelling. Where the
+  protocol names the person before the target is dialled (ssh, telnet, vnc)
+  nothing is reached without a grant; where it cannot (rdp's credential and
+  ftp's login both arrive after the connection is open) the grant is checked
+  before the credential or any command of the person's is forwarded, and against
+  the machine already reached. telnet and vnc now refuse `require_grant` at load
+  when they have no way to learn a name, rather than failing closed on the first
+  evening. A grant naming one machine **pins the dial to it**.
+
+  Eight refusal reasons, each its own counter (`no_grant`, `grant_pending`,
+  `grant_not_yet`, `grant_expired`, `grant_denied`, `grant_revoked`,
+  `grant_spent`, `grant_wrong_target`), because an operator answering a call
+  needs to know which; a listener in `policy: {mode: shadow}` records what it
+  would have refused and carries on. `xproxyctl access [ask|approve|deny|revoke]`
+  and five management calls under `/v1/access` are the interface, audited with
+  the caller's kernel-reported credentials beside the name each act was recorded
+  under.
+
 ### Changed (1.4)
 
 - **A discovered endpoint now earns its place with a probe.** Active health

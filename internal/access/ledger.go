@@ -412,11 +412,41 @@ func (l *Ledger) Revoke(id, actor, note string) (*Grant, error) {
 	return l.copyOf(g), nil
 }
 
+// find resolves an identifier: the whole one, or an unambiguous prefix of at
+// least four characters. The caller holds the mutex.
+//
+// A prefix because an operator reads an identifier off a table and types it into
+// an approval, and thirty-two hex characters is a transcription error waiting to
+// happen. Ambiguity is refused rather than resolved to the first match: the one
+// thing worse than mistyping a grant's id is approving somebody else's.
+func (l *Ledger) find(id string) (*Grant, error) {
+	id = strings.TrimSpace(id)
+	if g := l.byID[id]; g != nil {
+		return g, nil
+	}
+	if len(id) < 4 {
+		return nil, ErrUnknownGrant
+	}
+	var found *Grant
+	for k, g := range l.byID {
+		if strings.HasPrefix(k, id) {
+			if found != nil {
+				return nil, fmt.Errorf("%w: %q matches more than one grant", ErrUnknownGrant, id)
+			}
+			found = g
+		}
+	}
+	if found == nil {
+		return nil, ErrUnknownGrant
+	}
+	return found, nil
+}
+
 // open finds a grant that can still change. The caller holds the mutex.
 func (l *Ledger) open(id string, now time.Time) (*Grant, error) {
-	g := l.byID[strings.TrimSpace(id)]
-	if g == nil {
-		return nil, ErrUnknownGrant
+	g, err := l.find(id)
+	if err != nil {
+		return nil, err
 	}
 	if !g.Open(now) {
 		return nil, fmt.Errorf("%w: %s", ErrNotOpen, g.State(now))
@@ -488,9 +518,9 @@ func (l *Ledger) Use(id, session string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
-	g := l.byID[strings.TrimSpace(id)]
-	if g == nil {
-		return ErrUnknownGrant
+	g, err := l.find(id)
+	if err != nil {
+		return err
 	}
 	if g.State(now) != Active {
 		return fmt.Errorf("%w: %s", ErrNotOpen, g.State(now))
@@ -533,8 +563,8 @@ func (l *Ledger) Grants() []View {
 func (l *Ledger) Get(id string) (View, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	g := l.byID[strings.TrimSpace(id)]
-	if g == nil {
+	g, err := l.find(id)
+	if err != nil {
 		return View{}, false
 	}
 	return View{Grant: *l.copyOf(g), State: g.State(l.now())}, true
