@@ -16,6 +16,11 @@ type Endpoint struct {
 	Canary  bool
 	// Discovered marks an endpoint that came from DNS discovery.
 	Discovered bool
+	// joinOnProbe means this endpoint must wait for a passing health probe
+	// before it is picked, and that its first probe runs at once rather than
+	// after the usual jitter. It is set on an endpoint discovery announced
+	// while the pool was already serving -- see Pool.setDiscovered.
+	joinOnProbe bool
 	// socket is the Unix domain socket path this endpoint dials, and
 	// urlHost the synthetic authority it wears in a URL; both empty for
 	// an ordinary network endpoint. See unixsocket.go.

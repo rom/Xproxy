@@ -564,6 +564,35 @@ Open findings of the earlier rounds:
 
 ### Changed (1.4)
 
+- **A discovered endpoint now earns its place with a probe.** Active health
+  checking, passive outlier ejection, DNS and Consul discovery, drain and
+  per-endpoint bounds were all in place, but they met each other wrongly at one
+  point: an endpoint an announcement added to a **serving** pool started
+  `healthy: true` and was picked immediately, before any probe had run.
+
+  That is right at process start -- nothing has been probed then, and waiting
+  would serve nothing at all for an interval -- and wrong for an announcement,
+  because a registry announces an instance when its *process* starts, not when it
+  is ready: the service registers, then opens its database connections, loads its
+  caches and finally listens. The proxy was sending real requests into that gap
+  and then ejecting the endpoint for failing them, so every deploy and every
+  scale-up cost a burst of errors the proxy itself caused.
+
+  An endpoint that arrives while the pool is serving now begins unhealthy and
+  waits for `healthy_threshold` probes, and its **first probe runs at once**
+  rather than after the usual start jitter -- otherwise "wait for a probe" would
+  mean "sit out up to one `interval`", five minutes on a common setting.
+
+  The three exceptions are the point of the change rather than caveats to it. An
+  endpoint serves immediately when there is no `health_check` (no probe to wait
+  for, so waiting would mean never), when **nothing else in the pool can carry
+  the traffic** -- every other endpoint unhealthy, draining, ejected or at its
+  own `max_active` -- since there is no all-unhealthy fallback and an unprobed
+  endpoint beats an empty pool, and for the endpoints the pool starts with,
+  discovery's own first resolution included. An address that leaves a resolution
+  and comes back waits again: what is listening there now is not the process that
+  was healthy before.
+
 - **`internal/schedule`: one time window, shared by the thirteen kinds that had
   their own.** A refactor that turned into two bug fixes, because the copies had
   drifted.

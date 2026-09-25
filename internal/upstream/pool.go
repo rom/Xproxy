@@ -85,6 +85,11 @@ type Pool struct {
 	// context once Start ran, used for endpoints added later.
 	disc  *discoverer
 	hcCtx context.Context
+	// resolved records that discovery's first resolution has been applied,
+	// so that a later one is an announcement into a pool that is already
+	// serving rather than part of process start. Read and written under
+	// epMu; see setDiscovered.
+	resolved bool
 	// randFloat feeds the slow start admission; tests replace it.
 	randFloat func() float64
 }
@@ -182,12 +187,36 @@ func (p *Pool) setDiscovered(specs []endpointSpec) (added, removed int) {
 		}
 		e := p.newEndpoint(sp.address, sp.weight, sp.canary, true)
 		e.startRamp(now)
+		// An endpoint a registry has just announced has not been probed,
+		// and a registry announces an instance when its process starts
+		// rather than when it is ready to serve. Sending traffic into it
+		// produces a burst of failures the proxy caused and the outlier
+		// ejection then has to clean up.
+		//
+		// So it waits for one passing probe -- but only while some other
+		// endpoint can carry the traffic in the meantime. When this is the
+		// only endpoint there is, waiting would blackhole the pool for an
+		// interval, and serving an unprobed endpoint is better than
+		// serving nothing: that is the same reasoning newEndpoint gives
+		// for starting optimistic at process start.
+		//
+		// And only for an announcement, not for discovery's first
+		// resolution: that one *is* process start, reached from Start
+		// before the pool has served anything, and the endpoints it
+		// produces are the pool's own members however many static ones sit
+		// beside them. Making them wait would hold every request back for
+		// one probe interval at every restart, which is the outage
+		// newEndpoint's optimism exists to avoid.
+		if p.hcCtx != nil && p.Cfg.HealthCheck != nil {
+			if p.resolved && anyAvailable(next, now) {
+				e.joinOnProbe = true
+				e.healthy.Store(false)
+			}
+			p.startHealthLoop(e)
+		}
 		next = append(next, e)
 		keep[e] = true
 		added++
-		if p.hcCtx != nil && p.Cfg.HealthCheck != nil {
-			p.startHealthLoop(e)
-		}
 	}
 	for _, e := range old {
 		if !keep[e] {
@@ -219,6 +248,22 @@ func (p *Pool) setDiscovered(specs []endpointSpec) (added, removed int) {
 	// the new set rather than only at attach.
 	p.drains.apply(p)
 	return added, removed
+}
+
+// anyAvailable says whether any of these endpoints could take a request now.
+//
+// It decides whether a newly announced endpoint has to earn its place with a
+// probe or is needed immediately, so it asks the same question Pick asks rather
+// than merely counting endpoints: a pool whose other members are all draining,
+// ejected or at their connection bound has nothing to carry the traffic, and one
+// more unprobed endpoint is better than none.
+func anyAvailable(eps []*Endpoint, now time.Time) bool {
+	for _, e := range eps {
+		if e.Available(now) {
+			return true
+		}
+	}
+	return false
 }
 
 // startHealthLoop launches the probe loop of one endpoint under the pool's
@@ -468,6 +513,10 @@ func (p *Pool) Start() {
 	}
 	if p.disc != nil {
 		p.disc.once(ctx)
+		// From here a resolution is an announcement into a serving pool.
+		p.epMu.Lock()
+		p.resolved = true
+		p.epMu.Unlock()
 		p.wg.Add(1)
 		go p.disc.run(ctx)
 	}

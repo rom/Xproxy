@@ -5496,6 +5496,40 @@ as well as asked for in the query: the filter in the query is the agent's
 opinion, and this one is the proxy's. `Weights.Passing` becomes the
 endpoint weight, and a blank service address falls back to the node's.
 
+#### An endpoint that arrives while the pool is serving
+
+A registry announces an instance when its process starts, not when it is
+ready to answer: the service registers itself, then opens its database
+connections, loads its caches and finally listens. An address appearing
+in a resolution is therefore a weaker claim than it looks, and a pool that
+sends traffic to it immediately produces a burst of failures the proxy
+caused — the outlier ejection then has to clean up after a decision that
+should not have been made.
+
+So with `health_check` configured, an endpoint that **arrives after the
+pool started serving** begins unhealthy and is not picked until it passes
+`healthy_threshold` probes. Its first probe runs at once rather than after
+the usual jitter, so the wait is one probe rather than up to one
+`interval`.
+
+Three cases are deliberately not that:
+
+- **No `health_check`.** There is no probe to wait for, so a discovered
+  endpoint serves as soon as it is resolved. Waiting would mean never.
+- **Nothing else can carry the traffic.** If every other endpoint in the
+  pool is unhealthy, draining, ejected or at its own `max_active`, the new
+  one is used immediately: an unprobed endpoint is better than an empty
+  pool, and there is no all-unhealthy fallback to catch that case.
+- **The endpoints the pool starts with**, both the static `endpoints` and
+  discovery's first resolution, start healthy — at process start nothing
+  has been probed yet, and making them wait would serve nothing at all
+  for a probe interval on every restart.
+
+An address that leaves a resolution and comes back is a new endpoint, so
+it waits again; what is listening there now is not the process that was
+healthy before. `xproxyctl upstreams` shows `healthy: false` for an
+endpoint in this state, the same as for one a probe has failed.
+
 ### upstreams[].health_check
 
 | Key | Type | Default | Description |
@@ -5503,7 +5537,7 @@ endpoint weight, and a blank service address falls back to the node's.
 | `type` | `http`, `grpc`, `tcp`, `udp` | `http` | `grpc` calls the standard `grpc.health.v1.Health/Check` over HTTP/2 and needs `h2c` or `scheme: https`; `path` and `expected_status` are not used. `tcp` and `udp` are the layer 4 probes, for the pools a `kind: tcp` or `kind: udp` listener uses, where there is no request to make — see below |
 | `grpc_service` | string | `""` | Service asked in a grpc check; empty asks about the server as a whole |
 | `path` | path | `/` | GET target |
-| `interval` | duration | `5s` | At least 500ms; start is jittered |
+| `interval` | duration | `5s` | At least 500ms; the first probe of each endpoint is jittered across one interval so that a large pool does not probe in lockstep — except for an endpoint discovery announced into a serving pool, which probes at once because it is waiting on that probe to be used at all |
 | `timeout` | duration | `2s` | Must be shorter than `interval` |
 | `healthy_threshold` | int | `2` | Consecutive successes to mark healthy |
 | `unhealthy_threshold` | int | `3` | Consecutive failures to mark unhealthy |

@@ -13060,6 +13060,30 @@ T}
 The loop therefore waits on the agent rather than on a ticker: after an answer it asks again at once, because the next answer \fIis\fR the next change. \fBinterval\fR becomes the pause after a \fBfailure\fR \[u2014] without one, an agent that is down or answering 403 would be asked again immediately and forever, which is a loop against somebody else\(aqs machine. An index that goes backwards (a Consul server restart) resets to 1 rather than blocking against an index that will never be reached.
 .PP
 Only instances whose checks all pass are used, and the check is made here as well as asked for in the query: the filter in the query is the agent\(aqs opinion, and this one is the proxy\(aqs. \fBWeights.Passing\fR becomes the endpoint weight, and a blank service address falls back to the node\(aqs.
+.SS "An endpoint that arrives while the pool is serving"
+.PP
+A registry announces an instance when its process starts, not when it is ready to answer: the service registers itself, then opens its database connections, loads its caches and finally listens. An address appearing in a resolution is therefore a weaker claim than it looks, and a pool that sends traffic to it immediately produces a burst of failures the proxy caused \[u2014] the outlier ejection then has to clean up after a decision that should not have been made.
+.PP
+So with \fBhealth_check\fR configured, an endpoint that \fBarrives after the pool started serving\fR begins unhealthy and is not picked until it passes \fBhealthy_threshold\fR probes. Its first probe runs at once rather than after the usual jitter, so the wait is one probe rather than up to one \fBinterval\fR.
+.PP
+Three cases are deliberately not that:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBNo \fBhealth_check\fR.\fR There is no probe to wait for, so a discovered endpoint serves as soon as it is resolved. Waiting would mean never.
+.PP
+.ti -3n
+\(bu
+\fBNothing else can carry the traffic.\fR If every other endpoint in the pool is unhealthy, draining, ejected or at its own \fBmax_active\fR, the new one is used immediately: an unprobed endpoint is better than an empty pool, and there is no all\-unhealthy fallback to catch that case.
+.PP
+.ti -3n
+\(bu
+\fBThe endpoints the pool starts with\fR, both the static \fBendpoints\fR and discovery\(aqs first resolution, start healthy \[u2014] at process start nothing has been probed yet, and making them wait would serve nothing at all for a probe interval on every restart.
+.RE
+.PP
+.PP
+An address that leaves a resolution and comes back is a new endpoint, so it waits again; what is listening there now is not the process that was healthy before. \fBxproxyctl upstreams\fR shows \fBhealthy: false\fR for an endpoint in this state, the same as for one a probe has failed.
 .SS "upstreams[].health_check"
 .PP
 .TS
@@ -13109,7 +13133,7 @@ duration
 T}	T{
 \fB5s\fR
 T}	T{
-At least 500ms;\: start is jittered
+At least 500ms;\: the first probe of each endpoint is jittered across one interval so that a large pool does not probe in lockstep \[u2014] except for an endpoint discovery announced into a serving pool,\: which probes at once because it is waiting on that probe to be used at all
 T}
 T{
 \fBtimeout\fR
