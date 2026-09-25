@@ -442,6 +442,87 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **`kind: dhcp`: a DHCP relay agent that reads what it relays, because on this
+  protocol answering is the attack.** A client broadcasts "who will configure me"
+  and believes whatever answers first: its address, its **default route**, its
+  **resolvers**, its **proxy** (option 252) and, on a machine that boots from the
+  network, the **file it boots** (options 66 and 67). Nothing in the exchange
+  authenticates anybody -- a transaction identifier and a hardware address, both
+  visible to everyone on the segment -- and the client has no address yet, so it
+  cannot even be told apart by one. This is the one relay kind here whose
+  interesting half faces *upstream*.
+
+  **A reply from an address the listener does not admit as a server is dropped
+  before it is read.** Every switch vendor sells this as DHCP snooping and
+  implements it as a trusted port; here it is `allow_servers`, and it is not
+  shadowable, because a listener that evaluated the list without enforcing it
+  would relay a rogue server's answer and write it down. An empty list is not an
+  open one: it is filled in from the `upstream` pool's endpoints at load, since
+  an operator who wrote none meant "the servers I configured" -- and a pool whose
+  endpoints are hostnames makes the list required rather than guessed, because
+  guessing is the wrong kind of helpful on the one check this kind most depends
+  on.
+
+  **The options a server sends are checked as a configuration.** The built-in
+  `deny_options` list is what carries one rather than a value: options 121 and
+  Microsoft's 249 (a routing table in a broadcast reply), 33, 252 (a proxy), 66
+  and 67 (what a machine boots) and 43. The default is `strip` and forward,
+  because a client that still gets its address and no longer gets a route it
+  should not have is a client that works. `allow_options` turns the policy inside
+  out for a segment whose clients need six options.
+
+  **The addresses in a reply are checked against the estate's own** gateways,
+  resolvers and boot servers -- a check a *compromised real server* fails as
+  surely as a rogue one, and the one place this kind does something no trusted
+  port can. The boot server is checked in both places it lives, option 66 and the
+  `siaddr` field, because a check on one has a way round it. Classless routes are
+  allowed by containment, so `10.0.0.0/8` admits a route to `10.20.0.0/16` and
+  refuses a default route, and the refusal names the route.
+
+  **A client does not get to say which segment it is on.** Option 82 arriving
+  from a client is stripped as RFC 3046 §2.1 requires, the relay adds its own,
+  and §2.2's removal of it from the reply is enforced too.
+
+  **The starvation bound is keyed on the hardware address**, because pool
+  exhaustion is one host sending thousands of DISCOVERs with a made-up address in
+  each and a limit keyed on the source address would see one sender doing nothing
+  unusual. `max_clients` bounds the table doing the keying.
+
+  A lease past `max_lease_time` is shortened rather than refused, so the client
+  still boots. `default_action` is **allow** here, unlike the other relay kinds:
+  DHCP is infrastructure, a listener that refused everything until somebody wrote
+  a rule would stop an estate booting, and the protections above do not depend on
+  a rule existing. The listener takes no `tls` section and binds no TCP port.
+
+  Counters are `dhcp_messages`, `dhcp_discovers`, `dhcp_requests`,
+  `dhcp_replies`, `dhcp_leases`, `dhcp_releases`, `dhcp_denied`,
+  `dhcp_would_deny`, `dhcp_rogue`, `dhcp_stripped`, `dhcp_malformed`,
+  `dhcp_rejected`, `dhcp_rate_limited`, `dhcp_timed_out`,
+  `dhcp_upstream_failed`, `dhcp_unsolicited`, `dhcp_pending` and `dhcp_clients`;
+  `dhcp_rogue` is the one to alert on. The wire format is `internal/dhcp` with a
+  fuzz target on the reader, and `examples/addressing/dhcp.yaml` is five
+  listeners: an office segment, a build segment where the PXE rule is what allows
+  the boot options, a guest segment written as a positive list, a front for two
+  downstream relay agents where classless routes are allowed by containment, and
+  a shadow-mode trial.
+
+  **DHCPv6 (RFC 8415) is not implemented and is not claimed to be.** It is a
+  different packet format with a different relay mechanism, and reading it as if
+  it were DHCPv4 would be worse than not reading it.
+
+  Four things found while writing it. The fuzzer found a message type of **zero**
+  -- option 53 present, one octet, and a value no standard defines -- accepted by
+  the reader; it is the absent value wearing a length, and a relay cannot decide
+  about a message whose type the two ends may read differently. A rule's positive
+  lists had no effect on the listener's deny list, so "the build segment may be
+  told a boot server and nothing else may" could not be written at all: naming
+  what an option may contain is now how a rule allows the option, which is the
+  same turn the LDAP attribute policy makes. A stripped option that was a finding
+  was logged and not counted, so the number an operator would alert on did not
+  exist. And the pending gauge was only republished when a message arrived, so on
+  a quiet segment it sat at whatever the last busy moment said -- which is
+  exactly when somebody is looking at it.
+
 - **`kind: tftp`: a TFTP relay, so the protocol under provisioning can be put
   behind something that reads a filename as a path.** TFTP moves firmware onto
   switches, boot images to machines that have no operating system yet and

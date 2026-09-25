@@ -112,7 +112,7 @@ estate — and binds only the kinds of its own role:
 |--------|-------|----------------|
 | `xproxy` | the open internet | `http`, `forward`, `tcp`, `udp`, `dns` |
 | `xgate` | people | `ssh`, `telnet`, `vnc`, `rdp` |
-| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `snmp`, `ldap`, `tftp`, `ntp`, `ntske` |
+| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `snmp`, `ldap`, `tftp`, `dhcp`, `ntp`, `ntske` |
 
 A kind a binary did not link is never bound and never falls through to
 the HTTP data plane: it is an error naming the daemon that serves it.
@@ -186,6 +186,7 @@ its own for what is deliberately *not* implemented and why.
 | Telecontrol | IEC 60870-5-104 (APCI/APDU, the I, S and U formats, the type identifications and causes of transmission of IEC 60870-5-101), with IEC 62351-3 TLS | `iec104` |
 | Management | SNMP v1 (RFC 1157), v2c (RFC 1901–1908) and v3 with USM (RFC 3410–3418), over UDP and over TCP (RFC 3430), with RFC 6353 TLS on the stream side | `snmp` |
 | Directory | LDAP v3 (RFC 4511–4515, 4517, 4519) with LDAPS and the StartTLS of RFC 4513, as a relay: the bind methods, the search filter's shape, distinguished names compared per relative name, the attribute lists in both directions | `ldap`, filters |
+| Addressing | DHCP (RFC 2131) with its options (RFC 2132), relay agent information (RFC 3046), long options (RFC 3396) and classless static routes (RFC 3442), as a relay agent that reads what it relays: the server a reply came from, and the configuration the reply carries | `dhcp` |
 | Provisioning | TFTP (RFC 1350) with the option extension (RFC 2347), block size (RFC 2348), timeout and transfer size (RFC 2349) and windowed transfer (RFC 7440), as a relay: the filename read as a path, the direction of the transfer, and the bounds on what comes back | `tftp` |
 | Remote access | SSH (RFC 4251–4254) with OpenSSH user and host certificates; telnet's NVT (RFC 854); RFB 3.3 to 3.8 (RFC 6143) with VeNCrypt; RDP (MS-RDPBCGR) over TLS, CredSSP over NTLMv2 towards the desktop, or the protocol's own encryption | `ssh`, `telnet`, `vnc`, `rdp` |
 | Identity | OpenID Connect Core 1.0, OAuth 2.0 (RFC 6749) with introspection (RFC 7662), PKCE (RFC 7636) and token exchange (RFC 8693); JWT, JWS and JWKS (RFC 7515–7519); DPoP (RFC 9449); certificate-bound tokens (RFC 8705); SAML 2.0 as a service provider; SCIM 2.0 (RFC 7642–7644); WebAuthn level 2; LDAP (RFC 4511–4515); TOTP (RFC 6238); HTTP Basic (RFC 7617); client certificate identity as `Client-Cert` (RFC 9440) or Envoy's `X-Forwarded-Client-Cert` | filters |
@@ -217,6 +218,7 @@ protocol so that a policy can be written in that protocol's own terms:
 | `iec104` | `xrelay` | IEC 60870-5-104, IEC 62351-3 TLS | Type identifications, causes of transmission, common and originator addresses, information object ranges, select-before-operate, schedules |
 | `snmp` | `xrelay` | SNMP v1, v2c and v3 (USM), UDP and TCP, RFC 6353 TLS | Versions, community strings and USM users, security levels, operations, object subtrees, the amplification bounds |
 | `ldap` | `xrelay` | LDAP v3, LDAPS, StartTLS | Bind methods, the bound identity, operations, naming contexts and subtrees, scopes, attributes in both directions, filter and entry bounds |
+| `dhcp` | `xrelay` | DHCPv4 with RFC 2132 options, RFC 3046 relay agent information, RFC 3442 routes | The server a reply came from, the options and addresses a reply may carry, the boot file, the lease bounds, the hardware-address rate |
 | `tftp` | `xrelay` | TFTP with RFC 2347–2349 options and RFC 7440 windows | The client list, the direction, the transfer mode, the filename read as a path and refused by class, the directories, and the block, window and transfer bounds |
 | `ntp` | `xrelay` | NTP v1–v4, SNTP, NTS-protected NTP | Versions, modes, extension fields, authentication, and whether the servers agree |
 | `ntske` | `xrelay` | NTS key establishment (TLS on 4460) | The application protocol, the server name, the handshakes in flight |
@@ -417,6 +419,33 @@ protocol so that a policy can be written in that protocol's own terms:
   terminated here** rather than forwarded, which makes it a secure upgrade
   for a client library nobody can reconfigure — and it discards the
   identity, as the standard requires
+
+- `kind: dhcp`: a **DHCP relay agent that reads what it relays** — the one
+  protocol where *answering* is the attack. A client broadcasts "who will
+  configure me" and believes whatever answers first: its address, its **default
+  route**, its **resolvers**, its **proxy** (option 252) and, on a machine that
+  boots from the network, the **file it boots**. Nothing in the exchange
+  authenticates anybody, and the client has no address yet, so it cannot even be
+  told apart by one. That makes this the one relay kind whose interesting half
+  faces *upstream*. A **reply from an address the listener does not admit as a
+  server is dropped** before it is read — DHCP snooping by address rather than by
+  switch port, never shadowed, and filled in from the upstream pool when nobody
+  wrote a list, because an operator who wrote none meant "the servers I
+  configured". The **options a server sends are checked as a configuration**:
+  option 121 and Microsoft's 249 are a routing table in a broadcast reply,
+  option 252 is a proxy, options 66 and 67 are what a machine boots, and each is
+  stripped by default while the address itself goes through — a client that still
+  gets its address and no longer gets a route it should not have is a client that
+  works. The **addresses in a reply are checked against the estate's own**
+  gateways, resolvers and boot servers, which catches a *compromised real server*
+  as surely as a rogue one, and the boot server is checked in both places it
+  lives because a check on one has a way round it. A **client does not get to say
+  which segment it is on**: option 82 from a client is stripped as RFC 3046
+  requires and the relay adds its own. And the **starvation bound is keyed on the
+  hardware address**, because pool exhaustion is one host sending thousands of
+  discovers with a made-up address in each and a limit keyed on the source
+  address would see one sender doing nothing unusual. DHCPv6 is a different
+  protocol and is not pretended to be this one
 
 - `kind: tftp`: a **TFTP** relay in front of the servers that move firmware,
   configurations and boot images. This is the protocol under provisioning: a

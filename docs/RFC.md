@@ -35,6 +35,7 @@ did not build it" and "it does not apply" are different promises again.
 - [Network management](#network-management)
 - [Directory](#directory)
 - [Provisioning](#provisioning)
+- [Addressing](#addressing)
 - [Time](#time)
 - [Secure Shell and file transfer](#secure-shell-and-file-transfer)
 - [Remote desktop and terminal access](#remote-desktop-and-terminal-access)
@@ -302,6 +303,38 @@ this relay will not do is add security the protocol does not have: there is no
 TLS on a `tftp` listener and no option that could carry one, so a
 configuration that tried to give it a certificate is refused at load rather
 than quietly accepted.
+
+## Addressing
+
+DHCP is two documents and a pile of option assignments. What the table says is
+which parts a *relay agent* implements, and what it does about the fact that
+nothing in the protocol authenticates anybody.
+
+| RFC | Title | Status | Notes |
+|-----|-------|--------|-------|
+| 2131 | Dynamic Host Configuration Protocol | Implemented, as a relay agent | The BOOTP header of §2 and the message types of §3. §4.1.1's relay agent behaviour: `giaddr` filled in when it is empty, `hops` incremented and bounded, a reply sent to the address the request came from or broadcast when the client has none. An `hlen` past the sixteen-octet field is refused -- one reader takes sixteen and another reads past them, and the hardware address is what a lease is keyed on -- and the address is read as `hlen` octets rather than assumed to be six, because Infiniband's are twenty and the padding after a short one is whatever the client left there. `xid` plus the hardware address is what pairs a reply with its request, and the pairing survives the OFFER so that the ACK of the same transaction can be paired too |
+| 2132 | DHCP Options and BOOTP Vendor Extensions | Implemented, and the reason for the kind | Every option is read, carried and refusable by name or number. Four are named in the policy because they carry a *configuration*: option 3 (router), 6 (DNS), 66 and 67 (boot server and file). §9.3's **option overload** is read: when option 52 says so, the `sname` and `file` fields carry options, and a reader that missed them would decide about a message the server reads differently. §9.14's client identifier is compared with the header's hardware address only in its Ethernet form, because the RFC allows any opaque value |
+| 3046 | DHCP Relay Agent Information Option | Implemented, including the part that is a refusal | Option 82 with its circuit-id and remote-id suboptions. §2.1's rule that a relay **discards** the option arriving from a client is enforced: a client has no business asserting which circuit it is on, because that assertion is exactly what the option exists to make on its behalf. §2.2's rule that the relay removes what it added before forwarding the reply is enforced too -- the option is a note between the relay and the server |
+| 3396 | Encoding Long Options in DHCP | Implemented in both directions | Several instances of one option are **one option** whose value is their concatenation. A reader that took the first instance and a server that joins them disagree about the value, so this joins them; the encoder splits a long option the same way, because a relay that could read the encoding and not write it could not carry what it had just allowed |
+| 3442 | The Classless Static Route Option | Implemented, and decoded rather than only refused | Option 121, and Microsoft's option 249 which carries the same thing because Windows shipped before the number was assigned. Both are a routing table in a broadcast reply -- the most direct interception the protocol offers -- and both are on the default deny list. An estate that uses them names its own destinations in `allow_routes`, compared by *containment*, so `10.0.0.0/8` does not admit a default route. The refusal names the route, because an operator who sees an injection stopped is owed the route |
+| 4039 | Rapid Commit | Carried | Option 80 is a zero-length option whose presence is the whole message, which is why the encoder is careful to write a valueless option rather than drop it |
+| 4388 | DHCP Leasequery | Recognised, and not in the default type list | The lease-query family is a relay agent's own diagnostic and an inventory of every lease in the estate to anything else, so it is nameable in `message_types` and absent from the default |
+| 4578 | DHCP Options for PXE | Read as policy input | Options 93, 94 and 97 say what kind of machine is booting. They are carried; what they are useful for here is that a rule can be written about the machines that send them |
+| 4702 | The Client FQDN Option | Carried | Option 81 is a name a client asks the server to register on its behalf, and is logged with the lease |
+| 3203 | DHCP reconfigure extension | Recognised | DHCPFORCERENEW is a message *to* a client that answers nothing, which is why it is worth being able to name in a policy |
+| 951 / 1542 | BOOTP and its clarifications | Partial, by inheritance | The header is BOOTP's and the 300-octet minimum message is padded to, because there are relay agents and clients that drop anything shorter. A message with no option 53 is BOOTP rather than DHCP and is refused: this relay does not speak for BOOTP, and saying so is better than deciding about a message with no type |
+| 8415 | DHCP for IPv6 | **Not implemented** | A different packet format, different message types, a different relay mechanism and its own options. Reading it as if it were DHCPv4 would be worse than not reading it, and a security tool that claimed one implementation covered both would be making a claim it could not keep. A segment running both needs its v6 relaying done elsewhere |
+| 7513 / 7610 | SAVI for DHCP, DHCP shield | Related, not this | Both describe the switch-level countermeasure this kind implements at the relay: refusing a reply that did not come from a server. Where a switch can do it by port, it should; this is the same policy by address, plus the part a switch cannot do -- reading what the reply *says* |
+
+Three things this relay decides that no standard mentions, said plainly because
+the protocol leaves no other place to put them. A reply is checked against the
+estate's **own** gateways, resolvers and boot servers, which is a check a
+compromised real server fails as surely as a rogue one. A lease past the
+configured bound is **shortened** rather than refused, because a client that gets
+a shorter lease boots and one that gets no answer does not. And the starvation
+bound is keyed on the **hardware address** from inside the message rather than on
+the peer address, because the peer address of a booting client is `0.0.0.0` and a
+limit keyed on it would see one sender doing nothing unusual.
 
 ## Time
 

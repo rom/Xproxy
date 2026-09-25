@@ -3327,6 +3327,115 @@ log of guessed ones would be a list of the estate's passwords with a
 timestamp beside each. The v3 user name *is* logged, because it is an
 identity rather than a secret.
 
+### DHCP: a relay agent that reads the answers
+
+The one protocol where *answering* is the attack. A client broadcasts "who will
+configure me" and believes whatever answers first — including its default route,
+its resolvers, its proxy and the file it boots.
+
+```yaml
+server:
+  listeners:
+    - name: segment
+      address: "10.20.0.1:67"
+      kind: dhcp                      # UDP only: no tls section is accepted
+      dhcp:
+        upstream: dhcp-servers
+
+        # What giaddr becomes, which tells the server which segment to
+        # allocate from. Required: a relay agent without it is asking the
+        # server to answer a broadcast it never saw.
+        relay_address: 10.20.0.1
+        circuit_id: vlan20
+        remote_id: relay-north
+
+        # allow_servers is left out on purpose: it becomes the endpoints of
+        # dhcp-servers, which is what "the servers I configured" means.
+
+        # The estate's own. A reply naming anything else is wrong whoever
+        # sent it -- which catches a compromised real server too.
+        allow_gateways: [10.20.0.1]
+        allow_resolvers: [10.20.0.2, 10.20.0.3]
+
+        max_lease_time: 24h
+        rate_limit: 10                # per hardware address
+upstreams:
+  - {name: dhcp-servers, endpoints: [{address: "10.20.4.10:67"}, {address: "10.20.4.11:67"}]}
+```
+
+`examples/addressing/dhcp.yaml` is the complete file, with a PXE rule for the
+build segment, a guest segment on a short lease, a listener that fronts a
+downstream relay agent, and a shadow-mode trial.
+
+**`dhcp_rogue` is the counter to alert on.** It counts the replies that arrived
+from an address this listener does not admit as a server. That is somebody
+answering, and on this protocol answering is the whole attack. `allow_servers`
+defaults to the endpoints of the `upstream` pool, so the check is on before
+anybody configures it — but if the pool's endpoints are named by *hostname* the
+listener refuses to start and asks for the list, because guessing would be the
+wrong kind of helpful on the one check this kind most depends on.
+
+**The dangerous options are stripped and the address still goes through.** The
+built-in `deny_options` list is the options that carry a configuration: the two
+classless route options and the obsolete one, WPAD, the TFTP server and boot
+file, and the vendor blob. `on_denied_option` defaults to `strip`, so a client
+gets its address, its mask and its lease and does not get a route somebody
+injected. `dhcp_stripped` counts it.
+
+**Say what an option may contain to allow the option.** The built-in list strips
+the boot options from every reply, which is right for a network with no PXE
+clients and wrong for the one segment that has them. Put the permission on a
+rule:
+
+```yaml
+        rules:
+          - name: build-segment
+            action: allow
+            vendor_classes: ["PXEClient*"]
+            allow_boot_servers: [10.20.4.20]
+            boot_files: ["pxelinux.0", "images/*.efi"]
+```
+
+Naming `allow_boot_servers` and `boot_files` is what lets options 66 and 67
+through for that rule's traffic — and they are then checked against the lists
+rather than carried blindly. A rule's own `deny_options` still wins, because a
+deny somebody wrote is a deny.
+
+**An estate that really uses classless routes names its own destinations.**
+
+```yaml
+        deny_options: [wpad_url, tftp_server, boot_file, vendor_specific,
+                       ms_classless_static_route, static_route]
+        allow_routes: [10.20.0.0/16]
+```
+
+Note what that does: `classless_static_route` is left off the deny list so the
+option survives, and `allow_routes` then decides. The comparison is containment,
+so `10.20.0.0/16` admits a route to `10.20.5.0/24` and refuses a default route —
+which is the shape a route injection actually takes.
+
+**The starvation bound is keyed on the hardware address.** Pool exhaustion is one
+host sending thousands of DISCOVERs with a made-up address in each. `rate_limit`
+is per hardware address for that reason, and `max_clients` bounds the table doing
+the keying so the flood of new addresses cannot exhaust that instead.
+
+**Broadcast replies need a route.** A client with no address yet cannot be
+unicast to, so the reply goes to `255.255.255.255:68`, and that needs a route on
+the listener's interface — on Linux, `ip route add 255.255.255.255/32 dev eth1`.
+A relayed request or a renewal from a client that already has an address is
+answered where it came from and needs nothing.
+
+**Read the lease log.** `log_leases` (the default) writes which hardware address
+got which address, from which server, for how long, what it was told (router,
+DNS, boot file) and what it *asked for*. That last field is the one an ordinary
+DHCP server's log does not have, and the whole line is the beginning of an asset
+inventory: a hardware address, a vendor prefix, and a name the device called
+itself.
+
+**DHCPv6 is not this.** RFC 8415 is a different packet format with a different
+relay mechanism. A dual-stack segment needs its v6 relaying done elsewhere; this
+listener will not pretend to cover it.
+
 ### TFTP in front of the provisioning servers
 
 The protocol under provisioning, and the one with nothing to authenticate

@@ -287,6 +287,33 @@ type Stats struct {
 	TFTPTimedOut      atomic.Uint64
 	TFTPUpstreamFail  atomic.Uint64
 	TFTPUnsolicited   atomic.Uint64
+	// The DHCP relay.
+	//
+	// DHCPRogue is the counter that matters most and the one an operator
+	// should alert on: a reply from an address the listener does not admit as
+	// a server is somebody answering on the segment, which is the whole of
+	// this protocol's attack. DHCPStripped counts the options removed from
+	// replies -- a route, a proxy, a boot file -- which is the number that
+	// says the answer policy is doing something a request-side check could
+	// not.
+	DHCPMessages     atomic.Uint64
+	DHCPDiscovers    atomic.Uint64
+	DHCPRequests     atomic.Uint64
+	DHCPReplies      atomic.Uint64
+	DHCPLeases       atomic.Uint64
+	DHCPReleases     atomic.Uint64
+	DHCPDenied       atomic.Uint64
+	DHCPWouldDeny    atomic.Uint64
+	DHCPRogue        atomic.Uint64
+	DHCPStripped     atomic.Uint64
+	DHCPMalformed    atomic.Uint64
+	DHCPRejected     atomic.Uint64
+	DHCPRateLimited  atomic.Uint64
+	DHCPTimedOut     atomic.Uint64
+	DHCPUpstreamFail atomic.Uint64
+	DHCPUnsolicited  atomic.Uint64
+	DHCPPending      atomic.Int64
+	DHCPClients      atomic.Int64
 
 	// SNMPPending is how many requests are outstanding towards agents right
 	// now. It is a gauge rather than a total because the number an operator
@@ -704,6 +731,24 @@ type Snapshot struct {
 	TFTPTimedOut           uint64             `json:"tftp_timed_out"`
 	TFTPUpstreamFail       uint64             `json:"tftp_upstream_failed"`
 	TFTPUnsolicited        uint64             `json:"tftp_unsolicited"`
+	DHCPMessages           uint64             `json:"dhcp_messages"`
+	DHCPDiscovers          uint64             `json:"dhcp_discovers"`
+	DHCPRequests           uint64             `json:"dhcp_requests"`
+	DHCPReplies            uint64             `json:"dhcp_replies"`
+	DHCPLeases             uint64             `json:"dhcp_leases"`
+	DHCPReleases           uint64             `json:"dhcp_releases"`
+	DHCPDenied             uint64             `json:"dhcp_denied"`
+	DHCPWouldDeny          uint64             `json:"dhcp_would_deny"`
+	DHCPRogue              uint64             `json:"dhcp_rogue"`
+	DHCPStripped           uint64             `json:"dhcp_stripped"`
+	DHCPMalformed          uint64             `json:"dhcp_malformed"`
+	DHCPRejected           uint64             `json:"dhcp_rejected"`
+	DHCPRateLimited        uint64             `json:"dhcp_rate_limited"`
+	DHCPTimedOut           uint64             `json:"dhcp_timed_out"`
+	DHCPUpstreamFail       uint64             `json:"dhcp_upstream_failed"`
+	DHCPUnsolicited        uint64             `json:"dhcp_unsolicited"`
+	DHCPPending            int64              `json:"dhcp_pending"`
+	DHCPClients            int64              `json:"dhcp_clients"`
 	NTPRequests            uint64             `json:"ntp_requests"`
 	NTPForwarded           uint64             `json:"ntp_forwarded"`
 	NTPResponses           uint64             `json:"ntp_responses"`
@@ -1081,6 +1126,24 @@ func (s *Stats) snapshot() Snapshot {
 		TFTPTimedOut:           s.TFTPTimedOut.Load(),
 		TFTPUpstreamFail:       s.TFTPUpstreamFail.Load(),
 		TFTPUnsolicited:        s.TFTPUnsolicited.Load(),
+		DHCPMessages:           s.DHCPMessages.Load(),
+		DHCPDiscovers:          s.DHCPDiscovers.Load(),
+		DHCPRequests:           s.DHCPRequests.Load(),
+		DHCPReplies:            s.DHCPReplies.Load(),
+		DHCPLeases:             s.DHCPLeases.Load(),
+		DHCPReleases:           s.DHCPReleases.Load(),
+		DHCPDenied:             s.DHCPDenied.Load(),
+		DHCPWouldDeny:          s.DHCPWouldDeny.Load(),
+		DHCPRogue:              s.DHCPRogue.Load(),
+		DHCPStripped:           s.DHCPStripped.Load(),
+		DHCPMalformed:          s.DHCPMalformed.Load(),
+		DHCPRejected:           s.DHCPRejected.Load(),
+		DHCPRateLimited:        s.DHCPRateLimited.Load(),
+		DHCPTimedOut:           s.DHCPTimedOut.Load(),
+		DHCPUpstreamFail:       s.DHCPUpstreamFail.Load(),
+		DHCPUnsolicited:        s.DHCPUnsolicited.Load(),
+		DHCPPending:            s.DHCPPending.Load(),
+		DHCPClients:            s.DHCPClients.Load(),
 		NTPRequests:            s.NTPRequests.Load(),
 		NTPForwarded:           s.NTPForwarded.Load(),
 		NTPResponses:           s.NTPResponses.Load(),

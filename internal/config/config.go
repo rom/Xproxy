@@ -288,6 +288,8 @@ type Listener struct {
 	LDAP *LDAPListener `yaml:"ldap"`
 	// TFTP configures a kind: tftp listener.
 	TFTP *TFTPListener `yaml:"tftp"`
+	// DHCP configures a kind: dhcp listener.
+	DHCP *DHCPListener `yaml:"dhcp"`
 	// Policy is whether this listener enforces its policy or only
 	// evaluates it. It overrides the estate's own policy section.
 	Policy *ListenerPolicy `yaml:"policy"`
@@ -1152,6 +1154,208 @@ type TFTPRule struct {
 	// Schedule limits the rule to a time window, which is what a firmware
 	// window is: writes allowed during the change window and not outside
 	// it.
+	Schedule *ModbusSchedule `yaml:"schedule"`
+}
+
+// DHCPListener is a kind: dhcp listener: a DHCP relay agent that reads what it
+// relays.
+//
+// DHCP is the one protocol where *answering* is the attack. A client broadcasts
+// "who will configure me", and whatever answers first tells it its address, its
+// default route, its resolvers, its proxy and -- if it boots from the network --
+// the file it boots. Nothing in the exchange authenticates anybody.
+type DHCPListener struct {
+	// Mode is reverse (the default: clients send here and the relay forwards
+	// to the servers) or forward (this listener is the controlled egress a
+	// downstream relay agent uses to reach a server elsewhere).
+	Mode string `yaml:"mode"`
+	// Upstream is the server pool. Required.
+	Upstream string `yaml:"upstream"`
+	// AllowClients and DenyClients are the networks a message may arrive
+	// from. Deny is evaluated first.
+	//
+	// On a segment this is every client, which is why it is not the main
+	// control here: a DHCP client has no address yet, so it sends from
+	// 0.0.0.0 and the list cannot distinguish it from any other. It is the
+	// useful control on a listener that fronts *other relay agents*, where
+	// every sender is a known address.
+	AllowClients []string `yaml:"allow_clients"`
+	DenyClients  []string `yaml:"deny_clients"`
+	// AllowServers are the addresses a reply may come from, and it is the
+	// single most valuable line in the file. Every switch vendor sells this
+	// as DHCP snooping with a trusted port; here it is an address list, and
+	// an OFFER or an ACK from anywhere else is dropped and counted.
+	//
+	// Empty means the endpoints of the upstream pool, which is almost always
+	// what an operator means and is why it can be left out.
+	AllowServers []string `yaml:"allow_servers"`
+	// MessageTypes is the allow list of message types a client may send:
+	// discover, request, decline, release, inform, lease_query. Empty allows
+	// the four of the ordinary lease cycle plus inform, which is to say it
+	// leaves out the lease-query family -- a relay agent's own diagnostic,
+	// and an inventory of every lease in the estate to anything else.
+	MessageTypes []string `yaml:"message_types"`
+	// DenyOptions are the options a *server* may not send. Empty uses the
+	// built-in list, which is the options that carry a configuration rather
+	// than a value: the two classless route options and the obsolete one,
+	// the WPAD URL, the TFTP server and boot file, and the vendor-specific
+	// blob that can be any of them. Setting the list replaces it.
+	DenyOptions []string `yaml:"deny_options"`
+	// AllowOptions turns the answer policy inside out: when it is set, an
+	// option outside it is removed. It is the positive model, and on a
+	// network whose clients need six options it is a shorter and safer thing
+	// to write than a deny list.
+	AllowOptions []string `yaml:"allow_options"`
+	// OnDeniedOption is strip (the default) or deny. strip removes the option
+	// and forwards the rest, so a client still gets its address and no longer
+	// gets a route it should not have; deny refuses the whole reply, which
+	// leaves the client with no address at all.
+	OnDeniedOption string `yaml:"on_denied_option"`
+	// DenyRequestedOptions are options a client may not *ask* for, in its
+	// option 55 parameter list. A client asking for the WPAD URL is a client
+	// that will use a proxy if anything offers one, and an estate that has
+	// decided not to have that can say so here; the ask is removed rather
+	// than the message refused.
+	DenyRequestedOptions []string `yaml:"deny_requested_options"`
+	// AllowGateways, AllowResolvers and AllowBootServers are the addresses
+	// the router, DNS and boot-server options may name. These are the
+	// positive form of the same policy as DenyOptions, and the more useful
+	// one: an estate knows its own gateways and resolvers, so a reply naming
+	// anything else is wrong whoever sent it.
+	AllowGateways    []string `yaml:"allow_gateways"`
+	AllowResolvers   []string `yaml:"allow_resolvers"`
+	AllowBootServers []string `yaml:"allow_boot_servers"`
+	// AllowRoutes are the destinations the classless static route options
+	// (121 and Microsoft's 249) may carry, for an estate that uses them. A
+	// route outside the list is refused, and the refusal names the route.
+	AllowRoutes []string `yaml:"allow_routes"`
+	// BootFiles are shell patterns the boot filename may match, for the
+	// machines that boot from the network. This is where a PXE estate says
+	// which images exist.
+	BootFiles []string `yaml:"boot_files"`
+	// MinLeaseTime and MaxLeaseTime bound the lease a server may hand out. A
+	// very long lease is a pool exhausted by every device that ever visited;
+	// a very short one is a client that renews constantly. Zero leaves
+	// either end unbounded.
+	MinLeaseTime Duration `yaml:"min_lease_time"`
+	MaxLeaseTime Duration `yaml:"max_lease_time"`
+	// RequireClientIDMatch refuses a message whose option 61 client
+	// identifier is an Ethernet identifier naming a different hardware
+	// address from the one in the header. Default false: it is a real signal
+	// and there are real clients that get it wrong, so it is a decision
+	// rather than a default.
+	RequireClientIDMatch bool `yaml:"require_client_id_match"`
+	// RefuseHiddenOptions refuses a message that carried an option in the
+	// sname or file field (option 52) or split across instances (RFC 3396).
+	// Default true: both are legal, almost nothing in an estate sends them,
+	// and both make one message say different things to different parsers.
+	RefuseHiddenOptions *bool `yaml:"refuse_hidden_options"`
+	// MaxHops bounds the hops field, which counts the relay agents a message
+	// has crossed. Default 4; RFC 2131 makes 16 the outer limit. A message
+	// arriving with a large hop count has been somewhere.
+	MaxHops int `yaml:"max_hops"`
+	// RelayAddress is the address this relay puts in giaddr, which is what
+	// tells the server which segment to allocate from and where to answer.
+	// Required in reverse mode: a relay agent that left giaddr empty would be
+	// asking the server to answer a broadcast it never saw.
+	RelayAddress string `yaml:"relay_address"`
+	// CircuitID and RemoteID fill in the two suboptions of RFC 3046's option
+	// 82, which is how a server learns which segment a request came from.
+	// Empty leaves the option out.
+	CircuitID string `yaml:"circuit_id"`
+	RemoteID  string `yaml:"remote_id"`
+	// OnClientAgentOption is what to do when a *client* sends option 82:
+	// strip (the default, which is what RFC 3046 §2.1 requires) or deny. A
+	// client has no business asserting which circuit it is on, because that
+	// assertion is exactly what the option exists to make on its behalf.
+	OnClientAgentOption string `yaml:"on_client_agent_option"`
+	// Rules decide each message, in order, first match wins. A message that
+	// matches no rule takes DefaultAction.
+	Rules []DHCPRule `yaml:"rules"`
+	// DefaultAction is allow (the default) or deny.
+	//
+	// Unlike the other relay kinds here, the default is allow. DHCP is
+	// infrastructure: a listener that refused every request until somebody
+	// wrote a rule would be a listener that stops an estate booting, and the
+	// protections in this kind are the *answer* policy and the server list,
+	// which are on by default and do not depend on a rule existing.
+	DefaultAction string `yaml:"default_action"`
+	// DenyResponse is drop (the default) or nak. drop leaves the client
+	// retrying, which is what it does anyway when nothing answers; nak sends
+	// a DHCPNAK, which makes a client stop and start over. nak is honest and
+	// it is also a way to stop a client dead, so it is not the default.
+	DenyResponse string `yaml:"deny_response"`
+	// MaxPending bounds the requests outstanding towards servers, which is
+	// the table that pairs a reply with the client that asked. Default 256.
+	MaxPending int `yaml:"max_pending"`
+	// RequestTimeout is how long a server has to answer before its answer is
+	// too late to pair. Default 10s.
+	RequestTimeout Duration `yaml:"request_timeout"`
+	// MaxMessageBytes bounds one message. Default 1500.
+	MaxMessageBytes int `yaml:"max_message_bytes"`
+	// RateLimit and RateBurst bound messages per second per *hardware
+	// address*, which is the key that matters on this protocol: address pool
+	// exhaustion is one client sending thousands of DISCOVERs with a made-up
+	// address in each, and a limit keyed on the source address would see one
+	// sender doing nothing unusual.
+	RateLimit int `yaml:"rate_limit"`
+	RateBurst int `yaml:"rate_burst"`
+	// MaxClients bounds the distinct hardware addresses this listener will
+	// track at once. It is the other half of the starvation bound: the rate
+	// limit slows one address down, and this one stops a flood of *new*
+	// addresses from filling the table that does the limiting. Default 8192.
+	MaxClients int `yaml:"max_clients"`
+	// LogMessages writes an access line per message. A segment's DHCP is
+	// quiet by the standards of a proxy, so this is affordable here in a way
+	// it is not on a directory front.
+	LogMessages bool `yaml:"log_messages"`
+	// LogLeases writes a line for every address handed out: which hardware
+	// address got which lease, for how long, from which server, and what it
+	// was told. Default true, and it is the record an estate is asked for --
+	// it is also the beginning of an asset inventory.
+	LogLeases *bool `yaml:"log_leases"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
+}
+
+// DHCPRule decides one message.
+type DHCPRule struct {
+	// Name identifies the rule in the logs and the counters. Required.
+	Name string `yaml:"name"`
+	// Action is allow, deny or observe. observe logs and counts and then
+	// keeps looking, which is how a rule is tried on live traffic before it
+	// decides anything.
+	Action string `yaml:"action"`
+	// Clients are the networks the message arrived from.
+	Clients []string `yaml:"clients"`
+	// HardwareAddresses are the addresses this rule covers, each either a
+	// whole address (02:11:22:33:44:55) or a vendor prefix (02:11:22). The
+	// prefix form is what a rule about "the telephones" is actually written
+	// with, because nobody lists every handset.
+	HardwareAddresses []string `yaml:"hardware_addresses"`
+	// MessageTypes are the message types this rule covers.
+	MessageTypes []string `yaml:"message_types"`
+	// VendorClasses and UserClasses match options 60 and 77 as shell
+	// patterns, which is how a rule about PXE clients is written:
+	// "PXEClient*" is what every one of them sends.
+	VendorClasses []string `yaml:"vendor_classes"`
+	UserClasses   []string `yaml:"user_classes"`
+	// DenyOptions, AllowGateways, AllowResolvers, AllowBootServers,
+	// AllowRoutes and BootFiles narrow the answer policy for this rule's
+	// traffic, which is how "the PXE segment may be told a boot server and
+	// nothing else may" is written.
+	DenyOptions      []string `yaml:"deny_options"`
+	AllowGateways    []string `yaml:"allow_gateways"`
+	AllowResolvers   []string `yaml:"allow_resolvers"`
+	AllowBootServers []string `yaml:"allow_boot_servers"`
+	AllowRoutes      []string `yaml:"allow_routes"`
+	BootFiles        []string `yaml:"boot_files"`
+	// MaxLeaseTime overrides the listener's lease bound for this rule.
+	MaxLeaseTime Duration `yaml:"max_lease_time"`
+	// CircuitID overrides the listener's circuit identifier, so that a rule
+	// about one segment can tell the server which segment it is.
+	CircuitID string `yaml:"circuit_id"`
+	// Schedule limits the rule to a time window.
 	Schedule *ModbusSchedule `yaml:"schedule"`
 }
 
