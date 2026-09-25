@@ -712,6 +712,20 @@ func (cl *client10) write(b []byte) {
 	}
 }
 
+// tryWrite writes and says whether it got through.
+//
+// It exists for the tests that keep sending after the relay has had enough to
+// refuse on. Once the refusal closes the connection, a further write fails or
+// succeeds depending on whether the FIN has arrived yet -- so a strict write
+// there asserts on the kernel's timing rather than on the relay's behaviour, and
+// fails a few runs in a hundred. The refusal is what those tests are about, and
+// it is asserted separately.
+func (cl *client10) tryWrite(b []byte) bool {
+	cl.t.Helper()
+	_, err := cl.c.Write(b)
+	return err == nil
+}
+
 // sasl runs the SASL layer and the second protocol header.
 func (cl *client10) sasl(user string) {
 	cl.t.Helper()
@@ -867,8 +881,16 @@ func TestATenMessageIsBoundedAcrossItsTransfers(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		// The message's octets travel in the same frame as the
 		// performative that describes them, after it.
-		cl.write(frame10(wire.FrameAMQP, 1, append(perfBody(0x14, u10(1), u10(uint32(i)),
-			bin10([]byte{byte(i)}), u10(0), bool10(false), bool10(i < 3)), body...)))
+		//
+		// The relay has enough to refuse on once the second transfer puts
+		// the running total past sixty-four, so the third and fourth are
+		// writes to a connection it has already closed. Whether they
+		// error is the kernel's timing, not the relay's decision, so they
+		// are allowed to fail: the refusal below is the assertion.
+		if !cl.tryWrite(frame10(wire.FrameAMQP, 1, append(perfBody(0x14, u10(1), u10(uint32(i)),
+			bin10([]byte{byte(i)}), u10(0), bool10(false), bool10(i < 3)), body...))) {
+			break
+		}
 	}
 	if text := cl.closedText(); !strings.Contains(text, "message_too_large") {
 		t.Errorf("the refusal said %q", text)
