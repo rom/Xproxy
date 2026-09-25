@@ -164,7 +164,7 @@ func compileRule(c *config.TFTPRule) (*rule, error) {
 }
 
 func prefixes(in []string) ([]netip.Prefix, error) {
-	var out []netip.Prefix
+	out := make([]netip.Prefix, 0, len(in))
 	for _, s := range in {
 		p, err := netip.ParsePrefix(s)
 		if err != nil {
