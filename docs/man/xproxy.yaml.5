@@ -252,6 +252,13 @@ T}	T{
 malformed messages,\: the message and response bounds,\: the GETBULK repetition bound,\: the response ratio,\: an answer nobody asked for,\: rate limits,\: the client list,\: bans
 T}
 T{
+\fBtftp\fR
+T}	T{
+every rule: the direction,\: the mode,\: the directory,\: the filename pattern and the path class;\: \fBoperations\fR,\: \fBmodes\fR,\: \fBallow_\:path_\:classes\fR,\: \fBdirectories\fR,\: \fBfilenames\fR
+T}	T{
+a filename in the nul,\: control or empty class,\: the filename and depth bounds,\: the block,\: window and transfer bounds,\: a packet on the request port that is not a request,\: a datagram from an address with no part in the transfer,\: rate limits,\: the client list,\: bans
+T}
+T{
 \fBntp\fR
 T}	T{
 the client list and every request rule (versions,\: modes,\: extension fields,\: the identity it demands),\: and every answer rule (stratum,\: distances,\: timestamps,\: identifier,\: leap)
@@ -5794,6 +5801,422 @@ T}
 \fBA community string is never written to a log.\fR It is a credential, and an access log or security event that printed every guessed one would be a list of the estate\(aqs passwords with a timestamp beside each. The v3 user name \fIis\fR logged, because it is an identity rather than a secret.
 .PP
 Counters: \fBsnmp_messages\fR, \fBsnmp_sessions\fR, \fBsnmp_sessions_open\fR, \fBsnmp_reads\fR, \fBsnmp_writes\fR, \fBsnmp_traps\fR, \fBsnmp_denied\fR, \fBsnmp_would_deny\fR, \fBsnmp_malformed\fR, \fBsnmp_rejected\fR, \fBsnmp_rate_limited\fR, \fBsnmp_amplified\fR, \fBsnmp_truncated\fR, \fBsnmp_upgraded\fR, \fBsnmp_timed_out\fR, \fBsnmp_upstream_failed\fR, \fBsnmp_unsolicited\fR, \fBsnmp_pending\fR. Refusals are \fBsnmp_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBtls_handshake\fR, \fBupstream_tls\fR, \fBmalformed\fR, \fBmalformed_response\fR, \fBmessage_too_large\fR, \fBframing\fR, \fBmax_connections\fR, \fBrate_limited\fR, \fBversion\fR, \fBcommunity\fR, \fBuser\fR, \fBsecurity_level\fR, \fBread_only\fR, \fBdirection\fR, \fBvar_binds\fR, \fBrule\fR, \fBdefault_deny\fR, \fBmax_repetitions\fR, \fBresponse_too_large\fR, \fBresponse_ratio\fR, \fBresponse_too_late\fR, \fBunsolicited_response\fR, \fBencrypted_response\fR, \fBwrong_direction\fR, \fBtoo_many_pending\fR, \fBupgrade_failed\fR.
+.SS "server.listeners[].tftp (kind: tftp)"
+.PP
+TFTP is the protocol under provisioning. A switch pulls its firmware over it, a machine with no operating system yet pulls a boot image, a telephone pulls its configuration, and an engineer pushes a running configuration off a router with it. It has \fBno authentication of any kind\fR: no user, no password, no token, no transport security, and no extension that adds one. A request is a filename and a mode, and a server that receives one answers it.
+.PP
+The clients are switches, telephones and boot ROMs, so none of that can be fixed where it lives. The relay is the only place a policy can be, and there are exactly four things such a policy can be about.
+.PP
+\fBThe filename is read as a path and refused by shape.\fR There is no identity, so the decision is the address it came from and the path it asked for \-\- and a path is where this protocol has been exploited for forty years. A deny list of \fIstrings\fR is a list of the spellings somebody thought of: it stops \fB../../etc/shadow\fR and not \fB..\e..\eetc\eshadow\fR, stops that one and not \fB/etc/shadow\fR, stops that one and not \fBsecret.txt.\fR, which Windows opens as \fBsecret.txt\fR. So the name is classified and the \fBclass\fR is refused:
+.PP
+.TS
+allbox;
+lbw(1.0i) lbx
+lw(1.0i) lx.
+T{
+Class
+T}	T{
+What it is
+T}
+T{
+\fBtraversal\fR
+T}	T{
+a \fB.\:.\fR element anywhere,\: over either separator. Any of them,\: not only the ones that escape: \fBfirmware/\:.\:.\:/\:firmware/\:x\fR resolves inside the directory on a server that normalises the name and somewhere else on one that walks it a symbolic link at a time
+T}
+T{
+\fBabsolute\fR
+T}	T{
+rooted at the top of the file system,\: by either separator
+T}
+T{
+\fBdrive\fR
+T}	T{
+a Windows drive letter (\fBc:\:\ex\fR) or a UNC prefix (\fB\e\ehost\eshare\ex\fR),\: the second of which is a request the server makes to a third machine
+T}
+T{
+\fBbackslash\fR
+T}	T{
+a backslash elsewhere in the name,\: which is a separator on a server running on Windows and an ordinary character on one that is not
+T}
+T{
+\fBtrailing\fR
+T}	T{
+an element ending in a space or a dot,\: both of which Windows strips when it opens the file
+T}
+T{
+\fBnon_\:ascii\fR
+T}	T{
+a byte above 0x7f. RFC 1350 says the filename is netascii,\: so this is outside the standard \-\- but devices that send UTF\-8 names exist
+T}
+T{
+\fBnul\fR,\: \fBcontrol\fR,\: \fBempty\fR
+T}	T{
+a name this relay and the server would read differently. \fBThese three can never be allowed\fR,\: and they are refused in \fBpolicy:\: {mode:\: shadow}\fR too: a decision about a name the server will not see is not a decision
+T}
+.TE
+.PP
+\fBallow_path_classes\fR names the ones this listener accepts besides an ordinary relative path; a rule\(aqs own list widens it for that rule\(aqs traffic only, which is how one legacy server that really does serve absolute paths is written down without opening the class for everything.
+.PP
+\fBA write is a separate decision from a read, and the default is no.\fR A write is a device putting a file onto the server, which is how a configuration leaves an estate and how firmware arrives in it. \fBoperations\fR defaults to \fB[read]\fR.
+.PP
+\fBThe amplification is bounded by rewriting rather than by refusing.\fR A twenty\-octet read request yields a whole file to whatever address the datagram claimed to come from, and RFC 7440\(aqs \fBwindowsize\fR multiplies it: a window of sixty\-four is sixty\-four data packets per acknowledgement. A request asking for more than \fBmax_window_size\fR or \fBmax_block_size\fR is \fBrewritten to the bound and forwarded\fR, because a switch whose TFTP client nobody can reconfigure is the normal case and a bound that only refuses is a bound somebody turns off. Two things cannot be lowered and are refused instead: a \fBtsize\fR on a write declaring more than \fBmax_transfer_bytes\fR, because the client has said in advance how much it intends to send; and a server that acknowledges a \fIlarger\fR block or window than it was offered, because the two ends would then disagree about how much is coming.
+.PP
+\fBA transfer speaks to exactly two addresses.\fR TFTP moves to an ephemeral port pair after the first packet: the server answers from a new port, and the rest of the transfer runs between that port and the client\(aqs. So each transfer here gets a socket of its own, and only the client\(aqs transfer identifier and the first port the server answered from may use it. A datagram from anywhere else is dropped and counted rather than answered \-\- answering is how a relay becomes a reflector \-\- and on a protocol with no integrity protection that third address is the whole attack, because a packet injected into a firmware transfer \fIis\fR firmware.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.9i) lbw(1.0i) lbx
+lw(1.2i) lw(0.9i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBmode\fR
+T}	T{
+\fBreverse\fR,\: \fBforward\fR
+T}	T{
+\fBreverse\fR
+T}	T{
+\fBreverse\fR: clients send here and the relay forwards to the servers. \fBforward\fR: this listener is the controlled egress a device uses to reach a server elsewhere
+T}
+T{
+\fBupstream\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+The server pool
+T}
+T{
+\fBallow_\:clients\fR
+T}	T{
+list of CIDR
+T}	T{
+all
+T}	T{
+Networks a client may send from. On this protocol it is the only identity there is,\: and validation warns when it is empty
+T}
+T{
+\fBdeny_\:clients\fR
+T}	T{
+list of CIDR
+T}	T{
+
+T}	T{
+Evaluated before \fBallow_\:clients\fR
+T}
+T{
+\fBoperations\fR
+T}	T{
+list
+T}	T{
+\fB[read]\fR
+T}	T{
+\fBread\fR,\: \fBwrite\fR. The default is deliberate: see above
+T}
+T{
+\fBmodes\fR
+T}	T{
+list
+T}	T{
+\fB[octet,\: netascii]\fR
+T}	T{
+\fBoctet\fR,\: \fBnetascii\fR,\: \fBmail\fR. \fBmail\fR is obsolete \-\- RFC 1350 removed it \-\- and asked the server to deliver the file as mail to the address in the filename field,\: so a server that still implements it is a mail injection vector reachable with one datagram
+T}
+T{
+\fBallow_\:path_\:classes\fR
+T}	T{
+list
+T}	T{
+plain only
+T}	T{
+Path classes accepted besides an ordinary relative path: \fBabsolute\fR,\: \fBbackslash\fR,\: \fBdrive\fR,\: \fBtraversal\fR,\: \fBtrailing\fR,\: \fBnon_\:ascii\fR. \fBnul\fR,\: \fBcontrol\fR and \fBempty\fR are refused at load
+T}
+T{
+\fBdirectories\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+The directories a filename may name,\: compared \fBelement by element\fR from the top of what the server serves,\: so \fBfirmware\fR does not cover \fBfirmware\-\:staging\fR. A name outside all of them is refused before the rules and before \fBdefault_\:action:\: allow\fR
+T}
+T{
+\fBdeny_\:directories\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+Directories no rule can allow,\: which is how an exception inside an allowed tree is written
+T}
+T{
+\fBfilenames\fR
+T}	T{
+list of pattern
+T}	T{
+any
+T}	T{
+Shell patterns (\fBfirmware/\:*.\:bin\fR),\: matched against the whole cleaned path and against its last element,\: so either spelling says what it looks like
+T}
+T{
+\fBdeny_\:filenames\fR
+T}	T{
+list of pattern
+T}	T{
+
+T}	T{
+Evaluated first;\: no rule can override it
+T}
+T{
+\fBmax_\:depth\fR
+T}	T{
+int
+T}	T{
+\fB8\fR
+T}	T{
+Path elements one name may have
+T}
+T{
+\fBmax_\:filename_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB256\fR
+T}	T{
+The filename field
+T}
+T{
+\fBmax_\:transfer_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB67108864\fR
+T}	T{
+One transfer,\: in either direction. This is the bound that matters on a write,\: because a write has no natural end: the client stops when it stops
+T}
+T{
+\fBmax_\:block_\:size\fR
+T}	T{
+int
+T}	T{
+\fB1468\fR
+T}	T{
+RFC 2348\(aqs \fBblksize\fR. The default is a data packet that still fits an Ethernet frame;\: a larger block fragments at the IP layer,\: which is a lever rather than a feature
+T}
+T{
+\fBmax_\:window_\:size\fR
+T}	T{
+int
+T}	T{
+\fB4\fR
+T}	T{
+RFC 7440\(aqs \fBwindowsize\fR: data packets per acknowledgement,\: and this protocol\(aqs amplification factor
+T}
+T{
+\fBmax_\:transfers\fR
+T}	T{
+int
+T}	T{
+\fB64\fR
+T}	T{
+Transfers in flight on this listener. Each one holds a socket
+T}
+T{
+\fBmax_\:transfers_\:per_\:client\fR
+T}	T{
+int
+T}	T{
+\fB8\fR
+T}	T{
+Transfers in flight per client address. A device with eight is a device that has stopped reading its answers
+T}
+T{
+\fBrules\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+Per\-transfer rules,\: first match wins;\: see below
+T}
+T{
+\fBdefault_\:action\fR
+T}	T{
+\fBdeny\fR,\: \fBallow\fR
+T}	T{
+\fBdeny\fR
+T}	T{
+What a request no rule matched gets
+T}
+T{
+\fBdeny_\:response\fR
+T}	T{
+\fBerror\fR,\: \fBdrop\fR
+T}	T{
+\fBerror\fR
+T}	T{
+\fBerror\fR sends an error packet,\: which every client displays and stops on. \fBdrop\fR sends nothing,\: so the client retransmits until it times out \-\- which is why \fBerror\fR is the default: a device that is told no stops
+T}
+T{
+\fBtransfer_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+One whole transfer
+T}
+T{
+\fBidle_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB15s\fR
+T}	T{
+A transfer that has gone quiet,\: which is a few of the protocol\(aqs own retransmissions
+T}
+T{
+\fBrate_\:limit\fR,\: \fBrate_\:burst\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Requests per second per client address
+T}
+T{
+\fBlog_\:transfers\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+An access line per transfer: who,\: which direction,\: which path,\: how much moved,\: how it ended. This is the record an estate is asked for when somebody wants to know which switch got which firmware
+T}
+T{
+\fBalert_\:on_\:deny\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A security event per refusal
+T}
+.TE
+.SS "server.listeners[].tftp.rules[]"
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.8i) lbx
+lw(1.2i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+string
+T}	T{
+Required;\: names the rule in the logs and the counters
+T}
+T{
+\fBaction\fR
+T}	T{
+\fBallow\fR,\: \fBdeny\fR,\: \fBobserve\fR
+T}	T{
+Default \fBallow\fR. \fBobserve\fR records the request and keeps looking,\: which is how a rule is tried on live traffic before it decides anything
+T}
+T{
+\fBclients\fR
+T}	T{
+list of CIDR
+T}	T{
+Networks the client is in
+T}
+T{
+\fBoperations\fR
+T}	T{
+list
+T}	T{
+\fBread\fR,\: \fBwrite\fR
+T}
+T{
+\fBmodes\fR
+T}	T{
+list
+T}	T{
+The transfer modes this rule covers
+T}
+T{
+\fBdirectories\fR
+T}	T{
+list
+T}	T{
+The directories this rule covers
+T}
+T{
+\fBdeny_\:directories\fR
+T}	T{
+list
+T}	T{
+Directories this rule does not cover even when \fBdirectories\fR would match
+T}
+T{
+\fBfilenames\fR,\: \fBdeny_\:filenames\fR
+T}	T{
+list of pattern
+T}	T{
+This rule\(aqs own patterns,\: against the cleaned path
+T}
+T{
+\fBallow_\:path_\:classes\fR
+T}	T{
+list
+T}	T{
+Widens the listener\(aqs list for this rule\(aqs traffic only. The three classes the listener cannot allow,\: a rule cannot allow either
+T}
+T{
+\fBmax_\:transfer_\:bytes\fR
+T}	T{
+int
+T}	T{
+This rule\(aqs own transfer bound
+T}
+T{
+\fBmax_\:block_\:size\fR,\: \fBmax_\:window_\:size\fR
+T}	T{
+int
+T}	T{
+This rule\(aqs own amplification bounds,\: so "this directory at a window of one" is one rule
+T}
+T{
+\fBschedule\fR
+T}	T{
+object
+T}	T{
+\fB{days,\: from,\: to,\: timezone}\fR;\: a window whose \fBto\fR is before its \fBfrom\fR spans midnight. A firmware window is a schedule: writes allowed during the change window and refused outside it
+T}
+.TE
+.PP
+\fBWhat is checked before the rules, and cannot be shadowed.\fR A client outside the address list; the rate limit; a packet the relay could not parse; a packet on the request port whose opcode is not a request, because RFC 1350 gives that port one job; a filename in the \fBnul\fR, \fBcontrol\fR or \fBempty\fR class; \fBmax_filename_bytes\fR and \fBmax_depth\fR; \fBmax_block_size\fR, \fBmax_window_size\fR and \fBmax_transfer_bytes\fR; a data packet larger than the block size the transfer negotiated; and a datagram from an address that has no part in the transfer.
+.PP
+\fBA listener takes no \fBtls\fR section.\fR The protocol has no transport security and no extension that adds one, so a listener carrying a certificate would be promising something it cannot do; validation refuses it. There is no TCP port either: \fBkind: tftp\fR binds UDP and nothing else.
+.PP
+\fBWhat this relay does not do is look inside a transfer.\fR What is in a firmware image is the estate\(aqs business; that the image is one the policy allows, of a size the policy allows, to a path the policy allows, is the relay\(aqs. For content inspection of a file moving through an estate, the ICAP and YARA paths on \fBsftp\fR and \fBftp\fR are where that lives \-\- and both of those protocols have a user.
+.PP
+Counters: \fBtftp_requests\fR, \fBtftp_transfers\fR, \fBtftp_transfers_open\fR, \fBtftp_reads\fR, \fBtftp_writes\fR, \fBtftp_bytes_in\fR, \fBtftp_bytes_out\fR, \fBtftp_denied\fR, \fBtftp_would_deny\fR, \fBtftp_path_refused\fR, \fBtftp_lowered\fR, \fBtftp_oversize\fR, \fBtftp_malformed\fR, \fBtftp_rejected\fR, \fBtftp_rate_limited\fR, \fBtftp_timed_out\fR, \fBtftp_upstream_failed\fR, \fBtftp_unsolicited\fR. \fBtftp_lowered\fR is the one to watch first: it counts the requests whose block size or window this relay rewrote, which says the amplification bound is working without anything being refused. Refusals are \fBtftp_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBrate_limited\fR, \fBmalformed\fR, \fBmalformed_response\fR, \fBnot_a_request\fR, \fBnot_in_transfer\fR, \fBwrong_source\fR, \fBwrong_direction\fR, \fBpacket_too_large\fR, \fBblock_too_large\fR, \fBpath_traversal\fR, \fBpath_absolute\fR, \fBpath_drive\fR, \fBpath_backslash\fR, \fBpath_trailing\fR, \fBpath_non_ascii\fR, \fBpath_control\fR, \fBpath_nul\fR, \fBpath_empty\fR, \fBpath_too_deep\fR, \fBfilename_too_long\fR, \fBdirectory_denied\fR, \fBdirectory_not_allowed\fR, \fBfilename_denied\fR, \fBfilename_not_allowed\fR, \fBoperation_not_allowed\fR, \fBmode_not_allowed\fR, \fBrule\fR, \fBdefault_deny\fR, \fBblock_size_invalid\fR, \fBblock_size_malformed\fR, \fBwindow_size_invalid\fR, \fBwindow_size_malformed\fR, \fBtimeout_malformed\fR, \fBtransfer_size_malformed\fR, \fBtransfer_too_large\fR, \fBoack_malformed\fR, \fBoack_block_too_large\fR, \fBoack_window_too_large\fR, \fBrequest_unencodable\fR, \fBtoo_many_transfers\fR, \fBtoo_many_per_client\fR, \fBshutting_down\fR, \fBnot_udp\fR.
 .SS "server.listeners[].ntp (kind: ntp)"
 .PP
 A \fBkind: ntp\fR listener is an NTP and NTS security gateway: it reads every packet, decides about it in the protocol\(aqs own terms, and compares the servers behind it with each other.
@@ -13592,7 +14015,7 @@ list
 T}	T{
 \fB[]\fR (all)
 T}	T{
-Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fByara\fR
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fByara\fR
 T}
 T{
 \fBthreshold\fR

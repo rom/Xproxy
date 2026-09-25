@@ -34,6 +34,7 @@ did not build it" and "it does not apply" are different promises again.
 - [Industrial control](#industrial-control)
 - [Network management](#network-management)
 - [Directory](#directory)
+- [Provisioning](#provisioning)
 - [Time](#time)
 - [Secure Shell and file transfer](#secure-shell-and-file-transfer)
 - [Remote desktop and terminal access](#remote-desktop-and-terminal-access)
@@ -275,6 +276,32 @@ search that reaches the relay's entry bound is completed with
 `sizeLimitExceeded` (4), which is exactly what a directory with an
 administrative limit sends: the client knows it has part of an answer, rather
 than hanging on a connection that will say nothing more.
+
+## Provisioning
+
+TFTP is four short documents and one of the oldest protocols still in daily
+use. What the table says is which parts a *relay* implements, and what it does
+about the fact that there is nothing in any of them to authenticate with.
+
+| RFC | Title | Status | Notes |
+|-----|-------|--------|-------|
+| 1350 | The TFTP Protocol (Revision 2) | Implemented, as a relay | All five opcodes: read and write requests, data, acknowledgement and error. A request's filename and mode are read as zero-terminated netascii strings and a field with **no terminator is refused** rather than read to the end of the packet, because "to the end of the packet" is one server's reading and another's parser may take a different one -- and a filename that runs past its field is exactly where the two differ. An acknowledgement's body must be **exactly** two octets, for the same reason. The transfer identifier rules of §4 are what a transfer here is bounded to: one socket per transfer, the client's port on one side, and the first port the server answered from on the other. §4 says a packet from an unknown identifier should be answered with error 5; this relay **drops it instead**, because answering an address that has no part in the transfer is how a relay becomes a reflector. The `mail` mode is read and refused by default: the standard itself removed it, and it asked a server to deliver the file as mail to the address in the filename field |
+| 2347 | TFTP Option Extension | Implemented | The option acknowledgement, and the rule that the server answers in the request's order with values no larger than it was offered. A server that acknowledges a **larger** block size or window than the request carried ends the transfer, because the two ends would then disagree about how much is coming. Error code 8 is what a request whose options are outside this relay's bounds is answered with, since that is the one a client may legitimately retry without them |
+| 2348 | TFTP Blocksize Option | Implemented, and bounded | 8 to 65464 is the standard's range and `max_block_size` is the relay's, defaulting to 1468 -- a data packet inside an Ethernet frame. A larger block fragments at the IP layer, which is a lever rather than a feature. A request past the bound is **rewritten to it** and forwarded, because a device whose TFTP client nobody can reconfigure is the normal case |
+| 2349 | TFTP Timeout Interval and Transfer Size Options | Implemented, and one of them is a bound | `timeout` is carried and read only far enough to refuse a value that is not a number. `tsize` is the useful one: on a **write** the client declares in advance how much it is about to send, which is the one chance to refuse an oversize transfer before an octet of it arrives rather than in the middle. On a read the *server* fills it in, and a declared size past `max_transfer_bytes` ends the transfer before the first block |
+| 7440 | TFTP Windowsize Option | Implemented, and it is the amplification factor | A window of sixty-four is sixty-four data packets per acknowledgement, from a request twenty octets long, to whatever address the datagram claimed to come from. `max_window_size` defaults to 4, and a larger request is rewritten to it rather than refused |
+| 906 | Bootstrap Loading using TFTP | Historical | The reason this protocol is still in every estate. Nothing here implements BOOTP or DHCP; the relay sits in front of the file server the boot ROM was pointed at |
+| 1782 / 1783 / 1784 / 1785 | The original option extension drafts | Obsoleted | Superseded by 2347 to 2349. The option names are the same, which is why the names are compared case-insensitively |
+
+Three things this relay decides that no standard mentions, said plainly
+because there is nothing in the protocol to fall back on. A **filename is read
+as a path and refused by class** rather than matched as a string, because TFTP
+has no identity and the path is the only thing a policy has. A **write is a
+separate decision from a read**, and the default is to refuse it. And what
+this relay will not do is add security the protocol does not have: there is no
+TLS on a `tftp` listener and no option that could carry one, so a
+configuration that tried to give it a certificate is refused at load rather
+than quietly accepted.
 
 ## Time
 

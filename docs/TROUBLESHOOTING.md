@@ -3395,6 +3395,85 @@ context can. If you need object-level policy on that traffic, the relay has
 to be where the encryption ends, which means it needs the users' keys --
 which it is not given.
 
+## TFTP relay
+
+**A request reaches the relay and not the server.** The default answer is an
+error packet, which every TFTP client displays and stops on -- `accessViolation`
+(2) for a refusal about the path, the direction or the mode, `notDefined` (0)
+for one of the bounds, and `optionRefused` (8) for an option outside them. With
+`deny_response: drop` there is no answer at all and the device retransmits
+until it gives up, which looks like a dead server. The security event carries
+the direction, the path, its class and the rule:
+
+```sh
+xproxyctl -json stats | jq '.refusals.tftp'
+xproxyctl tail security | jq -c 'select(.proto=="tftp") | {t:.time, r:.reason, op:.op, path:.path, class:.path_class, detail:.detail, rule:.rule}'
+```
+
+The reasons, and what each means:
+
+| Reason | What happened |
+|--------|----------------|
+| `client_not_allowed` | The address is not in `allow_clients`, or is in `deny_clients`. On this protocol that list is the identity |
+| `path_traversal`, `path_absolute`, `path_drive`, `path_backslash`, `path_trailing`, `path_non_ascii` | The filename's **shape** is not one this listener accepts. `allow_path_classes` is the list; the `detail` field says which part of the name earned the class, and never repeats the name |
+| `path_nul`, `path_control`, `path_empty` | A filename this relay and the server would read differently. No configuration can allow these and shadow mode does not defer them |
+| `path_too_deep`, `filename_too_long` | `max_depth` or `max_filename_bytes`. Both are bounds, so both hold in shadow mode |
+| `directory_not_allowed`, `directory_denied` | Outside `directories`, or inside `deny_directories`. The comparison is per path **element**, so `firmware` does not cover `firmware-staging` |
+| `filename_not_allowed`, `filename_denied` | The patterns. Each is matched against the whole cleaned path and against its last element |
+| `operation_not_allowed` | A write on a listener whose `operations` is the default `[read]`, or a read on one that lists only `write` |
+| `mode_not_allowed` | `octet`, `netascii` or `mail`; the default list leaves out `mail` |
+| `rule`, `default_deny` | A `deny` rule matched, or nothing matched and `default_action` is `deny` |
+| `block_size_invalid`, `window_size_invalid`, `block_size_malformed`, `window_size_malformed`, `timeout_malformed`, `transfer_size_malformed` | An option whose value is outside what its RFC defines, or is not a number at all. A relay that ignored one would be bounding a number the transfer is not using |
+| `transfer_too_large` | A `tsize` on a write declaring more than `max_transfer_bytes`, or a transfer that reached the bound while it was running |
+| `oack_block_too_large`, `oack_window_too_large`, `oack_malformed` | The **server** acknowledged an option larger than it was offered, which would leave the two ends disagreeing about how much is coming |
+| `block_too_large` | A data packet larger than the block size the transfer negotiated |
+| `not_a_request` | A data packet, an acknowledgement or an option acknowledgement arrived on port 69, which RFC 1350 gives one job |
+| `not_in_transfer` | A request or an option acknowledgement arrived on a transfer's own socket. A retransmitted request goes to port 69, not there |
+| `wrong_source` | A datagram from an address that is neither the client's transfer identifier nor the port the server answered from. It is dropped and **not** answered: answering is how a relay becomes a reflector |
+| `wrong_direction` | Data from the side that asked to receive, or an acknowledgement from the side that asked to send |
+| `malformed`, `malformed_response`, `packet_too_large` | The packet could not be read, or was past the largest the standards define. None of these is shadowed |
+| `rate_limited` | `rate_limit` per client address |
+| `too_many_transfers`, `too_many_per_client` | `max_transfers` or `max_transfers_per_client`. Each transfer holds a socket of its own |
+
+**A transfer starts and never finishes.** `tftp_timed_out` is rising and
+`tftp_bytes_out` is small. Almost always a firewall: TFTP sends the request to
+port 69 and then moves to an **ephemeral port pair**, so a rule that opens
+UDP 69 and nothing else lets the request through and drops every packet after
+it. The relay's side of that pair is a fresh high port per transfer, and the
+server's is one it chooses; both directions have to be allowed for established
+UDP flows.
+
+**A device gets its file but slowly, and `tftp_lowered` is rising.** That is
+the amplification bound working as intended: the device asked for a larger
+block or window than `max_block_size` or `max_window_size` allows, and its
+request was rewritten rather than refused. If the device is on a wired link
+inside the estate and the transfer is genuinely too slow, raise the bound on a
+**rule** for that client rather than on the listener.
+
+**A path that looks like it should be allowed is refused.** Compare the path
+**elements**, not the strings: `directories: [firmware]` covers
+`firmware/boot.bin` and does not cover `firmware-staging/boot.bin`. If the
+refusal names a `path_` class instead, the filename's shape is the problem and
+not its place -- a leading slash, a backslash somewhere in the middle, or a
+trailing dot the provisioning system added.
+
+**`tftp_unsolicited` is not zero.** Something sent a datagram to a transfer's
+socket from an address that has no part in that transfer. A few may be a
+server that changed its source port mid-transfer, which is a broken server; a
+steady stream is somebody trying to inject into a transfer, and on a protocol
+with no integrity protection a packet injected into a firmware transfer *is*
+firmware. The relay drops them, and the count is the only place they appear.
+
+**A write is refused although a rule allows it.** Check the listener's
+`operations` first: it defaults to `[read]`, and a rule cannot widen it. Then
+check the rule's `schedule`, if it has one -- outside the window the rule does
+not match and the default decides.
+
+**A `tls` section on a `tftp` listener will not load.** By design. The protocol
+has no transport security and no extension that adds one, so a listener
+carrying a certificate would be promising something it cannot do. There is no
+TCP port either.
+
 ## NTP and NTS gateway
 
 **Clients get no answer at all.** A datagram cannot be refused, so
@@ -4910,6 +4989,7 @@ innocent.
 | `mqtt_denied` | The MQTT listener: a refused CONNECT, a topic or filter outside the policy, a malformed packet, or a client outside `allow_clients` (`detail` says which) | yes |
 | `iec104_denied` | The IEC 60870-5-104 relay: a frame the policy refused -- a type identification, a cause, a station, a point or a control function outside what a rule allows, a command on a `monitor_only` listener, an execute with no selection -- or a client outside `allow_clients`, a frame it could not read, a sequence gap, or a station sending an activation to its own control centre (`reason` says which, and the event carries the type, the cause, the common address, the point and the rule) | yes |
 | `ldap_denied` | The LDAP relay: a request the policy refused -- a bind method, a bound identity, an operation, a subtree, a scope or an attribute outside what a rule allows, a write on a `read_only` listener, an object outside `base_dns` -- or a client outside `allow_clients`, a bind carrying a password in the clear, a message it could not read, a bind the *directory* itself answered `invalidCredentials`, or an answer no request matched (`reason` says which, and the event carries the operation, the bound identity, the object and the rule, never a password or a filter's values) | yes |
+| `tftp_denied` | The TFTP relay: a transfer the policy refused -- a filename whose shape or place is outside what a rule allows, a write on a read-only listener, a mode outside the list -- or a client outside `allow_clients`, a filename this relay and the server would read differently, one of the bounds, a packet on the request port that is not a request, or a datagram from an address with no part in a transfer (`reason` says which, and the event carries the direction, the path, its class and the rule) | yes |
 | `snmp_denied` | The SNMP relay: a message the policy refused -- a version, a community string, a USM user, a security level, an operation or an object subtree outside what a rule allows, a SetRequest on a `read_only` listener -- or a client outside `allow_clients`, a message it could not read, a response past the amplification bounds, or an answer no request matched (`reason` says which, and the event carries the version, the operation, the object and the rule, never the community string) | yes |
 | `modbus_denied` | The Modbus relay: a frame the policy refused -- a function code, a unit identifier, a register range or a value outside what a rule allows, a write on a `read_only` listener, a role that is missing or not allowed -- or a client outside `allow_clients`, a frame it could not read, or an answer from the device it would not pass on (`reason` says which, and the event carries the unit, the function, the address and the rule) | yes |
 | `ntp_denied` | The NTP gateway: a client outside `allow_clients`, a version or mode the profile does not accept (including modes 6 and 7, which are the control and private protocols rather than time), a packet it could not read, a rate limit, missing or failed authentication, or an answer from a server that the quality rules refuse -- unsynchronised, too far down the tree, too dispersed, or stripped of the NTS fields the request carried (`detail` says which) | yes |

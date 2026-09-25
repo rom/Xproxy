@@ -112,7 +112,7 @@ estate — and binds only the kinds of its own role:
 |--------|-------|----------------|
 | `xproxy` | the open internet | `http`, `forward`, `tcp`, `udp`, `dns` |
 | `xgate` | people | `ssh`, `telnet`, `vnc`, `rdp` |
-| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `snmp`, `ldap`, `ntp`, `ntske` |
+| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `snmp`, `ldap`, `tftp`, `ntp`, `ntske` |
 
 A kind a binary did not link is never bound and never falls through to
 the HTTP data plane: it is an error naming the daemon that serves it.
@@ -186,6 +186,7 @@ its own for what is deliberately *not* implemented and why.
 | Telecontrol | IEC 60870-5-104 (APCI/APDU, the I, S and U formats, the type identifications and causes of transmission of IEC 60870-5-101), with IEC 62351-3 TLS | `iec104` |
 | Management | SNMP v1 (RFC 1157), v2c (RFC 1901–1908) and v3 with USM (RFC 3410–3418), over UDP and over TCP (RFC 3430), with RFC 6353 TLS on the stream side | `snmp` |
 | Directory | LDAP v3 (RFC 4511–4515, 4517, 4519) with LDAPS and the StartTLS of RFC 4513, as a relay: the bind methods, the search filter's shape, distinguished names compared per relative name, the attribute lists in both directions | `ldap`, filters |
+| Provisioning | TFTP (RFC 1350) with the option extension (RFC 2347), block size (RFC 2348), timeout and transfer size (RFC 2349) and windowed transfer (RFC 7440), as a relay: the filename read as a path, the direction of the transfer, and the bounds on what comes back | `tftp` |
 | Remote access | SSH (RFC 4251–4254) with OpenSSH user and host certificates; telnet's NVT (RFC 854); RFB 3.3 to 3.8 (RFC 6143) with VeNCrypt; RDP (MS-RDPBCGR) over TLS, CredSSP over NTLMv2 towards the desktop, or the protocol's own encryption | `ssh`, `telnet`, `vnc`, `rdp` |
 | Identity | OpenID Connect Core 1.0, OAuth 2.0 (RFC 6749) with introspection (RFC 7662), PKCE (RFC 7636) and token exchange (RFC 8693); JWT, JWS and JWKS (RFC 7515–7519); DPoP (RFC 9449); certificate-bound tokens (RFC 8705); SAML 2.0 as a service provider; SCIM 2.0 (RFC 7642–7644); WebAuthn level 2; LDAP (RFC 4511–4515); TOTP (RFC 6238); HTTP Basic (RFC 7617); client certificate identity as `Client-Cert` (RFC 9440) or Envoy's `X-Forwarded-Client-Cert` | filters |
 | Inspection | ModSecurity SecLang with the OWASP Core Rule Set through Coraza; a documented subset of YARA; ICAP (RFC 3507); OpenAPI 3 descriptions; GraphQL; XML and XSD with exclusive canonicalization; protobuf structure without a schema; WebAssembly with WASI preview 1 | filters |
@@ -216,6 +217,7 @@ protocol so that a policy can be written in that protocol's own terms:
 | `iec104` | `xrelay` | IEC 60870-5-104, IEC 62351-3 TLS | Type identifications, causes of transmission, common and originator addresses, information object ranges, select-before-operate, schedules |
 | `snmp` | `xrelay` | SNMP v1, v2c and v3 (USM), UDP and TCP, RFC 6353 TLS | Versions, community strings and USM users, security levels, operations, object subtrees, the amplification bounds |
 | `ldap` | `xrelay` | LDAP v3, LDAPS, StartTLS | Bind methods, the bound identity, operations, naming contexts and subtrees, scopes, attributes in both directions, filter and entry bounds |
+| `tftp` | `xrelay` | TFTP with RFC 2347–2349 options and RFC 7440 windows | The client list, the direction, the transfer mode, the filename read as a path and refused by class, the directories, and the block, window and transfer bounds |
 | `ntp` | `xrelay` | NTP v1–v4, SNTP, NTS-protected NTP | Versions, modes, extension fields, authentication, and whether the servers agree |
 | `ntske` | `xrelay` | NTS key establishment (TLS on 4460) | The application protocol, the server name, the handshakes in flight |
 
@@ -415,6 +417,34 @@ protocol so that a policy can be written in that protocol's own terms:
   terminated here** rather than forwarded, which makes it a secure upgrade
   for a client library nobody can reconfigure — and it discards the
   identity, as the standard requires
+
+- `kind: tftp`: a **TFTP** relay in front of the servers that move firmware,
+  configurations and boot images. This is the protocol under provisioning: a
+  switch pulls its firmware over it, a machine with no operating system yet
+  pulls a boot image, a telephone pulls its configuration. It has **no
+  authentication of any kind** — no user, no password, no token, no transport
+  security, and no extension that adds one — and the clients are switches and
+  boot ROMs, so none of that can be fixed where it lives. That leaves four
+  things, and they are the whole of this kind. The **filename is read as a
+  path and refused by shape**: a deny list of strings is a list of the
+  spellings somebody thought of, stopping `../../etc/shadow` and not
+  `..\..\etc\shadow`, stopping that and not `/etc/shadow`, stopping that and
+  not `secret.txt.`, which Windows opens as `secret.txt` — so the name is
+  classified and the class is refused, and three of those classes (a NUL, a
+  control character, an empty name) can never be allowed at all, because they
+  mean the relay and the server are reading **different names**. A **write is a
+  separate decision from a read and the default is no**, because a write is how
+  a configuration leaves an estate and how firmware arrives in it. The
+  **amplification is bounded by rewriting rather than refusing**: a
+  twenty-octet request yields a whole file and RFC 7440's window multiplies
+  it, so a client asking for a window of sixty-four gets its file at the
+  bound instead of an error, and nobody has to reconfigure a switch — what
+  cannot be lowered is refused, including a server that acknowledges a larger
+  block than it was offered. And a **transfer speaks to exactly two
+  addresses**, because the protocol moves to an ephemeral port pair after the
+  first packet: a datagram from anywhere else is dropped rather than answered,
+  since answering is how a relay becomes a reflector and a packet injected
+  into a firmware transfer *is* firmware
 
 - `kind: ntp` and `kind: ntske`: an NTP and NTS security gateway, in
   **both directions**. A time packet is 48 octets, has no session and is

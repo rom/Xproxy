@@ -1,0 +1,246 @@
+# TFTP relay: the protocol that moves firmware, configurations and boot
+# images, put behind something that can read a filename as a path.
+#
+# The problem this configuration solves is that TFTP has no authentication
+# of any kind. No user, no password, no token, no transport security, and no
+# extension that adds one. A request is a filename and a mode, and a server
+# that receives one answers it. The clients are switches, telephones and
+# boot ROMs, so none of that can be fixed where it lives.
+#
+# That leaves the relay with four things, and they are the whole of this
+# file:
+#   - which addresses may send at all (allow_clients) — on this protocol
+#     the network list is not "as well as" the identity, it is the identity
+#   - which paths may be named (directories, filenames, allow_path_classes),
+#     read as paths and refused by shape rather than by spelling
+#   - which direction a transfer may go (operations), where the default is
+#     read only, because a write is how a configuration leaves an estate
+#     and how firmware arrives in it
+#   - how much may come back (max_transfer_bytes, max_block_size,
+#     max_window_size), because a twenty-octet request yields a whole file
+#     and RFC 7440's window multiplies it
+#
+# Validate with: xproxyctl -config examples/provisioning/tftp.yaml validate
+version: 1
+
+logging:
+  directory: /var/log/xproxy
+  access: {file: access.log}
+  security: {file: security.log}
+  audit: {file: audit.log}
+
+management:
+  socket: /run/xproxy/mgmt.sock
+  socket_mode: "0660"
+
+server:
+  listeners:
+    # ---------------------------------------------------------------
+    # The provisioning front: switches, access points and telephones
+    # boot from here, and the relay forwards to the file servers.
+    #
+    # Reads only. Everything in this listener is about the path.
+    # ---------------------------------------------------------------
+    - name: boot
+      address: "10.60.0.10:69"
+      kind: tftp
+      tftp:
+        upstream: fileservers
+
+        # The provisioning VLANs. On a protocol with nothing else to check,
+        # this is the most valuable line in the file: a device that is not
+        # on one of these networks has no business asking for firmware, and
+        # there is no credential it could offer instead.
+        allow_clients: ["10.60.16.0/20", "10.60.32.0/20"]
+
+        # Reads. This is the default, written out because the reader of this
+        # file should see which direction was chosen rather than infer it.
+        operations: [read]
+
+        # octet is what firmware and boot images move in. netascii
+        # translates line endings, which no boot ROM wants and which is
+        # therefore one fewer behaviour to think about. mail is not listed
+        # anywhere in this file: RFC 1350 removed it, and it asked a server
+        # to deliver the file as mail to the address in the filename field.
+        modes: [octet]
+
+        # The two trees this estate provisions from, compared element by
+        # element from the top of what the server serves -- so "firmware"
+        # does not admit "firmware-staging", which a string prefix would.
+        directories: [firmware, config/devices]
+
+        # Where the vendor's own build output lands before anybody has
+        # looked at it. No rule can allow this, which is the point of a
+        # deny list.
+        deny_directories: [firmware/incoming]
+
+        # What a boot actually asks for. The pattern is matched against the
+        # whole path and against its last element, so either spelling means
+        # what it looks like.
+        filenames: ["firmware/*.bin", "firmware/*.img", "config/devices/*.cfg"]
+
+        # No allow_path_classes: this listener accepts ordinary relative
+        # paths and nothing else. Every traversal, every absolute path,
+        # every backslash separator and every Windows drive letter is
+        # refused by shape -- and a filename with a NUL or a control
+        # character in it is refused whatever this file says, because that
+        # is a name this relay and the server would read differently.
+
+        max_depth: 3
+        max_filename_bytes: 128
+
+        # A switch firmware image is tens of megabytes. A boot image is
+        # larger. Sixty-four is the ceiling nothing here needs to cross.
+        max_transfer_bytes: 67108864
+
+        # 1468 keeps a data packet inside an Ethernet frame. A larger block
+        # fragments at the IP layer, which is a lever rather than a feature.
+        max_block_size: 1468
+
+        # The amplification bound. A device asking for a window of sixty-four
+        # is not refused: its request is rewritten to four and forwarded, so
+        # a switch whose TFTP client nobody can reconfigure still boots.
+        # Watch tftp_lowered to see how often that happens.
+        max_window_size: 4
+
+        max_transfers: 128
+        max_transfers_per_client: 2
+
+        # A boot storm after a power cut is a hundred switches asking at
+        # once, so the rate is per address rather than per listener.
+        rate_limit: 4
+        rate_burst: 8
+
+        transfer_timeout: 10m
+        idle_timeout: 15s
+
+        default_action: deny
+        rules:
+          # Access points and switches read their own firmware. The window
+          # is one here: these devices boot from a wired uplink and the
+          # extra packets buy nothing.
+          - name: device-firmware
+            action: allow
+            clients: ["10.60.16.0/20"]
+            operations: [read]
+            directories: [firmware]
+            max_window_size: 1
+
+          # Telephones read their configuration, which is small and
+          # numerous. A bound of a megabyte is generous for a file that is
+          # usually a few kilobytes, and it means a mistake in the
+          # provisioning system cannot become a transfer of a disk image.
+          - name: phone-config
+            action: allow
+            clients: ["10.60.32.0/20"]
+            operations: [read]
+            directories: [config/devices]
+            max_transfer_bytes: 1048576
+
+    # ---------------------------------------------------------------
+    # The change window: the one address that may put a file onto the
+    # server, during the one window when that is planned.
+    #
+    # It is a listener of its own rather than a rule on the one above,
+    # because operations: [read] on that listener is a line nobody should
+    # have to re-read a rule list to trust.
+    # ---------------------------------------------------------------
+    - name: firmware-upload
+      address: "10.60.0.11:69"
+      kind: tftp
+      tftp:
+        upstream: fileservers
+
+        # The provisioning server, and no other address.
+        allow_clients: ["10.60.1.20/32"]
+
+        operations: [read, write]
+        modes: [octet]
+        directories: [firmware/incoming]
+        filenames: ["firmware/incoming/*.bin", "firmware/incoming/*.img"]
+
+        max_depth: 3
+        max_transfer_bytes: 134217728
+        max_block_size: 1468
+        max_window_size: 4
+        max_transfers: 4
+        max_transfers_per_client: 2
+
+        transfer_timeout: 30m
+        idle_timeout: 15s
+
+        default_action: deny
+        rules:
+          # Thursday and Friday evenings. A firmware window is a schedule,
+          # and this is the line that makes it one: outside it the write
+          # matches no allowing rule and the default decides.
+          - name: firmware-window
+            action: allow
+            operations: [write]
+            directories: [firmware/incoming]
+            schedule: {days: [thu, fri], from: "19:00", to: "23:00", timezone: Europe/Stockholm}
+
+          # Reading back what was just written, at any hour: verifying an
+          # upload is not a change.
+          - name: verify
+            action: allow
+            operations: [read]
+            directories: [firmware/incoming]
+
+    # ---------------------------------------------------------------
+    # A trial of a narrower policy on live traffic. Shadow mode evaluates
+    # every rule and enforces none of them, so the refusals appear in
+    # `xproxyctl policy report` and nothing stops booting.
+    #
+    # What it still refuses: a filename with a NUL or a control character
+    # in it, every bound, and a datagram from an address that has no part
+    # in a transfer. A bound in shadow mode would be a working amplifier,
+    # and a name the server reads differently is not something a policy can
+    # be evaluated against.
+    # ---------------------------------------------------------------
+    - name: boot-trial
+      address: "10.60.0.12:69"
+      kind: tftp
+      policy: {mode: shadow}
+      tftp:
+        upstream: fileservers
+        allow_clients: ["10.60.16.0/20"]
+        operations: [read]
+        directories: [firmware/approved]
+        filenames: ["firmware/approved/*.bin"]
+        max_transfer_bytes: 67108864
+        max_window_size: 4
+        default_action: deny
+
+upstreams:
+  - name: fileservers
+    endpoints:
+      - {address: "10.60.2.10:69"}
+      - {address: "10.60.2.11:69"}
+    # The datagram path picks one endpoint per transfer, and a health check
+    # is what keeps it from picking a server that is not answering. A UDP
+    # probe has to send something a TFTP server replies to, so it sends a
+    # read request for a file that is not there: the reply is an error
+    # packet, which is an answer, and an answer is what the check needs.
+    #
+    # The hex is a read request for "health.probe" in octet mode:
+    #   00 01 "health.probe" 00 "octet" 00
+    health_check:
+      type: udp
+      interval: 15s
+      timeout: 3s
+      send_hex: "00016865616c74682e70726f6265006f6374657400"
+
+# A device that is refused repeatedly is not a device that is
+# misconfigured: it is either something walking a path list or something
+# asking for files it was never provisioned with. Either way the answer is
+# the same, and on a protocol with no identity the address is all there is
+# to act on.
+bans:
+  action: drop
+  triggers:
+    - name: tftp-path-probing
+      reasons: [tftp_denied]
+      threshold: 10
+      window: 5m
+      duration: 1h
