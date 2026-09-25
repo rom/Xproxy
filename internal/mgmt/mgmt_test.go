@@ -506,3 +506,71 @@ routes:
 		}
 	}
 }
+
+// The shadow report over the socket: what the listeners in shadow mode
+// would have refused, worst first, and the reset an operator runs after
+// fixing the policy.
+func TestPolicyReportListsWhatWouldHaveBeenRefused(t *testing.T) {
+	cfg, err := config.Parse([]byte(`
+version: 1
+policy: {mode: shadow}
+server:
+  listeners: [{name: main, address: "127.0.0.1:0"}]
+upstreams:
+  - {name: u, endpoints: [{address: "127.0.0.1:1"}]}
+routes:
+  - {name: r, upstream: u}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := proxy.New(cfg, logging.Discard())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sock := filepath.Join(t.TempDir(), "m.sock")
+	m := New(config.Management{Socket: sock, SocketMode: "0600"}, p, logging.Discard(), Actions{})
+	if err := m.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer m.Shutdown(context.Background())
+	c := NewClient(sock)
+
+	rep, err := c.PolicyReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Entries) != 0 || rep.Status.Entries != 0 {
+		t.Fatalf("a fresh ledger: %+v", rep)
+	}
+	for i := 0; i < 3; i++ {
+		p.Shadow().Record("modbus", "line-2", "rule_deny", "setpoints", "unit 2 write 40010")
+	}
+	p.Shadow().Record("ssh", "operators", "command_refused", "", "rm -rf /")
+
+	rep, err = c.PolicyReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Entries) != 2 || rep.Entries[0].Count != 3 || rep.Entries[0].Kind != "modbus" {
+		t.Fatalf("report %+v", rep.Entries)
+	}
+	if rep.Status.Recorded != 4 || rep.Status.Entries != 2 {
+		t.Fatalf("status %+v", rep.Status)
+	}
+	if rep.Entries[0].Rule != "setpoints" || rep.Entries[0].Sample == "" {
+		t.Errorf("the entry lost the rule or the example: %+v", rep.Entries[0])
+	}
+	// The reset, which is what an operator runs after fixing the policy
+	// so the next week's report is about the new one.
+	if err := c.ResetPolicyReport(); err != nil {
+		t.Fatal(err)
+	}
+	rep, err = c.PolicyReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Entries) != 0 || rep.Status.Recorded != 0 {
+		t.Fatalf("after the reset: %+v", rep)
+	}
+}

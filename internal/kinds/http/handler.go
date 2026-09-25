@@ -368,7 +368,7 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Positive security model of the route.
 	if cr.policy != nil {
-		if res := cr.policy.check(r); res != nil {
+		if res := cr.policy.check(r); res != nil && !s.policyShadowed(rt, "policy", res.detail) {
 			s.stats.DeniedPolicy.Add(1)
 			cr.policyDenied.Add(1)
 			st.denied = "policy:" + res.detail
@@ -1269,6 +1269,27 @@ func (s *engine) deny(rw *responseWriter, r *http.Request, st *reqState, status 
 }
 
 // denyDetail is deny with a detail attribute in the security event.
+// policyShadowed records a refusal the estate's policy section asked to
+// evaluate without enforcing, and says whether it was recorded rather
+// than applied.
+//
+// On an HTTP listener it covers the route's positive security model --
+// the methods, media types, query parameters and shape bounds, which is
+// exactly the policy an operator writes for an existing application and
+// then dares not switch on. The WAF has its own detection mode and is
+// switched to it by the same setting; a ban, a rate limit, a virtual
+// patch, authentication and the request normalisation guard are enforced
+// in shadow mode too, because none of them is a statement about one
+// application's own shape.
+func (s *engine) policyShadowed(rt *runtime, reason, detail string) bool {
+	if rt == nil || rt.cfg == nil || rt.cfg.Policy == nil || rt.cfg.Policy.Mode != "shadow" {
+		return false
+	}
+	s.stats.WouldRefuse("http", reason)
+	s.host.Shadow().Record("http", "", reason, "", detail)
+	return true
+}
+
 func (s *engine) denyDetail(rw *responseWriter, r *http.Request, st *reqState, status int, reason, detail string) {
 	st.reason = reason
 	attrs := []any{"request_id", st.id, "client_ip", st.clientIP.String(), "method", r.Method,

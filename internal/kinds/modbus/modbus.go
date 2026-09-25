@@ -469,11 +469,14 @@ func (se *session) run() string {
 			}
 		}
 		if !decision.Allow {
-			// Learning mode without enforcement: the refusal is recorded
-			// and the frame goes on, which is the only honest way to
-			// find out what a policy would have broken.
+			// Shadow mode, or learning without enforcement: the refusal
+			// is recorded and the frame goes on, which is the only honest
+			// way to find out what a policy would have broken.
 			t.host.Counters().ModbusWouldDeny.Add(1)
+			t.host.Counters().WouldRefuse("modbus", decision.Reason)
 			t.audit(se, frame, pdu, decision, "would_deny")
+			t.host.Shadow().Record("modbus", t.cfg.Name, decision.Reason, decision.Rule,
+				fmt.Sprintf("unit %d %s %s", frame.Unit, wire.FunctionName(pdu.Function), pdu.Access))
 		}
 		if t.m.LogFrames {
 			t.logFrame(se, frame, pdu, decision)
@@ -509,8 +512,12 @@ func (se *session) run() string {
 
 // enforcing says whether the policy decides or only records. A learning
 // run is observe-only unless it says otherwise, which is what stops one
-// being left on by accident.
+// being left on by accident, and a listener in shadow mode records
+// without deciding whether or not it is learning.
 func (t *server) enforcing() bool {
+	if t.cfg.Shadowing() {
+		return false
+	}
 	l := t.m.Learn
 	if l == nil || !l.Enabled {
 		return true

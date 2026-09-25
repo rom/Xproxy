@@ -362,6 +362,16 @@ func newServer(host proxy.Host, lc config.Listener, udp net.PacketConn, tcp net.
 			return bl != nil && bl.Banned(client)
 		},
 		Refuse: func(reason string) { host.Counters().Refuse("dns", reason) },
+		// Shadow mode: the policy decides, the decision is written down,
+		// and the query is answered as if it had been allowed.
+		Shadow: func(reason, detail string) bool {
+			if !lc.Shadowing() {
+				return false
+			}
+			host.Counters().WouldRefuse("dns", reason)
+			host.Shadow().Record("dns", lc.Name, reason, "", detail)
+			return true
+		},
 	}
 	startRPZ(host, lc, p)
 	return wire.New(lc.Name, udp, tcp, lc.DNS.Cache.MaxEntries, lc.DNS.MaxInFlight, p, hooks), nil

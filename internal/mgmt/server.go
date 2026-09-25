@@ -30,6 +30,7 @@ import (
 	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/sandbox"
 	"github.com/rom/xproxy/internal/sessions"
+	"github.com/rom/xproxy/internal/shadow"
 	"github.com/rom/xproxy/internal/tracing"
 	"github.com/rom/xproxy/internal/unixsock"
 	"github.com/rom/xproxy/internal/version"
@@ -175,6 +176,19 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 	mux.HandleFunc("GET /v1/bans", s.listBans)
 	mux.HandleFunc("POST /v1/bans", s.addBan)
 	mux.HandleFunc("DELETE /v1/bans", s.removeBan)
+	// What the listeners in shadow mode would have refused, and emptying
+	// it: an operator reads the report, fixes the policy, clears the
+	// ledger, and reads the next week's report about the new one.
+	mux.HandleFunc("GET /v1/policy", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, 200, PolicyReport{
+			Status:  s.proxy.Shadow().Status(),
+			Entries: s.proxy.Shadow().Report(),
+		})
+	})
+	mux.HandleFunc("DELETE /v1/policy", s.audited("policy_report_reset", func() error {
+		s.proxy.Shadow().Reset()
+		return nil
+	}))
 	mux.HandleFunc("GET /v1/sessions", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, 200, s.proxy.Sessions().List())
 	})
@@ -608,6 +622,13 @@ func (s *Server) killSession(w http.ResponseWriter, r *http.Request) {
 			"client", v.Client, "user", v.User, "target", v.Target, "duration_ms", v.DurationMS)
 	}
 	writeJSON(w, 200, closed)
+}
+
+// PolicyReport is what GET /v1/policy answers: the ledger's totals and
+// every decision a listener in shadow mode made and did not enforce.
+type PolicyReport struct {
+	Status  shadow.Status  `json:"status"`
+	Entries []shadow.Entry `json:"entries"`
 }
 
 // BanRequest is the body of POST /v1/bans.

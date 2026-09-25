@@ -151,6 +151,155 @@ none
 T}	T{
 A SCIM 2.0 provisioning endpoint for the second factor and the API keys;\: see \fBscim\fR
 T}
+T{
+\fBpolicy\fR
+T}	T{
+object
+T}	T{
+\fB{mode:\: enforce}\fR
+T}	T{
+Whether the listeners enforce their policies or only evaluate them and write down what they would have refused;\: see \fBpolicy\fR
+T}
+.TE
+.SH "policy"
+.PP
+A policy nobody dares switch on is not a control, and the reason nobody dares is always the same: no one knows what it would refuse at three in the morning. Shadow mode is the answer the WAF has had for years, generalised to every protocol \[u2014] the policy is evaluated on real traffic, every decision it would have made is written down, and nothing is refused for policy.
+.PP
+.RS 4
+.nf
+.ft CR
+policy:
+  mode: shadow          # enforce (default) or shadow
+  max_reasons: 4096
+.ft
+.fi
+.RE
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.6i) lbw(0.8i) lbx
+lw(0.8i) lw(0.6i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBmode\fR
+T}	T{
+enum
+T}	T{
+\fBenforce\fR
+T}	T{
+\fBenforce\fR or \fBshadow\fR,\: for every listener that does not name its own in \fBserver.\:listeners[].\:policy\fR. \fBshadow\fR warns at validation
+T}
+T{
+\fBmax_\:reasons\fR
+T}	T{
+int
+T}	T{
+\fB4096\fR
+T}	T{
+The ledger\(aqs bound: distinct combinations of kind,\: listener,\: reason and rule. Past it the report says it is full rather than quietly stopping
+T}
+.TE
+.PP
+Read it with \fBxproxyctl policy report\fR (\fB\-top N\fR, \fB\-json\fR), which lists what each listener would have refused, most frequent first, with the rule that decided, an example of what was asked for, and when it was first and last seen. \fBxproxyctl policy reset\fR empties the ledger, which is what an operator runs after fixing a policy so the next week\(aqs report is about the new one. \fBGET /v1/policy\fR and \fBDELETE /v1/policy\fR are the endpoints; the totals are in \fBxproxyctl status\fR as \fBwould_refusals\fR beside \fBrefusals\fR, and \fBshadow\fR carries the ledger\(aqs own state.
+.PP
+\fBWhat shadow mode does and does not stop.\fR It applies to \fIpolicy\fR: the statements an estate writes about what its own traffic may do. It never applies to integrity, identity or a bound, because forwarding those would mean acting on bytes the code could not read, or admitting somebody who did not authenticate \[u2014] a trial instead of a door.
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(1.4i) lbx
+lw(0.8i) lw(1.4i) lx.
+T{
+Kind
+T}	T{
+Evaluated and recorded
+T}	T{
+Still refused
+T}
+T{
+\fBmodbus\fR
+T}	T{
+every rule: function,\: unit,\: address range,\: value bounds,\: rate and window
+T}	T{
+malformed frames,\: the unit table,\: the queue bound,\: rate limits,\: bans
+T}
+T{
+\fBntp\fR
+T}	T{
+the client list and every request rule (versions,\: modes,\: extension fields,\: the identity it demands),\: and every answer rule (stratum,\: distances,\: timestamps,\: identifier,\: leap)
+T}	T{
+mode 6 and 7,\: version 5,\: malformed packets,\: bans,\: rate limits,\: the association and outstanding bounds
+T}
+T{
+\fBmqtt\fR
+T}	T{
+the client list,\: the CONNECT policy (version,\: client id,\: username,\: keep alive,\: will),\: the publish and subscribe policies,\: retain
+T}	T{
+malformed packets,\: a first packet that is not CONNECT,\: a second CONNECT,\: the packet bound,\: the connection limit,\: TLS failures
+T}
+T{
+\fBsyslog\fR
+T}	T{
+the sender list,\: the facility,\: severity and pattern rules
+T}	T{
+malformed messages,\: the rate limit,\: a full queue
+T}
+T{
+\fBdns\fR
+T}	T{
+the client list,\: the block list,\: response policy zones,\: tunnel cooldowns
+T}	T{
+malformed queries,\: bans,\: the rate limit,\: the worker bound,\: the cookie requirement
+T}
+T{
+\fBssh\fR
+T}	T{
+the client list and the command,\: subsystem,\: environment and file\-transfer rules
+T}	T{
+an unknown host key,\: a key that does not authenticate,\: a certificate extension that itself refuses,\: MFA,\: bans,\: the connection limit,\: a request it could not parse
+T}
+T{
+\fBtelnet\fR,\: \fBvnc\fR,\: \fBrdp\fR,\: \fBftp\fR
+T}	T{
+the client list;\: telnet\(aqs option list;\: ftp\(aqs verb list
+T}	T{
+bans,\: connection limits,\: MFA,\: malformed input,\: the protocol\(aqs own version and encryption negotiation
+T}
+T{
+\fBsmtp\fR
+T}	T{
+the verb list
+T}	T{
+the protocol\-state refusals,\: the encryption and authentication requirements,\: the size bound,\: malformed commands
+T}
+T{
+\fBforward\fR
+T}	T{
+the destination lists: ports,\: deny,\: allow
+T}	T{
+\fBprivate\fR (which protects the estate \fIfrom\fR the client \[u2014] shadowing it would turn a trial into a server\-side request forgery),\: a destination that does not resolve,\: credentials,\: tunnel bounds
+T}
+T{
+\fBhttp\fR
+T}	T{
+the route\(aqs positive security model (methods,\: media types,\: query parameters,\: shape bounds);\: a blocking WAF profile runs as a detecting one,\: and \fBxproxyctl waf \-\:top\fR says which rule would have blocked what
+T}	T{
+bans,\: rate limits,\: virtual patches,\: authentication and authorisation filters,\: the normalisation guard,\: the request and body bounds
+T}
+T{
+\fBtcp\fR,\: \fBudp\fR,\: \fBntske\fR
+T}	T{
+nothing: their refusals are either "no destination exists for this" or a bound,\: and neither is a policy a shadow run could answer
+T}	T{
+all of them
+T}
 .TE
 .SH "server"
 .PP
@@ -380,6 +529,15 @@ T}	T{
 none
 T}	T{
 \fB{per_\:second,\: burst,\: ipv4_\:prefix,\: ipv6_\:prefix,\: max_\:sources}\fR: how fast one source network may connect to this listener
+T}
+T{
+\fBpolicy\fR
+T}	T{
+object
+T}	T{
+the estate\(aqs \fBpolicy\fR
+T}	T{
+\fB{mode:\: enforce|shadow}\fR for this listener alone;\: see \fBpolicy\fR
 T}
 .TE
 .SS "server.listeners[].tcp (kind: tcp)"

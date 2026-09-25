@@ -31,6 +31,9 @@ type refusals struct {
 	m  map[string]map[string]*atomic.Uint64
 }
 
+// The two tables: what was refused, and what a listener in shadow mode
+// would have refused. Kept apart so a status view cannot add them up.
+
 // Refuse counts one refusal: kind is the listener kind that refused
 // (the same name a "kind:" in the configuration says), reason the fine
 // grained reason it logged.
@@ -93,9 +96,62 @@ func refusalReason(kind, reason string) string {
 	return reason
 }
 
+// WouldRefuse counts one refusal a listener in shadow mode recorded
+// instead of enforcing. It is a separate table from the refusals on
+// purpose: an operator reading a status view has to be able to tell what
+// was refused from what merely would have been, and one table with a
+// label for the difference is one label away from a graph that adds them
+// together.
+//
+// The detail -- which rule, an example of what was asked for -- is in the
+// shadow ledger (xproxyctl policy report); this is the number.
+func (s *Stats) WouldRefuse(kind, reason string) {
+	if _, known := listener.RoleOf(kind); !known {
+		s.RefusalsUntracked.Add(1)
+		return
+	}
+	reason = refusalReason(kind, reason)
+	r := &s.wouldRefusals
+	r.mu.RLock()
+	c := r.m[kind][reason]
+	r.mu.RUnlock()
+	if c != nil {
+		c.Add(1)
+		return
+	}
+	r.mu.Lock()
+	if r.m == nil {
+		r.m = make(map[string]map[string]*atomic.Uint64, 4)
+	}
+	byReason := r.m[kind]
+	if byReason == nil {
+		byReason = make(map[string]*atomic.Uint64, 16)
+		r.m[kind] = byReason
+	}
+	c = byReason[reason]
+	if c == nil {
+		if len(byReason) >= maxRefusalReasons {
+			r.mu.Unlock()
+			s.RefusalsUntracked.Add(1)
+			return
+		}
+		c = new(atomic.Uint64)
+		byReason[reason] = c
+	}
+	r.mu.Unlock()
+	c.Add(1)
+}
+
+// WouldRefusalCounts copies the shadow counters, kind to reason to count.
+func (s *Stats) WouldRefusalCounts() map[string]map[string]uint64 {
+	return s.wouldRefusals.counts()
+}
+
 // RefusalCounts copies the counters, kind to reason to count.
-func (s *Stats) RefusalCounts() map[string]map[string]uint64 {
-	r := &s.refusals
+func (s *Stats) RefusalCounts() map[string]map[string]uint64 { return s.refusals.counts() }
+
+// counts copies one table.
+func (r *refusals) counts() map[string]map[string]uint64 {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if len(r.m) == 0 {

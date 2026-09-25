@@ -442,6 +442,55 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **Shadow mode: a policy you can switch on.** Every policy in this proxy
+  had the same adoption problem, and it is not a technical one: somebody
+  writes the allow list, the command policy, the register range or the
+  topic policy, and then nobody dares switch it on, because nobody knows
+  what it would refuse at three in the morning. So it stays in a branch, or
+  goes in at a weekend with somebody watching, or goes in allowing
+  everything -- which is a policy that is not a control.
+
+  `policy: {mode: shadow}`, for the estate or for one listener, evaluates
+  the policy on real traffic, writes down every decision it would have
+  made, and refuses nothing for policy. `xproxyctl policy report` is the
+  list: what would have been refused, most frequent first, with the kind,
+  the listener, the reason, the rule that decided, when it was first and
+  last seen, and one example of what was asked for. `xproxyctl policy
+  reset` empties it after the policy is fixed, so the next week's report is
+  about the new one. `GET`/`DELETE /v1/policy` are the endpoints, and
+  `would_refusals` sits beside `refusals` in the status view, per kind and
+  reason, so a dashboard can show the two together during a rollout.
+
+  It reaches every protocol that has a policy: Modbus's rules (function,
+  unit, address, value, rate, window), NTP's request and answer rules, the
+  MQTT CONNECT, publish and subscribe policies, syslog's facility, severity
+  and pattern rules, the DNS client list, block list, policy zones and
+  tunnel cooldowns, SSH's command, subsystem, environment and
+  file-transfer rules, the client lists of the four access gateways,
+  telnet's option list, FTP's and SMTP's verb lists, the forward proxy's
+  destination lists, and HTTP's positive security model -- where the same
+  setting also turns a blocking WAF profile into a detecting one, because
+  the WAF's own rule statistics say more about what would have blocked than
+  a ledger entry could.
+
+  **What it deliberately does not stop** is the half that makes it safe to
+  turn on: authentication and a second factor, a ban, a rate limit, a
+  bound, a malformed message, the protocol's own negotiation, a virtual
+  patch, and the forward proxy's `private` rule -- which protects the estate
+  *from* the client, so shadowing it would turn a trial into a server-side
+  request forgery. A bastion whose door opened because a policy was being
+  trialled would be a bastion with a trial instead of a door, and
+  forwarding a frame nobody could parse would mean sending a PLC bytes this
+  proxy never read. The table, kind by kind, is in docs/CONFIG.md's
+  `policy` section.
+
+  The ledger is bounded (`policy.max_reasons`, default 4096) because what
+  it keys on comes off the network; it keeps counts and the first and last
+  time rather than every event, because a week of a plant's traffic is
+  millions of frames and the question is "what would this have broken";
+  what is already in it keeps counting when it is full, and the report says
+  it is full rather than quietly stopping.
+
 - **The time gateway reads the answer, then watches the source.** The NTP
   and NTS relay could already refuse an answer for the bounds a server
   states about itself. What it could not do was read an answer against

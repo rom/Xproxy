@@ -110,6 +110,17 @@ type Hooks struct {
 	// knowing that queries are being dropped and knowing that they are
 	// being dropped because every worker slot is busy.
 	Refuse func(reason string)
+	// Shadow asks whether this listener evaluates its policy without
+	// enforcing it, and records the decision when it does. It returns
+	// true when the refusal was written down rather than applied, and the
+	// caller then answers as if the policy had allowed the query.
+	//
+	// Only policy reaches it: a malformed query, a ban, the rate limit,
+	// the worker bound and a cookie requirement are refused in shadow
+	// mode too. The first three are not policy questions, and the cookie
+	// is what stops a spoofed source spending this resolver's work on
+	// somebody else's behalf.
+	Shadow func(reason, detail string) bool
 }
 
 // Server answers DNS over one UDP socket and one TCP listener. When the
@@ -214,6 +225,12 @@ func (s *Server) refuse(reason string) {
 	if s.hooks.Refuse != nil {
 		s.hooks.Refuse(reason)
 	}
+}
+
+// shadowed reports a policy refusal this listener records instead of
+// enforcing. A listener that enforces never reaches past the first line.
+func (s *Server) shadowed(reason, detail string) bool {
+	return s.hooks.Shadow != nil && s.hooks.Shadow(reason, detail)
 }
 
 // Status is the management view of a listener.
@@ -659,7 +676,8 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 		s.refuse("formerr")
 		return s.finish(a, Question{}, "formerr", Reply(query[:headerLen], headerLen, h, RcodeFormErr))
 	}
-	if len(p.AllowClients) > 0 && !netutil.Contains(p.AllowClients, client) {
+	if len(p.AllowClients) > 0 && !netutil.Contains(p.AllowClients, client) &&
+		!s.shadowed("client_not_allowed", client.String()) {
 		s.Refused.Add(1)
 		s.refuse("client_not_allowed")
 		return s.finish(a, q, "refused", Reply(query, qEnd, h, RcodeRefused))
@@ -735,7 +753,7 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 		return s.finish(a, q, "local",
 			s.fit(a, query, qEnd, h, AnswerLocal(query, qEnd, h, q, recs), len(query)))
 	}
-	if ans.block != nil && ans.block.Match(q.Name) {
+	if ans.block != nil && ans.block.Match(q.Name) && !s.shadowed("blocked", q.Name) {
 		s.Blocked.Add(1)
 		s.refuse("blocked")
 		if s.hooks.Event != nil {
@@ -769,7 +787,7 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 	// for the cooldown. It is checked here rather than after the answer
 	// because the point of blocking is that the query does not reach
 	// the name server the tunnel is delegated to.
-	if dom, blocked := p.Tunnel.Blocks(client, q.Name, start); blocked {
+	if dom, blocked := p.Tunnel.Blocks(client, q.Name, start); blocked && !s.shadowed("tunnel", q.Name) {
 		s.TunnelBlocked.Add(1)
 		s.Blocked.Add(1)
 		s.refuse("tunnel")

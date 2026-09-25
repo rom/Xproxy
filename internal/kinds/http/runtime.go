@@ -260,9 +260,18 @@ func wafSelection(cfg *config.Config, r *config.Route) (profile string, mode waf
 		return "", waf.ModeOff
 	}
 	if r.WAF != nil {
-		return r.WAF.Profile, waf.Mode(r.WAF.Mode)
+		profile, mode = r.WAF.Profile, waf.Mode(r.WAF.Mode)
+	} else {
+		profile, mode = cfg.WAF.DefaultProfile, waf.Mode(cfg.WAF.DefaultMode)
 	}
-	return cfg.WAF.DefaultProfile, waf.Mode(cfg.WAF.DefaultMode)
+	// The estate's shadow mode reaches the WAF by the mechanism the WAF
+	// already has: a blocking profile runs as a detecting one. The rule
+	// statistics (xproxyctl waf -top) then say which rule would have
+	// blocked what, which is more than the policy ledger could hold.
+	if mode == waf.ModeBlock && cfg.Policy != nil && cfg.Policy.Mode == "shadow" {
+		mode = waf.ModeDetect
+	}
+	return profile, mode
 }
 
 func newRuntime(cfg *config.Config, generation uint64, pools map[string]*upstream.Pool, trusted []netip.Prefix,

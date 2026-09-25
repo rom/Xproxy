@@ -214,6 +214,18 @@ func (v *validator) config(c *Config) {
 	if c.Bans != nil {
 		v.bans(c.Bans)
 	}
+	if p := c.Policy; p != nil {
+		switch p.Mode {
+		case "", "enforce":
+		case "shadow":
+			v.warnf("policy.mode is shadow, so every listener that does not say otherwise evaluates its policy and refuses nothing for it: read xproxyctl policy report, then turn enforcement on. Authentication, bans, rate limits, bounds and malformed input are still refused")
+		default:
+			v.errf("policy.mode: must be enforce or shadow")
+		}
+		if p.MaxReasons < 0 || p.MaxReasons > 65536 {
+			v.errf("policy.max_reasons: must be between 0 and 65536")
+		}
+	}
 	if c.ThreatIntel != nil {
 		v.threatIntel(c.ThreatIntel)
 	}
@@ -851,6 +863,15 @@ func (v *validator) server(s *Server) {
 		}
 		if ln.NTSKE != nil && ln.Kind != "ntske" {
 			v.errf("%s.ntske: set on a %s listener (kind: ntske)", p, ln.Kind)
+		}
+		if lp := ln.Policy; lp != nil {
+			switch lp.Mode {
+			case "", "enforce":
+			case "shadow":
+				v.warnf("%s.policy.mode is shadow, so this listener evaluates its policy and refuses nothing for it: read xproxyctl policy report, then turn enforcement on. Authentication, bans, rate limits, bounds and malformed input are still refused", p)
+			default:
+				v.errf("%s.policy.mode: must be enforce or shadow", p)
+			}
 		}
 		if ln.FTP != nil && ln.Kind != "ftp" {
 			v.errf("%s.ftp: set on a %s listener (kind: ftp)", p, ln.Kind)

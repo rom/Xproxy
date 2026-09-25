@@ -1345,6 +1345,8 @@ Endpoints:
 | POST | `/v1/reload-certs` | re-read certificates |
 | POST | `/v1/logs/reopen` | reopen log files |
 | GET | `/v1/bans`, POST `/v1/bans`, DELETE `/v1/bans?target=` | ban list |
+| GET | `/v1/policy` | the shadow ledger: what every listener in shadow mode would have refused, most frequent first, with the rule, an example, the counts and the ledger's own totals |
+| DELETE | `/v1/policy` | empty the ledger (audited) |
 | GET | `/v1/sessions` | the sessions this daemon is serving now, oldest first: id, kind, listener, client, login, target, one detail the kind chose, and how long it has been up |
 | DELETE | `/v1/sessions` | close the session named by `id`, or every session matching `kind`, `listener` and `user`; a request naming none of them is refused rather than taken as "all", and every closure is audited |
 | GET | `/v1/mfa` | every listener that asks for a second factor: its kind, its enrolment file, and who is enrolled with the parameters, recovery codes left, failures and lockout this process remembers |

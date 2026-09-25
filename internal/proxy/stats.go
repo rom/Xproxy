@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"github.com/rom/xproxy/internal/shadow"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -311,6 +312,8 @@ type Stats struct {
 	// breakdown for them, keyed by the kind and the reason the kind
 	// already logs.
 	refusals refusals
+	// wouldRefusals is the same table for the listeners in shadow mode.
+	wouldRefusals refusals
 	// RefusalsUntracked counts refusals named under a kind the roster
 	// does not have or beyond a kind's reason bound. Zero in a healthy
 	// process; anything else is a bug in a listener kind.
@@ -657,8 +660,14 @@ type Snapshot struct {
 	// Refusals is what each listener kind refused, kind to reason to
 	// count. Omitted when nothing has been refused, so a quiet
 	// process's snapshot does not carry an empty object per kind.
-	Refusals          map[string]map[string]uint64 `json:"refusals,omitempty"`
-	RefusalsUntracked uint64                       `json:"refusals_untracked"`
+	Refusals map[string]map[string]uint64 `json:"refusals,omitempty"`
+	// WouldRefusals is the same breakdown for the listeners in shadow
+	// mode: what they would have refused and did not. The detail is in
+	// the shadow ledger (xproxyctl policy report).
+	WouldRefusals map[string]map[string]uint64 `json:"would_refusals,omitempty"`
+	// Shadow is the ledger's own totals.
+	Shadow            shadow.Status `json:"shadow"`
+	RefusalsUntracked uint64        `json:"refusals_untracked"`
 }
 
 func (s *Stats) snapshot() Snapshot {
@@ -709,6 +718,7 @@ func (s *Stats) snapshot() Snapshot {
 		HandshakesRefused:      s.HandshakesRefused.Load(),
 		KeyExchange:            s.KeyExchangeCounts(),
 		Refusals:               s.RefusalCounts(),
+		WouldRefusals:          s.WouldRefusalCounts(),
 		RefusalsUntracked:      s.RefusalsUntracked.Load(),
 		KeyExchangePQ:          s.KeyExchangePQ.Load(),
 		Degraded:               s.Degraded.Load(),

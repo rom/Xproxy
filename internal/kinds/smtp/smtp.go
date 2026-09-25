@@ -287,6 +287,29 @@ func (t *server) deny(ip netip.Addr, what, detail string) {
 	}
 }
 
+// shadowed records a policy refusal a listener in shadow mode does not
+// enforce, and says whether it was recorded rather than refused.
+//
+// Only the verb list reaches it. The protocol-state refusals ("send EHLO
+// first", "a transaction is already open"), the encryption and
+// authentication requirements, the size bound and a malformed command are
+// refused in shadow mode too: none of them is a question about what this
+// estate carries, and answering out of order would leave the client and
+// the server with different ideas of the session.
+func (t *server) shadowed(ip netip.Addr, what, detail string) bool {
+	if !t.cfg.Shadowing() {
+		return false
+	}
+	t.engine.Counters().WouldRefuse("smtp", what)
+	t.engine.Shadow().Record("smtp", t.cfg.Name, what, "", detail)
+	attrs := []any{"listener", t.cfg.Name, "client_ip", ip.String(), "proto", "smtp"}
+	if detail != "" {
+		attrs = append(attrs, "detail", detail)
+	}
+	t.engine.Logs().SecurityEvent(context.Background(), "would_deny", "smtp_"+what, attrs...)
+	return true
+}
+
 func (t *server) log(se *session, start time.Time, reason string) {
 	attrs := []any{"listener", t.cfg.Name, "client_ip", se.ip.String(), "tls", se.secure,
 		"messages", se.messages, "bytes_in", se.bytesIn, "refused", se.errors,
@@ -568,7 +591,7 @@ func (se *session) loop() string {
 // session; an error means the client or upstream connection broke.
 func (se *session) command(cmd wire.Command) (string, error) {
 	t := se.t
-	if !t.verbs[cmd.Verb] {
+	if !t.verbs[cmd.Verb] && !t.shadowed(se.ip, "command_refused", cmd.Verb) {
 		return "", se.refuse(502, "5.5.1 command not available here", "command_refused")
 	}
 	switch cmd.Verb {

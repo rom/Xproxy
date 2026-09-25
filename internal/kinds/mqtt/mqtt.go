@@ -216,7 +216,7 @@ func (t *server) handle(client net.Conn) {
 		_ = se.client.Close()
 	}()
 
-	if !t.allowed(ip) {
+	if !t.allowed(ip) && !t.shadowed(ip, "client_not_allowed", "") {
 		s.Counters().MQTTRejected.Add(1)
 		t.deny(ip, "client_not_allowed", "")
 		t.log(se, start, "client_not_allowed")
@@ -262,6 +262,28 @@ func (t *server) deny(ip netip.Addr, what, detail string) {
 	if bl := t.host.Bans(); bl != nil && ip.IsValid() {
 		bl.Observe(ip, "mqtt_denied")
 	}
+}
+
+// shadowed records a policy refusal a listener in shadow mode does not
+// enforce, and says whether it was recorded rather than refused.
+//
+// Only policy reaches it. A malformed packet, a first packet that is not
+// CONNECT, a second CONNECT, a packet past the bound and the connection
+// limit are refused in shadow mode too: forwarding those means acting on
+// bytes this proxy could not read, or keeping a session whose shape the
+// protocol does not have.
+func (t *server) shadowed(ip netip.Addr, what, detail string) bool {
+	if !t.cfg.Shadowing() {
+		return false
+	}
+	t.host.Counters().WouldRefuse("mqtt", what)
+	t.host.Shadow().Record("mqtt", t.cfg.Name, what, "", detail)
+	attrs := []any{"listener", t.cfg.Name, "client_ip", ip.String(), "proto", "mqtt"}
+	if detail != "" {
+		attrs = append(attrs, "detail", detail)
+	}
+	t.host.Logs().SecurityEvent(context.Background(), "would_deny", "mqtt_"+what, attrs...)
+	return true
 }
 
 func (t *server) log(se *session, start time.Time, reason string) {
@@ -312,7 +334,7 @@ func (se *session) run(time.Time) string {
 		return se.badPacket(err, "connect")
 	}
 	se.version, se.clientID, se.username = c.Version, c.ClientID, c.Username
-	if reason, code := se.checkConnect(c); reason != "" {
+	if reason, code := se.checkConnect(c); reason != "" && !t.shadowed(se.ip, reason, c.ClientID) {
 		se.refuseConnect(code)
 		t.deny(se.ip, reason, "")
 		return reason
@@ -574,6 +596,13 @@ func (se *session) decidePublish(p wire.Packet) (string, bool) {
 		t.host.Counters().MQTTPublished.Add(1)
 		return "", true
 	}
+	if t.shadowed(se.ip, bad, mqttClipTopic(pub.Topic)) {
+		// Shadow mode: the publication goes to the broker and the
+		// ledger says it would not have.
+		se.published.Add(1)
+		t.host.Counters().MQTTPublished.Add(1)
+		return "", true
+	}
 	t.host.Counters().MQTTRefused.Add(1)
 	t.deny(se.ip, bad, mqttClipTopic(pub.Topic))
 	if t.m.Action == "disconnect" {
@@ -618,6 +647,13 @@ func (se *session) decideSubscribe(p wire.Packet) (string, bool) {
 		refused = "(too many subscriptions)"
 	}
 	if refused == "" {
+		for _, f := range sub.Filters {
+			se.subs[f.Filter] = true
+		}
+		t.host.Counters().MQTTSubscribed.Add(1)
+		return "", true
+	}
+	if t.shadowed(se.ip, "subscribe_refused", mqttClipTopic(refused)) {
 		for _, f := range sub.Filters {
 			se.subs[f.Filter] = true
 		}

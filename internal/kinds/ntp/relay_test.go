@@ -1290,12 +1290,12 @@ func TestNTPASourceThatChangesIsSaidOutLoud(t *testing.T) {
 	if got.Stratum != 9 {
 		t.Fatalf("the second answer did not come from the changed server: stratum %d", got.Stratum)
 	}
-	sn := awaitCounters(t, s, func(sn proxy.Snapshot) bool {
-		return sn.NTPSourceChanged >= 1 && sn.NTPStratumJumped >= 1
-	}, "the source change and the stratum jump")
-	if sn.NTPAnswered < 2 {
-		t.Errorf("the answers did not reach the client: %+v", sn.NTPAnswered)
-	}
+	// The answers reached the client and the change was counted. Both are
+	// polled together, because the answered counter is incremented after
+	// the datagram is written.
+	awaitCounters(t, s, func(sn proxy.Snapshot) bool {
+		return sn.NTPSourceChanged >= 1 && sn.NTPStratumJumped >= 1 && sn.NTPAnswered >= 2
+	}, "the source change, the stratum jump and both answers")
 }
 
 // And the same change where the estate said to refuse: the answer does

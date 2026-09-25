@@ -115,6 +115,7 @@ units put the other two.
 | `bans` | List active bans with expiry, source and count |
 | `ban TARGET` | Ban an address, CIDR or `ja4:<fingerprint>`; `-duration 1h`, `-reason text` |
 | `unban TARGET` | Remove a ban |
+| `policy` [`report`\|`reset`] | What the listeners in shadow mode would have refused, most frequent first, with the rule that decided and an example (`-top N`); `reset` empties the ledger |
 | `sessions` | The sessions the daemon is serving now (ssh, sftp, telnet, vnc, rdp, ftp, modbus) with the client, login, target, one detail and how long; `-kill ID` closes one, `-kill-matching` with `-kind`, `-listener` or `-user` closes a set (audited) |
 | `cluster` | Peers, inbound connections and gossip counters |
 | `accounts` | Account guard state: endpoints with tracked keys, active blocks (`-top N` per endpoint), campaign state and the action counters |
@@ -3521,6 +3522,66 @@ read is a stream you cannot log.
 a deployment robot, an on-call rota by certificate and everyone else,
 and a delivery account that can do nothing but read one directory over
 sftp.
+
+### Turning a policy on without breaking the plant
+
+Every policy in this proxy has the same adoption problem: somebody writes
+the allow list, the command policy, the register range or the topic policy,
+and then cannot switch it on, because nobody knows what it would refuse at
+three in the morning. So it stays in a branch, or goes in at a weekend with
+somebody watching, or goes in allowing everything.
+
+```yaml
+policy:
+  mode: shadow        # the estate's default
+server:
+  listeners:
+    - name: line-2
+      kind: modbus
+      policy: {mode: shadow}    # or this listener alone
+```
+
+In shadow mode the policy is evaluated on real traffic, every decision it
+would have made is written down, and nothing is refused for policy. After a
+week:
+
+```sh
+xproxyctl policy report -top 20
+```
+
+```
+WOULD BLOCK  KIND    LISTENER   REASON                 RULE        FIRST                 LAST                  EXAMPLE
+1184         modbus  line-2     rule_deny              -           2026-09-18T02:11:04Z  2026-09-25T06:02:55Z  unit 4 write_single_register write
+37           ssh     operators  command_refused        -           2026-09-19T08:40:11Z  2026-09-24T17:22:03Z  ansible-playbook --check site.yml
+12           dns     resolver   blocked                -           2026-09-20T23:04:52Z  2026-09-25T04:40:19Z  telemetry.vendor.example
+2            mqtt    fleet      publish_topic_refused  -           2026-09-22T11:15:38Z  2026-09-22T11:16:02Z  plant/line2/debug
+```
+
+That is the list to work through before enforcement goes on: the first line
+is a device nobody knew was writing, the second is an automation account
+that needs a rule, the third and fourth are a vendor and a debug topic
+somebody has to decide about. `xproxyctl policy reset` empties the ledger,
+so the next week's report is about the policy as it is now.
+
+**What it does not switch off.** Shadow mode applies to policy — what an
+estate says its own traffic may do. Authentication, a second factor, a ban,
+a rate limit, a bound and anything the protocol parser could not read are
+refused in shadow mode exactly as they are in enforce mode: a bastion whose
+door opened because a policy was being trialled would be a bastion with a
+trial instead of a door, and forwarding a frame nobody could parse would
+mean sending a PLC bytes this proxy never read. docs/CONFIG.md's `policy`
+section has the table, kind by kind.
+
+On an HTTP listener the same setting reaches the WAF through the mechanism
+the WAF already has: a blocking profile runs as a detecting one, and
+`xproxyctl waf -top 20` says which rule would have blocked what, with the
+rule statistics the ledger could not hold. The route's positive security
+model goes into the ledger like every other policy.
+
+`xproxyctl status` carries `would_refusals` beside `refusals`, per kind and
+reason, so a dashboard can show the two next to each other while a rollout
+is in progress — which is the graph that tells an operator whether the last
+change to the policy helped.
 
 ### Who is on now, and getting them off
 

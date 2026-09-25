@@ -220,6 +220,26 @@ func (t *server) deny(ip netip.Addr, what, detail string) {
 		"detail", textsafe.Clip256(detail))
 }
 
+// shadowed records a policy refusal a listener in shadow mode does not
+// enforce, and says whether it was recorded rather than refused.
+//
+// Only policy reaches it. A ban, the connection limit, a rate limit, a
+// failed second factor and anything the protocol parser could not read
+// are refused in shadow mode too: a bastion that let somebody in because
+// a new allow list was being trialled would be a bastion with a trial
+// instead of a door.
+func (t *server) shadowed(ip netip.Addr, what, detail string) bool {
+	if !t.cfg.Shadowing() {
+		return false
+	}
+	t.engine.Counters().WouldRefuse("vnc", what)
+	t.engine.Shadow().Record("vnc", t.cfg.Name, what, "", detail)
+	t.engine.Logs().SecurityEvent(context.Background(), "would_deny", "vnc_"+what,
+		"listener", t.cfg.Name, "client_ip", ip.String(), "what", what,
+		"detail", textsafe.Clip256(detail))
+	return true
+}
+
 func (t *server) clientAllowed(ip netip.Addr) bool {
 	if len(t.allow) == 0 {
 		return true
@@ -289,7 +309,7 @@ func (t *server) handle(client net.Conn) {
 	defer s.Counters().VNCSessionsOpen.Add(-1)
 	defer func() { se.closeRecording() }()
 
-	if !t.clientAllowed(se.ip) {
+	if !t.clientAllowed(se.ip) && !t.shadowed(se.ip, "client_refused", "") {
 		s.Counters().VNCRejected.Add(1)
 		t.deny(se.ip, "client_refused", "")
 		_ = client.Close()

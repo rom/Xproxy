@@ -932,6 +932,7 @@ script:
 | Defence | `bans`, `ban`, `unban`, `waf`, `botscore`, `accounts`, `patches`, `honeypot`, `filters`, `api` |
 | Traffic | `drain`, `maintenance`, `cache`, `dns`, `ingress`, `icap`, `geoip` |
 | Identity | `mfa`, `apikey`, `htpasswd` |
+| Policy rollout | `policy report` — what every listener in shadow mode would have refused, most frequent first, with the rule that decided and an example of what was asked for; `policy reset` empties the ledger once the policy is fixed |
 | Live sessions | `sessions` — who is on now across SSH, SFTP, telnet, VNC, RDP, FTP and the Modbus device queues, with the login, the target and how long; `-kill ID` closes one and `-kill-matching` closes a set by kind, listener or person (audited, and a filter that names nothing is refused rather than taken as everything) |
 | Records | `tail`, `session` (list, show, play), `capture` (start, stop, status), `reopen-logs` |
 | Views | `tui` — a full screen terminal view; the web GUI is `xproxy-admin`, with viewer and operator roles, validated configuration editing, graphs and live logs |

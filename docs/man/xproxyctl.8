@@ -170,6 +170,11 @@ T}	T{
 Virtual patches with state (active,\: disabled,\: expired),\: action,\: hits,\: last hit and expiry
 T}
 T{
+\fBpolicy\fR [\fBreport\fR|\:\fBreset\fR] [\fB\-\:top\fR \fIN\fR]
+T}	T{
+What the listeners in shadow mode would have refused and did not: the count,\: the kind,\: the listener,\: the reason,\: the rule that decided,\: when it was first and last seen,\: and one example of what was asked for,\: most frequent first. \fBreset\fR empties the ledger,\: which is what an operator does after fixing a policy so the next report is about the new one. Shadow mode is \fBpolicy:\: {mode:\: shadow}\fR for the estate or for one listener;\: it covers policy only \-\- authentication,\: bans,\: rate limits,\: bounds and malformed input are refused in shadow mode too
+T}
+T{
 \fBsessions\fR [\fB\-\:kill\fR \fIID\fR] [\fB\-\:kill\-\:matching\fR \fB\-\:kind\fR \fIK\fR \fB\-\:listener\fR \fIL\fR \fB\-\:user\fR \fIU\fR]
 T}	T{
 The sessions the daemon is serving now \[u2014] SSH,\: SFTP,\: telnet,\: VNC,\: RDP,\: FTP and the Modbus device queues \[u2014] oldest first: the identifier,\: the kind,\: the listener,\: where the client came from,\: the login,\: the target it reached,\: one detail the kind chose (the desktop\(aqs name,\: the unit identifier,\: the subsystem) and how long it has been up. \fB\-\:kill\fR \fIID\fR closes one;\: \fB\-\:kill\-\:matching\fR closes every session matching the \fB\-\:kind\fR,\: \fB\-\:listener\fR and \fB\-\:user\fR given,\: and refuses to run with none of them,\: so a filter is never accidentally everything. A session is registered before its handshake finishes,\: so one stuck in a handshake is listed and can be closed. Every closure is written to the audit log with who asked. The names,\: logins and details came off the network and are clipped and filtered before they are printed. This is the live table;\: \fBsession\fR (singular) reads recordings back from disk

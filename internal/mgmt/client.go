@@ -284,6 +284,15 @@ func (c *Client) KillSessions(id, kind, listener, user string) ([]sessions.View,
 	return out, c.doBody("DELETE", "/v1/sessions?"+q.Encode(), nil, &out)
 }
 
+// PolicyReport is what the listeners in shadow mode would have refused.
+func (c *Client) PolicyReport() (*PolicyReport, error) {
+	var out PolicyReport
+	return &out, c.do("GET", "/v1/policy", &out)
+}
+
+// ResetPolicyReport empties the ledger.
+func (c *Client) ResetPolicyReport() error { return c.do("DELETE", "/v1/policy", nil) }
+
 // Bans lists active bans.
 func (c *Client) Bans() ([]ban.Entry, error) {
 	var out []ban.Entry

@@ -232,6 +232,7 @@ do not know where to look, start at the top.
 | Which certificate is served for a name | `xproxyctl tls` |
 | Whether a managed certificate is stuck | `xproxyctl acme` |
 | Who is banned | `xproxyctl bans` |
+| What a policy would refuse if it were enforced | `xproxyctl policy report -top 20` |
 | Who is on the estate right now, and getting them off | `xproxyctl sessions`, `xproxyctl sessions -kill ID` |
 | Which keys are consuming a rate limit | `xproxyctl quotas -top 20` |
 | Which WAF rules fire | `xproxyctl waf -top 20` |
@@ -3503,6 +3504,56 @@ before closing the client's channel — a lost exit status or a lost
 reply to the `exec` itself looks to the client like a crash. One such
 race was fixed in 1.4; if you see it again, collect the access line and
 the target's own log.
+
+## Shadow mode and the policy report
+
+**`xproxyctl policy report` is empty although a policy is refusing
+things.** Then the policy *is* being enforced, which is the default: the
+report holds what a listener in shadow mode would have refused and did not.
+Check `xproxyctl config` for the `policy` section and the listener's own
+`policy` — a listener naming `{mode: enforce}` overrides an estate-wide
+shadow, and the estate's mode reaches only the listeners that do not name
+one.
+
+**Traffic a policy should refuse is getting through.** Look at the mode
+before the rule. In shadow mode every policy refusal becomes a ledger entry
+and the traffic goes on, which is what shadow mode is; `xproxyctl status`
+shows `would_refusals` where `refusals` would be. Validation warns at every
+start and reload while a listener is in shadow mode, and the warning is in
+the security log.
+
+**The report says it is full.** `policy.max_reasons` (default 4096) bounds
+distinct combinations of kind, listener, reason and rule; past it new
+combinations are dropped and counted rather than the ledger growing
+without limit on strings that came off the network. What is already in it
+keeps counting, so the busiest entries stay accurate. Raise the bound, or
+reset the ledger once you have read it.
+
+**An entry with a huge count and no rule.** Not every policy has named
+rules: the Modbus rule list does, the client lists and verb lists do not, so
+the rule column is empty for those and the reason names the check
+(`client_not_allowed`, `command_refused`, `publish_topic_refused`).
+
+**The example looks truncated or odd.** It is clipped to 160 bytes and
+filtered before it is printed, like every other view of something that came
+off the network. The first example of each entry is kept rather than the
+latest, so the report does not change while it is being read.
+
+**Something was refused in shadow mode anyway.** By design, and the table
+in docs/CONFIG.md's `policy` section says which: authentication and a second
+factor, a ban, a rate limit, a bound, a malformed message, the protocol's
+own negotiation, an HTTP virtual patch, and the forward proxy's `private`
+rule (which protects the estate from the client rather than the other way
+about). Shadow mode is for the statements an estate makes about its own
+traffic, not for the parts that keep the proxy able to read what it is
+forwarding.
+
+**The WAF still blocks on an HTTP listener in shadow mode.** It should not:
+an estate-wide `policy: {mode: shadow}` turns a blocking WAF profile into a
+detecting one. Check that the mode is on the top-level `policy` section — an
+HTTP listener's own `policy` reaches the route's positive security model but
+not the WAF, because routes and profiles are estate-wide rather than
+per-listener. `xproxyctl waf` shows each profile's mode.
 
 ## Live sessions
 

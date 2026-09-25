@@ -129,6 +129,11 @@ func applyDefaults(c *Config) {
 	}
 	for i := range s.Listeners {
 		setStr(&s.Listeners[i].Kind, "http")
+		// The estate's enforcement mode reaches every listener that does
+		// not name its own, so a kind reads one field rather than two.
+		if c.Policy != nil && c.Policy.Mode != "" && s.Listeners[i].Policy == nil {
+			s.Listeners[i].Policy = &ListenerPolicy{Mode: c.Policy.Mode}
+		}
 		connectionRateDefaults(s.Listeners[i].ConnectionRate, s.Listeners[i].ConnectionRatePerSource)
 		if t := s.Listeners[i].TCP; t != nil {
 			setDur(&t.IdleTimeout, 10*time.Minute)

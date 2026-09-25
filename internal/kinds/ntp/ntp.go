@@ -327,7 +327,9 @@ func (s *server) fromClient(client netip.AddrPort, raw []byte) {
 		// the list it is being written against cannot be the thing that
 		// stops it seeing them.
 		c.NTPWouldDeny.Add(1)
+		c.WouldRefuse("ntp", "client_not_allowed")
 		s.denyLog(client, "client_not_allowed", "recorded, not enforced")
+		s.host.Shadow().Record("ntp", s.cfg.Name, "client_not_allowed", "", client.Addr().String())
 	}
 	if !s.admitRate(client, raw) {
 		return
@@ -365,7 +367,9 @@ func (s *server) fromClient(client netip.AddrPort, raw []byte) {
 			return
 		}
 		c.NTPWouldDeny.Add(1)
+		c.WouldRefuse("ntp", d.Reason)
 		s.audit(client, d, pkt, "would_deny")
+		s.host.Shadow().Record("ntp", s.cfg.Name, d.Reason, "", d.Detail)
 	}
 	a, ok := s.association(client)
 	if !ok {
@@ -725,7 +729,9 @@ func (s *server) answer(b *backend, raw []byte) {
 			return
 		}
 		c.NTPWouldDeny.Add(1)
+		c.WouldRefuse("ntp", d.Reason)
 		s.audit(a.client, d, pkt, "would_deny")
+		s.host.Shadow().Record("ntp", s.cfg.Name, d.Reason, "", d.Detail)
 	}
 	s.tracer.Response(s.cfg.Name, a.client, b.addr, pkt, d)
 	if _, err := s.pc.WriteTo(raw, net.UDPAddrFromAddrPort(a.client)); err != nil {
@@ -840,6 +846,9 @@ func (s *server) probe(b *backend) (*wire.Packet, time.Duration, time.Duration, 
 // enforcing says whether the policy decides or only records. A learning
 // run is observe-only unless it says otherwise.
 func (s *server) enforcing() bool {
+	if s.cfg.Shadowing() {
+		return false
+	}
 	l := s.n.Learn
 	if l == nil || !l.Enabled {
 		return true

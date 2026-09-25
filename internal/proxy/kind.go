@@ -21,6 +21,7 @@ import (
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/mfa"
 	"github.com/rom/xproxy/internal/sessions"
+	"github.com/rom/xproxy/internal/shadow"
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/upstream"
 )
@@ -91,6 +92,10 @@ type Host interface {
 	// list them and close one. Never nil, so a kind writes no
 	// conditionals around it.
 	Sessions() *sessions.Table
+	// Shadow is the ledger a listener in shadow mode writes what it would
+	// have refused to. Never nil, so a kind writes no conditionals around
+	// it; a listener that enforces never reaches it.
+	Shadow() *shadow.Ledger
 	// TakeRemote asks the cluster owner of a rate limit key to decide.
 	// decided is false without a cluster, without an owner or when the
 	// answer did not come in time, and the caller falls back to the

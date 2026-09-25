@@ -163,6 +163,26 @@ func (t *server) deny(ip netip.Addr, what, detail string) {
 		"detail", textsafe.Clip256(detail))
 }
 
+// shadowed records a policy refusal a listener in shadow mode does not
+// enforce, and says whether it was recorded rather than refused.
+//
+// Only policy reaches it. A ban, the connection limit, a rate limit, a
+// failed second factor and anything the protocol parser could not read
+// are refused in shadow mode too: a bastion that let somebody in because
+// a new allow list was being trialled would be a bastion with a trial
+// instead of a door.
+func (t *server) shadowed(ip netip.Addr, what, detail string) bool {
+	if !t.cfg.Shadowing() {
+		return false
+	}
+	t.engine.Counters().WouldRefuse("telnet", what)
+	t.engine.Shadow().Record("telnet", t.cfg.Name, what, "", detail)
+	t.engine.Logs().SecurityEvent(context.Background(), "would_deny", "telnet_"+what,
+		"listener", t.cfg.Name, "client_ip", ip.String(), "what", what,
+		"detail", textsafe.Clip256(detail))
+	return true
+}
+
 func (t *server) clientAllowed(ip netip.Addr) bool {
 	if len(t.allow) == 0 {
 		return true
@@ -206,7 +226,7 @@ func (t *server) handle(client net.Conn) {
 	defer s.Counters().TelnetSessionsOpen.Add(-1)
 	defer func() { se.closeRecording() }()
 
-	if !t.clientAllowed(se.ip) {
+	if !t.clientAllowed(se.ip) && !t.shadowed(se.ip, "client_refused", "") {
 		s.Counters().TelnetRejected.Add(1)
 		t.deny(se.ip, "client_refused", "")
 		_ = client.Close()
@@ -404,7 +424,11 @@ func (se *session) decide(p *wire.Parser, b []byte, src net.Conn, fromClient boo
 			}
 			out = append(out, wire.EscapeData(e.Data)...)
 		case wire.Negotiate:
-			if !t.options[e.Opt] {
+			if !t.options[e.Opt] && t.shadowed(se.ip, "option_refused", wire.OptionName(e.Opt)) {
+				// Shadow mode: the negotiation is forwarded and the
+				// ledger says the option list would have refused it.
+				out = append(out, wire.Negotiation(e.Cmd, e.Opt)...)
+			} else if !t.options[e.Opt] {
 				// Refused here rather than forwarded, and the peer that
 				// asked is answered so it stops asking. A refusal the
 				// asker never hears is a negotiation that repeats.
@@ -421,7 +445,9 @@ func (se *session) decide(p *wire.Parser, b []byte, src net.Conn, fromClient boo
 			}
 			out = append(out, wire.Negotiation(e.Cmd, e.Opt)...)
 		case wire.Subneg:
-			if !t.options[e.Opt] {
+			if !t.options[e.Opt] && t.shadowed(se.ip, "subnegotiation_refused", wire.OptionName(e.Opt)) {
+				out = append(out, wire.Subnegotiation(e.Opt, e.Data)...)
+			} else if !t.options[e.Opt] {
 				se.refused.Add(1)
 				t.engine.Counters().TelnetOptionsRefused.Add(1)
 				t.engine.Counters().Refuse("telnet", "subnegotiation_refused")

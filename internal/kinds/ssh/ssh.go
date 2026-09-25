@@ -471,6 +471,29 @@ func (t *server) deny(ip netip.Addr, what, detail string) {
 	}
 }
 
+// shadowed records a policy refusal a listener in shadow mode does not
+// enforce, and says whether it was recorded rather than refused.
+//
+// Only policy reaches it: the client list and the command, subsystem and
+// forwarding rules. An unknown host key, a key that does not
+// authenticate, a failed second factor, a ban, the connection limit and a
+// malformed request are refused in shadow mode too -- a bastion that let
+// somebody in because a policy was being trialled would be a bastion with
+// a trial instead of a door.
+func (t *server) shadowed(ip netip.Addr, what, detail string) bool {
+	if !t.cfg.Shadowing() {
+		return false
+	}
+	t.engine.Counters().WouldRefuse("ssh", what)
+	t.engine.Shadow().Record("ssh", t.cfg.Name, what, "", detail)
+	attrs := []any{"listener", t.cfg.Name, "client_ip", ip.String(), "proto", "ssh"}
+	if detail != "" {
+		attrs = append(attrs, "detail", detail)
+	}
+	t.engine.Logs().SecurityEvent(context.Background(), "would_deny", "ssh_"+what, attrs...)
+	return true
+}
+
 // session is one client connection and the target connection behind
 // it.
 type session struct {
@@ -510,7 +533,7 @@ func (t *server) handle(raw net.Conn) {
 	se := &session{t: t, ip: ip}
 	defer func() { _ = raw.Close() }()
 
-	if !t.allowed(ip) {
+	if !t.allowed(ip) && !t.shadowed(ip, "client_not_allowed", "") {
 		s.Counters().SSHRejected.Add(1)
 		t.deny(ip, "client_not_allowed", "")
 		t.log(se, start, "client_not_allowed")
@@ -919,16 +942,14 @@ func (se *session) answerRequest(clientCh, upCh cssh.Channel, r *cssh.Request, s
 			se.refuseRequest(r, "malformed_request", "env")
 			return true
 		}
-		if !se.policy.envAllowed(name) {
+		if !se.policy.envAllowed(name) && se.refuseByPolicy(r, "env_refused", name) {
 			// A variable the target would read before it runs the
 			// command the policy approved.
-			se.refuseRequest(r, "env_refused", name)
 			return true
 		}
 	case "subsystem":
 		name := sshStringPayload(r.Payload)
-		if !se.policy.subsystems[name] {
-			se.refuseRequest(r, "subsystem_refused", name)
+		if !se.policy.subsystems[name] && se.refuseByPolicy(r, "subsystem_refused", name) {
 			return true
 		}
 		if name == "sftp" && se.policy.sftp != nil {
@@ -992,16 +1013,15 @@ func (se *session) answerRequest(clientCh, upCh cssh.Channel, r *cssh.Request, s
 			return false
 		case cmdAllowed:
 		default:
-			if !se.policy.transfers && fileTransferCommand(cmd) {
+			if !se.policy.transfers && fileTransferCommand(cmd) &&
+				se.refuseByPolicy(r, "file_transfer_refused", textsafe.Clip256(cmd)) {
 				// scp and rsync move files without ever opening the
 				// sftp subsystem, so every path and operation rule
 				// there is simply not on their path. Refusing them is
 				// what makes an sftp policy mean anything.
-				se.refuseRequest(r, "file_transfer_refused", textsafe.Clip256(cmd))
 				return true
 			}
-			if !se.commandAllowed(cmd) {
-				se.refuseRequest(r, "command_refused", textsafe.Clip256(cmd))
+			if !se.commandAllowed(cmd) && se.refuseByPolicy(r, "command_refused", textsafe.Clip256(cmd)) {
 				return true
 			}
 			t.engine.Logs().SecurityEvent(context.Background(), "allow", "ssh_exec",
@@ -1038,6 +1058,24 @@ func (se *session) answerRequest(clientCh, upCh cssh.Channel, r *cssh.Request, s
 		return false
 	}
 	_ = r.Reply(ok, nil)
+	return true
+}
+
+// refuseByPolicy is refuseRequest for the refusals a listener in shadow
+// mode records instead of applying: the command, subsystem, environment
+// and file-transfer rules. It reports whether the request was refused, so
+// a caller that gets false carries on with the request as if the policy
+// had allowed it.
+//
+// The integrity refusals keep using refuseRequest and are never shadowed:
+// a request this proxy could not parse, a command whose shell syntax it
+// will not split, a certificate extension that itself says no, and an
+// identity that cannot stand in a path pattern.
+func (se *session) refuseByPolicy(r *cssh.Request, what, detail string) bool {
+	if se.t.shadowed(se.ip, what, detail) {
+		return false
+	}
+	se.refuseRequest(r, what, detail)
 	return true
 }
 

@@ -171,6 +171,14 @@
         }
       ]
     },
+    "policy": {
+      "description": "Policy is the estate's enforcement mode: whether the listeners enforce their policies or only evaluate them and write down what they would have refused.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Policy"
+        }
+      ]
+    },
     "rate_limits": {
       "type": "array",
       "items": {
@@ -3088,6 +3096,14 @@
             }
           ]
         },
+        "policy": {
+          "description": "Policy is whether this listener enforces its policy or only evaluates it. It overrides the estate's own policy section.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/ListenerPolicy"
+            }
+          ]
+        },
         "protocols": {
           "description": "Protocols accepted. Defaults to [h1, h2] with TLS and [h1] without.",
           "type": "array",
@@ -3174,6 +3190,17 @@
               "$ref": "#/$defs/VNCListener"
             }
           ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ListenerPolicy": {
+      "description": "ListenerPolicy is the enforcement mode of one listener.",
+      "type": "object",
+      "properties": {
+        "mode": {
+          "description": "Mode is enforce (the default) or shadow. In shadow mode the policy is evaluated on real traffic and every decision it would have made is recorded, and nothing is refused for policy -- which is how an operator finds out what a new allow list, command policy or register range would have broken before it breaks it. What shadow mode does NOT stop: a malformed message, a failed authentication or second factor, a ban, a rate limit, a bound (packet size, table full, connection limit) and a TLS handshake refusal are refused in shadow mode too. Forwarding those would mean acting on bytes the code could not read, or admitting somebody who did not authenticate, which is not a policy question.",
+          "type": "string"
         }
       },
       "additionalProperties": false
@@ -4900,6 +4927,21 @@
           "type": "string"
         },
         "name": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Policy": {
+      "description": "Policy is the estate's enforcement mode. A policy nobody dares switch on is not a control, and the reason nobody dares is always the same: no one knows what it would refuse at three in the morning. So the mode that answers that question is a first-class setting rather than a per-protocol learning flag -- the policy runs on real traffic, every decision is written down, and nothing is refused. `xproxyctl policy report` is then the list of what to fix before enforcement goes on.",
+      "type": "object",
+      "properties": {
+        "max_reasons": {
+          "description": "MaxReasons bounds the ledger: distinct combinations of kind, listener, reason and rule. Default 4096. Past it the report says it is full rather than quietly stopping.",
+          "type": "integer"
+        },
+        "mode": {
+          "description": "Mode is enforce (the default) or shadow, for every listener that does not say otherwise in its own policy section.",
           "type": "string"
         }
       },

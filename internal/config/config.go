@@ -53,6 +53,10 @@ type Config struct {
 
 	// Bans enables the ban list when present.
 	Bans *Bans `yaml:"bans"`
+	// Policy is the estate's enforcement mode: whether the listeners
+	// enforce their policies or only evaluate them and write down what
+	// they would have refused.
+	Policy *Policy `yaml:"policy"`
 	// ThreatIntel imports lists of client addresses and TLS
 	// fingerprints somebody else attributed, with what to do about a
 	// match.
@@ -276,6 +280,32 @@ type Listener struct {
 	NTP *NTPListener `yaml:"ntp"`
 	// NTSKE configures a kind: ntske listener.
 	NTSKE *NTSKEListener `yaml:"ntske"`
+	// Policy is whether this listener enforces its policy or only
+	// evaluates it. It overrides the estate's own policy section.
+	Policy *ListenerPolicy `yaml:"policy"`
+}
+
+// Shadowing reports whether this listener evaluates its policy without
+// enforcing it. The default is to enforce: a proxy that shadowed by
+// accident would be a proxy with no policy at all, and the one thing that
+// must never be a default is "allow everything and write it down".
+func (l Listener) Shadowing() bool { return l.Policy != nil && l.Policy.Mode == "shadow" }
+
+// ListenerPolicy is the enforcement mode of one listener.
+type ListenerPolicy struct {
+	// Mode is enforce (the default) or shadow. In shadow mode the policy
+	// is evaluated on real traffic and every decision it would have made
+	// is recorded, and nothing is refused for policy -- which is how an
+	// operator finds out what a new allow list, command policy or
+	// register range would have broken before it breaks it.
+	//
+	// What shadow mode does NOT stop: a malformed message, a failed
+	// authentication or second factor, a ban, a rate limit, a bound
+	// (packet size, table full, connection limit) and a TLS handshake
+	// refusal are refused in shadow mode too. Forwarding those would mean
+	// acting on bytes the code could not read, or admitting somebody who
+	// did not authenticate, which is not a policy question.
+	Mode string `yaml:"mode"`
 }
 
 // ModbusListener is a Modbus relay that reads every frame.
@@ -5331,6 +5361,25 @@ func (d Duration) D() time.Duration { return time.Duration(d) }
 
 // Enabled reports whether a stream is enabled (default true).
 func (s LogStream) IsEnabled() bool { return s.Enabled == nil || *s.Enabled }
+
+// Policy is the estate's enforcement mode.
+//
+// A policy nobody dares switch on is not a control, and the reason nobody
+// dares is always the same: no one knows what it would refuse at three in
+// the morning. So the mode that answers that question is a first-class
+// setting rather than a per-protocol learning flag -- the policy runs on
+// real traffic, every decision is written down, and nothing is refused.
+// `xproxyctl policy report` is then the list of what to fix before
+// enforcement goes on.
+type Policy struct {
+	// Mode is enforce (the default) or shadow, for every listener that
+	// does not say otherwise in its own policy section.
+	Mode string `yaml:"mode"`
+	// MaxReasons bounds the ledger: distinct combinations of kind,
+	// listener, reason and rule. Default 4096. Past it the report says it
+	// is full rather than quietly stopping.
+	MaxReasons int `yaml:"max_reasons"`
+}
 
 // Bans configures the ban list: addresses that are refused outright for a
 // period after repeated security denies or by operator action.

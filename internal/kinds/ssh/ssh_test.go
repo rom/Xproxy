@@ -1700,3 +1700,55 @@ func rulesFile(t *testing.T) string {
 	}
 	return p
 }
+
+// Shadow mode on a bastion: the command policy records what it would have
+// refused and the command runs, while the key that does not authenticate
+// is still refused. The second half is the point -- a bastion whose door
+// opened because a policy was being trialled would be a bastion with a
+// trial instead of a door.
+func TestSSHShadowModeRecordsTheCommandAndKeepsTheDoor(t *testing.T) {
+	s, addr, key, tg := bastionWith(t, `        allow_commands: ["^uptime$"]`,
+		"policy: {mode: shadow}")
+	c := dialBastion(t, addr, key)
+	se, err := c.NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A command the policy does not allow: in shadow mode it runs.
+	if out, err := se.Output("rm -rf /"); err != nil {
+		t.Fatalf("the command was refused in shadow mode: %q %v", out, err)
+	}
+	var reached bool
+	for _, r := range tg.seen() {
+		if strings.Contains(r, "rm -rf") {
+			reached = true
+		}
+	}
+	if !reached {
+		t.Error("the command did not reach the target in shadow mode")
+	}
+	rep := s.Shadow().Report()
+	if len(rep) != 1 || rep[0].Kind != "ssh" || rep[0].Listener != "bastion" ||
+		rep[0].Reason != "command_refused" {
+		t.Fatalf("report %+v", rep)
+	}
+	if !strings.Contains(rep[0].Sample, "rm -rf") {
+		t.Errorf("the entry does not say what was asked for: %+v", rep[0])
+	}
+	if sn := s.Stats(); sn.WouldRefusals["ssh"]["command_refused"] != 1 ||
+		sn.Refusals["ssh"]["command_refused"] != 0 {
+		t.Errorf("counters: would %+v refused %+v", sn.WouldRefusals["ssh"], sn.Refusals["ssh"])
+	}
+
+	// And the door: a key nobody authorised does not get in, shadow mode
+	// or not.
+	_, strangerSigner, _ := sshKey(t, t.TempDir(), "stranger")
+	if _, err := cssh.Dial("tcp", addr, &cssh.ClientConfig{
+		User:            "alice",
+		Auth:            []cssh.AuthMethod{cssh.PublicKeys(strangerSigner)},
+		HostKeyCallback: cssh.InsecureIgnoreHostKey(), //nolint:gosec // the test pins nothing
+		Timeout:         5 * time.Second,
+	}); err == nil {
+		t.Fatal("a key nobody authorised authenticated on a listener in shadow mode")
+	}
+}

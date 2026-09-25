@@ -1254,6 +1254,60 @@ func run(args []string, out, errOut io.Writer) int {
 			_ = tw.Flush()
 		}
 		return 0
+	case "policy":
+		// What the listeners in shadow mode would have refused. The
+		// subcommand is "report" because that is what an operator asks
+		// for, and "reset" empties the ledger after the policy is fixed.
+		pf := flag.NewFlagSet("policy", flag.ContinueOnError)
+		pf.SetOutput(errOut)
+		top := pf.Int("top", 0, "show only the first N entries")
+		if err := pf.Parse(fs.Args()[1:]); err != nil {
+			return 2
+		}
+		what := "report"
+		if pf.NArg() > 0 {
+			what = pf.Arg(0)
+		}
+		switch what {
+		case "report":
+		case "reset":
+			if err := c.ResetPolicyReport(); err != nil {
+				return fail(err)
+			}
+			_, _ = fmt.Fprintln(out, "the shadow report is empty")
+			return 0
+		default:
+			_, _ = fmt.Fprintln(errOut, "policy: report or reset")
+			return 2
+		}
+		rep, err := c.PolicyReport()
+		if err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			return printJSON(out, rep)
+		}
+		st := rep.Status
+		_, _ = fmt.Fprintf(out, "shadow mode: %d kinds of refusal recorded, %d in total\n", st.Entries, st.Recorded)
+		if st.Full {
+			_, _ = fmt.Fprintf(out, "the ledger is full, so this report is not complete (%d dropped); raise policy.max_reasons or reset it\n", st.Dropped)
+		}
+		if len(rep.Entries) == 0 {
+			_, _ = fmt.Fprintln(out, "nothing would have been refused (no listener is in shadow mode, or none of them refused anything)")
+			return 0
+		}
+		entries := rep.Entries
+		if *top > 0 && len(entries) > *top {
+			entries = entries[:*top]
+		}
+		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, "WOULD BLOCK\tKIND\tLISTENER\tREASON\tRULE\tFIRST\tLAST\tEXAMPLE")
+		for _, e := range entries {
+			_, _ = fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", e.Count, e.Kind, e.Listener,
+				e.Reason, textsafe.Clip64(e.Rule), e.First, e.Last, textsafe.Clip64(e.Sample))
+		}
+		_ = tw.Flush()
+		return 0
 	case "sessions":
 		// The sessions a daemon is serving now, and the one operation an
 		// operator needs on them. "session" is the recorded ones on

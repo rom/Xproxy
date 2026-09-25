@@ -274,6 +274,26 @@ func (t *server) deny(ip netip.Addr, what, detail string) {
 	}
 }
 
+// shadowed records a policy refusal a listener in shadow mode does not
+// enforce, and says whether it was recorded rather than refused.
+//
+// Only policy reaches it. A ban, the connection limit, a rate limit, a
+// failed second factor and anything the protocol parser could not read
+// are refused in shadow mode too: a bastion that let somebody in because
+// a new allow list was being trialled would be a bastion with a trial
+// instead of a door.
+func (t *server) shadowed(ip netip.Addr, what, detail string) bool {
+	if !t.cfg.Shadowing() {
+		return false
+	}
+	t.engine.Counters().WouldRefuse("ftp", what)
+	t.engine.Shadow().Record("ftp", t.cfg.Name, what, "", detail)
+	t.engine.Logs().SecurityEvent(context.Background(), "would_deny", "ftp_"+what,
+		"listener", t.cfg.Name, "client_ip", ip.String(), "what", what,
+		"detail", textsafe.Clip256(detail))
+	return true
+}
+
 // session is one control connection and the control connection to
 // the target that serves it.
 type session struct {
@@ -344,7 +364,7 @@ func (t *server) handle(client net.Conn) {
 	// that ends any way at all still leaves a complete file.
 	defer func() { se.closeRecording() }()
 
-	if !t.clientAllowed(se.ip) {
+	if !t.clientAllowed(se.ip) && !t.shadowed(se.ip, "client_refused", "") {
 		s.Counters().FTPRejected.Add(1)
 		t.deny(se.ip, "client_refused", "")
 		_ = client.Close()
@@ -590,6 +610,11 @@ func (se *session) command(c wire.Command) (bool, string) {
 		}
 		return false, ""
 	case !t.verbs[c.Verb]:
+		if t.shadowed(se.ip, "command_refused", c.Verb) {
+			// Shadow mode: the command goes to the server and the ledger
+			// says the verb list would have refused it.
+			break
+		}
 		if !se.refuse(502, "command not allowed", "command_refused", c.Verb) {
 			return true, "too_many_errors"
 		}

@@ -50,6 +50,56 @@ on the first line of the file to enable it.
 | `tracing` | object | none | W3C trace context and span export; see `tracing` |
 | `capture` | object | none | pcapng capture of the exchanges the proxy handled; see `capture` |
 | `scim` | object | none | A SCIM 2.0 provisioning endpoint for the second factor and the API keys; see `scim` |
+| `policy` | object | `{mode: enforce}` | Whether the listeners enforce their policies or only evaluate them and write down what they would have refused; see `policy` |
+
+## policy
+
+A policy nobody dares switch on is not a control, and the reason nobody
+dares is always the same: no one knows what it would refuse at three in
+the morning. Shadow mode is the answer the WAF has had for years,
+generalised to every protocol — the policy is evaluated on real traffic,
+every decision it would have made is written down, and nothing is refused
+for policy.
+
+```yaml
+policy:
+  mode: shadow          # enforce (default) or shadow
+  max_reasons: 4096
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `mode` | enum | `enforce` | `enforce` or `shadow`, for every listener that does not name its own in `server.listeners[].policy`. `shadow` warns at validation |
+| `max_reasons` | int | `4096` | The ledger's bound: distinct combinations of kind, listener, reason and rule. Past it the report says it is full rather than quietly stopping |
+
+Read it with `xproxyctl policy report` (`-top N`, `-json`), which lists
+what each listener would have refused, most frequent first, with the rule
+that decided, an example of what was asked for, and when it was first and
+last seen. `xproxyctl policy reset` empties the ledger, which is what an
+operator runs after fixing a policy so the next week's report is about the
+new one. `GET /v1/policy` and `DELETE /v1/policy` are the endpoints; the
+totals are in `xproxyctl status` as `would_refusals` beside `refusals`,
+and `shadow` carries the ledger's own state.
+
+**What shadow mode does and does not stop.** It applies to *policy*: the
+statements an estate writes about what its own traffic may do. It never
+applies to integrity, identity or a bound, because forwarding those would
+mean acting on bytes the code could not read, or admitting somebody who
+did not authenticate — a trial instead of a door.
+
+| Kind | Evaluated and recorded | Still refused |
+|------|------------------------|---------------|
+| `modbus` | every rule: function, unit, address range, value bounds, rate and window | malformed frames, the unit table, the queue bound, rate limits, bans |
+| `ntp` | the client list and every request rule (versions, modes, extension fields, the identity it demands), and every answer rule (stratum, distances, timestamps, identifier, leap) | mode 6 and 7, version 5, malformed packets, bans, rate limits, the association and outstanding bounds |
+| `mqtt` | the client list, the CONNECT policy (version, client id, username, keep alive, will), the publish and subscribe policies, retain | malformed packets, a first packet that is not CONNECT, a second CONNECT, the packet bound, the connection limit, TLS failures |
+| `syslog` | the sender list, the facility, severity and pattern rules | malformed messages, the rate limit, a full queue |
+| `dns` | the client list, the block list, response policy zones, tunnel cooldowns | malformed queries, bans, the rate limit, the worker bound, the cookie requirement |
+| `ssh` | the client list and the command, subsystem, environment and file-transfer rules | an unknown host key, a key that does not authenticate, a certificate extension that itself refuses, MFA, bans, the connection limit, a request it could not parse |
+| `telnet`, `vnc`, `rdp`, `ftp` | the client list; telnet's option list; ftp's verb list | bans, connection limits, MFA, malformed input, the protocol's own version and encryption negotiation |
+| `smtp` | the verb list | the protocol-state refusals, the encryption and authentication requirements, the size bound, malformed commands |
+| `forward` | the destination lists: ports, deny, allow | `private` (which protects the estate *from* the client — shadowing it would turn a trial into a server-side request forgery), a destination that does not resolve, credentials, tunnel bounds |
+| `http` | the route's positive security model (methods, media types, query parameters, shape bounds); a blocking WAF profile runs as a detecting one, and `xproxyctl waf -top` says which rule would have blocked what | bans, rate limits, virtual patches, authentication and authorisation filters, the normalisation guard, the request and body bounds |
+| `tcp`, `udp`, `ntske` | nothing: their refusals are either "no destination exists for this" or a bound, and neither is a policy a shadow run could answer | all of them |
 
 ## server
 
@@ -90,6 +140,7 @@ off) logs a warning and lists them under `mismatched_peers`.
 | `redirect_to_https` | bool | `false` | Answer every request with 308 to `https://host/path?query`. Plaintext listeners only. |
 | `connection_rate` | object | none | `{per_second, burst}`: how fast this listener accepts, replacing `server.limits.connection_rate` for it. See below |
 | `connection_rate_per_source` | object | none | `{per_second, burst, ipv4_prefix, ipv6_prefix, max_sources}`: how fast one source network may connect to this listener |
+| `policy` | object | the estate's `policy` | `{mode: enforce|shadow}` for this listener alone; see `policy` |
 
 ### server.listeners[].tcp (kind: tcp)
 
