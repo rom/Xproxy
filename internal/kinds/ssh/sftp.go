@@ -338,11 +338,12 @@ func (se *session) relaySFTP(clientCh, upCh cssh.Channel, p *sftpPolicy) {
 			if err != nil {
 				return
 			}
-			if pkt.Type == sftpwire.HANDLE {
+			switch pkt.Type {
+			case sftpwire.HANDLE:
 				if id, handle, err := sftpwire.ParseHandleReply(pkt); err == nil {
 					files.bind(id, handle, p.yara)
 				}
-			} else if pkt.Type == sftpwire.STATUS {
+			case sftpwire.STATUS:
 				// An OPEN which failed is answered with STATUS rather than
 				// HANDLE. It must not occupy a pending slot forever.
 				files.forget(sftpwire.StatusID(pkt))

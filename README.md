@@ -112,7 +112,7 @@ estate — and binds only the kinds of its own role:
 |--------|-------|----------------|
 | `xproxy` | the open internet | `http`, `forward`, `tcp`, `udp`, `dns` |
 | `xgate` | people | `ssh`, `telnet`, `vnc`, `rdp` |
-| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `ntp`, `ntske` |
+| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `snmp`, `ntp`, `ntske` |
 
 A kind a binary did not link is never bound and never falls through to
 the HTTP data plane: it is an error naming the daemon that serves it.
@@ -184,6 +184,7 @@ its own for what is deliberately *not* implemented and why.
 | Time | NTP v1 to v4 (RFC 5905), SNTP (RFC 4330), extension fields (RFC 7822), AES-CMAC authentication (RFC 8573), NTS (RFC 8915) passed through whole, and NTS key establishment relayed on TCP 4460 | `ntp`, `ntske` |
 | Industrial | Modbus/TCP (MBAP), Modbus over Serial Line RTU and ASCII tunnelled over TCP, and Modbus/TCP Security with the role in the client certificate | `modbus` |
 | Telecontrol | IEC 60870-5-104 (APCI/APDU, the I, S and U formats, the type identifications and causes of transmission of IEC 60870-5-101), with IEC 62351-3 TLS | `iec104` |
+| Management | SNMP v1 (RFC 1157), v2c (RFC 1901–1908) and v3 with USM (RFC 3410–3418), over UDP and over TCP (RFC 3430), with RFC 6353 TLS on the stream side | `snmp` |
 | Remote access | SSH (RFC 4251–4254) with OpenSSH user and host certificates; telnet's NVT (RFC 854); RFB 3.3 to 3.8 (RFC 6143) with VeNCrypt; RDP (MS-RDPBCGR) over TLS, CredSSP over NTLMv2 towards the desktop, or the protocol's own encryption | `ssh`, `telnet`, `vnc`, `rdp` |
 | Identity | OpenID Connect Core 1.0, OAuth 2.0 (RFC 6749) with introspection (RFC 7662), PKCE (RFC 7636) and token exchange (RFC 8693); JWT, JWS and JWKS (RFC 7515–7519); DPoP (RFC 9449); certificate-bound tokens (RFC 8705); SAML 2.0 as a service provider; SCIM 2.0 (RFC 7642–7644); WebAuthn level 2; LDAP (RFC 4511–4515); TOTP (RFC 6238); HTTP Basic (RFC 7617); client certificate identity as `Client-Cert` (RFC 9440) or Envoy's `X-Forwarded-Client-Cert` | filters |
 | Inspection | ModSecurity SecLang with the OWASP Core Rule Set through Coraza; a documented subset of YARA; ICAP (RFC 3507); OpenAPI 3 descriptions; GraphQL; XML and XSD with exclusive canonicalization; protobuf structure without a schema; WebAssembly with WASI preview 1 | filters |
@@ -212,6 +213,7 @@ protocol so that a policy can be written in that protocol's own terms:
 | `syslog` | `xrelay` | RFC 5424 and RFC 3164 over UDP, TCP, TLS | Facility, severity, sender, the text; re-emitted in one dialect |
 | `modbus` | `xrelay` | Modbus/TCP, RTU and ASCII, Modbus/TCP Security | Unit identifiers, function codes, register ranges, values, roles, schedules |
 | `iec104` | `xrelay` | IEC 60870-5-104, IEC 62351-3 TLS | Type identifications, causes of transmission, common and originator addresses, information object ranges, select-before-operate, schedules |
+| `snmp` | `xrelay` | SNMP v1, v2c and v3 (USM), UDP and TCP, RFC 6353 TLS | Versions, community strings and USM users, security levels, operations, object subtrees, the amplification bounds |
 | `ntp` | `xrelay` | NTP v1–v4, SNTP, NTS-protected NTP | Versions, modes, extension fields, authentication, and whether the servers agree |
 | `ntske` | `xrelay` | NTS key establishment (TLS on 4460) | The application protocol, the server name, the handshakes in flight |
 
@@ -339,6 +341,44 @@ protocol so that a policy can be written in that protocol's own terms:
   the first octet. The metric payloads are never decoded — a schema per
   estate is out of scope, and a relay that got one wrong would corrupt a
   reading nobody could trace
+
+- `kind: snmp`: an **SNMP** relay in front of the equipment that
+  management protocol actually manages. SNMP runs every switch, router,
+  printer, uninterruptible supply and building controller in an estate,
+  and v1 and v2c authenticate with a **community string**: a cleartext
+  password in every datagram, `public` to read and `private` to write on
+  anything nobody reconfigured, with no integrity, no replay protection
+  and no confidentiality. One datagram reads a device's whole
+  configuration; one changes it. v3 has a real security model and also
+  has `noAuthNoPriv`, which is v2c with more fields. The devices cannot
+  be fixed — they are printers and building controllers with firmware
+  nobody ships updates for — so the relay is the only place a policy can
+  live, written in the protocol's own terms: the version, the credential,
+  the operation, and the **object identifier subtree**, compared per
+  sub-identifier rather than per character, because `1.3.6.1.2.1` is a
+  string prefix of `1.3.6.1.2.11` and not its parent. `read_only` is one
+  line that no rule can override, because SNMP has exactly one writing
+  operation. The **amplification is bounded in two directions**: a
+  forty-octet GETBULK with a repetition count of ten thousand asks for
+  megabytes, aimed at whatever address the datagram claimed to come from,
+  so a count past the bound is **lowered rather than refused** — a
+  mis-tuned poller still gets an answer and the amplifier is gone — while
+  a response disproportionate to its request is refused outright. Every
+  answer is **matched to its question** by request identifier, which is
+  the only thing in the protocol that pairs them and therefore the only
+  way to recognise a response nobody asked for: on UDP that is the shape
+  of a spoofing attack on the manager. The **version is rewritten
+  downwards**: a manager authenticates with v3, or over RFC 6353 TLS, and
+  the relay speaks v2c to a switch whose firmware has neither, with a
+  community string the manager never learns — and the answer is rebuilt in
+  the version the question used. What it will not do is forge: producing
+  v3 is refused at load, and a v3 *request* is refused rather than
+  downgraded, because its answer would have to be authenticated with a
+  key this relay does not hold. A v3 *trap* downgrades cleanly, which is
+  the modern-device, legacy-collector case. An `authPriv` payload is
+  decided about and not inspected, and said to be: the header is
+  readable, the ciphertext is not, and pretending otherwise would be
+  worse than either refusing or forwarding
 
 - `kind: ntp` and `kind: ntske`: an NTP and NTS security gateway, in
   **both directions**. A time packet is 48 octets, has no session and is

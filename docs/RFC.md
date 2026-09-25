@@ -32,6 +32,7 @@ did not build it" and "it does not apply" are different promises again.
 - [Mail](#mail)
 - [Messaging](#messaging)
 - [Industrial control](#industrial-control)
+- [Network management](#network-management)
 - [Time](#time)
 - [Secure Shell and file transfer](#secure-shell-and-file-transfer)
 - [Remote desktop and terminal access](#remote-desktop-and-terminal-access)
@@ -201,6 +202,43 @@ security standard that wraps it, IEC 62351-3, is a profile of TLS.
 | Select-before-operate (IEC 60870-5-101 §7.3.2) | Enforced, which the standard does not require | The standard describes the two-step form; the equipment mostly accepts a bare execute. `require_select` makes it mandatory: a selection is remembered per connection, per common address, per information object address and per type identification, expires, authorises one execution, and is withdrawn by a deactivation. The bitstring commands, which have no two-step form, are exempt |
 | IEC 62351-3 (TLS for the 60870-5-104 profile) | Partial | TLS from the first octet on the listener and towards the station, with the project's own hardened defaults (TLS 1.2 minimum, mutual authentication, no renegotiation) rather than the standard's own cipher list, which is older than the deployed TLS stacks. The certificate revocation and key-management requirements of the standard are the estate's, not this proxy's |
 | IEC 60870-5-104 file transfer (types 120 to 127) | Recognised, not interpreted | The type identifications are named and can be allowed or refused as a class; the file segments themselves are relayed without being reassembled or scanned. A relay that reassembled them would need to hold a substation's disturbance record in memory to decide about it |
+
+## Network management
+
+SNMP is IETF work, and unusually complete as standards go: three versions,
+a security model, a transport mapping onto TCP and a TLS profile all have
+RFCs. What the table says is which parts of that a *relay* can honestly
+implement without holding the keys an agent holds.
+
+| RFC | Title | Status | Notes |
+|-----|-------|--------|-------|
+| 1157 | SNMP version 1 | Full, as a relay | The message, the community string, the five PDU types and the v1 trap with its own header (enterprise, agent address, generic and specific trap, timestamp). Its error statuses are the vocabulary a v1 refusal is written in: it has no `noAccess`, so a refusal is `noSuchName`, which is what a v1 agent answers for an object outside the community's view |
+| 1901 | Community-based SNMPv2 (SNMPv2c) | Full, as a relay | The version field, the community string, and the framework the v2 PDU types live in |
+| 1905 | Protocol Operations for SNMPv2 | Full | All eight PDU tags, including GETBULK with its non-repeaters and max-repetitions -- the field this protocol's amplification is measured in -- and the Inform and Report PDUs. A GETBULK past the configured bound is *lowered* rather than refused, because refusing breaks a poller nobody can reconfigure and lowering removes the amplifier |
+| 1906 | Transport Mappings for SNMPv2 | Partial | The UDP mapping, and the maximum message size it implies (65507 octets) as the outer bound on anything this relay will read. The OSI, DDP and IPX mappings are not implemented and are not coming |
+| 1907 | Management Information Base for SNMPv2 | Not applicable | This relay has no MIB of its own and answers no query about itself: its own numbers are in the Prometheus exposition and the management API. A relay that answered SNMP about itself would be one more agent to secure |
+| 2578 / 2579 / 2580 | SMIv2, Textual Conventions, Conformance Statements | Not applicable, by design | The *values* in a binding are never interpreted: a binding's type tag and extent are read and what a `Counter64` means is not. Interpreting them would need a MIB per estate, and a relay that mis-decoded one would corrupt a reading nobody could trace. Object identifiers are compared structurally, per sub-identifier, which needs no MIB |
+| 3411 | SNMP Management Frameworks (the architecture) | Partial | The v3 message header is read as the architecture defines it: message identifier, maximum size, the flags that carry the security level and the reportable bit, and the security model. The engine identifier bound of 32 octets is enforced. This relay is not an SNMP engine: it does not maintain engine boots and time, and it does not participate in discovery |
+| 3412 | Message Processing and Dispatch | Partial | The v3 message is dispatched on its security model and level, and the scoped PDU is read when there is one. A message whose model is not USM has its security parameters left unread rather than guessed at |
+| 3414 | User-based Security Model (USM) | Read, never verified | The USM parameters are parsed -- engine identifier, boots, time, user name, and the extents of the authentication and privacy parameters -- and the user name and security level are what a policy is written about. The HMAC is **not verified** and the payload is **not decrypted**, because that needs the user's keys and a relay is not given them. Pretending to check would be worse than saying it cannot: so an `authPriv` message is decided about on its header and forwarded, and is reported as `snmp_encrypted` rather than as inspected |
+| 3416 | Protocol Operations for SNMPv3 | Full | The same eight PDU types inside a v3 scoped PDU, with the context engine identifier and context name, which a rule can name |
+| 3417 | Transport Mappings for SNMPv3 | Partial | UDP, as above |
+| 3430 | SNMP over TCP | Full | A message on a stream is a BER SEQUENCE and its own length field delimits it. The length is decided about *before* the octets it claims are read, because reading them to find out what they asked for is the work the bound exists to avoid; and there is no resynchronisation, because a stream whose framing is wrong is a stream whose next octet is unknown |
+| 6353 | Transport Layer Security Transport Model (TLSTM) | Partial | TLS from the first octet on the stream side, on the standard's own port 10161, which is the half of the secure upgrade that faces a management station. The `tmSecurityName` derived from the certificate is not mapped to a USM user: the policy is written about the transport identity (the client list, the certificate the listener requires) and the credential in the message, which is what an estate can actually configure. DTLS on 10162 (RFC 5953) is **not implemented**, so a listener that is TLS throughout is a TCP one |
+| 5343 | SNMP Context EngineID Discovery | Not implemented | Discovery is an engine's job, and this is not an engine |
+| 5590 / 5591 | Transport Subsystem and Transport Security Model | Partial | Only as much of the model as RFC 6353 needs to make sense: a message that arrived over a secure transport is known to have done so, and that is in the access log. The security-name plumbing of the full model is not implemented |
+| 3826 | AES-128 in the SNMP USM | Not implemented | Nothing here decrypts a payload, so there is no cipher to support. This is the same statement as RFC 3414 above, said where somebody would look for it |
+
+Two rewrites are worth naming here because they are the ones a reader will
+ask about. The version a message is forwarded in can be rewritten
+*downwards* -- v3 or TLS facing the manager, v2c facing the switch -- and
+the answer is rebuilt in the version the question used. Producing v3 is
+refused at load, and downgrading a v3 **request** is refused at the
+message, both for the same reason: RFC 3414 authentication needs a key this
+relay does not hold, and a relay that produced an unauthenticated v3
+message, or handed a v3 manager a v2c answer, would be telling somebody
+their traffic was authenticated when nobody had checked. A v3
+**notification** downgrades cleanly, because nothing comes back.
 
 ## Time
 

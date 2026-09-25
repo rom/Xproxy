@@ -480,7 +480,14 @@ func TestOversizeStreamFindingAcrossFlushBoundary(t *testing.T) {
 
 	// A 32 KiB source read makes the first emission boundary 28 KiB. Put
 	// the card across that boundary to exercise the scanner's overlap.
-	body := strings.Repeat("x", (28<<10)-6) + "4111111111111111" + strings.Repeat("y", 2*hold)
+	//
+	// The single spaces around the number are what make it findable at
+	// all: the card detector's pattern is anchored on word boundaries, so
+	// digits glued between letters are not a card and never were --
+	// otherwise every long digit run inside an identifier would be one.
+	// Padding with filler letters and no separator would make this test
+	// pass for the wrong reason, or as it did, fail for one.
+	body := strings.Repeat("x", (28<<10)-7) + " 4111111111111111 " + strings.Repeat("y", 2*hold)
 
 	f := build("block")
 	r := httptest.NewRequest("POST", "http://a/x", strings.NewReader(body))

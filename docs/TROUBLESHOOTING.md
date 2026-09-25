@@ -3182,6 +3182,116 @@ node promoted cold has no selections at all — the first execute after a
 promotion is refused, which is the safe direction. `docs/HA.md` covers what
 else does and does not survive.
 
+## SNMP relay
+
+**A poll reaches the relay and not the agent.** The default answer is the
+Response PDU an agent would send -- `noAccess` on v2c and v3, `noSuchName`
+on v1 -- so the monitoring system shows an error rather than a timeout. The
+security event carries the version, the operation, the object and the rule
+that decided:
+
+```sh
+xproxyctl -json stats | jq '.refusals.snmp'
+xproxyctl tail security | jq -c 'select(.proto=="snmp") | {t:.time, r:.reason, pdu:.pdu, v:.version, oid:.detail, rule:.rule}'
+```
+
+The reasons, and what each means:
+
+| Reason | What happened |
+|--------|---------------|
+| `client_not_allowed` | The manager is outside `allow_clients`, or inside `deny_clients`. On this protocol that list is nearly the credential |
+| `version` | The version is not in `versions` |
+| `community` | The community string is not in `communities`. The string itself is never logged: it is a credential, and a log of guessed ones would be a list of the estate's passwords |
+| `user` | The v3 USM user name is not in `users` |
+| `security_level` | A v3 message below `min_security_level`. `noAuthNoPriv` is v2c with more fields, which is why a v3-only listener usually asks for `authNoPriv` |
+| `read_only` | A SetRequest on a read-only listener. No rule can override this one |
+| `direction` | A notification at an agent front, or a request at a `traps` listener: a datagram sent to the wrong place at best |
+| `var_binds` | More bindings in one message than `max_var_binds` |
+| `rule` | A `deny` rule matched, and its name is in the event |
+| `default_deny` | No rule matched. Add a named `deny` rule if you want the log to say which case it was |
+| `max_repetitions` | A *version 3* GETBULK past the bound. A v1 or v2c one is lowered instead; a v3 one cannot be rewritten, because this relay holds no key to re-authenticate it with, and forwarding it unchanged would leave the bound unenforced |
+| `response_too_large`, `response_ratio` | The answer was past `max_response_bytes`, or more than `max_response_ratio` times the size of its request. These are bounds and are never shadowed: a relay whose amplification bounds were in shadow mode would be a working amplifier |
+| `unsolicited_response` | An answer arrived that no outstanding request matched. On UDP this is the shape of a response-spoofing attack on the manager |
+| `response_too_late` | The answer came after `request_timeout`, by which time the manager has stopped waiting and may have reused the request identifier |
+| `wrong_direction` | Something other than a Response or Report arrived from the agent side. That side answers questions; it does not ask them |
+| `too_many_pending` | `max_pending` requests are already outstanding. The new one is refused rather than an old one forgotten, because forgetting would make the answer-matching unreliable -- and that matching is a check, not a convenience |
+| `upgrade_failed` | `upgrade_version` could not be applied: a v3 *request* (its answer would have to be authenticated), or a payload that is encrypted and has no PDU to re-envelope |
+| `encrypted_response` | An `authPriv` answer whose scoped PDU cannot be read, so there is no request identifier to pair it with |
+| `malformed`, `malformed_response`, `message_too_large`, `framing` | The message could not be read, or was past `max_message_bytes`, or a stream did not begin a BER SEQUENCE where one was due. None of these is ever shadowed: the agent behind the relay would read those octets somehow |
+| `rate_limited`, `max_connections` | The message rate or the stream-session bound. Bounds, not policy |
+
+**Every walk is slower than it was.** Check `snmp_truncated`. A GETBULK
+whose repetition count is past `max_repetitions` is *lowered* rather than
+refused, so the poller gets an answer with fewer rows and asks again. That
+is the intended trade: refusing would break a poller nobody can
+reconfigure, and the amplification is gone either way. If the poller is
+legitimate and the subtree is genuinely large, give it a rule with its own
+higher `max_repetitions` rather than raising the listener's.
+
+**The monitoring system reports nothing at all rather than an error.** It
+got a timeout, which means either `deny_response: drop`, or a bound on the
+way back rather than a policy refusal on the way out -- a refused *response*
+has nobody to send an error to. Check `snmp_amplified` and the
+`response_too_large` and `response_ratio` refusal counters, then look at the
+agent: an answer forty times the size of a two-hundred-octet request is
+either a very large table or an agent being used as an amplifier.
+
+**`snmp_pending` sits near `max_pending`.** The table of outstanding
+requests is full or nearly so, which means the agents are answering slower
+than something is asking. Look at `snmp_timed_out` and the
+`response_too_late` refusals first -- if answers are arriving after
+`request_timeout`, raise the timeout rather than the table. If they are not
+arriving at all, the agent is the problem and `snmp_upstream_failed` will
+say so. Raising `max_pending` only buys time; it is the bound, not the
+cause.
+
+**`snmp_unsolicited` is climbing.** An answer arrived that no request
+matched. Three causes, in order of likelihood: the agent is slow and its
+answers arrive after `request_timeout` (`response_too_late` counts those
+separately -- raise the timeout); something is sending responses to the
+relay's own socket, which on UDP is a spoofing attempt aimed at the
+manager; or a device is sending traps to an agent front rather than to port
+162, which shows up as `wrong_direction`.
+
+**A v3 request is refused on a listener with `upgrade_version`.** By
+design, and validation warns about it at load. The downgrade rebuilds the
+envelope around the PDU that arrived; the agent then answers in v2c, and
+handing that to a v3 manager would mean authenticating it with the user's
+key -- which this relay does not hold and will not invent. The downgrade
+that works end to end is a *notification*, because nothing comes back:
+`traps: true` with `upgrade_version: v2c` is the modern-device,
+legacy-collector case. Between v1 and v2c the rewrite works in both
+directions, because neither has any integrity to invalidate.
+
+**A rule naming `oids` refuses an object that looks like it is inside the
+subtree.** The comparison is per sub-identifier, not per character:
+`1.3.6.1.2.1` covers `1.3.6.1.2.1.1.1.0` and does not cover
+`1.3.6.1.2.11`. If the refusal names an object you expected to be covered,
+compare the sub-identifiers rather than the strings -- the string one is a
+prefix, the object is not under the subtree, and a relay that used string
+prefixes would allow a subtree nobody named.
+
+**A rule with `max_repetitions` does not seem to apply.** It does not cover
+traffic past its own bound: a GETBULK asking for more falls through to the
+next rule, or to `default_action`. Matching and then allowing would make
+the bound a suggestion. If you meant "this subtree, up to this many rows,
+and refuse anything greedier", follow the rule with a named `deny`.
+
+**The access log is unreadable.** Turn `log_messages` off and leave
+`log_writes` on (the default). A poller asks the same questions every
+thirty seconds, so a line per message buries the two things worth reading:
+what was *changed* through the relay, and what was refused.
+
+**`authPriv` traffic shows `snmp_encrypted` in the access log and no
+object.** That is the security model working. The v3 header parses -- the
+user and the level are checked and enforced -- and the scoped PDU is
+ciphertext, so there is no operation and no object identifier to decide
+about. A rule naming `pdus`, `access`, `oids` or `write_oids` cannot match
+such a message; a rule naming only the user, the level, the client or the
+context can. If you need object-level policy on that traffic, the relay has
+to be where the encryption ends, which means it needs the users' keys --
+which it is not given.
+
 ## NTP and NTS gateway
 
 **Clients get no answer at all.** A datagram cannot be refused, so
@@ -4696,6 +4806,7 @@ innocent.
 | `ssh_denied` | The SSH bastion: a failed authentication, a refused channel, request, subsystem, command, environment variable, file transfer helper or forward, or a refused SFTP request (`detail` says which) | yes |
 | `mqtt_denied` | The MQTT listener: a refused CONNECT, a topic or filter outside the policy, a malformed packet, or a client outside `allow_clients` (`detail` says which) | yes |
 | `iec104_denied` | The IEC 60870-5-104 relay: a frame the policy refused -- a type identification, a cause, a station, a point or a control function outside what a rule allows, a command on a `monitor_only` listener, an execute with no selection -- or a client outside `allow_clients`, a frame it could not read, a sequence gap, or a station sending an activation to its own control centre (`reason` says which, and the event carries the type, the cause, the common address, the point and the rule) | yes |
+| `snmp_denied` | The SNMP relay: a message the policy refused -- a version, a community string, a USM user, a security level, an operation or an object subtree outside what a rule allows, a SetRequest on a `read_only` listener -- or a client outside `allow_clients`, a message it could not read, a response past the amplification bounds, or an answer no request matched (`reason` says which, and the event carries the version, the operation, the object and the rule, never the community string) | yes |
 | `modbus_denied` | The Modbus relay: a frame the policy refused -- a function code, a unit identifier, a register range or a value outside what a rule allows, a write on a `read_only` listener, a role that is missing or not allowed -- or a client outside `allow_clients`, a frame it could not read, or an answer from the device it would not pass on (`reason` says which, and the event carries the unit, the function, the address and the rule) | yes |
 | `ntp_denied` | The NTP gateway: a client outside `allow_clients`, a version or mode the profile does not accept (including modes 6 and 7, which are the control and private protocols rather than time), a packet it could not read, a rate limit, missing or failed authentication, or an answer from a server that the quality rules refuse -- unsynchronised, too far down the tree, too dispersed, or stripped of the NTS fields the request carried (`detail` says which) | yes |
 | `ntske_denied` | NTS key establishment: a connection that did not offer the `ntske/1` application protocol (so it is not an NTS client), one that is not TLS at all, a server name outside `server_names`, a client outside `allow_clients`, or a handshake past the bound on how many may be in flight | yes |
@@ -4754,6 +4865,7 @@ actually being refused. What each kind can say:
 | `syslog` | `sender_refused`, `max_connections`, `rate_limit`, `too_large`, `framing`, `malformed`, the message policy (`facility`, `severity`, `pattern`) and `queue_full` when the collector is behind |
 | `iec104` | `client_not_allowed`, `tls_handshake`, `max_connections`, `rate_limited`, `command_rate_limited`, the framing (`malformed`, `frame_too_long`), the policy (`monitor_only`, `common_address`, `rule`, `default_deny`, `control`), select-before-operate (`unselected`, `select_unavailable`), the numbering (`sequence`, `window`, `ack_ahead`) and the direction (`station_command`) |
 | `modbus` | `client_not_allowed`, `max_connections`, `rate_limit`, `queue_full`, the session's own locks (`tls_handshake`, `no_client_certificate`, `no_role`, `role_not_allowed`, `security_requires_tls`), the framing (`framing`, `frame_too_large`, `malformed`), the policy (`read_only`, `read_only_unknown_function`, `unit_not_allowed`, `rule_deny`, `no_rule`, `value_out_of_range`, `value_delta`, `value_transition`, `value_rate`, `value_no_select`, `value_unknown`, `value_masked_write`, `coil_set_not_allowed`, `coil_clear_not_allowed`), the routing (`no_route_for_unit`) and what the device answered (`malformed_response`, `response_unit_mismatch`) |
+| `snmp` | `client_not_allowed`, `max_connections`, `rate_limited`, TLS (`tls_handshake`, `upstream_tls`), the framing (`malformed`, `malformed_response`, `message_too_large`, `framing`), the credential (`version`, `community`, `user`, `security_level`), the policy (`read_only`, `direction`, `var_binds`, `rule`, `default_deny`), the amplification bounds (`max_repetitions`, `response_too_large`, `response_ratio`), the answer matching (`unsolicited_response`, `response_too_late`, `encrypted_response`, `wrong_direction`, `too_many_pending`) and the rewrite (`upgrade_failed`) |
 | `ntp` | `banned`, `client_not_allowed`, `rate_limit`, `max_associations`, `outstanding_full`, the dispatch (`control_mode`, `private_mode`, `version5`, `version`, `version_not_allowed`, `mode_not_allowed`), the association shape (`not_a_peer`, `broadcast_not_allowed`), the packet (`malformed`, `packet_too_large`, `too_many_extensions`, `unknown_extension`, `ambiguous_mac`), the identity it demanded (`nts_required`, `auth_required`, `auth_failed`), the egress (`no_server`, `server_not_allowed`), what the server answered (`malformed_response`, `unsolicited`, `response_mode`, `kiss_of_death`, `unsynchronised`, `unsynchronised_stratum`, `stratum_too_high`, `stratum_not_allowed`, `root_delay`, `root_dispersion`, `root_distance`, `delay`, `offset`, `bogus_timestamps`, `bogus_refid`, `refid_not_allowed`, `leap_announced`, `leap_unexpected`, `nts_stripped`, `auth_stripped`) and what the server became (`source_changed`, with `change_detection.action: refuse`) |
 | `ntske` | `banned`, `client_not_allowed`, `max_connections`, `handshake_limit`, and what the handshake said (`not_tls`, `no_hello`, `incomplete_hello`, `hello_too_large`, `alpn_not_offered`, `server_name_not_allowed`) |
 

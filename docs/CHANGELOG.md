@@ -442,6 +442,100 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **`kind: snmp`: an SNMP relay, so the estate's own equipment can be
+  managed through something that refuses a write.** SNMP runs every switch,
+  router, printer, uninterruptible supply and building controller there is,
+  and versions 1 and 2c authenticate with a **community string**: a
+  cleartext password in every datagram, `public` to read and `private` to
+  write on anything nobody reconfigured, with no integrity, no replay
+  protection and no confidentiality. One datagram reads a device's whole
+  configuration; one changes it. Version 3 has a real security model and
+  also has `noAuthNoPriv`, which is version 2c with more fields. The
+  devices cannot be fixed -- printers and building controllers with
+  firmware nobody ships updates for -- so the relay is the only place a
+  policy can live.
+
+  The policy is written in the protocol's own terms: the version, the
+  community string or the USM user, the security level, the operation, the
+  access class (`read`, `write`, `notify`, which outlives a revision that
+  adds an operation) and the **object identifier subtree**. Subtrees are
+  compared **per sub-identifier**, not per character, because `1.3.6.1.2.1`
+  is a string prefix of `1.3.6.1.2.11` and is not its parent: a policy
+  written with string prefixes allows a subtree nobody named. `deny_oids`
+  is the exception inside an allowed subtree -- all of mib-2 except the ARP
+  table -- and `write_oids` replaces the read list for a SetRequest, so one
+  rule can allow a wide read and a narrow write. `read_only` is checked
+  above every rule and **no rule can override it**, because SNMP has
+  exactly one writing operation and a read-only listener a single rule
+  could write through is not a read-only listener.
+
+  **The amplification is bounded in two directions, and the interesting
+  half is that one bound does not refuse.** A forty-octet GETBULK with a
+  repetition count of ten thousand asks for a response of megabytes, sent
+  to whatever address the datagram claimed to come from -- the classic SNMP
+  reflection attack. A count past `max_repetitions` is **lowered** rather
+  than the request refused: a poller asking for more than it should get
+  still gets an answer, which is what makes the bound deployable in an
+  estate whose pollers nobody can reconfigure, and the amplifier is gone
+  either way. On the way back, `max_response_bytes` bounds the size an
+  agent that ignores the first bound can still produce, and
+  `max_response_ratio` is the one about *reflection* rather than size,
+  because a large answer to a large question is a walk and a large answer
+  to a tiny question is an amplifier. None of the three is ever shadowed: a
+  relay whose amplification bounds were evaluated and not enforced would be
+  a working amplifier.
+
+  **Every answer is matched to its question**, by the request identifier,
+  which is the only thing in the protocol that pairs them -- and therefore
+  the only way to recognise a response nobody asked for. On UDP that is the
+  shape of a response-spoofing attack on the manager: an answer to a
+  question it did ask, from somewhere else, arriving first. The table that
+  does the matching is bounded and **refuses the new request rather than
+  forgetting an old one**, because forgetting would make the matching
+  unreliable, and that matching is a check rather than a convenience.
+
+  **The version is rewritten downwards, and the two things it will not do
+  are the point.** `upgrade_version` rebuilds the envelope around the PDU
+  that arrived: a manager authenticates with v3, or over RFC 6353 TLS on
+  the stream side, and the relay speaks v2c to a switch whose firmware has
+  neither, with an `upstream_community` the manager never learns; the answer
+  is rebuilt in the version the question used. Producing v3 is refused **at
+  load**, and downgrading a v3 *request* is refused **at the message** --
+  both because RFC 3414 authentication needs a key this relay does not hold.
+  A relay that produced an unauthenticated v3 message, or handed a v3
+  manager the v2c answer its request actually got, would be telling somebody
+  their traffic was authenticated when nobody had checked. A v3
+  *notification* downgrades cleanly, because nothing comes back: a modern
+  device sending v3 traps to a collector that understands only v2c is the
+  case worth having, and it is `traps: true` with `upgrade_version: v2c`.
+
+  A refusal is the Response PDU an agent would send -- `noAccess` on v2c
+  and v3, `noSuchName` on v1, which is the only word v1 has for it -- so
+  every manager already knows how to display it. Dropping the request
+  instead is a timeout, and a timeout is what a dead device looks like.
+
+  An `authPriv` payload is **decided about and not inspected, and said to
+  be**: the v3 header parses, the user and the level are checked and
+  enforced, and the scoped PDU is ciphertext, so there is no operation and
+  no object identifier to decide about. The decision says `snmp_encrypted`
+  rather than refusing traffic the listener was configured to carry or
+  pretending it was inspected. The USM digest is read for its extent and
+  never verified, for the same reason: a relay is not given the users'
+  keys, and pretending to check would be worse than saying it cannot.
+
+  The values are never interpreted. A binding's type tag and extent are
+  read and what a `Counter64` means is not: interpreting them would need a
+  MIB per estate, and a relay that mis-decoded one would corrupt a reading
+  nobody could trace. Object identifiers need no MIB to compare.
+
+  The listener takes datagrams and streams at once -- UDP 161 is what every
+  poller and agent speaks, and RFC 3430's TCP mapping is what RFC 6353's
+  TLS runs over on 10161 -- and a community string never appears in a log,
+  because a record of guessed ones would be a list of the estate's
+  passwords with a timestamp beside each. `examples/ot/snmp.yaml`,
+  `docs/RFC.md` for which parts of eighteen SNMP documents are read and
+  which are deliberately not.
+
 - **`kind: iec104`: an IEC 60870-5-104 relay, so a substation gateway can be
   put behind something that refuses a breaker trip.** IEC 104 is the protocol
   that operates electricity transmission and distribution, and it is the

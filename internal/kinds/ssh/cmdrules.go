@@ -3,6 +3,7 @@ package ssh
 import (
 	"context"
 	"fmt"
+	"path"
 	"strings"
 
 	cssh "golang.org/x/crypto/ssh"
@@ -385,12 +386,54 @@ func (se *session) structuredCommand(clientCh, upCh cssh.Channel, r *cssh.Reques
 // one -- every word, directory parts removed -- because a policy with
 // rules should refuse "scp -t $(id)" as an scp rather than hand it to a
 // pattern.
+//
+// It deliberately does *not* use fileTransferCommand, although the word
+// scan is the same. That function fails closed when a line contains an
+// expansion, which is right for the question it answers -- "transfers are
+// disabled on this listener, may this line run at all" -- and wrong for
+// this one. Here the answer decides only whether an unreadable line is
+// refused as a transfer or left to the patterns, and failing closed would
+// make *every* unreadable line a transfer: `echo $(id)` on a listener with
+// allow_shell_syntax and a matching allow_commands pattern would be
+// refused for naming a family it does not name, purely because a
+// command_rules section exists. That is a configuration that worked before
+// the rules were added and stops working when one is, which is the failure
+// this split exists to avoid.
 func looksLikeTransfer(cmd string) bool {
-	if fileTransferCommand(cmd) {
+	if transferWord(cmd) {
 		return true
 	}
 	for _, v := range []string{"git-upload-pack", "git-receive-pack", "git-upload-archive"} {
 		if strings.Contains(cmd, v) {
+			return true
+		}
+	}
+	return false
+}
+
+// transferWord scans a line's words for a transfer program's name,
+// directory parts removed, without failing closed on an expansion.
+//
+// When the line is literal the normalised form is scanned, which is what
+// unquotes s”cp. When it is not -- an expansion, an operator -- the raw
+// text is scanned instead, so a transfer name written plainly beside an
+// expansion is still found: "scp -t $(cat /etc/hostname)" carries the word
+// scp whatever the substitution does. What such a line can hide is a
+// transfer name *produced* by the expansion, and that is the case
+// allow_shell_syntax is the switch for: a listener that permits shell
+// operators has accepted that its target's shell decides what runs.
+func transferWord(cmd string) bool {
+	text := cmd
+	if normalized, ok := literalShellCommand(cmd); ok {
+		text = normalized
+	}
+	for _, word := range strings.Fields(text) {
+		// Skip VAR=value prefixes, as the blanket check does.
+		if i := strings.IndexByte(word, '='); i > 0 && !strings.ContainsAny(word[:i], "/\\.") {
+			continue
+		}
+		name := path.Base(strings.Trim(word, "'\"`;|&()$<>"))
+		if config.SSHFileTransferCommands[strings.TrimSuffix(name, ".exe")] {
 			return true
 		}
 	}

@@ -53,7 +53,16 @@ server:
         # TLS tunnel. The tls-* subtypes are anonymous Diffie-Hellman
         # with no certificate to check, so they stop a reader and not
         # an active attacker, and are left out.
-        vencrypt_subtypes: [x509-plain, x509-vnc]
+        #
+        # x509-vnc is left out for a sharper reason: it is the DES
+        # challenge inside the TLS tunnel, so it carries no user name,
+        # and the second factor below has nobody to look an enrolment up
+        # for. Offering it beside x509-plain would let a viewer choose
+        # the subtype that skips the identity this whole listener is
+        # built around -- a weaker option offered is a weaker option
+        # taken. It is also what validation refuses without a
+        # password_file, which is the same objection in another form.
+        vencrypt_subtypes: [x509-plain]
 
         # The factor needs a security type whose credential carries a
         # name; with a plain subtype the name identifies the person and

@@ -323,13 +323,13 @@ func (r *Reloadable) Expiring(now time.Time) []string {
 	if r.expiry == nil || r.expiry.Warn == 0 {
 		return nil
 	}
-	var out []string
 	type due struct {
 		left time.Duration
 		text string
 	}
-	var found []due
-	for _, c := range r.allCertificates() {
+	certs := r.allCertificates()
+	found := make([]due, 0, len(certs))
+	for _, c := range certs {
 		leaf := c.Leaf
 		if leaf == nil && len(c.Certificate) > 0 {
 			leaf, _ = x509.ParseCertificate(c.Certificate[0])
@@ -351,7 +351,11 @@ func (r *Reloadable) Expiring(now time.Time) []string {
 		}
 		found = append(found, due{left, fmt.Sprintf("certificate %s expires on %s, in %s", name, leaf.NotAfter.Format(time.RFC3339), left.Round(time.Hour))})
 	}
+	if len(found) == 0 {
+		return nil
+	}
 	sort.Slice(found, func(i, j int) bool { return found[i].left < found[j].left })
+	out := make([]string, 0, len(found))
 	for _, f := range found {
 		out = append(out, f.text)
 	}

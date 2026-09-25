@@ -91,6 +91,7 @@ did not authenticate — a trial instead of a door.
 |------|------------------------|---------------|
 | `modbus` | every rule: function, unit, address range, value bounds, rate and window | malformed frames, the unit table, the queue bound, rate limits, bans |
 | `iec104` | every rule: type, class, cause, station, originator, point range and the select half; `monitor_only`; the common-address list; `require_select` | malformed frames, the frame bound, rate limits (frame and command), a station commanding its own control centre, bans |
+| `snmp` | every rule: version, community or user, security level, operation, access class, object subtree and context; `versions`, `communities`, `users`, `min_security_level`; `read_only`; the message direction | malformed messages, the message and response bounds, the GETBULK repetition bound, the response ratio, an answer nobody asked for, rate limits, the client list, bans |
 | `ntp` | the client list and every request rule (versions, modes, extension fields, the identity it demands), and every answer rule (stratum, distances, timestamps, identifier, leap) | mode 6 and 7, version 5, malformed packets, bans, rate limits, the association and outstanding bounds |
 | `mqtt` | the client list, the CONNECT policy (version, client id, username, keep alive, will), the publish and subscribe policies, retain | malformed packets, a first packet that is not CONNECT, a second CONNECT, the packet bound, the connection limit, TLS failures |
 | `syslog` | the sender list, the facility, severity and pattern rules | malformed messages, the rate limit, a full queue |
@@ -2029,6 +2030,166 @@ refusal counters: `client_not_allowed`, `tls_handshake`, `malformed`,
 `command_rate_limited`, `monitor_only`, `common_address`, `rule`,
 `default_deny`, `control`, `station_command`, `sequence`, `window`,
 `ack_ahead`, `unselected`, `select_unavailable`.
+
+### server.listeners[].snmp (kind: snmp)
+
+SNMP runs every switch, router, printer, uninterruptible supply and building
+controller in an estate, and versions 1 and 2c authenticate with a community
+string: a cleartext password in every datagram, `public` to read and
+`private` to write on anything nobody reconfigured, with no integrity, no
+replay protection and no confidentiality. One datagram reads a device's whole
+configuration; one changes it. Version 3 has a real security model and also
+has `noAuthNoPriv`, which is version 2c with more fields.
+
+The devices cannot be fixed -- they are switches and printers and building
+controllers with firmware nobody ships updates for -- so the relay is the
+only place a policy can live.
+
+Five things are deliberate in the data path.
+
+**Every message is parsed whole.** A relay that forwarded what it could not
+read would be forwarding what it could not decide about, and the agent behind
+it will read those octets somehow.
+
+**The amplification is bounded in two directions.** SNMP is a classic
+reflection vector: a forty-octet GETBULK with a repetition count of ten
+thousand asks for a response of megabytes, to whatever address the datagram
+claimed to come from. So a repetition count past `max_repetitions` is
+*lowered* rather than refused -- a poller asking for more than it should get
+still gets an answer, which is what keeps the bound deployable in an estate
+whose pollers nobody can reconfigure -- and a response past
+`max_response_bytes`, or more than `max_response_ratio` times the size of the
+request that asked for it, is refused outright.
+
+**A response is matched to its request.** The request identifier is the only
+thing in the protocol that pairs them, so an answer nobody asked for is
+recognisable -- and on UDP that is the shape of a response-spoofing attack on
+the manager: an answer to a question it did ask, from somewhere else,
+arriving first. The table of outstanding requests is bounded by
+`max_pending`, and a full table refuses the new request rather than
+forgetting an old one, because forgetting would make that pairing unreliable.
+
+**The version can be rewritten downwards.** `upgrade_version` is the secure
+upgrade: a manager speaks v3 with authentication to this relay, or TLS on the
+stream side, and the relay speaks v2c to a switch whose firmware has neither,
+with an `upstream_community` the manager never needs to know. A response is
+rebuilt in the version its request arrived in, so the manager sees the version
+it spoke.
+
+Two rewrites this relay will not do, both because it holds no USM keys and
+will not forge an authentication that did not happen. It cannot *produce* v3,
+which is refused at load. And it cannot downgrade a v3 **request**: the
+answer would come back as v2c and handing that to a v3 manager means
+authenticating it with a key that is not here, so such a request is refused
+rather than half-translated. A v3 **notification** downgrades cleanly,
+because nothing comes back -- a modern device sending v3 traps to a collector
+that understands only v2c is exactly what `traps: true` with
+`upgrade_version: v2c` is for.
+
+**The values are not interpreted.** A binding's type and extent are read;
+what a `Counter64` *means* is not. A policy about values would need a MIB per
+estate, and a relay that mis-decoded one would corrupt a reading nobody could
+trace.
+
+A listener always accepts the streams of RFC 3430 on its port, and
+`transport: udp` (the default) adds the datagram socket every poller and
+every agent actually speaks. RFC 6353 TLS is the stream half, on port 10161;
+DTLS on 10162 is not implemented, so a listener that is TLS throughout is
+`transport: tcp`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `mode` | `reverse`, `forward` | `reverse` | `reverse`: managers send here and the relay forwards to the agents. `forward`: this listener is the controlled egress a management station uses to reach agents elsewhere |
+| `upstream` | string | required | The agent pool a request goes to |
+| `transport` | `udp`, `tcp` | `udp` | Whether the datagram socket is opened as well as the stream one. Streams are always accepted |
+| `traps` | bool | `false` | A trap listener rather than an agent front: the messages arrive from agents and go to a collector, which is the opposite direction and a different policy. Port 162 rather than 161 |
+| `tls_mode` | `implicit`, `none` | `implicit` with a `tls` section | RFC 6353: TLS from the first octet on the stream side. This is the half of the secure upgrade that faces the management station |
+| `upstream_tls_mode` | `none`, `implicit` | `none` | Whether this listener speaks RFC 6353 TLS to the agent |
+| `upstream_tls` | object | | Verification of the agent when `upstream_tls_mode` is not `none` |
+| `allow_clients` | list of CIDR | all | Networks a manager may send from. On this protocol this is the most valuable line in the file after `read_only`, because a community string is not a secret in any useful sense |
+| `deny_clients` | list of CIDR | | Evaluated before `allow_clients` |
+| `versions` | list | all | `v1`, `v2c`, `v3`. "v3 only" is the single most useful line an operator can write here |
+| `communities` | list | any | The community strings v1 and v2c may use. Empty allows any, which validation warns about: the defaults are known to everyone and scanned for constantly |
+| `users` | list | any | The v3 USM user names |
+| `min_security_level` | `noAuthNoPriv`, `authNoPriv`, `authPriv` | `noAuthNoPriv` | The lowest v3 level accepted. `noAuthNoPriv` refuses nothing, so a listener that went to the trouble of requiring v3 usually wants `authNoPriv` at least |
+| `read_only` | bool | `false` | Refuse every SetRequest, for every client, before any rule is read. SNMP has exactly one writing operation, so this is a one-line policy covering the whole of "nobody reconfigures anything through this relay". **No rule can override it** |
+| `upgrade_version` | `v1`, `v2c` | | Rewrite the version a message is forwarded in. `v3` is refused at load |
+| `upstream_community` | string | the arriving one | The community string sent to the agent, which is what lets the manager stop knowing it |
+| `rules` | list | | Per-message rules, first match wins; see below |
+| `default_action` | `deny`, `allow` | `deny` | What a message no rule matched gets |
+| `deny_response` | `error`, `drop`, `close` | `error` | `error` sends the Response PDU an agent would send -- `noAccess` on v2c and v3, `noSuchName` on v1, which is the only word v1 has for it -- and every manager already knows how to display that. `drop` is a timeout to the manager, and a timeout is what a dead device looks like. `close` ends a stream session |
+| `max_repetitions` | int | `100` | A GETBULK's repetition count, which is the amplification factor of the best-known SNMP reflection attack. `0` leaves it unbounded, which validation warns about |
+| `max_var_binds` | int | `128` | Variable bindings one message may carry |
+| `max_response_bytes` | int | `8192` | One response. The other half of the amplification bound: `max_repetitions` bounds what was asked for and this bounds what came back, and an agent that ignores the first still cannot get past the second |
+| `max_response_ratio` | int | `50` | Refuse a response more than this many times the size of its request. The bound that is about *reflection* rather than size: a large answer to a large question is a walk, and a large answer to a tiny question is an amplifier |
+| `max_pending` | int | `32` | Requests outstanding towards agents, per datagram listener and per stream session |
+| `max_connections` | int | `32` | Live stream sessions |
+| `idle_timeout` | duration | `60s` | A stream session that says nothing |
+| `request_timeout` | duration | `5s` | How long the agent has to answer before its answer is too late to forward |
+| `connect_timeout` | duration | `5s` | Dialling the agent on the stream path |
+| `max_message_bytes` | int | `8192` | One message; the protocol's own floor is 484 octets and 1472 is what fits an Ethernet datagram. A message past this is refused unread |
+| `rate_limit`, `rate_burst` | int | `0` | Messages per second per client address. An SNMP poll is periodic and its rate is known, so this bound is unusually easy to set correctly |
+| `log_messages` | bool | `false` | An access line per message. A poller asks the same questions every thirty seconds, so this is a lot of lines |
+| `log_writes` | bool | `true` | An access line for every SetRequest and every refusal, leaving the polling alone: what was *changed* through this relay is the record an estate is asked for |
+| `alert_on_deny` | bool | `true` | A security event per refusal |
+| `proxy_protocol` | bool | `false` | Send a PROXY protocol v2 header to the agent on the stream path |
+
+#### server.listeners[].snmp.rules[]
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `name` | string | Required; names the rule in the logs and the counters |
+| `action` | `allow`, `deny`, `observe` | Default `allow`. `observe` records the message and keeps looking, which is how a rule is tried on live traffic before it decides anything |
+| `clients` | list of CIDR | Networks the manager is in |
+| `versions` | list | The protocol versions this rule covers |
+| `communities` | list | The community strings (v1 and v2c) this rule covers. A rule naming communities cannot match a v3 message, and one naming users cannot match a v2c one: letting either cross over would make a rule written about one authentication scheme apply to another |
+| `users` | list | The v3 USM user names this rule covers |
+| `min_security_level` | string | The lowest v3 level this rule covers, so that "this subtree only with authPriv" is one rule |
+| `pdus` | list | Operations by name: `get`, `get_next`, `get_bulk`, `set`, `trap`, `trap_v1`, `inform`, `response`, `report` |
+| `access` | list | `read`, `write`, `notify`: what the operation *does*. The durable way to write a policy, because it does not change when a later revision adds an operation |
+| `oids` | list | Object identifier subtrees, as `1.3.6.1.2.1` or a single object. A message naming an object outside all of them does not match. The comparison is per sub-identifier, so `1.3.6.1.2.1` does not cover `1.3.6.1.2.11` -- a policy written with string prefixes allows a subtree nobody named |
+| `deny_oids` | list | Subtrees this rule does not cover even when `oids` would match, which is how an exception inside an allowed subtree is written: all of mib-2 except the ARP table |
+| `write_oids` | list | Apply instead of `oids` to a SetRequest, so one rule can allow a wide read and a narrow write. The write list *replaces* the read list rather than adding to it |
+| `max_repetitions` | int | This rule's own GETBULK bound. A rule does not cover traffic past its own bound, so the next rule -- or the default -- decides; matching and then allowing would make the bound a suggestion |
+| `contexts` | list | The v3 context names this rule covers, for an engine that fronts several agents |
+| `schedule` | object | `{days, from, to, timezone}`; a window whose `to` is before its `from` spans midnight |
+
+**What is checked before the rules, and cannot be shadowed.** A message the
+relay could not parse is refused whether or not the listener is enforcing:
+forwarding what it cannot decide about would hand the agent octets it will
+read somehow. So are the message and response bounds, the repetition bound,
+the response ratio, an answer no request matched, a message arriving from the
+agent side that is not an answer, the rate limit and the client list. A relay
+whose amplification bounds were in shadow mode would be a working amplifier.
+
+**`read_only` is checked before any rule and cannot be overridden by one.**
+A read-only listener that a single rule could write through is not a
+read-only listener.
+
+**An encrypted v3 payload is decided about, not inspected.** When the
+security level is `authPriv` the scoped PDU is ciphertext: the header parses,
+the user and the level are checked, and there is no operation and no object
+identifier to decide about. The decision says `snmp_encrypted` rather than
+refusing traffic the listener was configured to carry or pretending it was
+inspected.
+
+**A community string is never written to a log.** It is a credential, and an
+access log or security event that printed every guessed one would be a list
+of the estate's passwords with a timestamp beside each. The v3 user name *is*
+logged, because it is an identity rather than a secret.
+
+Counters: `snmp_messages`, `snmp_sessions`, `snmp_sessions_open`,
+`snmp_reads`, `snmp_writes`, `snmp_traps`, `snmp_denied`, `snmp_would_deny`,
+`snmp_malformed`, `snmp_rejected`, `snmp_rate_limited`, `snmp_amplified`,
+`snmp_truncated`, `snmp_upgraded`, `snmp_timed_out`, `snmp_upstream_failed`,
+`snmp_unsolicited`, `snmp_pending`. Refusals are `snmp_denied` for the ban triggers, and the
+fine-grained reason is in the refusal counters: `client_not_allowed`,
+`tls_handshake`, `upstream_tls`, `malformed`, `malformed_response`, `message_too_large`,
+`framing`, `max_connections`, `rate_limited`, `version`, `community`, `user`,
+`security_level`, `read_only`, `direction`, `var_binds`, `rule`,
+`default_deny`, `max_repetitions`, `response_too_large`, `response_ratio`,
+`response_too_late`, `unsolicited_response`, `encrypted_response`,
+`wrong_direction`, `too_many_pending`, `upgrade_failed`.
 
 ### server.listeners[].ntp (kind: ntp)
 
@@ -5330,7 +5491,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `modbus_denied`, `iec104_denied`, `ntp_denied`, `ntske_denied`, `yara` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ntp_denied`, `ntske_denied`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |

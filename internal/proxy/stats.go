@@ -204,6 +204,42 @@ type Stats struct {
 	IEC104WindowFull   atomic.Uint64
 	IEC104UpstreamFail atomic.Uint64
 
+	// The SNMP relay.
+	//
+	// The counters are split by what the protocol distinguishes and an
+	// operator asks about: the messages, then the *writes* separately from
+	// the polling (a poller asks the same questions every thirty seconds;
+	// what was changed is the record an estate is asked for), then the
+	// amplification bounds, which are the ones that say whether this relay
+	// is being used as a reflector.
+	SNMPMessages     atomic.Uint64
+	SNMPSessions     atomic.Uint64
+	SNMPSessionsOpen atomic.Int64
+	SNMPReads        atomic.Uint64
+	SNMPWrites       atomic.Uint64
+	SNMPTraps        atomic.Uint64
+	SNMPDenied       atomic.Uint64
+	SNMPWouldDeny    atomic.Uint64
+	SNMPMalformed    atomic.Uint64
+	SNMPRejected     atomic.Uint64
+	SNMPRateLimited  atomic.Uint64
+	// SNMPAmplified counts the responses refused for being disproportionate
+	// to the request that asked for them, and SNMPTruncated the GETBULKs
+	// whose repetition count this relay lowered. The second is the quieter
+	// number and the more useful one: it says the bound is working rather
+	// than that an attack arrived.
+	SNMPAmplified    atomic.Uint64
+	SNMPTruncated    atomic.Uint64
+	SNMPUpgraded     atomic.Uint64
+	SNMPTimedOut     atomic.Uint64
+	SNMPUpstreamFail atomic.Uint64
+	SNMPUnsolicited  atomic.Uint64
+	// SNMPPending is how many requests are outstanding towards agents right
+	// now. It is a gauge rather than a total because the number an operator
+	// wants is "is the table filling up", and the bound refusing is counted
+	// under the too_many_pending refusal.
+	SNMPPending atomic.Int64
+
 	// The NTP and NTS gateway.
 	//
 	// The counters are split by what an operator does next. Requests and
@@ -560,6 +596,24 @@ type Snapshot struct {
 	IEC104SeqGaps          uint64             `json:"iec104_sequence_gaps"`
 	IEC104WindowFull       uint64             `json:"iec104_window_full"`
 	IEC104UpstreamFail     uint64             `json:"iec104_upstream_failed"`
+	SNMPMessages           uint64             `json:"snmp_messages"`
+	SNMPSessions           uint64             `json:"snmp_sessions"`
+	SNMPSessionsOpen       int64              `json:"snmp_sessions_open"`
+	SNMPReads              uint64             `json:"snmp_reads"`
+	SNMPWrites             uint64             `json:"snmp_writes"`
+	SNMPTraps              uint64             `json:"snmp_traps"`
+	SNMPDenied             uint64             `json:"snmp_denied"`
+	SNMPWouldDeny          uint64             `json:"snmp_would_deny"`
+	SNMPMalformed          uint64             `json:"snmp_malformed"`
+	SNMPRejected           uint64             `json:"snmp_rejected"`
+	SNMPRateLimited        uint64             `json:"snmp_rate_limited"`
+	SNMPAmplified          uint64             `json:"snmp_amplified"`
+	SNMPTruncated          uint64             `json:"snmp_truncated"`
+	SNMPUpgraded           uint64             `json:"snmp_upgraded"`
+	SNMPTimedOut           uint64             `json:"snmp_timed_out"`
+	SNMPUpstreamFail       uint64             `json:"snmp_upstream_failed"`
+	SNMPUnsolicited        uint64             `json:"snmp_unsolicited"`
+	SNMPPending            int64              `json:"snmp_pending"`
 	NTPRequests            uint64             `json:"ntp_requests"`
 	NTPForwarded           uint64             `json:"ntp_forwarded"`
 	NTPResponses           uint64             `json:"ntp_responses"`
@@ -883,6 +937,24 @@ func (s *Stats) snapshot() Snapshot {
 		IEC104SeqGaps:          s.IEC104SeqGaps.Load(),
 		IEC104WindowFull:       s.IEC104WindowFull.Load(),
 		IEC104UpstreamFail:     s.IEC104UpstreamFail.Load(),
+		SNMPMessages:           s.SNMPMessages.Load(),
+		SNMPSessions:           s.SNMPSessions.Load(),
+		SNMPSessionsOpen:       s.SNMPSessionsOpen.Load(),
+		SNMPReads:              s.SNMPReads.Load(),
+		SNMPWrites:             s.SNMPWrites.Load(),
+		SNMPTraps:              s.SNMPTraps.Load(),
+		SNMPDenied:             s.SNMPDenied.Load(),
+		SNMPWouldDeny:          s.SNMPWouldDeny.Load(),
+		SNMPMalformed:          s.SNMPMalformed.Load(),
+		SNMPRejected:           s.SNMPRejected.Load(),
+		SNMPRateLimited:        s.SNMPRateLimited.Load(),
+		SNMPAmplified:          s.SNMPAmplified.Load(),
+		SNMPTruncated:          s.SNMPTruncated.Load(),
+		SNMPUpgraded:           s.SNMPUpgraded.Load(),
+		SNMPTimedOut:           s.SNMPTimedOut.Load(),
+		SNMPUpstreamFail:       s.SNMPUpstreamFail.Load(),
+		SNMPUnsolicited:        s.SNMPUnsolicited.Load(),
+		SNMPPending:            s.SNMPPending.Load(),
 		NTPRequests:            s.NTPRequests.Load(),
 		NTPForwarded:           s.NTPForwarded.Load(),
 		NTPResponses:           s.NTPResponses.Load(),
