@@ -61,6 +61,12 @@ func TestBlocksRequestBody(t *testing.T) {
 	}
 }
 
+func TestRegistrationDeclaresBufferedBody(t *testing.T) {
+	if !filter.BuffersBody("yara") {
+		t.Fatal("yara must charge the process-wide buffered-body budget")
+	}
+}
+
 // A clean body goes through, and the body the upstream reads is the
 // body the client sent.
 func TestPassesCleanBody(t *testing.T) {

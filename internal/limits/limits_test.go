@@ -154,6 +154,25 @@ func TestConcurrency(t *testing.T) {
 	}
 }
 
+func TestConcurrencyAcquireN(t *testing.T) {
+	c := NewConcurrency(5)
+	release, ok := c.AcquireN(4)
+	if !ok || c.InFlight() != 4 {
+		t.Fatalf("reserve four: ok=%v inflight=%d", ok, c.InFlight())
+	}
+	if _, ok := c.AcquireN(2); ok {
+		t.Fatal("reservation past the ceiling was admitted")
+	}
+	if c.InFlight() != 4 {
+		t.Fatalf("failed reservation changed inflight to %d", c.InFlight())
+	}
+	release()
+	release()
+	if c.InFlight() != 0 {
+		t.Fatalf("idempotent release left %d inflight", c.InFlight())
+	}
+}
+
 func TestConnLimiterBanned(t *testing.T) {
 	base, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

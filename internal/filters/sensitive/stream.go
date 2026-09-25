@@ -195,25 +195,25 @@ func (s *streamScanner) Read(p []byte) (int, error) {
 }
 
 // flush scans what can be emitted: everything on EOF, otherwise, once
-// at least two holds are pending, all but the last hold bytes, so every
-// scanned piece is at least hold bytes long whatever the source's read
-// sizes.
+// at least two holds are pending, all pending bytes. It emits all but the
+// last hold bytes so that the next scan overlaps this one and values that
+// cross the emission boundary are presented whole to the detectors.
 func (s *streamScanner) flush(all bool) {
 	var text []byte
+	cut := len(s.pending)
 	switch {
 	case all:
 		text, s.pending = s.pending, nil
 	case len(s.pending) >= 2*hold:
-		cut := len(s.pending) - hold
-		text = s.pending[:cut]
-		s.pending = append([]byte(nil), s.pending[cut:]...)
+		cut = len(s.pending) - hold
+		text = s.pending
 	default:
 		return
 	}
 	if len(text) == 0 {
 		return
 	}
-	scanned, f := s.in.g.scanText(string(text), s.direction == "request", s.mask)
+	scanned, f := s.in.g.scanTextFixed(string(text), s.direction == "request", s.mask, s.mask)
 	s.in.record(s.where, f)
 	s.found += f.n
 	if s.block && f.n > 0 {
@@ -222,9 +222,15 @@ func (s *streamScanner) flush(all bool) {
 		return
 	}
 	if s.mask {
-		s.out = append(s.out, scanned...)
+		s.out = append(s.out, scanned[:cut]...)
+		if !all {
+			s.pending = append([]byte(nil), scanned[cut:]...)
+		}
 	} else {
-		s.out = append(s.out, text...)
+		s.out = append(s.out, text[:cut]...)
+		if !all {
+			s.pending = append([]byte(nil), text[cut:]...)
+		}
 	}
 }
 

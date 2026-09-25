@@ -109,6 +109,27 @@ func TestAcceptRateWiderPrefixSharesABudget(t *testing.T) {
 	}
 }
 
+// A connection refused by the per-source bound must not consume the shared
+// total budget, or one source can deny service to every other source.
+func TestAcceptRateSourceRejectionDoesNotConsumeTotal(t *testing.T) {
+	a := NewAcceptRate(1, 2, 1, 1, 32, 64, 1024)
+	attacker := addr(t, "192.0.2.1")
+	other := addr(t, "198.51.100.1")
+
+	if ok, _ := a.Allow(attacker); !ok {
+		t.Fatal("the attacker's first connection was refused")
+	}
+	if ok, reason := a.Allow(attacker); ok || reason != ReasonRateSource {
+		t.Fatalf("second attacker connection: ok=%v reason=%q", ok, reason)
+	}
+	if ok, reason := a.Allow(other); !ok {
+		t.Fatalf("another source was refused after a source rejection: %q", reason)
+	}
+	if ok, reason := a.Allow(addr(t, "203.0.113.1")); ok || reason != ReasonRate {
+		t.Fatalf("total bound did not account for admitted connections: ok=%v reason=%q", ok, reason)
+	}
+}
+
 // The gate closes what it refuses at accept, before a byte is read.
 func TestAcceptRateWrapClosesRefusedConnections(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

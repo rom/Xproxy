@@ -283,6 +283,45 @@ func TestForceCommandRunsInsteadOfWhatWasAsked(t *testing.T) {
 	}
 }
 
+// A subsystem is another way to start a program on a session channel.
+// It must not escape the command fixed by the certificate, even though SFTP
+// is allowed by the listener's default policy.
+func TestForceCommandRunsInsteadOfSubsystem(t *testing.T) {
+	h := certBastion(t, "")
+	forced := sign(t, h.ca, h.client, certOpts{
+		critical:   map[string]string{"force-command": "/usr/bin/uptime"},
+		extensions: certAll(),
+	})
+	c, err := dialCert(h.addr, forced)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+	sess, err := c.NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.RequestSubsystem("sftp"); err != nil {
+		t.Fatalf("subsystem: %v", err)
+	}
+	_ = sess.Close()
+	var sawForced, sawSubsystem bool
+	for _, r := range h.tg.seen() {
+		if strings.Contains(r, "/usr/bin/uptime") {
+			sawForced = true
+		}
+		if r == "subsystem:sftp" {
+			sawSubsystem = true
+		}
+	}
+	if !sawForced {
+		t.Errorf("the forced command did not reach the target: %v", h.tg.seen())
+	}
+	if sawSubsystem {
+		t.Errorf("the requested subsystem reached the target: %v", h.tg.seen())
+	}
+}
+
 // The point of certificates over authorized_keys is that they expire. A
 // CA that issues for a year has made a credential nobody can take back
 // for a year, and a bastion is entitled to say how soon.

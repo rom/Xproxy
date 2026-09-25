@@ -2,6 +2,7 @@ package apiinv
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -90,5 +91,20 @@ func TestInventory(t *testing.T) {
 	}
 	if v, base := versionOf("/api/v3/items/*"); v != "v3" || base != "/api/{v}/items/*" {
 		t.Fatalf("versionOf %q %q", v, base)
+	}
+}
+
+func TestObserveBoundsMediaTypes(t *testing.T) {
+	tb := New()
+	tb.Configure(Config{Enabled: true, MaxEndpoints: 1}, nil)
+	tb.Observe(Observation{
+		Host: "api.test", Method: "POST", Path: "/upload",
+		RequestType:  strings.Repeat("x", MaxMediaTypeBytes+1),
+		ResponseType: "application/json",
+	}, time.Now())
+
+	items := tb.Report("all", 0, nil, time.Now()).Items
+	if len(items) != 1 || len(items[0].ReqTypes) != 0 || len(items[0].RespTypes) != 1 {
+		t.Fatalf("unexpected bounded media types: %+v", items)
 	}
 }

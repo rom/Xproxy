@@ -775,6 +775,15 @@ func (f *oidcFilter) callback(r *http.Request, in *instance) filter.Verdict {
 			s.Claims[claim] = v
 		}
 	}
+	groupsClaim := f.cfg.GroupsClaim
+	if groupsClaim == "" {
+		groupsClaim = "groups"
+	}
+	for _, claim := range append([]string{groupsClaim, "scope"}, f.cfg.AttrClaims...) {
+		if v, ok := claims[claim]; ok {
+			s.Claims[claim] = v
+		}
+	}
 	sealed, err := f.seal(s, "session")
 	if err != nil || len(sealed) > maxCookie {
 		return fail(http.StatusInternalServerError, "session_size")

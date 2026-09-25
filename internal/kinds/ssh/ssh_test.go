@@ -877,6 +877,11 @@ func TestSSHFileTransferHole(t *testing.T) {
 		"sudo -u root rsync --server . /srv/",
 		"sh -c 'scp -t /srv/data/x'",
 		"nice -n 19 /usr/bin/scp -t /tmp/x",
+		// Quote removal, escaping and expansion happen in the target
+		// shell after the proxy has made its decision.
+		"s''cp -t /forbidden/path",
+		`r\sync --server . /forbidden/path`,
+		`${TRANSFER} -t /forbidden/path`,
 	} {
 		sess, err := c.NewSession()
 		if err != nil {

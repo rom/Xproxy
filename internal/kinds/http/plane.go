@@ -29,6 +29,7 @@ func newEngine(host proxy.Host) (proxy.Plane, error) {
 		stats:        host.Counters(),
 		fingerprints: host.Fingerprints(),
 		concurrency:  limits.NewConcurrency(lim.MaxConcurrentRequests),
+		h3Headers:    limits.NewConcurrency(lim.MaxConcurrentRequests),
 		tarpits:      limits.NewConcurrency(lim.MaxTarpits),
 		marks:        newMarks(),
 		wafStats:     waf.NewStats(),
@@ -125,6 +126,7 @@ func (s *engine) Prepare(g proxy.Generation) (commit, discard func(), err error)
 		// start, so a reload that changed either setting takes effect
 		// without a restart.
 		s.concurrency.Resize(cfg.Server.Limits.MaxConcurrentRequests)
+		s.h3Headers.Resize(cfg.Server.Limits.MaxConcurrentRequests)
 		s.tarpits.Resize(cfg.Server.Limits.MaxTarpits)
 		if old == nil && cfg.Maintenance != nil {
 			s.maintenance.Store(cfg.Maintenance.Enabled)

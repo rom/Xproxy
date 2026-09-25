@@ -45,7 +45,17 @@ type siemSink struct {
 	mu                            sync.Mutex
 	lastErr                       string
 	lastSent                      time.Time
+	queuedBytes                   atomic.Int64
 }
+
+// Keep attacker-controlled log data within a fixed memory envelope. These
+// limits are deliberately independent of the record-count configuration:
+// request metadata can make records much larger than normal log messages.
+const (
+	maxSIEMRecordBytes = 64 << 10
+	maxSIEMQueueBytes  = 16 << 20
+	maxSIEMBatchBytes  = 4 << 20
+)
 
 // SIEMStatus is the management view of the sink.
 type SIEMStatus struct {
@@ -116,12 +126,33 @@ func (s *siemSink) emit(level slog.Level, stream string, line []byte, rec slog.R
 	default:
 		ev = append([]byte(nil), line...)
 	}
+	if len(ev) > maxSIEMRecordBytes || !s.reserveBytes(len(ev)) {
+		s.dropFull()
+		return
+	}
 	select {
 	case s.queue <- ev:
 	default:
-		s.dropped.Add(1)
-		s.queueFull.Hit(s.log, "siem queue full; records are dropped", "table", "siem_queue")
+		s.queuedBytes.Add(-int64(len(ev)))
+		s.dropFull()
 	}
+}
+
+func (s *siemSink) reserveBytes(n int) bool {
+	for {
+		used := s.queuedBytes.Load()
+		if int64(n) > maxSIEMQueueBytes-used {
+			return false
+		}
+		if s.queuedBytes.CompareAndSwap(used, used+int64(n)) {
+			return true
+		}
+	}
+}
+
+func (s *siemSink) dropFull() {
+	s.dropped.Add(1)
+	s.queueFull.Hit(s.log, "siem queue limit reached; records are dropped", "table", "siem_queue")
 }
 
 // hecEnvelope wraps a JSON line in the Splunk HTTP Event Collector
@@ -196,6 +227,7 @@ func (s *siemSink) loop() {
 	ticker := time.NewTicker(s.cfg.Interval.D())
 	defer ticker.Stop()
 	batch := make([][]byte, 0, s.cfg.Batch)
+	batchBytes := 0
 	flush := func() {
 		if len(batch) == 0 {
 			return
@@ -214,7 +246,20 @@ func (s *siemSink) loop() {
 			s.lastErr = ""
 		}
 		s.mu.Unlock()
+		// batchBytes also includes the post body's newline per record; only
+		// the record bytes themselves were reserved by emit.
+		s.queuedBytes.Add(-int64(batchBytes - len(batch)))
 		batch = batch[:0]
+		batchBytes = 0
+	}
+	add := func(r []byte) {
+		// Account for the newline appended to every record and flush before
+		// bytes.Join can create an oversized contiguous allocation.
+		if len(batch) > 0 && batchBytes+1+len(r) > maxSIEMBatchBytes {
+			flush()
+		}
+		batch = append(batch, r)
+		batchBytes += len(r) + 1
 	}
 	for {
 		select {
@@ -222,7 +267,7 @@ func (s *siemSink) loop() {
 			for {
 				select {
 				case r := <-s.queue:
-					batch = append(batch, r)
+					add(r)
 					if len(batch) >= s.cfg.Batch {
 						flush()
 					}
@@ -234,7 +279,7 @@ func (s *siemSink) loop() {
 			flush()
 			return
 		case r := <-s.queue:
-			batch = append(batch, r)
+			add(r)
 			if len(batch) >= s.cfg.Batch {
 				flush()
 			}

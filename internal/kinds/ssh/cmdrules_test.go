@@ -98,6 +98,28 @@ func TestAFamilyWithNoRuleIsRefused(t *testing.T) {
 	}
 }
 
+// A wrapper is not a transfer family the gateway knows how to inspect, but
+// neither may it carry one past the structured rules into the legacy gates.
+// The check uses the words produced by the shell-aware splitter, rather than
+// the original spelling, so quoting cannot conceal the helper's name.
+func TestAWrappedFamilyIsRefused(t *testing.T) {
+	rs := rules(t, config.SSHCommandRule{Command: "scp", Directions: []string{"upload"}})
+	for _, line := range []string{
+		"env scp -f /etc/passwd",
+		"env s''cp -f /etc/passwd",
+		"sudo rsync --server --sender . /etc",
+		"sh -c 'git-upload-pack /srv/private.git'",
+	} {
+		d := decide(t, rs, line)
+		if d.allow || !d.matched || d.reason != refuseNoRule {
+			t.Errorf("%q: %+v, want refusal with %q", line, d, refuseNoRule)
+		}
+	}
+	if d := decide(t, rs, "journalctl -u xproxy"); d.matched {
+		t.Errorf("an ordinary wrapped command was decided: %+v", d)
+	}
+}
+
 func TestRsyncRules(t *testing.T) {
 	rs := rules(t, config.SSHCommandRule{
 		Command: "rsync", Directions: []string{"upload"}, Paths: []string{"/srv/incoming/**"},

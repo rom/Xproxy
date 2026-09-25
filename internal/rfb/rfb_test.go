@@ -439,6 +439,23 @@ func TestARDExchangeAndCredential(t *testing.T) {
 	}
 }
 
+func TestARDServerReusesPrimeWithEphemeralKey(t *testing.T) {
+	first, firstPriv, err := NewARDParams()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, secondPriv, err := NewARDParams()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first.Prime, second.Prime) {
+		t.Error("ARD server regenerated its public modulus")
+	}
+	if firstPriv.Cmp(secondPriv) == 0 || bytes.Equal(first.Pub, second.Pub) {
+		t.Error("ARD server reused an ephemeral key")
+	}
+}
+
 func TestARDRefusesDegenerateParameters(t *testing.T) {
 	good, _, err := NewARDParams()
 	if err != nil {

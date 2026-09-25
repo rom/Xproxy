@@ -126,6 +126,22 @@ func (l *KeyedLimiter) AllowN(key string, n float64) bool {
 	return l.AllowFallback(key, nil, n)
 }
 
+// refund restores tokens just consumed from an existing token bucket. It is
+// used when admission depends on another limiter which subsequently refuses
+// the request.
+func (l *KeyedLimiter) refund(key string, n float64) {
+	sh := &l.shards[fnv(key)%uint32(len(l.shards))]
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	b, ok := sh.buckets[key]
+	if !ok || l.window > 0 {
+		return
+	}
+	b.tokens = min(b.tokens+n, l.burst)
+	b.consumed = max(b.consumed-n, 0)
+	b.total = max(b.total-n, 0)
+}
+
 // AllowFallback consumes n tokens for key. When key is not tracked and
 // its shard is full of active keys, the decision is made on the first
 // usable fallback instead — the client address for a header keyed

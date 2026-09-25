@@ -36,12 +36,6 @@ func build(su *proxy.Setup) (proxy.Instance, error) {
 	if err != nil {
 		return nil, err
 	}
-	ln := su.Net
-	if f.socksEnabled() {
-		// SOCKS greetings are taken off the accept path before the HTTP
-		// server sees them; everything else is handed on.
-		ln = &socksListener{Listener: ln, f: f}
-	}
 	lim := su.Host.Limits()
 	srv := &http.Server{
 		Handler:           f,
@@ -54,9 +48,15 @@ func build(su *proxy.Setup) (proxy.Instance, error) {
 		// Protocol choice stays with TLS ALPN: no automatic h2c.
 		TLSNextProto: nil,
 	}
+	ln := su.Net
 	if su.TLS != nil {
 		srv.TLSConfig = su.TLS
 		ln = tls.NewListener(ln, su.TLS)
+	}
+	if f.socksEnabled() {
+		// Split protocols only after listener TLS has authenticated and
+		// decrypted the connection. Everything else is handed to HTTP.
+		ln = &socksListener{Listener: ln, f: f}
 	}
 	return &instance{f: f, srv: srv, ln: ln}, nil
 }
