@@ -1,6 +1,7 @@
 package assets
 
 import (
+	"fmt"
 	"net/netip"
 	"strings"
 	"testing"
@@ -556,5 +557,125 @@ func TestTheCountsAddUp(t *testing.T) {
 	}
 	if got.Unknown != 1 || got.ByRole[RoleUnknown] != 1 {
 		t.Errorf("unknown %d, by role %v", got.Unknown, got.ByRole)
+	}
+}
+
+// Re-freezing is how an operator accepts a device: the inventory reported it as
+// new, somebody looked, it is legitimate, and the baseline is taken again. That
+// has to clear the flag, or the device is reported as new for ever and the
+// alert becomes one people filter out.
+func TestReFreezingAcceptsTheDevicesThatWereNew(t *testing.T) {
+	inv := New(Options{})
+	inv.Observe(Observation{Proto: "modbus", Addr: netip.MustParseAddr("10.0.0.1"),
+		Hardware: []byte{0, 0x0f, 0xbb, 1, 2, 3}, Server: true, Units: []int{1}, Funcs: []int{3}})
+	if n := inv.Freeze(); n != 1 {
+		t.Fatalf("first freeze: %d", n)
+	}
+	inv.Observe(Observation{Proto: "modbus", Addr: netip.MustParseAddr("10.0.0.2"),
+		Hardware: []byte{0xaa, 0xbb, 0xcc, 1, 2, 3}, Server: true, Units: []int{2}, Funcs: []int{3}})
+	if c := inv.Counts(); c.New != 1 {
+		t.Fatalf("after the second sighting: %d new", c.New)
+	}
+	// Accept it.
+	if n := inv.Freeze(); n != 2 {
+		t.Fatalf("second freeze: %d", n)
+	}
+	if c := inv.Counts(); c.New != 0 {
+		t.Fatalf("a device in the current baseline is still reported as new: %d", c.New)
+	}
+	for _, a := range inv.List() {
+		if a.New {
+			t.Errorf("%s is still flagged new after being baselined", a.ID)
+		}
+	}
+}
+
+// Get hands out a copy for the same reason List does: a caller that could edit
+// the inventory by reading it would make the record whatever the last reader
+// wanted.
+func TestAnAssetFromGetCannotBeEditedThroughTheCopy(t *testing.T) {
+	inv := New(Options{})
+	inv.Observe(Observation{Proto: "dhcp", Addr: netip.MustParseAddr("10.0.0.9"),
+		Hardware: []byte{0, 0x11, 0x85, 1, 2, 3}, Hostname: "press-2"})
+	got, ok := inv.Get("10.0.0.9")
+	if !ok {
+		t.Fatal("not found")
+	}
+	got.Hostname = "rewritten"
+	got.Class.Role = RolePLC
+	got.Addrs[0] = "10.9.9.9"
+	got.Protos["modbus"] = 99
+	again, ok := inv.Get("10.0.0.9")
+	if !ok {
+		t.Fatal("not found the second time")
+	}
+	if again.Hostname != "press-2" || again.Class.Role == RolePLC {
+		t.Fatalf("the inventory was edited through a copy: %+v", again)
+	}
+	if again.Addrs[0] != "10.0.0.9" {
+		t.Fatalf("the address list was edited through a copy: %v", again.Addrs)
+	}
+	if again.Protos["modbus"] != 0 {
+		t.Fatalf("the protocol map was edited through a copy: %v", again.Protos)
+	}
+}
+
+// The protocol map's keys come off the network: a peer that spoke a thousand
+// protocol names would otherwise grow one record without bound.
+func TestTheProtocolMapIsBounded(t *testing.T) {
+	inv := New(Options{})
+	addr := netip.MustParseAddr("10.0.0.1")
+	for i := 0; i < MaxProtos*3; i++ {
+		inv.Observe(Observation{Proto: fmt.Sprintf("p%d", i), Addr: addr})
+	}
+	a, ok := inv.Get("10.0.0.1")
+	if !ok {
+		t.Fatal("not found")
+	}
+	if len(a.Protos) > MaxProtos {
+		t.Fatalf("%d protocols past the bound of %d", len(a.Protos), MaxProtos)
+	}
+	// A protocol already in the map still counts up past the bound, because
+	// forgetting the count of one the record already holds would make the
+	// busiest protocol look like the quietest.
+	before := a.Protos["p0"]
+	inv.Observe(Observation{Proto: "p0", Addr: addr})
+	if a, _ = inv.Get("10.0.0.1"); a.Protos["p0"] != before+1 {
+		t.Fatalf("a known protocol stopped counting: %d then %d", before, a.Protos["p0"])
+	}
+}
+
+// Every string a device chose is clipped on the way in, which is where the
+// defence belongs: a record that held a control sequence would carry it to
+// every reader -- a terminal, a log, a web view -- and each would have to
+// remember to strip it.
+func TestAPeerChosenStringIsClippedOnTheWayIn(t *testing.T) {
+	inv := New(Options{})
+	long := strings.Repeat("a", MaxString*3)
+	inv.Observe(Observation{Proto: "dhcp", Addr: netip.MustParseAddr("10.0.0.1"),
+		Hostname:    "\x1b]0;owned\x07",
+		VendorClass: long,
+		// \u009b is the C1 control introducer written as a rune, which is
+		// what a device sending valid UTF-8 puts on the wire; a lone 0x9b
+		// byte is invalid UTF-8 and decodes to the replacement character,
+		// which is inert.
+		Description: "a\x00b\u009bc\u202ed",
+	})
+	a, ok := inv.Get("10.0.0.1")
+	if !ok {
+		t.Fatal("not found")
+	}
+	for name, v := range map[string]string{
+		"hostname": a.Hostname, "vendor_class": a.VendorClass, "description": a.Description,
+	} {
+		for _, r := range v {
+			if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) ||
+				(r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069) {
+				t.Errorf("%s kept %U: %q", name, r, v)
+			}
+		}
+		if len(v) > MaxString+3 {
+			t.Errorf("%s is %d octets, past the bound", name, len(v))
+		}
 	}
 }
