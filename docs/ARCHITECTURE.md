@@ -22,7 +22,8 @@ the shape. Decision records are in [AMR.md](AMR.md); requirements in
  +----------v----------+  +----------v----------+  +------------v----------+
  |       xproxy        |  |        xgate        |  |        xrelay         |
  |  http tcp udp       |  |   ssh telnet        |  | smtp mqtt ftp syslog  |
- |  forward dns        |  |   vnc rdp           |  | modbus ntp ntske      |
+ |  forward dns        |  |   vnc rdp           |  | modbus iec104         |
+ |                     |  |                     |  | ntp ntske             |
  |  user: xproxy       |  |  user: xgate        |  |  user: xrelay         |
  +--+---------------+--+  +--+---------------+--+  +--+----------------+---+
     |               |        |               |        |                |
@@ -82,7 +83,7 @@ authority a cluster peer has by design.
 cmd/xproxy          edge daemon: links the http, forward, tcp and dns kinds
 cmd/xgate           gate daemon: links the ssh, telnet, vnc and rdp kinds
 cmd/xrelay          relay daemon: links the smtp, mqtt, ftp, syslog, modbus,
-                    ntp and ntske kinds
+                    iec104, ntp and ntske kinds
 cmd/xproxyctl       management CLI and TUI (talks to any of the three)
 cmd/xproxy-admin    web GUI process (users, sessions, embedded assets)
 cmd/xproxy-fleet    fleet controller
@@ -106,6 +107,9 @@ internal/kinds/ftp     kind: ftp -- control and data channel mediation
 internal/kinds/syslog  kind: syslog -- RFC 5424 and RFC 3164 relay
 internal/kinds/modbus  kind: modbus -- Modbus/TCP, RTU and ASCII relay with a
                        policy in the protocol's own terms, in both directions
+internal/kinds/iec104  kind: iec104 -- IEC 60870-5-104 relay: command policy by
+                       type identification and cause, enforced
+                       select-before-operate, sequence checks both ways
 internal/kinds/ntp     kind: ntp -- NTP and NTS gateway: policy, source
                        comparison, learning, traces
 internal/kinds/ntske   kind: ntske -- NTS key establishment relay on 4460
@@ -150,7 +154,7 @@ internal/geoip      MaxMind DB reader and CSV prefix table
 internal/cache      in-memory response cache (LRU, byte bound, Vary)
 internal/dns        DNS wire codec, cache, block list, resolver, servers
 internal/smtp internal/mqtt internal/ftp internal/syslog internal/sftp
-internal/modbus internal/ntp
+internal/modbus internal/iec104 internal/ntp
                     the wire codecs of the relay and gate protocols
 internal/masque internal/mitm internal/grpcmsg internal/asciicast
                     the wire formats the kinds above are built on
@@ -197,7 +201,7 @@ cmd/xrelay ─┘             metrics, ingress, listener, paths, version}
     │
     └─ blank imports of its own kinds, and nothing else:
          kinds/{http,tcp,udp,dns,forward} | kinds/{ssh,telnet,vnc,rdp} |
-         kinds/{smtp,mqtt,ftp,syslog,modbus,ntp,ntske}
+         kinds/{smtp,mqtt,ftp,syslog,modbus,iec104,ntp,ntske}
 
 kinds/<k> -> {proxy, config, listener, and that protocol's wire package}
 proxy     -> {listener, router, upstream, limits, netutil, tlsconf, logging,
@@ -233,7 +237,7 @@ So the binary is split by who is on the other end of the socket:
 |--------|-------|----------------|
 | `xproxy` | the open internet | `http`, `forward`, `tcp`, `udp`, `dns` |
 | `xgate` | people | `ssh`, `telnet`, `vnc`, `rdp` |
-| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `ntp`, `ntske` |
+| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `ntp`, `ntske` |
 
 One repository, one module, one version and one configuration format;
 three programs, three users, three systemd units, three sandboxes, three
@@ -1009,7 +1013,7 @@ and size, and a second factor can be demanded after the key.
 
 ### The relay: SMTP, MQTT, FTP, syslog, Modbus, NTP and NTS
 
-The relay kinds (`internal/kinds/{smtp,mqtt,ftp,syslog,modbus,ntp,ntske}`)
+The relay kinds (`internal/kinds/{smtp,mqtt,ftp,syslog,modbus,iec104,ntp,ntske}`)
 share a shape:
 each parses its protocol rather than forwarding bytes, holds a policy in
 that protocol's own terms, and bounds what a peer may say.
@@ -1039,6 +1043,20 @@ that protocol's own terms, and bounds what a peer may say.
   because a slave has one scan, refuses in the protocol's own exceptions,
   and can authorise by the role in a client certificate (Modbus/TCP
   Security).
+- `iec104` is Modbus's sibling one layer up the grid: the same absence of
+  security, the same unpatchable equipment, but a protocol that says what
+  a message *means*. Every I-format frame carries a type identification,
+  a cause of transmission and a common address, so the policy is written
+  about commands rather than about bytes. Two things it does that no other
+  kind here does: it enforces **select-before-operate** by remembering the
+  selections (narrowly -- per connection, per point, per type, with an
+  expiry), and it checks the **sequence numbering in both directions**,
+  which is the only mechanism in the protocol that finds a replayed frame.
+  It is full duplex and unserialised, unlike `modbus`: IEC 104 is designed
+  for both ends to send when they have something to say, and serialising
+  it would break the protocol's own flow control. There is no per-address
+  routing, because the first frame of an association carries no address to
+  route on.
 
 - `ntp` is the time gateway, and the one kind whose interesting half is
   not the forwarding: it probes every server in the pool with its own

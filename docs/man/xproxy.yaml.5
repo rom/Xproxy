@@ -214,8 +214,8 @@ Read it with \fBxproxyctl policy report\fR (\fB\-top N\fR, \fB\-json\fR), which 
 .PP
 .TS
 allbox;
-lbw(0.8i) lbw(1.4i) lbx
-lw(0.8i) lw(1.4i) lx.
+lbw(0.8i) lbw(1.5i) lbx
+lw(0.8i) lw(1.5i) lx.
 T{
 Kind
 T}	T{
@@ -229,6 +229,13 @@ T}	T{
 every rule: function,\: unit,\: address range,\: value bounds,\: rate and window
 T}	T{
 malformed frames,\: the unit table,\: the queue bound,\: rate limits,\: bans
+T}
+T{
+\fBiec104\fR
+T}	T{
+every rule: type,\: class,\: cause,\: station,\: originator,\: point range and the select half;\: \fBmonitor_\:only\fR;\: the common\-address list;\: \fBrequire_\:select\fR
+T}	T{
+malformed frames,\: the frame bound,\: rate limits (frame and command),\: a station commanding its own control centre,\: bans
 T}
 T{
 \fBntp\fR
@@ -4367,6 +4374,427 @@ T}
 \fBLearning is observe\-only unless it says otherwise.\fR \fBlearn.enforce\fR defaults to false, and validation warns while it is off, because a learning run left on by accident is a relay that decides nothing.
 .PP
 Counters: \fBmodbus_sessions\fR, \fBmodbus_sessions_open\fR, \fBmodbus_requests\fR, \fBmodbus_responses\fR, \fBmodbus_denied\fR, \fBmodbus_would_deny\fR, \fBmodbus_exceptions\fR, \fBmodbus_malformed\fR, \fBmodbus_refused\fR, \fBmodbus_rejected\fR, \fBmodbus_rate_limited\fR, \fBmodbus_queue_full\fR, \fBmodbus_upstream_failed\fR, \fBmodbus_traced\fR, \fBmodbus_learned\fR. Refusals are \fBmodbus_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBtls_handshake\fR, \fBno_client_certificate\fR, \fBno_role\fR, \fBrole_not_allowed\fR, \fBsecurity_requires_tls\fR, \fBframing\fR, \fBframe_too_large\fR, \fBmalformed\fR, \fBmalformed_response\fR, \fBresponse_unit_mismatch\fR, \fBno_route_for_unit\fR, \fBmax_connections\fR, \fBrate_limit\fR, \fBqueue_full\fR, \fBread_only\fR, \fBread_only_unknown_function\fR, \fBunit_not_allowed\fR, \fBrule_deny\fR, \fBno_rule\fR, \fBvalue_out_of_range\fR, \fBvalue_delta\fR, \fBvalue_transition\fR, \fBvalue_rate\fR, \fBvalue_no_select\fR, \fBvalue_unknown\fR, \fBvalue_masked_write\fR, \fBcoil_set_not_allowed\fR, \fBcoil_clear_not_allowed\fR. A selector that does not match is not a refusal of its own: the frame falls through to the next rule, and to \fBno_rule\fR if none matches.
+.SS "server.listeners[].iec104 (kind: iec104)"
+.PP
+IEC 60870\-5\-104 is the protocol that operates electricity transmission and distribution, and it is the grid\(aqs Modbus: a controlling station (the SCADA master) and a controlled station (a substation gateway or an RTU) exchange application service data units over a plain TCP connection on port 2404, with no authentication, no integrity and no confidentiality anywhere in the standard. Anyone who can reach the gateway can trip a breaker on it. IEC 62351\-3 adds TLS and is almost nowhere deployed, because the controlled stations are substation equipment with twenty\-year service lives.
+.PP
+What the protocol \fIdoes\fR have, and Modbus does not, is a structure that says what a message means, and that structure is what this relay enforces:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+Every I\-format frame carries a \fBtype identification\fR (what this is), a \fBcause of transmission\fR (why it was sent), an \fBoriginator address\fR (which control centre) and a \fBcommon address\fR (which station).
+.PP
+.ti -3n
+\(bu
+The \fBprocess commands\fR \-\- single, double, regulating step, setpoint, bitstring \-\- are a small numbered set, and so are the \fBsystem commands\fR, two of which reset a station and move its clock.
+.PP
+.ti -3n
+\(bu
+The dangerous commands have a \fBtwo\-step form\fR: \fIselect\fR (an activation with the S/E bit set) then \fIexecute\fR. The standard describes it; the equipment mostly does not enforce it.
+.PP
+.ti -3n
+\(bu
+Every I frame is \fBsequence numbered in both directions\fR, which is the only thing in the protocol that can detect a lost, duplicated or replayed frame.
+.RE
+.PP
+.PP
+So the policy here is written in those terms rather than in ports: which stations may be addressed, which commands may be sent to which points by whom, whether a command has to be selected before it is executed, and whether the numbering adds up.
+.PP
+\fBThere is no per\-address routing on this kind, on purpose.\fR An IEC 104 connection is a long\-lived \fIassociation\fR between one controlling station and one controlled station, and the first frame a control centre sends is \fBSTARTDT_act\fR \-\- a U\-format frame with no common address in it. A relay that chose a pool from the common address could not choose one until the first I frame, by which time the association is up and the handshake answered. One listener per association is the honest shape; \fBcommon_addresses\fR is what bounds which stations may be addressed through it.
+.PP
+.TS
+allbox;
+lbw(1.5i) lbw(1.0i) lbw(0.9i) lbx
+lw(1.5i) lw(1.0i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBmode\fR
+T}	T{
+\fBreverse\fR,\: \fBforward\fR
+T}	T{
+\fBreverse\fR
+T}	T{
+\fBreverse\fR: a control centre connects here and the relay dials the station. \fBforward\fR: this listener is the controlled egress a centre uses to reach stations elsewhere
+T}
+T{
+\fBupstream\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+The station pool this listener relays to
+T}
+T{
+\fBtls_\:mode\fR
+T}	T{
+\fBimplicit\fR,\: \fBnone\fR
+T}	T{
+\fBimplicit\fR with a \fBtls\fR section
+T}	T{
+IEC 62351\-3: TLS from the first octet. There is no in\-band upgrade to negotiate
+T}
+T{
+\fBupstream_\:tls_\:mode\fR
+T}	T{
+\fBnone\fR,\: \fBimplicit\fR
+T}	T{
+\fBnone\fR
+T}	T{
+Whether this listener speaks TLS to the station
+T}
+T{
+\fBupstream_\:tls\fR
+T}	T{
+object
+T}	T{
+
+T}	T{
+Verification of the station when \fBupstream_\:tls_\:mode\fR is not \fBnone\fR
+T}
+T{
+\fBallow_\:clients\fR
+T}	T{
+list of CIDR
+T}	T{
+all
+T}	T{
+Networks a controlling station may connect from
+T}
+T{
+\fBdeny_\:clients\fR
+T}	T{
+list of CIDR
+T}	T{
+
+T}	T{
+Evaluated before \fBallow_\:clients\fR
+T}
+T{
+\fBcommon_\:addresses\fR
+T}	T{
+list
+T}	T{
+all
+T}	T{
+The stations that may be addressed at all,\: as numbers or \fB"1\-\:16"\fR ranges. A control centre that may address one substation and reaches ten is the commonest finding in this protocol
+T}
+T{
+\fBmonitor_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse every command and system command,\: for every client,\: before any rule is read: telemetry up and nothing down. \fBNo rule can override it\fR
+T}
+T{
+\fBrules\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+Per\-frame rules,\: first match wins;\: see below
+T}
+T{
+\fBdefault_\:action\fR
+T}	T{
+\fBdeny\fR,\: \fBallow\fR
+T}	T{
+\fBdeny\fR
+T}	T{
+What a frame no rule matched gets
+T}
+T{
+\fBdeny_\:response\fR
+T}	T{
+\fBnegative\fR,\: \fBdrop\fR,\: \fBclose\fR
+T}	T{
+\fBnegative\fR
+T}	T{
+\fBnegative\fR returns the same ASDU with the negative\-confirm bit and cause \fBactcon\fR,\: which is what a station does and what a control centre\(aqs alarm list understands
+T}
+T{
+\fBrequire_\:select\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Make the two\-step form mandatory for every command type that has one
+T}
+T{
+\fBselect_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+How long a selection stays valid (1s to 10m)
+T}
+T{
+\fBmax_\:selections\fR
+T}	T{
+int
+T}	T{
+\fB4096\fR
+T}	T{
+Outstanding selections this relay remembers
+T}
+T{
+\fBallow_\:controls\fR
+T}	T{
+list
+T}	T{
+all
+T}	T{
+The U\-format control functions a client may send: \fBSTARTDT_\:act\fR,\: \fBSTARTDT_\:con\fR,\: \fBSTOPDT_\:act\fR,\: \fBSTOPDT_\:con\fR,\: \fBTESTFR_\:act\fR,\: \fBTESTFR_\:con\fR. Naming an activation names its confirmation
+T}
+T{
+\fBk\fR
+T}	T{
+int
+T}	T{
+\fB12\fR
+T}	T{
+The sending window: how many I frames may be unacknowledged
+T}
+T{
+\fBw\fR
+T}	T{
+int
+T}	T{
+\fB8\fR
+T}	T{
+After how many received frames a station acknowledges. Must not exceed \fBk\fR
+T}
+T{
+\fBcheck_\:sequence\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse an I frame whose send sequence number is not the next one
+T}
+T{
+\fBmax_\:unacknowledged\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse a station with more than \fBk\fR frames outstanding,\: and one acknowledging frames nobody sent
+T}
+T{
+\fBmax_\:connections\fR
+T}	T{
+int
+T}	T{
+\fB32\fR
+T}	T{
+Live sessions
+T}
+T{
+\fBidle_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB120s\fR
+T}	T{
+Longer than the standard\(aqs t3,\: so a station\(aqs own keepalive keeps a quiet link open
+T}
+T{
+\fBconnect_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB5s\fR
+T}	T{
+Dialling the station
+T}
+T{
+\fBmax_\:frame_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB255\fR
+T}	T{
+A policy bound below the protocol\(aqs own;\: the length field is one octet,\: so no APDU can exceed 257 octets whatever a station claims
+T}
+T{
+\fBrate_\:limit\fR,\: \fBrate_\:burst\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Frames per second per client address
+T}
+T{
+\fBcommand_\:rate_\:limit\fR,\: \fBcommand_\:rate_\:burst\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+\fICommands\fR per second per client,\: separately: a control centre that sends a thousand breaker commands a second is not a busy control centre,\: and a frame limit loose enough for telemetry says nothing about that
+T}
+T{
+\fBlog_\:frames\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+An access line per frame. On this protocol periodic telemetry is most of the traffic,\: so this is a lot of lines
+T}
+T{
+\fBlog_\:commands\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+An access line for every command and system command,\: in both directions,\: leaving the telemetry alone: a record of what was commanded is the thing a grid operator is asked for after an incident
+T}
+T{
+\fBalert_\:on_\:deny\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A security event per refusal
+T}
+T{
+\fBproxy_\:protocol\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Send a PROXY protocol v2 header to the station
+T}
+.TE
+.SS "server.listeners[].iec104.rules[]"
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.8i) lbx
+lw(1.2i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+string
+T}	T{
+Required;\: names the rule in the logs and the counters
+T}
+T{
+\fBaction\fR
+T}	T{
+\fBallow\fR,\: \fBdeny\fR,\: \fBobserve\fR
+T}	T{
+Default \fBallow\fR. \fBobserve\fR records the frame and keeps looking,\: which is how a rule is tried on live traffic before it decides anything
+T}
+T{
+\fBclients\fR
+T}	T{
+list of CIDR
+T}	T{
+Networks the controlling station is in
+T}
+T{
+\fBcommon_\:addresses\fR
+T}	T{
+list
+T}	T{
+The stations this rule covers
+T}
+T{
+\fBoriginators\fR
+T}	T{
+list
+T}	T{
+Originator addresses (0 to 255): which control centre,\: where a station serves several
+T}
+T{
+\fBtypes\fR
+T}	T{
+list
+T}	T{
+Type identifications by the standard\(aqs name (\fBC_\:SC_\:NA_\:1\fR) or by number. The names are the standard\(aqs own because that is what the substation documentation says
+T}
+T{
+\fBclass\fR
+T}	T{
+list
+T}	T{
+\fBmonitoring\fR,\: \fBcommand\fR,\: \fBsystem\fR,\: \fBparameter\fR,\: \fBfile\fR: what a type \fIdoes\fR. The durable way to write a policy,\: because a class outlives a standard revision that adds a type
+T}
+T{
+\fBcauses\fR
+T}	T{
+list
+T}	T{
+Causes of transmission by name (\fBact\fR,\: \fBactcon\fR,\: \fBspont\fR,\: \fBintrogroup1\fR) or number. A rule naming none matches any cause,\: which is usually wrong for a rule about commands: \fBact\fR is the centre commanding and \fBactcon\fR is the station answering
+T}
+T{
+\fBaddresses\fR
+T}	T{
+list
+T}	T{
+Information object address ranges (0 to 16777215). A frame naming an address outside all of them does not match
+T}
+T{
+\fBmax_\:objects\fR
+T}	T{
+int
+T}	T{
+Information objects one ASDU may carry (0 leaves the protocol\(aqs own 127)
+T}
+T{
+\fBselect\fR
+T}	T{
+\fBselect\fR,\: \fBexecute\fR
+T}	T{
+Which half of a two\-step command this rule is about. \fBselect\fR on one client and \fBexecute\fR on another is a four\-eyes control: one operator arms and another fires
+T}
+T{
+\fBschedule\fR
+T}	T{
+object
+T}	T{
+\fB{days,\: from,\: to,\: timezone}\fR;\: a window whose \fBto\fR is before its \fBfrom\fR spans midnight
+T}
+.TE
+.PP
+\fBWhat is checked before the rules, and cannot be shadowed.\fR A frame the relay could not read is refused whether or not the listener is enforcing: forwarding what it cannot decide about would hand the substation octets it will read somehow. So are the rate limits, and so is a \fIstation\fR sending an activation to its own control centre \-\- not a shape the standard has, and what a compromised substation gateway pivoting upstream looks like.
+.PP
+\fBSelect\-before\-operate is narrow on purpose.\fR A selection belongs to the connection that made it, to one common address, one information object address and one type identification, and it expires. A selection that outlived its connection would let a later client execute on an earlier one\(aqs intention; one that never expired would let an execute sent hours later operate a breaker somebody selected and thought better of. A selection authorises one execution, a deactivation withdraws it, and the bitstring commands \-\- which have no two\-step form in the standard \-\- are exempt, because requiring a selection for them would refuse every use of them for ever.
+.PP
+\fBA sequence gap is one refusal.\fR The state moves to what arrived, so a single lost frame does not take a substation off the air until somebody restarts the link.
+.PP
+\fBThe metric payloads are never decoded.\fR A measurement\(aqs scaled value, quality descriptor and timestamp are forwarded untouched. Decoding every one of the hundred\-odd type identifications would be a second implementation of the standard, and a relay that got one wrong would corrupt a reading nobody could trace. What is read is the ASDU header, the object addresses and a command\(aqs qualifier \-\- which is what a policy is written about. On a \fIsequence\fR ASDU only the first information object address is on the wire, so that is the one an \fBaddresses\fR rule checks.
+.PP
+Counters: \fBiec104_sessions\fR, \fBiec104_sessions_open\fR, \fBiec104_frames\fR, \fBiec104_commands\fR, \fBiec104_system_commands\fR, \fBiec104_denied\fR, \fBiec104_would_deny\fR, \fBiec104_malformed\fR, \fBiec104_rejected\fR, \fBiec104_rate_limited\fR, \fBiec104_selects\fR, \fBiec104_executes\fR, \fBiec104_unselected\fR, \fBiec104_selects_held\fR, \fBiec104_sequence_gaps\fR, \fBiec104_window_full\fR, \fBiec104_upstream_failed\fR. Refusals are \fBiec104_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBtls_handshake\fR, \fBmalformed\fR, \fBframe_too_long\fR, \fBmax_connections\fR, \fBrate_limited\fR, \fBcommand_rate_limited\fR, \fBmonitor_only\fR, \fBcommon_address\fR, \fBrule\fR, \fBdefault_deny\fR, \fBcontrol\fR, \fBstation_command\fR, \fBsequence\fR, \fBwindow\fR, \fBack_ahead\fR, \fBunselected\fR, \fBselect_unavailable\fR.
 .SS "server.listeners[].ntp (kind: ntp)"
 .PP
 A \fBkind: ntp\fR listener is an NTP and NTS security gateway: it reads every packet, decides about it in the protocol\(aqs own terms, and compares the servers behind it with each other.
@@ -12165,7 +12593,7 @@ list
 T}	T{
 \fB[]\fR (all)
 T}	T{
-Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fByara\fR
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fByara\fR
 T}
 T{
 \fBthreshold\fR

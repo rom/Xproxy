@@ -112,7 +112,7 @@ estate — and binds only the kinds of its own role:
 |--------|-------|----------------|
 | `xproxy` | the open internet | `http`, `forward`, `tcp`, `udp`, `dns` |
 | `xgate` | people | `ssh`, `telnet`, `vnc`, `rdp` |
-| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `ntp`, `ntske` |
+| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `ntp`, `ntske` |
 
 A kind a binary did not link is never bound and never falls through to
 the HTTP data plane: it is an error naming the daemon that serves it.
@@ -183,6 +183,7 @@ its own for what is deliberately *not* implemented and why.
 | Logging | Syslog RFC 5424 and RFC 3164 over UDP, TCP (RFC 6587 framing) and TLS, re-emitted in one dialect | `syslog` |
 | Time | NTP v1 to v4 (RFC 5905), SNTP (RFC 4330), extension fields (RFC 7822), AES-CMAC authentication (RFC 8573), NTS (RFC 8915) passed through whole, and NTS key establishment relayed on TCP 4460 | `ntp`, `ntske` |
 | Industrial | Modbus/TCP (MBAP), Modbus over Serial Line RTU and ASCII tunnelled over TCP, and Modbus/TCP Security with the role in the client certificate | `modbus` |
+| Telecontrol | IEC 60870-5-104 (APCI/APDU, the I, S and U formats, the type identifications and causes of transmission of IEC 60870-5-101), with IEC 62351-3 TLS | `iec104` |
 | Remote access | SSH (RFC 4251–4254) with OpenSSH user and host certificates; telnet's NVT (RFC 854); RFB 3.3 to 3.8 (RFC 6143) with VeNCrypt; RDP (MS-RDPBCGR) over TLS, CredSSP over NTLMv2 towards the desktop, or the protocol's own encryption | `ssh`, `telnet`, `vnc`, `rdp` |
 | Identity | OpenID Connect Core 1.0, OAuth 2.0 (RFC 6749) with introspection (RFC 7662), PKCE (RFC 7636) and token exchange (RFC 8693); JWT, JWS and JWKS (RFC 7515–7519); DPoP (RFC 9449); certificate-bound tokens (RFC 8705); SAML 2.0 as a service provider; SCIM 2.0 (RFC 7642–7644); WebAuthn level 2; LDAP (RFC 4511–4515); TOTP (RFC 6238); HTTP Basic (RFC 7617); client certificate identity as `Client-Cert` (RFC 9440) or Envoy's `X-Forwarded-Client-Cert` | filters |
 | Inspection | ModSecurity SecLang with the OWASP Core Rule Set through Coraza; a documented subset of YARA; ICAP (RFC 3507); OpenAPI 3 descriptions; GraphQL; XML and XSD with exclusive canonicalization; protobuf structure without a schema; WebAssembly with WASI preview 1 | filters |
@@ -210,6 +211,7 @@ protocol so that a policy can be written in that protocol's own terms:
 | `ftp` | `xrelay` | FTP and FTPS | Commands, paths, extensions, and the data connection itself |
 | `syslog` | `xrelay` | RFC 5424 and RFC 3164 over UDP, TCP, TLS | Facility, severity, sender, the text; re-emitted in one dialect |
 | `modbus` | `xrelay` | Modbus/TCP, RTU and ASCII, Modbus/TCP Security | Unit identifiers, function codes, register ranges, values, roles, schedules |
+| `iec104` | `xrelay` | IEC 60870-5-104, IEC 62351-3 TLS | Type identifications, causes of transmission, common and originator addresses, information object ranges, select-before-operate, schedules |
 | `ntp` | `xrelay` | NTP v1–v4, SNTP, NTS-protected NTP | Versions, modes, extension fields, authentication, and whether the servers agree |
 | `ntske` | `xrelay` | NTS key establishment (TLS on 4460) | The application protocol, the server name, the handshakes in flight |
 
@@ -301,6 +303,42 @@ protocol so that a policy can be written in that protocol's own terms:
   authentication and the role in the client certificate. And **learning
   mode**, because nobody knows what a plant's Modbus traffic is — run it
   for a week and the file it writes is the rule set to start from
+
+- `kind: iec104`: an **IEC 60870-5-104** relay for the electricity grid,
+  in both directions. IEC 104 is the protocol that operates transmission
+  and distribution, and it has no authentication, no integrity and no
+  session either: anyone who can reach a substation gateway on port 2404
+  can trip a breaker on it, and the gateways are substation equipment
+  with twenty-year service lives. What the protocol *has*, and Modbus
+  does not, is a structure that says what a message means — a **type
+  identification**, a **cause of transmission**, an **originator address**
+  and a **common address** in every frame — so the policy is written in
+  those terms: which stations may be addressed, which commands may be
+  sent by whom to which points, on what schedule. The commands are a
+  small numbered set, and the two that matter most are named separately:
+  `C_RP_NA_1` reboots a station and `C_CS_NA_1` moves its clock, which
+  changes the meaning of every timestamp in the historian and of every
+  protection function keyed to one. `monitor_only` that no rule can
+  override, for a historian or a neighbouring utility's data link.
+  **Select-before-operate enforced**: the standard describes the two-step
+  form and the equipment mostly does not check it, so a relay that
+  remembers the selections is the only thing in the path that can require
+  both steps — which turns one injected command frame from a breaker
+  operation into a refusal. The **sequence numbering** is checked in both
+  directions, because it is the only thing in the protocol that finds a
+  lost, duplicated or replayed frame. `STOPDT_act` is a policy decision of
+  its own: it stops data transfer, so a client that may send it blinds a
+  control room without refusing a single command. A **station sending an
+  activation to its own control centre** is refused, because that is not a
+  shape the standard has and it is what a compromised gateway pivoting
+  upstream looks like. Commands are rate limited separately from frames,
+  because a control centre sending a thousand breaker commands a second is
+  not a busy control centre. Refusals are the standard's own negative
+  confirmation, so the centre's alarm list says something true and the
+  link carries on. **IEC 62351-3** for the stations that have it: TLS from
+  the first octet. The metric payloads are never decoded — a schema per
+  estate is out of scope, and a relay that got one wrong would corrupt a
+  reading nobody could trace
 
 - `kind: ntp` and `kind: ntske`: an NTP and NTS security gateway, in
   **both directions**. A time packet is 48 octets, has no session and is
