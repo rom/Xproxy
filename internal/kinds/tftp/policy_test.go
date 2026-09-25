@@ -51,21 +51,27 @@ func TestTheDefaultsAreReadOnlyAndDenyEverythingElse(t *testing.T) {
 func TestAPathClassIsRefusedByShapeAndOnlyTheSoftOnesCanBeAllowed(t *testing.T) {
 	base := &config.TFTPListener{Upstream: "servers", DefaultAction: "allow"}
 	p := mustCompile(t, base)
-	for name, want := range map[string]string{
-		"../../etc/shadow": "path_traversal",
-		"/etc/shadow":      "path_absolute",
-		`fw\boot.bin`:      "path_backslash",
-		`c:\boot.bin`:      "path_drive",
-		"boot.bin ":        "path_trailing",
-		"bøt.bin":          "path_non_ascii",
-		"boot\r.bin":       "path_control",
+	// A slice rather than a map: two of these keys differ from an ordinary
+	// name only by a trailing space or a control character, and a map literal
+	// is the one place that difference is invisible to a reader.
+	for _, c := range []struct {
+		name, want string
+		hard       bool
+	}{
+		{name: "../../etc/shadow", want: "path_traversal"},
+		{name: "/etc/shadow", want: "path_absolute"},
+		{name: `fw\boot.bin`, want: "path_backslash"},
+		{name: `c:\boot.bin`, want: "path_drive"},
+		{name: "boot.bin ", want: "path_trailing"},
+		{name: "bøt.bin", want: "path_non_ascii"},
+		{name: "boot\r.bin", want: "path_control", hard: true},
 	} {
-		d := p.Decide(ask(wire.OpRead, name))
-		if d.Allow || d.Reason != want {
-			t.Errorf("%q: allow=%v reason=%q, want %q", name, d.Allow, d.Reason, want)
+		d := p.Decide(ask(wire.OpRead, c.name))
+		if d.Allow || d.Reason != c.want {
+			t.Errorf("%q: allow=%v reason=%q, want %q", c.name, d.Allow, d.Reason, c.want)
 		}
-		if hard := name == "boot\r.bin"; d.Hard != hard {
-			t.Errorf("%q: hard=%v, want %v", name, d.Hard, hard)
+		if d.Hard != c.hard {
+			t.Errorf("%q: hard=%v, want %v", c.name, d.Hard, c.hard)
 		}
 	}
 	// An estate that really does serve absolute paths says so, and then it

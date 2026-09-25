@@ -511,9 +511,9 @@ func (x *transfer) account(d *wire.Data) (string, bool) {
 	x.bytes += int64(d.Length)
 	x.packets++
 	if x.op == wire.OpRead {
-		c.TFTPBytesOut.Add(uint64(d.Length))
+		c.TFTPBytesOut.Add(octets(d.Length))
 	} else {
-		c.TFTPBytesIn.Add(uint64(d.Length))
+		c.TFTPBytesIn.Add(octets(d.Length))
 	}
 	if x.maxBytes > 0 && x.bytes > x.maxBytes {
 		c.TFTPOversize.Add(1)
@@ -599,6 +599,17 @@ func (x *transfer) toServer(raw []byte) {
 // what identifies a TFTP transfer.
 func sameAddr(a, b *net.UDPAddr) bool {
 	return a != nil && b != nil && a.Port == b.Port && a.IP.Equal(b.IP)
+}
+
+// octets is a payload length as an unsigned count.
+//
+// Parse computes Length from a bounded slice, so it is never negative -- and
+// the guard says so here rather than leaving the next reader to go and check.
+func octets(n int) uint64 {
+	if n < 0 {
+		return 0
+	}
+	return uint64(n)
 }
 
 func itoa(n int) string     { return strconv.Itoa(n) }

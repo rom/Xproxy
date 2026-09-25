@@ -85,7 +85,7 @@ func encodeOptions(opts []Option) ([]byte, error) {
 	if len(opts) > MaxOptions {
 		return nil, fmt.Errorf("%w: %d options", ErrCount, len(opts))
 	}
-	var out []byte
+	out := make([]byte, 0, 16*len(opts))
 	for _, o := range opts {
 		if o.Name == "" {
 			return nil, fmt.Errorf("%w: an option with no name", ErrShape)
