@@ -75,6 +75,31 @@ server:
           max_stratum: 10
           max_delay: 500ms
           refuse_unsynchronised: true
+          # The plant's time tree is a reference clock and the two
+          # servers that follow it, so those are the strata that exist.
+          # A list is not a bound: a bound would admit stratum 5, and
+          # there is no stratum 5 here.
+          allow_strata: [1, 2, 3]
+          # Half the root delay plus the root dispersion: the one figure
+          # a server cannot keep small by reporting the other half large.
+          max_root_distance: 750ms
+          # An answer whose own four timestamps cannot describe an
+          # exchange, and one whose reference identifier does not match
+          # the stratum saying how to read it. Both default to true;
+          # they are written out because this is the file an operator
+          # reads to find out what is enforced.
+          refuse_bogus_timestamps: true
+          refuse_bogus_refid: true
+          # The identifiers these servers really report: the GPS clock
+          # and the two that follow it. The cheapest statement of server
+          # identity the protocol allows without a key.
+          expect_refid: ["GPS", "PPS", "10.30.0.1"]
+          # A leap second is an instruction to every clock that hears it,
+          # and one is only ever inserted at the end of June, December,
+          # March or September. alert forwards the announcement and says
+          # so when it is out of season; window would refuse those.
+          leap_policy: alert
+          leap_window: 744h
           healthy_after: 3
           unhealthy_after: 3
           # pass keeps the clocks running while the log says every
@@ -85,6 +110,19 @@ server:
         # How long a source whose time cannot be verified is still used.
         holdover:
           max_duration: 1h
+
+        # Whether each server is still the same server. Everything in
+        # quality asks whether one answer was good enough; this asks
+        # whether the source was replaced, re-pointed or stood in front
+        # of -- which passes every bound above. alert rather than refuse:
+        # refusing stops the plant's corrections, and reading the event
+        # is what an operator can act on.
+        change_detection:
+          enabled: true
+          max_step: 500ms
+          max_stratum_jump: 2
+          dispersion_growth: 8
+          action: alert
 
         # Symmetric authentication for the devices that have it. AES-CMAC
         # per RFC 8573; the legacy algorithms need an explicit exception,

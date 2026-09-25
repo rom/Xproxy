@@ -4133,6 +4133,15 @@ T}	T{
 How long a server whose time cannot be verified is still used,\: below
 T}
 T{
+\fBchange_\:detection\fR
+T}	T{
+object
+T}	T{
+
+T}	T{
+Watch each server for a change in \fBwhat it is\fR rather than in what it answered,\: below
+T}
+T{
 \fBkod\fR
 T}	T{
 object
@@ -4473,6 +4482,69 @@ T}	T{
 Refuse an answer from too far down the tree
 T}
 T{
+\fBallow_\:strata\fR
+T}	T{
+list of int
+T}	T{
+\fB[]\fR (any)
+T}	T{
+The exhaustive list of strata accepted,\: 1..15. A bound admits everything below it and a list does not: a plant whose servers are a reference clock and its own two followers has no stratum 5 in it,\: and an answer claiming one is not a server that got worse
+T}
+T{
+\fBmax_\:root_\:distance\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR (off)
+T}	T{
+Refuse an answer whose \fBsynchronisation distance\fR \[u2014] half the root delay plus the root dispersion,\: RFC 5905\(aqs own measure \[u2014] is past it. It is the bound that cannot be satisfied by reporting a small delay and a large dispersion or the other way about
+T}
+T{
+\fBrefuse_\:bogus_\:timestamps\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse an answer whose four timestamps cannot describe an exchange: a zero transmit or receive timestamp,\: an answer sent before the request arrived,\: a last synchronisation later than the request. The check is between the packet\(aqs own fields,\: \fBnever against this relay\(aqs clock\fR,\: so a relay whose own time is wrong does not refuse correct answers;\: it is not applied to an interleaved answer,\: whose transmit timestamp is the server\(aqs previous one on purpose. Off warns
+T}
+T{
+\fBrefuse_\:bogus_\:refid\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse an answer whose reference identifier does not match the stratum that says how to read it: a stratum 1 answer whose identifier is not a reference clock\(aqs name,\: or a stratum 2\-or\-worse answer with none at all. At stratum 2 and above only the unset value is called wrong,\: because the field may be four octets of a hash of an IPv6 address. Off warns
+T}
+T{
+\fBexpect_\:refid\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+The reference identifiers a server may report: the four\-character name at stratum 0 and 1 (\fBGPS\fR,\: \fBPPS\fR,\: \fBDCFa\fR) and the dotted quad above. It is the cheapest statement of server identity the protocol allows without a key \[u2014] a GPS\-backed clock that starts answering as something else is either a different device or the same device with a different upstream
+T}
+T{
+\fBleap_\:policy\fR
+T}	T{
+enum
+T}	T{
+\fBalert\fR
+T}	T{
+What happens when an answer announces a leap second: \fBalert\fR (forward it and raise a security event when it is outside the window a leap second can happen in),\: \fBallow\fR (say nothing \[u2014] warns),\: \fBwindow\fR (refuse an announcement outside that window) or \fBrefuse\fR (refuse every announcement). An announcement makes every client that hears it plan to move its clock,\: and the IERS only ever uses the end of June,\: December,\: March or September
+T}
+T{
+\fBleap_\:window\fR
+T}	T{
+duration
+T}	T{
+\fB744h\fR (a month)
+T}	T{
+How long before the end of such a month an announcement is plausible;\: 1h..2160h. RFC 5905 sets the indicator during the last day and some servers announce from the start of the month
+T}
+T{
 \fBrefuse_\:unsynchronised\fR
 T}	T{
 bool
@@ -4504,6 +4576,70 @@ T}
 The monitor keeps four states apart, because the operator\(aqs next action differs: \fBunreachable\fR (no answer), \fBunsynchronised\fR (it answers and says not to use its time), \fBsuspect\fR (it answers, claims to be fine and disagrees with its peers) and \fBhealthy\fR. With three or more sources the median is the estate\(aqs opinion and the outlier is named; with two that disagree neither can be called wrong, so both are marked and the event says exactly that.
 .PP
 \fB\fBholdover\fR\fR bounds how long a server whose time cannot be verified is still used: \fBmax_duration\fR (0 disables it). Past it the listener says the holdover has expired, and the estate\(aqs \fBon_all_suspect\fR decides whether that stops the answers.
+.PP
+\fB\fBchange_detection\fR\fR asks a different question from every bound in \fBquality\fR. Those ask whether one answer is good enough; this asks whether the server is still the same server, answering the same way \[u2014] which is the question the interesting attack leaves open, because it passes every static bound. A source that was a GPS clock at stratum 1 and now answers as something else at stratum 4 is inside \fBmax_stratum: 8\fR. An offset that steps by fourteen seconds between two polls is inside \fBmax_offset: 30s\fR. A dispersion that grows from a millisecond to a second is inside \fBmax_root_dispersion: 2s\fR. A server that stops carrying NTS is carrying valid NTP.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.9i) lbw(0.8i) lbx
+lw(1.2i) lw(0.9i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Watch each server. Off warns: nothing else here notices a source being replaced,\: re\-pointed or stood in front of
+T}
+T{
+\fBmax_\:step\fR
+T}	T{
+duration
+T}	T{
+\fB1s\fR
+T}	T{
+How far the measured offset to one server may move between two measurements. A real clock drifts;\: it does not step
+T}
+T{
+\fBmax_\:stratum_\:jump\fR
+T}	T{
+int
+T}	T{
+\fB2\fR
+T}	T{
+How far a server\(aqs stratum may move at once. A server whose own upstream failed over moves by one or two;\: one that moved by eight is answering for somebody else
+T}
+T{
+\fBdispersion_\:growth\fR
+T}	T{
+int
+T}	T{
+\fB8\fR
+T}	T{
+The factor by which a server\(aqs root dispersion may grow between measurements before it is said
+T}
+T{
+\fBaction\fR
+T}	T{
+enum
+T}	T{
+\fBalert\fR
+T}	T{
+\fBalert\fR (a security event and a counter) or \fBrefuse\fR (that,\: and the answer does not reach the client). \fBrefuse\fR warns: it stops the corrections rather than merely reporting them
+T}
+.TE
+.PP
+Six detections, each with a counter and a security event of its own: \fBntp_source_changed\fR (the reference identifier), \fBntp_stratum_jumped\fR, \fBntp_offset_stepped\fR, \fBntp_dispersion_grew\fR, \fBntp_nts_lost\fR and \fBntp_leap_announced\fR. They are fed by both the monitor\(aqs own probes and the exchanges the relay forwards, so an estate whose devices poll once an hour still notices within a probe interval. The baseline moves to what was measured whether or not the change was reported, so one change is one alert rather than one per poll for ever; a kiss\-o\(aq\-death and an unsynchronised answer never become the baseline, since neither carries a measurement of the server\(aqs time.
 .PP
 \fB\fBkod\fR\fR is the kiss\-o\(aq\-death: a stratum\-0 answer whose four reference identifier octets are a code. It is the protocol\(aqs own way of saying "not now", and a client that gets one backs off.
 .PP
@@ -4566,7 +4702,7 @@ T}
 .PP
 \fBThe relay adds asymmetry, and that is a number.\fR A packet through a relay takes one path out and another back, and the offset a client computes is wrong by half the difference between them: \fB(forward \[u2212] reverse delay) / 2\fR. Nothing can remove it, so the data path is kept short \[u2014] the policy is compiled, the logging and the learning are off the forwarding path, the queues are bounded, and there is no deep inspection of anything, because there is nothing in a time packet to inspect deeply. An estate that needs better than the asymmetry allows puts a time server near its consumers rather than a relay.
 .PP
-Counters: \fBntp_requests\fR, \fBntp_forwarded\fR, \fBntp_responses\fR, \fBntp_answered\fR, \fBntp_denied\fR, \fBntp_would_deny\fR, \fBntp_dropped\fR, \fBntp_malformed\fR, \fBntp_unsolicited\fR, \fBntp_rate_limited\fR, \fBntp_kiss_sent\fR, \fBntp_timed_out\fR, \fBntp_associations\fR, \fBntp_associations_open\fR, \fBntp_upstream_failed\fR, \fBntp_upstream_unavailable\fR, \fBntp_send_failed\fR, \fBntp_interleaved\fR, \fBntp_nts_forwarded\fR, \fBntp_version5\fR, \fBntp_probes\fR, \fBntp_probe_failed\fR, \fBntp_disagreements\fR, \fBntp_source_healthy\fR, \fBntp_source_unhealthy\fR, \fBntp_holdover_expired\fR. Refusals are \fBntp_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBbanned\fR, \fBclient_not_allowed\fR, \fBrate_limit\fR, \fBcontrol_mode\fR, \fBprivate_mode\fR, \fBversion5\fR, \fBversion\fR, \fBversion_not_allowed\fR, \fBmode_not_allowed\fR, \fBnot_a_peer\fR, \fBbroadcast_not_allowed\fR, \fBmalformed\fR, \fBpacket_too_large\fR, \fBtoo_many_extensions\fR, \fBunknown_extension\fR, \fBambiguous_mac\fR, \fBnts_required\fR, \fBauth_required\fR, \fBauth_failed\fR, \fBmax_associations\fR, \fBoutstanding_full\fR, \fBno_server\fR, \fBserver_not_allowed\fR, \fBmalformed_response\fR, \fBunsolicited\fR, \fBresponse_mode\fR, \fBkiss_of_death\fR, \fBunsynchronised\fR, \fBunsynchronised_stratum\fR, \fBstratum_too_high\fR, \fBroot_delay\fR, \fBroot_dispersion\fR, \fBdelay\fR, \fBoffset\fR, \fBnts_stripped\fR, \fBauth_stripped\fR.
+Counters: \fBntp_requests\fR, \fBntp_forwarded\fR, \fBntp_responses\fR, \fBntp_answered\fR, \fBntp_denied\fR, \fBntp_would_deny\fR, \fBntp_dropped\fR, \fBntp_malformed\fR, \fBntp_unsolicited\fR, \fBntp_rate_limited\fR, \fBntp_kiss_sent\fR, \fBntp_timed_out\fR, \fBntp_associations\fR, \fBntp_associations_open\fR, \fBntp_upstream_failed\fR, \fBntp_upstream_unavailable\fR, \fBntp_send_failed\fR, \fBntp_interleaved\fR, \fBntp_nts_forwarded\fR, \fBntp_version5\fR, \fBntp_probes\fR, \fBntp_probe_failed\fR, \fBntp_disagreements\fR, \fBntp_source_healthy\fR, \fBntp_source_unhealthy\fR, \fBntp_holdover_expired\fR, \fBntp_source_changed\fR, \fBntp_stratum_jumped\fR, \fBntp_offset_stepped\fR, \fBntp_dispersion_grew\fR, \fBntp_nts_lost\fR, \fBntp_leap_announced\fR, \fBntp_leap_unexpected\fR. Refusals are \fBntp_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBbanned\fR, \fBclient_not_allowed\fR, \fBrate_limit\fR, \fBcontrol_mode\fR, \fBprivate_mode\fR, \fBversion5\fR, \fBversion\fR, \fBversion_not_allowed\fR, \fBmode_not_allowed\fR, \fBnot_a_peer\fR, \fBbroadcast_not_allowed\fR, \fBmalformed\fR, \fBpacket_too_large\fR, \fBtoo_many_extensions\fR, \fBunknown_extension\fR, \fBambiguous_mac\fR, \fBnts_required\fR, \fBauth_required\fR, \fBauth_failed\fR, \fBmax_associations\fR, \fBoutstanding_full\fR, \fBno_server\fR, \fBserver_not_allowed\fR, \fBmalformed_response\fR, \fBunsolicited\fR, \fBresponse_mode\fR, \fBkiss_of_death\fR, \fBunsynchronised\fR, \fBunsynchronised_stratum\fR, \fBstratum_too_high\fR, \fBstratum_not_allowed\fR, \fBroot_delay\fR, \fBroot_dispersion\fR, \fBroot_distance\fR, \fBdelay\fR, \fBoffset\fR, \fBbogus_timestamps\fR, \fBbogus_refid\fR, \fBrefid_not_allowed\fR, \fBleap_announced\fR, \fBleap_unexpected\fR, \fBsource_changed\fR, \fBnts_stripped\fR, \fBauth_stripped\fR.
 .SS "server.listeners[].ntske (kind: ntske)"
 .PP
 A \fBkind: ntske\fR listener is NTS key establishment (RFC 8915) on TCP 4460: TLS with the ALPN \fBntske/1\fR, relayed to the key establishment servers whose keys it is.

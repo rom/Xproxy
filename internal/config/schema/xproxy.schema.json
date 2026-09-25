@@ -4111,6 +4111,34 @@
       },
       "additionalProperties": false
     },
+    "NTPChangeDetection": {
+      "description": "NTPChangeDetection watches each time source for a change in what it is, which is a different question from whether one answer was acceptable. Every bound in quality asks \"is this answer good enough\". These ask \"is this still the same server, answering the same way\". A source that was a GPS clock at stratum 1 and is now something else at stratum 4, an offset that stepped by fourteen seconds between two polls, a dispersion that grew by two orders of magnitude, a server that stopped carrying NTS: each of those is within every static bound an estate would set, and each is the shape of a time source being replaced, re-pointed or stood in front of.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "Action is what a detection does: alert (the default -- a security event and a counter) or refuse (that, and the answer does not reach the client). Refusing is a real choice with a real cost: the estate's clocks stop being corrected until an operator looks. Alerting keeps the time flowing and makes somebody read the event, which for most estates is the right order.",
+          "type": "string"
+        },
+        "dispersion_growth": {
+          "description": "DispersionGrowth is the factor by which a server's root dispersion may grow between measurements before it is said. Default 8.",
+          "type": "integer"
+        },
+        "enabled": {
+          "description": "Enabled turns the watching on. Default true.",
+          "type": "boolean"
+        },
+        "max_step": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_stratum_jump": {
+          "description": "MaxStratumJump is how far a server's stratum may move at once. Default 2: a server whose own upstream failed over moves by one or two, and one that moved by eight is answering for somebody else.",
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
     "NTPExtensions": {
       "description": "NTPExtensions bounds the extension fields a packet may carry.",
       "type": "object",
@@ -4243,6 +4271,14 @@
           "allOf": [
             {
               "$ref": "#/$defs/NTPAuth"
+            }
+          ]
+        },
+        "change_detection": {
+          "description": "ChangeDetection watches each server for a change in what it is rather than in what it answered: a new time source, a stratum that jumped, an offset that stepped, a dispersion that exploded, NTS that stopped, a leap second announced out of season.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/NTPChangeDetection"
             }
           ]
         },
@@ -4415,13 +4451,36 @@
       "description": "NTPQuality is what the listener requires of a server's answer, and how it compares the servers with each other. Every bound here is about *responses*. A client's request carries a stratum, a root delay and a root dispersion too, and they mean nothing -- the protocol does not ask a client to fill them in -- so a listener that applied these to requests would be refusing clients for empty fields.",
       "type": "object",
       "properties": {
+        "allow_strata": {
+          "description": "AllowStrata is the exhaustive list of strata accepted, for an estate that knows exactly what its time tree looks like: [1, 2] says the servers are a reference clock and its immediate clients and nothing else may answer. Empty leaves max_stratum to decide.",
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
         "compare_sources": {
           "description": "CompareSources runs the monitor: the listener sends its own probes to every server, measures each the same way, and compares them. Default true, because a server that is reachable, synchronised, authenticated and wrong is the case every other check passes.",
           "type": "boolean"
         },
+        "expect_refid": {
+          "description": "ExpectRefID is the reference identifiers a server may report: the four-character name at stratum 0 and 1 (\"GPS\", \"PPS\", \"DCFa\") and the dotted quad at stratum 2 and above. Empty accepts any. It is the cheapest statement of server identity the protocol allows without authentication: a GPS-backed clock that starts answering as something else is either a different device or the same device with a different upstream.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "healthy_after": {
           "description": "HealthyAfter and UnhealthyAfter are the hysteresis: how many probes in a row it takes to change a server's state. Default 3 each, because one slow answer on a busy network is not a fault and a relay that moved every client on one sample would be an outage generator with a health check attached.",
           "type": "integer"
+        },
+        "leap_policy": {
+          "description": "LeapPolicy is what happens when an answer announces a leap second: alert (the default -- an announcement outside the window when a leap second can really happen is a security event), allow (say nothing), window (refuse an announcement outside the window) or refuse (refuse every announcement, for an estate that handles leap seconds another way). A leap announcement makes every client that hears it plan to move its clock, and the IERS only ever uses the end of June, December, March or September -- so an announcement in August says something.",
+          "type": "string"
+        },
+        "leap_window": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
         },
         "max_delay": {
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
@@ -4448,6 +4507,11 @@
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
         },
+        "max_root_distance": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
         "max_stratum": {
           "description": "MaxStratum refuses an answer from too far down the tree. 0 leaves the protocol's own bound of 15.",
           "type": "integer"
@@ -4460,6 +4524,14 @@
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "refuse_bogus_refid": {
+          "description": "RefuseBogusRefID refuses an answer whose reference identifier does not match the stratum that says how to read it: a stratum 1 answer whose identifier is not a reference clock's name, or a stratum 2 or worse answer with no identifier at all. Default true.",
+          "type": "boolean"
+        },
+        "refuse_bogus_timestamps": {
+          "description": "RefuseBogusTimestamps refuses an answer whose four timestamps cannot describe an exchange: a zero transmit or receive timestamp, an answer sent before the request arrived, a last synchronisation later than the request. Default true. The check is between the packet's own fields, never against this relay's clock, so a relay whose own time is wrong does not refuse correct answers.",
+          "type": "boolean"
         },
         "refuse_unsynchronised": {
           "description": "RefuseUnsynchronised refuses an answer from a server that says its own clock is not synchronised -- by the leap indicator or by stratum 16, which are two separate statements. Default true.",

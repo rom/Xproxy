@@ -7738,6 +7738,42 @@ func (v *validator) ntpListener(p string, n *NTPListener) {
 		if q.MaxStratum < 0 || q.MaxStratum > 16 {
 			v.errf("%s.quality.max_stratum: must be between 0 and 16", p)
 		}
+		if q.MaxRootDistance < 0 || q.MaxRootDistance > Duration(time.Hour) {
+			v.errf("%s.quality.max_root_distance: must be between 0 and 1h", p)
+		}
+		for i, st := range q.AllowStrata {
+			switch {
+			case st < 1 || st > 15:
+				v.errf("%s.quality.allow_strata[%d]: %d is not a stratum a server answers with: 1 to 15, since stratum 0 is a kiss-o'-death rather than a time and 16 is the protocol's own unsynchronised", p, i, st)
+			case q.MaxStratum > 0 && st > q.MaxStratum:
+				v.errf("%s.quality.allow_strata[%d]: stratum %d is past max_stratum %d, so naming it here cannot admit it", p, i, st, q.MaxStratum)
+			}
+		}
+		for i, id := range q.ExpectRefID {
+			switch {
+			case id == "":
+				v.errf("%s.quality.expect_refid[%d]: empty", p, i)
+			case len(id) > 15:
+				v.errf("%s.quality.expect_refid[%d]: %q is neither a four-character reference clock name nor a dotted quad", p, i, id)
+			}
+		}
+		switch q.LeapPolicy {
+		case "", "alert", "allow", "window", "refuse":
+		default:
+			v.errf("%s.quality.leap_policy: must be alert, allow, window or refuse", p)
+		}
+		if q.LeapPolicy == "allow" {
+			v.warnf("%s.quality.leap_policy is allow, so a leap second announced in a month the IERS never uses is forwarded to every client without a word: an announcement makes each of them plan to move its clock", p)
+		}
+		if d := q.LeapWindow; d != 0 && (d < Duration(time.Hour) || d > Duration(90*24*time.Hour)) {
+			v.errf("%s.quality.leap_window: must be between 1h and 2160h", p)
+		}
+		if q.RefuseBogusTimestamps != nil && !*q.RefuseBogusTimestamps {
+			v.warnf("%s.quality.refuse_bogus_timestamps is off, so an answer whose own timestamps cannot describe an exchange is forwarded, and the client computes an offset from it", p)
+		}
+		if q.RefuseBogusRefID != nil && !*q.RefuseBogusRefID {
+			v.warnf("%s.quality.refuse_bogus_refid is off, so a stratum 1 answer that names no reference clock is forwarded as if it came from one", p)
+		}
 		for _, f := range []struct {
 			key string
 			val int
@@ -7759,6 +7795,27 @@ func (v *validator) ntpListener(p string, n *NTPListener) {
 	}
 	if h := n.Holdover; h != nil && (h.MaxDuration < 0 || h.MaxDuration > Duration(24*time.Hour)) {
 		v.errf("%s.holdover.max_duration: must be between 0 and 24h", p)
+	}
+	if c := n.ChangeDetection; c != nil {
+		if d := c.MaxStep; d < 0 || d > Duration(time.Hour) {
+			v.errf("%s.change_detection.max_step: must be between 0 and 1h", p)
+		}
+		if c.MaxStratumJump < 0 || c.MaxStratumJump > 15 {
+			v.errf("%s.change_detection.max_stratum_jump: must be between 0 and 15", p)
+		}
+		if c.DispersionGrowth < 0 || c.DispersionGrowth > 1_000_000 {
+			v.errf("%s.change_detection.dispersion_growth: must be between 0 and 1000000", p)
+		}
+		switch c.Action {
+		case "", "alert":
+		case "refuse":
+			v.warnf("%s.change_detection.action is refuse, so a source that changed stops reaching the clients until an operator looks: that stops corrections rather than merely reporting them, and it has to be the estate's choice", p)
+		default:
+			v.errf("%s.change_detection.action: must be alert or refuse", p)
+		}
+		if c.Enabled != nil && !*c.Enabled {
+			v.warnf("%s.change_detection is off, so nothing here notices a time source being replaced, re-pointed or stood in front of: every check that is left asks whether one answer was good, not whether this is still the same server", p)
+		}
 	}
 	if l := n.Learn; l != nil && l.Enabled {
 		if l.File == "" {

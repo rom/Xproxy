@@ -442,6 +442,64 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **The time gateway reads the answer, then watches the source.** The NTP
+  and NTS relay could already refuse an answer for the bounds a server
+  states about itself. What it could not do was read an answer against
+  *itself*, or notice that a server had changed into a different server --
+  and for an estate where the time signs logs, orders events, bounds an
+  authentication window and expires a certificate, a second either way is
+  the point of the exercise.
+
+  Three checks that need no history and no second server:
+  `refuse_bogus_timestamps` (default on) refuses an answer whose four
+  timestamps cannot describe an exchange -- a zero transmit or receive
+  timestamp, an answer sent before the request arrived, a last
+  synchronisation later than the request. It compares the packet's own
+  fields and never this relay's clock, because a relay whose own time is
+  wrong would otherwise refuse every correct answer, which is the failure
+  that makes a check like this get switched off; an interleaved answer is
+  exempt, its transmit timestamp being the server's previous one on
+  purpose. `refuse_bogus_refid` (default on) refuses an identifier that
+  does not match the stratum saying how to read it: a stratum 1 answer
+  whose identifier is not a reference clock's name, a stratum 2-or-worse
+  answer naming no upstream. Only the unset value is called wrong above
+  stratum 1, because the field may be four octets of a hash of an IPv6
+  address and refusing a digest for looking like a multicast address would
+  refuse a correct server. And `max_root_distance` bounds half the root
+  delay plus the root dispersion -- RFC 5905's own measure, and the one a
+  server cannot satisfy by keeping one half small.
+
+  Two more statements of policy: `allow_strata` is the exhaustive list
+  rather than the bound (a plant whose servers are a reference clock and
+  its own two followers has no stratum 5 in it), and `expect_refid` names
+  the identifiers the estate's servers report, which is the cheapest
+  statement of server identity the protocol allows without a key.
+
+  A leap second gets a policy of its own, because a leap indicator is an
+  instruction to every clock that hears it and the IERS only ever uses the
+  end of June, December, March or September. `leap_policy: alert` (the
+  default) forwards the announcement and raises a security event when it is
+  out of season -- forwards, because the clients hear it from every other
+  server too and suppressing it quietly would lose the estate the one event
+  worth reading. `window` refuses the ones out of season, `refuse` refuses
+  every announcement, `allow` says nothing and warns.
+
+  Then `change_detection`, which asks whether the server is still the same
+  server: `ntp_source_changed` (the reference identifier), and a stratum
+  that jumped, an offset that stepped, a dispersion that exploded, NTS that
+  stopped, a leap second announced. Every one of those passes any static
+  bound an estate would write -- a GPS clock at stratum 1 now answering as
+  something else at stratum 4 is inside `max_stratum: 8`, an offset that
+  steps by fourteen seconds is inside `max_offset: 30s` -- which is why each
+  has a signal of its own. The measurements come from both the monitor's
+  own probes and the exchanges the relay forwards, so an estate polling
+  once an hour still notices within a probe interval. The baseline moves to
+  what was measured, so one change is one alert rather than one per poll
+  for ever, and an answer with no time in it (a kiss-o'-death, an
+  unsynchronised clock) never becomes the baseline. `action: refuse` drops
+  the answer as well, and warns: refusing stops the corrections rather than
+  reporting them.
+
 - **Live session control: who is on, and getting them off.** A bastion
   whose only answer to "who is on the production database right now, and
   can you get them off" is "restart the daemon, which drops everybody"

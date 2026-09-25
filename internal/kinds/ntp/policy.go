@@ -69,11 +69,18 @@ type Policy struct {
 
 	// The server-quality bounds, applied to responses.
 	maxStratum        uint8
+	allowStrata       map[uint8]bool
 	refuseUnsync      bool
 	maxRootDelay      time.Duration
 	maxRootDispersion time.Duration
+	maxRootDistance   time.Duration
 	maxDelay          time.Duration
 	maxOffset         time.Duration
+	checkTimestamps   bool
+	checkRefID        bool
+	expectRefID       map[string]bool
+	leapPolicy        string
+	leapWindow        time.Duration
 	forwardKoD        bool
 	interleaved       bool
 }
@@ -99,6 +106,13 @@ type response struct {
 	ntsAsked bool
 	// authAsked says the request carried a MAC this relay verified.
 	authAsked bool
+	// interleaved says this answer was matched as an interleaved one,
+	// where the transmit timestamp is the server's own previous one on
+	// purpose -- which is older than this request's arrival, so the
+	// timestamp-order check does not apply to it.
+	interleaved bool
+	// now is the receiving clock, for the leap window. Zero means now.
+	now time.Time
 }
 
 // compile builds the policy from the configuration.
@@ -114,6 +128,10 @@ func compile(l *config.NTPListener, keys wire.Keys) (*Policy, error) {
 		keys:               keys,
 		refuseAmbiguousMAC: true,
 		refuseUnsync:       true,
+		checkTimestamps:    true,
+		checkRefID:         true,
+		leapPolicy:         "alert",
+		leapWindow:         31 * 24 * time.Hour,
 		forwardKoD:         true,
 		interleaved:        l.InterleavedAllowed(),
 	}
@@ -198,6 +216,34 @@ func compile(l *config.NTPListener, keys wire.Keys) (*Policy, error) {
 		p.maxRootDispersion = q.MaxRootDispersion.D()
 		p.maxDelay = q.MaxDelay.D()
 		p.maxOffset = q.MaxOffset.D()
+		p.maxRootDistance = q.MaxRootDistance.D()
+		if len(q.AllowStrata) > 0 {
+			p.allowStrata = make(map[uint8]bool, len(q.AllowStrata))
+			for _, st := range q.AllowStrata {
+				if st < 1 || st > 15 {
+					return nil, fmt.Errorf("quality.allow_strata: %d is not a stratum a server answers with", st)
+				}
+				p.allowStrata[uint8(st)] = true //nolint:gosec // bounded above
+			}
+		}
+		if q.RefuseBogusTimestamps != nil {
+			p.checkTimestamps = *q.RefuseBogusTimestamps
+		}
+		if q.RefuseBogusRefID != nil {
+			p.checkRefID = *q.RefuseBogusRefID
+		}
+		if len(q.ExpectRefID) > 0 {
+			p.expectRefID = make(map[string]bool, len(q.ExpectRefID))
+			for _, id := range q.ExpectRefID {
+				p.expectRefID[id] = true
+			}
+		}
+		if q.LeapPolicy != "" {
+			p.leapPolicy = q.LeapPolicy
+		}
+		if q.LeapWindow.D() > 0 {
+			p.leapWindow = q.LeapWindow.D()
+		}
 	}
 	if k := l.KoD; k != nil && k.Forward != nil {
 		p.forwardKoD = *k.Forward
@@ -393,17 +439,53 @@ func (p *Policy) Response(r response) Decision {
 	if p.maxStratum > 0 && pkt.Stratum > p.maxStratum {
 		return deny("stratum_too_high", fmt.Sprintf("stratum %d", pkt.Stratum))
 	}
+	if len(p.allowStrata) > 0 && !p.allowStrata[pkt.Stratum] {
+		// The exhaustive list, for an estate that knows what its tree
+		// looks like. It is a separate rule from max_stratum because a
+		// bound admits everything below it and a list does not: a plant
+		// whose servers are a reference clock and its own two followers
+		// has no stratum 5 in it, and an answer claiming one is not a
+		// server that got worse.
+		return deny("stratum_not_allowed", fmt.Sprintf("stratum %d", pkt.Stratum))
+	}
 	if p.maxRootDelay > 0 && pkt.RootDelay.Duration() > p.maxRootDelay {
 		return deny("root_delay", pkt.RootDelay.Duration().String())
 	}
 	if p.maxRootDispersion > 0 && pkt.RootDispersion.Duration() > p.maxRootDispersion {
 		return deny("root_dispersion", pkt.RootDispersion.Duration().String())
 	}
+	if p.maxRootDistance > 0 && pkt.RootDistance() > p.maxRootDistance {
+		// The synchronisation distance: half the root delay plus the
+		// root dispersion. A server can keep either half small on its
+		// own; the sum is the statement it cannot dress up.
+		return deny("root_distance", pkt.RootDistance().String())
+	}
 	if p.maxDelay > 0 && r.delay > p.maxDelay {
 		return deny("delay", r.delay.String())
 	}
 	if p.maxOffset > 0 && (r.offset > p.maxOffset || r.offset < -p.maxOffset) {
 		return deny("offset", r.offset.String())
+	}
+	if p.checkTimestamps && !r.interleaved {
+		if why := pkt.TimestampsConsistent(); why != "" {
+			// An answer whose own four timestamps cannot describe an
+			// exchange still yields an offset, and the client acts on
+			// it. This is the check that costs an attacker the cheapest
+			// forgery there is: fill in whatever makes the arithmetic
+			// come out where you want it.
+			return deny("bogus_timestamps", why)
+		}
+	}
+	if p.checkRefID {
+		if why := pkt.RefIDSane(); why != "" {
+			return deny("bogus_refid", why)
+		}
+	}
+	if len(p.expectRefID) > 0 && !p.expectRefID[pkt.RefIDText()] {
+		return deny("refid_not_allowed", fmt.Sprintf("reference identifier %q", pkt.RefIDText()))
+	}
+	if d := p.leap(pkt, r.now); !d.Allow || d.Reason != "" {
+		return d
 	}
 	if r.ntsAsked && !pkt.NTS().Present {
 		// The request was protected and the answer is not. That is a
@@ -413,6 +495,49 @@ func (p *Policy) Response(r response) Decision {
 	}
 	if r.authAsked && !pkt.HasMAC && !pkt.CryptoNAK {
 		return deny("auth_stripped", "the request was authenticated and the answer is not")
+	}
+	return allowed
+}
+
+// leap applies the leap-second policy to an answer.
+//
+// A leap indicator of 1 or 2 is not a fault: it is the server telling
+// every client that hears it to plan to insert or delete a second. That
+// is why it is worth a rule of its own. A leap second is only ever
+// inserted at the end of June, December, March or September, so an
+// announcement at any other time is a fault or somebody's work, and in
+// an estate where event sequencing matters a second either way is
+// exactly the kind of quiet that a manipulated clock buys.
+//
+// The returned decision carries a reason even when it allows, so the
+// caller counts and logs an announcement it forwards.
+func (p *Policy) leap(pkt *wire.Packet, now time.Time) Decision {
+	if !pkt.Leap.Announcing() {
+		return allowed
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	plausible := wire.LeapPlausible(now, p.leapWindow)
+	switch p.leapPolicy {
+	case "allow":
+		return allowed
+	case "refuse":
+		return deny("leap_announced", "a leap second is announced and this listener refuses every announcement")
+	case "window":
+		if !plausible {
+			return deny("leap_unexpected",
+				fmt.Sprintf("a leap second is announced (%s) outside the window a leap second can happen in", pkt.Leap))
+		}
+	default: // alert
+		if !plausible {
+			// Forwarded, and said out loud: the client is going to hear
+			// this from every other server too, and an estate that
+			// stopped the announcement without a word would be hiding
+			// the one event it should be reading.
+			return Decision{Allow: true, Reason: "leap_unexpected",
+				Detail: fmt.Sprintf("a leap second is announced (%s) outside the window a leap second can happen in", pkt.Leap)}
+		}
 	}
 	return allowed
 }

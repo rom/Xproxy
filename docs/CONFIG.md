@@ -1802,6 +1802,7 @@ hang. NTS key establishment is TCP and is a listener of its own
 | `extensions` | object | | What extension fields a packet may carry, below |
 | `quality` | object | | What is required of a server's answer, and how the servers are compared, below |
 | `holdover` | object | | How long a server whose time cannot be verified is still used, below |
+| `change_detection` | object | | Watch each server for a change in **what it is** rather than in what it answered, below |
 | `kod` | object | | The kiss-o'-death policy, below |
 | `interleaved` | bool | `true` | Accept interleaved mode, where a server's answer echoes its own previous transmit timestamp rather than the client's. It is how a server hands out a hardware-quality transmit timestamp; refusing it means refusing the most accurate exchange the protocol has |
 | `learn` | object | | Learning mode, below |
@@ -1878,6 +1879,13 @@ fields.
 | `max_offset`, `max_delay` | duration | `0` (off) | Refuse an answer whose measured offset or round trip is past them |
 | `max_root_delay`, `max_root_dispersion` | duration | `0` (off) | Refuse an answer whose own statement of its error is past them |
 | `max_stratum` | int | `0` (the protocol's 15) | Refuse an answer from too far down the tree |
+| `allow_strata` | list of int | `[]` (any) | The exhaustive list of strata accepted, 1..15. A bound admits everything below it and a list does not: a plant whose servers are a reference clock and its own two followers has no stratum 5 in it, and an answer claiming one is not a server that got worse |
+| `max_root_distance` | duration | `0` (off) | Refuse an answer whose **synchronisation distance** — half the root delay plus the root dispersion, RFC 5905's own measure — is past it. It is the bound that cannot be satisfied by reporting a small delay and a large dispersion or the other way about |
+| `refuse_bogus_timestamps` | bool | `true` | Refuse an answer whose four timestamps cannot describe an exchange: a zero transmit or receive timestamp, an answer sent before the request arrived, a last synchronisation later than the request. The check is between the packet's own fields, **never against this relay's clock**, so a relay whose own time is wrong does not refuse correct answers; it is not applied to an interleaved answer, whose transmit timestamp is the server's previous one on purpose. Off warns |
+| `refuse_bogus_refid` | bool | `true` | Refuse an answer whose reference identifier does not match the stratum that says how to read it: a stratum 1 answer whose identifier is not a reference clock's name, or a stratum 2-or-worse answer with none at all. At stratum 2 and above only the unset value is called wrong, because the field may be four octets of a hash of an IPv6 address. Off warns |
+| `expect_refid` | list | `[]` (any) | The reference identifiers a server may report: the four-character name at stratum 0 and 1 (`GPS`, `PPS`, `DCFa`) and the dotted quad above. It is the cheapest statement of server identity the protocol allows without a key — a GPS-backed clock that starts answering as something else is either a different device or the same device with a different upstream |
+| `leap_policy` | enum | `alert` | What happens when an answer announces a leap second: `alert` (forward it and raise a security event when it is outside the window a leap second can happen in), `allow` (say nothing — warns), `window` (refuse an announcement outside that window) or `refuse` (refuse every announcement). An announcement makes every client that hears it plan to move its clock, and the IERS only ever uses the end of June, December, March or September |
+| `leap_window` | duration | `744h` (a month) | How long before the end of such a month an announcement is plausible; 1h..2160h. RFC 5905 sets the indicator during the last day and some servers announce from the start of the month |
 | `refuse_unsynchronised` | bool | `true` | Refuse an answer from a server that says its own clock is not synchronised — by the leap indicator **or** by stratum 16, which are two separate statements |
 | `healthy_after`, `unhealthy_after` | int | `3` | The hysteresis: how many probes in a row it takes to change a server's state |
 | `on_all_suspect` | enum | `pass` | What happens when no server is usable: `pass` (keep forwarding and keep saying so) or `refuse`. A blanket fail-closed stops the estate's clocks, which is itself an outage, so `refuse` warns |
@@ -1894,6 +1902,36 @@ says exactly that.
 still used: `max_duration` (0 disables it). Past it the listener says the
 holdover has expired, and the estate's `on_all_suspect` decides whether
 that stops the answers.
+
+**`change_detection`** asks a different question from every bound in
+`quality`. Those ask whether one answer is good enough; this asks whether
+the server is still the same server, answering the same way — which is
+the question the interesting attack leaves open, because it passes every
+static bound. A source that was a GPS clock at stratum 1 and now answers
+as something else at stratum 4 is inside `max_stratum: 8`. An offset that
+steps by fourteen seconds between two polls is inside `max_offset: 30s`. A
+dispersion that grows from a millisecond to a second is inside
+`max_root_dispersion: 2s`. A server that stops carrying NTS is carrying
+valid NTP.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Watch each server. Off warns: nothing else here notices a source being replaced, re-pointed or stood in front of |
+| `max_step` | duration | `1s` | How far the measured offset to one server may move between two measurements. A real clock drifts; it does not step |
+| `max_stratum_jump` | int | `2` | How far a server's stratum may move at once. A server whose own upstream failed over moves by one or two; one that moved by eight is answering for somebody else |
+| `dispersion_growth` | int | `8` | The factor by which a server's root dispersion may grow between measurements before it is said |
+| `action` | enum | `alert` | `alert` (a security event and a counter) or `refuse` (that, and the answer does not reach the client). `refuse` warns: it stops the corrections rather than merely reporting them |
+
+Six detections, each with a counter and a security event of its own:
+`ntp_source_changed` (the reference identifier), `ntp_stratum_jumped`,
+`ntp_offset_stepped`, `ntp_dispersion_grew`, `ntp_nts_lost` and
+`ntp_leap_announced`. They are fed by both the monitor's own probes and
+the exchanges the relay forwards, so an estate whose devices poll once an
+hour still notices within a probe interval. The baseline moves to what
+was measured whether or not the change was reported, so one change is one
+alert rather than one per poll for ever; a kiss-o'-death and an
+unsynchronised answer never become the baseline, since neither carries a
+measurement of the server's time.
 
 **`kod`** is the kiss-o'-death: a stratum-0 answer whose four reference
 identifier octets are a code. It is the protocol's own way of saying "not
@@ -1978,7 +2016,9 @@ Counters: `ntp_requests`, `ntp_forwarded`, `ntp_responses`,
 `ntp_upstream_failed`, `ntp_upstream_unavailable`, `ntp_send_failed`,
 `ntp_interleaved`, `ntp_nts_forwarded`, `ntp_version5`, `ntp_probes`,
 `ntp_probe_failed`, `ntp_disagreements`, `ntp_source_healthy`,
-`ntp_source_unhealthy`, `ntp_holdover_expired`. Refusals are `ntp_denied`
+`ntp_source_unhealthy`, `ntp_holdover_expired`, `ntp_source_changed`,
+`ntp_stratum_jumped`, `ntp_offset_stepped`, `ntp_dispersion_grew`,
+`ntp_nts_lost`, `ntp_leap_announced`, `ntp_leap_unexpected`. Refusals are `ntp_denied`
 for the ban triggers, and the fine-grained reason is in the refusal
 counters: `banned`, `client_not_allowed`, `rate_limit`, `control_mode`,
 `private_mode`, `version5`, `version`, `version_not_allowed`,
@@ -1988,8 +2028,11 @@ counters: `banned`, `client_not_allowed`, `rate_limit`, `control_mode`,
 `max_associations`, `outstanding_full`, `no_server`,
 `server_not_allowed`, `malformed_response`, `unsolicited`,
 `response_mode`, `kiss_of_death`, `unsynchronised`,
-`unsynchronised_stratum`, `stratum_too_high`, `root_delay`,
-`root_dispersion`, `delay`, `offset`, `nts_stripped`, `auth_stripped`.
+`unsynchronised_stratum`, `stratum_too_high`, `stratum_not_allowed`,
+`root_delay`, `root_dispersion`, `root_distance`, `delay`, `offset`,
+`bogus_timestamps`, `bogus_refid`, `refid_not_allowed`,
+`leap_announced`, `leap_unexpected`, `source_changed`, `nts_stripped`,
+`auth_stripped`.
 
 ### server.listeners[].ntske (kind: ntske)
 

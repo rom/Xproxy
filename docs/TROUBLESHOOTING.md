@@ -3040,6 +3040,61 @@ are two separate statements. `stratum_too_high`, `root_delay`,
 `root_dispersion`, `delay` and `offset` are the bounds in `quality`.
 Every one of them names the server in the security event.
 
+**A refusal naming the timestamps, the identifier or the distance.**
+These are the three readings of an answer *against itself*, and each
+catches a forgery that passes every threshold. `bogus_timestamps` is an
+answer whose four timestamps cannot describe an exchange: a zero transmit
+or receive timestamp, an answer sent before the request arrived, a last
+synchronisation later than the request — all read between the packet's own
+fields, never against this relay's clock, so a relay whose own time is
+wrong does not refuse correct answers. `bogus_refid` is an identifier that
+does not match the stratum saying how to read it: a stratum 1 answer whose
+identifier is not a reference clock's name, or a stratum 2-or-worse answer
+naming no upstream at all. `root_distance` is half the root delay plus the
+root dispersion, which is the statement a server cannot dress up by
+keeping one half small. Each can be turned off, and validation warns while
+it is.
+
+**`refid_not_allowed`.** `quality.expect_refid` names the reference
+identifiers the estate's servers report, and this answer's is not one of
+them. It is the cheapest statement of server identity the protocol allows
+without a key — and the reason the refusal is worth reading rather than
+suppressing is that a GPS-backed clock now answering as something else is
+either a different device or the same device with a different upstream.
+
+**A leap second in the log, or refused.** `ntp_leap_unexpected` is an
+announcement outside the window a leap second can happen in — the IERS
+only ever uses the end of June, December, March or September. The default
+`leap_policy: alert` forwards it and says so, because the clients will
+hear it from every other server anyway and an estate that suppressed it
+silently would lose the one event worth reading. `window` refuses those and
+keeps the real ones; `refuse` refuses every announcement, for an estate
+that handles leap seconds another way; `allow` says nothing and warns at
+validation. `leap_window` is how early an announcement counts as real
+(default 744h, a month, because implementations differ).
+
+**A source that changed, rather than an answer that was bad.** The six
+`change_detection` signals are about the server and not the packet:
+`ntp_source_changed` (its reference identifier), `ntp_stratum_jumped`,
+`ntp_offset_stepped`, `ntp_dispersion_grew`, `ntp_nts_lost` and
+`ntp_leap_announced`. Read them when the clocks are fine and something in
+the estate is not: each of these is inside every static bound an operator
+would set, which is exactly why it has a signal of its own. The events
+name the server and carry the old and the new value.
+
+With `action: refuse` the answer is also dropped (`source_changed` in the
+refusals) — and only that one answer: the baseline moves to what the
+server is now, so a source that really did change is the new normal by the
+next poll rather than a permanent outage. That is also why the default is
+`alert`: refusing stops the corrections, which for most estates is worse
+than reading an event.
+
+**`ntp_nts_lost` with no `nts_stripped` beside it.** Two different things.
+`nts_stripped` is one exchange where the request carried NTS fields and
+the answer did not. `ntp_nts_lost` is the *server* no longer carrying NTS
+at all, which the relay's own probes see even when no client is asking for
+protected time.
+
 **One source is marked suspect and the others are not.** That is the
 comparison working: the relay probes every server, takes the median of
 three or more, and names the one that is too far from it. Read
@@ -4433,7 +4488,7 @@ actually being refused. What each kind can say:
 | `ftp` | `client_refused`, `banned`, `max_connections`, `auth_failed`, `identity_refused`, `mfa_required`, `mfa_failed`, the command and path policy (`unknown_command`, `command_refused`, `path_refused`, `read_only`, `active_refused`, `no_data_connection`), the path shapes it will not guess about (`path_separator`, `path_control`, `path_encoding`), the commands that are half a decision (`rest_invalid`, `rest_unscannable`, `rename_out_of_order`), TLS (`tls_required`, `auth_refused`, `ccc_refused`, `tls_pipelined`), the data channel (`bounce_refused`, `malformed_address`, `data_stranger`, `upstream_address`, `transfer_cut`) and the line discipline (`line_too_long`, `malformed_line`, `malformed_command`) |
 | `syslog` | `sender_refused`, `max_connections`, `rate_limit`, `too_large`, `framing`, `malformed`, the message policy (`facility`, `severity`, `pattern`) and `queue_full` when the collector is behind |
 | `modbus` | `client_not_allowed`, `max_connections`, `rate_limit`, `queue_full`, the session's own locks (`tls_handshake`, `no_client_certificate`, `no_role`, `role_not_allowed`, `security_requires_tls`), the framing (`framing`, `frame_too_large`, `malformed`), the policy (`read_only`, `read_only_unknown_function`, `unit_not_allowed`, `rule_deny`, `no_rule`, `value_out_of_range`, `value_masked_write`, `coil_set_not_allowed`, `coil_clear_not_allowed`), the routing (`no_route_for_unit`) and what the device answered (`malformed_response`, `response_unit_mismatch`) |
-| `ntp` | `banned`, `client_not_allowed`, `rate_limit`, `max_associations`, `outstanding_full`, the dispatch (`control_mode`, `private_mode`, `version5`, `version`, `version_not_allowed`, `mode_not_allowed`), the association shape (`not_a_peer`, `broadcast_not_allowed`), the packet (`malformed`, `packet_too_large`, `too_many_extensions`, `unknown_extension`, `ambiguous_mac`), the identity it demanded (`nts_required`, `auth_required`, `auth_failed`), the egress (`no_server`, `server_not_allowed`) and what the server answered (`malformed_response`, `unsolicited`, `response_mode`, `kiss_of_death`, `unsynchronised`, `unsynchronised_stratum`, `stratum_too_high`, `root_delay`, `root_dispersion`, `delay`, `offset`, `nts_stripped`, `auth_stripped`) |
+| `ntp` | `banned`, `client_not_allowed`, `rate_limit`, `max_associations`, `outstanding_full`, the dispatch (`control_mode`, `private_mode`, `version5`, `version`, `version_not_allowed`, `mode_not_allowed`), the association shape (`not_a_peer`, `broadcast_not_allowed`), the packet (`malformed`, `packet_too_large`, `too_many_extensions`, `unknown_extension`, `ambiguous_mac`), the identity it demanded (`nts_required`, `auth_required`, `auth_failed`), the egress (`no_server`, `server_not_allowed`), what the server answered (`malformed_response`, `unsolicited`, `response_mode`, `kiss_of_death`, `unsynchronised`, `unsynchronised_stratum`, `stratum_too_high`, `stratum_not_allowed`, `root_delay`, `root_dispersion`, `root_distance`, `delay`, `offset`, `bogus_timestamps`, `bogus_refid`, `refid_not_allowed`, `leap_announced`, `leap_unexpected`, `nts_stripped`, `auth_stripped`) and what the server became (`source_changed`, with `change_detection.action: refuse`) |
 | `ntske` | `banned`, `client_not_allowed`, `max_connections`, `handshake_limit`, and what the handshake said (`not_tls`, `no_hello`, `incomplete_hello`, `hello_too_large`, `alpn_not_offered`, `server_name_not_allowed`) |
 
 Two things are deliberately *not* in this family. Refusals by the

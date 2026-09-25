@@ -696,6 +696,11 @@ type NTPListener struct {
 	// Holdover bounds how long a server whose time cannot be verified
 	// is still used.
 	Holdover *NTPHoldover `yaml:"holdover"`
+	// ChangeDetection watches each server for a change in what it is
+	// rather than in what it answered: a new time source, a stratum that
+	// jumped, an offset that stepped, a dispersion that exploded, NTS
+	// that stopped, a leap second announced out of season.
+	ChangeDetection *NTPChangeDetection `yaml:"change_detection"`
 	// KoD is the kiss-o'-death policy: the protocol's own way of saying
 	// "not now".
 	KoD *NTPKoD `yaml:"kod"`
@@ -861,6 +866,54 @@ type NTPQuality struct {
 	// MaxStratum refuses an answer from too far down the tree. 0 leaves
 	// the protocol's own bound of 15.
 	MaxStratum int `yaml:"max_stratum"`
+	// AllowStrata is the exhaustive list of strata accepted, for an
+	// estate that knows exactly what its time tree looks like: [1, 2]
+	// says the servers are a reference clock and its immediate clients
+	// and nothing else may answer. Empty leaves max_stratum to decide.
+	AllowStrata []int `yaml:"allow_strata"`
+	// MaxRootDistance refuses an answer whose synchronisation distance
+	// -- half the root delay plus the root dispersion, RFC 5905's own
+	// measure -- is past it. It is the bound that cannot be satisfied by
+	// reporting a small delay and a large dispersion or the other way
+	// about. 0 disables it.
+	MaxRootDistance Duration `yaml:"max_root_distance"`
+	// RefuseBogusTimestamps refuses an answer whose four timestamps
+	// cannot describe an exchange: a zero transmit or receive
+	// timestamp, an answer sent before the request arrived, a last
+	// synchronisation later than the request. Default true. The check is
+	// between the packet's own fields, never against this relay's clock,
+	// so a relay whose own time is wrong does not refuse correct
+	// answers.
+	RefuseBogusTimestamps *bool `yaml:"refuse_bogus_timestamps"`
+	// RefuseBogusRefID refuses an answer whose reference identifier does
+	// not match the stratum that says how to read it: a stratum 1 answer
+	// whose identifier is not a reference clock's name, or a stratum 2
+	// or worse answer with no identifier at all. Default true.
+	RefuseBogusRefID *bool `yaml:"refuse_bogus_refid"`
+	// ExpectRefID is the reference identifiers a server may report: the
+	// four-character name at stratum 0 and 1 ("GPS", "PPS", "DCFa") and
+	// the dotted quad at stratum 2 and above. Empty accepts any. It is
+	// the cheapest statement of server identity the protocol allows
+	// without authentication: a GPS-backed clock that starts answering
+	// as something else is either a different device or the same device
+	// with a different upstream.
+	ExpectRefID []string `yaml:"expect_refid"`
+	// LeapPolicy is what happens when an answer announces a leap
+	// second: alert (the default -- an announcement outside the window
+	// when a leap second can really happen is a security event), allow
+	// (say nothing), window (refuse an announcement outside the window)
+	// or refuse (refuse every announcement, for an estate that handles
+	// leap seconds another way).
+	//
+	// A leap announcement makes every client that hears it plan to move
+	// its clock, and the IERS only ever uses the end of June, December,
+	// March or September -- so an announcement in August says something.
+	LeapPolicy string `yaml:"leap_policy"`
+	// LeapWindow is how long before the end of such a month an
+	// announcement is plausible. Default 744h, a month, because RFC 5905
+	// sets the indicator during the last day and some servers announce
+	// from the start of the month.
+	LeapWindow Duration `yaml:"leap_window"`
 	// RefuseUnsynchronised refuses an answer from a server that says
 	// its own clock is not synchronised -- by the leap indicator or by
 	// stratum 16, which are two separate statements. Default true.
@@ -885,6 +938,43 @@ type NTPHoldover struct {
 	// MaxDuration is how long a server may stay unverifiable before the
 	// listener says the holdover has expired. 0 disables the bound.
 	MaxDuration Duration `yaml:"max_duration"`
+}
+
+// NTPChangeDetection watches each time source for a change in what it
+// is, which is a different question from whether one answer was
+// acceptable.
+//
+// Every bound in quality asks "is this answer good enough". These ask
+// "is this still the same server, answering the same way". A source that
+// was a GPS clock at stratum 1 and is now something else at stratum 4,
+// an offset that stepped by fourteen seconds between two polls, a
+// dispersion that grew by two orders of magnitude, a server that stopped
+// carrying NTS: each of those is within every static bound an estate
+// would set, and each is the shape of a time source being replaced,
+// re-pointed or stood in front of.
+type NTPChangeDetection struct {
+	// Enabled turns the watching on. Default true.
+	Enabled *bool `yaml:"enabled"`
+	// MaxStep is how far the measured offset to one server may move
+	// between two measurements. Default 1s. A real clock drifts; it does
+	// not step.
+	MaxStep Duration `yaml:"max_step"`
+	// MaxStratumJump is how far a server's stratum may move at once.
+	// Default 2: a server whose own upstream failed over moves by one or
+	// two, and one that moved by eight is answering for somebody else.
+	MaxStratumJump int `yaml:"max_stratum_jump"`
+	// DispersionGrowth is the factor by which a server's root dispersion
+	// may grow between measurements before it is said. Default 8.
+	DispersionGrowth int `yaml:"dispersion_growth"`
+	// Action is what a detection does: alert (the default -- a security
+	// event and a counter) or refuse (that, and the answer does not
+	// reach the client).
+	//
+	// Refusing is a real choice with a real cost: the estate's clocks
+	// stop being corrected until an operator looks. Alerting keeps the
+	// time flowing and makes somebody read the event, which for most
+	// estates is the right order.
+	Action string `yaml:"action"`
 }
 
 // NTPKoD is the kiss-o'-death policy: a stratum-0 answer whose four

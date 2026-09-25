@@ -3021,6 +3021,105 @@ authenticated, and writes out the three lists a policy is made of —
 `allow_clients` either: a run written to discover the clients cannot be
 stopped from seeing them by the list it is discovering.
 
+**Reading an answer against itself.** Three of the checks need no history
+and no second server, because they catch a packet that cannot be what it
+claims:
+
+```yaml
+        quality:
+          allow_strata: [1, 2]        # the tree the estate actually has
+          max_root_distance: 500ms    # half the root delay plus the dispersion
+          refuse_bogus_timestamps: true   # the default
+          refuse_bogus_refid: true        # the default
+          expect_refid: ["GPS", "PPS", "10.30.0.1"]
+```
+
+The timestamps first: an answer whose transmit or receive timestamp is
+zero, whose transmit is *before* its receive, or whose last
+synchronisation is later than the request arriving, is not a measurement —
+and a client that got it would still compute an offset and step its clock.
+The check is between the packet's own four fields and never against this
+relay's clock, because a relay whose own time is wrong would otherwise
+refuse every correct answer, which is the failure that makes a check like
+this get turned off. An interleaved answer is exempt, since its transmit
+timestamp is the server's previous one on purpose.
+
+Then the reference identifier, which is the field most often read wrongly.
+At stratum 1 it is the reference clock's four-character name (`GPS`,
+`PPS`, `DCFa`); at stratum 2 and above it is the upstream's IPv4 address
+or four octets of a hash of an IPv6 one. So a stratum 1 answer whose
+identifier is not a name did not come from a reference clock, and a
+stratum 2-or-worse answer with no identifier at all names nothing above
+itself while claiming a place in the tree. `expect_refid` goes further and
+says which identifiers the estate's own servers report — the cheapest
+statement of server identity the protocol allows without a key.
+
+And `max_root_distance`, which is half the root delay plus the root
+dispersion: RFC 5905's own measure, and the one a server cannot satisfy by
+reporting a small delay and a large dispersion or the other way about.
+`allow_strata` is the list rather than the bound: a bound admits
+everything below it, and a plant whose servers are a reference clock and
+its own two followers has no stratum 5 in it.
+
+**A leap second is an instruction, so it gets a policy.** A leap indicator
+of "add" or "delete" tells every client that hears it to plan to move its
+clock by a second, and the IERS only ever uses the end of June, December,
+March or September. So:
+
+```yaml
+        quality:
+          leap_policy: alert     # alert (default), allow, window, refuse
+          leap_window: 744h
+```
+
+`alert` forwards the announcement and raises a security event when it is
+outside that window — forwards, because the clients hear it from every
+other server too and an estate that suppressed it quietly would lose the
+one event worth reading. `window` refuses the ones outside and keeps the
+real ones. `refuse` refuses every announcement, for an estate that handles
+leap seconds another way. `allow` says nothing, and warns at validation.
+
+**Watching the source rather than the answer.** Every bound above asks
+whether one answer is good enough. This asks whether the server is still
+the same server:
+
+```yaml
+        change_detection:
+          enabled: true          # the default
+          max_step: 1s
+          max_stratum_jump: 2
+          dispersion_growth: 8
+          action: alert           # or refuse
+```
+
+Six things it names, each with a counter and a security event:
+`ntp_source_changed` (the reference identifier), `ntp_stratum_jumped`,
+`ntp_offset_stepped`, `ntp_dispersion_grew`, `ntp_nts_lost`,
+`ntp_leap_announced`.
+
+That is the list because that is what a replaced, re-pointed or
+impersonated time source looks like — and every item on it passes any
+static bound an estate would write. A source that was a GPS clock at
+stratum 1 and now answers as something else at stratum 4 is inside
+`max_stratum: 8`. An offset that steps by fourteen seconds between two
+polls is inside `max_offset: 30s`. A dispersion that grows from a
+millisecond to a second is inside `max_root_dispersion: 2s`. A server that
+stops carrying NTS is carrying valid NTP. **For an estate where the time
+signs logs, orders events, bounds an authentication window and expires a
+certificate, a second either way is the point of the exercise** — so the
+relay says so.
+
+The measurements come from both the monitor's own probes and the exchanges
+it forwards, so an estate whose devices poll once an hour still notices
+within a probe interval. The baseline moves to what was measured whether
+or not a change was reported, which is what makes one change one alert
+rather than one per poll for ever; and an answer with no time in it — a
+kiss-o'-death, an unsynchronised clock — never becomes the baseline, so the
+next real answer is not a change. `action: refuse` drops the answer too,
+and validation warns: refusing stops the corrections rather than merely
+reporting them, and for most estates reading an event beats stopping the
+clocks.
+
 **What the monitor says, and what to do about it.** Four states, kept
 apart because the next action differs: `unreachable` (no answer),
 `unsynchronised` (it answers and says not to use its time),

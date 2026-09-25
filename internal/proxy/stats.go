@@ -202,6 +202,13 @@ type Stats struct {
 	NTPSourceHealthy       atomic.Uint64
 	NTPSourceUnhealthy     atomic.Uint64
 	NTPHoldoverExpired     atomic.Uint64
+	NTPSourceChanged       atomic.Uint64
+	NTPStratumJumped       atomic.Uint64
+	NTPOffsetStepped       atomic.Uint64
+	NTPDispersionGrew      atomic.Uint64
+	NTPNTSLost             atomic.Uint64
+	NTPLeapAnnounced       atomic.Uint64
+	NTPLeapUnexpected      atomic.Uint64
 
 	// NTS key establishment, which is its own listener on its own port.
 	NTSKESessions          atomic.Uint64
@@ -522,6 +529,13 @@ type Snapshot struct {
 	NTPSourceHealthy       uint64             `json:"ntp_source_healthy"`
 	NTPSourceUnhealthy     uint64             `json:"ntp_source_unhealthy"`
 	NTPHoldoverExpired     uint64             `json:"ntp_holdover_expired"`
+	NTPSourceChanged       uint64             `json:"ntp_source_changed"`
+	NTPStratumJumped       uint64             `json:"ntp_stratum_jumped"`
+	NTPOffsetStepped       uint64             `json:"ntp_offset_stepped"`
+	NTPDispersionGrew      uint64             `json:"ntp_dispersion_grew"`
+	NTPNTSLost             uint64             `json:"ntp_nts_lost"`
+	NTPLeapAnnounced       uint64             `json:"ntp_leap_announced"`
+	NTPLeapUnexpected      uint64             `json:"ntp_leap_unexpected"`
 	NTSKESessions          uint64             `json:"ntske_sessions"`
 	NTSKERelayed           uint64             `json:"ntske_relayed"`
 	NTSKERefused           uint64             `json:"ntske_refused"`
@@ -812,6 +826,13 @@ func (s *Stats) snapshot() Snapshot {
 		NTPSourceHealthy:       s.NTPSourceHealthy.Load(),
 		NTPSourceUnhealthy:     s.NTPSourceUnhealthy.Load(),
 		NTPHoldoverExpired:     s.NTPHoldoverExpired.Load(),
+		NTPSourceChanged:       s.NTPSourceChanged.Load(),
+		NTPStratumJumped:       s.NTPStratumJumped.Load(),
+		NTPOffsetStepped:       s.NTPOffsetStepped.Load(),
+		NTPDispersionGrew:      s.NTPDispersionGrew.Load(),
+		NTPNTSLost:             s.NTPNTSLost.Load(),
+		NTPLeapAnnounced:       s.NTPLeapAnnounced.Load(),
+		NTPLeapUnexpected:      s.NTPLeapUnexpected.Load(),
 		NTSKESessions:          s.NTSKESessions.Load(),
 		NTSKERelayed:           s.NTSKERelayed.Load(),
 		NTSKERefused:           s.NTSKERefused.Load(),

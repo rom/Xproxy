@@ -242,8 +242,14 @@ func TestTheResponsePolicy(t *testing.T) {
 		MaxOffset: config.Duration(time.Second)}}
 	p := policy(t, l, nil)
 	answer := func(edit func(*wire.Packet)) *wire.Packet {
+		// A sound answer carries a reference identifier: at stratum 2
+		// that is the upstream it synchronises to, and an answer with
+		// none is a server claiming a place in the tree while naming
+		// nothing above it.
 		a := &wire.Packet{Version: 4, Mode: wire.ModeServer, Stratum: 2,
-			Receive: wire.TimestampOf(time.Now()), Transmit: wire.TimestampOf(time.Now())}
+			ReferenceID: [4]byte{10, 30, 10, 1},
+			Reference:   wire.TimestampOf(time.Now().Add(-time.Minute)),
+			Receive:     wire.TimestampOf(time.Now()), Transmit: wire.TimestampOf(time.Now())}
 		if edit != nil {
 			edit(a)
 		}
@@ -524,5 +530,190 @@ func TestTheMeasurementSmoothing(t *testing.T) {
 	}
 	if abs(-time.Second) != time.Second || abs(time.Second) != time.Second {
 		t.Error("abs")
+	}
+}
+
+// The checks that read a server's answer against itself rather than
+// against a bound: the timestamps, the reference identifier, the
+// synchronisation distance, the stratum list and the leap announcement.
+// Each of these is a forgery that passes every threshold an estate would
+// set, which is why each has a rule of its own.
+func TestAnAnswerIsReadAgainstItself(t *testing.T) {
+	sound := func(edit func(*wire.Packet)) *wire.Packet {
+		a := &wire.Packet{Version: 4, Mode: wire.ModeServer, Stratum: 2,
+			ReferenceID: [4]byte{10, 30, 10, 1},
+			Reference:   wire.TimestampOf(time.Now().Add(-time.Minute)),
+			Receive:     wire.TimestampOf(time.Now()), Transmit: wire.TimestampOf(time.Now())}
+		if edit != nil {
+			edit(a)
+		}
+		parsed, err := wire.Parse(a.Bytes())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return parsed
+	}
+	p := policy(t, &config.NTPListener{Upstream: "clocks"}, nil)
+	for _, tc := range []struct {
+		name   string
+		edit   func(*wire.Packet)
+		reason string
+	}{
+		{"no transmit timestamp, so the answer says nothing about when it was sent",
+			func(a *wire.Packet) { a.Transmit = 0 }, "bogus_timestamps"},
+		{"no receive timestamp",
+			func(a *wire.Packet) { a.Receive = 0 }, "bogus_timestamps"},
+		{"an answer sent before the request reached it",
+			func(a *wire.Packet) { a.Receive = wire.TimestampOf(time.Now().Add(time.Second)) },
+			"bogus_timestamps"},
+		{"a last synchronisation later than the request",
+			func(a *wire.Packet) { a.Reference = wire.TimestampOf(time.Now().Add(time.Hour)) },
+			"bogus_timestamps"},
+		{"a stratum 1 answer that names no reference clock",
+			func(a *wire.Packet) { a.Stratum = 1; a.ReferenceID = [4]byte{0, 1, 2, 3} }, "bogus_refid"},
+		{"a stratum 2 answer that names no upstream",
+			func(a *wire.Packet) { a.ReferenceID = [4]byte{} }, "bogus_refid"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if d := p.Response(response{pkt: sound(tc.edit)}); d.Allow || d.Reason != tc.reason {
+				t.Fatalf("decision %+v, want %s", d, tc.reason)
+			}
+		})
+	}
+	// A stratum 1 answer whose identifier is a reference clock's name is
+	// the normal case and must pass, or the check above would be a check
+	// on every stratum 1 server.
+	if d := p.Response(response{pkt: sound(func(a *wire.Packet) {
+		a.Stratum = 1
+		a.ReferenceID = [4]byte{}
+		copy(a.ReferenceID[:], "GPS")
+	})}); !d.Allow {
+		t.Errorf("a real stratum 1 answer: %+v", d)
+	}
+	// An interleaved answer's transmit timestamp is the server's own
+	// previous one on purpose, so it is older than this request's
+	// arrival. Applying the order check to it would refuse the most
+	// accurate exchange the protocol has.
+	late := sound(func(a *wire.Packet) { a.Receive = wire.TimestampOf(time.Now().Add(time.Second)) })
+	if d := p.Response(response{pkt: late, interleaved: true}); !d.Allow {
+		t.Errorf("an interleaved answer: %+v", d)
+	}
+	// A listener that says so turns each check off, which is what the
+	// warnings at validation are about.
+	lenient := policy(t, &config.NTPListener{Upstream: "clocks", Quality: &config.NTPQuality{
+		RefuseBogusTimestamps: ptr(false), RefuseBogusRefID: ptr(false)}}, nil)
+	if d := lenient.Response(response{pkt: sound(func(a *wire.Packet) { a.Transmit = 0 })}); !d.Allow {
+		t.Errorf("bogus timestamps where the listener allows them: %+v", d)
+	}
+	if d := lenient.Response(response{pkt: sound(func(a *wire.Packet) { a.ReferenceID = [4]byte{} })}); !d.Allow {
+		t.Errorf("a missing reference identifier where the listener allows it: %+v", d)
+	}
+
+	// The synchronisation distance: half the root delay plus the root
+	// dispersion. Each half is inside its own bound and the sum is not,
+	// which is the answer this rule exists for.
+	dist := policy(t, &config.NTPListener{Upstream: "clocks", Quality: &config.NTPQuality{
+		MaxRootDelay: config.Duration(time.Second), MaxRootDispersion: config.Duration(time.Second),
+		MaxRootDistance: config.Duration(600 * time.Millisecond)}}, nil)
+	far := sound(func(a *wire.Packet) {
+		a.RootDelay = wire.ShortOf(900 * time.Millisecond)
+		a.RootDispersion = wire.ShortOf(900 * time.Millisecond)
+	})
+	if d := dist.Response(response{pkt: far}); d.Allow || d.Reason != "root_distance" {
+		t.Errorf("a distant answer inside both halves: %+v", d)
+	}
+	near := sound(func(a *wire.Packet) {
+		a.RootDelay = wire.ShortOf(200 * time.Millisecond)
+		a.RootDispersion = wire.ShortOf(200 * time.Millisecond)
+	})
+	if d := dist.Response(response{pkt: near}); !d.Allow {
+		t.Errorf("an answer inside the distance: %+v", d)
+	}
+
+	// The stratum list, which is not the bound: a list admits what it
+	// names and a bound admits everything below it.
+	list := policy(t, &config.NTPListener{Upstream: "clocks",
+		Quality: &config.NTPQuality{AllowStrata: []int{1, 2}}}, nil)
+	if d := list.Response(response{pkt: sound(nil)}); !d.Allow {
+		t.Errorf("a stratum named in the list: %+v", d)
+	}
+	if d := list.Response(response{pkt: sound(func(a *wire.Packet) { a.Stratum = 3 })}); d.Allow ||
+		d.Reason != "stratum_not_allowed" {
+		t.Errorf("a stratum the list does not name: %+v", d)
+	}
+
+	// Server identity, as far as the protocol allows it without a key:
+	// the reference identifier the estate expects.
+	named := policy(t, &config.NTPListener{Upstream: "clocks",
+		Quality: &config.NTPQuality{ExpectRefID: []string{"GPS", "10.30.10.1"}}}, nil)
+	if d := named.Response(response{pkt: sound(nil)}); !d.Allow {
+		t.Errorf("the identifier the estate expects: %+v", d)
+	}
+	if d := named.Response(response{pkt: sound(func(a *wire.Packet) {
+		a.ReferenceID = [4]byte{192, 0, 2, 9}
+	})}); d.Allow || d.Reason != "refid_not_allowed" {
+		t.Errorf("an identifier the estate does not expect: %+v", d)
+	}
+}
+
+// The leap-second policy. An announcement is not a fault: it tells every
+// client that hears it to plan to move its clock, which is why one in a
+// month the IERS never uses is worth saying and worth being able to
+// refuse.
+func TestTheLeapSecondPolicy(t *testing.T) {
+	answer := func(l wire.Leap) *wire.Packet {
+		a := &wire.Packet{Version: 4, Mode: wire.ModeServer, Stratum: 2, Leap: l,
+			ReferenceID: [4]byte{10, 30, 10, 1},
+			Receive:     wire.TimestampOf(time.Now()), Transmit: wire.TimestampOf(time.Now())}
+		parsed, err := wire.Parse(a.Bytes())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return parsed
+	}
+	// The end of June, where a leap second really happens, and the
+	// middle of August, where one does not.
+	inSeason := time.Date(2026, time.June, 30, 12, 0, 0, 0, time.UTC)
+	outOfSeason := time.Date(2026, time.August, 14, 12, 0, 0, 0, time.UTC)
+
+	alert := policy(t, &config.NTPListener{Upstream: "clocks"}, nil) // the default
+	if d := alert.Response(response{pkt: answer(wire.LeapAddSecond), now: inSeason}); !d.Allow || d.Reason != "" {
+		t.Errorf("an announcement in season: %+v", d)
+	}
+	d := alert.Response(response{pkt: answer(wire.LeapAddSecond), now: outOfSeason})
+	if !d.Allow || d.Reason != "leap_unexpected" {
+		t.Errorf("an announcement out of season is forwarded and said: %+v", d)
+	}
+	quiet := policy(t, &config.NTPListener{Upstream: "clocks",
+		Quality: &config.NTPQuality{LeapPolicy: "allow"}}, nil)
+	if d := quiet.Response(response{pkt: answer(wire.LeapDeleteSecond), now: outOfSeason}); !d.Allow || d.Reason != "" {
+		t.Errorf("an announcement where the listener says nothing: %+v", d)
+	}
+	window := policy(t, &config.NTPListener{Upstream: "clocks",
+		Quality: &config.NTPQuality{LeapPolicy: "window"}}, nil)
+	if d := window.Response(response{pkt: answer(wire.LeapAddSecond), now: outOfSeason}); d.Allow ||
+		d.Reason != "leap_unexpected" {
+		t.Errorf("an announcement out of season where the listener refuses it: %+v", d)
+	}
+	if d := window.Response(response{pkt: answer(wire.LeapAddSecond), now: inSeason}); !d.Allow {
+		t.Errorf("an announcement in season where the listener refuses only the others: %+v", d)
+	}
+	never := policy(t, &config.NTPListener{Upstream: "clocks",
+		Quality: &config.NTPQuality{LeapPolicy: "refuse"}}, nil)
+	if d := never.Response(response{pkt: answer(wire.LeapAddSecond), now: inSeason}); d.Allow ||
+		d.Reason != "leap_announced" {
+		t.Errorf("an announcement where the listener refuses every one: %+v", d)
+	}
+	// And an answer that announces nothing is never touched by any of
+	// these, whatever the month.
+	for _, p := range []*Policy{alert, quiet, window, never} {
+		if d := p.Response(response{pkt: answer(wire.LeapNone), now: outOfSeason}); !d.Allow || d.Reason != "" {
+			t.Errorf("an ordinary answer: %+v", d)
+		}
+	}
+	// A listener with no clock in the response still decides, because a
+	// zero time means now rather than the epoch.
+	if d := window.Response(response{pkt: answer(wire.LeapNone)}); !d.Allow {
+		t.Errorf("an ordinary answer with no clock given: %+v", d)
 	}
 }
