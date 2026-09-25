@@ -749,6 +749,22 @@
       },
       "additionalProperties": false
     },
+    "CertExpiry": {
+      "description": "CertExpiry is what a listener does about a certificate that has expired, or is about to. A certificate outliving its validity is not an exotic failure: it is the single most common way a working service stops working. What the proxy can do about it is limited -- it cannot issue a new one, and serving an expired certificate is not a security hole, because the client is the one that decides whether to trust it. What it can do is say so, loudly and in one place, rather than leaving every client to discover it separately. So the refusal is opt-in and it is about *starting*: a certificate already expired when the configuration is loaded is a configuration error with refuse_expired, and a reload that would install one is refused, which is the case where refusing is strictly better than serving -- the old certificate keeps working. A certificate that expires while the proxy is running is reported and counted, never unloaded, because a listener that stops answering is worse than one answering with a certificate clients will reject for themselves.",
+      "type": "object",
+      "properties": {
+        "refuse_expired": {
+          "description": "RefuseExpired makes a certificate that has already expired a load error rather than something to serve.",
+          "type": "boolean"
+        },
+        "warn": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
     "Certificate": {
       "description": "Certificate references a PEM certificate chain and private key on disk.",
       "type": "object",
@@ -7599,6 +7615,14 @@
           "allOf": [
             {
               "$ref": "#/$defs/ECH"
+            }
+          ]
+        },
+        "expiry": {
+          "description": "Expiry decides what an expired certificate does. Without it an expired certificate is served and every client fails the handshake on its own, which is an outage nobody can read.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/CertExpiry"
             }
           ]
         },

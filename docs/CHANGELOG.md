@@ -442,6 +442,44 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **A readiness verdict a failover tool can act on, and `docs/HA.md`.**
+  Making a proxy redundant is easy; making it *fail over* means answering
+  one question -- what does "unfit to carry traffic" mean? -- and nothing
+  in this proxy answered it. `xproxyctl ready` and `GET /v1/ready` do, with
+  an exit code (0 carry, 1 do not, **2 the question could not be asked** --
+  a check script that confuses the last two moves a shared address because
+  a socket became unreadable) and an HTTP status for anything that speaks
+  neither. `xproxyctl ready -step-down "kernel update"` takes a node out
+  *before* the work starts, so the address moves while the node is still
+  healthy and can finish what it has, rather than moving because the node
+  died mid-upgrade; `-step-up` puts it back. The two judgement calls are
+  opt-in on purpose: whether a pool with no healthy endpoint
+  (`-require-upstreams`) or a hardening mechanism that did not apply
+  (`-require-undegraded`) should move an address depends on the topology --
+  two nodes reaching the same servers over the same network see an upstream
+  outage identically, and failing over gains a flap and nothing else. Load
+  is never a reason: a node that stands down under load hands its peer the
+  same traffic and twice the churn. `docs/HA.md` is the rest: a keepalived
+  configuration with the four details that are not obvious, and a table of
+  what survives a failover and what does not -- because the three rows that
+  say *no* (WAF learning, MFA lockouts, live bastion sessions) are the
+  honest cost, and the relay's Modbus and Sparkplug state is the sharpest
+  of them, a node promoted cold having seen nothing to compare against.
+
+- **An expired certificate can be a refusal rather than an outage nobody
+  can read.** By default this proxy serves an expired certificate, which is
+  correct -- the client decides whether to trust it, so serving one is not a
+  security hole -- and which means every client discovers the problem
+  separately and nobody discovers it in one place. `tls.expiry` says it once:
+  `refuse_expired` makes an already expired certificate a *load* error, so a
+  botched renewal that wrote an expired file **cannot replace a working
+  one** on a reload; `warn` is a window, reported worst first by
+  `xproxyctl tls`, `GET /v1/tls/expiring` and the security log at every
+  load. A certificate that expires while the proxy runs is never unloaded,
+  whatever the section says: a listener that stops answering is worse than
+  one answering with a certificate the client rejects for itself, and
+  unloading it would turn a late renewal into an outage.
+
 - **MQTT: the bounds belong to the topic, and Sparkplug's commands belong
   to somebody.** Three things about a publication are properties of the
   *topic* rather than of the listener -- how large a payload it may carry,
@@ -3114,6 +3152,21 @@ Open findings of the earlier rounds:
   `recording:` key and every field under it are untouched.
 
 ### Fixed (1.4)
+
+- **A reload handed every rate-limited client a fresh burst.** Each
+  generation built new limiters, so every bucket went back to full at every
+  reload. A reload is something an operator does *because* something is
+  going on, which made it the worst possible moment to lose a limit -- and
+  it made repeated reloads a way to defeat one outright. A policy whose
+  shape is unchanged now keeps the limiter it had, and with it every
+  bucket's level. "Shape" is the bounds and the *key*: rate, burst,
+  algorithm, limit, window, and `key` with its prefix lengths. Change one of
+  those and the buckets do start again, because a level measured in the old
+  rate's tokens says nothing about the new one, and a policy that moved from
+  `client_ip` to `jwt:sub` is counting something else. Everything else about
+  a policy -- what it does when it refuses, how long it tarpits, its cluster
+  semantics -- is about the decision rather than the counting, and does not
+  disturb a bucket.
 
 - **A layer 4 listener deadlocked against a server that speaks first.**
   A `kind: tcp` listener peeks for a ClientHello before it dials, and

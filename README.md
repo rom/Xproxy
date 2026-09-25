@@ -963,6 +963,7 @@ the stages a request can die at and every deny reason.
 | [docs/SECURITY.md](docs/SECURITY.md) | Security posture, controls, secure development, reporting |
 | [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) | STRIDE analysis per trust boundary |
 | [docs/HARDENING.md](docs/HARDENING.md) | Host hardening checklist |
+| [docs/HA.md](docs/HA.md) | Redundancy and failover: the readiness verdict a VRRP check script runs, stepping a node down before touching it, which state survives a failover and which does not, and what each of the three daemons costs when an address moves |
 | [docs/EXTENDING.md](docs/EXTENDING.md) | Compiled-in middleware and the WebAssembly ABI |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Measured scale and throughput |
 | [docs/TESTS.md](docs/TESTS.md) | Test harness, coverage and mutation gates |

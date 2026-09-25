@@ -4285,6 +4285,60 @@ cluster check that they agree with each other, not just with an upstream
 server. `xproxyctl tls tickets` reports which peers derive the same key
 set, which is the fastest clock check in a cluster.
 
+### A certificate expired, or is about to
+
+Symptom: every client fails the handshake, usually all at once, and the
+proxy is otherwise healthy.
+
+```sh
+xproxyctl tls                   # EXPIRY lines, worst first, if tls.expiry.warn is set
+xproxyctl -json tls | jq '.[][] | {names, not_after, managed}'
+journalctl -u xproxy | grep 'certificate expiry'
+```
+
+Three things to know before reaching for a switch:
+
+- **The proxy serves an expired certificate on purpose.** Whether to trust
+  one is the client's decision, and unloading it would turn a late renewal
+  into a total outage. What `tls.expiry.refuse_expired` changes is
+  *starting*: a listener will not come up on an expired certificate, and a
+  reload that would install one is refused while the certificate in use
+  goes on working. That last part is the case it exists for -- a renewal
+  that wrote a bad file no longer replaces a good one.
+- **A refusal will not save you from a certificate that expired under a
+  running proxy.** For that, the `warn` window and the alert on the
+  `certificate expiry` security event are the mechanism, and on a pair of
+  nodes they matter more than the refusal, because both nodes' certificates
+  usually expire together and no failover fixes that (`docs/HA.md`).
+- **`acme` certificates report through the ACME status, not the file list.**
+  If a managed certificate is close to expiry, the question is why renewal
+  is not happening: check the error log for the issuance attempt and that
+  the validation path reaches this node.
+
+### A failover happened, or should have, or should not have
+
+```sh
+xproxyctl ready; echo $?               # 0 serve, 1 do not, 2 could not ask
+xproxyctl -json ready | jq .reasons
+xproxyctl cluster                      # are the peers actually connected?
+```
+
+| Symptom | Likely cause |
+|---------|--------------|
+| The address flaps between nodes | A weightless keepalived script, or `-require-upstreams` on nodes that reach the same servers over the same network, so an upstream outage refuses on both |
+| The address moved and came back on its own | Unequal priorities without `nopreempt`: the recovered node took it back. Take it back deliberately instead, by stepping the other node down |
+| The address moved for no reason the logs show | The check script got exit **2**, not 1 — it could not reach the management socket. Check the socket's group and that keepalived's user is in it; the script runs with keepalived's environment, so pass `-socket` if the path is not the default |
+| A node serves again after a restart although it was stepped down | By design: a step-down is not persisted. Take it out of the balancer's configuration, or stop the service |
+| Rate limits doubled, or a banned client is served | The cluster section is off, or the peers are not connected: two nodes without it enforce half each |
+| Every resumption is a full handshake after a failover | The session ticket master key is not shared; `xproxyctl tls tickets` reports peer agreement |
+| The surviving node's WAF suddenly proposes odd exclusions | Learning is per node and it has seen almost nothing. Freeze the decisions in configuration rather than leaving them to a cold node's learning |
+| A Modbus write that was refused yesterday is allowed after a failover | The value and select state are per node and per what passed through it. With `on_unknown: allow` the first write to each point after a promotion is unchecked; with `refuse` it is an outage instead. `docs/HA.md` covers the trade |
+
+`xproxyctl ready` reporting a fault while still serving is not a bug: the
+two upstream and hardening judgements are opt-in, so the reasons appear on
+a serving verdict as well. That is the state to alert on, before it
+becomes a failover.
+
 ## Clients that misbehave
 
 **A client disconnects mid-request.** The access line records status

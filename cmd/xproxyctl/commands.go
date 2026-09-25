@@ -25,6 +25,7 @@ var commandTable = []command{
 	{name: "quotas", args: "[-top N]", summary: "Usage per tenant, route, rate limit policy and upstream", flags: []string{"-top"}},
 	{name: "waf", args: "[rules|proposals|anomalies|exclusions|reset] [-top N]", summary: "WAF profiles, rule statistics, learned exclusions, flagged clients", words: []string{"rules", "proposals", "anomalies", "exclusions", "reset"}, flags: []string{"-top"}},
 	{name: "sandbox", summary: "In-process hardening state and the file rules in force"},
+	{name: "ready", args: "[-require-upstreams] [-require-undegraded] [-step-down REASON] [-step-up]", summary: "Whether this node should be carrying traffic; exit 0 yes, 1 no, 2 could not ask", flags: []string{"-require-upstreams", "-require-undegraded", "-step-down", "-step-up"}},
 	{name: "config", summary: "Active configuration as YAML with defaults filled in"},
 	{name: "validate", summary: "Validate the configuration file locally"},
 	{name: "reload", args: "[-dry-run]", summary: "Validate locally, then reload the daemon; -dry-run shows the changes", flags: []string{"-dry-run"}},

@@ -87,6 +87,9 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 	mux.HandleFunc("GET /v1/upstreams", s.upstreams)
 	mux.HandleFunc("GET /v1/pools", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.Pools()) })
 	mux.HandleFunc("GET /v1/tls", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.Certificates()) })
+	mux.HandleFunc("GET /v1/tls/expiring", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, 200, s.proxy.ExpiringCertificates())
+	})
 	mux.HandleFunc("GET /v1/handshake", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.Handshake()) })
 	mux.HandleFunc("GET /v1/tls/key-exchange", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.KeyExchange()) })
 	mux.HandleFunc("GET /v1/masque", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.Masque()) })
@@ -173,6 +176,8 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 	mux.HandleFunc("POST /v1/logs/reopen", s.reopenLogs)
 	mux.HandleFunc("GET /v1/drain", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.Drains()) })
 	mux.HandleFunc("POST /v1/drain", s.setDrain)
+	mux.HandleFunc("GET /v1/ready", s.ready)
+	mux.HandleFunc("POST /v1/ready", s.setServing)
 	mux.HandleFunc("GET /v1/bans", s.listBans)
 	mux.HandleFunc("POST /v1/bans", s.addBan)
 	mux.HandleFunc("DELETE /v1/bans", s.removeBan)
@@ -730,6 +735,66 @@ type DrainRequest struct {
 // setDrain records an operator's decision to stop sending new work to an
 // endpoint or a pool. Nothing is closed: what is already running
 // finishes, which is what makes this usable for a rolling restart.
+// ServingRequest steps this node down or back up.
+type ServingRequest struct {
+	Serving bool   `json:"serving"`
+	Reason  string `json:"reason,omitempty"`
+}
+
+// ready answers whether this node should be carrying traffic. The two
+// judgement calls -- whether an upstream pool with nothing healthy in it,
+// or a hardening mechanism that did not apply, should move an address --
+// are the caller's to make, because the answer depends on the estate
+// (docs/HA.md). They arrive as query parameters so that a check script is
+// one URL.
+func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
+	opt := proxy.ReadinessOptions{
+		RequireUpstreams:  r.URL.Query().Get("require_upstreams") == "1",
+		RequireUndegraded: r.URL.Query().Get("require_undegraded") == "1",
+	}
+	res := s.proxy.Readiness(opt).WithDegraded(s.degradedMechanisms(), opt.RequireUndegraded)
+	// The status code is the answer as well as the body, so that a check
+	// that reads neither JSON nor exit codes still works.
+	code := 200
+	if !res.Serving {
+		code = 503
+	}
+	writeJSON(w, code, res)
+}
+
+// degradedMechanisms names the hardening mechanisms that are not doing
+// their job.
+func (s *Server) degradedMechanisms() []string {
+	st := s.sandbox()
+	if st == nil || !st.Enabled {
+		return nil
+	}
+	var out []string
+	for _, m := range st.Mechanism {
+		if m.State == sandbox.StateUnavailable || m.State == sandbox.StateFailed {
+			out = append(out, m.Name+": "+m.State)
+		}
+	}
+	return out
+}
+
+func (s *Server) setServing(w http.ResponseWriter, r *http.Request) {
+	var req ServingRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
+		writeJSON(w, 400, result{Error: "bad request body"})
+		return
+	}
+	if len(req.Reason) > 256 {
+		writeJSON(w, 400, result{Error: "reason too long"})
+		return
+	}
+	peer := peerFromContext(r.Context())
+	res := s.proxy.SetServing(req.Serving, req.Reason)
+	s.logs.Audit.Info("management action", "action", "node_serving", "serving", req.Serving,
+		"reason", req.Reason, "peer_uid", peer.UID, "peer_gid", peer.GID, "peer_pid", peer.PID, "peer_known", peer.OK)
+	writeJSON(w, 200, res)
+}
+
 func (s *Server) setDrain(w http.ResponseWriter, r *http.Request) {
 	var req DrainRequest
 	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {

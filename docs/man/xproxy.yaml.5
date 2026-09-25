@@ -8104,6 +8104,15 @@ none
 T}	T{
 Check the Certificate Transparency SCTs embedded in file certificates at load;\: see below
 T}
+T{
+\fBexpiry\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+What an expired or nearly expired certificate does;\: see below
+T}
 .TE
 .SS "server.listeners[].tls.key_exchange"
 .PP
@@ -8193,6 +8202,69 @@ Generate a key and the record to publish with \fBxproxyctl ech keygen\fR; the co
 \fBECH and layer 4 routing.\fR A \fBkind: tcp\fR listener routes on the SNI it can see, which with ECH is the \fIouter\fR name: every ECH client looks like a connection to the public name, so a passthrough listener in front of an ECH listener cannot split them. Terminate TLS where ECH is accepted, or give the public name its own backend.
 .PP
 \fBFingerprints.\fR The outer hello is what JA3 and JA4 are computed from, so fingerprinting keeps working; what changes is that the SNI in \fBsni\fR is the public name for every ECH client. The access log carries \fBech: true\fR when ECH was accepted, which is how to tell the two apart.
+.SS "server.listeners[].tls.expiry"
+.PP
+A certificate outliving its validity is the single most common way a working service stops working, and by default this proxy serves an expired certificate: the client is the one that decides whether to trust it, so serving one is not a security hole \[u2014] it is an outage nobody can read, because every client discovers it separately.
+.PP
+This section says so in one place instead. What it can do is bounded, and the boundary is deliberate:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBrefuse_expired\fR makes an already expired certificate a \fBload error\fR. At start the listener does not come up and the message names the file. On a reload the new configuration is refused and \fBthe certificate already in use keeps working\fR, which is the case where refusing is strictly better than serving: a botched renewal that wrote an expired file no longer replaces a working one.
+.PP
+.ti -3n
+\(bu
+\fBwarn\fR is a window before expiry. Certificates inside it are reported, worst first, by \fBxproxyctl tls\fR (an \fBEXPIRY\fR line each), by \fBGET /v1/tls/expiring\fR, and in the security log at every load and reload.
+.RE
+.PP
+.PP
+A certificate that expires while the proxy is running is \fBnever\fR unloaded, whatever this section says: a listener that stops answering is worse than one answering with a certificate the client will reject for itself, and unloading it would turn a renewal that ran late into an outage. It is reported and counted, and \fBdocs/HA.md\fR covers why that report matters more than the refusal on a pair of nodes.
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.9i) lbw(0.8i) lbx
+lw(0.8i) lw(0.9i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBrefuse_\:expired\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+An expired certificate is a load error rather than something to serve
+T}
+T{
+\fBwarn\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR
+T}	T{
+Report certificates this close to expiry (0 for none,\: otherwise 1h to 8760h)
+T}
+.TE
+.PP
+.RS 4
+.nf
+.ft CR
+tls:
+  certificates: [{cert_file: /etc/xproxy/tls/site.pem, key_file: /etc/xproxy/tls/site\-key.pem}]
+  expiry:
+    refuse_expired: true
+    warn: 336h          # fourteen days
+.ft
+.fi
+.RE
 .SS "server.listeners[].tls.ocsp_stapling"
 .PP
 A stapled OCSP response spares clients the responder round trip and keeps working when the responder is down or firewalled from them. The proxy fetches a response for every served certificate (file and ACME alike) from the responder named in the certificate, using the issuer that follows the leaf in the chain file, and refreshes it at half its validity, at \fBrefresh\fR at the latest, and one minute after a failure. A handshake never waits: it carries the current response when there is one and none otherwise, and a still valid response is kept through fetch failures. A \fBrevoked\fR answer is stapled as well, since clients must see it, and logged as an error. \fBxproxyctl tls\fR and \fBGET /v1/tls\fR show the state per certificate.

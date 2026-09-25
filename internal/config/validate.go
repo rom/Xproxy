@@ -986,6 +986,14 @@ func (v *validator) tls(p string, t *TLS) {
 			v.errf("%s.ct.enforce: needs require above 0", p)
 		}
 	}
+	if e := t.Expiry; e != nil {
+		if e.Warn != 0 && (e.Warn < Duration(time.Hour) || e.Warn > Duration(365*24*time.Hour)) {
+			v.errf("%s.expiry.warn: must be 0 (no warning) or between 1h and 8760h", p)
+		}
+		if !e.RefuseExpired && e.Warn == 0 {
+			v.warnf("%s.expiry: neither refuse_expired nor warn is set, so the section does nothing", p)
+		}
+	}
 	if len(t.Certificates) == 0 && len(t.ACME) == 0 {
 		v.errf("%s: certificates or acme is required", p)
 	}

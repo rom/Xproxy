@@ -46,7 +46,7 @@ func (s *engine) Prepare(g proxy.Generation) (commit, discard func(), err error)
 	cfg := g.Config
 	old := s.rt.Load()
 	rt, err := newRuntime(cfg, g.Number, g.Pools, g.Trusted, g.ICAP, s.logs.Error,
-		newEventBus(s), s.wafStats, &s.patches, &s.honeytokenHits)
+		newEventBus(s), s.wafStats, &s.patches, &s.honeytokenHits, old)
 	if err != nil {
 		return nil, nil, err
 	}

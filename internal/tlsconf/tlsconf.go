@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -54,9 +55,10 @@ type Reloadable struct {
 	echRejected atomic.Uint64
 	echRefused  atomic.Uint64
 
-	// ocsp and ct come from the listener's tls section.
+	// ocsp, ct and expiry come from the listener's tls section.
 	ocsp    *config.OCSPStapling
 	ct      *config.CT
+	expiry  *config.CertExpiry
 	logs    *LogList
 	stapler *stapler
 	ctMu    sync.Mutex
@@ -216,6 +218,18 @@ func (r *Reloadable) Load() error {
 		}
 		certs = append(certs, cert)
 	}
+	// Expiry. A certificate already past its validity is refused here
+	// rather than served, when the listener asked for that: refusing at
+	// load is the one place where refusing is strictly better than
+	// serving, because on a reload the certificate already in use keeps
+	// working and the operator gets a message naming the file. A
+	// certificate that expires later, while the proxy is running, is
+	// reported by Expiring rather than unloaded -- a listener that stops
+	// answering is worse than one answering with a certificate the client
+	// will reject for itself.
+	if err := r.checkExpiry(certs, time.Now()); err != nil {
+		return err
+	}
 	// Certificate Transparency: every file certificate is checked
 	// against the policy; a failure is fatal only with enforce.
 	state := map[[32]byte]CTStatus{}
@@ -279,6 +293,71 @@ func (r *Reloadable) NotAfter() time.Time {
 	return earliest
 }
 
+// checkExpiry applies the expiry policy to a set about to be installed.
+func (r *Reloadable) checkExpiry(certs []tls.Certificate, now time.Time) error {
+	if r.expiry == nil || !r.expiry.RefuseExpired {
+		return nil
+	}
+	for i := range certs {
+		leaf := certs[i].Leaf
+		if leaf == nil {
+			continue
+		}
+		if now.After(leaf.NotAfter) {
+			name := leaf.Subject.CommonName
+			if i < len(r.cfgs) {
+				name = r.cfgs[i].CertFile
+			}
+			return fmt.Errorf("certificate %s expired on %s", name, leaf.NotAfter.Format(time.RFC3339))
+		}
+	}
+	return nil
+}
+
+// Expiring lists the served certificates that have expired or are inside
+// the warning window, worst first. It is what the daemon reports and what
+// the management view shows; it is not a refusal, because a certificate
+// expiring under a running proxy is news rather than a reason to stop
+// answering.
+func (r *Reloadable) Expiring(now time.Time) []string {
+	if r.expiry == nil || r.expiry.Warn == 0 {
+		return nil
+	}
+	var out []string
+	type due struct {
+		left time.Duration
+		text string
+	}
+	var found []due
+	for _, c := range r.allCertificates() {
+		leaf := c.Leaf
+		if leaf == nil && len(c.Certificate) > 0 {
+			leaf, _ = x509.ParseCertificate(c.Certificate[0])
+		}
+		if leaf == nil {
+			continue
+		}
+		left := leaf.NotAfter.Sub(now)
+		if left > r.expiry.Warn.D() {
+			continue
+		}
+		name := leaf.Subject.CommonName
+		if name == "" && len(leaf.DNSNames) > 0 {
+			name = leaf.DNSNames[0]
+		}
+		if now.After(leaf.NotAfter) {
+			found = append(found, due{left, fmt.Sprintf("certificate %s expired on %s", name, leaf.NotAfter.Format(time.RFC3339))})
+			continue
+		}
+		found = append(found, due{left, fmt.Sprintf("certificate %s expires on %s, in %s", name, leaf.NotAfter.Format(time.RFC3339), left.Round(time.Hour))})
+	}
+	sort.Slice(found, func(i, j int) bool { return found[i].left < found[j].left })
+	for _, f := range found {
+		out = append(out, f.text)
+	}
+	return out
+}
+
 // getCertificate selects a certificate by SNI, falling back to the first
 // file certificate. A tls-alpn-01 handshake is answered from the
 // challenge hook before anything else.
@@ -319,7 +398,7 @@ func (r *Reloadable) getCertificate(hello *tls.ClientHelloInfo) (*tls.Certificat
 // Server builds a server tls.Config for a listener. The returned Reloadable
 // can be used to hot reload certificates.
 func Server(cfg *config.TLS, protocols []config.Protocol) (*tls.Config, *Reloadable, error) {
-	r := &Reloadable{cfgs: cfg.Certificates, ocsp: cfg.OCSPStapling, ct: cfg.CT, echCfg: cfg.ECH}
+	r := &Reloadable{cfgs: cfg.Certificates, ocsp: cfg.OCSPStapling, ct: cfg.CT, echCfg: cfg.ECH, expiry: cfg.Expiry}
 	if cfg.CT != nil && cfg.CT.LogListFile != "" {
 		ll, err := LoadLogList(cfg.CT.LogListFile)
 		if err != nil {

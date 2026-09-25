@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"time"
+
 	"context"
 	"crypto/tls"
 	"fmt"
@@ -277,6 +279,11 @@ func (s *Server) listenerTLS(lc config.Listener) (*tls.Config, *tlsconf.Reloadab
 	rl.Refuse = s.refuseHandshake
 	for _, w := range rl.CTWarnings() {
 		s.logs.Security.Warn("certificate transparency", "listener", lc.Name, "issue", w)
+	}
+	for _, w := range rl.Expiring(time.Now()) {
+		// At load and at every reload, because those are the moments an
+		// operator is watching. The continuous answer is the status view's.
+		s.logs.Security.Warn("certificate expiry", "listener", lc.Name, "issue", w)
 	}
 	rl.StartStapling(s.logs.Error)
 	return tc, rl, nil

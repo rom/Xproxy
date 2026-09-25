@@ -3748,6 +3748,7 @@ upstream `total` for those. 0-RTT is never enabled.
 | `ech` | object | none | Accept Encrypted Client Hello; see below |
 | `ocsp_stapling` | object | none | Fetch OCSP responses for the served certificates in the background and staple them into handshakes; see below |
 | `ct` | object | none | Check the Certificate Transparency SCTs embedded in file certificates at load; see below |
+| `expiry` | object | none | What an expired or nearly expired certificate does; see below |
 
 #### server.listeners[].tls.key_exchange
 
@@ -3845,6 +3846,48 @@ accepted, or give the public name its own backend.
 from, so fingerprinting keeps working; what changes is that the SNI in
 `sni` is the public name for every ECH client. The access log carries
 `ech: true` when ECH was accepted, which is how to tell the two apart.
+
+#### server.listeners[].tls.expiry
+
+A certificate outliving its validity is the single most common way a
+working service stops working, and by default this proxy serves an
+expired certificate: the client is the one that decides whether to trust
+it, so serving one is not a security hole — it is an outage nobody can
+read, because every client discovers it separately.
+
+This section says so in one place instead. What it can do is bounded, and
+the boundary is deliberate:
+
+- `refuse_expired` makes an already expired certificate a **load error**.
+  At start the listener does not come up and the message names the file.
+  On a reload the new configuration is refused and **the certificate
+  already in use keeps working**, which is the case where refusing is
+  strictly better than serving: a botched renewal that wrote an expired
+  file no longer replaces a working one.
+- `warn` is a window before expiry. Certificates inside it are reported,
+  worst first, by `xproxyctl tls` (an `EXPIRY` line each), by
+  `GET /v1/tls/expiring`, and in the security log at every load and
+  reload.
+
+A certificate that expires while the proxy is running is **never**
+unloaded, whatever this section says: a listener that stops answering is
+worse than one answering with a certificate the client will reject for
+itself, and unloading it would turn a renewal that ran late into an
+outage. It is reported and counted, and `docs/HA.md` covers why that
+report matters more than the refusal on a pair of nodes.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `refuse_expired` | bool | `false` | An expired certificate is a load error rather than something to serve |
+| `warn` | duration | `0` | Report certificates this close to expiry (0 for none, otherwise 1h to 8760h) |
+
+```yaml
+tls:
+  certificates: [{cert_file: /etc/xproxy/tls/site.pem, key_file: /etc/xproxy/tls/site-key.pem}]
+  expiry:
+    refuse_expired: true
+    warn: 336h          # fourteen days
+```
 
 #### server.listeners[].tls.ocsp_stapling
 

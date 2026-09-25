@@ -115,6 +115,11 @@ T}	T{
 In\-process hardening: each mechanism with its state and the file rules in force
 T}
 T{
+\fBready\fR [\fB\-\:require\-\:upstreams\fR] [\fB\-\:require\-\:undegraded\fR] [\fB\-\:step\-\:down\fR \fIREASON\fR] [\fB\-\:step\-\:up\fR]
+T}	T{
+Whether this node should be carrying traffic,\: for a VRRP or load balancer check script: exit 0 yes,\: 1 no,\: 2 the question could not be asked. \fB\-\:step\-\:down\fR takes the node out of service so that a shared address moves before any work starts,\: \fB\-\:step\-\:up\fR puts it back;\: the step\-down is not persisted across a restart. The two judgement calls are opt\-in: \fB\-\:require\-\:upstreams\fR makes a pool with no healthy endpoint a refusal,\: \fB\-\:require\-\:undegraded\fR makes a hardening mechanism that did not apply one. See \fBdocs/\:HA.\:md\fR
+T}
+T{
 \fBwaf\fR [\fBrules\fR|\:\fBproposals\fR|\:\fBanomalies\fR|\:\fBexclusions\fR|\:\fBreset\fR]
 T}	T{
 WAF profiles (with their CRS plugins and JSON schemas),\: counters and the most matched rules (\fB\-\:top\fR \fIN\fR);\: \fBproposals\fR lists learned exclusion candidates,\: \fBanomalies\fR the behavioural baseline and flagged clients,\: \fBexclusions\fR prints the proposals as SecLang,\: \fBreset\fR clears the statistics
@@ -322,7 +327,7 @@ T}
 .TE
 .SH "EXIT STATUS"
 .PP
-0 on success; 1 when the daemon reports an error or cannot be reached; 2 on a usage error. \fBdiff\fR exits 1 when the two configurations differ.
+0 on success; 1 when the daemon reports an error or cannot be reached; 2 on a usage error. \fBdiff\fR exits 1 when the two configurations differ. \fBready\fR exits 0 when this node should carry traffic, 1 when it should not, and 2 when the daemon could not be asked \[u2014] a check script must keep the last two apart, or it will move a shared address because a socket became unreadable.
 .SH "FILES"
 .PP
 \fB/run/xproxy/mgmt.sock\fR, \fB/etc/xproxy/xproxy.yaml\fR.
@@ -335,6 +340,8 @@ xproxyctl status
 xproxyctl \-json stats | jq .denied_rate_limit
 xproxyctl tail security | jq \-c '{t:.time, ip:.client_ip, r:.reason}'
 xproxyctl reload \-dry\-run
+xproxyctl ready \-step\-down "kernel update" && systemctl restart xproxy
+xproxyctl ready \-require\-upstreams; echo $?
 xproxyctl ban \-duration 24h \-reason "credential stuffing" 203.0.113.0/24
 xproxyctl rotate\-secret /var/lib/xproxy/challenge.key && xproxyctl reload
 xproxyctl completion bash > /etc/bash_completion.d/xproxyctl
@@ -343,4 +350,4 @@ xproxyctl completion bash > /etc/bash_completion.d/xproxyctl
 .RE
 .SH "SEE ALSO"
 .PP
-\fBxproxy\fR(8), \fBxproxy.yaml\fR(5), \fBdocs/USAGE.md\fR.
+\fBxproxy\fR(8), \fBxproxy.yaml\fR(5), \fBdocs/USAGE.md\fR, \fBdocs/HA.md\fR.

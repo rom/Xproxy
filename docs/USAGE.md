@@ -5351,6 +5351,80 @@ through the CAPTCHA (`automation: captcha`). The identifier and the
 markers are computed by the client and are advisory: treat them as
 correlation, not identity. `examples/security/captcha.yaml` is a complete configuration.
 
+### Failover: telling a check script whether this node should serve
+
+`docs/HA.md` is the full picture -- what survives a failover and what
+does not, a keepalived configuration, and the three daemons' different
+costs when an address moves. This is the mechanism.
+
+```sh
+xproxyctl ready                        # 0 serve, 1 do not, 2 could not ask
+xproxyctl ready -require-upstreams     # a pool with nothing healthy also counts
+xproxyctl ready -step-down "patching"  # take this node out before touching it
+xproxyctl ready -step-up               # and put it back
+```
+
+`GET /v1/ready` is the same answer as an HTTP status (200 or 503) with the
+reasons in a JSON body, for a load balancer that speaks HTTP rather than
+exit codes.
+
+Two things about this are worth stating plainly. **Exit 2 is not exit 1.**
+A script that treats "I could not reach the management socket" the same as
+"the node says no" will move a virtual address because a socket's
+permissions changed during an upgrade. And **a step-down is not
+persisted**: a node that has restarted serves again, which is the safe
+default for a process that has no idea what an operator decided before it
+started, and which means a step-down does not survive
+`systemctl restart`. Take a node out of the balancer's configuration, or
+stop the service, when it has to stay out.
+
+Step down *before* planned work, not during it: the address moves while
+the node is still healthy and can finish the requests it is holding.
+
+```sh
+xproxyctl ready -step-down "kernel update" && systemctl restart xproxy
+# verify, then
+xproxyctl ready -step-up
+```
+
+Whether a pool with no healthy endpoint, or a hardening mechanism that did
+not apply, should move an address is a judgement about your topology, which
+is why both are flags and neither is the default. Load is never a reason: a
+node that stands down under load hands its peer the same traffic and twice
+the connection churn.
+
+### Certificates that are about to stop working
+
+A certificate outliving its validity is the most common way a working
+service stops working, and by default the proxy serves an expired one --
+the client decides whether to trust it, so it is not a security hole, but
+it is an outage every client discovers separately. `tls.expiry` says it in
+one place:
+
+```yaml
+tls:
+  certificates: [{cert_file: /etc/xproxy/tls/site.pem, key_file: /etc/xproxy/tls/site-key.pem}]
+  expiry:
+    refuse_expired: true
+    warn: 336h
+```
+
+```
+$ xproxyctl tls
+EXPIRY edge: certificate api.example.com expires on 2026-10-07T09:00:00Z, in 288h0m0s
+...
+```
+
+`refuse_expired` is about *starting*: an already expired certificate is a
+load error, so a botched renewal cannot replace a working certificate on a
+reload -- the reload is refused and the old one keeps serving. A
+certificate that expires while the proxy is running is reported and
+counted, never unloaded: a listener that stops answering is worse than one
+answering with a certificate the client rejects for itself. Alert on the
+`certificate expiry` security-log entry and on `GET /v1/tls/expiring`;
+do not expect the refusal to save a pair of nodes whose certificates
+expired together.
+
 ## Web GUI
 
 `xproxy-admin` serves the browser interface. It is a separate process from

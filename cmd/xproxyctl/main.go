@@ -259,6 +259,58 @@ func run(args []string, out, errOut io.Writer) int {
 		}
 		_ = tw.Flush()
 		return 0
+	case "ready":
+		// The command a VRRP or load balancer check script runs, so the
+		// exit code is the answer: 0 carry traffic, 1 do not, 2 the
+		// question could not be asked. It is split from "status" because
+		// status is for a person and this is for a script -- and because
+		// what makes a node unfit to hold a shared address is a judgement
+		// the operator makes, not one this tool can make for them
+		// (docs/HA.md).
+		rfs := flag.NewFlagSet("ready", flag.ContinueOnError)
+		rfs.SetOutput(errOut)
+		reqUp := rfs.Bool("require-upstreams", false, "a pool with no healthy endpoint means not ready")
+		reqSound := rfs.Bool("require-undegraded", false, "a hardening mechanism that did not apply means not ready")
+		down := rfs.String("step-down", "", "take this node out of service, with a reason")
+		up := rfs.Bool("step-up", false, "put this node back in service")
+		if err := rfs.Parse(fs.Args()[1:]); err != nil {
+			return 2
+		}
+		if *down != "" && *up {
+			_, _ = fmt.Fprintln(errOut, "xproxyctl ready: -step-down and -step-up are opposites")
+			return 2
+		}
+		if *down != "" || *up {
+			var res proxy.Readiness
+			if err := c.Do("POST", "/v1/ready", mgmt.ServingRequest{Serving: *up, Reason: *down}, &res); err != nil {
+				return fail(err)
+			}
+			if *asJSON {
+				b, _ := json.Marshal(res)
+				_, _ = out.Write(b)
+				return 0
+			}
+			_, _ = fmt.Fprintln(out, readyLine(res))
+			return 0
+		}
+		res, err := c.Ready(*reqUp, *reqSound)
+		if err != nil {
+			// Unreachable is not "not ready": it is a different answer,
+			// and a check script that cannot tell them apart will move an
+			// address because a socket permission changed.
+			_, _ = fmt.Fprintf(errOut, "xproxyctl: %v\n", err)
+			return 2
+		}
+		if *asJSON {
+			b, _ := json.Marshal(res)
+			_, _ = out.Write(b)
+		} else {
+			_, _ = fmt.Fprintln(out, readyLine(*res))
+		}
+		if !res.Serving {
+			return 1
+		}
+		return 0
 	case "quotas":
 		qfs := flag.NewFlagSet("quotas", flag.ContinueOnError)
 		qfs.SetOutput(errOut)
@@ -431,6 +483,19 @@ func run(args []string, out, errOut io.Writer) int {
 		if hs.Enabled {
 			_, _ = fmt.Fprintf(out, "handshake: refuse_banned=%v fingerprints=%d refused=%d\n",
 				hs.RefuseBanned, hs.Fingerprints, hs.Refused)
+		}
+		// The certificates that have expired or are about to, worst
+		// first: the single most common way a working service stops
+		// working, and the one thing on this page an operator can act on
+		// today.
+		var exp map[string][]string
+		if eb, err := c.Raw("/v1/tls/expiring"); err == nil {
+			_ = json.Unmarshal(eb, &exp)
+		}
+		for _, name := range sortedKeys(exp) {
+			for _, w := range exp[name] {
+				_, _ = fmt.Fprintf(out, "EXPIRY %s: %s\n", name, w)
+			}
 		}
 		// The key agreement policy, and what clients actually agreed to:
 		// the post-quantum share is the number a rollout is judged by,
@@ -1968,6 +2033,20 @@ func state(on bool, name string) string {
 		return name
 	}
 	return "in rotation (explicit)"
+}
+
+// readyLine is the verdict a person reads, one line, with the reasons on
+// the same line because a check script's output is a log entry.
+func readyLine(r proxy.Readiness) string {
+	verdict := "ready"
+	if !r.Serving {
+		verdict = "NOT READY"
+	}
+	line := fmt.Sprintf("%s: %d listener(s)", verdict, r.Listeners)
+	if len(r.Reasons) > 0 {
+		line += "; " + strings.Join(r.Reasons, "; ")
+	}
+	return line
 }
 
 func sortedKeys[V any](m map[string]V) []string {

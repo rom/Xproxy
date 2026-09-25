@@ -3339,6 +3339,38 @@ type TLS struct {
 	CT *CT `yaml:"ct"`
 	// ECH accepts Encrypted Client Hello on this listener.
 	ECH *ECH `yaml:"ech"`
+	// Expiry decides what an expired certificate does. Without it an
+	// expired certificate is served and every client fails the
+	// handshake on its own, which is an outage nobody can read.
+	Expiry *CertExpiry `yaml:"expiry"`
+}
+
+// CertExpiry is what a listener does about a certificate that has
+// expired, or is about to.
+//
+// A certificate outliving its validity is not an exotic failure: it is
+// the single most common way a working service stops working. What the
+// proxy can do about it is limited -- it cannot issue a new one, and
+// serving an expired certificate is not a security hole, because the
+// client is the one that decides whether to trust it. What it can do is
+// say so, loudly and in one place, rather than leaving every client to
+// discover it separately.
+//
+// So the refusal is opt-in and it is about *starting*: a certificate
+// already expired when the configuration is loaded is a configuration
+// error with refuse_expired, and a reload that would install one is
+// refused, which is the case where refusing is strictly better than
+// serving -- the old certificate keeps working. A certificate that
+// expires while the proxy is running is reported and counted, never
+// unloaded, because a listener that stops answering is worse than one
+// answering with a certificate clients will reject for themselves.
+type CertExpiry struct {
+	// RefuseExpired makes a certificate that has already expired a load
+	// error rather than something to serve.
+	RefuseExpired bool `yaml:"refuse_expired"`
+	// Warn is how long before expiry to start warning. Default 336h
+	// (fourteen days); zero with an expiry section means no warning.
+	Warn Duration `yaml:"warn"`
 }
 
 // ECH configures Encrypted Client Hello: the client encrypts the real

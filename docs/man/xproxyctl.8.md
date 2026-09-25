@@ -41,6 +41,7 @@ locally; everything else goes through the socket.
 | `tls` | Served certificates per listener: names, issuer, expiry, source, OCSP staple state and Certificate Transparency verdict |
 | `tls tickets` | Session ticket keys: epoch, next rotation, key count, fingerprint and which cluster peers derive the same set |
 | `sandbox` | In-process hardening: each mechanism with its state and the file rules in force |
+| `ready` [`-require-upstreams`] [`-require-undegraded`] [`-step-down` *REASON*] [`-step-up`] | Whether this node should be carrying traffic, for a VRRP or load balancer check script: exit 0 yes, 1 no, 2 the question could not be asked. `-step-down` takes the node out of service so that a shared address moves before any work starts, `-step-up` puts it back; the step-down is not persisted across a restart. The two judgement calls are opt-in: `-require-upstreams` makes a pool with no healthy endpoint a refusal, `-require-undegraded` makes a hardening mechanism that did not apply one. See `docs/HA.md` |
 | `waf` [`rules`\|`proposals`\|`anomalies`\|`exclusions`\|`reset`] | WAF profiles (with their CRS plugins and JSON schemas), counters and the most matched rules (`-top` *N*); `proposals` lists learned exclusion candidates, `anomalies` the behavioural baseline and flagged clients, `exclusions` prints the proposals as SecLang, `reset` clears the statistics |
 | `rotate-secret` [`-keep` *N*] *FILE* | Add a fresh primary key to a secret file, keeping *N* (default 2) previous keys for verification; then `reload` |
 | `reload-certs` | Re-read certificate files |
@@ -87,6 +88,10 @@ locally; everything else goes through the socket.
 
 0 on success; 1 when the daemon reports an error or cannot be reached;
 2 on a usage error. `diff` exits 1 when the two configurations differ.
+`ready` exits 0 when this node should carry traffic, 1 when it should
+not, and 2 when the daemon could not be asked — a check script must keep
+the last two apart, or it will move a shared address because a socket
+became unreadable.
 
 ## FILES
 
@@ -99,6 +104,8 @@ xproxyctl status
 xproxyctl -json stats | jq .denied_rate_limit
 xproxyctl tail security | jq -c '{t:.time, ip:.client_ip, r:.reason}'
 xproxyctl reload -dry-run
+xproxyctl ready -step-down "kernel update" && systemctl restart xproxy
+xproxyctl ready -require-upstreams; echo $?
 xproxyctl ban -duration 24h -reason "credential stuffing" 203.0.113.0/24
 xproxyctl rotate-secret /var/lib/xproxy/challenge.key && xproxyctl reload
 xproxyctl completion bash > /etc/bash_completion.d/xproxyctl
@@ -106,4 +113,4 @@ xproxyctl completion bash > /etc/bash_completion.d/xproxyctl
 
 ## SEE ALSO
 
-`xproxy`(8), `xproxy.yaml`(5), `docs/USAGE.md`.
+`xproxy`(8), `xproxy.yaml`(5), `docs/USAGE.md`, `docs/HA.md`.

@@ -52,6 +52,7 @@ server:
             ocsp_stapling: null
             ct: null
             ech: null
+            expiry: null
           proxy_protocol: false
           redirect_to_https: false
           h3:

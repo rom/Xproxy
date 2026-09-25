@@ -76,6 +76,10 @@ type Server struct {
 	// capture writes exchanges as pcapng, kept across generations so a
 	// recording survives a reload.
 	capture atomic.Pointer[capture.Capturer]
+
+	// step is the operator's "this node should not be carrying traffic"
+	// switch, read by Readiness (readiness.go).
+	step stepDown
 	// live is the table of sessions this daemon is serving now, which
 	// every kind that holds one registers with.
 	live *sessions.Table
@@ -415,6 +419,29 @@ func (s *Server) Certificates() map[string][]tlsconf.CertInfo {
 	for _, bl := range s.listeners {
 		if bl.tlsReload != nil {
 			out[bl.cfg.Name] = bl.tlsReload.Certificates()
+		}
+	}
+	return out
+}
+
+// ExpiringCertificates lists, per listener, the served certificates that
+// have expired or fall inside the listener's warning window.
+//
+// It is computed on the question rather than on a timer, so a monitor
+// that asks gets the answer as of now, and a certificate that expires
+// while nothing reloads is still reported. Listeners without an
+// tls.expiry section do not appear.
+func (s *Server) ExpiringCertificates() map[string][]string {
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string][]string{}
+	for _, bl := range s.listeners {
+		if bl.tlsReload == nil {
+			continue
+		}
+		if w := bl.tlsReload.Expiring(now); len(w) > 0 {
+			out[bl.cfg.Name] = w
 		}
 	}
 	return out

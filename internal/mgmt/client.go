@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/rom/xproxy/internal/acme"
@@ -109,6 +110,45 @@ func (c *Client) Status() (*Status, error) {
 func (c *Client) Raw(path string) ([]byte, error) {
 	var b []byte
 	return b, c.do("GET", path, &b)
+}
+
+// Ready fetches the readiness verdict. It is the one call that treats a
+// non-2xx answer as an answer rather than an error: /v1/ready reports 503
+// when the node should not be carrying traffic, so that an HTTP health
+// check that reads neither JSON nor exit codes still works, and a client
+// that mistook that for an unreachable daemon would move an address for
+// the wrong reason.
+func (c *Client) Ready(requireUpstreams, requireUndegraded bool) (*proxy.Readiness, error) {
+	q := "/v1/ready?require_upstreams=0&require_undegraded=0"
+	if requireUpstreams {
+		q = strings.Replace(q, "require_upstreams=0", "require_upstreams=1", 1)
+	}
+	if requireUndegraded {
+		q = strings.Replace(q, "require_undegraded=0", "require_undegraded=1", 1)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "GET", "http://xproxy"+q, http.NoBody)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("management API: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != 200 && resp.StatusCode != 503 {
+		return nil, fmt.Errorf("management API: HTTP %d", resp.StatusCode)
+	}
+	var out proxy.Readiness
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // Post triggers an action endpoint.

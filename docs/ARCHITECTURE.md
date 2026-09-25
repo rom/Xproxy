@@ -1329,6 +1329,9 @@ Endpoints:
 | GET | `/v1/pools` | pool level state: circuit breaker, concurrency gate and queue |
 | GET | `/v1/tls` | served certificates per listener with OCSP staple and CT state |
 | GET | `/v1/tls/tickets` | session ticket key epoch, fingerprint and peer agreement (404 without `server.session_tickets`) |
+| GET | `/v1/tls/expiring` | per listener, the served certificates that have expired or fall inside `tls.expiry.warn`, worst first; computed on the question rather than on a timer, so a certificate that expires while nothing reloads is still reported |
+| GET | `/v1/ready` | whether this node should be carrying traffic: 200 or 503 with the reasons, for a failover tool. `require_upstreams=1` and `require_undegraded=1` add the two opt-in judgements (`docs/HA.md`) |
+| POST | `/v1/ready` | step this node down (`{"serving": false, "reason": "..."}`) or back up; audited, and not persisted across a restart |
 | GET | `/v1/telemetry` | OpenTelemetry exporters (metrics, traces, logs) with counters |
 | GET | `/v1/quotas` | usage per tenant, route and rate limit policy; `?top=N` consumers per policy |
 | GET | `/v1/waf` | WAF profiles (plugins, schemas), route assignments, per rule statistics (`?top=N`), learned exclusion proposals, schema violations and the anomaly baseline with flagged clients |
