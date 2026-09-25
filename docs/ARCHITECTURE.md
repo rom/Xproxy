@@ -23,7 +23,8 @@ the shape. Decision records are in [AMR.md](AMR.md); requirements in
  |       xproxy        |  |        xgate        |  |        xrelay         |
  |  http tcp udp       |  |   ssh telnet        |  | smtp mqtt ftp syslog  |
  |  forward dns        |  |   vnc rdp           |  | modbus iec104 snmp    |
- |                     |  |                     |  | ldap tftp ntp ntske   |
+ |                     |  |                     |  | ldap tftp dhcp        |
+ |                     |  |                     |  | ntp ntske             |
  |  user: xproxy       |  |  user: xgate        |  |  user: xrelay         |
  +--+---------------+--+  +--+---------------+--+  +--+----------------+---+
     |               |        |               |        |                |
@@ -83,7 +84,7 @@ authority a cluster peer has by design.
 cmd/xproxy          edge daemon: links the http, forward, tcp and dns kinds
 cmd/xgate           gate daemon: links the ssh, telnet, vnc and rdp kinds
 cmd/xrelay          relay daemon: links the smtp, mqtt, ftp, syslog, modbus,
-                    iec104, snmp, ldap, tftp, ntp and ntske kinds
+                    iec104, snmp, ldap, tftp, dhcp, ntp and ntske kinds
 cmd/xproxyctl       management CLI and TUI (talks to any of the three)
 cmd/xproxy-admin    web GUI process (users, sessions, embedded assets)
 cmd/xproxy-fleet    fleet controller
@@ -116,6 +117,9 @@ internal/kinds/snmp    kind: snmp -- SNMP relay: policy by version, credential,
 internal/kinds/ldap    kind: ldap -- LDAP relay: the bind methods, the bound
                        identity, subtree and attribute policy in both
                        directions, StartTLS terminated here
+internal/kinds/dhcp    kind: dhcp -- DHCP relay agent: the server a reply came
+                       from, the configuration it carries, option 82, the
+                       starvation bound keyed on the hardware address
 internal/kinds/tftp    kind: tftp -- TFTP relay: the filename read as a path
                        and refused by class, the direction of the transfer,
                        the amplification bounds, one socket per transfer
@@ -164,6 +168,7 @@ internal/cache      in-memory response cache (LRU, byte bound, Vary)
 internal/dns        DNS wire codec, cache, block list, resolver, servers
 internal/smtp internal/mqtt internal/ftp internal/syslog internal/sftp
 internal/modbus internal/iec104 internal/snmp internal/ntp internal/tftp
+internal/dhcp
 internal/ldap       the LDAP wire format, shared: the client the identity
                     filter authenticates with and the message reader the
                     relay kind decides about, over one BER codec
@@ -213,7 +218,7 @@ cmd/xrelay ─┘             metrics, ingress, listener, paths, version}
     │
     └─ blank imports of its own kinds, and nothing else:
          kinds/{http,tcp,udp,dns,forward} | kinds/{ssh,telnet,vnc,rdp} |
-         kinds/{smtp,mqtt,ftp,syslog,modbus,iec104,snmp,ldap,tftp,ntp,ntske}
+         kinds/{smtp,mqtt,ftp,syslog,modbus,iec104,snmp,ldap,tftp,dhcp,ntp,ntske}
 
 kinds/<k> -> {proxy, config, listener, and that protocol's wire package}
 proxy     -> {listener, router, upstream, limits, netutil, tlsconf, logging,
@@ -249,7 +254,7 @@ So the binary is split by who is on the other end of the socket:
 |--------|-------|----------------|
 | `xproxy` | the open internet | `http`, `forward`, `tcp`, `udp`, `dns` |
 | `xgate` | people | `ssh`, `telnet`, `vnc`, `rdp` |
-| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `snmp`, `ldap`, `tftp`, `ntp`, `ntske` |
+| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `snmp`, `ldap`, `tftp`, `dhcp`, `ntp`, `ntske` |
 
 One repository, one module, one version and one configuration format;
 three programs, three users, three systemd units, three sandboxes, three
@@ -1025,7 +1030,7 @@ and size, and a second factor can be demanded after the key.
 
 ### The relay: SMTP, MQTT, FTP, syslog, Modbus, IEC 104, SNMP, LDAP, NTP and NTS
 
-The relay kinds (`internal/kinds/{smtp,mqtt,ftp,syslog,modbus,iec104,snmp,ldap,tftp,ntp,ntske}`)
+The relay kinds (`internal/kinds/{smtp,mqtt,ftp,syslog,modbus,iec104,snmp,ldap,tftp,dhcp,ntp,ntske}`)
 share a shape:
 each parses its protocol rather than forwarding bytes, holds a policy in
 that protocol's own terms, and bounds what a peer may say.
@@ -1132,6 +1137,23 @@ that protocol's own terms, and bounds what a peer may say.
   coming. And it counts the transfer's octets as they pass, which is the
   only bound a write has: a write has no natural end, since the client stops
   when it stops.
+- `dhcp` is the only kind whose **policy is mostly about what comes back**.
+  Every other relay here decides about a request and carries the answer; this
+  one carries the request almost unchanged and spends its whole policy on the
+  reply, because a DHCP reply *is* a machine's configuration and a DHCP request
+  carries nothing to decide about. Four things follow from that. It is the only
+  kind with an **upstream allow list that is not a pool** -- the addresses a
+  reply may come from, filled in from the pool when nobody wrote one, and
+  enforced before the reply is parsed. It **rewrites in both directions**: the
+  relay agent's own giaddr, hops and option 82 on the way out, and the stripped
+  options and bounded lease on the way back, which makes it the kind that leans
+  hardest on its wire package's encoder. Its **rate limit is keyed on a value
+  from inside the message** rather than on the peer address, because the peer
+  address of a booting client is 0.0.0.0. And a rule's *positive* lists grant
+  permission rather than only narrowing it, which is the same turn `ldap` makes
+  with attributes and exists for the same reason: the interesting policy is
+  about the contents of a field, so naming the contents has to be how the field
+  is allowed.
 - `ntp` is the time gateway, and the one kind whose interesting half is
   not the forwarding: it probes every server in the pool with its own
   transactions, compares them with each other, and can refuse an answer

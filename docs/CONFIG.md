@@ -93,6 +93,7 @@ did not authenticate — a trial instead of a door.
 | `iec104` | every rule: type, class, cause, station, originator, point range and the select half; `monitor_only`; the common-address list; `require_select` | malformed frames, the frame bound, rate limits (frame and command), a station commanding its own control centre, bans |
 | `ldap` | every rule: the bound identity, the bind method, the operation, the access class, the subtree, the scope and the attributes; `methods`, `sasl_mechanisms`, `min_version`; `read_only`; `base_dns`; the attribute lists; the filter and entry bounds | a simple bind carrying a password on an unprotected connection, malformed messages, the message bound, message identifier zero, rate limits (request and bind), the client list, an answer no request matched, bans |
 | `snmp` | every rule: version, community or user, security level, operation, access class, object subtree and context; `versions`, `communities`, `users`, `min_security_level`; `read_only`; the message direction | malformed messages, the message and response bounds, the GETBULK repetition bound, the response ratio, an answer nobody asked for, rate limits, the client list, bans |
+| `dhcp` | every rule: the client network, the hardware address, the message type and the vendor class; `message_types`; the option lists and the address lists on a reply | a reply from an address that is not in `allow_servers`, malformed messages and malformed option values, an option hidden in a header field or split across instances, the hop bound, the lease bounds, the pending bound, rate limits, a message type arriving from the wrong side, bans |
 | `tftp` | every rule: the direction, the mode, the directory, the filename pattern and the path class; `operations`, `modes`, `allow_path_classes`, `directories`, `filenames` | a filename in the nul, control or empty class, the filename and depth bounds, the block, window and transfer bounds, a packet on the request port that is not a request, a datagram from an address with no part in the transfer, rate limits, the client list, bans |
 | `ntp` | the client list and every request rule (versions, modes, extension fields, the identity it demands), and every answer rule (stratum, distances, timestamps, identifier, leap) | mode 6 and 7, version 5, malformed packets, bans, rate limits, the association and outstanding bounds |
 | `mqtt` | the client list, the CONNECT policy (version, client id, username, keep alive, will), the publish and subscribe policies, retain | malformed packets, a first packet that is not CONNECT, a second CONNECT, the packet bound, the connection limit, TLS failures |
@@ -2362,6 +2363,179 @@ fine-grained reason is in the refusal counters: `client_not_allowed`,
 `default_deny`, `max_repetitions`, `response_too_large`, `response_ratio`,
 `response_too_late`, `unsolicited_response`, `encrypted_response`,
 `wrong_direction`, `too_many_pending`, `upgrade_failed`.
+
+### server.listeners[].dhcp (kind: dhcp)
+
+DHCP is the one protocol where **answering** is the attack. A client broadcasts
+"who will configure me", and it believes whatever answers first: its address, its
+**default route**, its **resolvers**, its **proxy** (option 252) and, on a
+machine that boots from the network, the **file it boots** (options 66 and 67).
+Nothing in the exchange authenticates anybody -- a transaction identifier and a
+hardware address, both visible to everyone on the segment -- and the client has
+no address yet, so it cannot even be told apart by one.
+
+That makes this the one relay kind here whose interesting half faces *upstream*.
+Five things are deliberate.
+
+**A reply from an address this listener does not admit as a server is dropped
+before it is read.** Every switch vendor sells this as DHCP snooping and
+implements it as a trusted port; here it is `allow_servers`, and it is **not
+shadowable**: a listener that evaluated the list without enforcing it would be a
+listener that relays a rogue server's answer and writes it down. Leaving the list
+out is not leaving it open -- it is filled in from the `upstream` pool's own
+endpoints at load, because an operator who wrote none meant "the servers I
+configured".
+
+**The options a server sends are a configuration, not data.** Option 121 and
+Microsoft's 249 are a routing table in a broadcast reply -- the most direct
+interception in the protocol. Option 252 is a proxy. Options 66, 67 and 43 are
+what a machine boots. Each is an option some estate legitimately needs, so each
+is a decision: `deny_options` has a built-in list, `allow_options` turns the
+policy inside out, and `on_denied_option` defaults to `strip` because a client
+that still gets its address and no longer gets a route it should not have is a
+client that works.
+
+**The addresses in a reply are checked against the estate's own.** An operator
+knows their gateways, their resolvers and their boot servers; a reply naming
+anything else is wrong *whoever sent it*, and that check catches a compromised
+real server as surely as a rogue one. The boot server is checked in both places
+it lives -- option 66 and the `siaddr` header field -- because a check on one has
+a way round it.
+
+**A client does not get to say which segment it is on.** RFC 3046 §2.1 says a
+relay discards the agent information option arriving from a client, because the
+option exists so that the *relay* tells the server which circuit the request came
+from. So option 82 from a client is stripped and this relay adds its own; on the
+way back it removes what it added, because the option is a note between the relay
+and the server.
+
+**The starvation bound is keyed on the hardware address.** Pool exhaustion is one
+host sending thousands of DISCOVERs with a made-up address in each, and a rate
+limit keyed on the source address would see one sender doing nothing unusual.
+`max_clients` bounds the table that does the keying, because otherwise the flood
+of new addresses would exhaust that instead.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `mode` | `reverse`, `forward` | `reverse` | `reverse`: clients send here and the relay forwards to the servers. `forward`: this listener is the controlled egress a downstream relay agent uses to reach a server elsewhere |
+| `upstream` | string | required | The server pool |
+| `allow_servers` | list of CIDR | the pool's endpoints | The addresses a reply may come from, and the most valuable line in the file. Empty means the endpoints of `upstream`, so it is never open by accident; a pool whose endpoints are named by hostname makes this required, because guessing is the wrong kind of helpful on the one check this kind most depends on |
+| `allow_clients` | list of CIDR | all | Networks a message may arrive from. On a segment this is every client -- a client with no address sends from `0.0.0.0`, and the unspecified address is admitted whatever the list says, because refusing it would refuse every first-time client. It is the useful control on a listener that fronts **other relay agents** |
+| `deny_clients` | list of CIDR | | Evaluated before `allow_clients`, and it beats the unspecified address too |
+| `message_types` | list | `[discover, request, decline, release, inform]` | Types a client may send. The default leaves out the **lease-query family** (RFC 4388): that is a relay agent's own diagnostic, and an inventory of every lease in the estate to anything else |
+| `deny_options` | list | the built-in list | Options a **server** may not send; see below for the built-in list. Setting the list **replaces** it. An option may be named or numbered, so an estate's own vendor option can be named |
+| `allow_options` | list | | The positive model: an option outside the list is removed. On a network whose clients need six options this is shorter and safer than a deny list. The message type and the server identifier are always carried, because a reply without them is not a reply |
+| `on_denied_option` | `strip`, `deny` | `strip` | `strip` removes the option and forwards the rest. `deny` refuses the whole reply, which leaves the client with **no address at all** -- which is why it is not the default |
+| `deny_requested_options` | list | | Options a client may not **ask** for, in its option 55 parameter list. The ask is trimmed rather than the message refused: a client that asked for a proxy and is not told about one is a client that works |
+| `allow_gateways` | list of IPv4 | any | The addresses option 3 may name |
+| `allow_resolvers` | list of IPv4 | any | The addresses option 6 may name |
+| `allow_boot_servers` | list of IPv4 | any | The addresses option 66 and `siaddr` may name |
+| `allow_routes` | list of CIDR | none | The destinations options 121 and 249 may carry, for an estate that uses them. Containment, not equality: `10.0.0.0/8` allows a route to `10.1.0.0/16` and **not** a default route. A route outside the list is refused and the refusal names the route |
+| `boot_files` | list of pattern | any | Shell patterns the boot filename may match, checked in both places it lives (option 67 and the `file` field) |
+| `min_lease_time`, `max_lease_time` | duration | `0` | Bound the lease a server may hand out. A lease past the bound is **shortened**, not refused, so the client still boots. A very long lease is an address pool exhausted by every device that ever visited |
+| `require_client_id_match` | bool | `false` | Refuse a message whose option 61 names a different hardware address from the header. Only the Ethernet form is compared, because RFC 2132 allows any opaque value; a real signal, and there are real clients that get it wrong, so it is a decision rather than a default |
+| `refuse_hidden_options` | bool | `true` | Refuse a message that carried an option in the `sname` or `file` field (option 52) or split across instances (RFC 3396). Both are legal, almost nothing sends them, and both make one message say different things to different parsers. **Not shadowable** |
+| `max_hops` | int | `4` | The hops field, which counts the relay agents a message has crossed. RFC 2131 makes 16 the outer limit |
+| `relay_address` | IPv4 | required in reverse mode | What this relay puts in `giaddr`, which tells the server which segment to allocate from. A relay agent that left it empty would be asking the server to answer a broadcast it never saw. An existing `giaddr` from a downstream agent is **not** overwritten, because that is where the reply has to go back to |
+| `circuit_id`, `remote_id` | string | | The two suboptions of RFC 3046's option 82. Empty leaves the option out |
+| `on_client_agent_option` | `strip`, `deny` | `strip` | What to do when a client sends option 82. `strip` is what RFC 3046 §2.1 requires |
+| `rules` | list | | Per-message rules, first match wins; see below |
+| `default_action` | `allow`, `deny` | `allow` | Unlike the other relay kinds here the default is **allow**. DHCP is infrastructure: a listener that refused every request until somebody wrote a rule would stop an estate booting, and the protections in this kind are the answer policy and the server list, which are on by default and do not depend on a rule existing |
+| `deny_response` | `drop`, `nak` | `drop` | `drop` leaves the client retrying, which is what it does when nothing answers. `nak` sends a DHCPNAK, which makes a client stop and start over -- honest, and also a way to stop a client dead, so not the default. Only a REQUEST is NAKed: DHCPNAK is defined as the answer to a request for a particular address |
+| `max_pending` | int | `256` | Requests outstanding towards servers. A full table refuses the new request rather than forgetting an old one, because forgetting is what would make a reply undeliverable to the client that actually asked |
+| `request_timeout` | duration | `10s` | How long a server has to answer before its answer is too late to pair |
+| `max_message_bytes` | int | `1500` | One message. A message past this is refused unread |
+| `rate_limit`, `rate_burst` | int | `0` | Messages per second per **hardware address** |
+| `max_clients` | int | `8192` | Distinct hardware addresses tracked at once |
+| `log_messages` | bool | `false` | An access line per message |
+| `log_leases` | bool | `true` | A line for every address handed out: which hardware address, which vendor prefix, which address, for how long, from which server, what it was told and what it asked for. The record an estate is asked for, and the beginning of an asset inventory |
+| `alert_on_deny` | bool | `true` | A security event per refusal |
+
+#### server.listeners[].dhcp.rules[]
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `name` | string | Required; names the rule in the logs and the counters |
+| `action` | `allow`, `deny`, `observe` | Default `allow`. `observe` records the message and keeps looking |
+| `clients` | list of CIDR | Networks the message arrived from |
+| `hardware_addresses` | list | Each either a whole address (`02:11:22:33:44:55`) or a **vendor prefix** (`02:11:22`), which is what a rule about "the telephones" is actually written with |
+| `message_types` | list | The types this rule covers |
+| `vendor_classes`, `user_classes` | list of pattern | Options 60 and 77 as shell patterns. `PXEClient*` is what every PXE client sends |
+| `deny_options` | list | Refused for this rule's traffic, **in addition to** the listener's list, and a rule's own deny beats its own permission below |
+| `allow_gateways`, `allow_resolvers`, `allow_boot_servers` | list of IPv4 | This rule's own address lists, replacing the listener's for its traffic |
+| `allow_routes` | list of CIDR | This rule's own route list |
+| `boot_files` | list of pattern | This rule's own boot filename patterns |
+| `max_lease_time` | duration | This rule's own lease bound |
+| `circuit_id` | string | Overrides the listener's circuit identifier, so a rule about one segment can tell the server which segment it is |
+| `schedule` | object | `{days, from, to, timezone}`; a window whose `to` is before its `from` spans midnight |
+
+**Saying what an option may contain is how a rule allows it.** This is the one
+turn in the kind worth reading twice, and it is the same one the LDAP attribute
+policy makes. The built-in `deny_options` list strips the boot options from every
+reply -- which is right for a network with no PXE clients and wrong for the one
+segment that has them. A rule with `allow_boot_servers` or `boot_files` is a rule
+about machines that boot from the network, so those options are *not* stripped
+from its traffic: they are checked against the list instead. The same holds for
+`allow_routes` and the two route options. Without that, "the build segment may be
+told a boot server and nothing else may" could not be written at all.
+
+**The built-in `deny_options` list** is the options that carry a machine's
+configuration rather than a value it displays:
+
+```
+121 classless_static_route   249 ms_classless_static_route   33 static_route
+252 wpad_url                 66 tftp_server                  67 boot_file
+43 vendor_specific
+```
+
+Naming `deny_options` replaces it rather than adding to it, and validation warns
+if the replacement drops the route option or WPAD. A rule's own `deny_options`
+adds to whichever list is in force.
+
+**What is checked before the rules, and cannot be shadowed.** A reply from an
+address that is not in `allow_servers`; a message the relay could not parse; a
+message past `max_message_bytes`; a message carrying an option in a header field
+or split across instances; the hop bound; the rate limit; the pending bound; the
+lease bounds; a message type arriving from the wrong side (a DHCPOFFER from the
+client side, or a DHCPDISCOVER from a server); and a malformed option value,
+because a client would read it somehow and "somehow" is where two readings
+differ.
+
+**A reply is broadcast only when there is nowhere to unicast to.** RFC 2131 §4.1
+says to honour the broadcast flag, and a client that sent from `0.0.0.0` has no
+address to unicast to whatever its flags say. A request relayed from another agent,
+or a renewal from a client that already has an address, is answered where it came
+from. Broadcasting needs a route for `255.255.255.255` on the listener's own
+interface: on Linux that is usually `ip route add 255.255.255.255/32 dev <iface>`,
+and it is a deployment matter rather than something the proxy can arrange.
+
+**A listener takes no `tls` section and binds no TCP port.** DHCP has no stream
+transport and no transport security of any kind, so a listener carrying a
+certificate would be promising something the protocol cannot do; validation
+refuses it.
+
+**DHCPv6 (RFC 8415) is not implemented**, and this kind does not pretend
+otherwise. It is a different packet format with different message types, a
+different relay mechanism and its own options; reading it as if it were DHCPv4
+would be worse than not reading it. A segment that runs both needs its v6
+relaying done elsewhere, and `docs/RFC.md` says so in the table.
+
+Counters: `dhcp_messages`, `dhcp_discovers`, `dhcp_requests`, `dhcp_replies`,
+`dhcp_leases`, `dhcp_releases`, `dhcp_denied`, `dhcp_would_deny`, `dhcp_rogue`,
+`dhcp_stripped`, `dhcp_malformed`, `dhcp_rejected`, `dhcp_rate_limited`,
+`dhcp_timed_out`, `dhcp_upstream_failed`, `dhcp_unsolicited`, `dhcp_pending`,
+`dhcp_clients`. **`dhcp_rogue` is the one to alert on**: it counts the replies
+from an address this listener does not admit as a server, which is somebody
+answering on the segment. `dhcp_stripped` is the one to read next -- a route, a
+proxy or a boot file removed from a reply. Refusals are `dhcp_denied` for the ban
+triggers, and the fine-grained reason is in the refusal counters:
+`client_not_allowed`, `rogue_server`, `malformed`, `malformed_reply`,
+`malformed_option`, `message_too_large`, `reply_too_large`,
+`reply_from_client_side`, `wrong_direction`, `unsolicited_reply`,
+`hidden_options`, `client_id_mismatch`, `message_type`, `too_many_hops`,
+`too_many_pending`, `rate_limited`, `client_agent_option`, `option_stripped`,
+`option_denied`, `boot_server_not_allowed`, `boot_file_not_allowed`, `rule`,
+`default_deny`, `unencodable`, `unencodable_reply`.
 
 ### server.listeners[].tftp (kind: tftp)
 
@@ -5814,7 +5988,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `ntp_denied`, `ntske_denied`, `yara` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `ntp_denied`, `ntske_denied`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |

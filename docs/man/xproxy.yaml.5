@@ -252,6 +252,13 @@ T}	T{
 malformed messages,\: the message and response bounds,\: the GETBULK repetition bound,\: the response ratio,\: an answer nobody asked for,\: rate limits,\: the client list,\: bans
 T}
 T{
+\fBdhcp\fR
+T}	T{
+every rule: the client network,\: the hardware address,\: the message type and the vendor class;\: \fBmessage_\:types\fR;\: the option lists and the address lists on a reply
+T}	T{
+a reply from an address that is not in \fBallow_\:servers\fR,\: malformed messages and malformed option values,\: an option hidden in a header field or split across instances,\: the hop bound,\: the lease bounds,\: the pending bound,\: rate limits,\: a message type arriving from the wrong side,\: bans
+T}
+T{
 \fBtftp\fR
 T}	T{
 every rule: the direction,\: the mode,\: the directory,\: the filename pattern and the path class;\: \fBoperations\fR,\: \fBmodes\fR,\: \fBallow_\:path_\:classes\fR,\: \fBdirectories\fR,\: \fBfilenames\fR
@@ -5801,6 +5808,464 @@ T}
 \fBA community string is never written to a log.\fR It is a credential, and an access log or security event that printed every guessed one would be a list of the estate\(aqs passwords with a timestamp beside each. The v3 user name \fIis\fR logged, because it is an identity rather than a secret.
 .PP
 Counters: \fBsnmp_messages\fR, \fBsnmp_sessions\fR, \fBsnmp_sessions_open\fR, \fBsnmp_reads\fR, \fBsnmp_writes\fR, \fBsnmp_traps\fR, \fBsnmp_denied\fR, \fBsnmp_would_deny\fR, \fBsnmp_malformed\fR, \fBsnmp_rejected\fR, \fBsnmp_rate_limited\fR, \fBsnmp_amplified\fR, \fBsnmp_truncated\fR, \fBsnmp_upgraded\fR, \fBsnmp_timed_out\fR, \fBsnmp_upstream_failed\fR, \fBsnmp_unsolicited\fR, \fBsnmp_pending\fR. Refusals are \fBsnmp_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBtls_handshake\fR, \fBupstream_tls\fR, \fBmalformed\fR, \fBmalformed_response\fR, \fBmessage_too_large\fR, \fBframing\fR, \fBmax_connections\fR, \fBrate_limited\fR, \fBversion\fR, \fBcommunity\fR, \fBuser\fR, \fBsecurity_level\fR, \fBread_only\fR, \fBdirection\fR, \fBvar_binds\fR, \fBrule\fR, \fBdefault_deny\fR, \fBmax_repetitions\fR, \fBresponse_too_large\fR, \fBresponse_ratio\fR, \fBresponse_too_late\fR, \fBunsolicited_response\fR, \fBencrypted_response\fR, \fBwrong_direction\fR, \fBtoo_many_pending\fR, \fBupgrade_failed\fR.
+.SS "server.listeners[].dhcp (kind: dhcp)"
+.PP
+DHCP is the one protocol where \fBanswering\fR is the attack. A client broadcasts "who will configure me", and it believes whatever answers first: its address, its \fBdefault route\fR, its \fBresolvers\fR, its \fBproxy\fR (option 252) and, on a machine that boots from the network, the \fBfile it boots\fR (options 66 and 67). Nothing in the exchange authenticates anybody \-\- a transaction identifier and a hardware address, both visible to everyone on the segment \-\- and the client has no address yet, so it cannot even be told apart by one.
+.PP
+That makes this the one relay kind here whose interesting half faces \fIupstream\fR. Five things are deliberate.
+.PP
+\fBA reply from an address this listener does not admit as a server is dropped before it is read.\fR Every switch vendor sells this as DHCP snooping and implements it as a trusted port; here it is \fBallow_servers\fR, and it is \fBnot shadowable\fR: a listener that evaluated the list without enforcing it would be a listener that relays a rogue server\(aqs answer and writes it down. Leaving the list out is not leaving it open \-\- it is filled in from the \fBupstream\fR pool\(aqs own endpoints at load, because an operator who wrote none meant "the servers I configured".
+.PP
+\fBThe options a server sends are a configuration, not data.\fR Option 121 and Microsoft\(aqs 249 are a routing table in a broadcast reply \-\- the most direct interception in the protocol. Option 252 is a proxy. Options 66, 67 and 43 are what a machine boots. Each is an option some estate legitimately needs, so each is a decision: \fBdeny_options\fR has a built\-in list, \fBallow_options\fR turns the policy inside out, and \fBon_denied_option\fR defaults to \fBstrip\fR because a client that still gets its address and no longer gets a route it should not have is a client that works.
+.PP
+\fBThe addresses in a reply are checked against the estate\(aqs own.\fR An operator knows their gateways, their resolvers and their boot servers; a reply naming anything else is wrong \fIwhoever sent it\fR, and that check catches a compromised real server as surely as a rogue one. The boot server is checked in both places it lives \-\- option 66 and the \fBsiaddr\fR header field \-\- because a check on one has a way round it.
+.PP
+\fBA client does not get to say which segment it is on.\fR RFC 3046 \[u00A7]2.1 says a relay discards the agent information option arriving from a client, because the option exists so that the \fIrelay\fR tells the server which circuit the request came from. So option 82 from a client is stripped and this relay adds its own; on the way back it removes what it added, because the option is a note between the relay and the server.
+.PP
+\fBThe starvation bound is keyed on the hardware address.\fR Pool exhaustion is one host sending thousands of DISCOVERs with a made\-up address in each, and a rate limit keyed on the source address would see one sender doing nothing unusual. \fBmax_clients\fR bounds the table that does the keying, because otherwise the flood of new addresses would exhaust that instead.
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(0.9i) lbw(1.1i) lbx
+lw(1.1i) lw(0.9i) lw(1.1i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBmode\fR
+T}	T{
+\fBreverse\fR,\: \fBforward\fR
+T}	T{
+\fBreverse\fR
+T}	T{
+\fBreverse\fR: clients send here and the relay forwards to the servers. \fBforward\fR: this listener is the controlled egress a downstream relay agent uses to reach a server elsewhere
+T}
+T{
+\fBupstream\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+The server pool
+T}
+T{
+\fBallow_\:servers\fR
+T}	T{
+list of CIDR
+T}	T{
+the pool\(aqs endpoints
+T}	T{
+The addresses a reply may come from,\: and the most valuable line in the file. Empty means the endpoints of \fBupstream\fR,\: so it is never open by accident;\: a pool whose endpoints are named by hostname makes this required,\: because guessing is the wrong kind of helpful on the one check this kind most depends on
+T}
+T{
+\fBallow_\:clients\fR
+T}	T{
+list of CIDR
+T}	T{
+all
+T}	T{
+Networks a message may arrive from. On a segment this is every client \-\- a client with no address sends from \fB0.\:0.\:0.\:0\fR,\: and the unspecified address is admitted whatever the list says,\: because refusing it would refuse every first\-time client. It is the useful control on a listener that fronts \fBother relay agents\fR
+T}
+T{
+\fBdeny_\:clients\fR
+T}	T{
+list of CIDR
+T}	T{
+
+T}	T{
+Evaluated before \fBallow_\:clients\fR,\: and it beats the unspecified address too
+T}
+T{
+\fBmessage_\:types\fR
+T}	T{
+list
+T}	T{
+\fB[discover,\: request,\: decline,\: release,\: inform]\fR
+T}	T{
+Types a client may send. The default leaves out the \fBlease\-query family\fR (RFC 4388): that is a relay agent\(aqs own diagnostic,\: and an inventory of every lease in the estate to anything else
+T}
+T{
+\fBdeny_\:options\fR
+T}	T{
+list
+T}	T{
+the built\-in list
+T}	T{
+Options a \fBserver\fR may not send;\: see below for the built\-in list. Setting the list \fBreplaces\fR it. An option may be named or numbered,\: so an estate\(aqs own vendor option can be named
+T}
+T{
+\fBallow_\:options\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+The positive model: an option outside the list is removed. On a network whose clients need six options this is shorter and safer than a deny list. The message type and the server identifier are always carried,\: because a reply without them is not a reply
+T}
+T{
+\fBon_\:denied_\:option\fR
+T}	T{
+\fBstrip\fR,\: \fBdeny\fR
+T}	T{
+\fBstrip\fR
+T}	T{
+\fBstrip\fR removes the option and forwards the rest. \fBdeny\fR refuses the whole reply,\: which leaves the client with \fBno address at all\fR \-\- which is why it is not the default
+T}
+T{
+\fBdeny_\:requested_\:options\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+Options a client may not \fBask\fR for,\: in its option 55 parameter list. The ask is trimmed rather than the message refused: a client that asked for a proxy and is not told about one is a client that works
+T}
+T{
+\fBallow_\:gateways\fR
+T}	T{
+list of IPv4
+T}	T{
+any
+T}	T{
+The addresses option 3 may name
+T}
+T{
+\fBallow_\:resolvers\fR
+T}	T{
+list of IPv4
+T}	T{
+any
+T}	T{
+The addresses option 6 may name
+T}
+T{
+\fBallow_\:boot_\:servers\fR
+T}	T{
+list of IPv4
+T}	T{
+any
+T}	T{
+The addresses option 66 and \fBsiaddr\fR may name
+T}
+T{
+\fBallow_\:routes\fR
+T}	T{
+list of CIDR
+T}	T{
+none
+T}	T{
+The destinations options 121 and 249 may carry,\: for an estate that uses them. Containment,\: not equality: \fB10.\:0.\:0.\:0/\:8\fR allows a route to \fB10.\:1.\:0.\:0/\:16\fR and \fBnot\fR a default route. A route outside the list is refused and the refusal names the route
+T}
+T{
+\fBboot_\:files\fR
+T}	T{
+list of pattern
+T}	T{
+any
+T}	T{
+Shell patterns the boot filename may match,\: checked in both places it lives (option 67 and the \fBfile\fR field)
+T}
+T{
+\fBmin_\:lease_\:time\fR,\: \fBmax_\:lease_\:time\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR
+T}	T{
+Bound the lease a server may hand out. A lease past the bound is \fBshortened\fR,\: not refused,\: so the client still boots. A very long lease is an address pool exhausted by every device that ever visited
+T}
+T{
+\fBrequire_\:client_\:id_\:match\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse a message whose option 61 names a different hardware address from the header. Only the Ethernet form is compared,\: because RFC 2132 allows any opaque value;\: a real signal,\: and there are real clients that get it wrong,\: so it is a decision rather than a default
+T}
+T{
+\fBrefuse_\:hidden_\:options\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse a message that carried an option in the \fBsname\fR or \fBfile\fR field (option 52) or split across instances (RFC 3396). Both are legal,\: almost nothing sends them,\: and both make one message say different things to different parsers. \fBNot shadowable\fR
+T}
+T{
+\fBmax_\:hops\fR
+T}	T{
+int
+T}	T{
+\fB4\fR
+T}	T{
+The hops field,\: which counts the relay agents a message has crossed. RFC 2131 makes 16 the outer limit
+T}
+T{
+\fBrelay_\:address\fR
+T}	T{
+IPv4
+T}	T{
+required in reverse mode
+T}	T{
+What this relay puts in \fBgiaddr\fR,\: which tells the server which segment to allocate from. A relay agent that left it empty would be asking the server to answer a broadcast it never saw. An existing \fBgiaddr\fR from a downstream agent is \fBnot\fR overwritten,\: because that is where the reply has to go back to
+T}
+T{
+\fBcircuit_\:id\fR,\: \fBremote_\:id\fR
+T}	T{
+string
+T}	T{
+
+T}	T{
+The two suboptions of RFC 3046\(aqs option 82. Empty leaves the option out
+T}
+T{
+\fBon_\:client_\:agent_\:option\fR
+T}	T{
+\fBstrip\fR,\: \fBdeny\fR
+T}	T{
+\fBstrip\fR
+T}	T{
+What to do when a client sends option 82. \fBstrip\fR is what RFC 3046 \[u00A7]2.1 requires
+T}
+T{
+\fBrules\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+Per\-message rules,\: first match wins;\: see below
+T}
+T{
+\fBdefault_\:action\fR
+T}	T{
+\fBallow\fR,\: \fBdeny\fR
+T}	T{
+\fBallow\fR
+T}	T{
+Unlike the other relay kinds here the default is \fBallow\fR. DHCP is infrastructure: a listener that refused every request until somebody wrote a rule would stop an estate booting,\: and the protections in this kind are the answer policy and the server list,\: which are on by default and do not depend on a rule existing
+T}
+T{
+\fBdeny_\:response\fR
+T}	T{
+\fBdrop\fR,\: \fBnak\fR
+T}	T{
+\fBdrop\fR
+T}	T{
+\fBdrop\fR leaves the client retrying,\: which is what it does when nothing answers. \fBnak\fR sends a DHCPNAK,\: which makes a client stop and start over \-\- honest,\: and also a way to stop a client dead,\: so not the default. Only a REQUEST is NAKed: DHCPNAK is defined as the answer to a request for a particular address
+T}
+T{
+\fBmax_\:pending\fR
+T}	T{
+int
+T}	T{
+\fB256\fR
+T}	T{
+Requests outstanding towards servers. A full table refuses the new request rather than forgetting an old one,\: because forgetting is what would make a reply undeliverable to the client that actually asked
+T}
+T{
+\fBrequest_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB10s\fR
+T}	T{
+How long a server has to answer before its answer is too late to pair
+T}
+T{
+\fBmax_\:message_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB1500\fR
+T}	T{
+One message. A message past this is refused unread
+T}
+T{
+\fBrate_\:limit\fR,\: \fBrate_\:burst\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Messages per second per \fBhardware address\fR
+T}
+T{
+\fBmax_\:clients\fR
+T}	T{
+int
+T}	T{
+\fB8192\fR
+T}	T{
+Distinct hardware addresses tracked at once
+T}
+T{
+\fBlog_\:messages\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+An access line per message
+T}
+T{
+\fBlog_\:leases\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A line for every address handed out: which hardware address,\: which vendor prefix,\: which address,\: for how long,\: from which server,\: what it was told and what it asked for. The record an estate is asked for,\: and the beginning of an asset inventory
+T}
+T{
+\fBalert_\:on_\:deny\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A security event per refusal
+T}
+.TE
+.SS "server.listeners[].dhcp.rules[]"
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(0.9i) lbx
+lw(1.1i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+string
+T}	T{
+Required;\: names the rule in the logs and the counters
+T}
+T{
+\fBaction\fR
+T}	T{
+\fBallow\fR,\: \fBdeny\fR,\: \fBobserve\fR
+T}	T{
+Default \fBallow\fR. \fBobserve\fR records the message and keeps looking
+T}
+T{
+\fBclients\fR
+T}	T{
+list of CIDR
+T}	T{
+Networks the message arrived from
+T}
+T{
+\fBhardware_\:addresses\fR
+T}	T{
+list
+T}	T{
+Each either a whole address (\fB02:\:11:\:22:\:33:\:44:\:55\fR) or a \fBvendor prefix\fR (\fB02:\:11:\:22\fR),\: which is what a rule about "the telephones" is actually written with
+T}
+T{
+\fBmessage_\:types\fR
+T}	T{
+list
+T}	T{
+The types this rule covers
+T}
+T{
+\fBvendor_\:classes\fR,\: \fBuser_\:classes\fR
+T}	T{
+list of pattern
+T}	T{
+Options 60 and 77 as shell patterns. \fBPXEClient*\fR is what every PXE client sends
+T}
+T{
+\fBdeny_\:options\fR
+T}	T{
+list
+T}	T{
+Refused for this rule\(aqs traffic,\: \fBin addition to\fR the listener\(aqs list,\: and a rule\(aqs own deny beats its own permission below
+T}
+T{
+\fBallow_\:gateways\fR,\: \fBallow_\:resolvers\fR,\: \fBallow_\:boot_\:servers\fR
+T}	T{
+list of IPv4
+T}	T{
+This rule\(aqs own address lists,\: replacing the listener\(aqs for its traffic
+T}
+T{
+\fBallow_\:routes\fR
+T}	T{
+list of CIDR
+T}	T{
+This rule\(aqs own route list
+T}
+T{
+\fBboot_\:files\fR
+T}	T{
+list of pattern
+T}	T{
+This rule\(aqs own boot filename patterns
+T}
+T{
+\fBmax_\:lease_\:time\fR
+T}	T{
+duration
+T}	T{
+This rule\(aqs own lease bound
+T}
+T{
+\fBcircuit_\:id\fR
+T}	T{
+string
+T}	T{
+Overrides the listener\(aqs circuit identifier,\: so a rule about one segment can tell the server which segment it is
+T}
+T{
+\fBschedule\fR
+T}	T{
+object
+T}	T{
+\fB{days,\: from,\: to,\: timezone}\fR;\: a window whose \fBto\fR is before its \fBfrom\fR spans midnight
+T}
+.TE
+.PP
+\fBSaying what an option may contain is how a rule allows it.\fR This is the one turn in the kind worth reading twice, and it is the same one the LDAP attribute policy makes. The built\-in \fBdeny_options\fR list strips the boot options from every reply \-\- which is right for a network with no PXE clients and wrong for the one segment that has them. A rule with \fBallow_boot_servers\fR or \fBboot_files\fR is a rule about machines that boot from the network, so those options are \fInot\fR stripped from its traffic: they are checked against the list instead. The same holds for \fBallow_routes\fR and the two route options. Without that, "the build segment may be told a boot server and nothing else may" could not be written at all.
+.PP
+\fBThe built\-in \fBdeny_options\fR list\fR is the options that carry a machine\(aqs configuration rather than a value it displays:
+.PP
+.RS 4
+.nf
+.ft CR
+121 classless_static_route   249 ms_classless_static_route   33 static_route
+252 wpad_url                 66 tftp_server                  67 boot_file
+43 vendor_specific
+.ft
+.fi
+.RE
+.PP
+Naming \fBdeny_options\fR replaces it rather than adding to it, and validation warns if the replacement drops the route option or WPAD. A rule\(aqs own \fBdeny_options\fR adds to whichever list is in force.
+.PP
+\fBWhat is checked before the rules, and cannot be shadowed.\fR A reply from an address that is not in \fBallow_servers\fR; a message the relay could not parse; a message past \fBmax_message_bytes\fR; a message carrying an option in a header field or split across instances; the hop bound; the rate limit; the pending bound; the lease bounds; a message type arriving from the wrong side (a DHCPOFFER from the client side, or a DHCPDISCOVER from a server); and a malformed option value, because a client would read it somehow and "somehow" is where two readings differ.
+.PP
+\fBA reply is broadcast only when there is nowhere to unicast to.\fR RFC 2131 \[u00A7]4.1 says to honour the broadcast flag, and a client that sent from \fB0.0.0.0\fR has no address to unicast to whatever its flags say. A request relayed from another agent, or a renewal from a client that already has an address, is answered where it came from. Broadcasting needs a route for \fB255.255.255.255\fR on the listener\(aqs own interface: on Linux that is usually \fBip route add 255.255.255.255/32 dev <iface>\fR, and it is a deployment matter rather than something the proxy can arrange.
+.PP
+\fBA listener takes no \fBtls\fR section and binds no TCP port.\fR DHCP has no stream transport and no transport security of any kind, so a listener carrying a certificate would be promising something the protocol cannot do; validation refuses it.
+.PP
+\fBDHCPv6 (RFC 8415) is not implemented\fR, and this kind does not pretend otherwise. It is a different packet format with different message types, a different relay mechanism and its own options; reading it as if it were DHCPv4 would be worse than not reading it. A segment that runs both needs its v6 relaying done elsewhere, and \fBdocs/RFC.md\fR says so in the table.
+.PP
+Counters: \fBdhcp_messages\fR, \fBdhcp_discovers\fR, \fBdhcp_requests\fR, \fBdhcp_replies\fR, \fBdhcp_leases\fR, \fBdhcp_releases\fR, \fBdhcp_denied\fR, \fBdhcp_would_deny\fR, \fBdhcp_rogue\fR, \fBdhcp_stripped\fR, \fBdhcp_malformed\fR, \fBdhcp_rejected\fR, \fBdhcp_rate_limited\fR, \fBdhcp_timed_out\fR, \fBdhcp_upstream_failed\fR, \fBdhcp_unsolicited\fR, \fBdhcp_pending\fR, \fBdhcp_clients\fR. \fB\fBdhcp_rogue\fR is the one to alert on\fR: it counts the replies from an address this listener does not admit as a server, which is somebody answering on the segment. \fBdhcp_stripped\fR is the one to read next \-\- a route, a proxy or a boot file removed from a reply. Refusals are \fBdhcp_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBrogue_server\fR, \fBmalformed\fR, \fBmalformed_reply\fR, \fBmalformed_option\fR, \fBmessage_too_large\fR, \fBreply_too_large\fR, \fBreply_from_client_side\fR, \fBwrong_direction\fR, \fBunsolicited_reply\fR, \fBhidden_options\fR, \fBclient_id_mismatch\fR, \fBmessage_type\fR, \fBtoo_many_hops\fR, \fBtoo_many_pending\fR, \fBrate_limited\fR, \fBclient_agent_option\fR, \fBoption_stripped\fR, \fBoption_denied\fR, \fBboot_server_not_allowed\fR, \fBboot_file_not_allowed\fR, \fBrule\fR, \fBdefault_deny\fR, \fBunencodable\fR, \fBunencodable_reply\fR.
 .SS "server.listeners[].tftp (kind: tftp)"
 .PP
 TFTP is the protocol under provisioning. A switch pulls its firmware over it, a machine with no operating system yet pulls a boot image, a telephone pulls its configuration, and an engineer pushes a running configuration off a router with it. It has \fBno authentication of any kind\fR: no user, no password, no token, no transport security, and no extension that adds one. A request is a filename and a mode, and a server that receives one answers it.
@@ -14015,7 +14480,7 @@ list
 T}	T{
 \fB[]\fR (all)
 T}	T{
-Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fByara\fR
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fByara\fR
 T}
 T{
 \fBthreshold\fR

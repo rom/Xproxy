@@ -3395,6 +3395,74 @@ context can. If you need object-level policy on that traffic, the relay has
 to be where the encryption ends, which means it needs the users' keys --
 which it is not given.
 
+## DHCP relay
+
+**Clients are not getting addresses at all.** Three things in order.
+`relay_address` has to be an address on the segment the clients are on, because
+the server allocates from the subnet `giaddr` names. The reply for a client with
+no address goes to `255.255.255.255:68`, which needs a route (`ip route add
+255.255.255.255/32 dev <iface>` on Linux) — without it the relay logs a write
+failure per reply. And `allow_servers` defaults to the `upstream` pool's
+endpoints, so a server answering from a *different* address than the one
+configured (a multi-homed server, or one behind NAT) is counted as rogue: check
+`dhcp_rogue` before anything else.
+
+```sh
+xproxyctl -json stats | jq '{rogue: .dhcp_rogue, stripped: .dhcp_stripped, pending: .dhcp_pending}'
+xproxyctl -json stats | jq '.refusals.dhcp'
+xproxyctl tail security | jq -c 'select(.proto=="dhcp") | {t:.time, r:.reason, hw:.hardware_address, side:.side, detail:.detail, rule:.rule}'
+```
+
+The reasons, and what each means:
+
+| Reason | What happened |
+|--------|----------------|
+| `rogue_server` | A reply from an address not in `allow_servers`. **This is the finding this kind exists for.** Either somebody is answering on the segment, or a real server is answering from an address the list does not have |
+| `reply_from_client_side` | A DHCPOFFER or DHCPACK arrived on the *client* port. A rogue server on the relay's own segment sends these to the clients directly, where the relay cannot see them — but one that also hit the relay's port shows up here |
+| `unsolicited_reply` | A reply whose transaction identifier and hardware address matched no request, or one that arrived after `request_timeout` |
+| `wrong_direction` | A message type only a client sends, arriving from a server |
+| `option_stripped` | A gateway, resolver, boot server or route the estate does not have was removed from a reply. The source was an admitted server, so this is the check that catches a **compromised real server** |
+| `option_denied` | `on_denied_option: deny` refused a whole reply. The client gets no address; this is why `strip` is the default |
+| `boot_server_not_allowed`, `boot_file_not_allowed` | `siaddr`, option 66 or the boot filename named something outside the lists. The boot file is what the machine runs |
+| `hidden_options` | An option arrived in the `sname` or `file` field (option 52) or split across instances (RFC 3396). Legal, almost never sent, and a message two parsers read differently. Set `refuse_hidden_options: false` only for a client you have identified |
+| `client_agent_option` | A client sent option 82. It is stripped and the relay's own added; RFC 3046 §2.1 requires this |
+| `client_id_mismatch` | Option 61's Ethernet form named a different hardware address from the header. Some real clients get this wrong: if a known device trips it, leave `require_client_id_match` off |
+| `message_type` | Outside `message_types`. The default list leaves out the lease-query family |
+| `too_many_hops` | The hops field reached `max_hops`, so the message has crossed that many relay agents |
+| `too_many_pending` | `max_pending` requests are outstanding. The table refuses rather than forgetting, because forgetting makes a reply undeliverable to the client that asked |
+| `rate_limited` | `rate_limit` per **hardware address** |
+| `malformed`, `malformed_reply`, `malformed_option`, `message_too_large` | Could not be read, or a value that is not the shape that option has. None of these is shadowed |
+| `unencodable`, `unencodable_reply` | The rewritten message would not fit or could not be written. A bug report rather than a policy event |
+
+**`dhcp_rogue` is climbing and the estate is fine.** Almost always a server whose
+reply source address is not its configured one. Put the real address in
+`allow_servers` rather than widening it to a network — the point of the list is
+that it is short.
+
+**A PXE client boots but cannot find its image.** The built-in `deny_options`
+list strips options 66 and 67. Put `allow_boot_servers` and `boot_files` on a
+rule matching those machines (`vendor_classes: ["PXEClient*"]` is what every one
+of them sends): naming what the options may contain is what allows the options.
+
+**A device gets a very short lease.** `max_lease_time` shortens rather than
+refuses, so a bound of an hour turns the server's week into an hour and the
+device renews constantly. Check `lease_bounded_to` in the lease log.
+
+**`dhcp_pending` sits high.** The servers are answering slower than the clients
+ask, or not at all. It expires on `request_timeout` and is swept independently of
+traffic, so a high number on a quiet segment means the requests are real and
+unanswered.
+
+**Nothing appears in the lease log.** `log_leases` is on by default and writes
+only on an OFFER or an ACK; a segment where clients renew successfully against a
+server this relay is not in front of will show nothing. Check `dhcp_replies`.
+
+**The access log has no client identifiers in it.** Host names, vendor classes
+and boot filenames are strings a client or a server chose, so they pass through
+the same clipping every peer-supplied string in this proxy does: control
+characters replaced, length bounded. A log line is exactly where a control
+character in a vendor class does its work.
+
 ## TFTP relay
 
 **A request reaches the relay and not the server.** The default answer is an
@@ -4990,6 +5058,7 @@ innocent.
 | `iec104_denied` | The IEC 60870-5-104 relay: a frame the policy refused -- a type identification, a cause, a station, a point or a control function outside what a rule allows, a command on a `monitor_only` listener, an execute with no selection -- or a client outside `allow_clients`, a frame it could not read, a sequence gap, or a station sending an activation to its own control centre (`reason` says which, and the event carries the type, the cause, the common address, the point and the rule) | yes |
 | `ldap_denied` | The LDAP relay: a request the policy refused -- a bind method, a bound identity, an operation, a subtree, a scope or an attribute outside what a rule allows, a write on a `read_only` listener, an object outside `base_dns` -- or a client outside `allow_clients`, a bind carrying a password in the clear, a message it could not read, a bind the *directory* itself answered `invalidCredentials`, or an answer no request matched (`reason` says which, and the event carries the operation, the bound identity, the object and the rule, never a password or a filter's values) | yes |
 | `tftp_denied` | The TFTP relay: a transfer the policy refused -- a filename whose shape or place is outside what a rule allows, a write on a read-only listener, a mode outside the list -- or a client outside `allow_clients`, a filename this relay and the server would read differently, one of the bounds, a packet on the request port that is not a request, or a datagram from an address with no part in a transfer (`reason` says which, and the event carries the direction, the path, its class and the rule) | yes |
+| `dhcp_denied` | The DHCP relay: a message the policy refused -- a message type, a rule, a client identifier that names another address, a boot server or boot file outside the lists -- or a reply from an address that is not a server, a message carrying an option in a header field or split across instances, one of the bounds, or an option removed from a reply for naming an address the estate does not have (`reason` says which, and the event carries the side, the hardware address, the message type and the rule). A client with no address yet sends from 0.0.0.0, and that address is never handed to the ban list: banning it would ban every first-time client on the segment | yes |
 | `snmp_denied` | The SNMP relay: a message the policy refused -- a version, a community string, a USM user, a security level, an operation or an object subtree outside what a rule allows, a SetRequest on a `read_only` listener -- or a client outside `allow_clients`, a message it could not read, a response past the amplification bounds, or an answer no request matched (`reason` says which, and the event carries the version, the operation, the object and the rule, never the community string) | yes |
 | `modbus_denied` | The Modbus relay: a frame the policy refused -- a function code, a unit identifier, a register range or a value outside what a rule allows, a write on a `read_only` listener, a role that is missing or not allowed -- or a client outside `allow_clients`, a frame it could not read, or an answer from the device it would not pass on (`reason` says which, and the event carries the unit, the function, the address and the rule) | yes |
 | `ntp_denied` | The NTP gateway: a client outside `allow_clients`, a version or mode the profile does not accept (including modes 6 and 7, which are the control and private protocols rather than time), a packet it could not read, a rate limit, missing or failed authentication, or an answer from a server that the quality rules refuse -- unsynchronised, too far down the tree, too dispersed, or stripped of the NTS fields the request carried (`detail` says which) | yes |

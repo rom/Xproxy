@@ -1089,6 +1089,297 @@
       },
       "additionalProperties": false
     },
+    "DHCPListener": {
+      "description": "DHCPListener is a kind: dhcp listener: a DHCP relay agent that reads what it relays. DHCP is the one protocol where *answering* is the attack. A client broadcasts \"who will configure me\", and whatever answers first tells it its address, its default route, its resolvers, its proxy and -- if it boots from the network -- the file it boots. Nothing in the exchange authenticates anybody.",
+      "type": "object",
+      "properties": {
+        "alert_on_deny": {
+          "description": "AlertOnDeny writes a security event for every refusal. Default true.",
+          "type": "boolean"
+        },
+        "allow_boot_servers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_clients": {
+          "description": "AllowClients and DenyClients are the networks a message may arrive from. Deny is evaluated first. On a segment this is every client, which is why it is not the main control here: a DHCP client has no address yet, so it sends from 0.0.0.0 and the list cannot distinguish it from any other. It is the useful control on a listener that fronts *other relay agents*, where every sender is a known address.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_gateways": {
+          "description": "AllowGateways, AllowResolvers and AllowBootServers are the addresses the router, DNS and boot-server options may name. These are the positive form of the same policy as DenyOptions, and the more useful one: an estate knows its own gateways and resolvers, so a reply naming anything else is wrong whoever sent it.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_options": {
+          "description": "AllowOptions turns the answer policy inside out: when it is set, an option outside it is removed. It is the positive model, and on a network whose clients need six options it is a shorter and safer thing to write than a deny list.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_resolvers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_routes": {
+          "description": "AllowRoutes are the destinations the classless static route options (121 and Microsoft's 249) may carry, for an estate that uses them. A route outside the list is refused, and the refusal names the route.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_servers": {
+          "description": "AllowServers are the addresses a reply may come from, and it is the single most valuable line in the file. Every switch vendor sells this as DHCP snooping with a trusted port; here it is an address list, and an OFFER or an ACK from anywhere else is dropped and counted. Empty means the endpoints of the upstream pool, which is almost always what an operator means and is why it can be left out.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "boot_files": {
+          "description": "BootFiles are shell patterns the boot filename may match, for the machines that boot from the network. This is where a PXE estate says which images exist.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "circuit_id": {
+          "description": "CircuitID and RemoteID fill in the two suboptions of RFC 3046's option 82, which is how a server learns which segment a request came from. Empty leaves the option out.",
+          "type": "string"
+        },
+        "default_action": {
+          "description": "DefaultAction is allow (the default) or deny. Unlike the other relay kinds here, the default is allow. DHCP is infrastructure: a listener that refused every request until somebody wrote a rule would be a listener that stops an estate booting, and the protections in this kind are the *answer* policy and the server list, which are on by default and do not depend on a rule existing.",
+          "type": "string"
+        },
+        "deny_clients": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_options": {
+          "description": "DenyOptions are the options a *server* may not send. Empty uses the built-in list, which is the options that carry a configuration rather than a value: the two classless route options and the obsolete one, the WPAD URL, the TFTP server and boot file, and the vendor-specific blob that can be any of them. Setting the list replaces it.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_requested_options": {
+          "description": "DenyRequestedOptions are options a client may not *ask* for, in its option 55 parameter list. A client asking for the WPAD URL is a client that will use a proxy if anything offers one, and an estate that has decided not to have that can say so here; the ask is removed rather than the message refused.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_response": {
+          "description": "DenyResponse is drop (the default) or nak. drop leaves the client retrying, which is what it does anyway when nothing answers; nak sends a DHCPNAK, which makes a client stop and start over. nak is honest and it is also a way to stop a client dead, so it is not the default.",
+          "type": "string"
+        },
+        "log_leases": {
+          "description": "LogLeases writes a line for every address handed out: which hardware address got which lease, for how long, from which server, and what it was told. Default true, and it is the record an estate is asked for -- it is also the beginning of an asset inventory.",
+          "type": "boolean"
+        },
+        "log_messages": {
+          "description": "LogMessages writes an access line per message. A segment's DHCP is quiet by the standards of a proxy, so this is affordable here in a way it is not on a directory front.",
+          "type": "boolean"
+        },
+        "max_clients": {
+          "description": "MaxClients bounds the distinct hardware addresses this listener will track at once. It is the other half of the starvation bound: the rate limit slows one address down, and this one stops a flood of *new* addresses from filling the table that does the limiting. Default 8192.",
+          "type": "integer"
+        },
+        "max_hops": {
+          "description": "MaxHops bounds the hops field, which counts the relay agents a message has crossed. Default 4; RFC 2131 makes 16 the outer limit. A message arriving with a large hop count has been somewhere.",
+          "type": "integer"
+        },
+        "max_lease_time": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_message_bytes": {
+          "description": "MaxMessageBytes bounds one message. Default 1500.",
+          "type": "integer"
+        },
+        "max_pending": {
+          "description": "MaxPending bounds the requests outstanding towards servers, which is the table that pairs a reply with the client that asked. Default 256.",
+          "type": "integer"
+        },
+        "message_types": {
+          "description": "MessageTypes is the allow list of message types a client may send: discover, request, decline, release, inform, lease_query. Empty allows the four of the ordinary lease cycle plus inform, which is to say it leaves out the lease-query family -- a relay agent's own diagnostic, and an inventory of every lease in the estate to anything else.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "min_lease_time": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "mode": {
+          "description": "Mode is reverse (the default: clients send here and the relay forwards to the servers) or forward (this listener is the controlled egress a downstream relay agent uses to reach a server elsewhere).",
+          "type": "string"
+        },
+        "on_client_agent_option": {
+          "description": "OnClientAgentOption is what to do when a *client* sends option 82: strip (the default, which is what RFC 3046 §2.1 requires) or deny. A client has no business asserting which circuit it is on, because that assertion is exactly what the option exists to make on its behalf.",
+          "type": "string"
+        },
+        "on_denied_option": {
+          "description": "OnDeniedOption is strip (the default) or deny. strip removes the option and forwards the rest, so a client still gets its address and no longer gets a route it should not have; deny refuses the whole reply, which leaves the client with no address at all.",
+          "type": "string"
+        },
+        "rate_burst": {
+          "type": "integer"
+        },
+        "rate_limit": {
+          "description": "RateLimit and RateBurst bound messages per second per *hardware address*, which is the key that matters on this protocol: address pool exhaustion is one client sending thousands of DISCOVERs with a made-up address in each, and a limit keyed on the source address would see one sender doing nothing unusual.",
+          "type": "integer"
+        },
+        "refuse_hidden_options": {
+          "description": "RefuseHiddenOptions refuses a message that carried an option in the sname or file field (option 52) or split across instances (RFC 3396). Default true: both are legal, almost nothing in an estate sends them, and both make one message say different things to different parsers.",
+          "type": "boolean"
+        },
+        "relay_address": {
+          "description": "RelayAddress is the address this relay puts in giaddr, which is what tells the server which segment to allocate from and where to answer. Required in reverse mode: a relay agent that left giaddr empty would be asking the server to answer a broadcast it never saw.",
+          "type": "string"
+        },
+        "remote_id": {
+          "type": "string"
+        },
+        "request_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "require_client_id_match": {
+          "description": "RequireClientIDMatch refuses a message whose option 61 client identifier is an Ethernet identifier naming a different hardware address from the one in the header. Default false: it is a real signal and there are real clients that get it wrong, so it is a decision rather than a default.",
+          "type": "boolean"
+        },
+        "rules": {
+          "description": "Rules decide each message, in order, first match wins. A message that matches no rule takes DefaultAction.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DHCPRule"
+          }
+        },
+        "upstream": {
+          "description": "Upstream is the server pool. Required.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "DHCPRule": {
+      "description": "DHCPRule decides one message.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "Action is allow, deny or observe. observe logs and counts and then keeps looking, which is how a rule is tried on live traffic before it decides anything.",
+          "type": "string"
+        },
+        "allow_boot_servers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_gateways": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_resolvers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_routes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "boot_files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "circuit_id": {
+          "description": "CircuitID overrides the listener's circuit identifier, so that a rule about one segment can tell the server which segment it is.",
+          "type": "string"
+        },
+        "clients": {
+          "description": "Clients are the networks the message arrived from.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_options": {
+          "description": "DenyOptions, AllowGateways, AllowResolvers, AllowBootServers, AllowRoutes and BootFiles narrow the answer policy for this rule's traffic, which is how \"the PXE segment may be told a boot server and nothing else may\" is written.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "hardware_addresses": {
+          "description": "HardwareAddresses are the addresses this rule covers, each either a whole address (02:11:22:33:44:55) or a vendor prefix (02:11:22). The prefix form is what a rule about \"the telephones\" is actually written with, because nobody lists every handset.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_lease_time": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "message_types": {
+          "description": "MessageTypes are the message types this rule covers.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "description": "Name identifies the rule in the logs and the counters. Required.",
+          "type": "string"
+        },
+        "schedule": {
+          "description": "Schedule limits the rule to a time window.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/ModbusSchedule"
+            }
+          ]
+        },
+        "user_classes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "vendor_classes": {
+          "description": "VendorClasses and UserClasses match options 60 and 77 as shell patterns, which is how a rule about PXE clients is written: \"PXEClient*\" is what every one of them sends.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "DNS64": {
       "description": "DNS64 is RFC 6147 address synthesis on a dns listener: an AAAA query for a name that has only an A record is answered with that IPv4 address embedded in a prefix (RFC 6052) routed to a translator. The answer is one this resolver invented, which is why the address policy sees the IPv4 address before it is embedded rather than the synthesised address afterwards: 64:ff9b::7f00:1 is not inside 127.0.0.0/8 and no prefix list would catch it, but it is 127.0.0.1 to everything past the translator. A synthesised answer also carries no AD bit, because there is nothing signed about it.",
       "type": "object",
@@ -3564,6 +3855,14 @@
         },
         "connection_rate_per_source": {
           "$ref": "#/$defs/SourceRate"
+        },
+        "dhcp": {
+          "description": "DHCP configures a kind: dhcp listener.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/DHCPListener"
+            }
+          ]
         },
         "dns": {
           "description": "DNS configures a kind: dns listener.",

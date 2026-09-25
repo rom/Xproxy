@@ -1,0 +1,265 @@
+# DHCP relay agent: the protocol where answering is the attack, put behind
+# something that reads the answers.
+#
+# A client broadcasts "who will configure me" and believes whatever answers
+# first: its address, its default route, its resolvers, its proxy (option
+# 252) and -- on a machine that boots from the network -- the file it boots
+# (options 66 and 67). Nothing in the exchange authenticates anybody, and the
+# client has no address yet, so it cannot even be told apart by one.
+#
+# Every switch vendor sells the countermeasure as DHCP snooping and
+# implements it as a trusted port. Where a switch can do that, it should.
+# This is the same policy by address, plus the part a switch cannot do:
+#   - which addresses may answer at all (allow_servers, which defaults to
+#     the endpoints of the upstream pool)
+#   - which options a reply may carry (deny_options, allow_options)
+#   - which *addresses* those options may name (allow_gateways,
+#     allow_resolvers, allow_boot_servers, allow_routes) -- the check a
+#     compromised real server fails as surely as a rogue one
+#   - which file a machine may be told to boot (boot_files)
+#   - how long a lease may be (max_lease_time), shortened rather than refused
+#   - that one host cannot empty the address pool (rate_limit, keyed on the
+#     hardware address, because that is what exhaustion is made of)
+#
+# Validate with: xproxyctl -config examples/addressing/dhcp.yaml validate
+version: 1
+
+logging:
+  directory: /var/log/xproxy
+  access: {file: access.log}
+  security: {file: security.log}
+  audit: {file: audit.log}
+
+management:
+  socket: /run/xproxy/mgmt.sock
+  socket_mode: "0660"
+
+server:
+  listeners:
+    # ---------------------------------------------------------------
+    # The office segment: desks, telephones, printers.
+    #
+    # Nothing here boots from the network, so the built-in deny list --
+    # which strips the boot options along with the routes and the proxy --
+    # is exactly right and is left alone.
+    # ---------------------------------------------------------------
+    - name: office
+      address: "10.20.0.1:67"
+      kind: dhcp
+      dhcp:
+        upstream: dhcp-servers
+
+        # What giaddr becomes. The server allocates from the subnet this
+        # address is in, so it has to be the relay's address *on this
+        # segment* rather than any address it happens to have.
+        relay_address: 10.20.0.1
+
+        # What the server is told about where the request came from. A
+        # server's own logs key on these, which is what makes an incident
+        # traceable back to a port rather than to a relay.
+        circuit_id: office-vlan20
+        remote_id: relay-north
+
+        # allow_servers is deliberately absent: it becomes the endpoints of
+        # dhcp-servers below, which is what "the servers I configured"
+        # means. Writing it out would be repeating the pool.
+
+        # The estate's own gateway and resolvers. This is the line that
+        # catches a compromised real server: the source address is on the
+        # server list and the answer is still wrong.
+        allow_gateways: [10.20.0.1]
+        allow_resolvers: [10.20.0.2, 10.20.0.3]
+
+        # A week is what the server hands out; a day is what this segment
+        # needs. The lease is shortened rather than the reply refused, so
+        # nothing stops working.
+        max_lease_time: 24h
+        min_lease_time: 10m
+
+        # Ten messages a second per hardware address is generous for a
+        # desk and stingy for a pool exhaustion.
+        rate_limit: 10
+        rate_burst: 20
+
+        max_clients: 4096
+        log_leases: true
+
+    # ---------------------------------------------------------------
+    # The build segment: machines that boot from the network.
+    #
+    # This is the listener that needs the boot options, and it is a
+    # listener of its own rather than a rule on the office one, because
+    # "the boot options are stripped here" is a line nobody should have to
+    # re-read a rule list to trust.
+    # ---------------------------------------------------------------
+    - name: build
+      address: "10.20.1.1:67"
+      kind: dhcp
+      dhcp:
+        upstream: dhcp-servers
+        relay_address: 10.20.1.1
+        circuit_id: build-vlan21
+        remote_id: relay-north
+
+        allow_gateways: [10.20.1.1]
+        allow_resolvers: [10.20.0.2, 10.20.0.3]
+
+        # A machine being built asks for a lot and should be told a little.
+        # Naming the boot server and the image list is what *allows*
+        # options 66 and 67 for the traffic the rule covers -- and what
+        # then checks them.
+        rules:
+          - name: pxe
+            action: allow
+            vendor_classes: ["PXEClient*"]
+            allow_boot_servers: [10.20.4.20]
+            boot_files: ["pxelinux.0", "images/*.efi", "images/*.iso"]
+            # Four hours is a build. A machine still on a build lease the
+            # next morning is a machine that did not finish.
+            max_lease_time: 4h
+
+          # Anything else on this segment is an ordinary client and gets
+          # the listener's own lists, where the boot options are refused.
+          - name: rest
+            action: allow
+
+        max_lease_time: 12h
+        rate_limit: 20
+        rate_burst: 40
+
+    # ---------------------------------------------------------------
+    # The guest segment: whatever somebody brought with them.
+    #
+    # A positive option list rather than a deny list. On a segment whose
+    # clients need six options, naming the six is shorter and safer than
+    # naming everything they may not have.
+    # ---------------------------------------------------------------
+    - name: guest
+      address: "10.20.9.1:67"
+      kind: dhcp
+      dhcp:
+        upstream: dhcp-servers
+        relay_address: 10.20.9.1
+        circuit_id: guest-vlan29
+
+        allow_options: [subnet_mask, router, dns_servers, domain_name,
+                        lease_time, renewal_time, rebind_time, interface_mtu]
+        allow_gateways: [10.20.9.1]
+        allow_resolvers: [10.20.9.2]
+
+        # A guest lease is short by design: the pool is small and the
+        # devices leave.
+        max_lease_time: 2h
+        min_lease_time: 10m
+
+        # A guest segment is where a starvation attempt actually happens,
+        # so the bound is tighter and the client table smaller.
+        rate_limit: 4
+        rate_burst: 8
+        max_clients: 512
+
+        # A guest device asking to be told a proxy is a guest device that
+        # will use one if anything offers it. The ask is trimmed rather
+        # than the message refused.
+        deny_requested_options: [wpad_url, classless_static_route,
+                                 ms_classless_static_route, tftp_server, boot_file]
+
+        # A visiting laptop whose option 61 disagrees with its own hardware
+        # address is worth knowing about on this segment and nowhere else.
+        require_client_id_match: true
+
+    # ---------------------------------------------------------------
+    # A downstream relay agent, at a site that has its own.
+    #
+    # Here the client list is a real control, because every sender is a
+    # known relay rather than a client with no address: the senders are
+    # named, and giaddr arrives already filled in and is not overwritten.
+    # ---------------------------------------------------------------
+    - name: remote-sites
+      address: "10.20.255.1:67"
+      kind: dhcp
+      dhcp:
+        upstream: dhcp-servers
+        relay_address: 10.20.255.1
+        allow_clients: ["10.30.0.0/16", "10.31.0.0/16"]
+        remote_id: relay-north
+
+        # Two hops is a site's own agent and then this one. More than that
+        # is a message that has been somewhere.
+        max_hops: 2
+
+        allow_gateways: [10.30.0.1, 10.31.0.1]
+        allow_resolvers: [10.20.0.2, 10.20.0.3]
+
+        # The remote sites do use classless routes, so the option is left
+        # off the deny list and allow_routes decides instead. Containment
+        # rather than equality: this admits a route to 10.30.5.0/24 and
+        # refuses a default route, which is the shape an injection takes.
+        deny_options: [wpad_url, tftp_server, boot_file, vendor_specific,
+                       ms_classless_static_route, static_route]
+        allow_routes: ["10.30.0.0/16", "10.31.0.0/16"]
+
+        max_lease_time: 24h
+        rate_limit: 50
+        rate_burst: 100
+
+    # ---------------------------------------------------------------
+    # A trial of a narrower policy on live traffic. Shadow mode evaluates
+    # every rule and enforces none of them, so the refusals appear in
+    # `xproxyctl policy report` and nothing stops booting.
+    #
+    # What it still refuses: a reply from an address that is not a server,
+    # a message carrying an option in a header field or split across
+    # instances, and every bound. A rogue server's answer relayed and
+    # written down would not be a trial of anything.
+    # ---------------------------------------------------------------
+    - name: office-trial
+      address: "10.20.0.2:67"
+      kind: dhcp
+      policy: {mode: shadow}
+      dhcp:
+        upstream: dhcp-servers
+        relay_address: 10.20.0.2
+        allow_gateways: [10.20.0.1]
+        allow_resolvers: [10.20.0.2]
+        message_types: [discover, request, release]
+        max_lease_time: 8h
+        rate_limit: 10
+
+upstreams:
+  - name: dhcp-servers
+    endpoints:
+      - {address: "10.20.4.10:67"}
+      - {address: "10.20.4.11:67"}
+    # The endpoints are also the server list: a reply from anywhere else is
+    # counted as rogue and dropped. They are written as addresses rather
+    # than names for exactly that reason -- a name this relay cannot resolve
+    # to a list at load would make the check unconfigurable, and the
+    # listener refuses to start rather than guessing.
+    #
+    # A health check has to send something a DHCP server answers, and an
+    # INFORM is the one message type that asks for configuration without
+    # asking for an address. The hex below is a DHCPINFORM from the relay's
+    # own hardware address with a parameter list of one option.
+    health_check:
+      type: udp
+      interval: 30s
+      timeout: 3s
+      send_hex: "01010600abcdef00000000000a14000100000000000000000a1400010200000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000063825363350108370101ff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+
+# A rogue server is not something a ban list can reach -- it answers the
+# clients directly, and the address it answers from is the finding rather
+# than the target. What a ban list *can* reach is a relay agent or a host
+# that keeps sending what this listener refuses.
+#
+# A client with no address yet sends from 0.0.0.0, and the relay never hands
+# that address to the ban list: banning it would ban every first-time client
+# on the segment.
+bans:
+  action: drop
+  triggers:
+    - name: dhcp-persistent-refusals
+      reasons: [dhcp_denied]
+      threshold: 20
+      window: 5m
+      duration: 1h
