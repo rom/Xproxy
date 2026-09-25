@@ -9351,9 +9351,5 @@ func (v *validator) assetInventory(a *AssetInventory) {
 
 // roleNames lists the roles for a validation message.
 func roleNames() string {
-	out := make([]string, 0, len(assets.Roles()))
-	for _, r := range assets.Roles() {
-		out = append(out, string(r))
-	}
-	return strings.Join(out, ", ")
+	return strings.Join(assets.RoleNames(), ", ")
 }

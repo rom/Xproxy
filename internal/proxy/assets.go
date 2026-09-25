@@ -224,6 +224,25 @@ func (s *Server) ObserveAsset(o assets.Observation) {
 	}
 }
 
+// AssetReport is the inventory's summary for a status view, or nil when the
+// configuration has no inventory.
+func (s *Server) AssetReport() *AssetSummary {
+	k := s.assets.Load()
+	if k == nil {
+		return nil
+	}
+	c := k.inv.Counts()
+	size, frozen := k.inv.Frozen()
+	sum := &AssetSummary{Assets: c.Assets, New: c.New, Unknown: c.Unknown,
+		Dropped: c.Dropped, Expired: c.Expired, Refused: c.Refused,
+		Findings: c.Findings, Frozen: frozen, Baseline: size,
+		ByRole: make(map[string]int, len(c.ByRole))}
+	for r, n := range c.ByRole {
+		sum.ByRole[string(r)] = n
+	}
+	return sum
+}
+
 // AssetCounts is the inventory's own summary, for the status view.
 func (s *Server) AssetCounts() (assets.Counts, bool) {
 	k := s.assets.Load()

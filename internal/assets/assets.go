@@ -615,8 +615,16 @@ func (inv *Inventory) Frozen() (int, bool) {
 }
 
 // Thaw forgets the baseline.
+//
+// Every record's New flag goes with it. An estate that has no baseline has no
+// opinion about what is new, and leaving the flag set would mean the summary
+// said "no baseline" while the devices said "new" -- two answers to one
+// question, which is how an operator stops believing either.
 func (inv *Inventory) Thaw() {
 	inv.mu.Lock()
+	for _, a := range inv.byID {
+		a.New = false
+	}
 	inv.baseline = nil
 	inv.mu.Unlock()
 }

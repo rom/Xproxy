@@ -109,6 +109,17 @@ func RoleOf(s string) (Role, bool) {
 	return "", false
 }
 
+// RoleNames is Roles as a configuration file spells them, which is what an
+// error message and the control plane both need to list.
+func RoleNames() []string {
+	rs := Roles()
+	out := make([]string, 0, len(rs))
+	for _, r := range rs {
+		out = append(out, string(r))
+	}
+	return out
+}
+
 // Roles are every role, in the order they are worth listing: down the process
 // first, then the network, then the things that merely share the wire.
 func Roles() []Role {

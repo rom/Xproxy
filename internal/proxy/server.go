@@ -347,18 +347,7 @@ func (s *Server) Stats() Snapshot {
 	snap.OpenConnections = s.connLimiter.Open()
 	snap.RejectedConns = s.connLimiter.Rejected.Load()
 	snap.RateRefusedConns = s.rate().Rejected.Load()
-	if k := s.assets.Load(); k != nil {
-		c := k.inv.Counts()
-		size, frozen := k.inv.Frozen()
-		sum := &AssetSummary{Assets: c.Assets, New: c.New, Unknown: c.Unknown,
-			Dropped: c.Dropped, Expired: c.Expired, Refused: c.Refused,
-			Findings: c.Findings, Frozen: frozen, Baseline: size,
-			ByRole: make(map[string]int, len(c.ByRole))}
-		for r, n := range c.ByRole {
-			sum.ByRole[string(r)] = n
-		}
-		snap.Assets = sum
-	}
+	snap.Assets = s.AssetReport()
 	s.mu.Lock()
 	for _, bl := range s.listeners {
 		if bl.rate != nil {

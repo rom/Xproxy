@@ -1204,7 +1204,7 @@ type AssetInventory struct {
 	VendorFile string `yaml:"vendor_file"`
 	// AlertOnNew writes a security event for a device that was not in the
 	// frozen baseline. It does nothing until a baseline exists
-	// (`xproxyctl assets freeze`), because before that everything is new.
+	// (`xproxyctl assets baseline`), because before that everything is new.
 	// Default true.
 	AlertOnNew *bool `yaml:"alert_on_new"`
 	// AlertOnChange writes a security event when a device's identity changes:
