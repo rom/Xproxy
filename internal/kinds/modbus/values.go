@@ -4,6 +4,8 @@ import (
 	"net/netip"
 	"sync"
 	"time"
+
+	"github.com/rom/xproxy/internal/numrange"
 )
 
 // The value state is what makes a Modbus policy about the process rather
@@ -188,14 +190,14 @@ func (v *valueState) WritesIn(unit byte, addr int, window time.Duration, client 
 
 // Selected reports whether a select register holds the value a
 // precondition asks for, written recently enough.
-func (v *valueState) Selected(unit byte, addrs ranges, equals int, within time.Duration, now time.Time) bool {
+func (v *valueState) Selected(unit byte, addrs numrange.Set, equals int, within time.Duration, now time.Time) bool {
 	if v == nil {
 		return false
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	for p, o := range v.points {
-		if p.unit != unit || !addrs.has(p.addr) {
+		if p.unit != unit || !addrs.Has(p.addr) {
 			continue
 		}
 		// The select has to have been *written*, not merely read back:

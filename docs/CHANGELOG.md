@@ -607,6 +607,16 @@ Open findings of the earlier rounds:
   including a regression that asserts the old reading in both directions -- a fix
   that only closed the wrong window would have left the right one closed too.
 
+- **`internal/numrange`: the range list, from two copies.** `5`, `1-16`,
+  `0x10-0x1F`, shared by the modbus and s7 kinds. Smaller than the schedule and
+  with no behaviour question attached -- both copies were byte-identical in the
+  parser and in `covers` -- but worth doing for what the s7 copy's comment
+  claimed: that it used the modbus spelling deliberately, so an estate with both
+  listeners does not have to remember that the two read `0-99` differently. A
+  promise held by two copies is one waiting to be broken. 100% coverage, and
+  `ParseNum` is exported because a policy reads bare numbers in the same two
+  spellings as the ends of a range.
+
 ### Added (1.4)
 
 - **`docs/protocols/`: one page per protocol, and a test that keeps the set

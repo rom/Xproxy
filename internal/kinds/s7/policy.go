@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/numrange"
 	wire "github.com/rom/xproxy/internal/s7"
 	"github.com/rom/xproxy/internal/schedule"
 )
@@ -79,15 +80,15 @@ type Session struct {
 
 type policy struct {
 	allowIPs, denyIPs []netip.Prefix
-	racks, slots      ranges
+	racks, slots      numrange.Set
 	resources         map[uint8]bool
 
 	readOnly            bool
 	allowOps, denyOps   map[wire.Op]bool
 	namedOps            map[wire.Op]bool
 	areas, denyAreas    map[uint8]bool
-	dbs                 ranges
-	addresses, writeAdr ranges
+	dbs                 numrange.Set
+	addresses, writeAdr numrange.Set
 	blockTypes          map[string]bool
 
 	maxItems, maxRead, maxWrite int
@@ -104,8 +105,8 @@ type rule struct {
 	name    string
 	comment string
 	clients []netip.Prefix
-	racks   ranges
-	slots   ranges
+	racks   numrange.Set
+	slots   numrange.Set
 	res     map[uint8]bool
 	sched   *schedule.Window
 	observe bool
@@ -113,8 +114,8 @@ type rule struct {
 
 	allowOps, denyOps   map[wire.Op]bool
 	areas, denyAreas    map[uint8]bool
-	dbs                 ranges
-	addresses, writeAdr ranges
+	dbs                 numrange.Set
+	addresses, writeAdr numrange.Set
 	blockTypes          map[string]bool
 	maxItems            int
 }
@@ -143,10 +144,10 @@ func compile(c *config.S7Listener) (*policy, error) {
 	if p.denyIPs, err = prefixes(c.DenyClients); err != nil {
 		return nil, fmt.Errorf("s7 deny_clients: %w", err)
 	}
-	if p.racks, err = parseRanges("racks", c.Racks, 7); err != nil {
+	if p.racks, err = numrange.Parse("racks", c.Racks, 7); err != nil {
 		return nil, err
 	}
-	if p.slots, err = parseRanges("slots", c.Slots, 31); err != nil {
+	if p.slots, err = numrange.Parse("slots", c.Slots, 31); err != nil {
 		return nil, err
 	}
 	if p.resources, err = resourceSet(c.Resources); err != nil {
@@ -171,13 +172,13 @@ func compile(c *config.S7Listener) (*policy, error) {
 	if p.denyAreas, err = areaSet(c.DenyAreas); err != nil {
 		return nil, err
 	}
-	if p.dbs, err = parseRanges("dbs", c.DBs, 65535); err != nil {
+	if p.dbs, err = numrange.Parse("dbs", c.DBs, 65535); err != nil {
 		return nil, err
 	}
-	if p.addresses, err = parseRanges("addresses", c.Addresses, 1<<21-1); err != nil {
+	if p.addresses, err = numrange.Parse("addresses", c.Addresses, 1<<21-1); err != nil {
 		return nil, err
 	}
-	if p.writeAdr, err = parseRanges("write_addresses", c.WriteAddresses, 1<<21-1); err != nil {
+	if p.writeAdr, err = numrange.Parse("write_addresses", c.WriteAddresses, 1<<21-1); err != nil {
 		return nil, err
 	}
 	if p.blockTypes, err = blockSet(c.BlockTypes); err != nil {
@@ -211,10 +212,10 @@ func compileRule(rc *config.S7Rule, i int) (*rule, error) {
 	if r.clients, err = prefixes(rc.Clients); err != nil {
 		return nil, fmt.Errorf("rules[%d].clients: %w", i, err)
 	}
-	if r.racks, err = parseRanges(fmt.Sprintf("rules[%d].racks", i), rc.Racks, 7); err != nil {
+	if r.racks, err = numrange.Parse(fmt.Sprintf("rules[%d].racks", i), rc.Racks, 7); err != nil {
 		return nil, err
 	}
-	if r.slots, err = parseRanges(fmt.Sprintf("rules[%d].slots", i), rc.Slots, 31); err != nil {
+	if r.slots, err = numrange.Parse(fmt.Sprintf("rules[%d].slots", i), rc.Slots, 31); err != nil {
 		return nil, err
 	}
 	if r.res, err = resourceSet(rc.Resources); err != nil {
@@ -232,13 +233,13 @@ func compileRule(rc *config.S7Rule, i int) (*rule, error) {
 	if r.denyAreas, err = areaSet(rc.DenyAreas); err != nil {
 		return nil, err
 	}
-	if r.dbs, err = parseRanges(fmt.Sprintf("rules[%d].dbs", i), rc.DBs, 65535); err != nil {
+	if r.dbs, err = numrange.Parse(fmt.Sprintf("rules[%d].dbs", i), rc.DBs, 65535); err != nil {
 		return nil, err
 	}
-	if r.addresses, err = parseRanges(fmt.Sprintf("rules[%d].addresses", i), rc.Addresses, 1<<21-1); err != nil {
+	if r.addresses, err = numrange.Parse(fmt.Sprintf("rules[%d].addresses", i), rc.Addresses, 1<<21-1); err != nil {
 		return nil, err
 	}
-	if r.writeAdr, err = parseRanges(fmt.Sprintf("rules[%d].write_addresses", i), rc.WriteAddresses, 1<<21-1); err != nil {
+	if r.writeAdr, err = numrange.Parse(fmt.Sprintf("rules[%d].write_addresses", i), rc.WriteAddresses, 1<<21-1); err != nil {
 		return nil, err
 	}
 	if r.blockTypes, err = blockSet(rc.BlockTypes); err != nil {
@@ -353,10 +354,10 @@ func (p *policy) Connection(se *Session, c *wire.COTP) Decision {
 	if p.resources != nil && !p.resources[resource] {
 		return hard("resource_not_allowed", wire.ResourceName(resource))
 	}
-	if len(p.racks) > 0 && !p.racks.has(rack) {
+	if len(p.racks) > 0 && !p.racks.Has(rack) {
 		return hard("rack_not_allowed", fmt.Sprint(rack))
 	}
-	if len(p.slots) > 0 && !p.slots.has(slot) {
+	if len(p.slots) > 0 && !p.slots.Has(slot) {
 		return hard("slot_not_allowed", fmt.Sprint(slot))
 	}
 	// A rule may narrow it further, and a rule that names racks or a
@@ -368,11 +369,11 @@ func (p *policy) Connection(se *Session, c *wire.COTP) Decision {
 			return Decision{Reason: "resource_not_allowed", Detail: wire.ResourceName(resource),
 				Hard: true, Rule: r.name, Comment: r.comment}
 		}
-		if len(r.racks) > 0 && !r.racks.has(rack) {
+		if len(r.racks) > 0 && !r.racks.Has(rack) {
 			return Decision{Reason: "rack_not_allowed", Detail: fmt.Sprint(rack),
 				Hard: true, Rule: r.name, Comment: r.comment}
 		}
-		if len(r.slots) > 0 && !r.slots.has(slot) {
+		if len(r.slots) > 0 && !r.slots.Has(slot) {
 			return Decision{Reason: "slot_not_allowed", Detail: fmt.Sprint(slot),
 				Hard: true, Rule: r.name, Comment: r.comment}
 		}
@@ -514,11 +515,11 @@ func (p *policy) memory(r *rule, op wire.Op, pdu *wire.PDU) Decision {
 			return p.hardenArea(Decision{Reason: "area_not_allowed", Detail: wire.AreaName(it.Area),
 				Rule: ruleName(r), Comment: comment(r)}, writing)
 		}
-		if it.Area == wire.AreaDB && len(dbs) > 0 && !dbs.has(int(it.DB)) {
+		if it.Area == wire.AreaDB && len(dbs) > 0 && !dbs.Has(int(it.DB)) {
 			return p.hardenArea(Decision{Reason: "db_not_allowed", Detail: fmt.Sprintf("DB%d", it.DB),
 				Rule: ruleName(r), Comment: comment(r)}, writing)
 		}
-		if len(adr) > 0 && !adr.covers(it.Byte(), it.Last()) {
+		if len(adr) > 0 && !adr.Covers(it.Byte(), it.Last()) {
 			return p.hardenArea(Decision{Reason: "address_not_allowed",
 				Detail: fmt.Sprintf("%s byte %d to %d", wire.AreaName(it.Area), it.Byte(), it.Last()),
 				Rule:   ruleName(r), Comment: comment(r)}, writing)
@@ -604,10 +605,10 @@ func (p *policy) match(se *Session) *rule {
 		// A rule that names racks, slots or a resource never matches a
 		// connection whose address this relay could not read: it is a rule
 		// about a CPU, and there is no CPU number to compare.
-		if len(r.racks) > 0 && (!se.Addressed || !r.racks.has(se.Rack)) {
+		if len(r.racks) > 0 && (!se.Addressed || !r.racks.Has(se.Rack)) {
 			continue
 		}
-		if len(r.slots) > 0 && (!se.Addressed || !r.slots.has(se.Slot)) {
+		if len(r.slots) > 0 && (!se.Addressed || !r.slots.Has(se.Slot)) {
 			continue
 		}
 		if r.res != nil && (!se.Addressed || !r.res[se.Resource]) {

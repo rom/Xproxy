@@ -136,6 +136,9 @@ internal/kinds/amqp    kind: amqp -- message broker relay: the version a
                        vhost, whether topology may be changed at all, and
                        every exchange, queue, routing key and link address
                        an operation names
+internal/numrange      The number-range list a policy is written with: `5`,
+                       `1-16`, `0x10-0x1F`. Hexadecimal because half the
+                       register maps a plant engineer has are written that way
 internal/schedule      The time window a rule can be limited to, in the one
                        spelling every kind uses. Thirteen kinds had their own
                        copy and they had drifted: two readings of what a
@@ -1458,6 +1461,15 @@ is valid. And the copies held **two different answers** to what a
 midnight-spanning window means, so the same YAML was in force at different times
 on a modbus listener than on an s7 one. Neither answer was the one the
 configuration reference describes. One implementation settles both.
+
+`internal/numrange` came out of the same pass, from two copies rather than
+thirteen. The s7 copy's own comment said it was the modbus spelling *on purpose*
+-- "a plant engineer should not have to remember that the two kinds read `0-99`
+differently" -- and a promise like that held by two copies is one waiting to be
+broken by whoever edits a single file. The decision it carries is that `Covers`
+needs *one* range to hold the whole span: two adjacent ranges do not together
+permit a request that straddles them, because an operator who wrote two ranges
+described two regions.
 
 `internal/acceptgroup` is shared by the database kinds and exists because the
 obvious way to wait for a listener's sessions is wrong. A `sync.WaitGroup` with
