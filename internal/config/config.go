@@ -298,6 +298,8 @@ type Listener struct {
 	Postgres *PostgresListener `yaml:"postgres"`
 	// MySQL is the kind: mysql section.
 	MySQL *MySQLListener `yaml:"mysql"`
+	// TDS is the kind: tds section.
+	TDS *TDSListener `yaml:"tds"`
 	// DHCP configures a kind: dhcp listener.
 	DHCP *DHCPListener `yaml:"dhcp"`
 	// Policy is whether this listener enforces its policy or only
@@ -1184,6 +1186,182 @@ type MySQLRule struct {
 	AllowStatements []string `yaml:"allow_statements"`
 	DenyStatements  []string `yaml:"deny_statements"`
 	AllowLoad       []string `yaml:"allow_load"`
+	ReadOnly        *bool    `yaml:"read_only"`
+	MaxStatements   int      `yaml:"max_statements"`
+}
+
+// TDSListener is the settings of a kind: tds listener: a relay in front of a
+// Microsoft SQL Server, or anything else speaking TDS.
+//
+// Three things make this protocol different from the other two database kinds.
+//
+// The encryption negotiation happens in a PRELOGIN message whose ENCRYPTION
+// option is one octet, unsigned, and answered by the server. `off` means "I would
+// rather not" and is what a great deal of deployed software sends; `not_supported`
+// means "I cannot" and is what anything on the path rewrites the server's answer
+// to, because a client that asked for `off` and hears `not_supported` proceeds in
+// the clear without complaint. This is PostgreSQL's SSLRequest octet and MySQL's
+// CLIENT_SSL bit for the third time, and it gets the same answer: the relay
+// negotiates with each side itself rather than forwarding what it read.
+//
+// The password in a LOGIN7 is not encrypted. It is XOR 0xA5 with the nibbles
+// swapped -- an encoding, with no key -- so `require_tls` here is not hardening,
+// it is the difference between a password on the wire and no password on the
+// wire. There is no equivalent of choosing a stronger authentication method,
+// because there is no stronger one short of integrated security.
+//
+// And the statement an application runs does not arrive as a statement. Every
+// client library that uses parameters sends `sp_executesql` with the SQL in a
+// parameter, so the procedure policy and the statement policy are the same
+// policy here: the relay reads the statement out of the call and classifies it.
+type TDSListener struct {
+	// Upstream is the server pool. Required.
+	Upstream string `yaml:"upstream"`
+	// AllowClients and DenyClients are the networks a client may connect from.
+	// Deny is evaluated first.
+	AllowClients []string `yaml:"allow_clients"`
+	DenyClients  []string `yaml:"deny_clients"`
+
+	// RequireTLS makes the relay answer every client's PRELOGIN with
+	// ENCRYPT_REQ, so a client that asked for `off` upgrades anyway. Default
+	// true, and on this protocol it is the setting that matters most: the
+	// password field is obfuscated rather than encrypted.
+	//
+	// A client too old to speak TLS will fail to connect when this is on. That
+	// is the honest outcome -- it was sending a recoverable password in
+	// cleartext -- and the relay logs a `tds_encryption_forced` event on every
+	// connection whose negotiation it raised, so the ones affected can be found
+	// before the switch is thrown.
+	RequireTLS *bool `yaml:"require_tls"`
+	// UpstreamTLSMode is how the relay speaks to the server: require (the
+	// default), prefer or disable.
+	UpstreamTLSMode string `yaml:"upstream_tls_mode"`
+	// UpstreamTLS is the certificate and verification settings for that leg.
+	UpstreamTLS *UpstreamTLS `yaml:"upstream_tls"`
+
+	// AllowCleartextPassword permits a LOGIN7 carrying a password over an
+	// unencrypted connection. Default false.
+	//
+	// It is named for what it is. There is no weak-authentication setting on
+	// this kind because there is no strong option to contrast it with: every
+	// TDS password is a cleartext password once the nibble swap is undone.
+	AllowCleartextPassword bool `yaml:"allow_cleartext_password"`
+
+	// AllowUsers, DenyUsers, AllowDatabases and DenyDatabases are the identity
+	// claims a login may make.
+	AllowUsers     []string `yaml:"allow_users"`
+	DenyUsers      []string `yaml:"deny_users"`
+	AllowDatabases []string `yaml:"allow_databases"`
+	DenyDatabases  []string `yaml:"deny_databases"`
+	// AllowApps matches the client's APPNAME, with a trailing * allowed. Like
+	// MySQL's program_name it is chosen by the client and is not a credential;
+	// it tells a reporting dashboard from a migration tool when both connect as
+	// the same login.
+	AllowApps []string `yaml:"allow_apps"`
+
+	// AllowIntegrated permits a login that uses integrated security, where the
+	// credential is an SSPI blob and the LOGIN7 carries no user name.
+	//
+	// It defaults to true, and to false the moment allow_users or deny_users is
+	// set -- because a user list cannot be applied to a login that names no
+	// user, and a relay that let one past would have a user policy with a hole
+	// exactly the shape of Windows authentication. Setting it explicitly says
+	// which you meant.
+	AllowIntegrated *bool `yaml:"allow_integrated"`
+
+	// AllowTypes and DenyTypes are the message types a client may send:
+	// sql_batch, rpc, bulk_load, transaction_manager, attention, sspi,
+	// fedauth_token, prelogin, login7, login. Empty allows what a client
+	// library sends.
+	//
+	// `bulk_load` is off by default because its data stream is not SQL and
+	// carries no policy, and `login` -- the pre-TDS7 shape -- is off because
+	// the relay does not read it, and forwarding a message it had not
+	// understood is the thing this kind exists not to do.
+	AllowTypes []string `yaml:"allow_types"`
+	DenyTypes  []string `yaml:"deny_types"`
+
+	// AllowProcedures and DenyProcedures are the RPC procedures a client may
+	// call, lower-cased. Empty allows the dynamic-SQL family, the cursor
+	// family, and the metadata calls a driver makes -- and nothing else, so
+	// every xp_, every sp_oa, sp_configure and sp_addlinkedserver are refused
+	// until named.
+	//
+	// A name matches whether the client called the procedure by name or by the
+	// numeric identifier the protocol also allows, because they are the same
+	// call and a policy that matched one spelling would be bypassed by the
+	// other.
+	AllowProcedures []string `yaml:"allow_procedures"`
+	DenyProcedures  []string `yaml:"deny_procedures"`
+
+	// ReadOnly refuses every statement that can change data, including exec.
+	ReadOnly bool `yaml:"read_only"`
+	// AllowStatements and DenyStatements are the statement kinds, as the
+	// postgres and mysql kinds name them. They apply to a SQLBATCH and to the
+	// statement inside an sp_executesql, which is the same policy reaching the
+	// same SQL by two routes. A statement the classifier cannot name is
+	// refused whatever this says.
+	AllowStatements []string `yaml:"allow_statements"`
+	DenyStatements  []string `yaml:"deny_statements"`
+
+	// MaxStatements bounds statements per batch. Default 1: T-SQL separates
+	// statements with nothing but whitespace, so a batch carrying several is
+	// ordinary -- and that is exactly why a bound belongs here rather than in a
+	// capability flag as it does on MySQL.
+	MaxStatements int `yaml:"max_statements"`
+	// MaxStatementBytes bounds one statement. Default 64 KiB.
+	MaxStatementBytes int `yaml:"max_statement_bytes"`
+	// MaxMessageBytes bounds one reassembled message. Default 4 MiB. The
+	// protocol has no bound: a sender may chain 64 KiB packets for ever, and
+	// only the EOM status bit ends a message.
+	MaxMessageBytes int `yaml:"max_message_bytes"`
+	// MaxSessions and MaxSessionsPerClient bound concurrent connections.
+	MaxSessions          int `yaml:"max_sessions"`
+	MaxSessionsPerClient int `yaml:"max_sessions_per_client"`
+	// IdleTimeout, SessionDuration and HandshakeTimeout bound a connection.
+	IdleTimeout      Duration `yaml:"idle_timeout"`
+	SessionDuration  Duration `yaml:"session_duration"`
+	HandshakeTimeout Duration `yaml:"handshake_timeout"`
+
+	// Rules narrow or widen the listener for traffic that matches them.
+	Rules []TDSRule `yaml:"rules"`
+	// DefaultAction is allow or deny when no rule matched. Default deny.
+	DefaultAction string `yaml:"default_action"`
+	// DenyResponse is error (the default: an error token the client's own
+	// library reports, with the number SQL Server uses for a permission
+	// refusal) or drop.
+	DenyResponse string `yaml:"deny_response"`
+	// MonitorOnly evaluates and enforces nothing, except the hard decisions:
+	// the client list, the TLS requirement, a cleartext password, an
+	// unnameable login, a message or statement the relay could not read, and
+	// the procedures in the dangerous set -- xp_cmdshell, the OLE automation
+	// family, the registry procedures, sp_addlinkedserver, sp_configure and
+	// the rest. Forwarding a shell command and writing down that it was
+	// noticed is not a trial of a policy.
+	MonitorOnly bool `yaml:"monitor_only"`
+}
+
+// TDSRule is one rule of a tds listener's policy.
+type TDSRule struct {
+	// Name identifies the rule in logs and counters.
+	Name string `yaml:"name"`
+	// Clients, Users, Databases and Apps select the traffic. Apps matches the
+	// client's APPNAME, with a trailing * allowed.
+	Clients   []string `yaml:"clients"`
+	Users     []string `yaml:"users"`
+	Databases []string `yaml:"databases"`
+	Apps      []string `yaml:"apps"`
+	// Schedule is when this rule allows what it allows.
+	Schedule *ModbusSchedule `yaml:"schedule"`
+	// Action is allow (the default), deny or observe.
+	Action string `yaml:"action"`
+	// The rule's own narrowing. The deny lists always win.
+	AllowProcedures []string `yaml:"allow_procedures"`
+	DenyProcedures  []string `yaml:"deny_procedures"`
+	AllowTypes      []string `yaml:"allow_types"`
+	DenyTypes       []string `yaml:"deny_types"`
+	AllowStatements []string `yaml:"allow_statements"`
+	DenyStatements  []string `yaml:"deny_statements"`
 	ReadOnly        *bool    `yaml:"read_only"`
 	MaxStatements   int      `yaml:"max_statements"`
 }

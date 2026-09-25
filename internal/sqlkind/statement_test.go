@@ -1,6 +1,10 @@
 package sqlkind
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"unicode/utf8"
+)
 
 // The classifier's whole claim is that it is beaten by a spelling nobody
 // thought of only in the safe direction. This is the table of spellings a deny
@@ -464,12 +468,63 @@ func TestTSQLBracketsAnIdentifier(t *testing.T) {
 		{"SELECT [DROP]", KindSelect},
 		{"SELECT [a;b]", KindSelect},
 		{"DROP TABLE [t]", KindDDL},
-		{"EXEC sp_who", KindExecute},
+		{"EXEC sp_who", KindCall},
 		{"BACKUP DATABASE x TO DISK = 'y'", KindMaintenance},
 	} {
 		got, ok := Statements(TSQL, tc.sql, 0)
 		if !ok || len(got) != 1 || got[0].Kind != tc.want {
 			t.Errorf("%q: %v %+v, want %s", tc.sql, ok, got, tc.want)
 		}
+	}
+}
+
+// EXEC and EXECUTE are spelled the same in T-SQL and in PostgreSQL and mean
+// different things, which is exactly the class of difference this file exists to
+// get right. PostgreSQL's EXECUTE runs a prepared statement, whose text was
+// classified when it was PREPAREd, so calling it a read loses nothing. T-SQL has
+// no prepared-statement syntax, so its EXEC runs a stored procedure -- which can
+// do anything the login can. Classified as a read, `read_only` would have been
+// decorative on the dialect where it matters most.
+func TestExecMeansRunAProcedureInTSQLAndRunAPreparedStatementInPostgres(t *testing.T) {
+	for _, sql := range []string{"EXEC dbo.DeleteEverything", "EXECUTE dbo.DeleteEverything",
+		"exec [dbo].[DeleteEverything]"} {
+		got, ok := Statements(TSQL, sql, 0)
+		if !ok || len(got) != 1 {
+			t.Fatalf("%q: %v %+v", sql, ok, got)
+		}
+		if got[0].Kind != KindCall {
+			t.Fatalf("%q: %s, want call", sql, got[0].Kind)
+		}
+		if !got[0].Writes {
+			t.Fatalf("%q: a procedure call that does not count as a write", sql)
+		}
+	}
+	got, ok := Statements(PostgreSQL, "EXECUTE stmt(1)", 0)
+	if !ok || len(got) != 1 || got[0].Kind != KindExecute {
+		t.Fatalf("postgres: %v %+v", ok, got)
+	}
+	if got[0].Writes {
+		t.Fatal("postgres EXECUTE of a prepared statement counted as a write")
+	}
+}
+
+// A clipped string still has to be a string. The bound is in octets and the
+// data is UTF-8, so a naive slice at the bound cuts a multi-byte character in
+// half -- and the result is invalid UTF-8 that a JSON log writer rewrites, a
+// terminal draws as a replacement character, and a comparison against a
+// policy's spelling no longer matches. Cutting one character short is the
+// harmless failure; cutting into a character is not.
+func TestClipCutsOnARuneBoundary(t *testing.T) {
+	// 3 octets per rune, and the bound is not a multiple of 3, so the octet at
+	// the bound is in the middle of a character.
+	got := Clip(strings.Repeat("\u5b57", MaxVerb))
+	if !utf8.ValidString(got) {
+		t.Fatalf("Clip produced invalid UTF-8: %q", got)
+	}
+	if len(got) > MaxVerb+3 {
+		t.Fatalf("Clip returned %d octets, want at most %d", len(got), MaxVerb+3)
+	}
+	if strings.ContainsRune(got, utf8.RuneError) {
+		t.Fatalf("Clip produced a replacement character: %q", got)
 	}
 }

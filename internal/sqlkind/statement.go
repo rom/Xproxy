@@ -69,7 +69,10 @@
 //     9.1, so there `'\'` is a complete string containing one backslash.
 package sqlkind
 
-import "strings"
+import (
+	"strings"
+	"unicode/utf8"
+)
 
 type Dialect int
 
@@ -568,9 +571,19 @@ var myKinds = map[string]Kind{
 	"SIGNAL": KindCall, "RESIGNAL": KindCall, "XA": KindTransactionAdmin,
 }
 
-// tsqlKinds are the keywords only Microsoft's dialect has.
+// tsqlKinds are the keywords only Microsoft's dialect has, and the ones it
+// spells the same as another dialect and means differently.
+//
+// EXEC and EXECUTE are the important entry. In PostgreSQL, EXECUTE runs a
+// prepared statement -- whose text was already classified when it was PREPAREd --
+// so classifying it as a read is defensible there. T-SQL has no prepared-statement
+// syntax at all (that is sp_prepare and sp_execute, which are RPCs), so EXEC and
+// EXECUTE mean "run a stored procedure", which is MySQL's CALL: it can do
+// anything the login can, including every write. Leaving it as KindExecute would
+// have made read_only decorative on this dialect -- `EXEC dbo.DeleteEverything`
+// would have read as a read.
 var tsqlKinds = map[string]Kind{
-	"EXEC": KindExecute, "GO": KindEmpty, "USE": KindSet,
+	"EXEC": KindCall, "EXECUTE": KindCall, "GO": KindEmpty, "USE": KindSet,
 	"BULK": KindCopy, "PRINT": KindSelect, "RAISERROR": KindCall,
 	"THROW": KindCall, "BACKUP": KindMaintenance, "RESTORE": KindMaintenance,
 	"DBCC": KindMaintenance, "KILL": KindMaintenance, "SHUTDOWN": KindMaintenance,
@@ -754,11 +767,21 @@ func KindNames() []string {
 const MaxVerb = 64
 
 // Clip bounds a peer-chosen string.
+//
+// The cut is on a rune boundary. A string sliced mid-rune is invalid UTF-8, and
+// everything downstream mangles it: a JSON log writer replaces the broken octets,
+// a terminal draws a replacement character, and a comparison against a policy's
+// spelling stops matching. Cutting short is the harmless failure; cutting into a
+// character is not.
 func Clip(s string) string {
 	if len(s) <= MaxVerb {
 		return s
 	}
-	return s[:MaxVerb] + "..."
+	cut := MaxVerb
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "..."
 }
 
 // execComment says whether a /* at i opens a MySQL executable comment.
