@@ -127,6 +127,15 @@ internal/kinds/bacnet  kind: bacnet -- BACnet/IP relay: the services carried,
                        the objects and properties they may name, the command
                        priority a write may claim, the broadcast and BBMD
                        bounds, invoke identifiers translated per client
+internal/amqpwire      AMQP off the wire: both versions' framing, the 0-9-1
+                       method catalogue and its field tables, the 1.0
+                       performatives over its type system, and the identity
+                       in a SASL exchange -- never the password
+internal/kinds/amqp    kind: amqp -- message broker relay: the version a
+                       client may speak, the mechanism and identity, the
+                       vhost, whether topology may be changed at all, and
+                       every exchange, queue, routing key and link address
+                       an operation names
 internal/kinds/tftp    kind: tftp -- TFTP relay: the filename read as a path
                        and refused by class, the direction of the transfer,
                        the amplification bounds, one socket per transfer
@@ -1333,6 +1342,42 @@ that protocol's own terms, and bounds what a peer may say.
   directions, because a client's segment acknowledgement names the identifier the
   client chose, and a segment renews the exchange's deadline rather than letting
   a long download expire in the middle of itself.
+- `amqp` reads both AMQP protocols (`internal/amqpwire` for the two framings and
+  the catalogues, `internal/kinds/amqp` for the policy). It is the only kind that
+  reads two protocols on one port, and the reason is the protocol family: a
+  client picks 0-9-1 or 1.0 in its first eight octets, and the framing of
+  everything after it follows from that choice.
+
+  Three things shape the code. **The header is decided before the broker is
+  dialled**, because it decides the framing: a client asking for a version this
+  listener does not serve never reaches the broker, and is answered with a header
+  the listener does serve, which is what both specifications say to do. A header
+  can also arrive *in the middle* of a stream -- AMQP 1.0 starts again with a
+  fresh one after a successful SASL exchange -- so both readers use one peeked
+  octet to tell a header from a frame rather than a flag shared between two
+  goroutines: a header begins with `A`, a 0-9-1 frame begins with a frame type
+  and a 1.0 frame with the high octet of a bounded size, so the octet is
+  unambiguous in both framings.
+
+  **On 1.0 the address is not in the frame that uses it.** An attach names the
+  node and every transfer after it carries a link handle, so the relay keeps the
+  handle table: a transfer is attributed to the address its handle was attached
+  to, and a transfer on a handle this relay never saw attached is refused rather
+  than forwarded with no policy applied to it. The same table is what makes the
+  message bound possible, because a 1.0 message is a run of transfers and
+  bounding each frame would bound nothing.
+
+  And **a refusal ends the connection**, which is different from every other
+  relay kind here. AMQP is stateful in both directions: dropping one frame out of
+  a conversation would leave the client waiting for a reply the broker was never
+  asked for, or the broker answering a method the client never learned was
+  refused. So the refusal is the protocol's own -- a `connection.close` with
+  reply code 403, or a 1.0 `close` carrying `amqp:unauthorized-access` -- and
+  both legs close. It is also the one place in the kind that writes a frame
+  rather than forwarding one, and the boundary is deliberate: the relay renders
+  its own messages and never re-renders a peer's, because a proxy that re-encoded
+  a frame would be a second implementation of the encoder whose disagreements
+  with the first are what an attacker is looking for.
 - `ntske` is NTS key establishment, TCP 4460, relayed rather than
   terminated: it reads the server name and the application protocol from
   the ClientHello, refuses what is not an NTS client, bounds the

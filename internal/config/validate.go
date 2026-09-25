@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/hex"
+	amqpwire "github.com/rom/xproxy/internal/amqpwire"
 	"github.com/rom/xproxy/internal/assets"
 	bacnetwire "github.com/rom/xproxy/internal/bacnet"
 	dhcpwire "github.com/rom/xproxy/internal/dhcp"
@@ -875,6 +876,12 @@ func (v *validator) server(s *Server) {
 				v.errf("%s.bacnet: required for kind bacnet", p)
 			} else {
 				v.bacnetListener(p+".bacnet", ln.BACnet)
+			}
+		case "amqp":
+			if ln.AMQP == nil {
+				v.errf("%s.amqp: required for kind amqp", p)
+			} else {
+				v.amqpListener(p+".amqp", ln.AMQP, ln.TLS != nil)
 			}
 		case "redis":
 			if ln.Redis == nil {
@@ -2532,7 +2539,7 @@ var denyReasons = map[string]bool{
 	"telnet_denied": true, "vnc_denied": true, "rdp_denied": true, "sftp_icap": true, "udp_denied": true,
 	"modbus_denied": true, "iec104_denied": true, "ntp_denied": true, "ntske_denied": true,
 	"snmp_denied": true, "ldap_denied": true, "tftp_denied": true, "dhcp_denied": true, "postgres_denied": true, "mysql_denied": true, "tds_denied": true, "redis_denied": true,
-	"bacnet_denied": true,
+	"bacnet_denied": true, "amqp_denied": true,
 }
 
 // securityTxtFieldRE bounds an extra field name to the token RFC 9116
@@ -7636,6 +7643,221 @@ func (v *validator) mysqlLoad(p string, in []string) {
 }
 
 // redisListener validates a kind: redis section.
+// amqpListener validates a kind: amqp section.
+func (v *validator) amqpListener(p string, m *AMQPListener, hasTLS bool) {
+	if m.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	v.modbusCIDRs(p+".allow_clients", m.AllowClients)
+	v.modbusCIDRs(p+".deny_clients", m.DenyClients)
+
+	requireTLS := m.RequireTLS == nil || *m.RequireTLS
+	if requireTLS && !hasTLS {
+		v.errf("%s.require_tls: set (it defaults on) but the listener has no tls section; "+
+			"AMQP has no in-protocol upgrade, so the port is either TLS or it is not", p)
+	}
+	if !requireTLS {
+		v.warnf("%s.require_tls: false lets a client authenticate in the clear, and AMQP's "+
+			"PLAIN mechanism is the username and the password in one field", p)
+	}
+	switch m.UpstreamTLSMode {
+	case "", "require", "prefer", "disable":
+	default:
+		v.errf("%s.upstream_tls_mode: %q is not require, prefer or disable", p, m.UpstreamTLSMode)
+	}
+	if m.RequireAuth != nil && !*m.RequireAuth {
+		v.warnf("%s.require_auth: false lets an operation through before the broker has "+
+			"accepted a credential", p)
+	}
+
+	for i, ver := range m.Versions {
+		switch ver {
+		case "0-9-1", "1.0":
+		case "0-8", "0-9":
+			v.errf("%s.versions[%d]: %q is not a version this relay reads; a broker answers it "+
+				"for compatibility, and a policy on a revision from 2006 is not one worth "+
+				"writing", p, i, ver)
+		default:
+			v.errf("%s.versions[%d]: %q is not 0-9-1 or 1.0", p, i, ver)
+		}
+	}
+	v.amqpMechanisms(p+".allow_mechanisms", m.AllowMechanisms)
+	v.amqpMechanisms(p+".deny_mechanisms", m.DenyMechanisms)
+
+	v.amqpMethods(p+".allow_methods", m.AllowMethods)
+	v.amqpMethods(p+".deny_methods", m.DenyMethods)
+	v.amqpPerformatives(p+".allow_performatives", m.AllowPerformatives)
+	v.amqpPerformatives(p+".deny_performatives", m.DenyPerformatives)
+
+	for name, list := range map[string][]string{
+		"allow_exchanges": m.AllowExchanges, "deny_exchanges": m.DenyExchanges,
+		"allow_queues": m.AllowQueues, "deny_queues": m.DenyQueues,
+		"allow_routing_keys": m.AllowRoutingKeys, "deny_routing_keys": m.DenyRoutingKeys,
+		"allow_addresses": m.AllowAddresses, "deny_addresses": m.DenyAddresses,
+		"allow_vhosts": m.AllowVhosts, "deny_vhosts": m.DenyVhosts,
+	} {
+		v.amqpPatterns(p+"."+name, list)
+	}
+
+	if m.AllowTopology {
+		v.warnf("%s.allow_topology: true lets a client declare and delete exchanges and "+
+			"queues, and purge them; almost no application needs to", p)
+	}
+	if m.MaxPriority < 0 || m.MaxPriority > 255 {
+		v.errf("%s.max_priority: %d is not a message priority", p, m.MaxPriority)
+	}
+	if m.MaxFrameBytes != 0 && m.MaxFrameBytes < amqpwire.MinFrameMax091 {
+		v.errf("%s.max_frame_bytes: %d is below the %d the protocol requires a peer to accept",
+			p, m.MaxFrameBytes, amqpwire.MinFrameMax091)
+	}
+	for name, val := range map[string]int{
+		"max_frame_bytes": m.MaxFrameBytes, "max_channels": m.MaxChannels,
+		"max_links": m.MaxLinks, "max_message_bytes": m.MaxMessageBytes,
+		"max_methods": m.MaxMethods, "rate_limit": m.RateLimit, "rate_burst": m.RateBurst,
+		"max_sessions": m.MaxSessions, "max_sessions_per_client": m.MaxSessionsPerClient,
+	} {
+		if val < 0 {
+			v.errf("%s.%s: must not be negative", p, name)
+		}
+	}
+	// A message bound below the frame bound never applies on 0-9-1: the
+	// content header declares the message size, and a message that fits in
+	// one frame is refused by neither.
+	if m.MaxMessageBytes > 0 && m.MaxFrameBytes > 0 && m.MaxMessageBytes < m.MaxFrameBytes {
+		v.warnf("%s.max_message_bytes: %d is below max_frame_bytes (%d), so a single frame may "+
+			"carry a message this bound would refuse", p, m.MaxMessageBytes, m.MaxFrameBytes)
+	}
+	if m.RequireUserID && m.MatchUserID != nil && !*m.MatchUserID {
+		v.warnf("%s.require_user_id: set with match_user_id false, so every message must "+
+			"carry a user identifier and none of them has to be this connection's", p)
+	}
+
+	switch m.DefaultAction {
+	case "", "allow", "deny":
+	default:
+		v.errf("%s.default_action: %q is not allow or deny", p, m.DefaultAction)
+	}
+	switch m.DenyResponse {
+	case "", "close", "drop":
+	default:
+		v.errf("%s.deny_response: %q is not close or drop", p, m.DenyResponse)
+	}
+	for i := range m.Rules {
+		r := &m.Rules[i]
+		rp := fmt.Sprintf("%s.rules[%d]", p, i)
+		v.modbusCIDRs(rp+".clients", r.Clients)
+		switch r.Action {
+		case "", "allow", "deny", "observe":
+		default:
+			v.errf("%s.action: %q is not allow, deny or observe", rp, r.Action)
+		}
+		v.amqpMethods(rp+".allow_methods", r.AllowMethods)
+		v.amqpMethods(rp+".deny_methods", r.DenyMethods)
+		v.amqpPerformatives(rp+".allow_performatives", r.AllowPerformatives)
+		v.amqpPerformatives(rp+".deny_performatives", r.DenyPerformatives)
+		for name, list := range map[string][]string{
+			"allow_exchanges": r.AllowExchanges, "deny_exchanges": r.DenyExchanges,
+			"allow_queues": r.AllowQueues, "deny_queues": r.DenyQueues,
+			"allow_routing_keys": r.AllowRoutingKeys, "deny_routing_keys": r.DenyRoutingKeys,
+			"allow_addresses": r.AllowAddresses, "deny_addresses": r.DenyAddresses,
+			"vhosts": r.Vhosts,
+		} {
+			v.amqpPatterns(rp+"."+name, list)
+		}
+		if r.MaxMessageBytes < 0 || r.MaxMethods < 0 {
+			v.errf("%s: max_message_bytes and max_methods must not be negative", rp)
+		}
+		if r.Schedule != nil {
+			v.modbusSchedule(rp+".schedule", r.Schedule)
+		}
+	}
+}
+
+// amqpMethods checks 0-9-1 method names, and says what an operator has just
+// allowed when the name is one that changes the broker rather than using it.
+func (v *validator) amqpMethods(p string, in []string) {
+	allowing := strings.HasSuffix(p, ".allow_methods")
+	for i, n := range in {
+		name := strings.ToLower(strings.TrimSpace(n))
+		if name == "" {
+			v.errf("%s[%d]: empty", p, i)
+			continue
+		}
+		if _, _, ok := amqpwire.MethodID(name); !ok {
+			// An error rather than a warning: unlike a redis command,
+			// this catalogue is fixed by the specification, so a name
+			// outside it is a typo and a policy line that matches
+			// nothing.
+			v.errf("%s[%d]: %q is not an AMQP 0-9-1 method (they are spelled "+
+				"`basic.publish`, `queue.declare`)", p, i, n)
+			continue
+		}
+		if !allowing {
+			continue
+		}
+		switch {
+		case amqpwire.Destructive(name):
+			v.warnf("%s[%d]: %s deletes or empties something, and no rule below can take it "+
+				"back", p, i, name)
+		case amqpwire.Topology(name):
+			v.warnf("%s[%d]: %s changes the broker's own configuration", p, i, name)
+		case amqpwire.Administrative(name):
+			v.warnf("%s[%d]: %s reaches past this connection", p, i, name)
+		}
+	}
+}
+
+// amqpPerformatives checks AMQP 1.0 performative names.
+func (v *validator) amqpPerformatives(p string, in []string) {
+	for i, n := range in {
+		name := strings.ToLower(strings.TrimSpace(n))
+		if name == "" {
+			v.errf("%s[%d]: empty", p, i)
+			continue
+		}
+		if _, ok := amqpwire.PerformativeCode(name); !ok {
+			v.errf("%s[%d]: %q is not an AMQP 1.0 performative (they are spelled `attach`, "+
+				"`transfer`, `sasl-init`)", p, i, n)
+		}
+	}
+}
+
+// amqpMechanisms checks SASL mechanism names.
+func (v *validator) amqpMechanisms(p string, in []string) {
+	allowing := strings.HasSuffix(p, ".allow_mechanisms")
+	for i, n := range in {
+		name := strings.ToUpper(strings.TrimSpace(n))
+		if name == "" {
+			v.errf("%s[%d]: empty", p, i)
+			continue
+		}
+		if allowing && name == "ANONYMOUS" {
+			v.warnf("%s[%d]: ANONYMOUS is a login with no identity, so nothing this listener "+
+				"logs or bans can be attributed to an account", p, i)
+		}
+	}
+}
+
+// amqpPatterns checks a name pattern list.
+func (v *validator) amqpPatterns(p string, in []string) {
+	for i, pat := range in {
+		if pat == "" {
+			// An empty pattern is not nothing on this protocol: the
+			// default exchange is named by the empty string, and a
+			// publish to it with a routing key is how every client
+			// library sends to a queue by name. So it has to be written
+			// deliberately, as `""`, and an accidental blank line in a
+			// list is an error.
+			v.errf("%s[%d]: empty; the default exchange is matched by the pattern \"\" "+
+				"written deliberately, not by a blank entry", p, i)
+			continue
+		}
+		if _, err := path.Match(pat, "x"); err != nil {
+			v.errf("%s[%d]: %q is not a pattern: %v", p, i, pat, err)
+		}
+	}
+}
+
 func (v *validator) redisListener(p string, m *RedisListener, hasTLS bool) {
 	if m.Upstream == "" {
 		v.errf("%s.upstream: required", p)

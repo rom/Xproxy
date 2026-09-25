@@ -41,6 +41,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/config"
+	_ "github.com/rom/xproxy/internal/kinds/amqp"
 	_ "github.com/rom/xproxy/internal/kinds/bacnet"
 	_ "github.com/rom/xproxy/internal/kinds/dhcp"
 	_ "github.com/rom/xproxy/internal/kinds/ftp"
@@ -97,6 +98,7 @@ var cases = map[string]kindCase{
 	"mysql":    {section: "mysql: {upstream: u, require_tls: false}"},
 	"tds":      {section: "tds: {upstream: u, require_tls: false}"},
 	"redis":    {section: "redis: {upstream: u, require_tls: false}"},
+	"amqp":     {section: "amqp: {upstream: u, require_tls: false}"},
 	"rdp": {section: "rdp: {upstream: u}\n      " +
 		"tls: {certificates: [{cert_file: %[1]s/c.pem, key_file: %[1]s/k.pem}]}"},
 	"ntske": {section: "ntske: {upstream: u}\n      " +

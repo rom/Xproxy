@@ -14480,7 +14480,7 @@ list
 T}	T{
 \fB[]\fR (all)
 T}	T{
-Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBpostgres_\:denied\fR,\: \fBmysql_\:denied\fR,\: \fBtds_\:denied\fR,\: \fBredis_\:denied\fR,\: \fBbacnet_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fByara\fR
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBpostgres_\:denied\fR,\: \fBmysql_\:denied\fR,\: \fBtds_\:denied\fR,\: \fBredis_\:denied\fR,\: \fBbacnet_\:denied\fR,\: \fBamqp_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fByara\fR
 T}
 T{
 \fBthreshold\fR
@@ -26185,6 +26185,655 @@ An unconfirmed request has nothing to pair with at all \-\- an \fBi\-Am\fR is se
 A segmented exchange is translated in \fBboth\fR directions. The reply\(aqs segments carry the identifier this relay chose; the client\(aqs segment acknowledgements, and any abort or error it sends about its own request, carry the one the \fIclient\fR chose \-\- so those are translated back the other way, and one naming an exchange this relay is not holding is refused (\fBno_such_exchange\fR) rather than forwarded. A segment also renews the exchange\(aqs deadline, because a segmented reply is one exchange however many datagrams it takes and a deadline measured from the request would expire in the middle of a long trend log download.
 .PP
 \fBservices\fR applies to the building\(aqs direction too, because it is a statement about which services cross this listener rather than about which a client may send. The one that matters is \fBtimeSynchronization\fR: a device, or something on the plant network wearing a device\(aqs address, broadcasting one at a client network sets the clock on every host that listens, and it is not on the default list in either direction. The object and property rules are \fInot\fR applied to the building\(aqs direction \-\- they are written about the objects a client may reach, and applying them backwards would refuse every \fBi\-Am\fR, which names a device object.
+.SH "amqp"
+.PP
+\fBkind: amqp\fR is a relay in front of a message broker. It is the only listener here that reads \fBtwo protocols on one port\fR, because AMQP is two protocols: a client picks one in its first eight octets.
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBAMQP 0\-9\-1\fR is what RabbitMQ speaks and what almost every deployment means by AMQP. A frame protocol with a class\-and\-method catalogue: declaring an exchange, binding a queue, publishing, consuming and deleting are each a method frame with typed arguments.
+.PP
+.ti -3n
+\(bu
+\fBAMQP 1.0\fR (ISO/IEC 19464) is a different protocol that kept the name. Nine performatives over a self\-describing type system, where the thing being authorised is the \fIaddress a link attaches to\fR and everything after it is a handle.
+.RE
+.PP
+.PP
+Both are read, and one policy decides both: the nouns are an exchange, a queue and a routing key on 0\-9\-1, and a link address on 1.0, which the brokers that serve both versions spell \fB/exchange/X/key\fR and \fB/queue/Q\fR.
+.SS "Why a relay in front of a broker"
+.PP
+A broker is where an estate\(aqs data is in transit \-\- orders, payments, telemetry, the events that drive everything else \-\- and four things about it are worth a listener.
+.PP
+\fBA broker\(aqs permissions are per user and per virtual host.\fR RabbitMQ\(aqs model is three regular expressions (configure, write, read) for each user in each vhost: more than most brokers offer, administered inside the broker, and outside the estate\(aqs own review. This holds the same boundary in the configuration that is reviewed with everything else, and holds it in front of brokers whose model is weaker.
+.PP
+\fBTopology is not work.\fR Declaring an exchange, deleting a queue, binding, unbinding and purging are the broker\(aqs \fIconfiguration\fR, and an application that publishes to an exchange somebody else declared needs none of them. So \fBallow_topology\fR is false by default, and a client library that declares its own queue on connect becomes a decision an operator makes rather than a default nobody noticed.
+.PP
+\fBThe credential is in the clear.\fR Both versions authenticate with SASL, and PLAIN \-\- what every deployment uses \-\- is the username and the password in one field separated by zero octets. \fBrequire_tls\fR is therefore the setting that matters most. The relay reads the \fIusername\fR out of the exchange for its rules and its logs, and never the password: no code path between the wire and a log line holds a broker credential.
+.PP
+\fBThe dangerous arguments are not the obvious ones.\fR These four name something a policy written against the obvious fields would miss:
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(0.9i) lbx
+lw(1.1i) lw(0.9i) lx.
+T{
+Where
+T}	T{
+What it names
+T}	T{
+Why it matters
+T}
+T{
+\fBx\-\:dead\-\:letter\-\:exchange\fR on \fBqueue.\:declare\fR
+T}	T{
+an exchange
+T}	T{
+where this queue\(aqs rejected and expired messages go. A client that may not publish to an exchange can have the broker deliver to it
+T}
+T{
+\fBalternate\-\:exchange\fR on \fBexchange.\:declare\fR
+T}	T{
+an exchange
+T}	T{
+where this exchange sends what it could not route
+T}
+T{
+\fBreply\-\:to\fR in a message\(aqs properties
+T}	T{
+a queue
+T}	T{
+where a request\-reply service will send its answer,\: named inside the message rather than in the publish
+T}
+T{
+\fB/\:exchange/\:X/\:key\fR as a 1.0 link address
+T}	T{
+an exchange and a routing key
+T}	T{
+the same boundary in the other protocol\(aqs vocabulary
+T}
+.TE
+.PP
+All four are checked against the same \fBallow_exchanges\fR, \fBallow_queues\fR and \fBallow_routing_keys\fR as the fields that carry them.
+.SS "The pattern language"
+.PP
+The name lists are written in the protocol\(aqs own topic language, because that is the one an operator already knows from writing bindings. A name is words separated by dots:
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(1.1i) lbx
+lw(0.8i) lw(1.1i) lx.
+T{
+Pattern
+T}	T{
+Matches
+T}	T{
+Does not match
+T}
+T{
+\fBorders\fR
+T}	T{
+\fBorders\fR
+T}	T{
+\fBorders.\:created\fR
+T}
+T{
+\fBorders.\:*\fR
+T}	T{
+\fBorders.\:created\fR,\: \fBorders.\:paid\fR
+T}	T{
+\fBorders\fR,\: \fBorders.\:eu.\:created\fR
+T}
+T{
+\fBorders.\:#\fR
+T}	T{
+\fBorders\fR,\: \fBorders.\:created\fR,\: \fBorders.\:eu.\:created\fR
+T}	T{
+\fBpayroll.\:created\fR
+T}
+T{
+\fB#\fR
+T}	T{
+everything
+T}	T{
+
+T}
+T{
+\fBsvc\-\:*\fR
+T}	T{
+\fBsvc\-\:a\fR,\: \fBsvc\-\:billing\fR
+T}	T{
+\fBsvc\-\:a.\:internal\fR
+T}
+T{
+\fBapp\-\:?\fR
+T}	T{
+\fBapp\-\:1\fR
+T}	T{
+\fBapp\-\:12\fR
+T}
+.TE
+.PP
+\fB*\fR is exactly one word and \fB#\fR is zero or more, as in a binding. Inside a word an ordinary shell glob applies, which is what the last two rows are. A name with no metacharacter matches itself, which is what most of these lists hold \-\- and the \fBdefault exchange is named by the empty string\fR, so a policy that means to allow publishing to a queue by name has to write \fB""\fR in \fBallow_exchanges\fR deliberately.
+.PP
+.RS 4
+.nf
+.ft CR
+\- name: broker
+  address: "0.0.0.0:5671"
+  kind: amqp
+  tls:
+    certificates: [{cert_file: /etc/xproxy/tls/amqp.pem, key_file: /etc/xproxy/tls/amqp\-key.pem}]
+  amqp:
+    upstream: brokers
+    allow_clients: ["10.0.2.0/24"]
+    allow_vhosts: ["/orders"]
+    allow_exchanges: ["orders", "orders.*"]
+    allow_queues: ["orders.*"]
+    allow_routing_keys: ["orders.*"]
+    require_user_id: true
+    rules:
+      \- name: deployment
+        users: [deploy]
+        allow_topology: true
+        schedule: {days: [mon, tue, wed, thu], from: "18:00", to: "22:00"}
+.ft
+.fi
+.RE
+.PP
+.TS
+allbox;
+lbw(1.5i) lbw(0.9i) lbw(1.2i) lbx
+lw(1.5i) lw(0.9i) lw(1.2i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBupstream\fR
+T}	T{
+name
+T}	T{
+\fI(required)\fR
+T}	T{
+The broker pool
+T}
+T{
+\fBallow_\:clients\fR,\: \fBdeny_\:clients\fR
+T}	T{
+list of CIDR
+T}	T{
+any
+T}	T{
+Networks a client may connect from;\: deny first
+T}
+T{
+\fBrequire_\:tls\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse a client that is not speaking TLS. AMQP has no in\-protocol upgrade on 0\-9\-1 \-\- TLS is the port,\: 5671 rather than 5672 \-\- and 1.0\(aqs TLS protocol identifier is refused rather than answered: a client asking this relay to negotiate transport security from its first octet should be given a TLS port instead
+T}
+T{
+\fBupstream_\:tls_\:mode\fR
+T}	T{
+\fBrequire\fR,\: \fBprefer\fR,\: \fBdisable\fR
+T}	T{
+\fBdisable\fR
+T}	T{
+How the relay speaks to the broker. Off by default for the same reason as redis: a great many brokers are reached over a private network with no TLS and there is nothing to negotiate,\: so requiring it by default would refuse every upstream rather than protect anything
+T}
+T{
+\fBupstream_\:tls\fR
+T}	T{
+object
+T}	T{
+\fI(none)\fR
+T}	T{
+Certificate and verification settings for that leg
+T}
+T{
+\fBversions\fR
+T}	T{
+list
+T}	T{
+both
+T}	T{
+\fB0\-\:9\-\:1\fR,\: \fB1.\:0\fR. 0\-8 and 0\-9 are never allowed: a broker answers them for compatibility,\: and a policy on a revision from 2006 is not one worth writing
+T}
+T{
+\fBallow_\:mechanisms\fR
+T}	T{
+list
+T}	T{
+\fB[PLAIN,\: EXTERNAL]\fR
+T}	T{
+SASL mechanisms a client may choose. ANONYMOUS is not in the default: it is a login with no identity,\: so the broker has no account to attribute anything to
+T}
+T{
+\fBdeny_\:mechanisms\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Evaluated first
+T}
+T{
+\fBrequire_\:auth\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse every operation until the \fBbroker\fR has accepted a credential. The outcome is the broker\(aqs answer and not the client\(aqs claim: a 0\-9\-1 broker that refuses a password closes the connection instead of sending \fBconnection.\:tune\fR,\: so tune is the answer;\: on 1.0 it is the \fBsasl\-\:outcome\fR
+T}
+T{
+\fBallow_\:users\fR,\: \fBdeny_\:users\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+The identities a connection may authenticate \fIas\fR,\: read out of the SASL exchange. The broker decides whether the password is right;\: this decides which names may be tried
+T}
+T{
+\fBallow_\:vhosts\fR,\: \fBdeny_\:vhosts\fR
+T}	T{
+list of pattern
+T}	T{
+any
+T}	T{
+The virtual hosts a connection may open: \fBconnection.\:open\fR\(aqs virtual\-host on 0\-9\-1,\: \fBopen\fR\(aqs hostname on 1.0. Decided before the exchange and queue lists,\: because a name means something different in each vhost
+T}
+T{
+\fBallow_\:methods\fR
+T}	T{
+list
+T}	T{
+the application set
+T}	T{
+0\-9\-1 method names,\: spelled \fBbasic.\:publish\fR,\: \fBqueue.\:declare\fR. Empty allows the handshake,\: the channel methods,\: publishing,\: consuming,\: acknowledging,\: publisher confirms and transactions \-\- and no topology method at all
+T}
+T{
+\fBdeny_\:methods\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The deny list,\: which no rule can override
+T}
+T{
+\fBallow_\:performatives\fR,\: \fBdeny_\:performatives\fR
+T}	T{
+list
+T}	T{
+all nine
+T}	T{
+The same for AMQP 1.0,\: spelled \fBattach\fR,\: \fBtransfer\fR,\: \fBflow\fR. Empty allows all of them,\: because on that version the policy is about the address a link attaches to rather than about which performative carries it
+T}
+T{
+\fBallow_\:topology\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Permit the methods that change the broker\(aqs configuration: declare,\: delete,\: bind,\: unbind and purge
+T}
+T{
+\fBallow_\:publish\fR,\: \fBallow_\:consume\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Putting messages in and taking them out. A listener in front of a broker that only ingests events sets consume false;\: one in front of a read model sets publish false. On 1.0 the same two decide an \fBattach\fR,\: because a sender is publishing and a receiver is consuming
+T}
+T{
+\fBallow_\:exchanges\fR,\: \fBdeny_\:exchanges\fR
+T}	T{
+list of pattern
+T}	T{
+any
+T}	T{
+Exchange names. Checked wherever an exchange is named,\: including the two arguments in the table above
+T}
+T{
+\fBallow_\:queues\fR,\: \fBdeny_\:queues\fR
+T}	T{
+list of pattern
+T}	T{
+any
+T}	T{
+Queue names,\: including a message\(aqs \fBreply\-\:to\fR
+T}
+T{
+\fBallow_\:routing_\:keys\fR,\: \fBdeny_\:routing_\:keys\fR
+T}	T{
+list of pattern
+T}	T{
+any
+T}	T{
+Routing keys
+T}
+T{
+\fBallow_\:addresses\fR,\: \fBdeny_\:addresses\fR
+T}	T{
+list of pattern
+T}	T{
+any
+T}	T{
+1.0 link addresses. A listener that names exchanges and queues already covers the addresses whose shape says which they are;\: these are for the node names that have no shape,\: which is what Azure Service Bus and Qpid use
+T}
+T{
+\fBdeny_\:management_\:nodes\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse the names a broker keeps for administering itself: \fB$management\fR and \fB$cbs\fR on 1.0,\: and the \fBamq.\:rabbitmq.\:*\fR exchanges on 0\-9\-1 \-\- the log stream,\: the trace stream and the event stream. An operator who needs one names it in \fBallow_\:exchanges\fR or \fBallow_\:addresses\fR
+T}
+T{
+\fBrequire_\:user_\:id\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse a published message with no \fBuser\-\:id\fR property. It is the one field that ties a message to a person,\: and nothing makes a publisher set it
+T}
+T{
+\fBmatch_\:user_\:id\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse a message whose \fBuser\-\:id\fR is not this connection\(aqs identity. Costs nothing when nobody sets the property
+T}
+T{
+\fBallow_\:no_\:ack\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Permit \fBbasic.\:consume\fR with \fBno\-\:ack\fR,\: which takes messages off a queue without acknowledging them: whatever was in flight when the consumer died is gone
+T}
+T{
+\fBmax_\:priority\fR
+T}	T{
+int
+T}	T{
+unbounded
+T}	T{
+Bound on a message\(aqs \fBpriority\fR property. A priority queue serves the highest first,\: so a publisher that sets the maximum on everything starves the others
+T}
+T{
+\fBmax_\:frame_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB131072\fR
+T}	T{
+One frame,\: and with it the \fBframe\-\:max\fR the two sides negotiate. A negotiation that settles above this is \fBrefused rather than rewritten\fR: rewriting it would make the relay a party to the negotiation,\: and a connection that agreed a frame size and then had a frame refused mid\-message is a harder fault to find than one that failed at the start
+T}
+T{
+\fBmax_\:channels\fR
+T}	T{
+int
+T}	T{
+\fB256\fR
+T}	T{
+Channels per connection (sessions,\: on 1.0),\: enforced by \fBcounting the channels that are opened\fR rather than by refusing the negotiation: a broker\(aqs own default channel\-max is in the thousands and every client echoes it,\: so refusing that would refuse every ordinary connection
+T}
+T{
+\fBmax_\:links\fR
+T}	T{
+int
+T}	T{
+\fB256\fR
+T}	T{
+Links per 1.0 session
+T}
+T{
+\fBmax_\:message_\:bytes\fR
+T}	T{
+int
+T}	T{
+unbounded
+T}	T{
+One message. On 0\-9\-1 it is checked against the size the \fBcontent header declares\fR,\: before the body arrives;\: on 1.0 it is the sum over a run of transfers,\: because a message may be split across them
+T}
+T{
+\fBrequire_\:heartbeat\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse a connection that negotiated no heartbeat. One with none holds the broker\(aqs resources until the kernel notices the socket is gone,\: which can be hours \-\- and off by default because a client behind something that keeps the socket open is not doing anything wrong
+T}
+T{
+\fBmax_\:methods\fR
+T}	T{
+int
+T}	T{
+unbounded
+T}	T{
+Methods or performatives per connection. Off by default because a broker connection is long\-lived;\: it is here for a bastion front where a session is a person
+T}
+T{
+\fBrate_\:limit\fR,\: \fBrate_\:burst\fR
+T}	T{
+int
+T}	T{
+off
+T}	T{
+Methods per second per client address
+T}
+T{
+\fBmax_\:sessions\fR,\: \fBmax_\:sessions_\:per_\:client\fR
+T}	T{
+int
+T}	T{
+unbounded
+T}	T{
+Concurrent connections
+T}
+T{
+\fBidle_\:timeout\fR,\: \fBsession_\:duration\fR,\: \fBhandshake_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR,\: \fB0\fR,\: \fB30s\fR
+T}	T{
+
+T}
+T{
+\fBdefault_\:action\fR
+T}	T{
+\fBallow\fR,\: \fBdeny\fR
+T}	T{
+\fBdeny\fR
+T}	T{
+When no rule matched
+T}
+T{
+\fBdeny_\:response\fR
+T}	T{
+\fBclose\fR,\: \fBdrop\fR
+T}	T{
+\fBclose\fR
+T}	T{
+\fBclose\fR sends the protocol\(aqs own statement \-\- a \fBconnection.\:close\fR with reply code 403 on 0\-9\-1,\: a \fBclose\fR carrying \fBamqp:\:unauthorized\-\:access\fR on 1.0 \-\- so a client library reports a refusal rather than a dropped socket
+T}
+T{
+\fBlog_\:methods\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+An access line per method,\: which on a busy broker is a great many lines
+T}
+T{
+\fBalert_\:on_\:deny\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A security event for every refusal
+T}
+T{
+\fBmonitor_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Evaluate and do not enforce,\: except the hard decisions below
+T}
+.TE
+.SS "rules[]"
+.PP
+.TS
+allbox;
+lbw(1.5i) lbw(0.8i) lbx
+lw(1.5i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+string
+T}	T{
+Names the rule in logs and counters
+T}
+T{
+\fBclients\fR,\: \fBusers\fR,\: \fBvhosts\fR
+T}	T{
+lists
+T}	T{
+Selectors;\: AND within a rule,\: OR within one
+T}
+T{
+\fBschedule\fR
+T}	T{
+object
+T}	T{
+\fBdays\fR,\: \fBfrom\fR,\: \fBto\fR,\: \fBtimezone\fR
+T}
+T{
+\fBaction\fR
+T}	T{
+\fBallow\fR,\: \fBdeny\fR,\: \fBobserve\fR
+T}	T{
+Default \fBallow\fR
+T}
+T{
+\fBallow_\:methods\fR,\: \fBdeny_\:methods\fR,\: \fBallow_\:performatives\fR,\: \fBdeny_\:performatives\fR,\: \fBallow_\:exchanges\fR,\: \fBdeny_\:exchanges\fR,\: \fBallow_\:queues\fR,\: \fBdeny_\:queues\fR,\: \fBallow_\:routing_\:keys\fR,\: \fBdeny_\:routing_\:keys\fR,\: \fBallow_\:addresses\fR,\: \fBdeny_\:addresses\fR,\: \fBallow_\:topology\fR,\: \fBallow_\:publish\fR,\: \fBallow_\:consume\fR,\: \fBmax_\:message_\:bytes\fR,\: \fBmax_\:methods\fR
+T}	T{
+
+T}	T{
+The rule\(aqs own narrowing. A rule that names methods \fBwidens\fR the listener for its own traffic;\: the deny lists always win
+T}
+.TE
+.SS "A refusal ends the connection"
+.PP
+On the other relay kinds a refused operation is answered and the session continues. Here it is not, and the reason is the protocol: AMQP is stateful in both directions, so dropping one frame out of a conversation leaves the two sides disagreeing about what happened \-\- the client waiting for a reply the broker was never asked for, or the broker answering a method the client never learned was refused. So a refusal sends the protocol\(aqs own statement of why and closes both legs. A client library reports that as an access refusal, which is what it reports when a broker refuses one of its own.
+.PP
+A refused \fBprotocol header\fR is answered the way both specifications say (0\-9\-1 \[u00A7]4.2.2, 1.0 \[u00A7]2.2): with a header this listener does serve, and then the socket closes. A client library reports "the server speaks 0\-9\-1" rather than "the connection dropped".
+.SS "What monitor mode never shadows"
+.PP
+.TS
+allbox;
+lbw(1.4i) lbx
+lw(1.4i) lx.
+T{
+Refusal
+T}	T{
+Why it is hard
+T}
+T{
+\fBclient_\:not_\:allowed\fR,\: \fBtls_\:required\fR
+T}	T{
+An address that may not connect;\: a credential that would go on the wire
+T}
+T{
+\fBprotocol_\:version_\:not_\:allowed\fR,\: \fBprotocol_\:version_\:unknown\fR,\: \fBtls_\:negotiation_\:refused\fR
+T}	T{
+The header decides the framing of everything after it,\: so there is no "observe" for it
+T}
+T{
+\fBnot_\:authenticated\fR
+T}	T{
+Forwarding an operation before the broker accepted a credential means the operation ran
+T}
+T{
+\fBunreadable_\:frame\fR,\: \fBframe_\:type_\:unknown\fR,\: \fBarguments_\:unreadable\fR
+T}	T{
+The relay has no opinion to observe
+T}
+T{
+\fBmechanism_\:not_\:allowed\fR,\: \fBmechanism_\:missing\fR
+T}	T{
+A mechanism is chosen once,\: at the start,\: and a downgrade observed is a downgrade
+T}
+T{
+\fBvhost_\:not_\:allowed\fR
+T}	T{
+The vhost decides what every name after it means
+T}
+T{
+\fBframe_\:max_\:unbounded\fR,\: \fBframe_\:max_\:too_\:large\fR,\: \fBheartbeat_\:disabled\fR,\: \fBtoo_\:many_\:channels\fR,\: \fBtoo_\:many_\:links\fR,\: \fBtoo_\:many_\:methods\fR,\: \fBmessage_\:too_\:large\fR,\: \fBrate_\:limited\fR,\: \fBbody_\:past_\:declared_\:size\fR
+T}	T{
+Bounds
+T}
+T{
+\fBmanagement_\:node_\:denied\fR
+T}	T{
+The broker\(aqs own administration
+T}
+T{
+\fBdelivery_\:denied\fR
+T}	T{
+The message is already on its way to the client
+T}
+T{
+\fBno_\:such_\:link\fR
+T}	T{
+A 1.0 transfer on a handle this relay never saw attached,\: so its address was never checked
+T}
+T{
+any refusal of a \fBqueue.\:delete\fR,\: \fBexchange.\:delete\fR,\: \fBqueue.\:purge\fR or \fBconnection.\:update\-\:secret\fR
+T}	T{
+A purge forwarded so that it could be written down is a queue that is empty
+T}
+.TE
+.PP
+A method merely \fIoff\fR the allow list is a \fBsoft\fR refusal, which is what makes monitor mode useful: it is most likely an application nobody has listed yet.
+.SS "The inbound direction"
+.PP
+The deny lists apply to what the broker hands the client \-\- \fBbasic.deliver\fR, \fBbasic.get\-ok\fR, \fBbasic.return\fR \-\- and the allow lists do not. The difference is deliberate. An allow list says what a client may \fIask for\fR; a delivery names where the message came \fIfrom\fR, which the consumer need not be allowed to name: a queue bound to an exchange by somebody else delivers messages carrying that exchange\(aqs name, and a relay that required it on the allow list would break every ordinary consumer. A deny list says something else \-\- this connection must never see messages from there, whoever routed them \-\- and that one holds in both directions.
+.PP
+Refusals are \fBamqp_denied\fR for the ban triggers, with the reasons in the table above plus \fBmethod_not_allowed\fR, \fBmethod_denied\fR, \fBmethod_unknown\fR, \fBperformative_not_allowed\fR, \fBperformative_denied\fR, \fBperformative_unknown\fR, \fBtopology_not_allowed\fR, \fBpublish_not_allowed\fR, \fBconsume_not_allowed\fR, \fBexchange_not_allowed\fR, \fBexchange_denied\fR, \fBqueue_not_allowed\fR, \fBqueue_denied\fR, \fBrouting_key_not_allowed\fR, \fBrouting_key_denied\fR, \fBaddress_not_allowed\fR, \fBaddress_denied\fR, \fBreply_to_not_allowed\fR, \fBuser_not_allowed\fR, \fBuser_id_missing\fR, \fBuser_id_mismatch\fR, \fBpriority_too_high\fR, \fBno_ack_not_allowed\fR, \fBaddress_missing\fR, \fBadministrative_not_allowed\fR, \fBno_rule_matched\fR, \fBrule_denied\fR, \fBoutside_schedule\fR, \fBtoo_many_sessions\fR, \fBtoo_many_sessions_per_client\fR, \fBno_protocol_header\fR, \fBtls_handshake\fR and \fBupstream_unavailable\fR.
 .SH "asset_inventory"
 .PP
 One record per device, built from traffic the proxy was already carrying.

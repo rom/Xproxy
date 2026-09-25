@@ -301,6 +301,36 @@ func (r *Reader) Header() (Header, error) {
 	return h, nil
 }
 
+// NextOrHeader reads whatever comes next: a frame, or a protocol header.
+//
+// A connection can send a header in the middle of its stream, and on AMQP 1.0
+// it must: a successful SASL exchange ends with both peers starting again with
+// a fresh header (§5.3.2), and a peer that refuses the version it was sent
+// answers with one of its own before closing (§2.2 and 0-9-1 §4.2.2). A reader
+// that assumed a frame there would read eight octets of header as a frame
+// header and lose the stream.
+//
+// One peeked octet tells them apart, and it is unambiguous in both framings: a
+// header begins with the literal `A`, a 0-9-1 frame begins with a frame type
+// (1, 2, 3 or 8), and a 1.0 frame begins with the most significant octet of a
+// size this reader bounds far below `A`'s value -- so a frame claiming
+// 0x41000000 octets is refused for its size either way.
+func (r *Reader) NextOrHeader() (*Frame, *Header, error) {
+	b, err := r.br.Peek(1)
+	if err != nil {
+		return nil, nil, err
+	}
+	if b[0] == literal[0] {
+		h, err := r.Header()
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, &h, nil
+	}
+	f, err := r.Next()
+	return f, nil, err
+}
+
 // Next reads one frame.
 func (r *Reader) Next() (*Frame, error) {
 	switch r.v {

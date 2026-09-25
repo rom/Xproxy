@@ -39,6 +39,7 @@ server:
           redis: null
           dhcp: null
           bacnet: null
+          amqp: null
           policy: null
         - name: public
           address: :443
@@ -99,6 +100,7 @@ server:
           redis: null
           dhcp: null
           bacnet: null
+          amqp: null
           policy: null
     limits:
         max_header_bytes: 65536

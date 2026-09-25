@@ -38,6 +38,7 @@ var sections = map[string]string{
 	"redis":    "redis: {upstream: u, require_tls: false}",
 	"dhcp":     "dhcp: {upstream: u, relay_address: 10.0.0.1}",
 	"bacnet":   "bacnet: {upstream: u}",
+	"amqp":     "amqp: {upstream: u, require_tls: false}",
 	"ntp":      "ntp: {upstream: u}",
 	"ntske":    "ntske: {upstream: u}",
 }

@@ -306,6 +306,8 @@ type Listener struct {
 	DHCP *DHCPListener `yaml:"dhcp"`
 	// BACnet configures a kind: bacnet listener.
 	BACnet *BACnetListener `yaml:"bacnet"`
+	// AMQP configures a kind: amqp listener.
+	AMQP *AMQPListener `yaml:"amqp"`
 	// Policy is whether this listener enforces its policy or only
 	// evaluates it. It overrides the estate's own policy section.
 	Policy *ListenerPolicy `yaml:"policy"`
@@ -1367,6 +1369,297 @@ type RedisRule struct {
 	DenyKeyPrefixes  []string `yaml:"deny_key_prefixes"`
 	ReadOnly         *bool    `yaml:"read_only"`
 	MaxCommands      int      `yaml:"max_commands"`
+}
+
+// AMQPListener is the settings of a kind: amqp listener: a relay in front of
+// a message broker.
+//
+// Two protocols arrive on this port. A client picks one in its first eight
+// octets: AMQP 0-9-1, which is what RabbitMQ speaks and what almost every
+// deployment means by AMQP, or AMQP 1.0, which is a different protocol that
+// kept the name. Both are read, and the same policy is written once for
+// both -- the nouns are an exchange, a queue and a routing key on 0-9-1, and
+// a link address on 1.0, which the brokers that serve both versions spell
+// as `/exchange/X/key` and `/queue/Q`.
+//
+// Four things make a relay worth having in front of a broker.
+//
+// **A broker's permissions are per user and per virtual host, and nothing
+// finer in practice.** RabbitMQ's model is a regular expression per vhost
+// over configure, write and read -- powerful, and administered in the
+// broker by whoever administers the broker. A relay holds the same boundary
+// in the estate's own configuration, reviewed with the rest of it, and it
+// holds it for brokers whose permission model is weaker than RabbitMQ's.
+//
+// **Topology is not work.** Declaring an exchange, deleting a queue,
+// binding and unbinding are the broker's configuration, and almost no
+// application needs to do any of it: a service that publishes to an
+// exchange somebody else declared needs no topology method at all. So
+// `allow_topology` is false by default, and a client library that declares
+// its own queue on connect is a decision an operator makes rather than a
+// default nobody noticed.
+//
+// **The credential is in the clear.** Both versions authenticate with SASL,
+// and PLAIN -- which is what every deployment uses -- is the username and
+// the password in one field separated by zero octets. `require_tls` is
+// therefore the setting that matters most; the relay reads the username out
+// of the exchange for its logs and rules and never the password.
+//
+// **The dangerous arguments are not the obvious ones.**
+// `x-dead-letter-exchange` on a queue and `alternate-exchange` on an
+// exchange both name an exchange the broker will route to, and a policy
+// that checked only the name being declared would let a client have the
+// broker deliver to an exchange it may not publish to. Both are checked
+// against the exchange policy, as is the `reply-to` in a message's own
+// properties.
+type AMQPListener struct {
+	// Upstream is the broker pool. Required.
+	Upstream string `yaml:"upstream"`
+	// AllowClients and DenyClients are the networks a client may connect
+	// from. Deny is evaluated first.
+	AllowClients []string `yaml:"allow_clients"`
+	DenyClients  []string `yaml:"deny_clients"`
+
+	// RequireTLS refuses a client that is not speaking TLS. Default true.
+	//
+	// AMQP has no in-protocol upgrade on 0-9-1: TLS is the port (5671
+	// rather than 5672), so this is about which port a client reached.
+	// AMQP 1.0 has a TLS protocol identifier in its header, which this
+	// listener refuses rather than answering -- a client that asked to
+	// negotiate TLS inside the protocol should be given a TLS port
+	// instead, and answering the request would mean this relay deciding
+	// the connection's cryptography from a client's first octet.
+	RequireTLS *bool `yaml:"require_tls"`
+	// UpstreamTLSMode is how the relay speaks to the broker: require,
+	// prefer or disable. Default disable, which is the honest default for
+	// the same reason as on redis: a great many brokers are reached over a
+	// private network with no TLS and there is nothing to negotiate, so
+	// requiring it by default would refuse every upstream rather than
+	// protect anything.
+	UpstreamTLSMode string `yaml:"upstream_tls_mode"`
+	// UpstreamTLS is the certificate and verification settings for that
+	// leg.
+	UpstreamTLS *UpstreamTLS `yaml:"upstream_tls"`
+
+	// Versions is the protocol versions a client may ask for: 0-9-1 and
+	// 1.0. Empty allows both. 0-8 and 0-9 are never allowed: they are
+	// answered by brokers for compatibility, their catalogue is a subset
+	// nobody writes new clients against, and a relay that read them would
+	// be deciding a policy on a protocol revision from 2006.
+	Versions []string `yaml:"versions"`
+
+	// AllowMechanisms is the SASL mechanisms a client may choose. Empty
+	// allows PLAIN and EXTERNAL.
+	//
+	// ANONYMOUS is not in that default. It is a login with no identity: a
+	// broker that accepts it has no account to attribute anything to, and
+	// a relay in front of one can refuse to pass it on.
+	AllowMechanisms []string `yaml:"allow_mechanisms"`
+	// DenyMechanisms is the deny list, evaluated first.
+	DenyMechanisms []string `yaml:"deny_mechanisms"`
+	// RequireAuth refuses every operation until the broker has accepted a
+	// credential. Default true.
+	//
+	// The outcome is the broker's answer and not the client's claim: the
+	// relay waits for the connection.tune that follows a successful
+	// 0-9-1 handshake, or for the sasl-outcome on 1.0, exactly as the
+	// redis and postgres kinds wait for a server's answer to an AUTH.
+	RequireAuth *bool `yaml:"require_auth"`
+	// AllowUsers and DenyUsers are the identities a connection may
+	// authenticate as, read out of the SASL exchange. Empty allows any.
+	AllowUsers []string `yaml:"allow_users"`
+	DenyUsers  []string `yaml:"deny_users"`
+
+	// AllowVhosts and DenyVhosts are the virtual hosts a connection may
+	// open: connection.open's virtual-host on 0-9-1 and open's hostname on
+	// 1.0. Empty allows any.
+	//
+	// This is the broker's own access boundary, and it is checked before
+	// the exchange and queue lists because a name means something
+	// different in each vhost.
+	AllowVhosts []string `yaml:"allow_vhosts"`
+	DenyVhosts  []string `yaml:"deny_vhosts"`
+
+	// AllowMethods is the allow list of 0-9-1 method names, spelled
+	// `basic.publish` and `queue.declare`. Empty allows the handshake, the
+	// channel methods, publishing, consuming, acknowledging, publisher
+	// confirms and transactions -- and no topology method at all.
+	AllowMethods []string `yaml:"allow_methods"`
+	// DenyMethods is the deny list, which no rule can override.
+	DenyMethods []string `yaml:"deny_methods"`
+	// AllowPerformatives and DenyPerformatives are the same for AMQP 1.0,
+	// spelled `attach`, `transfer`, `flow`. Empty allows all nine, because
+	// on that version the policy is about the address a link attaches to
+	// rather than about which performative carries it.
+	AllowPerformatives []string `yaml:"allow_performatives"`
+	DenyPerformatives  []string `yaml:"deny_performatives"`
+
+	// AllowTopology permits the methods that change the broker's
+	// configuration: declaring, deleting, binding and unbinding exchanges
+	// and queues, and purging. Default false.
+	AllowTopology bool `yaml:"allow_topology"`
+	// AllowPublish and AllowConsume permit putting messages in and taking
+	// them out. Both default true; a listener in front of a broker that
+	// only ingests events sets consume false, and one in front of a read
+	// model sets publish false.
+	AllowPublish *bool `yaml:"allow_publish"`
+	AllowConsume *bool `yaml:"allow_consume"`
+
+	// AllowExchanges, AllowQueues, AllowRoutingKeys and AllowAddresses are
+	// the names a connection may use, as glob patterns (`orders.*`,
+	// `app-?`, `*`). Empty allows any. The deny lists are evaluated first
+	// and no rule can override them.
+	//
+	// A name is checked wherever it appears, which is the part a policy
+	// written against the obvious fields would miss: the exchange of a
+	// publish, the queue of a consume, the dead-letter exchange of a
+	// declare, the alternate exchange, the reply-to of a message, and the
+	// node address of a 1.0 attach.
+	AllowExchanges   []string `yaml:"allow_exchanges"`
+	DenyExchanges    []string `yaml:"deny_exchanges"`
+	AllowQueues      []string `yaml:"allow_queues"`
+	DenyQueues       []string `yaml:"deny_queues"`
+	AllowRoutingKeys []string `yaml:"allow_routing_keys"`
+	DenyRoutingKeys  []string `yaml:"deny_routing_keys"`
+	// AllowAddresses and DenyAddresses are the 1.0 link addresses. A
+	// listener that names exchanges and queues covers the addresses whose
+	// shape says which they are; these are for the node names that have no
+	// shape, which is what Azure Service Bus and Qpid use.
+	AllowAddresses []string `yaml:"allow_addresses"`
+	DenyAddresses  []string `yaml:"deny_addresses"`
+
+	// DenyManagementNodes refuses the names a broker keeps for
+	// administering itself: `$management` and `$cbs` on 1.0, and the
+	// `amq.rabbitmq.*` exchanges on 0-9-1. Default true.
+	//
+	// These are how a client reads the broker's own configuration, its
+	// logs and its trace stream over the same connection it publishes on.
+	// An operator who needs one names it in allow_exchanges or
+	// allow_addresses, which is a line a reviewer can see.
+	DenyManagementNodes *bool `yaml:"deny_management_nodes"`
+
+	// RequireUserID refuses a published message that does not carry the
+	// user-id property. Default false.
+	//
+	// It is the one field on this protocol that ties a message to a
+	// person, and RabbitMQ already checks it against the connection's
+	// authenticated user when a publisher sets it. Nothing makes a
+	// publisher set it; requiring it turns "somebody published this" into
+	// an attributable act.
+	RequireUserID bool `yaml:"require_user_id"`
+	// MatchUserID refuses a published message whose user-id is not the
+	// identity this connection authenticated as. Default true, and it
+	// costs nothing when nobody sets the property.
+	MatchUserID *bool `yaml:"match_user_id"`
+	// AllowNoAck permits basic.consume with no-ack, which takes messages
+	// off a queue without acknowledging them: whatever was in flight when
+	// the consumer died is gone. Default true, because a great deal of
+	// working software uses it deliberately.
+	AllowNoAck *bool `yaml:"allow_no_ack"`
+	// MaxPriority bounds the priority property of a published message, 0
+	// for no bound. A priority queue serves the highest first, so a
+	// publisher that sets the maximum on everything starves the others.
+	MaxPriority int `yaml:"max_priority"`
+
+	// MaxFrameBytes bounds one frame, and with it the frame-max the two
+	// sides negotiate. Default 128 KiB, which is RabbitMQ's own default.
+	//
+	// A negotiation that settles above this bound is refused rather than
+	// rewritten, and the refusal says so: rewriting it would make this
+	// relay a party to the negotiation, and a client that agreed a frame
+	// size with the broker and then had a frame refused in the middle of a
+	// message is a harder fault to find than a connection that failed at
+	// the start.
+	MaxFrameBytes int `yaml:"max_frame_bytes"`
+	// MaxChannels bounds the channels one connection may open (the
+	// sessions, on 1.0). Default 256.
+	MaxChannels int `yaml:"max_channels"`
+	// MaxLinks bounds the links one 1.0 session may attach. Default 256.
+	MaxLinks int `yaml:"max_links"`
+	// MaxMessageBytes bounds one message, 0 for no bound. On 0-9-1 it is
+	// checked against the size the content header declares, before the
+	// body arrives; on 1.0 it is the sum over a run of transfers, because
+	// a message may be split across them.
+	MaxMessageBytes int `yaml:"max_message_bytes"`
+	// RequireHeartbeat refuses a connection that negotiated no heartbeat
+	// at all. Default false.
+	//
+	// A connection with no heartbeat holds the broker's resources until
+	// the kernel notices the socket is gone, which on a network that
+	// dropped a client can be hours. It is off by default because a client
+	// behind a proxy that keeps the socket open is not doing anything
+	// wrong, and because turning it on refuses those clients.
+	RequireHeartbeat bool `yaml:"require_heartbeat"`
+	// MaxMethods bounds the methods or performatives one connection may
+	// send, 0 for no bound. A broker connection is long-lived, so this is
+	// off by default; it is here for a bastion front where a session is a
+	// person.
+	MaxMethods int `yaml:"max_methods"`
+	// RateLimit and RateBurst bound methods per second per client address,
+	// 0 for no limit.
+	RateLimit int `yaml:"rate_limit"`
+	RateBurst int `yaml:"rate_burst"`
+	// MaxSessions and MaxSessionsPerClient bound concurrent connections.
+	MaxSessions          int `yaml:"max_sessions"`
+	MaxSessionsPerClient int `yaml:"max_sessions_per_client"`
+	// IdleTimeout, SessionDuration and HandshakeTimeout bound a
+	// connection.
+	IdleTimeout      Duration `yaml:"idle_timeout"`
+	SessionDuration  Duration `yaml:"session_duration"`
+	HandshakeTimeout Duration `yaml:"handshake_timeout"`
+
+	// Rules narrow or widen the listener for traffic that matches them.
+	Rules []AMQPRule `yaml:"rules"`
+	// DefaultAction is allow or deny when no rule matched. Default deny.
+	DefaultAction string `yaml:"default_action"`
+	// DenyResponse is close (the default: the protocol's own
+	// channel.close or detach, so the client library reports a refusal) or
+	// drop.
+	DenyResponse string `yaml:"deny_response"`
+	// LogMethods writes an access line per method, which on a busy broker
+	// is a great many lines. Default false.
+	LogMethods bool `yaml:"log_methods"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
+	// MonitorOnly evaluates and enforces nothing, except the hard
+	// decisions: the client list, the TLS requirement, the protocol
+	// version, a frame the relay could not read, an operation before
+	// authentication, the bounds, and the destructive methods -- deleting
+	// an exchange or a queue and purging one, because a purge forwarded so
+	// that it could be written down is a queue that is empty.
+	MonitorOnly bool `yaml:"monitor_only"`
+}
+
+// AMQPRule is one rule of an amqp listener's policy.
+type AMQPRule struct {
+	// Name identifies the rule in logs and counters.
+	Name string `yaml:"name"`
+	// Clients, Users and Vhosts select the traffic.
+	Clients []string `yaml:"clients"`
+	Users   []string `yaml:"users"`
+	Vhosts  []string `yaml:"vhosts"`
+	// Schedule is when this rule allows what it allows.
+	Schedule *ModbusSchedule `yaml:"schedule"`
+	// Action is allow (the default), deny or observe.
+	Action string `yaml:"action"`
+	// The rule's own narrowing. The deny lists always win.
+	AllowMethods       []string `yaml:"allow_methods"`
+	DenyMethods        []string `yaml:"deny_methods"`
+	AllowPerformatives []string `yaml:"allow_performatives"`
+	DenyPerformatives  []string `yaml:"deny_performatives"`
+	AllowExchanges     []string `yaml:"allow_exchanges"`
+	DenyExchanges      []string `yaml:"deny_exchanges"`
+	AllowQueues        []string `yaml:"allow_queues"`
+	DenyQueues         []string `yaml:"deny_queues"`
+	AllowRoutingKeys   []string `yaml:"allow_routing_keys"`
+	DenyRoutingKeys    []string `yaml:"deny_routing_keys"`
+	AllowAddresses     []string `yaml:"allow_addresses"`
+	DenyAddresses      []string `yaml:"deny_addresses"`
+	AllowTopology      *bool    `yaml:"allow_topology"`
+	AllowPublish       *bool    `yaml:"allow_publish"`
+	AllowConsume       *bool    `yaml:"allow_consume"`
+	MaxMessageBytes    int      `yaml:"max_message_bytes"`
+	MaxMethods         int      `yaml:"max_methods"`
 }
 
 // TDSListener is the settings of a kind: tds listener: a relay in front of a

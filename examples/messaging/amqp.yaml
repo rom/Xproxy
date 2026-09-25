@@ -1,0 +1,157 @@
+# A message broker behind a proxy that reads the frames: AMQP 0-9-1 (what
+# RabbitMQ speaks) and AMQP 1.0 (ISO/IEC 19464), which is a different
+# protocol that kept the name. A client picks one in its first eight
+# octets, and one policy below decides both.
+#
+# A layer 4 listener would carry the same bytes. The reason this one
+# parses them is that a broker is where an estate's data is in transit —
+# orders, payments, telemetry, the events that drive every other service
+# — and a broker's own permissions are a per-user, per-vhost matter
+# administered inside the broker. This holds the same boundary in the
+# configuration that is reviewed with everything else, and it holds two
+# lines the broker's model does not draw at all:
+#
+#   * Topology is not work. Declaring an exchange, deleting a queue,
+#     binding and purging are the broker's *configuration*, and an
+#     application that publishes to an exchange somebody else declared
+#     needs none of them. They are off here until a rule says otherwise.
+#
+#   * The dangerous argument is not the obvious one.
+#     `x-dead-letter-exchange` on a queue and `alternate-exchange` on an
+#     exchange each name an exchange the broker will route to, and
+#     `reply-to` inside a message names a queue a responder will deliver
+#     to. All three are checked against the same lists as the fields
+#     that carry them.
+#
+# Validate: xrelay -config examples/messaging/amqp.yaml -validate
+version: 1
+server:
+  listeners:
+    # The application front: services that publish events and consume
+    # their own work queues.
+    - name: broker
+      # 5671 is AMQP over TLS. There is no in-band upgrade on 0-9-1 —
+      # the port is either TLS or it is not — and the SASL PLAIN
+      # mechanism every deployment uses is the username and the
+      # password in one field, separated by a zero octet.
+      address: "0.0.0.0:5671"
+      kind: amqp
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/certs/amqp.pem, key_file: /etc/xproxy/certs/amqp-key.pem}
+        min_version: "1.2"
+      amqp:
+        upstream: brokers
+        allow_clients: ["10.0.2.0/24"]
+
+        # Both versions, and nothing older: a broker answers 0-8 and 0-9
+        # for compatibility, and a policy on a protocol revision from
+        # 2006 is not one worth writing.
+        versions: ["0-9-1", "1.0"]
+
+        # PLAIN inside TLS is the ordinary deployment; EXTERNAL is the
+        # better one, where the client certificate is the identity.
+        # ANONYMOUS is not on the list, because a broker that accepts it
+        # has no account to attribute anything to.
+        allow_mechanisms: ["PLAIN", "EXTERNAL"]
+        require_auth: true
+        allow_users: ["orders", "billing", "notifications"]
+
+        # The vhost is the broker's own boundary, and an exchange name
+        # means something different in each one.
+        allow_vhosts: ["/orders"]
+
+        # The nouns. `*` is one word and `#` is zero or more, as in a
+        # binding, so `orders.*` covers orders.created and not
+        # orders.eu.created.
+        allow_exchanges: ["orders", "orders.#", "amq.topic"]
+        allow_queues: ["orders.#", "billing.#"]
+        allow_routing_keys: ["orders.#", "billing.#"]
+
+        # Every message says who published it, and the identity it
+        # claims has to be the one this connection authenticated as.
+        require_user_id: true
+        match_user_id: true
+
+        # Bounds. The frame size is RabbitMQ's own default; a
+        # negotiation that settles above it is refused rather than
+        # rewritten, because a connection that agreed a frame size and
+        # then had a frame refused mid-message is a harder fault to find
+        # than one that failed at the start.
+        max_frame_bytes: 131072
+        max_message_bytes: 8388608
+        max_channels: 64
+        max_sessions_per_client: 16
+        idle_timeout: 10m
+
+        rules:
+          # The deployment account is the only one that may change the
+          # broker's shape, and only during the release window.
+          - name: deployment
+            users: ["deploy"]
+            allow_topology: true
+            allow_queues: ["orders.#", "billing.#"]
+            allow_exchanges: ["orders", "orders.#"]
+            schedule: {days: [mon, tue, wed, thu], from: "18:00", to: "22:00", timezone: Europe/Stockholm}
+
+          # The applications: publish and consume, and nothing else.
+          - name: applications
+            users: ["orders", "billing", "notifications"]
+
+    # A read model: it consumes and never publishes. The same
+    # configuration in the other direction fronts a broker that only
+    # ingests events.
+    - name: readmodel
+      address: "0.0.0.0:5672"
+      kind: amqp
+      amqp:
+        upstream: brokers
+        require_tls: false            # a private segment, and nothing else on it
+        allow_clients: ["10.0.9.0/24"]
+        allow_publish: false
+        allow_consume: true
+        allow_queues: ["projections.#"]
+        # A consumer that does not acknowledge loses whatever was in
+        # flight when it died, and the queue somebody else depends on is
+        # drained by it.
+        allow_no_ack: false
+        default_action: allow
+
+    # A trial in front of a broker nobody has an inventory for: it
+    # evaluates the policy, refuses nothing soft, and writes down what
+    # it would have refused. The destructive methods are still refused,
+    # because a purge forwarded so that it could be written down is a
+    # queue that is empty.
+    - name: trial
+      address: "0.0.0.0:5673"
+      kind: amqp
+      amqp:
+        upstream: brokers
+        require_tls: false
+        monitor_only: true
+        log_methods: true
+        default_action: deny
+
+logging:
+  directory: /var/log/xproxy
+  access: {file: access.log}
+  security: {file: security.log}
+  audit: {file: audit.log}
+
+bans:
+  action: drop
+  triggers:
+    # A client walking a broker's permissions produces a run of
+    # refusals: every one of them is an `amqp_denied` deny event.
+    - name: amqp-persistent-refusals
+      reasons: [amqp_denied]
+      threshold: 10
+      window: 1m
+      duration: 30m
+
+upstreams:
+  - name: brokers
+    endpoints:
+      - {address: 10.0.5.20:5672}
+      - {address: 10.0.5.21:5672}
+    health_check: {type: tcp, interval: 10s}

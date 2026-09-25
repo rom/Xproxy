@@ -4813,6 +4813,79 @@ would refuse every upstream in the common deployment rather than protect anythin
 If your server does speak it, set `upstream_tls_mode: require` -- and the
 `examples/databases/redis.yaml` application front does.
 
+## AMQP
+
+**Every client fails at `connection.open` with `vhost_not_allowed`.** The
+virtual host a client library sends is often `/` and is often *not*: a
+connection string of `amqp://user:pass@host/orders` opens the vhost `orders`
+without a leading slash, while `amqp://user:pass@host/%2Forders` opens
+`/orders` with one. They are two different vhosts to the broker and to this
+listener. Read the refusal's `detail`, which is the name the client actually
+sent, and put that in `allow_vhosts`.
+
+**A client library fails on connect with `topology_not_allowed` and nothing
+in the application declares anything.** It does: most client libraries declare
+the queue they are about to consume from, every time they connect, so that a
+queue somebody deleted comes back. That is `queue.declare` -- topology -- and
+it is off by default. Either name the account in a rule with `allow_topology:
+true` (with a schedule, if the declaring happens at deployment rather than at
+every connect) or turn the library's declaration off, which is usually one
+argument.
+
+**`arguments_unreadable` on a `queue.declare` that works without the relay.**
+The declare carries a field table, and one of its entries has a type code this
+relay does not read. The likely cause is a broker or client extension using a
+type outside the 0-9-1 table -- and the refusal is deliberate: the table is
+where `x-dead-letter-exchange` lives, so a table read halfway is a policy
+checking a list against whatever survived. The refusal's `detail` names the
+method; the log line from the client's side names the argument.
+
+**`frame_max_too_large` at the start of every connection.** The two sides
+negotiated a frame size above `max_frame_bytes`. The default here is 128 KiB,
+which is RabbitMQ's own default, so this means the broker was configured
+upward. Raise `max_frame_bytes` to match the broker rather than lowering the
+broker: the bound exists so this relay never reads an unbounded frame, not to
+be smaller than the broker's.
+
+```sh
+xproxyctl -json stats | jq '.refusals.amqp'
+```
+
+**A 1.0 client connects and then hangs.** Check whether it sent a SASL
+header: a 1.0 connection may skip the SASL layer entirely, which is a
+connection with no identity at all, and `require_auth` refuses the first
+performative after it. The event is `amqp_not_authenticated` with the
+performative in `detail`. A client that should be authenticating with a
+certificate wants `EXTERNAL`, which is in the default mechanism list.
+
+**`no_such_link` on an AMQP 1.0 connection that works elsewhere.** A transfer
+arrived on a link handle this relay never saw attached, which happens for two
+reasons. The connection was already open when this listener was reloaded --
+in which case reconnecting resolves it, because the relay is not a broker and
+does not carry link state across its own restarts. Or the client is reusing a
+handle it detached, which a broker tolerates and this does not: the address
+behind the handle is what the policy decided, and a handle with no attach has
+no address.
+
+**`amqp_broker_refused` in the security log.** This is the *broker* refusing
+something this listener allowed -- reply code 403 on 0-9-1,
+`amqp:unauthorized-access` on 1.0 -- which means the two policies disagree.
+The line carries the user and the vhost; the broker's own log says which of
+its three permissions (configure, write, read) did not match. Decide which
+policy is right rather than widening both.
+
+**`amqp_anonymous_offered`.** The broker offers the ANONYMOUS mechanism. A
+client that chooses it is refused here, but the offer means anything that
+reaches the broker without passing this listener can authenticate as nobody.
+On RabbitMQ that is the `rabbit.auth_mechanisms` setting, and the guest
+account it usually goes with.
+
+**Deliveries stop with `delivery_denied`.** A `deny_exchanges` or
+`deny_queues` entry matched what the broker was handing this connection. The
+allow lists are not applied to that direction -- a consumer need not be
+allowed to name the exchange a message was published to -- so this is a deny
+list doing exactly what it says. The `detail` names the exchange or queue.
+
 ## BACnet
 
 **Every write is refused with `service_not_allowed`.** `services` defaults to the

@@ -564,6 +564,80 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **`kind: amqp`: a message broker relay that reads both protocols.** `internal/amqpwire`
+  reads them off the wire and `internal/kinds/amqp` holds the policy.
+
+  AMQP is two protocols sharing a name and a port, and a client picks one in its
+  first eight octets. **0-9-1** is what RabbitMQ speaks and what almost every
+  deployment means by AMQP: a frame protocol with a class-and-method catalogue
+  where declaring an exchange, binding a queue, publishing and deleting are each
+  a method frame with typed arguments. **1.0** (ISO/IEC 19464) is a different
+  protocol that kept the name: nine performatives over a self-describing type
+  system, where the thing being authorised is the address a link attaches to and
+  everything after it carries a handle. Both are read, and **one policy decides
+  both** -- the brokers that serve both versions spell an address
+  `/exchange/X/key` and `/queue/Q`, so the same exchange and queue lists cover
+  it and an operator writes the boundary once.
+
+  A broker is where an estate's data is in transit, and its own permissions are a
+  per-user, per-vhost matter administered inside the broker -- RabbitMQ's model is
+  three regular expressions per user per vhost, which is more than most brokers
+  offer and still outside the estate's own review. This listener holds that
+  boundary in the configuration reviewed with everything else, and adds three
+  lines the broker's model does not draw.
+
+  **Topology is not work.** Declaring an exchange, deleting a queue, binding,
+  unbinding and purging are the broker's *configuration*, and a service that
+  publishes to an exchange somebody else declared needs none of them. So
+  `allow_topology` is false by default, and a client library that declares its own
+  queue on connect becomes a decision an operator makes rather than a default
+  nobody noticed.
+
+  **The credential is in the clear.** PLAIN -- what every deployment uses -- is
+  the username and the password in one field separated by a zero octet, so
+  `require_tls` defaults on and is the setting that matters most. The relay reads
+  the *username* out of the SASL exchange for its rules and its logs and steps
+  over the password, so no code path between the wire and a log line holds a
+  broker credential. ANONYMOUS is not on the default mechanism list, because it
+  is a login with no identity; a broker that *offers* it gets an
+  `amqp_anonymous_offered` alert, since anything reaching that broker without
+  passing this listener can use it.
+
+  **The dangerous argument is not the obvious one.** `x-dead-letter-exchange` on
+  a queue and `alternate-exchange` on an exchange each name an exchange the
+  broker will route to, and `reply-to` inside a message names a queue a responder
+  will deliver to. A policy that checked only the field being declared would let
+  a client have the broker reach what the client may not, so all three go through
+  the same lists -- as does the node address of a 1.0 attach. The name lists are
+  written in the protocol's own topic language (`*` one word, `#` zero or more),
+  because that is the one an operator already knows from writing bindings.
+
+  Four more things follow from what the protocol is. A message is refused on the
+  size its **content header declares**, before its body arrives, and on 1.0 by
+  the sum over a run of transfers, because a message there may be split across
+  them and bounding each frame would bound nothing. `require_user_id` with
+  `match_user_id` turns "somebody published this" into an attributable act: it is
+  the one field that ties a message to a person and nothing makes a publisher set
+  it. A **refusal ends the connection**, with the protocol's own statement of why
+  -- a `connection.close` carrying reply code 403, or a 1.0 `close` carrying
+  `amqp:unauthorized-access` -- because AMQP is stateful in both directions and
+  dropping one frame out of a conversation leaves the two sides disagreeing about
+  what happened. And the **inbound direction gets the deny lists only**: an allow
+  list says what a client may ask for, while a delivery names where a message came
+  from, which a consumer need not be allowed to name -- a queue bound to an
+  exchange by somebody else delivers messages carrying that exchange's name, and
+  requiring it on the allow list would break every ordinary consumer.
+
+  Two defects were found while writing the tests, both in the shape of the policy
+  rather than in the parsing. `allow_topology: true` did not widen the method
+  allow list, so a listener that permitted topology still refused
+  `queue.declare` for being off a list the operator had not written -- the flag
+  widens the list now, and the class is decided before the list so a refusal names
+  the reason rather than the symptom. And the name patterns were being matched as
+  shell globs over the whole string, in which `*` crosses a dot: `orders.*` then
+  covered `orders.eu.created`, which is precisely the distinction a routing key
+  policy exists to draw.
+
 - **`kind: bacnet`: a BACnet/IP relay in front of a building.**
   `internal/bacnet` reads the three layers of ASHRAE 135 Annex J and holds the
   service, object and property tables; `internal/kinds/bacnet` holds the policy.

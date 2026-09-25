@@ -5991,7 +5991,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `ntp_denied`, `ntske_denied`, `yara` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `amqp_denied`, `ntp_denied`, `ntske_denied`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |
@@ -10280,6 +10280,220 @@ list in either direction. The object and property rules are *not* applied to the
 building's direction -- they are written about the objects a client may reach,
 and applying them backwards would refuse every `i-Am`, which names a device
 object.
+
+## amqp
+
+`kind: amqp` is a relay in front of a message broker. It is the only listener
+here that reads **two protocols on one port**, because AMQP is two protocols: a
+client picks one in its first eight octets.
+
+- **AMQP 0-9-1** is what RabbitMQ speaks and what almost every deployment means
+  by AMQP. A frame protocol with a class-and-method catalogue: declaring an
+  exchange, binding a queue, publishing, consuming and deleting are each a
+  method frame with typed arguments.
+- **AMQP 1.0** (ISO/IEC 19464) is a different protocol that kept the name. Nine
+  performatives over a self-describing type system, where the thing being
+  authorised is the *address a link attaches to* and everything after it is a
+  handle.
+
+Both are read, and one policy decides both: the nouns are an exchange, a queue
+and a routing key on 0-9-1, and a link address on 1.0, which the brokers that
+serve both versions spell `/exchange/X/key` and `/queue/Q`.
+
+### Why a relay in front of a broker
+
+A broker is where an estate's data is in transit -- orders, payments, telemetry,
+the events that drive everything else -- and four things about it are worth a
+listener.
+
+**A broker's permissions are per user and per virtual host.** RabbitMQ's model
+is three regular expressions (configure, write, read) for each user in each
+vhost: more than most brokers offer, administered inside the broker, and outside
+the estate's own review. This holds the same boundary in the configuration that
+is reviewed with everything else, and holds it in front of brokers whose model
+is weaker.
+
+**Topology is not work.** Declaring an exchange, deleting a queue, binding,
+unbinding and purging are the broker's *configuration*, and an application that
+publishes to an exchange somebody else declared needs none of them. So
+`allow_topology` is false by default, and a client library that declares its own
+queue on connect becomes a decision an operator makes rather than a default
+nobody noticed.
+
+**The credential is in the clear.** Both versions authenticate with SASL, and
+PLAIN -- what every deployment uses -- is the username and the password in one
+field separated by zero octets. `require_tls` is therefore the setting that
+matters most. The relay reads the *username* out of the exchange for its rules
+and its logs, and never the password: no code path between the wire and a log
+line holds a broker credential.
+
+**The dangerous arguments are not the obvious ones.** These four name something
+a policy written against the obvious fields would miss:
+
+| Where | What it names | Why it matters |
+|-------|---------------|----------------|
+| `x-dead-letter-exchange` on `queue.declare` | an exchange | where this queue's rejected and expired messages go. A client that may not publish to an exchange can have the broker deliver to it |
+| `alternate-exchange` on `exchange.declare` | an exchange | where this exchange sends what it could not route |
+| `reply-to` in a message's properties | a queue | where a request-reply service will send its answer, named inside the message rather than in the publish |
+| `/exchange/X/key` as a 1.0 link address | an exchange and a routing key | the same boundary in the other protocol's vocabulary |
+
+All four are checked against the same `allow_exchanges`, `allow_queues` and
+`allow_routing_keys` as the fields that carry them.
+
+### The pattern language
+
+The name lists are written in the protocol's own topic language, because that
+is the one an operator already knows from writing bindings. A name is words
+separated by dots:
+
+| Pattern | Matches | Does not match |
+|---------|---------|----------------|
+| `orders` | `orders` | `orders.created` |
+| `orders.*` | `orders.created`, `orders.paid` | `orders`, `orders.eu.created` |
+| `orders.#` | `orders`, `orders.created`, `orders.eu.created` | `payroll.created` |
+| `#` | everything | |
+| `svc-*` | `svc-a`, `svc-billing` | `svc-a.internal` |
+| `app-?` | `app-1` | `app-12` |
+
+`*` is exactly one word and `#` is zero or more, as in a binding. Inside a
+word an ordinary shell glob applies, which is what the last two rows are. A
+name with no metacharacter matches itself, which is what most of these lists
+hold -- and the **default exchange is named by the empty string**, so a policy
+that means to allow publishing to a queue by name has to write `""` in
+`allow_exchanges` deliberately.
+
+```yaml
+- name: broker
+  address: "0.0.0.0:5671"
+  kind: amqp
+  tls:
+    certificates: [{cert_file: /etc/xproxy/tls/amqp.pem, key_file: /etc/xproxy/tls/amqp-key.pem}]
+  amqp:
+    upstream: brokers
+    allow_clients: ["10.0.2.0/24"]
+    allow_vhosts: ["/orders"]
+    allow_exchanges: ["orders", "orders.*"]
+    allow_queues: ["orders.*"]
+    allow_routing_keys: ["orders.*"]
+    require_user_id: true
+    rules:
+      - name: deployment
+        users: [deploy]
+        allow_topology: true
+        schedule: {days: [mon, tue, wed, thu], from: "18:00", to: "22:00"}
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | name | *(required)* | The broker pool |
+| `allow_clients`, `deny_clients` | list of CIDR | any | Networks a client may connect from; deny first |
+| `require_tls` | bool | `true` | Refuse a client that is not speaking TLS. AMQP has no in-protocol upgrade on 0-9-1 -- TLS is the port, 5671 rather than 5672 -- and 1.0's TLS protocol identifier is refused rather than answered: a client asking this relay to negotiate transport security from its first octet should be given a TLS port instead |
+| `upstream_tls_mode` | `require`, `prefer`, `disable` | `disable` | How the relay speaks to the broker. Off by default for the same reason as redis: a great many brokers are reached over a private network with no TLS and there is nothing to negotiate, so requiring it by default would refuse every upstream rather than protect anything |
+| `upstream_tls` | object | *(none)* | Certificate and verification settings for that leg |
+| `versions` | list | both | `0-9-1`, `1.0`. 0-8 and 0-9 are never allowed: a broker answers them for compatibility, and a policy on a revision from 2006 is not one worth writing |
+| `allow_mechanisms` | list | `[PLAIN, EXTERNAL]` | SASL mechanisms a client may choose. ANONYMOUS is not in the default: it is a login with no identity, so the broker has no account to attribute anything to |
+| `deny_mechanisms` | list | `[]` | Evaluated first |
+| `require_auth` | bool | `true` | Refuse every operation until the **broker** has accepted a credential. The outcome is the broker's answer and not the client's claim: a 0-9-1 broker that refuses a password closes the connection instead of sending `connection.tune`, so tune is the answer; on 1.0 it is the `sasl-outcome` |
+| `allow_users`, `deny_users` | list | any | The identities a connection may authenticate *as*, read out of the SASL exchange. The broker decides whether the password is right; this decides which names may be tried |
+| `allow_vhosts`, `deny_vhosts` | list of pattern | any | The virtual hosts a connection may open: `connection.open`'s virtual-host on 0-9-1, `open`'s hostname on 1.0. Decided before the exchange and queue lists, because a name means something different in each vhost |
+| `allow_methods` | list | the application set | 0-9-1 method names, spelled `basic.publish`, `queue.declare`. Empty allows the handshake, the channel methods, publishing, consuming, acknowledging, publisher confirms and transactions -- and no topology method at all |
+| `deny_methods` | list | `[]` | The deny list, which no rule can override |
+| `allow_performatives`, `deny_performatives` | list | all nine | The same for AMQP 1.0, spelled `attach`, `transfer`, `flow`. Empty allows all of them, because on that version the policy is about the address a link attaches to rather than about which performative carries it |
+| `allow_topology` | bool | `false` | Permit the methods that change the broker's configuration: declare, delete, bind, unbind and purge |
+| `allow_publish`, `allow_consume` | bool | `true` | Putting messages in and taking them out. A listener in front of a broker that only ingests events sets consume false; one in front of a read model sets publish false. On 1.0 the same two decide an `attach`, because a sender is publishing and a receiver is consuming |
+| `allow_exchanges`, `deny_exchanges` | list of pattern | any | Exchange names. Checked wherever an exchange is named, including the two arguments in the table above |
+| `allow_queues`, `deny_queues` | list of pattern | any | Queue names, including a message's `reply-to` |
+| `allow_routing_keys`, `deny_routing_keys` | list of pattern | any | Routing keys |
+| `allow_addresses`, `deny_addresses` | list of pattern | any | 1.0 link addresses. A listener that names exchanges and queues already covers the addresses whose shape says which they are; these are for the node names that have no shape, which is what Azure Service Bus and Qpid use |
+| `deny_management_nodes` | bool | `true` | Refuse the names a broker keeps for administering itself: `$management` and `$cbs` on 1.0, and the `amq.rabbitmq.*` exchanges on 0-9-1 -- the log stream, the trace stream and the event stream. An operator who needs one names it in `allow_exchanges` or `allow_addresses` |
+| `require_user_id` | bool | `false` | Refuse a published message with no `user-id` property. It is the one field that ties a message to a person, and nothing makes a publisher set it |
+| `match_user_id` | bool | `true` | Refuse a message whose `user-id` is not this connection's identity. Costs nothing when nobody sets the property |
+| `allow_no_ack` | bool | `true` | Permit `basic.consume` with `no-ack`, which takes messages off a queue without acknowledging them: whatever was in flight when the consumer died is gone |
+| `max_priority` | int | unbounded | Bound on a message's `priority` property. A priority queue serves the highest first, so a publisher that sets the maximum on everything starves the others |
+| `max_frame_bytes` | int | `131072` | One frame, and with it the `frame-max` the two sides negotiate. A negotiation that settles above this is **refused rather than rewritten**: rewriting it would make the relay a party to the negotiation, and a connection that agreed a frame size and then had a frame refused mid-message is a harder fault to find than one that failed at the start |
+| `max_channels` | int | `256` | Channels per connection (sessions, on 1.0), enforced by **counting the channels that are opened** rather than by refusing the negotiation: a broker's own default channel-max is in the thousands and every client echoes it, so refusing that would refuse every ordinary connection |
+| `max_links` | int | `256` | Links per 1.0 session |
+| `max_message_bytes` | int | unbounded | One message. On 0-9-1 it is checked against the size the **content header declares**, before the body arrives; on 1.0 it is the sum over a run of transfers, because a message may be split across them |
+| `require_heartbeat` | bool | `false` | Refuse a connection that negotiated no heartbeat. One with none holds the broker's resources until the kernel notices the socket is gone, which can be hours -- and off by default because a client behind something that keeps the socket open is not doing anything wrong |
+| `max_methods` | int | unbounded | Methods or performatives per connection. Off by default because a broker connection is long-lived; it is here for a bastion front where a session is a person |
+| `rate_limit`, `rate_burst` | int | off | Methods per second per client address |
+| `max_sessions`, `max_sessions_per_client` | int | unbounded | Concurrent connections |
+| `idle_timeout`, `session_duration`, `handshake_timeout` | duration | `0`, `0`, `30s` | |
+| `default_action` | `allow`, `deny` | `deny` | When no rule matched |
+| `deny_response` | `close`, `drop` | `close` | `close` sends the protocol's own statement -- a `connection.close` with reply code 403 on 0-9-1, a `close` carrying `amqp:unauthorized-access` on 1.0 -- so a client library reports a refusal rather than a dropped socket |
+| `log_methods` | bool | `false` | An access line per method, which on a busy broker is a great many lines |
+| `alert_on_deny` | bool | `true` | A security event for every refusal |
+| `monitor_only` | bool | `false` | Evaluate and do not enforce, except the hard decisions below |
+
+### rules[]
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `name` | string | Names the rule in logs and counters |
+| `clients`, `users`, `vhosts` | lists | Selectors; AND within a rule, OR within one |
+| `schedule` | object | `days`, `from`, `to`, `timezone` |
+| `action` | `allow`, `deny`, `observe` | Default `allow` |
+| `allow_methods`, `deny_methods`, `allow_performatives`, `deny_performatives`, `allow_exchanges`, `deny_exchanges`, `allow_queues`, `deny_queues`, `allow_routing_keys`, `deny_routing_keys`, `allow_addresses`, `deny_addresses`, `allow_topology`, `allow_publish`, `allow_consume`, `max_message_bytes`, `max_methods` | | The rule's own narrowing. A rule that names methods **widens** the listener for its own traffic; the deny lists always win |
+
+### A refusal ends the connection
+
+On the other relay kinds a refused operation is answered and the session
+continues. Here it is not, and the reason is the protocol: AMQP is stateful in
+both directions, so dropping one frame out of a conversation leaves the two
+sides disagreeing about what happened -- the client waiting for a reply the
+broker was never asked for, or the broker answering a method the client never
+learned was refused. So a refusal sends the protocol's own statement of why and
+closes both legs. A client library reports that as an access refusal, which is
+what it reports when a broker refuses one of its own.
+
+A refused **protocol header** is answered the way both specifications say
+(0-9-1 §4.2.2, 1.0 §2.2): with a header this listener does serve, and then the
+socket closes. A client library reports "the server speaks 0-9-1" rather than
+"the connection dropped".
+
+### What monitor mode never shadows
+
+| Refusal | Why it is hard |
+|---------|----------------|
+| `client_not_allowed`, `tls_required` | An address that may not connect; a credential that would go on the wire |
+| `protocol_version_not_allowed`, `protocol_version_unknown`, `tls_negotiation_refused` | The header decides the framing of everything after it, so there is no "observe" for it |
+| `not_authenticated` | Forwarding an operation before the broker accepted a credential means the operation ran |
+| `unreadable_frame`, `frame_type_unknown`, `arguments_unreadable` | The relay has no opinion to observe |
+| `mechanism_not_allowed`, `mechanism_missing` | A mechanism is chosen once, at the start, and a downgrade observed is a downgrade |
+| `vhost_not_allowed` | The vhost decides what every name after it means |
+| `frame_max_unbounded`, `frame_max_too_large`, `heartbeat_disabled`, `too_many_channels`, `too_many_links`, `too_many_methods`, `message_too_large`, `rate_limited`, `body_past_declared_size` | Bounds |
+| `management_node_denied` | The broker's own administration |
+| `delivery_denied` | The message is already on its way to the client |
+| `no_such_link` | A 1.0 transfer on a handle this relay never saw attached, so its address was never checked |
+| any refusal of a `queue.delete`, `exchange.delete`, `queue.purge` or `connection.update-secret` | A purge forwarded so that it could be written down is a queue that is empty |
+
+A method merely *off* the allow list is a **soft** refusal, which is what makes
+monitor mode useful: it is most likely an application nobody has listed yet.
+
+### The inbound direction
+
+The deny lists apply to what the broker hands the client -- `basic.deliver`,
+`basic.get-ok`, `basic.return` -- and the allow lists do not. The difference is
+deliberate. An allow list says what a client may *ask for*; a delivery names
+where the message came *from*, which the consumer need not be allowed to name:
+a queue bound to an exchange by somebody else delivers messages carrying that
+exchange's name, and a relay that required it on the allow list would break
+every ordinary consumer. A deny list says something else -- this connection must
+never see messages from there, whoever routed them -- and that one holds in both
+directions.
+
+Refusals are `amqp_denied` for the ban triggers, with the reasons in the table
+above plus `method_not_allowed`, `method_denied`, `method_unknown`,
+`performative_not_allowed`, `performative_denied`, `performative_unknown`,
+`topology_not_allowed`, `publish_not_allowed`, `consume_not_allowed`,
+`exchange_not_allowed`, `exchange_denied`, `queue_not_allowed`, `queue_denied`,
+`routing_key_not_allowed`, `routing_key_denied`, `address_not_allowed`,
+`address_denied`, `reply_to_not_allowed`, `user_not_allowed`,
+`user_id_missing`, `user_id_mismatch`, `priority_too_high`,
+`no_ack_not_allowed`, `address_missing`, `administrative_not_allowed`,
+`no_rule_matched`, `rule_denied`, `outside_schedule`, `too_many_sessions`,
+`too_many_sessions_per_client`, `no_protocol_header`, `tls_handshake` and
+`upstream_unavailable`.
 
 ## asset_inventory
 
