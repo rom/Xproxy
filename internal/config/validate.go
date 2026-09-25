@@ -347,6 +347,7 @@ func (v *validator) config(c *Config) {
 	if c.Maintenance != nil {
 		v.maintenance(c.Maintenance)
 	}
+	v.access(c)
 	jwtProviders := map[string]bool{}
 	if c.JWT != nil {
 		v.jwt(c.JWT, jwtProviders)
@@ -10549,5 +10550,80 @@ func (v *validator) bacnetRanges(p string, specs []string) {
 		if high < low {
 			v.errf("%s: %q runs backwards", p, s)
 		}
+	}
+}
+
+// access checks the access section and the listeners that require a grant.
+//
+// The two halves are checked together on purpose: a listener that requires a
+// grant with no ledger to ask would refuse every session, and a ledger no
+// listener asks is a queue of approvals nobody's access depends on. Each is a
+// configuration that reads as if it did something.
+func (v *validator) access(c *Config) {
+	const p = "access"
+	var need []string
+	for i := range c.Server.Listeners {
+		l := &c.Server.Listeners[i]
+		for _, g := range []struct {
+			kind string
+			on   bool
+		}{
+			{"ssh", l.SSH != nil && l.SSH.RequireGrant},
+			{"telnet", l.Telnet != nil && l.Telnet.RequireGrant},
+			{"vnc", l.VNC != nil && l.VNC.RequireGrant},
+			{"rdp", l.RDP != nil && l.RDP.RequireGrant},
+			{"ftp", l.FTP != nil && l.FTP.RequireGrant},
+		} {
+			if g.on {
+				need = append(need, l.Name+" ("+g.kind+")")
+			}
+		}
+	}
+	a := c.Access
+	if a == nil {
+		if len(need) > 0 {
+			v.errf("access: %s require a grant, and there is no access section for the grants to come from; "+
+				"without one every session on them would be refused", strings.Join(need, ", "))
+		}
+		return
+	}
+	if len(need) == 0 {
+		v.warnf("%s: no listener sets require_grant, so nothing consults these grants: requests would be approved and "+
+			"never used", p)
+	}
+	if a.Ledger == "" {
+		v.warnf("%s.ledger: empty, so the grants live only in this process -- gone at the next restart, with no trail "+
+			"of who approved what, which is the record this arrangement exists to produce", p)
+	} else if !filepath.IsAbs(a.Ledger) {
+		v.errf("%s.ledger: must be an absolute path", p)
+	}
+	if n := a.Approvals; n != nil {
+		switch {
+		case *n < 0:
+			v.errf("%s.approvals: must not be negative", p)
+		case *n > 8:
+			v.errf("%s.approvals: at most 8; a grant needing more approvals than an estate has operators is a grant "+
+				"nobody can use", p)
+		case *n == 0:
+			v.warnf("%s.approvals: 0, so a request is in force the moment it is made. Access is still just-in-time and "+
+				"time-boxed, but nobody else has to agree -- which is not four eyes", p)
+		}
+	}
+	if d := a.MaxDuration.D(); d < time.Minute || d > 24*time.Hour {
+		v.errf("%s.max_duration: must be between 1m and 24h", p)
+	}
+	if d := a.MaxLead.D(); d < 0 || d > 30*24*time.Hour {
+		v.errf("%s.max_lead: must be between 0 and 720h", p)
+	}
+	if a.MaxUses < 0 || a.MaxUses > 1000 {
+		v.errf("%s.max_uses: must be between 0 and 1000", p)
+	}
+	if a.MaxOpen < 1 || a.MaxOpen > 4096 {
+		v.errf("%s.max_open: must be between 1 and 4096", p)
+	}
+	if a.SelfApproval {
+		v.warnf("%s.self_approval: the person who asks may approve their own access, so four eyes is off. It is here for "+
+			"the estate with one operator; where there are two, this is the setting an attacker who reaches one "+
+			"account most wants", p)
 	}
 }

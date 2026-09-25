@@ -42,13 +42,13 @@ func TestASessionNeedsAGrantSomebodyElseApproved(t *testing.T) {
 	l, now := ledger(t, fourEyes())
 	g := ask(t, l, "alice", "alice")
 
-	if _, reason := l.Admit("alice", "bastion", "db-1:22"); reason != ReasonPending {
+	if _, reason := l.Admit("alice", "bastion", []string{"db-1:22"}); reason != ReasonPending {
 		t.Errorf("before approval: %q, want %q", reason, ReasonPending)
 	}
 	if _, err := l.Approve(g.ID, "bob", "spoke to alice"); err != nil {
 		t.Fatal(err)
 	}
-	got, reason := l.Admit("alice", "bastion", "db-1:22")
+	got, reason := l.Admit("alice", "bastion", []string{"db-1:22"})
 	if got == nil {
 		t.Fatalf("after approval: refused with %q", reason)
 	}
@@ -58,7 +58,7 @@ func TestASessionNeedsAGrantSomebodyElseApproved(t *testing.T) {
 
 	// And the window ends by itself.
 	*now = t0.Add(time.Hour + time.Second)
-	if _, reason := l.Admit("alice", "bastion", "db-1:22"); reason != ReasonExpired {
+	if _, reason := l.Admit("alice", "bastion", []string{"db-1:22"}); reason != ReasonExpired {
 		t.Errorf("after the window: %q, want %q", reason, ReasonExpired)
 	}
 }
@@ -80,13 +80,13 @@ func TestNeitherTheRequesterNorTheSubjectMayApprove(t *testing.T) {
 			t.Errorf("approval by %q: %v, want ErrSelfApproval", who, err)
 		}
 	}
-	if _, reason := l.Admit("alice", "bastion", "db-1:22"); reason != ReasonPending {
+	if _, reason := l.Admit("alice", "bastion", []string{"db-1:22"}); reason != ReasonPending {
 		t.Errorf("after the refused approvals: %q, want %q", reason, ReasonPending)
 	}
 	if _, err := l.Approve(g.ID, "bob", ""); err != nil {
 		t.Fatal(err)
 	}
-	if g, _ := l.Admit("alice", "bastion", "db-1:22"); g == nil {
+	if g, _ := l.Admit("alice", "bastion", []string{"db-1:22"}); g == nil {
 		t.Error("a colleague's approval did not let it in")
 	}
 }
@@ -104,13 +104,13 @@ func TestOneApproverCannotCountTwice(t *testing.T) {
 	if _, err := l.Approve(g.ID, "BOB", ""); !errors.Is(err, ErrDuplicateApproval) {
 		t.Errorf("second approval by the same person: %v, want ErrDuplicateApproval", err)
 	}
-	if _, reason := l.Admit("alice", "bastion", "db-1:22"); reason != ReasonPending {
+	if _, reason := l.Admit("alice", "bastion", []string{"db-1:22"}); reason != ReasonPending {
 		t.Errorf("one approval against a policy of two: %q, want %q", reason, ReasonPending)
 	}
 	if _, err := l.Approve(g.ID, "carol", ""); err != nil {
 		t.Fatal(err)
 	}
-	if g, _ := l.Admit("alice", "bastion", "db-1:22"); g == nil {
+	if g, _ := l.Admit("alice", "bastion", []string{"db-1:22"}); g == nil {
 		t.Error("two approvals did not let it in")
 	}
 }
@@ -130,7 +130,7 @@ func TestAGrantIsForOneSubjectListenerAndTarget(t *testing.T) {
 		{"alice", "jump", "db-1:22", ReasonNoGrant},
 		{"eve", "bastion", "db-1:22", ReasonNoGrant},
 	} {
-		got, reason := l.Admit(c.subject, c.listener, c.target)
+		got, reason := l.Admit(c.subject, c.listener, []string{c.target})
 		if reason != c.want || (c.want == "" && got == nil) {
 			t.Errorf("%s on %s to %s: %q, want %q", c.subject, c.listener, c.target, reason, c.want)
 		}
@@ -193,11 +193,11 @@ func TestAWindowAheadOfNowIsNotYet(t *testing.T) {
 	if _, err := l.Approve(g.ID, "bob", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, reason := l.Admit("alice", "bastion", "db-1:22"); reason != ReasonEarly {
+	if _, reason := l.Admit("alice", "bastion", []string{"db-1:22"}); reason != ReasonEarly {
 		t.Errorf("before the window opens: %q, want %q", reason, ReasonEarly)
 	}
 	*now = t0.Add(time.Hour)
-	if g, reason := l.Admit("alice", "bastion", "db-1:22"); g == nil {
+	if g, reason := l.Admit("alice", "bastion", []string{"db-1:22"}); g == nil {
 		t.Errorf("inside the window: %q", reason)
 	}
 }
@@ -214,7 +214,7 @@ func TestRevocationEndsAGrantThatIsInForce(t *testing.T) {
 	if _, err := l.Revoke(g.ID, "dave", "laptop stolen"); err != nil {
 		t.Fatal(err)
 	}
-	if _, reason := l.Admit("alice", "bastion", "db-1:22"); reason != ReasonRevoked {
+	if _, reason := l.Admit("alice", "bastion", []string{"db-1:22"}); reason != ReasonRevoked {
 		t.Errorf("after revocation: %q, want %q", reason, ReasonRevoked)
 	}
 	// And a revoked grant is finished: it cannot be approved back to life.
@@ -231,7 +231,7 @@ func TestADenialIsFinal(t *testing.T) {
 	if _, err := l.Deny(g.ID, "bob", "no change window"); err != nil {
 		t.Fatal(err)
 	}
-	if _, reason := l.Admit("alice", "bastion", "db-1:22"); reason != ReasonDenied {
+	if _, reason := l.Admit("alice", "bastion", []string{"db-1:22"}); reason != ReasonDenied {
 		t.Errorf("after a denial: %q, want %q", reason, ReasonDenied)
 	}
 	if _, err := l.Approve(g.ID, "carol", ""); !errors.Is(err, ErrNotOpen) {
@@ -258,14 +258,14 @@ func TestAUseIsSpentWhenTheListenerSaysItIs(t *testing.T) {
 	}
 	// Two admissions in a row, neither of which spends the grant.
 	for i := range 2 {
-		if got, reason := l.Admit("alice", "bastion", "db-1:22"); got == nil {
+		if got, reason := l.Admit("alice", "bastion", []string{"db-1:22"}); got == nil {
 			t.Fatalf("admission %d: %q", i, reason)
 		}
 	}
 	if err := l.Use(g.ID, "sess-1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, reason := l.Admit("alice", "bastion", "db-1:22"); reason != ReasonSpent {
+	if _, reason := l.Admit("alice", "bastion", []string{"db-1:22"}); reason != ReasonSpent {
 		t.Errorf("after the one use: %q, want %q", reason, ReasonSpent)
 	}
 	if err := l.Use(g.ID, "sess-2"); !errors.Is(err, ErrNotOpen) {
@@ -343,7 +343,7 @@ func TestSelfApprovalIsAnExplicitOptIn(t *testing.T) {
 	if _, err := l.Approve(g.ID, "alice", "sole operator"); err != nil {
 		t.Fatalf("with self_approval on: %v", err)
 	}
-	if got, reason := l.Admit("alice", "bastion", "db-1:22"); got == nil {
+	if got, reason := l.Admit("alice", "bastion", []string{"db-1:22"}); got == nil {
 		t.Errorf("refused: %q", reason)
 	} else if len(got.Approvals) != 1 || got.Approvals[0].By != "alice" {
 		t.Errorf("the trail does not name the approver: %+v", got.Approvals)
@@ -366,7 +366,7 @@ func TestTheApprovalsARequestNeededAreFixedWhenItIsMade(t *testing.T) {
 	}
 	// The estate decides one approval is enough from now on.
 	l.pol.Approvals = 1
-	if _, reason := l.Admit("alice", "bastion", "db-1:22"); reason != ReasonPending {
+	if _, reason := l.Admit("alice", "bastion", []string{"db-1:22"}); reason != ReasonPending {
 		t.Errorf("after loosening the policy: %q, want %q", reason, ReasonPending)
 	}
 	if v, _ := l.Get(g.ID); v.NeedApprovals != 2 {
@@ -385,8 +385,8 @@ func TestTheCountersSeparateTheReasons(t *testing.T) {
 	if err := l.Use(g.ID, "sess"); err != nil {
 		t.Fatal(err)
 	}
-	l.Admit("eve", "bastion", "db-1:22")
-	l.Admit("alice", "bastion", "db-2:22")
+	l.Admit("eve", "bastion", []string{"db-1:22"})
+	l.Admit("alice", "bastion", []string{"db-2:22"})
 	s := l.Stats()
 	if s.Requests != 1 || s.Approvals != 1 || s.Uses != 1 {
 		t.Errorf("counters %+v", s)
@@ -438,3 +438,126 @@ func TestAnActOfNobodyIsRefused(t *testing.T) {
 // mustErr keeps the table above readable: the grant a call returns is not what
 // is being asserted on.
 func mustErr(_ *Grant, err error) error { return err }
+
+// A gate offers what the session could reach: the pool's name and the addresses
+// in it. A grant naming the pool covers any of them, and a grant naming one
+// machine covers that machine and says so, which is how the gate knows to pin
+// the dial rather than let the balancer choose.
+func TestAGrantNamesEitherThePoolOrOneMachine(t *testing.T) {
+	l, _ := ledger(t, fourEyes())
+	candidates := []string{"prod-db", "db-1:22", "db-2:22"}
+
+	pool, err := l.Request(Request{Subject: "alice", Listener: "bastion", Target: "prod-db",
+		Reason: "any of them", By: "carol", Expires: t0.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Approve(pool.ID, "bob", ""); err != nil {
+		t.Fatal(err)
+	}
+	g, reason := l.Admit("alice", "bastion", candidates)
+	if g == nil {
+		t.Fatalf("a grant on the pool did not admit: %q", reason)
+	}
+	if g.Target != "prod-db" {
+		t.Errorf("the grant names %q, want the pool", g.Target)
+	}
+
+	one, err := l.Request(Request{Subject: "dave", Listener: "bastion", Target: "db-2:22",
+		Reason: "that machine", By: "carol", Expires: t0.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Approve(one.ID, "bob", ""); err != nil {
+		t.Fatal(err)
+	}
+	g, reason = l.Admit("dave", "bastion", candidates)
+	if g == nil {
+		t.Fatalf("a grant on one endpoint did not admit: %q", reason)
+	}
+	if g.Target != "db-2:22" {
+		t.Errorf("the grant names %q, want the one machine it was asked for", g.Target)
+	}
+	// And that grant does not follow the pool to another machine.
+	if _, reason := l.Admit("dave", "bastion", []string{"prod-db", "db-1:22"}); reason != ReasonNoTarget {
+		t.Errorf("a grant for db-2 reached db-1: %q", reason)
+	}
+}
+
+// A listener told to require a grant by a daemon that has no ledger refuses
+// every session. The alternative is a listener that was configured to check and
+// does not, which is the failure this whole arrangement is against; validation
+// refuses that configuration first, and the guard does not depend on validation
+// having run.
+func TestAGuardWithNoLedgerRefusesEverything(t *testing.T) {
+	g := NewGuard(nil, "bastion", true, nil)
+	if g == nil {
+		t.Fatal("a listener that requires a grant got no guard")
+	}
+	if _, reason := g.Admit("alice", []string{"prod-db"}); reason != ReasonNoGrant {
+		t.Errorf("%q, want %q", reason, ReasonNoGrant)
+	}
+	// And it does not panic on the calls a session would make anyway.
+	g.Use(nil, "sess")
+	g.Use(&Grant{ID: "nope"}, "sess")
+}
+
+// A listener that does not require a grant gets no guard, and the nil guard
+// admits: a kind holds one field and writes no conditionals.
+func TestNoGuardAdmits(t *testing.T) {
+	var g *Guard
+	if NewGuard(nil, "bastion", false, nil) != nil {
+		t.Error("a listener that requires nothing got a guard")
+	}
+	grant, reason := g.Admit("alice", []string{"prod-db"})
+	if grant != nil || reason != "" {
+		t.Errorf("a nil guard refused: %v %q", grant, reason)
+	}
+	g.Use(nil, "sess")
+}
+
+// The guard is the ledger with one listener's name filled in, and Use spends
+// through it.
+func TestTheGuardIsTheLedgerForOneListener(t *testing.T) {
+	l, _ := ledger(t, fourEyes())
+	g, err := l.Request(Request{Subject: "alice", Listener: "bastion", Target: "db-1:22", Reason: "one look",
+		By: "carol", Expires: t0.Add(time.Hour), MaxUses: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Approve(g.ID, "bob", ""); err != nil {
+		t.Fatal(err)
+	}
+	guard := NewGuard(l, "bastion", true, nil)
+	got, reason := guard.Admit("alice", []string{"prod-db", "db-1:22"})
+	if got == nil {
+		t.Fatalf("refused: %q", reason)
+	}
+	guard.Use(got, "sess-1")
+	if _, reason := guard.Admit("alice", []string{"db-1:22"}); reason != ReasonSpent {
+		t.Errorf("after the use: %q, want %q", reason, ReasonSpent)
+	}
+	// A guard for another listener does not see it.
+	other := NewGuard(l, "jump", true, nil)
+	if _, reason := other.Admit("alice", []string{"db-1:22"}); reason != ReasonNoGrant {
+		t.Errorf("another listener saw the grant: %q", reason)
+	}
+}
+
+// The session's deadline is the earlier of the window's end and whatever the
+// listener already meant to allow, so neither bound is lost.
+func TestTheDeadlineTakesTheEarlierBound(t *testing.T) {
+	g := &Grant{Expires: t0.Add(time.Hour)}
+	for name, c := range map[string]struct{ own, want time.Time }{
+		"no bound of its own": {time.Time{}, g.Expires},
+		"a later bound":       {t0.Add(2 * time.Hour), g.Expires},
+		"an earlier bound":    {t0.Add(30 * time.Minute), t0.Add(30 * time.Minute)},
+	} {
+		if got := Deadline(g, c.own); !got.Equal(c.want) {
+			t.Errorf("%s: %s, want %s", name, got, c.want)
+		}
+	}
+	if got := Deadline(nil, t0); !got.Equal(t0) {
+		t.Errorf("without a grant: %s, want the listener's own bound", got)
+	}
+}

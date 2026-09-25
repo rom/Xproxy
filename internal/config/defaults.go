@@ -76,6 +76,12 @@ const (
 	// DefaultDiscoveryMaxEndpoints bounds the endpoints one resolution
 	// may install; see Discovery.MaxEndpoints.
 	DefaultDiscoveryMaxEndpoints = 4096
+	// Access defaults: four eyes, a working afternoon at most, and a
+	// window that may be booked a day ahead.
+	DefaultAccessApprovals       = 1
+	DefaultAccessMaxDuration     = 4 * time.Hour
+	DefaultAccessMaxLead         = 24 * time.Hour
+	DefaultAccessMaxOpen         = 256
 	DefaultWAFLearningMinHits    = 5
 	DefaultWAFLearningMaxEntries = 10000
 	DefaultCRSParanoia           = 1
@@ -1021,6 +1027,19 @@ func applyDefaults(c *Config) {
 			t := true
 			o.Compress = &t
 		}
+	}
+	if a := c.Access; a != nil {
+		// Approvals is a pointer because 0 is a value an operator may
+		// mean -- a grant in force as soon as it is asked for, which
+		// validation warns about. A field whose default and whose
+		// deliberate value are the same number is a field nobody can
+		// turn off.
+		if a.Approvals == nil {
+			a.Approvals = ptr(DefaultAccessApprovals)
+		}
+		setDur(&a.MaxDuration, DefaultAccessMaxDuration)
+		setDur(&a.MaxLead, DefaultAccessMaxLead)
+		setInt(&a.MaxOpen, DefaultAccessMaxOpen)
 	}
 	if m := c.Maintenance; m != nil {
 		setInt(&m.Status, 503)

@@ -55,7 +55,7 @@ func TestTheLedgerSurvivesARestart(t *testing.T) {
 	if err := again.Use(g.ID, "sess-2"); err != nil {
 		t.Fatal(err)
 	}
-	if _, reason := again.Admit("alice", "bastion", "db-1:22"); reason != ReasonSpent {
+	if _, reason := again.Admit("alice", "bastion", []string{"db-1:22"}); reason != ReasonSpent {
 		t.Errorf("after both uses: %q, want %q", reason, ReasonSpent)
 	}
 	if s := again.Stats(); s.Requests != 1 || s.Approvals != 1 || s.Uses != 2 {
@@ -276,7 +276,7 @@ func TestAWriteThatFailsIsNotAGrant(t *testing.T) {
 	if n := len(l.Grants()); n != 1 {
 		t.Errorf("%d grants after the failed write, want only the one written before it", n)
 	}
-	if _, reason := l.Admit("dave", "bastion", "db-1:22"); reason != ReasonNoGrant {
+	if _, reason := l.Admit("dave", "bastion", []string{"db-1:22"}); reason != ReasonNoGrant {
 		t.Errorf("the unwritten grant admitted a session: %q", reason)
 	}
 	// A failed approval is the same: it is not in force, so the grant it was

@@ -3220,6 +3220,7 @@ proxy does not hold.
 | `allow_resize` | bool | `true` | Let a client ask the desktop to change size. The size asked for is bounded by `bounds.max_framebuffer_pixels` whatever this says |
 | `recording` | object | none | As `server.listeners[].ssh.recording`; see below for the format |
 | `mfa` | object | none | See below: it needs `x509-plain` |
+| `require_grant` | bool | `false` | Admit a session only against a live grant from the [access](#access) ledger: one somebody asked for, somebody else approved, and that ends by itself |
 | `idle_timeout` | duration | `5m` | No traffic in either direction |
 | `session_timeout` | duration | `0` | Bound on a whole session however active |
 | `handshake_timeout` | duration | `30s` | Bound on the negotiation before the session begins |
@@ -3625,6 +3626,7 @@ policy that quietly did not apply is worse than a session that stops.
 | `devices.allow` | list | `[]` (none) | The redirected device kinds, where `rdpdr` is allowed |
 | `recording` | object | none | As `server.listeners[].ssh.recording`; see below for the format |
 | `mfa` | object | none | See below |
+| `require_grant` | bool | `false` | Admit a session only against a live grant from the [access](#access) ledger: one somebody asked for, somebody else approved, and that ends by itself |
 | `idle_timeout` | duration | `5m` | No traffic in either direction |
 | `session_timeout` | duration | `0` | Bound on a whole session however active |
 | `handshake_timeout` | duration | `30s` | Bound on the connection sequence |
@@ -3733,6 +3735,7 @@ own into the stream before the target is dialled.
 | `max_subnegotiation` | int | `4096` | Bound on one subnegotiation; 64..1048576. A peer that sends `IAC SB` and never sends `IAC SE` is cut off here rather than allowed to grow a buffer |
 | `recording` | object | none | As `server.listeners[].ssh.recording` |
 | `mfa` | object | none | As `server.listeners[].ssh.mfa`; see below for how the code is asked for |
+| `require_grant` | bool | `false` | Admit a session only against a live grant from the [access](#access) ledger: one somebody asked for, somebody else approved, and that ends by itself |
 | `idle_timeout` | duration | `5m` | No traffic in either direction |
 | `session_timeout` | duration | `0` | Bound on a whole session however active; 0 is no bound |
 | `max_connections` | int | `1000` | Sessions on this listener |
@@ -3843,6 +3846,7 @@ assumed.
 | `max_errors` | int | `10` | Refused commands before the session ends |
 | `max_connections` | int | `1000` | Control connections on this listener |
 | `idle_timeout` | duration | `5m` | No traffic on the control connection |
+| `require_grant` | bool | `false` | Admit a session only against a live grant from the [access](#access) ledger: one somebody asked for, somebody else approved, and that ends by itself |
 | `session_timeout` | duration | `0` (none) | A whole session, however active |
 | `proxy_protocol` | bool | `false` | Send a PROXY protocol v2 header with the client address to the target |
 | `allow_clients` | list of CIDR | `[]` (any) | Others are closed at accept |
@@ -4080,6 +4084,7 @@ the credentials are read then — not per connection, so a key added to
 | `upstream_insecure_host_key` | bool | `false` | Accept any host key from the target. Refused unless `allow_insecure` is also set, and warned about: it is the one setting here that leaves nothing to notice a machine in the middle |
 | `recording` | object | none | Record what a session showed, to a file per channel; see below |
 | `mfa` | object | none | Require a second factor after the key or the password; see below |
+| `require_grant` | bool | `false` | Admit a session only against a live grant from the [access](#access) ledger: one somebody asked for, somebody else approved, and that ends by itself |
 | `sftp` | object | none | Inspect the SFTP protocol inside an sftp subsystem channel; see below |
 | `proxy_protocol` | bool | `false` | Send a PROXY protocol v2 header with the client address to the target |
 | `allow_clients` | list of CIDR | `[]` (any) | Others are closed before the handshake |
@@ -10906,6 +10911,140 @@ hardware address -- whichever a log line happened to carry.
 `xproxyctl assets` is the same thing as a table, `xproxyctl assets -long`
 one block per device with the evidence, and `xproxyctl assets show KEY`
 one device.
+
+## access
+
+Just-in-time access to the gate listeners: nobody opens a session unless
+there is a live grant naming them, the listener and the target.
+
+A bastion with standing access is a bastion whose accounts are worth as
+much as the machines behind it. The keys sit in the estate all the time,
+so whoever reaches a key, a laptop or a session reaches production at a
+moment of their choosing. This is the other arrangement: a grant somebody
+asked for, somebody else approved, that ends by itself, and that is written
+down.
+
+```yaml
+access:
+  ledger: /var/lib/xgate/access.log
+  approvals: 1            # four eyes: the person who asked and one other
+  max_duration: 4h
+  max_lead: 24h
+  max_uses: 0             # the window is the bound
+  max_open: 256
+
+server:
+  listeners:
+    - name: bastion
+      kind: ssh
+      ssh:
+        upstream: prod-hosts
+        require_grant: true
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `ledger` | path | none | The append-only file every request, approval, denial, revocation and use is written to, with a hash chain over the records. Absolute. Without it the grants live only in this process -- gone at the next restart, with no trail -- which is warned about rather than refused, because a test estate legitimately runs that way |
+| `approvals` | int | `1` | Approvals a grant needs **in addition to** the request. 1 is four eyes: the person who asked and one other. 0 means a request is in force the moment it is made -- still just-in-time and time-boxed, but nobody else has to agree, and it is warned about. At most 8 |
+| `max_duration` | duration | `4h` | The longest window a grant may cover; 1m to 24h |
+| `max_lead` | duration | `24h` | How far ahead of now a window may start, so an approval today cannot be a key for next quarter; 0 to 720h |
+| `max_uses` | int | `0` | Sessions one grant may open. 0 leaves the window as the only bound; 1 is a one-shot grant. 0 to 1000 |
+| `max_open` | int | `256` | Grants that may be pending or in force at once. A request queue nobody drains is how an approval system becomes a rubber stamp; 1 to 4096 |
+| `self_approval` | bool | `false` | Let the requester approve their own request. It is here for the estate with one operator, where the alternative is switching the requirement off altogether. Warned about every time |
+
+Each gate kind -- `ssh`, `telnet`, `vnc`, `rdp` and `ftp` -- takes
+`require_grant: true`, in that one spelling, so an estate does not have to
+remember which protocol calls it what. A listener that requires a grant
+with no `access` section fails the load; an `access` section no listener
+asks is warned about.
+
+### What a grant names
+
+A grant names a **subject**, a **listener** and a **target**.
+
+The subject is the identity the estate knows after authentication -- the
+SSH principal entry when a key matched one, otherwise the login -- rather
+than a name a client is free to offer. The listener is one listener by
+name: a grant on the jump host is not a grant on the bastion. The target
+is either the listener's `upstream` pool, which means any machine in it, or
+the `host:port` of one endpoint in that pool, which means that machine and
+**pins the dial to it** -- otherwise "alice may reach db-2 to restart a
+service" would be access to whichever machine the balancer felt like.
+
+An address that leaves the pool and comes back is the same address; a
+*grant* that is revoked, denied, spent or expired is finished and cannot be
+approved back to life.
+
+### Four eyes
+
+A grant is in force only once `approvals` people have approved it, and
+**neither the person who asked nor the person who gains the access may be
+one of them**. Names are compared trimmed and case-insensitively, so
+`Alice` approving what `alice` asked for is one person rather than two, and
+one approver cannot count twice.
+
+The approvals a grant needs are fixed when it is requested. Loosening
+`approvals` later does not bring a half-approved grant into force, and the
+record says what was required at the time rather than what is required now.
+
+Revocation is not slowed down the same way: anybody who can reach the
+management API may revoke a grant, including one in force. Taking access
+away is not the decision this requirement exists to guard.
+
+### The time box
+
+Every grant carries a window, checked against the policy when the request
+is made rather than left to an approver to notice. `max_duration` bounds
+its length and `max_lead` how far ahead it may start.
+
+The window ends the session **that is running**, not only the next one
+somebody opens: a gate sets the session's deadline to the earlier of its own
+`session_timeout` and the end of the window. Without that, a four-hour grant
+used at the last minute is a session that lasts as long as the operator
+likes.
+
+A request nobody approved before its window closed is expired rather than
+pending: it cannot come into force any more, and leaving it in the queue
+would hide the ones that still can.
+
+### The trail
+
+Every act is one line of the ledger, and each line carries a hash over the
+previous one. A removed, edited, reordered or forged line is found when the
+file is read at start, and the daemon refuses to serve a trail it cannot
+stand behind rather than presenting it as intact. One process holds the file
+exclusively -- two daemons appending would interleave their chains -- so a
+second daemon pointed at the same path fails to start and says so.
+
+A record is written, flushed and synced **before** the grant it describes is
+in force. A grant that is in force in memory but not on disk is a grant
+nobody approved after the next restart, and an approval the caller was told
+about but that was never written is worse than one that was refused.
+`max_uses` is durable for the same reason: a one-shot grant that refills
+itself on restart is not one shot.
+
+### What a refusal says
+
+A session turned away is counted under its own reason, because an operator
+answering a call needs to know which. They are the listener's ordinary
+refusal counters (`xproxyctl status`, the `_refusals_total` metrics) and
+each is a deny event on the listener's usual reason (`ssh_denied` and so
+on), so bans apply as they always did.
+
+| Reason | What happened |
+|--------|---------------|
+| `no_grant` | Nobody has asked for access for this subject on this listener |
+| `grant_pending` | A request exists and not enough people have approved it |
+| `grant_not_yet` | Approved, and its window has not opened |
+| `grant_expired` | The window closed, or nobody approved in time |
+| `grant_denied` | An approver refused it |
+| `grant_revoked` | It was withdrawn |
+| `grant_spent` | `max_uses` is used up |
+| `grant_wrong_target` | There is a grant for this subject on this listener, for another machine -- named separately because "wrong target" is the mistake an operator makes and "no grant" would send them looking for the wrong thing |
+
+A listener in `policy: {mode: shadow}` records what it would have refused
+and carries on, which is how an estate turns this on without locking its
+operators out on the first evening.
 
 ## Headers set on forwarded requests
 

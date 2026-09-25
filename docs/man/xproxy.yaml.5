@@ -7982,6 +7982,15 @@ T}	T{
 See below: it needs \fBx509\-\:plain\fR
 T}
 T{
+\fBrequire_\:grant\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Admit a session only against a live grant from the access ledger: one somebody asked for,\: somebody else approved,\: and that ends by itself
+T}
+T{
 \fBidle_\:timeout\fR
 T}	T{
 duration
@@ -8490,6 +8499,15 @@ T}	T{
 See below
 T}
 T{
+\fBrequire_\:grant\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Admit a session only against a live grant from the access ledger: one somebody asked for,\: somebody else approved,\: and that ends by itself
+T}
+T{
 \fBidle_\:timeout\fR
 T}	T{
 duration
@@ -8654,6 +8672,15 @@ T}	T{
 none
 T}	T{
 As \fBserver.\:listeners[].\:ssh.\:mfa\fR;\: see below for how the code is asked for
+T}
+T{
+\fBrequire_\:grant\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Admit a session only against a live grant from the access ledger: one somebody asked for,\: somebody else approved,\: and that ends by itself
 T}
 T{
 \fBidle_\:timeout\fR
@@ -8971,6 +8998,15 @@ T}	T{
 \fB5m\fR
 T}	T{
 No traffic on the control connection
+T}
+T{
+\fBrequire_\:grant\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Admit a session only against a live grant from the access ledger: one somebody asked for,\: somebody else approved,\: and that ends by itself
 T}
 T{
 \fBsession_\:timeout\fR
@@ -9482,6 +9518,15 @@ T}	T{
 none
 T}	T{
 Require a second factor after the key or the password;\: see below
+T}
+T{
+\fBrequire_\:grant\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Admit a session only against a live grant from the access ledger: one somebody asked for,\: somebody else approved,\: and that ends by itself
 T}
 T{
 \fBsftp\fR
@@ -27701,6 +27746,195 @@ Every classification keeps a confidence from 0 to 100 and the evidence that prod
 .SS "Reading it"
 .PP
 \fBGET /v1/assets\fR answers the summary, the known roles and the devices, with \fBrole\fR, \fBlistener\fR, \fBproto\fR, \fBvendor\fR, \fBnew=1\fR, \fBchanged=1\fR and \fBtop\fR as filters, or \fBid\fR to look one device up by identifier, address or hardware address \-\- whichever a log line happened to carry. \fBxproxyctl assets\fR is the same thing as a table, \fBxproxyctl assets \-long\fR one block per device with the evidence, and \fBxproxyctl assets show KEY\fR one device.
+.SH "access"
+.PP
+Just\-in\-time access to the gate listeners: nobody opens a session unless there is a live grant naming them, the listener and the target.
+.PP
+A bastion with standing access is a bastion whose accounts are worth as much as the machines behind it. The keys sit in the estate all the time, so whoever reaches a key, a laptop or a session reaches production at a moment of their choosing. This is the other arrangement: a grant somebody asked for, somebody else approved, that ends by itself, and that is written down.
+.PP
+.RS 4
+.nf
+.ft CR
+access:
+  ledger: /var/lib/xgate/access.log
+  approvals: 1            # four eyes: the person who asked and one other
+  max_duration: 4h
+  max_lead: 24h
+  max_uses: 0             # the window is the bound
+  max_open: 256
+
+server:
+  listeners:
+    \- name: bastion
+      kind: ssh
+      ssh:
+        upstream: prod\-hosts
+        require_grant: true
+.ft
+.fi
+.RE
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.9i) lbw(0.8i) lbx
+lw(1.0i) lw(0.9i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBledger\fR
+T}	T{
+path
+T}	T{
+none
+T}	T{
+The append\-only file every request,\: approval,\: denial,\: revocation and use is written to,\: with a hash chain over the records. Absolute. Without it the grants live only in this process \-\- gone at the next restart,\: with no trail \-\- which is warned about rather than refused,\: because a test estate legitimately runs that way
+T}
+T{
+\fBapprovals\fR
+T}	T{
+int
+T}	T{
+\fB1\fR
+T}	T{
+Approvals a grant needs \fBin addition to\fR the request. 1 is four eyes: the person who asked and one other. 0 means a request is in force the moment it is made \-\- still just\-in\-time and time\-boxed,\: but nobody else has to agree,\: and it is warned about. At most 8
+T}
+T{
+\fBmax_\:duration\fR
+T}	T{
+duration
+T}	T{
+\fB4h\fR
+T}	T{
+The longest window a grant may cover;\: 1m to 24h
+T}
+T{
+\fBmax_\:lead\fR
+T}	T{
+duration
+T}	T{
+\fB24h\fR
+T}	T{
+How far ahead of now a window may start,\: so an approval today cannot be a key for next quarter;\: 0 to 720h
+T}
+T{
+\fBmax_\:uses\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Sessions one grant may open. 0 leaves the window as the only bound;\: 1 is a one\-shot grant. 0 to 1000
+T}
+T{
+\fBmax_\:open\fR
+T}	T{
+int
+T}	T{
+\fB256\fR
+T}	T{
+Grants that may be pending or in force at once. A request queue nobody drains is how an approval system becomes a rubber stamp;\: 1 to 4096
+T}
+T{
+\fBself_\:approval\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Let the requester approve their own request. It is here for the estate with one operator,\: where the alternative is switching the requirement off altogether. Warned about every time
+T}
+.TE
+.PP
+Each gate kind \-\- \fBssh\fR, \fBtelnet\fR, \fBvnc\fR, \fBrdp\fR and \fBftp\fR \-\- takes \fBrequire_grant: true\fR, in that one spelling, so an estate does not have to remember which protocol calls it what. A listener that requires a grant with no \fBaccess\fR section fails the load; an \fBaccess\fR section no listener asks is warned about.
+.SS "What a grant names"
+.PP
+A grant names a \fBsubject\fR, a \fBlistener\fR and a \fBtarget\fR.
+.PP
+The subject is the identity the estate knows after authentication \-\- the SSH principal entry when a key matched one, otherwise the login \-\- rather than a name a client is free to offer. The listener is one listener by name: a grant on the jump host is not a grant on the bastion. The target is either the listener\(aqs \fBupstream\fR pool, which means any machine in it, or the \fBhost:port\fR of one endpoint in that pool, which means that machine and \fBpins the dial to it\fR \-\- otherwise "alice may reach db\-2 to restart a service" would be access to whichever machine the balancer felt like.
+.PP
+An address that leaves the pool and comes back is the same address; a \fIgrant\fR that is revoked, denied, spent or expired is finished and cannot be approved back to life.
+.SS "Four eyes"
+.PP
+A grant is in force only once \fBapprovals\fR people have approved it, and \fBneither the person who asked nor the person who gains the access may be one of them\fR. Names are compared trimmed and case\-insensitively, so \fBAlice\fR approving what \fBalice\fR asked for is one person rather than two, and one approver cannot count twice.
+.PP
+The approvals a grant needs are fixed when it is requested. Loosening \fBapprovals\fR later does not bring a half\-approved grant into force, and the record says what was required at the time rather than what is required now.
+.PP
+Revocation is not slowed down the same way: anybody who can reach the management API may revoke a grant, including one in force. Taking access away is not the decision this requirement exists to guard.
+.SS "The time box"
+.PP
+Every grant carries a window, checked against the policy when the request is made rather than left to an approver to notice. \fBmax_duration\fR bounds its length and \fBmax_lead\fR how far ahead it may start.
+.PP
+The window ends the session \fBthat is running\fR, not only the next one somebody opens: a gate sets the session\(aqs deadline to the earlier of its own \fBsession_timeout\fR and the end of the window. Without that, a four\-hour grant used at the last minute is a session that lasts as long as the operator likes.
+.PP
+A request nobody approved before its window closed is expired rather than pending: it cannot come into force any more, and leaving it in the queue would hide the ones that still can.
+.SS "The trail"
+.PP
+Every act is one line of the ledger, and each line carries a hash over the previous one. A removed, edited, reordered or forged line is found when the file is read at start, and the daemon refuses to serve a trail it cannot stand behind rather than presenting it as intact. One process holds the file exclusively \-\- two daemons appending would interleave their chains \-\- so a second daemon pointed at the same path fails to start and says so.
+.PP
+A record is written, flushed and synced \fBbefore\fR the grant it describes is in force. A grant that is in force in memory but not on disk is a grant nobody approved after the next restart, and an approval the caller was told about but that was never written is worse than one that was refused. \fBmax_uses\fR is durable for the same reason: a one\-shot grant that refills itself on restart is not one shot.
+.SS "What a refusal says"
+.PP
+A session turned away is counted under its own reason, because an operator answering a call needs to know which. They are the listener\(aqs ordinary refusal counters (\fBxproxyctl status\fR, the \fB_refusals_total\fR metrics) and each is a deny event on the listener\(aqs usual reason (\fBssh_denied\fR and so on), so bans apply as they always did.
+.PP
+.TS
+allbox;
+lbw(0.8i) lbx
+lw(0.8i) lx.
+T{
+Reason
+T}	T{
+What happened
+T}
+T{
+\fBno_\:grant\fR
+T}	T{
+Nobody has asked for access for this subject on this listener
+T}
+T{
+\fBgrant_\:pending\fR
+T}	T{
+A request exists and not enough people have approved it
+T}
+T{
+\fBgrant_\:not_\:yet\fR
+T}	T{
+Approved,\: and its window has not opened
+T}
+T{
+\fBgrant_\:expired\fR
+T}	T{
+The window closed,\: or nobody approved in time
+T}
+T{
+\fBgrant_\:denied\fR
+T}	T{
+An approver refused it
+T}
+T{
+\fBgrant_\:revoked\fR
+T}	T{
+It was withdrawn
+T}
+T{
+\fBgrant_\:spent\fR
+T}	T{
+\fBmax_\:uses\fR is used up
+T}
+T{
+\fBgrant_\:wrong_\:target\fR
+T}	T{
+There is a grant for this subject on this listener,\: for another machine \-\- named separately because "wrong target" is the mistake an operator makes and "no grant" would send them looking for the wrong thing
+T}
+.TE
+.PP
+A listener in \fBpolicy: {mode: shadow}\fR records what it would have refused and carries on, which is how an estate turns this on without locking its operators out on the first evening.
 .SH "Headers set on forwarded requests"
 .PP
 .TS

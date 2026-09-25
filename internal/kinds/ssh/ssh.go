@@ -17,6 +17,7 @@ import (
 
 	cssh "golang.org/x/crypto/ssh"
 
+	"github.com/rom/xproxy/internal/access"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/mfa"
 	"github.com/rom/xproxy/internal/netutil"
@@ -64,6 +65,11 @@ type server struct {
 	// It is the one list that overrides the CA, which is what makes a
 	// certificate revocable before it expires.
 	revoked map[string]bool
+
+	// grants is the just-in-time access guard, nil unless this listener
+	// sets require_grant. A session is admitted against a grant somebody
+	// asked for and somebody else approved, and ends when the grant does.
+	grants *access.Guard
 
 	// mfaGuard is the second factor, when one is configured. It is
 	// shared with every other listener reading the same enrolment file
@@ -166,6 +172,7 @@ func newServer(engine proxy.Host, cfg config.Listener, ln net.Listener) (*server
 			MaxUsers:    h.MFA.MaxUsers,
 		})
 	}
+	t.grants = access.NewGuard(engine.Access(), cfg.Name, h.RequireGrant, engine.Logs().Error)
 	if err := t.buildServerConfig(); err != nil {
 		return nil, err
 	}
@@ -520,7 +527,76 @@ type session struct {
 	forceCommand string
 	// forwards is the port forwards open now, against max_forwards.
 	forwards atomic.Int64
-	wg       sync.WaitGroup
+	// grant is the access grant this session was admitted under, nil when
+	// the listener requires none. pinned is the endpoint address the grant
+	// names, empty when it names the pool instead: a grant for one machine
+	// must not follow the balancer to another.
+	grant  *access.Grant
+	pinned string
+	// grantRefusal is the reason the access ledger gave, for the log line
+	// and the ban list.
+	grantRefusal string
+	wg           sync.WaitGroup
+}
+
+// admitByGrant is the just-in-time access decision, made after authentication
+// and before the target is dialled.
+//
+// The subject is the identity the estate knows -- the principal entry when a key
+// matched one, otherwise the login -- rather than anything the client is free to
+// choose at connection time. The candidates are what this session could reach:
+// the upstream pool's name, which a grant uses to mean any machine in it, and
+// the addresses of the endpoints in it, which a grant uses to name one machine.
+//
+// A shadowed listener records what it would have refused and carries on, which
+// is how an estate turns this on without locking its operators out on the first
+// evening.
+func (se *session) admitByGrant() bool {
+	t := se.t
+	if t.grants == nil {
+		return true
+	}
+	adm := t.grants.Check(se.principalKey(), t.h.Upstream, se.poolAddresses())
+	if adm.Reason == "" {
+		se.grant, se.pinned = adm.Grant, adm.Pinned
+		return true
+	}
+	reason := adm.Reason
+	se.grantRefusal = reason
+	if t.shadowed(se.ip, reason, se.principalKey()) {
+		return true
+	}
+	t.deny(se.ip, reason, se.principalKey())
+	return false
+}
+
+// poolAddresses is the machines behind this listener, which a grant may name
+// instead of naming the pool.
+func (se *session) poolAddresses() []string {
+	if pool := se.t.engine.Pool(se.t.h.Upstream); pool != nil {
+		return pool.Addresses()
+	}
+	return nil
+}
+
+// sessionEnd is when this session must close: its own session_timeout, the end
+// of the window it was admitted under, or the earlier of the two. The zero time
+// means neither applies.
+func (se *session) sessionEnd() time.Time {
+	var own time.Time
+	if se.t.h.SessionTimeout > 0 {
+		own = time.Now().Add(se.t.h.SessionTimeout.D())
+	}
+	return access.Deadline(se.grant, own)
+}
+
+// sessionID is the live table's identifier for this session, or empty when the
+// table refused to register it.
+func (se *session) sessionID() string {
+	if se.live == nil {
+		return ""
+	}
+	return se.live.ID
 }
 
 func (t *server) handle(raw net.Conn) {
@@ -588,8 +664,20 @@ func (t *server) handle(raw net.Conn) {
 	} else if release != nil {
 		defer release()
 	}
-	if t.h.SessionTimeout > 0 {
-		timer := time.AfterFunc(t.h.SessionTimeout.D(), func() { _ = sconn.Close() })
+	// The grant is checked after authentication, so the subject is the
+	// identity the estate knows rather than the name a client offered, and
+	// before the target is dialled, so a session with no grant never
+	// reaches a machine.
+	if !se.admitByGrant() {
+		s.Counters().SSHRejected.Add(1)
+		t.log(se, start, se.grantRefusal)
+		return
+	}
+	// The session ends at the earlier of its own timeout and the end of the
+	// window it was admitted under: a grant that expires has to end the
+	// session that is running, not only refuse the next one.
+	if end := se.sessionEnd(); !end.IsZero() {
+		timer := time.AfterFunc(time.Until(end), func() { _ = sconn.Close() })
 		defer timer.Stop()
 	}
 
@@ -652,6 +740,13 @@ func (se *session) connect() error {
 			break
 		}
 		tried[e] = true
+		if se.pinned != "" && !strings.EqualFold(e.Address, se.pinned) {
+			// The grant names one machine, and this is another. Passing
+			// over it rather than refusing lets the balancer offer the
+			// right one on the next turn of the loop.
+			lastErr = fmt.Errorf("the grant is for %s", se.pinned)
+			continue
+		}
 		d := net.Dialer{Timeout: pool.Cfg.Timeouts.Connect.D()}
 		conn, err := d.DialContext(context.Background(), "tcp", e.Address)
 		pool.Begin(e)
@@ -688,6 +783,11 @@ func (se *session) connect() error {
 		se.client = cssh.NewClient(nc, nchans, nreqs)
 		se.target = e.Address
 		se.live.Annotate("", se.target, se.principal)
+		// The window is spent here rather than at admission: a session
+		// that never reached a machine did not use the access, and an
+		// operator retrying against a target that is down must not run
+		// out of grant doing it.
+		t.grants.Use(se.grant, se.sessionID())
 		return nil
 	}
 	if lastErr == nil {

@@ -137,6 +137,10 @@ type Config struct {
 	Tracing *Tracing `yaml:"tracing"`
 	// ACME configures automatic certificates for listeners with tls.acme.
 	ACME *ACME `yaml:"acme"`
+	// Access is just-in-time access: the grants a gate listener with
+	// require_grant admits sessions against, who has to approve one and how
+	// long it may last.
+	Access *Access `yaml:"access"`
 }
 
 // Metrics configures Prometheus exposition and sampled series (AMR-026).
@@ -3701,6 +3705,10 @@ type FTPListener struct {
 	// way the protocol allows: as the argument of ACCT, or appended to
 	// the password.
 	MFA *MFAPolicy `yaml:"mfa"`
+	// RequireGrant admits a session only against a live grant from the
+	// access ledger: one somebody asked for, somebody else approved, and
+	// that ends by itself. Needs the access section. See docs/CONFIG.md.
+	RequireGrant bool `yaml:"require_grant"`
 }
 
 // TransferICAP scans the files a session moves (RFC 3507), for the
@@ -3774,6 +3782,10 @@ type TelnetListener struct {
 	// to read, so this is a prompt the proxy writes and reads itself;
 	// the target's own login happens afterwards, unchanged.
 	MFA *MFAPolicy `yaml:"mfa"`
+	// RequireGrant admits a session only against a live grant from the
+	// access ledger: one somebody asked for, somebody else approved, and
+	// that ends by itself. Needs the access section. See docs/CONFIG.md.
+	RequireGrant bool `yaml:"require_grant"`
 	// IdleTimeout is no traffic in either direction. Default 5m.
 	IdleTimeout Duration `yaml:"idle_timeout"`
 	// SessionTimeout bounds a whole session however active. Default 0,
@@ -3906,6 +3918,10 @@ type VNCListener struct {
 	// MFA asks for a login name and a one-time code before the target
 	// is dialled.
 	MFA *MFAPolicy `yaml:"mfa"`
+	// RequireGrant admits a session only against a live grant from the
+	// access ledger: one somebody asked for, somebody else approved, and
+	// that ends by itself. Needs the access section. See docs/CONFIG.md.
+	RequireGrant bool `yaml:"require_grant"`
 	// IdleTimeout is no traffic in either direction. Default 5m.
 	IdleTimeout Duration `yaml:"idle_timeout"`
 	// SessionTimeout bounds a whole session however active. Default 0.
@@ -4041,6 +4057,10 @@ type RDPListener struct {
 	// MFA asks for a one-time code, carried with the password since
 	// RDP has nowhere to ask a question.
 	MFA *MFAPolicy `yaml:"mfa"`
+	// RequireGrant admits a session only against a live grant from the
+	// access ledger: one somebody asked for, somebody else approved, and
+	// that ends by itself. Needs the access section. See docs/CONFIG.md.
+	RequireGrant bool `yaml:"require_grant"`
 	// IdleTimeout is no traffic in either direction. Default 5m.
 	IdleTimeout Duration `yaml:"idle_timeout"`
 	// SessionTimeout bounds a whole session however active. Default 0.
@@ -4265,6 +4285,10 @@ type SSHListener struct {
 	// client is told authentication partially succeeded and must then
 	// answer a keyboard-interactive prompt with a one-time code.
 	MFA *MFAPolicy `yaml:"mfa"`
+	// RequireGrant admits a session only against a live grant from the
+	// access ledger: one somebody asked for, somebody else approved, and
+	// that ends by itself. Needs the access section. See docs/CONFIG.md.
+	RequireGrant bool `yaml:"require_grant"`
 	// SFTP inspects the sftp subsystem's own protocol; without it the
 	// proxy can say only that a session may use sftp, which is the
 	// difference between reading a file and deleting a tree.
@@ -8449,6 +8473,44 @@ type Maintenance struct {
 	// AllowHeader, "Name: value", exempts a request carrying it (a shared
 	// bypass token behind another gate).
 	AllowHeader string `yaml:"allow_header"`
+}
+
+// Access is just-in-time access to the gate listeners: nobody opens a session
+// unless a live grant names them, the listener and the target.
+//
+// It is one section for the daemon rather than one per listener because the
+// ledger is one file with one writer, and because an approval is about a person
+// and a machine rather than about a port. Which listeners require a grant is
+// each listener's own require_grant.
+type Access struct {
+	// Ledger is the append-only file the grants and every act on them are
+	// written to, with a hash chain over the records. Without it the grants
+	// live only in this process: they are gone on a restart and there is no
+	// trail, which is warned about rather than refused because a test estate
+	// legitimately runs that way.
+	Ledger string `yaml:"ledger"`
+	// Approvals is how many approvals a grant needs in addition to the
+	// request. Default 1, which is four eyes: the person who asked and one
+	// other. 0 means a request is in force as soon as it is made, which is
+	// still just-in-time and time-boxed but is not four eyes, and is warned
+	// about -- so it is a pointer, to tell "the operator wrote 0" from "the
+	// operator wrote nothing".
+	Approvals *int `yaml:"approvals"`
+	// MaxDuration bounds the window a grant may cover. Default 4h.
+	MaxDuration Duration `yaml:"max_duration"`
+	// MaxLead bounds how far ahead of now a window may start, so that an
+	// approval today cannot be a key for next quarter. Default 24h.
+	MaxLead Duration `yaml:"max_lead"`
+	// MaxUses bounds the sessions one grant may open; 0 leaves the window as
+	// the only bound.
+	MaxUses int `yaml:"max_uses"`
+	// MaxOpen bounds the grants that may be pending or in force at once.
+	// Default 256.
+	MaxOpen int `yaml:"max_open"`
+	// SelfApproval lets the requester approve their own request. It exists
+	// for the estate with one operator, where the alternative is switching
+	// the requirement off altogether; it is warned about every time.
+	SelfApproval bool `yaml:"self_approval"`
 }
 
 // Challenge configures the browser proof-of-work challenge (AMR-023).

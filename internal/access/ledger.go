@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -424,13 +425,19 @@ func (l *Ledger) open(id string, now time.Time) (*Grant, error) {
 }
 
 // Admit is the runtime decision: may this subject open a session on this
-// listener to this target, and until when.
+// listener to one of these targets, and until when.
+//
+// A gate passes what the session could reach: the upstream pool's name, which a
+// grant uses to mean "any machine in it", and the addresses of the endpoints in
+// it, which a grant uses to name one machine. The grant that matches says which,
+// so a grant for one endpoint pins the dial to that endpoint rather than letting
+// the balancer choose.
 //
 // It returns the grant that allows it, or the reason the nearest grant does
 // not. It does not count a use -- a listener that has decided to admit calls
 // Use, so a connection refused later for its own reasons does not spend
 // somebody's window.
-func (l *Ledger) Admit(subject, listener, target string) (*Grant, string) {
+func (l *Ledger) Admit(subject, listener string, targets []string) (*Grant, string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
@@ -440,7 +447,7 @@ func (l *Ledger) Admit(subject, listener, target string) (*Grant, string) {
 		if !equalName(g.Subject, subject) || !equalName(g.Listener, listener) {
 			continue
 		}
-		if !equalName(g.Target, target) {
+		if !slices.ContainsFunc(targets, func(t string) bool { return equalName(g.Target, t) }) {
 			// A grant for this subject on this listener but another
 			// target: worth naming, because "wrong target" is the
 			// mistake an operator makes and "no grant" would send them

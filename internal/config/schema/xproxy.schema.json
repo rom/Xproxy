@@ -8,6 +8,14 @@
     "version"
   ],
   "properties": {
+    "access": {
+      "description": "Access is just-in-time access: the grants a gate listener with require_grant admits sessions against, who has to approve one and how long it may last.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Access"
+        }
+      ]
+    },
     "acme": {
       "description": "ACME configures automatic certificates for listeners with tls.acme.",
       "allOf": [
@@ -785,6 +793,43 @@
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Access": {
+      "description": "Access is just-in-time access to the gate listeners: nobody opens a session unless a live grant names them, the listener and the target. It is one section for the daemon rather than one per listener because the ledger is one file with one writer, and because an approval is about a person and a machine rather than about a port. Which listeners require a grant is each listener's own require_grant.",
+      "type": "object",
+      "properties": {
+        "approvals": {
+          "description": "Approvals is how many approvals a grant needs in addition to the request. Default 1, which is four eyes: the person who asked and one other. 0 means a request is in force as soon as it is made, which is still just-in-time and time-boxed but is not four eyes, and is warned about -- so it is a pointer, to tell \"the operator wrote 0\" from \"the operator wrote nothing\".",
+          "type": "integer"
+        },
+        "ledger": {
+          "description": "Ledger is the append-only file the grants and every act on them are written to, with a hash chain over the records. Without it the grants live only in this process: they are gone on a restart and there is no trail, which is warned about rather than refused because a test estate legitimately runs that way.",
+          "type": "string"
+        },
+        "max_duration": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_lead": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_open": {
+          "description": "MaxOpen bounds the grants that may be pending or in force at once. Default 256.",
+          "type": "integer"
+        },
+        "max_uses": {
+          "description": "MaxUses bounds the sessions one grant may open; 0 leaves the window as the only bound.",
+          "type": "integer"
+        },
+        "self_approval": {
+          "description": "SelfApproval lets the requester approve their own request. It exists for the estate with one operator, where the alternative is switching the requirement off altogether; it is warned about every time.",
+          "type": "boolean"
         }
       },
       "additionalProperties": false
@@ -3092,6 +3137,10 @@
               "$ref": "#/$defs/SessionRecording"
             }
           ]
+        },
+        "require_grant": {
+          "description": "RequireGrant admits a session only against a live grant from the access ledger: one somebody asked for, somebody else approved, and that ends by itself. Needs the access section. See docs/CONFIG.md.",
+          "type": "boolean"
         },
         "require_tls": {
           "description": "RequireTLS refuses every command but the ones that get to TLS until the control connection is encrypted. Defaults on wherever TLS is reachable: a control connection in clear carries the password.",
@@ -7432,6 +7481,10 @@
             }
           ]
         },
+        "require_grant": {
+          "description": "RequireGrant admits a session only against a live grant from the access ledger: one somebody asked for, somebody else approved, and that ends by itself. Needs the access section. See docs/CONFIG.md.",
+          "type": "boolean"
+        },
         "security": {
           "description": "Security is what a client may use, by name: tls or rdp. Default tls. nla is not offered to clients and cannot be: checking it would need every person's password, which is the one thing a gateway should not hold. See docs/CONFIG.md.",
           "type": "array",
@@ -9699,6 +9752,10 @@
           "description": "RemoteForward accepts tcpip-forward, which asks the target to listen on the client's behalf. Default false: it turns a session into an inbound path.",
           "type": "boolean"
         },
+        "require_grant": {
+          "description": "RequireGrant admits a session only against a live grant from the access ledger: one somebody asked for, somebody else approved, and that ends by itself. Needs the access section. See docs/CONFIG.md.",
+          "type": "boolean"
+        },
         "revoked_keys": {
           "description": "RevokedKeys is a file of public keys, in authorized_keys format, that are refused whatever else says otherwise: the key itself, a certificate whose key it is, and a certificate signed by it. It is the one list that overrides the CA, which is what makes a certificate revocable before it expires.",
           "type": "string"
@@ -11181,6 +11238,10 @@
             }
           ]
         },
+        "require_grant": {
+          "description": "RequireGrant admits a session only against a live grant from the access ledger: one somebody asked for, somebody else approved, and that ends by itself. Needs the access section. See docs/CONFIG.md.",
+          "type": "boolean"
+        },
         "session_timeout": {
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
@@ -11826,6 +11887,10 @@
               "$ref": "#/$defs/SessionRecording"
             }
           ]
+        },
+        "require_grant": {
+          "description": "RequireGrant admits a session only against a live grant from the access ledger: one somebody asked for, somebody else approved, and that ends by itself. Needs the access section. See docs/CONFIG.md.",
+          "type": "boolean"
         },
         "rsa_key_file": {
           "description": "RSAKeyFile is the RSA private key this proxy presents in the rsa-aes security types. Required with any of them, in PEM, PKCS#1 or PKCS#8, and at least 2048 bits.",

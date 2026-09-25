@@ -275,6 +275,18 @@ func (p *Pool) startHealthLoop(e *Endpoint) {
 	go p.healthLoop(ctx, e)
 }
 
+// Addresses lists the endpoint addresses of this pool, for a caller that has
+// to name them rather than pick one -- the gate kinds' access grants, which may
+// be written for the pool or for one machine in it.
+func (p *Pool) Addresses() []string {
+	eps := p.endpoints()
+	out := make([]string, 0, len(eps))
+	for _, e := range eps {
+		out = append(out, e.Address)
+	}
+	return out
+}
+
 // Breaker returns the circuit breaker, or nil.
 func (p *Pool) Breaker() *Breaker { return p.breaker }
 

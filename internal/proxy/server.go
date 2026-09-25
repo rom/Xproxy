@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/rom/xproxy/internal/access"
 	"github.com/rom/xproxy/internal/acme"
 	"github.com/rom/xproxy/internal/ban"
 	"github.com/rom/xproxy/internal/bound"
@@ -86,6 +87,11 @@ type Server struct {
 	live *sessions.Table
 	// wouldDeny is what the listeners in shadow mode would have refused.
 	wouldDeny *shadow.Ledger
+	// grants is the just-in-time access ledger, nil unless the
+	// configuration has an access section. A gate that requires a grant
+	// with no ledger refuses every session, which is the fail-closed
+	// answer; validation catches that configuration first.
+	grants *access.Ledger
 	// assets is the device inventory, absent unless the configuration asked
 	// for one.
 	assets atomic.Pointer[assetKeeper]
@@ -177,6 +183,13 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 		drains:       upstream.NewDrains(),
 		live:         sessions.New(),
 		wouldDeny:    shadow.NewLedger(shadowBound(cfg)),
+	}
+	if a := cfg.Access; a != nil {
+		l, err := access.Open(a.Ledger, accessPolicy(a))
+		if err != nil {
+			return nil, err
+		}
+		s.grants = l
 	}
 	// A contained panic is a bug in the proxy, not an event about the
 	// client, so it goes to the error log with its stack rather than to
@@ -1247,6 +1260,26 @@ func (s *Server) Sessions() *sessions.Table { return s.live }
 // Shadow is the ledger of what the listeners in shadow mode would have
 // refused.
 func (s *Server) Shadow() *shadow.Ledger { return s.wouldDeny }
+
+// Access is the just-in-time access ledger, or nil when the configuration
+// has no access section. A gate listener with require_grant and no ledger
+// refuses every session rather than admitting one unchecked.
+func (s *Server) Access() *access.Ledger { return s.grants }
+
+// accessPolicy is the configured section as the ledger reads it.
+func accessPolicy(a *config.Access) access.Policy {
+	p := access.Policy{
+		MaxDuration:  a.MaxDuration.D(),
+		MaxLead:      a.MaxLead.D(),
+		MaxUses:      a.MaxUses,
+		MaxOpen:      a.MaxOpen,
+		SelfApproval: a.SelfApproval,
+	}
+	if a.Approvals != nil {
+		p.Approvals = *a.Approvals
+	}
+	return p
+}
 
 // CaptureStatus reports the capture state, with Enabled false when the
 // configuration has no capture section.
