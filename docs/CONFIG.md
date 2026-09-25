@@ -1686,6 +1686,45 @@ register that may hold 0 to 100 and nothing else.
 | `min`, `max` | int | required unless `coils` is set | Bound each 16-bit value written into that range, inclusive |
 | `signed` | bool | `false` | Read the value as a signed 16-bit integer, which is how most setpoints are encoded |
 | `coils` | bool | | Bound a coil write instead: `true` allows setting a coil in the range, `false` allows only clearing it. "This client may stop the pump but not start it" |
+| `max_delta` | int | `0` (off) | How far one write may move the value from the last one this relay saw at that address: a setpoint that may be nudged and not jumped |
+| `transitions` | list | `[]` (any) | The value changes permitted, as `from->to` with numbers or `*` on either side: `["0->1", "1->0"]` is a state register that may be started and stopped and not driven anywhere else. `*->*` is refused as a list that permits everything |
+| `rate` | object | | `{max, period, per_client}`: how often this range may be written, counted per unit identifier and address (`per_client` counts each master's writes separately instead). Not the listener's rate limit, which is about frames from a client: this is about one address, and a master that moves a setpoint sixty times a minute is either broken or not the master it claims to be |
+| `require_before` | object | | Select-before-operate: `{registers, equals, within (default 30s), unit}`. The write is refused unless that register was **written** to that value within the window. IEC 60870-5-104 has this in the protocol; Modbus does not, so a plant that wants it either implements it in every client — where the frame that skips it looks exactly like the frame that did not — or has the relay enforce it |
+| `on_unknown` | enum | `allow` | What happens when a check needs the address's current value and this relay has not seen one: `allow` (counted, with `min` and `max` still in force) or `refuse`. It warns while `max_delta` or `transitions` are set with `allow` |
+
+**The three bounds that are about a change**, and the honest limit of all
+three: `max_delta`, `transitions` and `require_before` need to know what
+the value *is*, and what this relay knows is the last value it **saw** — a
+write it forwarded, or a read it relayed back. A value changed by another
+master, by a local panel or by the process itself was never on this path.
+So `on_unknown` says what to do when there is no value, the number of such
+checks is counted (`modbus_value_unknown`), and `min`/`max`, which need
+nothing, are the bounds that always hold. A masked write (function code
+22) makes the relay *forget* the address rather than guess: the result
+depends on what the register held inside the device.
+
+`max_value_points` on the listener bounds how many addresses are
+remembered (default 65536; a plant has hundreds), because the addresses
+come off the network.
+
+```yaml
+rules:
+  - name: setpoint
+    action: allow
+    clients: ["10.30.7.13/32"]        # HMI-3 and nothing else
+    units: ["2"]
+    functions: [write_single_register]
+    addresses: ["40001"]
+    schedule: {days: [sat], from: "06:00", to: "14:00", timezone: Europe/Stockholm}
+    values:
+      - registers: "40001"
+        min: 0
+        max: 1500                      # the range
+        max_delta: 100                 # and not in one jump
+        rate: {max: 1, period: 1m}     # and not more than once a minute
+        require_before: {registers: "40000", equals: 1, within: 30s}
+        on_unknown: refuse
+```
 
 **`schedule`** limits a rule to a time window. A rule with no schedule is
 always in force, so "these rules during the shift and those outside it"
@@ -1797,7 +1836,8 @@ the refusal counters: `client_not_allowed`, `tls_handshake`,
 `malformed_response`, `response_unit_mismatch`, `no_route_for_unit`,
 `max_connections`, `rate_limit`, `queue_full`, `read_only`,
 `read_only_unknown_function`, `unit_not_allowed`, `rule_deny`, `no_rule`,
-`value_out_of_range`, `value_masked_write`, `coil_set_not_allowed`,
+`value_out_of_range`, `value_delta`, `value_transition`, `value_rate`,
+`value_no_select`, `value_unknown`, `value_masked_write`, `coil_set_not_allowed`,
 `coil_clear_not_allowed`. A selector that does not match is not a refusal
 of its own: the frame falls through to the next rule, and to `no_rule` if
 none matches.

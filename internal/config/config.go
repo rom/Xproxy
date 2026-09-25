@@ -393,6 +393,11 @@ type ModbusListener struct {
 	// master understands), drop (no answer at all, which a master reads
 	// as a timeout) or close (end the connection).
 	DenyResponse string `yaml:"deny_response"`
+	// MaxValuePoints bounds the addresses whose last value this relay
+	// remembers for the value rules that need one (max_delta,
+	// transitions, require_before). Default 65536. A plant has hundreds;
+	// the bound is here because the addresses come off the network.
+	MaxValuePoints int `yaml:"max_value_points"`
 	// Learn records what actually crosses this listener -- the clients,
 	// the roles, the units, the function codes, the address ranges and
 	// the value ranges -- and writes it out as a rule set to start from.
@@ -550,6 +555,82 @@ type ModbusValueRule struct {
 	// Coils, when set, bounds a coil write instead: true allows setting
 	// a coil in the range, false allows only clearing it.
 	Coils *bool `yaml:"coils"`
+	// MaxDelta bounds how far one write may move the value from the last
+	// one this relay saw at that address: a setpoint that may be nudged
+	// but not jumped. 0 disables it.
+	//
+	// "The last one this relay saw" is exactly that, and it is the honest
+	// limit of the check: a value changed by another master, by a local
+	// panel or by the process itself is not seen here, so OnUnknown says
+	// what to do about a write to an address whose value this relay does
+	// not know.
+	MaxDelta int `yaml:"max_delta"`
+	// Transitions are the value changes permitted, as "from->to" pairs
+	// with numbers or "*" on either side: ["0->1", "1->0"] is a state
+	// register that may be started and stopped but not driven to any
+	// other state. Empty permits every change the other bounds allow.
+	Transitions []string `yaml:"transitions"`
+	// Rate bounds how often this range may be written.
+	Rate *ModbusValueRate `yaml:"rate"`
+	// RequireBefore is select-before-operate: this write is refused
+	// unless another register was set to a given value first, recently.
+	// It is how a two-step confirmation is enforced by the relay rather
+	// than hoped for in the client.
+	RequireBefore *ModbusPrecondition `yaml:"require_before"`
+	// OnUnknown is what happens when a check needs the address's current
+	// value and this relay has not seen one -- after a restart, or before
+	// any master has read it: allow (the default, with a counter and an
+	// event, leaving the absolute Min and Max bounds in force) or refuse.
+	//
+	// It is a real choice. allow means a write straight after a restart
+	// is bounded by the range but not by the delta or the transition
+	// list; refuse means a plant cannot be driven until something has
+	// read the register, which for a relay in front of a running process
+	// is usually a poll away and occasionally an outage.
+	OnUnknown string `yaml:"on_unknown"`
+}
+
+// ModbusValueRate bounds how often a range of addresses may be written.
+//
+// It is not the listener's rate limit, which is about frames from a
+// client. This is about one address: "the setpoint may be moved once a
+// minute" is a statement about the process, and a master that moves it
+// sixty times a minute is either broken or not the master it claims to
+// be -- in both cases the device should not see the writes.
+type ModbusValueRate struct {
+	// Max is how many writes are allowed per Period, counted per unit
+	// identifier and address. Required.
+	Max int `yaml:"max"`
+	// Period is the window. Required, 1s..24h.
+	Period Duration `yaml:"period"`
+	// PerClient counts each master's writes separately rather than
+	// counting every write to the address together. Default false: the
+	// bound is usually about the device, not about who is asking.
+	PerClient bool `yaml:"per_client"`
+}
+
+// ModbusPrecondition is select-before-operate: a write this rule covers
+// is refused unless another register was recently set to a given value.
+//
+// The pattern exists because the dangerous operations in a plant are the
+// ones where a single frame does something physical. IEC 60870-5-104 has
+// it in the protocol; Modbus does not, so a plant that wants it either
+// implements it in every client or has the relay enforce it -- and a
+// client-side confirmation is not a control at all, because the frame
+// that skips it looks exactly like the frame that did not.
+type ModbusPrecondition struct {
+	// Registers is the address that has to have been written, as a
+	// single address or a range. Required.
+	Registers string `yaml:"registers"`
+	// Equals is the value it has to have been given. Required.
+	Equals int `yaml:"equals"`
+	// Within is how long the select stays good. Default 30s: long enough
+	// for an operator to confirm, short enough that a select left behind
+	// yesterday does not arm a write today.
+	Within Duration `yaml:"within"`
+	// Unit is the unit identifier the select was written to, when it is
+	// not the unit this write is for.
+	Unit *int `yaml:"unit"`
 }
 
 // ModbusSchedule is when a rule is in force. The times are local to the

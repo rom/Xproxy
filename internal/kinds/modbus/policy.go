@@ -118,6 +118,38 @@ type valueRule struct {
 	min, max  int
 	signed    bool
 	coils     *bool
+
+	// The checks that need to know what the value is now. Each is off
+	// when its zero value says so, and each says what to do when this
+	// relay has not seen a value for the address (onUnknown).
+	maxDelta    int
+	transitions []transition
+	rate        *valueRate
+	before      *precondition
+	refuseUnk   bool
+}
+
+// transition is one permitted value change. A negative bound means "any".
+type transition struct {
+	from, to int
+	anyFrom  bool
+	anyTo    bool
+}
+
+// valueRate bounds how often an address may be written.
+type valueRate struct {
+	max       int
+	period    time.Duration
+	perClient bool
+}
+
+// precondition is select-before-operate: the register that has to have
+// been written, the value it has to hold, and for how long that counts.
+type precondition struct {
+	registers ranges
+	equals    int
+	within    time.Duration
+	unit      *int
 }
 
 // rule is a compiled rule.
@@ -187,6 +219,9 @@ type Policy struct {
 	allowedRoles  map[string]bool
 	maxFrameBytes int
 	now           func() time.Time
+	// state is what this relay has seen at each address, for the value
+	// rules that are about a change rather than about a value.
+	state *valueState
 }
 
 // request is what the policy decides about: a parsed frame and who sent
@@ -203,7 +238,7 @@ type request struct {
 // frame that matches it.
 func compile(l *config.ModbusListener, now func() time.Time) (*Policy, error) {
 	p := &Policy{readOnly: l.ReadOnly, defaultAllow: l.DefaultAction == "allow",
-		maxFrameBytes: l.MaxFrameBytes, now: now}
+		maxFrameBytes: l.MaxFrameBytes, now: now, state: newValueState(l.MaxValuePoints)}
 	if p.now == nil {
 		p.now = time.Now
 	}
@@ -305,6 +340,9 @@ func compileRule(c *config.ModbusRule) (*rule, error) {
 		if err != nil {
 			return nil, err
 		}
+		if err := compileValueState(c.Name, &c.Values[i], &v); err != nil {
+			return nil, err
+		}
 		r.values = append(r.values, v)
 	}
 	if c.Schedule != nil {
@@ -354,6 +392,162 @@ func compileValue(rule string, c *config.ModbusValueRule) (valueRule, error) {
 	}
 	v.min, v.max = *c.Min, *c.Max
 	return v, nil
+}
+
+// compileValueState compiles the checks that need the address's current
+// value. They are separate from the range because they are separate in
+// kind: a range is a statement about a value and these are statements
+// about a change.
+func compileValueState(rule string, c *config.ModbusValueRule, v *valueRule) error {
+	where := "rules." + rule + ".values"
+	v.maxDelta = c.MaxDelta
+	if c.MaxDelta < 0 || c.MaxDelta > 0xFFFF {
+		return fmt.Errorf("%s.max_delta: must be between 0 and 65535", where)
+	}
+	switch c.OnUnknown {
+	case "", "allow":
+	case "refuse":
+		v.refuseUnk = true
+	default:
+		return fmt.Errorf("%s.on_unknown: must be allow or refuse", where)
+	}
+	for _, t := range c.Transitions {
+		tr, err := parseTransition(where, t)
+		if err != nil {
+			return err
+		}
+		v.transitions = append(v.transitions, tr)
+	}
+	if r := c.Rate; r != nil {
+		if r.Max < 1 {
+			return fmt.Errorf("%s.rate.max: must be at least 1", where)
+		}
+		d := r.Period.D()
+		if d < time.Second || d > 24*time.Hour {
+			return fmt.Errorf("%s.rate.period: must be between 1s and 24h", where)
+		}
+		v.rate = &valueRate{max: r.Max, period: d, perClient: r.PerClient}
+	}
+	if b := c.RequireBefore; b != nil {
+		if b.Registers == "" {
+			return fmt.Errorf("%s.require_before.registers: required", where)
+		}
+		rs, err := parseRanges(where+".require_before.registers", []string{b.Registers}, 0xFFFF)
+		if err != nil {
+			return err
+		}
+		within := b.Within.D()
+		if within == 0 {
+			within = 30 * time.Second
+		}
+		if within < time.Second || within > time.Hour {
+			return fmt.Errorf("%s.require_before.within: must be between 1s and 1h", where)
+		}
+		if b.Unit != nil && (*b.Unit < 0 || *b.Unit > 255) {
+			return fmt.Errorf("%s.require_before.unit: must be between 0 and 255", where)
+		}
+		v.before = &precondition{registers: rs, equals: b.Equals, within: within, unit: b.Unit}
+	}
+	return nil
+}
+
+// parseTransition reads "0->1", with "*" for any value on either side.
+func parseTransition(where, s string) (transition, error) {
+	parts := strings.SplitN(s, "->", 2)
+	if len(parts) != 2 {
+		return transition{}, fmt.Errorf("%s.transitions: %q is not a transition (\"from->to\")", where, s)
+	}
+	var t transition
+	for i, half := range parts {
+		text := strings.TrimSpace(half)
+		if text == "*" {
+			if i == 0 {
+				t.anyFrom = true
+			} else {
+				t.anyTo = true
+			}
+			continue
+		}
+		n, err := parseNum(text)
+		if err != nil || n < -32768 || n > 65535 {
+			return transition{}, fmt.Errorf("%s.transitions: %q in %q is not a value or *", where, text, s)
+		}
+		if i == 0 {
+			t.from = n
+		} else {
+			t.to = n
+		}
+	}
+	if t.anyFrom && t.anyTo {
+		return transition{}, fmt.Errorf("%s.transitions: %q permits every change, which is the same as no list", where, s)
+	}
+	return t, nil
+}
+
+// allows says whether a change from one value to another is in the list.
+func (t transition) allows(from, to int) bool {
+	return (t.anyFrom || t.from == from) && (t.anyTo || t.to == to)
+}
+
+// checkChange applies the three bounds that are about a change rather
+// than a value, and the rate. It returns the refusal reason, or empty.
+//
+// Each of the three needs the address's current value, and what that
+// means here is the last value this relay saw -- a write it forwarded or a
+// read it relayed. A value changed by another master, a local panel or
+// the process itself was never on this path. So a rule that needs one and
+// has none is decided by on_unknown, and the counter says how often that
+// happened: a policy running on less than it asks for should be visible
+// rather than silently permissive.
+func (v valueRule) checkChange(state *valueState, req request, addr, val int, now time.Time) string {
+	if v.rate != nil {
+		n := state.WritesIn(req.unit, addr, v.rate.period, req.client, v.rate.perClient, now)
+		if n >= v.rate.max {
+			return "value_rate"
+		}
+	}
+	if v.before != nil {
+		unit := req.unit
+		if v.before.unit != nil {
+			unit = byte(*v.before.unit) //nolint:gosec // validated 0..255
+		}
+		if !state.Selected(unit, v.before.registers, v.before.equals, v.before.within, now) {
+			return "value_no_select"
+		}
+	}
+	if v.maxDelta == 0 && len(v.transitions) == 0 {
+		return ""
+	}
+	last, _, known := state.Last(req.unit, addr)
+	if !known {
+		if state != nil {
+			state.mu.Lock()
+			state.Unknown++
+			state.mu.Unlock()
+		}
+		if v.refuseUnk {
+			return "value_unknown"
+		}
+		return ""
+	}
+	if v.maxDelta > 0 {
+		d := val - last
+		if d < 0 {
+			d = -d
+		}
+		if d > v.maxDelta {
+			return "value_delta"
+		}
+	}
+	if len(v.transitions) > 0 {
+		for _, t := range v.transitions {
+			if t.allows(last, val) {
+				return ""
+			}
+		}
+		return "value_transition"
+	}
+	return ""
 }
 
 func compileSchedule(rule string, c *config.ModbusSchedule) (*schedule, error) {
@@ -492,7 +686,7 @@ func (p *Policy) Decide(req request) Decision {
 			// is tried against live traffic without deciding anything.
 			continue
 		default:
-			if reason := r.checkValues(req); reason != "" {
+			if reason := r.checkValues(req, p.state, now); reason != "" {
 				return Decision{Rule: r.name, Reason: reason, Comment: r.comment}
 			}
 			return Decision{Allow: true, Rule: r.name, Comment: r.comment}
@@ -502,6 +696,51 @@ func (p *Policy) Decide(req request) Decision {
 		return Decision{Allow: true, Reason: "default_allow"}
 	}
 	return Decision{Reason: "no_rule"}
+}
+
+// observeWrite records the values a write carries, so the next write's
+// delta, transition and rate are measured against them.
+func (p *Policy) observeWrite(req request, now time.Time) {
+	if p == nil || p.state == nil || req.pdu == nil || !req.pdu.Writes() {
+		return
+	}
+	pdu := req.pdu
+	base := int(pdu.Address)
+	if pdu.Function == wire.FCReadWriteMultiple {
+		base = int(pdu.WriteAddress)
+	}
+	if pdu.Function == wire.FCMaskWriteRegister {
+		// A masked write is not a value at an address, so recording one
+		// would be inventing what the register now holds. The address is
+		// forgotten instead: a delta measured against a value this relay
+		// only thinks it knows would be worse than one that says it does
+		// not know.
+		p.state.Forget(req.unit, base)
+		return
+	}
+	p.state.Observe(req.unit, base, pdu.Registers, true, req.client, now)
+	p.state.ObserveCoils(req.unit, base, pdu.Coils, true, req.client, now)
+}
+
+// observeRead records what a device answered a read with. It is where the
+// value of a register this relay never wrote comes from.
+func (p *Policy) observeRead(req request, resp *wire.PDU, now time.Time) {
+	if p == nil || p.state == nil || req.pdu == nil || resp == nil || req.pdu.Writes() {
+		return
+	}
+	base := int(req.pdu.Address)
+	p.state.Observe(req.unit, base, resp.Registers, false, req.client, now)
+	p.state.ObserveCoils(req.unit, base, resp.Coils, false, req.client, now)
+}
+
+// ValueState is the value table's own numbers, for the status view.
+func (p *Policy) ValueState() (points int, unknown, dropped uint64) {
+	if p == nil || p.state == nil {
+		return 0, 0, 0
+	}
+	p.state.mu.Lock()
+	defer p.state.mu.Unlock()
+	return len(p.state.points), p.state.Unknown, p.state.Dropped
 }
 
 // Observed reports the names of the observe rules a request matches, for
@@ -598,7 +837,7 @@ func writeSpan(p *wire.PDU) (int, int, bool) {
 // match, because a setpoint of 900 where 0 to 100 is allowed is exactly
 // what the rule was written to stop, and falling through to the next
 // rule would be looking for one that permits it.
-func (r *rule) checkValues(req request) string {
+func (r *rule) checkValues(req request, state *valueState, now time.Time) string {
 	if len(r.values) == 0 {
 		return ""
 	}
@@ -634,6 +873,9 @@ func (r *rule) checkValues(req request) string {
 			if val < v.min || val > v.max {
 				return "value_out_of_range"
 			}
+			if reason := v.checkChange(state, req, addr, val, now); reason != "" {
+				return reason
+			}
 		}
 	}
 	for i, on := range p.Coils {
@@ -655,6 +897,17 @@ func (r *rule) checkValues(req request) string {
 			}
 			if !on && *v.coils {
 				return "coil_clear_not_allowed"
+			}
+			// A coil is a value of 0 or 1, so the same rate,
+			// transition and select-before-operate machinery covers
+			// it: "the pump may be started once a minute, and only
+			// after the permissive is set" is a coil rule.
+			val := 0
+			if on {
+				val = 1
+			}
+			if reason := v.checkChange(state, req, addr, val, now); reason != "" {
+				return reason
 			}
 		}
 	}

@@ -1203,3 +1203,71 @@ upstreams:
 		t.Errorf("a malformed frame was not refused in shadow mode: %+v", sn.Refusals["modbus"])
 	}
 }
+
+// The value semantics through a real relay: the setpoint rule from the
+// documentation, which is what a plant asks for in one sentence -- this
+// register, this range, not in one jump, once a minute, and only after the
+// permissive was set.
+func TestModbusValueSemanticsEndToEnd(t *testing.T) {
+	dev := startPLC(t, &plc{framing: wire.FramingTCP})
+	dev.regs[400] = 500
+	s, addr := modbusServer(t, `        upstream: plc
+        rules:
+          - {name: reads, action: allow, access: [read]}
+          - name: permissive
+            action: allow
+            functions: [write_single_register]
+            addresses: ["401"]
+            values: [{registers: "401", min: 0, max: 1}]
+          - name: setpoint
+            action: allow
+            functions: [write_single_register]
+            addresses: ["400"]
+            values:
+              - registers: "400"
+                min: 0
+                max: 1500
+                max_delta: 100
+                rate: {max: 1, period: 1m}
+                require_before: {registers: "401", equals: 1, within: 30s}`,
+		map[string]*plc{"plc": dev})
+
+	m := dialMaster(t, addr, wire.FramingTCP)
+	// A read tells the relay what the registers hold, which is what the
+	// delta is measured against. Two registers, because the test master's
+	// reads always ask for two.
+	if _, err := m.ask(1, []byte{3, 0x01, 0x90, 0x00, 0x02}); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	// No permissive yet: the write is refused, and the master is told in
+	// its own terms.
+	m.raw(wire.Encode(wire.FramingTCP, &wire.Frame{Transaction: 2, Unit: 1,
+		PDU: []byte{6, 0x01, 0x90, 0x02, 0x1C}})) // write 540 to 400
+	m.expectException("a setpoint with no permissive", wire.ExIllegalValue)
+	if got := dev.regs[400]; got != 500 {
+		t.Fatalf("the refused write reached the device: %d", got)
+	}
+	// The permissive, then the setpoint: a nudge of 40 inside the delta.
+	if _, err := m.ask(1, []byte{6, 0x01, 0x91, 0x00, 0x01}); err != nil {
+		t.Fatalf("permissive: %v", err)
+	}
+	if _, err := m.ask(1, []byte{6, 0x01, 0x90, 0x02, 0x1C}); err != nil {
+		t.Fatalf("setpoint after the permissive: %v", err)
+	}
+	if got := dev.regs[400]; got != 540 {
+		t.Fatalf("the setpoint did not reach the device: %d", got)
+	}
+	// The second write inside the minute is refused for the rate, which
+	// is a different exception because the same write would be accepted
+	// later.
+	m.raw(wire.Encode(wire.FramingTCP, &wire.Frame{Transaction: 5, Unit: 1,
+		PDU: []byte{6, 0x01, 0x90, 0x02, 0x1D}}))
+	m.expectException("a second setpoint inside the minute", wire.ExServerBusy)
+	sn := s.Stats()
+	if sn.Refusals["modbus"]["value_no_select"] == 0 || sn.Refusals["modbus"]["value_rate"] == 0 {
+		t.Errorf("refusals %+v", sn.Refusals["modbus"])
+	}
+	if sn.ModbusValuePoints == 0 {
+		t.Error("the value table is empty although writes and reads were relayed")
+	}
+}

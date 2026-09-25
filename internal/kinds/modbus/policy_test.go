@@ -1,6 +1,7 @@
 package modbus
 
 import (
+	"fmt"
 	"net/netip"
 	"strings"
 	"testing"
@@ -30,6 +31,29 @@ func policy(t *testing.T, l *config.ModbusListener, now time.Time) *Policy {
 		t.Fatalf("compile: %v", err)
 	}
 	return p
+}
+
+// policyFor compiles a policy from a modbus section written as YAML, so a
+// test about the value rules reads like the configuration an operator
+// writes rather than like the structs behind it.
+func policyFor(t *testing.T, section string) *Policy {
+	t.Helper()
+	cfg, err := config.Parse([]byte(fmt.Sprintf(`
+version: 1
+server:
+  listeners:
+    - name: plant
+      address: "127.0.0.1:0"
+      kind: modbus
+      modbus:
+        upstream: plc
+%s
+upstreams: [{name: plc, endpoints: [{address: "127.0.0.1:502"}]}]
+`, section)))
+	if err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	return policy(t, cfg.Server.Listeners[0].Modbus, time.Now())
 }
 
 var (
@@ -407,4 +431,248 @@ func TestTheRoleModes(t *testing.T) {
 	if !off.RoleAllowed("anything") {
 		t.Error("an empty role list refused a role")
 	}
+}
+
+// The bounds that are about a change rather than a value. Each of them is
+// what a plant actually asks for, and each needs to know what the value is
+// now -- which is the last value this relay saw, and the reason on_unknown
+// exists.
+func TestTheValueBoundsThatAreAboutAChange(t *testing.T) {
+	wreg := func(unit byte, addr, val int) request {
+		return request{client: netip.MustParseAddr("10.0.0.9"), unit: unit,
+			pdu: &wire.PDU{Function: wire.FCWriteSingleRegister, Access: wire.AccessWrite,
+				Address: uint16(addr), Quantity: 1, Registers: []uint16{uint16(val)}}}
+	}
+	rreg := func(unit byte, addr int) request {
+		return request{client: netip.MustParseAddr("10.0.0.9"), unit: unit,
+			pdu: &wire.PDU{Function: wire.FCReadHoldingRegisters, Access: wire.AccessRead,
+				Address: uint16(addr), Quantity: 1}}
+	}
+
+	t.Run("a delta is measured against the last value seen", func(t *testing.T) {
+		p := policyFor(t, `
+        rules:
+          - name: setpoint
+            action: allow
+            values: [{registers: "400", min: 0, max: 1500, max_delta: 100}]`)
+		// Nothing is known yet, and on_unknown is allow by default: the
+		// range still holds, the delta cannot.
+		if d := p.Decide(wreg(1, 400, 1400)); !d.Allow {
+			t.Fatalf("a write to an address with no known value: %+v", d)
+		}
+		if d := p.Decide(wreg(1, 400, 1600)); d.Allow || d.Reason != "value_out_of_range" {
+			t.Fatalf("the range still holds: %+v", d)
+		}
+		// A read tells the policy what the register holds.
+		p.observeRead(rreg(1, 400), &wire.PDU{Registers: []uint16{100}}, time.Now())
+		if d := p.Decide(wreg(1, 400, 150)); !d.Allow {
+			t.Fatalf("a nudge of 50: %+v", d)
+		}
+		if d := p.Decide(wreg(1, 400, 900)); d.Allow || d.Reason != "value_delta" {
+			t.Fatalf("a jump of 800: %+v", d)
+		}
+		// A value that falls too far is the same bound: a delta that only
+		// held in one direction would be half a bound, and a setpoint
+		// dropped from 1400 to 0 is the dangerous direction in most
+		// plants.
+		p.observeRead(rreg(1, 400), &wire.PDU{Registers: []uint16{500}}, time.Now())
+		if d := p.Decide(wreg(1, 400, 100)); d.Allow || d.Reason != "value_delta" {
+			t.Fatalf("a fall of 400: %+v", d)
+		}
+		p.observeRead(rreg(1, 400), &wire.PDU{Registers: []uint16{100}}, time.Now())
+		// And the write that was allowed becomes the new baseline, so the
+		// next nudge is measured from where the value now is.
+		p.observeWrite(wreg(1, 400, 150), time.Now())
+		if d := p.Decide(wreg(1, 400, 240)); !d.Allow {
+			t.Fatalf("a nudge from the new value: %+v", d)
+		}
+		if d := p.Decide(wreg(1, 400, 400)); d.Allow {
+			t.Fatalf("a jump from the new value: %+v", d)
+		}
+	})
+
+	t.Run("on_unknown refuse waits for a value", func(t *testing.T) {
+		p := policyFor(t, `
+        rules:
+          - name: state
+            action: allow
+            values: [{registers: "500", min: 0, max: 1, transitions: ["0->1", "1->0"], on_unknown: refuse}]`)
+		if d := p.Decide(wreg(1, 500, 1)); d.Allow || d.Reason != "value_unknown" {
+			t.Fatalf("a write with no value known: %+v", d)
+		}
+		p.observeRead(rreg(1, 500), &wire.PDU{Registers: []uint16{0}}, time.Now())
+		if d := p.Decide(wreg(1, 500, 1)); !d.Allow {
+			t.Fatalf("0 to 1 is in the list: %+v", d)
+		}
+		if _, unknown, _ := p.ValueState(); unknown == 0 {
+			t.Error("the check that ran without a value was not counted")
+		}
+	})
+
+	t.Run("a transition list permits the changes it names", func(t *testing.T) {
+		p := policyFor(t, `
+        rules:
+          - name: state
+            action: allow
+            values: [{registers: "500", min: 0, max: 9, transitions: ["0->1", "1->2", "*->0"]}]`)
+		p.observeRead(rreg(1, 500), &wire.PDU{Registers: []uint16{1}}, time.Now())
+		if d := p.Decide(wreg(1, 500, 2)); !d.Allow {
+			t.Fatalf("1 to 2: %+v", d)
+		}
+		if d := p.Decide(wreg(1, 500, 5)); d.Allow || d.Reason != "value_transition" {
+			t.Fatalf("1 to 5: %+v", d)
+		}
+		// The wildcard on the left: anything may go to 0, which is how a
+		// stop is written.
+		if d := p.Decide(wreg(1, 500, 0)); !d.Allow {
+			t.Fatalf("1 to 0 through the wildcard: %+v", d)
+		}
+	})
+
+	t.Run("a rate is about the address", func(t *testing.T) {
+		p := policyFor(t, `
+        rules:
+          - name: setpoint
+            action: allow
+            values: [{registers: "400", min: 0, max: 1500, rate: {max: 2, period: 1m}}]`)
+		now := time.Now()
+		for i := 0; i < 2; i++ {
+			if d := p.Decide(wreg(1, 400, 10)); !d.Allow {
+				t.Fatalf("write %d: %+v", i, d)
+			}
+			p.observeWrite(wreg(1, 400, 10), now)
+		}
+		if d := p.Decide(wreg(1, 400, 10)); d.Allow || d.Reason != "value_rate" {
+			t.Fatalf("the third write inside the minute: %+v", d)
+		}
+		// The window is a sliding one: writes older than the period do not
+		// count, or a plant would be locked out for ever by a busy minute
+		// an hour ago.
+		old := policyFor(t, `
+        rules:
+          - name: setpoint
+            action: allow
+            values: [{registers: "400", min: 0, max: 1500, rate: {max: 2, period: 1m}}]`)
+		for i := 0; i < 5; i++ {
+			old.observeWrite(wreg(1, 400, 10), time.Now().Add(-2*time.Minute))
+		}
+		if d := old.Decide(wreg(1, 400, 10)); !d.Allow {
+			t.Fatalf("a write after the window passed: %+v", d)
+		}
+		// Another address is another bound: the rate is per address.
+		if d := p.Decide(wreg(1, 401, 10)); !d.Allow {
+			t.Fatalf("a write to another address: %+v", d)
+		}
+		// And another unit is another device.
+		if d := p.Decide(wreg(2, 400, 10)); !d.Allow {
+			t.Fatalf("a write to another unit: %+v", d)
+		}
+	})
+
+	t.Run("select before operate", func(t *testing.T) {
+		p := policyFor(t, `
+        rules:
+          - name: operate
+            action: allow
+            values:
+              - registers: "600"
+                min: 0
+                max: 1
+                require_before: {registers: "601", equals: 1, within: 30s}
+              - registers: "601"
+                min: 0
+                max: 1`)
+		// No select: the operate is refused, which is the whole point.
+		if d := p.Decide(wreg(1, 600, 1)); d.Allow || d.Reason != "value_no_select" {
+			t.Fatalf("an operate with no select: %+v", d)
+		}
+		// A read that happens to find the select register at 1 is not
+		// somebody confirming an operation.
+		p.observeRead(rreg(1, 601), &wire.PDU{Registers: []uint16{1}}, time.Now())
+		if d := p.Decide(wreg(1, 600, 1)); d.Allow {
+			t.Fatalf("a read of the select register armed the operate: %+v", d)
+		}
+		// The select itself, written.
+		if d := p.Decide(wreg(1, 601, 1)); !d.Allow {
+			t.Fatalf("the select: %+v", d)
+		}
+		p.observeWrite(wreg(1, 601, 1), time.Now())
+		if d := p.Decide(wreg(1, 600, 1)); !d.Allow {
+			t.Fatalf("the operate after the select: %+v", d)
+		}
+		// A select goes stale: one left behind yesterday must not arm a
+		// write today, which is the difference between a confirmation and
+		// a switch somebody flipped once.
+		stale := policyFor(t, `
+        rules:
+          - name: operate
+            action: allow
+            values:
+              - registers: "600"
+                min: 0
+                max: 1
+                require_before: {registers: "601", equals: 1, within: 30s}`)
+		stale.observeWrite(wreg(1, 601, 1), time.Now().Add(-10*time.Minute))
+		if d := stale.Decide(wreg(1, 600, 1)); d.Allow || d.Reason != "value_no_select" {
+			t.Fatalf("an operate after a stale select: %+v", d)
+		}
+	})
+
+	t.Run("a masked write forgets the address", func(t *testing.T) {
+		p := policyFor(t, `
+        rules:
+          - name: setpoint
+            action: allow
+            values: [{registers: "400", min: 0, max: 1500, max_delta: 10, on_unknown: refuse}]`)
+		p.observeRead(rreg(1, 400), &wire.PDU{Registers: []uint16{100}}, time.Now())
+		if d := p.Decide(wreg(1, 400, 105)); !d.Allow {
+			t.Fatalf("a nudge: %+v", d)
+		}
+		// A masked write's result depends on what the device held, so the
+		// relay stops claiming to know the value rather than guessing it.
+		p.observeWrite(request{client: netip.MustParseAddr("10.0.0.9"), unit: 1,
+			pdu: &wire.PDU{Function: wire.FCMaskWriteRegister, Access: wire.AccessWrite,
+				Address: 400}}, time.Now())
+		if d := p.Decide(wreg(1, 400, 105)); d.Allow || d.Reason != "value_unknown" {
+			t.Fatalf("after a masked write the value is not known: %+v", d)
+		}
+	})
+
+	t.Run("a coil is a value of zero or one", func(t *testing.T) {
+		p := policyFor(t, `
+        rules:
+          - name: pump
+            action: allow
+            values:
+              - registers: "10"
+                coils: true
+                rate: {max: 1, period: 1m}`)
+		coil := func(on bool) request {
+			return request{client: netip.MustParseAddr("10.0.0.9"), unit: 1,
+				pdu: &wire.PDU{Function: wire.FCWriteSingleCoil, Access: wire.AccessWrite,
+					Address: 10, Quantity: 1, Coils: []bool{on}}}
+		}
+		if d := p.Decide(coil(true)); !d.Allow {
+			t.Fatalf("the first start: %+v", d)
+		}
+		p.observeWrite(coil(true), time.Now())
+		if d := p.Decide(coil(true)); d.Allow || d.Reason != "value_rate" {
+			t.Fatalf("the second start inside the minute: %+v", d)
+		}
+	})
+
+	t.Run("the table is bounded", func(t *testing.T) {
+		p := policyFor(t, `
+        max_value_points: 8
+        rules:
+          - name: any
+            action: allow
+            values: [{registers: "0-65535", min: 0, max: 65535, max_delta: 1}]`)
+		for i := 0; i < 50; i++ {
+			p.observeWrite(wreg(1, i, 1), time.Now())
+		}
+		if points, _, dropped := p.ValueState(); points > 8 || dropped == 0 {
+			t.Fatalf("points %d dropped %d", points, dropped)
+		}
+	})
 }

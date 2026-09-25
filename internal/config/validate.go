@@ -6815,6 +6815,9 @@ func (v *validator) ftpListener(p string, f *FTPListener, hasTLS bool) {
 // is told, so a rule that does not do what its author thought is a rule
 // that lets somebody write a setpoint.
 func (v *validator) modbusListener(p string, m *ModbusListener, hasTLS bool) {
+	if m.MaxValuePoints < 0 || m.MaxValuePoints > 1<<20 {
+		v.errf("%s.max_value_points: must be between 0 and 1048576", p)
+	}
 	switch m.Mode {
 	case "", "reverse":
 	case "forward":
@@ -6968,6 +6971,48 @@ func (v *validator) modbusListener(p string, m *ModbusListener, hasTLS bool) {
 			if val.Max != nil && (*val.Max < lo || *val.Max > hi) {
 				v.errf("%s.max: outside %d to %d", vq, lo, hi)
 			}
+			// The three bounds that are about a change rather than a
+			// value, and the rate.
+			if val.MaxDelta < 0 || val.MaxDelta > 0xFFFF {
+				v.errf("%s.max_delta: must be between 0 and 65535", vq)
+			}
+			for k, tr := range val.Transitions {
+				if !modbusTransition(tr) {
+					v.errf("%s.transitions[%d]: %q is not a transition: \"from->to\" with values or *", vq, k, tr)
+				}
+			}
+			switch val.OnUnknown {
+			case "", "allow", "refuse":
+			default:
+				v.errf("%s.on_unknown: must be allow or refuse", vq)
+			}
+			if (val.MaxDelta > 0 || len(val.Transitions) > 0) && val.OnUnknown != "refuse" {
+				v.warnf("%s: max_delta and transitions need the address's current value, and on_unknown is allow, so a write to an address this relay has not seen a value for is bounded by min and max alone: set on_unknown: refuse where that is not enough, knowing it refuses until something reads the register", vq)
+			}
+			if r := val.Rate; r != nil {
+				if r.Max < 1 {
+					v.errf("%s.rate.max: must be at least 1", vq)
+				}
+				if d := r.Period.D(); d < time.Second || d > 24*time.Hour {
+					v.errf("%s.rate.period: must be between 1s and 24h", vq)
+				}
+			}
+			if b := val.RequireBefore; b != nil {
+				if b.Registers == "" {
+					v.errf("%s.require_before.registers: required", vq)
+				} else {
+					v.modbusRanges(vq+".require_before.registers", []string{b.Registers}, 0xFFFF)
+				}
+				if d := b.Within; d != 0 && (d < Duration(time.Second) || d > Duration(time.Hour)) {
+					v.errf("%s.require_before.within: must be between 1s and 1h", vq)
+				}
+				if b.Unit != nil && (*b.Unit < 0 || *b.Unit > 255) {
+					v.errf("%s.require_before.unit: must be between 0 and 255", vq)
+				}
+				if b.Equals < -32768 || b.Equals > 65535 {
+					v.errf("%s.require_before.equals: outside -32768 to 65535", vq)
+				}
+			}
 		}
 		if s := r.Schedule; s != nil {
 			for j, d := range s.Days {
@@ -7065,6 +7110,29 @@ func (v *validator) modbusListener(p string, m *ModbusListener, hasTLS bool) {
 }
 
 // modbusCIDRs checks a network list.
+// modbusTransition says whether a string is a "from->to" pair.
+func modbusTransition(s string) bool {
+	parts := strings.SplitN(s, "->", 2)
+	if len(parts) != 2 {
+		return false
+	}
+	stars := 0
+	for _, half := range parts {
+		text := strings.TrimSpace(half)
+		if text == "*" {
+			stars++
+			continue
+		}
+		n, err := strconv.Atoi(text)
+		if err != nil || n < -32768 || n > 65535 {
+			return false
+		}
+	}
+	// Two stars permit every change, which is the same as no list at all
+	// and reads as a rule that does something.
+	return stars < 2
+}
+
 func (v *validator) modbusCIDRs(p string, in []string) {
 	for i, c := range in {
 		if _, err := netip.ParsePrefix(c); err != nil {

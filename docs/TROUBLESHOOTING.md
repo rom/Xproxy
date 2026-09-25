@@ -3023,6 +3023,40 @@ record a plant is asked for, and it is a line per request — a scan of a
 thousand registers a second is a thousand lines a second, which is why
 it is a choice rather than a default.
 
+**A write is refused with illegal data value although it is inside min and
+max.** One of the three bounds that are about a *change* refused it, and
+the security event names which: `value_delta` (it moved further than
+`max_delta` from the last value this relay saw), `value_transition` (the
+change is not in the `transitions` list) or `value_no_select` (the
+`require_before` register was not written to its value recently enough).
+`value_unknown` is the fourth: the check needed the address's current
+value, this relay has not seen one, and `on_unknown: refuse` says to
+refuse rather than fall back to the range.
+
+**`value_unknown` after a restart, or after a masked write.** Both are the
+same thing: the relay knows a value only because it forwarded a write or
+relayed a read, so a fresh process knows nothing until a master polls, and
+a masked write (function code 22) makes it *forget* the address because the
+result depends on what the register held inside the device. A single read
+from any master re-arms the checks. `modbus_value_unknown` counts how often
+a check ran without a value and `modbus_value_points` how many addresses
+are known.
+
+**A write is refused with server busy.** That is `value_rate`: the address
+has had its allowed writes for the period. It is deliberately a different
+exception from an illegal value, because the same write would be accepted
+later and a master's diagnostics should say so. The window is a sliding
+one, counted per unit identifier and address — or per master with
+`per_client: true`.
+
+**The delta or the transition list is not refusing anything.** Check
+`on_unknown`: with the default `allow`, an address whose value the relay
+has not seen is bounded by `min` and `max` alone, and validation warns
+about exactly that. Check also that something reads the register: in a
+plant where the master only ever writes, the relay learns the value from
+the writes it forwards, so the first write after a restart is the one that
+cannot be checked.
+
 ## NTP and NTS gateway
 
 **Clients get no answer at all.** A datagram cannot be refused, so
@@ -4538,7 +4572,7 @@ actually being refused. What each kind can say:
 | `mqtt` | `client_not_allowed`, `max_connections`, `not_connect`, `second_connect`, `version_refused`, the client id policy (`empty_client_id`, `client_id_too_long`, `client_id_refused`), `no_username`, `keep_alive_refused`, the topic policy (`publish_topic_refused`, `subscribe_refused`, `retain_refused`, `will_topic_refused`, `will_retain_refused`), `packet_too_large`, `malformed` |
 | `ftp` | `client_refused`, `banned`, `max_connections`, `auth_failed`, `identity_refused`, `mfa_required`, `mfa_failed`, the command and path policy (`unknown_command`, `command_refused`, `path_refused`, `read_only`, `active_refused`, `no_data_connection`), the path shapes it will not guess about (`path_separator`, `path_control`, `path_encoding`), the commands that are half a decision (`rest_invalid`, `rest_unscannable`, `rename_out_of_order`), TLS (`tls_required`, `auth_refused`, `ccc_refused`, `tls_pipelined`), the data channel (`bounce_refused`, `malformed_address`, `data_stranger`, `upstream_address`, `transfer_cut`) and the line discipline (`line_too_long`, `malformed_line`, `malformed_command`) |
 | `syslog` | `sender_refused`, `max_connections`, `rate_limit`, `too_large`, `framing`, `malformed`, the message policy (`facility`, `severity`, `pattern`) and `queue_full` when the collector is behind |
-| `modbus` | `client_not_allowed`, `max_connections`, `rate_limit`, `queue_full`, the session's own locks (`tls_handshake`, `no_client_certificate`, `no_role`, `role_not_allowed`, `security_requires_tls`), the framing (`framing`, `frame_too_large`, `malformed`), the policy (`read_only`, `read_only_unknown_function`, `unit_not_allowed`, `rule_deny`, `no_rule`, `value_out_of_range`, `value_masked_write`, `coil_set_not_allowed`, `coil_clear_not_allowed`), the routing (`no_route_for_unit`) and what the device answered (`malformed_response`, `response_unit_mismatch`) |
+| `modbus` | `client_not_allowed`, `max_connections`, `rate_limit`, `queue_full`, the session's own locks (`tls_handshake`, `no_client_certificate`, `no_role`, `role_not_allowed`, `security_requires_tls`), the framing (`framing`, `frame_too_large`, `malformed`), the policy (`read_only`, `read_only_unknown_function`, `unit_not_allowed`, `rule_deny`, `no_rule`, `value_out_of_range`, `value_delta`, `value_transition`, `value_rate`, `value_no_select`, `value_unknown`, `value_masked_write`, `coil_set_not_allowed`, `coil_clear_not_allowed`), the routing (`no_route_for_unit`) and what the device answered (`malformed_response`, `response_unit_mismatch`) |
 | `ntp` | `banned`, `client_not_allowed`, `rate_limit`, `max_associations`, `outstanding_full`, the dispatch (`control_mode`, `private_mode`, `version5`, `version`, `version_not_allowed`, `mode_not_allowed`), the association shape (`not_a_peer`, `broadcast_not_allowed`), the packet (`malformed`, `packet_too_large`, `too_many_extensions`, `unknown_extension`, `ambiguous_mac`), the identity it demanded (`nts_required`, `auth_required`, `auth_failed`), the egress (`no_server`, `server_not_allowed`), what the server answered (`malformed_response`, `unsolicited`, `response_mode`, `kiss_of_death`, `unsynchronised`, `unsynchronised_stratum`, `stratum_too_high`, `stratum_not_allowed`, `root_delay`, `root_dispersion`, `root_distance`, `delay`, `offset`, `bogus_timestamps`, `bogus_refid`, `refid_not_allowed`, `leap_announced`, `leap_unexpected`, `nts_stripped`, `auth_stripped`) and what the server became (`source_changed`, with `change_detection.action: refuse`) |
 | `ntske` | `banned`, `client_not_allowed`, `max_connections`, `handshake_limit`, and what the handshake said (`not_tls`, `no_hello`, `incomplete_hello`, `hello_too_large`, `alpn_not_offered`, `server_name_not_allowed`) |
 

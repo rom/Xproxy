@@ -442,6 +442,39 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **Modbus values are changes, not only numbers.** A range says what may
+  be written. The rules a plant actually asks for are about what may
+  *happen*, and four of them are new: `max_delta` bounds how far one write
+  may move a value from the last one this relay saw (a right value reached
+  the wrong way is what a runaway or a typo in an engineering station looks
+  like); `transitions` lists the changes permitted as `0->1` pairs, with
+  `*` on one side, for the registers that are states rather than numbers;
+  `rate` bounds how often an address may be written, per unit and address
+  or per master, because a master hunting a setpoint sixty times a minute
+  is either broken or not the master it claims to be; and `require_before`
+  is select-before-operate -- which IEC 60870-5-104 has in the protocol and
+  Modbus does not, so either every client implements the confirmation,
+  where the frame that skips it looks exactly like the frame that did not,
+  or the relay enforces it. Coils go through the same machinery as values
+  of 0 and 1, so "the pump may be started once a minute, and only after the
+  permissive is set" is a coil rule.
+
+  Three of the four need to know what the value is, and the honest answer
+  is what this relay *saw*: a write it forwarded or a read it relayed back.
+  A value changed by another master, a local panel or the process itself
+  was never on this path. So `on_unknown` says what to do when there is no
+  value -- `allow`, counted, with the range still in force, or `refuse`,
+  which waits until something reads the register -- validation warns while
+  a delta or a transition list runs with `allow`, `modbus_value_unknown`
+  counts the checks that ran without a value, and a masked write makes the
+  relay *forget* the address rather than guess what the device now holds.
+  The table is bounded by `max_value_points` (default 65536) because the
+  addresses come off the network.
+
+  A rate refusal is answered with *server busy* rather than *illegal
+  value*: the same write would be accepted a minute later, and that is what
+  a master's own diagnostics should say.
+
 - **Shadow mode: a policy you can switch on.** Every policy in this proxy
   had the same adoption problem, and it is not a technical one: somebody
   writes the allow list, the command policy, the register range or the

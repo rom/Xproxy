@@ -2799,6 +2799,57 @@ may carry: a setpoint register that may hold 0 to 100 and nothing else,
 refused *by the rule that set the bound*, not passed to a later rule
 that would permit it.
 
+**A value is not only a number: it is a change.** A range says what may
+be written; the interesting rules in a plant are about what may *happen*:
+
+```yaml
+          - name: setpoint
+            action: allow
+            clients: ["10.30.7.13/32"]      # HMI-3, and nothing else
+            units: ["2"]
+            functions: [write_single_register]
+            addresses: ["40001"]
+            schedule: {days: [sat], from: "06:00", to: "14:00", timezone: Europe/Stockholm}
+            values:
+              - registers: "40001"
+                min: 0
+                max: 1500                    # the range
+                max_delta: 100               # and not in one jump
+                rate: {max: 1, period: 1m}   # and not more than once a minute
+                transitions: ["0->1", "1->0"]   # for a state register
+                require_before: {registers: "40000", equals: 1, within: 30s}
+                on_unknown: refuse
+```
+
+That is one sentence from a plant written out: *this register, this
+range, not in one jump, once a minute, only after the permissive was set,
+only from HMI-3, only during the maintenance window.* Each part answers a
+different failure. A range catches a wrong value; `max_delta` catches a
+right value reached the wrong way, which is what a runaway or a typo in
+an engineering station looks like; `rate` catches a master hunting a
+setpoint sixty times a minute, which is either broken or not the master
+it claims to be; `transitions` is for the registers that are states
+rather than numbers, where 0 to 1 is starting and 0 to 4 is nonsense; and
+`require_before` is **select-before-operate**, which IEC 60870-5-104 has
+in the protocol and Modbus does not — so either every client implements
+the confirmation, where the frame that skips it looks exactly like the
+frame that did not, or the relay enforces it.
+
+Three of those need to know what the value *is*, and here is the honest
+part: what this relay knows is the last value it **saw** — a write it
+forwarded, or a read it relayed back to a master. A value changed by
+another master, a local panel or the process itself was never on this
+path. So `on_unknown` says what to do when there is no value (`allow`,
+counted, with the range still in force; or `refuse`, which waits until
+something reads the register), the count is in `modbus_value_unknown`,
+and a masked write makes the relay *forget* the address rather than guess
+what the device now holds. `max_value_points` bounds the table, because
+the addresses come off the network.
+
+A rate refusal is answered with *server busy* rather than *illegal value*:
+the same write would be accepted a minute later, and that is what a
+master's own diagnostics should say.
+
 **Schedules** put a rule in force for a window — `{days: [sat, sun],
 from: "22:00", to: "04:00", timezone: Europe/Stockholm}` for a
 maintenance window, with a `to` before its `from` spanning midnight.

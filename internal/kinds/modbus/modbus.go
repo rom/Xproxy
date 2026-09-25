@@ -500,6 +500,17 @@ func (se *session) run() string {
 			se.answerException(frame, pdu.Function, wire.ExServerBusy, nil)
 			continue
 		}
+		// The values this write carries become what the relay knows about
+		// those addresses: the next write's delta, transition and rate are
+		// measured against them. Recorded here, where the frame has been
+		// allowed and is about to reach the device.
+		t.policy.observeWrite(req, time.Now())
+		// The value table's own numbers, so an operator can see how many
+		// addresses the policy knows a value for and how often a check
+		// ran without one.
+		points, unknown, _ := t.policy.ValueState()
+		t.host.Counters().ModbusValuePoints.Store(int64(points))
+		t.host.Counters().ModbusValueUnknown.Store(unknown)
 		j := &job{req: req, raw: raw, frame: frame, txn: frame.Transaction}
 		select {
 		case w.jobs <- j:
@@ -602,6 +613,13 @@ func (se *session) serveWorker(w *worker) {
 			t.host.Counters().ModbusExceptions.Add(1)
 			se.exceptions.Add(1)
 			t.learner.ObserveException(j.req, time.Now())
+		}
+		// A read's answer is the other half of what the relay knows: a
+		// master polling a register tells this policy what the register
+		// holds, which is what a delta or a transition is measured
+		// against. An exception says nothing about a value.
+		if pdu != nil && !pdu.IsException {
+			t.policy.observeRead(j.req, pdu, time.Now())
 		}
 		t.traceResponse(se, w, j, resp, pdu)
 		se.send(resp)
@@ -795,8 +813,17 @@ func exceptionFor(d Decision) byte {
 	switch d.Reason {
 	case "read_only", "read_only_unknown_function", "rule_deny", "no_rule":
 		return wire.ExIllegalFunction
-	case "value_out_of_range", "coil_set_not_allowed", "coil_clear_not_allowed", "value_masked_write":
+	case "value_out_of_range", "coil_set_not_allowed", "coil_clear_not_allowed", "value_masked_write",
+		"value_delta", "value_transition", "value_no_select", "value_unknown":
+		// Every one of these is a statement about the value asked for,
+		// which is what an illegal data value means to a master's own
+		// diagnostics.
 		return wire.ExIllegalValue
+	case "value_rate":
+		// Not an illegal value: the same write would be accepted later.
+		// Server busy is the nearest true thing the protocol has, and a
+		// master reads it as "ask again".
+		return wire.ExServerBusy
 	case "unit_not_allowed":
 		return wire.ExGatewayPathUnavail
 	}

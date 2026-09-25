@@ -74,7 +74,16 @@ server:
             addresses: ["400-499"]
             write_addresses: ["400-499"]
             values:
-              - {registers: "400-449", min: 0, max: 100}          # percent
+              # A range is what may be written; the rest is what may
+              # happen. A percentage setpoint may be nudged and not
+              # jumped, and not more than once a minute -- a master
+              # moving it sixty times a minute is either broken or not
+              # the master it claims to be.
+              - registers: "400-449"
+                min: 0
+                max: 100                     # percent
+                max_delta: 10
+                rate: {max: 1, period: 1m}
               - {registers: "450-499", min: -50, max: 250, signed: true}  # degrees
             comment: "change 2024-118: setpoint window"
 
@@ -90,7 +99,23 @@ server:
             action: allow
             clients: ["10.30.2.0/24"]
             functions: [write_single_coil]
-            values: [{registers: "10", coils: true}]
+            values:
+              # Starting the pump is the operation this plant confirms:
+              # register 11 has to have been set to 1 within the last
+              # half minute, which is select-before-operate enforced
+              # here rather than hoped for in the client. And once a
+              # minute, because a coil cycled faster than that is not an
+              # operator.
+              - registers: "10"
+                coils: true
+                rate: {max: 1, period: 1m}
+                require_before: {registers: "11", equals: 1, within: 30s}
+          - name: pump-permissive
+            action: allow
+            clients: ["10.30.2.0/24"]
+            functions: [write_single_register]
+            addresses: ["11"]
+            values: [{registers: "11", min: 0, max: 1}]
             schedule:
               days: [mon, tue, wed, thu, fri]
               from: "06:00"

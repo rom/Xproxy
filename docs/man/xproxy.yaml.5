@@ -3883,8 +3883,8 @@ T}
 .PP
 .TS
 allbox;
-lbw(1.0i) lbw(0.6i) lbw(0.9i) lbx
-lw(1.0i) lw(0.6i) lw(0.9i) lx.
+lbw(1.2i) lbw(0.7i) lbw(0.9i) lbx
+lw(1.2i) lw(0.7i) lw(0.9i) lx.
 T{
 Key
 T}	T{
@@ -3930,7 +3930,79 @@ T}	T{
 T}	T{
 Bound a coil write instead: \fBtrue\fR allows setting a coil in the range,\: \fBfalse\fR allows only clearing it. "This client may stop the pump but not start it"
 T}
+T{
+\fBmax_\:delta\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (off)
+T}	T{
+How far one write may move the value from the last one this relay saw at that address: a setpoint that may be nudged and not jumped
+T}
+T{
+\fBtransitions\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+The value changes permitted,\: as \fBfrom\-\:>to\fR with numbers or \fB*\fR on either side: \fB["0\-\:>1",\: "1\-\:>0"]\fR is a state register that may be started and stopped and not driven anywhere else. \fB*\-\:>*\fR is refused as a list that permits everything
+T}
+T{
+\fBrate\fR
+T}	T{
+object
+T}	T{
+
+T}	T{
+\fB{max,\: period,\: per_\:client}\fR: how often this range may be written,\: counted per unit identifier and address (\fBper_\:client\fR counts each master\(aqs writes separately instead). Not the listener\(aqs rate limit,\: which is about frames from a client: this is about one address,\: and a master that moves a setpoint sixty times a minute is either broken or not the master it claims to be
+T}
+T{
+\fBrequire_\:before\fR
+T}	T{
+object
+T}	T{
+
+T}	T{
+Select\-\:before\-\:operate: \fB{registers,\: equals,\: within (default 30s),\: unit}\fR. The write is refused unless that register was \fBwritten\fR to that value within the window. IEC 60870\-5\-104 has this in the protocol;\: Modbus does not,\: so a plant that wants it either implements it in every client \[u2014] where the frame that skips it looks exactly like the frame that did not \[u2014] or has the relay enforce it
+T}
+T{
+\fBon_\:unknown\fR
+T}	T{
+enum
+T}	T{
+\fBallow\fR
+T}	T{
+What happens when a check needs the address\(aqs current value and this relay has not seen one: \fBallow\fR (counted,\: with \fBmin\fR and \fBmax\fR still in force) or \fBrefuse\fR. It warns while \fBmax_\:delta\fR or \fBtransitions\fR are set with \fBallow\fR
+T}
 .TE
+.PP
+\fBThe three bounds that are about a change\fR, and the honest limit of all three: \fBmax_delta\fR, \fBtransitions\fR and \fBrequire_before\fR need to know what the value \fIis\fR, and what this relay knows is the last value it \fBsaw\fR \[u2014] a write it forwarded, or a read it relayed back. A value changed by another master, by a local panel or by the process itself was never on this path. So \fBon_unknown\fR says what to do when there is no value, the number of such checks is counted (\fBmodbus_value_unknown\fR), and \fBmin\fR/\fBmax\fR, which need nothing, are the bounds that always hold. A masked write (function code 22) makes the relay \fIforget\fR the address rather than guess: the result depends on what the register held inside the device.
+.PP
+\fBmax_value_points\fR on the listener bounds how many addresses are remembered (default 65536; a plant has hundreds), because the addresses come off the network.
+.PP
+.RS 4
+.nf
+.ft CR
+rules:
+  \- name: setpoint
+    action: allow
+    clients: ["10.30.7.13/32"]        # HMI\-3 and nothing else
+    units: ["2"]
+    functions: [write_single_register]
+    addresses: ["40001"]
+    schedule: {days: [sat], from: "06:00", to: "14:00", timezone: Europe/Stockholm}
+    values:
+      \- registers: "40001"
+        min: 0
+        max: 1500                      # the range
+        max_delta: 100                 # and not in one jump
+        rate: {max: 1, period: 1m}     # and not more than once a minute
+        require_before: {registers: "40000", equals: 1, within: 30s}
+        on_unknown: refuse
+.ft
+.fi
+.RE
 .PP
 \fB\fBschedule\fR\fR limits a rule to a time window. A rule with no schedule is always in force, so "these rules during the shift and those outside it" is written as the scheduled rules first and the unscheduled ones after them.
 .PP
@@ -4105,7 +4177,7 @@ T}
 .PP
 \fBLearning is observe\-only unless it says otherwise.\fR \fBlearn.enforce\fR defaults to false, and validation warns while it is off, because a learning run left on by accident is a relay that decides nothing.
 .PP
-Counters: \fBmodbus_sessions\fR, \fBmodbus_sessions_open\fR, \fBmodbus_requests\fR, \fBmodbus_responses\fR, \fBmodbus_denied\fR, \fBmodbus_would_deny\fR, \fBmodbus_exceptions\fR, \fBmodbus_malformed\fR, \fBmodbus_refused\fR, \fBmodbus_rejected\fR, \fBmodbus_rate_limited\fR, \fBmodbus_queue_full\fR, \fBmodbus_upstream_failed\fR, \fBmodbus_traced\fR, \fBmodbus_learned\fR. Refusals are \fBmodbus_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBtls_handshake\fR, \fBno_client_certificate\fR, \fBno_role\fR, \fBrole_not_allowed\fR, \fBsecurity_requires_tls\fR, \fBframing\fR, \fBframe_too_large\fR, \fBmalformed\fR, \fBmalformed_response\fR, \fBresponse_unit_mismatch\fR, \fBno_route_for_unit\fR, \fBmax_connections\fR, \fBrate_limit\fR, \fBqueue_full\fR, \fBread_only\fR, \fBread_only_unknown_function\fR, \fBunit_not_allowed\fR, \fBrule_deny\fR, \fBno_rule\fR, \fBvalue_out_of_range\fR, \fBvalue_masked_write\fR, \fBcoil_set_not_allowed\fR, \fBcoil_clear_not_allowed\fR. A selector that does not match is not a refusal of its own: the frame falls through to the next rule, and to \fBno_rule\fR if none matches.
+Counters: \fBmodbus_sessions\fR, \fBmodbus_sessions_open\fR, \fBmodbus_requests\fR, \fBmodbus_responses\fR, \fBmodbus_denied\fR, \fBmodbus_would_deny\fR, \fBmodbus_exceptions\fR, \fBmodbus_malformed\fR, \fBmodbus_refused\fR, \fBmodbus_rejected\fR, \fBmodbus_rate_limited\fR, \fBmodbus_queue_full\fR, \fBmodbus_upstream_failed\fR, \fBmodbus_traced\fR, \fBmodbus_learned\fR. Refusals are \fBmodbus_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBtls_handshake\fR, \fBno_client_certificate\fR, \fBno_role\fR, \fBrole_not_allowed\fR, \fBsecurity_requires_tls\fR, \fBframing\fR, \fBframe_too_large\fR, \fBmalformed\fR, \fBmalformed_response\fR, \fBresponse_unit_mismatch\fR, \fBno_route_for_unit\fR, \fBmax_connections\fR, \fBrate_limit\fR, \fBqueue_full\fR, \fBread_only\fR, \fBread_only_unknown_function\fR, \fBunit_not_allowed\fR, \fBrule_deny\fR, \fBno_rule\fR, \fBvalue_out_of_range\fR, \fBvalue_delta\fR, \fBvalue_transition\fR, \fBvalue_rate\fR, \fBvalue_no_select\fR, \fBvalue_unknown\fR, \fBvalue_masked_write\fR, \fBcoil_set_not_allowed\fR, \fBcoil_clear_not_allowed\fR. A selector that does not match is not a refusal of its own: the frame falls through to the next rule, and to \fBno_rule\fR if none matches.
 .SS "server.listeners[].ntp (kind: ntp)"
 .PP
 A \fBkind: ntp\fR listener is an NTP and NTS security gateway: it reads every packet, decides about it in the protocol\(aqs own terms, and compares the servers behind it with each other.

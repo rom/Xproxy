@@ -3804,6 +3804,10 @@
           "description": "MaxPending bounds the requests one session may have outstanding. Default 1 for the serial framings, where the protocol has no transaction identifier and a second request in flight cannot be told from the first; 16 for MBAP.",
           "type": "integer"
         },
+        "max_value_points": {
+          "description": "MaxValuePoints bounds the addresses whose last value this relay remembers for the value rules that need one (max_delta, transitions, require_before). Default 65536. A plant has hundreds; the bound is here because the addresses come off the network.",
+          "type": "integer"
+        },
         "mode": {
           "description": "Mode is reverse (the default: masters connect here and the listener dials the devices) or forward (this listener is the controlled egress a plant's masters use to reach devices elsewhere). The frame handling is the same; what differs is which side the policy is written about, and forward requires the routes to name every destination that may be reached.",
           "type": "string"
@@ -3888,6 +3892,30 @@
         "upstream_tls_mode": {
           "description": "UpstreamTLSMode is none or implicit: whether this listener speaks Modbus/TCP Security to the device.",
           "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ModbusPrecondition": {
+      "description": "ModbusPrecondition is select-before-operate: a write this rule covers is refused unless another register was recently set to a given value. The pattern exists because the dangerous operations in a plant are the ones where a single frame does something physical. IEC 60870-5-104 has it in the protocol; Modbus does not, so a plant that wants it either implements it in every client or has the relay enforce it -- and a client-side confirmation is not a control at all, because the frame that skips it looks exactly like the frame that did not.",
+      "type": "object",
+      "properties": {
+        "equals": {
+          "description": "Equals is the value it has to have been given. Required.",
+          "type": "integer"
+        },
+        "registers": {
+          "description": "Registers is the address that has to have been written, as a single address or a range. Required.",
+          "type": "string"
+        },
+        "unit": {
+          "description": "Unit is the unit identifier the select was written to, when it is not the unit this write is for.",
+          "type": "integer"
+        },
+        "within": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
         }
       },
       "additionalProperties": false
@@ -4086,6 +4114,26 @@
       },
       "additionalProperties": false
     },
+    "ModbusValueRate": {
+      "description": "ModbusValueRate bounds how often a range of addresses may be written. It is not the listener's rate limit, which is about frames from a client. This is about one address: \"the setpoint may be moved once a minute\" is a statement about the process, and a master that moves it sixty times a minute is either broken or not the master it claims to be -- in both cases the device should not see the writes.",
+      "type": "object",
+      "properties": {
+        "max": {
+          "description": "Max is how many writes are allowed per Period, counted per unit identifier and address. Required.",
+          "type": "integer"
+        },
+        "per_client": {
+          "description": "PerClient counts each master's writes separately rather than counting every write to the address together. Default false: the bound is usually about the device, not about who is asking.",
+          "type": "boolean"
+        },
+        "period": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
     "ModbusValueRule": {
       "description": "ModbusValueRule bounds the values a write may carry.",
       "type": "object",
@@ -4097,17 +4145,48 @@
         "max": {
           "type": "integer"
         },
+        "max_delta": {
+          "description": "MaxDelta bounds how far one write may move the value from the last one this relay saw at that address: a setpoint that may be nudged but not jumped. 0 disables it. \"The last one this relay saw\" is exactly that, and it is the honest limit of the check: a value changed by another master, by a local panel or by the process itself is not seen here, so OnUnknown says what to do about a write to an address whose value this relay does not know.",
+          "type": "integer"
+        },
         "min": {
           "description": "Min and Max bound each 16-bit value written into that range, inclusive. Both are required.",
           "type": "integer"
+        },
+        "on_unknown": {
+          "description": "OnUnknown is what happens when a check needs the address's current value and this relay has not seen one -- after a restart, or before any master has read it: allow (the default, with a counter and an event, leaving the absolute Min and Max bounds in force) or refuse. It is a real choice. allow means a write straight after a restart is bounded by the range but not by the delta or the transition list; refuse means a plant cannot be driven until something has read the register, which for a relay in front of a running process is usually a poll away and occasionally an outage.",
+          "type": "string"
+        },
+        "rate": {
+          "description": "Rate bounds how often this range may be written.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/ModbusValueRate"
+            }
+          ]
         },
         "registers": {
           "description": "Registers is the address range this bound applies to, as \"400-499\" or a single address. Empty applies it to every address the rule covers.",
           "type": "string"
         },
+        "require_before": {
+          "description": "RequireBefore is select-before-operate: this write is refused unless another register was set to a given value first, recently. It is how a two-step confirmation is enforced by the relay rather than hoped for in the client.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/ModbusPrecondition"
+            }
+          ]
+        },
         "signed": {
           "description": "Signed reads the value as a signed 16-bit integer, which is how most setpoints are actually encoded.",
           "type": "boolean"
+        },
+        "transitions": {
+          "description": "Transitions are the value changes permitted, as \"from-\u003eto\" pairs with numbers or \"*\" on either side: [\"0-\u003e1\", \"1-\u003e0\"] is a state register that may be started and stopped but not driven to any other state. Empty permits every change the other bounds allow.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false
