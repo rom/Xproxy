@@ -468,13 +468,43 @@ func TestTSQLBracketsAnIdentifier(t *testing.T) {
 		{"SELECT [DROP]", KindSelect},
 		{"SELECT [a;b]", KindSelect},
 		{"DROP TABLE [t]", KindDDL},
-		{"EXEC sp_who", KindExecute},
+		{"EXEC sp_who", KindCall},
 		{"BACKUP DATABASE x TO DISK = 'y'", KindMaintenance},
 	} {
 		got, ok := Statements(TSQL, tc.sql, 0)
 		if !ok || len(got) != 1 || got[0].Kind != tc.want {
 			t.Errorf("%q: %v %+v, want %s", tc.sql, ok, got, tc.want)
 		}
+	}
+}
+
+// EXEC and EXECUTE are spelled the same in T-SQL and in PostgreSQL and mean
+// different things, which is exactly the class of difference this file exists to
+// get right. PostgreSQL's EXECUTE runs a prepared statement, whose text was
+// classified when it was PREPAREd, so calling it a read loses nothing. T-SQL has
+// no prepared-statement syntax, so its EXEC runs a stored procedure -- which can
+// do anything the login can. Classified as a read, `read_only` would have been
+// decorative on the dialect where it matters most.
+func TestExecMeansRunAProcedureInTSQLAndRunAPreparedStatementInPostgres(t *testing.T) {
+	for _, sql := range []string{"EXEC dbo.DeleteEverything", "EXECUTE dbo.DeleteEverything",
+		"exec [dbo].[DeleteEverything]"} {
+		got, ok := Statements(TSQL, sql, 0)
+		if !ok || len(got) != 1 {
+			t.Fatalf("%q: %v %+v", sql, ok, got)
+		}
+		if got[0].Kind != KindCall {
+			t.Fatalf("%q: %s, want call", sql, got[0].Kind)
+		}
+		if !got[0].Writes {
+			t.Fatalf("%q: a procedure call that does not count as a write", sql)
+		}
+	}
+	got, ok := Statements(PostgreSQL, "EXECUTE stmt(1)", 0)
+	if !ok || len(got) != 1 || got[0].Kind != KindExecute {
+		t.Fatalf("postgres: %v %+v", ok, got)
+	}
+	if got[0].Writes {
+		t.Fatal("postgres EXECUTE of a prepared statement counted as a write")
 	}
 }
 

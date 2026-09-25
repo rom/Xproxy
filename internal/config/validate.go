@@ -20,6 +20,7 @@ import (
 	"github.com/rom/xproxy/internal/rfb"
 	snmpwire "github.com/rom/xproxy/internal/snmp"
 	"github.com/rom/xproxy/internal/syslog"
+	tdswire "github.com/rom/xproxy/internal/tdswire"
 	"github.com/rom/xproxy/internal/telnet"
 	tftpwire "github.com/rom/xproxy/internal/tftp"
 	"github.com/rom/xproxy/internal/tmpl"
@@ -860,6 +861,12 @@ func (v *validator) server(s *Server) {
 				v.errf("%s.dhcp: required for kind dhcp", p)
 			} else {
 				v.dhcpListener(p+".dhcp", ln.DHCP)
+			}
+		case "tds":
+			if ln.TDS == nil {
+				v.errf("%s.tds: required for kind tds", p)
+			} else {
+				v.tdsListener(p+".tds", ln.TDS, ln.TLS != nil)
 			}
 		case "mysql":
 			if ln.MySQL == nil {
@@ -2504,7 +2511,7 @@ var denyReasons = map[string]bool{
 	"forward_sni_mismatch": true, "dns_tunnel": true, "dns_answer_denied": true,
 	"telnet_denied": true, "vnc_denied": true, "rdp_denied": true, "sftp_icap": true, "udp_denied": true,
 	"modbus_denied": true, "iec104_denied": true, "ntp_denied": true, "ntske_denied": true,
-	"snmp_denied": true, "ldap_denied": true, "tftp_denied": true, "dhcp_denied": true, "postgres_denied": true, "mysql_denied": true,
+	"snmp_denied": true, "ldap_denied": true, "tftp_denied": true, "dhcp_denied": true, "postgres_denied": true, "mysql_denied": true, "tds_denied": true,
 }
 
 // securityTxtFieldRE bounds an extra field name to the token RFC 9116
@@ -7603,6 +7610,132 @@ func (v *validator) mysqlLoad(p string, in []string) {
 				"which is how a hostile server reads the filesystem of whatever connected to it", p, i)
 		default:
 			v.errf("%s[%d]: %q is not file or local", p, i, n)
+		}
+	}
+}
+
+// tdsListener validates a kind: tds section.
+func (v *validator) tdsListener(p string, m *TDSListener, hasTLS bool) {
+	if m.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	v.modbusCIDRs(p+".allow_clients", m.AllowClients)
+	v.modbusCIDRs(p+".deny_clients", m.DenyClients)
+
+	requireTLS := m.RequireTLS == nil || *m.RequireTLS
+	if requireTLS && !hasTLS {
+		v.errf("%s.require_tls: set (it defaults on) but the listener has no tls section; "+
+			"a tds client upgrades an existing connection, so the listener needs a certificate", p)
+	}
+	if !requireTLS {
+		v.warnf("%s.require_tls: false lets the PRELOGIN negotiation settle on cleartext, "+
+			"and a TDS password is XOR 0xa5 with the nibbles swapped -- an encoding, not encryption", p)
+	}
+	if m.AllowCleartextPassword {
+		v.warnf("%s.allow_cleartext_password: true lets a LOGIN7 carry a recoverable "+
+			"password over an unencrypted connection", p)
+	}
+	switch m.UpstreamTLSMode {
+	case "", "require", "prefer", "disable":
+	default:
+		v.errf("%s.upstream_tls_mode: %q is not require, prefer or disable", p, m.UpstreamTLSMode)
+	}
+
+	// A user list and integrated security cannot both be in force: an SSPI login
+	// carries no user name for a list to match. Saying so at validation is much
+	// better than a policy that silently does not apply.
+	if (len(m.AllowUsers) > 0 || len(m.DenyUsers) > 0) && m.AllowIntegrated == nil {
+		v.warnf("%s: allow_users or deny_users is set, so a login using integrated security "+
+			"-- which carries no user name -- is refused; set allow_integrated explicitly to say "+
+			"which you meant", p)
+	}
+	if m.AllowIntegrated != nil && *m.AllowIntegrated && len(m.AllowUsers) > 0 {
+		v.warnf("%s.allow_integrated: true with allow_users set means the user list does not "+
+			"apply to a login using integrated security, because it carries no user name", p)
+	}
+
+	v.tdsTypes(p+".allow_types", m.AllowTypes)
+	v.tdsTypes(p+".deny_types", m.DenyTypes)
+	v.tdsProcedures(p+".allow_procedures", m.AllowProcedures)
+	v.tdsProcedures(p+".deny_procedures", m.DenyProcedures)
+	v.postgresStatements(p+".allow_statements", m.AllowStatements)
+	v.postgresStatements(p+".deny_statements", m.DenyStatements)
+
+	for name, val := range map[string]int{
+		"max_statements": m.MaxStatements, "max_statement_bytes": m.MaxStatementBytes,
+		"max_message_bytes": m.MaxMessageBytes, "max_sessions": m.MaxSessions,
+		"max_sessions_per_client": m.MaxSessionsPerClient,
+	} {
+		if val < 0 {
+			v.errf("%s.%s: must not be negative", p, name)
+		}
+	}
+	if m.MaxMessageBytes > tdswire.MaxMessage {
+		v.errf("%s.max_message_bytes: %d is past the bound of %d", p, m.MaxMessageBytes, tdswire.MaxMessage)
+	}
+
+	switch m.DefaultAction {
+	case "", "allow", "deny":
+	default:
+		v.errf("%s.default_action: %q is not allow or deny", p, m.DefaultAction)
+	}
+	switch m.DenyResponse {
+	case "", "error", "drop":
+	default:
+		v.errf("%s.deny_response: %q is not error or drop", p, m.DenyResponse)
+	}
+	for i := range m.Rules {
+		r := &m.Rules[i]
+		rp := fmt.Sprintf("%s.rules[%d]", p, i)
+		v.modbusCIDRs(rp+".clients", r.Clients)
+		switch r.Action {
+		case "", "allow", "deny", "observe":
+		default:
+			v.errf("%s.action: %q is not allow, deny or observe", rp, r.Action)
+		}
+		v.tdsTypes(rp+".allow_types", r.AllowTypes)
+		v.tdsTypes(rp+".deny_types", r.DenyTypes)
+		v.tdsProcedures(rp+".allow_procedures", r.AllowProcedures)
+		v.tdsProcedures(rp+".deny_procedures", r.DenyProcedures)
+		v.postgresStatements(rp+".allow_statements", r.AllowStatements)
+		v.postgresStatements(rp+".deny_statements", r.DenyStatements)
+		if r.MaxStatements < 0 {
+			v.errf("%s.max_statements: must not be negative", rp)
+		}
+		if r.Schedule != nil {
+			v.modbusSchedule(rp+".schedule", r.Schedule)
+		}
+	}
+}
+
+func (v *validator) tdsTypes(p string, in []string) {
+	for i, n := range in {
+		if _, ok := tdswire.TypeOf(n); !ok {
+			v.errf("%s[%d]: %q is not a message type (%s)", p, i, n,
+				strings.Join(tdswire.TypeNames(), ", "))
+		}
+	}
+}
+
+// tdsProcedures checks the procedure names, and says what an operator has just
+// allowed when the name is one of the ways out of the database.
+//
+// A procedure name is any identifier, so there is nothing to spell-check. What
+// there is to do is notice: a configuration that allows xp_cmdshell is a
+// configuration somebody should have to defend, and an empty spelling is a typo
+// that would otherwise sit in an allow list matching nothing.
+func (v *validator) tdsProcedures(p string, in []string) {
+	allowing := strings.HasSuffix(p, ".allow_procedures")
+	for i, n := range in {
+		name := strings.ToLower(strings.TrimSpace(n))
+		if name == "" {
+			v.errf("%s[%d]: empty", p, i)
+			continue
+		}
+		if allowing && tdswire.Dangerous(name) {
+			v.warnf("%s[%d]: %s is a way out of the database -- a shell command, a COM object, "+
+				"the host registry, a linked server or the switch that turns one of those back on",
+				p, i, name)
 		}
 	}
 }
