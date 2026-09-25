@@ -1,9 +1,11 @@
 package proxy
 
 import (
+	"errors"
 	"net"
 	"os"
 	"strconv"
+	"syscall"
 	"testing"
 )
 
@@ -145,5 +147,48 @@ func TestListenerForPrefersActivatedSockets(t *testing.T) {
 	}
 	if _, _, err := packetFor(empty, "main", "203.0.113.200:80"); err == nil {
 		t.Error("an unbindable datagram address was accepted")
+	}
+}
+
+// A listener on port 0 has the kernel choose, and a kind that also wants
+// a datagram socket takes it on the port the accept socket was given --
+// the two have to be the same port. The kernel chooses that port from the
+// TCP side alone, so it can hand over one that something else holds in
+// the UDP side, and the listener then fails to come up on a port nobody
+// asked for. The answer is to let that pair go and ask for another, and
+// this is the decision that answer rests on.
+func TestAnotherPortIsAskedForOnlyWhenItCanHelp(t *testing.T) {
+	inUse := &net.OpError{Op: "listen", Net: "udp",
+		Err: &os.SyscallError{Syscall: "bind", Err: syscall.EADDRINUSE}}
+	other := errors.New("the certificate did not load")
+	for _, c := range []struct {
+		name      string
+		address   string
+		activated bool
+		attempt   int
+		err       error
+		want      bool
+	}{
+		{"the kernel's port, taken", "127.0.0.1:0", false, 1, inUse, true},
+		{"the wildcard form", ":0", false, 1, inUse, true},
+		{"and once more", "127.0.0.1:0", false, 7, inUse, true},
+		// A port the file names is the same port next time, so asking
+		// again only hides the answer behind seven more attempts.
+		{"a port the file names", "127.0.0.1:8080", false, 1, inUse, false},
+		// A socket handed over by the service manager is not ours to
+		// reopen, whatever the file says.
+		{"an activated socket", "127.0.0.1:0", true, 1, inUse, false},
+		// Every other failure fails the same way on every port.
+		{"a failure a port cannot fix", "127.0.0.1:0", false, 1, other, false},
+		{"no failure at all", "127.0.0.1:0", false, 1, nil, false},
+		// And the retrying ends, because a machine with no free port
+		// pair has to be told so rather than looped over.
+		{"past the attempts", "127.0.0.1:0", false, 8, inUse, false},
+		// A unix socket has no port to ask again for.
+		{"a unix socket", "unix:/run/xproxy/listener.sock", false, 1, inUse, false},
+	} {
+		if got := retryOnAnotherPort(c.address, c.activated, c.attempt, c.err); got != c.want {
+			t.Errorf("%s: retry = %v, want %v", c.name, got, c.want)
+		}
 	}
 }

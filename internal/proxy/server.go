@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/rom/xproxy/internal/acme"
@@ -635,17 +636,55 @@ func (s *Server) bind(lc config.Listener, activated *activated) (*boundListener,
 		}
 		return bl, nil
 	}
-	ln, act, err := listenerFor(activated, lc.Name, lc.Address, 0)
-	if err != nil {
-		return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
-	}
-	acc := newAcceptor(ln)
-	bl, err := s.build(lc, acc, act, activated)
-	if err != nil {
+	// The accept socket, and then the kind, which may want a datagram
+	// socket on the same port (a DNS listener answers on both). On a
+	// listener configured with port 0 that pairing is what can fail:
+	// the kernel picks the port from the TCP side alone, so the one it
+	// gives can be a port something else already holds in the UDP side,
+	// and there is no way to ask for a port free in both. So the pair is
+	// let go of and another asked for.
+	for attempt := 1; ; attempt++ {
+		ln, act, err := listenerFor(activated, lc.Name, lc.Address, 0)
+		if err != nil {
+			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
+		}
+		acc := newAcceptor(ln)
+		bl, err := s.build(lc, acc, act, activated)
+		if err == nil {
+			return bl, nil
+		}
 		acc.close()
-		return nil, err
+		if !retryOnAnotherPort(lc.Address, act, attempt, err) {
+			return nil, err
+		}
 	}
-	return bl, nil
+}
+
+// retryOnAnotherPort says whether a listener that failed to come up
+// should be tried again on a different port.
+//
+// Three things have to hold. The port has to be the kernel's to choose,
+// because asking again for a port the file names would ask for the same
+// one. The socket has to be this process's own, because a socket handed
+// over by the service manager is not ours to reopen. And the failure has
+// to be the one a different port answers: anything else -- a certificate
+// that will not load, a policy that will not compile -- fails the same
+// way on every port, and retrying would turn one clear error into eight
+// of them.
+func retryOnAnotherPort(address string, activated bool, attempt int, err error) bool {
+	const attempts = 8
+	return attempt < attempts && !activated && kernelChosenPort(address) &&
+		errors.Is(err, syscall.EADDRINUSE)
+}
+
+// kernelChosenPort says whether the configuration left the port to the
+// kernel. A unix socket has no port and never matches.
+func kernelChosenPort(address string) bool {
+	if _, ok := config.UnixSocket(address); ok {
+		return false
+	}
+	_, port, err := net.SplitHostPort(address)
+	return err == nil && port == "0"
 }
 
 // build assembles a listener around an accept socket. On error the

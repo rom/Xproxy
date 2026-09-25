@@ -482,7 +482,7 @@ host:port
 T}	T{
 required
 T}	T{
-\fB":\:443"\fR,\: \fB"0.\:0.\:0.\:0:\:80"\fR,\: \fB"[:\::\:1]:\:8080"\fR. Port \fB0\fR picks a free port (tests).
+\fB":\:443"\fR,\: \fB"0.\:0.\:0.\:0:\:80"\fR,\: \fB"[:\::\:1]:\:8080"\fR. Port \fB0\fR picks a free port (tests): a kind that serves datagrams as well takes the same port on both transports,\: and if the port the kernel chose is held by something else on the other one,\: another pair is asked for.
 T}
 T{
 \fBprotocols\fR

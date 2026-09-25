@@ -534,6 +534,34 @@ Open findings of the earlier rounds:
   test was assuming, and the gauge coming back down when the connection closes is
   asserted as well.
 
+- **A listener on port `0` could fail on a port nobody asked for.** A kind that
+  serves datagrams as well as connections takes its datagram socket on the port
+  the accept socket was given, because the two have to be the same port -- a DNS
+  resolver answers on 53 over both, and one that answered on only one of them
+  works until an answer does not fit. With `address: "127.0.0.1:0"` that port is
+  the kernel's choice, and the kernel chooses it from the TCP side alone: it can
+  hand over a port something else already holds on the UDP side, and there is no
+  way to ask for one free in both. The listener then failed to come up with a
+  bind error naming a port that appears nowhere in the configuration. That pair
+  is let go of and another asked for now, up to eight times.
+
+  Three conditions guard the retry, because a retry that fires on the wrong
+  failure turns one clear error into eight of them: the port has to be the
+  kernel's to choose (a port the file names is the same port next time), the
+  socket has to be this process's own (one handed over by the service manager is
+  not ours to reopen), and the failure has to be the address being in use.
+  Everything else -- a certificate that will not load, a policy that will not
+  compile -- is reported as it was.
+
+  It was found as a test flake twice, in the syslog relay and then in the DNS
+  policy-zone tests, where a test that asked for a listener on port 0 got a bind
+  error instead. The collision itself cannot be produced on demand -- it needs
+  the kernel to hand out one particular port out of thousands while something
+  holds it on the other transport -- so what is tested is the decision, every
+  branch of it driven directly, and the two things that must not change: a port
+  whose datagram side is taken fails with the reason it failed and nothing left
+  bound behind it, and a port 0 listener comes up with both sockets.
+
 ### Added (1.4)
 
 - **`kind: bacnet`: a BACnet/IP relay in front of a building.**
