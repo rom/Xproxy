@@ -123,6 +123,6 @@ MAC addresses to exhaust a pool looks like.
 
 ## See also
 
-- The settings: [docs/CONFIG.md `## dhcp`](../CONFIG.md#dhcp)
+- The settings: [docs/CONFIG.md `server.listeners[].dhcp`](../CONFIG.md#serverlistenersdhcp-kind-dhcp)
 - A worked configuration: [`examples/addressing/dhcp.yaml`](../../examples/addressing/dhcp.yaml)
 - The other protocol in a provisioning path: [tftp](tftp.md)

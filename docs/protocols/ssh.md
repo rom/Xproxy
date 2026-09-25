@@ -152,7 +152,7 @@ timeouts.
 
 ## See also
 
-- The settings: [docs/CONFIG.md `## ssh`](../CONFIG.md#ssh)
+- The settings: [docs/CONFIG.md `server.listeners[].ssh`](../CONFIG.md#serverlistenersssh-kind-ssh)
 - A worked configuration: [`examples/bastion/ssh.yaml`](../../examples/bastion/ssh.yaml)
 - The other interactive protocols: [telnet](telnet.md), [vnc](vnc.md),
   [rdp](rdp.md)

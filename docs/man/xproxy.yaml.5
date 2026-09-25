@@ -13542,6 +13542,69 @@ T}
 At the origin, recompute the MAC with the shared key selected by \fBkid\fR, compare in constant time, and refuse when it differs, the key id is unknown or \fBt\fR is older than the TTL. When the header carries \fBbd=1\fR, the last signed line is the body digest: hash the body and compare. Dropping \fBbd=1\fR does not turn that off, because the digest is part of what was signed.
 .PP
 Within the TTL a signature is replayable by anything that captured it (a log, a proxy in front of the origin, a browser extension). Where that matters, have the origin remember the \fBX\-Request\-Id\fR values it has already answered for the TTL and refuse a repeat: the proxy sets a fresh one per request and the id is covered by the signature, so a replay carries the same id. \fBbody_digest\fR bounds what a replay can change; the id dedupe stops the replay itself. HARDENING.md has verifier snippets; \fBinternal/originsig\fR has \fBVerify\fR for origins written in Go. Combine with mutual TLS (\fBtls.client_cert_file\fR) and with network filtering: each closes what the others cannot.
+.SH "http"
+.PP
+\fBkind: http\fR has no section of its own here, because it is most of this document. The other twenty\-seven kinds each get one section, since each reads one protocol and has one policy about it; HTTP is a pipeline of policies, and they are written up where each belongs.
+.PP
+Where to look, in roughly the order a request passes through:
+.PP
+.TS
+allbox;
+lbw(1.1i) lbx
+lw(1.1i) lx.
+T{
+What
+T}	T{
+Section
+T}
+T{
+The listener,\: its address,\: TLS and the framing limits
+T}	T{
+\fBserver\fR,\: \fBlimits\fR
+T}
+T{
+The route,\: and everything decided per route
+T}	T{
+[\fBroutes[]\fR](#routes)
+T}
+T{
+Who is asking,\: and with what
+T}	T{
+[\fBfilters[]\fR](#filters) \[u2014] the identity filters
+T}
+T{
+Whether the request is what it claims
+T}	T{
+\fBwaf\fR
+T}
+T{
+Whether it is a person
+T}	T{
+\fBchallenge\fR,\: and the bot and account filters in [\fBfilters[]\fR](#filters)
+T}
+T{
+How much and how often
+T}	T{
+\fBshedding\fR,\: the rate limits in [\fBroutes[]\fR](#routes),\: and \fBbans\fR
+T}
+T{
+Where it goes
+T}	T{
+[\fBupstreams[]\fR](#upstreams)
+T}
+T{
+What is remembered and what is compressed
+T}	T{
+\fBcache\fR,\: \fBcompression\fR
+T}
+T{
+What an attacker is told
+T}	T{
+\fBdecoys\fR,\: and docs/\:DECEPTION.md
+T}
+.TE
+.PP
+The protocol itself \-\- the three wire formats, what each gives you, and the framing ambiguities this listener refuses rather than normalises \-\- is docs/protocols/http.md. Every kind has a page there; docs/protocols/README.md is the index.
 .SH "routes[]"
 .PP
 Matching: exact host, then wildcard host, then hostless routes; within a host the longest path (a \fBpath_regex\fR entry counts as the length of its literal prefix and, at equal length, beats a plain prefix); then the number of \fBheaders\fR and \fBcookies\fR conditions (more first, so a conditioned route is tried before the plain route on the same path); then \fBpriority\fR (higher wins); then configuration order. \fBmethods\fR and the conditions are filters: a route whose method set or conditions do not match is skipped and the next candidate is tried.

@@ -121,5 +121,5 @@ sees and an estate usually wants its own name in it rather than the software's.
 
 ## See also
 
-- The settings: [docs/CONFIG.md `## smtp`](../CONFIG.md#smtp)
+- The settings: [docs/CONFIG.md `server.listeners[].smtp`](../CONFIG.md#serverlistenerssmtp-kind-smtp)
 - A worked configuration: [`examples/mail/submission.yaml`](../../examples/mail/submission.yaml)

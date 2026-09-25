@@ -121,7 +121,7 @@ request was refused would turn a refusal into an outage.
 
 ## See also
 
-- The settings: [docs/CONFIG.md `## modbus`](../CONFIG.md#modbus)
+- The settings: [docs/CONFIG.md `server.listeners[].modbus`](../CONFIG.md#serverlistenersmodbus-kind-modbus)
 - A worked configuration: [`examples/ot/modbus.yaml`](../../examples/ot/modbus.yaml)
 - The other protocols on a plant: [s7](s7.md), [iec104](iec104.md),
   [bacnet](bacnet.md)

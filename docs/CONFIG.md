@@ -5669,6 +5669,32 @@ snippets; `internal/originsig` has `Verify` for origins written in Go.
 Combine with mutual TLS (`tls.client_cert_file`) and with network
 filtering: each closes what the others cannot.
 
+## http
+
+`kind: http` has no section of its own here, because it is most of this
+document. The other twenty-seven kinds each get one section, since each reads
+one protocol and has one policy about it; HTTP is a pipeline of policies, and
+they are written up where each belongs.
+
+Where to look, in roughly the order a request passes through:
+
+| What | Section |
+|------|---------|
+| The listener, its address, TLS and the framing limits | [`server`](#server), [`limits`](#limits) |
+| The route, and everything decided per route | [`routes[]`](#routes) |
+| Who is asking, and with what | [`filters[]`](#filters) — the identity filters |
+| Whether the request is what it claims | [`waf`](#waf) |
+| Whether it is a person | [`challenge`](#challenge), and the bot and account filters in [`filters[]`](#filters) |
+| How much and how often | [`shedding`](#shedding), the rate limits in [`routes[]`](#routes), and [`bans`](#bans) |
+| Where it goes | [`upstreams[]`](#upstreams) |
+| What is remembered and what is compressed | [`cache`](#cache), [`compression`](#compression) |
+| What an attacker is told | [`decoys`](#decoys), and [docs/DECEPTION.md](DECEPTION.md) |
+
+The protocol itself -- the three wire formats, what each gives you, and the
+framing ambiguities this listener refuses rather than normalises -- is
+[docs/protocols/http.md](protocols/http.md). Every kind has a page there;
+[docs/protocols/README.md](protocols/README.md) is the index.
+
 ## routes[]
 
 Matching: exact host, then wildcard host, then hostless routes; within a

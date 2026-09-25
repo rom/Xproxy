@@ -68,21 +68,33 @@ device that has started logging debug at ten thousand lines a second is bounded.
 another host's name into its own log lines is visible.
 
 **The text.** The message is read rather than forwarded blind: the length is
-bounded, and **terminal control sequences are removed**, because a log line is
-eventually displayed in somebody's terminal and a message carrying an escape
+bounded by `max_message_bytes`, `deny_patterns` drops what an estate has decided
+not to carry, and **terminal control sequences are removed**, because a log line
+is eventually displayed in somebody's terminal and a message carrying an escape
 sequence can rewrite what the operator sees — including making an earlier line
 disappear.
 
+`redact` goes further: a pattern that matches is replaced, and the message
+carries a structured-data element naming the rule that did it. A log path is
+where a password typed into the wrong field ends up, and a redaction nobody can
+see happened is a redaction nobody can audit.
+
 **One dialect out.** The relay parses whichever dialect arrived and **re-emits
 in one**, which is the single most useful thing it does for a collector: the
-collector stops guessing, the timestamps all have a year and a timezone, and
-the framing on the way out is unambiguous. A message that cannot be parsed is
-not dropped — it becomes a message *about* an unparseable message, with the
-original as its text, because a log relay that silently discards is the worst
-kind.
+collector stops guessing, and the framing on the way out is unambiguous. A
+message the relay could not parse is **refused and counted** (`malformed`),
+because its facility, severity and sender — every field a rule here decides on —
+are unknown, and forwarding it would be forwarding something no policy was
+applied to. The counter is what makes that visible rather than silent.
 
-**The framing, explicitly.** The relay decides which RFC 6587 framing it accepts
-rather than sniffing, which is what closes the injection.
+**What the sender did not say.** `hostname: observed` replaces the claimed
+hostname with the address the message came from; `annotate` keeps both and says
+which is which, in a structured-data element carrying the claimed name beside
+the observed address. And a message with no timestamp gets the relay's receive
+time, because a record nobody can order is a record that cannot be correlated.
+
+**The framing, explicitly.** `framing` decides which RFC 6587 framing the relay
+accepts rather than sniffing, which is what closes the injection.
 
 ## What it does not do
 
@@ -94,12 +106,14 @@ rather than sniffing, which is what closes the injection.
 - **It does not parse the message body.** The text is bounded and sanitised, not
   interpreted. Field extraction belongs in the collector, which knows the
   estate's applications.
-- **It does not deduplicate or rate-limit per message content.** The bounds are
-  per sender and per severity, because content-based suppression is how a real
-  incident gets suppressed.
-- **It does not invent timestamps.** An RFC 3164 message has no year, so the
-  relay supplies one from its own clock and says so; it does not silently claim
-  the sender wrote it.
+- **It does not deduplicate.** A repeated line is relayed. Suppressing
+  repetition is how a real incident — which repeats, by definition — gets
+  suppressed, so the bounds here are per sender and per severity instead.
+- **It does not rewrite a timestamp the sender gave.** A message with no
+  timestamp at all gets the relay's receive time, since a record nobody can order
+  cannot be correlated; one that carries a timestamp keeps it, even where the
+  relay thinks it is wrong, because a clock disagreement is a fact about the
+  estate and hiding it does not fix the clock.
 
 ## Standards
 
@@ -114,6 +128,6 @@ rather than sniffing, which is what closes the injection.
 
 ## See also
 
-- The settings: [docs/CONFIG.md `## syslog`](../CONFIG.md#syslog)
+- The settings: [docs/CONFIG.md `server.listeners[].syslog`](../CONFIG.md#serverlistenerssyslog-kind-syslog)
 - A worked configuration: [`examples/logs/syslog.yaml`](../../examples/logs/syslog.yaml)
 - Where this proxy's own logs go: [docs/CONFIG.md `## logging`](../CONFIG.md#logging)

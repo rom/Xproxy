@@ -135,7 +135,7 @@ send LDAP.
 
 ## See also
 
-- The settings: [docs/CONFIG.md `## ldap`](../CONFIG.md#ldap)
+- The settings: [docs/CONFIG.md `server.listeners[].ldap`](../CONFIG.md#serverlistenersldap-kind-ldap)
 - A worked configuration: [`examples/directory/ldap.yaml`](../../examples/directory/ldap.yaml)
 - LDAP as an *identity source* for HTTP listeners is a filter, not this kind —
   see the `ldap` filter in [docs/CONFIG.md](../CONFIG.md)

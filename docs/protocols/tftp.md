@@ -48,14 +48,25 @@ credential, and will not be gaining one.
 kind, and the reasoning is worth stating: a *deny list of strings* is a list of
 the spellings somebody thought of. It stops `../../etc/shadow` and not
 `..\..\etc\shadow`; it stops that and not `/etc/shadow`; it stops that and not
-`secret.txt.`, which Windows opens as `secret.txt`. So the name is **classified**
-— traversal, absolute, backslash, trailing dot, UNC, device name, control
-character, NUL, empty — and the class is refused.
+`secret.txt.`, which Windows opens as `secret.txt`. So the name is
+**classified**, and the class is what `allow_path_classes` decides:
 
-Three of those classes can never be allowed at all: a NUL, a control character
-and an empty name. They do not mean "a path the policy disagrees with"; they
-mean the relay and the server are reading **different names**, which is the
-condition under which no policy is worth anything.
+| Class | What it is |
+|-------|-----------|
+| `plain` | An ordinary relative name, always allowed |
+| `traversal` | A `..` element anywhere in it |
+| `absolute` | A leading separator |
+| `backslash` | A backslash, which a Windows server reads as a separator and a POSIX one does not |
+| `drive` | A drive letter or a UNC prefix |
+| `trailing` | A trailing dot or space, which Windows strips before opening the file |
+| `non_ascii` | Octets outside ASCII, where the relay and the server may disagree about the encoding |
+| `control`, `nul`, `empty` | A control character, a NUL, or no name at all |
+
+The last three **can never be allowed**, and naming one in
+`allow_path_classes` is a configuration error rather than a permissive setting.
+They do not mean "a path the policy disagrees with"; they mean the relay and the
+server are reading **different names**, which is the condition under which no
+policy is worth anything.
 
 **The direction, separately, defaulting to read.** A write is how a
 configuration leaves an estate and how firmware arrives in it, so `operations`
@@ -113,6 +124,6 @@ idle timeouts.
 
 ## See also
 
-- The settings: [docs/CONFIG.md `## tftp`](../CONFIG.md#tftp)
+- The settings: [docs/CONFIG.md `server.listeners[].tftp`](../CONFIG.md#serverlistenerstftp-kind-tftp)
 - A worked configuration: [`examples/provisioning/tftp.yaml`](../../examples/provisioning/tftp.yaml)
 - The other protocol in a provisioning path: [dhcp](dhcp.md)

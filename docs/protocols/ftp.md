@@ -53,9 +53,11 @@ the whole of the access control.
 protected, because `PROT C` after a `AUTH TLS` is a session that looks encrypted
 and transfers in the clear.
 
-**`CCC` is refused.** Not configurable: it exists to make a session cleartext so
-a middlebox can read it, and this listener *is* the middlebox, reading the
-addresses properly instead.
+**`CCC` is refused**, with reply 534, and it is not configurable. Clearing the
+control channel after `AUTH TLS` puts the rest of the session back in the clear
+— every path, every filename, every reply — and the reason the command exists is
+so that a middlebox can read and rewrite the data-connection addresses. This
+listener *is* the middlebox, and it reads those addresses properly instead.
 
 **The data connection, mediated at both ends.** This is the core of the kind.
 The relay does not forward a `PORT` or `PASV` address; it terminates the data
@@ -125,7 +127,7 @@ connections, and the idle, session and data timeouts.
 
 ## See also
 
-- The settings: [docs/CONFIG.md `## ftp`](../CONFIG.md#ftp)
+- The settings: [docs/CONFIG.md `server.listeners[].ftp`](../CONFIG.md#serverlistenersftp-kind-ftp)
 - A worked configuration: [`examples/files/ftp.yaml`](../../examples/files/ftp.yaml)
 - The other file transfer protocols here: [ssh](ssh.md) (SFTP),
   [tftp](tftp.md)

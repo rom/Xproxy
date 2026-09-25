@@ -140,7 +140,7 @@ of it is holding resources on both sides.
 
 ## See also
 
-- The settings: [docs/CONFIG.md `## rdp`](../CONFIG.md#rdp)
+- The settings: [docs/CONFIG.md `server.listeners[].rdp`](../CONFIG.md#serverlistenersrdp-kind-rdp)
 - A worked configuration: [`examples/bastion/rdp.yaml`](../../examples/bastion/rdp.yaml)
 - The other interactive protocols: [ssh](ssh.md), [telnet](telnet.md),
   [vnc](vnc.md)

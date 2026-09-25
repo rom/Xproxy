@@ -112,7 +112,7 @@ open for weeks.
 
 ## See also
 
-- The settings: [docs/CONFIG.md `## telnet`](../CONFIG.md#telnet)
+- The settings: [docs/CONFIG.md `server.listeners[].telnet`](../CONFIG.md#serverlistenerstelnet-kind-telnet)
 - A worked configuration: [`examples/bastion/telnet.yaml`](../../examples/bastion/telnet.yaml)
 - The protocol to use instead where the equipment allows: [ssh](ssh.md)
 - The other interactive protocols: [vnc](vnc.md), [rdp](rdp.md)

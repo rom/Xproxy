@@ -564,6 +564,37 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **`docs/protocols/`: one page per protocol, and a test that keeps the set
+  honest.** `docs/CONFIG.md` answers "which settings are there", and a
+  reflection test keeps it from falling behind the schema. Nothing answered the
+  question an engineer has first: what is this protocol, what security was it
+  designed with, and what did this relay decide to read?
+
+  Twenty-eight pages, one per listener kind, each with the same five sections in
+  the same order -- on the wire, what the protocol gives you, what this listener
+  decides, what it does not do, and the standards -- and each handing the reader
+  on to its `docs/CONFIG.md` section rather than repeating it.
+
+  The **"what it does not do"** section is the one worth reading before relying
+  on a listener, and the one that took the longest to write. A page that only
+  says what a listener decides reads as a claim to cover a protocol; the honest
+  version names the client list that is only an address list on UDP, the segment
+  a listener is not a firewall for, the negotiation refused rather than
+  rewritten, the content bounded rather than inspected, and — for the four
+  database kinds — that a statement-shape policy is not a SQL firewall.
+
+  `test/docs` ties the set to the roster in both directions and checks that no
+  page is a stub: each of the five headings present, in order, with something
+  under it. `TestEveryPageLinksToItsSettings` resolves the anchor rather than
+  matching a string, and found twenty links that rendered as links going
+  nowhere — because `docs/CONFIG.md` spells its per-kind headings two ways, the
+  twenty-two older kinds as `### server.listeners[].<kind>` and the seven newest
+  as `## <kind>`, so the anchor is not derivable from the kind's name.
+
+  `docs/CONFIG.md` gained a `## http` section in the process. It is a map rather
+  than a reference — HTTP is most of that document, and a reader looking for
+  `## http` beside `## s7` and `## amqp` was not finding one.
+
 - **`kind: s7`: a relay in front of a Siemens PLC.** `internal/s7` reads the
   three layers off the wire and `internal/kinds/s7` holds the policy.
 

@@ -197,6 +197,11 @@ its own for what is deliberately *not* implemented and why.
 | Inspection | ModSecurity SecLang with the OWASP Core Rule Set through Coraza; a documented subset of YARA; ICAP (RFC 3507); OpenAPI 3 descriptions; GraphQL; XML and XSD with exclusive canonicalization; protobuf structure without a schema; WebAssembly with WASI preview 1 | filters |
 | Operations | Prometheus exposition; OpenTelemetry OTLP for traces, metrics and logs; SIEM export as NDJSON, Splunk HEC, CEF or LEEF; pcapng capture files; asciicast v2 session recordings; journald and syslog log sinks; the Consul catalogue; Kubernetes Ingress and Gateway API | the control plane |
 
+Each protocol has a page of its own -- what it looks like on the wire, what
+security it was designed with, what this proxy decided to read and what it
+deliberately does not do -- indexed at
+[docs/protocols/README.md](docs/protocols/README.md).
+
 ## Every listener kind
 
 `kind: http` is the pipeline above. The others reuse its accept limits,

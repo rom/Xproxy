@@ -1432,6 +1432,11 @@ that protocol's own terms, and bounds what a peer may say.
 All of them reach the engine through `Host` alone, which is why they link
 into `xrelay` and nowhere else.
 
+What each of these protocols *is* -- its framing, the security it was designed
+with, and what this project decided to read of it -- is one page per kind under
+[docs/protocols/README.md](protocols/README.md). This document is about where
+the code lives; those are about what the code is reading.
+
 `internal/acceptgroup` is shared by the database kinds and exists because the
 obvious way to wait for a listener's sessions is wrong. A `sync.WaitGroup` with
 `Add` in the accept loop and `Wait` in shutdown is a race: `Add` must not run

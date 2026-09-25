@@ -117,6 +117,6 @@ plant are a decision rather than one topic among many.
 
 ## See also
 
-- The settings: [docs/CONFIG.md `## mqtt`](../CONFIG.md#mqtt)
+- The settings: [docs/CONFIG.md `server.listeners[].mqtt`](../CONFIG.md#serverlistenersmqtt-kind-mqtt)
 - A worked configuration: [`examples/iot/mqtt.yaml`](../../examples/iot/mqtt.yaml)
 - The other messaging protocol here: [amqp](amqp.md)

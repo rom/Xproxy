@@ -104,7 +104,7 @@ rest.
 
 ## See also
 
-- The settings: [docs/CONFIG.md `## ntske`](../CONFIG.md#ntske)
+- The settings: [docs/CONFIG.md `server.listeners[].ntske`](../CONFIG.md#serverlistenersntske-kind-ntske)
 - A worked configuration: [`examples/ot/ntp.yaml`](../../examples/ot/ntp.yaml)
 - The time exchange itself: [ntp](ntp.md)
 - TLS passthrough in general: [tcp](tcp.md)

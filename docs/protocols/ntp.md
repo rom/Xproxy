@@ -122,6 +122,6 @@ policy is written.
 
 ## See also
 
-- The settings: [docs/CONFIG.md `## ntp`](../CONFIG.md#ntp)
+- The settings: [docs/CONFIG.md `server.listeners[].ntp`](../CONFIG.md#serverlistenersntp-kind-ntp)
 - A worked configuration: [`examples/ot/ntp.yaml`](../../examples/ot/ntp.yaml)
 - The key establishment: [ntske](ntske.md)

@@ -120,7 +120,7 @@ with real transport security, for the parts of an estate that can use it.
 
 ## See also
 
-- The settings: [docs/CONFIG.md `## snmp`](../CONFIG.md#snmp)
+- The settings: [docs/CONFIG.md `server.listeners[].snmp`](../CONFIG.md#serverlistenerssnmp-kind-snmp)
 - A worked configuration: [`examples/ot/snmp.yaml`](../../examples/ot/snmp.yaml)
 - The asset inventory built partly from what this listener sees:
   [`examples/ot/inventory.yaml`](../../examples/ot/inventory.yaml)

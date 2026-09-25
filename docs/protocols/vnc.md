@@ -127,7 +127,7 @@ up.
 
 ## See also
 
-- The settings: [docs/CONFIG.md `## vnc`](../CONFIG.md#vnc)
+- The settings: [docs/CONFIG.md `server.listeners[].vnc`](../CONFIG.md#serverlistenersvnc-kind-vnc)
 - A worked configuration: [`examples/bastion/vnc.yaml`](../../examples/bastion/vnc.yaml)
 - The other interactive protocols: [ssh](ssh.md), [telnet](telnet.md),
   [rdp](rdp.md)
