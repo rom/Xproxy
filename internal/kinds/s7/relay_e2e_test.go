@@ -645,3 +645,71 @@ func waitFor(t *testing.T, ok func() bool) {
 		t.Error("the condition never held")
 	}
 }
+
+// The per-client session bound, through the real engine and under concurrent
+// dials. This is the bound the s7 listener most needs to hold: an S7-300 has
+// sixteen connection resources altogether, so a client that takes more than its
+// share denies the plant its own HMI.
+//
+// What this covers is that the bound is wired to the right setting, refuses at
+// the right point and is counted under the reason an operator watches. It does
+// *not* catch the check-then-act race the kinds used to have: a real dial and
+// transport handshake take long enough that accepts do not collide tightly
+// enough to expose it -- removing the lock from sesslimit.Enter leaves this test
+// passing. The race is held by internal/sesslimit's own tests, which drive
+// Enter directly with 512 goroutines spinning on a flag.
+func TestThePerClientSessionBoundHoldsUnderParallelDials(t *testing.T) {
+	p := startPLC(t, &fakePLC{})
+	s, addr := relayFor(t, base+"        max_sessions_per_client: 2\n", p.addr())
+
+	const dials = 64
+	var opened sync.WaitGroup
+	var held []net.Conn
+	var mu sync.Mutex
+	var gate sync.WaitGroup
+	gate.Add(1)
+	for i := 0; i < dials; i++ {
+		opened.Add(1)
+		go func() {
+			defer opened.Done()
+			gate.Wait()
+			c, err := net.Dial("tcp", addr)
+			if err != nil {
+				return
+			}
+			// Reach the point past the bound check by completing the
+			// transport handshake, then hold the connection open.
+			_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+			if _, err := c.Write(connectionRequest(wire.ResourceOP, 0, 2)); err != nil {
+				_ = c.Close()
+				return
+			}
+			r := wire.NewReader(c, 0)
+			if _, err := r.Next(); err != nil {
+				_ = c.Close()
+				return
+			}
+			mu.Lock()
+			held = append(held, c)
+			mu.Unlock()
+		}()
+	}
+	gate.Done()
+	opened.Wait()
+	t.Cleanup(func() {
+		for _, c := range held {
+			_ = c.Close()
+		}
+	})
+
+	mu.Lock()
+	n := len(held)
+	mu.Unlock()
+	if n > 2 {
+		t.Errorf("max_sessions_per_client is 2 and %d sessions completed the handshake", n)
+	}
+	// And the refusals were counted under the reason an operator watches.
+	waitFor(t, func() bool {
+		return s.Stats().Refusals["s7"]["too_many_sessions_per_client"] > 0
+	})
+}

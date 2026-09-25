@@ -607,6 +607,34 @@ Open findings of the earlier rounds:
   including a regression that asserts the old reading in both directions -- a fix
   that only closed the wrong window would have left the right one closed too.
 
+- **`internal/sesslimit`: the session bound, and the race six kinds shared.**
+  `max_sessions` and `max_sessions_per_client` could each be **exceeded by
+  concurrent connections**, because every copy read the counter and then
+  incremented it with nothing holding it in between. Driven with 512 goroutines
+  against a bound of two, three sessions were admitted; the global bound failed
+  the same way and by as many as the accepts in flight.
+
+  The per-client table had a second fault: the release path deleted a client's
+  entry when its count reached zero while another goroutine held the counter it
+  had already fetched, so that increment landed on an orphaned counter and the
+  session went uncounted for the rest of its life.
+
+  Both are bound evasion by an attacker opening connections in parallel. It
+  matters most concretely on `kind: s7`, where the bound exists because an S7-300
+  has sixteen connection resources altogether and a client that takes more than
+  its share denies the plant its own HMI -- and on the four database kinds, where
+  the bound is what keeps one client from consuming a server's connection slots.
+
+  The shared gate takes the count under the lock that checked it. It is a mutex
+  rather than a pair of atomics on purpose: the contended operation is an
+  *accept*, one per connection rather than one per frame, and a bound only
+  approximately enforced is not a bound. 100% coverage, and the concurrency tests
+  spin on a flag rather than parking on a WaitGroup, because a barrier that wakes
+  goroutines spreads their arrival out far enough to hide the original defect.
+
+  Six kinds migrated: amqp, mysql, postgres, redis, s7, tds. Refusal reasons are
+  unchanged, so a listener's counters and alerts keep their names across this.
+
 - **`internal/numrange`: the range list, from two copies.** `5`, `1-16`,
   `0x10-0x1F`, shared by the modbus and s7 kinds. Smaller than the schedule and
   with no behaviour question attached -- both copies were byte-identical in the

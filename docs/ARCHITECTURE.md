@@ -139,6 +139,9 @@ internal/kinds/amqp    kind: amqp -- message broker relay: the version a
 internal/numrange      The number-range list a policy is written with: `5`,
                        `1-16`, `0x10-0x1F`. Hexadecimal because half the
                        register maps a plant engineer has are written that way
+internal/sesslimit     The bound on sessions held, altogether and per client
+                       address. Six kinds had their own copy and all six could
+                       be pushed past the bound by concurrent accepts
 internal/schedule      The time window a rule can be limited to, in the one
                        spelling every kind uses. Thirteen kinds had their own
                        copy and they had drifted: two readings of what a
@@ -1461,6 +1464,29 @@ is valid. And the copies held **two different answers** to what a
 midnight-spanning window means, so the same YAML was in force at different times
 on a modbus listener than on an s7 one. Neither answer was the one the
 configuration reference describes. One implementation settles both.
+
+`internal/sesslimit` came out of the same pass and is the one that fixed
+something exploitable. Six kinds bounded their sessions with a load followed by
+an add:
+
+```go
+if n.Load() >= int64(per) {   // check
+    return false
+}
+n.Add(1)                      // act
+```
+
+Nothing holds the counter between those lines, so concurrent accepts all see room
+and all take it. Driven with 512 goroutines against a bound of two, three
+sessions get admitted; the global bound fails the same way and by as many as the
+accepts in flight. The per-client map had a second problem: `release` deleted a
+client's entry at zero while another goroutine held the counter it had already
+fetched, so that increment landed on an orphan and the session went uncounted.
+
+Both are bound evasion by an attacker who opens connections in parallel, which is
+not a sophisticated thing to do. The shared gate is a mutex rather than a pair of
+atomics, because the contended operation is an accept -- one per connection, not
+one per frame -- and a bound that is only approximately enforced is not a bound.
 
 `internal/numrange` came out of the same pass, from two copies rather than
 thirteen. The s7 copy's own comment said it was the modbus spelling *on purpose*
