@@ -260,6 +260,33 @@ type Stats struct {
 	LDAPRateLimited  atomic.Uint64
 	LDAPUpstreamFail atomic.Uint64
 	LDAPOutstanding  atomic.Int64
+	// The TFTP relay.
+	//
+	// Transfers are counted rather than datagrams, because a transfer is
+	// what a policy decided about and what an operator asks after: which
+	// device got which firmware. TFTPLowered counts the requests whose
+	// block size or window this relay rewrote to its bound, which is the
+	// number that says the amplification bound is working without anything
+	// being refused; TFTPPathRefused counts the filenames refused for their
+	// shape, which is the other half of the same story.
+	TFTPRequests      atomic.Uint64
+	TFTPTransfers     atomic.Uint64
+	TFTPTransfersOpen atomic.Int64
+	TFTPReads         atomic.Uint64
+	TFTPWrites        atomic.Uint64
+	TFTPBytesIn       atomic.Uint64
+	TFTPBytesOut      atomic.Uint64
+	TFTPDenied        atomic.Uint64
+	TFTPWouldDeny     atomic.Uint64
+	TFTPPathRefused   atomic.Uint64
+	TFTPLowered       atomic.Uint64
+	TFTPOversize      atomic.Uint64
+	TFTPMalformed     atomic.Uint64
+	TFTPRejected      atomic.Uint64
+	TFTPRateLimited   atomic.Uint64
+	TFTPTimedOut      atomic.Uint64
+	TFTPUpstreamFail  atomic.Uint64
+	TFTPUnsolicited   atomic.Uint64
 
 	// SNMPPending is how many requests are outstanding towards agents right
 	// now. It is a gauge rather than a total because the number an operator
@@ -659,6 +686,24 @@ type Snapshot struct {
 	LDAPRateLimited        uint64             `json:"ldap_rate_limited"`
 	LDAPUpstreamFail       uint64             `json:"ldap_upstream_failed"`
 	LDAPOutstanding        int64              `json:"ldap_outstanding"`
+	TFTPRequests           uint64             `json:"tftp_requests"`
+	TFTPTransfers          uint64             `json:"tftp_transfers"`
+	TFTPTransfersOpen      int64              `json:"tftp_transfers_open"`
+	TFTPReads              uint64             `json:"tftp_reads"`
+	TFTPWrites             uint64             `json:"tftp_writes"`
+	TFTPBytesIn            uint64             `json:"tftp_bytes_in"`
+	TFTPBytesOut           uint64             `json:"tftp_bytes_out"`
+	TFTPDenied             uint64             `json:"tftp_denied"`
+	TFTPWouldDeny          uint64             `json:"tftp_would_deny"`
+	TFTPPathRefused        uint64             `json:"tftp_path_refused"`
+	TFTPLowered            uint64             `json:"tftp_lowered"`
+	TFTPOversize           uint64             `json:"tftp_oversize"`
+	TFTPMalformed          uint64             `json:"tftp_malformed"`
+	TFTPRejected           uint64             `json:"tftp_rejected"`
+	TFTPRateLimited        uint64             `json:"tftp_rate_limited"`
+	TFTPTimedOut           uint64             `json:"tftp_timed_out"`
+	TFTPUpstreamFail       uint64             `json:"tftp_upstream_failed"`
+	TFTPUnsolicited        uint64             `json:"tftp_unsolicited"`
 	NTPRequests            uint64             `json:"ntp_requests"`
 	NTPForwarded           uint64             `json:"ntp_forwarded"`
 	NTPResponses           uint64             `json:"ntp_responses"`
@@ -1018,6 +1063,24 @@ func (s *Stats) snapshot() Snapshot {
 		LDAPRateLimited:        s.LDAPRateLimited.Load(),
 		LDAPUpstreamFail:       s.LDAPUpstreamFail.Load(),
 		LDAPOutstanding:        s.LDAPOutstanding.Load(),
+		TFTPRequests:           s.TFTPRequests.Load(),
+		TFTPTransfers:          s.TFTPTransfers.Load(),
+		TFTPTransfersOpen:      s.TFTPTransfersOpen.Load(),
+		TFTPReads:              s.TFTPReads.Load(),
+		TFTPWrites:             s.TFTPWrites.Load(),
+		TFTPBytesIn:            s.TFTPBytesIn.Load(),
+		TFTPBytesOut:           s.TFTPBytesOut.Load(),
+		TFTPDenied:             s.TFTPDenied.Load(),
+		TFTPWouldDeny:          s.TFTPWouldDeny.Load(),
+		TFTPPathRefused:        s.TFTPPathRefused.Load(),
+		TFTPLowered:            s.TFTPLowered.Load(),
+		TFTPOversize:           s.TFTPOversize.Load(),
+		TFTPMalformed:          s.TFTPMalformed.Load(),
+		TFTPRejected:           s.TFTPRejected.Load(),
+		TFTPRateLimited:        s.TFTPRateLimited.Load(),
+		TFTPTimedOut:           s.TFTPTimedOut.Load(),
+		TFTPUpstreamFail:       s.TFTPUpstreamFail.Load(),
+		TFTPUnsolicited:        s.TFTPUnsolicited.Load(),
 		NTPRequests:            s.NTPRequests.Load(),
 		NTPForwarded:           s.NTPForwarded.Load(),
 		NTPResponses:           s.NTPResponses.Load(),

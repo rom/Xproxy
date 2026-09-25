@@ -286,6 +286,8 @@ type Listener struct {
 	SNMP *SNMPListener `yaml:"snmp"`
 	// LDAP configures a kind: ldap listener.
 	LDAP *LDAPListener `yaml:"ldap"`
+	// TFTP configures a kind: tftp listener.
+	TFTP *TFTPListener `yaml:"tftp"`
 	// Policy is whether this listener enforces its policy or only
 	// evaluates it. It overrides the estate's own policy section.
 	Policy *ListenerPolicy `yaml:"policy"`
@@ -994,6 +996,162 @@ type LDAPRule struct {
 	// rule's traffic.
 	AllowLeadingWildcard *bool `yaml:"allow_leading_wildcard"`
 	// Schedule limits the rule to a time window.
+	Schedule *ModbusSchedule `yaml:"schedule"`
+}
+
+// TFTPListener is a kind: tftp listener: a TFTP relay in front of the
+// servers that move firmware, configurations and boot images around an
+// estate.
+//
+// There is nothing to authenticate with in this protocol, so the whole of
+// the policy is the address it came from, the direction of the transfer,
+// the path it asked for and the size of what comes back.
+type TFTPListener struct {
+	// Mode is reverse (the default: clients send here and the listener
+	// forwards to the servers) or forward (this listener is the controlled
+	// egress a device uses to reach a server elsewhere).
+	Mode string `yaml:"mode"`
+	// Upstream is the server pool a transfer goes to. Required in reverse
+	// mode.
+	Upstream string `yaml:"upstream"`
+	// AllowClients and DenyClients are the networks a client may send
+	// from. Deny is evaluated first. On this protocol the client list is
+	// the most valuable line in the file, because it is the only thing
+	// resembling an identity that exists at all.
+	AllowClients []string `yaml:"allow_clients"`
+	DenyClients  []string `yaml:"deny_clients"`
+	// Operations is the allow list of transfer directions: read, write.
+	// Empty allows read only, and that default is deliberate. A write is a
+	// device putting a file onto the server, which is how a configuration
+	// leaves an estate and how firmware arrives in it, and a protocol with
+	// no authentication should not be how either happens by default.
+	Operations []string `yaml:"operations"`
+	// Modes is the allow list of transfer modes: octet, netascii, mail.
+	// Empty allows octet and netascii. mail is obsolete -- RFC 1350
+	// removed it -- and asked a server to deliver the file as mail to the
+	// address in the filename field, so a server that still implements it
+	// is a mail injection vector reachable with one datagram.
+	Modes []string `yaml:"modes"`
+	// AllowPathClasses names the shapes of filename this listener accepts
+	// besides an ordinary relative path: absolute, backslash, drive,
+	// traversal, trailing, non_ascii. Empty accepts only the ordinary one.
+	//
+	// The classes exist because a deny list of strings is a list of the
+	// spellings somebody thought of. Three of them -- empty, nul, control
+	// -- cannot be named here at all: each means this relay and the server
+	// behind it are reading different filenames, and a decision about a
+	// name the server will not see is not a decision.
+	AllowPathClasses []string `yaml:"allow_path_classes"`
+	// Directories are the directories a filename may name, compared
+	// element by element from the top of the server's own directory: a
+	// name outside all of them is refused before the rules and whatever
+	// default_action says. Empty allows any, which validation advises
+	// against.
+	//
+	// The comparison is per element, so firmware does not cover
+	// firmware-staging.
+	Directories []string `yaml:"directories"`
+	// DenyDirectories are directories no rule can allow, which is how an
+	// exception inside an allowed tree is written.
+	DenyDirectories []string `yaml:"deny_directories"`
+	// Filenames and DenyFilenames are shell patterns matched against the
+	// whole cleaned path (as in firmware/*.bin). Deny is evaluated first
+	// and no rule can override it.
+	Filenames     []string `yaml:"filenames"`
+	DenyFilenames []string `yaml:"deny_filenames"`
+	// MaxDepth bounds how many elements a path may have. Default 8.
+	MaxDepth int `yaml:"max_depth"`
+	// MaxFilenameBytes bounds the filename field. Default 256.
+	MaxFilenameBytes int `yaml:"max_filename_bytes"`
+	// MaxTransferBytes bounds one transfer in either direction. Default
+	// 64 MiB. It is the bound that matters most on a write, because a
+	// write has no natural end: the client stops when it stops.
+	MaxTransferBytes int64 `yaml:"max_transfer_bytes"`
+	// MaxBlockSize bounds RFC 2348's blksize option. Default 1468, which
+	// is a data packet that still fits an Ethernet frame. A larger block
+	// fragments at the IP layer, which is a lever rather than a feature.
+	MaxBlockSize int `yaml:"max_block_size"`
+	// MaxWindowSize bounds RFC 7440's windowsize option: how many data
+	// packets a server may send before one acknowledgement. Default 4.
+	//
+	// This is the protocol's amplification factor. A twenty-octet read
+	// request yields a whole file to whatever address the datagram claimed
+	// to come from, and a window of sixty-four makes that sixty-four
+	// packets per acknowledgement rather than one. A request asking for
+	// more than the bound is *rewritten* to it rather than refused, so a
+	// device nobody can reconfigure still transfers.
+	MaxWindowSize int `yaml:"max_window_size"`
+	// MaxTransfers bounds the transfers this listener has in flight.
+	// Default 64. Each one holds a socket of its own, because TFTP moves
+	// to an ephemeral port pair after the first packet.
+	MaxTransfers int `yaml:"max_transfers"`
+	// MaxTransfersPerClient bounds them per client address. Default 8.
+	MaxTransfersPerClient int `yaml:"max_transfers_per_client"`
+	// Rules decide each transfer, in order, first match wins. A request
+	// that matches no rule takes DefaultAction.
+	Rules []TFTPRule `yaml:"rules"`
+	// DefaultAction is deny (the default) or allow.
+	DefaultAction string `yaml:"default_action"`
+	// DenyResponse is how a refused request is answered: error (the
+	// default: an error packet, which every client displays and stops on)
+	// or drop (nothing, which the client retries and then reads as a
+	// timeout). error is almost always right: a device that is told no
+	// stops, and a device that hears nothing retransmits.
+	DenyResponse string `yaml:"deny_response"`
+	// TransferTimeout bounds one whole transfer. Default 5m.
+	TransferTimeout Duration `yaml:"transfer_timeout"`
+	// IdleTimeout ends a transfer that has gone quiet. Default 15s, which
+	// is a few of the protocol's own retransmissions.
+	IdleTimeout Duration `yaml:"idle_timeout"`
+	// RateLimit and RateBurst bound requests per second per client
+	// address. Zero disables them.
+	RateLimit int `yaml:"rate_limit"`
+	RateBurst int `yaml:"rate_burst"`
+	// LogTransfers writes an access line per transfer: who, which
+	// direction, which path, how much moved and how it ended. Default
+	// true. This is the record an estate is asked for when somebody wants
+	// to know which switch got which firmware.
+	LogTransfers *bool `yaml:"log_transfers"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
+}
+
+// TFTPRule decides one transfer.
+type TFTPRule struct {
+	// Name identifies the rule in the logs and the counters. Required.
+	Name string `yaml:"name"`
+	// Action is allow, deny or observe. observe logs and counts and then
+	// keeps looking, which is how a rule is tried on live traffic before
+	// it decides anything.
+	Action string `yaml:"action"`
+	// Clients are the networks the client is in.
+	Clients []string `yaml:"clients"`
+	// Operations are the directions this rule covers: read, write.
+	Operations []string `yaml:"operations"`
+	// Modes are the transfer modes this rule covers.
+	Modes []string `yaml:"modes"`
+	// Directories are the directories this rule covers, and
+	// DenyDirectories the ones it does not cover even when Directories
+	// would match.
+	Directories     []string `yaml:"directories"`
+	DenyDirectories []string `yaml:"deny_directories"`
+	// Filenames and DenyFilenames are shell patterns against the cleaned
+	// path.
+	Filenames     []string `yaml:"filenames"`
+	DenyFilenames []string `yaml:"deny_filenames"`
+	// AllowPathClasses widens the listener's list for this rule's traffic
+	// only, which is how one legacy server that really does serve
+	// absolute paths is written down. The three classes the listener
+	// cannot allow, a rule cannot allow either.
+	AllowPathClasses []string `yaml:"allow_path_classes"`
+	// MaxTransferBytes, MaxBlockSize and MaxWindowSize override the
+	// listener's bounds for this rule's traffic.
+	MaxTransferBytes int64 `yaml:"max_transfer_bytes"`
+	MaxBlockSize     int   `yaml:"max_block_size"`
+	MaxWindowSize    int   `yaml:"max_window_size"`
+	// Schedule limits the rule to a time window, which is what a firmware
+	// window is: writes allowed during the change window and not outside
+	// it.
 	Schedule *ModbusSchedule `yaml:"schedule"`
 }
 

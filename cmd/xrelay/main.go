@@ -31,6 +31,7 @@ import (
 	_ "github.com/rom/xproxy/internal/kinds/smtp"   // listener kind: smtp
 	_ "github.com/rom/xproxy/internal/kinds/snmp"   // listener kind: snmp
 	_ "github.com/rom/xproxy/internal/kinds/syslog" // listener kind: syslog
+	_ "github.com/rom/xproxy/internal/kinds/tftp"   // listener kind: tftp
 	"github.com/rom/xproxy/internal/listener"
 )
 

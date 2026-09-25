@@ -17,10 +17,12 @@ import (
 	snmpwire "github.com/rom/xproxy/internal/snmp"
 	"github.com/rom/xproxy/internal/syslog"
 	"github.com/rom/xproxy/internal/telnet"
+	tftpwire "github.com/rom/xproxy/internal/tftp"
 	"github.com/rom/xproxy/internal/tmpl"
 	"github.com/rom/xproxy/internal/transparent"
 	"github.com/rom/xproxy/internal/yara"
 	"mime"
+	"path"
 	"path/filepath"
 	"sort"
 	"time"
@@ -839,6 +841,19 @@ func (v *validator) server(s *Server) {
 				v.errf("%s.ldap: required for kind ldap", p)
 			} else {
 				v.ldapListener(p+".ldap", ln.LDAP, ln.TLS != nil)
+			}
+		case "tftp":
+			// No tls section: TFTP has no transport security and no
+			// extension that adds one, so a listener carrying a
+			// certificate would be a listener promising something the
+			// protocol cannot do.
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C || ln.TLS != nil {
+				v.errf("%s: a tftp listener takes only address and tftp: the protocol is UDP and has no TLS", p)
+			}
+			if ln.TFTP == nil {
+				v.errf("%s.tftp: required for kind tftp", p)
+			} else {
+				v.tftpListener(p+".tftp", ln.TFTP)
 			}
 		case "iec104":
 			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
@@ -2458,7 +2473,7 @@ var denyReasons = map[string]bool{
 	"forward_sni_mismatch": true, "dns_tunnel": true, "dns_answer_denied": true,
 	"telnet_denied": true, "vnc_denied": true, "rdp_denied": true, "sftp_icap": true, "udp_denied": true,
 	"modbus_denied": true, "iec104_denied": true, "ntp_denied": true, "ntske_denied": true,
-	"snmp_denied": true, "ldap_denied": true,
+	"snmp_denied": true, "ldap_denied": true, "tftp_denied": true,
 }
 
 // securityTxtFieldRE bounds an extra field name to the token RFC 9116
@@ -7192,6 +7207,219 @@ func (v *validator) ldapDNs(p string, in []string) {
 		}
 		if _, err := ldapwire.ParseDN(dn); err != nil {
 			v.errf("%s[%d]: %v", p, i, err)
+		}
+	}
+}
+
+func (v *validator) tftpListener(p string, m *TFTPListener) {
+	switch m.Mode {
+	case "", "reverse", "forward":
+	default:
+		v.errf("%s.mode: must be reverse or forward", p)
+	}
+	if m.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	v.modbusCIDRs(p+".allow_clients", m.AllowClients)
+	v.modbusCIDRs(p+".deny_clients", m.DenyClients)
+	if len(m.AllowClients) == 0 {
+		// On a protocol with no credential at all, this list is the whole
+		// of the identity.
+		v.warnf("%s.allow_clients: empty, so any address may transfer through this relay -- and TFTP has no other identity to check", p)
+	}
+	ops := v.tftpOperations(p+".operations", m.Operations)
+	if ops[tftpwire.OpWrite] {
+		v.warnf("%s.operations: write allows a client to put files onto the server, which is how a configuration leaves an estate and how firmware arrives in it", p)
+	}
+	modes := v.tftpModes(p+".modes", m.Modes)
+	if modes[tftpwire.ModeMail] {
+		v.warnf("%s.modes: mail is obsolete -- RFC 1350 removed it -- and asked the server to deliver the file as mail to the address in the filename field", p)
+	}
+	v.tftpClasses(p+".allow_path_classes", m.AllowPathClasses)
+	v.tftpDirs(p+".directories", m.Directories)
+	v.tftpDirs(p+".deny_directories", m.DenyDirectories)
+	if len(m.Directories) == 0 {
+		v.warnf("%s.directories: empty, so a transfer may name any path the server serves", p)
+	}
+	v.tftpPatterns(p+".filenames", m.Filenames)
+	v.tftpPatterns(p+".deny_filenames", m.DenyFilenames)
+	if m.MaxDepth < 0 || m.MaxDepth > 64 {
+		v.errf("%s.max_depth: must be between 0 and 64", p)
+	}
+	if m.MaxFilenameBytes < 0 || m.MaxFilenameBytes > tftpwire.MaxFilename {
+		v.errf("%s.max_filename_bytes: must be between 0 and %d", p, tftpwire.MaxFilename)
+	}
+	if m.MaxTransferBytes < 0 || m.MaxTransferBytes > 1<<40 {
+		v.errf("%s.max_transfer_bytes: must be between 0 and %d", p, int64(1)<<40)
+	}
+	if m.MaxTransferBytes == 0 {
+		v.warnf("%s.max_transfer_bytes: 0 leaves a transfer unbounded, and a write with no bound is a disk somebody else fills", p)
+	}
+	if m.MaxBlockSize != 0 && (m.MaxBlockSize < tftpwire.MinBlockSize || m.MaxBlockSize > tftpwire.MaxBlockSize) {
+		v.errf("%s.max_block_size: must be between %d and %d", p, tftpwire.MinBlockSize, tftpwire.MaxBlockSize)
+	}
+	if m.MaxWindowSize < 0 || m.MaxWindowSize > tftpwire.MaxWindowSize {
+		v.errf("%s.max_window_size: must be between 0 and %d", p, tftpwire.MaxWindowSize)
+	}
+	if m.MaxWindowSize == 0 {
+		v.warnf("%s.max_window_size: 0 leaves RFC 7440's window unbounded, which is this protocol's amplification factor: a twenty-octet request answered by a window of packets", p)
+	}
+	if m.MaxTransfers < 0 || m.MaxTransfers > 1<<16 {
+		v.errf("%s.max_transfers: must be between 0 and 65536", p)
+	}
+	if m.MaxTransfersPerClient < 0 || m.MaxTransfersPerClient > 1<<16 {
+		v.errf("%s.max_transfers_per_client: must be between 0 and 65536", p)
+	}
+	switch m.DefaultAction {
+	case "", "deny", "allow":
+	default:
+		v.errf("%s.default_action: must be deny or allow", p)
+	}
+	if m.DefaultAction == "allow" && len(m.Rules) == 0 {
+		v.warnf("%s: default_action allow with no rules relays every transfer this listener can reach, from any address the client list admits", p)
+	}
+	switch m.DenyResponse {
+	case "", "error", "drop":
+	default:
+		v.errf("%s.deny_response: must be error or drop", p)
+	}
+	if m.DenyResponse == "drop" {
+		v.warnf("%s.deny_response: drop makes a refused client retransmit until it times out, where error makes it stop", p)
+	}
+	for _, d := range []struct {
+		key    string
+		val    Duration
+		lo, hi time.Duration
+	}{
+		{"transfer_timeout", m.TransferTimeout, time.Second, 24 * time.Hour},
+		{"idle_timeout", m.IdleTimeout, time.Second, time.Hour},
+	} {
+		if d.val != 0 && (d.val.D() < d.lo || d.val.D() > d.hi) {
+			v.errf("%s.%s: must be between %s and %s", p, d.key, d.lo, d.hi)
+		}
+	}
+	if m.TransferTimeout != 0 && m.IdleTimeout != 0 && m.IdleTimeout.D() > m.TransferTimeout.D() {
+		v.errf("%s.idle_timeout: longer than transfer_timeout, so it would never end a transfer", p)
+	}
+	if m.RateLimit < 0 || m.RateLimit > 1<<20 {
+		v.errf("%s.rate_limit: must be between 0 and 1048576", p)
+	}
+	if m.RateBurst < 0 || m.RateBurst > 1<<20 {
+		v.errf("%s.rate_burst: must be between 0 and 1048576", p)
+	}
+	if m.RateLimit == 0 && m.RateBurst > 0 {
+		v.warnf("%s.rate_burst: a burst without a rate_limit bounds nothing", p)
+	}
+	names := map[string]bool{}
+	for i := range m.Rules {
+		r := &m.Rules[i]
+		q := fmt.Sprintf("%s.rules[%d]", p, i)
+		if !nameRE.MatchString(r.Name) {
+			v.errf("%s.name: %q is not a valid name", q, r.Name)
+		} else if names[r.Name] {
+			v.errf("%s.name: duplicate %q", q, r.Name)
+		}
+		names[r.Name] = true
+		switch r.Action {
+		case "", "allow", "deny", "observe":
+		default:
+			v.errf("%s.action: must be allow, deny or observe", q)
+		}
+		v.modbusCIDRs(q+".clients", r.Clients)
+		v.tftpOperations(q+".operations", r.Operations)
+		v.tftpModes(q+".modes", r.Modes)
+		v.tftpClasses(q+".allow_path_classes", r.AllowPathClasses)
+		v.tftpDirs(q+".directories", r.Directories)
+		v.tftpDirs(q+".deny_directories", r.DenyDirectories)
+		v.tftpPatterns(q+".filenames", r.Filenames)
+		v.tftpPatterns(q+".deny_filenames", r.DenyFilenames)
+		if r.MaxTransferBytes < 0 || r.MaxTransferBytes > 1<<40 {
+			v.errf("%s.max_transfer_bytes: must be between 0 and %d", q, int64(1)<<40)
+		}
+		if r.MaxBlockSize != 0 && (r.MaxBlockSize < tftpwire.MinBlockSize || r.MaxBlockSize > tftpwire.MaxBlockSize) {
+			v.errf("%s.max_block_size: must be between %d and %d", q, tftpwire.MinBlockSize, tftpwire.MaxBlockSize)
+		}
+		if r.MaxWindowSize < 0 || r.MaxWindowSize > tftpwire.MaxWindowSize {
+			v.errf("%s.max_window_size: must be between 0 and %d", q, tftpwire.MaxWindowSize)
+		}
+		v.modbusSchedule(q+".schedule", r.Schedule)
+	}
+}
+
+// tftpOperations checks a transfer-direction list and returns it as a set.
+func (v *validator) tftpOperations(p string, in []string) map[tftpwire.Op]bool {
+	out := map[tftpwire.Op]bool{}
+	for i, name := range in {
+		op, ok := tftpwire.OpOf(name)
+		if !ok || !op.Request() {
+			v.errf("%s[%d]: %q must be read or write", p, i, name)
+			continue
+		}
+		out[op] = true
+	}
+	return out
+}
+
+// tftpModes checks a transfer-mode list and returns it as a set.
+func (v *validator) tftpModes(p string, in []string) map[string]bool {
+	out := map[string]bool{}
+	for i, name := range in {
+		switch m := strings.ToLower(name); m {
+		case tftpwire.ModeOctet, tftpwire.ModeNetASCII, tftpwire.ModeMail:
+			out[m] = true
+		default:
+			v.errf("%s[%d]: %q must be octet, netascii or mail", p, i, name)
+		}
+	}
+	return out
+}
+
+// tftpClasses checks a path-class list.
+//
+// The three classes a configuration may not name are refused here rather
+// than ignored at run time, because an operator who wrote one asked for
+// something this relay will not do and is owed the answer at load: a name
+// whose end two parsers disagree about cannot be decided at all, so
+// "allowed" is not a thing it can be.
+func (v *validator) tftpClasses(p string, in []string) {
+	for i, name := range in {
+		c, ok := tftpwire.ClassOf(name)
+		switch {
+		case !ok:
+			v.errf("%s[%d]: %q must be absolute, backslash, drive, traversal, trailing or non_ascii", p, i, name)
+		case c == tftpwire.ClassPlain:
+			v.errf("%s[%d]: plain is every ordinary path and is always allowed, so naming it says nothing", p, i)
+		case c.Hard():
+			v.errf("%s[%d]: %q can never be allowed: it means this relay and the server read different filenames", p, i, name)
+		case c == tftpwire.ClassTraversal:
+			v.warnf("%s[%d]: traversal allows a .. element, which is how every path escape in this protocol's history was written", p, i)
+		}
+	}
+}
+
+// tftpDirs checks a directory list. A directory is compared element by
+// element, so what is checked here is that there is an element to compare.
+func (v *validator) tftpDirs(p string, in []string) {
+	for i, d := range in {
+		if strings.TrimSpace(d) == "" {
+			v.errf("%s[%d]: empty; the server's own directory is not one worth naming, because it is every directory", p, i)
+			continue
+		}
+		if c := tftpwire.Classify(d); c.Class.Hard() {
+			v.errf("%s[%d]: %q is not a directory a filename can be under: %s", p, i, d, c.Detail)
+		}
+	}
+}
+
+// tftpPatterns checks a filename pattern list.
+func (v *validator) tftpPatterns(p string, in []string) {
+	for i, pat := range in {
+		if pat == "" {
+			v.errf("%s[%d]: empty", p, i)
+			continue
+		}
+		if _, err := path.Match(pat, "x"); err != nil {
+			v.errf("%s[%d]: %q is not a pattern: %v", p, i, pat, err)
 		}
 	}
 }
