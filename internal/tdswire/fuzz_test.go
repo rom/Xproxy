@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // Every reader here runs before anything has authenticated anything: the
@@ -109,9 +110,11 @@ func FuzzParseLogin7(f *testing.F) {
 }
 
 func FuzzParseRPC(f *testing.F) {
-	f.Add(rpcByName("sp_executesql", false))
+	f.Add(rpcByName("sp_executesql", false, nvarcharParam("SELECT 1")))
 	f.Add(rpcByName("xp_cmdshell", true))
-	f.Add(rpcByID(SpExecuteSql))
+	f.Add(rpcByID(SpExecuteSql, nvarcharParam("SELECT 1")))
+	f.Add(rpcByName("sp_prepare", false, intParam(0), nvarcharParam("@a int"),
+		nvarcharParam("UPDATE t SET x = 1"), intParam(1)))
 	f.Fuzz(func(t *testing.T, b []byte) {
 		r, err := ParseRPC(b)
 		if err != nil {
@@ -133,6 +136,26 @@ func FuzzParseRPC(f *testing.F) {
 		// Named by number and named by name are mutually exclusive.
 		if r.ByID && r.Name != "" {
 			t.Fatalf("both forms at once: %+v", r)
+		}
+		// A statement is read exactly when the procedure's signature has one,
+		// and never invented: the relay's statement policy runs on this value,
+		// so a statement that appeared out of a call that has none would be a
+		// decision about text nobody sent.
+		_, dynamic := StatementParam(p)
+		if r.HasStatement != dynamic {
+			t.Fatalf("%s: HasStatement=%v, signature says %v", p, r.HasStatement, dynamic)
+		}
+		if r.HasStatement && r.Statement == "" {
+			t.Fatalf("%s: an empty statement", p)
+		}
+		if !r.HasStatement && r.Statement != "" {
+			t.Fatalf("%s: a statement on a procedure with none: %q", p, r.Statement)
+		}
+		// Whatever came back is text. It is about to be lexed by the statement
+		// classifier and then put in a log line, and both of those want a
+		// string rather than a byte soup.
+		if !utf8.ValidString(r.Statement) {
+			t.Fatalf("%s: the statement is not valid UTF-8: %q", p, r.Statement)
 		}
 	})
 }

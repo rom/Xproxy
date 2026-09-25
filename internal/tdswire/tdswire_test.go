@@ -446,12 +446,32 @@ func TestTheLoginPasswordIsAnEncodingAndNotEncryption(t *testing.T) {
 	}
 }
 
-// rpcByName builds an RPC naming a procedure.
-func rpcByName(name string, withHeaders bool) []byte {
+// nvarcharParam builds one unnamed NVARCHAR parameter in the short form.
+func nvarcharParam(s string) []byte {
+	enc := ToUCS2(s)
+	out := []byte{0, 0, 0xe7}                                     // no name, no flags, NVARCHARTYPE
+	out = binary.LittleEndian.AppendUint16(out, 8000)             // maximum length
+	out = append(out, 0, 0, 0, 0, 0)                              // collation
+	out = binary.LittleEndian.AppendUint16(out, uint16(len(enc))) //nolint:gosec // test data
+	return append(out, enc...)
+}
+
+// intParam builds one unnamed INTN parameter, which is the shape the handle and
+// option arguments of the prepare family take.
+func intParam(v int32) []byte {
+	out := []byte{0, 0, 0x26, 4, 4} // no name, no flags, INTNTYPE, max 4, actual 4
+	return binary.LittleEndian.AppendUint32(out, uint32(v))
+}
+
+// rpcByName builds an RPC naming a procedure, with the parameters given.
+func rpcByName(name string, withHeaders bool, params ...[]byte) []byte {
 	enc := ToUCS2(name)
 	body := binary.LittleEndian.AppendUint16(nil, uint16(len(enc)/2))
 	body = append(body, enc...)
 	body = binary.LittleEndian.AppendUint16(body, 0) // option flags
+	for _, p := range params {
+		body = append(body, p...)
+	}
 	if !withHeaders {
 		return body
 	}
@@ -461,24 +481,28 @@ func rpcByName(name string, withHeaders bool) []byte {
 }
 
 // rpcByID builds an RPC naming a procedure by number.
-func rpcByID(id uint16) []byte {
+func rpcByID(id uint16, params ...[]byte) []byte {
 	body := binary.LittleEndian.AppendUint16(nil, 0xffff)
 	body = binary.LittleEndian.AppendUint16(body, id)
-	return binary.LittleEndian.AppendUint16(body, 0)
+	body = binary.LittleEndian.AppendUint16(body, 0) // option flags
+	for _, p := range params {
+		body = append(body, p...)
+	}
+	return body
 }
 
 // The two naming forms are the same call, and a policy that matched only the
 // string would be bypassed by a client library that uses the number -- which
 // most of them do.
 func TestAProcedureIsNamedByNameOrByNumberAndBothCollapse(t *testing.T) {
-	r, err := ParseRPC(rpcByName("sp_executesql", false))
+	r, err := ParseRPC(rpcByName("sp_executesql", false, nvarcharParam("SELECT 1")))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if r.Procedure() != "sp_executesql" || r.ByID {
 		t.Fatalf("%+v", r)
 	}
-	if r, err = ParseRPC(rpcByID(SpExecuteSql)); err != nil {
+	if r, err = ParseRPC(rpcByID(SpExecuteSql, nvarcharParam("SELECT 1"))); err != nil {
 		t.Fatal(err)
 	}
 	if !r.ByID || r.Procedure() != "sp_executesql" {
@@ -492,7 +516,7 @@ func TestAProcedureIsNamedByNameOrByNumberAndBothCollapse(t *testing.T) {
 		t.Fatalf("%q", r.Procedure())
 	}
 	// A stream header block before the body is stepped over.
-	if r, err = ParseRPC(rpcByName("sp_executesql", true)); err != nil {
+	if r, err = ParseRPC(rpcByName("sp_executesql", true, nvarcharParam("SELECT 1"))); err != nil {
 		t.Fatal(err)
 	}
 	if r.Procedure() != "sp_executesql" {
@@ -692,5 +716,167 @@ func TestClipCutsOnARuneBoundary(t *testing.T) {
 	}
 	if strings.ContainsRune(got, utf8.RuneError) {
 		t.Fatalf("Clip produced a replacement character: %q", got)
+	}
+}
+
+// The whole claim of rpc.go: the statement an application actually runs arrives
+// as a parameter of sp_executesql, not as a batch, so a relay that read only
+// SQLBATCH would be inspecting the SET statements a driver emits on connect and
+// nothing else.
+func TestTheStatementInADynamicSQLCallIsRead(t *testing.T) {
+	r, err := ParseRPC(rpcByName("sp_executesql", false,
+		nvarcharParam("SELECT * FROM payroll WHERE id = @id"),
+		nvarcharParam("@id int"),
+		intParam(7)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.HasStatement {
+		t.Fatal("sp_executesql carried no statement")
+	}
+	if r.Statement != "SELECT * FROM payroll WHERE id = @id" {
+		t.Fatalf("statement is %q", r.Statement)
+	}
+	// By number is the same call, and most drivers use the number.
+	if r, err = ParseRPC(rpcByID(SpExecuteSql, nvarcharParam("DROP TABLE t"))); err != nil {
+		t.Fatal(err)
+	}
+	if r.Statement != "DROP TABLE t" {
+		t.Fatalf("by id: %q", r.Statement)
+	}
+}
+
+// The prepare family puts the statement third or fourth, behind an output handle
+// and a parameter declaration, so the positions come from the signatures rather
+// than from "the first string-shaped thing".
+func TestTheStatementIsFoundAtTheSignaturesPosition(t *testing.T) {
+	for _, tc := range []struct {
+		proc   string
+		params [][]byte
+	}{
+		{"sp_prepare", [][]byte{intParam(0), nvarcharParam("@id int"),
+			nvarcharParam("UPDATE t SET x = 1"), intParam(1)}},
+		{"sp_prepexec", [][]byte{intParam(0), nvarcharParam("@id int"),
+			nvarcharParam("UPDATE t SET x = 1")}},
+		{"sp_cursorprepare", [][]byte{intParam(0), nvarcharParam(""),
+			nvarcharParam("UPDATE t SET x = 1"), intParam(1)}},
+		{"sp_cursorprepexec", [][]byte{intParam(0), intParam(0), nvarcharParam(""),
+			nvarcharParam("UPDATE t SET x = 1")}},
+		{"sp_cursoropen", [][]byte{intParam(0), nvarcharParam("UPDATE t SET x = 1")}},
+	} {
+		r, err := ParseRPC(rpcByName(tc.proc, false, tc.params...))
+		if err != nil {
+			t.Fatalf("%s: %v", tc.proc, err)
+		}
+		if r.Statement != "UPDATE t SET x = 1" {
+			t.Fatalf("%s: statement is %q", tc.proc, r.Statement)
+		}
+	}
+}
+
+// A procedure with no statement in its signature has none read, and nothing is
+// invented for it. sp_unprepare takes a handle; xp_cmdshell takes a command
+// string that is not T-SQL and must not be classified as though it were.
+func TestAProcedureWithNoStatementHasNoneRead(t *testing.T) {
+	for _, proc := range []string{"sp_unprepare", "sp_execute", "xp_cmdshell",
+		"sp_prepexecrpc", "sp_oacreate"} {
+		r, err := ParseRPC(rpcByName(proc, false, nvarcharParam("SELECT 1")))
+		if err != nil {
+			t.Fatalf("%s: %v", proc, err)
+		}
+		if r.HasStatement || r.Statement != "" {
+			t.Fatalf("%s: invented a statement %q", proc, r.Statement)
+		}
+	}
+}
+
+// A statement longer than 4000 characters does not fit NVARCHAR's short form, so
+// a driver sends it partially length-prefixed -- in chunks, with the total
+// sometimes declared as unknown. A reader that handled only the short form would
+// refuse every long statement, which is every migration script.
+func TestALongStatementArrivesInChunks(t *testing.T) {
+	stmt := "SELECT '" + strings.Repeat("x", 9000) + "'"
+	enc := ToUCS2(stmt)
+	for _, tc := range []struct {
+		name  string
+		total uint64
+	}{
+		{"declared length", uint64(len(enc))},
+		{"unknown length", 0xfffffffffffffffe},
+	} {
+		p := []byte{0, 0, 0xe7}
+		p = binary.LittleEndian.AppendUint16(p, 0xffff) // PLP
+		p = append(p, 0, 0, 0, 0, 0)                    // collation
+		p = binary.LittleEndian.AppendUint64(p, tc.total)
+		for i := 0; i < len(enc); i += 4000 {
+			end := i + 4000
+			if end > len(enc) {
+				end = len(enc)
+			}
+			p = binary.LittleEndian.AppendUint32(p, uint32(end-i))
+			p = append(p, enc[i:end]...)
+		}
+		p = binary.LittleEndian.AppendUint32(p, 0) // terminator
+		r, err := ParseRPC(rpcByName("sp_executesql", false, p))
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if r.Statement != stmt {
+			t.Fatalf("%s: reassembled %d characters, want %d",
+				tc.name, len(r.Statement), len(stmt))
+		}
+	}
+}
+
+// A NULL statement parameter is not a statement, and neither is an absent one.
+// Both are refused, because a dynamic-SQL call the relay cannot read the
+// statement out of is a call it has no opinion about -- and forwarding one would
+// be forwarding the single message on this protocol that carries arbitrary SQL.
+func TestAnUnreadableDynamicCallIsRefused(t *testing.T) {
+	null := []byte{0, 0, 0xe7}
+	null = binary.LittleEndian.AppendUint16(null, 8000)
+	null = append(null, 0, 0, 0, 0, 0)
+	null = binary.LittleEndian.AppendUint16(null, 0xffff) // NULL
+
+	for _, tc := range []struct {
+		name string
+		body []byte
+	}{
+		{"no parameters at all", rpcByName("sp_executesql", false)},
+		{"a NULL statement", rpcByName("sp_executesql", false, null)},
+		{"an integer where the statement should be",
+			rpcByName("sp_executesql", false, intParam(1))},
+		{"too few parameters for the signature",
+			rpcByName("sp_prepare", false, intParam(0), nvarcharParam(""))},
+		{"a data type the reader does not know",
+			rpcByName("sp_executesql", false, []byte{0, 0, 0xf1, 0})},
+		{"a parameter that ends inside its value",
+			rpcByName("sp_executesql", false, nvarcharParam("SELECT 1")[:12])},
+	} {
+		if _, err := ParseRPC(tc.body); err == nil {
+			t.Fatalf("%s was accepted", tc.name)
+		}
+	}
+	// And the type error says which type, so an operator whose driver sends
+	// something unusual can report it rather than guess.
+	_, err := ParseRPC(rpcByName("sp_executesql", false, []byte{0, 0, 0xf1, 0}))
+	if !errors.Is(err, ErrParamType) {
+		t.Fatalf("an unknown type gave %v, want ErrParamType", err)
+	}
+}
+
+// A PLP value whose chunks say more than its declared total is a value two
+// readers would disagree about. Neither number is believed.
+func TestChunksThatExceedTheDeclaredTotalAreRefused(t *testing.T) {
+	enc := ToUCS2("SELECT 1")
+	p := []byte{0, 0, 0xe7}
+	p = binary.LittleEndian.AppendUint16(p, 0xffff)
+	p = append(p, 0, 0, 0, 0, 0)
+	p = binary.LittleEndian.AppendUint64(p, 2) // two octets declared
+	p = binary.LittleEndian.AppendUint32(p, uint32(len(enc)))
+	p = append(p, enc...)
+	p = binary.LittleEndian.AppendUint32(p, 0)
+	if _, err := ParseRPC(rpcByName("sp_executesql", false, p)); err == nil {
+		t.Fatal("a value whose chunks outran its declared total was accepted")
 	}
 }

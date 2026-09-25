@@ -527,11 +527,17 @@ type RPC struct {
 	ProcID uint16
 	// ByID says the procedure was named by number.
 	ByID bool
-	// Params is how many parameters followed, which is a number the client
-	// chose.
-	Params int
-	// Batch says another RPC follows in the same message.
-	Batch bool
+	// Statement is the T-SQL this call carries, when the procedure is one whose
+	// signature puts a statement in a parameter -- sp_executesql and the
+	// prepare family. It is empty for every other procedure, and HasStatement
+	// says which case it is.
+	//
+	// This is the only parameter value this package ever decodes, and the
+	// reason is that it is not data: it is the statement, and without it a
+	// T-SQL policy would be inspecting the SET statements a driver emits on
+	// connect and nothing an application ever runs. See rpc.go.
+	Statement    string
+	HasStatement bool
 }
 
 // The well-known procedure identifiers, from MS-TDS. Only the ones a policy has
@@ -651,9 +657,27 @@ func ParseRPC(b []byte) (*RPC, error) {
 	// query's data and are deliberately not read: a relay that held them would
 	// be holding the contents of somebody's database, and would put them in a
 	// log line.
-	if len(rest) < 2 {
+	//
+	// The one exception is the parameter that *is* the statement, on the six
+	// procedures whose documented signature has one. Reading it is the
+	// difference between a policy that inspects what applications run and one
+	// that inspects almost nothing, because a client library that uses
+	// parameters sends sp_executesql rather than a batch.
+	at, ok := StatementParam(r.Procedure())
+	if !ok {
 		return r, nil
 	}
+	if len(rest) < 2 {
+		// A dynamic-SQL call with no parameter list at all. It cannot be the
+		// call its signature describes, and refusing it is cheaper than
+		// deciding about a statement that is not there.
+		return nil, fmt.Errorf("%w: %s with no parameters", ErrTruncated, r.Procedure())
+	}
+	st, err := readStatementParam(rest[2:], at)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", r.Procedure(), err)
+	}
+	r.Statement, r.HasStatement = st, true
 	return r, nil
 }
 
