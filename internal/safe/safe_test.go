@@ -12,12 +12,12 @@ func TestGuardContainsAPanicAndReportsIt(t *testing.T) {
 	var what string
 	var value any
 	var stack string
-	Report = func(w string, v any, s []byte) {
+	SetReport(func(w string, v any, s []byte) {
 		mu.Lock()
 		defer mu.Unlock()
 		what, value, stack = w, v, string(s)
-	}
-	defer func() { Report = nil }()
+	})
+	defer SetReport(nil)
 
 	done := make(chan struct{})
 	go func() {
@@ -47,18 +47,18 @@ func TestGuardContainsAPanicAndReportsIt(t *testing.T) {
 // A goroutine that returns normally must cost nothing and report nothing.
 func TestGuardIsSilentWithoutAPanic(t *testing.T) {
 	before := Panics()
-	Report = func(string, any, []byte) { t.Error("a clean return was reported as a panic") }
-	defer func() { Report = nil }()
+	SetReport(func(string, any, []byte) { t.Error("a clean return was reported as a panic") })
+	defer SetReport(nil)
 	func() { defer Guard("test flow") }()
 	if Panics() != before {
 		t.Fatal("a clean return was counted")
 	}
 }
 
-// A nil Report must still contain the panic: the counter is the only
-// thing lost.
+// No reporter must still contain the panic: the detail is the only thing
+// lost.
 func TestGuardWithoutAReporter(t *testing.T) {
-	Report = nil
+	SetReport(nil)
 	before := Panics()
 	done := make(chan struct{})
 	go func() {
@@ -70,4 +70,38 @@ func TestGuardWithoutAReporter(t *testing.T) {
 	if Panics()-before != 1 {
 		t.Fatal("the panic was not counted")
 	}
+}
+
+// The sink is installed while flow goroutines are running, because a
+// reload builds a second Server while the first is still serving. Under
+// the race detector this is what says the pointer is not torn: a plain
+// package variable fails it, which is how the race was found -- by a test
+// that started two listeners at once.
+func TestSetReportDoesNotRaceAContainedPanic(t *testing.T) {
+	defer SetReport(nil)
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			SetReport(func(string, any, []byte) {})
+		}
+	}()
+	for i := 0; i < 200; i++ {
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			defer Guard("test flow")
+			panic("boom")
+		}()
+		<-done
+	}
+	close(stop)
+	wg.Wait()
 }

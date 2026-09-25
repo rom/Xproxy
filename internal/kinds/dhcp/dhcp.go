@@ -54,6 +54,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rom/xproxy/internal/acceptgroup"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/proxy"
@@ -71,9 +72,13 @@ type server struct {
 	// address, which is the key starvation is measured in.
 	limiter *limits.KeyedLimiter
 
-	wg   sync.WaitGroup
-	once sync.Once
-	done chan struct{}
+	// running is what a shutdown waits for: the reader towards the servers
+	// and the sweep of pending requests. It is acceptgroup rather than a
+	// bare WaitGroup because the engine can call Shutdown before serve has
+	// run its first Add -- and a WaitGroup's Add must not race its Wait.
+	running acceptgroup.Group
+	once    sync.Once
+	done    chan struct{}
 
 	// pend pairs a reply with the client that asked for it. On a protocol
 	// with no session that pairing is the only thing that makes a reply
@@ -161,16 +166,13 @@ func (s *server) shutdown(ctx context.Context) {
 			_ = s.pc.Close()
 		}
 	})
-	finished := make(chan struct{})
-	go func() {
-		s.wg.Wait()
-		close(finished)
-	}()
-	select {
-	case <-finished:
-	case <-ctx.Done():
-		<-finished
-	}
+	s.running.Close()
+	s.running.Wait(ctx)
+	// And then without the bound, which is what this did before the group
+	// replaced the WaitGroup. There is no session here to be stuck on: the
+	// sockets are closed above, so the reader and the sweep end on the error
+	// that follows and the wait is short whatever the context says.
+	s.running.Wait(context.Background())
 }
 
 // exchange is one request in flight towards a server, and who is waiting.

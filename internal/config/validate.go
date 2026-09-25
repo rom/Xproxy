@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/hex"
 	"github.com/rom/xproxy/internal/assets"
+	bacnetwire "github.com/rom/xproxy/internal/bacnet"
 	dhcpwire "github.com/rom/xproxy/internal/dhcp"
 	"github.com/rom/xproxy/internal/dns"
 	"github.com/rom/xproxy/internal/expr"
@@ -862,6 +863,18 @@ func (v *validator) server(s *Server) {
 				v.errf("%s.dhcp: required for kind dhcp", p)
 			} else {
 				v.dhcpListener(p+".dhcp", ln.DHCP)
+			}
+		case "bacnet":
+			// No tls section: Annex J is BACnet over UDP and the protocol
+			// has no transport security anywhere, so a listener carrying a
+			// certificate would be promising something it cannot do.
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C || ln.TLS != nil {
+				v.errf("%s: a bacnet listener takes only address and bacnet: the protocol is UDP and has no TLS", p)
+			}
+			if ln.BACnet == nil {
+				v.errf("%s.bacnet: required for kind bacnet", p)
+			} else {
+				v.bacnetListener(p+".bacnet", ln.BACnet)
 			}
 		case "redis":
 			if ln.Redis == nil {
@@ -2519,6 +2532,7 @@ var denyReasons = map[string]bool{
 	"telnet_denied": true, "vnc_denied": true, "rdp_denied": true, "sftp_icap": true, "udp_denied": true,
 	"modbus_denied": true, "iec104_denied": true, "ntp_denied": true, "ntske_denied": true,
 	"snmp_denied": true, "ldap_denied": true, "tftp_denied": true, "dhcp_denied": true, "postgres_denied": true, "mysql_denied": true, "tds_denied": true, "redis_denied": true,
+	"bacnet_denied": true,
 }
 
 // securityTxtFieldRE bounds an extra field name to the token RFC 9116
@@ -9942,4 +9956,189 @@ func (v *validator) assetInventory(a *AssetInventory) {
 // roleNames lists the roles for a validation message.
 func roleNames() string {
 	return strings.Join(assets.RoleNames(), ", ")
+}
+
+// bacnetListener checks a kind: bacnet section.
+//
+// Every name is resolved here rather than at the first datagram, because a
+// service, object type or property this file spells wrong would otherwise be
+// a rule that quietly matches nothing -- which on this protocol is a policy
+// with a hole in it that nothing reports.
+func (v *validator) bacnetListener(p string, m *BACnetListener) {
+	if m.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	v.modbusCIDRs(p+".allow_clients", m.AllowClients)
+	v.modbusCIDRs(p+".deny_clients", m.DenyClients)
+	if len(m.AllowClients) == 0 {
+		v.warnf("%s.allow_clients: empty, so any address may send: BACnet has no "+
+			"authentication, and this list is the only identity a request has", p)
+	}
+	v.bacnetServices(p+".services", m.Services)
+	v.bacnetServices(p+".deny_services", m.DenyServices)
+	v.bacnetObjects(p+".objects", m.Objects)
+	v.bacnetObjects(p+".deny_objects", m.DenyObjects)
+	v.bacnetProperties(p+".properties", m.Properties)
+	v.bacnetProperties(p+".deny_properties", m.DenyProperties)
+	v.bacnetPriority(p+".max_command_priority", m.MaxCommandPriority)
+	v.bacnetNetworks(p+".networks", m.Networks)
+	if m.MaxPriority != "" {
+		switch strings.ToLower(m.MaxPriority) {
+		case "normal", "urgent", "critical-equipment", "life-safety":
+		default:
+			v.errf("%s.max_priority: must be normal, urgent, critical-equipment or life-safety", p)
+		}
+	}
+	if m.MaxHopCount < 0 || m.MaxHopCount > 255 {
+		v.errf("%s.max_hop_count: must be between 1 and 255", p)
+	}
+	if m.MaxMessageBytes < 0 || m.MaxMessageBytes > bacnetwire.MaxMessage {
+		v.errf("%s.max_message_bytes: must be between 1 and %d, which is Annex J's own maximum",
+			p, bacnetwire.MaxMessage)
+	}
+	if m.MaxBroadcastReplies < 0 {
+		v.errf("%s.max_broadcast_replies: must not be negative", p)
+	}
+	if m.MaxWhoIsRange < 0 {
+		v.errf("%s.max_whois_range: must not be negative", p)
+	}
+	if m.MaxPending < 0 || m.MaxPending > 256 {
+		// There are two hundred and fifty-six invoke identifiers, and the
+		// relay allocates one per outstanding request. A larger table
+		// cannot hold more than that, and asking for one says the
+		// configuration expects something the protocol cannot do.
+		v.errf("%s.max_pending: must be between 1 and 256, which is how many invoke "+
+			"identifiers the protocol has", p)
+	}
+	switch m.DenyResponse {
+	case "", "reject", "error", "drop":
+	default:
+		v.errf("%s.deny_response: must be reject, error or drop", p)
+	}
+	switch m.DefaultAction {
+	case "", "deny", "allow":
+	default:
+		v.errf("%s.default_action: must be deny or allow", p)
+	}
+	if m.DefaultAction == "allow" {
+		v.warnf("%s.default_action: allow carries every request no rule refuses, on a "+
+			"protocol with no authentication", p)
+	}
+	if bacnetOn(m.AllowBBMD) {
+		v.warnf("%s.allow_bbmd: register-foreign-device asks a BBMD to send the "+
+			"registering address every broadcast on a network it is not on, from one "+
+			"unauthenticated datagram", p)
+	}
+	if bacnetOn(m.AllowRouting) && !bacnetOn(m.AllowNetworkMessages) {
+		v.errf("%s.allow_routing: needs allow_network_messages, because a routing "+
+			"message is a network layer message", p)
+	}
+	if bacnetOn(m.AllowForwarded) && !bacnetOn(m.AllowBroadcast) {
+		v.warnf("%s.allow_forwarded: a forwarded-npdu is a broadcast somebody else "+
+			"relayed, and it carries the originating address inside the payload", p)
+	}
+	names := map[string]bool{}
+	for i := range m.Rules {
+		r := &m.Rules[i]
+		rp := fmt.Sprintf("%s.rules[%d]", p, i)
+		if r.Name == "" {
+			v.errf("%s.name: required", rp)
+		} else if names[r.Name] {
+			v.errf("%s.name: %q is used twice", rp, r.Name)
+		}
+		names[r.Name] = true
+		switch r.Action {
+		case "allow", "deny", "observe":
+		default:
+			v.errf("%s.action: must be allow, deny or observe", rp)
+		}
+		v.modbusCIDRs(rp+".clients", r.Clients)
+		v.bacnetServices(rp+".services", r.Services)
+		v.bacnetObjects(rp+".objects", r.Objects)
+		v.bacnetObjects(rp+".deny_objects", r.DenyObjects)
+		v.bacnetProperties(rp+".properties", r.Properties)
+		v.bacnetProperties(rp+".deny_properties", r.DenyProperties)
+		v.bacnetRanges(rp+".instances", r.Instances)
+		v.bacnetNetworks(rp+".networks", r.Networks)
+		v.bacnetPriority(rp+".max_command_priority", r.MaxCommandPriority)
+		v.modbusSchedule(rp+".schedule", r.Schedule)
+	}
+}
+
+// bacnetOn reads an optional boolean the way the kind does, so a warning
+// about a setting says what the listener will actually do with it.
+//
+// Every setting it is asked about defaults to off. The ones that default to
+// on are refusals -- deny_sensitive_writes, refuse_unlocated_objects -- and a
+// warning about those would fire on every well-configured file.
+func bacnetOn(p *bool) bool { return p != nil && *p }
+
+func (v *validator) bacnetServices(p string, names []string) {
+	for _, n := range names {
+		if _, ok := bacnetwire.ParseService(n); !ok {
+			v.errf("%s: %q is not a BACnet service", p, n)
+		}
+	}
+}
+
+func (v *validator) bacnetObjects(p string, names []string) {
+	for _, n := range names {
+		if _, ok := bacnetwire.ParseObjectType(n); !ok {
+			v.errf("%s: %q is not a BACnet object type", p, n)
+		}
+	}
+}
+
+func (v *validator) bacnetProperties(p string, names []string) {
+	for _, n := range names {
+		if _, ok := bacnetwire.ParseProperty(n); !ok {
+			v.errf("%s: %q is not a BACnet property", p, n)
+		}
+	}
+}
+
+// bacnetPriority checks a command priority. Zero means "not set", which is
+// how a rule says it takes the listener's bound.
+func (v *validator) bacnetPriority(p string, n int) {
+	if n < 0 || n > 16 {
+		v.errf("%s: must be between 1 and 16, which are the command priorities of clause 19.2", p)
+	}
+	if n > 0 && n <= 2 {
+		v.warnf("%s: priority 1 and 2 are life safety and cannot be overridden by the "+
+			"management system, a schedule or an operator", p)
+	}
+}
+
+func (v *validator) bacnetNetworks(p string, ns []int) {
+	for _, n := range ns {
+		if n < 0 || n > 65535 {
+			v.errf("%s: %d is not a BACnet network number", p, n)
+		}
+		if n == 65535 {
+			v.errf("%s: 65535 is the global broadcast network, which this relay will not route to", p)
+		}
+	}
+}
+
+// bacnetRanges checks instance ranges written as 1-100 or as one number.
+func (v *validator) bacnetRanges(p string, specs []string) {
+	for _, s := range specs {
+		lo, hi, found := strings.Cut(strings.TrimSpace(s), "-")
+		low, err := strconv.ParseUint(strings.TrimSpace(lo), 10, 22)
+		if err != nil {
+			v.errf("%s: %q is not an instance or a range of them", p, s)
+			continue
+		}
+		if !found {
+			continue
+		}
+		high, err := strconv.ParseUint(strings.TrimSpace(hi), 10, 22)
+		if err != nil {
+			v.errf("%s: %q is not a range of instances", p, s)
+			continue
+		}
+		if high < low {
+			v.errf("%s: %q runs backwards", p, s)
+		}
+	}
 }

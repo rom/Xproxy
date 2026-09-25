@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rom/xproxy/internal/acceptgroup"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/httpx"
 	"github.com/rom/xproxy/internal/netutil"
@@ -48,11 +49,14 @@ type forwardServer struct {
 	mitm *interceptor
 
 	open atomic.Int64
-	wg   sync.WaitGroup
-	mu   sync.Mutex
-	cons map[net.Conn]struct{}
-	once sync.Once
-	done chan struct{}
+	// tunnels is what a shutdown waits for. It is acceptgroup rather than a
+	// bare WaitGroup because a CONNECT can be admitted at the moment
+	// shutdown begins -- and a WaitGroup's Add must not race its Wait.
+	tunnels acceptgroup.Group
+	mu      sync.Mutex
+	cons    map[net.Conn]struct{}
+	once    sync.Once
+	done    chan struct{}
 
 	authMu    sync.Mutex
 	authCache map[[32]byte]time.Time
@@ -502,9 +506,13 @@ func (f *forwardServer) connect(w http.ResponseWriter, r *http.Request, p *forwa
 	h.Counters().ForwardTunnelsOpen.Add(1)
 	defer h.Counters().ForwardTunnelsOpen.Add(-1)
 	f.track(client, true)
-	f.wg.Add(1)
-	defer f.wg.Done()
 	defer f.track(client, false)
+	if !f.tunnels.Enter() {
+		// Shutting down: the tunnel is not started, so the client is told
+		// nothing and the connection closes with the listener.
+		return
+	}
+	defer f.tunnels.Leave()
 	_ = client.SetDeadline(time.Time{})
 	_, err = bufrw.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
 	if err == nil {
@@ -556,9 +564,11 @@ func (f *forwardServer) connectH2(w http.ResponseWriter, r *http.Request, p *for
 	h.Counters().ForwardTunnelsOpen.Add(1)
 	defer h.Counters().ForwardTunnelsOpen.Add(-1)
 	f.track(dst, true)
-	f.wg.Add(1)
-	defer f.wg.Done()
 	defer f.track(dst, false)
+	if !f.tunnels.Enter() {
+		return
+	}
+	defer f.tunnels.Leave()
 	defer func() { _ = dst.Close() }()
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
@@ -733,16 +743,17 @@ func (f *forwardServer) track(c net.Conn, add bool) {
 func (f *forwardServer) shutdown(ctx context.Context) {
 	f.once.Do(func() { close(f.done) })
 	f.tr.CloseIdleConnections()
-	finished := make(chan struct{})
-	go func() { f.wg.Wait(); close(finished) }()
-	select {
-	case <-finished:
-	case <-ctx.Done():
+	f.tunnels.Close()
+	f.tunnels.Wait(ctx)
+	if ctx.Err() != nil {
 		f.mu.Lock()
 		for c := range f.cons {
 			_ = c.Close()
 		}
 		f.mu.Unlock()
-		<-finished
+		// And then without the bound: the connections are closed above, so
+		// each tunnel ends on the error that follows, and this is what the
+		// select's own second wait did before the group replaced it.
+		f.tunnels.Wait(context.Background())
 	}
 }

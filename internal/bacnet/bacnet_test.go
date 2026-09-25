@@ -409,3 +409,77 @@ func TestClipCutsOnARuneBoundary(t *testing.T) {
 		}
 	}
 }
+
+// The invoke identifier's offset, because a relay rewrites it: the
+// standard makes the identifier unique only between one client and one
+// device, so two clients through one relay socket would otherwise get
+// each other's answers.
+func TestTheInvokeIdentifiersOffsetIsWhereItIs(t *testing.T) {
+	cases := []struct {
+		name string
+		b    []byte
+	}{
+		{"an unsegmented confirmed request", confirmed(ReadProperty)},
+		{"a segmented confirmed request", []byte{0x0C, 0x05, 0x2A, 0x03, 0x10, ReadProperty}},
+		{"a simple ack", []byte{0x20, 0x2A, WriteProperty}},
+		{"a complex ack", []byte{0x30, 0x2A, ReadProperty}},
+		{"a segment ack", []byte{0x41, 0x2A, 0x02, 0x10}},
+		{"an error", []byte{0x50, 0x2A, ReadProperty}},
+		{"a reject", []byte{0x60, 0x2A, 0x09}},
+		{"an abort", []byte{0x71, 0x2A, 0x04}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			b := append([]byte(nil), c.b...)
+			b[2] = 0x2A // every one of these carries the identifier here
+			a, err := ParseAPDU(b)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !a.HasInvokeID {
+				t.Fatal("no invoke identifier")
+			}
+			if b[a.InvokeOffset] != a.InvokeID {
+				t.Fatalf("offset %d holds %#x, and the identifier read was %#x",
+					a.InvokeOffset, b[a.InvokeOffset], a.InvokeID)
+			}
+			// And a rewrite through the offset is what the relay reads back.
+			b[a.InvokeOffset] = 0x7F
+			again, err := ParseAPDU(b)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if again.InvokeID != 0x7F {
+				t.Fatalf("after a rewrite the identifier is %#x", again.InvokeID)
+			}
+		})
+	}
+	// An unconfirmed request has none, and its offset says nothing.
+	u, err := ParseAPDU(unconfirmed(WhoIs))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.HasInvokeID {
+		t.Fatal("an unconfirmed request carried an invoke identifier")
+	}
+}
+
+// The link layer requests are named as a group because the link layer has
+// no identifier to pair an answer by: a relay that forwards one has to
+// expect exactly one answer, and one that expected none would forward the
+// question and drop the reply.
+func TestTheLinkLayerRequestsAreNamedAsAGroup(t *testing.T) {
+	for _, f := range []Function{FuncWriteBDT, FuncReadBDT, FuncRegisterForeignDevice,
+		FuncReadFDT, FuncDeleteFDTEntry} {
+		if !f.LinkRequest() {
+			t.Errorf("%s is a request and is not counted as one", f)
+		}
+	}
+	for _, f := range []Function{FuncResult, FuncReadBDTAck, FuncReadFDTAck,
+		FuncOriginalUnicast, FuncOriginalBroadcast, FuncForwardedNPDU,
+		FuncDistributeBroadcast, FuncSecureBVLL} {
+		if f.LinkRequest() {
+			t.Errorf("%s was counted as a link layer request", f)
+		}
+	}
+}

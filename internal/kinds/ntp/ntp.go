@@ -44,6 +44,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rom/xproxy/internal/acceptgroup"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/limits"
 	wire "github.com/rom/xproxy/internal/ntp"
@@ -83,9 +84,14 @@ type server struct {
 	backends []*backend
 	rr       atomic.Uint64
 
-	wg   sync.WaitGroup
-	done chan struct{}
-	once sync.Once
+	// running is what a shutdown waits for: the sweep, the monitor, the
+	// reader per server and each opaque exchange. It is acceptgroup rather
+	// than a bare WaitGroup because the engine can call Shutdown before
+	// serve has run its first Add -- and a WaitGroup's Add must not race
+	// its Wait. The race detector found this one through test/shutdown.
+	running acceptgroup.Group
+	done    chan struct{}
+	once    sync.Once
 }
 
 // backend is one time server: its endpoint, and the one socket this
@@ -273,9 +279,17 @@ func (s *server) serve() {
 				"listener", s.cfg.Name, "error", err.Error())
 		})
 	}
-	s.wg.Add(2)
-	go func() { defer s.wg.Done(); s.sweep() }()
-	go func() { defer s.wg.Done(); s.monitor.run() }()
+	if !s.running.Enter() {
+		// Shut down before it started, which a reload can do.
+		return
+	}
+	defer s.running.Leave()
+	for _, run := range []func(){s.sweep, s.monitor.run} {
+		if !s.running.Enter() {
+			break
+		}
+		go func() { defer s.running.Leave(); run() }()
+	}
 	buf := make([]byte, 65535)
 	for {
 		nb, addr, err := s.pc.ReadFrom(buf)
@@ -569,8 +583,9 @@ func (s *server) openBackends() error {
 		b.health.Store(&Health{State: StateUnknown})
 		s.backends = append(s.backends, b)
 		pool.Begin(e)
-		s.wg.Add(1)
-		go func() { defer s.wg.Done(); s.fromServer(b) }()
+		if s.running.Enter() {
+			go func() { defer s.running.Leave(); s.fromServer(b) }()
+		}
 	}
 	if len(s.backends) == 0 {
 		return errors.New("no usable server endpoint")
@@ -772,9 +787,11 @@ func (s *server) opaqueExchange(client netip.AddrPort, raw []byte) {
 		s.drop(client, "no_server", "")
 		return
 	}
-	s.wg.Add(1)
+	if !s.running.Enter() {
+		return
+	}
 	go func() {
-		defer s.wg.Done()
+		defer s.running.Leave()
 		defer safe.Guard("ntp opaque exchange")
 		conn, err := net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(b.addr))
 		if err != nil {
@@ -908,12 +925,8 @@ func (s *server) shutdown(ctx context.Context) {
 		}
 		s.mu.Unlock()
 	})
-	finished := make(chan struct{})
-	go func() { s.wg.Wait(); close(finished) }()
-	select {
-	case <-finished:
-	case <-ctx.Done():
-	}
+	s.running.Close()
+	s.running.Wait(ctx)
 	if err := s.learner.Stop(); err != nil {
 		s.host.Logs().Error.Warn("ntp learning report could not be written at shutdown",
 			"listener", s.cfg.Name, "error", err.Error())

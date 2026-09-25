@@ -120,6 +120,13 @@ internal/kinds/ldap    kind: ldap -- LDAP relay: the bind methods, the bound
 internal/kinds/dhcp    kind: dhcp -- DHCP relay agent: the server a reply came
                        from, the configuration it carries, option 82, the
                        starvation bound keyed on the hardware address
+internal/acceptgroup   what a listener's shutdown waits for: the check and
+                       the Add under one lock, because a WaitGroup's Add
+                       must not race its Wait. Fifteen kinds use it
+internal/kinds/bacnet  kind: bacnet -- BACnet/IP relay: the services carried,
+                       the objects and properties they may name, the command
+                       priority a write may claim, the broadcast and BBMD
+                       bounds, invoke identifiers translated per client
 internal/kinds/tftp    kind: tftp -- TFTP relay: the filename read as a path
                        and refused by class, the direction of the transfer,
                        the amplification bounds, one socket per transfer
@@ -1283,6 +1290,49 @@ that protocol's own terms, and bounds what a peer may say.
   policy is in force -- because a table entry that guessed a position would have the
   policy checking an option value or a Lua script's text, and passing exactly what
   it was meant to stop, silently.
+- `bacnet` reads BACnet/IP (`internal/bacnet` for the three layers and the
+  tables, `internal/kinds/bacnet` for the policy). It is the only kind whose
+  protocol has no identity of any kind, so the whole listener rests on the client
+  list, the service, and the object and property a request names.
+
+  Three things shape the code. **Where a service keeps its object is a table,
+  not a search.** The first object identifier in a request's parameters is the
+  wrong one often enough to matter: in a COV notification the first is the device
+  that sent it and the third is the object that changed, and in `subscribeCOV`
+  the first is a process identifier that is not an object at all.
+  `internal/bacnet/params.go` therefore holds a position per service, walks the
+  access lists of `readPropertyMultiple` and `writePropertyMultiple` in full, and
+  returns a second value saying whether it found what it was looking for. That
+  second value is the point: `createObject` names a type or an identifier inside
+  a choice and `who-Has` names an object or a name, and a listener with object
+  rules cannot decide about a request whose object it has not found. The two ways
+  to get that wrong are to check the wrong field and to let the request through
+  unchecked.
+
+  **The command priority is a bound, and the bounds are checked before the policy
+  choices.** A commandable object holds sixteen slots and the plant follows the
+  highest-priority one that is filled, so a write at slot 1 stands over the
+  management system, the schedules and the operator until whoever wrote it
+  relinquishes it. That refusal is hard -- it holds in shadow mode -- which means
+  `Decide` has to reach it even when a soft refusal would have been found first:
+  the rule is matched, then the bounds, then the service and object lists. A
+  listener whose order was the other way round would carry a life safety write in
+  monitor mode because the service was not on the allow list.
+
+  And **invoke identifiers are translated per client**, the way a BACnet router
+  translates them. The standard makes an identifier unique only between one
+  client and one device; this relay speaks to the building from one socket, so
+  two clients using identifier 1 towards the same controller would be
+  indistinguishable on the way back and one client's answer would be delivered to
+  the other. There are two hundred and fifty-six of them, and when all are
+  outstanding a request is refused rather than an identifier reused. An
+  unconfirmed request has nothing to pair with at all -- an `i-Am` is sent of the
+  device's own accord -- so those answers are matched to the clients that
+  broadcast inside a window and bounded in number, which is this protocol's
+  amplification control rather than a convenience. The translation runs in both
+  directions, because a client's segment acknowledgement names the identifier the
+  client chose, and a segment renews the exchange's deadline rather than letting
+  a long download expire in the middle of itself.
 - `ntske` is NTS key establishment, TCP 4460, relayed rather than
   terminated: it reads the server name and the application protocol from
   the ClientHello, refuses what is not an NTS client, bounds the

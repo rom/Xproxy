@@ -181,9 +181,9 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 	// client, so it goes to the error log with its stack rather than to
 	// the security log. Set here because every deployment builds a
 	// Server before any listener accepts.
-	safe.Report = func(what string, value any, stack []byte) {
+	safe.SetReport(func(what string, value any, stack []byte) {
 		logs.Error.Error("panic contained", "where", what, "panic", fmt.Sprint(value), "stack", string(stack))
-	}
+	})
 	if ai := cfg.AssetInventory; ai != nil && ai.Enabled {
 		k, err := newAssetKeeper(s, ai)
 		if err != nil {

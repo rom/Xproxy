@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rom/xproxy/internal/acceptgroup"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/proxy"
@@ -52,11 +53,16 @@ type server struct {
 
 	queue chan *record
 	open  atomic.Int64
-	wg    sync.WaitGroup
-	mu    sync.Mutex
-	once  sync.Once
-	cons  map[net.Conn]struct{}
-	done  chan struct{}
+	// running is what a shutdown waits for: the accepted sessions and the
+	// two goroutines serve starts. It is acceptgroup rather than a bare
+	// WaitGroup because the engine can call Shutdown before serve has run
+	// its first Add, and before an accepted connection has reached its
+	// own -- and a WaitGroup's Add must not race its Wait.
+	running acceptgroup.Group
+	mu      sync.Mutex
+	once    sync.Once
+	cons    map[net.Conn]struct{}
+	done    chan struct{}
 }
 
 type redaction struct {
@@ -156,16 +162,25 @@ func framingOf(s string) (wire.Framing, error) {
 }
 
 func (t *server) serve() {
-	t.wg.Add(1)
+	if !t.running.Enter() {
+		// Shut down before it started, which a reload can do.
+		return
+	}
+	defer t.running.Leave()
 	go func() {
-		defer t.wg.Done()
+		if !t.running.Enter() {
+			return
+		}
+		defer t.running.Leave()
 		defer safe.Guard("syslog forwarder")
 		t.forward()
 	}()
 	if t.pc != nil {
-		t.wg.Add(1)
 		go func() {
-			defer t.wg.Done()
+			if !t.running.Enter() {
+				return
+			}
+			defer t.running.Leave()
 			defer safe.Guard("syslog udp")
 			t.serveUDP()
 		}()
@@ -202,7 +217,7 @@ func (t *server) serve() {
 			return
 		}
 		go func() {
-			defer t.wg.Done()
+			defer t.running.Leave()
 			defer t.open.Add(-1)
 			defer t.untrack(c)
 			defer safe.Guard("syslog stream")
@@ -214,13 +229,10 @@ func (t *server) serve() {
 func (t *server) admit(c net.Conn) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	select {
-	case <-t.done:
+	if !t.running.Enter() {
 		return false
-	default:
 	}
 	t.cons[c] = struct{}{}
-	t.wg.Add(1)
 	return true
 }
 
@@ -240,17 +252,17 @@ func (t *server) shutdown(ctx context.Context) {
 			_ = t.pc.Close()
 		}
 	})
-	finished := make(chan struct{})
-	go func() { t.wg.Wait(); close(finished) }()
-	select {
-	case <-finished:
-	case <-ctx.Done():
+	t.running.Close()
+	t.running.Wait(ctx)
+	if ctx.Err() != nil {
 		t.mu.Lock()
 		for c := range t.cons {
 			_ = c.Close()
 		}
 		t.mu.Unlock()
-		<-finished
+		// And this returns rather than waiting again, which is what it did
+		// before the group replaced the WaitGroup: a shutdown that hangs on
+		// one session is worse than one that stops asking.
 	}
 }
 

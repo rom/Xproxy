@@ -156,6 +156,22 @@ func (f Function) Broadcast() bool {
 	return false
 }
 
+// LinkRequest reports whether the function is a request the virtual link
+// layer answers: one of the table reads or writes, or a foreign device
+// registration.
+//
+// It matters to a relay because the link layer has no identifier to pair
+// an answer by. A relay that forwards one of these has to expect exactly
+// one answer back -- a BVLC-Result or a table acknowledgement -- and a
+// relay that expected none would forward the question and drop the reply.
+func (f Function) LinkRequest() bool {
+	switch f {
+	case FuncWriteBDT, FuncReadBDT, FuncRegisterForeignDevice, FuncReadFDT, FuncDeleteFDTEntry:
+		return true
+	}
+	return false
+}
+
 // BBMD reports whether the function manages a broadcast management
 // device: its distribution table, or the foreign devices registered with
 // it.

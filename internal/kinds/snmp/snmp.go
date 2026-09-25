@@ -57,6 +57,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rom/xproxy/internal/acceptgroup"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/proxy"
@@ -83,11 +84,17 @@ type server struct {
 	upgrade wire.Version
 
 	open atomic.Int64
-	wg   sync.WaitGroup
-	mu   sync.Mutex
-	once sync.Once
-	cons map[net.Conn]struct{}
-	done chan struct{}
+	// running is what a shutdown waits for: the accepted sessions, the
+	// datagram reader and the reader towards the agents. It is acceptgroup
+	// rather than a bare WaitGroup because the engine can call Shutdown
+	// before serve has run its first Add -- and a WaitGroup's Add must not
+	// race its Wait. The race detector found this one through
+	// test/shutdown.
+	running acceptgroup.Group
+	mu      sync.Mutex
+	once    sync.Once
+	cons    map[net.Conn]struct{}
+	done    chan struct{}
 
 	// pend tracks the requests this relay has outstanding towards agents,
 	// so that a response can be matched to the client that asked.
@@ -194,10 +201,17 @@ func (t *server) alerts() bool { return t.m.AlertOnDeny == nil || *t.m.AlertOnDe
 // with the same policy: a client that connected would hang rather than be
 // decided about.
 func (t *server) serve() {
+	if !t.running.Enter() {
+		// Shut down before it started, which a reload can do.
+		return
+	}
+	defer t.running.Leave()
 	if t.pc != nil {
-		t.wg.Add(1)
 		go func() {
-			defer t.wg.Done()
+			if !t.running.Enter() {
+				return
+			}
+			defer t.running.Leave()
 			defer safe.Guard("snmp datagrams")
 			t.serveDatagrams()
 		}()
@@ -221,20 +235,17 @@ func (t *server) shutdown(ctx context.Context) {
 			_ = t.ln.Close()
 		}
 	})
-	finished := make(chan struct{})
-	go func() {
-		t.wg.Wait()
-		close(finished)
-	}()
-	select {
-	case <-finished:
-	case <-ctx.Done():
+	t.running.Close()
+	t.running.Wait(ctx)
+	if ctx.Err() != nil {
 		t.mu.Lock()
 		for c := range t.cons {
 			_ = c.Close()
 		}
 		t.mu.Unlock()
-		<-finished
+		// And this returns rather than waiting again, which is what it did
+		// before the group replaced the WaitGroup: a shutdown that hangs on
+		// one session is worse than one that stops asking.
 	}
 }
 
@@ -246,8 +257,10 @@ func (t *server) track(c net.Conn) bool {
 		return false
 	default:
 	}
+	if !t.running.Enter() {
+		return false
+	}
 	t.cons[c] = struct{}{}
-	t.wg.Add(1)
 	return true
 }
 
@@ -422,7 +435,7 @@ func (t *server) serveStreams() {
 			return
 		}
 		go func() {
-			defer t.wg.Done()
+			defer t.running.Leave()
 			defer t.open.Add(-1)
 			defer t.untrack(c)
 			defer safe.Guard("snmp session")

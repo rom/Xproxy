@@ -92,9 +92,13 @@ func (f *forwardServer) serveSOCKS(c net.Conn) {
 	h.Counters().ForwardRequests.Add(1)
 	h.Counters().ForwardSOCKS.Add(1)
 	f.track(c, true)
-	f.wg.Add(1)
-	defer f.wg.Done()
 	defer f.track(c, false)
+	if !f.tunnels.Enter() {
+		// Shutting down: the session is not started, so the client is told
+		// nothing and the connection closes with the listener.
+		return
+	}
+	defer f.tunnels.Leave()
 
 	_ = c.SetDeadline(time.Now().Add(socksHandshakeTimeout))
 	p := f.policy.Load()

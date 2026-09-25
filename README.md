@@ -112,7 +112,7 @@ estate — and binds only the kinds of its own role:
 |--------|-------|----------------|
 | `xproxy` | the open internet | `http`, `forward`, `tcp`, `udp`, `dns` |
 | `xgate` | people | `ssh`, `telnet`, `vnc`, `rdp` |
-| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `snmp`, `ldap`, `tftp`, `dhcp`, `postgres`, `mysql`, `tds`, `redis`, `ntp`, `ntske` |
+| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `snmp`, `ldap`, `tftp`, `dhcp`, `postgres`, `mysql`, `tds`, `redis`, `bacnet`, `ntp`, `ntske` |
 
 A kind a binary did not link is never bound and never falls through to
 the HTTP data plane: it is an error naming the daemon that serves it.
@@ -184,6 +184,7 @@ its own for what is deliberately *not* implemented and why.
 | Time | NTP v1 to v4 (RFC 5905), SNTP (RFC 4330), extension fields (RFC 7822), AES-CMAC authentication (RFC 8573), NTS (RFC 8915) passed through whole, and NTS key establishment relayed on TCP 4460 | `ntp`, `ntske` |
 | Industrial | Modbus/TCP (MBAP), Modbus over Serial Line RTU and ASCII tunnelled over TCP, and Modbus/TCP Security with the role in the client certificate | `modbus` |
 | Telecontrol | IEC 60870-5-104 (APCI/APDU, the I, S and U formats, the type identifications and causes of transmission of IEC 60870-5-101), with IEC 62351-3 TLS | `iec104` |
+| Building automation | BACnet/IP (ASHRAE 135 Annex J): the BVLC functions, the network layer of clause 6 with its routing and security messages, the application layer of clause 20 with the confirmed and unconfirmed services, and the object, property and command priority each request names | `bacnet` |
 | Management | SNMP v1 (RFC 1157), v2c (RFC 1901–1908) and v3 with USM (RFC 3410–3418), over UDP and over TCP (RFC 3430), with RFC 6353 TLS on the stream side | `snmp` |
 | Directory | LDAP v3 (RFC 4511–4515, 4517, 4519) with LDAPS and the StartTLS of RFC 4513, as a relay: the bind methods, the search filter's shape, distinguished names compared per relative name, the attribute lists in both directions | `ldap`, filters |
 | Addressing | DHCP (RFC 2131) with its options (RFC 2132), relay agent information (RFC 3046), long options (RFC 3396) and classless static routes (RFC 3442), as a relay agent that reads what it relays: the server a reply came from, and the configuration the reply carries | `dhcp` |
@@ -225,6 +226,7 @@ protocol so that a policy can be written in that protocol's own terms:
 | `tds` | `xrelay` | TDS 7.x for SQL Server: the PRELOGIN negotiation, LOGIN7, SQLBATCH and RPC, and the TLS handshake carried inside TDS packets | Whether the connection may be unencrypted at all -- and the relay answers the negotiation itself rather than forwarding the server's octet -- whether a password may cross in the clear, which login, database and application name may be claimed, whether a login carrying no user name is admitted, which message types, which stored procedures, and which statement shapes, applied to a batch and to the SQL inside an sp_executesql alike |
 | `redis` | `xrelay` | RESP2 and RESP3, multibulk and inline, with a table of where each command's keys are | Whether the connection may be unencrypted, whether a command may arrive before the connection has authenticated -- with the answer taken from the server's reply -- which ACL user may be named, which commands and subcommands may cross, which keys by prefix, which numbered databases, and whether anything may write |
 | `tftp` | `xrelay` | TFTP with RFC 2347–2349 options and RFC 7440 windows | The client list, the direction, the transfer mode, the filename read as a path and refused by class, the directories, and the block, window and transfer bounds |
+| `bacnet` | `xrelay` | BACnet/IP: the BVLC functions, the network layer, the confirmed and unconfirmed services, and where each service keeps its object | Which addresses may speak to the building at all -- the only identity the protocol has -- which services may be sent, which objects and properties they may name, and at which *command priority*, so nobody takes a piece of plant at a life safety slot the management system cannot override; whether a broadcast is carried and how many answers it may bring back; whether foreign-device registration with the estate's broadcast management is carried at all |
 | `ntp` | `xrelay` | NTP v1–v4, SNTP, NTS-protected NTP | Versions, modes, extension fields, authentication, and whether the servers agree |
 | `ntske` | `xrelay` | NTS key establishment (TLS on 4460) | The application protocol, the server name, the handshakes in flight |
 
@@ -550,6 +552,35 @@ protocol so that a policy can be written in that protocol's own terms:
   The structural oddity is the **TLS handshake, which happens inside TDS packets
   and then stops**: for the length of the handshake TDS wraps TLS, afterwards TLS
   wraps TDS, and the nesting inverts once part way through a connection
+
+- `kind: bacnet`: a **BACnet/IP relay in front of a building**. The controllers
+  behind it hold the setpoints for air handling, chillers, lighting, lifts,
+  access control and smoke control, and the protocol has **no identity at
+  all**: no user, no session, no password that means anything, and no transport
+  security. Clause 24's `authenticate` service was withdrawn from the standard
+  and its network security is implemented by almost nothing in the field, so a
+  device answers whoever asks it.
+
+  Three properties of the protocol shape what the relay does. Writing is a
+  *service*, not a mode, so the difference between reading a zone temperature
+  and setting it is one octet -- and an unconfigured listener therefore carries
+  reading, discovery and notifications and nothing that changes anything.
+  Writing has a *priority*, and the priority is the privilege: a commandable
+  object holds sixteen command slots, the plant follows the highest-priority one
+  that is filled, and slots 1 and 2 are life safety and cannot be overridden by
+  the management system, a schedule or an operator -- so a write above the bound
+  is refused *hard*, in monitor mode too. And it is broadcast, and it amplifies:
+  one `who-Is` is answered by an `i-Am` from every device that hears it, and a
+  BBMD's foreign-device registration lets one unauthenticated datagram subscribe
+  a host to every broadcast on a network it is not even on.
+
+  Deciding about a request means knowing which object it is about, and the first
+  object identifier in the parameters is the wrong one often enough to matter --
+  in a COV notification the first is the device that sent it and the third is the
+  object that changed. So the relay knows where each service keeps its object,
+  checks every object in a multiple request rather than the first of forty, and
+  where it *cannot* find one says so: with object rules configured, a request
+  whose object was not found is refused rather than passed
 
 - `kind: redis`: a **Redis and Valkey relay**, and the protocol where a relay earns
   its place fastest -- because **Redis's own default is no password**. An instance

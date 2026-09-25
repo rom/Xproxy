@@ -34,6 +34,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rom/xproxy/internal/acceptgroup"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/netutil"
 	wire "github.com/rom/xproxy/internal/ntp"
@@ -72,9 +73,15 @@ type server struct {
 	open atomic.Int64
 	mu   sync.Mutex
 	cons map[net.Conn]struct{}
-	wg   sync.WaitGroup
-	done chan struct{}
-	once sync.Once
+	// sessions is what a shutdown waits for. It is acceptgroup rather than
+	// a bare WaitGroup because the check and the Add have to happen under
+	// one lock that the close also takes: the engine closes the front
+	// socket before it calls Shutdown, which leaves the accept goroutine
+	// between a connection it has accepted and the Add it has not reached.
+	// The race detector found this one through test/shutdown.
+	sessions acceptgroup.Group
+	done     chan struct{}
+	once     sync.Once
 }
 
 func newServer(host proxy.Host, cfg config.Listener, ln net.Listener) (*server, error) {
@@ -143,7 +150,7 @@ func (s *server) serve() {
 			return
 		}
 		go func() {
-			defer s.wg.Done()
+			defer s.sessions.Leave()
 			defer s.open.Add(-1)
 			defer s.untrack(c)
 			defer safe.Guard("ntske session")
@@ -155,13 +162,10 @@ func (s *server) serve() {
 func (s *server) track(c net.Conn) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	select {
-	case <-s.done:
+	if !s.sessions.Enter() {
 		return false
-	default:
 	}
 	s.cons[c] = struct{}{}
-	s.wg.Add(1)
 	return true
 }
 
@@ -403,16 +407,15 @@ func (s *server) shutdown(ctx context.Context) {
 		close(s.done)
 		_ = s.ln.Close()
 	})
-	finished := make(chan struct{})
-	go func() { s.wg.Wait(); close(finished) }()
-	select {
-	case <-finished:
-	case <-ctx.Done():
-		s.mu.Lock()
-		for c := range s.cons {
-			_ = c.Close()
-		}
-		s.mu.Unlock()
-		<-finished
+	s.sessions.Close()
+	s.sessions.Wait(ctx)
+	if ctx.Err() == nil {
+		return
 	}
+	s.mu.Lock()
+	for c := range s.cons {
+		_ = c.Close()
+	}
+	s.mu.Unlock()
+	s.sessions.Wait(context.Background())
 }

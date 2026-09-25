@@ -5988,7 +5988,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `ntp_denied`, `ntske_denied`, `yara` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `ntp_denied`, `ntske_denied`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |
@@ -10057,6 +10057,226 @@ A command merely *off* the allow list is a **soft** refusal, which is the
 distinction that makes monitor mode useful: it is most likely an application nobody
 has listed yet, and finding those is what the mode is for. An operator who names
 one of the hard set in `allow_commands` has said so, and is not overruled.
+
+## bacnet
+
+`kind: bacnet` is a relay in front of a building. The controllers behind it hold
+the setpoints for air handling, chillers, boilers, lighting, lifts, access
+control, smoke control and the pressurisation in an operating theatre, and a
+great many of them have been in a ceiling void since before the estate had a
+security team.
+
+**There is no identity in this protocol.** No user, no session, no password that
+means anything, and no transport security. Clause 24's `authenticate` service was
+withdrawn from the standard; the network security of the same clause -- the
+challenge, the wrapped payloads, the key distribution -- is implemented by almost
+nothing in the field. A device answers whoever asks it. So this listener decides
+about a datagram from three things and no others: the address it came from, the
+service it asks for, and the object and property it names.
+
+Three properties of the protocol shape every control below.
+
+**Writing is a service, not a mode.** `readProperty` and `writeProperty` are
+different service choices in the same request shape, so the difference between
+reading a zone temperature and setting it is one octet. `reinitializeDevice`
+restarts a controller and `deviceCommunicationControl` tells one to stop talking
+for a while; both take an optional password that is sent in the clear and that
+most devices leave unset. An empty `services` list therefore allows reading,
+discovery and the notifications a device sends of its own accord, and nothing
+that changes anything.
+
+**Writing has a priority, and the priority is the privilege.** A commandable
+object -- an analogue output, a binary output, a lighting output, a lift --
+holds sixteen command slots, and the plant follows the highest-priority slot
+that is filled. Slots 1 and 2 are manual and automatic life safety: a value
+written there cannot be overridden by the management system, by a schedule, or by
+an operator at a workstation, and it stands until whoever wrote it relinquishes
+it. `max_command_priority` is the bound, it defaults to 8, and a request above it
+is refused *hard* -- the refusal stands in monitor mode, because a relay that
+shadowed this one would be watching somebody take a piece of plant.
+
+**It is broadcast, and it amplifies.** `who-Is` is a broadcast that every device
+answers with an `i-Am`. A BBMD -- a broadcast management device -- forwards
+broadcasts between subnets, and its foreign-device registration lets a host ask
+to be sent every broadcast on a network it is not even on, from a single
+unauthenticated datagram. `Forwarded-NPDU` carries the address a message came
+from *inside the payload*, where whoever sent the datagram chose it. So
+`allow_broadcast`, `allow_bbmd` and `allow_forwarded` all default to false,
+`max_broadcast_replies` bounds the answers one broadcast brings back, and a
+`Forwarded-NPDU` whose claimed origin is not the address it arrived from is
+refused.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `upstream` | string | -- | The pool of devices, routers or BBMDs. Required |
+| `allow_clients` | list | `[]` (any) | Networks a client may send from. Empty warns at load: this list is the only identity a request has |
+| `deny_clients` | list | `[]` | Evaluated first |
+| `services` | list | reading, discovery and notifications | The services carried, by the standard's own names (`readProperty`, `writeProperty`, `who-Is`) |
+| `deny_services` | list | `[]` | Services no rule can allow |
+| `max_command_priority` | int | `8` | The most privileged write priority, 1 (highest) to 16 |
+| `objects` | list | `[]` (any) | Object types a request may name, by name (`analog-output`) or by number for a vendor's proprietary type |
+| `deny_objects` | list | `[]` | Object types no rule can allow |
+| `properties` | list | `[]` (any) | Properties a request may name, by name (`present-value`) or by number |
+| `deny_properties` | list | `[]` | Properties no rule can allow |
+| `deny_sensitive_writes` | bool | `true` | Refuse a write to a property whose value is the device's own behaviour |
+| `refuse_unlocated_objects` | bool | `true` | Refuse a request whose object this relay could not find, where object rules exist |
+| `allow_broadcast` | bool | `false` | Carry a broadcast from a client |
+| `max_broadcast_replies` | int | `64` | Answers one broadcast may bring back to the client that sent it |
+| `broadcast_reply_window` | duration | `5s` | How long answers are matched back to the client that broadcast |
+| `allow_bbmd` | bool | `false` | Carry the broadcast management functions |
+| `allow_forwarded` | bool | `false` | Carry a `Forwarded-NPDU` from a client |
+| `allow_network_messages` | bool | `false` | Carry the network layer's own messages |
+| `allow_routing` | bool | `false` | Carry `Initialize-Routing-Table` and the two connection messages. Needs `allow_network_messages` |
+| `allow_security_messages` | bool | `false` | Carry clause 24's security messages |
+| `networks` | list of int | `[]` (local only) | Destination networks (DNET) a request may be routed to. 65535 is refused at load: it is the global broadcast |
+| `max_hop_count` | int | `8` | Largest hop count a routed message may carry. A larger one is *lowered*, not refused |
+| `max_priority` | string | `urgent` | Highest network priority a client may claim: `normal`, `urgent`, `critical-equipment`, `life-safety` |
+| `allow_segmented` | bool | `true` | Carry a segmented request or reply |
+| `max_whois_range` | int | `0` (any) | Largest device instance range a `who-Is` may ask about |
+| `require_whois_range` | bool | `false` | Refuse a `who-Is` with no range at all |
+| `max_message_bytes` | int | `1497` | Largest datagram, and Annex J's own maximum |
+| `max_pending` | int | `512` | Confirmed requests waiting for answers. Validation caps it at 256: that is how many invoke identifiers the protocol has |
+| `request_timeout` | duration | `10s` | How long a confirmed request's slot is held |
+| `rate_limit`, `rate_burst` | int | `0` | Requests per second per client address |
+| `rules` | list | `[]` | Per-request rules, in order, first match wins |
+| `default_action` | string | `deny` | `deny` or `allow` for a request no rule matched |
+| `deny_response` | string | `reject` | `reject`, `error` or `drop`. An unconfirmed request is always dropped: the protocol gives a relay nothing to say back |
+| `log_requests` | bool | `true` | An access line per request: who, which service, which object and property |
+| `alert_on_deny` | bool | `true` | A security event per refusal |
+
+A rule takes `name`, `action` (`allow`, `deny`, `observe`), `clients`,
+`services`, `objects`, `deny_objects`, `instances`, `properties`,
+`deny_properties`, `networks`, `max_command_priority` and `schedule`.
+`instances` is written as `1-100` or as a single number, and bounds which
+object instances the rule covers. `schedule` is the shape the modbus, iec104,
+snmp, ldap and tftp rules use, and on a building it is a change window: writes
+allowed while the engineers are on site and refused at three in the morning.
+
+The three lists a rule sets *replace* the listener's for its own traffic, which
+is how one workstation that really does command at a high priority, or one
+integration that really does write to a device object, is written down.
+`max_command_priority` on a rule works the same way -- and a rule that sets none
+takes the listener's rather than none at all.
+
+### Where the object is, and when it cannot be found
+
+A policy about objects needs to know which object a request is about, and the
+first object identifier in a request's parameters is the wrong one often enough
+to matter. In a COV notification the first is the device that sent it and the
+third is the object that changed; in `subscribeCOV` the first is a process
+identifier that is not an object at all. So this relay knows where each service
+keeps its object, rather than searching for one -- and `readPropertyMultiple` and
+`writePropertyMultiple` carry lists, every object and property of which is
+checked. A request reading one property from each of forty objects is one
+datagram, and checking the first of them would be checking a fortieth of it.
+
+A handful of services keep their object somewhere no fixed position describes:
+`createObject` names a type or an identifier inside a choice, `who-Has` names an
+object or a name, the COV-multiple and audit services carry lists of lists. Where
+this listener has object or property rules, a request whose object it could not
+find is refused, and `refuse_unlocated_objects: false` says otherwise. The two
+ways to get this wrong are to check the wrong field and to let the request
+through unchecked; saying "I could not find it" is the only answer that is
+neither.
+
+### The sensitive properties
+
+`deny_sensitive_writes` refuses a write to `object-identifier`, `object-name`,
+`out-of-service`, `program-change`, `relinquish-default`, `reliability`,
+`max-master`, `max-info-frames`, `apdu-timeout`, `number-of-apdu-retries`,
+`time-synchronization-recipients`, `restart-notification-recipients`,
+`device-address-binding`, `database-revision`, `local-date`, `local-time` and
+`utc-offset`.
+
+`out-of-service` is the one to understand. Writing it true cuts a point loose
+from the physical world: the present value becomes whatever was last written,
+and every graphics page, trend and alarm in the estate then reports that number
+as the truth. It is how a sensor is made to lie without touching the sensor. The
+recipient lists are the other shape of the same idea: they make a device send its
+notifications to an address of the writer's choosing.
+
+### Refusal reasons
+
+| `reason` | What it was |
+|---|---|
+| `client_not_allowed` | The address is outside `allow_clients` or inside `deny_clients` |
+| `rate_limited` | The per-client rate. A bound, never shadowed |
+| `not_bacnet` | The first octet is not 0x81: something else on the port |
+| `malformed` | A BACnet message whose fields contradict each other or the standard |
+| `message_too_large`, `reply_too_large` | Past `max_message_bytes`, refused unread |
+| `bbmd_not_allowed` | A broadcast management function without `allow_bbmd` |
+| `forwarded_not_allowed` | A `Forwarded-NPDU` without `allow_forwarded` |
+| `forwarded_origin_mismatch` | A `Forwarded-NPDU` claiming to come from somewhere other than where it arrived from |
+| `broadcast_not_allowed` | A broadcast without `allow_broadcast` |
+| `security_not_allowed`, `security_message_not_allowed` | Clause 24 without `allow_security_messages` |
+| `routing_not_allowed` | A destination network where `networks` names none |
+| `network_not_allowed` | A destination network outside `networks` |
+| `priority_not_allowed` | A network priority above `max_priority` |
+| `network_message_not_allowed` | A network layer message without `allow_network_messages` |
+| `routing_message_not_allowed` | `Initialize-Routing-Table` and the two connection messages without `allow_routing` |
+| `network_message_unknown` | A network message type no edition defines |
+| `service_denied`, `service_not_allowed` | The service lists |
+| `service_unknown` | A service choice no edition of the standard defines |
+| `segmented_not_allowed` | A segmented message with `allow_segmented: false` |
+| `command_priority_too_high` | A write above `max_command_priority`. A bound, never shadowed |
+| `whois_unbounded`, `whois_range_too_wide` | The discovery bounds. Bounds, never shadowed |
+| `object_denied`, `object_not_allowed` | The object type lists |
+| `instance_not_allowed` | A rule's `instances` |
+| `property_denied`, `property_not_allowed` | The property lists |
+| `sensitive_write` | A write to a property whose value is the device's own behaviour |
+| `object_unlocatable` | Object rules exist and this relay could not find the request's object |
+| `rule_denied`, `no_rule_matched` | The rules and `default_action` |
+| `too_many_pending` | Every invoke identifier is outstanding, which means the devices are not answering |
+| `too_many_broadcasts` | The outstanding broadcast table is full |
+| `unsolicited_reply` | An answer carrying an invoke identifier nobody used, or from a device the request did not go to |
+| `no_such_exchange` | A segment acknowledgement, abort or error from a client naming an exchange this relay is not holding |
+| `unsolicited_broadcast` | An unsolicited datagram from the building with no client waiting for one |
+| `wrong_direction` | A confirmed request arriving from the building towards a client |
+| `hop_count_lowered` | Counted rather than refused: the hop count was rewritten down to `max_hop_count` |
+
+The refusals that are never shadowed are the bounds:
+`command_priority_too_high`, `whois_unbounded`, `whois_range_too_wide` and
+`rate_limited`. Everything else is a policy choice, and monitor mode is for
+finding out what an estate actually sends before refusing any of it.
+
+### Pairing an answer with its question
+
+The standard makes an invoke identifier unique only between one client and one
+device. This relay speaks to the building from a socket of its own, so two
+clients that both use identifier 1 towards the same controller would be
+indistinguishable on the way back, and one client's answer would be delivered to
+the other. So the relay allocates an identifier of its own towards the device and
+translates it back on the answer, which is what a BACnet router does for the same
+reason. There are two hundred and fifty-six of them; when all are outstanding a
+request is refused (`too_many_pending`) rather than reusing one, because reusing
+one delivers somebody else's answer.
+
+An unconfirmed request has nothing to pair with at all -- an `i-Am` is sent of
+the device's own accord -- so those answers are matched to the clients that
+broadcast inside `broadcast_reply_window` and bounded by
+`max_broadcast_replies`. An answer arriving outside anybody's window is not
+forwarded: that bound is this protocol's amplification control, not a
+convenience. A virtual link layer request -- a table read, a registration --
+gets a window of exactly one reply, since that is what it expects.
+
+A segmented exchange is translated in **both** directions. The reply's segments
+carry the identifier this relay chose; the client's segment acknowledgements, and
+any abort or error it sends about its own request, carry the one the *client*
+chose -- so those are translated back the other way, and one naming an exchange
+this relay is not holding is refused (`no_such_exchange`) rather than forwarded.
+A segment also renews the exchange's deadline, because a segmented reply is one
+exchange however many datagrams it takes and a deadline measured from the request
+would expire in the middle of a long trend log download.
+
+`services` applies to the building's direction too, because it is a statement
+about which services cross this listener rather than about which a client may
+send. The one that matters is `timeSynchronization`: a device, or something on
+the plant network wearing a device's address, broadcasting one at a client
+network sets the clock on every host that listens, and it is not on the default
+list in either direction. The object and property rules are *not* applied to the
+building's direction -- they are written about the objects a client may reach,
+and applying them backwards would refuse every `i-Am`, which names a device
+object.
 
 ## asset_inventory
 
