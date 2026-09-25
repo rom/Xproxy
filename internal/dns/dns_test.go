@@ -134,14 +134,52 @@ func (f *fakeUpstream) answer(query []byte, tcp bool) []byte {
 }
 
 // udpQuery sends one query and returns the response or nil on timeout.
+// udpQuery sends a query and returns the answer, waiting long enough
+// that a slow machine cannot be mistaken for a silent server. How long
+// the answer takes is not what any test here measures, and some of the
+// answers come only after the server has timed out an upstream that is
+// deliberately dead -- so a tight deadline turns a loaded test run into
+// "the stale entry was not served". Silence is asserted with udpDropped
+// instead, which is where a short wait belongs.
 func udpQuery(t *testing.T, server string, query []byte) []byte {
+	t.Helper()
+	return udpWithin(t, server, query, 5*time.Second)
+}
+
+// udpDropped reports whether the server stayed silent, which is what a
+// dropped query looks like from the client. Nothing arrives, so this one
+// has to wait a timeout out rather than an answer in: the wait is short
+// because silence is the expected outcome and every call pays it.
+func udpDropped(t *testing.T, server string, query []byte) bool {
+	t.Helper()
+	return udpWithin(t, server, query, 400*time.Millisecond) == nil
+}
+
+// waitFor polls until cond holds, or gives up after five seconds. The
+// timeout is long on purpose: these are waits on work a background
+// goroutine does, and the only thing a short one measures is how busy
+// the machine running the tests happens to be. A test that passes waits
+// no longer for the generous bound than for a tight one.
+func waitFor(cond func() bool) bool {
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		if cond() {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func udpWithin(t *testing.T, server string, query []byte, wait time.Duration) []byte {
 	t.Helper()
 	c, err := net.Dial("udp", server)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = c.Close() }()
-	_ = c.SetDeadline(time.Now().Add(500 * time.Millisecond))
+	_ = c.SetDeadline(time.Now().Add(wait))
 	if _, err := c.Write(query); err != nil {
 		t.Fatal(err)
 	}
@@ -363,10 +401,23 @@ func TestCache(t *testing.T) {
 	}
 }
 
+// defaultInFlight is the worker budget most tests here run with. It is
+// small on purpose -- the listener's own default is much larger -- so
+// that nothing in these tests depends on a generous one. A test that
+// sends more queries at once than this has to say so with
+// startServerInFlight, or the listener will drop the excess and the test
+// will be measuring the budget instead of what it meant to measure.
+const defaultInFlight = 8
+
 func startServer(t *testing.T, p *Policy, hooks Hooks) (*Server, string) {
 	t.Helper()
+	return startServerInFlight(t, p, hooks, defaultInFlight)
+}
+
+func startServerInFlight(t *testing.T, p *Policy, hooks Hooks, inFlight int) (*Server, string) {
+	t.Helper()
 	udp, tcp := listenPair(t)
-	s := New("dns", udp, tcp, 100, 8, p, hooks)
+	s := New("dns", udp, tcp, 100, inFlight, p, hooks)
 	s.Serve()
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -477,12 +528,12 @@ func TestServer(t *testing.T) {
 	if h, _ := ParseHeader(udpQuery(t, addr, bad)); h.Rcode() != RcodeFormErr {
 		t.Fatal("formerr")
 	}
-	if udpQuery(t, addr, []byte{1, 2, 3}) != nil {
+	if !udpDropped(t, addr, []byte{1, 2, 3}) {
 		t.Fatal("short packet answered")
 	}
 	respQ := mustQuery(t, 13, "a.test", TypeA)
 	respQ[2] |= 0x80
-	if udpQuery(t, addr, respQ) != nil {
+	if !udpDropped(t, addr, respQ) {
 		t.Fatal("response packet answered")
 	}
 	// Opcode other than QUERY: NOTIMP.
@@ -503,7 +554,7 @@ func TestServer(t *testing.T) {
 	s.Apply(&policy5, 100)
 	answered := 0
 	for i := 0; i < 5; i++ {
-		if udpQuery(t, addr, mustQuery(t, uint16(20+i), "a.example.test", TypeA)) != nil {
+		if !udpDropped(t, addr, mustQuery(t, uint16(20+i), "a.example.test", TypeA)) {
 			answered++
 		}
 	}

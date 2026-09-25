@@ -35,7 +35,7 @@ func TestEveryDropNamesItsReason(t *testing.T) {
 	// A response sent where a question belongs.
 	resp := mustQuery(t, 1, "a.test", TypeA)
 	resp[2] |= 0x80
-	if udpQuery(t, addr, resp) != nil {
+	if !udpDropped(t, addr, resp) {
 		t.Fatal("a response was answered")
 	}
 	if got := count(DropMalformed); got != 1 {
@@ -44,7 +44,7 @@ func TestEveryDropNamesItsReason(t *testing.T) {
 
 	// A banned client.
 	banned.Store(true)
-	if udpQuery(t, addr, mustQuery(t, 2, "a.test", TypeA)) != nil {
+	if !udpDropped(t, addr, mustQuery(t, 2, "a.test", TypeA)) {
 		t.Fatal("a banned client was answered")
 	}
 	banned.Store(false)
@@ -57,7 +57,7 @@ func TestEveryDropNamesItsReason(t *testing.T) {
 	rated.RateLimit = limits.NewKeyedLimiter(0.001, 1, 16) // no refill within the test
 	s.Apply(&rated, 100)
 	for i := 0; i < 4; i++ {
-		_ = udpQuery(t, addr, mustQuery(t, uint16(10+i), "a.test", TypeA))
+		_ = udpDropped(t, addr, mustQuery(t, uint16(10+i), "a.test", TypeA))
 	}
 	if got := count(DropRateLimit); got < 2 {
 		t.Errorf("%s counted %d after four queries past a burst of 1 (have %v)", DropRateLimit, got, seen)

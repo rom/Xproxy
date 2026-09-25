@@ -1030,7 +1030,7 @@ and size, and a second factor can be demanded after the key.
 
 ### The relay: SMTP, MQTT, FTP, syslog, Modbus, IEC 104, SNMP, LDAP, PostgreSQL, MySQL, NTP and NTS
 
-The relay kinds (`internal/kinds/{smtp,mqtt,ftp,syslog,modbus,iec104,snmp,ldap,tftp,dhcp,postgres,mysql,tds,ntp,ntske}`)
+The relay kinds (`internal/kinds/{smtp,mqtt,ftp,syslog,modbus,iec104,snmp,ldap,tftp,dhcp,postgres,mysql,tds,redis,ntp,ntske}`)
 share a shape:
 each parses its protocol rather than forwarding bytes, holds a policy in
 that protocol's own terms, and bounds what a peer may say.
@@ -1251,6 +1251,38 @@ that protocol's own terms, and bounds what a peer may say.
   holds no lock across its underlying read, because a relay reads one direction
   while writing the other and a lock there deadlocks every answer behind a
   request that has not arrived.
+- `redis` reads RESP (`internal/respwire` for the framing and the command table,
+  `internal/kinds/redis` for the policy). It is the shortest kind in the project
+  and the one whose *tables* carry the most weight, because the protocol gives a
+  relay almost nothing: a command is an array of opaque byte strings, with no
+  schema and no statement grammar.
+
+  There is no handshake and no encryption to negotiate -- the port is either TLS or
+  it is not -- so the connection is admitted on what the engine already knows and
+  every command is decided one at a time. The upstream leg's default is the one
+  place in the project where a transport-security default is *off*, and
+  deliberately: Redis offers nothing to discover whether the server speaks TLS, so
+  requiring it by default would refuse every upstream in the common deployment
+  rather than protect anything.
+
+  Two things shape the code. **Authentication is read from the server's answer**,
+  not from the relay having seen an `AUTH`: the client's side cannot say whether a
+  password was right, and a relay that took the attempt for the answer would treat
+  a wrong password as a login. `fromServer` therefore looks at one bit -- the type
+  marker of the reply that follows a credential -- and deliberately no more, because
+  parsing the server's whole reply stream would mean a second protocol reader whose
+  disagreements with the first are the interesting bugs.
+
+  And the **key prefix policy rests on the command table's honesty**. Keys sit
+  where each command's signature puts them, and `internal/respwire` keeps three
+  tables rather than one: fixed positions, positions declared in an argument
+  (`EVAL`, `LMPOP`), and an explicit set of ten whose positions depend on an option
+  that may or may not be present (`SORT` with `STORE`, `XREAD`'s `STREAMS` token,
+  `MIGRATE` with `KEYS`). The third is the one that matters. Those commands report
+  that their keys cannot be located, so the policy refuses them while a prefix
+  policy is in force -- because a table entry that guessed a position would have the
+  policy checking an option value or a Lua script's text, and passing exactly what
+  it was meant to stop, silently.
 - `ntske` is NTS key establishment, TCP 4460, relayed rather than
   terminated: it reads the server name and the application protocol from
   the ClientHello, refuses what is not an NTS client, bounds the
@@ -1259,6 +1291,18 @@ that protocol's own terms, and bounds what a peer may say.
 
 All of them reach the engine through `Host` alone, which is why they link
 into `xrelay` and nowhere else.
+
+`internal/acceptgroup` is shared by the database kinds and exists because the
+obvious way to wait for a listener's sessions is wrong. A `sync.WaitGroup` with
+`Add` in the accept loop and `Wait` in shutdown is a race: `Add` must not run
+concurrently with `Wait` at zero, and a connection can be accepted at exactly the
+moment a shutdown begins. What goes wrong is not a detector warning but a session
+that either is or is not waited for depending on the scheduler -- so shutdown can
+return while a session is still reading a connection the process is about to
+close, which on a reload is a session dropped mid-command and on a shutdown is a
+log line written after the log file was closed. The group puts the closed check
+and the `Add` under one lock, and a connection accepted after that is closed by
+the accept loop rather than served.
 
 ### The device inventory
 

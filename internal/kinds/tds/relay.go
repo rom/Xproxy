@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rom/xproxy/internal/acceptgroup"
 	"github.com/rom/xproxy/internal/assets"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/netutil"
@@ -37,8 +38,10 @@ type server struct {
 	live      atomic.Int64
 	perClient sync.Map
 
-	wg     sync.WaitGroup
-	closed atomic.Bool
+	// sessions tracks what has been accepted, so shutdown waits for it. A bare
+	// WaitGroup would not do: its Add must not race its Wait, and an accept loop
+	// Adds at exactly the moment a shutdown Waits.
+	sessions acceptgroup.Group
 }
 
 func newServer(host proxy.Host, cfg config.Listener, ln net.Listener, tlsCfg *tls.Config) (*server, error) {
@@ -68,7 +71,7 @@ func (t *server) serve() {
 	for {
 		c, err := t.ln.Accept()
 		if err != nil {
-			if t.closed.Load() {
+			if t.sessions.Closing() {
 				return
 			}
 			var ne net.Error
@@ -77,9 +80,14 @@ func (t *server) serve() {
 			}
 			return
 		}
-		t.wg.Add(1)
+		if !t.sessions.Enter() {
+			// Accepted as the listener was shutting down. Serving it would start
+			// a session nothing waits for, so it is closed instead.
+			_ = c.Close()
+			return
+		}
 		go func() {
-			defer t.wg.Done()
+			defer t.sessions.Leave()
 			defer safe.Guard("tds session")
 			t.handle(c)
 		}()
@@ -87,16 +95,11 @@ func (t *server) serve() {
 }
 
 func (t *server) shutdown(ctx context.Context) {
-	if t.closed.Swap(true) {
+	if !t.sessions.Close() {
 		return
 	}
 	_ = t.ln.Close()
-	done := make(chan struct{})
-	go func() { t.wg.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-ctx.Done():
-	}
+	t.sessions.Wait(ctx)
 }
 
 var errRefused = errors.New("tds: refused")

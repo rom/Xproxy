@@ -4687,6 +4687,121 @@ upgrades an existing connection rather than using a second port, so the listener
 needs a `tls` section. Refusing at load is deliberate: a listener that silently
 served plaintext instead is the bug.
 
+## Redis
+
+**Everything is refused with `not_authenticated`.** `require_auth` defaults on and
+the relay takes the answer from the *server's* reply, not from having seen an
+`AUTH` -- so a connection whose password the server refused is still
+unauthenticated, and the next command is still refused. Look for
+`redis_auth_failed` in the security log: that is the server saying no, and it is
+also the signal a password is being guessed. What a client may send before
+authenticating is `AUTH`, `HELLO`, `PING`, `QUIT`, `RESET` and `COMMAND`, and
+nothing else; the list is deliberately short, because the alternative is a window
+an attacker fills with one command.
+
+**A client library fails on connect before it sends AUTH.** Some send `COMMAND
+DOCS` first to learn the command table. That is on the pre-authentication list, so
+it is not this -- check whether the library sends something else, and name it in
+`allow_commands` if it is harmless. What it may not do is anything that touches a
+key.
+
+**Everything is refused with `command_not_allowed`.** `allow_commands` defaults to
+what an application does to a cache. A tool that is not one needs its commands
+named, ideally on a rule for that account rather than on the listener. If you are
+looking at a long list, `xproxyctl policy` in monitor mode is the faster route:
+run the listener with `monitor_only: true` for a week and read what it would have
+refused.
+
+**`CONFIG GET` is refused and I allowed `CONFIG`.** Then something is in
+`deny_commands` or `deny_subcommands`, which no rule can override. If instead
+`CONFIG SET` is going through when you only wanted the read: a container command
+allowed with no subcommand listed allows *all* of its subcommands. Name the ones
+you want in `allow_subcommands` (`"CONFIG GET"`, `"CONFIG RESETSTAT"`). That is
+the whole reason the setting exists: `CONFIG SET dir` plus `CONFIG SET dbfilename`
+plus `SAVE` writes a file wherever the server can write.
+
+**A command is refused even in monitor mode.** It is in the set that leads out of
+the database, loses all of it, or stops the thread that serves everybody --
+`CONFIG`, `MODULE`, `EVAL` and the rest of the Lua family, `DEBUG`, `SCRIPT`,
+`FUNCTION`, `ACL`, `CLIENT`, `CLUSTER`, the replication commands, `MIGRATE`,
+`DUMP`, `RESTORE`, `FLUSHALL`, `FLUSHDB`, `SHUTDOWN`, `MONITOR`, `SLOWLOG`,
+`LATENCY`, `MEMORY`, `SAVE`, `BGSAVE`, `BGREWRITEAOF`, `SWAPDB`, `KEYS` and
+`RANDOMKEY`. Forwarding one and writing down that it was noticed is not a trial of
+a policy. If one is genuinely needed, name it in `allow_commands` -- an explicit
+allow is not overruled -- ideally on a rule with a schedule.
+
+**`KEYS` is refused and it is only a read.** It is O(n) **on the single thread
+that serves every client**, so one `KEYS *` on a large instance stops the whole
+estate for as long as it takes. That is why it is in the hard set alongside the
+commands that write files: a monitor-mode listener that forwarded one would cause
+the outage it was installed to prevent. Use `SCAN`, which is a cursor and is on
+the default allow list.
+
+**`key_position_unknown`.** A key prefix policy is set and the command's keys are
+at positions that depend on an option that may or may not be present. There are
+ten: `XREAD`, `XREADGROUP`, `SORT`, `SORT_RO`, `GEORADIUS`, `GEORADIUSBYMEMBER`,
+`ZUNIONSTORE`, `ZINTERSTORE`, `ZDIFFSTORE` and `MIGRATE`. `SORT`'s `STORE` adds a
+key at the end; `XREAD`'s keys follow a `STREAMS` token whose position depends on
+four other options; `MIGRATE`'s key is the third argument *unless* `KEYS` is used,
+in which case the third is an empty string and the keys are at the end. The relay
+refuses rather than checking some other argument, because a prefix policy applied
+to a `STORE` option's value or a Lua script's text passes exactly what it was
+meant to stop, silently. If the command is needed, put it on a rule that has no
+prefix policy of its own and narrow that rule some other way -- by client, by user,
+by schedule.
+
+**`GEORADIUS_RO` works and `GEORADIUS` does not.** The `_RO` variants have no
+`STORE` option, so their keys are at a fixed position and the prefix policy can be
+applied. That is not a workaround; it is the right command for a read.
+
+**A read is refused with `read_only`, and it looks like a read.** `EVAL` counts as
+a write because a script can do anything the connection can -- a read-only listener
+that allowed one would have a read-only setting that was decorative. The server's
+own `EVAL_RO` and `FCALL_RO` are honoured as reads. A command the relay has never
+heard of also counts as a write: Redis gains commands every release and a module
+adds its own, and one nobody has written down must not pass a read-only listener
+because of it. Name it in `allow_commands` and the validator will warn about what
+that costs.
+
+**A module command is refused, or its keys are not checked.** A name this build
+does not know is still allowed if you name it, but the relay cannot say where its
+keys are (so a prefix policy refuses it) and counts it as a write (so a read-only
+listener refuses it). The validator warns about both. Both are the safe direction
+for a command nobody has written down.
+
+**An inline command is refused.** `allow_inline` defaults to false. No client
+library sends the space-separated form -- it exists for a human with a telnet
+session -- and a great many exploitation scripts use it because it needs no length
+arithmetic. The relay reads it either way, so the policy applies to it when it is
+allowed; refusing it costs an application nothing.
+
+**`-ERR Protocol error`.** The relay could not read the message as RESP: an
+element count or bulk length past the bound, a line not ended by CRLF, a null
+inside a command, or something that cannot be a command name. It answers the way
+the server would, because a client library reports a protocol error and reconnects
+rather than hanging. If a legitimate client trips it, the bounds are the first
+thing to check -- `max_bulk_bytes` defaults to 1 MiB, which is a large value for a
+cache and a small one for an estate that stores documents.
+
+**A large value is refused.** `max_bulk_bytes` bounds one argument and
+`max_message_bytes` bounds the whole command; Redis's own limit for both is 512
+MiB. Raise `max_message_bytes` with it, because a bulk bound above the message
+bound never applies -- the message check fires first and the log then names a limit
+you did not set. The validator warns about that combination.
+
+**The listener will not start.** `require_tls` defaults on and Redis has no
+in-protocol upgrade, so the port is either TLS or it is not: the listener needs a
+`tls` section. Refusing at load is deliberate, because a listener that silently
+served plaintext instead is the bug -- a Redis `AUTH` sends the password as an
+argument of an ordinary command.
+
+**The upstream leg is not encrypted and I did not notice.** `upstream_tls_mode`
+defaults to `disable` on this kind and on no other. There is nothing in the
+protocol to discover whether the server speaks TLS, so a default of `require`
+would refuse every upstream in the common deployment rather than protect anything.
+If your server does speak it, set `upstream_tls_mode: require` -- and the
+`examples/databases/redis.yaml` application front does.
+
 ## The device inventory
 
 **It is empty.** Two causes, in this order. The section is off by default,

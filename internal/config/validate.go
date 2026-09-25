@@ -17,6 +17,7 @@ import (
 	"github.com/rom/xproxy/internal/netutil"
 	pgwire "github.com/rom/xproxy/internal/pgwire"
 	"github.com/rom/xproxy/internal/rdp"
+	respwire "github.com/rom/xproxy/internal/respwire"
 	"github.com/rom/xproxy/internal/rfb"
 	snmpwire "github.com/rom/xproxy/internal/snmp"
 	"github.com/rom/xproxy/internal/syslog"
@@ -861,6 +862,12 @@ func (v *validator) server(s *Server) {
 				v.errf("%s.dhcp: required for kind dhcp", p)
 			} else {
 				v.dhcpListener(p+".dhcp", ln.DHCP)
+			}
+		case "redis":
+			if ln.Redis == nil {
+				v.errf("%s.redis: required for kind redis", p)
+			} else {
+				v.redisListener(p+".redis", ln.Redis, ln.TLS != nil)
 			}
 		case "tds":
 			if ln.TDS == nil {
@@ -2511,7 +2518,7 @@ var denyReasons = map[string]bool{
 	"forward_sni_mismatch": true, "dns_tunnel": true, "dns_answer_denied": true,
 	"telnet_denied": true, "vnc_denied": true, "rdp_denied": true, "sftp_icap": true, "udp_denied": true,
 	"modbus_denied": true, "iec104_denied": true, "ntp_denied": true, "ntske_denied": true,
-	"snmp_denied": true, "ldap_denied": true, "tftp_denied": true, "dhcp_denied": true, "postgres_denied": true, "mysql_denied": true, "tds_denied": true,
+	"snmp_denied": true, "ldap_denied": true, "tftp_denied": true, "dhcp_denied": true, "postgres_denied": true, "mysql_denied": true, "tds_denied": true, "redis_denied": true,
 }
 
 // securityTxtFieldRE bounds an extra field name to the token RFC 9116
@@ -7610,6 +7617,165 @@ func (v *validator) mysqlLoad(p string, in []string) {
 				"which is how a hostile server reads the filesystem of whatever connected to it", p, i)
 		default:
 			v.errf("%s[%d]: %q is not file or local", p, i, n)
+		}
+	}
+}
+
+// redisListener validates a kind: redis section.
+func (v *validator) redisListener(p string, m *RedisListener, hasTLS bool) {
+	if m.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	v.modbusCIDRs(p+".allow_clients", m.AllowClients)
+	v.modbusCIDRs(p+".deny_clients", m.DenyClients)
+
+	requireTLS := m.RequireTLS == nil || *m.RequireTLS
+	if requireTLS && !hasTLS {
+		v.errf("%s.require_tls: set (it defaults on) but the listener has no tls section; "+
+			"redis has no in-protocol upgrade, so the port is either TLS or it is not", p)
+	}
+	if !requireTLS {
+		v.warnf("%s.require_tls: false lets a client send AUTH in the clear, and a redis "+
+			"password is an ordinary command argument", p)
+	}
+	switch m.UpstreamTLSMode {
+	case "", "require", "prefer", "disable":
+	default:
+		v.errf("%s.upstream_tls_mode: %q is not require, prefer or disable", p, m.UpstreamTLSMode)
+	}
+	if m.RequireAuth != nil && !*m.RequireAuth {
+		v.warnf("%s.require_auth: false lets a command through before the connection has "+
+			"authenticated, and redis's own default is no password at all", p)
+	}
+
+	v.redisCommands(p+".allow_commands", m.AllowCommands)
+	v.redisCommands(p+".deny_commands", m.DenyCommands)
+	v.redisSubcommands(p+".allow_subcommands", m.AllowSubcommands)
+	v.redisSubcommands(p+".deny_subcommands", m.DenySubcommands)
+	v.redisPrefixes(p+".allow_key_prefixes", m.AllowKeyPrefixes)
+	v.redisPrefixes(p+".deny_key_prefixes", m.DenyKeyPrefixes)
+
+	for _, db := range m.AllowDatabases {
+		if db < 0 || db > 255 {
+			v.errf("%s.allow_databases: %d is not a database number", p, db)
+		}
+	}
+	if m.AllowInline {
+		v.warnf("%s.allow_inline: true permits the space-separated command form, which no "+
+			"client library sends and which most exploitation scripts use", p)
+	}
+
+	for name, val := range map[string]int{
+		"max_message_bytes": m.MaxMessageBytes, "max_bulk_bytes": m.MaxBulkBytes,
+		"max_elements": m.MaxElements, "max_commands": m.MaxCommands,
+		"max_sessions": m.MaxSessions, "max_sessions_per_client": m.MaxSessionsPerClient,
+	} {
+		if val < 0 {
+			v.errf("%s.%s: must not be negative", p, name)
+		}
+	}
+	if m.MaxMessageBytes > respwire.MaxMessage {
+		v.errf("%s.max_message_bytes: %d is past the bound of %d",
+			p, m.MaxMessageBytes, respwire.MaxMessage)
+	}
+	if m.MaxBulkBytes > respwire.MaxBulk {
+		v.errf("%s.max_bulk_bytes: %d is past the bound of %d",
+			p, m.MaxBulkBytes, respwire.MaxBulk)
+	}
+	if m.MaxElements > respwire.MaxElements {
+		v.errf("%s.max_elements: %d is past the bound of %d",
+			p, m.MaxElements, respwire.MaxElements)
+	}
+	// A bulk bound above the message bound never applies: the message check
+	// fires first, and the log then names a limit the operator did not set.
+	if m.MaxBulkBytes > 0 && m.MaxMessageBytes > 0 && m.MaxBulkBytes > m.MaxMessageBytes {
+		v.warnf("%s.max_bulk_bytes: %d is above max_message_bytes (%d), so the message bound "+
+			"decides and this value never applies", p, m.MaxBulkBytes, m.MaxMessageBytes)
+	}
+
+	switch m.DefaultAction {
+	case "", "allow", "deny":
+	default:
+		v.errf("%s.default_action: %q is not allow or deny", p, m.DefaultAction)
+	}
+	switch m.DenyResponse {
+	case "", "error", "drop":
+	default:
+		v.errf("%s.deny_response: %q is not error or drop", p, m.DenyResponse)
+	}
+	for i := range m.Rules {
+		r := &m.Rules[i]
+		rp := fmt.Sprintf("%s.rules[%d]", p, i)
+		v.modbusCIDRs(rp+".clients", r.Clients)
+		switch r.Action {
+		case "", "allow", "deny", "observe":
+		default:
+			v.errf("%s.action: %q is not allow, deny or observe", rp, r.Action)
+		}
+		v.redisCommands(rp+".allow_commands", r.AllowCommands)
+		v.redisCommands(rp+".deny_commands", r.DenyCommands)
+		v.redisSubcommands(rp+".allow_subcommands", r.AllowSubcommands)
+		v.redisSubcommands(rp+".deny_subcommands", r.DenySubcommands)
+		v.redisPrefixes(rp+".allow_key_prefixes", r.AllowKeyPrefixes)
+		v.redisPrefixes(rp+".deny_key_prefixes", r.DenyKeyPrefixes)
+		if r.MaxCommands < 0 {
+			v.errf("%s.max_commands: must not be negative", rp)
+		}
+		if r.Schedule != nil {
+			v.modbusSchedule(rp+".schedule", r.Schedule)
+		}
+	}
+}
+
+// redisCommands checks the command names, and says what an operator has just
+// allowed when the name is one of the ways out of the database.
+func (v *validator) redisCommands(p string, in []string) {
+	allowing := strings.HasSuffix(p, ".allow_commands")
+	for i, n := range in {
+		name := strings.ToUpper(strings.TrimSpace(n))
+		if name == "" {
+			v.errf("%s[%d]: empty", p, i)
+			continue
+		}
+		if !respwire.Known(name) {
+			// Not an error: redis gains commands every release and a module adds
+			// its own, so a name this build does not know may still be one the
+			// server has. But the relay cannot locate its keys or say whether it
+			// writes, so naming it has consequences worth stating.
+			v.warnf("%s[%d]: %s is not a command this build knows, so the relay cannot say "+
+				"where its keys are (a key prefix policy will refuse it) and counts it as a write",
+				p, i, name)
+			continue
+		}
+		if allowing && respwire.Dangerous(name) {
+			v.warnf("%s[%d]: %s is a way out of the database, a way to lose all of it, or a "+
+				"way to stop the thread that serves every client", p, i, name)
+		}
+	}
+}
+
+// redisSubcommands checks the "CONTAINER SUB" spellings.
+func (v *validator) redisSubcommands(p string, in []string) {
+	for i, n := range in {
+		fields := strings.Fields(strings.ToUpper(n))
+		if len(fields) != 2 {
+			v.errf("%s[%d]: %q is not a container command and a subcommand, as in "+
+				"\"CONFIG GET\"", p, i, n)
+			continue
+		}
+		if !respwire.Known(fields[0]) {
+			v.warnf("%s[%d]: %s is not a command this build knows", p, i, fields[0])
+		}
+	}
+}
+
+// redisPrefixes checks the key prefixes. An empty one matches every key, which
+// makes the list it is in decorative -- and on an allow list that reads as a
+// policy where there is none.
+func (v *validator) redisPrefixes(p string, in []string) {
+	for i, n := range in {
+		if n == "" {
+			v.errf("%s[%d]: an empty prefix matches every key", p, i)
 		}
 	}
 }
