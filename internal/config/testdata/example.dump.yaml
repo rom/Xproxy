@@ -34,6 +34,7 @@ server:
           ldap: null
           tftp: null
           postgres: null
+          mysql: null
           dhcp: null
           policy: null
         - name: public
@@ -90,6 +91,7 @@ server:
           ldap: null
           tftp: null
           postgres: null
+          mysql: null
           dhcp: null
           policy: null
     limits:

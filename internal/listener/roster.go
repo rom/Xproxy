@@ -69,6 +69,7 @@ var roster = map[string]Role{
 	"ldap":     RoleRelay,
 	"tftp":     RoleRelay,
 	"postgres": RoleRelay,
+	"mysql":    RoleRelay,
 	"dhcp":     RoleRelay,
 	"ntp":      RoleRelay,
 	"ntske":    RoleRelay,

@@ -77,3 +77,17 @@ func Get(t *testing.T, url string, hdr ...string) (*http.Response, string) {
 	b, _ := io.ReadAll(resp.Body)
 	return resp, string(b)
 }
+
+// TryStart parses and builds a server without starting it, and returns the
+// error rather than failing the test.
+//
+// It is for the tests whose subject is that a configuration must *not* load: a
+// listener that requires TLS without a certificate, for instance, where the bug
+// would be a listener that quietly served plaintext instead.
+func TryStart(yaml string) (*proxy.Server, error) {
+	cfg, err := config.Parse([]byte(yaml))
+	if err != nil {
+		return nil, err
+	}
+	return proxy.New(cfg, logging.Discard())
+}

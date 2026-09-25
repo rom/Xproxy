@@ -487,3 +487,67 @@ func TestClipBoundsAPeerChosenString(t *testing.T) {
 		t.Fatal("a short string was changed")
 	}
 }
+
+// Stripping a capability from the greeting is how a client is stopped from
+// negotiating something dangerous *without* breaking the connection.
+func TestStrippingACapabilityFromTheGreeting(t *testing.T) {
+	g := greeting(baseCaps|CapSSL|CapLocalFiles|CapMultiStatements|CapCompress, AuthCachingSHA2)
+	cleared, err := StripCaps(g, CapLocalFiles|CapMultiStatements)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared != CapLocalFiles|CapMultiStatements {
+		t.Fatalf("cleared %#x", cleared)
+	}
+	// Read it back: the two are gone and everything else is untouched. The
+	// second part matters most -- a relay that cleared more than it meant to
+	// would break TLS or authentication while looking like it was helping.
+	parsed, err := ParseGreeting(g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Offers(CapLocalFiles) || parsed.Offers(CapMultiStatements) {
+		t.Fatal("a stripped capability is still offered")
+	}
+	for _, keep := range []uint32{CapSSL, CapCompress, CapProtocol41,
+		CapSecureConnection, CapPluginAuth} {
+		if !parsed.Offers(keep) {
+			t.Errorf("%s was cleared and should not have been", CapName(keep))
+		}
+	}
+	if parsed.Plugin != AuthCachingSHA2 || parsed.ConnID != 42 {
+		t.Fatalf("the rest of the greeting changed: %+v", parsed)
+	}
+
+	// Only bits the server actually offered are reported as cleared, so a log
+	// line says what changed rather than what was asked for.
+	g2 := greeting(baseCaps, AuthNative)
+	if cleared, err = StripCaps(g2, CapLocalFiles|CapMultiStatements); err != nil {
+		t.Fatal(err)
+	}
+	if cleared != 0 {
+		t.Fatalf("reported clearing %s from a greeting that offered neither", CapList(cleared))
+	}
+	// And a greeting it cannot read is an error rather than a silent no-op,
+	// because a no-op here is a capability that crossed unstripped.
+	if _, err = StripCaps([]byte{10, 'x'}, CapLocalFiles); err == nil {
+		t.Error("an unterminated greeting was stripped silently")
+	}
+	if _, err = StripCaps(nil, CapLocalFiles); err == nil {
+		t.Error("an empty greeting was stripped silently")
+	}
+}
+
+func TestCapListNamesWhatIsSet(t *testing.T) {
+	got := CapList(CapSSL | CapLocalFiles)
+	if len(got) != 2 {
+		t.Fatalf("%v", got)
+	}
+	joined := strings.Join(got, ",")
+	if !strings.Contains(joined, "ssl") || !strings.Contains(joined, "local_files") {
+		t.Fatalf("%v", got)
+	}
+	if len(CapList(0)) != 0 {
+		t.Error("an empty mask named something")
+	}
+}

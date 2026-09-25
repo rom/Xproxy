@@ -3998,6 +3998,14 @@
             }
           ]
         },
+        "mysql": {
+          "description": "MySQL is the kind: mysql section.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/MySQLListener"
+            }
+          ]
+        },
         "name": {
           "type": "string"
         },
@@ -5237,6 +5245,272 @@
       },
       "additionalProperties": false
     },
+    "MySQLListener": {
+      "description": "TFTPListener is a kind: tftp listener: a TFTP relay in front of the servers that move firmware, configurations and boot images around an estate. There is nothing to authenticate with in this protocol, so the whole of the policy is the address it came from, the direction of the transfer, the path it asked for and the size of what comes back. MySQLListener is the settings of a kind: mysql listener: a relay in front of a MySQL or MariaDB server. PostgreSQL's dangerous operations are statements, so a statement policy reaches them all. MySQL's are **commands** -- one octet each, with no SQL involved -- and that is why this section has an `allow_commands` list where the postgres one does not. COM_SHUTDOWN is one octet and stops the server; the three replication commands are a copy of every change to every database; COM_CREATE_DB and COM_DROP_DB predate the DDL statements and bypass any statement policy entirely. The other MySQL-specific move is `deny_capabilities`, which *strips* bits from the server's greeting rather than refusing the connection. A client that never sees CLIENT_LOCAL_FILES offered cannot negotiate it, so the server can never ask that client for a file -- and the application still works. Refusing instead would mean everything on the segment breaks until somebody reconfigures a driver, which is how a security control gets turned off.",
+      "type": "object",
+      "properties": {
+        "allow_auth": {
+          "description": "AllowAuth is the allow list of authentication plugins, named as the server names them: caching_sha2_password, mysql_native_password, sha256_password, mysql_clear_password, mysql_old_password. Empty allows any that is not weak.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_clients": {
+          "description": "AllowClients and DenyClients are the networks a client may connect from. Deny is evaluated first.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_commands": {
+          "description": "AllowCommands is the allow list of protocol commands. Empty allows what an application driver sends and nothing administrative: query, stmt_prepare, stmt_execute, stmt_send_long_data, stmt_close, stmt_reset, stmt_fetch, init_db, ping, quit, statistics, reset_connection, set_option and change_user. The absences are the point: shutdown, debug, process_kill, the three replication commands, table_dump, create_db, drop_db, refresh, process_info, clone and field_list are all off unless named.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_databases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_load": {
+          "description": "AllowLoad names which LOAD DATA forms may cross: `file` (a path on the server) or `local` (a path on the *client*). Empty allows neither, which is the right default: bulk loading is a job, not something an application connection does by accident.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_programs": {
+          "description": "AllowPrograms matches the client's `program_name` connection attribute, with a trailing * allowed. It is chosen by the client and is not a credential; it is useful for telling a migration tool from a reporting dashboard when both connect as the same user.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_statements": {
+          "description": "AllowStatements and DenyStatements are the statement kinds, as the postgres kind names them. A statement the classifier cannot name is refused whatever this says.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_users": {
+          "description": "AllowUsers, DenyUsers, AllowDatabases and DenyDatabases are the identity claims a connection may make. They are re-checked on COM_CHANGE_USER, which re-authenticates a live connection as somebody else -- a relay that did not would have a user policy that applied to the first message and nothing after it.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_weak_auth": {
+          "description": "AllowWeakAuth permits mysql_clear_password (the password itself) and mysql_old_password (the pre-4.1 scramble, removed from the server in 5.7). Default false. mysql_native_password is deliberately not in that set: its challenge-response discloses no reusable secret, and treating it as weak would make this setting one operators turn off wholesale.",
+          "type": "boolean"
+        },
+        "default_action": {
+          "description": "DefaultAction is allow or deny when no rule matched. Default deny.",
+          "type": "string"
+        },
+        "deny_capabilities": {
+          "description": "DenyCapabilities are the capability bits stripped from the server's greeting so a client cannot negotiate them. Empty strips local_files, multi_statements and compress. local_files lets the server ask the *client* to open a path and send its contents, which is how a hostile server reads the filesystem of whatever connected to it. multi_statements lets one query carry several statements separated by semicolons, which is how every injection ending in `; DROP TABLE` is delivered. compress hides the protocol from the relay -- and from everything else that inspects it. `ssl` cannot be named here: stripping it would be performing the downgrade this kind exists to prevent.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_clients": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_commands": {
+          "description": "DenyCommands is the deny list, which no rule can override.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_databases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_response": {
+          "description": "DenyResponse is error (the default: an error packet the client's own library reports) or drop.",
+          "type": "string"
+        },
+        "deny_statements": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_users": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "handshake_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "idle_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_message_bytes": {
+          "description": "MaxMessageBytes bounds one reassembled message. Default 1 MiB. The protocol has no bound at all: a sender may chain 16 MiB packets for ever.",
+          "type": "integer"
+        },
+        "max_sessions": {
+          "description": "MaxSessions and MaxSessionsPerClient bound concurrent connections.",
+          "type": "integer"
+        },
+        "max_sessions_per_client": {
+          "type": "integer"
+        },
+        "max_statement_bytes": {
+          "description": "MaxStatementBytes bounds one statement. Default 64 KiB.",
+          "type": "integer"
+        },
+        "max_statements": {
+          "description": "MaxStatements bounds statements per query message. Default 1, because multi_statements is stripped by default and a message carrying more than one when the capability was refused is a client working around the policy.",
+          "type": "integer"
+        },
+        "monitor_only": {
+          "description": "MonitorOnly evaluates and enforces nothing, except the hard decisions: the client list, the TLS requirement, the authentication plugins, a command or statement the relay could not read, a replication command, a LOAD DATA LOCAL the capability forbids, and the capability stripping itself -- which is not a refusal at all, so there is nothing to shadow.",
+          "type": "boolean"
+        },
+        "read_only": {
+          "description": "ReadOnly refuses every statement that can change data, including call and do.",
+          "type": "boolean"
+        },
+        "require_tls": {
+          "description": "RequireTLS refuses a client that does not set CLIENT_SSL. Default true. The negotiation is a capability flag and nothing signs the server's greeting, so anything on the path can clear CLIENT_SSL from the advertised capabilities and the client will never ask. This is PostgreSQL's SSLRequest problem with a different encoding, and it gets the same answer: the relay decides, not the octets.",
+          "type": "boolean"
+        },
+        "rules": {
+          "description": "Rules narrow or widen the listener for traffic that matches them.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MySQLRule"
+          }
+        },
+        "session_duration": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "upstream": {
+          "description": "Upstream is the server pool. Required.",
+          "type": "string"
+        },
+        "upstream_tls": {
+          "description": "UpstreamTLS is the certificate and verification settings for that leg.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/UpstreamTLS"
+            }
+          ]
+        },
+        "upstream_tls_mode": {
+          "description": "UpstreamTLSMode is how the relay speaks to the server: require (the default), prefer or disable.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "MySQLRule": {
+      "description": "MySQLRule is one rule of a mysql listener's policy.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "Action is allow (the default), deny or observe.",
+          "type": "string"
+        },
+        "allow_commands": {
+          "description": "The rule's own narrowing. A rule that names a command or a statement kind widens the listener for its own traffic; the deny lists always win.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_load": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_statements": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "clients": {
+          "description": "Clients, Users, Databases and Programs select the traffic. Programs matches the client's `program_name` connection attribute, with a trailing * allowed.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "databases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_commands": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_statements": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_statements": {
+          "type": "integer"
+        },
+        "name": {
+          "description": "Name identifies the rule in logs and counters.",
+          "type": "string"
+        },
+        "programs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "read_only": {
+          "type": "boolean"
+        },
+        "schedule": {
+          "description": "Schedule is when this rule allows what it allows.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/ModbusSchedule"
+            }
+          ]
+        },
+        "users": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "NTPAuth": {
       "description": "NTPAuth is symmetric authentication with pre-shared keys. RFC 8573 makes AES-CMAC the algorithm: the older construction is MD5 over the key followed by the packet, which is a length-extension shape with a broken hash in it. The legacy algorithms are therefore an explicit exception rather than a default, because a device from 2006 cannot be taught a new one and pretending otherwise ends with no authentication at all rather than weak authentication somebody knows about. Autokey (RFC 5906) is not implemented and will not be.",
       "type": "object",
@@ -6073,7 +6347,7 @@
       "additionalProperties": false
     },
     "PostgresListener": {
-      "description": "TFTPListener is a kind: tftp listener: a TFTP relay in front of the servers that move firmware, configurations and boot images around an estate. There is nothing to authenticate with in this protocol, so the whole of the policy is the address it came from, the direction of the transfer, the path it asked for and the size of what comes back. PostgresListener is the settings of a kind: postgres listener: a relay in front of a PostgreSQL server that reads the frontend/backend protocol. A database proxy must not pretend to be a SQL firewall. Knowing which tables a statement touches means parsing SQL properly -- every alias, subquery, CTE, view, function body and search_path interaction -- and a relay that got that 95% right would have a policy with a hole in exactly the place somebody is looking. Restricting a role's tables is the database's own job, with GRANT. What a relay can do is everything that happens before the database has an opinion, and two things it does better than the database: refuse the encryption downgrade that libpq's default sslmode accepts silently, and refuse the authentication methods that put a reusable credential on the wire. Plus one thing the database cannot do at all: decide by the *shape* of a statement, as an allow list of kinds where anything unclassifiable is refused.",
+      "description": "PostgresListener is the settings of a kind: postgres listener: a relay in front of a PostgreSQL server that reads the frontend/backend protocol. A database proxy must not pretend to be a SQL firewall. Knowing which tables a statement touches means parsing SQL properly -- every alias, subquery, CTE, view, function body and search_path interaction -- and a relay that got that 95% right would have a policy with a hole in exactly the place somebody is looking. Restricting a role's tables is the database's own job, with GRANT. What a relay can do is everything that happens before the database has an opinion, and two things it does better than the database: refuse the encryption downgrade that libpq's default sslmode accepts silently, and refuse the authentication methods that put a reusable credential on the wire. Plus one thing the database cannot do at all: decide by the *shape* of a statement, as an allow list of kinds where anything unclassifiable is refused.",
       "type": "object",
       "properties": {
         "allow_applications": {

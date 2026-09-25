@@ -14480,7 +14480,7 @@ list
 T}	T{
 \fB[]\fR (all)
 T}	T{
-Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBpostgres_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fByara\fR
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBpostgres_\:denied\fR,\: \fBmysql_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fByara\fR
 T}
 T{
 \fBthreshold\fR
@@ -23943,6 +23943,370 @@ T}
 .TE
 .PP
 Selectors within a rule are AND, values within a selector are OR, and rules are tried in order. To capture one route for one client, put both selectors in one rule; to capture two unrelated things, write two rules.
+.SH "mysql"
+.PP
+\fBkind: mysql\fR is a relay in front of a MySQL or MariaDB server.
+.PP
+It has the same four jobs as the postgres kind \-\- refuse the encryption downgrade, refuse the weak credentials, refuse what is not a statement, decide by the shape of what is \-\- plus two that are MySQL\(aqs alone.
+.PP
+\fBOn MySQL the dangerous operations are commands, not statements.\fR After the handshake every client message begins with a one\-octet command code, and several of those carry no SQL at all, so a statement policy would never see them. \fBCOM_SHUTDOWN\fR is one octet and stops the server. The three replication commands are a copy of every change to every database. \fBCOM_TABLE_DUMP\fR is a whole table. \fBCOM_PROCESS_KILL\fR ends somebody else\(aqs query. \fBCOM_DEBUG\fR writes the server\(aqs internals to its error log. \fBCOM_CREATE_DB\fR and \fBCOM_DROP_DB\fR predate the DDL statements and bypass a statement policy entirely. Hence \fBallow_commands\fR, which the postgres kind has no equivalent of.
+.PP
+Two commands are subtler and are why a capability policy alone is not enough. \fBCOM_CHANGE_USER\fR re\-authenticates a \fIlive\fR connection as somebody else, so a relay that did not read it would have a user policy that applied to the first message and nothing after it. And \fBCOM_SET_OPTION\fR turns \fBCLIENT_MULTI_STATEMENTS\fR on \fBafter the handshake is over\fR \-\- a policy a client lifts with one command, unless the relay reads it.
+.PP
+\fBThe relay rewrites the server\(aqs greeting.\fR MySQL\(aqs handshake runs the opposite way round from PostgreSQL\(aqs: the server speaks first and advertises its capabilities, and the client answers. So the relay reads the greeting, clears the bits \fBdeny_capabilities\fR names, and forwards the edited one \-\- a client that never sees \fBCLIENT_LOCAL_FILES\fR offered cannot negotiate it, so the server can never ask that client for a file, \fBand the application still works\fR. That is the same move the tftp kind makes with RFC 7440\(aqs window: rewrite rather than refuse, because a control that breaks every application on a segment is a control somebody switches off. The strip is logged as an \fBalert\fR rather than a refusal, since nothing was denied.
+.PP
+.RS 4
+.nf
+.ft CR
+\- name: app
+  address: "10.0.0.20:3306"
+  kind: mysql
+  tls:
+    certificates: [{cert_file: /etc/xproxy/tls/db.pem, key_file: /etc/xproxy/tls/db\-key.pem}]
+  mysql:
+    upstream: my
+    allow_clients: ["10.0.2.0/24"]
+    allow_users: [app]
+    allow_databases: [sales]
+    allow_auth: [caching_sha2_password]
+    allow_statements: [select, insert, update, delete, show, set, begin, commit, rollback]
+.ft
+.fi
+.RE
+.PP
+.TS
+allbox;
+lbw(1.3i) lbw(0.9i) lbw(1.2i) lbx
+lw(1.3i) lw(0.9i) lw(1.2i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBupstream\fR
+T}	T{
+name
+T}	T{
+\fI(required)\fR
+T}	T{
+The server pool
+T}
+T{
+\fBallow_\:clients\fR,\: \fBdeny_\:clients\fR
+T}	T{
+list of CIDR
+T}	T{
+any
+T}	T{
+Networks a client may connect from;\: deny first
+T}
+T{
+\fBrequire_\:tls\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse a client that does not set \fBCLIENT_\:SSL\fR. The negotiation is a capability flag and nothing signs the server\(aqs greeting,\: so anything on the path can clear the bit and the client never asks. The listener needs a \fBtls\fR section
+T}
+T{
+\fBupstream_\:tls_\:mode\fR
+T}	T{
+\fBrequire\fR,\: \fBprefer\fR,\: \fBdisable\fR
+T}	T{
+\fBrequire\fR
+T}	T{
+How the relay speaks to the server. Both legs are upgraded independently,\: which is the only way a relay that reads the protocol can exist
+T}
+T{
+\fBupstream_\:tls\fR
+T}	T{
+object
+T}	T{
+\fI(none)\fR
+T}	T{
+Certificate and verification settings for that leg
+T}
+T{
+\fBallow_\:users\fR,\: \fBdeny_\:users\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+Which users a connection may claim. \fBRe\-checked on \fBCOM_\:CHANGE_\:USER\fR\fR
+T}
+T{
+\fBallow_\:databases\fR,\: \fBdeny_\:databases\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+Same,\: for the database
+T}
+T{
+\fBallow_\:programs\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+Matches the client\(aqs \fBprogram_\:name\fR connection attribute,\: trailing \fB*\fR allowed
+T}
+T{
+\fBallow_\:auth\fR
+T}	T{
+list
+T}	T{
+any not weak
+T}	T{
+Plugins the relay will carry: \fBcaching_\:sha2_\:password\fR,\: \fBmysql_\:native_\:password\fR,\: \fBsha256_\:password\fR,\: \fBmysql_\:clear_\:password\fR,\: \fBmysql_\:old_\:password\fR,\: and the enterprise ones
+T}
+T{
+\fBallow_\:weak_\:auth\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Permit \fBmysql_\:clear_\:password\fR (the password itself) and \fBmysql_\:old_\:password\fR (the pre\-4.1 scramble,\: removed from the server in 5.7). \fBmysql_\:native_\:password\fR is deliberately \fBnot\fR in that set: its challenge\-response discloses no reusable secret,\: and treating it as weak would make this setting one operators turn off wholesale. \fBmysql_\:clear_\:password\fR on an unencrypted connection is refused even when this is true
+T}
+T{
+\fBallow_\:commands\fR
+T}	T{
+list
+T}	T{
+the driver set
+T}	T{
+Protocol commands. Empty allows \fBquery\fR,\: \fBstmt_\:prepare\fR,\: \fBstmt_\:execute\fR,\: \fBstmt_\:send_\:long_\:data\fR,\: \fBstmt_\:close\fR,\: \fBstmt_\:reset\fR,\: \fBstmt_\:fetch\fR,\: \fBinit_\:db\fR,\: \fBping\fR,\: \fBquit\fR,\: \fBstatistics\fR,\: \fBreset_\:connection\fR,\: \fBset_\:option\fR and \fBchange_\:user\fR \[u2014] and nothing administrative
+T}
+T{
+\fBdeny_\:commands\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The deny list,\: which no rule can override
+T}
+T{
+\fBdeny_\:capabilities\fR
+T}	T{
+list
+T}	T{
+\fB[local_\:files,\: multi_\:statements,\: compress]\fR
+T}	T{
+Bits stripped from the server\(aqs greeting. \fBssl\fR \fBcannot be named\fR: stripping it would perform the downgrade this kind exists to prevent
+T}
+T{
+\fBread_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse every statement that can change data,\: \fBcall\fR and \fBdo\fR included
+T}
+T{
+\fBallow_\:statements\fR,\: \fBdeny_\:statements\fR
+T}	T{
+list of kinds
+T}	T{
+any nameable
+T}	T{
+As the postgres kind names them
+T}
+T{
+\fBallow_\:load\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Which \fBLOAD DATA\fR forms may cross: \fBfile\fR (a path on the server,\: needing the FILE privilege) or \fBlocal\fR (a path on the \fBclient\fR). Empty allows neither
+T}
+T{
+\fBmax_\:statements\fR
+T}	T{
+int
+T}	T{
+\fB1\fR
+T}	T{
+Statements per query message. The default is 1 because \fBmulti_\:statements\fR is stripped by default,\: so a message carrying more is a client working around the policy
+T}
+T{
+\fBmax_\:statement_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB65536\fR
+T}	T{
+One statement
+T}
+T{
+\fBmax_\:message_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB1048576\fR
+T}	T{
+One reassembled message. The protocol has no bound at all: a sender may chain 16 MiB packets for ever
+T}
+T{
+\fBmax_\:sessions\fR,\: \fBmax_\:sessions_\:per_\:client\fR
+T}	T{
+int
+T}	T{
+unbounded
+T}	T{
+Concurrent connections
+T}
+T{
+\fBidle_\:timeout\fR,\: \fBsession_\:duration\fR,\: \fBhandshake_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR,\: \fB0\fR,\: \fB30s\fR
+T}	T{
+
+T}
+T{
+\fBdefault_\:action\fR
+T}	T{
+\fBallow\fR,\: \fBdeny\fR
+T}	T{
+\fBdeny\fR
+T}	T{
+When no rule matched
+T}
+T{
+\fBdeny_\:response\fR
+T}	T{
+\fBerror\fR,\: \fBdrop\fR
+T}	T{
+\fBerror\fR
+T}	T{
+\fBerror\fR sends an error packet: 1142 with SQLSTATE 42000 for a refused statement,\: 1045 with 28000 for a refused connection,\: which are what the server itself answers
+T}
+T{
+\fBmonitor_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Evaluate and do not enforce,\: except the hard decisions below
+T}
+.TE
+.SS "rules[]"
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.8i) lbx
+lw(1.2i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+string
+T}	T{
+Names the rule in logs and counters
+T}
+T{
+\fBclients\fR,\: \fBusers\fR,\: \fBdatabases\fR,\: \fBprograms\fR
+T}	T{
+lists
+T}	T{
+Selectors;\: AND within a rule,\: OR within one
+T}
+T{
+\fBschedule\fR
+T}	T{
+object
+T}	T{
+\fBdays\fR,\: \fBfrom\fR,\: \fBto\fR,\: \fBtimezone\fR
+T}
+T{
+\fBaction\fR
+T}	T{
+\fBallow\fR,\: \fBdeny\fR,\: \fBobserve\fR
+T}	T{
+Default \fBallow\fR
+T}
+T{
+\fBallow_\:commands\fR,\: \fBdeny_\:commands\fR,\: \fBallow_\:statements\fR,\: \fBdeny_\:statements\fR,\: \fBallow_\:load\fR,\: \fBread_\:only\fR,\: \fBmax_\:statements\fR
+T}	T{
+
+T}	T{
+The rule\(aqs own narrowing. A rule that names a command or a kind \fBwidens\fR the listener for its own traffic;\: the deny lists always win
+T}
+.TE
+.SS "What shadow mode never shadows"
+.PP
+.TS
+allbox;
+lbw(1.3i) lbx
+lw(1.3i) lx.
+T{
+Refusal
+T}	T{
+Why it is hard
+T}
+T{
+\fBclient_\:not_\:allowed\fR
+T}	T{
+An address that may not connect
+T}
+T{
+\fBtls_\:required\fR,\: \fBupstream_\:no_\:tls\fR
+T}	T{
+The user name and database are inside the handshake response
+T}
+T{
+\fBweak_\:auth\fR,\: \fBauth_\:not_\:allowed\fR,\: \fBcleartext_\:password_\:unencrypted\fR
+T}	T{
+A credential an observer can reuse is disclosed by being sent
+T}
+T{
+\fBreplication_\:command\fR
+T}	T{
+The connection becomes a stream of every change to every database
+T}
+T{
+\fBlocal_\:infile\fR,\: \fBload_\:local\fR
+T}	T{
+Forwarding the request means the client\(aqs file has already left
+T}
+T{
+\fBchange_\:user\fR refusals
+T}	T{
+Otherwise the connection \fIis\fR somebody the policy refused while the relay notes that it noticed
+T}
+T{
+\fBstatement_\:unreadable\fR,\: \fBset_\:option_\:unreadable\fR,\: \fBempty_\:command\fR
+T}	T{
+The relay has no opinion to observe
+T}
+T{
+\fBstatement_\:too_\:long\fR
+T}	T{
+A bound
+T}
+.TE
+.PP
+Capability stripping is not in that table because it is not a refusal: nothing is denied, the connection goes through, and the client simply never sees the capability offered.
 .SH "postgres"
 .PP
 \fBkind: postgres\fR is a relay in front of a PostgreSQL server that reads the frontend/backend protocol (the PostgreSQL manual, part IV chapter 55).

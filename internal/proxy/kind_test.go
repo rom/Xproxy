@@ -33,6 +33,7 @@ var sections = map[string]string{
 	"ldap":     "ldap: {upstream: u}",
 	"tftp":     "tftp: {upstream: u}",
 	"postgres": "postgres: {upstream: u, require_tls: false}",
+	"mysql":    "mysql: {upstream: u, require_tls: false}",
 	"dhcp":     "dhcp: {upstream: u, relay_address: 10.0.0.1}",
 	"ntp":      "ntp: {upstream: u}",
 	"ntske":    "ntske: {upstream: u}",

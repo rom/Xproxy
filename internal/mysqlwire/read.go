@@ -44,9 +44,17 @@ type Reader struct {
 	max int
 	// seq is the sequence number expected next.
 	seq byte
-	// strict says an out-of-sequence packet is an error rather than something
-	// to resynchronise on. It is on, because the alternative is a relay that
-	// decides about a message the server will read differently.
+	// strict says a *first* packet whose number is not the expected one is an
+	// error. Within a continuation chain the check is always made, whatever
+	// this says: mis-reassembling a chain would be the reader's own bug and
+	// would produce a message neither peer sent.
+	//
+	// Across messages it is a choice, and a relay turns it off. A relay sits
+	// between two independently numbered streams and originates packets of its
+	// own -- a refusal, an empty answer to a file request -- so its own reader
+	// desynchronises exactly when it is doing its job. The server checks the
+	// numbering itself and refuses a gap, so a relay that also checked would
+	// add a failure mode without adding a defence. See Lax.
 	strict bool
 }
 
@@ -61,6 +69,14 @@ func NewReader(r io.Reader, max int) *Reader {
 // Reset puts the sequence back to zero, which is what happens at the start of
 // each command and after a TLS upgrade.
 func (rd *Reader) Reset() { rd.seq = 0 }
+
+// Lax stops checking the number of a message's *first* packet, for a relay.
+//
+// The continuation check stays on. A relay must not mis-reassemble a chain --
+// that would build a message neither peer sent -- but it has no business
+// policing numbering between messages, because it originates packets of its own
+// and the server enforces the sequence anyway.
+func (rd *Reader) Lax() { rd.strict = false }
 
 // SetSeq sets the next expected sequence number, for the caller that has just
 // forwarded a packet it read elsewhere.
@@ -110,7 +126,9 @@ func (rd *Reader) Next() (Packet, error) {
 			return Packet{}, err
 		}
 		n = int(hdr[0]) | int(hdr[1])<<8 | int(hdr[2])<<16
-		if rd.strict && hdr[3] != rd.seq {
+		// Always checked, strict or not: a chain assembled out of order is a
+		// message neither peer sent.
+		if hdr[3] != rd.seq {
 			return Packet{}, fmt.Errorf("%w: continuation got %d, expected %d", ErrSequence, hdr[3], rd.seq)
 		}
 		rd.seq = hdr[3] + 1

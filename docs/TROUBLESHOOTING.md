@@ -4423,6 +4423,85 @@ growing. An application that puts an id in the path without the proxy
 deriving a template is the usual cause, and the fix is the description,
 not the bound.
 
+## MySQL
+
+**`LOAD DATA LOCAL INFILE` stopped working.** That is the capability strip
+doing its job: `local_files` is in `deny_capabilities` by default, so the
+client never sees `CLIENT_LOCAL_FILES` offered and cannot negotiate it. Look
+for the `mysql_capabilities_stripped` line in the security log, which names
+what was cleared. If the load is legitimate -- a nightly job, not an
+application connection -- put `local` in `allow_load` and remove
+`local_files` from `deny_capabilities` on that listener only. Understand what
+you are turning back on: with it, a server the client trusts can answer any
+query by asking for a path, and the client opens it and sends the contents.
+
+**Multi-statement queries stopped working.** Same cause:
+`multi_statements` is stripped by default, and `max_statements` is 1. An ORM
+that batches with semicolons needs both changed. A `; DROP TABLE` injection
+needs exactly the same two things, which is why the default is what it is.
+
+**`COM_SET_OPTION` is refused.** The client asked to turn multi-statement
+support on after the handshake. That is the command that would otherwise lift
+the capability strip, so it is refused while `multi_statements` is denied.
+Turning the option *off* is always allowed.
+
+**Everything is refused with `command_not_allowed`.** `allow_commands`
+defaults to what an application driver sends. A tool that is not one --
+`mysqldump` uses `field_list` and `refresh`, a monitoring agent uses
+`process_info` and `statistics`, a replica uses the three replication
+commands -- needs its commands named, ideally on a rule for that account
+rather than on the listener.
+
+**A replica cannot connect.** `binlog_dump`, `binlog_dump_gtid` and
+`register_slave` are refused by default and their refusal is *hard*, so
+shadow mode does not carry them either. Name them in a rule selected on the
+replica's user and address; `examples/databases/mysql.yaml` has that listener.
+
+**The connection works and then dies after `COM_CHANGE_USER`.** The relay
+re-checks the user and database on that command, because it re-authenticates
+a live connection as somebody else. The new user has to be on
+`allow_users` too, and the refusal is hard -- the alternative is a connection
+that *is* somebody the policy refused while the relay writes down that it
+noticed.
+
+**`mysql_native_password` is refused.** Not because it is weak -- it is
+deliberately not in that set, since its challenge-response discloses no
+reusable secret -- but because `allow_auth` names a list that does not
+include it. An estate on 8.0 has no reason to accept it; one with older
+clients does.
+
+**`mysql_clear_password` is refused even with `allow_weak_auth: true`.** The
+connection is not encrypted. That plugin sends the password itself, so it is
+only ever safe inside TLS, and the refusal is separate from the weak-plugin
+one for exactly that reason.
+
+**The listener will not start.** `require_tls` defaults on and the protocol
+upgrades an existing connection rather than using a second port, so the
+listener needs a `tls` section. Refusing at load is deliberate: a listener
+that silently served plaintext instead is the bug.
+
+**`upstream_no_tls`.** The server's greeting did not offer `CLIENT_SSL`,
+which means the server was built without TLS or has `ssl=OFF`. Fix the
+server; `upstream_tls_mode: prefer` is the honest workaround and records in
+the configuration that the leg is unencrypted.
+
+**A statement in a comment was refused.** MySQL's `/*! ... */` and
+`/*!50000 ... */` are **executable comments**: the server runs the contents.
+The classifier reads them as code, which is why `/*!50000 DROP TABLE t */`
+is a DDL statement and not a comment. An optimiser hint (`/*+ ... */`) is
+skipped, because it cannot carry a statement.
+
+**`packet out of sequence` in the error log.** Within a reassembled message,
+that is a chain with a gap in it, and the relay refuses rather than building
+a message neither peer sent. Between messages the relay does not check, and
+the server does -- so a sequence error from the *server* is a different
+problem, usually a client library sharing one connection across goroutines.
+
+**A large statement is refused as too long.** `max_message_bytes` bounds the
+reassembled message and defaults to 1 MiB, while the protocol has no bound at
+all: a sender may chain 16 MiB packets for ever. A bulk insert legitimately
+needs more; raise it on that listener rather than removing the bound.
+
 ## PostgreSQL
 
 **Every connection fails and the listener will not start.** `require_tls`

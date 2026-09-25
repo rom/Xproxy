@@ -13,6 +13,7 @@ import (
 	"github.com/rom/xproxy/internal/listener"
 	"github.com/rom/xproxy/internal/modbus"
 	mqttwire "github.com/rom/xproxy/internal/mqtt"
+	mysqlwire "github.com/rom/xproxy/internal/mysqlwire"
 	"github.com/rom/xproxy/internal/netutil"
 	pgwire "github.com/rom/xproxy/internal/pgwire"
 	"github.com/rom/xproxy/internal/rdp"
@@ -859,6 +860,12 @@ func (v *validator) server(s *Server) {
 				v.errf("%s.dhcp: required for kind dhcp", p)
 			} else {
 				v.dhcpListener(p+".dhcp", ln.DHCP)
+			}
+		case "mysql":
+			if ln.MySQL == nil {
+				v.errf("%s.mysql: required for kind mysql", p)
+			} else {
+				v.mysqlListener(p+".mysql", ln.MySQL, ln.TLS != nil)
 			}
 		case "postgres":
 			if ln.Postgres == nil {
@@ -2497,7 +2504,7 @@ var denyReasons = map[string]bool{
 	"forward_sni_mismatch": true, "dns_tunnel": true, "dns_answer_denied": true,
 	"telnet_denied": true, "vnc_denied": true, "rdp_denied": true, "sftp_icap": true, "udp_denied": true,
 	"modbus_denied": true, "iec104_denied": true, "ntp_denied": true, "ntske_denied": true,
-	"snmp_denied": true, "ldap_denied": true, "tftp_denied": true, "dhcp_denied": true, "postgres_denied": true,
+	"snmp_denied": true, "ldap_denied": true, "tftp_denied": true, "dhcp_denied": true, "postgres_denied": true, "mysql_denied": true,
 }
 
 // securityTxtFieldRE bounds an extra field name to the token RFC 9116
@@ -7457,6 +7464,145 @@ func (v *validator) dhcpPatterns(p string, in []string) {
 		}
 		if _, err := path.Match(pat, "x"); err != nil {
 			v.errf("%s[%d]: %q is not a pattern: %v", p, i, pat, err)
+		}
+	}
+}
+
+// mysqlListener validates a kind: mysql section.
+func (v *validator) mysqlListener(p string, m *MySQLListener, hasTLS bool) {
+	if m.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	v.modbusCIDRs(p+".allow_clients", m.AllowClients)
+	v.modbusCIDRs(p+".deny_clients", m.DenyClients)
+
+	requireTLS := m.RequireTLS == nil || *m.RequireTLS
+	if requireTLS && !hasTLS {
+		v.errf("%s.require_tls: set (it defaults on) but the listener has no tls section; "+
+			"a mysql client upgrades an existing connection, so the listener needs a certificate", p)
+	}
+	if !requireTLS {
+		v.warnf("%s.require_tls: false lets a client connect without setting CLIENT_SSL, "+
+			"and nothing signs the server greeting that advertises it", p)
+	}
+	switch m.UpstreamTLSMode {
+	case "", "require", "prefer", "disable":
+	default:
+		v.errf("%s.upstream_tls_mode: %q is not require, prefer or disable", p, m.UpstreamTLSMode)
+	}
+
+	for i, name := range m.AllowAuth {
+		if !mysqlPlugin(name) {
+			v.errf("%s.allow_auth[%d]: %q is not an authentication plugin (%s)",
+				p, i, name, strings.Join(mysqlwire.AuthPlugins(), ", "))
+		}
+	}
+	if m.AllowWeakAuth {
+		v.warnf("%s.allow_weak_auth: true permits mysql_clear_password (the password itself) "+
+			"and mysql_old_password (the pre-4.1 scramble, removed from the server in 5.7)", p)
+	}
+
+	v.mysqlCommands(p+".allow_commands", m.AllowCommands)
+	v.mysqlCommands(p+".deny_commands", m.DenyCommands)
+	v.mysqlCaps(p+".deny_capabilities", m.DenyCapabilities)
+	v.postgresStatements(p+".allow_statements", m.AllowStatements)
+	v.postgresStatements(p+".deny_statements", m.DenyStatements)
+	v.mysqlLoad(p+".allow_load", m.AllowLoad)
+
+	for name, val := range map[string]int{
+		"max_statements": m.MaxStatements, "max_statement_bytes": m.MaxStatementBytes,
+		"max_message_bytes": m.MaxMessageBytes, "max_sessions": m.MaxSessions,
+		"max_sessions_per_client": m.MaxSessionsPerClient,
+	} {
+		if val < 0 {
+			v.errf("%s.%s: must not be negative", p, name)
+		}
+	}
+	if m.MaxMessageBytes > mysqlwire.MaxMessage {
+		v.errf("%s.max_message_bytes: %d is past the bound of %d", p, m.MaxMessageBytes, mysqlwire.MaxMessage)
+	}
+
+	switch m.DefaultAction {
+	case "", "allow", "deny":
+	default:
+		v.errf("%s.default_action: %q is not allow or deny", p, m.DefaultAction)
+	}
+	switch m.DenyResponse {
+	case "", "error", "drop":
+	default:
+		v.errf("%s.deny_response: %q is not error or drop", p, m.DenyResponse)
+	}
+	for i := range m.Rules {
+		r := &m.Rules[i]
+		rp := fmt.Sprintf("%s.rules[%d]", p, i)
+		v.modbusCIDRs(rp+".clients", r.Clients)
+		switch r.Action {
+		case "", "allow", "deny", "observe":
+		default:
+			v.errf("%s.action: %q is not allow, deny or observe", rp, r.Action)
+		}
+		v.mysqlCommands(rp+".allow_commands", r.AllowCommands)
+		v.mysqlCommands(rp+".deny_commands", r.DenyCommands)
+		v.postgresStatements(rp+".allow_statements", r.AllowStatements)
+		v.postgresStatements(rp+".deny_statements", r.DenyStatements)
+		v.mysqlLoad(rp+".allow_load", r.AllowLoad)
+		if r.MaxStatements < 0 {
+			v.errf("%s.max_statements: must not be negative", rp)
+		}
+		if r.Schedule != nil {
+			v.modbusSchedule(rp+".schedule", r.Schedule)
+		}
+	}
+}
+
+func mysqlPlugin(name string) bool {
+	for _, p := range mysqlwire.AuthPlugins() {
+		if p == strings.TrimSpace(name) {
+			return true
+		}
+	}
+	return false
+}
+
+func (v *validator) mysqlCommands(p string, in []string) {
+	for i, n := range in {
+		if _, ok := mysqlwire.CommandOf(n); !ok {
+			v.errf("%s[%d]: %q is not a command (%s)", p, i, n,
+				strings.Join(mysqlwire.CommandNames(), ", "))
+		}
+	}
+}
+
+// mysqlCaps checks the capabilities to strip. `ssl` cannot be named: stripping it
+// would perform the downgrade the kind exists to prevent, because a client that
+// never sees CLIENT_SSL offered never asks for TLS.
+func (v *validator) mysqlCaps(p string, in []string) {
+	for i, n := range in {
+		bit, ok := mysqlwire.CapOf(n)
+		if !ok {
+			v.errf("%s[%d]: %q is not a capability (%s)", p, i, n,
+				strings.Join(mysqlwire.CapNames(), ", "))
+			continue
+		}
+		if bit == mysqlwire.CapSSL {
+			v.errf("%s[%d]: ssl cannot be stripped; a client that never sees it offered "+
+				"never asks for TLS, which is the downgrade this kind exists to prevent", p, i)
+		}
+	}
+}
+
+// mysqlLoad checks which LOAD DATA forms may cross.
+func (v *validator) mysqlLoad(p string, in []string) {
+	for i, n := range in {
+		switch strings.ToLower(strings.TrimSpace(n)) {
+		case "file":
+			v.warnf("%s[%d]: file lets LOAD DATA read a path on the server, "+
+				"which needs the FILE privilege", p, i)
+		case "local":
+			v.warnf("%s[%d]: local lets the server ask the *client* to open a path and send it, "+
+				"which is how a hostile server reads the filesystem of whatever connected to it", p, i)
+		default:
+			v.errf("%s[%d]: %q is not file or local", p, i, n)
 		}
 	}
 }

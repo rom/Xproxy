@@ -775,3 +775,63 @@ func Clip(s string) string {
 	}
 	return s[:MaxString] + "..."
 }
+
+// StripCaps clears capability bits from a server greeting, in place, and says
+// which it cleared.
+//
+// This is the move the TFTP kind makes with RFC 7440's window: **rewrite rather
+// than refuse**. A client that never sees CLIENT_LOCAL_FILES offered cannot
+// negotiate it, so the server can never ask that client for a file -- and the
+// connection still works. Refusing the connection instead would mean every
+// application on the segment breaks until somebody reconfigures a driver, which
+// is how a security control gets turned off.
+//
+// The bits are edited in the greeting the relay forwards rather than the one it
+// read, and only bits the server actually offered are reported as cleared, so a
+// log line says what changed rather than what was asked for.
+func StripCaps(greeting []byte, deny uint32) (cleared uint32, err error) {
+	// The capability fields sit at fixed offsets after the NUL-terminated
+	// server version: connection id (4) + auth data (8) + filler (1) puts the
+	// low half at 13, and charset (1) + status (2) after it puts the high half
+	// at 18.
+	if len(greeting) < 2 {
+		return 0, ErrTruncated
+	}
+	nul := -1
+	for i := 1; i < len(greeting); i++ {
+		if greeting[i] == 0 {
+			nul = i
+			break
+		}
+	}
+	if nul < 0 {
+		return 0, ErrNotTerminated
+	}
+	rest := greeting[nul+1:]
+	if len(rest) < 20 {
+		return 0, ErrTruncated
+	}
+	low := binary.LittleEndian.Uint16(rest[13:15])
+	high := binary.LittleEndian.Uint16(rest[18:20])
+	caps := uint32(low) | uint32(high)<<16
+	cleared = caps & deny
+	if cleared == 0 {
+		return 0, nil
+	}
+	caps &^= deny
+	binary.LittleEndian.PutUint16(rest[13:15], uint16(caps&0xffff)) //nolint:gosec // masked
+	binary.LittleEndian.PutUint16(rest[18:20], uint16(caps>>16))    //nolint:gosec // masked
+	return cleared, nil
+}
+
+// CapList names the bits set in a mask, for a log line.
+func CapList(mask uint32) []string {
+	var out []string
+	for i := 0; i < 32; i++ {
+		bit := uint32(1) << uint(i)
+		if mask&bit != 0 {
+			out = append(out, CapName(bit))
+		}
+	}
+	return out
+}
