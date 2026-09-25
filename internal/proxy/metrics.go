@@ -119,6 +119,25 @@ func (s *Server) Collect(e metrics.Collector) {
 			e.Gauge("xproxy_shedding", "1 while the priority class is being shed.", L{"class": class}, v)
 		}
 	}
+	// Just-in-time access. The three worth alerting on are a pending queue
+	// that is not being answered, sessions refused for want of a grant, and
+	// -- in the other direction -- a listener that requires grants and has
+	// none in force at all, which looks the same from outside as a listener
+	// that is down.
+	if a := sn.Access; a != nil {
+		for state, n := range a.ByState {
+			e.Gauge("xproxy_access_grants", "Access grants by state.", L{"state": state}, float64(n))
+		}
+		e.Counter("xproxy_access_requests_total", "Access grants asked for.", nil, float64(a.Requests))
+		e.Counter("xproxy_access_approvals_total", "Approvals recorded.", nil, float64(a.Approvals))
+		e.Counter("xproxy_access_denials_total", "Requests refused by an approver.", nil, float64(a.Denials))
+		e.Counter("xproxy_access_revocations_total", "Grants withdrawn.", nil, float64(a.Revocations))
+		e.Counter("xproxy_access_uses_total", "Sessions opened against a grant.", nil, float64(a.Uses))
+		for reason, n := range a.Refusals {
+			e.Counter("xproxy_access_refusals_total", "Sessions turned away, by reason.",
+				L{"reason": reason}, float64(n))
+		}
+	}
 	// The device inventory. The numbers worth alerting on are the last two:
 	// a device nobody accounted for, and a device behaving like something
 	// this estate said it does not have.

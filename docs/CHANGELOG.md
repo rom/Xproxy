@@ -605,6 +605,14 @@ Open findings of the earlier rounds:
   when they have no way to learn a name, rather than failing closed on the first
   evening. A grant naming one machine **pins the dial to it**.
 
+  The exposition carries it: `xproxy_access_grants{state}` with every state
+  present even at zero (a gauge that disappears when it reaches zero is a gauge
+  an alert cannot be written against), the acts as counters, and
+  `xproxy_access_refusals_total{reason}`. Three alerts come with it -- a request
+  that has been pending for half an hour, sessions refused for want of a grant,
+  and grants being *used* over a day with no approval recorded in the same day,
+  which is four eyes switched off -- and two panels on the security dashboard.
+
   Eight refusal reasons, each its own counter (`no_grant`, `grant_pending`,
   `grant_not_yet`, `grant_expired`, `grant_denied`, `grant_revoked`,
   `grant_spent`, `grant_wrong_target`), because an operator answering a call

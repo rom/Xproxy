@@ -168,6 +168,29 @@ groups:
         annotations:
           summary: "Rate limit policy {{ $labels.policy }} denies more than half of its decisions on {{ $labels.instance }}"
           description: "The limit is too tight for legitimate traffic or an abuser is being held off; xproxyctl quotas shows the top keys."
+      - alert: XproxyAccessRequestWaiting
+        expr: max by (instance) (xproxy_access_grants{state="pending"}) > 0
+        for: 30m
+        labels: {severity: warn}
+        annotations:
+          summary: "An access request has been waiting half an hour on {{ $labels.instance }}"
+          description: "Somebody asked for just-in-time access and nobody has approved or refused it. An approval queue that is not answered is an operator who cannot work, and an approval system that is quietly ignored is worse than none: xproxyctl access -state pending lists them."
+      - alert: XproxySessionsRefusedForWantOfAGrant
+        expr: sum by (instance) (rate(xproxy_access_refusals_total{reason=~"no_grant|grant_expired|grant_pending"}[15m])) > 0
+        for: 15m
+        labels: {severity: warn}
+        annotations:
+          summary: "Sessions on {{ $labels.instance }} are being refused for want of an access grant"
+          description: "A gate listener with require_grant is turning people away: either the estate has not adopted the asking-and-approving habit yet, or somebody is trying to use a bastion they have no window for. The reason label separates the two: no_grant is nobody asked, grant_pending is nobody approved, grant_expired is a window that closed."
+      - alert: XproxyAccessSelfApprovalOn
+        expr: |
+          sum by (instance) (increase(xproxy_access_uses_total[24h])) > 0
+            and sum by (instance) (increase(xproxy_access_approvals_total[24h])) == 0
+        for: 1h
+        labels: {severity: warn}
+        annotations:
+          summary: "Access grants on {{ $labels.instance }} are being used with no approvals recorded"
+          description: "Sessions opened against grants in the last day and not one approval was recorded in the same day, which means approvals: 0 or self_approval: true -- just-in-time and time-boxed, but not four eyes. Intended on a single-operator estate; on any other it is the setting an attacker who reaches one account most wants."
   - name: xproxy.accounts
     rules:
       - alert: XproxyCredentialStuffing

@@ -1815,6 +1815,126 @@
       ],
       "title": "DNS answers served stale, and entries prefetched",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Just-in-time access: the grants that exist and what state each is in. pending is the one to watch -- a request nobody has answered is an operator who cannot work, and an approval system that is quietly ignored is worse than none.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 40,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal"
+            }
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 96
+      },
+      "id": 33,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "refId": "A",
+          "legendFormat": "{{state}}",
+          "expr": "sum by (state) (xproxy_access_grants{instance=~\"$instance\"})"
+        }
+      ],
+      "title": "Access grants by state",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Sessions a gate listener turned away for want of a grant, by reason: no_grant is nobody asked, grant_pending is nobody approved, grant_expired is a window that closed, grant_wrong_target is a grant for another machine. Beside them, the approvals actually recorded -- uses without approvals means four eyes is off.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 40,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal"
+            }
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 96
+      },
+      "id": 34,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "refId": "A",
+          "legendFormat": "{{reason}}",
+          "expr": "sum by (reason) (rate(xproxy_access_refusals_total{instance=~\"$instance\"}[5m]))"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "refId": "B",
+          "legendFormat": "approvals",
+          "expr": "sum(rate(xproxy_access_approvals_total{instance=~\"$instance\"}[5m]))"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "refId": "C",
+          "legendFormat": "uses",
+          "expr": "sum(rate(xproxy_access_uses_total{instance=~\"$instance\"}[5m]))"
+        }
+      ],
+      "title": "Access refused, approved and used",
+      "type": "timeseries"
     }
   ],
   "refresh": "30s",

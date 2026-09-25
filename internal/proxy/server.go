@@ -362,6 +362,7 @@ func (s *Server) Stats() Snapshot {
 	snap.RejectedConns = s.connLimiter.Rejected.Load()
 	snap.RateRefusedConns = s.rate().Rejected.Load()
 	snap.Assets = s.AssetReport()
+	snap.Access = s.AccessReport()
 	s.mu.Lock()
 	for _, bl := range s.listeners {
 		if bl.rate != nil {
@@ -1265,6 +1266,29 @@ func (s *Server) Shadow() *shadow.Ledger { return s.wouldDeny }
 // has no access section. A gate listener with require_grant and no ledger
 // refuses every session rather than admitting one unchecked.
 func (s *Server) Access() *access.Ledger { return s.grants }
+
+// AccessReport summarises the ledger for the status view and the exposition,
+// or nil when the configuration has no access section.
+func (s *Server) AccessReport() *AccessSummary {
+	l := s.grants
+	if l == nil {
+		return nil
+	}
+	st := l.Stats()
+	sum := &AccessSummary{Requests: st.Requests, Approvals: st.Approvals, Denials: st.Denials,
+		Revocations: st.Revocations, Uses: st.Uses, Refusals: st.Refusals, ByState: map[string]int{}}
+	// Every state appears, including the ones at zero: a gauge that
+	// disappears when it reaches zero is a gauge an alert cannot be written
+	// against.
+	for _, st := range []access.State{access.Pending, access.Scheduled, access.Active, access.Spent,
+		access.Expired, access.Denied, access.Revoked} {
+		sum.ByState[string(st)] = 0
+	}
+	for _, g := range l.Grants() {
+		sum.ByState[string(g.State)]++
+	}
+	return sum
+}
 
 // accessPolicy is the configured section as the ledger reads it.
 func accessPolicy(a *config.Access) access.Policy {
