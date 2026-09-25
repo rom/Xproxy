@@ -1,0 +1,263 @@
+# SQL Server relay: the protocol where the password is not encrypted, the
+# statement is not a statement, and the TLS handshake is inside the protocol.
+#
+# Three things to understand before reading this file.
+#
+# **The password is an encoding, not a secret.** A LOGIN7 carries the
+# password with its nibbles swapped and XORed with 0xA5. There is no key.
+# Anybody who read the packet has the password, which is why require_tls
+# here is not hardening -- it is the difference between a reusable
+# credential on the wire and no credential on the wire. And the
+# negotiation that decides whether the connection is encrypted is one
+# octet in a PRELOGIN option table, answered by the server, signed by
+# nothing:
+#
+#   ENCRYPT_OFF      (0x00)  "I would rather not" -- what a lot of software sends
+#   ENCRYPT_ON       (0x01)  "let us"
+#   ENCRYPT_NOT_SUP  (0x02)  "I cannot" -- what an attacker rewrites the answer to
+#   ENCRYPT_REQ      (0x03)  "I will not continue without it"
+#
+# A client that sent ENCRYPT_OFF and hears ENCRYPT_NOT_SUP proceeds in the
+# clear without complaint. So the relay does not forward the server's
+# answer: it answers ENCRYPT_REQ itself, and every client becomes one the
+# downgrade cannot touch. Each connection whose negotiation was raised is
+# logged as tds_encryption_forced -- turn that on first, read the log, and
+# then set require_tls, rather than the other way round.
+#
+# **The dangerous operations are procedures.** Not statements, and not
+# one-octet commands as on MySQL:
+#
+#   xp_cmdshell            a shell command as the service account
+#   sp_OACreate + family   arbitrary COM objects, which is the same thing
+#   xp_regread/regwrite    the host's registry
+#   sp_addlinkedserver     one compromised database becomes a route to another
+#   sp_configure           how xp_cmdshell gets turned back on
+#   xp_dirtree/xp_subdirs  the filesystem, enumerated
+#   sp_send_dbmail         egress, with attachments
+#   xp_servicecontrol      stop and start services
+#
+# To a statement classifier every one of those is an EXECUTE. A statement
+# policy strict enough to catch them would refuse every stored procedure
+# in the estate. So allow_procedures is an allow list, defaulting to what
+# a driver calls and nothing else, and refusing one of the procedures
+# above is never shadowed by monitor_only.
+#
+# **The statement is inside the procedure call.** Every client library
+# that uses parameters sends sp_executesql with the SQL as a parameter, so
+# a relay that classified only SQLBATCH would be inspecting the SET
+# statements a driver emits on connect and nothing an application ever
+# runs. The relay reads that one parameter -- and only that one, because
+# the rest are the caller's data -- and the same statement policy applies
+# to it as to a batch.
+#
+# Validate with: xproxyctl -config examples/databases/tds.yaml validate
+version: 1
+
+logging:
+  directory: /var/log/xproxy
+  access: {file: access.log}
+  security: {file: security.log}
+  audit: {file: audit.log}
+
+management:
+  socket: /run/xproxy/mgmt.sock
+  socket_mode: "0660"
+
+server:
+  listeners:
+    # ---------------------------------------------------------------
+    # The application front.
+    #
+    # Read this as one sentence: from the application network, as one
+    # login, into one database, over TLS, calling the procedures a driver
+    # calls and running the seven statement shapes this application needs.
+    # ---------------------------------------------------------------
+    - name: app
+      address: "10.0.0.30:1433"
+      kind: tds
+
+      # A TDS client upgrades an existing connection rather than
+      # connecting to a second port, so the listener needs a certificate
+      # and the relay terminates the client's TLS. The handshake itself
+      # runs inside TDS packets until it completes, which the relay
+      # handles; nothing here has to say so.
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/tls/db.pem, key_file: /etc/xproxy/tls/db-key.pem}
+
+      tds:
+        upstream: sql
+        allow_clients: ["10.0.2.0/24"]
+
+        # The two lines that matter most in the file.
+        require_tls: true
+        upstream_tls_mode: require
+        upstream_tls:
+          ca_file: /etc/xproxy/tls/sql-ca.pem
+
+        # Named for what it is: there is no stronger authentication method
+        # to prefer here, so this is the only credential decision to make.
+        allow_cleartext_password: false
+
+        allow_users: [svc_sales]
+        allow_databases: [sales]
+
+        # The APPNAME a client sends about itself. Not a credential --
+        # the client chooses it -- but it tells a reporting dashboard from
+        # a migration tool when both connect as the same login.
+        allow_apps: ["SalesPortal*"]
+
+        # Integrated security carries no user name, so allow_users above
+        # cannot be applied to it. Saying so explicitly is better than a
+        # user policy with a hole the shape of Windows authentication.
+        allow_integrated: false
+
+        # What a client library sends. bulk_load is absent because a bulk
+        # insert is a job rather than something an application connection
+        # does by accident, and its data stream carries no policy at all.
+        # `login` -- the pre-TDS7 shape -- is absent because the relay does
+        # not read that message, and forwarding octets it has not
+        # understood is the thing this kind exists not to do.
+        allow_types: [sql_batch, rpc, transaction_manager, attention, prelogin, login7]
+
+        # Dynamic SQL, prepared statements, cursors, and the metadata calls
+        # a driver makes to describe a result set. This is roughly the
+        # default list; it is written out so a reader can see that the
+        # absences are a decision.
+        allow_procedures:
+          - sp_executesql
+          - sp_prepare
+          - sp_prepexec
+          - sp_execute
+          - sp_unprepare
+          - sp_cursoropen
+          - sp_cursorprepare
+          - sp_cursorprepexec
+          - sp_cursorfetch
+          - sp_cursorclose
+          - sp_cursorunprepare
+          - sp_reset_connection
+          - sp_describe_first_result_set
+          - sp_describe_undeclared_parameters
+
+        # A deny list cannot be overridden by a rule and an allow list can,
+        # which is the difference between "not normally" and "not ever".
+        # These are the ways out of the database.
+        deny_procedures:
+          - xp_cmdshell
+          - sp_oacreate
+          - sp_oamethod
+          - xp_regread
+          - xp_regwrite
+          - sp_addlinkedserver
+          - sp_addextendedproc
+          - sp_configure
+          - xp_servicecontrol
+          - sp_send_dbmail
+          - xp_dirtree
+          - xp_subdirs
+
+        # Applies to a batch and to the statement inside an sp_executesql
+        # alike: one policy, two routes to the same SQL.
+        allow_statements:
+          - select
+          - insert
+          - update
+          - delete
+          - set
+          - begin
+          - commit
+          - rollback
+          - empty            # a driver's liveness check
+
+        # T-SQL separates statements with whitespace, so a batch carrying
+        # several is ordinary -- which is exactly why the bound belongs
+        # here rather than in a capability flag as it does on MySQL.
+        max_statements: 8
+        max_statement_bytes: 262144
+        max_message_bytes: 4194304
+
+        idle_timeout: 30m
+        session_duration: 12h
+        max_sessions: 400
+        max_sessions_per_client: 40
+
+        default_action: deny
+
+    # ---------------------------------------------------------------
+    # The reporting front, with a schedule.
+    #
+    # An extract that runs between 02:00 and 05:00 is a rule an estate
+    # actually has. A connection as this login at noon is either a
+    # mistake or somebody wearing its credentials, and either way it is
+    # worth refusing rather than logging.
+    # ---------------------------------------------------------------
+    - name: reporting
+      address: "10.0.0.31:1433"
+      kind: tds
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/tls/db.pem, key_file: /etc/xproxy/tls/db-key.pem}
+      tds:
+        upstream: sql
+        allow_clients: ["10.0.9.0/24"]
+        require_tls: true
+        allow_users: [svc_reporting, analyst]
+        allow_databases: [sales, sales_archive]
+        read_only: true
+        allow_statements: [select, set, begin, commit, rollback, empty, show]
+
+        rules:
+          # The nightly extract: the only traffic allowed to write, and
+          # only during the window.
+          - name: nightly_extract
+            users: [svc_reporting]
+            schedule: {days: [mon, tue, wed, thu, fri], from: "02:00", to: "05:00"}
+            read_only: false
+            allow_statements: [select, insert, update, delete, set, begin, commit, rollback, empty]
+
+          # Everybody else with a spreadsheet, at any hour, read-only --
+          # the listener's own setting, restated so the rule matches and
+          # the default_action below does not refuse them.
+          - name: interactive
+            apps: ["Excel*", "Microsoft SQL Server Management Studio*"]
+
+        default_action: deny
+
+    # ---------------------------------------------------------------
+    # A shadow-mode trial.
+    #
+    # monitor_only evaluates everything and enforces nothing, except the
+    # decisions that cannot honestly be observed: the client list, the TLS
+    # requirement, a cleartext password, a login with no name a user list
+    # can be applied to, a message or statement the relay could not read,
+    # and the procedures above. Forwarding a shell command and writing
+    # down that it was noticed is not a trial of anything.
+    #
+    # Read the result with: xproxyctl policy
+    # ---------------------------------------------------------------
+    - name: trial
+      address: "10.0.0.32:1433"
+      kind: tds
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/tls/db.pem, key_file: /etc/xproxy/tls/db-key.pem}
+      tds:
+        upstream: sql
+        allow_clients: ["10.0.2.0/24"]
+        read_only: true
+        allow_statements: [select, set, empty]
+        monitor_only: true
+        default_action: deny
+
+upstreams:
+  - name: sql
+    endpoints:
+      - {address: "10.0.16.30:1433"}
+      - {address: "10.0.16.31:1433"}
+    health_check:
+      type: tcp
+      interval: 10s
+      timeout: 2s
+      unhealthy_threshold: 3
+      healthy_threshold: 2

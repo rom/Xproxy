@@ -4584,6 +4584,109 @@ by more people than the database is. The kind, the verb and the rule are
 what a decision was made on; the text is the data. The one exception is the
 leading keyword of a statement the classifier could not read.
 
+## SQL Server
+
+**Every client suddenly needs a trusted certificate.** That is `require_tls`,
+which defaults on: the relay answers every PRELOGIN with ENCRYPT_REQ, so a client
+that asked for `off` upgrades anyway. Before turning it on, read the
+`tds_encryption_forced` lines in the security log with `require_tls: false` --
+each one names a client whose negotiation the relay raised, which is exactly the
+set that will break if any of them cannot do TLS at all. If one cannot, the
+answer is to fix that client and not to leave the listener as it was: its
+password is on the wire, obfuscated with a nibble swap and an XOR against 0xA5,
+with no key.
+
+**`cleartext_password`.** A LOGIN7 carried a password over an unencrypted
+connection. Because of the paragraph above, that means the password has already
+been disclosed to anybody who read the packet, which is why the refusal is hard
+and shadow mode does not carry it. `allow_cleartext_password: true` permits it
+and is named for exactly what it permits.
+
+**`upstream_no_tls`.** The server answered the relay's PRELOGIN with `off` or
+`not_supported`. Those two mean the same thing on the wire even though one reads
+like a preference and the other like a capability: the connection will be
+plaintext. `upstream_tls_mode: prefer` is the honest workaround and records in
+the configuration that the leg is unencrypted; fixing the server's certificate
+is the real answer.
+
+**`integrated_not_allowed`.** A login using integrated security -- Windows
+authentication, where the credential is an SSPI blob -- carries **no user name**,
+so `allow_users` and `deny_users` cannot be applied to it. Naming either list
+therefore turns integrated logins off. If both are wanted, set
+`allow_integrated: true` explicitly and understand that the user list does not
+apply to those connections; the validator warns about it. If the user list was a
+mistake, remove it.
+
+**Everything is refused with `procedure_not_allowed`.** `allow_procedures`
+defaults to what a client library calls: the dynamic-SQL family, the cursor
+family and the metadata calls that describe a result set. An application that
+calls its own stored procedures needs them named, ideally on a rule for that
+login rather than on the listener. The name is compared lower-cased and matches
+whether the client called the procedure by name or by the numeric identifier the
+protocol also allows.
+
+**A procedure is refused even in monitor mode.** It is in the set that leads out
+of the database: `xp_cmdshell`, the `sp_OA` OLE automation family, the registry
+procedures, `sp_addlinkedserver`, `sp_addextendedproc`, `sp_configure`,
+`xp_servicecontrol`, the mail procedures, the filesystem procedures, the SQL
+Agent job procedures, the role-membership procedures. Forwarding a shell command
+and writing down that it was noticed is not a trial of a policy. If one is
+genuinely needed, name it in `allow_procedures` -- an explicit allow is not
+overruled -- and note in the configuration why.
+
+**`sp_prepexecrpc` is refused and naming it does not help me inspect it.** It is
+absent from the default allow list on purpose. Its string argument is an RPC call
+rather than a T-SQL batch, so the relay cannot classify it the way it classifies
+`sp_executesql`'s statement parameter; naming it means accepting a call the
+statement policy does not see. That is a decision worth making knowingly, which
+is why it is not a default.
+
+**`rpc_unreadable` on a call my driver makes.** The relay reads the statement
+parameter of the six dynamic-SQL procedures and, to find it, measures the
+parameters before it. It knows the data types those documented signatures use --
+integers and strings, in the short and the partially length-prefixed forms -- and
+refuses anything else by name rather than guessing at its length, because a
+parameter it cannot measure is one it cannot step over, and everything it
+reported afterwards would be about the wrong octets. The log line names the type
+octet; report it.
+
+**A read is refused with `read_only`, and it looks like a read.** `EXEC` and
+`EXECUTE` count as writes on this dialect. T-SQL has no prepared-statement
+syntax -- that is `sp_prepare` and `sp_execute`, which are RPCs -- so `EXEC` runs
+a stored procedure, which can do anything the login can. A relay that called it a
+read would have made `read_only` decorative.
+
+**`bulk_load` is refused.** It is off by default: a bulk insert's data stream is
+not SQL and carries no policy at all, so nothing in the statement or procedure
+lists would ever look at it. `BULK INSERT` as a statement is a separate thing and
+is classified `copy`. If the bulk stream is the job, name `bulk_load` in
+`allow_types`, ideally on a rule for the account that does it.
+
+**`legacy_login`.** The client sent the pre-TDS7 login message rather than
+LOGIN7. The relay does not read that shape, and forwarding octets it has not
+understood is what this kind exists not to do, so the refusal is hard. The client
+is older than SQL Server 7.0; there is no configuration that makes this safe.
+
+**The connection hangs right after the TLS handshake.** This is the shape of a
+bug in the encapsulation, not a certificate problem, and it is worth knowing why
+the two look alike. The TLS handshake is carried inside TDS packets and then is
+not, and a reader that flipped to raw records one packet too early reads a TDS
+header as a TLS record header and waits for a record that will never be complete.
+If this happens, the security log will have neither a refusal nor a handshake
+failure -- report it with the client library and its version.
+
+**A large batch is refused as too long.** `max_message_bytes` bounds the
+reassembled message and defaults to 4 MiB, while the protocol has no bound at
+all: only the EOM status bit ends a message, so a sender may chain 64 KiB packets
+for ever. A migration script legitimately needs more; raise it on that listener
+rather than removing the bound. `max_statement_bytes` bounds one statement and is
+separate.
+
+**The listener will not start.** `require_tls` defaults on and the protocol
+upgrades an existing connection rather than using a second port, so the listener
+needs a `tls` section. Refusing at load is deliberate: a listener that silently
+served plaintext instead is the bug.
+
 ## The device inventory
 
 **It is empty.** Two causes, in this order. The section is off by default,

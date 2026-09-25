@@ -442,6 +442,134 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **`kind: tds`: a SQL Server relay, on the protocol where the password is not
+  encrypted and the statement is not a statement.** `internal/tdswire` reads the
+  framing and the three protocols a TDS connection speaks in sequence;
+  `internal/kinds/tds` holds the policy; `internal/sqlkind` with the T-SQL dialect
+  classifies the statements.
+
+  **The PRELOGIN encryption negotiation is the third cleartext downgrade in a row
+  and gets the same answer.** One octet in an option table, answered by the
+  server, signed by nothing -- and `off` ("I would rather not", which a great deal
+  of deployed software sends) has the same wire consequence as `not_supported` ("I
+  cannot", which is what something on the path rewrites the server's answer to),
+  so a client that asked for the first and heard the second carries on in the
+  clear without complaint. As on the postgres and mysql kinds, the relay
+  negotiates with each leg itself rather than forwarding what it read: with
+  `require_tls` on it answers every client `required`, so every client becomes one
+  the downgrade cannot touch, and it asks the server for encryption on its own
+  account regardless of what the client wanted. What matters more here than on the
+  other two is why: a TDS password is XOR 0xa5 with the nibbles swapped, an
+  encoding with no key, so a login that crossed in the clear has disclosed a
+  reusable credential to anybody who read it. There is no `allow_weak_auth` on
+  this kind because there is no stronger method to contrast one with; the one
+  credential setting is `allow_cleartext_password`, named for exactly what it
+  permits. `Deobfuscate` exists in the wire package so that claim is demonstrated
+  by a round-trip test rather than asserted in a comment, and the relay
+  deliberately never calls it: reversing the encoding would put a plaintext
+  password in the relay's memory, one careless log line from disk, in exchange for
+  nothing -- the only question the relay has is whether one crossed.
+
+  Every connection whose negotiation the relay raised is logged as
+  `tds_encryption_forced`, an `alert` rather than a refusal because nothing was
+  denied. That list is the point: each entry is a client that would have gone in
+  the clear, and one that will fail if it turns out not to speak TLS at all, so it
+  is what an operator reads *before* turning the setting on rather than after.
+
+  **The dangerous operations are procedures.** Not statements, and not one-octet
+  commands as on MySQL. `xp_cmdshell` is a shell command running as the service
+  account; the `sp_OA` family instantiates arbitrary COM objects, which is the
+  same thing with more steps; the registry procedures are the host's
+  configuration; `sp_addlinkedserver` turns one compromised database into a route
+  to another; `sp_configure` is how `xp_cmdshell` gets turned back on after
+  somebody disabled it. To a statement classifier every one of those is an
+  `EXECUTE`, and a statement policy strict enough to catch them would refuse every
+  stored procedure in the estate. So procedures get their own allow list --
+  inverted the same way the statement classifier is, defaulting to what a client
+  library calls rather than listing what somebody remembered to forbid -- and a
+  procedure nobody thought of is refused. Refusing one of the set that leads out
+  of the database is never shadowed, on the reasoning the mysql kind applies to
+  replication: forwarding a shell command and writing down that it was noticed is
+  not a trial of a policy. A procedure merely *off* the allow list is a soft
+  refusal, because that one is most likely an application nobody has listed yet,
+  and finding those is what monitor mode is for. An operator who names one of the
+  hard set in `allow_procedures` has said so and is not overruled.
+
+  **The statement an application runs is not a statement, so the policy had to
+  reach into an RPC.** Every client library that uses parameters -- ADO.NET, JDBC,
+  ODBC, pyodbc, go-mssqldb -- sends `sp_executesql` with the SQL as a parameter, so
+  a relay that classified only `SQLBATCH` would be inspecting the `SET` statements
+  a driver emits on connect and nothing an application ever runs. The wire package
+  reads that one parameter and the same statement policy applies to it as to a
+  batch, which the end-to-end test asserts by refusing the same `DELETE` both
+  ways. The line is drawn precisely: the *other* parameters are the caller's data,
+  and a relay that held them would be holding the contents of somebody's database
+  and would eventually put one in a log line, so they are measured to be stepped
+  over and never decoded. Which parameter carries the statement comes from the six
+  documented signatures in MS-TDS rather than from "the first string-shaped
+  argument" -- `sp_prepare`'s is third, behind an output handle and a parameter
+  declaration, and `sp_cursorprepexec`'s is fourth. `sp_prepexecrpc` is
+  deliberately absent from that table and from the default allow list: its string
+  argument is an RPC call rather than a batch, so classifying it as T-SQL would
+  name it `unknown` and refuse every use of the procedure, and allowing it is a
+  decision worth making knowingly rather than a default that inspects nothing.
+
+  **And the TLS handshake happens inside TDS packets, and then stops.** For the
+  length of the handshake TDS wraps TLS -- the records are carried as the payload
+  of PRELOGIN-type packets -- and once it finishes the encapsulation stops and TLS
+  wraps TDS for the rest of the connection. The nesting inverts, once, part way
+  through a connection, and where exactly is the hard part. The design assumes the
+  handshake ends at a point both peers agree on, which was true when it was
+  written: in TLS 1.2 everything including the session ticket precedes Finished.
+  TLS 1.3 moved the ticket to *after* the handshake, so a peer whose handshake has
+  completed may still have encapsulated octets coming -- and a peer that flipped to
+  reading raw records there reads a TDS header as a record header, which hangs the
+  connection and looks like a certificate problem. So writes flip when this side's
+  handshake finishes and reads pass through a window in which either framing is
+  accepted. That is not a guess about which arrived: the tag spaces are disjoint,
+  an encapsulated packet beginning `0x12` and a TLS record beginning with a content
+  type, 20 to 25, so the first octet says which framing it belongs to and anything
+  else is refused rather than interpreted.
+
+  Six fuzz targets found five bugs in the wire package, all fixed before the kind
+  was written. A PRELOGIN option table could carry the same token twice, so the
+  relay and the server could read different values depending on which one a reader
+  keeps -- and on the ENCRYPTION option that is the entire negotiation. A nameless
+  RPC, and a NUL inside a procedure name, were both accepted. `Procedure()` clipped
+  a name before lower-casing it, and lower-casing can *lengthen* UTF-8 (U+0130
+  becomes two runes), so a bounded name came back past its bound. And `Clip` cut at
+  an octet boundary, so a multi-byte character could be sliced in half: the result
+  is invalid UTF-8 that a JSON log writer rewrites, a terminal draws as a
+  replacement character, and a comparison against a policy's spelling stops
+  matching. Cutting one character short is the harmless failure; cutting into a
+  character is not. That last one had been copied into four packages, so it is
+  fixed in four, each with a test that a 3-octet-per-rune string clipped at a bound
+  that is not a multiple of 3 comes back valid UTF-8.
+
+  Two more the end-to-end tests found. The TLS tunnel held one mutex across its
+  underlying read, so a write deadlocked behind a read that was waiting for the
+  peer -- which appears only once both directions are live, so after the handshake
+  and after every test of the handshake had passed; the state is atomic now and
+  nothing is held across the read. And `internal/sqlkind` classified T-SQL's `EXEC`
+  as `execute`, the prepared-statement kind. That is right for PostgreSQL, where
+  `EXECUTE` runs a prepared statement whose text was classified at `PREPARE` time,
+  and wrong here: T-SQL has no prepared-statement syntax at all -- that is
+  `sp_prepare` and `sp_execute`, which are RPCs -- so `EXEC` runs a stored
+  procedure, which can do anything the login can. `read_only` was decorative on the
+  dialect where it matters most: `EXEC dbo.DeleteEverything` read as a read.
+
+  One more thing the validator now says out loud: a user list and integrated
+  security cannot both be in force, because an SSPI login carries no user name for
+  a list to match. Naming `allow_users` or `deny_users` therefore turns integrated
+  logins off unless `allow_integrated` says otherwise. The alternative was a user
+  policy with a hole exactly the shape of Windows authentication, which said so
+  nowhere.
+
+  Refusals are `tds_denied` for the ban triggers.
+  `examples/databases/tds.yaml` has an application front, a reporting front where
+  a schedule confines the nightly extract to its window, and a shadow-mode trial;
+  docs/CONFIG.md `tds`, and docs/TROUBLESHOOTING.md.
+
 - **`kind: mysql`: a MySQL and MariaDB relay, on the protocol where the dangerous
   things are commands.** PostgreSQL's hazards are all statements, so a statement
   policy reaches them all. MySQL's are commands -- one octet each, with no SQL

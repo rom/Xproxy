@@ -4109,6 +4109,14 @@
             }
           ]
         },
+        "tds": {
+          "description": "TDS is the kind: tds section.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/TDSListener"
+            }
+          ]
+        },
         "telnet": {
           "description": "Telnet configures a kind: telnet listener.",
           "allOf": [
@@ -9282,6 +9290,273 @@
         },
         "upstream": {
           "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "TDSListener": {
+      "description": "TDSListener is the settings of a kind: tds listener: a relay in front of a Microsoft SQL Server, or anything else speaking TDS. Three things make this protocol different from the other two database kinds. The encryption negotiation happens in a PRELOGIN message whose ENCRYPTION option is one octet, unsigned, and answered by the server. `off` means \"I would rather not\" and is what a great deal of deployed software sends; `not_supported` means \"I cannot\" and is what anything on the path rewrites the server's answer to, because a client that asked for `off` and hears `not_supported` proceeds in the clear without complaint. This is PostgreSQL's SSLRequest octet and MySQL's CLIENT_SSL bit for the third time, and it gets the same answer: the relay negotiates with each side itself rather than forwarding what it read. The password in a LOGIN7 is not encrypted. It is XOR 0xA5 with the nibbles swapped -- an encoding, with no key -- so `require_tls` here is not hardening, it is the difference between a password on the wire and no password on the wire. There is no equivalent of choosing a stronger authentication method, because there is no stronger one short of integrated security. And the statement an application runs does not arrive as a statement. Every client library that uses parameters sends `sp_executesql` with the SQL in a parameter, so the procedure policy and the statement policy are the same policy here: the relay reads the statement out of the call and classifies it.",
+      "type": "object",
+      "properties": {
+        "allow_apps": {
+          "description": "AllowApps matches the client's APPNAME, with a trailing * allowed. Like MySQL's program_name it is chosen by the client and is not a credential; it tells a reporting dashboard from a migration tool when both connect as the same login.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_cleartext_password": {
+          "description": "AllowCleartextPassword permits a LOGIN7 carrying a password over an unencrypted connection. Default false. It is named for what it is. There is no weak-authentication setting on this kind because there is no strong option to contrast it with: every TDS password is a cleartext password once the nibble swap is undone.",
+          "type": "boolean"
+        },
+        "allow_clients": {
+          "description": "AllowClients and DenyClients are the networks a client may connect from. Deny is evaluated first.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_databases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_integrated": {
+          "description": "AllowIntegrated permits a login that uses integrated security, where the credential is an SSPI blob and the LOGIN7 carries no user name. It defaults to true, and to false the moment allow_users or deny_users is set -- because a user list cannot be applied to a login that names no user, and a relay that let one past would have a user policy with a hole exactly the shape of Windows authentication. Setting it explicitly says which you meant.",
+          "type": "boolean"
+        },
+        "allow_procedures": {
+          "description": "AllowProcedures and DenyProcedures are the RPC procedures a client may call, lower-cased. Empty allows the dynamic-SQL family, the cursor family, and the metadata calls a driver makes -- and nothing else, so every xp_, every sp_oa, sp_configure and sp_addlinkedserver are refused until named. A name matches whether the client called the procedure by name or by the numeric identifier the protocol also allows, because they are the same call and a policy that matched one spelling would be bypassed by the other.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_statements": {
+          "description": "AllowStatements and DenyStatements are the statement kinds, as the postgres and mysql kinds name them. They apply to a SQLBATCH and to the statement inside an sp_executesql, which is the same policy reaching the same SQL by two routes. A statement the classifier cannot name is refused whatever this says.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_types": {
+          "description": "AllowTypes and DenyTypes are the message types a client may send: sql_batch, rpc, bulk_load, transaction_manager, attention, sspi, fedauth_token, prelogin, login7, login. Empty allows what a client library sends. `bulk_load` is off by default because its data stream is not SQL and carries no policy, and `login` -- the pre-TDS7 shape -- is off because the relay does not read it, and forwarding a message it had not understood is the thing this kind exists not to do.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_users": {
+          "description": "AllowUsers, DenyUsers, AllowDatabases and DenyDatabases are the identity claims a login may make.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "default_action": {
+          "description": "DefaultAction is allow or deny when no rule matched. Default deny.",
+          "type": "string"
+        },
+        "deny_clients": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_databases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_procedures": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_response": {
+          "description": "DenyResponse is error (the default: an error token the client's own library reports, with the number SQL Server uses for a permission refusal) or drop.",
+          "type": "string"
+        },
+        "deny_statements": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_users": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "handshake_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "idle_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_message_bytes": {
+          "description": "MaxMessageBytes bounds one reassembled message. Default 4 MiB. The protocol has no bound: a sender may chain 64 KiB packets for ever, and only the EOM status bit ends a message.",
+          "type": "integer"
+        },
+        "max_sessions": {
+          "description": "MaxSessions and MaxSessionsPerClient bound concurrent connections.",
+          "type": "integer"
+        },
+        "max_sessions_per_client": {
+          "type": "integer"
+        },
+        "max_statement_bytes": {
+          "description": "MaxStatementBytes bounds one statement. Default 64 KiB.",
+          "type": "integer"
+        },
+        "max_statements": {
+          "description": "MaxStatements bounds statements per batch. Default 1: T-SQL separates statements with nothing but whitespace, so a batch carrying several is ordinary -- and that is exactly why a bound belongs here rather than in a capability flag as it does on MySQL.",
+          "type": "integer"
+        },
+        "monitor_only": {
+          "description": "MonitorOnly evaluates and enforces nothing, except the hard decisions: the client list, the TLS requirement, a cleartext password, an unnameable login, a message or statement the relay could not read, and the procedures in the dangerous set -- xp_cmdshell, the OLE automation family, the registry procedures, sp_addlinkedserver, sp_configure and the rest. Forwarding a shell command and writing down that it was noticed is not a trial of a policy.",
+          "type": "boolean"
+        },
+        "read_only": {
+          "description": "ReadOnly refuses every statement that can change data, including exec.",
+          "type": "boolean"
+        },
+        "require_tls": {
+          "description": "RequireTLS makes the relay answer every client's PRELOGIN with ENCRYPT_REQ, so a client that asked for `off` upgrades anyway. Default true, and on this protocol it is the setting that matters most: the password field is obfuscated rather than encrypted. A client too old to speak TLS will fail to connect when this is on. That is the honest outcome -- it was sending a recoverable password in cleartext -- and the relay logs a `tds_encryption_forced` event on every connection whose negotiation it raised, so the ones affected can be found before the switch is thrown.",
+          "type": "boolean"
+        },
+        "rules": {
+          "description": "Rules narrow or widen the listener for traffic that matches them.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TDSRule"
+          }
+        },
+        "session_duration": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "upstream": {
+          "description": "Upstream is the server pool. Required.",
+          "type": "string"
+        },
+        "upstream_tls": {
+          "description": "UpstreamTLS is the certificate and verification settings for that leg.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/UpstreamTLS"
+            }
+          ]
+        },
+        "upstream_tls_mode": {
+          "description": "UpstreamTLSMode is how the relay speaks to the server: require (the default), prefer or disable.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "TDSRule": {
+      "description": "TDSRule is one rule of a tds listener's policy.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "Action is allow (the default), deny or observe.",
+          "type": "string"
+        },
+        "allow_procedures": {
+          "description": "The rule's own narrowing. The deny lists always win.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_statements": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "apps": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "clients": {
+          "description": "Clients, Users, Databases and Apps select the traffic. Apps matches the client's APPNAME, with a trailing * allowed.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "databases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_procedures": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_statements": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_statements": {
+          "type": "integer"
+        },
+        "name": {
+          "description": "Name identifies the rule in logs and counters.",
+          "type": "string"
+        },
+        "read_only": {
+          "type": "boolean"
+        },
+        "schedule": {
+          "description": "Schedule is when this rule allows what it allows.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/ModbusSchedule"
+            }
+          ]
+        },
+        "users": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false

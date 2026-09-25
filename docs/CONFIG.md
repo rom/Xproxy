@@ -5988,7 +5988,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `postgres_denied`, `mysql_denied`, `ntp_denied`, `ntske_denied`, `yara` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `ntp_denied`, `ntske_denied`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |
@@ -9757,6 +9757,150 @@ Text that cannot be lexed at all -- an unterminated quote, comment or
 dollar quote -- is refused rather than classified, because the relay and
 the server would disagree about where the statement ends, and disagreeing
 about that is how a statement gets past a relay that read a different one.
+
+## tds
+
+`kind: tds` is a relay in front of a Microsoft SQL Server, or anything else
+speaking TDS.
+
+It has the [postgres](#postgres) kind's four jobs -- refuse the encryption
+downgrade, refuse the credential that crosses in the clear, refuse what is not a
+statement, decide by the shape of what is -- and two that belong to SQL Server.
+Like the other two, **it is not a SQL firewall and will not become one**:
+restricting a login's tables is the database's job, with `GRANT`.
+
+**The password is an encoding, not a secret.** A `LOGIN7` carries the password
+with its nibbles swapped and XORed with 0xA5. There is no key. Anybody who read
+the packet has the password, so `require_tls` here is not hardening -- it is the
+difference between a reusable credential on the wire and none. There is no
+equivalent of `allow_weak_auth` on this kind because there is no stronger
+method to contrast one with, short of integrated security; the only credential
+setting is `allow_cleartext_password`, named for exactly what it permits.
+
+And the negotiation that decides whether the connection is encrypted is one
+octet in a `PRELOGIN` option table, answered by the server, signed by nothing:
+
+| Value | Means | On the wire |
+|-------|-------|-------------|
+| `off` (0x00) | "I would rather not" | plaintext -- and what a great deal of deployed software sends |
+| `on` (0x01) | "let us" | encrypted |
+| `not_supported` (0x02) | "I cannot" | plaintext -- and what something on the path rewrites the *server's* answer to |
+| `required` (0x03) | "I will not continue without it" | encrypted |
+
+`off` reads like a preference and `not_supported` reads like a capability, and
+their wire consequence is identical. A client that asked for `off` and hears
+`not_supported` proceeds in the clear without complaint, which is the third time
+this shape has appeared after PostgreSQL's `SSLRequest` octet and MySQL's
+`CLIENT_SSL` bit -- and it gets the same answer. The relay does not forward the
+server's value: with `require_tls` on it answers every client `required`, so
+every client becomes one the downgrade cannot touch, and it negotiates the leg
+to the server separately. Each connection whose negotiation it raised is logged
+as `tds_encryption_forced`, which is the list to read **before** turning the
+setting on rather than after: every client on it is one that would have gone in
+the clear, and one that will fail if it turns out not to speak TLS at all.
+
+**The dangerous operations are procedures.** Not statements, and not one-octet
+commands as on MySQL. `xp_cmdshell` is a shell command running as the service
+account; the `sp_OA` family instantiates arbitrary COM objects, which is the
+same thing with more steps; the registry procedures read and write the host's
+configuration; `sp_addlinkedserver` turns one compromised database into a route
+to another; `sp_configure` is how `xp_cmdshell` gets turned back on after
+somebody disabled it. To a statement classifier every one of those is an
+`EXECUTE`, and a statement policy strict enough to catch them would refuse every
+stored procedure in the estate. Hence `allow_procedures`, which defaults to what
+a client library calls -- the dynamic-SQL family, the cursor family, and the
+metadata calls JDBC and ODBC make to describe a result set -- and nothing else.
+
+**The statement an application runs is not a statement.** Every client library
+that uses parameters sends `sp_executesql` with the SQL in a parameter, so a
+relay that classified only `SQLBATCH` would be inspecting the `SET` statements a
+driver emits on connect and nothing an application ever runs. The relay reads
+that one parameter -- and only that one, on the six procedures whose documented
+signature has a statement in it, because the rest are the caller's data and a
+relay that held them would put one in a log line -- and applies the same
+statement policy to it as to a batch. A dynamic-SQL call whose statement it
+cannot read is refused: it is the one message on this protocol that carries
+arbitrary SQL.
+
+One structural oddity, which needs no configuration but explains the code: **the
+TLS handshake runs inside TDS packets and then stops.** For the length of the
+handshake TDS wraps TLS; afterwards TLS wraps TDS. The nesting inverts once,
+part way through a connection.
+
+```yaml
+- name: app
+  address: "10.0.0.30:1433"
+  kind: tds
+  tls:
+    certificates: [{cert_file: /etc/xproxy/tls/db.pem, key_file: /etc/xproxy/tls/db-key.pem}]
+  tds:
+    upstream: sql
+    allow_clients: ["10.0.2.0/24"]
+    allow_users: [svc_sales]
+    allow_databases: [sales]
+    allow_statements: [select, insert, update, delete, set, begin, commit, rollback]
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | name | *(required)* | The server pool |
+| `allow_clients`, `deny_clients` | list of CIDR | any | Networks a client may connect from; deny first |
+| `require_tls` | bool | `true` | Answer every client's PRELOGIN with `required`, so one that asked for `off` upgrades anyway. The listener needs a `tls` section. A client too old to speak TLS will fail to connect, which is the honest outcome: it was sending a recoverable password in cleartext |
+| `upstream_tls_mode` | `require`, `prefer`, `disable` | `require` | How the relay speaks to the server. A separate negotiation from the client's, because a relay that terminated the client's TLS and spoke plaintext onwards would have moved the exposure rather than removed it |
+| `upstream_tls` | object | *(none)* | Certificate and verification settings for that leg |
+| `allow_cleartext_password` | bool | `false` | Permit a `LOGIN7` carrying a password over an unencrypted connection |
+| `allow_users`, `deny_users` | list | any | Which logins a connection may claim |
+| `allow_databases`, `deny_databases` | list | any | Same, for the database |
+| `allow_apps` | list | any | Matches the client's `APPNAME`, trailing `*` allowed. Chosen by the client and not a credential; it tells a reporting dashboard from a migration tool when both connect as the same login |
+| `allow_integrated` | bool | `true`, or `false` once a user list is set | Permit a login using integrated security, where the credential is an SSPI blob and the `LOGIN7` carries **no user name**. A user list cannot be applied to a login that names no user, so naming one turns this off: the alternative is a user policy with a hole exactly the shape of Windows authentication. Set it explicitly to say which you meant |
+| `allow_types`, `deny_types` | list | the driver set | Message types: `sql_batch`, `rpc`, `bulk_load`, `transaction_manager`, `attention`, `sspi`, `fedauth_token`, `prelogin`, `login7`, `login`. Empty allows all but `bulk_load` (whose stream is not SQL and carries no policy) and `login` (the pre-TDS7 shape, which the relay does not read) |
+| `allow_procedures`, `deny_procedures` | list | the driver set | RPC procedures, lower-cased. Empty allows `sp_executesql`, the prepare and cursor families, `sp_reset_connection` and the driver metadata calls — so every `xp_`, every `sp_oa`, `sp_configure`, `sp_addlinkedserver` and `sp_send_dbmail` are refused until named. A name matches whether the client called the procedure by name or by the numeric identifier the protocol also allows, because they are the same call |
+| `read_only` | bool | `false` | Refuse every statement that can change data. `EXEC` is one of them: T-SQL has no prepared-statement syntax, so `EXEC` runs a stored procedure, which can do anything the login can |
+| `allow_statements`, `deny_statements` | list of kinds | any nameable | As the postgres kind names them. They apply to a `SQLBATCH` and to the statement inside an `sp_executesql` alike |
+| `max_statements` | int | `1` | Statements per batch. T-SQL separates statements with whitespace, so a batch carrying several is ordinary -- which is why the bound belongs here rather than in a capability flag as it does on MySQL |
+| `max_statement_bytes` | int | `65536` | One statement |
+| `max_message_bytes` | int | `4194304` | One reassembled message. The protocol has no bound: only the EOM status bit ends a message, so a sender may chain 64 KiB packets for ever |
+| `max_sessions`, `max_sessions_per_client` | int | unbounded | Concurrent connections |
+| `idle_timeout`, `session_duration`, `handshake_timeout` | duration | `0`, `0`, `30s` | |
+| `default_action` | `allow`, `deny` | `deny` | When no rule matched |
+| `deny_response` | `error`, `drop` | `error` | `error` sends an error token: 229 (permission denied on an object) for a refused message, 18456 (login failed) for a refused connection, which are what the server itself answers |
+| `monitor_only` | bool | `false` | Evaluate and do not enforce, except the hard decisions below |
+
+### rules[]
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `name` | string | Names the rule in logs and counters |
+| `clients`, `users`, `databases`, `apps` | lists | Selectors; AND within a rule, OR within one |
+| `schedule` | object | `days`, `from`, `to`, `timezone` |
+| `action` | `allow`, `deny`, `observe` | Default `allow` |
+| `allow_procedures`, `deny_procedures`, `allow_types`, `deny_types`, `allow_statements`, `deny_statements`, `read_only`, `max_statements` | | The rule's own narrowing. A rule that names a procedure, a type or a kind **widens** the listener for its own traffic; the deny lists always win |
+
+### What shadow mode never shadows
+
+| Refusal | Why it is hard |
+|---------|----------------|
+| `client_not_allowed` | An address that may not connect |
+| `tls_required`, `upstream_no_tls` | The login name, the database and a recoverable password are inside the LOGIN7 |
+| `cleartext_password` | Anybody who read the packet has the password; there is nothing left to observe |
+| `integrated_not_allowed`, `no_user` | A login no user list can be applied to. Admitting it would be a user policy with a hole, noted and permitted |
+| `procedure_denied`, `procedure_not_allowed` for a procedure in the dangerous set | Forwarding a shell command, a COM object, a registry write or a linked server and writing down that it was noticed is not a trial of a policy |
+| `legacy_login` | The pre-TDS7 login is a message shape the relay does not read, and forwarding octets it has not understood is what this kind exists not to do |
+| `batch_unreadable`, `rpc_unreadable`, `statement_unreadable` | The relay has no opinion to observe |
+| `statement_too_long` | A bound |
+
+The set whose refusal is never shadowed is `xp_cmdshell`, the OLE automation
+family, the registry procedures, `sp_addextendedproc`, `sp_addlinkedserver`,
+`sp_serveroption`, `sp_configure`, `xp_servicecontrol`, the mail procedures, the
+filesystem procedures, the SQL Agent job procedures and the role-membership
+procedures. A procedure that is merely *not on the allow list* is a soft
+refusal, because it is most likely an application nobody has listed yet -- which
+is what monitor mode is for. An operator who names one of the hard set in
+`allow_procedures` has said so, and is not overruled.
+
+Forcing the encryption negotiation upward is not in the table either, because it
+is not a refusal: nothing is denied, the connection goes through, and it happens
+in shadow mode too. It is logged as an `alert`.
 
 ## asset_inventory
 

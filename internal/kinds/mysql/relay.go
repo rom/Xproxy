@@ -72,7 +72,8 @@ func (t *server) serve() {
 			if t.closed.Load() {
 				return
 			}
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			var ne net.Error
+			if errors.As(err, &ne) && ne.Timeout() {
 				continue
 			}
 			return

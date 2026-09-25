@@ -14480,7 +14480,7 @@ list
 T}	T{
 \fB[]\fR (all)
 T}	T{
-Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBpostgres_\:denied\fR,\: \fBmysql_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fByara\fR
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBpostgres_\:denied\fR,\: \fBmysql_\:denied\fR,\: \fBtds_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fByara\fR
 T}
 T{
 \fBthreshold\fR
@@ -24737,6 +24737,400 @@ T}
 .TE
 .PP
 Text that cannot be lexed at all \-\- an unterminated quote, comment or dollar quote \-\- is refused rather than classified, because the relay and the server would disagree about where the statement ends, and disagreeing about that is how a statement gets past a relay that read a different one.
+.SH "tds"
+.PP
+\fBkind: tds\fR is a relay in front of a Microsoft SQL Server, or anything else speaking TDS.
+.PP
+It has the postgres kind\(aqs four jobs \-\- refuse the encryption downgrade, refuse the credential that crosses in the clear, refuse what is not a statement, decide by the shape of what is \-\- and two that belong to SQL Server. Like the other two, \fBit is not a SQL firewall and will not become one\fR: restricting a login\(aqs tables is the database\(aqs job, with \fBGRANT\fR.
+.PP
+\fBThe password is an encoding, not a secret.\fR A \fBLOGIN7\fR carries the password with its nibbles swapped and XORed with 0xA5. There is no key. Anybody who read the packet has the password, so \fBrequire_tls\fR here is not hardening \-\- it is the difference between a reusable credential on the wire and none. There is no equivalent of \fBallow_weak_auth\fR on this kind because there is no stronger method to contrast one with, short of integrated security; the only credential setting is \fBallow_cleartext_password\fR, named for exactly what it permits.
+.PP
+And the negotiation that decides whether the connection is encrypted is one octet in a \fBPRELOGIN\fR option table, answered by the server, signed by nothing:
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.9i) lbx
+lw(1.0i) lw(0.9i) lx.
+T{
+Value
+T}	T{
+Means
+T}	T{
+On the wire
+T}
+T{
+\fBoff\fR (0x00)
+T}	T{
+"I would rather not"
+T}	T{
+plaintext \-\- and what a great deal of deployed software sends
+T}
+T{
+\fBon\fR (0x01)
+T}	T{
+"let us"
+T}	T{
+encrypted
+T}
+T{
+\fBnot_\:supported\fR (0x02)
+T}	T{
+"I cannot"
+T}	T{
+plaintext \-\- and what something on the path rewrites the \fIserver\(aqs\fR answer to
+T}
+T{
+\fBrequired\fR (0x03)
+T}	T{
+"I will not continue without it"
+T}	T{
+encrypted
+T}
+.TE
+.PP
+\fBoff\fR reads like a preference and \fBnot_supported\fR reads like a capability, and their wire consequence is identical. A client that asked for \fBoff\fR and hears \fBnot_supported\fR proceeds in the clear without complaint, which is the third time this shape has appeared after PostgreSQL\(aqs \fBSSLRequest\fR octet and MySQL\(aqs \fBCLIENT_SSL\fR bit \-\- and it gets the same answer. The relay does not forward the server\(aqs value: with \fBrequire_tls\fR on it answers every client \fBrequired\fR, so every client becomes one the downgrade cannot touch, and it negotiates the leg to the server separately. Each connection whose negotiation it raised is logged as \fBtds_encryption_forced\fR, which is the list to read \fBbefore\fR turning the setting on rather than after: every client on it is one that would have gone in the clear, and one that will fail if it turns out not to speak TLS at all.
+.PP
+\fBThe dangerous operations are procedures.\fR Not statements, and not one\-octet commands as on MySQL. \fBxp_cmdshell\fR is a shell command running as the service account; the \fBsp_OA\fR family instantiates arbitrary COM objects, which is the same thing with more steps; the registry procedures read and write the host\(aqs configuration; \fBsp_addlinkedserver\fR turns one compromised database into a route to another; \fBsp_configure\fR is how \fBxp_cmdshell\fR gets turned back on after somebody disabled it. To a statement classifier every one of those is an \fBEXECUTE\fR, and a statement policy strict enough to catch them would refuse every stored procedure in the estate. Hence \fBallow_procedures\fR, which defaults to what a client library calls \-\- the dynamic\-SQL family, the cursor family, and the metadata calls JDBC and ODBC make to describe a result set \-\- and nothing else.
+.PP
+\fBThe statement an application runs is not a statement.\fR Every client library that uses parameters sends \fBsp_executesql\fR with the SQL in a parameter, so a relay that classified only \fBSQLBATCH\fR would be inspecting the \fBSET\fR statements a driver emits on connect and nothing an application ever runs. The relay reads that one parameter \-\- and only that one, on the six procedures whose documented signature has a statement in it, because the rest are the caller\(aqs data and a relay that held them would put one in a log line \-\- and applies the same statement policy to it as to a batch. A dynamic\-SQL call whose statement it cannot read is refused: it is the one message on this protocol that carries arbitrary SQL.
+.PP
+One structural oddity, which needs no configuration but explains the code: \fBthe TLS handshake runs inside TDS packets and then stops.\fR For the length of the handshake TDS wraps TLS; afterwards TLS wraps TDS. The nesting inverts once, part way through a connection.
+.PP
+.RS 4
+.nf
+.ft CR
+\- name: app
+  address: "10.0.0.30:1433"
+  kind: tds
+  tls:
+    certificates: [{cert_file: /etc/xproxy/tls/db.pem, key_file: /etc/xproxy/tls/db\-key.pem}]
+  tds:
+    upstream: sql
+    allow_clients: ["10.0.2.0/24"]
+    allow_users: [svc_sales]
+    allow_databases: [sales]
+    allow_statements: [select, insert, update, delete, set, begin, commit, rollback]
+.ft
+.fi
+.RE
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.9i) lbw(1.1i) lbx
+lw(1.2i) lw(0.9i) lw(1.1i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBupstream\fR
+T}	T{
+name
+T}	T{
+\fI(required)\fR
+T}	T{
+The server pool
+T}
+T{
+\fBallow_\:clients\fR,\: \fBdeny_\:clients\fR
+T}	T{
+list of CIDR
+T}	T{
+any
+T}	T{
+Networks a client may connect from;\: deny first
+T}
+T{
+\fBrequire_\:tls\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Answer every client\(aqs PRELOGIN with \fBrequired\fR,\: so one that asked for \fBoff\fR upgrades anyway. The listener needs a \fBtls\fR section. A client too old to speak TLS will fail to connect,\: which is the honest outcome: it was sending a recoverable password in cleartext
+T}
+T{
+\fBupstream_\:tls_\:mode\fR
+T}	T{
+\fBrequire\fR,\: \fBprefer\fR,\: \fBdisable\fR
+T}	T{
+\fBrequire\fR
+T}	T{
+How the relay speaks to the server. A separate negotiation from the client\(aqs,\: because a relay that terminated the client\(aqs TLS and spoke plaintext onwards would have moved the exposure rather than removed it
+T}
+T{
+\fBupstream_\:tls\fR
+T}	T{
+object
+T}	T{
+\fI(none)\fR
+T}	T{
+Certificate and verification settings for that leg
+T}
+T{
+\fBallow_\:cleartext_\:password\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Permit a \fBLOGIN7\fR carrying a password over an unencrypted connection
+T}
+T{
+\fBallow_\:users\fR,\: \fBdeny_\:users\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+Which logins a connection may claim
+T}
+T{
+\fBallow_\:databases\fR,\: \fBdeny_\:databases\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+Same,\: for the database
+T}
+T{
+\fBallow_\:apps\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+Matches the client\(aqs \fBAPPNAME\fR,\: trailing \fB*\fR allowed. Chosen by the client and not a credential;\: it tells a reporting dashboard from a migration tool when both connect as the same login
+T}
+T{
+\fBallow_\:integrated\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR,\: or \fBfalse\fR once a user list is set
+T}	T{
+Permit a login using integrated security,\: where the credential is an SSPI blob and the \fBLOGIN7\fR carries \fBno user name\fR. A user list cannot be applied to a login that names no user,\: so naming one turns this off: the alternative is a user policy with a hole exactly the shape of Windows authentication. Set it explicitly to say which you meant
+T}
+T{
+\fBallow_\:types\fR,\: \fBdeny_\:types\fR
+T}	T{
+list
+T}	T{
+the driver set
+T}	T{
+Message types: \fBsql_\:batch\fR,\: \fBrpc\fR,\: \fBbulk_\:load\fR,\: \fBtransaction_\:manager\fR,\: \fBattention\fR,\: \fBsspi\fR,\: \fBfedauth_\:token\fR,\: \fBprelogin\fR,\: \fBlogin7\fR,\: \fBlogin\fR. Empty allows all but \fBbulk_\:load\fR (whose stream is not SQL and carries no policy) and \fBlogin\fR (the pre\-TDS7 shape,\: which the relay does not read)
+T}
+T{
+\fBallow_\:procedures\fR,\: \fBdeny_\:procedures\fR
+T}	T{
+list
+T}	T{
+the driver set
+T}	T{
+RPC procedures,\: lower\-cased. Empty allows \fBsp_\:executesql\fR,\: the prepare and cursor families,\: \fBsp_\:reset_\:connection\fR and the driver metadata calls \[u2014] so every \fBxp_\fR,\: every \fBsp_\:oa\fR,\: \fBsp_\:configure\fR,\: \fBsp_\:addlinkedserver\fR and \fBsp_\:send_\:dbmail\fR are refused until named. A name matches whether the client called the procedure by name or by the numeric identifier the protocol also allows,\: because they are the same call
+T}
+T{
+\fBread_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse every statement that can change data. \fBEXEC\fR is one of them: T\-SQL has no prepared\-statement syntax,\: so \fBEXEC\fR runs a stored procedure,\: which can do anything the login can
+T}
+T{
+\fBallow_\:statements\fR,\: \fBdeny_\:statements\fR
+T}	T{
+list of kinds
+T}	T{
+any nameable
+T}	T{
+As the postgres kind names them. They apply to a \fBSQLBATCH\fR and to the statement inside an \fBsp_\:executesql\fR alike
+T}
+T{
+\fBmax_\:statements\fR
+T}	T{
+int
+T}	T{
+\fB1\fR
+T}	T{
+Statements per batch. T\-SQL separates statements with whitespace,\: so a batch carrying several is ordinary \-\- which is why the bound belongs here rather than in a capability flag as it does on MySQL
+T}
+T{
+\fBmax_\:statement_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB65536\fR
+T}	T{
+One statement
+T}
+T{
+\fBmax_\:message_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB4194304\fR
+T}	T{
+One reassembled message. The protocol has no bound: only the EOM status bit ends a message,\: so a sender may chain 64 KiB packets for ever
+T}
+T{
+\fBmax_\:sessions\fR,\: \fBmax_\:sessions_\:per_\:client\fR
+T}	T{
+int
+T}	T{
+unbounded
+T}	T{
+Concurrent connections
+T}
+T{
+\fBidle_\:timeout\fR,\: \fBsession_\:duration\fR,\: \fBhandshake_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR,\: \fB0\fR,\: \fB30s\fR
+T}	T{
+
+T}
+T{
+\fBdefault_\:action\fR
+T}	T{
+\fBallow\fR,\: \fBdeny\fR
+T}	T{
+\fBdeny\fR
+T}	T{
+When no rule matched
+T}
+T{
+\fBdeny_\:response\fR
+T}	T{
+\fBerror\fR,\: \fBdrop\fR
+T}	T{
+\fBerror\fR
+T}	T{
+\fBerror\fR sends an error token: 229 (permission denied on an object) for a refused message,\: 18456 (login failed) for a refused connection,\: which are what the server itself answers
+T}
+T{
+\fBmonitor_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Evaluate and do not enforce,\: except the hard decisions below
+T}
+.TE
+.SS "rules[]"
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.8i) lbx
+lw(1.2i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+string
+T}	T{
+Names the rule in logs and counters
+T}
+T{
+\fBclients\fR,\: \fBusers\fR,\: \fBdatabases\fR,\: \fBapps\fR
+T}	T{
+lists
+T}	T{
+Selectors;\: AND within a rule,\: OR within one
+T}
+T{
+\fBschedule\fR
+T}	T{
+object
+T}	T{
+\fBdays\fR,\: \fBfrom\fR,\: \fBto\fR,\: \fBtimezone\fR
+T}
+T{
+\fBaction\fR
+T}	T{
+\fBallow\fR,\: \fBdeny\fR,\: \fBobserve\fR
+T}	T{
+Default \fBallow\fR
+T}
+T{
+\fBallow_\:procedures\fR,\: \fBdeny_\:procedures\fR,\: \fBallow_\:types\fR,\: \fBdeny_\:types\fR,\: \fBallow_\:statements\fR,\: \fBdeny_\:statements\fR,\: \fBread_\:only\fR,\: \fBmax_\:statements\fR
+T}	T{
+
+T}	T{
+The rule\(aqs own narrowing. A rule that names a procedure,\: a type or a kind \fBwidens\fR the listener for its own traffic;\: the deny lists always win
+T}
+.TE
+.SS "What shadow mode never shadows"
+.PP
+.TS
+allbox;
+lbw(1.2i) lbx
+lw(1.2i) lx.
+T{
+Refusal
+T}	T{
+Why it is hard
+T}
+T{
+\fBclient_\:not_\:allowed\fR
+T}	T{
+An address that may not connect
+T}
+T{
+\fBtls_\:required\fR,\: \fBupstream_\:no_\:tls\fR
+T}	T{
+The login name,\: the database and a recoverable password are inside the LOGIN7
+T}
+T{
+\fBcleartext_\:password\fR
+T}	T{
+Anybody who read the packet has the password;\: there is nothing left to observe
+T}
+T{
+\fBintegrated_\:not_\:allowed\fR,\: \fBno_\:user\fR
+T}	T{
+A login no user list can be applied to. Admitting it would be a user policy with a hole,\: noted and permitted
+T}
+T{
+\fBprocedure_\:denied\fR,\: \fBprocedure_\:not_\:allowed\fR for a procedure in the dangerous set
+T}	T{
+Forwarding a shell command,\: a COM object,\: a registry write or a linked server and writing down that it was noticed is not a trial of a policy
+T}
+T{
+\fBlegacy_\:login\fR
+T}	T{
+The pre\-TDS7 login is a message shape the relay does not read,\: and forwarding octets it has not understood is what this kind exists not to do
+T}
+T{
+\fBbatch_\:unreadable\fR,\: \fBrpc_\:unreadable\fR,\: \fBstatement_\:unreadable\fR
+T}	T{
+The relay has no opinion to observe
+T}
+T{
+\fBstatement_\:too_\:long\fR
+T}	T{
+A bound
+T}
+.TE
+.PP
+The set whose refusal is never shadowed is \fBxp_cmdshell\fR, the OLE automation family, the registry procedures, \fBsp_addextendedproc\fR, \fBsp_addlinkedserver\fR, \fBsp_serveroption\fR, \fBsp_configure\fR, \fBxp_servicecontrol\fR, the mail procedures, the filesystem procedures, the SQL Agent job procedures and the role\-membership procedures. A procedure that is merely \fInot on the allow list\fR is a soft refusal, because it is most likely an application nobody has listed yet \-\- which is what monitor mode is for. An operator who names one of the hard set in \fBallow_procedures\fR has said so, and is not overruled.
+.PP
+Forcing the encryption negotiation upward is not in the table either, because it is not a refusal: nothing is denied, the connection goes through, and it happens in shadow mode too. It is logged as an \fBalert\fR.
 .SH "asset_inventory"
 .PP
 One record per device, built from traffic the proxy was already carrying.

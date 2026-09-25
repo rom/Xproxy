@@ -41,7 +41,7 @@ type Decision struct {
 	Rule string
 }
 
-func deny(reason, detail string) Decision { return Decision{Reason: reason, Detail: detail} }
+func deny(reason string) Decision { return Decision{Reason: reason} }
 func hardDeny(reason, detail string) Decision {
 	return Decision{Reason: reason, Detail: detail, Hard: true}
 }
@@ -332,13 +332,13 @@ func (p *policy) Login(se *Session, l *wire.Login) Decision {
 	if p.requireTLS && !se.Secure {
 		return hardDeny("tls_required", "")
 	}
-	return p.identity(se, l.User, l.Database, "connect")
+	return p.identity(se, l.User, l.Database)
 }
 
 // ChangeUser decides about a COM_CHANGE_USER, which re-authenticates a live
 // connection as somebody else.
 func (p *policy) ChangeUser(se *Session, cu *wire.ChangeUser) Decision {
-	d := p.identity(se, cu.User, cu.Database, "change_user")
+	d := p.identity(se, cu.User, cu.Database)
 	if !d.Allow {
 		// Hard, because the alternative is a connection that is now somebody
 		// the policy refused while the relay writes down that it noticed.
@@ -348,19 +348,19 @@ func (p *policy) ChangeUser(se *Session, cu *wire.ChangeUser) Decision {
 }
 
 // identity applies the user, database and program lists.
-func (p *policy) identity(se *Session, user, db, what string) Decision {
+func (p *policy) identity(se *Session, user, db string) Decision {
 	u := strings.ToLower(user)
 	if u == "" {
 		return hardDeny("no_user", "")
 	}
 	if !permitted(u, p.allowUsers, p.denyUsers) {
-		return deny("user_not_allowed", "")
+		return deny("user_not_allowed")
 	}
 	if db != "" && !permitted(strings.ToLower(db), p.allowDBs, p.denyDBs) {
-		return deny("database_not_allowed", "")
+		return deny("database_not_allowed")
 	}
 	if len(p.allowPrograms) > 0 && !matchAny(se.Program, p.allowPrograms) {
-		return deny("program_not_allowed", "")
+		return deny("program_not_allowed")
 	}
 	r := p.match(se)
 	if r == nil {
@@ -453,7 +453,7 @@ func (p *policy) SetOption(se *Session, on, readable bool) Decision {
 		return hardDeny("set_option_unreadable", "")
 	}
 	if on && p.denyCaps&wire.CapMultiStatements != 0 {
-		return deny("multi_statements_denied", "")
+		return deny("multi_statements_denied")
 	}
 	return Decision{Allow: true}
 }

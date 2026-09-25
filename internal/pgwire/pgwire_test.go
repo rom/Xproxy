@@ -11,7 +11,7 @@ import (
 
 // startup builds a version 3 startup packet from key/value pairs.
 func startup(code int32, kv ...string) []byte {
-	var body []byte
+	body := make([]byte, 0, 64)
 	for _, s := range kv {
 		body = append(body, s...)
 		body = append(body, 0)
