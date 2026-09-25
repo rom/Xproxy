@@ -106,6 +106,12 @@ func reply(m *wire.Message, typ wire.MessageType) *wire.Message {
 		SIAddr: netip.MustParseAddr("0.0.0.0"),
 		GIAddr: m.GIAddr, CIAddr: netip.MustParseAddr("0.0.0.0")}
 	out.Set(wire.OptServerID, []byte{10, 20, 0, 1})
+	if v, ok := m.Get(wire.OptRelayAgent); ok {
+		// RFC 3046 §2.2: a server returns the agent option unchanged, and the
+		// relay is the thing that has to take it off again before the client
+		// sees it. A fake server that dropped it would leave that untested.
+		out.Set(wire.OptRelayAgent, v)
+	}
 	out.Set(wire.OptSubnetMask, []byte{255, 255, 255, 0})
 	out.Set(wire.OptLeaseTime, []byte{0, 0, 14, 16}) // 3600 seconds
 	out.Set(wire.OptRouter, []byte{10, 20, 0, 1})
@@ -570,6 +576,47 @@ func TestARuleNarrowsByHardwareAddressAndVendorClass(t *testing.T) {
 	if m2.Has(wire.OptBootFile) || m2.Has(wire.OptTFTPServer) {
 		t.Error("a machine outside the rule was told a boot server")
 	}
+	// A machine whose hardware address is in the rule's vendor range and whose
+	// vendor class is not: the rule needs *both*, so this one is outside it.
+	// Without this case a rule that ignored its vendor class entirely would
+	// behave identically on every client the test sent.
+	c3 := dial(t, addr, 0x02, 0x11, 0x22, 0x77, 0x88, 0x99)
+	c3.send(wire.Discover, 0xbbcc, func(m *wire.Message) {
+		m.Set(wire.OptVendorClass, []byte("MSFT 5.0"))
+	})
+	m3, ok := c3.recv()
+	if !ok {
+		t.Fatal("no offer came back for the third client")
+	}
+	if m3.Has(wire.OptBootFile) || m3.Has(wire.OptTFTPServer) {
+		t.Error("a machine matching the rule's addresses but not its vendor class was told a boot server")
+	}
+}
+
+// TestADownstreamAgentsGiaddrIsNotOverwritten: giaddr is where the reply has to
+// go back to, so overwriting another agent's would strand every client behind it.
+func TestADownstreamAgentsGiaddrIsNotOverwritten(t *testing.T) {
+	fs := startServer(t, &fakeServer{})
+	_, addr := relayFor(t, base+"        allow_clients: [\"127.0.0.0/8\"]\n        max_hops: 4\n", fs.addr())
+	c := dial(t, addr)
+	downstream := netip.MustParseAddr("10.30.0.1")
+	c.send(wire.Request, 0xdd01, func(m *wire.Message) {
+		m.Hops = 1
+		m.GIAddr = downstream
+	})
+	seen := fs.await(t, 1, "the relayed request")
+	if seen[0].GIAddr != downstream {
+		t.Fatalf("the server saw giaddr %v, want the downstream agent's %v",
+			seen[0].GIAddr, downstream)
+	}
+	if seen[0].Hops != 2 {
+		t.Errorf("hops %d, want the downstream agent's one plus this relay's", seen[0].Hops)
+	}
+	// And the reply goes back to where the request came from, not to a
+	// broadcast: a relayed request has somewhere to unicast to.
+	if m, ok := c.recv(); !ok || m.Type != wire.Ack {
+		t.Fatalf("got %v, want an ack back", m)
+	}
 }
 
 // TestABootFileOutsideTheListIsRefused, because the boot file is what the
@@ -629,8 +676,9 @@ func TestAReplyNobodyAskedForIsDropped(t *testing.T) {
 	if _, ok := c.recv(); ok {
 		t.Fatal("a reply that matched no request reached the client")
 	}
-	awaitCounter(t, s, func(sn proxy.Snapshot) bool { return sn.DHCPUnsolicited > 0 },
-		"the unsolicited reply was counted")
+	awaitCounter(t, s, func(sn proxy.Snapshot) bool {
+		return sn.Refusals["dhcp"]["unsolicited_reply"] > 0
+	}, "the unsolicited reply was counted")
 }
 
 // TestTooManyHopsIsRefused: the hop count says how many relay agents a message
