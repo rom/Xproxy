@@ -23,6 +23,7 @@
 package fipsmode
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/fips140"
@@ -129,18 +130,25 @@ func handshake(cert tls.Certificate, version uint16, groups []tls.CurveID, suite
 	_ = client.SetDeadline(deadline)
 	_ = server.SetDeadline(deadline)
 
-	sc := &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: version, MaxVersion: version,
+	// The version is pinned to the one under test on both ends, TLS 1.2
+	// included: the whole point is to find out what this runtime does with a
+	// 1.2 cipher suite the configuration names, which cannot be asked at 1.3.
+	// Nothing here reaches a network -- it is a pipe inside this process --
+	// and the certificate lives for the length of the probe.
+	sc := &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: version, MaxVersion: version, //nolint:gosec // the version under test is the question
 		CurvePreferences: groups, CipherSuites: suites}
-	cc := &tls.Config{RootCAs: probePool(cert), ServerName: probeName, MinVersion: version, MaxVersion: version,
+	cc := &tls.Config{RootCAs: probePool(cert), ServerName: probeName, MinVersion: version, MaxVersion: version, //nolint:gosec // as above
 		CurvePreferences: groups, CipherSuites: suites}
 
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
 	errc := make(chan error, 1)
 	go func() {
 		s := tls.Server(server, sc)
-		errc <- s.Handshake()
+		errc <- s.HandshakeContext(ctx)
 	}()
 	c := tls.Client(client, cc)
-	cerr := c.Handshake()
+	cerr := c.HandshakeContext(ctx)
 	if cerr != nil {
 		// The client has decided. Closing both ends unblocks the server
 		// rather than leaving it to its deadline, which is what made a
