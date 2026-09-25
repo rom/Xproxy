@@ -26154,6 +26154,11 @@ T}	T{
 An answer carrying an invoke identifier nobody used,\: or from a device the request did not go to
 T}
 T{
+\fBno_\:such_\:exchange\fR
+T}	T{
+A segment acknowledgement,\: abort or error from a client naming an exchange this relay is not holding
+T}
+T{
 \fBunsolicited_\:broadcast\fR
 T}	T{
 An unsolicited datagram from the building with no client waiting for one
@@ -26175,7 +26180,11 @@ The refusals that are never shadowed are the bounds: \fBcommand_priority_too_hig
 .PP
 The standard makes an invoke identifier unique only between one client and one device. This relay speaks to the building from a socket of its own, so two clients that both use identifier 1 towards the same controller would be indistinguishable on the way back, and one client\(aqs answer would be delivered to the other. So the relay allocates an identifier of its own towards the device and translates it back on the answer, which is what a BACnet router does for the same reason. There are two hundred and fifty\-six of them; when all are outstanding a request is refused (\fBtoo_many_pending\fR) rather than reusing one, because reusing one delivers somebody else\(aqs answer.
 .PP
-An unconfirmed request has nothing to pair with at all \-\- an \fBi\-Am\fR is sent of the device\(aqs own accord \-\- so those answers are matched to the clients that broadcast inside \fBbroadcast_reply_window\fR and bounded by \fBmax_broadcast_replies\fR. An answer arriving outside anybody\(aqs window is not forwarded: that bound is this protocol\(aqs amplification control, not a convenience.
+An unconfirmed request has nothing to pair with at all \-\- an \fBi\-Am\fR is sent of the device\(aqs own accord \-\- so those answers are matched to the clients that broadcast inside \fBbroadcast_reply_window\fR and bounded by \fBmax_broadcast_replies\fR. An answer arriving outside anybody\(aqs window is not forwarded: that bound is this protocol\(aqs amplification control, not a convenience. A virtual link layer request \-\- a table read, a registration \-\- gets a window of exactly one reply, since that is what it expects.
+.PP
+A segmented exchange is translated in \fBboth\fR directions. The reply\(aqs segments carry the identifier this relay chose; the client\(aqs segment acknowledgements, and any abort or error it sends about its own request, carry the one the \fIclient\fR chose \-\- so those are translated back the other way, and one naming an exchange this relay is not holding is refused (\fBno_such_exchange\fR) rather than forwarded. A segment also renews the exchange\(aqs deadline, because a segmented reply is one exchange however many datagrams it takes and a deadline measured from the request would expire in the middle of a long trend log download.
+.PP
+\fBservices\fR applies to the building\(aqs direction too, because it is a statement about which services cross this listener rather than about which a client may send. The one that matters is \fBtimeSynchronization\fR: a device, or something on the plant network wearing a device\(aqs address, broadcasting one at a client network sets the clock on every host that listens, and it is not on the default list in either direction. The object and property rules are \fInot\fR applied to the building\(aqs direction \-\- they are written about the objects a client may reach, and applying them backwards would refuse every \fBi\-Am\fR, which names a device object.
 .SH "asset_inventory"
 .PP
 One record per device, built from traffic the proxy was already carrying.
