@@ -1790,8 +1790,8 @@ them.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `days` | list | `[]` (every day) | `mon`, `tue`, `wed`, `thu`, `fri`, `sat`, `sun` |
-| `from`, `to` | `HH:MM` | | The window in `timezone`. A `to` before its `from` spans midnight, which is how a night shift is written |
+| `days` | list | `[]` (every day) | `mon`, `tue`, `wed`, `thu`, `fri`, `sat`, `sun`, or the long form (`monday`). Every listener kind reads both |
+| `from`, `to` | `HH:MM` | | The window in `timezone`. A `to` before its `from` spans midnight, and the window then **belongs to the day it started on**: `{days: [fri], from: "22:00", to: "06:00"}` runs Friday 22:00 to Saturday 06:00, and covers neither Friday's own small hours nor Saturday evening. The end is exclusive, so two adjacent windows do not overlap on the minute they meet |
 | `timezone` | IANA name | `UTC` | A schedule in the host's local time is a schedule that moves when somebody fixes the host's time zone |
 
 **`learn`** records what actually crosses the listener — the clients, the
@@ -1988,7 +1988,7 @@ bounds which stations may be addressed through it.
 | `addresses` | list | Information object address ranges (0 to 16777215). A frame naming an address outside all of them does not match |
 | `max_objects` | int | Information objects one ASDU may carry (0 leaves the protocol's own 127) |
 | `select` | `select`, `execute` | Which half of a two-step command this rule is about. `select` on one client and `execute` on another is a four-eyes control: one operator arms and another fires |
-| `schedule` | object | `{days, from, to, timezone}`; a window whose `to` is before its `from` spans midnight |
+| `schedule` | object | `{days, from, to, timezone}`; a window whose `to` is before its `from` spans midnight and belongs to the day it started on |
 
 **What is checked before the rules, and cannot be shadowed.** A frame the
 relay could not read is refused whether or not the listener is enforcing:
@@ -2144,7 +2144,7 @@ answer rather than hanging; `max_filter_terms`, `max_filter_depth` and
 | `max_entries` | int | This rule's own bound on entries returned |
 | `max_filter_terms`, `max_filter_depth` | int | This rule's own filter bounds. A rule does not cover a filter past its own bound, so the next rule -- or the default -- decides; matching and then allowing would make the bound a suggestion |
 | `allow_leading_wildcard` | bool | This rule's own setting |
-| `schedule` | object | `{days, from, to, timezone}`; a window whose `to` is before its `from` spans midnight |
+| `schedule` | object | `{days, from, to, timezone}`; a window whose `to` is before its `from` spans midnight and belongs to the day it started on |
 
 **The built-in `deny_attributes` list** is the password and key material of the
 directories people actually run:
@@ -2325,7 +2325,7 @@ DTLS on 10162 is not implemented, so a listener that is TLS throughout is
 | `write_oids` | list | Apply instead of `oids` to a SetRequest, so one rule can allow a wide read and a narrow write. The write list *replaces* the read list rather than adding to it |
 | `max_repetitions` | int | This rule's own GETBULK bound. A rule does not cover traffic past its own bound, so the next rule -- or the default -- decides; matching and then allowing would make the bound a suggestion |
 | `contexts` | list | The v3 context names this rule covers, for an engine that fronts several agents |
-| `schedule` | object | `{days, from, to, timezone}`; a window whose `to` is before its `from` spans midnight |
+| `schedule` | object | `{days, from, to, timezone}`; a window whose `to` is before its `from` spans midnight and belongs to the day it started on |
 
 **What is checked before the rules, and cannot be shadowed.** A message the
 relay could not parse is refused whether or not the listener is enforcing:
@@ -2467,7 +2467,7 @@ of new addresses would exhaust that instead.
 | `boot_files` | list of pattern | This rule's own boot filename patterns |
 | `max_lease_time` | duration | This rule's own lease bound |
 | `circuit_id` | string | Overrides the listener's circuit identifier, so a rule about one segment can tell the server which segment it is |
-| `schedule` | object | `{days, from, to, timezone}`; a window whose `to` is before its `from` spans midnight |
+| `schedule` | object | `{days, from, to, timezone}`; a window whose `to` is before its `from` spans midnight and belongs to the day it started on |
 
 **Saying what an option may contain is how a rule allows it.** This is the one
 turn in the kind worth reading twice, and it is the same one the LDAP attribute
@@ -2644,7 +2644,7 @@ firmware.
 | `allow_path_classes` | list | Widens the listener's list for this rule's traffic only. The three classes the listener cannot allow, a rule cannot allow either |
 | `max_transfer_bytes` | int | This rule's own transfer bound |
 | `max_block_size`, `max_window_size` | int | This rule's own amplification bounds, so "this directory at a window of one" is one rule |
-| `schedule` | object | `{days, from, to, timezone}`; a window whose `to` is before its `from` spans midnight. A firmware window is a schedule: writes allowed during the change window and refused outside it |
+| `schedule` | object | `{days, from, to, timezone}`; a window whose `to` is before its `from` spans midnight and belongs to the day it started on. A firmware window is a schedule: writes allowed during the change window and refused outside it |
 
 **What is checked before the rules, and cannot be shadowed.** A client outside
 the address list; the rate limit; a packet the relay could not parse; a packet

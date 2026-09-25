@@ -304,6 +304,12 @@ func TestAWindowSpanningMidnightIsTheNightShift(t *testing.T) {
 		{"saturday at seven in the morning", time.Date(2026, 9, 26, 7, 0, 0, 0, time.UTC), false},
 		{"friday at noon", time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC), false},
 		{"sunday at two in the morning", time.Date(2026, 9, 27, 2, 0, 0, 0, time.UTC), false},
+		// Friday's own small hours are Thursday's shift, not Friday's, and
+		// this listener used to allow them: the old code checked the day
+		// list against today and then fell through to the
+		// spanning-window hour test, so the window was in force twice in
+		// one day. The shared schedule package reads it once.
+		{"friday at two in the morning", time.Date(2026, 9, 25, 2, 0, 0, 0, time.UTC), false},
 	} {
 		p := policy(t, cfg, tc.when)
 		if got := p.Decide(req(t, "10.0.0.1", "", 1, readRegs)).Allow; got != tc.want {

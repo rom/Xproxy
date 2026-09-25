@@ -10,6 +10,7 @@ import (
 	"github.com/rom/xproxy/internal/config"
 	wire "github.com/rom/xproxy/internal/modbus"
 	"github.com/rom/xproxy/internal/netutil"
+	"github.com/rom/xproxy/internal/schedule"
 )
 
 // The policy is written in Modbus's own terms, because that is the only
@@ -167,44 +168,7 @@ type rule struct {
 	writeAddr ranges
 	maxQty    int
 	values    []valueRule
-	schedule  *schedule
-}
-
-// schedule is when a rule is in force.
-type schedule struct {
-	days map[time.Weekday]bool
-	// from and to are minutes past midnight in loc. to before from
-	// spans midnight.
-	from, to int
-	loc      *time.Location
-}
-
-func (s *schedule) active(now time.Time) bool {
-	if s == nil {
-		return true
-	}
-	t := now.In(s.loc)
-	if len(s.days) > 0 && !s.days[t.Weekday()] {
-		// A window spanning midnight belongs to the day it started on,
-		// so the small hours of Saturday are still Friday's night
-		// shift.
-		if s.to >= s.from {
-			return false
-		}
-		yesterday := t.AddDate(0, 0, -1).Weekday()
-		if !s.days[yesterday] {
-			return false
-		}
-		return t.Hour()*60+t.Minute() < s.to
-	}
-	mins := t.Hour()*60 + t.Minute()
-	if s.from == s.to {
-		return true
-	}
-	if s.to > s.from {
-		return mins >= s.from && mins < s.to
-	}
-	return mins >= s.from || mins < s.to
+	schedule  *schedule.Window
 }
 
 // Policy is the compiled listener policy.
@@ -345,10 +309,8 @@ func compileRule(c *config.ModbusRule) (*rule, error) {
 		}
 		r.values = append(r.values, v)
 	}
-	if c.Schedule != nil {
-		if r.schedule, err = compileSchedule(c.Name, c.Schedule); err != nil {
-			return nil, err
-		}
+	if r.schedule, err = schedule.Compile(c.Schedule); err != nil {
+		return nil, fmt.Errorf("rules.%s.%w", c.Name, err)
 	}
 	return r, nil
 }
@@ -550,81 +512,6 @@ func (v valueRule) checkChange(state *valueState, req request, addr, val int, no
 	return ""
 }
 
-func compileSchedule(rule string, c *config.ModbusSchedule) (*schedule, error) {
-	s := &schedule{loc: time.UTC}
-	if c.Timezone != "" {
-		loc, err := time.LoadLocation(c.Timezone)
-		if err != nil {
-			return nil, fmt.Errorf("rules.%s.schedule.timezone: %w", rule, err)
-		}
-		s.loc = loc
-	}
-	if len(c.Days) > 0 {
-		s.days = map[time.Weekday]bool{}
-		for _, d := range c.Days {
-			wd, ok := weekday(d)
-			if !ok {
-				return nil, fmt.Errorf("rules.%s.schedule.days: %q is not a day", rule, d)
-			}
-			s.days[wd] = true
-		}
-	}
-	from, err := clock(c.From)
-	if err != nil {
-		return nil, fmt.Errorf("rules.%s.schedule.from: %w", rule, err)
-	}
-	to, err := clock(c.To)
-	if err != nil {
-		return nil, fmt.Errorf("rules.%s.schedule.to: %w", rule, err)
-	}
-	s.from, s.to = from, to
-	return s, nil
-}
-
-func weekday(s string) (time.Weekday, bool) {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "mon", "monday":
-		return time.Monday, true
-	case "tue", "tuesday":
-		return time.Tuesday, true
-	case "wed", "wednesday":
-		return time.Wednesday, true
-	case "thu", "thursday":
-		return time.Thursday, true
-	case "fri", "friday":
-		return time.Friday, true
-	case "sat", "saturday":
-		return time.Saturday, true
-	case "sun", "sunday":
-		return time.Sunday, true
-	}
-	return 0, false
-}
-
-// clock reads "HH:MM". An empty time is midnight, which with an equal
-// from and to means the whole day.
-func clock(s string) (int, error) {
-	if s == "" {
-		return 0, nil
-	}
-	h, m, ok := strings.Cut(s, ":")
-	if !ok {
-		return 0, fmt.Errorf("%q is not HH:MM", s)
-	}
-	hh, err := strconv.Atoi(h)
-	if err != nil {
-		return 0, fmt.Errorf("%q is not HH:MM", s)
-	}
-	mm, err := strconv.Atoi(m)
-	if err != nil {
-		return 0, fmt.Errorf("%q is not HH:MM", s)
-	}
-	if hh < 0 || hh > 23 || mm < 0 || mm > 59 {
-		return 0, fmt.Errorf("%q is not a time of day", s)
-	}
-	return hh*60 + mm, nil
-}
-
 // ClientAllowed applies the address lists. It is separate from the frame
 // policy because it decides before a frame exists: a master that may not
 // connect is refused at accept, without a PLC hearing from it at all.
@@ -760,7 +647,7 @@ func (p *Policy) Observed(req request) []string {
 
 // matches says whether every selector the rule sets holds.
 func (r *rule) matches(req request, now time.Time) bool {
-	if !r.schedule.active(now) {
+	if !r.schedule.InForce(now) {
 		return false
 	}
 	if len(r.clients) > 0 && !netutil.Contains(r.clients, req.client) {

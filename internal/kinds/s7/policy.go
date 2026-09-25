@@ -8,6 +8,7 @@ import (
 
 	"github.com/rom/xproxy/internal/config"
 	wire "github.com/rom/xproxy/internal/s7"
+	"github.com/rom/xproxy/internal/schedule"
 )
 
 // The policy, in a plant's own terms.
@@ -106,7 +107,7 @@ type rule struct {
 	racks   ranges
 	slots   ranges
 	res     map[uint8]bool
-	sched   *schedule
+	sched   *schedule.Window
 	observe bool
 	action  string
 
@@ -244,7 +245,7 @@ func compileRule(rc *config.S7Rule, i int) (*rule, error) {
 		return nil, err
 	}
 	if rc.Schedule != nil {
-		if r.sched, err = compileSchedule(rc.Schedule); err != nil {
+		if r.sched, err = schedule.Compile(rc.Schedule); err != nil {
 			return nil, fmt.Errorf("rules[%d].schedule: %w", i, err)
 		}
 	}
@@ -448,7 +449,7 @@ func (p *policy) Request(se *Session, pdu *wire.PDU) Decision {
 	if r.action == "deny" {
 		return Decision{Reason: "rule_denied", Detail: string(op), Rule: r.name, Comment: r.comment}
 	}
-	if r.sched != nil && !r.sched.inForce(se.At) {
+	if r.sched != nil && !r.sched.InForce(se.At) {
 		return Decision{Reason: "outside_schedule", Detail: string(op), Rule: r.name, Comment: r.comment}
 	}
 	return Decision{Allow: true, Rule: r.name, Comment: r.comment}

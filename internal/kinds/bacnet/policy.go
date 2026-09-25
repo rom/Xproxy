@@ -19,6 +19,7 @@ import (
 
 	wire "github.com/rom/xproxy/internal/bacnet"
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/schedule"
 )
 
 // Decision is one policy answer.
@@ -85,7 +86,7 @@ type rule struct {
 	networks  map[uint16]bool
 
 	maxPriority int
-	sched       *schedule
+	sched       *schedule.Window
 }
 
 type policy struct {
@@ -255,7 +256,7 @@ func compileRule(c *config.BACnetRule) (*rule, error) {
 	}
 	r.networks = networkSet(c.Networks)
 	if c.Schedule != nil {
-		if r.sched, err = compileSchedule(c.Schedule); err != nil {
+		if r.sched, err = schedule.Compile(c.Schedule); err != nil {
 			return nil, fmt.Errorf("schedule: %w", err)
 		}
 	}
@@ -551,7 +552,7 @@ func (r *rule) matches(req request) bool {
 			return false
 		}
 	}
-	if r.sched != nil && !r.sched.inForce(req.at) {
+	if r.sched != nil && !r.sched.InForce(req.at) {
 		return false
 	}
 	if len(r.objects) > 0 || len(r.instances) > 0 {

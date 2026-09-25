@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/schedule"
 	wire "github.com/rom/xproxy/internal/tftp"
 )
 
@@ -85,7 +86,7 @@ type rule struct {
 	maxBytes  int64
 	maxBlock  int
 	maxWindow int
-	sched     *schedule
+	sched     *schedule.Window
 }
 
 func compile(m *config.TFTPListener, now func() time.Time) (*Policy, error) {
@@ -157,7 +158,7 @@ func compileRule(c *config.TFTPRule) (*rule, error) {
 	if r.classes, err = classes(c.AllowPathClasses); err != nil {
 		return nil, err
 	}
-	if r.sched, err = compileSchedule(c.Schedule); err != nil {
+	if r.sched, err = schedule.Compile(c.Schedule); err != nil {
 		return nil, err
 	}
 	return r, nil
@@ -380,7 +381,7 @@ func (r *rule) matches(req request, p *Policy) bool {
 	if len(r.pats) > 0 && !matches(req.path, r.pats) {
 		return false
 	}
-	return r.sched.inForce(req.at)
+	return r.sched.InForce(req.at)
 }
 
 func contains(ns []netip.Prefix, ip netip.Addr) bool {

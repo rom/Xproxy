@@ -9,6 +9,7 @@ import (
 
 	"github.com/rom/xproxy/internal/config"
 	wire "github.com/rom/xproxy/internal/dhcp"
+	"github.com/rom/xproxy/internal/schedule"
 )
 
 // The policy. It has two halves, and the second is the unusual one.
@@ -109,7 +110,7 @@ type rule struct {
 	bootFiles   []string
 	maxLease    uint32
 	circuit     string
-	sched       *schedule
+	sched       *schedule.Window
 }
 
 func compile(m *config.DHCPListener, now func() time.Time) (*Policy, error) {
@@ -215,7 +216,7 @@ func compileRule(c *config.DHCPRule) (*rule, error) {
 	if r.bootServers, err = addrSet(c.AllowBootServers); err != nil {
 		return nil, fmt.Errorf("dhcp rule %s allow_boot_servers: %w", c.Name, err)
 	}
-	if r.sched, err = compileSchedule(c.Schedule); err != nil {
+	if r.sched, err = schedule.Compile(c.Schedule); err != nil {
 		return nil, err
 	}
 	return r, nil
@@ -653,7 +654,7 @@ func (r *rule) matches(req request) bool {
 	if len(r.user) > 0 && !matchAny(r.user, optString(m, wire.OptUserClass)) {
 		return false
 	}
-	return r.sched.inForce(req.at)
+	return r.sched.InForce(req.at)
 }
 
 // hardwareMatches compares a hardware address against a rule's list, where an

@@ -136,6 +136,11 @@ internal/kinds/amqp    kind: amqp -- message broker relay: the version a
                        vhost, whether topology may be changed at all, and
                        every exchange, queue, routing key and link address
                        an operation names
+internal/schedule      The time window a rule can be limited to, in the one
+                       spelling every kind uses. Thirteen kinds had their own
+                       copy and they had drifted: two readings of what a
+                       midnight-spanning window means, and one accepted a day
+                       name the other twelve refused
 internal/s7            S7comm off the wire: TPKT framing, the COTP connection
                        request with the rack and slot it addresses, and the
                        S7 layer -- function codes, user-data groups and item
@@ -1436,6 +1441,23 @@ What each of these protocols *is* -- its framing, the security it was designed
 with, and what this project decided to read of it -- is one page per kind under
 [docs/protocols/README.md](protocols/README.md). This document is about where
 the code lives; those are about what the code is reading.
+
+`internal/schedule` is the other piece the kinds share, and it is worth a word
+about why it exists now rather than from the start. Thirteen kinds grew a rule
+list with a `schedule` section, and thirteen grew their own copy of a hundred
+lines to read it -- ten byte-identical but for the package clause. That is the
+ordinary cost of copying and it was worth paying while the shape was still being
+found.
+
+What made it worth stopping is that the copies had drifted, and in the direction
+that matters. `internal/config` accepts a day written either way, `mon` or
+`monday`; the modbus copy accepted both and the other twelve accepted only the
+short form -- so a file with `days: [monday]` passed `-validate` and then failed
+at startup, which is validation and the runtime disagreeing about whether a file
+is valid. And the copies held **two different answers** to what a
+midnight-spanning window means, so the same YAML was in force at different times
+on a modbus listener than on an s7 one. Neither answer was the one the
+configuration reference describes. One implementation settles both.
 
 `internal/acceptgroup` is shared by the database kinds and exists because the
 obvious way to wait for a listener's sessions is wrong. A `sync.WaitGroup` with

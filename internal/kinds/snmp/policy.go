@@ -8,6 +8,7 @@ import (
 
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/netutil"
+	"github.com/rom/xproxy/internal/schedule"
 	wire "github.com/rom/xproxy/internal/snmp"
 )
 
@@ -39,95 +40,6 @@ type Decision struct {
 	// the reason. A refusal that says which OID it was about is an audit
 	// trail; one that says "denied" is not.
 	Detail string
-}
-
-// schedule is a compiled time window.
-type schedule struct {
-	days     [7]bool
-	anyDay   bool
-	from, to int // minutes since midnight; equal means the whole day
-	loc      *time.Location
-}
-
-func compileSchedule(c *config.ModbusSchedule) (*schedule, error) {
-	if c == nil {
-		return nil, nil
-	}
-	s := &schedule{loc: time.UTC, anyDay: len(c.Days) == 0}
-	for _, d := range c.Days {
-		i, ok := dayIndex(d)
-		if !ok {
-			return nil, fmt.Errorf("schedule.days: %q is not a day", d)
-		}
-		s.days[i] = true
-	}
-	var err error
-	if s.from, err = clockMinutes(c.From); err != nil {
-		return nil, err
-	}
-	if s.to, err = clockMinutes(c.To); err != nil {
-		return nil, err
-	}
-	if c.Timezone != "" {
-		if s.loc, err = time.LoadLocation(c.Timezone); err != nil {
-			return nil, err
-		}
-	}
-	return s, nil
-}
-
-func dayIndex(d string) (int, bool) {
-	switch strings.ToLower(strings.TrimSpace(d)) {
-	case "sun":
-		return 0, true
-	case "mon":
-		return 1, true
-	case "tue":
-		return 2, true
-	case "wed":
-		return 3, true
-	case "thu":
-		return 4, true
-	case "fri":
-		return 5, true
-	case "sat":
-		return 6, true
-	}
-	return 0, false
-}
-
-func clockMinutes(s string) (int, error) {
-	if s == "" {
-		return 0, nil
-	}
-	var h, m int
-	if _, err := fmt.Sscanf(s, "%d:%d", &h, &m); err != nil {
-		return 0, fmt.Errorf("schedule: %q is not HH:MM", s)
-	}
-	if h < 0 || h > 23 || m < 0 || m > 59 {
-		return 0, fmt.Errorf("schedule: %q is not a time of day", s)
-	}
-	return h*60 + m, nil
-}
-
-// inForce says whether a schedule includes a moment. A window whose end is
-// before its start spans midnight, which is how a night shift is written.
-func (s *schedule) inForce(now time.Time) bool {
-	if s == nil {
-		return true
-	}
-	t := now.In(s.loc)
-	if !s.anyDay && !s.days[int(t.Weekday())] {
-		return false
-	}
-	mins := t.Hour()*60 + t.Minute()
-	if s.from == s.to {
-		return true
-	}
-	if s.to > s.from {
-		return mins >= s.from && mins < s.to
-	}
-	return mins >= s.from || mins < s.to
 }
 
 // subtrees is a set of object identifier subtrees.
@@ -181,7 +93,7 @@ type rule struct {
 	writeOIDs   subtrees
 	contexts    map[string]bool
 	maxReps     int
-	sched       *schedule
+	sched       *schedule.Window
 }
 
 // Policy is the compiled listener policy.
@@ -364,7 +276,7 @@ func compileRule(c *config.SNMPRule) (*rule, error) {
 	if r.writeOIDs, err = compileSubtrees(where+".write_oids", c.WriteOIDs); err != nil {
 		return nil, err
 	}
-	if r.sched, err = compileSchedule(c.Schedule); err != nil {
+	if r.sched, err = schedule.Compile(c.Schedule); err != nil {
 		return nil, fmt.Errorf("%s: %w", where, err)
 	}
 	return r, nil
@@ -491,7 +403,7 @@ func firstOID(p *wire.PDU) string {
 // not match when an object is the reason.
 func (r *rule) matches(req request, now time.Time) (bool, string) {
 	m := req.msg
-	if !r.sched.inForce(now) {
+	if !r.sched.InForce(now) {
 		return false, ""
 	}
 	if len(r.clients) > 0 && !netutil.Contains(r.clients, req.client) {

@@ -9,6 +9,7 @@ import (
 
 	wire "github.com/rom/xproxy/internal/amqpwire"
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/schedule"
 )
 
 // The policy, in a message broker's own terms.
@@ -115,7 +116,7 @@ type rule struct {
 	clients []netip.Prefix
 	users   []string
 	vhosts  []string
-	sched   *schedule
+	sched   *schedule.Window
 	observe bool
 	action  string
 
@@ -265,7 +266,7 @@ func compileRule(rc *config.AMQPRule, i int) (*rule, error) {
 		r.consume = &v
 	}
 	if rc.Schedule != nil {
-		if r.sched, err = compileSchedule(rc.Schedule); err != nil {
+		if r.sched, err = schedule.Compile(rc.Schedule); err != nil {
 			return nil, fmt.Errorf("rules[%d].schedule: %w", i, err)
 		}
 	}
@@ -839,7 +840,7 @@ func (p *policy) byRule(se *Session, r *rule) Decision {
 	if r.action == "deny" {
 		return Decision{Reason: "rule_denied", Rule: r.name}
 	}
-	if r.sched != nil && !r.sched.inForce(se.At) {
+	if r.sched != nil && !r.sched.InForce(se.At) {
 		return Decision{Reason: "outside_schedule", Rule: r.name}
 	}
 	return Decision{Allow: true, Rule: r.name}

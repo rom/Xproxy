@@ -4250,7 +4250,7 @@ list
 T}	T{
 \fB[]\fR (every day)
 T}	T{
-\fBmon\fR,\: \fBtue\fR,\: \fBwed\fR,\: \fBthu\fR,\: \fBfri\fR,\: \fBsat\fR,\: \fBsun\fR
+\fBmon\fR,\: \fBtue\fR,\: \fBwed\fR,\: \fBthu\fR,\: \fBfri\fR,\: \fBsat\fR,\: \fBsun\fR,\: or the long form (\fBmonday\fR). Every listener kind reads both
 T}
 T{
 \fBfrom\fR,\: \fBto\fR
@@ -4259,7 +4259,7 @@ T}	T{
 T}	T{
 
 T}	T{
-The window in \fBtimezone\fR. A \fBto\fR before its \fBfrom\fR spans midnight,\: which is how a night shift is written
+The window in \fBtimezone\fR. A \fBto\fR before its \fBfrom\fR spans midnight,\: and the window then \fBbelongs to the day it started on\fR: \fB{days:\: [fri],\: from:\: "22:\:00",\: to:\: "06:\:00"}\fR runs Friday 22:00 to Saturday 06:00,\: and covers neither Friday\(aqs own small hours nor Saturday evening. The end is exclusive,\: so two adjacent windows do not overlap on the minute they meet
 T}
 T{
 \fBtimezone\fR
@@ -4810,7 +4810,7 @@ T{
 T}	T{
 object
 T}	T{
-\fB{days,\: from,\: to,\: timezone}\fR;\: a window whose \fBto\fR is before its \fBfrom\fR spans midnight
+\fB{days,\: from,\: to,\: timezone}\fR;\: a window whose \fBto\fR is before its \fBfrom\fR spans midnight and belongs to the day it started on
 T}
 .TE
 .PP
@@ -5309,7 +5309,7 @@ T{
 T}	T{
 object
 T}	T{
-\fB{days,\: from,\: to,\: timezone}\fR;\: a window whose \fBto\fR is before its \fBfrom\fR spans midnight
+\fB{days,\: from,\: to,\: timezone}\fR;\: a window whose \fBto\fR is before its \fBfrom\fR spans midnight and belongs to the day it started on
 T}
 .TE
 .PP
@@ -5795,7 +5795,7 @@ T{
 T}	T{
 object
 T}	T{
-\fB{days,\: from,\: to,\: timezone}\fR;\: a window whose \fBto\fR is before its \fBfrom\fR spans midnight
+\fB{days,\: from,\: to,\: timezone}\fR;\: a window whose \fBto\fR is before its \fBfrom\fR spans midnight and belongs to the day it started on
 T}
 .TE
 .PP
@@ -6237,7 +6237,7 @@ T{
 T}	T{
 object
 T}	T{
-\fB{days,\: from,\: to,\: timezone}\fR;\: a window whose \fBto\fR is before its \fBfrom\fR spans midnight
+\fB{days,\: from,\: to,\: timezone}\fR;\: a window whose \fBto\fR is before its \fBfrom\fR spans midnight and belongs to the day it started on
 T}
 .TE
 .PP
@@ -6671,7 +6671,7 @@ T{
 T}	T{
 object
 T}	T{
-\fB{days,\: from,\: to,\: timezone}\fR;\: a window whose \fBto\fR is before its \fBfrom\fR spans midnight. A firmware window is a schedule: writes allowed during the change window and refused outside it
+\fB{days,\: from,\: to,\: timezone}\fR;\: a window whose \fBto\fR is before its \fBfrom\fR spans midnight and belongs to the day it started on. A firmware window is a schedule: writes allowed during the change window and refused outside it
 T}
 .TE
 .PP

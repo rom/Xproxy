@@ -562,6 +562,51 @@ Open findings of the earlier rounds:
   whose datagram side is taken fails with the reason it failed and nothing left
   bound behind it, and a port 0 listener comes up with both sockets.
 
+### Changed (1.4)
+
+- **`internal/schedule`: one time window, shared by the thirteen kinds that had
+  their own.** A refactor that turned into two bug fixes, because the copies had
+  drifted.
+
+  Thirteen listener kinds have a rule list with a `schedule` section, and
+  thirteen had their own hundred lines to read it -- ten of them byte-identical
+  but for the package clause and a paragraph of comment. 1,404 lines out, 56 in.
+
+  **The day names disagreed with validation.** `internal/config` accepts a day
+  written either way, `mon` or `monday`, because that is what an operator writes.
+  The modbus copy accepted both; the other twelve accepted only the short form
+  and returned an error for the long one. So a configuration with
+  `days: [monday]` on any listener but a modbus one passed
+  `xrelay -config … -validate`, which said OK, and then refused to start with
+  `"monday" is not a day`. Validation and the runtime disagreeing about whether a
+  file is valid is the worst class of configuration bug there is: the check an
+  operator runs before a change window told them the change was safe. Both
+  spellings now work everywhere, and a test asserts that every day name
+  validation accepts is one the runtime compiles.
+
+  **The copies held two different answers to what a midnight-spanning window
+  means**, so the same YAML was in force at different times depending on which
+  listener it was written for. Twelve checked the day list against the day the
+  moment falls on, which reads `{days: [fri], from: "22:00", to: "06:00"}` as
+  Friday's *own* small hours -- nobody's night shift -- and refuses Saturday's,
+  which is the shift that was written. The modbus copy did that *and* reached
+  into Saturday morning, so it was the union of both readings and in force three
+  times over.
+
+  Neither is what `docs/CONFIG.md` describes. A window now **belongs to the day
+  it started on**: Friday 22:00 to Saturday 06:00, and nothing else. This
+  **changes when a midnight-spanning rule with a day list is in force** -- the
+  small hours of a named day are no longer covered by that day's own evening
+  window, and the small hours after it now are. Measured across every named day
+  and every hour of a week, 84 of 3,528 (window, hour) pairs change, and all 84
+  are midnight-spanning: a rule with no day list, or whose window sits inside one
+  day, is unaffected, which is almost every rule anybody has written. An operator
+  who wants a plain "these hours on these days" window is not affected at all.
+
+  `internal/schedule` is at 98.5% coverage, and its tests pin both fixes,
+  including a regression that asserts the old reading in both directions -- a fix
+  that only closed the wrong window would have left the right one closed too.
+
 ### Added (1.4)
 
 - **`docs/protocols/`: one page per protocol, and a test that keeps the set
