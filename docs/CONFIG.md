@@ -5988,7 +5988,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `postgres_denied`, `ntp_denied`, `ntske_denied`, `yara` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `postgres_denied`, `mysql_denied`, `ntp_denied`, `ntske_denied`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |
@@ -9513,6 +9513,113 @@ on the management socket, where the kernel decides who may throw it.
 Selectors within a rule are AND, values within a selector are OR, and
 rules are tried in order. To capture one route for one client, put both
 selectors in one rule; to capture two unrelated things, write two rules.
+
+## mysql
+
+`kind: mysql` is a relay in front of a MySQL or MariaDB server.
+
+It has the same four jobs as the [postgres](#postgres) kind -- refuse the
+encryption downgrade, refuse the weak credentials, refuse what is not a
+statement, decide by the shape of what is -- plus two that are MySQL's
+alone.
+
+**On MySQL the dangerous operations are commands, not statements.** After
+the handshake every client message begins with a one-octet command code, and
+several of those carry no SQL at all, so a statement policy would never see
+them. `COM_SHUTDOWN` is one octet and stops the server. The three
+replication commands are a copy of every change to every database.
+`COM_TABLE_DUMP` is a whole table. `COM_PROCESS_KILL` ends somebody else's
+query. `COM_DEBUG` writes the server's internals to its error log.
+`COM_CREATE_DB` and `COM_DROP_DB` predate the DDL statements and bypass a
+statement policy entirely. Hence `allow_commands`, which the postgres kind
+has no equivalent of.
+
+Two commands are subtler and are why a capability policy alone is not
+enough. `COM_CHANGE_USER` re-authenticates a *live* connection as somebody
+else, so a relay that did not read it would have a user policy that applied
+to the first message and nothing after it. And `COM_SET_OPTION` turns
+`CLIENT_MULTI_STATEMENTS` on **after the handshake is over** -- a policy a
+client lifts with one command, unless the relay reads it.
+
+**The relay rewrites the server's greeting.** MySQL's handshake runs the
+opposite way round from PostgreSQL's: the server speaks first and advertises
+its capabilities, and the client answers. So the relay reads the greeting,
+clears the bits `deny_capabilities` names, and forwards the edited one -- a
+client that never sees `CLIENT_LOCAL_FILES` offered cannot negotiate it, so
+the server can never ask that client for a file, **and the application still
+works**. That is the same move the [tftp](#tftp) kind makes with RFC 7440's
+window: rewrite rather than refuse, because a control that breaks every
+application on a segment is a control somebody switches off. The strip is
+logged as an `alert` rather than a refusal, since nothing was denied.
+
+```yaml
+- name: app
+  address: "10.0.0.20:3306"
+  kind: mysql
+  tls:
+    certificates: [{cert_file: /etc/xproxy/tls/db.pem, key_file: /etc/xproxy/tls/db-key.pem}]
+  mysql:
+    upstream: my
+    allow_clients: ["10.0.2.0/24"]
+    allow_users: [app]
+    allow_databases: [sales]
+    allow_auth: [caching_sha2_password]
+    allow_statements: [select, insert, update, delete, show, set, begin, commit, rollback]
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | name | *(required)* | The server pool |
+| `allow_clients`, `deny_clients` | list of CIDR | any | Networks a client may connect from; deny first |
+| `require_tls` | bool | `true` | Refuse a client that does not set `CLIENT_SSL`. The negotiation is a capability flag and nothing signs the server's greeting, so anything on the path can clear the bit and the client never asks. The listener needs a `tls` section |
+| `upstream_tls_mode` | `require`, `prefer`, `disable` | `require` | How the relay speaks to the server. Both legs are upgraded independently, which is the only way a relay that reads the protocol can exist |
+| `upstream_tls` | object | *(none)* | Certificate and verification settings for that leg |
+| `allow_users`, `deny_users` | list | any | Which users a connection may claim. **Re-checked on `COM_CHANGE_USER`** |
+| `allow_databases`, `deny_databases` | list | any | Same, for the database |
+| `allow_programs` | list | any | Matches the client's `program_name` connection attribute, trailing `*` allowed |
+| `allow_auth` | list | any not weak | Plugins the relay will carry: `caching_sha2_password`, `mysql_native_password`, `sha256_password`, `mysql_clear_password`, `mysql_old_password`, and the enterprise ones |
+| `allow_weak_auth` | bool | `false` | Permit `mysql_clear_password` (the password itself) and `mysql_old_password` (the pre-4.1 scramble, removed from the server in 5.7). `mysql_native_password` is deliberately **not** in that set: its challenge-response discloses no reusable secret, and treating it as weak would make this setting one operators turn off wholesale. `mysql_clear_password` on an unencrypted connection is refused even when this is true |
+| `allow_commands` | list | the driver set | Protocol commands. Empty allows `query`, `stmt_prepare`, `stmt_execute`, `stmt_send_long_data`, `stmt_close`, `stmt_reset`, `stmt_fetch`, `init_db`, `ping`, `quit`, `statistics`, `reset_connection`, `set_option` and `change_user` — and nothing administrative |
+| `deny_commands` | list | `[]` | The deny list, which no rule can override |
+| `deny_capabilities` | list | `[local_files, multi_statements, compress]` | Bits stripped from the server's greeting. `ssl` **cannot be named**: stripping it would perform the downgrade this kind exists to prevent |
+| `read_only` | bool | `false` | Refuse every statement that can change data, `call` and `do` included |
+| `allow_statements`, `deny_statements` | list of kinds | any nameable | As the postgres kind names them |
+| `allow_load` | list | `[]` | Which `LOAD DATA` forms may cross: `file` (a path on the server, needing the FILE privilege) or `local` (a path on the **client**). Empty allows neither |
+| `max_statements` | int | `1` | Statements per query message. The default is 1 because `multi_statements` is stripped by default, so a message carrying more is a client working around the policy |
+| `max_statement_bytes` | int | `65536` | One statement |
+| `max_message_bytes` | int | `1048576` | One reassembled message. The protocol has no bound at all: a sender may chain 16 MiB packets for ever |
+| `max_sessions`, `max_sessions_per_client` | int | unbounded | Concurrent connections |
+| `idle_timeout`, `session_duration`, `handshake_timeout` | duration | `0`, `0`, `30s` | |
+| `default_action` | `allow`, `deny` | `deny` | When no rule matched |
+| `deny_response` | `error`, `drop` | `error` | `error` sends an error packet: 1142 with SQLSTATE 42000 for a refused statement, 1045 with 28000 for a refused connection, which are what the server itself answers |
+| `monitor_only` | bool | `false` | Evaluate and do not enforce, except the hard decisions below |
+
+### rules[]
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `name` | string | Names the rule in logs and counters |
+| `clients`, `users`, `databases`, `programs` | lists | Selectors; AND within a rule, OR within one |
+| `schedule` | object | `days`, `from`, `to`, `timezone` |
+| `action` | `allow`, `deny`, `observe` | Default `allow` |
+| `allow_commands`, `deny_commands`, `allow_statements`, `deny_statements`, `allow_load`, `read_only`, `max_statements` | | The rule's own narrowing. A rule that names a command or a kind **widens** the listener for its own traffic; the deny lists always win |
+
+### What shadow mode never shadows
+
+| Refusal | Why it is hard |
+|---------|----------------|
+| `client_not_allowed` | An address that may not connect |
+| `tls_required`, `upstream_no_tls` | The user name and database are inside the handshake response |
+| `weak_auth`, `auth_not_allowed`, `cleartext_password_unencrypted` | A credential an observer can reuse is disclosed by being sent |
+| `replication_command` | The connection becomes a stream of every change to every database |
+| `local_infile`, `load_local` | Forwarding the request means the client's file has already left |
+| `change_user` refusals | Otherwise the connection *is* somebody the policy refused while the relay notes that it noticed |
+| `statement_unreadable`, `set_option_unreadable`, `empty_command` | The relay has no opinion to observe |
+| `statement_too_long` | A bound |
+
+Capability stripping is not in that table because it is not a refusal:
+nothing is denied, the connection goes through, and the client simply never
+sees the capability offered.
 
 ## postgres
 

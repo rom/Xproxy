@@ -1,55 +1,98 @@
-package pgwire
-
-import "strings"
-
-// Classifying a statement without parsing SQL.
+// Package sqlkind classifies a SQL statement by its shape, for the database
+// relay kinds.
 //
 // The TFTP kind learned that a deny list of strings is a list of the spellings
 // somebody thought of: it stops `../../etc/shadow` and not `..\..\etc\shadow`,
 // stops that and not `/etc/shadow`. On SQL the same problem is worse, because
-// the language has four kinds of quoting, nesting comments, and a hundred ways
-// to write whitespace. A relay that searched a statement for "DROP" would be
-// beaten by `DR/**/OP`, by `"DROP"`, and by a statement that mentions the word
-// in a string literal and is perfectly innocent.
+// the language has several kinds of quoting, comments with dialect-specific
+// rules, and a hundred ways to write whitespace. A relay that searched a
+// statement for "DROP" would be beaten by `DR/**/OP`, by `"DROP"`, and by a
+// statement that mentions the word in a string literal and is perfectly
+// innocent.
 //
-// So this classifier does the opposite. It reads the leading keyword of every
+// So this package does the opposite. It reads the leading keyword of every
 // statement in a message, having first skipped comments and quoted regions
-// *properly*, and names the kind. The policy is then an allow list of kinds,
-// and a statement whose kind this code cannot name is `Unknown`, which the
-// policy refuses. That turns "did anybody think of this spelling" into "is this
+// *properly*, and names the kind. The policy is then an allow list of kinds, and
+// a statement whose kind this code cannot name is `Unknown`, which the policy
+// refuses. That turns "did anybody think of this spelling" into "is this
 // statement one of the shapes we allow" -- and the failure mode of a spelling
 // nobody thought of becomes a refusal rather than a pass.
 //
 // Three things it deliberately gets conservative rather than right:
 //
 // A `WITH` statement may be a write. `WITH x AS (...) DELETE FROM y` is a
-// DELETE wearing a SELECT's hat, and PostgreSQL allows INSERT, UPDATE, DELETE
-// and MERGE inside and after a common table expression. Rather than parse the
-// CTE list, this scans the whole statement at top level for a writing keyword
-// and, if it finds one, classifies the statement as that write. That can
-// classify a read as a write -- a CTE that merely mentions `delete` as a column
-// alias at top level -- and it can never classify a write as a read. When a
+// DELETE wearing a SELECT's hat, and both dialects allow a data-modifying
+// statement inside or after a common table expression. Rather than parse the CTE
+// list, this scans the whole statement at top level for a writing keyword and,
+// if it finds one, classifies the statement as that write. That can classify a
+// read as a write, and it can never classify a write as a read. When a
 // classifier has to be wrong, it must be wrong towards the more restricted
 // answer.
 //
 // `EXPLAIN ANALYZE` executes the statement it explains. Plain EXPLAIN does not.
-// So `EXPLAIN ANALYZE INSERT ...` is classified as the insert, and `EXPLAIN
-// INSERT ...` as an explain.
+// So `EXPLAIN ANALYZE INSERT ...` is classified as the insert.
 //
-// `COPY` is two completely different operations wearing one keyword. `COPY t TO
-// STDOUT` is bulk egress of a table; `COPY t FROM STDIN` is bulk ingest; and
-// `COPY t FROM PROGRAM 'curl ...'` runs a shell command as the server's
-// operating-system user, which is remote code execution with a SQL keyword in
-// front of it. The kind carries which, so a policy can allow the data ones and
-// refuse the program one without an operator having to know that they share a
-// verb.
+// `COPY` (PostgreSQL) and `LOAD DATA` (MySQL) are several operations wearing one
+// keyword. `COPY t TO STDOUT` is bulk egress; `COPY t FROM PROGRAM 'curl ...'`
+// runs a shell command as the server's operating-system user, which is remote
+// code execution with a SQL keyword in front of it. The kind carries which, so a
+// policy can allow the data ones and refuse the program one without an operator
+// having to know that they share a verb.
 //
 // What it does not attempt at all is table names. Knowing which relations a
 // statement touches means parsing SQL, including every alias, subquery, CTE and
-// search_path interaction, and a relay that got that 95% right would be a
-// relay whose policy has a 5% hole in exactly the place somebody is looking.
+// search-path interaction, and a relay that got that 95% right would be a relay
+// whose policy has a 5% hole in exactly the place somebody is looking.
 // Restricting a role's tables is the database's own job, done properly, with
 // GRANT.
+//
+// # Dialects
+//
+// The lexical rules differ between the two dialects in ways that decide whether
+// a keyword is visible at all, so the dialect is a parameter rather than an
+// assumption:
+//
+//   - PostgreSQL nests block comments: `/* /* */ */` is one comment. MySQL does
+//     not. A reader that got this backwards would either think a statement
+//     resumed inside a comment, or think it ended inside one.
+//   - PostgreSQL has dollar-quoted strings (`$tag$ ... $tag$`) with no escaping
+//     inside at all, which is how a function body is written and the most
+//     effective place to hide text from a naive reader.
+//   - MySQL has `#` line comments and backtick-quoted identifiers.
+//   - **MySQL has executable comments.** `/*! SELECT 1 */` and
+//     `/*!80000 SELECT 1 */` are *code*, not comments: the server runs the
+//     contents when the version matches. A lexer that treated them as comments
+//     would miss every keyword inside one, which is exactly what they are used
+//     for. They are therefore unwrapped and lexed as the statement they are.
+//   - MySQL honours backslash escapes inside string literals by default;
+//     PostgreSQL has not since standard_conforming_strings became the default in
+//     9.1, so there `'\'` is a complete string containing one backslash.
+package sqlkind
+
+import "strings"
+
+type Dialect int
+
+// The dialects.
+const (
+	// PostgreSQL is the PostgreSQL lexical dialect.
+	PostgreSQL Dialect = iota
+	// MySQL is the MySQL and MariaDB dialect, which is also close enough to
+	// TDS's for the keywords that matter; TDS uses its own value so the
+	// difference can be made later without touching a policy.
+	MySQL
+	// TSQL is Microsoft's dialect: `--` and `/* */` comments that nest, and
+	// bracket-quoted identifiers.
+	TSQL
+)
+
+func (d Dialect) hashComments() bool     { return d == MySQL }
+func (d Dialect) nestsComments() bool    { return d == PostgreSQL || d == TSQL }
+func (d Dialect) dollarQuotes() bool     { return d == PostgreSQL }
+func (d Dialect) backticks() bool        { return d == MySQL }
+func (d Dialect) brackets() bool         { return d == TSQL }
+func (d Dialect) execComments() bool     { return d == MySQL }
+func (d Dialect) backslashEscapes() bool { return d == MySQL }
 
 // Kind is what a statement does, as far as its leading keyword says.
 type Kind string
@@ -128,6 +171,10 @@ const (
 	// superuser or pg_write_server_files and reads or writes the server's
 	// own filesystem.
 	CopyFile CopyTarget = "file"
+	// CopyLocal is MySQL's LOAD DATA LOCAL INFILE: the *client* reads a path
+	// and sends it, at the server's request. A compromised or hostile server
+	// asks for /etc/passwd or a private key and the client obeys.
+	CopyLocal CopyTarget = "local"
 	// CopyProgram is COPY ... FROM PROGRAM or TO PROGRAM: the server runs a
 	// shell command. This is remote code execution as the postgres user, and
 	// it is the reason COPY is classified in this much detail.
@@ -162,13 +209,13 @@ type Statement struct {
 // rather than classified, because the relay and the server would disagree about
 // where the statement ends, and disagreeing about that is how a statement gets
 // past a relay that read a different one.
-func Statements(text string, max int) (out []Statement, ok bool) {
-	parts, ok := split(text, max)
+func Statements(d Dialect, text string, max int) (out []Statement, ok bool) {
+	parts, ok := split(d, text, max)
 	if !ok {
 		return nil, false
 	}
 	for _, p := range parts {
-		out = append(out, classify(p))
+		out = append(out, classify(d, p))
 	}
 	if len(out) == 0 {
 		out = append(out, Statement{Kind: KindEmpty})
@@ -179,13 +226,14 @@ func Statements(text string, max int) (out []Statement, ok bool) {
 // split cuts text at top-level semicolons, skipping comments and every kind of
 // quoted region. The returned parts keep their original text, because the
 // classifier needs to look inside them.
-func split(text string, max int) ([]string, bool) {
+func split(d Dialect, text string, max int) ([]string, bool) {
 	var out []string
 	start := 0
 	i := 0
 	for i < len(text) {
 		switch {
-		case text[i] == '-' && i+1 < len(text) && text[i+1] == '-':
+		case text[i] == '-' && i+1 < len(text) && text[i+1] == '-',
+			d.hashComments() && text[i] == '#':
 			// Line comment to the end of the line, or the end of the text.
 			j := strings.IndexByte(text[i:], '\n')
 			if j < 0 {
@@ -194,24 +242,41 @@ func split(text string, max int) ([]string, bool) {
 				i += j + 1
 			}
 		case text[i] == '/' && i+1 < len(text) && text[i+1] == '*':
-			n, ok := blockComment(text, i)
+			if d.execComments() && execComment(text, i) {
+				// MySQL runs the contents of /*! ... */ and
+				// /*!nnnnn ... */. Skipping it as a comment would hide
+				// every keyword inside one, which is exactly what it is
+				// used for: `/*!50000 DROP TABLE t */` is a DROP.
+				i = skipExecOpen(text, i)
+				continue
+			}
+			n, ok := blockComment(d, text, i)
 			if !ok {
 				return nil, false
 			}
 			i = n
 		case text[i] == '\'':
-			n, ok := quoted(text, i, '\'')
+			n, ok := quoted(d, text, i, '\'')
 			if !ok {
 				return nil, false
 			}
 			i = n
-		case text[i] == '"':
-			n, ok := quoted(text, i, '"')
+		case text[i] == '"',
+			d.backticks() && text[i] == '`':
+			n, ok := quoted(d, text, i, text[i])
 			if !ok {
 				return nil, false
 			}
 			i = n
-		case text[i] == '$':
+		case d.brackets() && text[i] == '[':
+			// T-SQL quotes an identifier in brackets, and doubles the closer
+			// to escape it.
+			n, ok := quoted(d, text, i, ']')
+			if !ok {
+				return nil, false
+			}
+			i = n
+		case d.dollarQuotes() && text[i] == '$':
 			n, ok, isQuote := dollarQuote(text, i)
 			if !ok {
 				return nil, false
@@ -234,7 +299,7 @@ func split(text string, max int) ([]string, bool) {
 			i++
 		}
 	}
-	if tail := text[start:]; strings.TrimSpace(strip(tail)) != "" {
+	if tail := text[start:]; strings.TrimSpace(strip(d, tail)) != "" {
 		out = append(out, tail)
 	}
 	if max > 0 && len(out) > max {
@@ -244,7 +309,7 @@ func split(text string, max int) ([]string, bool) {
 	// least nothing: a message of only semicolons is an empty query.
 	kept := out[:0]
 	for _, p := range out {
-		if strings.TrimSpace(strip(p)) != "" {
+		if strings.TrimSpace(strip(d, p)) != "" {
 			kept = append(kept, p)
 		}
 	}
@@ -257,7 +322,7 @@ func split(text string, max int) ([]string, bool) {
 // and `/* /* */` is unterminated. A reader that stopped at the first `*/` would
 // think the statement resumed inside a comment, which is a place to hide a
 // keyword from exactly this classifier.
-func blockComment(text string, i int) (int, bool) {
+func blockComment(d Dialect, text string, i int) (int, bool) {
 	depth := 0
 	for i < len(text) {
 		switch {
@@ -267,7 +332,9 @@ func blockComment(text string, i int) (int, bool) {
 		case text[i] == '*' && i+1 < len(text) && text[i+1] == '/':
 			depth--
 			i += 2
-			if depth == 0 {
+			// MySQL does not nest: the first close ends the comment however
+			// many opens preceded it.
+			if depth == 0 || !d.nestsComments() {
 				return i, true
 			}
 		default:
@@ -291,9 +358,18 @@ func blockComment(text string, i int) (int, bool) {
 // differently from a server with escapes enabled; it is lexed as the standard
 // says, and the statement is refused rather than guessed at if that leaves the
 // text unterminated.
-func quoted(text string, i int, q byte) (int, bool) {
+func quoted(d Dialect, text string, i int, q byte) (int, bool) {
 	i++ // the opening quote
 	for i < len(text) {
+		// MySQL honours a backslash escape inside a string literal by default,
+		// so a backslash-quote does not end the string. PostgreSQL has not
+		// since 9.1, where the same two octets are a backslash then the
+		// closing quote -- read the wrong way round, a reader runs on into the
+		// next statement and decides about text the server never saw as one.
+		if d.backslashEscapes() && text[i] == '\\' && q != '`' && q != ']' {
+			i += 2
+			continue
+		}
 		if text[i] != q {
 			i++
 			continue
@@ -333,12 +409,13 @@ func dollarQuote(text string, i int) (next int, ok, isQuote bool) {
 // strip removes comments from a statement so the leading keyword can be read.
 // It keeps quoted regions, because a quoted identifier is part of the
 // statement.
-func strip(text string) string {
+func strip(d Dialect, text string) string {
 	var b strings.Builder
 	i := 0
 	for i < len(text) {
 		switch {
-		case text[i] == '-' && i+1 < len(text) && text[i+1] == '-':
+		case text[i] == '-' && i+1 < len(text) && text[i+1] == '-',
+			d.hashComments() && text[i] == '#':
 			j := strings.IndexByte(text[i:], '\n')
 			if j < 0 {
 				return b.String()
@@ -348,21 +425,37 @@ func strip(text string) string {
 			b.WriteByte(' ')
 			i += j + 1
 		case text[i] == '/' && i+1 < len(text) && text[i+1] == '*':
-			n, ok := blockComment(text, i)
+			if d.execComments() && execComment(text, i) {
+				// Unwrap it: the contents are code, so they are written out
+				// and lexed as part of the statement.
+				j := skipExecOpen(text, i)
+				end, ok := blockComment(d, text, i)
+				if !ok {
+					b.WriteString(text[j:])
+					return b.String()
+				}
+				b.WriteByte(' ')
+				b.WriteString(text[j : end-2])
+				b.WriteByte(' ')
+				i = end
+				continue
+			}
+			n, ok := blockComment(d, text, i)
 			if !ok {
 				return b.String()
 			}
 			b.WriteByte(' ')
 			i = n
-		case text[i] == '\'' || text[i] == '"':
-			n, ok := quoted(text, i, text[i])
+		case text[i] == '\'' || text[i] == '"' ||
+			(d.backticks() && text[i] == '`'):
+			n, ok := quoted(d, text, i, text[i])
 			if !ok {
 				b.WriteString(text[i:])
 				return b.String()
 			}
 			b.WriteString(text[i:n])
 			i = n
-		case text[i] == '$':
+		case d.dollarQuotes() && text[i] == '$':
 			n, ok, isQuote := dollarQuote(text, i)
 			if !ok {
 				b.WriteString(text[i:])
@@ -389,7 +482,7 @@ func isDigit(c byte) bool { return c >= '0' && c <= '9' }
 // words returns the upper-cased keywords of a stripped statement, outside
 // quotes, up to a handful -- enough to recognise EXPLAIN ANALYZE and a data
 // modifying CTE without walking a long statement twice.
-func words(stripped string, max int) []string {
+func words(d Dialect, stripped string, max int) []string {
 	var out []string
 	i := 0
 	for i < len(stripped) && len(out) < max {
@@ -402,13 +495,13 @@ func words(stripped string, max int) []string {
 			}
 			out = append(out, strings.ToUpper(stripped[i:j]))
 			i = j
-		case c == '\'' || c == '"':
-			n, ok := quoted(stripped, i, c)
+		case c == '\'' || c == '"' || (d.backticks() && c == '`'):
+			n, ok := quoted(d, stripped, i, c)
 			if !ok {
 				return out
 			}
 			i = n
-		case c == '$':
+		case d.dollarQuotes() && c == '$':
 			n, ok, isQuote := dollarQuote(stripped, i)
 			if !ok || !isQuote {
 				i++
@@ -422,11 +515,19 @@ func words(stripped string, max int) []string {
 	return out
 }
 
-// leadingKinds maps a statement's first keyword to its kind.
+// leadingKinds maps a statement's first keyword to its kind, for the keywords
+// both dialects share.
+//
+// The dialect-specific tables are separate rather than merged, and that matters:
+// `FLUSH PRIVILEGES` is a MySQL statement and a PostgreSQL syntax error, so a
+// shared table would make the PostgreSQL relay classify it as an ordinary
+// maintenance statement -- which a policy might allow -- instead of `unknown`,
+// which a policy always refuses. Merging the tables would make each dialect's
+// relay *less* strict by exactly the other dialect's vocabulary.
 var leadingKinds = map[string]Kind{
 	"SELECT": KindSelect, "TABLE": KindSelect, "VALUES": KindSelect,
 	"INSERT": KindInsert, "UPDATE": KindUpdate, "DELETE": KindDelete,
-	"MERGE": KindMerge, "COPY": KindCopy, "CALL": KindCall, "DO": KindDo,
+	"MERGE": KindMerge, "CALL": KindCall, "DO": KindDo,
 	"SET": KindSet, "SHOW": KindShow, "RESET": KindReset,
 	"BEGIN": KindBegin, "START": KindBegin,
 	"COMMIT": KindCommit, "END": KindCommit,
@@ -435,13 +536,63 @@ var leadingKinds = map[string]Kind{
 	"PREPARE": KindPrepare, "EXECUTE": KindExecute, "DEALLOCATE": KindDeallocate,
 	"DECLARE": KindDeclare, "FETCH": KindFetch, "MOVE": KindMove,
 	"CLOSE": KindCloseC, "EXPLAIN": KindExplain,
-	"LISTEN": KindListen, "NOTIFY": KindNotify, "UNLISTEN": KindUnlisten,
 	"CREATE": KindDDL, "ALTER": KindDDL, "DROP": KindDDL, "TRUNCATE": KindDDL,
-	"COMMENT": KindDDL, "REINDEX": KindDDL, "CLUSTER": KindDDL,
-	"REFRESH": KindDDL, "IMPORT": KindDDL, "SECURITY": KindDDL,
+	"COMMENT": KindDDL, "REINDEX": KindDDL, "RENAME": KindDDL,
 	"GRANT": KindGrant, "REVOKE": KindGrant,
-	"VACUUM": KindMaintenance, "ANALYZE": KindMaintenance, "ANALYSE": KindMaintenance,
-	"CHECKPOINT": KindMaintenance, "DISCARD": KindMaintenance, "LOAD": KindMaintenance,
+	"ANALYZE": KindMaintenance, "ANALYSE": KindMaintenance,
+}
+
+// pgKinds are the keywords only PostgreSQL has.
+var pgKinds = map[string]Kind{
+	"COPY": KindCopy, "LISTEN": KindListen, "NOTIFY": KindNotify,
+	"UNLISTEN": KindUnlisten, "CLUSTER": KindDDL, "REFRESH": KindDDL,
+	"IMPORT": KindDDL, "SECURITY": KindDDL, "VACUUM": KindMaintenance,
+	"CHECKPOINT": KindMaintenance, "DISCARD": KindMaintenance,
+	"LOAD": KindMaintenance,
+}
+
+// myKinds are the keywords only MySQL and MariaDB have.
+//
+// LOAD is KindCopy rather than maintenance because `LOAD DATA [LOCAL] INFILE`
+// is the bulk data path, and the LOCAL form asks the *client* to read a file
+// and send it -- which is how a hostile or compromised server reads the
+// filesystem of whatever connected to it.
+var myKinds = map[string]Kind{
+	"LOAD": KindCopy, "REPLACE": KindInsert, "HANDLER": KindSelect,
+	"DESCRIBE": KindShow, "DESC": KindShow, "USE": KindSet,
+	"FLUSH": KindMaintenance, "OPTIMIZE": KindMaintenance, "REPAIR": KindMaintenance,
+	"CHECK": KindMaintenance, "CHECKSUM": KindMaintenance, "KILL": KindMaintenance,
+	"PURGE": KindMaintenance, "BINLOG": KindMaintenance, "CACHE": KindMaintenance,
+	"STOP": KindMaintenance, "SHUTDOWN": KindMaintenance, "RESTART": KindMaintenance,
+	"INSTALL": KindDDL, "UNINSTALL": KindDDL, "CHANGE": KindDDL,
+	"SIGNAL": KindCall, "RESIGNAL": KindCall, "XA": KindTransactionAdmin,
+}
+
+// tsqlKinds are the keywords only Microsoft's dialect has.
+var tsqlKinds = map[string]Kind{
+	"EXEC": KindExecute, "GO": KindEmpty, "USE": KindSet,
+	"BULK": KindCopy, "PRINT": KindSelect, "RAISERROR": KindCall,
+	"THROW": KindCall, "BACKUP": KindMaintenance, "RESTORE": KindMaintenance,
+	"DBCC": KindMaintenance, "KILL": KindMaintenance, "SHUTDOWN": KindMaintenance,
+	"DENY": KindGrant, "WAITFOR": KindMaintenance,
+}
+
+// kindOfWord resolves a keyword in one dialect.
+func kindOfWord(d Dialect, w string) (Kind, bool) {
+	var extra map[string]Kind
+	switch d {
+	case PostgreSQL:
+		extra = pgKinds
+	case MySQL:
+		extra = myKinds
+	case TSQL:
+		extra = tsqlKinds
+	}
+	if k, ok := extra[w]; ok {
+		return k, true
+	}
+	k, ok := leadingKinds[w]
+	return k, ok
 }
 
 // writingKinds are the kinds that can change data. CALL and DO are here because
@@ -455,9 +606,9 @@ var writingKinds = map[Kind]bool{
 }
 
 // classify names one statement.
-func classify(text string) Statement {
-	stripped := strip(text)
-	w := words(stripped, 24)
+func classify(d Dialect, text string) Statement {
+	stripped := strip(d, text)
+	w := words(d, stripped, 24)
 	if len(w) == 0 {
 		return Statement{Kind: KindEmpty}
 	}
@@ -470,7 +621,7 @@ func classify(text string) Statement {
 		// wrong in.
 		st.Kind = KindSelect
 		for _, k := range w[1:] {
-			if kd, ok := leadingKinds[k]; ok && writingKinds[kd] {
+			if kd, ok := kindOfWord(d, k); ok && writingKinds[kd] {
 				st.Kind = kd
 				break
 			}
@@ -486,7 +637,7 @@ func classify(text string) Statement {
 				if k == "ANALYZE" || k == "ANALYSE" {
 					continue
 				}
-				if kd, ok := leadingKinds[k]; ok && writingKinds[kd] {
+				if kd, ok := kindOfWord(d, k); ok && writingKinds[kd] {
 					st.Kind = kd
 					break
 				}
@@ -504,7 +655,7 @@ func classify(text string) Statement {
 			st.Kind = KindTransactionAdmin
 		}
 	default:
-		kd, ok := leadingKinds[w[0]]
+		kd, ok := kindOfWord(d, w[0])
 		if !ok {
 			return Statement{Kind: KindUnknown, Verb: st.Verb, Writes: true}
 		}
@@ -525,6 +676,21 @@ func classify(text string) Statement {
 func copyTarget(w []string) CopyTarget {
 	if hasWord(w, "PROGRAM") {
 		return CopyProgram
+	}
+	// MySQL's LOAD DATA LOCAL INFILE is its own hazard and its own target.
+	// The server sends a packet asking the *client* to open a path and send
+	// it, and the client obeys if local_infile is on -- which it is by
+	// default in several drivers. That is a server reading the filesystem of
+	// whatever connected to it, and it is the reason `local` is a target a
+	// policy can name and refuse.
+	if hasWord(w, "LOAD") {
+		switch {
+		case hasWord(w, "LOCAL"):
+			return CopyLocal
+		case hasWord(w, "INFILE"):
+			return CopyFile
+		}
+		return CopyFile
 	}
 	switch {
 	case hasWord(w, "STDIN"):
@@ -581,4 +747,37 @@ func KindNames() []string {
 		out = append(out, string(k))
 	}
 	return out
+}
+
+// MaxVerb bounds the leading keyword kept for a log line. It came off the
+// network, so it is clipped here rather than at each reader.
+const MaxVerb = 64
+
+// Clip bounds a peer-chosen string.
+func Clip(s string) string {
+	if len(s) <= MaxVerb {
+		return s
+	}
+	return s[:MaxVerb] + "..."
+}
+
+// execComment says whether a /* at i opens a MySQL executable comment.
+//
+// `/*!` and `/*!nnnnn` are not comments: the server executes what is inside
+// when the version matches, and `/*!` with no number executes unconditionally.
+// They exist so that a dump can carry MySQL-only syntax past other servers, and
+// they are the single most effective way to hide a keyword from a reader that
+// skips comments. `/*+ hint */` is an optimiser hint and *is* skipped, because
+// it cannot carry a statement.
+func execComment(text string, i int) bool {
+	return i+2 < len(text) && text[i+2] == '!'
+}
+
+// skipExecOpen returns the index just past `/*!` and any version digits.
+func skipExecOpen(text string, i int) int {
+	j := i + 3 // past the /*!
+	for j < len(text) && isDigit(text[j]) {
+		j++
+	}
+	return j
 }

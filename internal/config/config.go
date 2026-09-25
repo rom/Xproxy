@@ -296,6 +296,8 @@ type Listener struct {
 	TFTP *TFTPListener `yaml:"tftp"`
 	// Postgres is the kind: postgres section.
 	Postgres *PostgresListener `yaml:"postgres"`
+	// MySQL is the kind: mysql section.
+	MySQL *MySQLListener `yaml:"mysql"`
 	// DHCP configures a kind: dhcp listener.
 	DHCP *DHCPListener `yaml:"dhcp"`
 	// Policy is whether this listener enforces its policy or only
@@ -1016,6 +1018,176 @@ type LDAPRule struct {
 // There is nothing to authenticate with in this protocol, so the whole of
 // the policy is the address it came from, the direction of the transfer,
 // the path it asked for and the size of what comes back.
+// MySQLListener is the settings of a kind: mysql listener: a relay in front of a
+// MySQL or MariaDB server.
+//
+// PostgreSQL's dangerous operations are statements, so a statement policy reaches
+// them all. MySQL's are **commands** -- one octet each, with no SQL involved --
+// and that is why this section has an `allow_commands` list where the postgres
+// one does not. COM_SHUTDOWN is one octet and stops the server; the three
+// replication commands are a copy of every change to every database;
+// COM_CREATE_DB and COM_DROP_DB predate the DDL statements and bypass any
+// statement policy entirely.
+//
+// The other MySQL-specific move is `deny_capabilities`, which *strips* bits from
+// the server's greeting rather than refusing the connection. A client that never
+// sees CLIENT_LOCAL_FILES offered cannot negotiate it, so the server can never
+// ask that client for a file -- and the application still works. Refusing
+// instead would mean everything on the segment breaks until somebody
+// reconfigures a driver, which is how a security control gets turned off.
+type MySQLListener struct {
+	// Upstream is the server pool. Required.
+	Upstream string `yaml:"upstream"`
+	// AllowClients and DenyClients are the networks a client may connect from.
+	// Deny is evaluated first.
+	AllowClients []string `yaml:"allow_clients"`
+	DenyClients  []string `yaml:"deny_clients"`
+
+	// RequireTLS refuses a client that does not set CLIENT_SSL. Default true.
+	//
+	// The negotiation is a capability flag and nothing signs the server's
+	// greeting, so anything on the path can clear CLIENT_SSL from the
+	// advertised capabilities and the client will never ask. This is
+	// PostgreSQL's SSLRequest problem with a different encoding, and it gets
+	// the same answer: the relay decides, not the octets.
+	RequireTLS *bool `yaml:"require_tls"`
+	// UpstreamTLSMode is how the relay speaks to the server: require (the
+	// default), prefer or disable.
+	UpstreamTLSMode string `yaml:"upstream_tls_mode"`
+	// UpstreamTLS is the certificate and verification settings for that leg.
+	UpstreamTLS *UpstreamTLS `yaml:"upstream_tls"`
+
+	// AllowUsers, DenyUsers, AllowDatabases and DenyDatabases are the identity
+	// claims a connection may make. They are re-checked on COM_CHANGE_USER,
+	// which re-authenticates a live connection as somebody else -- a relay that
+	// did not would have a user policy that applied to the first message and
+	// nothing after it.
+	AllowUsers     []string `yaml:"allow_users"`
+	DenyUsers      []string `yaml:"deny_users"`
+	AllowDatabases []string `yaml:"allow_databases"`
+	DenyDatabases  []string `yaml:"deny_databases"`
+
+	// AllowAuth is the allow list of authentication plugins, named as the
+	// server names them: caching_sha2_password, mysql_native_password,
+	// sha256_password, mysql_clear_password, mysql_old_password. Empty allows
+	// any that is not weak.
+	AllowAuth []string `yaml:"allow_auth"`
+	// AllowWeakAuth permits mysql_clear_password (the password itself) and
+	// mysql_old_password (the pre-4.1 scramble, removed from the server in
+	// 5.7). Default false.
+	//
+	// mysql_native_password is deliberately not in that set: its
+	// challenge-response discloses no reusable secret, and treating it as weak
+	// would make this setting one operators turn off wholesale.
+	AllowWeakAuth bool `yaml:"allow_weak_auth"`
+
+	// AllowCommands is the allow list of protocol commands. Empty allows what
+	// an application driver sends and nothing administrative: query,
+	// stmt_prepare, stmt_execute, stmt_send_long_data, stmt_close, stmt_reset,
+	// stmt_fetch, init_db, ping, quit, statistics, reset_connection,
+	// set_option and change_user.
+	//
+	// The absences are the point: shutdown, debug, process_kill, the three
+	// replication commands, table_dump, create_db, drop_db, refresh,
+	// process_info, clone and field_list are all off unless named.
+	AllowCommands []string `yaml:"allow_commands"`
+	// DenyCommands is the deny list, which no rule can override.
+	DenyCommands []string `yaml:"deny_commands"`
+
+	// DenyCapabilities are the capability bits stripped from the server's
+	// greeting so a client cannot negotiate them. Empty strips local_files,
+	// multi_statements and compress.
+	//
+	// local_files lets the server ask the *client* to open a path and send its
+	// contents, which is how a hostile server reads the filesystem of whatever
+	// connected to it. multi_statements lets one query carry several statements
+	// separated by semicolons, which is how every injection ending in
+	// `; DROP TABLE` is delivered. compress hides the protocol from the relay
+	// -- and from everything else that inspects it.
+	//
+	// `ssl` cannot be named here: stripping it would be performing the
+	// downgrade this kind exists to prevent.
+	DenyCapabilities []string `yaml:"deny_capabilities"`
+
+	// ReadOnly refuses every statement that can change data, including call and
+	// do.
+	ReadOnly bool `yaml:"read_only"`
+	// AllowStatements and DenyStatements are the statement kinds, as the
+	// postgres kind names them. A statement the classifier cannot name is
+	// refused whatever this says.
+	AllowStatements []string `yaml:"allow_statements"`
+	DenyStatements  []string `yaml:"deny_statements"`
+	// AllowLoad names which LOAD DATA forms may cross: `file` (a path on the
+	// server) or `local` (a path on the *client*). Empty allows neither, which
+	// is the right default: bulk loading is a job, not something an
+	// application connection does by accident.
+	AllowLoad []string `yaml:"allow_load"`
+
+	// MaxStatements bounds statements per query message. Default 1, because
+	// multi_statements is stripped by default and a message carrying more than
+	// one when the capability was refused is a client working around the
+	// policy.
+	MaxStatements int `yaml:"max_statements"`
+	// MaxStatementBytes bounds one statement. Default 64 KiB.
+	MaxStatementBytes int `yaml:"max_statement_bytes"`
+	// MaxMessageBytes bounds one reassembled message. Default 1 MiB. The
+	// protocol has no bound at all: a sender may chain 16 MiB packets for ever.
+	MaxMessageBytes int `yaml:"max_message_bytes"`
+	// MaxSessions and MaxSessionsPerClient bound concurrent connections.
+	MaxSessions          int `yaml:"max_sessions"`
+	MaxSessionsPerClient int `yaml:"max_sessions_per_client"`
+	// IdleTimeout, SessionDuration and HandshakeTimeout bound a connection.
+	IdleTimeout      Duration `yaml:"idle_timeout"`
+	SessionDuration  Duration `yaml:"session_duration"`
+	HandshakeTimeout Duration `yaml:"handshake_timeout"`
+
+	// AllowPrograms matches the client's `program_name` connection attribute,
+	// with a trailing * allowed. It is chosen by the client and is not a
+	// credential; it is useful for telling a migration tool from a reporting
+	// dashboard when both connect as the same user.
+	AllowPrograms []string `yaml:"allow_programs"`
+
+	// Rules narrow or widen the listener for traffic that matches them.
+	Rules []MySQLRule `yaml:"rules"`
+	// DefaultAction is allow or deny when no rule matched. Default deny.
+	DefaultAction string `yaml:"default_action"`
+	// DenyResponse is error (the default: an error packet the client's own
+	// library reports) or drop.
+	DenyResponse string `yaml:"deny_response"`
+	// MonitorOnly evaluates and enforces nothing, except the hard decisions:
+	// the client list, the TLS requirement, the authentication plugins, a
+	// command or statement the relay could not read, a replication command, a
+	// LOAD DATA LOCAL the capability forbids, and the capability stripping
+	// itself -- which is not a refusal at all, so there is nothing to shadow.
+	MonitorOnly bool `yaml:"monitor_only"`
+}
+
+// MySQLRule is one rule of a mysql listener's policy.
+type MySQLRule struct {
+	// Name identifies the rule in logs and counters.
+	Name string `yaml:"name"`
+	// Clients, Users, Databases and Programs select the traffic. Programs
+	// matches the client's `program_name` connection attribute, with a
+	// trailing * allowed.
+	Clients   []string `yaml:"clients"`
+	Users     []string `yaml:"users"`
+	Databases []string `yaml:"databases"`
+	Programs  []string `yaml:"programs"`
+	// Schedule is when this rule allows what it allows.
+	Schedule *ModbusSchedule `yaml:"schedule"`
+	// Action is allow (the default), deny or observe.
+	Action string `yaml:"action"`
+	// The rule's own narrowing. A rule that names a command or a statement kind
+	// widens the listener for its own traffic; the deny lists always win.
+	AllowCommands   []string `yaml:"allow_commands"`
+	DenyCommands    []string `yaml:"deny_commands"`
+	AllowStatements []string `yaml:"allow_statements"`
+	DenyStatements  []string `yaml:"deny_statements"`
+	AllowLoad       []string `yaml:"allow_load"`
+	ReadOnly        *bool    `yaml:"read_only"`
+	MaxStatements   int      `yaml:"max_statements"`
+}
+
 // PostgresListener is the settings of a kind: postgres listener: a relay in
 // front of a PostgreSQL server that reads the frontend/backend protocol.
 //

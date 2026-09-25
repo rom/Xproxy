@@ -1,4 +1,4 @@
-package pgwire
+package sqlkind
 
 import "testing"
 
@@ -66,7 +66,7 @@ func TestAStatementIsClassifiedByItsShapeAndNotItsSpelling(t *testing.T) {
 		{"FLUSH PRIVILEGES", KindUnknown},
 		{"\\du", KindUnknown},
 	} {
-		got, ok := Statements(tc.sql, 0)
+		got, ok := Statements(PostgreSQL, tc.sql, 0)
 		if !ok {
 			t.Errorf("%q: would not lex", tc.sql)
 			continue
@@ -95,7 +95,7 @@ func TestADataModifyingCTEIsAWrite(t *testing.T) {
 		{"WITH x AS (UPDATE t SET a = 1 RETURNING *) SELECT * FROM x", KindUpdate},
 		{"with recursive x as (select 1) select * from x", KindSelect},
 	} {
-		got, ok := Statements(tc.sql, 0)
+		got, ok := Statements(PostgreSQL, tc.sql, 0)
 		if !ok || len(got) != 1 {
 			t.Fatalf("%q: %v %d", tc.sql, ok, len(got))
 		}
@@ -123,7 +123,7 @@ func TestExplainAnalyzeIsTheStatementItRuns(t *testing.T) {
 		{"EXPLAIN ANALYSE INSERT INTO t VALUES (1)", KindInsert},
 		{"explain (analyze true) update t set a = 1", KindUpdate},
 	} {
-		got, ok := Statements(tc.sql, 0)
+		got, ok := Statements(PostgreSQL, tc.sql, 0)
 		if !ok || len(got) != 1 {
 			t.Fatalf("%q: %v", tc.sql, ok)
 		}
@@ -149,7 +149,7 @@ func TestCopyIsClassifiedByWhereItMovesDataTo(t *testing.T) {
 		{"COPY t TO PROGRAM 'sh -c whoami'", CopyProgram},
 		{"copy t from program 'id'", CopyProgram},
 	} {
-		got, ok := Statements(tc.sql, 0)
+		got, ok := Statements(PostgreSQL, tc.sql, 0)
 		if !ok || len(got) != 1 {
 			t.Fatalf("%q: %v", tc.sql, ok)
 		}
@@ -166,7 +166,7 @@ func TestCopyIsClassifiedByWhereItMovesDataTo(t *testing.T) {
 // relay that classified only the first statement would have a policy one
 // semicolon wide.
 func TestEveryStatementInAMessageIsClassified(t *testing.T) {
-	got, ok := Statements("SELECT 1; DROP TABLE users", 0)
+	got, ok := Statements(PostgreSQL, "SELECT 1; DROP TABLE users", 0)
 	if !ok {
 		t.Fatal("would not lex")
 	}
@@ -180,7 +180,7 @@ func TestEveryStatementInAMessageIsClassified(t *testing.T) {
 		"SELECT 1 /* ; DROP TABLE t */",
 		"DO $$ BEGIN PERFORM 1; PERFORM 2; END $$",
 	} {
-		got, ok = Statements(sql, 0)
+		got, ok = Statements(PostgreSQL, sql, 0)
 		if !ok {
 			t.Errorf("%q: would not lex", sql)
 			continue
@@ -190,10 +190,10 @@ func TestEveryStatementInAMessageIsClassified(t *testing.T) {
 		}
 	}
 	// Trailing and doubled semicolons are not empty statements.
-	if got, ok = Statements("SELECT 1;;;", 0); !ok || len(got) != 1 {
+	if got, ok = Statements(PostgreSQL, "SELECT 1;;;", 0); !ok || len(got) != 1 {
 		t.Fatalf("trailing: %v %+v", ok, got)
 	}
-	if got, ok = Statements(";;", 0); !ok || len(got) != 1 || got[0].Kind != KindEmpty {
+	if got, ok = Statements(PostgreSQL, ";;", 0); !ok || len(got) != 1 || got[0].Kind != KindEmpty {
 		t.Fatalf("only semicolons: %v %+v", ok, got)
 	}
 }
@@ -210,7 +210,7 @@ func TestTextThatCannotBeLexedIsRefusedRatherThanGuessed(t *testing.T) {
 		"DO $$ unterminated",
 		"DO $tag$ unterminated $nottag$",
 	} {
-		if _, ok := Statements(sql, 0); ok {
+		if _, ok := Statements(PostgreSQL, sql, 0); ok {
 			t.Errorf("%q: lexed anyway", sql)
 		}
 	}
@@ -218,10 +218,10 @@ func TestTextThatCannotBeLexedIsRefusedRatherThanGuessed(t *testing.T) {
 
 // The statement count is a number the client chooses.
 func TestTooManyStatementsIsRefused(t *testing.T) {
-	if _, ok := Statements("SELECT 1; SELECT 2; SELECT 3", 2); ok {
+	if _, ok := Statements(PostgreSQL, "SELECT 1; SELECT 2; SELECT 3", 2); ok {
 		t.Fatal("three statements accepted with a bound of two")
 	}
-	if _, ok := Statements("SELECT 1; SELECT 2", 2); !ok {
+	if _, ok := Statements(PostgreSQL, "SELECT 1; SELECT 2", 2); !ok {
 		t.Fatal("two statements refused by a bound of two")
 	}
 }
@@ -230,7 +230,7 @@ func TestTooManyStatementsIsRefused(t *testing.T) {
 // halves of a keyword somebody split on purpose.
 func TestACommentIsWhitespaceAndNotNothing(t *testing.T) {
 	for _, sql := range []string{"SEL/**/ECT 1", "SEL--x\nECT 1", "DR/**/OP TABLE t"} {
-		got, ok := Statements(sql, 0)
+		got, ok := Statements(PostgreSQL, sql, 0)
 		if !ok {
 			t.Fatalf("%q: would not lex", sql)
 		}
@@ -244,7 +244,7 @@ func TestACommentIsWhitespaceAndNotNothing(t *testing.T) {
 // read_only setting and an allow list of kinds both refuse it without an
 // operator having to think about the unknown case at all.
 func TestAnUnknownStatementCountsAsAWrite(t *testing.T) {
-	got, ok := Statements("FLUSH PRIVILEGES", 0)
+	got, ok := Statements(PostgreSQL, "FLUSH PRIVILEGES", 0)
 	if !ok {
 		t.Fatal("would not lex")
 	}
@@ -268,7 +268,7 @@ func TestTheTwoPhaseStatementsAreTheirOwnKind(t *testing.T) {
 		{"ROLLBACK", KindRollback},
 		{"ROLLBACK PREPARED 'x'", KindTransactionAdmin},
 	} {
-		got, ok := Statements(tc.sql, 0)
+		got, ok := Statements(PostgreSQL, tc.sql, 0)
 		if !ok || got[0].Kind != tc.want {
 			t.Errorf("%q: %s, want %s", tc.sql, got[0].Kind, tc.want)
 		}
@@ -296,5 +296,180 @@ func TestAKindIsNamedTheWayAConfigurationWritesIt(t *testing.T) {
 	}
 	if len(KindNames()) != len(Kinds()) {
 		t.Error("the names and the kinds disagree")
+	}
+}
+
+// MySQL's executable comments are the single best place to hide a keyword from a
+// reader that skips comments, because the server *runs* what is inside them.
+func TestAMySQLExecutableCommentIsCodeAndNotAComment(t *testing.T) {
+	for _, tc := range []struct {
+		sql  string
+		want Kind
+	}{
+		// /*! ... */ runs unconditionally; /*!nnnnn ... */ runs when the
+		// server is at least that version. Both are code.
+		{"/*! DROP TABLE t */", KindDDL},
+		{"/*!50000 DROP TABLE t */", KindDDL},
+		{"/*!80000 SELECT 1 */", KindSelect},
+		{"SELECT 1 /*! ; DROP TABLE t */", KindSelect}, // two statements; see below
+		// An ordinary comment is still a comment, and an optimiser hint
+		// cannot carry a statement.
+		{"/* DROP TABLE t */ SELECT 1", KindSelect},
+		{"/*+ MAX_EXECUTION_TIME(1000) */ SELECT 1", KindSelect},
+	} {
+		got, ok := Statements(MySQL, tc.sql, 0)
+		if !ok {
+			t.Errorf("%q: would not lex", tc.sql)
+			continue
+		}
+		if got[0].Kind != tc.want {
+			t.Errorf("%q: %s, want %s", tc.sql, got[0].Kind, tc.want)
+		}
+	}
+	// A semicolon inside an executable comment really does separate two
+	// statements, because the contents are code.
+	got, ok := Statements(MySQL, "SELECT 1 /*! ; DROP TABLE t */", 0)
+	if !ok {
+		t.Fatal("would not lex")
+	}
+	if len(got) != 2 || got[1].Kind != KindDDL {
+		t.Fatalf("a drop hidden in an executable comment: %+v", got)
+	}
+	// And in PostgreSQL the same text is a comment, because PostgreSQL has no
+	// such thing -- so the dialect has to be right.
+	if got, ok = Statements(PostgreSQL, "/*! DROP TABLE t */ SELECT 1", 0); !ok ||
+		len(got) != 1 || got[0].Kind != KindSelect {
+		t.Fatalf("postgres read an executable comment as code: %+v", got)
+	}
+}
+
+// The dialects differ on whether a block comment nests, and getting it backwards
+// means either resuming inside a comment or ending inside one.
+func TestBlockCommentsNestInPostgresAndNotInMySQL(t *testing.T) {
+	// `/* /* */ SELECT 1` : one comment in MySQL (closed at the first */),
+	// leaving `SELECT 1`. In PostgreSQL it is unterminated.
+	if got, ok := Statements(MySQL, "/* /* */ SELECT 1", 0); !ok || got[0].Kind != KindSelect {
+		t.Errorf("mysql: %v %+v", ok, got)
+	}
+	if _, ok := Statements(PostgreSQL, "/* /* */ SELECT 1", 0); ok {
+		t.Error("postgres lexed an unterminated nested comment")
+	}
+	// And `/* /* */ */ SELECT 1` is one comment in PostgreSQL.
+	if got, ok := Statements(PostgreSQL, "/* /* */ */ SELECT 1", 0); !ok || got[0].Kind != KindSelect {
+		t.Errorf("postgres: %v %+v", ok, got)
+	}
+}
+
+// MySQL has # line comments and backtick identifiers; PostgreSQL has neither.
+func TestTheMySQLOnlyLexicalRules(t *testing.T) {
+	for _, tc := range []struct {
+		sql  string
+		want Kind
+	}{
+		{"# a comment\nSELECT 1", KindSelect},
+		{"SELECT 1 # ; DROP TABLE t", KindSelect},
+		{"SELECT `DROP`", KindSelect},
+		{"SELECT `a;b`", KindSelect},
+		{"DROP TABLE `t`", KindDDL},
+	} {
+		got, ok := Statements(MySQL, tc.sql, 0)
+		if !ok {
+			t.Errorf("%q: would not lex", tc.sql)
+			continue
+		}
+		if len(got) != 1 || got[0].Kind != tc.want {
+			t.Errorf("%q: %+v, want %s", tc.sql, got, tc.want)
+		}
+	}
+	// A backslash escapes a quote in MySQL, so the string does not end there.
+	// Reading it the other way, a reader runs on into the next statement and
+	// decides about text the server never saw as one.
+	if got, ok := Statements(MySQL, `SELECT 'a\'; DROP TABLE t'`, 0); !ok || len(got) != 1 {
+		t.Errorf("mysql backslash escape: %v %+v", ok, got)
+	}
+	// In PostgreSQL the same two octets are a backslash then the closing
+	// quote, so it really is two statements.
+	if got, ok := Statements(PostgreSQL, `SELECT 'a\'; DROP TABLE t'`, 0); ok && len(got) == 1 {
+		t.Errorf("postgres treated a backslash as an escape: %+v", got)
+	}
+}
+
+// MySQL's LOAD DATA is its COPY, and the LOCAL form points at the client.
+func TestLoadDataIsClassifiedAndTheLocalFormIsItsOwnTarget(t *testing.T) {
+	for _, tc := range []struct {
+		sql  string
+		want CopyTarget
+	}{
+		{"LOAD DATA INFILE '/tmp/x' INTO TABLE t", CopyFile},
+		{"LOAD DATA LOCAL INFILE '/etc/passwd' INTO TABLE t", CopyLocal},
+		{"load data local infile '/x' into table t", CopyLocal},
+	} {
+		got, ok := Statements(MySQL, tc.sql, 0)
+		if !ok || got[0].Kind != KindCopy {
+			t.Errorf("%q: %v %+v", tc.sql, ok, got)
+			continue
+		}
+		if got[0].Copy != tc.want {
+			t.Errorf("%q: %s, want %s", tc.sql, got[0].Copy, tc.want)
+		}
+		if !got[0].Writes {
+			t.Errorf("%q: not counted as a write", tc.sql)
+		}
+	}
+	// And in PostgreSQL, LOAD is the extension loader rather than a data path,
+	// so it must not be read as a copy.
+	if got, ok := Statements(PostgreSQL, "LOAD 'auto_explain'", 0); !ok || got[0].Kind == KindCopy {
+		t.Errorf("postgres read LOAD as a copy: %+v", got)
+	}
+}
+
+// A keyword one dialect has and the other does not must be unknown in the other,
+// or that dialect's relay is less strict by exactly the other's vocabulary.
+func TestAKeywordFromTheWrongDialectIsUnknown(t *testing.T) {
+	for _, tc := range []struct {
+		d    Dialect
+		sql  string
+		want Kind
+	}{
+		{PostgreSQL, "FLUSH PRIVILEGES", KindUnknown},
+		{MySQL, "FLUSH PRIVILEGES", KindMaintenance},
+		{PostgreSQL, "OPTIMIZE TABLE t", KindUnknown},
+		{MySQL, "OPTIMIZE TABLE t", KindMaintenance},
+		{PostgreSQL, "REPLACE INTO t VALUES (1)", KindUnknown},
+		{MySQL, "REPLACE INTO t VALUES (1)", KindInsert},
+		{MySQL, "VACUUM FULL", KindUnknown},
+		{PostgreSQL, "VACUUM FULL", KindMaintenance},
+		{MySQL, "LISTEN c", KindUnknown},
+		{PostgreSQL, "LISTEN c", KindListen},
+		{MySQL, "COPY t FROM STDIN", KindUnknown},
+		{PostgreSQL, "COPY t FROM STDIN", KindCopy},
+	} {
+		got, ok := Statements(tc.d, tc.sql, 0)
+		if !ok {
+			t.Errorf("%q: would not lex", tc.sql)
+			continue
+		}
+		if got[0].Kind != tc.want {
+			t.Errorf("dialect %d %q: %s, want %s", tc.d, tc.sql, got[0].Kind, tc.want)
+		}
+	}
+}
+
+// T-SQL brackets an identifier, and doubles the closer to escape it.
+func TestTSQLBracketsAnIdentifier(t *testing.T) {
+	for _, tc := range []struct {
+		sql  string
+		want Kind
+	}{
+		{"SELECT [DROP]", KindSelect},
+		{"SELECT [a;b]", KindSelect},
+		{"DROP TABLE [t]", KindDDL},
+		{"EXEC sp_who", KindExecute},
+		{"BACKUP DATABASE x TO DISK = 'y'", KindMaintenance},
+	} {
+		got, ok := Statements(TSQL, tc.sql, 0)
+		if !ok || len(got) != 1 || got[0].Kind != tc.want {
+			t.Errorf("%q: %v %+v, want %s", tc.sql, ok, got, tc.want)
+		}
 	}
 }

@@ -442,6 +442,107 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **`kind: mysql`: a MySQL and MariaDB relay, on the protocol where the dangerous
+  things are commands.** PostgreSQL's hazards are all statements, so a statement
+  policy reaches them all. MySQL's are commands -- one octet each, with no SQL
+  involved -- and that is the fact everything else follows from.
+
+  `COM_SHUTDOWN` is one octet and stops the server. `COM_BINLOG_DUMP`,
+  `COM_BINLOG_DUMP_GTID` and `COM_REGISTER_SLAVE` open a stream of every change
+  to every database. `COM_TABLE_DUMP` is a whole table in one command.
+  `COM_PROCESS_KILL` ends somebody else's query. `COM_DEBUG` writes the server's
+  internals to its error log. `COM_CREATE_DB` and `COM_DROP_DB` predate the DDL
+  statements and bypass a statement policy entirely. **A relay that only
+  classified SQL would never see one of them**, so this kind has an
+  `allow_commands` list that the postgres kind has no equivalent of, defaulting
+  to the fourteen an application driver sends and nothing administrative. The
+  replication commands are refused *hard*, so shadow mode does not carry them
+  either.
+
+  Two commands are subtler, and are why a capability policy on its own is not
+  enough. **`COM_CHANGE_USER` re-authenticates a live connection** as somebody
+  else, so a relay that did not read it would have a user and database policy
+  that applied to the first message of a connection and nothing after it; the
+  identity is re-checked and the refusal is hard, because the alternative is a
+  connection that *is* somebody the policy refused while the relay writes down
+  that it noticed. And **`COM_SET_OPTION` turns `CLIENT_MULTI_STATEMENTS` on
+  after the handshake is over** -- a policy a client lifts with one command
+  unless the relay reads the two-octet payload and refuses it.
+
+  **The relay rewrites the server's greeting.** MySQL's handshake runs the
+  opposite way round from PostgreSQL's: the server speaks first and advertises
+  its capabilities. So the relay reads the greeting, clears the bits
+  `deny_capabilities` names, and forwards the edited one -- a client that never
+  sees `CLIENT_LOCAL_FILES` offered cannot negotiate it, so the server can never
+  ask that client to open a path and send its contents, **and the application
+  still works**. That is rewrite rather than refuse, the same choice the tftp
+  kind makes with RFC 7440's window, and for the same reason: a control that
+  breaks every application on a segment is a control somebody switches off. The
+  default strips `local_files`, `multi_statements` and `compress`. `ssl` cannot
+  be named at all, because stripping it would perform the downgrade the kind
+  exists to prevent -- and validation refuses a configuration that tries. The
+  strip is logged as an `alert` rather than a refusal, since nothing is denied.
+
+  The encryption negotiation is a capability flag, which is PostgreSQL's
+  SSLRequest problem with a different encoding: nothing signs the greeting, so
+  anything on the path clears `CLIENT_SSL` from the advertised capabilities and
+  the client never asks. `require_tls` is on by default and both legs are
+  upgraded independently. `mysql_clear_password` is refused on an unencrypted
+  connection even where the plugin is allowed, because that is the password on
+  the wire. `mysql_native_password` is deliberately **not** counted weak: its
+  challenge-response discloses no reusable secret, and treating it as weak would
+  make the setting one operators turn off wholesale.
+
+  `LOAD DATA` is classified as a bulk-data statement with `local` as a target of
+  its own, and both forms are off by default -- bulk loading is a job, not
+  something an application connection does by accident. The `local` refusal is
+  hard, on the statement and on the server's request alike, because forwarding
+  either means the client's file has already left.
+
+  The framing has two traps, and both have tests. A payload of exactly `0xffffff`
+  means "more follows", so a message whose length is an exact multiple of that
+  ends with an **empty** packet: a reader that stopped on "length zero" would end
+  the message one packet early. And the sequence number is checked strictly
+  *within* a continuation chain, because mis-reassembling would build a message
+  neither peer sent, and deliberately **not** between messages, because a relay
+  originates packets of its own and so desynchronises exactly when it is doing
+  its job -- while the server enforces the numbering anyway, so a relay that also
+  checked would add a failure mode without adding a defence.
+
+  Three bugs the tests found. `MaxPayload` (16 MiB) exceeded `MaxMessage`
+  (1 MiB), so *any* continuation chain was refused: the protocol ceiling and the
+  policy default had been conflated into one constant. The relay's own upstream
+  reader enforced the cross-message sequence it had just desynchronised by
+  forwarding a login. And "is the authentication exchange over" was a guess at a
+  sequence number being large enough, which meant a command sent early was
+  forwarded unchecked -- it is taken from the server's OK packet now, which is
+  the protocol's own signal.
+
+  Refusals are `mysql_denied` for the ban triggers.
+  `examples/databases/mysql.yaml` has an application front, a replication front
+  where a rule lets exactly one account from exactly one address stream the
+  binary log, and a shadow-mode trial; docs/CONFIG.md `mysql`, and
+  docs/TROUBLESHOOTING.md.
+
+- **The SQL statement classifier became dialect-aware** (`internal/sqlkind`,
+  where it moved from `internal/pgwire`), because MySQL and TDS need the same
+  vocabulary with different lexical rules and two copies of the lexer would
+  drift. The differences are not cosmetic; each decides whether a keyword is
+  visible to the classifier at all. **MySQL has executable comments**:
+  `/*! DROP TABLE t */` and `/*!50000 DROP TABLE t */` are *code*, which the
+  server runs when the version matches, and they are the single most effective
+  place to hide a keyword from a reader that skips comments -- so they are
+  unwrapped and lexed as the statement they are, semicolon included. PostgreSQL
+  nests block comments and MySQL does not, so `/* /* */` is a complete comment in
+  one and unterminated in the other. MySQL honours backslash escapes in string
+  literals and PostgreSQL has not since 9.1, so `SELECT 'a\'; DROP TABLE t'` is
+  one statement in one dialect and two in the other. The keyword tables are split
+  per dialect rather than merged, which is the correctness point rather than
+  tidiness: `FLUSH PRIVILEGES` is a MySQL statement and a PostgreSQL syntax
+  error, so one shared table would make the PostgreSQL relay classify it as an
+  ordinary maintenance statement instead of `unknown`, and merging would make
+  each dialect's relay less strict by exactly the other's vocabulary.
+
 - **`kind: postgres`: a PostgreSQL relay that is deliberately not a SQL
   firewall.** Knowing which tables a statement touches means parsing SQL
   properly -- every alias, subquery, CTE, view, function body and `search_path`

@@ -1028,9 +1028,9 @@ templating, an operation policy and YARA over what is written. Sessions
 are recorded to asciicast files (`internal/asciicast`) bounded by count
 and size, and a second factor can be demanded after the key.
 
-### The relay: SMTP, MQTT, FTP, syslog, Modbus, IEC 104, SNMP, LDAP, PostgreSQL, NTP and NTS
+### The relay: SMTP, MQTT, FTP, syslog, Modbus, IEC 104, SNMP, LDAP, PostgreSQL, MySQL, NTP and NTS
 
-The relay kinds (`internal/kinds/{smtp,mqtt,ftp,syslog,modbus,iec104,snmp,ldap,tftp,dhcp,postgres,ntp,ntske}`)
+The relay kinds (`internal/kinds/{smtp,mqtt,ftp,syslog,modbus,iec104,snmp,ldap,tftp,dhcp,postgres,mysql,ntp,ntske}`)
 share a shape:
 each parses its protocol rather than forwarding bytes, holds a policy in
 that protocol's own terms, and bounds what a peer may say.
@@ -1187,6 +1187,31 @@ that protocol's own terms, and bounds what a peer may say.
   parser, and the refusal is an ErrorResponse with SQLSTATE 42501 followed by
   ReadyForQuery, because a client in the simple protocol will not send anything
   else until it sees the second one.
+- `mysql` reads the MySQL and MariaDB client/server protocol
+  (`internal/mysqlwire` for the framing and the handshake,
+  `internal/kinds/mysql` for the policy, `internal/sqlkind` with the MySQL
+  dialect for the statements). The handshake runs the opposite way round from
+  PostgreSQL's: the *server* speaks first, advertising its capabilities, and that
+  order is what makes this kind's distinctive move possible. The relay reads the
+  greeting, clears the capability bits the policy denies, and forwards the
+  **edited** greeting, so the client negotiates against a narrower server than
+  the real one -- rewrite rather than refuse, as the tftp kind does with its
+  window. `CLIENT_SSL` is the one bit it will not strip, because that would be
+  the downgrade.
+
+  The policy has a half the postgres one does not: an allow list of protocol
+  *commands*, because on this protocol the dangerous operations carry no SQL. It
+  also reads two commands for their effect on the rest of the connection --
+  `COM_CHANGE_USER`, which replaces the identity every later decision is made
+  about, and `COM_SET_OPTION`, which can lift a stripped capability after the
+  handshake. The end of the authentication exchange is taken from the server's OK
+  packet rather than guessed from a sequence number, because until it arrives the
+  client's packets are credential material and a scramble's first octet is not a
+  command code. The framing reader is *lax* about the sequence number between
+  messages and strict within a continuation chain: a relay originates packets of
+  its own, so its reader desynchronises exactly when it is doing its job, and the
+  server enforces the numbering anyway -- but mis-reassembling a chain would
+  build a message neither peer sent.
 - `ntske` is NTS key establishment, TCP 4460, relayed rather than
   terminated: it reads the server name and the application protocol from
   the ClientHello, refuses what is not an NTS client, bounds the

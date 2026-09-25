@@ -112,7 +112,7 @@ estate — and binds only the kinds of its own role:
 |--------|-------|----------------|
 | `xproxy` | the open internet | `http`, `forward`, `tcp`, `udp`, `dns` |
 | `xgate` | people | `ssh`, `telnet`, `vnc`, `rdp` |
-| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `snmp`, `ldap`, `tftp`, `dhcp`, `postgres`, `ntp`, `ntske` |
+| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `snmp`, `ldap`, `tftp`, `dhcp`, `postgres`, `mysql`, `ntp`, `ntske` |
 
 A kind a binary did not link is never bound and never falls through to
 the HTTP data plane: it is an error naming the daemon that serves it.
@@ -188,7 +188,7 @@ its own for what is deliberately *not* implemented and why.
 | Directory | LDAP v3 (RFC 4511–4515, 4517, 4519) with LDAPS and the StartTLS of RFC 4513, as a relay: the bind methods, the search filter's shape, distinguished names compared per relative name, the attribute lists in both directions | `ldap`, filters |
 | Addressing | DHCP (RFC 2131) with its options (RFC 2132), relay agent information (RFC 3046), long options (RFC 3396) and classless static routes (RFC 3442), as a relay agent that reads what it relays: the server a reply came from, and the configuration the reply carries | `dhcp` |
 | Provisioning | TFTP (RFC 1350) with the option extension (RFC 2347), block size (RFC 2348), timeout and transfer size (RFC 2349) and windowed transfer (RFC 7440), as a relay: the filename read as a path, the direction of the transfer, and the bounds on what comes back | `tftp` |
-| Databases | PostgreSQL frontend/backend protocol version 3, with the SSL and GSSAPI encryption requests, the cancel request, the simple and extended query protocols, and the authentication methods of pg_hba.conf | `postgres` |
+| Databases | PostgreSQL frontend/backend protocol version 3, with the SSL and GSSAPI encryption requests, the cancel request, the simple and extended query protocols, and the authentication methods of pg_hba.conf; the MySQL and MariaDB client/server protocol with handshake v10, the capability negotiation, the command set and the authentication plugins | `postgres`, `mysql` |
 | Remote access | SSH (RFC 4251–4254) with OpenSSH user and host certificates; telnet's NVT (RFC 854); RFB 3.3 to 3.8 (RFC 6143) with VeNCrypt; RDP (MS-RDPBCGR) over TLS, CredSSP over NTLMv2 towards the desktop, or the protocol's own encryption | `ssh`, `telnet`, `vnc`, `rdp` |
 | Identity | OpenID Connect Core 1.0, OAuth 2.0 (RFC 6749) with introspection (RFC 7662), PKCE (RFC 7636) and token exchange (RFC 8693); JWT, JWS and JWKS (RFC 7515–7519); DPoP (RFC 9449); certificate-bound tokens (RFC 8705); SAML 2.0 as a service provider; SCIM 2.0 (RFC 7642–7644); WebAuthn level 2; LDAP (RFC 4511–4515); TOTP (RFC 6238); HTTP Basic (RFC 7617); client certificate identity as `Client-Cert` (RFC 9440) or Envoy's `X-Forwarded-Client-Cert` | filters |
 | Inspection | ModSecurity SecLang with the OWASP Core Rule Set through Coraza; a documented subset of YARA; ICAP (RFC 3507); OpenAPI 3 descriptions; GraphQL; XML and XSD with exclusive canonicalization; protobuf structure without a schema; WebAssembly with WASI preview 1 | filters |
@@ -221,6 +221,7 @@ protocol so that a policy can be written in that protocol's own terms:
 | `ldap` | `xrelay` | LDAP v3, LDAPS, StartTLS | Bind methods, the bound identity, operations, naming contexts and subtrees, scopes, attributes in both directions, filter and entry bounds |
 | `dhcp` | `xrelay` | DHCPv4 with RFC 2132 options, RFC 3046 relay agent information, RFC 3442 routes | The server a reply came from, the options and addresses a reply may carry, the boot file, the lease bounds, the hardware-address rate |
 | `postgres` | `xrelay` | PostgreSQL protocol v3, both query protocols, the cleartext TLS negotiation | Whether the connection may be unencrypted at all, which role and database may be claimed, which authentication methods may cross, which *shapes* of statement are allowed, replication, the fast-path call, cancel requests |
+| `mysql` | `xrelay` | MySQL and MariaDB protocol, handshake v10, the capability flags, the command set | The capability bits a client may even see offered, which of the protocol's commands may cross, whether the connection may be unencrypted, which user and database may be claimed (re-checked on COM_CHANGE_USER), which authentication plugins, which statement shapes, LOAD DATA in either form |
 | `tftp` | `xrelay` | TFTP with RFC 2347–2349 options and RFC 7440 windows | The client list, the direction, the transfer mode, the filename read as a path and refused by class, the directories, and the block, window and transfer bounds |
 | `ntp` | `xrelay` | NTP v1–v4, SNTP, NTS-protected NTP | Versions, modes, extension fields, authentication, and whether the servers agree |
 | `ntske` | `xrelay` | NTS key establishment (TLS on 4460) | The application protocol, the server name, the handshakes in flight |
@@ -487,6 +488,36 @@ protocol so that a policy can be written in that protocol's own terms:
   the statement it runs because `ANALYZE` executes it, and `COPY` carries which
   of its three operations it is -- because `COPY ... FROM PROGRAM` runs a shell
   command as the server's own user, and no rule in any mode can allow it
+
+- `kind: mysql`: a **MySQL and MariaDB relay**, where the distinguishing fact is
+  that **the dangerous operations are commands rather than statements**. After
+  the handshake every client message begins with a one-octet command code, and
+  several of those carry no SQL at all: `COM_SHUTDOWN` is one octet and stops the
+  server, three more open a stream of every change to every database,
+  `COM_TABLE_DUMP` is a whole table, `COM_PROCESS_KILL` ends somebody else's
+  query, `COM_DEBUG` writes the server's internals to its error log, and
+  `COM_CREATE_DB` and `COM_DROP_DB` predate the DDL statements entirely. **A
+  relay that only classified SQL would never see any of them**, so this kind has
+  a command allow list where the postgres one does not, defaulting to what a
+  driver sends and nothing administrative. Two commands are subtler and are why a
+  capability policy alone is not enough: **`COM_CHANGE_USER` re-authenticates a
+  live connection** as somebody else, so a relay that did not read it would have
+  a user policy that applied to the first message and nothing after it; and
+  **`COM_SET_OPTION` turns `CLIENT_MULTI_STATEMENTS` on after the handshake is
+  over**, so refusing the capability at the handshake is a policy a client lifts
+  with one command. The move this kind makes that no other does is to **rewrite
+  the server's greeting**: MySQL's handshake runs the opposite way round from
+  PostgreSQL's -- the server speaks first and advertises its capabilities -- so
+  the relay clears the bits the policy denies and forwards the edited one. A
+  client that never sees `CLIENT_LOCAL_FILES` offered cannot negotiate it, so the
+  server can never ask that client to open a path and send its contents -- which
+  is how a hostile or compromised server reads the filesystem of whatever
+  connected to it -- **and the application still works**. That is rewrite rather
+  than refuse, the same choice the tftp kind makes with RFC 7440's window, and
+  for the same reason: a control that breaks every application on a segment is a
+  control somebody switches off. `CLIENT_SSL` is the one bit that cannot be
+  stripped, because stripping it would perform the downgrade the kind exists to
+  prevent
 
 - `kind: tftp`: a **TFTP** relay in front of the servers that move firmware,
   configurations and boot images. This is the protocol under provisioning: a

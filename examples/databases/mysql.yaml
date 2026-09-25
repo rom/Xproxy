@@ -1,0 +1,230 @@
+# MySQL relay: the protocol where the dangerous things are commands.
+#
+# PostgreSQL's hazards are all statements, so a statement policy reaches
+# them all. MySQL's are commands -- one octet each, with no SQL involved --
+# and that is the thing to understand before reading this file:
+#
+#   COM_SHUTDOWN (0x08)         one octet, stops the server
+#   COM_BINLOG_DUMP (0x12)      a stream of every change to every database
+#   COM_BINLOG_DUMP_GTID (0x1e) the same, by transaction identifier
+#   COM_REGISTER_SLAVE (0x15)   announces this connection as a replica
+#   COM_TABLE_DUMP (0x13)       a whole table in one command
+#   COM_PROCESS_KILL (0x0c)     ends somebody else's query
+#   COM_DEBUG (0x0d)            the server's internals into its error log
+#   COM_CREATE_DB / COM_DROP_DB predate the DDL statements entirely
+#
+# Not one of those would be visible to a relay that only classified SQL, so
+# allow_commands is the first thing this file narrows.
+#
+# Two more that are subtler, and are why a capability policy alone is not
+# enough:
+#
+#   COM_CHANGE_USER re-authenticates a *live* connection as somebody else.
+#   Without reading it, a user policy applies to the first message of a
+#   connection and nothing after it.
+#
+#   COM_SET_OPTION turns CLIENT_MULTI_STATEMENTS on *after* the handshake is
+#   over. Stripping the capability from the greeting is not enough on its
+#   own: it is a policy a client lifts with one command.
+#
+# And the move this kind makes that no other does: it rewrites the server's
+# greeting. MySQL's handshake runs the opposite way round from
+# PostgreSQL's -- the server speaks first and advertises its capabilities --
+# so the relay clears the bits deny_capabilities names and forwards the
+# edited greeting. A client that never sees CLIENT_LOCAL_FILES offered
+# cannot negotiate it, so the server can never ask that client for a file,
+# and the application still works. That is rewrite rather than refuse, the
+# same choice the tftp kind makes with RFC 7440's window, and for the same
+# reason: a control that breaks every application on a segment is a control
+# somebody switches off.
+#
+# Validate with: xproxyctl -config examples/databases/mysql.yaml validate
+version: 1
+
+logging:
+  directory: /var/log/xproxy
+  access: {file: access.log}
+  security: {file: security.log}
+  audit: {file: audit.log}
+
+management:
+  socket: /run/xproxy/mgmt.sock
+  socket_mode: "0660"
+
+server:
+  listeners:
+    # ---------------------------------------------------------------
+    # The application front.
+    #
+    # Read this as one sentence: from the application network, as one
+    # user, into one database, over TLS, with caching_sha2_password,
+    # sending the fourteen commands a driver sends and the nine
+    # statements this application needs.
+    # ---------------------------------------------------------------
+    - name: app
+      address: "10.0.0.20:3306"
+      kind: mysql
+
+      # TLS is a capability flag rather than a port, so the client upgrades
+      # an existing connection -- which means the listener needs a
+      # certificate, and the relay terminates the client's TLS and starts
+      # its own to the server.
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/tls/db.pem, key_file: /etc/xproxy/tls/db-key.pem}
+
+      mysql:
+        upstream: my
+        allow_clients: ["10.0.2.0/24"]
+
+        # Nothing signs the server's greeting, so anything on the path can
+        # clear CLIENT_SSL from the advertised capabilities and the client
+        # will never ask. This is the line that makes that impossible.
+        require_tls: true
+        upstream_tls_mode: require
+        upstream_tls:
+          ca_file: /etc/xproxy/tls/my-ca.pem
+
+        # caching_sha2_password is the default since 8.0 and the right
+        # answer. mysql_clear_password is the password itself -- only ever
+        # safe inside TLS, and refused here outright.
+        #
+        # mysql_native_password is deliberately absent from this list
+        # rather than from the *weak* list: its challenge-response
+        # discloses no reusable secret, so it is not weak, but an estate
+        # on 8.0 has no reason to accept it either.
+        allow_auth: [caching_sha2_password]
+
+        allow_users: [app]
+        allow_databases: [sales]
+
+        # The three stripped by default, written out so the reader sees
+        # the decision was made. `ssl` cannot appear here: stripping it
+        # would perform the downgrade above.
+        deny_capabilities: [local_files, multi_statements, compress]
+
+        # What a driver sends. Note what is not here, which is the whole
+        # list at the top of this file.
+        allow_commands:
+          - query
+          - stmt_prepare
+          - stmt_execute
+          - stmt_send_long_data
+          - stmt_close
+          - stmt_reset
+          - stmt_fetch
+          - init_db
+          - ping
+          - quit
+          - reset_connection
+          - set_option        # read, and refused when it turns multi-statements on
+          - change_user       # read, and the identity re-checked
+
+        # shutdown and the replication commands are on the deny list as
+        # well as absent from the allow list, because a deny list cannot
+        # be overridden by a rule and an allow list can. That is the
+        # difference between "not normally" and "not ever" -- and the
+        # replica listener below is why the distinction matters.
+        deny_commands: [shutdown, debug, process_kill, table_dump, clone]
+
+        allow_statements:
+          - select
+          - insert
+          - update
+          - delete
+          - show
+          - set
+          - begin
+          - commit
+          - rollback
+          - empty            # a driver's liveness check
+
+        # Neither form of LOAD DATA. `local` would let the server ask this
+        # application's own host for a file.
+        allow_load: []
+
+        max_statements: 1
+        max_statement_bytes: 262144
+        idle_timeout: 30m
+        session_duration: 12h
+        max_sessions: 400
+        max_sessions_per_client: 40
+
+        default_action: deny
+
+    # ---------------------------------------------------------------
+    # The replica front: the one place where streaming the binary log is
+    # the job rather than an exfiltration.
+    #
+    # This is what the rule mechanism is for. One account, from one
+    # address, may send the replication commands; nothing else on the
+    # listener may, and the deny list on the application listener above
+    # means no rule there could grant them either.
+    # ---------------------------------------------------------------
+    - name: replication
+      address: "10.0.0.21:3306"
+      kind: mysql
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/tls/db.pem, key_file: /etc/xproxy/tls/db-key.pem}
+      mysql:
+        upstream: my
+        allow_clients: ["10.0.9.10/32"]
+        allow_auth: [caching_sha2_password]
+        allow_users: [replica]
+
+        # A replica sends almost no SQL, so the statement list is tiny and
+        # the command list is what matters.
+        allow_commands: [ping, quit, query]
+        allow_statements: [select, show, set, empty]
+        read_only: true
+
+        rules:
+          - name: replica
+            users: [replica]
+            clients: ["10.0.9.10/32"]
+            allow_commands: [binlog_dump, binlog_dump_gtid, register_slave, ping, quit, query]
+
+        default_action: deny
+
+    # ---------------------------------------------------------------
+    # A shadow-mode trial.
+    #
+    # monitor_only evaluates everything and enforces nothing, except the
+    # decisions that cannot honestly be observed: the client list, the TLS
+    # requirement, the authentication plugins, a replication command, a
+    # LOAD DATA LOCAL, a COM_CHANGE_USER the policy refuses, and anything
+    # the relay could not read.
+    #
+    # The capability strip is not in that list because it is not a
+    # refusal: nothing is denied, the connection goes through, and the
+    # client simply never sees the capability offered. It happens in
+    # shadow mode too, and it is logged as an alert.
+    #
+    # Read the result with: xproxyctl policy
+    # ---------------------------------------------------------------
+    - name: trial
+      address: "10.0.0.22:3306"
+      kind: mysql
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/tls/db.pem, key_file: /etc/xproxy/tls/db-key.pem}
+      mysql:
+        upstream: my
+        allow_clients: ["10.0.2.0/24"]
+        read_only: true
+        allow_statements: [select, show, set, empty]
+        monitor_only: true
+        default_action: deny
+
+upstreams:
+  - name: my
+    endpoints:
+      - {address: "10.0.16.20:3306"}
+      - {address: "10.0.16.21:3306"}
+    health_check:
+      type: tcp
+      interval: 10s
+      timeout: 2s
+      unhealthy_threshold: 3
+      healthy_threshold: 2
