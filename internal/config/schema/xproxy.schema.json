@@ -2841,6 +2841,10 @@
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
         },
+        "max_endpoints": {
+          "description": "MaxEndpoints bounds how many endpoints one resolution may install. A registry is a remote input: a DNS answer with thousands of A records, or a registry response filled with entries, would otherwise become thousands of health check goroutines and a hash ring rebuilt around them. Beyond the bound the resolution is truncated (lowest addresses first, so the set is stable between resolutions), warned about and counted. Default 4096; 1 to 65536.",
+          "type": "integer"
+        },
         "name": {
           "description": "Name is the DNS name to resolve (for srv the full _service._proto name), or, for type http, the registry URL to poll.",
           "type": "string"

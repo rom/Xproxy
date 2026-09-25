@@ -12855,8 +12855,8 @@ T}
 .PP
 .TS
 allbox;
-lbw(0.9i) lbw(1.0i) lbw(0.9i) lbx
-lw(0.9i) lw(1.0i) lw(0.9i) lx.
+lbw(1.0i) lbw(1.0i) lbw(0.9i) lbx
+lw(1.0i) lw(1.0i) lw(0.9i) lx.
 T{
 Key
 T}	T{
@@ -12955,6 +12955,15 @@ T}	T{
 \fB5s\fR
 T}	T{
 Bound on one resolution,\: including the synchronous first one at start and reload;\: a failed resolution keeps the previous endpoint set and is counted in \fBxproxyctl upstreams\fR
+T}
+T{
+\fBmax_\:endpoints\fR
+T}	T{
+int
+T}	T{
+\fB4096\fR
+T}	T{
+How many endpoints one resolution may install;\: 1 to 65536. A larger answer is truncated to the first addresses in sorted order,\: warned about (throttled) and counted as \fBtruncations\fR in \fBxproxyctl upstreams\fR. A registry is a remote input,\: and the answer decides how many health\-check goroutines this process runs and how large the hash ring is;\: the sort makes the subset the same one on every resolution,\: so a truncated pool does not churn its endpoints every interval
 T}
 T{
 \fBconsul\fR
@@ -13060,6 +13069,8 @@ T}
 The loop therefore waits on the agent rather than on a ticker: after an answer it asks again at once, because the next answer \fIis\fR the next change. \fBinterval\fR becomes the pause after a \fBfailure\fR \[u2014] without one, an agent that is down or answering 403 would be asked again immediately and forever, which is a loop against somebody else\(aqs machine. An index that goes backwards (a Consul server restart) resets to 1 rather than blocking against an index that will never be reached.
 .PP
 Only instances whose checks all pass are used, and the check is made here as well as asked for in the query: the filter in the query is the agent\(aqs opinion, and this one is the proxy\(aqs. \fBWeights.Passing\fR becomes the endpoint weight, and a blank service address falls back to the node\(aqs.
+.PP
+\fBHow large a resolution may be.\fR \fBmax_endpoints\fR bounds one resolution. It is not a limit on the estate \[u2014] 4096 endpoints in one pool is more than a load balancer can usefully spread across \[u2014] but on what a single answer can do to this process: a DNS response over TCP carries thousands of A records, and a four megabyte registry response tens of thousands of entries, each of which would become a health\-check goroutine and a place in the hash ring. Beyond the bound the resolution is \fBtruncated rather than refused\fR, because refusing keeps the previous set, and for a pool whose backends have all moved that is a pool serving nothing. \fBxproxyctl upstreams\fR counts the truncations, and the log line names how many were returned.
 .SS "An endpoint that arrives while the pool is serving"
 .PP
 A registry announces an instance when its process starts, not when it is ready to answer: the service registers itself, then opens its database connections, loads its caches and finally listens. An address appearing in a resolution is therefore a weaker claim than it looks, and a pool that sends traffic to it immediately produces a burst of failures the proxy caused \[u2014] the outlier ejection then has to clean up after a decision that should not have been made.

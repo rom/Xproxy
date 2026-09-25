@@ -593,6 +593,27 @@ Open findings of the earlier rounds:
   and comes back waits again: what is listening there now is not the process that
   was healthy before.
 
+- **A resolution can no longer size the process: `discovery.max_endpoints`.**
+  Endpoint discovery installed however many endpoints an answer carried, and
+  each one is a health-check goroutine, a place in the hash ring and a slice of
+  the pool. A DNS answer over TCP carries thousands of A records and the four
+  megabyte registry body limit allows tens of thousands of entries, so one
+  answer -- from a registry that is confused, compromised, or answering somebody
+  else's question -- decided how large this process is, on every interval.
+
+  `max_endpoints` bounds one resolution; default 4096, 1 to 65536. Beyond it the
+  resolution is **truncated rather than refused**: refusing keeps the previous
+  set, and for a pool whose backends have all moved that is a pool serving
+  nothing, while a bounded subset still carries traffic. The specs are already
+  sorted by address when the bound is applied, so the subset is the same one on
+  every resolution -- an unstable subset would remove and add endpoints every
+  interval, losing their statistics, restarting their ramps and rebuilding the
+  ring each time. The truncation is warned about through the throttled notice
+  (a registry that answers that way answers that way every interval) and
+  counted as `truncations` in `xproxyctl upstreams`, so a pool serving a subset
+  of what was announced is visible rather than quiet. A configuration built in
+  code rather than loaded falls back to the default instead of to no bound.
+
 - **`internal/schedule`: one time window, shared by the thirteen kinds that had
   their own.** A refactor that turned into two bug fixes, because the copies had
   drifted.

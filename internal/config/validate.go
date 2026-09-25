@@ -1812,6 +1812,9 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 		if d.Weight < 1 || d.Weight > 1000 {
 			v.errf("%s.weight: must be between 1 and 1000", dp)
 		}
+		if d.MaxEndpoints < 1 || d.MaxEndpoints > 65536 {
+			v.errf("%s.max_endpoints: must be between 1 and 65536", dp)
+		}
 		if d.Canary && u.Canary == nil {
 			v.errf("%s.canary: set without a canary section", dp)
 		}

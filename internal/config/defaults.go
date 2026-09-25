@@ -71,8 +71,11 @@ const (
 	// proposed; DefaultWAFLearningMaxEntries bounds the learning table.
 	// DefaultDiscoveryInterval is how often discovered endpoints are
 	// re-resolved; DefaultDiscoveryTimeout bounds one resolution.
-	DefaultDiscoveryInterval     = 30 * time.Second
-	DefaultDiscoveryTimeout      = 5 * time.Second
+	DefaultDiscoveryInterval = 30 * time.Second
+	DefaultDiscoveryTimeout  = 5 * time.Second
+	// DefaultDiscoveryMaxEndpoints bounds the endpoints one resolution
+	// may install; see Discovery.MaxEndpoints.
+	DefaultDiscoveryMaxEndpoints = 4096
 	DefaultWAFLearningMinHits    = 5
 	DefaultWAFLearningMaxEntries = 10000
 	DefaultCRSParanoia           = 1
@@ -669,6 +672,7 @@ func applyDefaults(c *Config) {
 			setDur(&d.Interval, DefaultDiscoveryInterval)
 			setDur(&d.Timeout, DefaultDiscoveryTimeout)
 			setInt(&d.Weight, 1)
+			setInt(&d.MaxEndpoints, DefaultDiscoveryMaxEndpoints)
 		}
 		if u.Retries == nil {
 			r := DefaultRetries

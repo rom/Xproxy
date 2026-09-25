@@ -6412,6 +6412,14 @@ type Discovery struct {
 	// Timeout of one resolution and of the initial synchronous one at
 	// start. Default 5s.
 	Timeout Duration `yaml:"timeout"`
+	// MaxEndpoints bounds how many endpoints one resolution may install.
+	// A registry is a remote input: a DNS answer with thousands of A
+	// records, or a registry response filled with entries, would
+	// otherwise become thousands of health check goroutines and a hash
+	// ring rebuilt around them. Beyond the bound the resolution is
+	// truncated (lowest addresses first, so the set is stable between
+	// resolutions), warned about and counted. Default 4096; 1 to 65536.
+	MaxEndpoints int `yaml:"max_endpoints"`
 	// Consul configures type consul.
 	Consul *ConsulDiscovery `yaml:"consul"`
 }

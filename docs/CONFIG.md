@@ -5459,6 +5459,7 @@ beyond the first is gated by `retry_budget` when one is set.
 | `weight` | int | `1` | Weight of discovered endpoints that do not carry their own (`dns`, and `http` `list` entries without a `weight`) |
 | `canary` | bool | `false` | Mark discovered endpoints as canaries (needs the pool's `canary` section) |
 | `timeout` | duration | `5s` | Bound on one resolution, including the synchronous first one at start and reload; a failed resolution keeps the previous endpoint set and is counted in `xproxyctl upstreams` |
+| `max_endpoints` | int | `4096` | How many endpoints one resolution may install; 1 to 65536. A larger answer is truncated to the first addresses in sorted order, warned about (throttled) and counted as `truncations` in `xproxyctl upstreams`. A registry is a remote input, and the answer decides how many health-check goroutines this process runs and how large the hash ring is; the sort makes the subset the same one on every resolution, so a truncated pool does not churn its endpoints every interval |
 | `consul` | object | required for `consul` | See below |
 
 #### upstreams[].discovery.consul
@@ -5495,6 +5496,18 @@ Only instances whose checks all pass are used, and the check is made here
 as well as asked for in the query: the filter in the query is the agent's
 opinion, and this one is the proxy's. `Weights.Passing` becomes the
 endpoint weight, and a blank service address falls back to the node's.
+
+**How large a resolution may be.** `max_endpoints` bounds one
+resolution. It is not a limit on the estate — 4096 endpoints in one pool
+is more than a load balancer can usefully spread across — but on what a
+single answer can do to this process: a DNS response over TCP carries
+thousands of A records, and a four megabyte registry response tens of
+thousands of entries, each of which would become a health-check goroutine
+and a place in the hash ring. Beyond the bound the resolution is
+**truncated rather than refused**, because refusing keeps the previous
+set, and for a pool whose backends have all moved that is a pool serving
+nothing. `xproxyctl upstreams` counts the truncations, and the log line
+names how many were returned.
 
 #### An endpoint that arrives while the pool is serving
 
