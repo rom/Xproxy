@@ -304,6 +304,8 @@ type Listener struct {
 	Redis *RedisListener `yaml:"redis"`
 	// DHCP configures a kind: dhcp listener.
 	DHCP *DHCPListener `yaml:"dhcp"`
+	// BACnet configures a kind: bacnet listener.
+	BACnet *BACnetListener `yaml:"bacnet"`
 	// Policy is whether this listener enforces its policy or only
 	// evaluates it. It overrides the estate's own policy section.
 	Policy *ListenerPolicy `yaml:"policy"`
@@ -8600,4 +8602,221 @@ func derefFloat(p *float64) float64 {
 		return 0
 	}
 	return *p
+}
+
+// BACnetListener is the kind: bacnet section.
+//
+// A BACnet/IP listener is a relay in front of a building: the controllers
+// behind it hold the setpoints for air handling, heating, lighting, lifts
+// and smoke control, and the protocol they speak has no user, no session
+// and no authentication of any kind. Every control here is therefore about
+// the three things a datagram does carry -- where it came from, what it
+// asks for, and which object and property it names.
+type BACnetListener struct {
+	// Upstream is the pool of devices, routers or BBMDs this listener
+	// relays to. Required.
+	Upstream string `yaml:"upstream"`
+	// AllowClients and DenyClients are the networks a client may send
+	// from. Deny is evaluated first. On a protocol with no identity this
+	// is the most valuable line in the file: it is the only thing
+	// resembling authentication that exists.
+	AllowClients []string `yaml:"allow_clients"`
+	DenyClients  []string `yaml:"deny_clients"`
+	// Services is the allow list of application services, by the
+	// standard's own names (readProperty, writeProperty, who-Is). Empty
+	// allows the reading, discovery and notification services and nothing
+	// that changes anything -- an estate that wants this relay to carry
+	// writes says which ones, one at a time.
+	Services []string `yaml:"services"`
+	// DenyServices are services no rule can allow, which is how an
+	// exception inside an allowed set is written.
+	DenyServices []string `yaml:"deny_services"`
+	// MaxCommandPriority is the most privileged write priority a client
+	// may ask for, from 1 (highest) to 16. Default 8.
+	//
+	// This is BACnet's own privilege ladder and it is the control this
+	// protocol most needs a relay for. A commandable object holds sixteen
+	// slots and the plant follows the highest-priority one that is filled;
+	// slots 1 and 2 are manual and automatic life safety and cannot be
+	// overridden by the management system, by a schedule or by an operator
+	// at a workstation. A client writing there has taken a piece of plant
+	// away from everything else that commands it. The default refuses the
+	// seven slots above 8, which are where life safety and manual override
+	// live, and leaves the ordinary supervisory range alone.
+	MaxCommandPriority int `yaml:"max_command_priority"`
+	// Objects is the allow list of object types a request may name
+	// (analog-output, binary-value, device), by the standard's names or by
+	// number for a vendor's proprietary type. Empty allows any.
+	Objects []string `yaml:"objects"`
+	// DenyObjects are object types no rule can allow.
+	DenyObjects []string `yaml:"deny_objects"`
+	// Properties and DenyProperties are the properties a request may name,
+	// by the standard's names (present-value, out-of-service) or by
+	// number. Empty allows any.
+	Properties     []string `yaml:"properties"`
+	DenyProperties []string `yaml:"deny_properties"`
+	// DenySensitiveWrites refuses a write to a property whose value is the
+	// device's own behaviour rather than a measurement or a setpoint:
+	// object-name, out-of-service, program-change, the recipient lists and
+	// the MS/TP timing properties. Default true.
+	//
+	// out-of-service is the one to understand. Writing it true cuts a
+	// point loose from the physical world: its present value becomes
+	// whatever was last written, and every graphics page, trend and alarm
+	// in the estate then reports that number as the truth. It is how a
+	// sensor is made to lie without touching the sensor.
+	DenySensitiveWrites *bool `yaml:"deny_sensitive_writes"`
+	// RefuseUnlocatedObjects refuses a request whose object this relay
+	// could not find, when object or property rules are configured.
+	// Default true.
+	//
+	// A handful of services keep their object somewhere a fixed position
+	// cannot describe: createObject names a type or an identifier inside a
+	// choice, who-Has names an object or a name. A listener with rules
+	// about objects cannot apply them to a request whose object it has not
+	// found, and the two ways to get that wrong are to check the wrong
+	// field and to let the request through unchecked.
+	RefuseUnlocatedObjects *bool `yaml:"refuse_unlocated_objects"`
+	// AllowBroadcast carries a broadcast from a client: an
+	// Original-Broadcast-NPDU, or a Distribute-Broadcast-To-Network that
+	// asks every BBMD in the estate to repeat it. Default false.
+	//
+	// A broadcast is how BACnet discovers, and it is also the protocol's
+	// amplifier: one Who-Is yields an I-Am from every device that hears
+	// it. MaxBroadcastReplies bounds the answers either way.
+	AllowBroadcast *bool `yaml:"allow_broadcast"`
+	// MaxBroadcastReplies bounds the answers one broadcast may bring back
+	// to the client that sent it. Default 64.
+	MaxBroadcastReplies int `yaml:"max_broadcast_replies"`
+	// BroadcastReplyWindow is how long answers to a broadcast are matched
+	// back to the client that sent it. Default 5s.
+	BroadcastReplyWindow Duration `yaml:"broadcast_reply_window"`
+	// AllowBBMD carries the broadcast management functions:
+	// Register-Foreign-Device, the distribution and foreign device tables.
+	// Default false.
+	//
+	// Two of them are a whole attack. Register-Foreign-Device asks a BBMD
+	// to send the registering address every broadcast on a network it is
+	// not on, from one unauthenticated datagram;
+	// Read-Broadcast-Distribution-Table hands the estate's BACnet routing
+	// to whoever asks.
+	AllowBBMD *bool `yaml:"allow_bbmd"`
+	// AllowForwarded carries a Forwarded-NPDU from a client. Default
+	// false. The function exists for a BBMD to relay a broadcast it
+	// received, and it carries the originating address inside the payload
+	// -- where whoever sent the datagram chose it. A client that is not a
+	// BBMD has no reason to send one.
+	AllowForwarded *bool `yaml:"allow_forwarded"`
+	// AllowNetworkMessages carries the network layer's own messages: the
+	// router discovery and routing table messages of clause 6.4. Default
+	// false.
+	AllowNetworkMessages *bool `yaml:"allow_network_messages"`
+	// AllowRouting carries the three that change how the internetwork is
+	// routed: Initialize-Routing-Table, and the two that dial and drop a
+	// half-router's link. Default false, and it requires
+	// allow_network_messages as well.
+	AllowRouting *bool `yaml:"allow_routing"`
+	// AllowSecurityMessages carries clause 24's network security messages:
+	// the challenge, the wrapped payloads and the key distribution.
+	// Default false. A relay cannot read inside a Security-Payload, which
+	// is the point of it -- so an estate that has deployed BACnet network
+	// security has a stronger control than this relay and can turn this
+	// on, and one that has not should not be seeing key distribution
+	// arrive from a client network.
+	AllowSecurityMessages *bool `yaml:"allow_security_messages"`
+	// Networks is the allow list of destination network numbers (DNET) a
+	// request may be routed to. Empty allows the local network only, which
+	// is a message with no destination field at all.
+	Networks []int `yaml:"networks"`
+	// MaxHopCount is the largest hop count a routed message may carry.
+	// Default 8. A message arriving with more is rewritten down to it
+	// rather than refused: the hop count is what stops a routing loop, and
+	// lowering it is the safe direction.
+	MaxHopCount int `yaml:"max_hop_count"`
+	// MaxPriority is the highest network priority a client may claim:
+	// normal, urgent, critical-equipment or life-safety. Default urgent.
+	// The priority decides what a congested router drops, so a client that
+	// sends everything as life safety has claimed a queue it has not
+	// earned.
+	MaxPriority string `yaml:"max_priority"`
+	// AllowSegmented carries a segmented request or reply. Default true.
+	// A relay sees one segment at a time and decides about the one that
+	// carries the service choice, so an estate that wants every request
+	// decided whole turns this off -- at the cost of the large reads a
+	// trend log download needs.
+	AllowSegmented *bool `yaml:"allow_segmented"`
+	// MaxWhoIsRange bounds the device instance range a Who-Is may ask
+	// about. Zero allows any. A Who-Is with no range at all asks every
+	// device there is to answer at once, which RequireWhoIsRange refuses.
+	MaxWhoIsRange     int   `yaml:"max_whois_range"`
+	RequireWhoIsRange *bool `yaml:"require_whois_range"`
+	// MaxMessageBytes bounds one datagram. Default 1497, which is Annex
+	// J's own maximum.
+	MaxMessageBytes int `yaml:"max_message_bytes"`
+	// MaxPending bounds the confirmed requests this listener is waiting
+	// for answers to. Default 512. Each one holds a slot until the answer
+	// arrives or the timeout passes.
+	MaxPending int `yaml:"max_pending"`
+	// RequestTimeout is how long a confirmed request's slot is held.
+	// Default 10s, which is longer than the protocol's own default APDU
+	// timeout and shorter than a client's patience.
+	RequestTimeout Duration `yaml:"request_timeout"`
+	// RateLimit and RateBurst bound requests per second per client
+	// address. Zero disables them.
+	RateLimit int `yaml:"rate_limit"`
+	RateBurst int `yaml:"rate_burst"`
+	// Rules decide each request, in order, first match wins. A request
+	// that matches no rule takes DefaultAction.
+	Rules []BACnetRule `yaml:"rules"`
+	// DefaultAction is deny (the default) or allow.
+	DefaultAction string `yaml:"default_action"`
+	// DenyResponse is how a refused request is answered: reject (the
+	// default, for a confirmed request: a Reject-PDU, which every client
+	// displays and stops on), error (an Error-PDU) or drop (nothing, which
+	// the client retries and then reads as a timeout).
+	//
+	// An unconfirmed request has nothing to answer, so it is always
+	// dropped -- the protocol gives a relay nothing to say back.
+	DenyResponse string `yaml:"deny_response"`
+	// LogRequests writes an access line per request: who, which service,
+	// which object and property, and how it was decided. Default true.
+	// This is the record an estate is asked for when somebody wants to
+	// know who set the setpoint.
+	LogRequests *bool `yaml:"log_requests"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
+}
+
+// BACnetRule decides one request.
+type BACnetRule struct {
+	// Name identifies the rule in the logs and the counters. Required.
+	Name string `yaml:"name"`
+	// Action is allow, deny or observe. observe logs and counts and then
+	// keeps looking, which is how a rule is tried on live traffic before
+	// it decides anything.
+	Action string `yaml:"action"`
+	// Clients are the networks the client is in.
+	Clients []string `yaml:"clients"`
+	// Services are the services this rule covers.
+	Services []string `yaml:"services"`
+	// Objects and DenyObjects are the object types this rule covers, and
+	// the ones it does not cover even when Objects would match.
+	Objects     []string `yaml:"objects"`
+	DenyObjects []string `yaml:"deny_objects"`
+	// Instances is the range of object instance numbers this rule covers,
+	// written as 1-100 or as a single number. Empty covers any.
+	Instances []string `yaml:"instances"`
+	// Properties and DenyProperties are the properties this rule covers.
+	Properties     []string `yaml:"properties"`
+	DenyProperties []string `yaml:"deny_properties"`
+	// Networks are the destination networks this rule covers.
+	Networks []int `yaml:"networks"`
+	// MaxCommandPriority overrides the listener's bound for this rule's
+	// traffic, which is how the one workstation that really does command
+	// at priority 8 is written down.
+	MaxCommandPriority int `yaml:"max_command_priority"`
+	// Schedule limits the rule to a time window. A change window is what
+	// this is for: writes allowed while the engineers are on site and not
+	// at three in the morning.
+	Schedule *ModbusSchedule `yaml:"schedule"`
 }

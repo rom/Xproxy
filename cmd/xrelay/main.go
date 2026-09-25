@@ -21,6 +21,7 @@ import (
 	"os"
 
 	"github.com/rom/xproxy/internal/daemon"
+	_ "github.com/rom/xproxy/internal/kinds/bacnet"   // listener kind: bacnet
 	_ "github.com/rom/xproxy/internal/kinds/dhcp"     // listener kind: dhcp
 	_ "github.com/rom/xproxy/internal/kinds/ftp"      // listener kind: ftp
 	_ "github.com/rom/xproxy/internal/kinds/iec104"   // listener kind: iec104

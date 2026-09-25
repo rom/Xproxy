@@ -1,0 +1,233 @@
+# BACnet/IP relay: the protocol that runs the building, put behind
+# something that can refuse a write to a life safety command slot.
+#
+# The problem this configuration solves is the protocol's own shape.
+# Every air handling unit, chiller, boiler, fan coil, lighting controller
+# and lift interface in an estate answers BACnet requests over UDP 47808,
+# and BACnet has no identity at all: no user, no session, no password
+# that means anything, and no transport security. Clause 24's
+# authenticate service was withdrawn from the standard, and its network
+# security is implemented by almost nothing in the field. A device
+# answers whoever asks it.
+#
+# The controllers cannot be fixed. They are ceiling-void equipment with
+# fifteen-year service lives whose firmware is a site visit, and the
+# building does not stop for an upgrade.
+#
+# What the protocol does have is structure, and this relay enforces it:
+#   - which addresses may speak to the building at all (allow_clients),
+#     which is the only identity a request has
+#   - which services may be sent, by whom, to which objects (services,
+#     objects, rules)
+#   - which command priority a client may write at
+#     (max_command_priority) -- the protocol's own privilege ladder,
+#     where slots 1 and 2 are life safety and cannot be overridden by the
+#     management system, a schedule or an operator
+#   - that a discovery sweep cannot bring the whole estate back at once
+#     (allow_broadcast, max_broadcast_replies)
+#   - that nobody registers as a foreign device with the estate's
+#     broadcast management (allow_bbmd)
+#   - that out-of-service cannot be written, so a point cannot be cut
+#     loose from the physical world and made to report whatever somebody
+#     wrote (deny_sensitive_writes)
+#
+# Validate with: xproxyctl -config examples/ot/bacnet.yaml validate
+version: 1
+
+logging:
+  directory: /var/log/xproxy
+  access: {file: access.log}
+  security: {file: security.log}
+  audit: {file: audit.log}
+
+management:
+  socket: /run/xproxy/mgmt.sock
+  socket_mode: "0660"
+
+server:
+  listeners:
+    # ---------------------------------------------------------------
+    # The supervisory link: the building management system connects
+    # here, the relay forwards to the plant network.
+    #
+    # Reading is carried, writing is carried for the plant the BMS
+    # actually commands, and everything the protocol offers for
+    # administering a controller is not carried at all.
+    # ---------------------------------------------------------------
+    - name: plant
+      address: "10.60.0.10:47808"
+      kind: bacnet
+      bacnet:
+        upstream: controllers
+
+        # The only identity there is. Without this line any host that can
+        # route to the listener can command the building.
+        allow_clients: ["10.60.1.0/24"]
+
+        # Reading, discovery, the notifications a device sends of its own
+        # accord -- and the two writes the management system needs.
+        #
+        # Everything absent from this list is absent on purpose:
+        # reinitializeDevice restarts a controller,
+        # deviceCommunicationControl tells one to stop talking,
+        # atomicWriteFile puts a file on it, createObject and
+        # deleteObject change what it is, timeSynchronization sets every
+        # clock on the network from a broadcast, and youAre hands a
+        # device a new instance number.
+        services:
+          - readProperty
+          - readPropertyMultiple
+          - readRange
+          - writeProperty
+          - writePropertyMultiple
+          - subscribeCOV
+          - confirmedCOVNotification
+          - unconfirmedCOVNotification
+          - confirmedEventNotification
+          - unconfirmedEventNotification
+          - getEventInformation
+          - getAlarmSummary
+          - acknowledgeAlarm
+          - who-Is
+          - i-Am
+          - who-Has
+          - i-Have
+
+        # Nothing on this estate has any business commanding at a life
+        # safety priority across a relay. 8 leaves the supervisory range
+        # alone and refuses the seven slots above it -- and the refusal
+        # stands in monitor mode, because a relay that shadowed this one
+        # would be watching somebody take a piece of plant.
+        max_command_priority: 8
+
+        # A write to out-of-service cuts a point loose from the physical
+        # world: the present value becomes whatever was last written, and
+        # every graphics page, trend and alarm in the estate then reports
+        # that number as the truth.
+        deny_sensitive_writes: true
+
+        # Discovery is carried, and bounded. One who-Is is answered by an
+        # i-Am from every device that hears it, which is this protocol's
+        # amplifier.
+        allow_broadcast: true
+        max_broadcast_replies: 64
+        broadcast_reply_window: 5s
+        max_whois_range: 2000
+
+        # The broadcast management functions are not carried.
+        # Register-Foreign-Device asks a BBMD to send the registering
+        # address every broadcast on a network it is not on, from one
+        # unauthenticated datagram; Read-Broadcast-Distribution-Table
+        # hands over the estate's BACnet routing.
+        allow_bbmd: false
+        allow_forwarded: false
+
+        # The routers of the estate talk to each other on the plant
+        # network, not across this relay.
+        allow_network_messages: false
+        allow_routing: false
+
+        # Only the local plant network. A request addressed to network
+        # 65535 asks every router in the estate to repeat it, and is
+        # refused at load if anybody writes it here.
+        networks: []
+        max_hop_count: 8
+
+        # A client that marks everything life safety has taken a queue
+        # from the traffic that is life safety.
+        max_priority: urgent
+
+        # A flood of requests at a controller is a controller that stops
+        # answering the management system, which on a building is the
+        # plant running on its own last commands.
+        rate_limit: 200
+        rate_burst: 400
+
+        rules:
+          # The plant the management system commands, during the day.
+          - name: bms-setpoints
+            action: allow
+            clients: ["10.60.1.10/32"]
+            services: [writeProperty, writePropertyMultiple]
+            objects: [analog-value, analog-output, binary-value, binary-output,
+                      multi-state-value, multi-state-output]
+            properties: [present-value, relinquish-default]
+            instances: ["1-4000"]
+
+          # The lighting integration, and only the lighting.
+          - name: lighting
+            action: allow
+            clients: ["10.60.1.20/32"]
+            services: [writeProperty]
+            objects: [lighting-output, binary-lighting-output]
+            properties: [present-value]
+
+          # The commissioning engineers, inside the change window, with a
+          # wider reach and a priority they are trusted with.
+          - name: change-window
+            action: allow
+            clients: ["10.60.1.100/32"]
+            services: [writeProperty, writePropertyMultiple, subscribeCOV]
+            max_command_priority: 6
+            schedule:
+              days: [mon, tue, wed, thu, fri]
+              from: "08:00"
+              to: "17:00"
+              timezone: Europe/Stockholm
+
+          # The lifts and the escalators are read and never written from
+          # here. A deny rule says so where a missing allow rule would
+          # only imply it.
+          - name: no-transport-writes
+            action: deny
+            services: [writeProperty, writePropertyMultiple]
+            objects: [elevator-group, escalator, lift, access-door]
+
+          # Everything else reads.
+          - name: supervisory-reads
+            action: allow
+            services: [readProperty, readPropertyMultiple, readRange,
+                       getEventInformation, getAlarmSummary]
+
+        default_action: deny
+        deny_response: reject
+        log_requests: true
+        alert_on_deny: true
+
+    # ---------------------------------------------------------------
+    # A second listener for the tenant-facing network: reading only, and
+    # a narrower set of objects. Nothing here writes anything.
+    # ---------------------------------------------------------------
+    - name: tenant-portal
+      address: "10.60.0.11:47808"
+      kind: bacnet
+      bacnet:
+        upstream: controllers
+        allow_clients: ["10.70.0.0/24"]
+        services: [readProperty, readPropertyMultiple]
+        objects: [analog-input, analog-value, binary-input, binary-value,
+                  multi-state-input, multi-state-value]
+        properties: [present-value, object-name, description, units, status-flags]
+        allow_broadcast: false
+        rate_limit: 50
+        rate_burst: 100
+        default_action: allow
+
+upstreams:
+  - name: controllers
+    endpoints:
+      - {address: "10.60.2.21:47808"}
+      - {address: "10.60.2.22:47808"}
+
+# A client that keeps asking for what it is refused is a client to stop
+# talking to for a while. On a building the source is usually a
+# misconfigured integration rather than an intruder, and a temporary ban
+# is how the plant network stops carrying its traffic either way.
+bans:
+  action: drop
+  triggers:
+    - name: bacnet-persistent-refusals
+      reasons: [bacnet_denied]
+      threshold: 20
+      window: 1m
+      duration: 15m

@@ -58,6 +58,17 @@ type APDU struct {
 	// unconfirmed request has one.
 	InvokeID    uint8
 	HasInvokeID bool
+	// InvokeOffset is where the identifier sits in the octets this APDU
+	// was read from, so a relay can rewrite it without re-deriving the
+	// header's length.
+	//
+	// A relay has to rewrite it. The standard makes an invoke identifier
+	// unique only between one client and one device, so two clients
+	// speaking to the same controller through one relay socket would be
+	// indistinguishable on the way back, and one client's answer would be
+	// delivered to the other. Translating it is what a BACnet router does
+	// for the same reason.
+	InvokeOffset int
 	// Segmented, MoreFollows, Sequence and Window are the segmentation
 	// fields. A segmented message is a message a relay sees a piece of,
 	// which is the reason they are surfaced rather than skipped.
@@ -122,6 +133,7 @@ func ParseAPDU(b []byte) (APDU, error) {
 		if a.MaxAPDU = maxAPDULengths[sz&0x0F]; a.MaxAPDU == 0 {
 			return a, fmt.Errorf("%w: a reserved maximum APDU length (%d)", ErrMalformed, sz&0x0F)
 		}
+		a.InvokeOffset = at
 		if a.InvokeID, err = take("the invoke identifier"); err != nil {
 			return a, err
 		}
@@ -155,6 +167,7 @@ func ParseAPDU(b []byte) (APDU, error) {
 		if flags != 0 {
 			return a, fmt.Errorf("%w: a reserved bit set in a simple ack (0x%02x)", ErrMalformed, b[0])
 		}
+		a.InvokeOffset = at
 		if a.InvokeID, err = take("the invoke identifier"); err != nil {
 			return a, err
 		}
@@ -172,6 +185,7 @@ func ParseAPDU(b []byte) (APDU, error) {
 		if !a.Segmented && a.MoreFollows {
 			return a, fmt.Errorf("%w: more-follows on a reply that is not segmented", ErrMalformed)
 		}
+		a.InvokeOffset = at
 		if a.InvokeID, err = take("the invoke identifier"); err != nil {
 			return a, err
 		}
@@ -194,6 +208,7 @@ func ParseAPDU(b []byte) (APDU, error) {
 			return a, fmt.Errorf("%w: a reserved bit set in a segment ack (0x%02x)", ErrMalformed, b[0])
 		}
 		a.Server = flags&0x01 != 0
+		a.InvokeOffset = at
 		if a.InvokeID, err = take("the invoke identifier"); err != nil {
 			return a, err
 		}
@@ -208,6 +223,7 @@ func ParseAPDU(b []byte) (APDU, error) {
 		if flags != 0 {
 			return a, fmt.Errorf("%w: a reserved bit set in an error (0x%02x)", ErrMalformed, b[0])
 		}
+		a.InvokeOffset = at
 		if a.InvokeID, err = take("the invoke identifier"); err != nil {
 			return a, err
 		}
@@ -227,6 +243,7 @@ func ParseAPDU(b []byte) (APDU, error) {
 			}
 			a.Server = flags&0x01 != 0
 		}
+		a.InvokeOffset = at
 		if a.InvokeID, err = take("the invoke identifier"); err != nil {
 			return a, err
 		}

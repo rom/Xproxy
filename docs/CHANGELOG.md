@@ -442,6 +442,96 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **`kind: bacnet`: a BACnet/IP relay in front of a building.**
+  `internal/bacnet` reads the three layers of ASHRAE 135 Annex J and holds the
+  service, object and property tables; `internal/kinds/bacnet` holds the policy.
+
+  The controllers behind this listener hold the setpoints for air handling,
+  chillers, boilers, lighting, lifts, access control and smoke control, and the
+  protocol they speak has **no identity at all**: no user, no session, no
+  password that means anything, and no transport security. Clause 24's
+  `authenticate` service was withdrawn from the standard and its network security
+  is implemented by almost nothing in the field, so a device answers whoever asks
+  it. Three properties of the protocol shape every control.
+
+  **Writing is a service, not a mode.** `readProperty` and `writeProperty` are
+  different service choices in the same request shape, so the difference between
+  reading a zone temperature and setting it is one octet -- and
+  `reinitializeDevice`, `deviceCommunicationControl`, `atomicWriteFile`,
+  `createObject` and `youAre` are all ordinary confirmed requests. An empty
+  `services` list therefore allows reading, discovery and the notifications a
+  device sends of its own accord, and nothing that changes anything.
+
+  **Writing has a priority, and the priority is the privilege.** A commandable
+  object holds sixteen command slots and the plant follows the highest-priority
+  one that is filled; slots 1 and 2 are manual and automatic life safety, and a
+  value written there cannot be overridden by the management system, by a schedule
+  or by an operator, and stands until whoever wrote it relinquishes it.
+  `max_command_priority` defaults to 8 and the refusal is *hard* -- it holds in
+  monitor mode, because a relay that shadowed this one would be watching somebody
+  take a piece of plant.
+
+  **It is broadcast, and it amplifies.** One `who-Is` is answered by an `i-Am`
+  from every device that hears it; a BBMD's foreign-device registration lets one
+  unauthenticated datagram subscribe a host to every broadcast on a network it is
+  not on; `Forwarded-NPDU` carries the address a message came from inside the
+  payload, where whoever sent it chose it. So `allow_broadcast`, `allow_bbmd` and
+  `allow_forwarded` all default to false, `max_broadcast_replies` bounds the
+  answers one broadcast brings back, a request routed to network 65535 is refused,
+  and a `Forwarded-NPDU` whose claimed origin is not the address it arrived from
+  is refused.
+
+  Deciding about a request means knowing which object it is about, and the first
+  object identifier in the parameters is the wrong one often enough to matter: in
+  a COV notification the first is the device that sent it and the third is the
+  object that changed. So the relay knows *where each service keeps its object*
+  rather than searching for one, checks every object and property in a
+  `readPropertyMultiple` or `writePropertyMultiple` rather than the first of
+  forty, and where no fixed position describes the object -- `createObject`'s
+  choice, `who-Has`'s alternative, the COV-multiple and audit services -- reports
+  that it could not be located. With object rules configured, such a request is
+  refused: the two ways to get that wrong are to check the wrong field and to let
+  it through unchecked.
+
+  The service list applies to the building's direction too, because it is a
+  statement about which services cross this listener rather than about which a
+  client may send: a device -- or something on the plant network wearing a
+  device's address -- broadcasting a `timeSynchronization` at a client network
+  sets the clock on every host that listens. The object and property rules are
+  deliberately *not* applied backwards, since they are written about the objects a
+  client may reach and applying them to the reply direction would refuse every
+  `i-Am`.
+
+  Invoke identifiers are translated per client, the way a BACnet router
+  translates them. The standard makes one unique only between a client and a
+  device, so two clients using identifier 1 towards the same controller through
+  one relay socket would get each other's answers.
+
+  Refusals are `bacnet_denied` deny events, so bans apply. The bounds that are
+  never shadowed are `command_priority_too_high`, `whois_unbounded`,
+  `whois_range_too_wide` and `rate_limited`.
+
+  A segmented exchange is translated in both directions and a segment renews the
+  exchange's deadline, because the client's acknowledgements name the identifier
+  the client chose and a deadline measured from the request would expire in the
+  middle of a long trend log download.
+
+  Four defects the tests and a review found. Fuzzing the parsers for twenty million executions
+  found that a four-octet property identifier decodes to a number and only some of
+  those numbers are property identifiers -- a value past the twenty-two bits
+  clause 21 gives one is now refused where it is read rather than reported as a
+  request about a property no device could have meant. And the end-to-end test for
+  shadow mode found an *ordering* defect in the policy: the command priority bound
+  was hidden behind the service refusal found first, so a listener in monitor mode
+  carried a write at a life safety command slot. `Decide` now matches the rule,
+  then checks the bounds, then the policy choices. Reading the relay back found
+  two more: a client's segment acknowledgement was forwarded with the client's own
+  invoke identifier, so every segmented reply stalled after its first window, and
+  an unconfirmed request arriving *from* the building was fanned out to clients
+  without the service list applied to it. The listener's two goroutines use
+  `internal/acceptgroup` rather than a bare `sync.WaitGroup`, so a shutdown that
+  arrives at the moment it starts waits for them instead of racing the Add.
+
 - **`kind: redis`: a Redis and Valkey relay, on the protocol where reachable means
   administrable.** `internal/respwire` reads the framing and holds the command
   table; `internal/kinds/redis` holds the policy.

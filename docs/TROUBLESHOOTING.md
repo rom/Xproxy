@@ -4802,6 +4802,121 @@ would refuse every upstream in the common deployment rather than protect anythin
 If your server does speak it, set `upstream_tls_mode: require` -- and the
 `examples/databases/redis.yaml` application front does.
 
+## BACnet
+
+**Every write is refused with `service_not_allowed`.** `services` defaults to the
+reading, discovery and notification services, and nothing that changes anything.
+That default is the listener's whole point: the protocol has no identity, so a
+relay somebody put in front of a building without reading the manual should carry
+what a graphics page needs and nothing that moves plant. Name the services the
+management system actually sends -- `writeProperty` and usually
+`writePropertyMultiple` -- and prefer naming them on a rule for that workstation
+rather than on the listener.
+
+**A write is refused with `command_priority_too_high`, and I allowed
+writeProperty.** The service is allowed and the *priority* is not.
+`max_command_priority` defaults to 8, which refuses the seven slots above it: a
+commandable object holds sixteen command slots, the plant follows the
+highest-priority one that is filled, and 1 and 2 are manual and automatic life
+safety. A value written there cannot be overridden by the management system, by a
+schedule or by an operator, and it stands until whoever wrote it relinquishes it.
+If a workstation genuinely commands in the supervisory range, raise the bound on a
+rule for that client. This refusal is one of the few that hold in monitor mode,
+because a relay that shadowed it would be watching somebody take a piece of plant.
+
+**A write to `out-of-service` is refused with `sensitive_write`.** That is
+`deny_sensitive_writes`, on by default. Writing `out-of-service` true cuts a point
+loose from the physical world: its present value becomes whatever was last
+written, and every graphics page, trend and alarm in the estate then reports that
+number as the truth. It is the shape of making a sensor lie without touching the
+sensor. Commissioning genuinely needs it, so put it on a rule with a schedule and
+a client list rather than turning the setting off.
+
+**A request is refused with `object_unlocatable`.** This listener has object or
+property rules, and the request is one of the services that keeps its object
+somewhere no fixed position describes: `createObject` names a type or an
+identifier inside a choice, `who-Has` names an object or a name, the COV-multiple
+and audit services carry lists of lists. The relay will not check the wrong field
+and will not pass the request unchecked, so it refuses. Either allow the service
+on a listener without object rules, or set `refuse_unlocated_objects: false` and
+accept that object rules do not apply to it.
+
+**`who-Is` gets no answers, or far fewer than there are devices.**
+`allow_broadcast` defaults to false, so check for `broadcast_not_allowed` first.
+If it is on, the answers are bounded: `max_broadcast_replies` (64) caps how many
+an `i-Am` flood may bring back to one client, and `broadcast_reply_window` (5s)
+caps how long answers are matched to the client that broadcast. An answer arriving
+after the window is counted as `unsolicited_broadcast` and dropped. Both are
+amplification bounds, which is why they exist rather than a discovery convenience.
+
+**A notification from a device never reaches the client.** The service list
+applies in that direction too: it says which services cross this listener, not
+which a client may send. `i-Am`, `i-Have` and the COV and event notifications are
+on the default list; `timeSynchronization` is not, in either direction, because a
+device broadcasting one at a client network sets the clock on every host that
+listens. The object and property rules are *not* applied to the building's
+direction -- they are written about the objects a client may reach, and applying
+them backwards would refuse every `i-Am`, which names a device object.
+
+**A `who-Is` addressed to network 65535 is refused.** That is the global broadcast
+network: it asks every router in the estate to repeat the message on every network
+it serves. `networks` names the destination networks a request may be routed to,
+and 65535 is refused at load if anybody writes it there. A `who-Is` for the local
+network carries no destination field at all and is not affected.
+
+**A BBMD registration is refused with `bbmd_not_allowed`.** `allow_bbmd` defaults
+to false, and it should stay that way across a client network.
+`Register-Foreign-Device` asks a broadcast management device to send the
+registering address every broadcast on a network it is not on, from one
+unauthenticated datagram; `Read-Broadcast-Distribution-Table` hands over the
+estate's BACnet routing to whoever asks. If a real BBMD is on the far side of this
+relay, the relay is in the wrong place: put it between the client network and the
+BBMD's own network rather than between the BBMD and its peers.
+
+**A `Forwarded-NPDU` is refused with `forwarded_origin_mismatch`.** The
+originating address in that function lives inside the payload, where whoever sent
+the datagram chose it, and it does not match the address the datagram came from. A
+BBMD doing its job and somebody putting another host's address on a broadcast look
+identical from here, and the relay assumes the second.
+
+**A trend log download stops after the first block.** That was a defect and is
+fixed; if you see it now, look for `no_such_exchange` in the security log. A
+segmented reply arrives as several datagrams and the client acknowledges each
+one, naming the identifier *it* chose -- which the relay has to translate back to
+the identifier the device is waiting for. A `no_such_exchange` means the relay is
+not holding that exchange: either the request timed out (`request_timeout`,
+default 10s, though a segment renews it) or something other than the client that
+made the request sent the acknowledgement. If a client really is too slow,
+raise `request_timeout`; if segmentation is not wanted at all, `allow_segmented:
+false` refuses it at the request instead of letting it stall.
+
+**Requests are refused with `too_many_pending`.** Every invoke identifier is
+outstanding, which means the devices are not answering. The relay allocates one of
+the protocol's two hundred and fifty-six identifiers per outstanding confirmed
+request and translates it back on the answer, because the standard makes an
+identifier unique only between one client and one device -- two clients using
+identifier 1 towards the same controller would otherwise get each other's
+answers. When they are all taken the relay refuses rather than reusing one. Look
+at the plant network first: this is usually a controller that has stopped
+answering, not a bound that is too low. `request_timeout` (10s) is how long a slot
+is held.
+
+**A client gets no answer at all and there is nothing in the security log.** If
+the request was an unconfirmed one, that is the protocol: an unconfirmed request
+expects nothing back, so a refusal of one is silence whatever `deny_response`
+says. For a confirmed request, `deny_response: drop` produces the same silence
+deliberately; `reject` is almost always better, because a device that is told no
+stops and a device that hears nothing retransmits.
+
+| Refusal | What it was | Shadowed? |
+|---|---|---|
+| `bacnet_denied` | The BACnet relay: a request the policy refused -- the client list, a service, an object, a property, a rule, the command priority, a discovery sweep, one of the broadcast or routing controls -- or an answer nobody asked for, a request arriving from the building towards a client, or a datagram that is not a BACnet message (`reason` says which, and the event carries the service, the object and property where they were found, the invoke identifier and the rule) | policy refusals yes, bounds no |
+
+The bounds that are never shadowed are `command_priority_too_high`,
+`whois_unbounded`, `whois_range_too_wide` and `rate_limited`. Everything else is a
+policy choice, and monitor mode is for finding out what an estate actually sends
+before refusing any of it.
+
 ## The device inventory
 
 **It is empty.** Two causes, in this order. The section is off by default,

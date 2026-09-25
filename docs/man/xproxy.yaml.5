@@ -14480,7 +14480,7 @@ list
 T}	T{
 \fB[]\fR (all)
 T}	T{
-Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBpostgres_\:denied\fR,\: \fBmysql_\:denied\fR,\: \fBtds_\:denied\fR,\: \fBredis_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fByara\fR
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBpostgres_\:denied\fR,\: \fBmysql_\:denied\fR,\: \fBtds_\:denied\fR,\: \fBredis_\:denied\fR,\: \fBbacnet_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fByara\fR
 T}
 T{
 \fBthreshold\fR
@@ -25635,6 +25635,547 @@ T}
 .TE
 .PP
 A command merely \fIoff\fR the allow list is a \fBsoft\fR refusal, which is the distinction that makes monitor mode useful: it is most likely an application nobody has listed yet, and finding those is what the mode is for. An operator who names one of the hard set in \fBallow_commands\fR has said so, and is not overruled.
+.SH "bacnet"
+.PP
+\fBkind: bacnet\fR is a relay in front of a building. The controllers behind it hold the setpoints for air handling, chillers, boilers, lighting, lifts, access control, smoke control and the pressurisation in an operating theatre, and a great many of them have been in a ceiling void since before the estate had a security team.
+.PP
+\fBThere is no identity in this protocol.\fR No user, no session, no password that means anything, and no transport security. Clause 24\(aqs \fBauthenticate\fR service was withdrawn from the standard; the network security of the same clause \-\- the challenge, the wrapped payloads, the key distribution \-\- is implemented by almost nothing in the field. A device answers whoever asks it. So this listener decides about a datagram from three things and no others: the address it came from, the service it asks for, and the object and property it names.
+.PP
+Three properties of the protocol shape every control below.
+.PP
+\fBWriting is a service, not a mode.\fR \fBreadProperty\fR and \fBwriteProperty\fR are different service choices in the same request shape, so the difference between reading a zone temperature and setting it is one octet. \fBreinitializeDevice\fR restarts a controller and \fBdeviceCommunicationControl\fR tells one to stop talking for a while; both take an optional password that is sent in the clear and that most devices leave unset. An empty \fBservices\fR list therefore allows reading, discovery and the notifications a device sends of its own accord, and nothing that changes anything.
+.PP
+\fBWriting has a priority, and the priority is the privilege.\fR A commandable object \-\- an analogue output, a binary output, a lighting output, a lift \-\- holds sixteen command slots, and the plant follows the highest\-priority slot that is filled. Slots 1 and 2 are manual and automatic life safety: a value written there cannot be overridden by the management system, by a schedule, or by an operator at a workstation, and it stands until whoever wrote it relinquishes it. \fBmax_command_priority\fR is the bound, it defaults to 8, and a request above it is refused \fIhard\fR \-\- the refusal stands in monitor mode, because a relay that shadowed this one would be watching somebody take a piece of plant.
+.PP
+\fBIt is broadcast, and it amplifies.\fR \fBwho\-Is\fR is a broadcast that every device answers with an \fBi\-Am\fR. A BBMD \-\- a broadcast management device \-\- forwards broadcasts between subnets, and its foreign\-device registration lets a host ask to be sent every broadcast on a network it is not even on, from a single unauthenticated datagram. \fBForwarded\-NPDU\fR carries the address a message came from \fIinside the payload\fR, where whoever sent the datagram chose it. So \fBallow_broadcast\fR, \fBallow_bbmd\fR and \fBallow_forwarded\fR all default to false, \fBmax_broadcast_replies\fR bounds the answers one broadcast brings back, and a \fBForwarded\-NPDU\fR whose claimed origin is not the address it arrived from is refused.
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(0.9i) lbw(1.4i) lbx
+lw(1.1i) lw(0.9i) lw(1.4i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Meaning
+T}
+T{
+\fBupstream\fR
+T}	T{
+string
+T}	T{
+\-\-
+T}	T{
+The pool of devices,\: routers or BBMDs. Required
+T}
+T{
+\fBallow_\:clients\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Networks a client may send from. Empty warns at load: this list is the only identity a request has
+T}
+T{
+\fBdeny_\:clients\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Evaluated first
+T}
+T{
+\fBservices\fR
+T}	T{
+list
+T}	T{
+reading,\: discovery and notifications
+T}	T{
+The services carried,\: by the standard\(aqs own names (\fBreadProperty\fR,\: \fBwriteProperty\fR,\: \fBwho\-\:Is\fR)
+T}
+T{
+\fBdeny_\:services\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Services no rule can allow
+T}
+T{
+\fBmax_\:command_\:priority\fR
+T}	T{
+int
+T}	T{
+\fB8\fR
+T}	T{
+The most privileged write priority,\: 1 (highest) to 16
+T}
+T{
+\fBobjects\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Object types a request may name,\: by name (\fBanalog\-\:output\fR) or by number for a vendor\(aqs proprietary type
+T}
+T{
+\fBdeny_\:objects\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Object types no rule can allow
+T}
+T{
+\fBproperties\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Properties a request may name,\: by name (\fBpresent\-\:value\fR) or by number
+T}
+T{
+\fBdeny_\:properties\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Properties no rule can allow
+T}
+T{
+\fBdeny_\:sensitive_\:writes\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse a write to a property whose value is the device\(aqs own behaviour
+T}
+T{
+\fBrefuse_\:unlocated_\:objects\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse a request whose object this relay could not find,\: where object rules exist
+T}
+T{
+\fBallow_\:broadcast\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Carry a broadcast from a client
+T}
+T{
+\fBmax_\:broadcast_\:replies\fR
+T}	T{
+int
+T}	T{
+\fB64\fR
+T}	T{
+Answers one broadcast may bring back to the client that sent it
+T}
+T{
+\fBbroadcast_\:reply_\:window\fR
+T}	T{
+duration
+T}	T{
+\fB5s\fR
+T}	T{
+How long answers are matched back to the client that broadcast
+T}
+T{
+\fBallow_\:bbmd\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Carry the broadcast management functions
+T}
+T{
+\fBallow_\:forwarded\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Carry a \fBForwarded\-\:NPDU\fR from a client
+T}
+T{
+\fBallow_\:network_\:messages\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Carry the network layer\(aqs own messages
+T}
+T{
+\fBallow_\:routing\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Carry \fBInitialize\-\:Routing\-\:Table\fR and the two connection messages. Needs \fBallow_\:network_\:messages\fR
+T}
+T{
+\fBallow_\:security_\:messages\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Carry clause 24\(aqs security messages
+T}
+T{
+\fBnetworks\fR
+T}	T{
+list of int
+T}	T{
+\fB[]\fR (local only)
+T}	T{
+Destination networks (DNET) a request may be routed to. 65535 is refused at load: it is the global broadcast
+T}
+T{
+\fBmax_\:hop_\:count\fR
+T}	T{
+int
+T}	T{
+\fB8\fR
+T}	T{
+Largest hop count a routed message may carry. A larger one is \fIlowered\fR,\: not refused
+T}
+T{
+\fBmax_\:priority\fR
+T}	T{
+string
+T}	T{
+\fBurgent\fR
+T}	T{
+Highest network priority a client may claim: \fBnormal\fR,\: \fBurgent\fR,\: \fBcritical\-\:equipment\fR,\: \fBlife\-\:safety\fR
+T}
+T{
+\fBallow_\:segmented\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Carry a segmented request or reply
+T}
+T{
+\fBmax_\:whois_\:range\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (any)
+T}	T{
+Largest device instance range a \fBwho\-\:Is\fR may ask about
+T}
+T{
+\fBrequire_\:whois_\:range\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse a \fBwho\-\:Is\fR with no range at all
+T}
+T{
+\fBmax_\:message_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB1497\fR
+T}	T{
+Largest datagram,\: and Annex J\(aqs own maximum
+T}
+T{
+\fBmax_\:pending\fR
+T}	T{
+int
+T}	T{
+\fB512\fR
+T}	T{
+Confirmed requests waiting for answers. Validation caps it at 256: that is how many invoke identifiers the protocol has
+T}
+T{
+\fBrequest_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB10s\fR
+T}	T{
+How long a confirmed request\(aqs slot is held
+T}
+T{
+\fBrate_\:limit\fR,\: \fBrate_\:burst\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Requests per second per client address
+T}
+T{
+\fBrules\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Per\-request rules,\: in order,\: first match wins
+T}
+T{
+\fBdefault_\:action\fR
+T}	T{
+string
+T}	T{
+\fBdeny\fR
+T}	T{
+\fBdeny\fR or \fBallow\fR for a request no rule matched
+T}
+T{
+\fBdeny_\:response\fR
+T}	T{
+string
+T}	T{
+\fBreject\fR
+T}	T{
+\fBreject\fR,\: \fBerror\fR or \fBdrop\fR. An unconfirmed request is always dropped: the protocol gives a relay nothing to say back
+T}
+T{
+\fBlog_\:requests\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+An access line per request: who,\: which service,\: which object and property
+T}
+T{
+\fBalert_\:on_\:deny\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A security event per refusal
+T}
+.TE
+.PP
+A rule takes \fBname\fR, \fBaction\fR (\fBallow\fR, \fBdeny\fR, \fBobserve\fR), \fBclients\fR, \fBservices\fR, \fBobjects\fR, \fBdeny_objects\fR, \fBinstances\fR, \fBproperties\fR, \fBdeny_properties\fR, \fBnetworks\fR, \fBmax_command_priority\fR and \fBschedule\fR. \fBinstances\fR is written as \fB1\-100\fR or as a single number, and bounds which object instances the rule covers. \fBschedule\fR is the shape the modbus, iec104, snmp, ldap and tftp rules use, and on a building it is a change window: writes allowed while the engineers are on site and refused at three in the morning.
+.PP
+The three lists a rule sets \fIreplace\fR the listener\(aqs for its own traffic, which is how one workstation that really does command at a high priority, or one integration that really does write to a device object, is written down. \fBmax_command_priority\fR on a rule works the same way \-\- and a rule that sets none takes the listener\(aqs rather than none at all.
+.SS "Where the object is, and when it cannot be found"
+.PP
+A policy about objects needs to know which object a request is about, and the first object identifier in a request\(aqs parameters is the wrong one often enough to matter. In a COV notification the first is the device that sent it and the third is the object that changed; in \fBsubscribeCOV\fR the first is a process identifier that is not an object at all. So this relay knows where each service keeps its object, rather than searching for one \-\- and \fBreadPropertyMultiple\fR and \fBwritePropertyMultiple\fR carry lists, every object and property of which is checked. A request reading one property from each of forty objects is one datagram, and checking the first of them would be checking a fortieth of it.
+.PP
+A handful of services keep their object somewhere no fixed position describes: \fBcreateObject\fR names a type or an identifier inside a choice, \fBwho\-Has\fR names an object or a name, the COV\-multiple and audit services carry lists of lists. Where this listener has object or property rules, a request whose object it could not find is refused, and \fBrefuse_unlocated_objects: false\fR says otherwise. The two ways to get this wrong are to check the wrong field and to let the request through unchecked; saying "I could not find it" is the only answer that is neither.
+.SS "The sensitive properties"
+.PP
+\fBdeny_sensitive_writes\fR refuses a write to \fBobject\-identifier\fR, \fBobject\-name\fR, \fBout\-of\-service\fR, \fBprogram\-change\fR, \fBrelinquish\-default\fR, \fBreliability\fR, \fBmax\-master\fR, \fBmax\-info\-frames\fR, \fBapdu\-timeout\fR, \fBnumber\-of\-apdu\-retries\fR, \fBtime\-synchronization\-recipients\fR, \fBrestart\-notification\-recipients\fR, \fBdevice\-address\-binding\fR, \fBdatabase\-revision\fR, \fBlocal\-date\fR, \fBlocal\-time\fR and \fButc\-offset\fR.
+.PP
+\fBout\-of\-service\fR is the one to understand. Writing it true cuts a point loose from the physical world: the present value becomes whatever was last written, and every graphics page, trend and alarm in the estate then reports that number as the truth. It is how a sensor is made to lie without touching the sensor. The recipient lists are the other shape of the same idea: they make a device send its notifications to an address of the writer\(aqs choosing.
+.SS "Refusal reasons"
+.PP
+.TS
+allbox;
+lbw(1.3i) lbx
+lw(1.3i) lx.
+T{
+\fBreason\fR
+T}	T{
+What it was
+T}
+T{
+\fBclient_\:not_\:allowed\fR
+T}	T{
+The address is outside \fBallow_\:clients\fR or inside \fBdeny_\:clients\fR
+T}
+T{
+\fBrate_\:limited\fR
+T}	T{
+The per\-client rate. A bound,\: never shadowed
+T}
+T{
+\fBnot_\:bacnet\fR
+T}	T{
+The first octet is not 0x81: something else on the port
+T}
+T{
+\fBmalformed\fR
+T}	T{
+A BACnet message whose fields contradict each other or the standard
+T}
+T{
+\fBmessage_\:too_\:large\fR,\: \fBreply_\:too_\:large\fR
+T}	T{
+Past \fBmax_\:message_\:bytes\fR,\: refused unread
+T}
+T{
+\fBbbmd_\:not_\:allowed\fR
+T}	T{
+A broadcast management function without \fBallow_\:bbmd\fR
+T}
+T{
+\fBforwarded_\:not_\:allowed\fR
+T}	T{
+A \fBForwarded\-\:NPDU\fR without \fBallow_\:forwarded\fR
+T}
+T{
+\fBforwarded_\:origin_\:mismatch\fR
+T}	T{
+A \fBForwarded\-\:NPDU\fR claiming to come from somewhere other than where it arrived from
+T}
+T{
+\fBbroadcast_\:not_\:allowed\fR
+T}	T{
+A broadcast without \fBallow_\:broadcast\fR
+T}
+T{
+\fBsecurity_\:not_\:allowed\fR,\: \fBsecurity_\:message_\:not_\:allowed\fR
+T}	T{
+Clause 24 without \fBallow_\:security_\:messages\fR
+T}
+T{
+\fBrouting_\:not_\:allowed\fR
+T}	T{
+A destination network where \fBnetworks\fR names none
+T}
+T{
+\fBnetwork_\:not_\:allowed\fR
+T}	T{
+A destination network outside \fBnetworks\fR
+T}
+T{
+\fBpriority_\:not_\:allowed\fR
+T}	T{
+A network priority above \fBmax_\:priority\fR
+T}
+T{
+\fBnetwork_\:message_\:not_\:allowed\fR
+T}	T{
+A network layer message without \fBallow_\:network_\:messages\fR
+T}
+T{
+\fBrouting_\:message_\:not_\:allowed\fR
+T}	T{
+\fBInitialize\-\:Routing\-\:Table\fR and the two connection messages without \fBallow_\:routing\fR
+T}
+T{
+\fBnetwork_\:message_\:unknown\fR
+T}	T{
+A network message type no edition defines
+T}
+T{
+\fBservice_\:denied\fR,\: \fBservice_\:not_\:allowed\fR
+T}	T{
+The service lists
+T}
+T{
+\fBservice_\:unknown\fR
+T}	T{
+A service choice no edition of the standard defines
+T}
+T{
+\fBsegmented_\:not_\:allowed\fR
+T}	T{
+A segmented message with \fBallow_\:segmented:\: false\fR
+T}
+T{
+\fBcommand_\:priority_\:too_\:high\fR
+T}	T{
+A write above \fBmax_\:command_\:priority\fR. A bound,\: never shadowed
+T}
+T{
+\fBwhois_\:unbounded\fR,\: \fBwhois_\:range_\:too_\:wide\fR
+T}	T{
+The discovery bounds. Bounds,\: never shadowed
+T}
+T{
+\fBobject_\:denied\fR,\: \fBobject_\:not_\:allowed\fR
+T}	T{
+The object type lists
+T}
+T{
+\fBinstance_\:not_\:allowed\fR
+T}	T{
+A rule\(aqs \fBinstances\fR
+T}
+T{
+\fBproperty_\:denied\fR,\: \fBproperty_\:not_\:allowed\fR
+T}	T{
+The property lists
+T}
+T{
+\fBsensitive_\:write\fR
+T}	T{
+A write to a property whose value is the device\(aqs own behaviour
+T}
+T{
+\fBobject_\:unlocatable\fR
+T}	T{
+Object rules exist and this relay could not find the request\(aqs object
+T}
+T{
+\fBrule_\:denied\fR,\: \fBno_\:rule_\:matched\fR
+T}	T{
+The rules and \fBdefault_\:action\fR
+T}
+T{
+\fBtoo_\:many_\:pending\fR
+T}	T{
+Every invoke identifier is outstanding,\: which means the devices are not answering
+T}
+T{
+\fBtoo_\:many_\:broadcasts\fR
+T}	T{
+The outstanding broadcast table is full
+T}
+T{
+\fBunsolicited_\:reply\fR
+T}	T{
+An answer carrying an invoke identifier nobody used,\: or from a device the request did not go to
+T}
+T{
+\fBunsolicited_\:broadcast\fR
+T}	T{
+An unsolicited datagram from the building with no client waiting for one
+T}
+T{
+\fBwrong_\:direction\fR
+T}	T{
+A confirmed request arriving from the building towards a client
+T}
+T{
+\fBhop_\:count_\:lowered\fR
+T}	T{
+Counted rather than refused: the hop count was rewritten down to \fBmax_\:hop_\:count\fR
+T}
+.TE
+.PP
+The refusals that are never shadowed are the bounds: \fBcommand_priority_too_high\fR, \fBwhois_unbounded\fR, \fBwhois_range_too_wide\fR and \fBrate_limited\fR. Everything else is a policy choice, and monitor mode is for finding out what an estate actually sends before refusing any of it.
+.SS "Pairing an answer with its question"
+.PP
+The standard makes an invoke identifier unique only between one client and one device. This relay speaks to the building from a socket of its own, so two clients that both use identifier 1 towards the same controller would be indistinguishable on the way back, and one client\(aqs answer would be delivered to the other. So the relay allocates an identifier of its own towards the device and translates it back on the answer, which is what a BACnet router does for the same reason. There are two hundred and fifty\-six of them; when all are outstanding a request is refused (\fBtoo_many_pending\fR) rather than reusing one, because reusing one delivers somebody else\(aqs answer.
+.PP
+An unconfirmed request has nothing to pair with at all \-\- an \fBi\-Am\fR is sent of the device\(aqs own accord \-\- so those answers are matched to the clients that broadcast inside \fBbroadcast_reply_window\fR and bounded by \fBmax_broadcast_replies\fR. An answer arriving outside anybody\(aqs window is not forwarded: that bound is this protocol\(aqs amplification control, not a convenience.
 .SH "asset_inventory"
 .PP
 One record per device, built from traffic the proxy was already carrying.
