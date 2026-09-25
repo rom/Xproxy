@@ -63,14 +63,26 @@ stale answer for the rest of the session.
 **The capability bits a client may even see offered.** `deny_capabilities`
 rewrites the server's greeting, which is the only place in this listener where a
 peer's message is modified — and it is the right place, because a capability the
-client never sees is a capability it cannot use. `CLIENT_LOCAL_FILES` is the
-one that matters: strip it and the server cannot ask the client for a file,
-whatever the server later decides to do.
+client never sees is a capability it cannot use. `CLIENT_LOCAL_FILES` is the one
+that matters: strip it and the server cannot ask the client for a file, whatever
+the server later decides to do.
+
+Stripping a bit from the greeting is not the whole job, though, and this is the
+detail that makes the capability policy real rather than decorative:
+`COM_SET_OPTION` turns multi-statement support back **on** afterwards. So a
+denied capability is enforced there as well as in the greeting — otherwise a
+client that never saw `CLIENT_MULTI_STATEMENTS` offered could simply ask for it
+one command later.
 
 **Whether the connection may be unencrypted**, with `require_tls`.
 
-**The authentication plugins.** `allow_auth` names them and `allow_weak_auth` is
-the explicit line for `mysql_clear_password` and the SHA-1 plugin.
+**The authentication plugins.** `allow_auth` names them, and `allow_weak_auth` is
+the explicit line for the two whose credential an observer can *reuse*:
+`mysql_clear_password` (the password itself) and `mysql_old_password` (the
+pre-4.1 scramble). `mysql_native_password` is deliberately not in that set —
+it is SHA-1 based and dated, but its challenge-response discloses no reusable
+secret, and calling it weak would push deployments towards turning the flag on
+for the wrong reason.
 
 **The identity — and again on `COM_CHANGE_USER`.** `allow_users` and
 `allow_databases` are re-checked when the connection changes user, because that

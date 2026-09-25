@@ -56,6 +56,14 @@ what a graphics page needs and nothing that moves plant.
 `writeProperty` to a setpoint and `writeProperty` to `out-of-service` are the
 same service.
 
+`deny_sensitive_writes` is that distinction made a default rather than a list
+somebody has to remember to write. It is **on**, and it refuses writes to the
+properties that are the device's own behaviour rather than a measurement or a
+setpoint: `object-name`, `out-of-service`, `program-change`, the notification
+recipient lists and the MS/TP timing properties. `refuse_unlocated_objects`
+covers the other half of the same idea — a request whose object this relay
+cannot place is a request no object policy was applied to.
+
 **The command priority.** `max_command_priority` defaults to 8, refusing the
 seven slots above it — so nobody takes a piece of plant at a life safety slot
 the management system cannot override. It is the single most useful line in the

@@ -61,10 +61,14 @@ usually accumulated over years.
 `SSLRequest` is required and the relay answers it — so a client that would have
 continued after an `N` never gets one.
 
-**Which authentication methods may cross.** `allow_auth` names them and
-`allow_weak_auth` is the explicit line an operator writes to permit MD5 or
-cleartext, so a downgrade is a configured decision rather than a server's
-choice.
+**Which authentication methods may cross.** `allow_auth` names them as
+`pg_hba.conf` does — `password`, `md5`, `scram`, `gss`, `sspi`, `kerberos`,
+`scm` — and an empty list allows any that is not weak. `allow_weak_auth` is the
+explicit line for the two whose credential an observer can reuse: `password`,
+which is cleartext, and `md5`, which is worse than it looks — the stored
+verifier is `md5(password+username)`, so the hash *is* a password-equivalent and
+anybody who can read `pg_authid` can authenticate with it. Either way a
+downgrade becomes a configured decision rather than the server's choice.
 
 **The identity, from the startup parameters**: `allow_users`,
 `allow_databases`, and `allow_applications` — the last more useful than it
