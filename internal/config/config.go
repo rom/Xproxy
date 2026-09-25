@@ -294,6 +294,8 @@ type Listener struct {
 	LDAP *LDAPListener `yaml:"ldap"`
 	// TFTP configures a kind: tftp listener.
 	TFTP *TFTPListener `yaml:"tftp"`
+	// Postgres is the kind: postgres section.
+	Postgres *PostgresListener `yaml:"postgres"`
 	// DHCP configures a kind: dhcp listener.
 	DHCP *DHCPListener `yaml:"dhcp"`
 	// Policy is whether this listener enforces its policy or only
@@ -1014,6 +1016,193 @@ type LDAPRule struct {
 // There is nothing to authenticate with in this protocol, so the whole of
 // the policy is the address it came from, the direction of the transfer,
 // the path it asked for and the size of what comes back.
+// PostgresListener is the settings of a kind: postgres listener: a relay in
+// front of a PostgreSQL server that reads the frontend/backend protocol.
+//
+// A database proxy must not pretend to be a SQL firewall. Knowing which tables a
+// statement touches means parsing SQL properly -- every alias, subquery, CTE,
+// view, function body and search_path interaction -- and a relay that got that
+// 95% right would have a policy with a hole in exactly the place somebody is
+// looking. Restricting a role's tables is the database's own job, with GRANT.
+//
+// What a relay can do is everything that happens before the database has an
+// opinion, and two things it does better than the database: refuse the
+// encryption downgrade that libpq's default sslmode accepts silently, and refuse
+// the authentication methods that put a reusable credential on the wire. Plus
+// one thing the database cannot do at all: decide by the *shape* of a statement,
+// as an allow list of kinds where anything unclassifiable is refused.
+type PostgresListener struct {
+	// Upstream is the server pool a connection goes to. Required.
+	Upstream string `yaml:"upstream"`
+	// AllowClients and DenyClients are the networks a client may connect
+	// from. Deny is evaluated first.
+	AllowClients []string `yaml:"allow_clients"`
+	DenyClients  []string `yaml:"deny_clients"`
+
+	// RequireTLS refuses a client that will not encrypt. Default true, and
+	// this is the single most valuable line in a postgres listener's
+	// configuration.
+	//
+	// The protocol negotiates encryption in cleartext: the client sends eight
+	// octets asking for TLS and the server answers with one octet, 'S' or 'N'.
+	// Nothing signs that octet. libpq's default sslmode is `prefer`, which
+	// means "ask for TLS and carry on in the clear if refused, without telling
+	// anybody" -- so the default configuration of the most widely deployed
+	// client in the world downgrades silently when something on the path says
+	// no. The relay answers the request itself rather than forwarding it, so
+	// the decision is made here and not by whatever rewrote the octet.
+	RequireTLS *bool `yaml:"require_tls"`
+	// UpstreamTLSMode is how the relay speaks to the server: require (the
+	// default), prefer or disable. A relay that terminated TLS from the
+	// client and then spoke plaintext to the server would have moved the
+	// exposure rather than removed it, which is why the default is require
+	// rather than matching the client's leg.
+	UpstreamTLSMode string `yaml:"upstream_tls_mode"`
+	// UpstreamTLS is the certificate and verification settings for the leg to
+	// the server.
+	UpstreamTLS *UpstreamTLS `yaml:"upstream_tls"`
+
+	// AllowUsers, DenyUsers, AllowDatabases and DenyDatabases are the
+	// identity claims a connection may make. They are claims rather than
+	// credentials -- the client says who it wants to be and the server
+	// decides -- so these lists say which attempts may even be made, which is
+	// smaller and still useful: an estate where nothing should ever connect as
+	// `postgres` can say so and have it hold before a single password is
+	// guessed at.
+	AllowUsers     []string `yaml:"allow_users"`
+	DenyUsers      []string `yaml:"deny_users"`
+	AllowDatabases []string `yaml:"allow_databases"`
+	DenyDatabases  []string `yaml:"deny_databases"`
+	// AllowApplications matches the application_name startup parameter, with
+	// a trailing * allowed. It is chosen by the client and is not a
+	// credential; it is useful for telling a migration tool from a reporting
+	// dashboard when both connect as the same role, which is the ordinary
+	// state of affairs.
+	AllowApplications []string `yaml:"allow_applications"`
+
+	// AllowAuth is the allow list of authentication methods the relay will
+	// carry, named as pg_hba.conf names them: password, md5, scram, gss,
+	// sspi, kerberos, scm. Empty allows any that is not weak.
+	AllowAuth []string `yaml:"allow_auth"`
+	// AllowWeakAuth permits a method whose credential an observer can reuse:
+	// `password` is the password in cleartext, and `md5` is worse than it
+	// looks -- the stored verifier is md5(password+username), so the hash *is*
+	// a password-equivalent and anybody who reads pg_authid can authenticate
+	// without cracking anything. PostgreSQL has shipped SCRAM since 10.
+	// Default false.
+	AllowWeakAuth bool `yaml:"allow_weak_auth"`
+
+	// ReadOnly refuses every statement that can change data, which includes
+	// CALL and DO: a procedure and an anonymous block can do anything the
+	// role can, so a relay that called them reads would have a read_only
+	// setting that is decorative.
+	ReadOnly bool `yaml:"read_only"`
+	// AllowStatements is the allow list of statement kinds. Empty allows any
+	// kind the classifier can name, subject to read_only and the deny list.
+	//
+	// The kinds are select, insert, update, delete, merge, copy, call, do,
+	// explain, show, set, reset, begin, commit, rollback, savepoint, lock,
+	// prepare, execute, deallocate, declare, fetch, move, close_cursor,
+	// listen, notify, unlisten, ddl, grant, maintenance, two_phase, empty.
+	//
+	// A statement the classifier cannot name is refused whatever this says,
+	// and cannot be allowed: the whole design is an allow list of shapes, and
+	// a shape nobody could read is not one of them.
+	AllowStatements []string `yaml:"allow_statements"`
+	// DenyStatements is the deny list, which no rule can override.
+	DenyStatements []string `yaml:"deny_statements"`
+	// AllowCopy names which COPY operations may cross: in (FROM STDIN), out
+	// (TO STDOUT) or file (a path on the server, which needs a privileged
+	// role). Empty allows in and out.
+	//
+	// `program` cannot be named here at all. COPY ... FROM PROGRAM runs a
+	// shell command as the server's operating-system user: it is remote code
+	// execution with a SQL keyword in front of it, and a setting that could
+	// switch it on through a relay is one somebody switches on by accident.
+	AllowCopy []string `yaml:"allow_copy"`
+	// AllowReplication permits a connection whose startup packet asks for
+	// one. Default false. A physical replication stream is a byte-for-byte
+	// copy of every database on the server including the role passwords, and
+	// it is a startup *parameter* rather than a statement, so no statement
+	// policy would ever see it.
+	AllowReplication bool `yaml:"allow_replication"`
+	// AllowFunctionCall permits the legacy fast-path interface, which names a
+	// function by object identifier and bypasses the parser completely.
+	// Nothing written this century sends it. Default false.
+	AllowFunctionCall bool `yaml:"allow_function_call"`
+	// AllowCancel permits a CancelRequest. Default true, because cancelling a
+	// runaway query is something operators legitimately do -- and it is worth
+	// knowing that the server acts on one with no authentication at all: the
+	// whole credential is a process identifier and a 32-bit secret. The relay
+	// cannot check the secret, so what it does is refuse one from an address
+	// that is not an admitted client, and count them.
+	AllowCancel *bool `yaml:"allow_cancel"`
+
+	// MaxStatements bounds how many statements one message may carry. Default
+	// 8. The simple query protocol allows several separated by semicolons,
+	// which is also how every injection ending in `; DROP TABLE` is
+	// delivered.
+	MaxStatements int `yaml:"max_statements"`
+	// MaxStatementBytes bounds one statement. Default 64 KiB.
+	MaxStatementBytes int `yaml:"max_statement_bytes"`
+	// MaxMessageBytes bounds one protocol message. Default 1 MiB. The
+	// protocol's own limit is the 4-byte length field, which is two
+	// gigabytes.
+	MaxMessageBytes int `yaml:"max_message_bytes"`
+	// MaxSessions bounds concurrent connections through this listener, and
+	// MaxSessionsPerClient bounds them per source address.
+	MaxSessions          int `yaml:"max_sessions"`
+	MaxSessionsPerClient int `yaml:"max_sessions_per_client"`
+	// IdleTimeout ends a connection that has said nothing, and
+	// SessionDuration one that has lasted too long whatever it is doing.
+	IdleTimeout     Duration `yaml:"idle_timeout"`
+	SessionDuration Duration `yaml:"session_duration"`
+	// HandshakeTimeout bounds the TLS handshake and the startup exchange.
+	HandshakeTimeout Duration `yaml:"handshake_timeout"`
+
+	// Rules narrow or widen the listener for traffic that matches them.
+	Rules []PostgresRule `yaml:"rules"`
+	// DefaultAction is allow or deny when no rule matched. Default deny.
+	DefaultAction string `yaml:"default_action"`
+	// DenyResponse is error (the default: an ErrorResponse the client's own
+	// library reports) or drop (close without a word).
+	DenyResponse string `yaml:"deny_response"`
+	// MonitorOnly evaluates the policy and enforces nothing, except the
+	// decisions marked hard: the client list, the TLS requirement, the
+	// authentication methods, a statement the classifier could not read, a
+	// replication connection and COPY ... FROM PROGRAM. Forwarding any of
+	// those and writing it down is not a trial of anything.
+	MonitorOnly bool `yaml:"monitor_only"`
+}
+
+// PostgresRule is one rule of a postgres listener's policy.
+type PostgresRule struct {
+	// Name identifies the rule in logs and counters.
+	Name string `yaml:"name"`
+	// Clients, Users, Databases and Applications select the traffic this rule
+	// is about. Selectors within a rule are AND; values within a selector are
+	// OR. A rule with no selectors matches everything.
+	Clients      []string `yaml:"clients"`
+	Users        []string `yaml:"users"`
+	Databases    []string `yaml:"databases"`
+	Applications []string `yaml:"applications"`
+	// Schedule is when this rule allows what it allows.
+	Schedule *ModbusSchedule `yaml:"schedule"`
+	// Action is allow (the default), deny or observe.
+	Action string `yaml:"action"`
+	// AllowStatements, DenyStatements, AllowCopy and ReadOnly are the rule's
+	// own narrowing. A rule that names a kind widens the listener for its own
+	// traffic, which is what makes one listener serve a reporting account that
+	// may only select and a migration account that may also change the schema.
+	// The deny lists always win, on the rule and on the listener both.
+	AllowStatements []string `yaml:"allow_statements"`
+	DenyStatements  []string `yaml:"deny_statements"`
+	AllowCopy       []string `yaml:"allow_copy"`
+	ReadOnly        *bool    `yaml:"read_only"`
+	// MaxStatements is the rule's own bound on statements per message.
+	MaxStatements int `yaml:"max_statements"`
+}
+
 type TFTPListener struct {
 	// Mode is reverse (the default: clients send here and the listener
 	// forwards to the servers) or forward (this listener is the controlled

@@ -232,3 +232,69 @@ routes:
 		}
 	}
 }
+
+// A role nothing can be classified as must always be expected, whatever the
+// estate listed. Otherwise every device the evidence does not identify -- which
+// on a quiet segment is most of them, at first -- raises a finding, and a
+// detection that fires on everything is one an operator turns off.
+func TestUnknownIsAlwaysExpectedEvenWhenTheEstateDidNotListIt(t *testing.T) {
+	s := inventoryProxy(t, "\nasset_inventory:\n  enabled: true\n  roles: [plc]\n")
+	// An address and nothing else: identifiable, and classifiable as nothing.
+	s.ObserveAsset(assets.Observation{Proto: "modbus", Listener: "line1",
+		Addr: netip.MustParseAddr("10.30.9.9")})
+	sum := s.Stats().Assets
+	if sum == nil || sum.Unknown != 1 {
+		t.Fatalf("summary: %+v", sum)
+	}
+	if n := s.stats.AssetUnexpected.Load(); n != 0 {
+		t.Fatalf("an unclassifiable device raised %d findings against a list it cannot be on", n)
+	}
+	// The listed role is still not a finding, and an unlisted one still is.
+	s.ObserveAsset(assets.Observation{Proto: "modbus", Listener: "line1",
+		Addr: netip.MustParseAddr("10.30.10.20"), Hardware: []byte{0, 0x0f, 0xbb, 1, 2, 3},
+		Server: true, Units: []int{1}, Funcs: []int{3}})
+	if n := s.stats.AssetUnexpected.Load(); n != 0 {
+		t.Fatalf("a listed role raised a finding: %d", n)
+	}
+	s.ObserveAsset(assets.Observation{Proto: "modbus", Listener: "line1",
+		Addr: netip.MustParseAddr("10.30.1.5"), Hardware: []byte{0xaa, 0xbb, 0xcc, 1, 2, 3},
+		Units: []int{1}, Funcs: []int{3, 6, 16}})
+	if n := s.stats.AssetUnexpected.Load(); n != 1 {
+		t.Fatalf("an unlisted role raised %d findings, want 1", n)
+	}
+}
+
+// A state file that cannot be written is the failure that makes every other
+// alert wrong, because the next restart reports the whole estate as new. It has
+// to be counted, or nobody finds out until then.
+func TestAStateFileThatCannotBeWrittenIsCounted(t *testing.T) {
+	// A path inside a directory that does not exist. The inventory is still
+	// kept in memory -- refusing to carry traffic over a record would make the
+	// record more important than the traffic -- so the only way anybody learns
+	// is the counter and the warning.
+	path := filepath.Join(t.TempDir(), "no-such-directory", "assets.json")
+	s := inventoryProxy(t, "\nasset_inventory:\n  enabled: true\n  state_file: "+path+"\n")
+	if s.Assets() == nil {
+		t.Fatal("no inventory")
+	}
+	s.ObserveAsset(assets.Observation{Proto: "modbus", Listener: "line1",
+		Addr: netip.MustParseAddr("10.30.10.20"), Hardware: []byte{0, 0x0f, 0xbb, 1, 2, 3},
+		Server: true, Units: []int{1}, Funcs: []int{3}})
+	k := s.assets.Load()
+	if k == nil {
+		t.Fatal("no keeper")
+	}
+	k.stop() // writes one last time, and fails
+	if n := s.stats.AssetSaveFailures.Load(); n == 0 {
+		t.Fatal("a save that could not happen was not counted")
+	}
+	// And the failure reaches the exposition, because that is where an alert
+	// on it lives.
+	var buf bytes.Buffer
+	if err := s.WriteMetrics(&buf); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "xproxy_asset_save_failures_total 1") {
+		t.Error("the save failure is not in the metrics")
+	}
+}

@@ -121,7 +121,27 @@ func TestTheFiltersNarrowAndATypoIsRefused(t *testing.T) {
 	if _, err := c.Assets(AssetQuery{Role: "plk"}); err == nil {
 		t.Fatal("an unknown role was accepted as a filter")
 	}
-	rep, err := c.Assets(AssetQuery{Proto: "dhcp"})
+	// By role, which is the filter a segmentation review uses: show me
+	// everything on this wire that is classified as a controller.
+	rep, err := c.Assets(AssetQuery{Role: "plc"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Assets) != 1 || rep.Assets[0].Hardware != "00:0f:bb:01:02:03" {
+		t.Fatalf("by role: %+v", rep.Assets)
+	}
+	// A role nothing is classified as answers an empty list rather than an
+	// error: the role is real, so the question is well formed and the answer
+	// is that there are none.
+	if rep, err = c.Assets(AssetQuery{Role: "voip_phone"}); err != nil || len(rep.Assets) != 0 {
+		t.Fatalf("by an absent role: %d %v", len(rep.Assets), err)
+	}
+	// And the spelling is not case-sensitive, because a role in a log line is
+	// not necessarily the spelling somebody types.
+	if rep, err = c.Assets(AssetQuery{Role: "PLC"}); err != nil || len(rep.Assets) != 1 {
+		t.Fatalf("by an upper-case role: %d %v", len(rep.Assets), err)
+	}
+	rep, err = c.Assets(AssetQuery{Proto: "dhcp"})
 	if err != nil {
 		t.Fatal(err)
 	}

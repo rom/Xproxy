@@ -21,18 +21,19 @@ import (
 	"os"
 
 	"github.com/rom/xproxy/internal/daemon"
-	_ "github.com/rom/xproxy/internal/kinds/dhcp"   // listener kind: dhcp
-	_ "github.com/rom/xproxy/internal/kinds/ftp"    // listener kind: ftp
-	_ "github.com/rom/xproxy/internal/kinds/iec104" // listener kind: iec104
-	_ "github.com/rom/xproxy/internal/kinds/ldap"   // listener kind: ldap
-	_ "github.com/rom/xproxy/internal/kinds/modbus" // listener kind: modbus
-	_ "github.com/rom/xproxy/internal/kinds/mqtt"   // listener kind: mqtt
-	_ "github.com/rom/xproxy/internal/kinds/ntp"    // listener kind: ntp
-	_ "github.com/rom/xproxy/internal/kinds/ntske"  // listener kind: ntske
-	_ "github.com/rom/xproxy/internal/kinds/smtp"   // listener kind: smtp
-	_ "github.com/rom/xproxy/internal/kinds/snmp"   // listener kind: snmp
-	_ "github.com/rom/xproxy/internal/kinds/syslog" // listener kind: syslog
-	_ "github.com/rom/xproxy/internal/kinds/tftp"   // listener kind: tftp
+	_ "github.com/rom/xproxy/internal/kinds/dhcp"     // listener kind: dhcp
+	_ "github.com/rom/xproxy/internal/kinds/ftp"      // listener kind: ftp
+	_ "github.com/rom/xproxy/internal/kinds/iec104"   // listener kind: iec104
+	_ "github.com/rom/xproxy/internal/kinds/ldap"     // listener kind: ldap
+	_ "github.com/rom/xproxy/internal/kinds/modbus"   // listener kind: modbus
+	_ "github.com/rom/xproxy/internal/kinds/mqtt"     // listener kind: mqtt
+	_ "github.com/rom/xproxy/internal/kinds/ntp"      // listener kind: ntp
+	_ "github.com/rom/xproxy/internal/kinds/ntske"    // listener kind: ntske
+	_ "github.com/rom/xproxy/internal/kinds/postgres" // listener kind: postgres
+	_ "github.com/rom/xproxy/internal/kinds/smtp"     // listener kind: smtp
+	_ "github.com/rom/xproxy/internal/kinds/snmp"     // listener kind: snmp
+	_ "github.com/rom/xproxy/internal/kinds/syslog"   // listener kind: syslog
+	_ "github.com/rom/xproxy/internal/kinds/tftp"     // listener kind: tftp
 	"github.com/rom/xproxy/internal/listener"
 )
 
