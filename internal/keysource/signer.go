@@ -8,8 +8,11 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -395,4 +398,38 @@ func (s *Signer) Close() error {
 		}
 	})
 	return nil
+}
+
+// CertificateFor builds a tls.Certificate whose private key lives in the
+// helper: the chain comes from the certificate PEM, the public key from its
+// leaf, and every signature goes over the socket.
+//
+// It is here rather than in the TLS package because the interesting part is the
+// proof -- NewSigner verifies that the helper's key matches this certificate --
+// and that belongs beside the signer it is about.
+func CertificateFor(certPEM []byte, cfg SignerConfig) (tls.Certificate, error) {
+	var chain [][]byte
+	rest := certPEM
+	for {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		if block.Type == "CERTIFICATE" {
+			chain = append(chain, block.Bytes)
+		}
+	}
+	if len(chain) == 0 {
+		return tls.Certificate{}, errors.New("signer: no certificate in the PEM")
+	}
+	leaf, err := x509.ParseCertificate(chain[0])
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("signer: %w", err)
+	}
+	s, err := NewSigner(cfg, leaf.PublicKey)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	return tls.Certificate{Certificate: chain, PrivateKey: s, Leaf: leaf}, nil
 }

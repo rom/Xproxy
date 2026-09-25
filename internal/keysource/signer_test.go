@@ -13,6 +13,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"math/big"
 	"net"
@@ -444,4 +445,37 @@ func selfSigned(t *testing.T, key crypto.Signer) ([]byte, *x509.CertPool) {
 	pool := x509.NewCertPool()
 	pool.AddCert(leaf)
 	return der, pool
+}
+
+// CertificateFor is what a listener uses: the chain from the PEM, the public key
+// from its leaf, the private key on the other side of a socket -- and the proof
+// that the two belong together before anything is served.
+func TestACertificateWhoseKeyIsElsewhere(t *testing.T) {
+	key := mustECDSA(t)
+	certDER, _ := selfSigned(t, key)
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	h := startHelper(t, key, "edge")
+
+	cert, err := CertificateFor(certPEM, SignerConfig{Socket: h.addr(), Key: "edge"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cert.Certificate) != 1 || cert.Leaf == nil {
+		t.Fatalf("chain %d leaf %v", len(cert.Certificate), cert.Leaf)
+	}
+	if _, ok := cert.PrivateKey.(*Signer); !ok {
+		t.Errorf("private key is %T, want the external signer", cert.PrivateKey)
+	}
+
+	// A PEM with no certificate in it, and a helper holding another key, are
+	// both load-time errors rather than handshake-time ones.
+	if _, err := CertificateFor([]byte("not a pem"), SignerConfig{Socket: h.addr(), Key: "edge"}); err == nil {
+		t.Error("a PEM with no certificate was accepted")
+	}
+	other := mustECDSA(t)
+	otherDER, _ := selfSigned(t, other)
+	otherPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: otherDER})
+	if _, err := CertificateFor(otherPEM, SignerConfig{Socket: h.addr(), Key: "edge"}); err == nil {
+		t.Error("a certificate the helper cannot sign for was accepted")
+	}
 }
