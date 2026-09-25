@@ -33,6 +33,7 @@ server:
           snmp: null
           ldap: null
           tftp: null
+          postgres: null
           dhcp: null
           policy: null
         - name: public
@@ -88,6 +89,7 @@ server:
           snmp: null
           ldap: null
           tftp: null
+          postgres: null
           dhcp: null
           policy: null
     limits:

@@ -5988,7 +5988,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `ntp_denied`, `ntske_denied`, `yara` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `postgres_denied`, `ntp_denied`, `ntske_denied`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |
@@ -9513,6 +9513,143 @@ on the management socket, where the kernel decides who may throw it.
 Selectors within a rule are AND, values within a selector are OR, and
 rules are tried in order. To capture one route for one client, put both
 selectors in one rule; to capture two unrelated things, write two rules.
+
+## postgres
+
+`kind: postgres` is a relay in front of a PostgreSQL server that reads the
+frontend/backend protocol (the PostgreSQL manual, part IV chapter 55).
+
+**It is not a SQL firewall, and will not become one.** Knowing which
+tables a statement touches means parsing SQL properly -- every alias,
+subquery, CTE, view, function body and `search_path` interaction -- and a
+relay that got that 95% right would have a policy with a hole in exactly
+the place somebody is looking. Restricting a role's tables is the
+database's own job, done properly, with `GRANT`.
+
+What a relay can do is everything that happens before the database has an
+opinion, two things it does better than the database, and one the database
+cannot do at all:
+
+- **Refuse the encryption downgrade.** The protocol negotiates TLS in
+  cleartext: the client sends eight octets asking, and the server answers
+  with one unsigned octet, `S` or `N`. libpq's default `sslmode` is
+  `prefer`, which means "ask for TLS and carry on in the clear if refused,
+  without telling anybody" -- so the default configuration of the most
+  widely deployed client in the world downgrades silently when something
+  on the path rewrites that octet. The relay answers the request itself
+  rather than forwarding it, and `require_tls` (on by default) refuses a
+  client that will not encrypt at all.
+- **Refuse the weak authentication methods.** `password` is the password
+  in cleartext. `md5` is worse than it looks: the stored verifier is
+  `md5(password+username)`, so the hash *is* a password-equivalent and
+  anybody who reads `pg_authid` can authenticate without cracking
+  anything. PostgreSQL has shipped SCRAM since version 10. `pg_hba.conf`
+  can refuse both too, and on every estate that has been audited, it does
+  not.
+- **Refuse what is not a statement at all**: a replication connection (a
+  startup *parameter*, so no statement policy would ever see it), the
+  legacy fast-path function call, a cancel request from an address that has
+  no business sending one.
+- **Decide by the shape of a statement.** An allow list of statement
+  *kinds*, where a statement the classifier cannot name is refused. That is
+  a much smaller claim than a SQL firewall and it holds.
+
+```yaml
+- name: reporting
+  address: "10.0.0.10:5432"
+  kind: postgres
+  tls:
+    certificates: [{cert_file: /etc/xproxy/tls/db.pem, key_file: /etc/xproxy/tls/db-key.pem}]
+  postgres:
+    upstream: pg
+    allow_clients: ["10.0.4.0/24"]
+    allow_users: [reporting, dashboards]
+    allow_databases: [sales]
+    allow_auth: [scram]
+    read_only: true
+    allow_statements: [select, explain, show, set, begin, commit, rollback, fetch, declare, close_cursor]
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | name | *(required)* | The server pool |
+| `allow_clients`, `deny_clients` | list of CIDR | any | Networks a client may connect from; deny is evaluated first |
+| `require_tls` | bool | `true` | Refuse a client that will not encrypt. **The single most valuable line in a postgres listener.** The listener needs a `tls` section, because the protocol upgrades an existing connection rather than using a second port |
+| `upstream_tls_mode` | `require`, `prefer`, `disable` | `require` | How the relay speaks to the server. The default is not "match the client" on purpose: a relay that terminated TLS and then spoke plaintext onward would have moved the exposure rather than removed it. `require` refuses a server that answers `N` |
+| `upstream_tls` | object | *(none)* | Certificate and verification settings for the leg to the server |
+| `allow_users`, `deny_users` | list | any | Which roles a connection may *claim*. It is a claim, not a credential -- the server decides -- so this says which attempts may be made, which is smaller and still useful: an estate where nothing should ever connect as `postgres` can say so and have it hold before a password is guessed at |
+| `allow_databases`, `deny_databases` | list | any | Same, for the database. Absent in the startup packet it defaults to the user name, and the policy applies that default |
+| `allow_applications` | list | any | Matches `application_name`, trailing `*` allowed. Client-chosen and not a credential; useful for telling a migration tool from a dashboard when both connect as the same role |
+| `allow_auth` | list | any not weak | Methods the relay will carry, named as `pg_hba.conf` names them: `password`, `md5`, `scram`, `gss`, `sspi`, `kerberos`, `scm` |
+| `allow_weak_auth` | bool | `false` | Permit `password`, `md5` or `scm` -- the methods whose credential an observer can reuse |
+| `read_only` | bool | `false` | Refuse every statement that can change data. This includes `call` and `do`, because a procedure and an anonymous block can do anything the role can, and a relay that counted them reads would have a `read_only` that is decorative |
+| `allow_statements` | list of kinds | any nameable | The allow list. Kinds: `select`, `insert`, `update`, `delete`, `merge`, `copy`, `call`, `do`, `explain`, `show`, `set`, `reset`, `begin`, `commit`, `rollback`, `savepoint`, `lock`, `prepare`, `execute`, `deallocate`, `declare`, `fetch`, `move`, `close_cursor`, `listen`, `notify`, `unlisten`, `ddl`, `grant`, `maintenance`, `two_phase`, `empty` |
+| `deny_statements` | list of kinds | `[]` | The deny list, which no rule can override |
+| `allow_copy` | list | `[in, out]` | Which `COPY` may cross: `in` (FROM STDIN), `out` (TO STDOUT), `file` (a path on the server, needing a privileged role). **`program` cannot be named at all** |
+| `allow_replication` | bool | `false` | Permit a startup packet asking for a replication stream, which is a byte-for-byte copy of every database on the server including the role passwords |
+| `allow_function_call` | bool | `false` | Permit the legacy fast-path interface, which names a function by object identifier and bypasses the parser |
+| `allow_cancel` | bool | `true` | Permit a `CancelRequest`. Worth knowing: the server acts on one with no authentication at all -- the whole credential is a process identifier and a 32-bit secret. The relay cannot check the secret, so it refuses one from an address that is not an admitted client, and counts them |
+| `max_statements` | int | `8` | Statements per message. The simple query protocol allows several separated by semicolons, which is how every injection ending in `; DROP TABLE` is delivered |
+| `max_statement_bytes` | int | `65536` | One statement |
+| `max_message_bytes` | int | `1048576` | One protocol message. The protocol's own limit is the 4-byte length field, which is two gigabytes |
+| `max_sessions`, `max_sessions_per_client` | int | unbounded | Concurrent connections |
+| `idle_timeout`, `session_duration`, `handshake_timeout` | duration | `0`, `0`, `30s` | |
+| `default_action` | `allow`, `deny` | `deny` | When no rule matched |
+| `deny_response` | `error`, `drop` | `error` | `error` sends an `ErrorResponse` with SQLSTATE 42501 (insufficient_privilege), which the client's own library reports the way it reports the database's refusals, so an application's existing error handling works |
+| `monitor_only` | bool | `false` | Evaluate and do not enforce -- except the hard decisions below |
+
+### rules[]
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `name` | string | Names the rule in logs and counters |
+| `clients`, `users`, `databases`, `applications` | lists | Selectors. Within a rule they are AND; values within one are OR |
+| `schedule` | object | `days`, `from`, `to`, `timezone` |
+| `action` | `allow`, `deny`, `observe` | Default `allow` |
+| `allow_statements`, `deny_statements`, `allow_copy`, `read_only`, `max_statements` | | The rule's own narrowing. A rule that names a kind **widens** the listener for its own traffic, which is what makes one listener serve a reporting account that may only select and a migration account that may also change the schema. The deny lists always win, on the rule and the listener both |
+
+### What shadow mode never shadows
+
+`monitor_only` evaluates the policy and enforces nothing, with these
+exceptions -- forwarding any of them and writing it down is not a trial of
+anything:
+
+| Refusal | Why it is hard |
+|---------|----------------|
+| `client_not_allowed` | An address that may not connect |
+| `tls_required` | The identity is *inside* the startup packet, so a packet that crossed in the clear has already disclosed the role and database |
+| `weak_auth`, `auth_not_allowed` | A credential an observer can reuse is disclosed by being sent |
+| `replication_not_allowed` | The connection becomes a copy of the whole server |
+| `statement_unreadable` | The classifier could not name the statement, so the relay has no opinion to observe |
+| `copy_program` | `COPY ... FROM PROGRAM` runs a shell command as the server's operating-system user |
+| `function_call` | The fast-path interface bypasses the parser |
+| `statement_too_long` | A bound |
+
+### How a statement is classified
+
+A deny list of strings is a list of the spellings somebody thought of:
+`DROP` does not stop `DR/**/OP`, and a statement that merely *mentions*
+the word in a string literal is innocent. So the classifier reads the
+leading keyword of every statement after stripping comments and quoting
+properly -- PostgreSQL's block comments nest, and dollar-quoted strings
+have no escaping at all -- and anything it cannot name becomes `unknown`,
+which is refused. The failure mode of a spelling nobody thought of is a
+refusal rather than a pass.
+
+Three cases it is deliberately conservative about, because when a
+classifier must be wrong it must be wrong towards the more restricted
+answer:
+
+| Written | Classified as | Why |
+|---------|---------------|-----|
+| `WITH x AS (DELETE FROM t ...) SELECT ...` | `delete` | A data-modifying CTE is a write wearing a SELECT's leading keyword |
+| `EXPLAIN ANALYZE INSERT ...` | `insert` | `ANALYZE` executes the statement it explains. Plain `EXPLAIN` does not, and is `explain` |
+| `COPY t FROM PROGRAM '...'` | `copy` + program | Three operations share one keyword and one of them is remote code execution |
+
+Text that cannot be lexed at all -- an unterminated quote, comment or
+dollar quote -- is refused rather than classified, because the relay and
+the server would disagree about where the statement ends, and disagreeing
+about that is how a statement gets past a relay that read a different one.
 
 ## asset_inventory
 

@@ -14,6 +14,7 @@ import (
 	"github.com/rom/xproxy/internal/modbus"
 	mqttwire "github.com/rom/xproxy/internal/mqtt"
 	"github.com/rom/xproxy/internal/netutil"
+	pgwire "github.com/rom/xproxy/internal/pgwire"
 	"github.com/rom/xproxy/internal/rdp"
 	"github.com/rom/xproxy/internal/rfb"
 	snmpwire "github.com/rom/xproxy/internal/snmp"
@@ -858,6 +859,12 @@ func (v *validator) server(s *Server) {
 				v.errf("%s.dhcp: required for kind dhcp", p)
 			} else {
 				v.dhcpListener(p+".dhcp", ln.DHCP)
+			}
+		case "postgres":
+			if ln.Postgres == nil {
+				v.errf("%s.postgres: required for kind postgres", p)
+			} else {
+				v.postgresListener(p+".postgres", ln.Postgres, ln.TLS != nil)
 			}
 		case "tftp":
 			// No tls section: TFTP has no transport security and no
@@ -2490,7 +2497,7 @@ var denyReasons = map[string]bool{
 	"forward_sni_mismatch": true, "dns_tunnel": true, "dns_answer_denied": true,
 	"telnet_denied": true, "vnc_denied": true, "rdp_denied": true, "sftp_icap": true, "udp_denied": true,
 	"modbus_denied": true, "iec104_denied": true, "ntp_denied": true, "ntske_denied": true,
-	"snmp_denied": true, "ldap_denied": true, "tftp_denied": true, "dhcp_denied": true,
+	"snmp_denied": true, "ldap_denied": true, "tftp_denied": true, "dhcp_denied": true, "postgres_denied": true,
 }
 
 // securityTxtFieldRE bounds an extra field name to the token RFC 9116
@@ -7450,6 +7457,144 @@ func (v *validator) dhcpPatterns(p string, in []string) {
 		}
 		if _, err := path.Match(pat, "x"); err != nil {
 			v.errf("%s[%d]: %q is not a pattern: %v", p, i, pat, err)
+		}
+	}
+}
+
+// postgresListener validates a kind: postgres section.
+func (v *validator) postgresListener(p string, m *PostgresListener, hasTLS bool) {
+	if m.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	v.modbusCIDRs(p+".allow_clients", m.AllowClients)
+	v.modbusCIDRs(p+".deny_clients", m.DenyClients)
+
+	// require_tls defaults on, and a listener that requires it without a
+	// certificate cannot serve anybody. Saying so here is better than every
+	// connection failing at handshake with a message in a log nobody is
+	// reading yet.
+	requireTLS := m.RequireTLS == nil || *m.RequireTLS
+	if requireTLS && !hasTLS {
+		v.errf("%s.require_tls: set (it defaults on) but the listener has no tls section; "+
+			"a postgres client upgrades an existing connection, so the listener needs a certificate", p)
+	}
+	if !requireTLS {
+		v.warnf("%s.require_tls: false lets a client connect in the clear; libpq's default "+
+			"sslmode=prefer then carries on unencrypted without telling anybody", p)
+	}
+	switch m.UpstreamTLSMode {
+	case "", "require", "prefer", "disable":
+	default:
+		v.errf("%s.upstream_tls_mode: %q is not require, prefer or disable", p, m.UpstreamTLSMode)
+	}
+	if m.UpstreamTLSMode == "disable" {
+		v.warnf("%s.upstream_tls_mode: disable means the leg to the server is in the clear, "+
+			"which moves the exposure rather than removing it", p)
+	}
+
+	for i, name := range m.AllowAuth {
+		if !postgresAuthNames[strings.ToLower(strings.TrimSpace(name))] {
+			v.errf("%s.allow_auth[%d]: %q is not an authentication method (password, md5, scram, gss, sspi, kerberos, scm)", p, i, name)
+		}
+	}
+	if m.AllowWeakAuth {
+		v.warnf("%s.allow_weak_auth: true permits password (the password in cleartext) and md5 "+
+			"(whose stored verifier is a password-equivalent); PostgreSQL has shipped SCRAM since version 10", p)
+	}
+	if m.AllowReplication {
+		v.warnf("%s.allow_replication: true lets a connection open a replication stream, which is a "+
+			"byte-for-byte copy of every database on the server including the role passwords", p)
+	}
+	if m.AllowFunctionCall {
+		v.warnf("%s.allow_function_call: true permits the legacy fast-path interface, which names a "+
+			"function by object identifier and bypasses the parser; nothing written this century sends it", p)
+	}
+
+	v.postgresStatements(p+".allow_statements", m.AllowStatements)
+	v.postgresStatements(p+".deny_statements", m.DenyStatements)
+	v.postgresCopy(p+".allow_copy", m.AllowCopy)
+
+	for name, val := range map[string]int{
+		"max_statements": m.MaxStatements, "max_statement_bytes": m.MaxStatementBytes,
+		"max_message_bytes": m.MaxMessageBytes, "max_sessions": m.MaxSessions,
+		"max_sessions_per_client": m.MaxSessionsPerClient,
+	} {
+		if val < 0 {
+			v.errf("%s.%s: must not be negative", p, name)
+		}
+	}
+	if m.MaxMessageBytes > pgwire.MaxMessage {
+		v.errf("%s.max_message_bytes: %d is past the bound of %d", p, m.MaxMessageBytes, pgwire.MaxMessage)
+	}
+
+	switch m.DefaultAction {
+	case "", "allow", "deny":
+	default:
+		v.errf("%s.default_action: %q is not allow or deny", p, m.DefaultAction)
+	}
+	switch m.DenyResponse {
+	case "", "error", "drop":
+	default:
+		v.errf("%s.deny_response: %q is not error or drop", p, m.DenyResponse)
+	}
+	if m.DefaultAction == "allow" && len(m.AllowStatements) == 0 && !m.ReadOnly {
+		v.warnf("%s: default_action allow with no allow_statements and read_only false lets every "+
+			"statement kind the classifier can name through, including ddl and grant", p)
+	}
+	for i := range m.Rules {
+		r := &m.Rules[i]
+		rp := fmt.Sprintf("%s.rules[%d]", p, i)
+		v.modbusCIDRs(rp+".clients", r.Clients)
+		switch r.Action {
+		case "", "allow", "deny", "observe":
+		default:
+			v.errf("%s.action: %q is not allow, deny or observe", rp, r.Action)
+		}
+		v.postgresStatements(rp+".allow_statements", r.AllowStatements)
+		v.postgresStatements(rp+".deny_statements", r.DenyStatements)
+		v.postgresCopy(rp+".allow_copy", r.AllowCopy)
+		if r.MaxStatements < 0 {
+			v.errf("%s.max_statements: must not be negative", rp)
+		}
+		if r.Schedule != nil {
+			v.modbusSchedule(rp+".schedule", r.Schedule)
+		}
+	}
+}
+
+// postgresAuthNames are the methods a configuration may name, spelled as
+// pg_hba.conf spells them.
+var postgresAuthNames = map[string]bool{
+	"password": true, "md5": true, "scram": true, "gss": true,
+	"sspi": true, "kerberos": true, "scm": true,
+}
+
+// postgresStatements checks a list of statement kinds.
+func (v *validator) postgresStatements(p string, in []string) {
+	for i, name := range in {
+		if _, ok := pgwire.KindOf(name); !ok {
+			v.errf("%s[%d]: %q is not a statement kind (%s)", p, i, name,
+				strings.Join(pgwire.KindNames(), ", "))
+		}
+	}
+}
+
+// postgresCopy checks a list of COPY targets. `program` is deliberately not
+// nameable: COPY ... FROM PROGRAM runs a shell command as the server's
+// operating-system user, and a setting that could switch it on through a relay
+// is one somebody switches on by accident.
+func (v *validator) postgresCopy(p string, in []string) {
+	for i, name := range in {
+		switch strings.ToLower(strings.TrimSpace(name)) {
+		case "in", "out":
+		case "file":
+			v.warnf("%s[%d]: file lets COPY read and write the server's own filesystem, "+
+				"which needs a privileged role", p, i)
+		case "program":
+			v.errf("%s[%d]: program cannot be allowed through this relay; COPY ... FROM PROGRAM "+
+				"runs a command as the server's operating-system user", p, i)
+		default:
+			v.errf("%s[%d]: %q is not in, out or file", p, i, name)
 		}
 	}
 }
