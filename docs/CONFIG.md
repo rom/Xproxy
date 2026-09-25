@@ -93,6 +93,7 @@ did not authenticate — a trial instead of a door.
 | `iec104` | every rule: type, class, cause, station, originator, point range and the select half; `monitor_only`; the common-address list; `require_select` | malformed frames, the frame bound, rate limits (frame and command), a station commanding its own control centre, bans |
 | `ldap` | every rule: the bound identity, the bind method, the operation, the access class, the subtree, the scope and the attributes; `methods`, `sasl_mechanisms`, `min_version`; `read_only`; `base_dns`; the attribute lists; the filter and entry bounds | a simple bind carrying a password on an unprotected connection, malformed messages, the message bound, message identifier zero, rate limits (request and bind), the client list, an answer no request matched, bans |
 | `snmp` | every rule: version, community or user, security level, operation, access class, object subtree and context; `versions`, `communities`, `users`, `min_security_level`; `read_only`; the message direction | malformed messages, the message and response bounds, the GETBULK repetition bound, the response ratio, an answer nobody asked for, rate limits, the client list, bans |
+| `tftp` | every rule: the direction, the mode, the directory, the filename pattern and the path class; `operations`, `modes`, `allow_path_classes`, `directories`, `filenames` | a filename in the nul, control or empty class, the filename and depth bounds, the block, window and transfer bounds, a packet on the request port that is not a request, a datagram from an address with no part in the transfer, rate limits, the client list, bans |
 | `ntp` | the client list and every request rule (versions, modes, extension fields, the identity it demands), and every answer rule (stratum, distances, timestamps, identifier, leap) | mode 6 and 7, version 5, malformed packets, bans, rate limits, the association and outstanding bounds |
 | `mqtt` | the client list, the CONNECT policy (version, client id, username, keep alive, will), the publish and subscribe policies, retain | malformed packets, a first packet that is not CONNECT, a second CONNECT, the packet bound, the connection limit, TLS failures |
 | `syslog` | the sender list, the facility, severity and pattern rules | malformed messages, the rate limit, a full queue |
@@ -2361,6 +2362,157 @@ fine-grained reason is in the refusal counters: `client_not_allowed`,
 `default_deny`, `max_repetitions`, `response_too_large`, `response_ratio`,
 `response_too_late`, `unsolicited_response`, `encrypted_response`,
 `wrong_direction`, `too_many_pending`, `upgrade_failed`.
+
+### server.listeners[].tftp (kind: tftp)
+
+TFTP is the protocol under provisioning. A switch pulls its firmware over it, a
+machine with no operating system yet pulls a boot image, a telephone pulls its
+configuration, and an engineer pushes a running configuration off a router with
+it. It has **no authentication of any kind**: no user, no password, no token, no
+transport security, and no extension that adds one. A request is a filename and
+a mode, and a server that receives one answers it.
+
+The clients are switches, telephones and boot ROMs, so none of that can be
+fixed where it lives. The relay is the only place a policy can be, and there
+are exactly four things such a policy can be about.
+
+**The filename is read as a path and refused by shape.** There is no identity,
+so the decision is the address it came from and the path it asked for -- and a
+path is where this protocol has been exploited for forty years. A deny list of
+*strings* is a list of the spellings somebody thought of: it stops
+`../../etc/shadow` and not `..\..\etc\shadow`, stops that one and not
+`/etc/shadow`, stops that one and not `secret.txt.`, which Windows opens as
+`secret.txt`. So the name is classified and the **class** is refused:
+
+| Class | What it is |
+|-------|------------|
+| `traversal` | a `..` element anywhere, over either separator. Any of them, not only the ones that escape: `firmware/../firmware/x` resolves inside the directory on a server that normalises the name and somewhere else on one that walks it a symbolic link at a time |
+| `absolute` | rooted at the top of the file system, by either separator |
+| `drive` | a Windows drive letter (`c:\x`) or a UNC prefix (`\\host\share\x`), the second of which is a request the server makes to a third machine |
+| `backslash` | a backslash elsewhere in the name, which is a separator on a server running on Windows and an ordinary character on one that is not |
+| `trailing` | an element ending in a space or a dot, both of which Windows strips when it opens the file |
+| `non_ascii` | a byte above 0x7f. RFC 1350 says the filename is netascii, so this is outside the standard -- but devices that send UTF-8 names exist |
+| `nul`, `control`, `empty` | a name this relay and the server would read differently. **These three can never be allowed**, and they are refused in `policy: {mode: shadow}` too: a decision about a name the server will not see is not a decision |
+
+`allow_path_classes` names the ones this listener accepts besides an ordinary
+relative path; a rule's own list widens it for that rule's traffic only, which
+is how one legacy server that really does serve absolute paths is written down
+without opening the class for everything.
+
+**A write is a separate decision from a read, and the default is no.** A write
+is a device putting a file onto the server, which is how a configuration leaves
+an estate and how firmware arrives in it. `operations` defaults to `[read]`.
+
+**The amplification is bounded by rewriting rather than by refusing.** A
+twenty-octet read request yields a whole file to whatever address the datagram
+claimed to come from, and RFC 7440's `windowsize` multiplies it: a window of
+sixty-four is sixty-four data packets per acknowledgement. A request asking for
+more than `max_window_size` or `max_block_size` is **rewritten to the bound and
+forwarded**, because a switch whose TFTP client nobody can reconfigure is the
+normal case and a bound that only refuses is a bound somebody turns off. Two
+things cannot be lowered and are refused instead: a `tsize` on a write
+declaring more than `max_transfer_bytes`, because the client has said in
+advance how much it intends to send; and a server that acknowledges a *larger*
+block or window than it was offered, because the two ends would then disagree
+about how much is coming.
+
+**A transfer speaks to exactly two addresses.** TFTP moves to an ephemeral port
+pair after the first packet: the server answers from a new port, and the rest of
+the transfer runs between that port and the client's. So each transfer here gets
+a socket of its own, and only the client's transfer identifier and the first
+port the server answered from may use it. A datagram from anywhere else is
+dropped and counted rather than answered -- answering is how a relay becomes a
+reflector -- and on a protocol with no integrity protection that third address
+is the whole attack, because a packet injected into a firmware transfer *is*
+firmware.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `mode` | `reverse`, `forward` | `reverse` | `reverse`: clients send here and the relay forwards to the servers. `forward`: this listener is the controlled egress a device uses to reach a server elsewhere |
+| `upstream` | string | required | The server pool |
+| `allow_clients` | list of CIDR | all | Networks a client may send from. On this protocol it is the only identity there is, and validation warns when it is empty |
+| `deny_clients` | list of CIDR | | Evaluated before `allow_clients` |
+| `operations` | list | `[read]` | `read`, `write`. The default is deliberate: see above |
+| `modes` | list | `[octet, netascii]` | `octet`, `netascii`, `mail`. `mail` is obsolete -- RFC 1350 removed it -- and asked the server to deliver the file as mail to the address in the filename field, so a server that still implements it is a mail injection vector reachable with one datagram |
+| `allow_path_classes` | list | plain only | Path classes accepted besides an ordinary relative path: `absolute`, `backslash`, `drive`, `traversal`, `trailing`, `non_ascii`. `nul`, `control` and `empty` are refused at load |
+| `directories` | list | any | The directories a filename may name, compared **element by element** from the top of what the server serves, so `firmware` does not cover `firmware-staging`. A name outside all of them is refused before the rules and before `default_action: allow` |
+| `deny_directories` | list | | Directories no rule can allow, which is how an exception inside an allowed tree is written |
+| `filenames` | list of pattern | any | Shell patterns (`firmware/*.bin`), matched against the whole cleaned path and against its last element, so either spelling says what it looks like |
+| `deny_filenames` | list of pattern | | Evaluated first; no rule can override it |
+| `max_depth` | int | `8` | Path elements one name may have |
+| `max_filename_bytes` | int | `256` | The filename field |
+| `max_transfer_bytes` | int | `67108864` | One transfer, in either direction. This is the bound that matters on a write, because a write has no natural end: the client stops when it stops |
+| `max_block_size` | int | `1468` | RFC 2348's `blksize`. The default is a data packet that still fits an Ethernet frame; a larger block fragments at the IP layer, which is a lever rather than a feature |
+| `max_window_size` | int | `4` | RFC 7440's `windowsize`: data packets per acknowledgement, and this protocol's amplification factor |
+| `max_transfers` | int | `64` | Transfers in flight on this listener. Each one holds a socket |
+| `max_transfers_per_client` | int | `8` | Transfers in flight per client address. A device with eight is a device that has stopped reading its answers |
+| `rules` | list | | Per-transfer rules, first match wins; see below |
+| `default_action` | `deny`, `allow` | `deny` | What a request no rule matched gets |
+| `deny_response` | `error`, `drop` | `error` | `error` sends an error packet, which every client displays and stops on. `drop` sends nothing, so the client retransmits until it times out -- which is why `error` is the default: a device that is told no stops |
+| `transfer_timeout` | duration | `5m` | One whole transfer |
+| `idle_timeout` | duration | `15s` | A transfer that has gone quiet, which is a few of the protocol's own retransmissions |
+| `rate_limit`, `rate_burst` | int | `0` | Requests per second per client address |
+| `log_transfers` | bool | `true` | An access line per transfer: who, which direction, which path, how much moved, how it ended. This is the record an estate is asked for when somebody wants to know which switch got which firmware |
+| `alert_on_deny` | bool | `true` | A security event per refusal |
+
+#### server.listeners[].tftp.rules[]
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `name` | string | Required; names the rule in the logs and the counters |
+| `action` | `allow`, `deny`, `observe` | Default `allow`. `observe` records the request and keeps looking, which is how a rule is tried on live traffic before it decides anything |
+| `clients` | list of CIDR | Networks the client is in |
+| `operations` | list | `read`, `write` |
+| `modes` | list | The transfer modes this rule covers |
+| `directories` | list | The directories this rule covers |
+| `deny_directories` | list | Directories this rule does not cover even when `directories` would match |
+| `filenames`, `deny_filenames` | list of pattern | This rule's own patterns, against the cleaned path |
+| `allow_path_classes` | list | Widens the listener's list for this rule's traffic only. The three classes the listener cannot allow, a rule cannot allow either |
+| `max_transfer_bytes` | int | This rule's own transfer bound |
+| `max_block_size`, `max_window_size` | int | This rule's own amplification bounds, so "this directory at a window of one" is one rule |
+| `schedule` | object | `{days, from, to, timezone}`; a window whose `to` is before its `from` spans midnight. A firmware window is a schedule: writes allowed during the change window and refused outside it |
+
+**What is checked before the rules, and cannot be shadowed.** A client outside
+the address list; the rate limit; a packet the relay could not parse; a packet
+on the request port whose opcode is not a request, because RFC 1350 gives that
+port one job; a filename in the `nul`, `control` or `empty` class;
+`max_filename_bytes` and `max_depth`; `max_block_size`, `max_window_size` and
+`max_transfer_bytes`; a data packet larger than the block size the transfer
+negotiated; and a datagram from an address that has no part in the transfer.
+
+**A listener takes no `tls` section.** The protocol has no transport security
+and no extension that adds one, so a listener carrying a certificate would be
+promising something it cannot do; validation refuses it. There is no TCP port
+either: `kind: tftp` binds UDP and nothing else.
+
+**What this relay does not do is look inside a transfer.** What is in a
+firmware image is the estate's business; that the image is one the policy
+allows, of a size the policy allows, to a path the policy allows, is the
+relay's. For content inspection of a file moving through an estate, the ICAP
+and YARA paths on `sftp` and `ftp` are where that lives -- and both of those
+protocols have a user.
+
+Counters: `tftp_requests`, `tftp_transfers`, `tftp_transfers_open`,
+`tftp_reads`, `tftp_writes`, `tftp_bytes_in`, `tftp_bytes_out`, `tftp_denied`,
+`tftp_would_deny`, `tftp_path_refused`, `tftp_lowered`, `tftp_oversize`,
+`tftp_malformed`, `tftp_rejected`, `tftp_rate_limited`, `tftp_timed_out`,
+`tftp_upstream_failed`, `tftp_unsolicited`. `tftp_lowered` is the one to watch
+first: it counts the requests whose block size or window this relay rewrote,
+which says the amplification bound is working without anything being refused.
+Refusals are `tftp_denied` for the ban triggers, and the fine-grained reason is
+in the refusal counters: `client_not_allowed`, `rate_limited`, `malformed`,
+`malformed_response`, `not_a_request`, `not_in_transfer`, `wrong_source`,
+`wrong_direction`, `packet_too_large`, `block_too_large`, `path_traversal`,
+`path_absolute`, `path_drive`, `path_backslash`, `path_trailing`,
+`path_non_ascii`, `path_control`, `path_nul`, `path_empty`, `path_too_deep`,
+`filename_too_long`, `directory_denied`, `directory_not_allowed`,
+`filename_denied`, `filename_not_allowed`, `operation_not_allowed`,
+`mode_not_allowed`, `rule`, `default_deny`, `block_size_invalid`,
+`block_size_malformed`, `window_size_invalid`, `window_size_malformed`,
+`timeout_malformed`, `transfer_size_malformed`, `transfer_too_large`,
+`oack_malformed`, `oack_block_too_large`, `oack_window_too_large`,
+`request_unencodable`, `too_many_transfers`, `too_many_per_client`,
+`shutting_down`, `not_udp`.
 
 ### server.listeners[].ntp (kind: ntp)
 
@@ -5662,7 +5814,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `ntp_denied`, `ntske_denied`, `yara` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `ntp_denied`, `ntske_denied`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |

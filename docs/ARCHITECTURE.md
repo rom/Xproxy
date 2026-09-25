@@ -23,7 +23,7 @@ the shape. Decision records are in [AMR.md](AMR.md); requirements in
  |       xproxy        |  |        xgate        |  |        xrelay         |
  |  http tcp udp       |  |   ssh telnet        |  | smtp mqtt ftp syslog  |
  |  forward dns        |  |   vnc rdp           |  | modbus iec104 snmp    |
- |                     |  |                     |  | ldap ntp ntske        |
+ |                     |  |                     |  | ldap tftp ntp ntske   |
  |  user: xproxy       |  |  user: xgate        |  |  user: xrelay         |
  +--+---------------+--+  +--+---------------+--+  +--+----------------+---+
     |               |        |               |        |                |
@@ -83,7 +83,7 @@ authority a cluster peer has by design.
 cmd/xproxy          edge daemon: links the http, forward, tcp and dns kinds
 cmd/xgate           gate daemon: links the ssh, telnet, vnc and rdp kinds
 cmd/xrelay          relay daemon: links the smtp, mqtt, ftp, syslog, modbus,
-                    iec104, snmp, ldap, ntp and ntske kinds
+                    iec104, snmp, ldap, tftp, ntp and ntske kinds
 cmd/xproxyctl       management CLI and TUI (talks to any of the three)
 cmd/xproxy-admin    web GUI process (users, sessions, embedded assets)
 cmd/xproxy-fleet    fleet controller
@@ -116,6 +116,9 @@ internal/kinds/snmp    kind: snmp -- SNMP relay: policy by version, credential,
 internal/kinds/ldap    kind: ldap -- LDAP relay: the bind methods, the bound
                        identity, subtree and attribute policy in both
                        directions, StartTLS terminated here
+internal/kinds/tftp    kind: tftp -- TFTP relay: the filename read as a path
+                       and refused by class, the direction of the transfer,
+                       the amplification bounds, one socket per transfer
 internal/kinds/ntp     kind: ntp -- NTP and NTS gateway: policy, source
                        comparison, learning, traces
 internal/kinds/ntske   kind: ntske -- NTS key establishment relay on 4460
@@ -160,7 +163,7 @@ internal/geoip      MaxMind DB reader and CSV prefix table
 internal/cache      in-memory response cache (LRU, byte bound, Vary)
 internal/dns        DNS wire codec, cache, block list, resolver, servers
 internal/smtp internal/mqtt internal/ftp internal/syslog internal/sftp
-internal/modbus internal/iec104 internal/snmp internal/ntp
+internal/modbus internal/iec104 internal/snmp internal/ntp internal/tftp
 internal/ldap       the LDAP wire format, shared: the client the identity
                     filter authenticates with and the message reader the
                     relay kind decides about, over one BER codec
@@ -210,7 +213,7 @@ cmd/xrelay ─┘             metrics, ingress, listener, paths, version}
     │
     └─ blank imports of its own kinds, and nothing else:
          kinds/{http,tcp,udp,dns,forward} | kinds/{ssh,telnet,vnc,rdp} |
-         kinds/{smtp,mqtt,ftp,syslog,modbus,iec104,snmp,ldap,ntp,ntske}
+         kinds/{smtp,mqtt,ftp,syslog,modbus,iec104,snmp,ldap,tftp,ntp,ntske}
 
 kinds/<k> -> {proxy, config, listener, and that protocol's wire package}
 proxy     -> {listener, router, upstream, limits, netutil, tlsconf, logging,
@@ -246,7 +249,7 @@ So the binary is split by who is on the other end of the socket:
 |--------|-------|----------------|
 | `xproxy` | the open internet | `http`, `forward`, `tcp`, `udp`, `dns` |
 | `xgate` | people | `ssh`, `telnet`, `vnc`, `rdp` |
-| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `snmp`, `ldap`, `ntp`, `ntske` |
+| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `snmp`, `ldap`, `tftp`, `ntp`, `ntske` |
 
 One repository, one module, one version and one configuration format;
 three programs, three users, three systemd units, three sandboxes, three
@@ -1022,7 +1025,7 @@ and size, and a second factor can be demanded after the key.
 
 ### The relay: SMTP, MQTT, FTP, syslog, Modbus, IEC 104, SNMP, LDAP, NTP and NTS
 
-The relay kinds (`internal/kinds/{smtp,mqtt,ftp,syslog,modbus,iec104,snmp,ldap,ntp,ntske}`)
+The relay kinds (`internal/kinds/{smtp,mqtt,ftp,syslog,modbus,iec104,snmp,ldap,tftp,ntp,ntske}`)
 share a shape:
 each parses its protocol rather than forwarding bytes, holds a policy in
 that protocol's own terms, and bounds what a peer may say.
@@ -1108,6 +1111,27 @@ that protocol's own terms, and bounds what a peer may say.
   nothing else here: several requests in flight on one connection, answers
   keyed by message identifier, so a per-connection table of outstanding
   requests is what makes an answer decidable at all.
+- `tftp` is the provisioning relay, and the one kind with **no identity to
+  key a policy on at all**: the protocol has no user, no password and no
+  transport security, so the client list stands in for an identity rather
+  than narrowing one. Four things are particular to it. Its policy is
+  *path* shaped, and the path is classified rather than matched: the
+  classes are refused, not the spellings, and three of them (a NUL, a
+  control character, an empty name) are refusals no configuration can lift
+  and no shadow mode defers, because they mean the relay and the server are
+  reading different filenames. It is the only kind that opens **a socket per
+  transfer**, because TFTP moves to an ephemeral port pair after the first
+  packet -- one unconnected socket bounded to exactly two addresses, which
+  is also the only integrity this protocol has: a datagram from a third
+  address is dropped rather than answered, because answering is how a relay
+  becomes a reflector. Like `snmp` it bounds an amplification by
+  **rewriting the request** -- the block size and RFC 7440 window are
+  lowered and forwarded rather than refused -- and unlike `snmp` it also
+  checks what the *server* granted, because a server that acknowledges more
+  than it was offered would leave the two ends disagreeing about how much is
+  coming. And it counts the transfer's octets as they pass, which is the
+  only bound a write has: a write has no natural end, since the client stops
+  when it stops.
 - `ntp` is the time gateway, and the one kind whose interesting half is
   not the forwarding: it probes every server in the pool with its own
   transactions, compares them with each other, and can refuse an answer

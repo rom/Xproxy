@@ -3327,6 +3327,108 @@ log of guessed ones would be a list of the estate's passwords with a
 timestamp beside each. The v3 user name *is* logged, because it is an
 identity rather than a secret.
 
+### TFTP in front of the provisioning servers
+
+The protocol under provisioning, and the one with nothing to authenticate
+with. A switch pulls its firmware over it, a machine with no operating system
+yet pulls a boot image, a telephone pulls its configuration. There is no user,
+no password, no token and no transport security, so everything below is about
+the address, the direction and the **path**.
+
+```yaml
+server:
+  listeners:
+    - name: boot
+      address: "10.60.0.10:69"
+      kind: tftp                    # UDP only: no tls section is accepted
+      tftp:
+        upstream: fileservers
+
+        # On this protocol the client list is the identity, not an extra
+        # check on one.
+        allow_clients: ["10.60.16.0/20"]
+
+        operations: [read]          # the default, written out
+        modes: [octet]              # mail is obsolete and is a mail injector
+
+        directories: [firmware]     # compared element by element
+        filenames: ["firmware/*.bin"]
+        max_depth: 3
+
+        max_transfer_bytes: 67108864
+        max_block_size: 1468        # a data packet inside an Ethernet frame
+        max_window_size: 4          # the amplification factor
+
+        default_action: deny
+        rules:
+          - {name: device-firmware, action: allow, operations: [read], directories: [firmware]}
+upstreams:
+  - {name: fileservers, endpoints: [{address: "10.60.2.10:69"}]}
+```
+
+`examples/provisioning/tftp.yaml` is the complete file, with a second listener
+on its own address for the one server that may write during the one window
+when that is planned, a UDP health check that probes with a read request for a
+file that is not there, and a shadow-mode trial.
+
+**The filename is read as a path, and the class is refused.** A deny list of
+strings is a list of the spellings somebody thought of. `allow_path_classes`
+is empty by default, which accepts an ordinary relative path and refuses every
+traversal (`..` anywhere, over either separator), every absolute path, every
+backslash separator, every Windows drive letter and UNC prefix, every element
+ending in a space or a dot (Windows strips both when it opens the file), and
+every byte above 0x7f. Three classes are not on that list because they can
+never be allowed: a NUL, a control character and an empty name each mean this
+relay and the server would read **different filenames**, and those are refused
+in `policy: {mode: shadow}` too.
+
+If an estate really does serve absolute paths from one legacy server, say so
+on a rule rather than on the listener:
+
+```yaml
+        rules:
+          - name: legacy
+            action: allow
+            clients: ["10.60.20.5/32"]
+            allow_path_classes: [absolute]
+            directories: ["/tftpboot"]
+```
+
+**A write is a separate decision, and `operations` defaults to `[read]`.** A
+write is a device putting a file onto the server, which is how a configuration
+leaves an estate and how firmware arrives in it. Put it on a listener of its
+own with its own address and its own client list, and put a `schedule` on the
+rule: a firmware window is a schedule, and outside it the write matches no
+allowing rule.
+
+**The amplification bound is applied by rewriting, not by refusing.** A
+twenty-octet read request yields a whole file, and RFC 7440's `windowsize`
+multiplies it. A device asking for a window of sixty-four has its request
+rewritten to `max_window_size` and forwarded, so a switch whose TFTP client
+nobody can reconfigure still boots; `tftp_lowered` counts how often that
+happens, and it is the first counter to read on a new listener. What cannot be
+lowered is refused: a `tsize` on a write declaring more than
+`max_transfer_bytes`, because the client has said in advance how much it
+intends to send, and a server that acknowledges a larger block or window than
+it was offered.
+
+**Read the counters by what an operator asks about.** `tftp_lowered` says the
+amplification bound is working with nothing refused; `tftp_path_refused` says
+something is asking for paths it was not provisioned with;
+`tftp_unsolicited` counts the datagrams that arrived from an address with no
+part in a transfer, which on this protocol is the whole of the injection
+problem; `tftp_timed_out` says transfers are starting and not finishing, which
+is usually a firewall that let the request through on port 69 and not the
+ephemeral pair that follows. `log_transfers` (the default) writes which device
+got which file, in which direction, how much of it moved and how it ended --
+the record an estate is asked for when somebody wants to know which switch got
+which firmware.
+
+**What this relay does not do is look inside the file.** What is in a firmware
+image is the estate's business. For content inspection of a file crossing an
+estate, `sftp` and `ftp` carry the ICAP and YARA paths -- and both of those
+protocols have a user.
+
 ### Time: an NTP and NTS gateway
 
 ```yaml

@@ -442,6 +442,81 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **`kind: tftp`: a TFTP relay, so the protocol under provisioning can be put
+  behind something that reads a filename as a path.** TFTP moves firmware onto
+  switches, boot images to machines that have no operating system yet and
+  configurations to telephones, and it has **no authentication of any kind**:
+  no user, no password, no token, no transport security, and no extension that
+  adds one. A request is a filename and a mode, and a server that receives one
+  answers it. The clients are switches and boot ROMs, so the relay is the only
+  place a policy can live -- and there are exactly four things it can be
+  about.
+
+  **The filename is read as a path and refused by class.** A deny list of
+  *strings* is a list of the spellings somebody thought of: it stops
+  `../../etc/shadow` and not `..\..\etc\shadow`, stops that one and not
+  `/etc/shadow`, stops that one and not `secret.txt.`, which Windows opens as
+  `secret.txt`. Each of those has been the bug somewhere. So the name is
+  classified -- traversal, absolute, drive or UNC, backslash, trailing dot or
+  space, non-ASCII, NUL, control, empty -- and the class is refused.
+  `allow_path_classes` names the ones a listener accepts, a rule's own list
+  widens it for that rule's traffic only, and three of them can never be
+  allowed at all: a NUL, a control character and an empty name each mean this
+  relay and the server are reading *different* filenames, so they are refused
+  in `policy: {mode: shadow}` too. A decision about a name the server will not
+  see is not a decision. The traversal check runs over **both** separators and
+  before the backslash class, because an estate serving Windows hosts may well
+  allow backslashes and `..\..\etc\shadow` is not made safe by that.
+
+  **A write is a separate decision from a read, and `operations` defaults to
+  `[read]`.** A write is a device putting a file onto the server, which is how
+  a configuration leaves an estate and how firmware arrives in it.
+
+  **The amplification is bounded by rewriting rather than by refusing.** A
+  twenty-octet read request yields a whole file to whatever address the
+  datagram claimed to come from, and RFC 7440's `windowsize` multiplies it: a
+  window of sixty-four is sixty-four data packets per acknowledgement. A
+  request past `max_block_size` or `max_window_size` is rewritten to the bound
+  and forwarded, because a switch whose TFTP client nobody can reconfigure is
+  the normal case and a bound that only refuses is a bound somebody turns off;
+  `tftp_lowered` counts it. Two things cannot be lowered and are refused
+  instead: a `tsize` on a write declaring more than `max_transfer_bytes`, since
+  the client has said in advance how much it intends to send, and a server that
+  acknowledges a *larger* block or window than it was offered, since the two
+  ends would then disagree about how much is coming.
+
+  **A transfer speaks to exactly two addresses.** The protocol moves to an
+  ephemeral port pair after the first packet, so each transfer gets a socket of
+  its own and only the client's transfer identifier and the first port the
+  server answered from may use it. A datagram from anywhere else is dropped and
+  counted rather than answered: RFC 1350 §4 says to reply with error 5, and
+  replying is how a relay becomes a reflector. On a protocol with no integrity
+  protection that third address is the whole attack, because a packet injected
+  into a firmware transfer *is* firmware.
+
+  The listener takes no `tls` section and binds no TCP port, and validation
+  refuses both: the protocol has no transport security and no extension that
+  adds one, so a listener carrying a certificate would be promising something
+  it cannot do. Counters are `tftp_requests`, `tftp_transfers`,
+  `tftp_transfers_open`, `tftp_reads`, `tftp_writes`, `tftp_bytes_in`,
+  `tftp_bytes_out`, `tftp_denied`, `tftp_would_deny`, `tftp_path_refused`,
+  `tftp_lowered`, `tftp_oversize`, `tftp_malformed`, `tftp_rejected`,
+  `tftp_rate_limited`, `tftp_timed_out`, `tftp_upstream_failed` and
+  `tftp_unsolicited`; refusals are `tftp_denied` for the ban triggers. The wire
+  format is `internal/tftp` with fuzz targets on the reader and the classifier,
+  and `examples/provisioning/tftp.yaml` is a full deployment: a read-only
+  provisioning front, a write listener on its own address with a firmware
+  window as a `schedule`, a UDP health check that probes with a read request
+  for a file that is not there, and a shadow-mode trial.
+
+  Two bugs the tests found while it was being written. A rule's
+  `allow_path_classes` could never take effect, because the listener's list was
+  consulted before any rule was read; the soft half of that check now runs
+  after the rules. And a transfer ran at whatever block size the *request*
+  asked for, so a server that acknowledged no options -- and therefore sent
+  512-octet blocks -- had its first block read as its last, ending every such
+  transfer one packet in.
+
 - **`kind: ldap`: an LDAP and LDAPS relay, so a directory can be put behind
   something that refuses a bind with an empty password.** A directory is the
   one service in an estate that knows who everybody is, and LDAP is how

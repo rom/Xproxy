@@ -32,6 +32,7 @@ server:
           iec104: null
           snmp: null
           ldap: null
+          tftp: null
           policy: null
         - name: public
           address: :443
@@ -85,6 +86,7 @@ server:
           iec104: null
           snmp: null
           ldap: null
+          tftp: null
           policy: null
     limits:
         max_header_bytes: 65536
