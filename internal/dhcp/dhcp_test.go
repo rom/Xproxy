@@ -253,6 +253,23 @@ func TestTheMessagesThatAreNotMessages(t *testing.T) {
 		t.Error("an option with no length octet parsed")
 	}
 
+	// A message type of zero: option 53 present, one octet, and a value no
+	// standard defines. The fuzzer found this one -- it is the absent value
+	// wearing a length, and a relay cannot decide about a message whose type
+	// the two ends may read differently.
+	if _, err := Parse(build{opts: opt(OptMessageType, 0)}.bytes()); err == nil {
+		t.Error("a message type of zero parsed")
+	}
+	// A type nobody has defined but which is not zero is carried, because the
+	// policy's type list is where a later RFC's type belongs rather than a
+	// code change in the reader.
+	m, err := Parse(build{opts: opt(OptMessageType, 200)}.bytes())
+	if err != nil {
+		t.Errorf("an undefined message type was refused by the reader: %v", err)
+	} else if m.Type.Known() || m.Type != MessageType(200) {
+		t.Errorf("type %v", m.Type)
+	}
+
 	// An hlen longer than the field that holds it: one reader takes sixteen
 	// octets and another reads past them, and the address is what a lease is
 	// keyed on.

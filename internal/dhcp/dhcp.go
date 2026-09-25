@@ -367,6 +367,21 @@ func Parse(raw []byte) (*Message, error) {
 	if !ok || len(v) != 1 {
 		return nil, ErrNoType
 	}
+	if v[0] == 0 {
+		// Option 53 present, one octet long, and zero. No standard defines a
+		// message type of zero: it is the absent value wearing a length, and
+		// what a server does with it is the server's own business -- one will
+		// find no case and drop it, another will fall through. A relay cannot
+		// decide about a message whose *type* the two ends may read
+		// differently, so this is refused rather than carried with a type a
+		// rule could not name.
+		//
+		// A non-zero type nobody has defined is a different matter and is
+		// carried: it is refusable by the policy's own type list, which is
+		// where a type added by a later RFC belongs rather than in a code
+		// change here.
+		return nil, fmt.Errorf("%w: option 53 is zero", ErrNoType)
+	}
 	m.Type = MessageType(v[0])
 	return m, nil
 }
