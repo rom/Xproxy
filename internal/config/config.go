@@ -300,6 +300,8 @@ type Listener struct {
 	MySQL *MySQLListener `yaml:"mysql"`
 	// TDS is the kind: tds section.
 	TDS *TDSListener `yaml:"tds"`
+	// Redis is the kind: redis section.
+	Redis *RedisListener `yaml:"redis"`
 	// DHCP configures a kind: dhcp listener.
 	DHCP *DHCPListener `yaml:"dhcp"`
 	// Policy is whether this listener enforces its policy or only
@@ -1188,6 +1190,181 @@ type MySQLRule struct {
 	AllowLoad       []string `yaml:"allow_load"`
 	ReadOnly        *bool    `yaml:"read_only"`
 	MaxStatements   int      `yaml:"max_statements"`
+}
+
+// RedisListener is the settings of a kind: redis listener: a relay in front of a
+// Redis or Valkey server.
+//
+// This is the protocol with the least structure and the most dangerous default
+// posture in the project. A command is an array of opaque byte strings; there is
+// no schema, no statement grammar, and nothing to classify by shape the way a SQL
+// statement can be. What there is instead is a command name, and on this protocol
+// the distance between "administrative" and "remote code execution" is one
+// command:
+//
+//	CONFIG SET dir /var/spool/cron + CONFIG SET dbfilename root + SAVE
+//
+// writes a file of the attacker's choosing wherever the server can write. Pointed
+// at a cron directory or an authorized_keys it is a shell, and it has been used
+// that way for a decade against instances exposed with no password because the
+// default configuration had none.
+//
+// So this kind's policy is an allow list of commands defaulting to what an
+// application does to a cache, a set that is refused even in monitor mode, and a
+// key prefix policy -- which is the closest this protocol has to the
+// database-and-table boundary the SQL kinds leave to GRANT, and which only works
+// because the wire package knows where each command's keys are and says so when it
+// does not.
+type RedisListener struct {
+	// Upstream is the server pool. Required.
+	Upstream string `yaml:"upstream"`
+	// AllowClients and DenyClients are the networks a client may connect from.
+	// Deny is evaluated first.
+	AllowClients []string `yaml:"allow_clients"`
+	DenyClients  []string `yaml:"deny_clients"`
+
+	// RequireTLS refuses a client that is not speaking TLS. Default true.
+	//
+	// Redis has no in-protocol upgrade: TLS is either on for the port or it is
+	// not, which makes this simpler than the three database kinds and no less
+	// important. A Redis AUTH sends the password as an argument of an ordinary
+	// command, so an unencrypted connection discloses it to anybody on the path
+	// -- and the same is true of every value written or read.
+	RequireTLS *bool `yaml:"require_tls"`
+	// UpstreamTLSMode is how the relay speaks to the server: require, prefer or
+	// disable. Default disable, which is the one honest default here: a great
+	// many Redis instances are deployed with no TLS at all and there is no
+	// negotiation to discover it, so requiring it by default would refuse every
+	// upstream in the common case rather than protecting anything.
+	UpstreamTLSMode string `yaml:"upstream_tls_mode"`
+	// UpstreamTLS is the certificate and verification settings for that leg.
+	UpstreamTLS *UpstreamTLS `yaml:"upstream_tls"`
+
+	// RequireAuth refuses any command before the connection has authenticated.
+	// Default true.
+	//
+	// This is the setting that matters most after require_tls, because Redis's
+	// own default is no password at all: a server with no `requirepass` accepts
+	// every command from anybody who can reach the port. A relay that enforces
+	// authentication in front of such a server turns "reachable" back into
+	// "authorised", which is the property the estate thought it had.
+	RequireAuth *bool `yaml:"require_auth"`
+	// AllowUsers is the ACL usernames a connection may authenticate as, from the
+	// two-argument form of AUTH and from HELLO's AUTH clause. Empty allows any.
+	// The one-argument AUTH form names no user and authenticates as `default`,
+	// which is what this list calls it.
+	AllowUsers []string `yaml:"allow_users"`
+	DenyUsers  []string `yaml:"deny_users"`
+
+	// AllowCommands is the allow list of command names, case-insensitive. Empty
+	// allows what an application does to a cache: the data-type commands, the
+	// transaction commands, AUTH, HELLO, PING and SELECT.
+	//
+	// The absences are the point. Every `CONFIG`, `MODULE`, `EVAL`, `DEBUG`,
+	// `SCRIPT`, `FUNCTION`, `ACL`, `CLIENT`, `CLUSTER`, `REPLICAOF`, `MIGRATE`,
+	// `FLUSHALL`, `SHUTDOWN`, `MONITOR`, `SAVE`, `KEYS` and `RANDOMKEY` is off
+	// until named.
+	AllowCommands []string `yaml:"allow_commands"`
+	// DenyCommands is the deny list, which no rule can override.
+	DenyCommands []string `yaml:"deny_commands"`
+	// AllowSubcommands narrows a container command to particular subcommands,
+	// written as "CONFIG GET" or "CLIENT SETNAME". A container command named in
+	// allow_commands without any subcommand listed here allows all of its
+	// subcommands, which for CONFIG means CONFIG SET -- so naming the
+	// subcommands is how an operator allows the read and not the write.
+	AllowSubcommands []string `yaml:"allow_subcommands"`
+	DenySubcommands  []string `yaml:"deny_subcommands"`
+
+	// AllowKeyPrefixes restricts which keys a connection may name. Empty allows
+	// any.
+	//
+	// A command whose key positions depend on an option -- SORT with STORE,
+	// XREAD, MIGRATE with KEYS -- is refused while this is set, because the
+	// relay cannot say which argument is the key and checking the wrong one
+	// would be a policy that passes what it was meant to stop. The refusal names
+	// the command, so an operator can decide whether to allow it with no prefix
+	// policy on a rule of its own.
+	AllowKeyPrefixes []string `yaml:"allow_key_prefixes"`
+	// DenyKeyPrefixes is the deny list, evaluated first.
+	DenyKeyPrefixes []string `yaml:"deny_key_prefixes"`
+	// AllowDatabases restricts which numbered databases SELECT may switch to.
+	// Empty allows any. A Redis database is not an access boundary -- the
+	// password is the same for all of them -- but it is how an estate separates
+	// one application's keys from another's, and a relay can hold that line
+	// where the server will not.
+	AllowDatabases []int `yaml:"allow_databases"`
+
+	// ReadOnly refuses every command that can change data or the server. A
+	// command the relay has never heard of counts as a write, because Redis
+	// gains commands every release and a module adds its own.
+	ReadOnly bool `yaml:"read_only"`
+
+	// MaxMessageBytes bounds one reassembled command. Default 8 MiB.
+	MaxMessageBytes int `yaml:"max_message_bytes"`
+	// MaxBulkBytes bounds one argument, which for a SET is the value. Default
+	// 1 MiB. A value above max_message_bytes is brought down to it.
+	MaxBulkBytes int `yaml:"max_bulk_bytes"`
+	// MaxElements bounds the number of elements in one command's array. Default
+	// 1024. An ordinary command has single digits; a pipeline is several
+	// commands rather than one long array, so a large value here is not what a
+	// client library needs.
+	MaxElements int `yaml:"max_elements"`
+	// MaxCommands bounds commands per connection, 0 for no bound. A cache
+	// connection is long-lived and chatty, so this is off by default; it is here
+	// for a bastion front where a session is a person.
+	MaxCommands int `yaml:"max_commands"`
+	// MaxSessions and MaxSessionsPerClient bound concurrent connections.
+	MaxSessions          int `yaml:"max_sessions"`
+	MaxSessionsPerClient int `yaml:"max_sessions_per_client"`
+	// IdleTimeout, SessionDuration and HandshakeTimeout bound a connection.
+	IdleTimeout      Duration `yaml:"idle_timeout"`
+	SessionDuration  Duration `yaml:"session_duration"`
+	HandshakeTimeout Duration `yaml:"handshake_timeout"`
+
+	// AllowInline permits the space-separated command form. Default false.
+	//
+	// No client library sends it -- it exists for a human with a telnet session
+	// -- and a great many exploitation scripts use it because it needs no length
+	// arithmetic. The relay reads it either way, so refusing it costs an
+	// operator nothing and removes a form the policy would otherwise have to
+	// cover twice.
+	AllowInline bool `yaml:"allow_inline"`
+
+	// Rules narrow or widen the listener for traffic that matches them.
+	Rules []RedisRule `yaml:"rules"`
+	// DefaultAction is allow or deny when no rule matched. Default deny.
+	DefaultAction string `yaml:"default_action"`
+	// DenyResponse is error (the default: a -NOPERM error reply the client's own
+	// library reports) or drop.
+	DenyResponse string `yaml:"deny_response"`
+	// MonitorOnly evaluates and enforces nothing, except the hard decisions: the
+	// client list, the TLS requirement, a command before authentication, a
+	// message the relay could not read, and the commands in the dangerous set --
+	// which on this protocol includes KEYS, because it is O(n) on the single
+	// thread that serves every client and one of them stops the estate.
+	MonitorOnly bool `yaml:"monitor_only"`
+}
+
+// RedisRule is one rule of a redis listener's policy.
+type RedisRule struct {
+	// Name identifies the rule in logs and counters.
+	Name string `yaml:"name"`
+	// Clients and Users select the traffic.
+	Clients []string `yaml:"clients"`
+	Users   []string `yaml:"users"`
+	// Schedule is when this rule allows what it allows.
+	Schedule *ModbusSchedule `yaml:"schedule"`
+	// Action is allow (the default), deny or observe.
+	Action string `yaml:"action"`
+	// The rule's own narrowing. The deny lists always win.
+	AllowCommands    []string `yaml:"allow_commands"`
+	DenyCommands     []string `yaml:"deny_commands"`
+	AllowSubcommands []string `yaml:"allow_subcommands"`
+	DenySubcommands  []string `yaml:"deny_subcommands"`
+	AllowKeyPrefixes []string `yaml:"allow_key_prefixes"`
+	DenyKeyPrefixes  []string `yaml:"deny_key_prefixes"`
+	ReadOnly         *bool    `yaml:"read_only"`
+	MaxCommands      int      `yaml:"max_commands"`
 }
 
 // TDSListener is the settings of a kind: tds listener: a relay in front of a

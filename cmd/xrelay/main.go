@@ -31,6 +31,7 @@ import (
 	_ "github.com/rom/xproxy/internal/kinds/ntp"      // listener kind: ntp
 	_ "github.com/rom/xproxy/internal/kinds/ntske"    // listener kind: ntske
 	_ "github.com/rom/xproxy/internal/kinds/postgres" // listener kind: postgres
+	_ "github.com/rom/xproxy/internal/kinds/redis"    // listener kind: redis
 	_ "github.com/rom/xproxy/internal/kinds/smtp"     // listener kind: smtp
 	_ "github.com/rom/xproxy/internal/kinds/snmp"     // listener kind: snmp
 	_ "github.com/rom/xproxy/internal/kinds/syslog"   // listener kind: syslog

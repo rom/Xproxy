@@ -5988,7 +5988,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `ntp_denied`, `ntske_denied`, `yara` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `ntp_denied`, `ntske_denied`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |
@@ -9901,6 +9901,162 @@ is what monitor mode is for. An operator who names one of the hard set in
 Forcing the encryption negotiation upward is not in the table either, because it
 is not a refusal: nothing is denied, the connection goes through, and it happens
 in shadow mode too. It is logged as an `alert`.
+
+## redis
+
+`kind: redis` is a relay in front of a Redis or Valkey server.
+
+**It is the protocol in this project where a relay earns its place fastest**, and
+the reason is Redis's own default: no password. An instance with `requirepass`
+unset accepts every command from anybody who can reach the port, so an instance
+that is *reachable* is an instance that is *administrable*. And on this protocol
+the distance between an administrative command and remote code execution is one
+command:
+
+```
+CONFIG SET dir /var/spool/cron
+CONFIG SET dbfilename root
+SAVE
+```
+
+writes a file of the attacker's choosing wherever the server can write. Pointed at
+a cron directory or an `authorized_keys` it is a shell, and it has been used that
+way for a decade.
+
+There is also almost nothing for a relay to reason about. A command is an array of
+opaque byte strings: no schema, no statement grammar, nothing to classify by shape
+the way the three SQL kinds classify a statement. So the policy is built on four
+things, in the order they are decided:
+
+- **Authentication, before anything else.** `require_auth` refuses a command that
+  arrives before the connection has authenticated, and the answer is taken from the
+  *server's* reply rather than from the relay having seen an `AUTH` -- a relay that
+  trusted the attempt would treat a wrong password as a login. What a client may
+  legitimately send first is named rather than guessed (`AUTH`, `HELLO`, `PING`,
+  `QUIT`, `RESET`, `COMMAND`), because the alternative -- letting everything
+  through until an `+OK` arrives -- is a window an attacker fills with one command.
+
+- **The command name, as an allow list**, defaulting to what an application does to
+  a cache. The absences are the value; the table below says what each one is.
+
+- **The subcommand, where it decides.** `CONFIG GET` is a read and `CONFIG SET` is
+  the paragraph above, so `allow_subcommands` exists to allow the one and not the
+  other. A container command allowed with no subcommand listed allows all of them.
+
+- **The key prefix**, which is the closest this protocol has to the
+  database-and-table boundary the SQL kinds leave to `GRANT`.
+
+### The key prefix policy, and the commands it refuses
+
+A command's keys sit where its own signature puts them, and the relay reads them
+from a table of 202 commands -- including the interleaved ones (`MSET` is key,
+value, key, value) and the ones whose last argument is a timeout rather than a key
+(`BLPOP`). Fifteen more declare their key count in an argument (`EVAL`, `LMPOP`,
+`SINTERCARD`), and that count is read rather than assumed: it is the client's
+number and it decides which arguments are keys, so a relay that assumed a position
+would check a prefix policy against a Lua script's text.
+
+Ten commands have key positions that depend on an option that may or may not be
+present, and while a prefix policy is in force **those are refused** with
+`key_position_unknown` rather than checked against a guess:
+
+| Command | Why its keys cannot be located |
+|---------|-------------------------------|
+| `XREAD`, `XREADGROUP` | the keys follow a `STREAMS` token whose position depends on `COUNT`, `BLOCK`, `GROUP` and `NOACK`, and after it the streams and their identifiers are two halves rather than alternating pairs |
+| `SORT`, `SORT_RO` | a `STORE` option adds a destination key at the end, and `BY` and `GET` take key *patterns* rather than keys |
+| `GEORADIUS`, `GEORADIUSBYMEMBER` | `STORE` and `STOREDIST` each add a key at the end. The `_RO` variants have neither, so they are locatable and are not on this list |
+| `ZUNIONSTORE`, `ZINTERSTORE`, `ZDIFFSTORE` | a destination, then a `numkeys` count, then that many source keys: two different mechanisms in one command |
+| `MIGRATE` | the key is the third argument -- unless `KEYS` is used, in which case the third is an empty string and the keys are at the end |
+
+Refusing them is the honest answer and the refusal is hard, because checking some
+other argument instead would be a prefix policy that passes exactly what it was
+meant to stop, and it would do it silently. With no prefix policy set, all ten are
+ordinary commands.
+
+```yaml
+- name: cache
+  address: "10.0.0.40:6379"
+  kind: redis
+  tls:
+    certificates: [{cert_file: /etc/xproxy/tls/db.pem, key_file: /etc/xproxy/tls/db-key.pem}]
+  redis:
+    upstream: rd
+    allow_clients: ["10.0.2.0/24"]
+    allow_key_prefixes: ["app:", "session:"]
+    read_only: false
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | name | *(required)* | The server pool |
+| `allow_clients`, `deny_clients` | list of CIDR | any | Networks a client may connect from; deny first |
+| `require_tls` | bool | `true` | Refuse a client that is not speaking TLS. Redis has no in-protocol upgrade, so the port is either TLS or it is not -- which makes this simpler than the SQL kinds and no less important: a Redis `AUTH` sends the password as an argument of an ordinary command |
+| `upstream_tls_mode` | `require`, `prefer`, `disable` | `disable` | How the relay speaks to the server. **The one place a default is off**, and deliberately: there is no negotiation to discover whether the server speaks TLS, so requiring it by default would refuse every upstream in the common deployment rather than protect anything |
+| `upstream_tls` | object | *(none)* | Certificate and verification settings for that leg |
+| `require_auth` | bool | `true` | Refuse any command before the connection has authenticated, taking the answer from the server's reply |
+| `allow_users`, `deny_users` | list | any | ACL usernames a connection may authenticate as, from `AUTH user pass` and from `HELLO`'s `AUTH` clause. The one-argument `AUTH` form names no user and authenticates as `default`, which is what this list calls it -- so it is judged rather than bypassing the list |
+| `allow_commands` | list | the application set | Command names, case-insensitive. Empty allows the data-type commands, the transaction commands, `AUTH`, `HELLO`, `PING`, `SELECT` and the pub/sub message commands — and nothing else |
+| `deny_commands` | list | `[]` | The deny list, which no rule can override |
+| `allow_subcommands`, `deny_subcommands` | list | *(none)* | Written `"CONFIG GET"`. A container command allowed without any subcommand listed allows all of them, which for `CONFIG` means `CONFIG SET` |
+| `allow_key_prefixes` | list | any | Which keys a connection may name. See above for the commands this refuses |
+| `deny_key_prefixes` | list | `[]` | Evaluated first |
+| `allow_databases` | list of int | any | Which numbered databases `SELECT` may switch to. A Redis database is not an access boundary -- the password is the same for all of them -- but it is how an estate separates one application's keys from another's |
+| `read_only` | bool | `false` | Refuse every command that can change data or the server. A command the relay has never heard of counts as a write, because Redis gains commands every release and a module adds its own. `EVAL` counts as a write because a script can do anything the connection can; the server's own `_RO` variants are honoured as reads |
+| `max_message_bytes` | int | `8388608` | One reassembled command |
+| `max_bulk_bytes` | int | `1048576` | One argument, which for a `SET` is the value. A value above `max_message_bytes` is brought down to it, because otherwise the message check fires first and the configured value never applies |
+| `max_elements` | int | `1024` | Elements in one command's array. An ordinary command has single digits; a pipeline is several commands rather than one long array |
+| `max_commands` | int | unbounded | Commands per connection. Off by default because a cache connection is long-lived and chatty; it is here for a bastion front where a session is a person |
+| `max_sessions`, `max_sessions_per_client` | int | unbounded | Concurrent connections |
+| `idle_timeout`, `session_duration`, `handshake_timeout` | duration | `0`, `0`, `30s` | |
+| `allow_inline` | bool | `false` | Permit the space-separated command form. No client library sends it -- it exists for a human with a telnet session -- and a great many exploitation scripts use it because it needs no length arithmetic. The relay reads it either way, so refusing it costs an operator nothing |
+| `default_action` | `allow`, `deny` | `deny` | When no rule matched |
+| `deny_response` | `error`, `drop` | `error` | `error` sends `-NOPERM`, the kind Redis's own ACL uses for "this user may not run this command", so a client library reports it the way it reports the server's refusals |
+| `monitor_only` | bool | `false` | Evaluate and do not enforce, except the hard decisions below |
+
+### rules[]
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `name` | string | Names the rule in logs and counters |
+| `clients`, `users` | lists | Selectors; AND within a rule, OR within one |
+| `schedule` | object | `days`, `from`, `to`, `timezone` |
+| `action` | `allow`, `deny`, `observe` | Default `allow` |
+| `allow_commands`, `deny_commands`, `allow_subcommands`, `deny_subcommands`, `allow_key_prefixes`, `deny_key_prefixes`, `read_only`, `max_commands` | | The rule's own narrowing. A rule that names commands **widens** the listener for its own traffic; the deny lists always win |
+
+### What is off by default, and why
+
+| Command | What it is |
+|---------|-----------|
+| `CONFIG` | `SET dir` plus `SET dbfilename` plus `SAVE` writes a file wherever the server can write. `CONFIG GET` is a read, which is what `allow_subcommands` is for |
+| `MODULE` | loads a shared object into the server |
+| `EVAL`, `EVALSHA`, `FUNCTION`, `SCRIPT`, `FCALL` | a Lua interpreter inside the database |
+| `REPLICAOF`, `SLAVEOF`, `REPLCONF`, `PSYNC`, `SYNC`, `FAILOVER` | makes this server a replica of one the attacker controls, which replaces its whole dataset |
+| `MIGRATE`, `DUMP`, `RESTORE` | moves a key to another server: egress with a key name attached |
+| `FLUSHALL`, `FLUSHDB`, `SWAPDB` | deletes everything, unrecoverably |
+| `SHUTDOWN` | stops the server; with `NOSAVE` it loses data |
+| `SAVE`, `BGSAVE`, `BGREWRITEAOF` | writes a file, and blocks |
+| `KEYS`, `RANDOMKEY` | `KEYS` is O(n) **on the single thread that serves every client**, so one `KEYS *` on a large instance is an outage that looks like a slow query |
+| `MONITOR` | streams every command every client sends, arguments included -- which is every value written to the database |
+| `SLOWLOG`, `LATENCY`, `MEMORY` | the same, in samples |
+| `ACL`, `CLIENT`, `CLUSTER`, `DEBUG` | administration of the thing enforcing the policy |
+| `PSUBSCRIBE` | `PSUBSCRIBE *` receives every message on the instance, which is `MONITOR` for pub/sub |
+
+### What shadow mode never shadows
+
+| Refusal | Why it is hard |
+|---------|----------------|
+| `client_not_allowed` | An address that may not connect |
+| `tls_required` | An `AUTH` on this connection puts the password on the wire as an ordinary command argument, and so does every value after it |
+| `not_authenticated` | Forwarding an unauthenticated command means the command ran. In front of a server whose `requirepass` is unset, that is the whole of what the setting was for |
+| `unreadable_command` | The relay has no opinion to observe |
+| `key_position_unknown` | Checking the wrong argument against a prefix list is a policy that passes what it was meant to stop |
+| `too_many_commands` | A bound |
+| any refusal of a command in the table above | Forwarding a `CONFIG SET`, an `EVAL` or a `REPLICAOF` and writing down that it was noticed is not a trial of a policy. `KEYS` is in the set on different grounds: a monitor-mode listener that forwarded one would cause the outage it was installed to prevent |
+
+A command merely *off* the allow list is a **soft** refusal, which is the
+distinction that makes monitor mode useful: it is most likely an application nobody
+has listed yet, and finding those is what the mode is for. An operator who names
+one of the hard set in `allow_commands` has said so, and is not overruled.
 
 ## asset_inventory
 

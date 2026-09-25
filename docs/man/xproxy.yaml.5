@@ -14480,7 +14480,7 @@ list
 T}	T{
 \fB[]\fR (all)
 T}	T{
-Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBpostgres_\:denied\fR,\: \fBmysql_\:denied\fR,\: \fBtds_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fByara\fR
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBpostgres_\:denied\fR,\: \fBmysql_\:denied\fR,\: \fBtds_\:denied\fR,\: \fBredis_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fByara\fR
 T}
 T{
 \fBthreshold\fR
@@ -25131,6 +25131,510 @@ T}
 The set whose refusal is never shadowed is \fBxp_cmdshell\fR, the OLE automation family, the registry procedures, \fBsp_addextendedproc\fR, \fBsp_addlinkedserver\fR, \fBsp_serveroption\fR, \fBsp_configure\fR, \fBxp_servicecontrol\fR, the mail procedures, the filesystem procedures, the SQL Agent job procedures and the role\-membership procedures. A procedure that is merely \fInot on the allow list\fR is a soft refusal, because it is most likely an application nobody has listed yet \-\- which is what monitor mode is for. An operator who names one of the hard set in \fBallow_procedures\fR has said so, and is not overruled.
 .PP
 Forcing the encryption negotiation upward is not in the table either, because it is not a refusal: nothing is denied, the connection goes through, and it happens in shadow mode too. It is logged as an \fBalert\fR.
+.SH "redis"
+.PP
+\fBkind: redis\fR is a relay in front of a Redis or Valkey server.
+.PP
+\fBIt is the protocol in this project where a relay earns its place fastest\fR, and the reason is Redis\(aqs own default: no password. An instance with \fBrequirepass\fR unset accepts every command from anybody who can reach the port, so an instance that is \fIreachable\fR is an instance that is \fIadministrable\fR. And on this protocol the distance between an administrative command and remote code execution is one command:
+.PP
+.RS 4
+.nf
+.ft CR
+CONFIG SET dir /var/spool/cron
+CONFIG SET dbfilename root
+SAVE
+.ft
+.fi
+.RE
+.PP
+writes a file of the attacker\(aqs choosing wherever the server can write. Pointed at a cron directory or an \fBauthorized_keys\fR it is a shell, and it has been used that way for a decade.
+.PP
+There is also almost nothing for a relay to reason about. A command is an array of opaque byte strings: no schema, no statement grammar, nothing to classify by shape the way the three SQL kinds classify a statement. So the policy is built on four things, in the order they are decided:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBAuthentication, before anything else.\fR \fBrequire_auth\fR refuses a command that arrives before the connection has authenticated, and the answer is taken from the \fIserver\(aqs\fR reply rather than from the relay having seen an \fBAUTH\fR \-\- a relay that trusted the attempt would treat a wrong password as a login. What a client may legitimately send first is named rather than guessed (\fBAUTH\fR, \fBHELLO\fR, \fBPING\fR, \fBQUIT\fR, \fBRESET\fR, \fBCOMMAND\fR), because the alternative \-\- letting everything through until an \fB+OK\fR arrives \-\- is a window an attacker fills with one command.
+.PP
+.ti -3n
+\(bu
+\fBThe command name, as an allow list\fR, defaulting to what an application does to a cache. The absences are the value; the table below says what each one is.
+.PP
+.ti -3n
+\(bu
+\fBThe subcommand, where it decides.\fR \fBCONFIG GET\fR is a read and \fBCONFIG SET\fR is the paragraph above, so \fBallow_subcommands\fR exists to allow the one and not the other. A container command allowed with no subcommand listed allows all of them.
+.PP
+.ti -3n
+\(bu
+\fBThe key prefix\fR, which is the closest this protocol has to the database\-and\-table boundary the SQL kinds leave to \fBGRANT\fR.
+.RE
+.PP
+.SS "The key prefix policy, and the commands it refuses"
+.PP
+A command\(aqs keys sit where its own signature puts them, and the relay reads them from a table of 202 commands \-\- including the interleaved ones (\fBMSET\fR is key, value, key, value) and the ones whose last argument is a timeout rather than a key (\fBBLPOP\fR). Fifteen more declare their key count in an argument (\fBEVAL\fR, \fBLMPOP\fR, \fBSINTERCARD\fR), and that count is read rather than assumed: it is the client\(aqs number and it decides which arguments are keys, so a relay that assumed a position would check a prefix policy against a Lua script\(aqs text.
+.PP
+Ten commands have key positions that depend on an option that may or may not be present, and while a prefix policy is in force \fBthose are refused\fR with \fBkey_position_unknown\fR rather than checked against a guess:
+.PP
+.TS
+allbox;
+lbw(1.8i) lbx
+lw(1.8i) lx.
+T{
+Command
+T}	T{
+Why its keys cannot be located
+T}
+T{
+\fBXREAD\fR,\: \fBXREADGROUP\fR
+T}	T{
+the keys follow a \fBSTREAMS\fR token whose position depends on \fBCOUNT\fR,\: \fBBLOCK\fR,\: \fBGROUP\fR and \fBNOACK\fR,\: and after it the streams and their identifiers are two halves rather than alternating pairs
+T}
+T{
+\fBSORT\fR,\: \fBSORT_\:RO\fR
+T}	T{
+a \fBSTORE\fR option adds a destination key at the end,\: and \fBBY\fR and \fBGET\fR take key \fIpatterns\fR rather than keys
+T}
+T{
+\fBGEORADIUS\fR,\: \fBGEORADIUSBYMEMBER\fR
+T}	T{
+\fBSTORE\fR and \fBSTOREDIST\fR each add a key at the end. The \fB_\:RO\fR variants have neither,\: so they are locatable and are not on this list
+T}
+T{
+\fBZUNIONSTORE\fR,\: \fBZINTERSTORE\fR,\: \fBZDIFFSTORE\fR
+T}	T{
+a destination,\: then a \fBnumkeys\fR count,\: then that many source keys: two different mechanisms in one command
+T}
+T{
+\fBMIGRATE\fR
+T}	T{
+the key is the third argument \-\- unless \fBKEYS\fR is used,\: in which case the third is an empty string and the keys are at the end
+T}
+.TE
+.PP
+Refusing them is the honest answer and the refusal is hard, because checking some other argument instead would be a prefix policy that passes exactly what it was meant to stop, and it would do it silently. With no prefix policy set, all ten are ordinary commands.
+.PP
+.RS 4
+.nf
+.ft CR
+\- name: cache
+  address: "10.0.0.40:6379"
+  kind: redis
+  tls:
+    certificates: [{cert_file: /etc/xproxy/tls/db.pem, key_file: /etc/xproxy/tls/db\-key.pem}]
+  redis:
+    upstream: rd
+    allow_clients: ["10.0.2.0/24"]
+    allow_key_prefixes: ["app:", "session:"]
+    read_only: false
+.ft
+.fi
+.RE
+.PP
+.TS
+allbox;
+lbw(1.3i) lbw(0.9i) lbw(1.2i) lbx
+lw(1.3i) lw(0.9i) lw(1.2i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBupstream\fR
+T}	T{
+name
+T}	T{
+\fI(required)\fR
+T}	T{
+The server pool
+T}
+T{
+\fBallow_\:clients\fR,\: \fBdeny_\:clients\fR
+T}	T{
+list of CIDR
+T}	T{
+any
+T}	T{
+Networks a client may connect from;\: deny first
+T}
+T{
+\fBrequire_\:tls\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse a client that is not speaking TLS. Redis has no in\-protocol upgrade,\: so the port is either TLS or it is not \-\- which makes this simpler than the SQL kinds and no less important: a Redis \fBAUTH\fR sends the password as an argument of an ordinary command
+T}
+T{
+\fBupstream_\:tls_\:mode\fR
+T}	T{
+\fBrequire\fR,\: \fBprefer\fR,\: \fBdisable\fR
+T}	T{
+\fBdisable\fR
+T}	T{
+How the relay speaks to the server. \fBThe one place a default is off\fR,\: and deliberately: there is no negotiation to discover whether the server speaks TLS,\: so requiring it by default would refuse every upstream in the common deployment rather than protect anything
+T}
+T{
+\fBupstream_\:tls\fR
+T}	T{
+object
+T}	T{
+\fI(none)\fR
+T}	T{
+Certificate and verification settings for that leg
+T}
+T{
+\fBrequire_\:auth\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse any command before the connection has authenticated,\: taking the answer from the server\(aqs reply
+T}
+T{
+\fBallow_\:users\fR,\: \fBdeny_\:users\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+ACL usernames a connection may authenticate as,\: from \fBAUTH user pass\fR and from \fBHELLO\fR\(aqs \fBAUTH\fR clause. The one\-argument \fBAUTH\fR form names no user and authenticates as \fBdefault\fR,\: which is what this list calls it \-\- so it is judged rather than bypassing the list
+T}
+T{
+\fBallow_\:commands\fR
+T}	T{
+list
+T}	T{
+the application set
+T}	T{
+Command names,\: case\-insensitive. Empty allows the data\-type commands,\: the transaction commands,\: \fBAUTH\fR,\: \fBHELLO\fR,\: \fBPING\fR,\: \fBSELECT\fR and the pub/\:sub message commands \[u2014] and nothing else
+T}
+T{
+\fBdeny_\:commands\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The deny list,\: which no rule can override
+T}
+T{
+\fBallow_\:subcommands\fR,\: \fBdeny_\:subcommands\fR
+T}	T{
+list
+T}	T{
+\fI(none)\fR
+T}	T{
+Written \fB"CONFIG GET"\fR. A container command allowed without any subcommand listed allows all of them,\: which for \fBCONFIG\fR means \fBCONFIG SET\fR
+T}
+T{
+\fBallow_\:key_\:prefixes\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+Which keys a connection may name. See above for the commands this refuses
+T}
+T{
+\fBdeny_\:key_\:prefixes\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Evaluated first
+T}
+T{
+\fBallow_\:databases\fR
+T}	T{
+list of int
+T}	T{
+any
+T}	T{
+Which numbered databases \fBSELECT\fR may switch to. A Redis database is not an access boundary \-\- the password is the same for all of them \-\- but it is how an estate separates one application\(aqs keys from another\(aqs
+T}
+T{
+\fBread_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse every command that can change data or the server. A command the relay has never heard of counts as a write,\: because Redis gains commands every release and a module adds its own. \fBEVAL\fR counts as a write because a script can do anything the connection can;\: the server\(aqs own \fB_\:RO\fR variants are honoured as reads
+T}
+T{
+\fBmax_\:message_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB8388608\fR
+T}	T{
+One reassembled command
+T}
+T{
+\fBmax_\:bulk_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB1048576\fR
+T}	T{
+One argument,\: which for a \fBSET\fR is the value. A value above \fBmax_\:message_\:bytes\fR is brought down to it,\: because otherwise the message check fires first and the configured value never applies
+T}
+T{
+\fBmax_\:elements\fR
+T}	T{
+int
+T}	T{
+\fB1024\fR
+T}	T{
+Elements in one command\(aqs array. An ordinary command has single digits;\: a pipeline is several commands rather than one long array
+T}
+T{
+\fBmax_\:commands\fR
+T}	T{
+int
+T}	T{
+unbounded
+T}	T{
+Commands per connection. Off by default because a cache connection is long\-lived and chatty;\: it is here for a bastion front where a session is a person
+T}
+T{
+\fBmax_\:sessions\fR,\: \fBmax_\:sessions_\:per_\:client\fR
+T}	T{
+int
+T}	T{
+unbounded
+T}	T{
+Concurrent connections
+T}
+T{
+\fBidle_\:timeout\fR,\: \fBsession_\:duration\fR,\: \fBhandshake_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR,\: \fB0\fR,\: \fB30s\fR
+T}	T{
+
+T}
+T{
+\fBallow_\:inline\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Permit the space\-separated command form. No client library sends it \-\- it exists for a human with a telnet session \-\- and a great many exploitation scripts use it because it needs no length arithmetic. The relay reads it either way,\: so refusing it costs an operator nothing
+T}
+T{
+\fBdefault_\:action\fR
+T}	T{
+\fBallow\fR,\: \fBdeny\fR
+T}	T{
+\fBdeny\fR
+T}	T{
+When no rule matched
+T}
+T{
+\fBdeny_\:response\fR
+T}	T{
+\fBerror\fR,\: \fBdrop\fR
+T}	T{
+\fBerror\fR
+T}	T{
+\fBerror\fR sends \fB\-\:NOPERM\fR,\: the kind Redis\(aqs own ACL uses for "this user may not run this command",\: so a client library reports it the way it reports the server\(aqs refusals
+T}
+T{
+\fBmonitor_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Evaluate and do not enforce,\: except the hard decisions below
+T}
+.TE
+.SS "rules[]"
+.PP
+.TS
+allbox;
+lbw(1.3i) lbw(0.8i) lbx
+lw(1.3i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+string
+T}	T{
+Names the rule in logs and counters
+T}
+T{
+\fBclients\fR,\: \fBusers\fR
+T}	T{
+lists
+T}	T{
+Selectors;\: AND within a rule,\: OR within one
+T}
+T{
+\fBschedule\fR
+T}	T{
+object
+T}	T{
+\fBdays\fR,\: \fBfrom\fR,\: \fBto\fR,\: \fBtimezone\fR
+T}
+T{
+\fBaction\fR
+T}	T{
+\fBallow\fR,\: \fBdeny\fR,\: \fBobserve\fR
+T}	T{
+Default \fBallow\fR
+T}
+T{
+\fBallow_\:commands\fR,\: \fBdeny_\:commands\fR,\: \fBallow_\:subcommands\fR,\: \fBdeny_\:subcommands\fR,\: \fBallow_\:key_\:prefixes\fR,\: \fBdeny_\:key_\:prefixes\fR,\: \fBread_\:only\fR,\: \fBmax_\:commands\fR
+T}	T{
+
+T}	T{
+The rule\(aqs own narrowing. A rule that names commands \fBwidens\fR the listener for its own traffic;\: the deny lists always win
+T}
+.TE
+.SS "What is off by default, and why"
+.PP
+.TS
+allbox;
+lbw(1.3i) lbx
+lw(1.3i) lx.
+T{
+Command
+T}	T{
+What it is
+T}
+T{
+\fBCONFIG\fR
+T}	T{
+\fBSET dir\fR plus \fBSET dbfilename\fR plus \fBSAVE\fR writes a file wherever the server can write. \fBCONFIG GET\fR is a read,\: which is what \fBallow_\:subcommands\fR is for
+T}
+T{
+\fBMODULE\fR
+T}	T{
+loads a shared object into the server
+T}
+T{
+\fBEVAL\fR,\: \fBEVALSHA\fR,\: \fBFUNCTION\fR,\: \fBSCRIPT\fR,\: \fBFCALL\fR
+T}	T{
+a Lua interpreter inside the database
+T}
+T{
+\fBREPLICAOF\fR,\: \fBSLAVEOF\fR,\: \fBREPLCONF\fR,\: \fBPSYNC\fR,\: \fBSYNC\fR,\: \fBFAILOVER\fR
+T}	T{
+makes this server a replica of one the attacker controls,\: which replaces its whole dataset
+T}
+T{
+\fBMIGRATE\fR,\: \fBDUMP\fR,\: \fBRESTORE\fR
+T}	T{
+moves a key to another server: egress with a key name attached
+T}
+T{
+\fBFLUSHALL\fR,\: \fBFLUSHDB\fR,\: \fBSWAPDB\fR
+T}	T{
+deletes everything,\: unrecoverably
+T}
+T{
+\fBSHUTDOWN\fR
+T}	T{
+stops the server;\: with \fBNOSAVE\fR it loses data
+T}
+T{
+\fBSAVE\fR,\: \fBBGSAVE\fR,\: \fBBGREWRITEAOF\fR
+T}	T{
+writes a file,\: and blocks
+T}
+T{
+\fBKEYS\fR,\: \fBRANDOMKEY\fR
+T}	T{
+\fBKEYS\fR is O(n) \fBon the single thread that serves every client\fR,\: so one \fBKEYS *\fR on a large instance is an outage that looks like a slow query
+T}
+T{
+\fBMONITOR\fR
+T}	T{
+streams every command every client sends,\: arguments included \-\- which is every value written to the database
+T}
+T{
+\fBSLOWLOG\fR,\: \fBLATENCY\fR,\: \fBMEMORY\fR
+T}	T{
+the same,\: in samples
+T}
+T{
+\fBACL\fR,\: \fBCLIENT\fR,\: \fBCLUSTER\fR,\: \fBDEBUG\fR
+T}	T{
+administration of the thing enforcing the policy
+T}
+T{
+\fBPSUBSCRIBE\fR
+T}	T{
+\fBPSUBSCRIBE *\fR receives every message on the instance,\: which is \fBMONITOR\fR for pub/\:sub
+T}
+.TE
+.SS "What shadow mode never shadows"
+.PP
+.TS
+allbox;
+lbw(1.4i) lbx
+lw(1.4i) lx.
+T{
+Refusal
+T}	T{
+Why it is hard
+T}
+T{
+\fBclient_\:not_\:allowed\fR
+T}	T{
+An address that may not connect
+T}
+T{
+\fBtls_\:required\fR
+T}	T{
+An \fBAUTH\fR on this connection puts the password on the wire as an ordinary command argument,\: and so does every value after it
+T}
+T{
+\fBnot_\:authenticated\fR
+T}	T{
+Forwarding an unauthenticated command means the command ran. In front of a server whose \fBrequirepass\fR is unset,\: that is the whole of what the setting was for
+T}
+T{
+\fBunreadable_\:command\fR
+T}	T{
+The relay has no opinion to observe
+T}
+T{
+\fBkey_\:position_\:unknown\fR
+T}	T{
+Checking the wrong argument against a prefix list is a policy that passes what it was meant to stop
+T}
+T{
+\fBtoo_\:many_\:commands\fR
+T}	T{
+A bound
+T}
+T{
+any refusal of a command in the table above
+T}	T{
+Forwarding a \fBCONFIG SET\fR,\: an \fBEVAL\fR or a \fBREPLICAOF\fR and writing down that it was noticed is not a trial of a policy. \fBKEYS\fR is in the set on different grounds: a monitor\-mode listener that forwarded one would cause the outage it was installed to prevent
+T}
+.TE
+.PP
+A command merely \fIoff\fR the allow list is a \fBsoft\fR refusal, which is the distinction that makes monitor mode useful: it is most likely an application nobody has listed yet, and finding those is what the mode is for. An operator who names one of the hard set in \fBallow_commands\fR has said so, and is not overruled.
 .SH "asset_inventory"
 .PP
 One record per device, built from traffic the proxy was already carrying.

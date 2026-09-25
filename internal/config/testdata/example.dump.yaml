@@ -36,6 +36,7 @@ server:
           postgres: null
           mysql: null
           tds: null
+          redis: null
           dhcp: null
           policy: null
         - name: public
@@ -94,6 +95,7 @@ server:
           postgres: null
           mysql: null
           tds: null
+          redis: null
           dhcp: null
           policy: null
     limits:

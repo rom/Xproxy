@@ -534,3 +534,43 @@ func TestAKeyIsClippedForTheLogAndNotForTheWire(t *testing.T) {
 		t.Fatalf("the key reaching a policy is %d octets", len(keys[0]))
 	}
 }
+
+// The three key tables' sizes are written into docs/CONFIG.md and
+// docs/CHANGELOG.md, so they are pinned here.
+//
+// Not because a count means anything on its own, but because a number in prose
+// rots silently: somebody adds a command, the documentation still says 202, and a
+// reader who checks discovers the docs cannot be trusted about the thing they were
+// reading them for. Either update the prose with the count, or -- if the number has
+// stopped being worth stating -- take it out of the prose and out of here together.
+func TestTheKeyTableSizesMatchWhatTheDocsSay(t *testing.T) {
+	for _, tc := range []struct {
+		what string
+		got  int
+		want int
+	}{
+		{"commands with fixed key positions", len(commands), 202},
+		{"commands whose key count is an argument", len(numkeyCommands), 15},
+		{"commands whose key positions depend on an option", len(unlocatable), 10},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s: %d, and the documentation says %d -- update both or neither",
+				tc.what, tc.got, tc.want)
+		}
+	}
+	// And no command is in two of them, because each is a different statement
+	// about where a command's keys are and a command has one answer.
+	for name := range commands {
+		if _, ok := numkeyCommands[name]; ok {
+			t.Errorf("%s is in both the fixed table and the numkey table", name)
+		}
+		if unlocatable[name] {
+			t.Errorf("%s is in both the fixed table and the unlocatable set", name)
+		}
+	}
+	for name := range numkeyCommands {
+		if unlocatable[name] {
+			t.Errorf("%s is in both the numkey table and the unlocatable set", name)
+		}
+	}
+}

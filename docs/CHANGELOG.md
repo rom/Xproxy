@@ -442,6 +442,119 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **`kind: redis`: a Redis and Valkey relay, on the protocol where reachable means
+  administrable.** `internal/respwire` reads the framing and holds the command
+  table; `internal/kinds/redis` holds the policy.
+
+  This is the protocol where a relay earns its place fastest, and the reason is
+  Redis's own default: **no password**. An instance with `requirepass` unset accepts
+  every command from anybody who can reach the port. And the distance from an
+  administrative command to remote code execution is three of them --
+  `CONFIG SET dir`, `CONFIG SET dbfilename`, `SAVE` -- which writes a file of the
+  attacker's choosing wherever the server can write. Pointed at a cron directory or
+  an `authorized_keys`, that is a shell, and it is how internet-exposed instances
+  have been taken over for a decade.
+
+  It is also the protocol that gives a relay the least to work with. A command is an
+  array of opaque byte strings: no schema, no statement grammar, nothing to classify
+  by shape the way the three SQL kinds classify a statement. So the policy is four
+  decisions in order, and each one is there because the one before it is not enough.
+
+  **Authentication first**, and taken from the *server's* reply rather than from the
+  relay having seen an `AUTH`. A relay that trusted the attempt would treat a wrong
+  password as a login, which is the whole of what the setting exists to prevent, so
+  `fromServer` reads one bit -- the type marker of the reply that follows a
+  credential -- and deliberately no more, because parsing the server's whole reply
+  stream would mean a second protocol reader whose disagreements with the first are
+  the interesting bugs. What a client may legitimately send before authenticating is
+  named rather than guessed (`AUTH`, `HELLO`, `PING`, `QUIT`, `RESET`, `COMMAND`),
+  because the alternative -- letting everything through until an `+OK` arrives -- is
+  a window an attacker fills with one command.
+
+  **Then the command name**, as an allow list defaulting to what an application does
+  to a cache. The absences are the value: `MODULE LOAD`, the whole Lua family, the
+  replication commands that replace the dataset from a server you choose, `MIGRATE`,
+  `FLUSHALL`, `SHUTDOWN`, `MONITOR` -- which streams every command every client
+  sends, arguments included, and so is every value written to the database -- and
+  `KEYS`, which belongs in that list on different grounds and they are worth
+  separating. `KEYS` is not an escape. It is O(n) **on the single thread that serves
+  every client**, so one `KEYS *` on a large instance stops the estate for as long as
+  it takes, which means a monitor-mode listener that forwarded one would cause the
+  outage it was installed to prevent and the shadow report would record that it had
+  noticed. That is why it is refused even in monitor mode, alongside the commands
+  that write files.
+
+  **Then the subcommand**, because `CONFIG GET` is a read and `CONFIG SET` is the
+  chain above, so a policy that could only say `CONFIG` would have to refuse both or
+  neither. A container command allowed with no subcommand listed allows all of them,
+  which is stated rather than implied: for `CONFIG` that means `CONFIG SET`.
+
+  **Then the key prefix**, which is the closest this protocol has to the
+  database-and-table boundary the SQL kinds leave to `GRANT` -- and which is only
+  safe because the wire package is honest about what it does not know. Keys sit where
+  each command's signature puts them, so there are three tables rather than one: 202
+  commands with fixed positions (including the interleaved ones, where `MSET` is key,
+  value, key, value, and the ones whose last argument is a timeout rather than a key);
+  15 that declare their key count in an argument, which is read rather than assumed
+  because it is the client's number and it decides which arguments are keys; and 10
+  whose positions depend on an option that may or may not be present. That third set
+  is the interesting one. `SORT`'s `STORE` adds a key at the end; `XREAD`'s keys
+  follow a `STREAMS` token whose position depends on four other options; `MIGRATE`'s
+  key is the third argument *unless* `KEYS` is used, in which case the third is an
+  empty string and the keys are at the end. Those report that their keys cannot be
+  located, so the policy refuses them while a prefix policy is in force and allows
+  them where one is not -- because a table entry that guessed would have the policy
+  checking a `STORE` option's value or a Lua script's text, and passing exactly what
+  it was meant to stop, silently. Leaving them out of the tables altogether would
+  have been worse in the other direction: they would be *unknown* commands, which a
+  read-only listener refuses outright and a validator would not let an operator name.
+
+  One default on this kind is off where every sibling's is on: `upstream_tls_mode`
+  is `disable`. There is nothing in the protocol to discover whether the server
+  speaks TLS, so requiring it by default would refuse every upstream in the common
+  deployment rather than protect anything. `require_tls` on the client's leg still
+  defaults on, and matters as much as anywhere: a Redis `AUTH` sends the password as
+  an argument of an ordinary command.
+
+  A test asserts the four command tables agree with each other rather than a comment
+  claiming they do -- everything the default allow list or the dangerous set names
+  must be nameable in a configuration, nothing may be in both -- and it earned its
+  place immediately. It caught four commands that do not exist, which I had written
+  into the key table by hand (`PSETNX`, `SETGET` and two invented `_RO` variants),
+  and two key positions wrong in the direction that matters: `SINTERCARD`'s fixed
+  spec counted its `LIMIT` token as a key, and `ZUNIONSTORE`'s found the destination
+  and none of the source keys, so a source outside the allowed prefix would have
+  passed.
+
+  Three fuzz targets, and the second is the invariant a relay rests on: what the
+  reader keeps as the raw octets, read again, is the same command. It found that the
+  bulk header was being recorded twice, so what the relay forwarded was not what it
+  had decided about -- the exact failure a protocol relay exists to prevent. It also
+  found a command name that was not text and an error reply with no readable error
+  kind, both fixed.
+
+- **A race in four kinds' shutdown, and `internal/acceptgroup` to hold the fix.**
+
+  The redis end-to-end test surfaced it and the race detector named it: the accept
+  loop's `WaitGroup.Add` against shutdown's `Wait`. `Add` must not run concurrently
+  with `Wait` while the counter is at zero, and an accept loop does exactly that,
+  because a connection can be accepted at the moment a shutdown begins.
+
+  What goes wrong is worth stating, because it is not a detector warning. The
+  session either is or is not waited for depending on the scheduler -- so shutdown
+  can return while a session is still reading a connection the process is about to
+  close. On a reload that is a session dropped mid-command; on a shutdown it is a log
+  line written after the log file was closed.
+
+  The modbus kind already did it correctly, with its own mutex and done channel. That
+  pattern is now a package, with the check and the `Add` under one lock and a
+  connection accepted after `Close` refused by the accept loop rather than served,
+  so the four database kinds share the fix rather than four copies of the bug -- and
+  so it is tested once (four goroutines Entering against Close and Wait, two hundred
+  times, under `-race`) rather than four times not at all. The remaining kinds have
+  the same shape and are a sweep of their own; `vnc` and `rdp` are confirmed by
+  reading.
+
 - **`kind: tds`: a SQL Server relay, on the protocol where the password is not
   encrypted and the statement is not a statement.** `internal/tdswire` reads the
   framing and the three protocols a TDS connection speaks in sequence;

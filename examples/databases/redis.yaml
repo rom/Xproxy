@@ -1,0 +1,321 @@
+# Redis relay: the protocol where reachable means administrable.
+#
+# Redis's own default is no password. An instance with `requirepass` unset
+# accepts every command from anybody who can reach the port -- and on this
+# protocol the distance between an administrative command and a shell is
+# three commands:
+#
+#   CONFIG SET dir /var/spool/cron
+#   CONFIG SET dbfilename root
+#   SAVE
+#
+# which writes a file of the attacker's choosing wherever the server can
+# write. That is not a theoretical chain; it is how internet-exposed Redis
+# instances have been taken over for a decade.
+#
+# There is also almost nothing for a relay to reason about. A command is an
+# array of opaque byte strings: no schema, no statement grammar, nothing to
+# classify by shape the way the SQL kinds classify a statement. So this
+# file is four decisions, in the order the relay makes them.
+#
+# **Authenticate first.** require_auth refuses a command that arrives
+# before the connection has authenticated, and the answer comes from the
+# server's reply rather than from the relay having seen an AUTH -- a relay
+# that trusted the attempt would treat a wrong password as a login. In
+# front of a server with no password at all, this line is the whole of the
+# access control.
+#
+# **Then the command name**, as an allow list. What is absent is the point:
+#
+#   CONFIG SET dir/dbfilename  writes a file wherever the server can write
+#   MODULE LOAD                loads a shared object
+#   EVAL / FUNCTION / SCRIPT   a Lua interpreter inside the database
+#   REPLICAOF / SLAVEOF        replaces the dataset from a server you choose
+#   MIGRATE / DUMP / RESTORE   egress, with a key name attached
+#   FLUSHALL / FLUSHDB         deletes everything, unrecoverably
+#   SHUTDOWN                   stops it; with NOSAVE it loses data
+#   MONITOR                    every command every client sends, arguments
+#                              included -- which is every value written
+#   KEYS / RANDOMKEY           KEYS is O(n) *on the single thread that
+#                              serves every client*: one KEYS * on a large
+#                              instance is an outage that reads as a slow
+#                              query
+#   ACL / CLIENT / CLUSTER     administration of the thing enforcing this
+#
+# **Then the subcommand**, where it is the whole of what matters. CONFIG
+# GET is a read; CONFIG SET is the first line of this file. A policy that
+# could only say CONFIG would have to refuse both or neither.
+#
+# **Then the key.** A key prefix policy is the closest this protocol has to
+# the database-and-table boundary the SQL kinds leave to GRANT. It works
+# because the relay knows where each command's keys are -- and refuses the
+# ten commands whose key positions depend on an option, rather than
+# checking the wrong argument and passing what it was meant to stop.
+#
+# Validate with: xproxyctl -config examples/databases/redis.yaml validate
+version: 1
+
+logging:
+  directory: /var/log/xproxy
+  access: {file: access.log}
+  security: {file: security.log}
+  audit: {file: audit.log}
+
+management:
+  socket: /run/xproxy/mgmt.sock
+  socket_mode: "0660"
+
+server:
+  listeners:
+    # ---------------------------------------------------------------
+    # The application front.
+    #
+    # Read this as one sentence: from the application network, over TLS,
+    # authenticated, using the data-type commands on keys under two
+    # prefixes, and nothing administrative at all.
+    # ---------------------------------------------------------------
+    - name: cache
+      address: "10.0.0.40:6379"
+      kind: redis
+
+      # Redis has no in-protocol upgrade: the port is either TLS or it is
+      # not. Which makes this simpler than the SQL kinds and no less
+      # important -- a Redis AUTH sends the password as an argument of an
+      # ordinary command, so an unencrypted connection discloses it to
+      # anybody on the path, and so does every value read or written.
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/tls/db.pem, key_file: /etc/xproxy/tls/db-key.pem}
+
+      redis:
+        upstream: rd
+        allow_clients: ["10.0.2.0/24"]
+        require_tls: true
+
+        # The one default in this file that is *off* in the product, and
+        # named here because an estate that can turn it on should. There is
+        # no negotiation to discover whether the server speaks TLS, so
+        # requiring it by default would refuse every upstream in the common
+        # deployment rather than protect anything -- but this estate's
+        # server does speak it.
+        upstream_tls_mode: require
+        upstream_tls:
+          ca_file: /etc/xproxy/tls/rd-ca.pem
+
+        # The line that matters most, in front of a server whose
+        # requirepass may well be unset.
+        require_auth: true
+        allow_users: [app]
+
+        # What an application does to a cache. This is roughly the default
+        # list, written out so a reader can see the absences are a decision
+        # rather than an oversight.
+        allow_commands:
+          - AUTH
+          - HELLO
+          - PING
+          - SELECT
+          - GET
+          - SET
+          - SETEX
+          - SETNX
+          - GETDEL
+          - MGET
+          - MSET
+          - DEL
+          - UNLINK
+          - EXISTS
+          - EXPIRE
+          - TTL
+          - INCR
+          - DECR
+          - INCRBY
+          - HGET
+          - HSET
+          - HDEL
+          - HGETALL
+          - HINCRBY
+          - LPUSH
+          - RPUSH
+          - LPOP
+          - RPOP
+          - LRANGE
+          - LLEN
+          - SADD
+          - SREM
+          - SMEMBERS
+          - SISMEMBER
+          - ZADD
+          - ZREM
+          - ZRANGE
+          - ZSCORE
+          - MULTI
+          - EXEC
+          - DISCARD
+          - WATCH
+          - UNWATCH
+
+        # A deny list cannot be overridden by a rule and an allow list can,
+        # which is the difference between "not normally" and "not ever".
+        deny_commands:
+          - CONFIG
+          - MODULE
+          - EVAL
+          - EVALSHA
+          - FUNCTION
+          - SCRIPT
+          - DEBUG
+          - ACL
+          - CLIENT
+          - CLUSTER
+          - REPLICAOF
+          - SLAVEOF
+          - MIGRATE
+          - FLUSHALL
+          - FLUSHDB
+          - SHUTDOWN
+          - MONITOR
+          - SAVE
+          - BGSAVE
+          - KEYS
+          - RANDOMKEY
+
+        # This application's keys and nothing else. A command that touches
+        # a key outside these is refused, and so are the ten commands whose
+        # key positions depend on an option -- because checking the wrong
+        # argument against this list would be a policy that passes exactly
+        # what it was meant to stop.
+        allow_key_prefixes: ["app:", "session:"]
+
+        # Database 0 and nothing else, which is what this application uses.
+        allow_databases: [0]
+
+        max_message_bytes: 8388608
+        max_bulk_bytes: 1048576
+        max_elements: 1024
+        idle_timeout: 30m
+        session_duration: 12h
+        max_sessions: 2000
+        max_sessions_per_client: 200
+
+        default_action: deny
+
+    # ---------------------------------------------------------------
+    # The operations front, with a schedule.
+    #
+    # Somebody has to be able to look at the configuration and empty a
+    # database during a maintenance window. This is how: one account, one
+    # network, read-only outside the window, and CONFIG narrowed to the
+    # subcommands that read rather than the one that writes a file.
+    # ---------------------------------------------------------------
+    - name: ops
+      address: "10.0.0.41:6379"
+      kind: redis
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/tls/db.pem, key_file: /etc/xproxy/tls/db-key.pem}
+      redis:
+        upstream: rd
+        allow_clients: ["10.0.9.0/24"]
+        require_tls: true
+        require_auth: true
+        allow_users: [ops]
+
+        # Read-only on the listener, lifted by the rule below inside the
+        # window only.
+        read_only: true
+        allow_commands:
+          - AUTH
+          - HELLO
+          - PING
+          - SELECT
+          - GET
+          - MGET
+          - EXISTS
+          - TTL
+          - TYPE
+          - HGETALL
+          - LRANGE
+          - SMEMBERS
+          - ZRANGE
+          - INFO
+          - DBSIZE
+          - COMMAND
+          - CONFIG      # narrowed below
+          - SCAN        # the cursor form, not KEYS
+
+        # CONFIG GET reads; CONFIG SET writes a file wherever the server
+        # can write. Naming the subcommands is the only way to have the one
+        # without the other.
+        allow_subcommands:
+          - CONFIG GET
+          - CONFIG RESETSTAT
+
+        rules:
+          - name: maintenance_window
+            users: [ops]
+            schedule: {days: [sun], from: "02:00", to: "04:00"}
+            read_only: false
+            allow_commands:
+              - AUTH
+              - HELLO
+              - PING
+              - SELECT
+              - GET
+              - MGET
+              - SET
+              - DEL
+              - UNLINK
+              - EXPIRE
+              - INFO
+              - DBSIZE
+              - CONFIG
+              - FLUSHDB     # the reason the window exists
+              - SCAN
+            allow_subcommands:
+              - CONFIG GET
+              - CONFIG RESETSTAT
+
+        default_action: deny
+
+    # ---------------------------------------------------------------
+    # A shadow-mode trial.
+    #
+    # monitor_only evaluates everything and enforces nothing, except the
+    # decisions that cannot honestly be observed: the client list, the TLS
+    # requirement, a command before authentication, a message the relay
+    # could not read, and the commands listed at the top of this file.
+    #
+    # KEYS is in that set on different grounds from the rest, and they are
+    # worth separating. It is not an escape; it is O(n) on the one thread
+    # that serves everybody, so a trial listener that forwarded a KEYS *
+    # would cause the outage it was installed to prevent -- and the report
+    # would record that it had noticed.
+    #
+    # Read the result with: xproxyctl policy
+    # ---------------------------------------------------------------
+    - name: trial
+      address: "10.0.0.42:6379"
+      kind: redis
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/tls/db.pem, key_file: /etc/xproxy/tls/db-key.pem}
+      redis:
+        upstream: rd
+        allow_clients: ["10.0.2.0/24"]
+        require_auth: true
+        read_only: true
+        monitor_only: true
+        default_action: deny
+
+upstreams:
+  - name: rd
+    endpoints:
+      - {address: "10.0.16.40:6379"}
+      - {address: "10.0.16.41:6379"}
+    health_check:
+      type: tcp
+      interval: 10s
+      timeout: 2s
+      unhealthy_threshold: 3
+      healthy_threshold: 2
