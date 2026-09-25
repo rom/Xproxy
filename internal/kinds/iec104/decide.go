@@ -39,6 +39,7 @@ func (se *session) decide(frame *wire.Frame, fromClient bool) (string, bool) {
 	if a == nil {
 		return "", true
 	}
+	se.t.observeFrame(se, a)
 	command := a.Type.Command()
 	system := a.Type.System()
 	if command {

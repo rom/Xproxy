@@ -152,6 +152,7 @@ func (t *server) request(raw []byte, from net.Addr) {
 	} else {
 		c.TFTPWrites.Add(1)
 	}
+	t.observeTransfer(x)
 	go func() {
 		defer safe.Guard("tftp transfer")
 		x.run(out)

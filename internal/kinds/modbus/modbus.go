@@ -267,6 +267,12 @@ type session struct {
 	requests, denied, exceptions atomic.Uint64
 	closed                       atomic.Bool
 	wg                           sync.WaitGroup
+
+	// watch accumulates what this session did, for the estate's device
+	// inventory. It is reported twice -- on the first frame and at the end --
+	// rather than per frame, because a Modbus session carries a frame every
+	// few milliseconds and this path exists not to add latency to a scan.
+	watch *watcher
 }
 
 // worker serialises requests towards one device pool. A Modbus slave has
@@ -282,6 +288,10 @@ type worker struct {
 	ep   *upstream.Endpoint
 	once sync.Once
 	done chan struct{}
+	// seen says this device has been reported to the estate's inventory, so
+	// the report happens once per device connection rather than once per
+	// frame.
+	seen bool
 }
 
 // job is one request waiting for its device.
@@ -301,12 +311,18 @@ func (t *server) handle(client net.Conn) {
 	s.Counters().ModbusSessionsOpen.Add(1)
 	defer s.Counters().ModbusSessionsOpen.Add(-1)
 	ip := netutil.AddrOf(client.RemoteAddr().String())
-	se := &session{t: t, client: client, ip: ip,
+	se := &session{t: t, client: client, ip: ip, watch: newWatcher(),
 		workers: map[string]*worker{}, writes: make(chan []byte, 16),
 		pending: make(chan struct{}, t.m.Pending())}
 	defer func() {
 		se.stop()
 		_ = client.Close()
+		if se.watch.anything() {
+			// At the end, with everything the session did: the unit
+			// identifiers and function codes are what say whether this end
+			// was a panel, a historian or an engineering station.
+			t.observeClient(se)
+		}
 	}()
 	if !t.policy.ClientAllowed(ip) {
 		t.host.Counters().ModbusRejected.Add(1)
@@ -481,6 +497,7 @@ func (se *session) run() string {
 		if t.m.LogFrames {
 			t.logFrame(se, frame, pdu, decision)
 		}
+		t.observeFrame(se, frame, pdu)
 		w, reason := se.workerFor(frame.Unit)
 		if reason != "" {
 			t.host.Counters().ModbusDenied.Add(1)
@@ -689,6 +706,14 @@ func (se *session) exchange(w *worker, j *job) ([]byte, *wire.PDU, error) {
 				fmt.Sprintf("asked %d, answered %d", unit, frame.Unit))
 			return wire.Encode(t.framing, &wire.Frame{Transaction: j.txn, Unit: j.frame.Unit,
 				PDU: wire.ExceptionPDU(j.req.pdu.Function, wire.ExServerFailure)}), nil, nil
+		}
+		// The device answered, which is the strongest evidence in the whole
+		// fingerprint set. Reported once per worker, not once per frame: the
+		// worker is one device connection and a frame goes down it every few
+		// milliseconds.
+		if w.ep != nil && !w.seen {
+			w.seen = true
+			t.observeDevice(w.ep.Address, unit)
 		}
 		out = raw
 		if w.route.framing != t.framing || unit != j.frame.Unit {

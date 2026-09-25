@@ -85,6 +85,9 @@ type Server struct {
 	live *sessions.Table
 	// wouldDeny is what the listeners in shadow mode would have refused.
 	wouldDeny *shadow.Ledger
+	// assets is the device inventory, absent unless the configuration asked
+	// for one.
+	assets atomic.Pointer[assetKeeper]
 	// tickets manages shared session ticket keys; nil without the section.
 	tickets        *tlsconf.Tickets
 	ticketMismatch bound.Notice
@@ -180,6 +183,13 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 	// Server before any listener accepts.
 	safe.Report = func(what string, value any, stack []byte) {
 		logs.Error.Error("panic contained", "where", what, "panic", fmt.Sprint(value), "stack", string(stack))
+	}
+	if ai := cfg.AssetInventory; ai != nil && ai.Enabled {
+		k, err := newAssetKeeper(s, ai)
+		if err != nil {
+			return nil, fmt.Errorf("asset_inventory: %w", err)
+		}
+		s.assets.Store(k)
 	}
 	if ti := cfg.ThreatIntel; ti != nil {
 		set, err := newIntel(ti)
@@ -337,6 +347,18 @@ func (s *Server) Stats() Snapshot {
 	snap.OpenConnections = s.connLimiter.Open()
 	snap.RejectedConns = s.connLimiter.Rejected.Load()
 	snap.RateRefusedConns = s.rate().Rejected.Load()
+	if k := s.assets.Load(); k != nil {
+		c := k.inv.Counts()
+		size, frozen := k.inv.Frozen()
+		sum := &AssetSummary{Assets: c.Assets, New: c.New, Unknown: c.Unknown,
+			Dropped: c.Dropped, Expired: c.Expired, Refused: c.Refused,
+			Findings: c.Findings, Frozen: frozen, Baseline: size,
+			ByRole: make(map[string]int, len(c.ByRole))}
+		for r, n := range c.ByRole {
+			sum.ByRole[string(r)] = n
+		}
+		snap.Assets = sum
+	}
 	s.mu.Lock()
 	for _, bl := range s.listeners {
 		if bl.rate != nil {
@@ -588,6 +610,9 @@ func (s *Server) Start() error {
 		pl.Start()
 	}
 	s.sampler.Start()
+	if k := s.assets.Load(); k != nil {
+		k.start()
+	}
 	if set := s.intel.Load(); set != nil {
 		set.Refresh(cfg.ThreatIntel.RefreshInterval().D(), func(err error) {
 			s.logs.Error.Warn("threat intel list", "err", err.Error())
@@ -1245,6 +1270,14 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		if s.acme != nil {
 			s.acme.Stop()
 		}
+	}
+	if k := s.assets.Load(); k != nil {
+		// After the listeners, so that the last observations they made are in
+		// the file: an inventory whose final minutes were lost would report
+		// those devices as new on the next start, and a new-device alert that
+		// fires because the proxy restarted is one an operator learns to
+		// ignore.
+		k.stop()
 	}
 	if node := s.cluster.Load(); node != nil {
 		node.Stop()

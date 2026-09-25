@@ -184,6 +184,7 @@ func (s *server) fromClient(up net.PacketConn, raw []byte, from net.Addr) {
 		}
 	}
 	s.logMessage(ip, m, d, "client", "allow")
+	s.observeRequest(m, ip)
 	addr := s.serverAddr(ip)
 	if addr == nil {
 		c.DHCPUpstreamFail.Add(1)
@@ -353,6 +354,7 @@ func (s *server) fromServer(raw []byte, from net.Addr) {
 	if m.Type.Assigns() {
 		c.DHCPLeases.Add(1)
 		s.logLease(e, m, d, ip)
+		s.observeLease(m, ip)
 	}
 	if m.Type == wire.Ack || m.Type == wire.Nak {
 		// The exchange is over. A NAK ends it as surely as an ACK, and the

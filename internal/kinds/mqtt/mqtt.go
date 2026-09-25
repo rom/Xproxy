@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rom/xproxy/internal/assets"
 	"github.com/rom/xproxy/internal/config"
 	wire "github.com/rom/xproxy/internal/mqtt"
 	"github.com/rom/xproxy/internal/netutil"
@@ -306,6 +307,24 @@ func (t *server) shadowed(ip netip.Addr, what, detail string) bool {
 	return true
 }
 
+// observe tells the estate's inventory what this session was.
+//
+// The client identifier is the most useful string MQTT carries: brokers key
+// their own subscriptions on it, so estates give it a real name, and a
+// Sparkplug identifier (spBv1.0/...) says the device is an edge node publishing
+// on behalf of something else.
+func (t *server) observe(se *session) {
+	if se.clientID == "" && !se.ip.IsValid() {
+		return
+	}
+	t.host.ObserveAsset(assets.Observation{
+		Listener: t.cfg.Name, Proto: "mqtt", Addr: se.ip,
+		ClientID: se.clientID,
+		// A publisher asked; the broker answered.
+		Server: false,
+	})
+}
+
 func (t *server) log(se *session, start time.Time, reason string) {
 	attrs := []any{"listener", t.cfg.Name, "client_ip", se.ip.String(), "tls", se.secure,
 		"client_id", se.clientID, "username", se.username, "version", mqttVersionName(se.version),
@@ -354,6 +373,7 @@ func (se *session) run(time.Time) string {
 		return se.badPacket(err, "connect")
 	}
 	se.version, se.clientID, se.username = c.Version, c.ClientID, c.Username
+	t.observe(se)
 	if reason, code := se.checkConnect(c); reason != "" && !t.shadowed(se.ip, reason, c.ClientID) {
 		se.refuseConnect(code)
 		t.deny(se.ip, reason, "")

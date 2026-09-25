@@ -92,6 +92,12 @@ type Config struct {
 	// APIInventory records the endpoints the proxy serves and reports
 	// shadow, zombie and superseded APIs.
 	APIInventory *APIInventory `yaml:"api_inventory"`
+	// AssetInventory records the *devices* the proxy has seen and works
+	// out what each one is, from the traffic it was already carrying.
+	// Where api_inventory answers "what does this estate serve", this one
+	// answers "what is on this estate's network" -- the question an
+	// operational network cannot answer with a scanner.
+	AssetInventory *AssetInventory `yaml:"asset_inventory"`
 	// Shedding enables adaptive load shedding by priority class when
 	// present.
 	Shedding *Shedding `yaml:"shedding"`
@@ -1155,6 +1161,63 @@ type TFTPRule struct {
 	// window is: writes allowed during the change window and not outside
 	// it.
 	Schedule *ModbusSchedule `yaml:"schedule"`
+}
+
+// AssetInventory is the estate's own record of what is on its network, built
+// from the traffic the proxy was already carrying.
+//
+// An operational network cannot be scanned: an active scan is how a
+// programmable controller gets knocked over, and on a safety network it is a
+// thing people lose their jobs for. So the inventory is a by-product. Nothing
+// here probes, connects or sends anything.
+type AssetInventory struct {
+	// Enabled turns it on. Default false: an inventory is a record of
+	// somebody's estate, and a proxy that started keeping one without being
+	// asked would be making a decision about their data for them.
+	Enabled bool `yaml:"enabled"`
+	// StateFile is where the inventory is written and read back. Empty keeps it
+	// in memory only, which means the estate is reported as new after every
+	// restart -- the fastest way to teach an operator to ignore it.
+	StateFile string `yaml:"state_file"`
+	// SaveInterval is how often the file is written. Default 5m.
+	SaveInterval Duration `yaml:"save_interval"`
+	// MaxAssets bounds the inventory. Default 8192. Past the bound the least
+	// recently seen asset goes, which is the opposite of the pairing tables in
+	// the relay kinds and is deliberate: forgetting here loses history rather
+	// than making a decision wrong, and refusing would stop the inventory
+	// noticing the estate at the moment something is filling it up.
+	MaxAssets int `yaml:"max_assets"`
+	// TTL is how long an asset nobody has seen is kept, so that a
+	// decommissioned device leaves the record instead of being reported for
+	// ever. Default 720h, which is thirty days.
+	TTL Duration `yaml:"ttl"`
+	// VendorFile is a list of hardware prefixes and manufacturer names, one per
+	// line, which replaces nothing and adds to the built-in seed list. The
+	// built-in list is two dozen entries weighted towards the vendors an
+	// operational estate is made of; an estate that wants the IEEE's registry
+	// points this at a copy of it.
+	//
+	// The format is a prefix, whitespace or a comma, and a name. A malformed
+	// line refuses the file rather than being skipped: a list an operator
+	// trusted and which silently dropped half its entries is worse than one
+	// that would not load.
+	VendorFile string `yaml:"vendor_file"`
+	// AlertOnNew writes a security event for a device that was not in the
+	// frozen baseline. It does nothing until a baseline exists
+	// (`xproxyctl assets freeze`), because before that everything is new.
+	// Default true.
+	AlertOnNew *bool `yaml:"alert_on_new"`
+	// AlertOnChange writes a security event when a device's identity changes:
+	// its address taken over by another device, its role changed, its vendor
+	// re-resolved. Default true, and this is the setting worth leaving on --
+	// a steady-state inventory is a reference document, and the deltas are the
+	// security value.
+	AlertOnChange *bool `yaml:"alert_on_change"`
+	// Roles, when set, is the allow list of roles this estate expects to see.
+	// A device classified as something else raises a finding, which is how
+	// "there are no engineering workstations on the process network" is
+	// written down.
+	Roles []string `yaml:"roles"`
 }
 
 // DHCPListener is a kind: dhcp listener: a DHCP relay agent that reads what it

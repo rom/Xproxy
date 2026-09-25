@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rom/xproxy/internal/assets"
 	wire "github.com/rom/xproxy/internal/dhcp"
 	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/proxytest"
@@ -128,6 +129,7 @@ func ack(m *wire.Message) *wire.Message {
 
 const dhcpYAML = `
 version: 1
+%s
 server:
   listeners:
     - name: segment
@@ -148,8 +150,23 @@ func relayFor(t *testing.T, section, serverAddr string) (*proxy.Server, string) 
 
 func relayWith(t *testing.T, section, extra, serverAddr string) (*proxy.Server, string) {
 	t.Helper()
-	s := proxytest.Start(t, fmt.Sprintf(dhcpYAML, extra, section, serverAddr))
+	return relayWithGlobal(t, section, extra, serverAddr, "")
+}
+
+// relayWithGlobal starts a relay with extra top-level configuration, which is
+// where the asset inventory lives: one device is one record across every
+// listener, so the inventory is not a listener's own section.
+func relayWithGlobal(t *testing.T, section, extra, serverAddr, global string) (*proxy.Server, string) {
+	t.Helper()
+	s := proxytest.Start(t, fmt.Sprintf(dhcpYAML, global, extra, section, serverAddr))
 	return s, proxytest.Addr(t, s, "segment")
+}
+
+// assetObservation is what a listener that knows only an address reports, which
+// is every listener but this one.
+func assetObservation(addr netip.Addr) assets.Observation {
+	return assets.Observation{Listener: "plant", Proto: "modbus", Addr: addr,
+		Server: true, Units: []int{1}}
 }
 
 // base is the section every test starts from: a relay address, the server pool,

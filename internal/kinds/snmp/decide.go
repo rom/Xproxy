@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/rom/xproxy/internal/assets"
 	wire "github.com/rom/xproxy/internal/snmp"
 )
 
@@ -166,6 +167,48 @@ func (t *server) access(ip netip.Addr, m *wire.Message, d Decision, decision, fr
 // logMessage writes the access line for a message that was allowed.
 func (t *server) logMessage(ip netip.Addr, m *wire.Message, d Decision, from string) {
 	t.access(ip, m, d, "allow", from)
+}
+
+// observeManager tells the estate's inventory about the thing polling.
+//
+// A monitoring system asks; that is what separates it from the equipment it
+// monitors. The object identifiers it asked for are recorded because the shape
+// of a poll says what kind of monitoring it is.
+func (t *server) observeManager(ip netip.Addr, m *wire.Message) {
+	t.host.ObserveAsset(assets.Observation{Listener: t.cfg.Name, Proto: "snmp",
+		Addr: ip, Server: false, OIDs: oidsOf(m)})
+}
+
+// observeAgent tells the inventory about the equipment that answered.
+//
+// What it does *not* record is the agent's own description. sysDescr
+// (1.3.6.1.2.1.1.1) is the one string in an estate that usually names a device's
+// model and firmware, and a relay does see it go past -- but this package's
+// reader keeps a varbind's name, type and extent and deliberately not its
+// value, because a policy about values would need a MIB per estate. Changing a
+// parser on the data path so that an inventory can read one string would be
+// paying for a convenience in the place where the cost lands hardest, so the
+// object identifiers are recorded and the values are left alone.
+func (t *server) observeAgent(ip netip.Addr, m *wire.Message) {
+	t.host.ObserveAsset(assets.Observation{Listener: t.cfg.Name, Proto: "snmp",
+		Addr: ip, Server: true, OIDs: oidsOf(m)})
+}
+
+// oidsOf is the object identifiers a message named, bounded: the shape of a
+// poll says what kind of monitoring it is, and the first few say it as well as
+// all of them.
+func oidsOf(m *wire.Message) []string {
+	if m.PDU == nil {
+		return nil
+	}
+	out := make([]string, 0, 8)
+	for _, vb := range m.PDU.VarBinds {
+		if len(out) >= 8 {
+			break
+		}
+		out = append(out, vb.OID.String())
+	}
+	return out
 }
 
 // logSession writes the line for one stream session.
