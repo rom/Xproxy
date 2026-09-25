@@ -130,6 +130,45 @@ func TestTheNamesThatAreNotNames(t *testing.T) {
 	}
 }
 
+// An escaped space at the end of a value is significant, and an unescaped one
+// is not. That is the whole reason the trimming here is escape-aware rather
+// than a call to TrimSpace: `cn=a\ ` is a value that ends in a space on
+// purpose, and a reader that trimmed before resolving the escaping would turn
+// it into the value "a" -- silently, and into a *different* entry.
+func TestAnEscapedTrailingSpaceIsSignificant(t *testing.T) {
+	withSpace, err := ParseDN(`cn=a\ ,dc=example,dc=com`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := ParseDN("cn=a,dc=example,dc=com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withSpace.Equal(plain) {
+		t.Error(`cn=a\  and cn=a are the same name, so the escaped space was dropped`)
+	}
+	if got := withSpace.Values()[0]; got != "a " {
+		t.Errorf("the value is %q, wanted %q", got, "a ")
+	}
+	// An *unescaped* trailing space is insignificant, and the two names with
+	// one are the same name.
+	padded, err := ParseDN("cn=a   ,dc=example,dc=com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !padded.Equal(plain) {
+		t.Errorf("%q is not the same name as %q", padded, plain)
+	}
+	// And a leading one, which the grammar treats the same way.
+	leading, err := ParseDN(`cn=\ a,dc=example,dc=com`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if leading.Equal(plain) {
+		t.Error("an escaped leading space was dropped")
+	}
+}
+
 // The string form is written back escaped, so a name that came in with a
 // comma in a value goes out with one and is read the same way twice.
 func TestANameSurvivesARoundTrip(t *testing.T) {

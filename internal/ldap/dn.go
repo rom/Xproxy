@@ -312,6 +312,16 @@ func (d DN) Under(suffix DN) bool {
 	return true
 }
 
+// Values are the values of the most specific relative name, in the order the
+// types are. It is here for the tests and for a caller that wants the leaf's
+// own value without re-parsing the string form.
+func (d DN) Values() []string {
+	if len(d) == 0 {
+		return nil
+	}
+	return d[0].Values
+}
+
 // Depth is how many relative names the name has, which is what a scope
 // bound is measured in.
 func (d DN) Depth() int { return len(d) }
