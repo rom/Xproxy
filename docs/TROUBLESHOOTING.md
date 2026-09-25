@@ -3111,6 +3111,77 @@ plant where the master only ever writes, the relay learns the value from
 the writes it forwards, so the first write after a restart is the one that
 cannot be checked.
 
+## IEC 60870-5-104 relay
+
+**A command reaches the relay and not the substation.** The default answer
+is the standard's own negative confirmation, so look for it in the control
+centre's alarm list and then at the security event, which carries the type
+identification, the cause, the common address, the point and the rule that
+decided:
+
+```sh
+xproxyctl -json stats | jq '.refusals.iec104'
+xproxyctl tail security | jq -c 'select(.proto=="iec104") | {t:.time, r:.reason, type:.type, ca:.common, ioa:.address, rule:.rule}'
+```
+
+The reasons, and what each means:
+
+| Reason | What happened |
+|--------|---------------|
+| `client_not_allowed` | The controlling station is outside `allow_clients`, or inside `deny_clients` |
+| `common_address` | The frame names a station outside `common_addresses`. Checked before the rules and before `default_action: allow`, so a permissive listener still cannot reach a station it does not name |
+| `monitor_only` | A command or a system command on a monitor-only listener. No rule can override this one |
+| `rule` | A `deny` rule matched, and its name is in the event |
+| `default_deny` | No rule matched. Add a named `deny` rule if you want the log to say which case it was |
+| `unselected` | An execute arrived without a selection, with `require_select` on. This is the check working: a bare execute is what an injected frame looks like |
+| `select_unavailable` | A selection could not be recorded — the table is full, or the command names no point — so an execute after it could not be matched |
+| `control` | A U-format control function outside `allow_controls`. Usually `STOPDT_act` |
+| `station_command` | The *station* sent an activation to its control centre. Not a shape the standard has, and what a compromised gateway pivoting upstream looks like |
+| `sequence` | An I frame whose send sequence number was not the next one: a lost frame, a duplicated station, or a replay |
+| `window` | More than `k` I frames outstanding unacknowledged |
+| `ack_ahead` | A receive sequence number acknowledging a frame that was never sent |
+| `rate_limited`, `command_rate_limited` | The frame or the command bound. These are bounds, not policy, and are never shadowed |
+| `malformed`, `frame_too_long` | The frame could not be read, or was past `max_frame_bytes`. The session ends: there is no resynchronising on a protocol framed by a start octet and a length, because the next `0x68` is as likely to be inside a measurement as at a frame boundary |
+
+**Everything is refused after one bad frame.** It is not: a sequence gap is
+one refusal, and the state moves to what arrived. If refusals continue,
+something is genuinely replaying, or two controlling stations are using the
+same connection. Check `iec104_sequence_gaps` against `iec104_frames`: a
+steady ratio is a lossy link, a burst is an event.
+
+**`require_select` is on and nothing is refused.** Check
+`iec104_unselected`. Zero with commands flowing means the control centre is
+already sending both steps, which is the good case. Zero with
+`iec104_executes` also zero means the commands being sent are of a type with
+no two-step form — the bitstring commands — which are exempt, because
+requiring a selection for them would refuse every use of them for ever.
+
+**A selection stops working across a reconnection.** By design. A selection
+belongs to the connection that made it; one that outlived its connection
+would let a later client execute on an earlier one's intention.
+`iec104_selects_held` is how many are outstanding right now.
+
+**The access log is unreadable.** Turn `log_frames` off and leave
+`log_commands` on (the default). On this protocol a station's periodic
+telemetry is most of the traffic, and a line per measurement buries the
+commands — which are the thing a grid operator is asked for after an
+incident.
+
+**The station's own confirmations are being refused.** A rule about
+commands that names no `causes` matches every cause, including `actcon` —
+but a rule that names `causes: [act]` alone will not match the station's
+answer, and the answer then falls to `default_deny`. Name `[act, deact]` on
+the command rules and let a `class: [monitoring]` rule or an explicit
+`causes: [actcon, deactcon, actterm]` rule carry the replies. The same trap
+with control functions is handled for you: naming `STARTDT_act` in
+`allow_controls` names `STARTDT_con` too.
+
+**After a failover the relay allows a command it refused before.** The
+select-before-operate state is per node and per what passed through it, so a
+node promoted cold has no selections at all — the first execute after a
+promotion is refused, which is the safe direction. `docs/HA.md` covers what
+else does and does not survive.
+
 ## NTP and NTS gateway
 
 **Clients get no answer at all.** A datagram cannot be refused, so
@@ -4624,6 +4695,7 @@ innocent.
 | `ftp_denied` | The FTP proxy: a refused command, path, extension or address, a failed login, a malformed control line, a bounce attempt, or a transfer cut by a bound or a rule (`detail` says which) | yes |
 | `ssh_denied` | The SSH bastion: a failed authentication, a refused channel, request, subsystem, command, environment variable, file transfer helper or forward, or a refused SFTP request (`detail` says which) | yes |
 | `mqtt_denied` | The MQTT listener: a refused CONNECT, a topic or filter outside the policy, a malformed packet, or a client outside `allow_clients` (`detail` says which) | yes |
+| `iec104_denied` | The IEC 60870-5-104 relay: a frame the policy refused -- a type identification, a cause, a station, a point or a control function outside what a rule allows, a command on a `monitor_only` listener, an execute with no selection -- or a client outside `allow_clients`, a frame it could not read, a sequence gap, or a station sending an activation to its own control centre (`reason` says which, and the event carries the type, the cause, the common address, the point and the rule) | yes |
 | `modbus_denied` | The Modbus relay: a frame the policy refused -- a function code, a unit identifier, a register range or a value outside what a rule allows, a write on a `read_only` listener, a role that is missing or not allowed -- or a client outside `allow_clients`, a frame it could not read, or an answer from the device it would not pass on (`reason` says which, and the event carries the unit, the function, the address and the rule) | yes |
 | `ntp_denied` | The NTP gateway: a client outside `allow_clients`, a version or mode the profile does not accept (including modes 6 and 7, which are the control and private protocols rather than time), a packet it could not read, a rate limit, missing or failed authentication, or an answer from a server that the quality rules refuse -- unsynchronised, too far down the tree, too dispersed, or stripped of the NTS fields the request carried (`detail` says which) | yes |
 | `ntske_denied` | NTS key establishment: a connection that did not offer the `ntske/1` application protocol (so it is not an NTS client), one that is not TLS at all, a server name outside `server_names`, a client outside `allow_clients`, or a handshake past the bound on how many may be in flight | yes |
@@ -4680,6 +4752,7 @@ actually being refused. What each kind can say:
 | `mqtt` | `client_not_allowed`, `max_connections`, `not_connect`, `second_connect`, `version_refused`, the client id policy (`empty_client_id`, `client_id_too_long`, `client_id_refused`), `no_username`, `keep_alive_refused`, the topic policy (`publish_topic_refused`, `subscribe_refused`, `retain_refused`, `will_topic_refused`, `will_retain_refused`), `packet_too_large`, `malformed`, the per-topic bounds (`payload_too_large`, `qos_too_high`, `qos_too_low`, `retain_refused`) and the Sparkplug policy (`sparkplug_not_sparkplug`, `sparkplug_namespace`, `sparkplug_message_type`, `sparkplug_command_refused`, `sparkplug_no_birth`, `sparkplug_sequence`) |
 | `ftp` | `client_refused`, `banned`, `max_connections`, `auth_failed`, `identity_refused`, `mfa_required`, `mfa_failed`, the command and path policy (`unknown_command`, `command_refused`, `path_refused`, `read_only`, `active_refused`, `no_data_connection`), the path shapes it will not guess about (`path_separator`, `path_control`, `path_encoding`), the commands that are half a decision (`rest_invalid`, `rest_unscannable`, `rename_out_of_order`), TLS (`tls_required`, `auth_refused`, `ccc_refused`, `tls_pipelined`), the data channel (`bounce_refused`, `malformed_address`, `data_stranger`, `upstream_address`, `transfer_cut`) and the line discipline (`line_too_long`, `malformed_line`, `malformed_command`) |
 | `syslog` | `sender_refused`, `max_connections`, `rate_limit`, `too_large`, `framing`, `malformed`, the message policy (`facility`, `severity`, `pattern`) and `queue_full` when the collector is behind |
+| `iec104` | `client_not_allowed`, `tls_handshake`, `max_connections`, `rate_limited`, `command_rate_limited`, the framing (`malformed`, `frame_too_long`), the policy (`monitor_only`, `common_address`, `rule`, `default_deny`, `control`), select-before-operate (`unselected`, `select_unavailable`), the numbering (`sequence`, `window`, `ack_ahead`) and the direction (`station_command`) |
 | `modbus` | `client_not_allowed`, `max_connections`, `rate_limit`, `queue_full`, the session's own locks (`tls_handshake`, `no_client_certificate`, `no_role`, `role_not_allowed`, `security_requires_tls`), the framing (`framing`, `frame_too_large`, `malformed`), the policy (`read_only`, `read_only_unknown_function`, `unit_not_allowed`, `rule_deny`, `no_rule`, `value_out_of_range`, `value_delta`, `value_transition`, `value_rate`, `value_no_select`, `value_unknown`, `value_masked_write`, `coil_set_not_allowed`, `coil_clear_not_allowed`), the routing (`no_route_for_unit`) and what the device answered (`malformed_response`, `response_unit_mismatch`) |
 | `ntp` | `banned`, `client_not_allowed`, `rate_limit`, `max_associations`, `outstanding_full`, the dispatch (`control_mode`, `private_mode`, `version5`, `version`, `version_not_allowed`, `mode_not_allowed`), the association shape (`not_a_peer`, `broadcast_not_allowed`), the packet (`malformed`, `packet_too_large`, `too_many_extensions`, `unknown_extension`, `ambiguous_mac`), the identity it demanded (`nts_required`, `auth_required`, `auth_failed`), the egress (`no_server`, `server_not_allowed`), what the server answered (`malformed_response`, `unsolicited`, `response_mode`, `kiss_of_death`, `unsynchronised`, `unsynchronised_stratum`, `stratum_too_high`, `stratum_not_allowed`, `root_delay`, `root_dispersion`, `root_distance`, `delay`, `offset`, `bogus_timestamps`, `bogus_refid`, `refid_not_allowed`, `leap_announced`, `leap_unexpected`, `nts_stripped`, `auth_stripped`) and what the server became (`source_changed`, with `change_detection.action: refuse`) |
 | `ntske` | `banned`, `client_not_allowed`, `max_connections`, `handshake_limit`, and what the handshake said (`not_tls`, `no_hello`, `incomplete_hello`, `hello_too_large`, `alpn_not_offered`, `server_name_not_allowed`) |

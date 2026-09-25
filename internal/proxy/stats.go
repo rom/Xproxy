@@ -174,6 +174,36 @@ type Stats struct {
 	ModbusTraced         atomic.Uint64
 	ModbusLearned        atomic.Uint64
 
+	// The IEC 60870-5-104 relay.
+	//
+	// The counters are split by what the protocol distinguishes, because
+	// that is what an operator asks about: the frames, then the commands
+	// separately from the telemetry (a control room's question is never
+	// "how many measurements", it is "what was commanded"), then the
+	// select-before-operate state, and then the numbering checks that
+	// find a lost, duplicated or replayed frame.
+	IEC104Sessions     atomic.Uint64
+	IEC104SessionsOpen atomic.Int64
+	IEC104Frames       atomic.Uint64
+	IEC104Commands     atomic.Uint64
+	IEC104SystemCmds   atomic.Uint64
+	IEC104Denied       atomic.Uint64
+	IEC104WouldDeny    atomic.Uint64
+	IEC104Malformed    atomic.Uint64
+	IEC104Rejected     atomic.Uint64
+	IEC104RateLimited  atomic.Uint64
+	// IEC104Selects and IEC104Executes count the two halves of a
+	// two-step command; IEC104Unselected counts the executes refused for
+	// arriving without one, which is the number that says whether
+	// require_select is doing anything.
+	IEC104Selects      atomic.Uint64
+	IEC104Executes     atomic.Uint64
+	IEC104Unselected   atomic.Uint64
+	IEC104SelectsHeld  atomic.Int64
+	IEC104SeqGaps      atomic.Uint64
+	IEC104WindowFull   atomic.Uint64
+	IEC104UpstreamFail atomic.Uint64
+
 	// The NTP and NTS gateway.
 	//
 	// The counters are split by what an operator does next. Requests and
@@ -513,6 +543,23 @@ type Snapshot struct {
 	ModbusUpstreamFailed   uint64             `json:"modbus_upstream_failed"`
 	ModbusTraced           uint64             `json:"modbus_traced"`
 	ModbusLearned          uint64             `json:"modbus_learned"`
+	IEC104Sessions         uint64             `json:"iec104_sessions"`
+	IEC104SessionsOpen     int64              `json:"iec104_sessions_open"`
+	IEC104Frames           uint64             `json:"iec104_frames"`
+	IEC104Commands         uint64             `json:"iec104_commands"`
+	IEC104SystemCmds       uint64             `json:"iec104_system_commands"`
+	IEC104Denied           uint64             `json:"iec104_denied"`
+	IEC104WouldDeny        uint64             `json:"iec104_would_deny"`
+	IEC104Malformed        uint64             `json:"iec104_malformed"`
+	IEC104Rejected         uint64             `json:"iec104_rejected"`
+	IEC104RateLimited      uint64             `json:"iec104_rate_limited"`
+	IEC104Selects          uint64             `json:"iec104_selects"`
+	IEC104Executes         uint64             `json:"iec104_executes"`
+	IEC104Unselected       uint64             `json:"iec104_unselected"`
+	IEC104SelectsHeld      int64              `json:"iec104_selects_held"`
+	IEC104SeqGaps          uint64             `json:"iec104_sequence_gaps"`
+	IEC104WindowFull       uint64             `json:"iec104_window_full"`
+	IEC104UpstreamFail     uint64             `json:"iec104_upstream_failed"`
 	NTPRequests            uint64             `json:"ntp_requests"`
 	NTPForwarded           uint64             `json:"ntp_forwarded"`
 	NTPResponses           uint64             `json:"ntp_responses"`
@@ -819,6 +866,23 @@ func (s *Stats) snapshot() Snapshot {
 		ModbusUpstreamFailed:   s.ModbusUpstreamFailed.Load(),
 		ModbusTraced:           s.ModbusTraced.Load(),
 		ModbusLearned:          s.ModbusLearned.Load(),
+		IEC104Sessions:         s.IEC104Sessions.Load(),
+		IEC104SessionsOpen:     s.IEC104SessionsOpen.Load(),
+		IEC104Frames:           s.IEC104Frames.Load(),
+		IEC104Commands:         s.IEC104Commands.Load(),
+		IEC104SystemCmds:       s.IEC104SystemCmds.Load(),
+		IEC104Denied:           s.IEC104Denied.Load(),
+		IEC104WouldDeny:        s.IEC104WouldDeny.Load(),
+		IEC104Malformed:        s.IEC104Malformed.Load(),
+		IEC104Rejected:         s.IEC104Rejected.Load(),
+		IEC104RateLimited:      s.IEC104RateLimited.Load(),
+		IEC104Selects:          s.IEC104Selects.Load(),
+		IEC104Executes:         s.IEC104Executes.Load(),
+		IEC104Unselected:       s.IEC104Unselected.Load(),
+		IEC104SelectsHeld:      s.IEC104SelectsHeld.Load(),
+		IEC104SeqGaps:          s.IEC104SeqGaps.Load(),
+		IEC104WindowFull:       s.IEC104WindowFull.Load(),
+		IEC104UpstreamFail:     s.IEC104UpstreamFail.Load(),
 		NTPRequests:            s.NTPRequests.Load(),
 		NTPForwarded:           s.NTPForwarded.Load(),
 		NTPResponses:           s.NTPResponses.Load(),

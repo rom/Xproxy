@@ -2988,6 +2988,99 @@ the historian, the setpoints and the serial drive; the same line again
 with Modbus/TCP Security and roles; and the read-only forward egress with
 a trace.
 
+### IEC 60870-5-104 in front of a substation
+
+The grid's version of the problem above, with one thing Modbus does not
+have: a protocol that says what a message *means*. Every frame carries a
+type identification, a cause of transmission and a common address, so the
+policy is written about commands rather than about bytes.
+
+```yaml
+server:
+  listeners:
+    - name: substation-a
+      address: "10.40.0.10:2404"
+      kind: iec104
+      iec104:
+        upstream: rtu-a
+        allow_clients: ["10.40.1.0/24"]
+        common_addresses: ["1"]          # the one station this link is for
+
+        require_select: true             # the line that matters most
+        select_timeout: 30s
+
+        # STOPDT_act is deliberately absent: it stops data transfer, so a
+        # client that may send it blinds the control room without refusing
+        # a single command. Naming STARTDT_act names its confirmation.
+        allow_controls: [STARTDT_act, TESTFR_act]
+
+        rate_limit: 500                  # frames: telemetry is most of it
+        command_rate_limit: 5            # commands: a different question
+
+        default_action: deny
+        rules:
+          - {name: telemetry, action: allow, class: [monitoring]}
+          - {name: interrogation, action: allow, types: [C_IC_NA_1], causes: [act, deact]}
+          - name: switching
+            action: allow
+            types: [C_SC_NA_1, C_DC_NA_1]
+            addresses: ["4000-4099"]     # the substation's own point list
+            causes: [act, deact]
+            schedule: {days: [mon, tue, wed, thu, fri], from: "07:00", to: "19:00"}
+          - {name: no-reset, action: deny, types: [C_RP_NA_1]}
+          - {name: no-clock, action: deny, types: [C_CS_NA_1]}
+upstreams:
+  - {name: rtu-a, endpoints: [{address: "10.40.2.10:2404"}]}
+```
+
+`examples/ot/iec104.yaml` is the complete file, with a monitor-only
+interchange link, an IEC 62351-3 listener and a shadow-mode trial beside it.
+
+**Enforce select-before-operate.** The standard describes the two-step
+form -- select, then execute -- and the equipment mostly accepts a bare
+execute anyway. `require_select: true` makes the relay the thing that
+requires both steps, which turns one injected command frame from a breaker
+operation into a refusal. A selection belongs to the connection that made
+it, to one point, and it expires; it authorises one execution; and a
+deactivation withdraws it.
+
+**A four-eyes control is two rules.** `select: select` on one client and
+`select: execute` on another means one operator arms and a different one
+fires:
+
+```yaml
+rules:
+  - {name: arming, action: allow, clients: ["10.40.1.10/32"], select: select}
+  - {name: firing, action: allow, clients: ["10.40.1.11/32"], select: execute}
+```
+
+**Name the two dangerous system commands.** `C_RP_NA_1` resets a station --
+a reboot of the thing running a substation -- and `C_CS_NA_1` moves its
+clock, which changes the meaning of every timestamp in the historian and of
+every protection function keyed to one. Both are refused by the default
+deny, but naming them means the security log says which one it was.
+
+**`class` outlives a standard revision.** `class: [command]` covers every
+process command there is, including any a later revision adds;
+`types: [C_SC_NA_1, ...]` covers the ones written down. Use `class` for the
+boundary and `types` for the exceptions.
+
+**Read the counters by what an operator asks about.** `iec104_commands` is
+the number a control room cares about, not `iec104_frames`;
+`iec104_unselected` says whether `require_select` is doing anything;
+`iec104_sequence_gaps` says whether something is replaying or the link is
+lossy. `log_commands` (the default) writes an access line per command in
+both directions and leaves the telemetry alone, which is what makes the
+access log readable on this protocol.
+
+**What a refusal looks like to the control centre.** The default
+`deny_response: negative` returns the same ASDU with the negative-confirm
+bit and cause `actcon`, which is what a station does when it will not carry
+out a command and what the centre's alarm list already understands. The
+link carries on: refusing a command is not refusing a link, and a control
+room that lost its telemetry because one command was refused would be an
+outage.
+
 ### Time: an NTP and NTS gateway
 
 ```yaml

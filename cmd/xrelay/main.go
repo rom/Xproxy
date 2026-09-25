@@ -22,6 +22,7 @@ import (
 
 	"github.com/rom/xproxy/internal/daemon"
 	_ "github.com/rom/xproxy/internal/kinds/ftp"    // listener kind: ftp
+	_ "github.com/rom/xproxy/internal/kinds/iec104" // listener kind: iec104
 	_ "github.com/rom/xproxy/internal/kinds/modbus" // listener kind: modbus
 	_ "github.com/rom/xproxy/internal/kinds/mqtt"   // listener kind: mqtt
 	_ "github.com/rom/xproxy/internal/kinds/ntp"    // listener kind: ntp

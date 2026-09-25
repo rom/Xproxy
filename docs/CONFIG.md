@@ -90,6 +90,7 @@ did not authenticate — a trial instead of a door.
 | Kind | Evaluated and recorded | Still refused |
 |------|------------------------|---------------|
 | `modbus` | every rule: function, unit, address range, value bounds, rate and window | malformed frames, the unit table, the queue bound, rate limits, bans |
+| `iec104` | every rule: type, class, cause, station, originator, point range and the select half; `monitor_only`; the common-address list; `require_select` | malformed frames, the frame bound, rate limits (frame and command), a station commanding its own control centre, bans |
 | `ntp` | the client list and every request rule (versions, modes, extension fields, the identity it demands), and every answer rule (stratum, distances, timestamps, identifier, leap) | mode 6 and 7, version 5, malformed packets, bans, rate limits, the association and outstanding bounds |
 | `mqtt` | the client list, the CONNECT policy (version, client id, username, keep alive, will), the publish and subscribe policies, retain | malformed packets, a first packet that is not CONNECT, a second CONNECT, the packet bound, the connection limit, TLS failures |
 | `syslog` | the sender list, the facility, severity and pattern rules | malformed messages, the rate limit, a full queue |
@@ -1893,6 +1894,141 @@ the refusal counters: `client_not_allowed`, `tls_handshake`,
 `coil_clear_not_allowed`. A selector that does not match is not a refusal
 of its own: the frame falls through to the next rule, and to `no_rule` if
 none matches.
+
+### server.listeners[].iec104 (kind: iec104)
+
+IEC 60870-5-104 is the protocol that operates electricity transmission and
+distribution, and it is the grid's Modbus: a controlling station (the SCADA
+master) and a controlled station (a substation gateway or an RTU) exchange
+application service data units over a plain TCP connection on port 2404,
+with no authentication, no integrity and no confidentiality anywhere in the
+standard. Anyone who can reach the gateway can trip a breaker on it.
+IEC 62351-3 adds TLS and is almost nowhere deployed, because the controlled
+stations are substation equipment with twenty-year service lives.
+
+What the protocol *does* have, and Modbus does not, is a structure that says
+what a message means, and that structure is what this relay enforces:
+
+- Every I-format frame carries a **type identification** (what this is), a
+  **cause of transmission** (why it was sent), an **originator address**
+  (which control centre) and a **common address** (which station).
+- The **process commands** -- single, double, regulating step, setpoint,
+  bitstring -- are a small numbered set, and so are the **system commands**,
+  two of which reset a station and move its clock.
+- The dangerous commands have a **two-step form**: *select* (an activation
+  with the S/E bit set) then *execute*. The standard describes it; the
+  equipment mostly does not enforce it.
+- Every I frame is **sequence numbered in both directions**, which is the
+  only thing in the protocol that can detect a lost, duplicated or replayed
+  frame.
+
+So the policy here is written in those terms rather than in ports: which
+stations may be addressed, which commands may be sent to which points by
+whom, whether a command has to be selected before it is executed, and
+whether the numbering adds up.
+
+**There is no per-address routing on this kind, on purpose.** An IEC 104
+connection is a long-lived *association* between one controlling station and
+one controlled station, and the first frame a control centre sends is
+`STARTDT_act` -- a U-format frame with no common address in it. A relay that
+chose a pool from the common address could not choose one until the first I
+frame, by which time the association is up and the handshake answered. One
+listener per association is the honest shape; `common_addresses` is what
+bounds which stations may be addressed through it.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `mode` | `reverse`, `forward` | `reverse` | `reverse`: a control centre connects here and the relay dials the station. `forward`: this listener is the controlled egress a centre uses to reach stations elsewhere |
+| `upstream` | string | required | The station pool this listener relays to |
+| `tls_mode` | `implicit`, `none` | `implicit` with a `tls` section | IEC 62351-3: TLS from the first octet. There is no in-band upgrade to negotiate |
+| `upstream_tls_mode` | `none`, `implicit` | `none` | Whether this listener speaks TLS to the station |
+| `upstream_tls` | object | | Verification of the station when `upstream_tls_mode` is not `none` |
+| `allow_clients` | list of CIDR | all | Networks a controlling station may connect from |
+| `deny_clients` | list of CIDR | | Evaluated before `allow_clients` |
+| `common_addresses` | list | all | The stations that may be addressed at all, as numbers or `"1-16"` ranges. A control centre that may address one substation and reaches ten is the commonest finding in this protocol |
+| `monitor_only` | bool | `false` | Refuse every command and system command, for every client, before any rule is read: telemetry up and nothing down. **No rule can override it** |
+| `rules` | list | | Per-frame rules, first match wins; see below |
+| `default_action` | `deny`, `allow` | `deny` | What a frame no rule matched gets |
+| `deny_response` | `negative`, `drop`, `close` | `negative` | `negative` returns the same ASDU with the negative-confirm bit and cause `actcon`, which is what a station does and what a control centre's alarm list understands |
+| `require_select` | bool | `false` | Make the two-step form mandatory for every command type that has one |
+| `select_timeout` | duration | `30s` | How long a selection stays valid (1s to 10m) |
+| `max_selections` | int | `4096` | Outstanding selections this relay remembers |
+| `allow_controls` | list | all | The U-format control functions a client may send: `STARTDT_act`, `STARTDT_con`, `STOPDT_act`, `STOPDT_con`, `TESTFR_act`, `TESTFR_con`. Naming an activation names its confirmation |
+| `k` | int | `12` | The sending window: how many I frames may be unacknowledged |
+| `w` | int | `8` | After how many received frames a station acknowledges. Must not exceed `k` |
+| `check_sequence` | bool | `true` | Refuse an I frame whose send sequence number is not the next one |
+| `max_unacknowledged` | bool | `true` | Refuse a station with more than `k` frames outstanding, and one acknowledging frames nobody sent |
+| `max_connections` | int | `32` | Live sessions |
+| `idle_timeout` | duration | `120s` | Longer than the standard's t3, so a station's own keepalive keeps a quiet link open |
+| `connect_timeout` | duration | `5s` | Dialling the station |
+| `max_frame_bytes` | int | `255` | A policy bound below the protocol's own; the length field is one octet, so no APDU can exceed 257 octets whatever a station claims |
+| `rate_limit`, `rate_burst` | int | `0` | Frames per second per client address |
+| `command_rate_limit`, `command_rate_burst` | int | `0` | *Commands* per second per client, separately: a control centre that sends a thousand breaker commands a second is not a busy control centre, and a frame limit loose enough for telemetry says nothing about that |
+| `log_frames` | bool | `false` | An access line per frame. On this protocol periodic telemetry is most of the traffic, so this is a lot of lines |
+| `log_commands` | bool | `true` | An access line for every command and system command, in both directions, leaving the telemetry alone: a record of what was commanded is the thing a grid operator is asked for after an incident |
+| `alert_on_deny` | bool | `true` | A security event per refusal |
+| `proxy_protocol` | bool | `false` | Send a PROXY protocol v2 header to the station |
+
+#### server.listeners[].iec104.rules[]
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `name` | string | Required; names the rule in the logs and the counters |
+| `action` | `allow`, `deny`, `observe` | Default `allow`. `observe` records the frame and keeps looking, which is how a rule is tried on live traffic before it decides anything |
+| `clients` | list of CIDR | Networks the controlling station is in |
+| `common_addresses` | list | The stations this rule covers |
+| `originators` | list | Originator addresses (0 to 255): which control centre, where a station serves several |
+| `types` | list | Type identifications by the standard's name (`C_SC_NA_1`) or by number. The names are the standard's own because that is what the substation documentation says |
+| `class` | list | `monitoring`, `command`, `system`, `parameter`, `file`: what a type *does*. The durable way to write a policy, because a class outlives a standard revision that adds a type |
+| `causes` | list | Causes of transmission by name (`act`, `actcon`, `spont`, `introgroup1`) or number. A rule naming none matches any cause, which is usually wrong for a rule about commands: `act` is the centre commanding and `actcon` is the station answering |
+| `addresses` | list | Information object address ranges (0 to 16777215). A frame naming an address outside all of them does not match |
+| `max_objects` | int | Information objects one ASDU may carry (0 leaves the protocol's own 127) |
+| `select` | `select`, `execute` | Which half of a two-step command this rule is about. `select` on one client and `execute` on another is a four-eyes control: one operator arms and another fires |
+| `schedule` | object | `{days, from, to, timezone}`; a window whose `to` is before its `from` spans midnight |
+
+**What is checked before the rules, and cannot be shadowed.** A frame the
+relay could not read is refused whether or not the listener is enforcing:
+forwarding what it cannot decide about would hand the substation octets it
+will read somehow. So are the rate limits, and so is a *station* sending an
+activation to its own control centre -- not a shape the standard has, and
+what a compromised substation gateway pivoting upstream looks like.
+
+**Select-before-operate is narrow on purpose.** A selection belongs to the
+connection that made it, to one common address, one information object
+address and one type identification, and it expires. A selection that
+outlived its connection would let a later client execute on an earlier one's
+intention; one that never expired would let an execute sent hours later
+operate a breaker somebody selected and thought better of. A selection
+authorises one execution, a deactivation withdraws it, and the bitstring
+commands -- which have no two-step form in the standard -- are exempt,
+because requiring a selection for them would refuse every use of them for
+ever.
+
+**A sequence gap is one refusal.** The state moves to what arrived, so a
+single lost frame does not take a substation off the air until somebody
+restarts the link.
+
+**The metric payloads are never decoded.** A measurement's scaled value,
+quality descriptor and timestamp are forwarded untouched. Decoding every one
+of the hundred-odd type identifications would be a second implementation of
+the standard, and a relay that got one wrong would corrupt a reading nobody
+could trace. What is read is the ASDU header, the object addresses and a
+command's qualifier -- which is what a policy is written about. On a
+*sequence* ASDU only the first information object address is on the wire, so
+that is the one an `addresses` rule checks.
+
+Counters: `iec104_sessions`, `iec104_sessions_open`, `iec104_frames`,
+`iec104_commands`, `iec104_system_commands`, `iec104_denied`,
+`iec104_would_deny`, `iec104_malformed`, `iec104_rejected`,
+`iec104_rate_limited`, `iec104_selects`, `iec104_executes`,
+`iec104_unselected`, `iec104_selects_held`, `iec104_sequence_gaps`,
+`iec104_window_full`, `iec104_upstream_failed`. Refusals are
+`iec104_denied` for the ban triggers, and the fine-grained reason is in the
+refusal counters: `client_not_allowed`, `tls_handshake`, `malformed`,
+`frame_too_long`, `max_connections`, `rate_limited`,
+`command_rate_limited`, `monitor_only`, `common_address`, `rule`,
+`default_deny`, `control`, `station_command`, `sequence`, `window`,
+`ack_ahead`, `unselected`, `select_unavailable`.
 
 ### server.listeners[].ntp (kind: ntp)
 
@@ -5194,7 +5330,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `modbus_denied`, `ntp_denied`, `ntske_denied`, `yara` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `modbus_denied`, `iec104_denied`, `ntp_denied`, `ntske_denied`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |

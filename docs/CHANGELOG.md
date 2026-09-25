@@ -442,6 +442,83 @@ Open findings of the earlier rounds:
 
 ### Added (1.4)
 
+- **`kind: iec104`: an IEC 60870-5-104 relay, so a substation gateway can be
+  put behind something that refuses a breaker trip.** IEC 104 is the protocol
+  that operates electricity transmission and distribution, and it is the
+  grid's Modbus: plain TCP on port 2404, no authentication, no integrity, no
+  session. Anyone who can reach the gateway can open a breaker on it, and the
+  gateways are substation equipment with twenty-year service lives.
+  IEC 62351-3 wraps it in TLS and is almost nowhere deployed.
+
+  What the protocol *has*, and Modbus does not, is a structure that says what
+  a message means -- a **type identification**, a **cause of transmission**,
+  an **originator address** and a **common address** in every I frame -- so
+  the policy is written about commands rather than about bytes: which stations
+  may be addressed, which commands may be sent by whom to which information
+  object addresses, on what schedule. `class: [monitoring]` outlives a
+  standard revision that adds a type; `types: [C_RP_NA_1]` names the one that
+  reboots a station and `C_CS_NA_1` the one that moves its clock, which
+  changes the meaning of every timestamp in the historian and of every
+  protection function keyed to one. `monitor_only` that no rule can override,
+  for a historian or a neighbouring utility's data link.
+
+  **Select-before-operate, enforced.** The standard describes the two-step
+  form -- select, then execute -- and the equipment mostly accepts a bare
+  execute, so a relay that remembers the selections is the only thing in the
+  path that can require both steps. That turns one injected command frame from
+  a breaker operation into a refusal. The state is deliberately narrow: a
+  selection belongs to the connection that made it, to one common address, one
+  point and one type identification; it expires; it authorises one execution;
+  a deactivation withdraws it; and it dies with its connection, because one
+  that outlived it would let a later client execute on an earlier one's
+  intention. `select: select` on one client and `select: execute` on another
+  is a four-eyes control in two lines.
+
+  **Both directions are read, because the numbering only makes sense as a
+  pair.** The sequence numbers are the only mechanism in this protocol that
+  finds a lost, duplicated or replayed frame, and a relay sees both sides: a
+  send number that is not the next one, a station with more than *k* frames
+  outstanding, and a receive number acknowledging frames nobody sent. A gap is
+  *one* refusal -- the state moves to what arrived, because a relay that
+  refused for ever after one lost frame would take a substation off the air
+  until somebody restarted the link.
+
+  **Three things a policy about ASDUs would have missed.** `STOPDT_act` is a
+  U-format control function with no ASDU at all, and it stops data transfer:
+  a client that may send it blinds a control room without refusing a single
+  command, so the control functions are a policy of their own (and naming an
+  activation names its confirmation, or the station's reply would be refused
+  and the centre would wait for ever). A *station* sending an activation to
+  its own control centre is refused, because that is not a shape the standard
+  has and it is what a compromised gateway pivoting upstream looks like. And
+  commands are rate limited separately from frames, because a frame limit
+  loose enough for periodic telemetry says nothing about a centre sending a
+  thousand breaker commands a second.
+
+  Refusals are the standard's own negative confirmation -- the same ASDU
+  returned with the negative-confirm bit and cause `actcon` -- so the centre's
+  alarm list says something true and the link carries on; a measurement gets
+  no answer at all, because the protocol has no confirmation for one and
+  inventing it would put an ASDU on the wire no station would ever send.
+
+  The metric payloads are never decoded. Decoding every one of the
+  hundred-odd type identifications would be a second implementation of the
+  standard, and a relay that got one wrong would corrupt a reading nobody
+  could trace; what is read is the ASDU header, the object addresses and a
+  command's qualifier. A type the standard does not define is forwarded with
+  its addresses *unread* rather than guessed at, because inventing an object
+  size would misreport an address and the policy would then decide about the
+  wrong point.
+
+  There is deliberately **no per-address routing**, and the reason is the
+  protocol's own shape rather than an omission: the first frame a control
+  centre sends is `STARTDT_act`, which carries no common address, so a relay
+  could not choose a pool from the address until the first I frame -- by which
+  time the association is up and the handshake answered. One listener per
+  association is the honest shape; `common_addresses` bounds which stations
+  may be addressed through it. `examples/ot/iec104.yaml`, `docs/RFC.md` for
+  what of the standard is read and what is not.
+
 - **A readiness verdict a failover tool can act on, and `docs/HA.md`.**
   Making a proxy redundant is easy; making it *fail over* means answering
   one question -- what does "unfit to carry traffic" mean? -- and nothing

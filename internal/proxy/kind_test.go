@@ -28,6 +28,7 @@ var sections = map[string]string{
 	"ftp":     "ftp: {upstream: u}",
 	"syslog":  "syslog: {upstream: u}",
 	"modbus":  "modbus: {upstream: u}",
+	"iec104":  "iec104: {upstream: u}",
 	"ntp":     "ntp: {upstream: u}",
 	"ntske":   "ntske: {upstream: u}",
 }

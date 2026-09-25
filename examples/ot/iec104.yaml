@@ -1,0 +1,238 @@
+# IEC 60870-5-104 relay: the protocol that operates the electricity grid,
+# put behind something that can refuse a breaker trip.
+#
+# The problem this configuration solves is not subtle. A control centre and
+# a substation gateway exchange ASDUs over plain TCP on port 2404, with no
+# authentication and no integrity anywhere in the standard. Anyone who can
+# reach the gateway can open a breaker on it. The gateways cannot be fixed:
+# they are substation equipment with twenty-year service lives, and the
+# process they run does not stop for an upgrade.
+#
+# What the protocol does have is structure, and this relay enforces it:
+#   - which stations may be addressed at all (common_addresses)
+#   - which commands may be sent, by whom, to which points (rules)
+#   - that a dangerous command is selected before it is executed
+#     (require_select) — which the standard describes and the equipment
+#     mostly does not enforce
+#   - that a station cannot command its own control centre
+#   - that the sequence numbering adds up, in both directions
+#
+# Validate with: xproxyctl -config examples/ot/iec104.yaml validate
+version: 1
+
+logging:
+  directory: /var/log/xproxy
+  access: {file: access.log}
+  security: {file: security.log}
+  audit: {file: audit.log}
+
+management:
+  socket: /run/xproxy/mgmt.sock
+  socket_mode: "0660"
+
+server:
+  listeners:
+    # ---------------------------------------------------------------
+    # The operational link: the control centre connects here, the relay
+    # dials the substation gateway.
+    #
+    # There is no per-address routing on this kind, and the reason is the
+    # protocol's own shape: the first frame a control centre sends is
+    # STARTDT_act, a U-format frame with no common address in it, so a
+    # relay could not choose a pool from the address until the first I
+    # frame — by which time the association is already up. One listener
+    # per association is the honest shape.
+    # ---------------------------------------------------------------
+    - name: substation-a
+      address: "10.40.0.10:2404"
+      kind: iec104
+      iec104:
+        upstream: rtu-a
+
+        # Only the control centre, and only the station it is for.
+        allow_clients: ["10.40.1.0/24"]
+        common_addresses: ["1"]
+
+        # The two-step form, made mandatory. This is the single most
+        # valuable line in the file: it turns one injected command frame
+        # from a breaker operation into a refusal.
+        require_select: true
+        select_timeout: 30s
+
+        # STOPDT_act is not in the list. It stops data transfer, so a
+        # client that may send it blinds the control room without
+        # refusing a single command — and naming STARTDT_act names its
+        # confirmation, so the station's reply is not refused.
+        allow_controls: [STARTDT_act, TESTFR_act]
+
+        # A control centre that sends a thousand breaker commands a
+        # second is not a busy control centre. The frame limit is loose
+        # because telemetry is most of the traffic; the command limit is
+        # what actually bounds the damage.
+        rate_limit: 500
+        rate_burst: 1000
+        command_rate_limit: 5
+        command_rate_burst: 10
+
+        default_action: deny
+        deny_response: negative
+        rules:
+          # Telemetry travelling up, always. Refusing telemetry blinds
+          # the control room, which is its own kind of incident.
+          - name: telemetry
+            action: allow
+            class: [monitoring]
+
+          # The interrogations a control centre sends after a restart to
+          # rebuild its picture. They ask the station to do something, so
+          # they are commands by cause; they operate nothing.
+          - name: interrogation
+            action: allow
+            types: [C_IC_NA_1, C_CI_NA_1, C_RD_NA_1]
+            causes: [act, deact]
+
+          # The keepalive's own test command.
+          - name: test
+            action: allow
+            types: [C_TS_NA_1, C_TS_TA_1]
+
+          # Breakers and switches, by point, during the day shift only.
+          # The points are the substation's own numbering: this is the
+          # line an engineer confirms against the point list.
+          - name: switching
+            action: allow
+            types: [C_SC_NA_1, C_DC_NA_1, C_SC_TA_1, C_DC_TA_1]
+            addresses: ["4000-4099"]
+            causes: [act, deact]
+            schedule: {days: [mon, tue, wed, thu, fri], from: "07:00", to: "19:00"}
+
+          # Tap changers: a regulating step command, narrower still.
+          - name: tap-changer
+            action: allow
+            types: [C_RC_NA_1, C_RC_TA_1]
+            addresses: ["4200-4209"]
+            causes: [act, deact]
+
+          # Setpoints from the one engineering workstation that has any
+          # business writing them.
+          - name: setpoints
+            action: allow
+            clients: ["10.40.1.20/32"]
+            types: [C_SE_NA_1, C_SE_NB_1, C_SE_NC_1]
+            addresses: ["5000-5099"]
+            causes: [act, deact]
+
+          # Named refusals, so that the security log says which one it
+          # was rather than "default deny". C_RP_NA_1 reboots a station
+          # and C_CS_NA_1 moves its clock — which changes the meaning of
+          # every timestamp in the historian and of every protection
+          # function keyed to one.
+          - name: no-reset
+            action: deny
+            types: [C_RP_NA_1]
+          - name: no-clock
+            action: deny
+            types: [C_CS_NA_1]
+          - name: no-parameters
+            action: deny
+            class: [parameter]
+          - name: no-files
+            action: deny
+            class: [file]
+
+        log_commands: true
+        alert_on_deny: true
+
+    # ---------------------------------------------------------------
+    # A neighbouring utility's data link: telemetry out, nothing in.
+    # monitor_only is the shorthand, and no rule can override it — a
+    # monitor-only listener that one rule could command through is not a
+    # monitor-only listener.
+    # ---------------------------------------------------------------
+    - name: interchange
+      address: "10.40.0.11:2404"
+      kind: iec104
+      iec104:
+        upstream: rtu-a
+        allow_clients: ["198.51.100.0/24"]
+        common_addresses: ["1"]
+        monitor_only: true
+        default_action: allow
+        allow_controls: [STARTDT_act, TESTFR_act]
+        rate_limit: 200
+        rate_burst: 400
+
+    # ---------------------------------------------------------------
+    # IEC 62351-3: TLS from the first octet, on the standard's own port.
+    # This is the one part of IEC 104 with any security in it, and a
+    # relay is where a substation gateway that will never speak TLS can
+    # still be put behind it: the centre's leg is authenticated, the
+    # station's leg is the plain protocol on a segment nobody else is on.
+    # ---------------------------------------------------------------
+    - name: substation-b-secure
+      address: "10.40.0.12:2404"
+      kind: iec104
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/tls/relay.pem, key_file: /etc/xproxy/tls/relay-key.pem}
+        client_auth: require
+        client_ca_file: /etc/xproxy/tls/control-centre-ca.pem
+        min_version: "1.3"
+        expiry: {refuse_expired: true, warn: 336h}
+      iec104:
+        upstream: rtu-b
+        tls_mode: implicit
+        upstream_tls_mode: none
+        common_addresses: ["2"]
+        require_select: true
+        default_action: deny
+        rules:
+          - {name: telemetry, action: allow, class: [monitoring]}
+          - {name: interrogation, action: allow, types: [C_IC_NA_1], causes: [act]}
+          - name: switching
+            action: allow
+            types: [C_SC_NA_1, C_DC_NA_1]
+            addresses: ["4000-4099"]
+            causes: [act, deact]
+
+    # ---------------------------------------------------------------
+    # A new policy, evaluated and not enforced. Every refusal it would
+    # have made is recorded and nothing is refused for policy, which is
+    # how an operator finds out what a command policy would have broken
+    # before it breaks it. The integrity checks — malformed frames, the
+    # rate limits, the sequence numbering — are never shadowed.
+    # ---------------------------------------------------------------
+    - name: substation-c-trial
+      address: "10.40.0.13:2404"
+      kind: iec104
+      policy: {mode: shadow}
+      iec104:
+        upstream: rtu-c
+        common_addresses: ["3"]
+        require_select: true
+        default_action: deny
+        rules:
+          - {name: telemetry, action: allow, class: [monitoring]}
+          - {name: switching, action: allow, types: [C_SC_NA_1], addresses: ["4000-4099"]}
+
+upstreams:
+  - name: rtu-a
+    endpoints: [{address: "10.40.2.10:2404"}]
+    health_check: {type: tcp, interval: 10s, timeout: 3s}
+  - name: rtu-b
+    endpoints: [{address: "10.40.2.11:2404"}]
+    health_check: {type: tcp, interval: 10s, timeout: 3s}
+  - name: rtu-c
+    endpoints: [{address: "10.40.2.12:2404"}]
+    health_check: {type: tcp, interval: 10s, timeout: 3s}
+
+# Repeated refusals from one address are a probe, and on this protocol a
+# probe is somebody enumerating a substation's point list.
+bans:
+  action: drop
+  triggers:
+    - name: iec104-probing
+      reasons: [iec104_denied]
+      threshold: 10
+      window: 5m
+      duration: 1h

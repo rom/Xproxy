@@ -280,6 +280,8 @@ type Listener struct {
 	NTP *NTPListener `yaml:"ntp"`
 	// NTSKE configures a kind: ntske listener.
 	NTSKE *NTSKEListener `yaml:"ntske"`
+	// IEC104 configures a kind: iec104 listener.
+	IEC104 *IEC104Listener `yaml:"iec104"`
 	// Policy is whether this listener enforces its policy or only
 	// evaluates it. It overrides the estate's own policy section.
 	Policy *ListenerPolicy `yaml:"policy"`
@@ -443,6 +445,204 @@ type ModbusListener struct {
 	// a device or a collector behind this listener sees the master's
 	// address rather than the relay's.
 	ProxyProtocol bool `yaml:"proxy_protocol"`
+}
+
+// IEC104Listener configures a kind: iec104 listener: an
+// IEC 60870-5-104 relay for electricity transmission and distribution.
+//
+// The protocol is the grid's Modbus, with the same absence of security --
+// no authentication, no integrity, no session -- and the same reason a
+// relay is the only place a policy can live: the controlled stations are
+// substation gateways and RTUs with twenty-year service lives.
+//
+// What it *has*, and Modbus does not, is a structure that says what a
+// message means. Every I-format frame carries a type identification (what
+// this is), a cause of transmission (why it was sent) and a common address
+// (which station), and the process commands are a small numbered set. So
+// the policy here is written in those terms rather than in register
+// numbers: which stations a control centre may address, which commands it
+// may send them, whether a dangerous command has to be selected before it
+// is executed, and which information object addresses each command may
+// name.
+type IEC104Listener struct {
+	// Mode is reverse (the default: a controlling station connects here
+	// and the listener dials the controlled station) or forward (this
+	// listener is the controlled egress a control centre uses to reach
+	// stations elsewhere).
+	Mode string `yaml:"mode"`
+	// Upstream is the station pool this listener relays to. Required.
+	//
+	// There is deliberately no per-address routing here, and the reason is
+	// the protocol's own shape: an IEC 104 connection is a long-lived
+	// *association* between one controlling station and one controlled
+	// station, and the first thing a control centre sends is STARTDT_act,
+	// a U-format frame that carries no common address at all. A relay that
+	// chose a pool from the common address could not choose one until the
+	// first I frame, by which time the association is already up and the
+	// handshake already answered -- so a route would be a pool selector
+	// that cannot select in time. One listener per association is the
+	// honest shape; common_addresses is what bounds which stations may be
+	// addressed through it.
+	Upstream string `yaml:"upstream"`
+	// TLSMode is implicit (IEC 62351-3: TLS from the first octet) or
+	// none. Default implicit when the listener has a tls section. The
+	// standard's own port for it is 2404 either way, which is why the
+	// mode is a setting rather than inferred from the port.
+	TLSMode string `yaml:"tls_mode"`
+	// UpstreamTLSMode is none or implicit: whether this listener speaks
+	// TLS to the station.
+	UpstreamTLSMode string `yaml:"upstream_tls_mode"`
+	// UpstreamTLS verifies the station when upstream_tls_mode is not none.
+	UpstreamTLS *UpstreamTLS `yaml:"upstream_tls"`
+	// AllowClients and DenyClients are the networks a controlling station
+	// may connect from. Deny is evaluated first.
+	AllowClients []string `yaml:"allow_clients"`
+	DenyClients  []string `yaml:"deny_clients"`
+	// CommonAddresses is the shorthand allow list of common addresses,
+	// written as numbers or "1-16" ranges. Empty allows every address the
+	// rules do. A control centre that may address one substation and
+	// reaches ten is the commonest finding in this protocol.
+	CommonAddresses []string `yaml:"common_addresses"`
+	// MonitorOnly refuses every command and every system command, for
+	// every client, before any rule is read: the relay carries telemetry
+	// up and nothing down. It is the shorthand for a historian or a
+	// neighbouring utility's data link, and no rule can override it,
+	// because a monitor-only listener that one rule could command
+	// through is not a monitor-only listener.
+	MonitorOnly bool `yaml:"monitor_only"`
+	// Rules decide each frame, in order, first match wins. A frame that
+	// matches no rule takes DefaultAction.
+	Rules []IEC104Rule `yaml:"rules"`
+	// DefaultAction is deny (the default) or allow.
+	DefaultAction string `yaml:"default_action"`
+	// DenyResponse is how a refused activation is answered: negative
+	// (the default: the same ASDU returned with the negative-confirm bit
+	// and cause actcon, which is what the standard says a station does
+	// and what a control centre's alarm list understands), drop (no
+	// answer, which the centre reads as a timeout) or close.
+	DenyResponse string `yaml:"deny_response"`
+	// RequireSelect makes the two-step form mandatory for every command
+	// type that has one: a command must be selected, by the same client
+	// on the same connection, before it is executed. The standard
+	// describes select-before-operate; the equipment mostly does not
+	// enforce it, which is the gap this closes.
+	RequireSelect bool `yaml:"require_select"`
+	// SelectTimeout is how long a selection stays valid. Default 30s. A
+	// selection that never expired would let an execute sent hours later
+	// ride on it.
+	SelectTimeout Duration `yaml:"select_timeout"`
+	// MaxSelections bounds the outstanding selections this relay
+	// remembers. Default 4096.
+	MaxSelections int `yaml:"max_selections"`
+	// AllowControls is the U-format control functions a client may send:
+	// STARTDT_act, STOPDT_act, TESTFR_act and their confirmations. Empty
+	// allows all of them. STOPDT_act is the one worth naming: it stops
+	// data transfer, which blinds a control room without refusing
+	// anything.
+	AllowControls []string `yaml:"allow_controls"`
+	// K and W are the protocol's window parameters: k is how many
+	// I frames may be unacknowledged before a station stops sending, w
+	// is after how many received frames it acknowledges. Defaults 12 and
+	// 8, the standard's own. This relay checks them rather than
+	// implementing them, because it forwards the sequence numbers the
+	// stations chose.
+	K int `yaml:"k"`
+	W int `yaml:"w"`
+	// CheckSequence refuses an I frame whose send sequence number is not
+	// the next one, which is a lost frame, a duplicated station or a
+	// replayed command. Default true: this protocol numbers its frames
+	// precisely so that the gap can be seen.
+	CheckSequence *bool `yaml:"check_sequence"`
+	// MaxUnacknowledged refuses a station that has more than k
+	// unacknowledged I frames outstanding. Default true.
+	MaxUnacknowledged *bool `yaml:"max_unacknowledged"`
+	// MaxConnections bounds live sessions. Default 32.
+	MaxConnections int `yaml:"max_connections"`
+	// IdleTimeout closes a session that says nothing. Default 120s,
+	// which is longer than the standard's t3 so that a station's own
+	// keepalive keeps a quiet link open.
+	IdleTimeout Duration `yaml:"idle_timeout"`
+	// ConnectTimeout bounds dialling the station. Default 5s.
+	ConnectTimeout Duration `yaml:"connect_timeout"`
+	// MaxFrameBytes bounds one APDU. Default 255, which is the protocol's
+	// own bound because the length is one octet.
+	MaxFrameBytes int `yaml:"max_frame_bytes"`
+	// RateLimit and RateBurst bound frames per second per client address.
+	// Zero disables them.
+	RateLimit int `yaml:"rate_limit"`
+	RateBurst int `yaml:"rate_burst"`
+	// CommandRateLimit and CommandRateBurst bound *commands* per second
+	// per client, separately from the frames, because a control centre
+	// that sends a thousand breaker commands a second is not a busy
+	// control centre. Zero disables them.
+	CommandRateLimit int `yaml:"command_rate_limit"`
+	CommandRateBurst int `yaml:"command_rate_burst"`
+	// LogFrames writes an access line per frame rather than per session.
+	// On this protocol a station's periodic telemetry is most of the
+	// traffic, so this is a lot of lines; LogCommands is usually what an
+	// operator wants instead.
+	LogFrames bool `yaml:"log_frames"`
+	// LogCommands writes an access line for every command and system
+	// command, in both directions, and leaves the telemetry alone.
+	// Default true: a record of what was commanded is the thing a grid
+	// operator is asked for after an incident.
+	LogCommands *bool `yaml:"log_commands"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
+	// ProxyProtocol sends a PROXY protocol v2 header to the station.
+	ProxyProtocol bool `yaml:"proxy_protocol"`
+}
+
+// IEC104Rule decides one frame.
+type IEC104Rule struct {
+	// Name identifies the rule in the logs and the counters. Required.
+	Name string `yaml:"name"`
+	// Action is allow, deny or observe. observe logs and counts and then
+	// keeps looking, which is how a rule is tried on live traffic before
+	// it decides anything.
+	Action string `yaml:"action"`
+	// Clients are the networks the controlling station is in.
+	Clients []string `yaml:"clients"`
+	// CommonAddresses are the stations this rule covers: numbers or
+	// ranges.
+	CommonAddresses []string `yaml:"common_addresses"`
+	// Originators are the originator addresses: which controlling
+	// station, where a controlled station serves several. Numbers or
+	// ranges.
+	Originators []string `yaml:"originators"`
+	// Types are type identifications by the standard's name
+	// (C_SC_NA_1) or by number.
+	Types []string `yaml:"types"`
+	// Class matches what a type *does*, which is the durable way to
+	// write a policy: monitoring (information travelling up), command
+	// (the process commands that operate equipment), system (the system
+	// commands, which include the clock and the reset), parameter or
+	// file. A class outlives a standard revision that adds a type.
+	Class []string `yaml:"class"`
+	// Causes are causes of transmission by name (act, actcon, spont) or
+	// by number. A rule that names none matches any cause, which is
+	// usually wrong for a rule about commands: `act` is the control
+	// centre commanding and `actcon` is the station answering.
+	Causes []string `yaml:"causes"`
+	// Addresses are the information object address ranges the frame may
+	// name, as "0-65535" or single numbers. A frame naming an address
+	// outside all of them does not match. On a sequence only the first
+	// address is on the wire, and that is the one checked -- which the
+	// documentation says plainly, because it is a real limit.
+	Addresses []string `yaml:"addresses"`
+	// MaxObjects bounds the information objects one ASDU may carry. 0
+	// leaves the protocol's own bound of 127.
+	MaxObjects int `yaml:"max_objects"`
+	// Select restricts the rule by the select bit: "select" matches only
+	// the first half of a two-step command, "execute" only the second,
+	// and empty matches either. It is how "this client may select
+	// anything and execute nothing" is written -- a four-eyes control
+	// where one operator arms and another fires.
+	Select string `yaml:"select"`
+	// Schedule limits the rule to a time window. The shape is the same
+	// as a Modbus rule's, because "during the day shift" does not change
+	// with the protocol.
+	Schedule *ModbusSchedule `yaml:"schedule"`
 }
 
 // ModbusRoute sends a range of unit identifiers to one pool.

@@ -6,6 +6,7 @@ import (
 	"github.com/rom/xproxy/internal/expr"
 	"github.com/rom/xproxy/internal/filter"
 	"github.com/rom/xproxy/internal/ftp"
+	"github.com/rom/xproxy/internal/iec104"
 	"github.com/rom/xproxy/internal/listener"
 	"github.com/rom/xproxy/internal/modbus"
 	mqttwire "github.com/rom/xproxy/internal/mqtt"
@@ -818,6 +819,15 @@ func (v *validator) server(s *Server) {
 				v.errf("%s.modbus: required for kind modbus", p)
 			} else {
 				v.modbusListener(p+".modbus", ln.Modbus, ln.TLS != nil)
+			}
+		case "iec104":
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
+				v.errf("%s: an iec104 listener takes only address, iec104 and tls", p)
+			}
+			if ln.IEC104 == nil {
+				v.errf("%s.iec104: required for kind iec104", p)
+			} else {
+				v.iec104Listener(p+".iec104", ln.IEC104, ln.TLS != nil)
 			}
 		case "ntp":
 			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C || ln.TLS != nil {
@@ -2415,7 +2425,7 @@ var denyReasons = map[string]bool{
 	"account_abuse": true, "api_abuse": true, "honeytoken": true, "scim": true, "threat_intel": true, "smtp_denied": true, "mqtt_denied": true, "ssh_denied": true, "ftp_denied": true, "syslog_denied": true, "yara": true,
 	"forward_sni_mismatch": true, "dns_tunnel": true, "dns_answer_denied": true,
 	"telnet_denied": true, "vnc_denied": true, "rdp_denied": true, "sftp_icap": true, "udp_denied": true,
-	"modbus_denied": true, "ntp_denied": true, "ntske_denied": true,
+	"modbus_denied": true, "iec104_denied": true, "ntp_denied": true, "ntske_denied": true,
 }
 
 // securityTxtFieldRE bounds an extra field name to the token RFC 9116
@@ -6895,6 +6905,182 @@ func (v *validator) ftpListener(p string, f *FTPListener, hasTLS bool) {
 // same thing: this listener sits in front of equipment that does what it
 // is told, so a rule that does not do what its author thought is a rule
 // that lets somebody write a setpoint.
+func (v *validator) iec104Listener(p string, m *IEC104Listener, hasTLS bool) {
+	switch m.Mode {
+	case "", "reverse", "forward":
+	default:
+		v.errf("%s.mode: must be reverse or forward", p)
+	}
+	if m.Upstream == "" {
+		v.errf("%s.upstream: required; an IEC 104 connection is one association with one controlled station, so this listener relays to one pool", p)
+	}
+	switch m.TLSMode {
+	case "", "implicit", "none":
+	default:
+		v.errf("%s.tls_mode: must be implicit or none", p)
+	}
+	if m.TLSMode == "implicit" && !hasTLS {
+		v.errf("%s.tls_mode: implicit needs the listener's tls section", p)
+	}
+	switch m.UpstreamTLSMode {
+	case "", "none", "implicit":
+	default:
+		v.errf("%s.upstream_tls_mode: must be none or implicit", p)
+	}
+	if m.UpstreamTLS != nil {
+		v.upstreamTLS(p+".upstream_tls", m.UpstreamTLS)
+	}
+	v.modbusCIDRs(p+".allow_clients", m.AllowClients)
+	v.modbusCIDRs(p+".deny_clients", m.DenyClients)
+	v.modbusRanges(p+".common_addresses", m.CommonAddresses, 65535)
+	switch m.DefaultAction {
+	case "", "deny", "allow":
+	default:
+		v.errf("%s.default_action: must be deny or allow", p)
+	}
+	if m.DefaultAction == "allow" && len(m.Rules) == 0 && !m.MonitorOnly {
+		v.warnf("%s: default_action allow with no rules and without monitor_only relays every command to the substation", p)
+	}
+	switch m.DenyResponse {
+	case "", "negative", "drop", "close":
+	default:
+		v.errf("%s.deny_response: must be negative, drop or close", p)
+	}
+	for i, c := range m.AllowControls {
+		if _, ok := iec104ControlName(c); !ok {
+			v.errf("%s.allow_controls[%d]: %q is not a control function (STARTDT_act, STARTDT_con, STOPDT_act, STOPDT_con, TESTFR_act, TESTFR_con)", p, i, c)
+		}
+	}
+	if m.MonitorOnly && m.RequireSelect {
+		v.warnf("%s.require_select: monitor_only already refuses every command, so there is nothing left to select", p)
+	}
+	if m.SelectTimeout != 0 && (m.SelectTimeout < Duration(time.Second) || m.SelectTimeout > Duration(10*time.Minute)) {
+		v.errf("%s.select_timeout: must be between 1s and 10m", p)
+	}
+	if m.MaxSelections < 0 || m.MaxSelections > 1<<20 {
+		v.errf("%s.max_selections: must be between 0 and 1048576", p)
+	}
+	if m.K != 0 && (m.K < 1 || m.K > 32767) {
+		v.errf("%s.k: must be between 1 and 32767", p)
+	}
+	if m.W != 0 && (m.W < 1 || m.W > 32767) {
+		v.errf("%s.w: must be between 1 and 32767", p)
+	}
+	if m.K != 0 && m.W != 0 && m.W > m.K {
+		// The standard's own rule: acknowledging later than the sending
+		// window closes stalls the link.
+		v.errf("%s.w: %d is above k (%d): a station that acknowledges later than its peer's window closes stops the link", p, m.W, m.K)
+	}
+	if m.MaxConnections < 0 || m.MaxConnections > 4096 {
+		v.errf("%s.max_connections: must be between 0 and 4096", p)
+	}
+	if m.IdleTimeout != 0 && (m.IdleTimeout < Duration(time.Second) || m.IdleTimeout > Duration(time.Hour)) {
+		v.errf("%s.idle_timeout: must be between 1s and 1h", p)
+	}
+	if m.ConnectTimeout != 0 && (m.ConnectTimeout < Duration(100*time.Millisecond) || m.ConnectTimeout > Duration(time.Minute)) {
+		v.errf("%s.connect_timeout: must be between 100ms and 1m", p)
+	}
+	if m.MaxFrameBytes != 0 && (m.MaxFrameBytes < 6 || m.MaxFrameBytes > 255) {
+		v.errf("%s.max_frame_bytes: must be between 6 and 255 (the length field is one octet)", p)
+	}
+	for _, r := range []struct {
+		key         string
+		rate, burst int
+	}{{"rate", m.RateLimit, m.RateBurst}, {"command_rate", m.CommandRateLimit, m.CommandRateBurst}} {
+		if r.rate < 0 || r.rate > 1<<20 {
+			v.errf("%s.%s_limit: must be between 0 and 1048576", p, r.key)
+		}
+		if r.burst < 0 || r.burst > 1<<20 {
+			v.errf("%s.%s_burst: must be between 0 and 1048576", p, r.key)
+		}
+		if r.rate == 0 && r.burst > 0 {
+			v.warnf("%s.%s_burst: a burst without a %s_limit bounds nothing", p, r.key, r.key)
+		}
+	}
+	ruleNames := map[string]bool{}
+	for i := range m.Rules {
+		r := &m.Rules[i]
+		q := fmt.Sprintf("%s.rules[%d]", p, i)
+		if !nameRE.MatchString(r.Name) {
+			v.errf("%s.name: %q is not a valid name", q, r.Name)
+		} else if ruleNames[r.Name] {
+			v.errf("%s.name: duplicate %q", q, r.Name)
+		}
+		ruleNames[r.Name] = true
+		switch r.Action {
+		case "", "allow", "deny", "observe":
+		default:
+			v.errf("%s.action: must be allow, deny or observe", q)
+		}
+		v.modbusCIDRs(q+".clients", r.Clients)
+		v.modbusRanges(q+".common_addresses", r.CommonAddresses, 65535)
+		v.modbusRanges(q+".originators", r.Originators, 255)
+		v.modbusRanges(q+".addresses", r.Addresses, 1<<24-1)
+		for j, t := range r.Types {
+			if _, ok := iec104TypeName(t); !ok {
+				v.errf("%s.types[%d]: %q is not a type identification name or a number 1 to 255", q, j, t)
+			}
+		}
+		for j, c := range r.Class {
+			switch c {
+			case "monitoring", "command", "system", "parameter", "file":
+			default:
+				v.errf("%s.class[%d]: %q must be monitoring, command, system, parameter or file", q, j, c)
+			}
+		}
+		for j, c := range r.Causes {
+			if _, ok := iec104CauseName(c); !ok {
+				v.errf("%s.causes[%d]: %q is not a cause of transmission name or a number 1 to 63", q, j, c)
+			}
+		}
+		if r.MaxObjects < 0 || r.MaxObjects > 127 {
+			v.errf("%s.max_objects: must be between 0 and 127", q)
+		}
+		switch r.Select {
+		case "", "select", "execute":
+		default:
+			v.errf("%s.select: must be select or execute", q)
+		}
+		if r.Schedule != nil {
+			v.modbusSchedule(q+".schedule", r.Schedule)
+		}
+		if r.Action == "allow" && len(r.Clients) == 0 && len(r.Types) == 0 && len(r.Class) == 0 &&
+			len(r.CommonAddresses) == 0 && len(r.Causes) == 0 && len(r.Originators) == 0 {
+			v.warnf("%s: an allow rule that names no client, station, type, class, cause or originator allows everything", q)
+		}
+	}
+}
+
+// iec104TypeName says whether a string names a type identification, by the
+// standard's name or by number. The number is allowed because a vendor's
+// private range is still a thing an operator has to be able to write.
+func iec104TypeName(s string) (byte, bool) {
+	if t, ok := iec104.TypeOf(s); ok {
+		return byte(t), true
+	}
+	if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil && n >= 1 && n <= 255 {
+		return byte(n), true
+	}
+	return 0, false
+}
+
+// iec104CauseName says whether a string names a cause of transmission.
+func iec104CauseName(s string) (byte, bool) {
+	if c, ok := iec104.CauseOf(s); ok {
+		return byte(c), true
+	}
+	if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil && n >= 1 && n <= 63 {
+		return byte(n), true
+	}
+	return 0, false
+}
+
+// iec104ControlName says whether a string names a U-format control function.
+func iec104ControlName(s string) (byte, bool) {
+	c, ok := iec104.ControlOf(strings.TrimSpace(s))
+	return byte(c), ok
+}
+
 func (v *validator) modbusListener(p string, m *ModbusListener, hasTLS bool) {
 	if m.MaxValuePoints < 0 || m.MaxValuePoints > 1<<20 {
 		v.errf("%s.max_value_points: must be between 0 and 1048576", p)
@@ -7096,21 +7282,7 @@ func (v *validator) modbusListener(p string, m *ModbusListener, hasTLS bool) {
 			}
 		}
 		if s := r.Schedule; s != nil {
-			for j, d := range s.Days {
-				if !modbusDay(d) {
-					v.errf("%s.schedule.days[%d]: %q is not a day (mon to sun)", q, j, d)
-				}
-			}
-			v.modbusClock(q+".schedule.from", s.From)
-			v.modbusClock(q+".schedule.to", s.To)
-			if s.Timezone != "" {
-				if _, err := time.LoadLocation(s.Timezone); err != nil {
-					v.errf("%s.schedule.timezone: %v", q, err)
-				}
-			}
-			if s.From == "" && s.To == "" && len(s.Days) == 0 {
-				v.errf("%s.schedule: sets nothing, so the rule is always in force; drop the section", q)
-			}
+			v.modbusSchedule(q+".schedule", s)
 		}
 		if r.Action == "observe" && len(r.Values) > 0 {
 			v.warnf("%s: an observe rule with value bounds records the frame and decides nothing, so the bounds are not applied", q)
@@ -7224,6 +7396,27 @@ func (v *validator) modbusCIDRs(p string, in []string) {
 
 // modbusRanges checks the "5" and "1-16" range lists the Modbus policy is
 // written with.
+// modbusSchedule validates a rule's time window. It is shared with the
+// IEC 104 rules, because "during the day shift" does not change with the
+// protocol.
+func (v *validator) modbusSchedule(p string, s *ModbusSchedule) {
+	for j, d := range s.Days {
+		if !modbusDay(d) {
+			v.errf("%s.days[%d]: %q is not a day (mon to sun)", p, j, d)
+		}
+	}
+	v.modbusClock(p+".from", s.From)
+	v.modbusClock(p+".to", s.To)
+	if s.Timezone != "" {
+		if _, err := time.LoadLocation(s.Timezone); err != nil {
+			v.errf("%s.timezone: %v", p, err)
+		}
+	}
+	if s.From == "" && s.To == "" && len(s.Days) == 0 {
+		v.errf("%s: sets nothing, so the rule is always in force; drop the section", p)
+	}
+}
+
 func (v *validator) modbusRanges(p string, in []string, max int) {
 	for i, s := range in {
 		text := strings.TrimSpace(s)

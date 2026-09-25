@@ -64,6 +64,7 @@ var roster = map[string]Role{
 	"ftp":     RoleRelay,
 	"syslog":  RoleRelay,
 	"modbus":  RoleRelay,
+	"iec104":  RoleRelay,
 	"ntp":     RoleRelay,
 	"ntske":   RoleRelay,
 }

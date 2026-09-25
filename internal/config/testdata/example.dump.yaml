@@ -29,6 +29,7 @@ server:
           modbus: null
           ntp: null
           ntske: null
+          iec104: null
           policy: null
         - name: public
           address: :443
@@ -79,6 +80,7 @@ server:
           modbus: null
           ntp: null
           ntske: null
+          iec104: null
           policy: null
     limits:
         max_header_bytes: 65536
