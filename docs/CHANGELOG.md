@@ -493,6 +493,75 @@ Open findings of the earlier rounds:
   the same client, the sweeper, a shutdown. The three are one atomic pointer now,
   so a reader either sees the upstream or sees that there is not one yet.
 
+- **The status terminal read one key per read, and dropped everything else.**
+  `xproxyctl top` handed each read from the terminal to its key handler whole, as
+  if a read were a keystroke. A terminal does not work that way: a read returns
+  whatever the driver had ready, so a person typing quickly, a key held down
+  under autorepeat and *any paste* arrive as several keys in one read -- and the
+  handler matched that group against its key table, found nothing, and discarded
+  every byte of it. Pasting an address into the ban prompt, which is the ordinary
+  way an address gets there, put nothing in the prompt. A read is cut into its
+  keys now, with an escape sequence kept whole so that the first byte of a cursor
+  key cannot arrive as the Escape that cancels a prompt, and the fetch a key asks
+  for is done once per read rather than once per key, so a held `r` is one
+  refresh.
+
+  The defect was sitting behind a flaky test, which is how it was found: the
+  terminal test spaced its keystrokes with a fixed pause and the pause was a
+  guess at how long the program needs, so under the load of the rest of the suite
+  two keystrokes landed in one read and the test failed on the ban that its
+  pasted line no longer performed. It waits for the frame each key draws now --
+  the program has read the key when it has drawn it, which is a fact rather than
+  an estimate -- and the line the ban prompt takes is deliberately pasted in one
+  write, so the case that was broken is the case the test drives. The pause that
+  stood in for "nothing should happen" is gone too: the frame after the return
+  key is proof the refusal was handled, so nothing has to be waited out.
+
+- **`ntske_handshakes`, a gauge for the bound that had none.** The NTS key
+  establishment relay bounds the handshakes in flight
+  (`max_concurrent_handshakes`), and the only thing that reported on it was the
+  counter of clients already being turned away -- which answers the question
+  after the moment an operator wanted it. The gauge says how many slots are held
+  now, so occupancy at the bound is visible before the refusals start; on a slow
+  upstream it also separates a flood from slots held by handshakes waiting on the
+  key establishment server.
+
+  It was added for a test that was a race it usually won: the test held the only
+  slot with one connection and then expected the next client to be refused, but a
+  dial returns when the kernel has the connection and not when the server has
+  taken the slot for it, so under load the second client took the free slot and
+  the bound read as broken. It waits for the gauge now, which is the fact the
+  test was assuming, and the gauge coming back down when the connection closes is
+  asserted as well.
+
+- **A listener on port `0` could fail on a port nobody asked for.** A kind that
+  serves datagrams as well as connections takes its datagram socket on the port
+  the accept socket was given, because the two have to be the same port -- a DNS
+  resolver answers on 53 over both, and one that answered on only one of them
+  works until an answer does not fit. With `address: "127.0.0.1:0"` that port is
+  the kernel's choice, and the kernel chooses it from the TCP side alone: it can
+  hand over a port something else already holds on the UDP side, and there is no
+  way to ask for one free in both. The listener then failed to come up with a
+  bind error naming a port that appears nowhere in the configuration. That pair
+  is let go of and another asked for now, up to eight times.
+
+  Three conditions guard the retry, because a retry that fires on the wrong
+  failure turns one clear error into eight of them: the port has to be the
+  kernel's to choose (a port the file names is the same port next time), the
+  socket has to be this process's own (one handed over by the service manager is
+  not ours to reopen), and the failure has to be the address being in use.
+  Everything else -- a certificate that will not load, a policy that will not
+  compile -- is reported as it was.
+
+  It was found as a test flake twice, in the syslog relay and then in the DNS
+  policy-zone tests, where a test that asked for a listener on port 0 got a bind
+  error instead. The collision itself cannot be produced on demand -- it needs
+  the kernel to hand out one particular port out of thousands while something
+  holds it on the other transport -- so what is tested is the decision, every
+  branch of it driven directly, and the two things that must not change: a port
+  whose datagram side is taken fails with the reason it failed and nothing left
+  bound behind it, and a port 0 listener comes up with both sockets.
+
 ### Added (1.4)
 
 - **`kind: bacnet`: a BACnet/IP relay in front of a building.**

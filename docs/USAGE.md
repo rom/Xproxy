@@ -6330,10 +6330,13 @@ management socket:
 | 7 Routes | Usage per route (requests by class, denied, rate limited, bytes), per tenant, and per rate limit policy with the top consumers |
 | 8 WAF | Counters, learning state, profiles with rule set source and version, route assignments, the most matched rules and the exclusion proposals |
 | 9 TLS | Served certificates per listener: names, issuer, days left, source, OCSP status and CT verdict |
+| 0 MFA | Second-factor enrolments per listener; `j`/`k` select, `u` unlock, `x` remove the factor (each confirmed with `y`) |
 
-Keys: `1` to `9` or `tab` and `shift-tab` switch screens, `r` refreshes,
-`p` pauses, `+` and `-` change the interval, `q` quits. Bans and unbans
-from the TUI go through the same audited API as the CLI.
+Keys: `1` to `9` and `0`, or `tab` and `shift-tab`, switch screens, `r`
+refreshes, `p` pauses, `+` and `-` change the interval, `q` quits. A
+prompt takes a pasted line as well as a typed one, `backspace` edits it
+and `escape` cancels it. Bans and unbans from the TUI go through the same
+audited API as the CLI.
 
 ## Metrics and graphs
 

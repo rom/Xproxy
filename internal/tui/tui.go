@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/term"
 
@@ -69,7 +70,13 @@ func Run(src Source, act Actions, o Options) error {
 
 	keys := make(chan []byte, 16)
 	go func() {
-		buf := make([]byte, 16)
+		// The buffer holds a paste, not a keystroke: a read returns
+		// whatever the driver had ready, and an address pasted into the
+		// ban prompt is longer than a handful of bytes. A read cut in
+		// the middle of an escape sequence cannot be put back together
+		// without a timer, so the buffer is sized to make the cut rare
+		// rather than to save the memory.
+		buf := make([]byte, 256)
 		for {
 			n, err := o.In.Read(buf)
 			if err != nil {
@@ -116,21 +123,90 @@ func Run(src Source, act Actions, o Options) error {
 				}
 				draw()
 			}
-		case k, ok := <-keys:
+		case chunk, ok := <-keys:
 			if !ok {
 				return nil
 			}
-			quit, refresh := handleKey(&st, k, &data, act)
-			if quit {
-				return nil
+			// One read can hold several keys, so each is applied in
+			// turn. The fetch a key asks for is done once at the end:
+			// a key held down under autorepeat arrives as a run of the
+			// same byte, and that is one person asking to refresh, not
+			// sixteen.
+			refresh := false
+			for _, k := range splitKeys(chunk) {
+				quit, want := handleKey(&st, k, &data, act)
+				if quit {
+					return nil
+				}
+				refresh = refresh || want
 			}
 			if refresh {
 				data = fetch()
+				if st.Selected >= len(data.Bans) {
+					st.Selected = max(len(data.Bans)-1, 0)
+				}
 				ticker.Reset(st.Refresh)
 			}
 			draw()
 		}
 	}
+}
+
+// splitKeys cuts one read from the terminal into the keys it holds.
+//
+// A terminal does not deliver one key per read. Bytes arrive in whatever
+// grouping the driver had ready, so a person typing quickly, a key
+// repeating under autorepeat and any paste all put several keys in one
+// read -- and a paste is the ordinary way an address gets into the ban
+// prompt. Handing the whole read to handleKey treats that grouping as a
+// single key nothing is bound to, which drops every byte of it.
+//
+// An escape sequence is the one thing that has to stay whole: the three
+// bytes of a cursor key are one key, and cutting them apart would turn
+// the first into the Escape that cancels the prompt.
+//
+// The cut is within one read, because that is how a terminal delivers a
+// key. An escape sequence split across two reads cannot be told from an
+// Escape followed by typing without waiting to see what comes next, and
+// that wait would delay the Escape key itself -- which is the key a
+// person presses to get out.
+func splitKeys(b []byte) [][]byte {
+	out := make([][]byte, 0, len(b))
+	for i := 0; i < len(b); {
+		n := keyLen(b[i:])
+		out = append(out, b[i:i+n])
+		i += n
+	}
+	return out
+}
+
+// keyLen is the length of the key at the front of b, which is never
+// empty.
+func keyLen(b []byte) int {
+	if b[0] != 0x1b {
+		// A rune, so that a multi-byte character is one key rather than
+		// a run of bytes each of which is nothing on its own.
+		if r, n := utf8.DecodeRune(b); r != utf8.RuneError || n > 1 {
+			return n
+		}
+		return 1
+	}
+	switch {
+	case len(b) > 1 && b[1] == '[':
+		// CSI: parameter and intermediate bytes up to one final byte.
+		for j := 2; j < len(b); j++ {
+			if b[j] >= 0x40 && b[j] <= 0x7e {
+				return j + 1
+			}
+		}
+		return len(b)
+	case len(b) > 1 && b[1] == 'O':
+		// SS3, which is how the cursor keys arrive from a terminal in
+		// application mode.
+		return min(3, len(b))
+	}
+	// Escape on its own.
+	return 1
 }
 
 // handleKey applies one key press. It returns whether to quit and whether

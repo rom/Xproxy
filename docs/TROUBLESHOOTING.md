@@ -3690,6 +3690,17 @@ refused rather than queued, because a queue here is a queue of TLS
 handshakes. `no_hello` and `incomplete_hello` are a client that connected
 and said nothing or half a hello.
 
+`ntske_handshakes` is the gauge to read before that refusal starts:
+
+```sh
+xproxyctl -json stats | jq '{inflight: .ntske_handshakes, limited: .ntske_handshake_limited}'
+```
+
+Sitting at the bound with nothing limited yet means the next burst is
+refused; sitting there with a slow upstream means the slots are being held
+by handshakes waiting on the key establishment server rather than by a
+flood, and `handshake_timeout` is what lets them go.
+
 **The clients' offsets are worse through the gateway than direct.** They
 will be, by half the difference between the forward and reverse path:
 `(forward − reverse delay) / 2`. That is what a relay costs, and no

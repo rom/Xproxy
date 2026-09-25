@@ -135,7 +135,7 @@ off) logs a warning and lists them under `mismatched_peers`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Also used to match systemd socket names |
-| `address` | host:port | required | `":443"`, `"0.0.0.0:80"`, `"[::1]:8080"`. Port `0` picks a free port (tests). |
+| `address` | host:port | required | `":443"`, `"0.0.0.0:80"`, `"[::1]:8080"`. Port `0` picks a free port (tests): a kind that serves datagrams as well takes the same port on both transports, and if the port the kernel chose is held by something else on the other one, another pair is asked for. |
 | `protocols` | list | `[h1, h2]` with TLS, `[h1]` without | `h2` and `h3` require `tls`. `h3` adds a QUIC endpoint on UDP at the same port and requires `h1` or `h2` alongside it (clients discover HTTP/3 through `Alt-Svc`). |
 | `h3` | object | defaults when `h3` is listed | QUIC tuning; see below |
 | `h2c` | bool | `false` | Accept HTTP/2 without TLS (prior knowledge and Upgrade) on a plaintext listener, for gRPC clients inside a trusted network |
@@ -3010,8 +3010,11 @@ service through a server's own key establishment record will look for
 
 Counters: `ntske_sessions`, `ntske_relayed`, `ntske_refused`,
 `ntske_rejected`, `ntske_not_nts`, `ntske_handshake_limited`,
-`ntske_upstream_failed`. Refusals are `ntske_denied` for the ban
-triggers, with the reasons `banned`, `client_not_allowed`,
+`ntske_upstream_failed`, and `ntske_handshakes`, which is a gauge of the
+handshakes holding a slot right now: it says how close
+`max_concurrent_handshakes` is to being reached, which the limited
+counter only answers once clients are already being turned away.
+Refusals are `ntske_denied` for the ban triggers, with the reasons `banned`, `client_not_allowed`,
 `max_connections`, `handshake_limit`, `not_tls`, `no_hello`,
 `incomplete_hello`, `hello_too_large`, `alpn_not_offered` and
 `server_name_not_allowed`.

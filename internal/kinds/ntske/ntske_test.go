@@ -275,6 +275,18 @@ func TestNTSKEBoundsTheHandshakesInFlight(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = held.Close() }()
+	// And it holds it before the second client asks for it. A dial
+	// returns when the kernel has the connection, not when the server
+	// has taken the slot for it, so dialling first is not being served
+	// first: without this wait the test is a race it usually wins, and
+	// the loser reads as the bound not working. The gauge is the fact
+	// the comment above is claiming.
+	for deadline := time.Now().Add(10 * time.Second); s.Stats().NTSKEHandshakes == 0; {
+		if time.Now().After(deadline) {
+			t.Fatal("the first connection never took the handshake slot")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	// A second client cannot get a slot within the second the relay
 	// waits, so it is refused.
 	done := make(chan error, 1)
@@ -298,6 +310,14 @@ func TestNTSKEBoundsTheHandshakesInFlight(t *testing.T) {
 	}
 	if s.Stats().NTSKEHandshakeLimited == 0 {
 		t.Error("the bound was not counted")
+	}
+	// And the gauge comes back down when the slot is given up.
+	_ = held.Close()
+	for deadline := time.Now().Add(10 * time.Second); s.Stats().NTSKEHandshakes != 0; {
+		if time.Now().After(deadline) {
+			t.Fatalf("the handshake gauge stayed at %d", s.Stats().NTSKEHandshakes)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
