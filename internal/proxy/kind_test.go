@@ -30,6 +30,7 @@ var sections = map[string]string{
 	"modbus":  "modbus: {upstream: u}",
 	"iec104":  "iec104: {upstream: u}",
 	"snmp":    "snmp: {upstream: u}",
+	"ldap":    "ldap: {upstream: u}",
 	"ntp":     "ntp: {upstream: u}",
 	"ntske":   "ntske: {upstream: u}",
 }

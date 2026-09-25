@@ -3081,6 +3081,125 @@ link carries on: refusing a command is not refusing a link, and a control
 room that lost its telemetry because one command was refused would be an
 outage.
 
+### LDAP in front of a directory
+
+The directory is where every application asks who somebody is, and the two
+things this protocol does by default are things nobody intends.
+
+```yaml
+server:
+  listeners:
+    - name: directory
+      address: "10.60.0.10:636"
+      kind: ldap
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/tls/ldap.crt, key_file: /etc/xproxy/tls/ldap.key}
+      ldap:
+        upstream: directories
+        tls_mode: implicit            # LDAPS: TLS from the first octet
+        allow_clients: ["10.60.1.0/24"]
+
+        base_dns: ["dc=example,dc=com"]   # the naming context this is for
+        read_only: true                   # no rule can override it
+        # methods defaults to [simple, sasl]: the two that authenticate
+        min_version: 3
+
+        max_entries: 500              # an unbounded subtree search is a copy
+        bind_rate_limit: 5            # the credential-stuffing signal
+
+        default_action: deny
+        rules:
+          - {name: pre-auth, action: allow, bind_dns: [""], operations: [bind]}
+          - name: phonebook
+            action: allow
+            bind_dns: ["ou=services,dc=example,dc=com"]
+            access: [read]
+            base_dns: ["ou=people,dc=example,dc=com"]
+            attributes: [cn, mail, telephoneNumber]
+upstreams:
+  - {name: directories, endpoints: [{address: "10.60.4.10:636"}]}
+```
+
+`examples/directory/ldap.yaml` is the complete file, with a StartTLS listener
+for the client library nobody can reconfigure, a change window on its own
+address and its own two identities, and a shadow-mode trial.
+
+**The default `methods` list is the whole point.** A simple bind with a name
+and an **empty password** is an anonymous bind (RFC 4513 §5.1.2), and most
+directories answer it with *success*. An application written as "bind as the
+user; if it worked, the password was right" is then bypassed with an empty
+string, and the directory cannot tell that login from a correct one. The
+default -- `[simple, sasl]` -- refuses it; adding `unauthenticated` is an
+operator saying they mean it, and validation says so loudly.
+
+**`require_tls` is on by default and is not shadowable.** A simple bind on
+port 389 puts a directory password in the clear on the wire. By the time a
+policy could be consulted the password has already travelled, so this refusal
+holds even on a listener in `policy: {mode: shadow}`. SASL `PLAIN` counts,
+because it is a simple bind with extra steps.
+
+**Write `base_dns` and read the comparison carefully.** It is checked before
+every rule and before `default_action: allow`, which is what keeps one
+listener from becoming a way into the directory's other trees. The comparison
+is per relative name, so `dc=example,dc=com` does not cover
+`dc=notexample,dc=com` -- and a policy written with string suffixes elsewhere
+would let that through.
+
+**The attribute policy applies to the answer.** A search that asks for `*`
+never names `userPassword`, and the directory sends it anyway; the relay
+removes it from the entry on its way back and `ldap_stripped` counts how
+often. Naming it in the request is refused instead, because stripping would
+answer a plain question with a silence the client cannot tell from an empty
+directory -- and naming it in a *filter* is refused too, because
+`(userPassword=a*)` is a password oracle one character at a time. A rule's
+`attributes` list inverts the answer policy: anything outside the list is
+removed, which is how a phone book stays a phone book.
+
+**Key the rules on the identity, not just the address.** `bind_dns` names a
+distinguished name and everything below it, so
+`ou=services,dc=example,dc=com` covers every service account in that
+container. The empty name is the unbound connection, which is how "before you
+authenticate, you may bind and nothing else" is written:
+
+```yaml
+rules:
+  - {name: pre-auth, action: allow, bind_dns: [""], operations: [bind]}
+```
+
+The identity is the directory's to grant: the relay watches the bind
+*response* and adopts the name only when the directory answers success, so a
+rule keyed on it means what it says. A StartTLS upgrade discards it, as RFC
+4513 §5.1.7 requires.
+
+**A change window belongs on its own listener.** `read_only` cannot be
+overridden by a rule, and should not be: a read-only listener one rule could
+write through is not a read-only listener. Give the writing client its own
+address, its own `allow_clients`, its own credential and its own schedule --
+and split the identity that may add a person from the one that may change a
+group, because group membership is privilege.
+
+**StartTLS is the secure upgrade.** `tls_mode: starttls` with
+`upstream_tls_mode: implicit` means the relay terminates the upgrade on the
+client's leg and speaks LDAPS to the directory, so a client library that can
+be pointed at a host and nothing else still gets TLS, and the directory never
+sees a plaintext connection.
+
+**Read the counters by what an operator asks about.** `ldap_bind_failures`
+against `ldap_binds` is the ratio that says somebody is trying passwords;
+`ldap_stripped` says the attribute policy is doing something a request-side
+check could not; `ldap_truncated` says searches are hitting the entry bound,
+which is either a client that should be paging or one that is copying the
+directory. `log_binds` (the default) writes who authenticated, from where, as
+whom, and whether it worked -- which is the record an estate is actually
+asked for.
+
+**What is never logged.** A password, and a filter's assertion values. The
+filter's *shape* is logged -- how many terms, how deep, whether a leading
+wildcard -- and what it was looking for is not: a search for a person's name
+is that person's business, and a log of every one is a surveillance record
+the estate did not ask for.
+
 ### SNMP in front of the estate's own equipment
 
 The other protocol that runs on unpatchable hardware, except that this one

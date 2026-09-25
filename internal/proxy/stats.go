@@ -234,6 +234,33 @@ type Stats struct {
 	SNMPTimedOut     atomic.Uint64
 	SNMPUpstreamFail atomic.Uint64
 	SNMPUnsolicited  atomic.Uint64
+	// The LDAP relay.
+	//
+	// Binds are counted apart from requests and failures apart from binds,
+	// because those are the three numbers that say whether somebody is
+	// trying passwords against a directory. LDAPStripped counts the
+	// attributes removed from answers the directory sent anyway, which is
+	// the number that says the attribute policy is doing something a
+	// request-side check could not.
+	LDAPSessions     atomic.Uint64
+	LDAPSessionsOpen atomic.Int64
+	LDAPRequests     atomic.Uint64
+	LDAPBinds        atomic.Uint64
+	LDAPBindFailures atomic.Uint64
+	LDAPSearches     atomic.Uint64
+	LDAPWrites       atomic.Uint64
+	LDAPEntries      atomic.Uint64
+	LDAPStripped     atomic.Uint64
+	LDAPTruncated    atomic.Uint64
+	LDAPStartTLS     atomic.Uint64
+	LDAPDenied       atomic.Uint64
+	LDAPWouldDeny    atomic.Uint64
+	LDAPMalformed    atomic.Uint64
+	LDAPRejected     atomic.Uint64
+	LDAPRateLimited  atomic.Uint64
+	LDAPUpstreamFail atomic.Uint64
+	LDAPOutstanding  atomic.Int64
+
 	// SNMPPending is how many requests are outstanding towards agents right
 	// now. It is a gauge rather than a total because the number an operator
 	// wants is "is the table filling up", and the bound refusing is counted
@@ -614,6 +641,24 @@ type Snapshot struct {
 	SNMPUpstreamFail       uint64             `json:"snmp_upstream_failed"`
 	SNMPUnsolicited        uint64             `json:"snmp_unsolicited"`
 	SNMPPending            int64              `json:"snmp_pending"`
+	LDAPSessions           uint64             `json:"ldap_sessions"`
+	LDAPSessionsOpen       int64              `json:"ldap_sessions_open"`
+	LDAPRequests           uint64             `json:"ldap_requests"`
+	LDAPBinds              uint64             `json:"ldap_binds"`
+	LDAPBindFailures       uint64             `json:"ldap_bind_failures"`
+	LDAPSearches           uint64             `json:"ldap_searches"`
+	LDAPWrites             uint64             `json:"ldap_writes"`
+	LDAPEntries            uint64             `json:"ldap_entries"`
+	LDAPStripped           uint64             `json:"ldap_stripped"`
+	LDAPTruncated          uint64             `json:"ldap_truncated"`
+	LDAPStartTLS           uint64             `json:"ldap_starttls"`
+	LDAPDenied             uint64             `json:"ldap_denied"`
+	LDAPWouldDeny          uint64             `json:"ldap_would_deny"`
+	LDAPMalformed          uint64             `json:"ldap_malformed"`
+	LDAPRejected           uint64             `json:"ldap_rejected"`
+	LDAPRateLimited        uint64             `json:"ldap_rate_limited"`
+	LDAPUpstreamFail       uint64             `json:"ldap_upstream_failed"`
+	LDAPOutstanding        int64              `json:"ldap_outstanding"`
 	NTPRequests            uint64             `json:"ntp_requests"`
 	NTPForwarded           uint64             `json:"ntp_forwarded"`
 	NTPResponses           uint64             `json:"ntp_responses"`
@@ -955,6 +1000,24 @@ func (s *Stats) snapshot() Snapshot {
 		SNMPUpstreamFail:       s.SNMPUpstreamFail.Load(),
 		SNMPUnsolicited:        s.SNMPUnsolicited.Load(),
 		SNMPPending:            s.SNMPPending.Load(),
+		LDAPSessions:           s.LDAPSessions.Load(),
+		LDAPSessionsOpen:       s.LDAPSessionsOpen.Load(),
+		LDAPRequests:           s.LDAPRequests.Load(),
+		LDAPBinds:              s.LDAPBinds.Load(),
+		LDAPBindFailures:       s.LDAPBindFailures.Load(),
+		LDAPSearches:           s.LDAPSearches.Load(),
+		LDAPWrites:             s.LDAPWrites.Load(),
+		LDAPEntries:            s.LDAPEntries.Load(),
+		LDAPStripped:           s.LDAPStripped.Load(),
+		LDAPTruncated:          s.LDAPTruncated.Load(),
+		LDAPStartTLS:           s.LDAPStartTLS.Load(),
+		LDAPDenied:             s.LDAPDenied.Load(),
+		LDAPWouldDeny:          s.LDAPWouldDeny.Load(),
+		LDAPMalformed:          s.LDAPMalformed.Load(),
+		LDAPRejected:           s.LDAPRejected.Load(),
+		LDAPRateLimited:        s.LDAPRateLimited.Load(),
+		LDAPUpstreamFail:       s.LDAPUpstreamFail.Load(),
+		LDAPOutstanding:        s.LDAPOutstanding.Load(),
 		NTPRequests:            s.NTPRequests.Load(),
 		NTPForwarded:           s.NTPForwarded.Load(),
 		NTPResponses:           s.NTPResponses.Load(),

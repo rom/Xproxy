@@ -91,6 +91,7 @@ did not authenticate — a trial instead of a door.
 |------|------------------------|---------------|
 | `modbus` | every rule: function, unit, address range, value bounds, rate and window | malformed frames, the unit table, the queue bound, rate limits, bans |
 | `iec104` | every rule: type, class, cause, station, originator, point range and the select half; `monitor_only`; the common-address list; `require_select` | malformed frames, the frame bound, rate limits (frame and command), a station commanding its own control centre, bans |
+| `ldap` | every rule: the bound identity, the bind method, the operation, the access class, the subtree, the scope and the attributes; `methods`, `sasl_mechanisms`, `min_version`; `read_only`; `base_dns`; the attribute lists; the filter and entry bounds | a simple bind carrying a password on an unprotected connection, malformed messages, the message bound, message identifier zero, rate limits (request and bind), the client list, an answer no request matched, bans |
 | `snmp` | every rule: version, community or user, security level, operation, access class, object subtree and context; `versions`, `communities`, `users`, `min_security_level`; `read_only`; the message direction | malformed messages, the message and response bounds, the GETBULK repetition bound, the response ratio, an answer nobody asked for, rate limits, the client list, bans |
 | `ntp` | the client list and every request rule (versions, modes, extension fields, the identity it demands), and every answer rule (stratum, distances, timestamps, identifier, leap) | mode 6 and 7, version 5, malformed packets, bans, rate limits, the association and outstanding bounds |
 | `mqtt` | the client list, the CONNECT policy (version, client id, username, keep alive, will), the publish and subscribe policies, retain | malformed packets, a first packet that is not CONNECT, a second CONNECT, the packet bound, the connection limit, TLS failures |
@@ -2030,6 +2031,176 @@ refusal counters: `client_not_allowed`, `tls_handshake`, `malformed`,
 `command_rate_limited`, `monitor_only`, `common_address`, `rule`,
 `default_deny`, `control`, `station_command`, `sequence`, `window`,
 `ack_ahead`, `unselected`, `select_unavailable`.
+
+### server.listeners[].ldap (kind: ldap)
+
+A directory is the one service in an estate that knows who everybody is, and
+LDAP is how everything asks. That makes it two things at once: the
+authentication path for every application that has not moved to OIDC, and the
+most complete map of an organisation that exists anywhere on its network --
+every person, every group, every service account, every machine, with the
+memberships that say who is an administrator.
+
+Five things are deliberate in the data path.
+
+**A bind with a name and an empty password is refused by default.** RFC 4513
+§5.1.2 calls it an *unauthenticated bind* and says it is anonymous. A great
+many directories answer it with **success**, and a great many applications are
+written as "bind as the user, and if it worked the password was right". That
+is an authentication bypass in the application, reachable with an empty string,
+and the directory cannot tell the difference between it and a correct login.
+The relay can. `methods` is the list, and it defaults to `simple` and `sasl`
+-- the two that actually authenticate.
+
+**A password in the clear is refused by default.** LDAP on port 389 with a
+simple bind puts a directory password on the wire in plaintext, and the client
+library that did it will not tell anyone. `require_tls` (default true) stops
+it, and it is **not shadowable**: by the time a policy could be consulted the
+password has already gone past, so a listener in `policy: {mode: shadow}`
+refuses it anyway. SASL `PLAIN` counts as a password, because it is a simple
+bind with extra steps.
+
+**The attribute policy applies to the answer, not only to the question.** A
+search that asks for `*` never names `userPassword`, and the directory sends it
+anyway. So a denied attribute is **removed from the entry on its way back** --
+which is the half a request-side access list cannot do -- while a request that
+names one plainly is refused, because stripping it would answer a plain
+question with a silence the client cannot tell from an empty directory. A
+*filter* naming one is refused too: `(userPassword=a*)` is a password oracle,
+one character at a time.
+
+**A subtree is a suffix compared one relative name at a time.** A string suffix
+test admits `dc=notexample,dc=com` under `example,dc=com`, and a string prefix
+test admits `ou=peoplex` under `ou=people`. Distinguished names are a tree and
+are compared as one, with RFC 4514's escaping resolved, the attribute type
+folded to lower case and the insignificant space removed.
+
+**The entries are counted and the filter is measured.** An unbounded subtree
+search with `(objectClass=*)` is how a directory is copied, and a filter of a
+hundred substring terms with leading wildcards is a hundred full scans from a
+request two hundred octets long. `max_entries` cuts the search with the
+directory's own `sizeLimitExceeded`, so the client knows it got part of an
+answer rather than hanging; `max_filter_terms`, `max_filter_depth` and
+`allow_leading_wildcard` bound the filter.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `mode` | `reverse`, `forward` | `reverse` | `reverse`: clients connect here and the relay forwards to the directory. `forward`: this listener is the controlled egress an application uses to reach a directory elsewhere |
+| `upstream` | string | required | The directory pool |
+| `tls_mode` | `implicit`, `starttls`, `none` | `implicit` with a `tls` section | `implicit` is LDAPS: TLS from the first octet, port 636. `starttls` is the extended operation of RFC 4513 on port 389, which this relay **terminates itself** rather than forwarding, because the two legs of the connection are separate decisions |
+| `require_tls` | bool | `true` | Refuse a bind that carries a password on an unprotected connection. Not shadowable |
+| `upstream_tls_mode` | `none`, `implicit`, `starttls` | `none` | How this listener reaches the directory. With `tls_mode` this is the secure upgrade: TLS towards the client, whatever the directory will take towards the directory |
+| `upstream_tls` | object | | Verification of the directory when `upstream_tls_mode` is not `none` |
+| `allow_clients` | list of CIDR | all | Networks a client may connect from |
+| `deny_clients` | list of CIDR | | Evaluated before `allow_clients` |
+| `min_version` | int | `3` | The lowest LDAP version accepted. LDAPv2 is a different protocol wearing the same tags and has no SASL bind |
+| `methods` | list | `[simple, sasl]` | Bind methods: `anonymous`, `unauthenticated`, `simple`, `sasl`. The default leaves out the two that are anonymous binds, one of them wearing a user's name |
+| `sasl_mechanisms` | list | any | SASL mechanisms by name (`GSSAPI`, `EXTERNAL`, `DIGEST-MD5`, `PLAIN`). The comparison ignores case |
+| `base_dns` | list of DN | any | The naming contexts this listener fronts. A request naming an object outside all of them is refused **before the rules and before `default_action: allow`**, which is what stops one listener from being a way into a directory's other trees |
+| `read_only` | bool | `false` | Refuse add, delete, modify and modifyDN, for every client, before any rule is read. **No rule can override it** |
+| `deny_attributes` | list | the built-in list | Attributes this relay will not carry, in either direction; see below for the built-in list. Setting the list **replaces** it |
+| `on_denied_attribute` | `strip`, `deny` | `strip` | `strip` removes it from the answer and carries the rest, so an application that asked for everything still works and no longer receives a password hash. `deny` refuses the whole operation |
+| `max_entries` | int | `500` | Entries one search may return. The client's own size limit is a request rather than a bound |
+| `max_filter_terms` | int | `64` | Assertions one filter may contain |
+| `max_filter_depth` | int | `12` | Levels of `and`/`or`/`not` one filter may nest |
+| `allow_leading_wildcard` | bool | `true` | Permit a substring filter whose first component is a wildcard -- `(cn=*smith)` -- which no index can serve. Every address book does it; set it false on a listener fronting a large directory |
+| `extended_operations` | list of OID | StartTLS only | Extended operations allowed. The two worth naming if you allow more are `1.3.6.1.4.1.4203.1.11.1` (password modify) and `1.3.6.1.4.1.4203.1.11.3` (who am I) |
+| `deny_controls` | list of OID | | Controls this relay refuses to carry. Empty carries any: a control this relay does not know is one the directory decides about, and RFC 4511 already refuses an unrecognised critical control there |
+| `rules` | list | | Per-request rules, first match wins; see below |
+| `default_action` | `deny`, `allow` | `deny` | What a request no rule matched gets |
+| `deny_response` | `insufficient`, `unwilling`, `drop`, `close` | `insufficient` | `insufficient` is result code 50, which is what a directory sends and what every client displays; a refused **bind** is always answered `invalidCredentials` instead, because that is the only code a client treats as a failed login rather than a server fault. `drop` is a hang to the client, and a hang looks like a directory that died |
+| `max_outstanding` | int | `32` | Requests one connection may have in flight. LDAP is asynchronous and multiplexed, so this bounds the table that pairs a response with its request |
+| `max_connections` | int | `256` | Live sessions |
+| `idle_timeout` | duration | `300s` | A session that says nothing. A pooled directory connection is idle by design |
+| `request_timeout` | duration | `30s` | How long the directory has to answer before its answer is too late to pair |
+| `connect_timeout` | duration | `5s` | Dialling the directory |
+| `max_message_bytes` | int | `262144` | One message. A directory entry with a photograph or a certificate in it is real. A message past this is refused unread |
+| `rate_limit`, `rate_burst` | int | `0` | Requests per second per client address. A request past the limit is refused with `busy` and the connection is kept: LDAP clients hold pooled connections, and closing one on a rate spike makes the application reconnect and retry, which is more load rather than less |
+| `bind_rate_limit`, `bind_rate_burst` | int | `0` | **Binds** per second per client address, separately, because a rate loose enough for an application's searches says nothing about somebody working through a password list. Unlike the request rate, this one **ends the session**: that rate is a credential attack, and leaving the connection open is leaving it somewhere to keep trying |
+| `log_requests` | bool | `false` | An access line per request. A directory front carries a great many searches |
+| `log_binds` | bool | `true` | An access line for every bind and its outcome: who authenticated, from where, as whom, and whether it worked |
+| `log_writes` | bool | `true` | An access line for every operation that changes the directory, and for every refusal |
+| `alert_on_deny` | bool | `true` | A security event per refusal |
+| `proxy_protocol` | bool | `false` | Send a PROXY protocol v2 header to the directory |
+
+#### server.listeners[].ldap.rules[]
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `name` | string | Required; names the rule in the logs and the counters |
+| `action` | `allow`, `deny`, `observe` | Default `allow`. `observe` records the request and keeps looking |
+| `clients` | list of CIDR | Networks the client is in |
+| `bind_dns` | list of DN | The identities this rule covers. A name covers itself and everything below it, so `ou=services,dc=example,dc=com` covers every service account in that container. The **empty** name matches an unbound or anonymous connection, which is how "before you authenticate, you may do this and no more" is written |
+| `methods` | list | The bind methods this rule covers, for a rule about *how* the connection authenticated rather than as whom |
+| `operations` | list | `bind`, `search`, `compare`, `modify`, `add`, `delete`, `modify_dn`, `extended`, `abandon`, `unbind` |
+| `access` | list | `read`, `write`, `bind`: what the operation *does*. The durable way to write a policy, because it does not change when a later revision adds an operation |
+| `base_dns` | list of DN | The suffixes the request may name |
+| `deny_dns` | list of DN | Suffixes this rule does not cover even when `base_dns` would match: all of the directory except the administrators container |
+| `scopes` | list | `base`, `one`, `sub`. A rule that omits them covers any scope, which on a wide base is usually not what was meant |
+| `attributes` | list | The attributes a request may name and an answer may carry. Naming them turns the answer policy inside out: anything outside the list is removed from an entry |
+| `deny_attributes` | list | Refused or stripped for this rule's traffic, **in addition to** the listener's list |
+| `max_entries` | int | This rule's own bound on entries returned |
+| `max_filter_terms`, `max_filter_depth` | int | This rule's own filter bounds. A rule does not cover a filter past its own bound, so the next rule -- or the default -- decides; matching and then allowing would make the bound a suggestion |
+| `allow_leading_wildcard` | bool | This rule's own setting |
+| `schedule` | object | `{days, from, to, timezone}`; a window whose `to` is before its `from` spans midnight |
+
+**The built-in `deny_attributes` list** is the password and key material of the
+directories people actually run:
+
+```
+userPassword  unicodePwd  dBCSPwd  ntPwdHistory  lmPwdHistory  pwdHistory
+supplementalCredentials  msDS-ManagedPassword  ms-Mcs-AdmPwd
+ms-Mcs-AdmPwdExpirationTime  krbPrincipalKey  sambaNTPassword
+sambaLMPassword  sambaPasswordHistory  userPKCS12
+```
+
+Naming `deny_attributes` replaces it rather than adding to it, and validation
+warns if the replacement drops `userPassword`. A rule's own `deny_attributes`
+adds to whichever list is in force. An attribute's transfer option is not part
+of its name, so a policy about `userCertificate` covers
+`userCertificate;binary`.
+
+**What is checked before the rules, and cannot be shadowed.** A message the
+relay could not parse; a message past `max_message_bytes`; message identifier
+zero, which is reserved for the server's unsolicited notification; the request
+and bind rate limits; the client list; a response the directory sent against a
+message identifier no request used; and a bind carrying a password on an
+unprotected connection.
+
+**`read_only` and `base_dns` are checked before any rule and cannot be
+overridden by one.** A read-only listener one rule could write through is not a
+read-only listener, and a listener for one naming context that could be asked
+about another is not a listener for one naming context.
+
+**The identity is the directory's to grant.** The relay watches the bind
+*response*, not the request: the identity a rule names is adopted only when the
+directory answers success, because believing the request would let anyone be
+anybody by binding with the wrong password. A StartTLS upgrade discards it, as
+RFC 4513 §5.1.7 requires -- and because keeping it would let a client bind in
+the clear and then hide behind TLS with what that bind gave it.
+
+**A password never reaches a log**, and neither does a filter's assertion
+value. The filter's *shape* is logged -- how many terms, how deep, whether a
+leading wildcard -- and what it was looking for is not: a search for a person's
+name is that person's business, and a log of every one is a surveillance record
+the estate did not ask for.
+
+Counters: `ldap_sessions`, `ldap_sessions_open`, `ldap_requests`, `ldap_binds`,
+`ldap_bind_failures`, `ldap_searches`, `ldap_writes`, `ldap_entries`,
+`ldap_stripped`, `ldap_truncated`, `ldap_starttls`, `ldap_denied`,
+`ldap_would_deny`, `ldap_malformed`, `ldap_rejected`, `ldap_rate_limited`,
+`ldap_upstream_failed`, `ldap_outstanding`. Refusals are `ldap_denied` for the
+ban triggers, and the fine-grained reason is in the refusal counters:
+`client_not_allowed`, `tls_handshake`, `upstream_tls`, `max_connections`,
+`rate_limited`, `bind_rate_limited`, `malformed`, `malformed_response`,
+`message_too_large`, `framing`, `message_id_zero`, `wrong_direction`,
+`wrong_direction_response`, `anonymous_bind`, `unauthenticated_bind`,
+`bind_method`, `sasl_mechanism`, `bind_in_clear`, `bind_failed`, `version`,
+`read_only`, `base_dn`, `extended`, `control`, `filter_terms`, `filter_depth`,
+`leading_wildcard`, `filter_attribute`, `attribute`,
+`attribute_not_allowed`, `rule`, `default_deny`, `max_entries`,
+`unsolicited_entry`, `too_many_outstanding`, `starttls_unavailable`,
+`starttls_twice`, `starttls_outstanding`.
 
 ### server.listeners[].snmp (kind: snmp)
 
@@ -5491,7 +5662,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ntp_denied`, `ntske_denied`, `yara` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `ntp_denied`, `ntske_denied`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |

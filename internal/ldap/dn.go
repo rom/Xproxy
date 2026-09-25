@@ -134,20 +134,39 @@ func indexUnescaped(s string, c byte) int {
 	return -1
 }
 
-// unescapeDNValue resolves the escaping of RFC 4514 §3: a backslash before a
-// special character, a backslash and two hex digits, and the quoted form.
-// The result is folded to lower case and trimmed of the leading and trailing
-// space the grammar calls insignificant.
+// unescapeDNValue resolves the escaping of RFC 4514 §3: a backslash before one
+// of the characters the grammar makes special, a backslash and two hex digits,
+// and the quoted form RFC 1779 left behind. The result is folded to lower case
+// and trimmed of the leading and trailing space the grammar calls
+// insignificant.
+//
+// The trimming is the subtle part, and it is why this does not simply call
+// TrimSpace. A *trailing* space is insignificant only when it is unescaped;
+// `cn=a\ ` is a value that ends in a space on purpose, and trimming before
+// unescaping would turn it into a value that ends in a backslash. So each
+// output byte remembers whether it came from an escape, and only the
+// unescaped spaces at the ends are removed.
+//
+// An escape the grammar does not have -- a backslash before anything but a
+// special character or a hex pair -- is an error rather than a character taken
+// literally. Being lenient there would mean two different names normalising to
+// one, which is the wrong direction for a rule that *allows* a subtree.
 func unescapeDNValue(s string) (string, error) {
-	s = strings.TrimSpace(s)
 	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
-		s = s[1 : len(s)-1]
+		// Inside the quoted form everything between the quotes is
+		// significant, including the spaces.
+		inner, err := unquoteDNValue(s[1 : len(s)-1])
+		if err != nil {
+			return "", err
+		}
+		return strings.ToLower(inner), nil
 	}
-	var b strings.Builder
-	b.Grow(len(s))
+	var b []byte
+	var escaped []bool
 	for i := 0; i < len(s); i++ {
 		if s[i] != '\\' {
-			b.WriteByte(s[i])
+			b = append(b, s[i])
+			escaped = append(escaped, false)
 			continue
 		}
 		if i+1 >= len(s) {
@@ -161,14 +180,63 @@ func unescapeDNValue(s string) (string, error) {
 			if !ok {
 				return "", fmt.Errorf("ldap: half a hex escape in a value")
 			}
-			b.WriteByte(h1<<4 | h2)
+			b = append(b, h1<<4|h2)
+			escaped = append(escaped, true)
 			i += 2
 			continue
 		}
-		b.WriteByte(s[i+1])
+		if !dnSpecial(s[i+1]) {
+			return "", fmt.Errorf("ldap: \\%c is not an escape RFC 4514 defines", s[i+1])
+		}
+		b = append(b, s[i+1])
+		escaped = append(escaped, true)
 		i++
 	}
-	return strings.ToLower(strings.TrimSpace(b.String())), nil
+	// Now the insignificant space: unescaped, at either end.
+	lo, hi := 0, len(b)
+	for lo < hi && b[lo] == ' ' && !escaped[lo] {
+		lo++
+	}
+	for hi > lo && b[hi-1] == ' ' && !escaped[hi-1] {
+		hi--
+	}
+	return strings.ToLower(string(b[lo:hi])), nil
+}
+
+// unquoteDNValue resolves the escapes inside the quoted form, where the only
+// escape is a backslash before a character.
+func unquoteDNValue(s string) (string, error) {
+	var b []byte
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\\' {
+			b = append(b, s[i])
+			continue
+		}
+		if i+1 >= len(s) {
+			return "", fmt.Errorf("ldap: quoted value ends in an escape")
+		}
+		if h1, ok := hexDigit(s[i+1]); ok && i+2 < len(s) {
+			if h2, ok := hexDigit(s[i+2]); ok {
+				b = append(b, h1<<4|h2)
+				i += 2
+				continue
+			}
+		}
+		b = append(b, s[i+1])
+		i++
+	}
+	return string(b), nil
+}
+
+// dnSpecial is the set of characters RFC 4514 allows a bare backslash before.
+// The space and the number sign are in it because they are the two characters
+// whose *position* makes them special.
+func dnSpecial(c byte) bool {
+	switch c {
+	case '"', '+', ',', ';', '<', '>', '\\', ' ', '#', '=':
+		return true
+	}
+	return false
 }
 
 func hexDigit(c byte) (byte, bool) {
@@ -242,6 +310,16 @@ func (d DN) Under(suffix DN) bool {
 		}
 	}
 	return true
+}
+
+// Values are the values of the most specific relative name, in the order the
+// types are. It is here for the tests and for a caller that wants the leaf's
+// own value without re-parsing the string form.
+func (d DN) Values() []string {
+	if len(d) == 0 {
+		return nil
+	}
+	return d[0].Values
 }
 
 // Depth is how many relative names the name has, which is what a scope

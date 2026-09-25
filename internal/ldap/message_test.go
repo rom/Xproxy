@@ -205,6 +205,15 @@ func TestAFilterIsReadAsAShape(t *testing.T) {
 	}
 	// An attribute's transfer option is not part of its name: a policy about
 	// userCertificate covers userCertificate;binary.
+	// A substring with an `any` part in the middle is still anchored by its
+	// initial part, so it is not the shape no index can serve.
+	shape, err = ReadFilter(substrings("cn", initialPart("sm"), anyPart("it"), finalPart("h")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shape.Substrings != 1 || shape.LeadingWildcard != 0 {
+		t.Errorf("an anchored substring: %+v", shape)
+	}
 	shape, err = ReadFilter(present("userCertificate;binary"))
 	if err != nil {
 		t.Fatal(err)
@@ -475,7 +484,7 @@ func TestAnOperationIsNamedByWhatItDoes(t *testing.T) {
 		"modify_dn": OpModifyDNRequest, "moddn": OpModifyDNRequest,
 		"compare": OpCompareRequest, "abandon": OpAbandonRequest,
 		"extended": OpExtendedRequest, "unbind": OpUnbindRequest,
-		" Search ": OpSearchRequest,
+		"  search  ": OpSearchRequest,
 	} {
 		got, ok := OpOf(name)
 		if !ok || got != want {

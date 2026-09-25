@@ -3182,6 +3182,109 @@ node promoted cold has no selections at all — the first execute after a
 promotion is refused, which is the safe direction. `docs/HA.md` covers what
 else does and does not survive.
 
+## LDAP relay
+
+**A request reaches the relay and not the directory.** The default answer is
+`insufficientAccessRights` (50), which is what a directory sends and what every
+client displays; a refused *bind* is always `invalidCredentials` (49), because
+that is the only code a client treats as a failed login. The security event
+carries the operation, the object and the rule:
+
+```sh
+xproxyctl -json stats | jq '.refusals.ldap'
+xproxyctl tail security | jq -c 'select(.proto=="ldap") | {t:.time, r:.reason, op:.op, dn:.bound_dn, detail:.detail, rule:.rule}'
+```
+
+The reasons, and what each means:
+
+| Reason | What happened |
+|--------|---------------|
+| `client_not_allowed` | The client is outside `allow_clients`, or inside `deny_clients` |
+| `unauthenticated_bind` | A simple bind with a name and an **empty password**. RFC 4513 §5.1.2 calls it an anonymous bind; most directories answer it with success, and the application behind them reads that as a correct password. If this is climbing, something is either misconfigured or testing whether it can log in as anybody |
+| `anonymous_bind` | A bind with no name and no password, which `methods` does not allow |
+| `bind_method` | A method outside `methods` |
+| `sasl_mechanism` | A SASL mechanism outside `sasl_mechanisms` |
+| `bind_in_clear` | A bind carrying a password on an unprotected connection. **Not shadowable**: by the time a policy could be consulted the password has travelled |
+| `bind_failed` | The *directory* answered `invalidCredentials`. This is the reason a ban trigger counts: one is a typo, forty from one address in five minutes is a password list |
+| `version` | Below `min_version`. LDAPv2 is a different protocol wearing the same tags |
+| `read_only` | An add, delete, modify or modifyDN on a read-only listener. No rule can override this one |
+| `base_dn` | The request names an object outside `base_dns`. Checked before the rules and before `default_action: allow` |
+| `attribute` | A denied attribute asked for **by name**. Stripping it would answer a plain question with a silence the client cannot tell from an empty directory |
+| `attribute_not_allowed` | An attribute outside a rule's own `attributes` list |
+| `filter_attribute` | A filter that tests a denied attribute. `(userPassword=a*)` is a password oracle one character at a time |
+| `filter_terms`, `filter_depth`, `leading_wildcard` | The filter's shape past a bound. A leading wildcard is a scan of the subtree, because no index can serve it |
+| `max_entries` | The search reached the entry bound and was completed with `sizeLimitExceeded`. This is a cut, not a refusal: the client has the entries it got |
+| `extended` | An extended operation whose OID is not in `extended_operations` |
+| `control` | A control named in `deny_controls` |
+| `rule`, `default_deny` | A `deny` rule matched, or none did |
+| `unsolicited_entry` | The directory sent an entry against a message identifier no request used. The client is not waiting for it |
+| `too_many_outstanding` | `max_outstanding` requests are already in flight on one connection |
+| `starttls_unavailable`, `starttls_twice`, `starttls_outstanding` | A StartTLS this listener does not offer, one inside TLS, or one with operations in flight (RFC 4511 §4.14.1) |
+| `message_id_zero` | A client used message identifier 0, which is reserved for the server's unsolicited notification |
+| `wrong_direction`, `wrong_direction_response` | A response from the client, or a request from the directory |
+| `malformed`, `malformed_response`, `message_too_large`, `framing` | The message could not be read, was past `max_message_bytes`, or a stream did not begin an LDAPMessage where one was due. None of these is shadowed |
+| `rate_limited`, `bind_rate_limited`, `max_connections` | The request rate, the bind rate, or the session bound. The request rate refuses the one request with `busy` and keeps the connection, because closing a pooled connection on a rate spike makes the application reconnect and retry; the bind rate ends the session, because that rate is a credential attack |
+
+**Every application broke at once after enabling this.** Look at
+`ldap_bind_failures` first. The most likely cause is the default `methods`
+list: an application that has been performing an *unauthenticated* bind -- a
+name with an empty password -- has been getting success from the directory and
+treating it as a login. It is now refused, and that is the finding rather than
+the fault. Fix the application; if you cannot yet, add `unauthenticated` to
+`methods` on a listener of its own, with `allow_clients` naming only that
+application, and treat it as a deadline.
+
+**Binds fail only from one network.** Check `bind_in_clear`. That network is
+reaching a plaintext listener, or a `tls_mode: starttls` listener without
+performing the upgrade. A client library configured with `ldap://` and no
+StartTLS is the usual cause, and the password was travelling in the clear
+before this relay existed.
+
+**A search returns fewer attributes than it used to.** That is the attribute
+policy, and `ldap_stripped` counts it. The built-in `deny_attributes` list is
+password and key material; if an application genuinely needs one of those --
+a password-synchronisation tool is the honest case -- give it its own listener
+and its own `deny_attributes` list, rather than widening this one.
+
+**A search returns fewer *entries* than it used to.** Check
+`ldap_truncated`. The search reached `max_entries` and was completed with
+`sizeLimitExceeded`, which is what a directory with an administrative limit
+sends. Either the client should be paging (and the relay counts a paged search
+per *search*, not per page, because a client that pages through a directory has
+still copied it), or the search is wider than it needs to be. Raising the bound
+is the last option, not the first.
+
+**A rule keyed on `bind_dns` does not seem to apply.** The identity is adopted
+only when the *directory* answers the bind with success -- believing the
+request would let anyone be anybody by binding with the wrong password -- so a
+rule keyed on it does not apply to the bind itself. That is what the empty
+`bind_dns` rule is for:
+
+```yaml
+rules:
+  - {name: pre-auth, action: allow, bind_dns: [""], operations: [bind]}
+```
+
+A StartTLS upgrade also discards the identity, as RFC 4513 §5.1.7 requires, so
+a client that bound before upgrading has to bind again.
+
+**A subtree that looks like it should match does not.** The comparison is per
+relative name, not per character: `dc=example,dc=com` covers
+`ou=people,dc=example,dc=com` and does not cover `dc=notexample,dc=com`. If a
+refusal names an object you expected to be covered, compare the relative names
+rather than the strings.
+
+**`ldap_outstanding` sits near `max_outstanding`.** The directory is answering
+slower than the client is asking. Look at the directory first; raising the
+bound only buys time, and the table is what makes an answer decidable at all.
+
+**The access log has no filters in it.** By design. The filter's *shape* is
+logged -- how many terms, how deep, whether a leading wildcard -- and its
+assertion values are not: a search for a person's name is that person's
+business, and a log of every one is a surveillance record the estate did not
+ask for. Passwords are never logged either, and the relay does not keep one in
+memory beyond the octets it forwards.
+
 ## SNMP relay
 
 **A poll reaches the relay and not the agent.** The default answer is the
@@ -4806,6 +4909,7 @@ innocent.
 | `ssh_denied` | The SSH bastion: a failed authentication, a refused channel, request, subsystem, command, environment variable, file transfer helper or forward, or a refused SFTP request (`detail` says which) | yes |
 | `mqtt_denied` | The MQTT listener: a refused CONNECT, a topic or filter outside the policy, a malformed packet, or a client outside `allow_clients` (`detail` says which) | yes |
 | `iec104_denied` | The IEC 60870-5-104 relay: a frame the policy refused -- a type identification, a cause, a station, a point or a control function outside what a rule allows, a command on a `monitor_only` listener, an execute with no selection -- or a client outside `allow_clients`, a frame it could not read, a sequence gap, or a station sending an activation to its own control centre (`reason` says which, and the event carries the type, the cause, the common address, the point and the rule) | yes |
+| `ldap_denied` | The LDAP relay: a request the policy refused -- a bind method, a bound identity, an operation, a subtree, a scope or an attribute outside what a rule allows, a write on a `read_only` listener, an object outside `base_dns` -- or a client outside `allow_clients`, a bind carrying a password in the clear, a message it could not read, a bind the *directory* itself answered `invalidCredentials`, or an answer no request matched (`reason` says which, and the event carries the operation, the bound identity, the object and the rule, never a password or a filter's values) | yes |
 | `snmp_denied` | The SNMP relay: a message the policy refused -- a version, a community string, a USM user, a security level, an operation or an object subtree outside what a rule allows, a SetRequest on a `read_only` listener -- or a client outside `allow_clients`, a message it could not read, a response past the amplification bounds, or an answer no request matched (`reason` says which, and the event carries the version, the operation, the object and the rule, never the community string) | yes |
 | `modbus_denied` | The Modbus relay: a frame the policy refused -- a function code, a unit identifier, a register range or a value outside what a rule allows, a write on a `read_only` listener, a role that is missing or not allowed -- or a client outside `allow_clients`, a frame it could not read, or an answer from the device it would not pass on (`reason` says which, and the event carries the unit, the function, the address and the rule) | yes |
 | `ntp_denied` | The NTP gateway: a client outside `allow_clients`, a version or mode the profile does not accept (including modes 6 and 7, which are the control and private protocols rather than time), a packet it could not read, a rate limit, missing or failed authentication, or an answer from a server that the quality rules refuse -- unsynchronised, too far down the tree, too dispersed, or stripped of the NTS fields the request carried (`detail` says which) | yes |
@@ -4865,6 +4969,7 @@ actually being refused. What each kind can say:
 | `syslog` | `sender_refused`, `max_connections`, `rate_limit`, `too_large`, `framing`, `malformed`, the message policy (`facility`, `severity`, `pattern`) and `queue_full` when the collector is behind |
 | `iec104` | `client_not_allowed`, `tls_handshake`, `max_connections`, `rate_limited`, `command_rate_limited`, the framing (`malformed`, `frame_too_long`), the policy (`monitor_only`, `common_address`, `rule`, `default_deny`, `control`), select-before-operate (`unselected`, `select_unavailable`), the numbering (`sequence`, `window`, `ack_ahead`) and the direction (`station_command`) |
 | `modbus` | `client_not_allowed`, `max_connections`, `rate_limit`, `queue_full`, the session's own locks (`tls_handshake`, `no_client_certificate`, `no_role`, `role_not_allowed`, `security_requires_tls`), the framing (`framing`, `frame_too_large`, `malformed`), the policy (`read_only`, `read_only_unknown_function`, `unit_not_allowed`, `rule_deny`, `no_rule`, `value_out_of_range`, `value_delta`, `value_transition`, `value_rate`, `value_no_select`, `value_unknown`, `value_masked_write`, `coil_set_not_allowed`, `coil_clear_not_allowed`), the routing (`no_route_for_unit`) and what the device answered (`malformed_response`, `response_unit_mismatch`) |
+| `ldap` | `client_not_allowed`, `max_connections`, `rate_limited`, `bind_rate_limited`, TLS (`tls_handshake`, `upstream_tls`, `starttls_unavailable`, `starttls_twice`, `starttls_outstanding`), the framing (`malformed`, `malformed_response`, `message_too_large`, `framing`, `message_id_zero`, `wrong_direction`, `wrong_direction_response`), the bind (`anonymous_bind`, `unauthenticated_bind`, `bind_method`, `sasl_mechanism`, `bind_in_clear`, `bind_failed`, `version`), the policy (`read_only`, `base_dn`, `rule`, `default_deny`, `extended`, `control`), the filter and attribute bounds (`filter_terms`, `filter_depth`, `leading_wildcard`, `filter_attribute`, `attribute`, `attribute_not_allowed`) and the answers (`max_entries`, `unsolicited_entry`, `too_many_outstanding`) |
 | `snmp` | `client_not_allowed`, `max_connections`, `rate_limited`, TLS (`tls_handshake`, `upstream_tls`), the framing (`malformed`, `malformed_response`, `message_too_large`, `framing`), the credential (`version`, `community`, `user`, `security_level`), the policy (`read_only`, `direction`, `var_binds`, `rule`, `default_deny`), the amplification bounds (`max_repetitions`, `response_too_large`, `response_ratio`), the answer matching (`unsolicited_response`, `response_too_late`, `encrypted_response`, `wrong_direction`, `too_many_pending`) and the rewrite (`upgrade_failed`) |
 | `ntp` | `banned`, `client_not_allowed`, `rate_limit`, `max_associations`, `outstanding_full`, the dispatch (`control_mode`, `private_mode`, `version5`, `version`, `version_not_allowed`, `mode_not_allowed`), the association shape (`not_a_peer`, `broadcast_not_allowed`), the packet (`malformed`, `packet_too_large`, `too_many_extensions`, `unknown_extension`, `ambiguous_mac`), the identity it demanded (`nts_required`, `auth_required`, `auth_failed`), the egress (`no_server`, `server_not_allowed`), what the server answered (`malformed_response`, `unsolicited`, `response_mode`, `kiss_of_death`, `unsynchronised`, `unsynchronised_stratum`, `stratum_too_high`, `stratum_not_allowed`, `root_delay`, `root_dispersion`, `root_distance`, `delay`, `offset`, `bogus_timestamps`, `bogus_refid`, `refid_not_allowed`, `leap_announced`, `leap_unexpected`, `nts_stripped`, `auth_stripped`) and what the server became (`source_changed`, with `change_detection.action: refuse`) |
 | `ntske` | `banned`, `client_not_allowed`, `max_connections`, `handshake_limit`, and what the handshake said (`not_tls`, `no_hello`, `incomplete_hello`, `hello_too_large`, `alpn_not_offered`, `server_name_not_allowed`) |

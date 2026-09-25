@@ -112,7 +112,7 @@ estate — and binds only the kinds of its own role:
 |--------|-------|----------------|
 | `xproxy` | the open internet | `http`, `forward`, `tcp`, `udp`, `dns` |
 | `xgate` | people | `ssh`, `telnet`, `vnc`, `rdp` |
-| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `snmp`, `ntp`, `ntske` |
+| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `snmp`, `ldap`, `ntp`, `ntske` |
 
 A kind a binary did not link is never bound and never falls through to
 the HTTP data plane: it is an error naming the daemon that serves it.
@@ -185,6 +185,7 @@ its own for what is deliberately *not* implemented and why.
 | Industrial | Modbus/TCP (MBAP), Modbus over Serial Line RTU and ASCII tunnelled over TCP, and Modbus/TCP Security with the role in the client certificate | `modbus` |
 | Telecontrol | IEC 60870-5-104 (APCI/APDU, the I, S and U formats, the type identifications and causes of transmission of IEC 60870-5-101), with IEC 62351-3 TLS | `iec104` |
 | Management | SNMP v1 (RFC 1157), v2c (RFC 1901–1908) and v3 with USM (RFC 3410–3418), over UDP and over TCP (RFC 3430), with RFC 6353 TLS on the stream side | `snmp` |
+| Directory | LDAP v3 (RFC 4511–4515, 4517, 4519) with LDAPS and the StartTLS of RFC 4513, as a relay: the bind methods, the search filter's shape, distinguished names compared per relative name, the attribute lists in both directions | `ldap`, filters |
 | Remote access | SSH (RFC 4251–4254) with OpenSSH user and host certificates; telnet's NVT (RFC 854); RFB 3.3 to 3.8 (RFC 6143) with VeNCrypt; RDP (MS-RDPBCGR) over TLS, CredSSP over NTLMv2 towards the desktop, or the protocol's own encryption | `ssh`, `telnet`, `vnc`, `rdp` |
 | Identity | OpenID Connect Core 1.0, OAuth 2.0 (RFC 6749) with introspection (RFC 7662), PKCE (RFC 7636) and token exchange (RFC 8693); JWT, JWS and JWKS (RFC 7515–7519); DPoP (RFC 9449); certificate-bound tokens (RFC 8705); SAML 2.0 as a service provider; SCIM 2.0 (RFC 7642–7644); WebAuthn level 2; LDAP (RFC 4511–4515); TOTP (RFC 6238); HTTP Basic (RFC 7617); client certificate identity as `Client-Cert` (RFC 9440) or Envoy's `X-Forwarded-Client-Cert` | filters |
 | Inspection | ModSecurity SecLang with the OWASP Core Rule Set through Coraza; a documented subset of YARA; ICAP (RFC 3507); OpenAPI 3 descriptions; GraphQL; XML and XSD with exclusive canonicalization; protobuf structure without a schema; WebAssembly with WASI preview 1 | filters |
@@ -214,6 +215,7 @@ protocol so that a policy can be written in that protocol's own terms:
 | `modbus` | `xrelay` | Modbus/TCP, RTU and ASCII, Modbus/TCP Security | Unit identifiers, function codes, register ranges, values, roles, schedules |
 | `iec104` | `xrelay` | IEC 60870-5-104, IEC 62351-3 TLS | Type identifications, causes of transmission, common and originator addresses, information object ranges, select-before-operate, schedules |
 | `snmp` | `xrelay` | SNMP v1, v2c and v3 (USM), UDP and TCP, RFC 6353 TLS | Versions, community strings and USM users, security levels, operations, object subtrees, the amplification bounds |
+| `ldap` | `xrelay` | LDAP v3, LDAPS, StartTLS | Bind methods, the bound identity, operations, naming contexts and subtrees, scopes, attributes in both directions, filter and entry bounds |
 | `ntp` | `xrelay` | NTP v1–v4, SNTP, NTS-protected NTP | Versions, modes, extension fields, authentication, and whether the servers agree |
 | `ntske` | `xrelay` | NTS key establishment (TLS on 4460) | The application protocol, the server name, the handshakes in flight |
 
@@ -379,6 +381,40 @@ protocol so that a policy can be written in that protocol's own terms:
   decided about and not inspected, and said to be: the header is
   readable, the ciphertext is not, and pretending otherwise would be
   worse than either refusing or forwarding
+
+- `kind: ldap`: an **LDAP and LDAPS** relay in front of a directory — the
+  one service in an estate that knows who everybody is, answering the
+  protocol every application that has not moved to OIDC still asks with.
+  Two defaults of that protocol are why this exists. A simple bind with a
+  name and an **empty password** is an anonymous bind by RFC 4513 §5.1.2,
+  and most directories answer it with *success*; an application written as
+  "bind as the user, and if it worked the password was right" is then
+  bypassed with an empty string, and the directory cannot tell the
+  difference. And a simple bind on port 389 puts a **directory password in
+  the clear** on the wire, which the client library that did it does not
+  mention. Both are refused by default, and the second is refused even in
+  shadow mode, because by the time a policy could be consulted the password
+  has already travelled. The policy is written in LDAP's terms: who bound
+  and how, which naming context and subtree a request may name, which
+  operation, and which attributes. Two of those are unusual. **Subtrees are
+  compared one relative name at a time**, because a string suffix test
+  admits `dc=notexample,dc=com` under `example,dc=com`. And the **attribute
+  policy applies to the answer**: a search that asks for `*` never names
+  `userPassword` and the directory sends it anyway, so a denied attribute is
+  removed from the entry on its way back — which is the half a request-side
+  access list cannot do — while a request that names one plainly is refused,
+  and a *filter* that tests one is refused too, because `(userPassword=a*)`
+  is a password oracle a character at a time. The **identity is the
+  directory's to grant**: the relay watches the bind response, not the
+  request, so "this service account may read this subtree" means what it
+  says. An unbounded subtree search is this protocol's amplification, so the
+  entries are counted and the search is cut with the directory's own
+  `sizeLimitExceeded`; the filter's depth, term count and leading wildcards
+  are bounded too, because a filter is the one part of a request whose size
+  the client chooses and whose cost the directory pays. **StartTLS is
+  terminated here** rather than forwarded, which makes it a secure upgrade
+  for a client library nobody can reconfigure — and it discards the
+  identity, as the standard requires
 
 - `kind: ntp` and `kind: ntske`: an NTP and NTS security gateway, in
   **both directions**. A time packet is 48 octets, has no session and is

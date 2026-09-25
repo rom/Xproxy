@@ -284,6 +284,8 @@ type Listener struct {
 	IEC104 *IEC104Listener `yaml:"iec104"`
 	// SNMP configures a kind: snmp listener.
 	SNMP *SNMPListener `yaml:"snmp"`
+	// LDAP configures a kind: ldap listener.
+	LDAP *LDAPListener `yaml:"ldap"`
 	// Policy is whether this listener enforces its policy or only
 	// evaluates it. It overrides the estate's own policy section.
 	Policy *ListenerPolicy `yaml:"policy"`
@@ -762,6 +764,237 @@ type SNMPListener struct {
 	// ProxyProtocol sends a PROXY protocol v2 header to the agent on a TCP
 	// listener.
 	ProxyProtocol bool `yaml:"proxy_protocol"`
+}
+
+// LDAPListener is a kind: ldap listener: an LDAP and LDAPS relay in front of
+// a directory.
+type LDAPListener struct {
+	// Mode is reverse (the default: clients connect here and the listener
+	// forwards to the directory) or forward (this listener is the
+	// controlled egress an application uses to reach a directory
+	// elsewhere).
+	Mode string `yaml:"mode"`
+	// Upstream is the directory pool. Required.
+	Upstream string `yaml:"upstream"`
+	// TLSMode is implicit (LDAPS: TLS from the first octet, port 636),
+	// starttls (the extended operation of RFC 4513 on port 389, which this
+	// relay terminates itself) or none. Default implicit when the listener
+	// has a tls section and starttls is not asked for.
+	TLSMode string `yaml:"tls_mode"`
+	// RequireTLS refuses a simple bind that carries a password on an
+	// unprotected connection. Default true, and it is the most valuable
+	// line in the file: LDAP on port 389 with a simple bind puts a
+	// directory password in the clear on the wire, and the client library
+	// that did it will not tell anyone.
+	RequireTLS *bool `yaml:"require_tls"`
+	// UpstreamTLSMode is none, implicit or starttls: how this listener
+	// reaches the directory. Together with tls_mode this is the secure
+	// upgrade -- TLS towards the client, whatever the directory will take
+	// towards the directory, or the reverse for a client library nobody
+	// can reconfigure.
+	UpstreamTLSMode string `yaml:"upstream_tls_mode"`
+	// UpstreamTLS verifies the directory when upstream_tls_mode is not
+	// none.
+	UpstreamTLS *UpstreamTLS `yaml:"upstream_tls"`
+	// AllowClients and DenyClients are the networks a client may connect
+	// from. Deny is evaluated first.
+	AllowClients []string `yaml:"allow_clients"`
+	DenyClients  []string `yaml:"deny_clients"`
+	// MinVersion is the lowest LDAP version accepted. Default 3. LDAPv2 is
+	// a different protocol wearing the same tags and its bind has no
+	// SASL; a directory that still answers it is one nobody has looked at.
+	MinVersion int `yaml:"min_version"`
+	// Methods is the allow list of bind methods: anonymous,
+	// unauthenticated, simple, sasl. Empty allows simple and sasl, which
+	// is to say it refuses the two that are anonymous binds wearing a
+	// name.
+	//
+	// unauthenticated is the one to read twice. A simple bind with a name
+	// and an *empty* password is an anonymous bind by RFC 4513 §5.1.2, and
+	// a great many directories answer it with success -- which the
+	// application behind them reads as "the password was right". Allowing
+	// it is almost never what anyone means.
+	Methods []string `yaml:"methods"`
+	// SASLMechanisms is the allow list of SASL mechanisms by name
+	// (GSSAPI, DIGEST-MD5, EXTERNAL, PLAIN). Empty allows any. PLAIN puts
+	// a password in the clear exactly as a simple bind does, which is why
+	// naming the mechanisms is worth doing.
+	SASLMechanisms []string `yaml:"sasl_mechanisms"`
+	// BaseDNs are the suffixes any request may name at all: the naming
+	// contexts this relay fronts. A request naming an object outside all
+	// of them is refused before the rules and whatever default_action
+	// says, which is what stops one listener from being a way into a
+	// directory's other trees. Empty allows any, which validation advises
+	// against.
+	//
+	// The comparison is per relative name from the root, so
+	// dc=example,dc=com does not cover dc=notexample,dc=com -- which a
+	// string suffix test would.
+	BaseDNs []string `yaml:"base_dns"`
+	// ReadOnly refuses every operation that changes the directory -- add,
+	// delete, modify, modifyDN -- for every client, before any rule is
+	// read, and no rule can override it.
+	ReadOnly bool `yaml:"read_only"`
+	// DenyAttributes are the attributes this relay will not carry: it
+	// refuses a request that names one and removes it from an answer that
+	// carries it anyway. Both halves are needed, because a search that
+	// asks for "*" gets every user attribute without naming one.
+	//
+	// Unset means the built-in list, which is the password and key
+	// material of the directories people actually run: userPassword,
+	// unicodePwd, dBCSPwd, ntPwdHistory, lmPwdHistory, pwdHistory,
+	// supplementalCredentials, msDS-ManagedPassword, ms-Mcs-AdmPwd,
+	// ms-Mcs-AdmPwdExpirationTime, krbPrincipalKey, sambaNTPassword,
+	// sambaLMPassword, sambaPasswordHistory and userPKCS12. Setting the
+	// list replaces it; validation warns if the replacement drops
+	// userPassword.
+	DenyAttributes []string `yaml:"deny_attributes"`
+	// OnDeniedAttribute is strip (the default: remove it from the answer
+	// and carry the rest) or deny (refuse the whole operation). strip is
+	// the useful one: an application that asked for everything still works
+	// and no longer receives a password hash.
+	OnDeniedAttribute string `yaml:"on_denied_attribute"`
+	// MaxEntries bounds the entries one search may return. Default 500. It
+	// is this protocol's amplification bound: an unbounded subtree search
+	// with (objectClass=*) is how a directory is copied, and the client's
+	// own size limit is a request rather than a bound.
+	MaxEntries int `yaml:"max_entries"`
+	// MaxFilterTerms and MaxFilterDepth bound a search filter's shape.
+	// Defaults 64 and 12. A filter is the one part of a request whose size
+	// the client chooses and whose cost the directory pays.
+	MaxFilterTerms int `yaml:"max_filter_terms"`
+	MaxFilterDepth int `yaml:"max_filter_depth"`
+	// AllowLeadingWildcard permits a substring filter whose first
+	// component is a wildcard -- (cn=*smith) -- which no index can serve
+	// and which is therefore a scan of the subtree. Default true, because
+	// every address book does it; set it false on a listener that fronts a
+	// large directory.
+	AllowLeadingWildcard *bool `yaml:"allow_leading_wildcard"`
+	// ExtendedOperations is the allow list of extended operation OIDs.
+	// Empty allows only StartTLS, which this relay terminates rather than
+	// forwards. The two worth naming if you allow more are
+	// 1.3.6.1.4.1.4203.1.11.1 (password modify) and
+	// 1.3.6.1.4.1.4203.1.11.3 (who am I).
+	ExtendedOperations []string `yaml:"extended_operations"`
+	// DenyControls are control OIDs this relay refuses to carry. Empty
+	// carries any control, which is the right default: a control this
+	// relay does not know is one the directory decides about, and RFC 4511
+	// already says an unrecognised critical control is refused there.
+	DenyControls []string `yaml:"deny_controls"`
+	// Rules decide each request, in order, first match wins.
+	Rules []LDAPRule `yaml:"rules"`
+	// DefaultAction is deny (the default) or allow.
+	DefaultAction string `yaml:"default_action"`
+	// DenyResponse is how a refused request is answered: insufficient (the
+	// default: result code 50, insufficientAccessRights, which is what a
+	// directory sends and what every client already displays), unwilling
+	// (53), drop (no answer, which the client reads as a hang) or close
+	// (end the connection).
+	DenyResponse string `yaml:"deny_response"`
+	// MaxOutstanding bounds the requests one connection may have in flight.
+	// Default 32. LDAP is asynchronous and multiplexed, so this is what
+	// keeps the table that pairs a response with its request bounded.
+	MaxOutstanding int `yaml:"max_outstanding"`
+	// MaxConnections bounds live sessions. Default 256.
+	MaxConnections int `yaml:"max_connections"`
+	// IdleTimeout closes a session that says nothing. Default 300s: a
+	// pooled directory connection is idle by design.
+	IdleTimeout Duration `yaml:"idle_timeout"`
+	// RequestTimeout bounds how long the directory has to answer one
+	// request. Default 30s.
+	RequestTimeout Duration `yaml:"request_timeout"`
+	// ConnectTimeout bounds dialling the directory. Default 5s.
+	ConnectTimeout Duration `yaml:"connect_timeout"`
+	// MaxMessageBytes bounds one message. Default 262144: a directory entry
+	// with a photograph or a certificate in it is real.
+	MaxMessageBytes int `yaml:"max_message_bytes"`
+	// RateLimit and RateBurst bound requests per second per client
+	// address. Zero disables them.
+	RateLimit int `yaml:"rate_limit"`
+	RateBurst int `yaml:"rate_burst"`
+	// BindRateLimit and BindRateBurst bound *binds* per second per client
+	// address, separately, because a rate loose enough for an
+	// application's searches says nothing about somebody trying passwords.
+	// Zero disables them.
+	BindRateLimit int `yaml:"bind_rate_limit"`
+	BindRateBurst int `yaml:"bind_rate_burst"`
+	// LogRequests writes an access line per request. A directory front
+	// carries a great many searches, so this is a lot of lines.
+	LogRequests bool `yaml:"log_requests"`
+	// LogBinds writes an access line for every bind and its outcome.
+	// Default true: who authenticated, from where, as whom, and whether it
+	// worked is the record an estate is asked for.
+	LogBinds *bool `yaml:"log_binds"`
+	// LogWrites writes an access line for every operation that changes the
+	// directory, and for every refusal. Default true.
+	LogWrites *bool `yaml:"log_writes"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
+	// ProxyProtocol sends a PROXY protocol v2 header to the directory.
+	ProxyProtocol bool `yaml:"proxy_protocol"`
+}
+
+// LDAPRule decides one request.
+type LDAPRule struct {
+	// Name identifies the rule in the logs and the counters. Required.
+	Name string `yaml:"name"`
+	// Action is allow, deny or observe. observe logs and counts and then
+	// keeps looking, which is how a rule is tried on live traffic before it
+	// decides anything.
+	Action string `yaml:"action"`
+	// Clients are the networks the client is in.
+	Clients []string `yaml:"clients"`
+	// BindDNs are the identities this rule covers, as distinguished names.
+	// A name here covers itself and everything below it, so
+	// ou=services,dc=example,dc=com covers every service account in that
+	// container. An empty name matches an unbound or anonymous connection,
+	// which is how "before you authenticate, you may do this and no more"
+	// is written.
+	BindDNs []string `yaml:"bind_dns"`
+	// Methods are the bind methods this rule covers, for a rule about how
+	// the connection authenticated rather than as whom.
+	Methods []string `yaml:"methods"`
+	// Operations are the operations by name: bind, search, compare,
+	// modify, add, delete, modify_dn, extended, abandon, unbind.
+	Operations []string `yaml:"operations"`
+	// Access matches what the operation does: read, write, bind. It is the
+	// durable way to write a policy, because it does not change when a
+	// later revision adds an operation.
+	Access []string `yaml:"access"`
+	// BaseDNs are the suffixes the request may name. A request naming an
+	// object outside all of them does not match. The comparison is per
+	// relative name.
+	BaseDNs []string `yaml:"base_dns"`
+	// DenyDNs are suffixes this rule does not cover even when BaseDNs
+	// would match, which is how an exception inside an allowed subtree is
+	// written: all of the directory except the administrators container.
+	DenyDNs []string `yaml:"deny_dns"`
+	// Scopes are the search scopes this rule covers: base, one, sub. A
+	// rule that omits them covers any scope, which on a wide base is
+	// usually not what was meant: a subtree search from a naming context
+	// is a request for the whole tree.
+	Scopes []string `yaml:"scopes"`
+	// Attributes are the attributes a request may name and an answer may
+	// carry. Empty allows any that the listener's deny_attributes does not
+	// refuse.
+	Attributes []string `yaml:"attributes"`
+	// DenyAttributes are refused or stripped for the traffic this rule
+	// covers, in addition to the listener's own list.
+	DenyAttributes []string `yaml:"deny_attributes"`
+	// MaxEntries overrides the listener's bound on entries returned, for
+	// the searches this rule covers.
+	MaxEntries int `yaml:"max_entries"`
+	// MaxFilterTerms and MaxFilterDepth override the listener's filter
+	// bounds. A rule does not cover a filter past its own bound, so the
+	// next rule -- or the default -- decides; matching and then allowing
+	// would make the bound a suggestion.
+	MaxFilterTerms int `yaml:"max_filter_terms"`
+	MaxFilterDepth int `yaml:"max_filter_depth"`
+	// AllowLeadingWildcard overrides the listener's setting for this
+	// rule's traffic.
+	AllowLeadingWildcard *bool `yaml:"allow_leading_wildcard"`
+	// Schedule limits the rule to a time window.
+	Schedule *ModbusSchedule `yaml:"schedule"`
 }
 
 // SNMPRule decides one message.

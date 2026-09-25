@@ -114,7 +114,7 @@ func Parse(raw []byte) (*Message, error) {
 	}
 	top, used, err := parse(raw)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s", ErrTruncated, err)
+		return nil, fmt.Errorf("%w: %s", ErrTruncated, err.Error())
 	}
 	if used != len(raw) {
 		// Octets after the message. On a stream that is a framing this
@@ -130,7 +130,7 @@ func Parse(raw []byte) (*Message, error) {
 	}
 	m := &Message{Raw: raw, pkt: top}
 	if m.ID, err = top.kids[0].intValue(); err != nil {
-		return nil, fmt.Errorf("%w: message id: %s", ErrShape, err)
+		return nil, fmt.Errorf("%w: message id: %s", ErrShape, err.Error())
 	}
 	body := top.kids[1]
 	if body.class != classApplication {
@@ -167,7 +167,7 @@ func (m *Message) readOp(body *packet) error {
 	case OpAbandonRequest:
 		n, err := body.intValue()
 		if err != nil {
-			return fmt.Errorf("%w: abandon: %s", ErrShape, err)
+			return fmt.Errorf("%w: abandon: %s", ErrShape, err.Error())
 		}
 		m.Abandon = n
 		return nil
@@ -194,11 +194,11 @@ func (m *Message) readBind(body *packet) error {
 	b := &Bind{}
 	var err error
 	if b.Version, err = body.kids[0].intValue(); err != nil {
-		return fmt.Errorf("%w: bind version: %s", ErrShape, err)
+		return fmt.Errorf("%w: bind version: %s", ErrShape, err.Error())
 	}
 	b.Name = string(body.kids[1].data)
 	if b.DN, err = ParseDN(b.Name); err != nil {
-		return fmt.Errorf("%w: bind name: %s", ErrShape, err)
+		return fmt.Errorf("%w: bind name: %s", ErrShape, err.Error())
 	}
 	auth := body.kids[2]
 	if auth.class != classContext {
@@ -245,22 +245,22 @@ func (m *Message) readSearch(body *packet) error {
 	var err error
 	s.Base = string(body.kids[0].data)
 	if s.BaseDN, err = ParseDN(s.Base); err != nil {
-		return fmt.Errorf("%w: search base: %s", ErrShape, err)
+		return fmt.Errorf("%w: search base: %s", ErrShape, err.Error())
 	}
 	if s.Scope, err = body.kids[1].intValue(); err != nil {
-		return fmt.Errorf("%w: search scope: %s", ErrShape, err)
+		return fmt.Errorf("%w: search scope: %s", ErrShape, err.Error())
 	}
 	if s.Scope < ScopeBase || s.Scope > ScopeSub {
 		return fmt.Errorf("%w: search scope %d", ErrShape, s.Scope)
 	}
 	if s.DerefAliases, err = body.kids[2].intValue(); err != nil {
-		return fmt.Errorf("%w: deref aliases: %s", ErrShape, err)
+		return fmt.Errorf("%w: deref aliases: %s", ErrShape, err.Error())
 	}
 	if s.SizeLimit, err = body.kids[3].intValue(); err != nil {
-		return fmt.Errorf("%w: size limit: %s", ErrShape, err)
+		return fmt.Errorf("%w: size limit: %s", ErrShape, err.Error())
 	}
 	if s.TimeLimit, err = body.kids[4].intValue(); err != nil {
-		return fmt.Errorf("%w: time limit: %s", ErrShape, err)
+		return fmt.Errorf("%w: time limit: %s", ErrShape, err.Error())
 	}
 	s.TypesOnly = len(body.kids[5].data) > 0 && body.kids[5].data[0] != 0
 	if s.Filter, err = ReadFilter(body.kids[6]); err != nil {
@@ -303,7 +303,7 @@ func (m *Message) readModify(body *packet) error {
 	mod := &Modify{Object: string(body.kids[0].data)}
 	var err error
 	if mod.ObjectDN, err = ParseDN(mod.Object); err != nil {
-		return fmt.Errorf("%w: modify object: %s", ErrShape, err)
+		return fmt.Errorf("%w: modify object: %s", ErrShape, err.Error())
 	}
 	for _, change := range body.kids[1].kids {
 		if len(mod.Attributes) >= MaxAttributes {
@@ -314,7 +314,7 @@ func (m *Message) readModify(body *packet) error {
 		}
 		op, err := change.kids[0].intValue()
 		if err != nil {
-			return fmt.Errorf("%w: change operation: %s", ErrShape, err)
+			return fmt.Errorf("%w: change operation: %s", ErrShape, err.Error())
 		}
 		if len(change.kids[1].kids) == 0 {
 			return fmt.Errorf("%w: a change with no attribute", ErrShape)
@@ -342,7 +342,7 @@ func (m *Message) readTarget(body *packet) error {
 	}
 	dn, err := ParseDN(m.Target)
 	if err != nil {
-		return fmt.Errorf("%w: %s object: %s", ErrShape, m.Op, err)
+		return fmt.Errorf("%w: %s object: %s", ErrShape, m.Op, err.Error())
 	}
 	m.TargetDN = dn
 	return nil
@@ -387,7 +387,7 @@ func (m *Message) readResult(body *packet) error {
 	}
 	code, err := body.kids[0].intValue()
 	if err != nil {
-		return fmt.Errorf("%w: result code: %s", ErrShape, err)
+		return fmt.Errorf("%w: result code: %s", ErrShape, err.Error())
 	}
 	r := &Result{Code: ResultCode(code),
 		MatchedDN: string(body.kids[1].data), Message: string(body.kids[2].data)}
