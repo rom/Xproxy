@@ -29,6 +29,8 @@ import (
 	"github.com/rom/xproxy/internal/metrics"
 	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/sandbox"
+	"github.com/rom/xproxy/internal/sessions"
+	"github.com/rom/xproxy/internal/shadow"
 	"github.com/rom/xproxy/internal/tracing"
 	"github.com/rom/xproxy/internal/unixsock"
 	"github.com/rom/xproxy/internal/version"
@@ -85,6 +87,9 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 	mux.HandleFunc("GET /v1/upstreams", s.upstreams)
 	mux.HandleFunc("GET /v1/pools", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.Pools()) })
 	mux.HandleFunc("GET /v1/tls", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.Certificates()) })
+	mux.HandleFunc("GET /v1/tls/expiring", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, 200, s.proxy.ExpiringCertificates())
+	})
 	mux.HandleFunc("GET /v1/handshake", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.Handshake()) })
 	mux.HandleFunc("GET /v1/tls/key-exchange", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.KeyExchange()) })
 	mux.HandleFunc("GET /v1/masque", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.Masque()) })
@@ -171,9 +176,30 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 	mux.HandleFunc("POST /v1/logs/reopen", s.reopenLogs)
 	mux.HandleFunc("GET /v1/drain", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.Drains()) })
 	mux.HandleFunc("POST /v1/drain", s.setDrain)
+	mux.HandleFunc("GET /v1/ready", s.ready)
+	mux.HandleFunc("POST /v1/ready", s.setServing)
 	mux.HandleFunc("GET /v1/bans", s.listBans)
 	mux.HandleFunc("POST /v1/bans", s.addBan)
 	mux.HandleFunc("DELETE /v1/bans", s.removeBan)
+	// What the listeners in shadow mode would have refused, and emptying
+	// it: an operator reads the report, fixes the policy, clears the
+	// ledger, and reads the next week's report about the new one.
+	mux.HandleFunc("GET /v1/policy", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, 200, PolicyReport{
+			Status:  s.proxy.Shadow().Status(),
+			Entries: s.proxy.Shadow().Report(),
+		})
+	})
+	mux.HandleFunc("DELETE /v1/policy", s.audited("policy_report_reset", func() error {
+		s.proxy.Shadow().Reset()
+		return nil
+	}))
+	mux.HandleFunc("GET /v1/sessions", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, 200, s.proxy.Sessions().List())
+	})
+	// Closing a session is an operation on the estate, so it is audited
+	// like a ban: who asked, which session, and what it was.
+	mux.HandleFunc("DELETE /v1/sessions", s.killSession)
 	mux.HandleFunc("GET /v1/cluster", s.clusterStatus)
 	mux.HandleFunc("GET /v1/acme", func(w http.ResponseWriter, _ *http.Request) {
 		if s.proxy.ACME() == nil {
@@ -569,6 +595,47 @@ type FilterKind struct {
 	Description string `json:"description"`
 }
 
+// killSession closes one live session, or every session matching a
+// filter. A request that names nothing is refused rather than read as
+// "all of them": an operator who meant every session says so with a
+// filter that matches it.
+func (s *Server) killSession(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	id, kind, listener, user := q.Get("id"), q.Get("kind"), q.Get("listener"), q.Get("user")
+	if id == "" && kind == "" && listener == "" && user == "" {
+		writeJSON(w, 400, result{Error: "name a session with id, or a filter with kind, listener or user"})
+		return
+	}
+	table := s.proxy.Sessions()
+	var closed []sessions.View
+	if id != "" {
+		v, ok := table.Kill(id)
+		if !ok {
+			writeJSON(w, 404, result{Error: "no live session with that id"})
+			return
+		}
+		closed = []sessions.View{v}
+	} else {
+		closed = table.KillWhere(func(v sessions.View) bool {
+			return (kind == "" || v.Kind == kind) &&
+				(listener == "" || v.Listener == listener) &&
+				(user == "" || v.User == user)
+		})
+	}
+	for _, v := range closed {
+		s.audit(r, "session_kill", "session_id", v.ID, "kind", v.Kind, "listener", v.Listener,
+			"client", v.Client, "user", v.User, "target", v.Target, "duration_ms", v.DurationMS)
+	}
+	writeJSON(w, 200, closed)
+}
+
+// PolicyReport is what GET /v1/policy answers: the ledger's totals and
+// every decision a listener in shadow mode made and did not enforce.
+type PolicyReport struct {
+	Status  shadow.Status  `json:"status"`
+	Entries []shadow.Entry `json:"entries"`
+}
+
 // BanRequest is the body of POST /v1/bans.
 type BanRequest struct {
 	Target   string `json:"target"`   // address or CIDR
@@ -668,6 +735,66 @@ type DrainRequest struct {
 // setDrain records an operator's decision to stop sending new work to an
 // endpoint or a pool. Nothing is closed: what is already running
 // finishes, which is what makes this usable for a rolling restart.
+// ServingRequest steps this node down or back up.
+type ServingRequest struct {
+	Serving bool   `json:"serving"`
+	Reason  string `json:"reason,omitempty"`
+}
+
+// ready answers whether this node should be carrying traffic. The two
+// judgement calls -- whether an upstream pool with nothing healthy in it,
+// or a hardening mechanism that did not apply, should move an address --
+// are the caller's to make, because the answer depends on the estate
+// (docs/HA.md). They arrive as query parameters so that a check script is
+// one URL.
+func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
+	opt := proxy.ReadinessOptions{
+		RequireUpstreams:  r.URL.Query().Get("require_upstreams") == "1",
+		RequireUndegraded: r.URL.Query().Get("require_undegraded") == "1",
+	}
+	res := s.proxy.Readiness(opt).WithDegraded(s.degradedMechanisms(), opt.RequireUndegraded)
+	// The status code is the answer as well as the body, so that a check
+	// that reads neither JSON nor exit codes still works.
+	code := 200
+	if !res.Serving {
+		code = 503
+	}
+	writeJSON(w, code, res)
+}
+
+// degradedMechanisms names the hardening mechanisms that are not doing
+// their job.
+func (s *Server) degradedMechanisms() []string {
+	st := s.sandbox()
+	if st == nil || !st.Enabled {
+		return nil
+	}
+	var out []string
+	for _, m := range st.Mechanism {
+		if m.State == sandbox.StateUnavailable || m.State == sandbox.StateFailed {
+			out = append(out, m.Name+": "+m.State)
+		}
+	}
+	return out
+}
+
+func (s *Server) setServing(w http.ResponseWriter, r *http.Request) {
+	var req ServingRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
+		writeJSON(w, 400, result{Error: "bad request body"})
+		return
+	}
+	if len(req.Reason) > 256 {
+		writeJSON(w, 400, result{Error: "reason too long"})
+		return
+	}
+	peer := peerFromContext(r.Context())
+	res := s.proxy.SetServing(req.Serving, req.Reason)
+	s.logs.Audit.Info("management action", "action", "node_serving", "serving", req.Serving,
+		"reason", req.Reason, "peer_uid", peer.UID, "peer_gid", peer.GID, "peer_pid", peer.PID, "peer_known", peer.OK)
+	writeJSON(w, 200, res)
+}
+
 func (s *Server) setDrain(w http.ResponseWriter, r *http.Request) {
 	var req DrainRequest
 	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {

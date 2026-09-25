@@ -1139,3 +1139,135 @@ func TestModbusConfigDefaults(t *testing.T) {
 		t.Fatal("turning the alerts off is a choice that has to work")
 	}
 }
+
+// Shadow mode, end to end: the policy that would have refused a write
+// records it and the write reaches the device, while a malformed frame is
+// still refused -- which is the line that makes shadow mode safe to turn
+// on at all.
+func TestModbusShadowModeRecordsAndDoesNotEnforce(t *testing.T) {
+	dev := startPLC(t, &plc{framing: wire.FramingTCP})
+	yaml := fmt.Sprintf(`
+version: 1
+policy: {mode: shadow}
+server:
+  listeners:
+    - name: plant
+      address: "127.0.0.1:0"
+      kind: modbus
+      modbus:
+        upstream: plc
+        rules:
+          - {name: reads, action: allow, access: [read]}
+logging: {access: {enabled: false}}
+upstreams:
+  - {name: plc, endpoints: [{address: %q}]}
+`, dev.addr())
+	s := proxytest.Start(t, yaml)
+	addr := proxytest.Addr(t, s, "plant")
+
+	m := dialMaster(t, addr, wire.FramingTCP)
+	// A write no rule allows: in shadow mode it reaches the device, and
+	// the ledger says which rule would have refused it.
+	if _, err := m.ask(1, setPoint); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if got := dev.regs[400]; got != 50 {
+		t.Fatalf("the write did not reach the device: %d", got)
+	}
+	rep := s.Shadow().Report()
+	if len(rep) != 1 || rep[0].Kind != "modbus" || rep[0].Listener != "plant" || rep[0].Count != 1 {
+		t.Fatalf("the report does not name the write: %+v", rep)
+	}
+	if rep[0].Sample == "" {
+		t.Errorf("the entry carries no example of what was asked for: %+v", rep[0])
+	}
+	if sn := s.Stats(); sn.ModbusWouldDeny != 1 || sn.ModbusDenied != 0 ||
+		sn.WouldRefusals["modbus"][rep[0].Reason] != 1 {
+		t.Errorf("counters: would_deny %d denied %d would_refusals %+v",
+			sn.ModbusWouldDeny, sn.ModbusDenied, sn.WouldRefusals)
+	}
+	// A read the policy allows is not in the ledger: shadow mode records
+	// refusals, not traffic.
+	if _, err := m.ask(1, readTwo); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if got := s.Shadow().Report(); len(got) != 1 {
+		t.Errorf("an allowed frame was recorded: %+v", got)
+	}
+	// And the integrity refusal still refuses: a frame this relay cannot
+	// parse is not a policy question, and forwarding it would mean
+	// sending the device bytes nobody read.
+	m.raw(wire.Encode(wire.FramingTCP, &wire.Frame{Transaction: 7, Unit: 1, PDU: []byte{0x06, 0x01}}))
+	m.expectException("a truncated write in shadow mode", wire.ExIllegalFunction)
+	if sn := s.Stats(); sn.Refusals["modbus"]["malformed"] == 0 {
+		t.Errorf("a malformed frame was not refused in shadow mode: %+v", sn.Refusals["modbus"])
+	}
+}
+
+// The value semantics through a real relay: the setpoint rule from the
+// documentation, which is what a plant asks for in one sentence -- this
+// register, this range, not in one jump, once a minute, and only after the
+// permissive was set.
+func TestModbusValueSemanticsEndToEnd(t *testing.T) {
+	dev := startPLC(t, &plc{framing: wire.FramingTCP})
+	dev.regs[400] = 500
+	s, addr := modbusServer(t, `        upstream: plc
+        rules:
+          - {name: reads, action: allow, access: [read]}
+          - name: permissive
+            action: allow
+            functions: [write_single_register]
+            addresses: ["401"]
+            values: [{registers: "401", min: 0, max: 1}]
+          - name: setpoint
+            action: allow
+            functions: [write_single_register]
+            addresses: ["400"]
+            values:
+              - registers: "400"
+                min: 0
+                max: 1500
+                max_delta: 100
+                rate: {max: 1, period: 1m}
+                require_before: {registers: "401", equals: 1, within: 30s}`,
+		map[string]*plc{"plc": dev})
+
+	m := dialMaster(t, addr, wire.FramingTCP)
+	// A read tells the relay what the registers hold, which is what the
+	// delta is measured against. Two registers, because the test master's
+	// reads always ask for two.
+	if _, err := m.ask(1, []byte{3, 0x01, 0x90, 0x00, 0x02}); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	// No permissive yet: the write is refused, and the master is told in
+	// its own terms.
+	m.raw(wire.Encode(wire.FramingTCP, &wire.Frame{Transaction: 2, Unit: 1,
+		PDU: []byte{6, 0x01, 0x90, 0x02, 0x1C}})) // write 540 to 400
+	m.expectException("a setpoint with no permissive", wire.ExIllegalValue)
+	if got := dev.regs[400]; got != 500 {
+		t.Fatalf("the refused write reached the device: %d", got)
+	}
+	// The permissive, then the setpoint: a nudge of 40 inside the delta.
+	if _, err := m.ask(1, []byte{6, 0x01, 0x91, 0x00, 0x01}); err != nil {
+		t.Fatalf("permissive: %v", err)
+	}
+	if _, err := m.ask(1, []byte{6, 0x01, 0x90, 0x02, 0x1C}); err != nil {
+		t.Fatalf("setpoint after the permissive: %v", err)
+	}
+	if got := dev.regs[400]; got != 540 {
+		t.Fatalf("the setpoint did not reach the device: %d", got)
+	}
+	// The second write inside the minute is refused for the rate, which
+	// is a different exception because the same write would be accepted
+	// later.
+	m.raw(wire.Encode(wire.FramingTCP, &wire.Frame{Transaction: 5, Unit: 1,
+		PDU: []byte{6, 0x01, 0x90, 0x02, 0x1D}}))
+	m.expectException("a second setpoint inside the minute", wire.ExServerBusy)
+	sn := s.Stats()
+	if sn.Refusals["modbus"]["value_no_select"] == 0 || sn.Refusals["modbus"]["value_rate"] == 0 {
+		t.Errorf("refusals %+v", sn.Refusals["modbus"])
+	}
+	if sn.ModbusValuePoints == 0 {
+		t.Error("the value table is empty although writes and reads were relayed")
+	}
+}

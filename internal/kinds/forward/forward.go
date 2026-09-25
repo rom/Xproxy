@@ -30,8 +30,11 @@ import (
 // destination is never terminated. The policy is compiled from the
 // listener configuration and replaced on reload.
 type forwardServer struct {
-	host   proxy.Host
-	name   string
+	host proxy.Host
+	name string
+	// shadow says this listener evaluates its destination policy without
+	// enforcing it.
+	shadow bool
 	policy atomic.Pointer[forwardPolicy]
 	tr     *http.Transport
 	// masque is the compiled MASQUE section, nil without one. It is
@@ -83,7 +86,8 @@ const (
 type forwardDialKey struct{}
 
 func newForwardServer(host proxy.Host, lc config.Listener) (*forwardServer, error) {
-	f := &forwardServer{host: host, name: lc.Name, cons: map[net.Conn]struct{}{}, done: make(chan struct{}),
+	f := &forwardServer{host: host, name: lc.Name, shadow: lc.Shadowing(),
+		cons: map[net.Conn]struct{}{}, done: make(chan struct{}),
 		authCache: map[[32]byte]time.Time{}, authSem: make(chan struct{}, 4)}
 	if err := f.apply(lc.Forward); err != nil {
 		return nil, err
@@ -220,10 +224,31 @@ func privateAddr(ip netip.Addr) bool {
 	return false
 }
 
+// shadowed records a destination policy refusal a listener in shadow mode
+// does not enforce, and says whether it was recorded rather than applied.
+//
+// Two of this policy's refusals are never shadowed, and the difference is
+// the direction they protect. The operator's own destination lists -- the
+// ports, the deny list, the allow list -- say where this estate's clients
+// may go, and shadowing those tells an operator what a new egress policy
+// would have stopped. "private" says the client may not use this proxy to
+// reach the network the proxy is on, which protects the estate *from* the
+// client: shadowing it would turn a trial into a server-side request
+// forgery. A destination that does not resolve is not a policy question
+// at all.
+func (f *forwardServer) shadowed(reason, dest string) bool {
+	if !f.shadow {
+		return false
+	}
+	f.host.Counters().WouldRefuse("forward", reason)
+	f.host.Shadow().Record("forward", f.name, reason, "", dest)
+	return true
+}
+
 // check applies the destination policy and returns the addresses to
 // dial, or the deny reason.
 func (f *forwardServer) check(ctx context.Context, p *forwardPolicy, host string, port int) ([]netip.Addr, string) {
-	if !p.ports[port] {
+	if !p.ports[port] && !f.shadowed("port", net.JoinHostPort(host, strconv.Itoa(port))) {
 		return nil, "port"
 	}
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
@@ -252,10 +277,10 @@ func (f *forwardServer) check(ctx context.Context, p *forwardPolicy, host string
 			}
 		}
 	}
-	if anyRule(p.deny, host, ips) {
+	if anyRule(p.deny, host, ips) && !f.shadowed("deny", host) {
 		return nil, "deny"
 	}
-	if len(p.allow) > 0 && !anyRule(p.allow, host, ips) {
+	if len(p.allow) > 0 && !anyRule(p.allow, host, ips) && !f.shadowed("not_allowed", host) {
 		return nil, "not_allowed"
 	}
 	return ips, ""

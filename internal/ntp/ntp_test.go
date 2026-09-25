@@ -790,3 +790,176 @@ func TestEveryAcceptedPacketRendersBackToItself(t *testing.T) {
 		})
 	}
 }
+
+// The three readings a relay makes of a server's own statement about
+// itself: the synchronisation distance, when a leap second could really
+// be announced, and whether the identifier matches the stratum that says
+// how to read it.
+func TestTheSynchronisationDistanceIsBothHalves(t *testing.T) {
+	p := &Packet{RootDelay: ShortOf(400 * time.Millisecond),
+		RootDispersion: ShortOf(100 * time.Millisecond)}
+	// Half the delay plus the dispersion: 200ms + 100ms.
+	if got := p.RootDistance(); got < 295*time.Millisecond || got > 305*time.Millisecond {
+		t.Fatalf("distance %v, want about 300ms", got)
+	}
+	// Each half can sit inside its own bound while the sum does not,
+	// which is why the sum is the number a bound is written about: a
+	// delay of 900ms and a dispersion of 200ms are both under a second
+	// and the distance is 650ms.
+	both := &Packet{RootDelay: ShortOf(900 * time.Millisecond),
+		RootDispersion: ShortOf(200 * time.Millisecond)}
+	if both.RootDelay.Duration() > time.Second || both.RootDispersion.Duration() > time.Second {
+		t.Fatal("a half is past a second, so this test proves nothing")
+	}
+	if got := both.RootDistance(); got < 645*time.Millisecond || got > 655*time.Millisecond {
+		t.Errorf("distance %v, want about 650ms", got)
+	}
+	if (&Packet{}).RootDistance() != 0 {
+		t.Error("an answer claiming no error at all")
+	}
+}
+
+func TestALeapSecondOnlyHappensAtTheEndOfFourMonths(t *testing.T) {
+	window := 24 * time.Hour
+	for _, tc := range []struct {
+		when string
+		want bool
+	}{
+		{"2026-06-30T12:00:00Z", true}, // the end of June, where they happen
+		{"2026-12-31T23:59:00Z", true}, // and the end of December
+		{"2026-03-31T06:00:00Z", true}, // the two the IERS uses only if it must
+		{"2026-09-30T00:30:00Z", true},
+		{"2026-06-15T12:00:00Z", false}, // the middle of a month that has one
+		{"2026-08-31T23:00:00Z", false}, // the end of one that never does
+		{"2026-01-31T23:59:00Z", false},
+	} {
+		when, err := time.Parse(time.RFC3339, tc.when)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := LeapPlausible(when, window); got != tc.want {
+			t.Errorf("%s: %v", tc.when, got)
+		}
+	}
+	// The window is the caller's, because implementations differ about
+	// how early they announce. A month out is plausible with a month's
+	// window and not with a day's.
+	early, _ := time.Parse(time.RFC3339, "2026-06-05T12:00:00Z")
+	if LeapPlausible(early, window) {
+		t.Error("five days into June with a day's window")
+	}
+	if !LeapPlausible(early, 31*24*time.Hour) {
+		t.Error("five days into June with a month's window")
+	}
+	// A window of zero is a day, not everything.
+	if !LeapPlausible(mustTime(t, "2026-12-31T12:00:00Z"), 0) ||
+		LeapPlausible(mustTime(t, "2026-12-01T12:00:00Z"), 0) {
+		t.Error("a zero window is not a day")
+	}
+	// And only the two announcing values are announcements: an
+	// unsynchronised clock is a different statement.
+	if !LeapAddSecond.Announcing() || !LeapDeleteSecond.Announcing() {
+		t.Error("an announcement is not one")
+	}
+	if LeapNone.Announcing() || LeapUnsynchronised.Announcing() {
+		t.Error("not an announcement is one")
+	}
+}
+
+func mustTime(t *testing.T, s string) time.Time {
+	t.Helper()
+	v, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
+func TestTheTimestampsAreReadAgainstEachOther(t *testing.T) {
+	now := time.Now()
+	sound := func(edit func(*Packet)) *Packet {
+		p := &Packet{Mode: ModeServer, Stratum: 2,
+			Reference: TimestampOf(now.Add(-time.Minute)),
+			Receive:   TimestampOf(now), Transmit: TimestampOf(now.Add(time.Millisecond))}
+		if edit != nil {
+			edit(p)
+		}
+		return p
+	}
+	if why := sound(nil).TimestampsConsistent(); why != "" {
+		t.Fatalf("a sound answer: %s", why)
+	}
+	for _, tc := range []struct {
+		name string
+		edit func(*Packet)
+	}{
+		{"no transmit timestamp", func(p *Packet) { p.Transmit = 0 }},
+		{"no receive timestamp", func(p *Packet) { p.Receive = 0 }},
+		{"transmitted before received", func(p *Packet) { p.Transmit = TimestampOf(now.Add(-time.Second)) }},
+		{"synchronised after the request arrived", func(p *Packet) { p.Reference = TimestampOf(now.Add(time.Hour)) }},
+	} {
+		if why := sound(tc.edit).TimestampsConsistent(); why == "" {
+			t.Errorf("%s was called sound", tc.name)
+		}
+	}
+	// A request is not an answer: the fields mean different things and a
+	// client does not fill most of them in, so the check says nothing
+	// about one.
+	req := &Packet{Mode: ModeClient, Transmit: TimestampOf(now)}
+	if why := req.TimestampsConsistent(); why != "" {
+		t.Errorf("a client's request was judged as an answer: %s", why)
+	}
+	// An exchange across the end of an era is the small number it really
+	// is rather than a hundred and thirty-six years: the seconds field
+	// wraps between the receive and the transmit timestamp, and the
+	// modular subtraction has to see a millisecond.
+	era := time.Date(2036, time.February, 7, 6, 28, 15, 990_000_000, time.UTC)
+	across := &Packet{Mode: ModeServer, Stratum: 2,
+		Receive: TimestampOf(era), Transmit: TimestampOf(era.Add(20 * time.Millisecond))}
+	if across.Receive.Seconds() == across.Transmit.Seconds() {
+		t.Fatal("the seconds field did not wrap, so this test proves nothing")
+	}
+	if why := across.TimestampsConsistent(); why != "" {
+		t.Errorf("an exchange across the end of an era: %s", why)
+	}
+}
+
+func TestTheReferenceIdentifierIsReadByItsStratum(t *testing.T) {
+	gps := &Packet{Stratum: 1}
+	copy(gps.ReferenceID[:], "GPS")
+	if why := gps.RefIDSane(); why != "" {
+		t.Errorf("a reference clock's name: %s", why)
+	}
+	if got := gps.RefIDText(); got != "GPS" {
+		t.Errorf("text %q", got)
+	}
+	binary := &Packet{Stratum: 1, ReferenceID: [4]byte{0xde, 0xad, 0xbe, 0xef}}
+	if binary.RefIDSane() == "" {
+		t.Error("a stratum 1 answer whose identifier is not a name was called sound")
+	}
+	up := &Packet{Stratum: 3, ReferenceID: [4]byte{10, 30, 10, 1}}
+	if why := up.RefIDSane(); why != "" {
+		t.Errorf("an upstream address: %s", why)
+	}
+	if got := up.RefIDText(); got != "10.30.10.1" {
+		t.Errorf("text %q", got)
+	}
+	none := &Packet{Stratum: 3}
+	if none.RefIDSane() == "" {
+		t.Error("a stratum 3 answer that names no upstream was called sound")
+	}
+	// At stratum 0 the field is a kiss code, which is not the identity of
+	// a server and is not judged here.
+	kiss := &Packet{Mode: ModeServer, Stratum: 0}
+	copy(kiss.ReferenceID[:], "RATE")
+	if why := kiss.RefIDSane(); why != "" {
+		t.Errorf("a kiss code: %s", why)
+	}
+	// Four octets that could be a hash of an IPv6 address are not called
+	// wrong for looking like a multicast address, because refusing a
+	// digest would refuse a correct server.
+	hash := &Packet{Stratum: 2, ReferenceID: [4]byte{239, 255, 0, 1}}
+	if why := hash.RefIDSane(); why != "" {
+		t.Errorf("four octets of a digest: %s", why)
+	}
+}

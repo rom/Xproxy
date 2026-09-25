@@ -20,6 +20,7 @@
 //	reload-certs   re-read TLS certificate files
 //	reopen-logs    reopen log files after rotation
 //	tail STREAM    follow a log stream (access, error, security, audit)
+//	sessions       list the sessions being served now (-kill ID, -kill-matching)
 //	bans           list active bans
 //	ban TARGET     ban an address or CIDR (-duration 1h -reason text)
 //	unban TARGET   remove a ban
@@ -72,6 +73,7 @@ import (
 	"github.com/rom/xproxy/internal/sandbox"
 	"github.com/rom/xproxy/internal/secret"
 	"github.com/rom/xproxy/internal/termsafe"
+	"github.com/rom/xproxy/internal/textsafe"
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/tui"
 	"github.com/rom/xproxy/internal/upstream"
@@ -257,6 +259,58 @@ func run(args []string, out, errOut io.Writer) int {
 		}
 		_ = tw.Flush()
 		return 0
+	case "ready":
+		// The command a VRRP or load balancer check script runs, so the
+		// exit code is the answer: 0 carry traffic, 1 do not, 2 the
+		// question could not be asked. It is split from "status" because
+		// status is for a person and this is for a script -- and because
+		// what makes a node unfit to hold a shared address is a judgement
+		// the operator makes, not one this tool can make for them
+		// (docs/HA.md).
+		rfs := flag.NewFlagSet("ready", flag.ContinueOnError)
+		rfs.SetOutput(errOut)
+		reqUp := rfs.Bool("require-upstreams", false, "a pool with no healthy endpoint means not ready")
+		reqSound := rfs.Bool("require-undegraded", false, "a hardening mechanism that did not apply means not ready")
+		down := rfs.String("step-down", "", "take this node out of service, with a reason")
+		up := rfs.Bool("step-up", false, "put this node back in service")
+		if err := rfs.Parse(fs.Args()[1:]); err != nil {
+			return 2
+		}
+		if *down != "" && *up {
+			_, _ = fmt.Fprintln(errOut, "xproxyctl ready: -step-down and -step-up are opposites")
+			return 2
+		}
+		if *down != "" || *up {
+			var res proxy.Readiness
+			if err := c.Do("POST", "/v1/ready", mgmt.ServingRequest{Serving: *up, Reason: *down}, &res); err != nil {
+				return fail(err)
+			}
+			if *asJSON {
+				b, _ := json.Marshal(res)
+				_, _ = out.Write(b)
+				return 0
+			}
+			_, _ = fmt.Fprintln(out, readyLine(res))
+			return 0
+		}
+		res, err := c.Ready(*reqUp, *reqSound)
+		if err != nil {
+			// Unreachable is not "not ready": it is a different answer,
+			// and a check script that cannot tell them apart will move an
+			// address because a socket permission changed.
+			_, _ = fmt.Fprintf(errOut, "xproxyctl: %v\n", err)
+			return 2
+		}
+		if *asJSON {
+			b, _ := json.Marshal(res)
+			_, _ = out.Write(b)
+		} else {
+			_, _ = fmt.Fprintln(out, readyLine(*res))
+		}
+		if !res.Serving {
+			return 1
+		}
+		return 0
 	case "quotas":
 		qfs := flag.NewFlagSet("quotas", flag.ContinueOnError)
 		qfs.SetOutput(errOut)
@@ -429,6 +483,19 @@ func run(args []string, out, errOut io.Writer) int {
 		if hs.Enabled {
 			_, _ = fmt.Fprintf(out, "handshake: refuse_banned=%v fingerprints=%d refused=%d\n",
 				hs.RefuseBanned, hs.Fingerprints, hs.Refused)
+		}
+		// The certificates that have expired or are about to, worst
+		// first: the single most common way a working service stops
+		// working, and the one thing on this page an operator can act on
+		// today.
+		var exp map[string][]string
+		if eb, err := c.Raw("/v1/tls/expiring"); err == nil {
+			_ = json.Unmarshal(eb, &exp)
+		}
+		for _, name := range sortedKeys(exp) {
+			for _, w := range exp[name] {
+				_, _ = fmt.Fprintf(out, "EXPIRY %s: %s\n", name, w)
+			}
 		}
 		// The key agreement policy, and what clients actually agreed to:
 		// the post-quantum share is the number a rollout is judged by,
@@ -1252,6 +1319,111 @@ func run(args []string, out, errOut io.Writer) int {
 			_ = tw.Flush()
 		}
 		return 0
+	case "policy":
+		// What the listeners in shadow mode would have refused. The
+		// subcommand is "report" because that is what an operator asks
+		// for, and "reset" empties the ledger after the policy is fixed.
+		pf := flag.NewFlagSet("policy", flag.ContinueOnError)
+		pf.SetOutput(errOut)
+		top := pf.Int("top", 0, "show only the first N entries")
+		if err := pf.Parse(fs.Args()[1:]); err != nil {
+			return 2
+		}
+		what := "report"
+		if pf.NArg() > 0 {
+			what = pf.Arg(0)
+		}
+		switch what {
+		case "report":
+		case "reset":
+			if err := c.ResetPolicyReport(); err != nil {
+				return fail(err)
+			}
+			_, _ = fmt.Fprintln(out, "the shadow report is empty")
+			return 0
+		default:
+			_, _ = fmt.Fprintln(errOut, "policy: report or reset")
+			return 2
+		}
+		rep, err := c.PolicyReport()
+		if err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			return printJSON(out, rep)
+		}
+		st := rep.Status
+		_, _ = fmt.Fprintf(out, "shadow mode: %d kinds of refusal recorded, %d in total\n", st.Entries, st.Recorded)
+		if st.Full {
+			_, _ = fmt.Fprintf(out, "the ledger is full, so this report is not complete (%d dropped); raise policy.max_reasons or reset it\n", st.Dropped)
+		}
+		if len(rep.Entries) == 0 {
+			_, _ = fmt.Fprintln(out, "nothing would have been refused (no listener is in shadow mode, or none of them refused anything)")
+			return 0
+		}
+		entries := rep.Entries
+		if *top > 0 && len(entries) > *top {
+			entries = entries[:*top]
+		}
+		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, "WOULD BLOCK\tKIND\tLISTENER\tREASON\tRULE\tFIRST\tLAST\tEXAMPLE")
+		for _, e := range entries {
+			_, _ = fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", e.Count, e.Kind, e.Listener,
+				e.Reason, textsafe.Clip64(e.Rule), e.First, e.Last, textsafe.Clip64(e.Sample))
+		}
+		_ = tw.Flush()
+		return 0
+	case "sessions":
+		// The sessions a daemon is serving now, and the one operation an
+		// operator needs on them. "session" is the recorded ones on
+		// disk; this is the live ones.
+		sf := flag.NewFlagSet("sessions", flag.ContinueOnError)
+		sf.SetOutput(errOut)
+		kill := sf.String("kill", "", "close the session with this id")
+		kind := sf.String("kind", "", "with -kill-matching, only this listener kind")
+		listener := sf.String("listener", "", "with -kill-matching, only this listener")
+		user := sf.String("user", "", "with -kill-matching, only this login")
+		killMatching := sf.Bool("kill-matching", false, "close every session the filters match")
+		if err := sf.Parse(fs.Args()[1:]); err != nil {
+			return 2
+		}
+		if *kill != "" || *killMatching {
+			if *killMatching && *kill == "" && *kind == "" && *listener == "" && *user == "" {
+				_, _ = fmt.Fprintln(errOut, "sessions: -kill-matching needs -kind, -listener or -user")
+				return 2
+			}
+			closed, err := c.KillSessions(*kill, *kind, *listener, *user)
+			if err != nil {
+				return fail(err)
+			}
+			if *asJSON {
+				return printJSON(out, closed)
+			}
+			for _, v := range closed {
+				_, _ = fmt.Fprintf(out, "closed %s: %s %s %s %s after %s\n", v.ID, v.Kind, v.Listener,
+					textsafe.Clip64(v.User), v.Client, time.Duration(v.DurationMS)*time.Millisecond)
+			}
+			if len(closed) == 0 {
+				_, _ = fmt.Fprintln(out, "no session matched")
+			}
+			return 0
+		}
+		live, err := c.Sessions()
+		if err != nil {
+			return fail(err)
+		}
+		if *asJSON {
+			return printJSON(out, live)
+		}
+		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, "ID\tKIND\tLISTENER\tCLIENT\tUSER\tTARGET\tDETAIL\tFOR")
+		for _, v := range live {
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", v.ID, v.Kind, v.Listener,
+				v.Client, textsafe.Clip64(v.User), textsafe.Clip64(v.Target), textsafe.Clip64(v.Detail),
+				(time.Duration(v.DurationMS) * time.Millisecond).Round(time.Second))
+		}
+		_ = tw.Flush()
+		return 0
 	case "bans":
 		es, err := c.Bans()
 		if err != nil {
@@ -1861,6 +2033,20 @@ func state(on bool, name string) string {
 		return name
 	}
 	return "in rotation (explicit)"
+}
+
+// readyLine is the verdict a person reads, one line, with the reasons on
+// the same line because a check script's output is a log entry.
+func readyLine(r proxy.Readiness) string {
+	verdict := "ready"
+	if !r.Serving {
+		verdict = "NOT READY"
+	}
+	line := fmt.Sprintf("%s: %d listener(s)", verdict, r.Listeners)
+	if len(r.Reasons) > 0 {
+		line += "; " + strings.Join(r.Reasons, "; ")
+	}
+	return line
 }
 
 func sortedKeys[V any](m map[string]V) []string {

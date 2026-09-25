@@ -8,6 +8,7 @@ import (
 	"github.com/rom/xproxy/internal/ftp"
 	"github.com/rom/xproxy/internal/listener"
 	"github.com/rom/xproxy/internal/modbus"
+	mqttwire "github.com/rom/xproxy/internal/mqtt"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/rdp"
 	"github.com/rom/xproxy/internal/rfb"
@@ -213,6 +214,18 @@ func (v *validator) config(c *Config) {
 	}
 	if c.Bans != nil {
 		v.bans(c.Bans)
+	}
+	if p := c.Policy; p != nil {
+		switch p.Mode {
+		case "", "enforce":
+		case "shadow":
+			v.warnf("policy.mode is shadow, so every listener that does not say otherwise evaluates its policy and refuses nothing for it: read xproxyctl policy report, then turn enforcement on. Authentication, bans, rate limits, bounds and malformed input are still refused")
+		default:
+			v.errf("policy.mode: must be enforce or shadow")
+		}
+		if p.MaxReasons < 0 || p.MaxReasons > 65536 {
+			v.errf("policy.max_reasons: must be between 0 and 65536")
+		}
 	}
 	if c.ThreatIntel != nil {
 		v.threatIntel(c.ThreatIntel)
@@ -852,6 +865,15 @@ func (v *validator) server(s *Server) {
 		if ln.NTSKE != nil && ln.Kind != "ntske" {
 			v.errf("%s.ntske: set on a %s listener (kind: ntske)", p, ln.Kind)
 		}
+		if lp := ln.Policy; lp != nil {
+			switch lp.Mode {
+			case "", "enforce":
+			case "shadow":
+				v.warnf("%s.policy.mode is shadow, so this listener evaluates its policy and refuses nothing for it: read xproxyctl policy report, then turn enforcement on. Authentication, bans, rate limits, bounds and malformed input are still refused", p)
+			default:
+				v.errf("%s.policy.mode: must be enforce or shadow", p)
+			}
+		}
 		if ln.FTP != nil && ln.Kind != "ftp" {
 			v.errf("%s.ftp: set on a %s listener (kind: ftp)", p, ln.Kind)
 		}
@@ -962,6 +984,14 @@ func (v *validator) tls(p string, t *TLS) {
 		}
 		if c.Enforce && c.Require == 0 {
 			v.errf("%s.ct.enforce: needs require above 0", p)
+		}
+	}
+	if e := t.Expiry; e != nil {
+		if e.Warn != 0 && (e.Warn < Duration(time.Hour) || e.Warn > Duration(365*24*time.Hour)) {
+			v.errf("%s.expiry.warn: must be 0 (no warning) or between 1h and 8760h", p)
+		}
+		if !e.RefuseExpired && e.Warn == 0 {
+			v.warnf("%s.expiry: neither refuse_expired nor warn is set, so the section does nothing", p)
 		}
 	}
 	if len(t.Certificates) == 0 && len(t.ACME) == 0 {
@@ -3484,6 +3514,71 @@ func (v *validator) mqttListener(p string, m *MQTTListener, hasTLS bool) {
 	}
 	if m.MaxTopicLevels < 1 || m.MaxTopicLevels > 1000 {
 		v.errf("%s.max_topic_levels: must be 1..1000", p)
+	}
+	if m.MaxPayloadBytes < 0 || m.MaxPayloadBytes > 268435455 {
+		v.errf("%s.max_payload_bytes: must be between 0 and 268435455", p)
+	}
+	if m.MaxQoS != nil && (*m.MaxQoS < 0 || *m.MaxQoS > 2) {
+		v.errf("%s.max_qos: must be 0, 1 or 2", p)
+	}
+	names := map[string]bool{}
+	for i := range m.Topics {
+		r := &m.Topics[i]
+		q := fmt.Sprintf("%s.topics[%d]", p, i)
+		switch {
+		case r.Name == "":
+			v.errf("%s.name: required", q)
+		case names[r.Name]:
+			v.errf("%s.name: duplicate %q", q, r.Name)
+		}
+		names[r.Name] = true
+		if len(r.Filters) == 0 {
+			v.errf("%s.filters: required", q)
+		}
+		for j, f := range r.Filters {
+			if err := mqttwire.ValidFilter(f); err != nil {
+				v.errf("%s.filters[%d]: %q is not a topic filter: %v", q, j, f, err)
+			}
+		}
+		if r.MaxPayloadBytes < 0 || r.MaxPayloadBytes > 268435455 {
+			v.errf("%s.max_payload_bytes: must be between 0 and 268435455", q)
+		}
+		for _, f := range []struct {
+			key string
+			val *int
+		}{{"min_qos", r.MinQoS}, {"max_qos", r.MaxQoS}} {
+			if f.val != nil && (*f.val < 0 || *f.val > 2) {
+				v.errf("%s.%s: must be 0, 1 or 2", q, f.key)
+			}
+		}
+		if r.MinQoS != nil && r.MaxQoS != nil && *r.MinQoS > *r.MaxQoS {
+			v.errf("%s: min_qos %d is above max_qos %d", q, *r.MinQoS, *r.MaxQoS)
+		}
+		if r.MinQoS == nil && r.MaxQoS == nil && r.MaxPayloadBytes == 0 && r.AllowRetain == nil {
+			v.errf("%s: sets no bound, so the rule decides nothing; drop it or give it one", q)
+		}
+	}
+	if sp := m.Sparkplug; sp != nil && sp.Enabled {
+		for i, name := range sp.AllowMessageTypes {
+			if !mqttwire.SparkplugType(name) {
+				v.errf("%s.sparkplug.allow_message_types[%d]: %q is not a Sparkplug B message type (NBIRTH, NDEATH, DBIRTH, DDEATH, NDATA, DDATA, NCMD, DCMD, STATE)", p, i, name)
+			}
+		}
+		for i, c := range sp.CommandClients {
+			if _, err := netip.ParsePrefix(c); err != nil {
+				v.errf("%s.sparkplug.command_clients[%d]: %q is not a network in CIDR form", p, i, c)
+			}
+		}
+		if sp.MaxNodes < 0 || sp.MaxNodes > 1<<20 {
+			v.errf("%s.sparkplug.max_nodes: must be between 0 and 1048576", p)
+		}
+		if len(sp.CommandClients) == 0 {
+			v.warnf("%s.sparkplug.command_clients is empty, so NCMD and DCMD -- the Sparkplug messages that command equipment -- are left to the ordinary publish policy: naming the publishers that may send one is what this section is for", p)
+		}
+		if !sp.RequireBirthBeforeData && !sp.CheckSequence && len(sp.CommandClients) == 0 &&
+			len(sp.AllowMessageTypes) == 0 && !sp.RequireNamespace {
+			v.warnf("%s.sparkplug is enabled and sets nothing, so it reads topics and decides nothing", p)
+		}
 	}
 	if m.MaxSubscriptions < 1 {
 		v.errf("%s.max_subscriptions: must be positive", p)
@@ -6801,6 +6896,9 @@ func (v *validator) ftpListener(p string, f *FTPListener, hasTLS bool) {
 // is told, so a rule that does not do what its author thought is a rule
 // that lets somebody write a setpoint.
 func (v *validator) modbusListener(p string, m *ModbusListener, hasTLS bool) {
+	if m.MaxValuePoints < 0 || m.MaxValuePoints > 1<<20 {
+		v.errf("%s.max_value_points: must be between 0 and 1048576", p)
+	}
 	switch m.Mode {
 	case "", "reverse":
 	case "forward":
@@ -6954,6 +7052,48 @@ func (v *validator) modbusListener(p string, m *ModbusListener, hasTLS bool) {
 			if val.Max != nil && (*val.Max < lo || *val.Max > hi) {
 				v.errf("%s.max: outside %d to %d", vq, lo, hi)
 			}
+			// The three bounds that are about a change rather than a
+			// value, and the rate.
+			if val.MaxDelta < 0 || val.MaxDelta > 0xFFFF {
+				v.errf("%s.max_delta: must be between 0 and 65535", vq)
+			}
+			for k, tr := range val.Transitions {
+				if !modbusTransition(tr) {
+					v.errf("%s.transitions[%d]: %q is not a transition: \"from->to\" with values or *", vq, k, tr)
+				}
+			}
+			switch val.OnUnknown {
+			case "", "allow", "refuse":
+			default:
+				v.errf("%s.on_unknown: must be allow or refuse", vq)
+			}
+			if (val.MaxDelta > 0 || len(val.Transitions) > 0) && val.OnUnknown != "refuse" {
+				v.warnf("%s: max_delta and transitions need the address's current value, and on_unknown is allow, so a write to an address this relay has not seen a value for is bounded by min and max alone: set on_unknown: refuse where that is not enough, knowing it refuses until something reads the register", vq)
+			}
+			if r := val.Rate; r != nil {
+				if r.Max < 1 {
+					v.errf("%s.rate.max: must be at least 1", vq)
+				}
+				if d := r.Period.D(); d < time.Second || d > 24*time.Hour {
+					v.errf("%s.rate.period: must be between 1s and 24h", vq)
+				}
+			}
+			if b := val.RequireBefore; b != nil {
+				if b.Registers == "" {
+					v.errf("%s.require_before.registers: required", vq)
+				} else {
+					v.modbusRanges(vq+".require_before.registers", []string{b.Registers}, 0xFFFF)
+				}
+				if d := b.Within; d != 0 && (d < Duration(time.Second) || d > Duration(time.Hour)) {
+					v.errf("%s.require_before.within: must be between 1s and 1h", vq)
+				}
+				if b.Unit != nil && (*b.Unit < 0 || *b.Unit > 255) {
+					v.errf("%s.require_before.unit: must be between 0 and 255", vq)
+				}
+				if b.Equals < -32768 || b.Equals > 65535 {
+					v.errf("%s.require_before.equals: outside -32768 to 65535", vq)
+				}
+			}
 		}
 		if s := r.Schedule; s != nil {
 			for j, d := range s.Days {
@@ -7051,6 +7191,29 @@ func (v *validator) modbusListener(p string, m *ModbusListener, hasTLS bool) {
 }
 
 // modbusCIDRs checks a network list.
+// modbusTransition says whether a string is a "from->to" pair.
+func modbusTransition(s string) bool {
+	parts := strings.SplitN(s, "->", 2)
+	if len(parts) != 2 {
+		return false
+	}
+	stars := 0
+	for _, half := range parts {
+		text := strings.TrimSpace(half)
+		if text == "*" {
+			stars++
+			continue
+		}
+		n, err := strconv.Atoi(text)
+		if err != nil || n < -32768 || n > 65535 {
+			return false
+		}
+	}
+	// Two stars permit every change, which is the same as no list at all
+	// and reads as a rule that does something.
+	return stars < 2
+}
+
 func (v *validator) modbusCIDRs(p string, in []string) {
 	for i, c := range in {
 		if _, err := netip.ParsePrefix(c); err != nil {
@@ -7745,6 +7908,42 @@ func (v *validator) ntpListener(p string, n *NTPListener) {
 		if q.MaxStratum < 0 || q.MaxStratum > 16 {
 			v.errf("%s.quality.max_stratum: must be between 0 and 16", p)
 		}
+		if q.MaxRootDistance < 0 || q.MaxRootDistance > Duration(time.Hour) {
+			v.errf("%s.quality.max_root_distance: must be between 0 and 1h", p)
+		}
+		for i, st := range q.AllowStrata {
+			switch {
+			case st < 1 || st > 15:
+				v.errf("%s.quality.allow_strata[%d]: %d is not a stratum a server answers with: 1 to 15, since stratum 0 is a kiss-o'-death rather than a time and 16 is the protocol's own unsynchronised", p, i, st)
+			case q.MaxStratum > 0 && st > q.MaxStratum:
+				v.errf("%s.quality.allow_strata[%d]: stratum %d is past max_stratum %d, so naming it here cannot admit it", p, i, st, q.MaxStratum)
+			}
+		}
+		for i, id := range q.ExpectRefID {
+			switch {
+			case id == "":
+				v.errf("%s.quality.expect_refid[%d]: empty", p, i)
+			case len(id) > 15:
+				v.errf("%s.quality.expect_refid[%d]: %q is neither a four-character reference clock name nor a dotted quad", p, i, id)
+			}
+		}
+		switch q.LeapPolicy {
+		case "", "alert", "allow", "window", "refuse":
+		default:
+			v.errf("%s.quality.leap_policy: must be alert, allow, window or refuse", p)
+		}
+		if q.LeapPolicy == "allow" {
+			v.warnf("%s.quality.leap_policy is allow, so a leap second announced in a month the IERS never uses is forwarded to every client without a word: an announcement makes each of them plan to move its clock", p)
+		}
+		if d := q.LeapWindow; d != 0 && (d < Duration(time.Hour) || d > Duration(90*24*time.Hour)) {
+			v.errf("%s.quality.leap_window: must be between 1h and 2160h", p)
+		}
+		if q.RefuseBogusTimestamps != nil && !*q.RefuseBogusTimestamps {
+			v.warnf("%s.quality.refuse_bogus_timestamps is off, so an answer whose own timestamps cannot describe an exchange is forwarded, and the client computes an offset from it", p)
+		}
+		if q.RefuseBogusRefID != nil && !*q.RefuseBogusRefID {
+			v.warnf("%s.quality.refuse_bogus_refid is off, so a stratum 1 answer that names no reference clock is forwarded as if it came from one", p)
+		}
 		for _, f := range []struct {
 			key string
 			val int
@@ -7766,6 +7965,27 @@ func (v *validator) ntpListener(p string, n *NTPListener) {
 	}
 	if h := n.Holdover; h != nil && (h.MaxDuration < 0 || h.MaxDuration > Duration(24*time.Hour)) {
 		v.errf("%s.holdover.max_duration: must be between 0 and 24h", p)
+	}
+	if c := n.ChangeDetection; c != nil {
+		if d := c.MaxStep; d < 0 || d > Duration(time.Hour) {
+			v.errf("%s.change_detection.max_step: must be between 0 and 1h", p)
+		}
+		if c.MaxStratumJump < 0 || c.MaxStratumJump > 15 {
+			v.errf("%s.change_detection.max_stratum_jump: must be between 0 and 15", p)
+		}
+		if c.DispersionGrowth < 0 || c.DispersionGrowth > 1_000_000 {
+			v.errf("%s.change_detection.dispersion_growth: must be between 0 and 1000000", p)
+		}
+		switch c.Action {
+		case "", "alert":
+		case "refuse":
+			v.warnf("%s.change_detection.action is refuse, so a source that changed stops reaching the clients until an operator looks: that stops corrections rather than merely reporting them, and it has to be the estate's choice", p)
+		default:
+			v.errf("%s.change_detection.action: must be alert or refuse", p)
+		}
+		if c.Enabled != nil && !*c.Enabled {
+			v.warnf("%s.change_detection is off, so nothing here notices a time source being replaced, re-pointed or stood in front of: every check that is left asks whether one answer was good, not whether this is still the same server", p)
+		}
 	}
 	if l := n.Learn; l != nil && l.Enabled {
 		if l.File == "" {

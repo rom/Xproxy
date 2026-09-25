@@ -41,6 +41,7 @@ locally; everything else goes through the socket.
 | `tls` | Served certificates per listener: names, issuer, expiry, source, OCSP staple state and Certificate Transparency verdict |
 | `tls tickets` | Session ticket keys: epoch, next rotation, key count, fingerprint and which cluster peers derive the same set |
 | `sandbox` | In-process hardening: each mechanism with its state and the file rules in force |
+| `ready` [`-require-upstreams`] [`-require-undegraded`] [`-step-down` *REASON*] [`-step-up`] | Whether this node should be carrying traffic, for a VRRP or load balancer check script: exit 0 yes, 1 no, 2 the question could not be asked. `-step-down` takes the node out of service so that a shared address moves before any work starts, `-step-up` puts it back; the step-down is not persisted across a restart. The two judgement calls are opt-in: `-require-upstreams` makes a pool with no healthy endpoint a refusal, `-require-undegraded` makes a hardening mechanism that did not apply one. See `docs/HA.md` |
 | `waf` [`rules`\|`proposals`\|`anomalies`\|`exclusions`\|`reset`] | WAF profiles (with their CRS plugins and JSON schemas), counters and the most matched rules (`-top` *N*); `proposals` lists learned exclusion candidates, `anomalies` the behavioural baseline and flagged clients, `exclusions` prints the proposals as SecLang, `reset` clears the statistics |
 | `rotate-secret` [`-keep` *N*] *FILE* | Add a fresh primary key to a secret file, keeping *N* (default 2) previous keys for verification; then `reload` |
 | `reload-certs` | Re-read certificate files |
@@ -52,6 +53,8 @@ locally; everything else goes through the socket.
 | `cluster` | Peers, inbound connections and gossip counters |
 | `api` [`all`\|`shadow`\|`zombie`\|`versions`\|`documented`\|`undocumented`] | API inventory discovered from traffic: host, method, path template, route, version, state (documented, shadow, zombie, superseded), counts, credentials seen and last seen (`-top` *N*); with `-openapi` [`-title` *T*] the view as an OpenAPI 3.0 skeleton in YAML |
 | `patches` | Virtual patches with state (active, disabled, expired), action, hits, last hit and expiry |
+| `policy` [`report`\|`reset`] [`-top` *N*] | What the listeners in shadow mode would have refused and did not: the count, the kind, the listener, the reason, the rule that decided, when it was first and last seen, and one example of what was asked for, most frequent first. `reset` empties the ledger, which is what an operator does after fixing a policy so the next report is about the new one. Shadow mode is `policy: {mode: shadow}` for the estate or for one listener; it covers policy only -- authentication, bans, rate limits, bounds and malformed input are refused in shadow mode too |
+| `sessions` [`-kill` *ID*] [`-kill-matching` `-kind` *K* `-listener` *L* `-user` *U*] | The sessions the daemon is serving now — SSH, SFTP, telnet, VNC, RDP, FTP and the Modbus device queues — oldest first: the identifier, the kind, the listener, where the client came from, the login, the target it reached, one detail the kind chose (the desktop's name, the unit identifier, the subsystem) and how long it has been up. `-kill` *ID* closes one; `-kill-matching` closes every session matching the `-kind`, `-listener` and `-user` given, and refuses to run with none of them, so a filter is never accidentally everything. A session is registered before its handshake finishes, so one stuck in a handshake is listed and can be closed. Every closure is written to the audit log with who asked. The names, logins and details came off the network and are clipped and filtered before they are printed. This is the live table; `session` (singular) reads recordings back from disk |
 | `session` `list` *DIR* \| `show` [`-safe`] [`-input`] *FILE* \| `play` [`-speed` *N*] [`-plain`] *FILE* | Read a recorded gate session back. `list` names the recordings in a directory with their size, start, dimensions and title; `show` prints what the session showed, and `play` replays it with its timing. The escape sequences that reach outside the window a replay is drawn in are never forwarded: a recording is the bytes a session sent, and a terminal is an interpreter of exactly those bytes, so writing one out unfiltered lets a recorded session set the reviewer's clipboard (OSC 52), retitle their window, or ask for a device report — which the terminal answers on its own input, and a shell reads as a command line. `show` keeps the text and drops every sequence; `-safe` keeps the colours and cursor movement and writes the rest out inert; `play` is `-safe` by default and `-plain` is the reading view. The file itself is never rewritten |
 | `capture` [`status`\|`start` [`-duration` *D*]\|`stop`] | Packet capture of the exchanges the proxy handled, written as pcapng: whether it is recording, when the window ends, the current file and the per rule counters; `start` opens a window (*D*, bounded by `capture.max_duration`), `stop` closes it. The files hold decrypted request and response bytes |
 | `fleet` | Fleet agent state: controller, node id, applied bundle digest and result, pending bundle, poll and report counters |
@@ -85,6 +88,10 @@ locally; everything else goes through the socket.
 
 0 on success; 1 when the daemon reports an error or cannot be reached;
 2 on a usage error. `diff` exits 1 when the two configurations differ.
+`ready` exits 0 when this node should carry traffic, 1 when it should
+not, and 2 when the daemon could not be asked — a check script must keep
+the last two apart, or it will move a shared address because a socket
+became unreadable.
 
 ## FILES
 
@@ -97,6 +104,8 @@ xproxyctl status
 xproxyctl -json stats | jq .denied_rate_limit
 xproxyctl tail security | jq -c '{t:.time, ip:.client_ip, r:.reason}'
 xproxyctl reload -dry-run
+xproxyctl ready -step-down "kernel update" && systemctl restart xproxy
+xproxyctl ready -require-upstreams; echo $?
 xproxyctl ban -duration 24h -reason "credential stuffing" 203.0.113.0/24
 xproxyctl rotate-secret /var/lib/xproxy/challenge.key && xproxyctl reload
 xproxyctl completion bash > /etc/bash_completion.d/xproxyctl
@@ -104,4 +113,4 @@ xproxyctl completion bash > /etc/bash_completion.d/xproxyctl
 
 ## SEE ALSO
 
-`xproxy`(8), `xproxy.yaml`(5), `docs/USAGE.md`.
+`xproxy`(8), `xproxy.yaml`(5), `docs/USAGE.md`, `docs/HA.md`.

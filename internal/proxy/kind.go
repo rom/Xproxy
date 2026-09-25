@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"time"
+
 	"context"
 	"crypto/tls"
 	"fmt"
@@ -20,6 +22,8 @@ import (
 	"github.com/rom/xproxy/internal/listener"
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/mfa"
+	"github.com/rom/xproxy/internal/sessions"
+	"github.com/rom/xproxy/internal/shadow"
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/upstream"
 )
@@ -85,6 +89,15 @@ type Host interface {
 	// listener set, so the lookup is here rather than between the two
 	// kinds, which are not linked together in every daemon.
 	DNSServer(listener string) *dns.Server
+	// Sessions is the table of live sessions, which every kind that holds
+	// one for longer than a request registers with, so an operator can
+	// list them and close one. Never nil, so a kind writes no
+	// conditionals around it.
+	Sessions() *sessions.Table
+	// Shadow is the ledger a listener in shadow mode writes what it would
+	// have refused to. Never nil, so a kind writes no conditionals around
+	// it; a listener that enforces never reaches it.
+	Shadow() *shadow.Ledger
 	// TakeRemote asks the cluster owner of a rate limit key to decide.
 	// decided is false without a cluster, without an owner or when the
 	// answer did not come in time, and the caller falls back to the
@@ -266,6 +279,11 @@ func (s *Server) listenerTLS(lc config.Listener) (*tls.Config, *tlsconf.Reloadab
 	rl.Refuse = s.refuseHandshake
 	for _, w := range rl.CTWarnings() {
 		s.logs.Security.Warn("certificate transparency", "listener", lc.Name, "issue", w)
+	}
+	for _, w := range rl.Expiring(time.Now()) {
+		// At load and at every reload, because those are the moments an
+		// operator is watching. The continuous answer is the status view's.
+		s.logs.Security.Warn("certificate expiry", "listener", lc.Name, "issue", w)
 	}
 	rl.StartStapling(s.logs.Error)
 	return tc, rl, nil

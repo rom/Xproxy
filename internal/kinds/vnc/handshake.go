@@ -294,6 +294,7 @@ func (se *session) namedCredential(user, secret string) string {
 		return se.finishClientAuth(false, "authentication failed")
 	}
 	se.user = user
+	se.live.Annotate(user, "", "")
 	return se.finishClientAuth(true, "")
 }
 

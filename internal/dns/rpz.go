@@ -686,12 +686,23 @@ func (s *RPZ) Stop() {
 	})
 }
 
+// shadowedRPZ records a policy zone's decision on a listener in shadow
+// mode. A shadowed hit is answered exactly as a passthru is -- the query
+// carries on -- with the rule and the zone in the ledger, which is what
+// makes a new feed reviewable before it starts answering for names.
+func (s *Server) shadowedRPZ(hit RPZHit, q Question) bool {
+	if hit.Action == RPZPassthru {
+		return false
+	}
+	return s.shadowed("rpz", hit.Zone+" "+hit.Rule+" "+q.Name)
+}
+
 // applyRPZ answers a query a policy zone decided, and reports whether it
 // did: a passthru is a decision to answer normally, so the caller carries
 // on with the query it was already handling.
 func (s *Server) applyRPZ(a *asked, client netip.Addr, proto string, query []byte, qEnd int, h Header,
 	q Question, hit RPZHit, tcp bool) ([]byte, bool) {
-	if hit.Action == RPZPassthru {
+	if hit.Action == RPZPassthru || s.shadowedRPZ(hit, q) {
 		// An exception, counted so an operator can see the feed being
 		// overruled rather than wonder why a name still resolves.
 		s.RPZPassthru.Add(1)

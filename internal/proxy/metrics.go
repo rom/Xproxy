@@ -103,6 +103,9 @@ func (s *Server) Collect(e metrics.Collector) {
 	e.Gauge("xproxy_connections_open", "Open client connections (TCP and QUIC).", nil, float64(sn.OpenConnections))
 	e.Gauge("xproxy_requests_in_flight", "Requests currently admitted.", nil, float64(sn.InFlight))
 	e.Gauge("xproxy_bans_active", "Active bans.", nil, float64(sn.BansActive))
+	e.Gauge("xproxy_sessions_live", "Sessions being served now (ssh, sftp, telnet, vnc, rdp, ftp, modbus).", nil, float64(sn.SessionsLive))
+	e.Counter("xproxy_sessions_total", "Sessions served.", nil, float64(sn.SessionsOpened))
+	e.Counter("xproxy_sessions_closed_total", "Sessions closed by an operator.", L{"by": "operator"}, float64(sn.SessionsKilled))
 	if sn.SheddingClasses != nil {
 		e.Gauge("xproxy_load_level", "Load level used for shedding (0 to 1).", nil, sn.LoadLevel)
 		e.Gauge("xproxy_upstream_latency_seconds", "Average upstream time to first byte over the shedding window.", nil, sn.UpstreamLatencyMS/1000)

@@ -62,6 +62,9 @@ type server struct {
 	learner *Learner
 	tracer  *Tracer
 	monitor *Monitor
+	// watch holds what each server looked like last time, so a source
+	// that changed is a change rather than a new normal.
+	watch *watcher
 
 	// clients and prefixes are the two rate limits: one per address, one
 	// per network, because a client behind a NAT and a subnet asking in
@@ -190,6 +193,7 @@ func newServer(host proxy.Host, cfg config.Listener, pc net.PacketConn) (*server
 		s.tracer = t
 	}
 	s.monitor = NewMonitor(s)
+	s.watch = newWatcher(s)
 	return s, nil
 }
 
@@ -323,7 +327,9 @@ func (s *server) fromClient(client netip.AddrPort, raw []byte) {
 		// the list it is being written against cannot be the thing that
 		// stops it seeing them.
 		c.NTPWouldDeny.Add(1)
+		c.WouldRefuse("ntp", "client_not_allowed")
 		s.denyLog(client, "client_not_allowed", "recorded, not enforced")
+		s.host.Shadow().Record("ntp", s.cfg.Name, "client_not_allowed", "", client.Addr().String())
 	}
 	if !s.admitRate(client, raw) {
 		return
@@ -361,7 +367,9 @@ func (s *server) fromClient(client netip.AddrPort, raw []byte) {
 			return
 		}
 		c.NTPWouldDeny.Add(1)
+		c.WouldRefuse("ntp", d.Reason)
 		s.audit(client, d, pkt, "would_deny")
+		s.host.Shadow().Record("ntp", s.cfg.Name, d.Reason, "", d.Detail)
 	}
 	a, ok := s.association(client)
 	if !ok {
@@ -690,13 +698,29 @@ func (s *server) answer(b *backend, raw []byte) {
 		resp = response{server: b.addr, pkt: pkt,
 			offset:   wire.Offset(p.sentAt, pkt, t4),
 			delay:    time.Duration(now - p.sent),
-			ntsAsked: p.nts, authAsked: p.auth}
+			ntsAsked: p.nts, authAsked: p.auth, now: time.Now()}
 	} else {
-		resp = response{server: b.addr, pkt: pkt, ntsAsked: a.nts.Load(), authAsked: a.authenticated.Load()}
+		resp = response{server: b.addr, pkt: pkt, ntsAsked: a.nts.Load(),
+			authAsked: a.authenticated.Load(), interleaved: true, now: time.Now()}
 		c.NTPInterleaved.Add(1)
 	}
 	s.monitor.Observe(b, resp)
+	// What this server looked like last time, against what it looks like
+	// now. It is checked before the per-packet policy because a source
+	// that changed is worth saying even when the answer it sent is
+	// otherwise acceptable -- which is the whole point of the check.
+	changes := s.watch.Check(b.addr.String(), pkt, resp.offset)
+	s.watch.Report(b.addr.String(), changes)
 	d := s.policy.Response(resp)
+	if d.Allow && len(changes) > 0 && s.watch.Refusing() {
+		d = deny("source_changed", changes[0].Detail)
+	}
+	if d.Reason == "leap_unexpected" {
+		c.NTPLeapUnexpected.Add(1)
+		s.host.Logs().SecurityEvent(context.Background(), "alert", "ntp_leap_unexpected",
+			"listener", s.cfg.Name, "proto", "ntp", "server", b.addr.String(),
+			"client", a.client.String(), "detail", d.Detail)
+	}
 	if !d.Allow {
 		if s.enforcing() {
 			c.NTPDenied.Add(1)
@@ -705,7 +729,9 @@ func (s *server) answer(b *backend, raw []byte) {
 			return
 		}
 		c.NTPWouldDeny.Add(1)
+		c.WouldRefuse("ntp", d.Reason)
 		s.audit(a.client, d, pkt, "would_deny")
+		s.host.Shadow().Record("ntp", s.cfg.Name, d.Reason, "", d.Detail)
 	}
 	s.tracer.Response(s.cfg.Name, a.client, b.addr, pkt, d)
 	if _, err := s.pc.WriteTo(raw, net.UDPAddrFromAddrPort(a.client)); err != nil {
@@ -820,6 +846,9 @@ func (s *server) probe(b *backend) (*wire.Packet, time.Duration, time.Duration, 
 // enforcing says whether the policy decides or only records. A learning
 // run is observe-only unless it says otherwise.
 func (s *server) enforcing() bool {
+	if s.cfg.Shadowing() {
+		return false
+	}
 	l := s.n.Learn
 	if l == nil || !l.Enabled {
 		return true

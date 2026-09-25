@@ -24,6 +24,7 @@ import (
 	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/safe"
 	"github.com/rom/xproxy/internal/sessionrec"
+	"github.com/rom/xproxy/internal/sessions"
 	"github.com/rom/xproxy/internal/textsafe"
 	"github.com/rom/xproxy/internal/upstream"
 )
@@ -470,6 +471,29 @@ func (t *server) deny(ip netip.Addr, what, detail string) {
 	}
 }
 
+// shadowed records a policy refusal a listener in shadow mode does not
+// enforce, and says whether it was recorded rather than refused.
+//
+// Only policy reaches it: the client list and the command, subsystem and
+// forwarding rules. An unknown host key, a key that does not
+// authenticate, a failed second factor, a ban, the connection limit and a
+// malformed request are refused in shadow mode too -- a bastion that let
+// somebody in because a policy was being trialled would be a bastion with
+// a trial instead of a door.
+func (t *server) shadowed(ip netip.Addr, what, detail string) bool {
+	if !t.cfg.Shadowing() {
+		return false
+	}
+	t.engine.Counters().WouldRefuse("ssh", what)
+	t.engine.Shadow().Record("ssh", t.cfg.Name, what, "", detail)
+	attrs := []any{"listener", t.cfg.Name, "client_ip", ip.String(), "proto", "ssh"}
+	if detail != "" {
+		attrs = append(attrs, "detail", detail)
+	}
+	t.engine.Logs().SecurityEvent(context.Background(), "would_deny", "ssh_"+what, attrs...)
+	return true
+}
+
 // session is one client connection and the target connection behind
 // it.
 type session struct {
@@ -480,6 +504,7 @@ type session struct {
 	user   string
 	auth   string
 	target string
+	live   *sessions.Session
 	// policy is the listener's, or the one the matched principal
 	// refined it to. principal names that entry for the log.
 	policy    *sshPolicy
@@ -508,12 +533,20 @@ func (t *server) handle(raw net.Conn) {
 	se := &session{t: t, ip: ip}
 	defer func() { _ = raw.Close() }()
 
-	if !t.allowed(ip) {
+	if !t.allowed(ip) && !t.shadowed(ip, "client_not_allowed", "") {
 		s.Counters().SSHRejected.Add(1)
 		t.deny(ip, "client_not_allowed", "")
 		t.log(se, start, "client_not_allowed")
 		return
 	}
+	// Listed from here, before the handshake: a connection stuck in one,
+	// or one whose authentication never finishes, is exactly what an
+	// operator wants to see and be able to close. Closing the accepted
+	// socket ends it, whatever stage it reached.
+	se.live = s.Sessions().Register(sessions.Info{
+		Kind: "ssh", Listener: t.cfg.Name, Client: raw.RemoteAddr().String(),
+	}, func() { _ = raw.Close() })
+	defer se.live.Done()
 	// The handshake and authentication share one deadline. Once the
 	// session is up the idle timeout takes over, applied by the
 	// connection wrapper below.
@@ -528,6 +561,7 @@ func (t *server) handle(raw net.Conn) {
 	se.sconn = sconn
 	se.user = sconn.User()
 	se.policy = t.base
+	se.live.Annotate(se.user, "", "")
 	if sconn.Permissions != nil {
 		se.auth = sconn.Permissions.Extensions["auth"]
 		se.principal = sconn.Permissions.Extensions["principal"]
@@ -653,6 +687,7 @@ func (se *session) connect() error {
 		pool.End(e, false, 0)
 		se.client = cssh.NewClient(nc, nchans, nreqs)
 		se.target = e.Address
+		se.live.Annotate("", se.target, se.principal)
 		return nil
 	}
 	if lastErr == nil {
@@ -907,10 +942,9 @@ func (se *session) answerRequest(clientCh, upCh cssh.Channel, r *cssh.Request, s
 			se.refuseRequest(r, "malformed_request", "env")
 			return true
 		}
-		if !se.policy.envAllowed(name) {
+		if !se.policy.envAllowed(name) && se.refuseByPolicy(r, "env_refused", name) {
 			// A variable the target would read before it runs the
 			// command the policy approved.
-			se.refuseRequest(r, "env_refused", name)
 			return true
 		}
 	case "subsystem":
@@ -986,16 +1020,15 @@ func (se *session) answerRequest(clientCh, upCh cssh.Channel, r *cssh.Request, s
 			return false
 		case cmdAllowed:
 		default:
-			if !se.policy.transfers && fileTransferCommand(cmd) {
+			if !se.policy.transfers && fileTransferCommand(cmd) &&
+				se.refuseByPolicy(r, "file_transfer_refused", textsafe.Clip256(cmd)) {
 				// scp and rsync move files without ever opening the
 				// sftp subsystem, so every path and operation rule
 				// there is simply not on their path. Refusing them is
 				// what makes an sftp policy mean anything.
-				se.refuseRequest(r, "file_transfer_refused", textsafe.Clip256(cmd))
 				return true
 			}
-			if !se.commandAllowed(cmd) {
-				se.refuseRequest(r, "command_refused", textsafe.Clip256(cmd))
+			if !se.commandAllowed(cmd) && se.refuseByPolicy(r, "command_refused", textsafe.Clip256(cmd)) {
 				return true
 			}
 			t.engine.Logs().SecurityEvent(context.Background(), "allow", "ssh_exec",
@@ -1032,6 +1065,24 @@ func (se *session) answerRequest(clientCh, upCh cssh.Channel, r *cssh.Request, s
 		return false
 	}
 	_ = r.Reply(ok, nil)
+	return true
+}
+
+// refuseByPolicy is refuseRequest for the refusals a listener in shadow
+// mode records instead of applying: the command, subsystem, environment
+// and file-transfer rules. It reports whether the request was refused, so
+// a caller that gets false carries on with the request as if the policy
+// had allowed it.
+//
+// The integrity refusals keep using refuseRequest and are never shadowed:
+// a request this proxy could not parse, a command whose shell syntax it
+// will not split, a certificate extension that itself says no, and an
+// identity that cannot stand in a path pattern.
+func (se *session) refuseByPolicy(r *cssh.Request, what, detail string) bool {
+	if se.t.shadowed(se.ip, what, detail) {
+		return false
+	}
+	se.refuseRequest(r, what, detail)
 	return true
 }
 

@@ -115,6 +115,8 @@ units put the other two.
 | `bans` | List active bans with expiry, source and count |
 | `ban TARGET` | Ban an address, CIDR or `ja4:<fingerprint>`; `-duration 1h`, `-reason text` |
 | `unban TARGET` | Remove a ban |
+| `policy` [`report`\|`reset`] | What the listeners in shadow mode would have refused, most frequent first, with the rule that decided and an example (`-top N`); `reset` empties the ledger |
+| `sessions` | The sessions the daemon is serving now (ssh, sftp, telnet, vnc, rdp, ftp, modbus) with the client, login, target, one detail and how long; `-kill ID` closes one, `-kill-matching` with `-kind`, `-listener` or `-user` closes a set (audited) |
 | `cluster` | Peers, inbound connections and gossip counters |
 | `accounts` | Account guard state: endpoints with tracked keys, active blocks (`-top N` per endpoint), campaign state and the action counters |
 | `maintenance` [`on`\|`off`] | Show or set maintenance mode; on holds every request but the allowlist behind a 503 |
@@ -2639,6 +2641,68 @@ of the session — validation says so rather than leaving it implied.
 `mqtt_denied`: a device does not probe topics, so something walking the
 tree is either broken or not a device.
 
+**Payload, quality of service and retain are properties of the topic.**
+A command topic wants QoS at least 1 and a payload of tens of octets; a
+firmware topic wants a large payload and retain; telemetry wants QoS 0 and
+neither. One bound for the listener has to be the loosest of the three,
+which is the same as no bound:
+
+```yaml
+        max_payload_bytes: 65536         # the listener's own
+        max_qos: 1
+        topics:
+          - {name: telemetry, filters: ["plant/+/telemetry"], max_payload_bytes: 256, max_qos: 0}
+          - {name: control, filters: ["plant/+/control"], min_qos: 1, max_payload_bytes: 64}
+          - {name: firmware, filters: ["plant/+/firmware"], max_payload_bytes: 4194304, allow_retain: true}
+```
+
+`min_qos: 1` on the control topic is the one that is not about the
+transport: **a command that may be lost is not a command**. And
+`allow_retain: true` on the firmware topic overrides a listener that
+refuses retain, which keeps the one case where a retained message is the
+point.
+
+**Sparkplug B, because two of its message types are commands.** Sparkplug
+is the convention that makes MQTT an industrial protocol, and the reason
+it belongs in a proxy is that its topics say what a message is:
+
+```
+spBv1.0/<group>/<message type>/<node>[/<device>]
+```
+
+Most of those types are telemetry going up — a node or device being born
+(`NBIRTH`, `DBIRTH`), dying (`NDEATH`, `DDEATH`) or reporting (`NDATA`,
+`DDATA`). Two go the other way: `NCMD` and `DCMD` are **commands to
+equipment**, the MQTT equivalent of a Modbus write, and in most estates
+the publishers with any business sending one are a short and known list. A
+broker's own topic ACLs usually cannot tell a command from a reading;
+reading the topic can.
+
+```yaml
+        sparkplug:
+          enabled: true
+          require_namespace: true          # this listener carries nothing else
+          allow_message_types: [NBIRTH, NDEATH, DBIRTH, DDEATH, NDATA, DDATA, NCMD, DCMD]
+          command_clients: ["10.30.7.0/24"]   # only SCADA may command
+          require_birth_before_data: true
+          check_sequence: true
+```
+
+Two more things the convention states, which the relay can check and the
+broker does not: data from an edge node nobody has heard a birth from is
+out of order, and every message carries a sequence number that increments
+by one and wraps at 255, with a birth resetting it to zero. A gap or a
+repeat is a lost message, a duplicated publisher, or somebody replaying
+one.
+
+**The metrics are not decoded**, and that is deliberate: a Sparkplug
+payload is protobuf and the metric set is the plant's own, so carrying a
+schema per estate is not this proxy's business. The two top-level fields —
+the timestamp and the sequence, two varints at a fixed place in every
+payload — are read in place, and the rest is forwarded untouched. A payload
+with no sequence number simply does not get the sequence check rather than
+being refused for a field the convention allows to be absent.
+
 ### A syslog relay that reads what it forwards
 
 ```yaml
@@ -2796,6 +2860,57 @@ may carry: a setpoint register that may hold 0 to 100 and nothing else,
 (with `coils: true` the other way round). A value outside the bound is
 refused *by the rule that set the bound*, not passed to a later rule
 that would permit it.
+
+**A value is not only a number: it is a change.** A range says what may
+be written; the interesting rules in a plant are about what may *happen*:
+
+```yaml
+          - name: setpoint
+            action: allow
+            clients: ["10.30.7.13/32"]      # HMI-3, and nothing else
+            units: ["2"]
+            functions: [write_single_register]
+            addresses: ["40001"]
+            schedule: {days: [sat], from: "06:00", to: "14:00", timezone: Europe/Stockholm}
+            values:
+              - registers: "40001"
+                min: 0
+                max: 1500                    # the range
+                max_delta: 100               # and not in one jump
+                rate: {max: 1, period: 1m}   # and not more than once a minute
+                transitions: ["0->1", "1->0"]   # for a state register
+                require_before: {registers: "40000", equals: 1, within: 30s}
+                on_unknown: refuse
+```
+
+That is one sentence from a plant written out: *this register, this
+range, not in one jump, once a minute, only after the permissive was set,
+only from HMI-3, only during the maintenance window.* Each part answers a
+different failure. A range catches a wrong value; `max_delta` catches a
+right value reached the wrong way, which is what a runaway or a typo in
+an engineering station looks like; `rate` catches a master hunting a
+setpoint sixty times a minute, which is either broken or not the master
+it claims to be; `transitions` is for the registers that are states
+rather than numbers, where 0 to 1 is starting and 0 to 4 is nonsense; and
+`require_before` is **select-before-operate**, which IEC 60870-5-104 has
+in the protocol and Modbus does not — so either every client implements
+the confirmation, where the frame that skips it looks exactly like the
+frame that did not, or the relay enforces it.
+
+Three of those need to know what the value *is*, and here is the honest
+part: what this relay knows is the last value it **saw** — a write it
+forwarded, or a read it relayed back to a master. A value changed by
+another master, a local panel or the process itself was never on this
+path. So `on_unknown` says what to do when there is no value (`allow`,
+counted, with the range still in force; or `refuse`, which waits until
+something reads the register), the count is in `modbus_value_unknown`,
+and a masked write makes the relay *forget* the address rather than guess
+what the device now holds. `max_value_points` bounds the table, because
+the addresses come off the network.
+
+A rate refusal is answered with *server busy* rather than *illegal value*:
+the same write would be accepted a minute later, and that is what a
+master's own diagnostics should say.
 
 **Schedules** put a rule in force for a window — `{days: [sat, sun],
 from: "22:00", to: "04:00", timezone: Europe/Stockholm}` for a
@@ -3019,6 +3134,105 @@ authenticated, and writes out the three lists a policy is made of —
 `enforce` is off it decides nothing, and it does not apply
 `allow_clients` either: a run written to discover the clients cannot be
 stopped from seeing them by the list it is discovering.
+
+**Reading an answer against itself.** Three of the checks need no history
+and no second server, because they catch a packet that cannot be what it
+claims:
+
+```yaml
+        quality:
+          allow_strata: [1, 2]        # the tree the estate actually has
+          max_root_distance: 500ms    # half the root delay plus the dispersion
+          refuse_bogus_timestamps: true   # the default
+          refuse_bogus_refid: true        # the default
+          expect_refid: ["GPS", "PPS", "10.30.0.1"]
+```
+
+The timestamps first: an answer whose transmit or receive timestamp is
+zero, whose transmit is *before* its receive, or whose last
+synchronisation is later than the request arriving, is not a measurement —
+and a client that got it would still compute an offset and step its clock.
+The check is between the packet's own four fields and never against this
+relay's clock, because a relay whose own time is wrong would otherwise
+refuse every correct answer, which is the failure that makes a check like
+this get turned off. An interleaved answer is exempt, since its transmit
+timestamp is the server's previous one on purpose.
+
+Then the reference identifier, which is the field most often read wrongly.
+At stratum 1 it is the reference clock's four-character name (`GPS`,
+`PPS`, `DCFa`); at stratum 2 and above it is the upstream's IPv4 address
+or four octets of a hash of an IPv6 one. So a stratum 1 answer whose
+identifier is not a name did not come from a reference clock, and a
+stratum 2-or-worse answer with no identifier at all names nothing above
+itself while claiming a place in the tree. `expect_refid` goes further and
+says which identifiers the estate's own servers report — the cheapest
+statement of server identity the protocol allows without a key.
+
+And `max_root_distance`, which is half the root delay plus the root
+dispersion: RFC 5905's own measure, and the one a server cannot satisfy by
+reporting a small delay and a large dispersion or the other way about.
+`allow_strata` is the list rather than the bound: a bound admits
+everything below it, and a plant whose servers are a reference clock and
+its own two followers has no stratum 5 in it.
+
+**A leap second is an instruction, so it gets a policy.** A leap indicator
+of "add" or "delete" tells every client that hears it to plan to move its
+clock by a second, and the IERS only ever uses the end of June, December,
+March or September. So:
+
+```yaml
+        quality:
+          leap_policy: alert     # alert (default), allow, window, refuse
+          leap_window: 744h
+```
+
+`alert` forwards the announcement and raises a security event when it is
+outside that window — forwards, because the clients hear it from every
+other server too and an estate that suppressed it quietly would lose the
+one event worth reading. `window` refuses the ones outside and keeps the
+real ones. `refuse` refuses every announcement, for an estate that handles
+leap seconds another way. `allow` says nothing, and warns at validation.
+
+**Watching the source rather than the answer.** Every bound above asks
+whether one answer is good enough. This asks whether the server is still
+the same server:
+
+```yaml
+        change_detection:
+          enabled: true          # the default
+          max_step: 1s
+          max_stratum_jump: 2
+          dispersion_growth: 8
+          action: alert           # or refuse
+```
+
+Six things it names, each with a counter and a security event:
+`ntp_source_changed` (the reference identifier), `ntp_stratum_jumped`,
+`ntp_offset_stepped`, `ntp_dispersion_grew`, `ntp_nts_lost`,
+`ntp_leap_announced`.
+
+That is the list because that is what a replaced, re-pointed or
+impersonated time source looks like — and every item on it passes any
+static bound an estate would write. A source that was a GPS clock at
+stratum 1 and now answers as something else at stratum 4 is inside
+`max_stratum: 8`. An offset that steps by fourteen seconds between two
+polls is inside `max_offset: 30s`. A dispersion that grows from a
+millisecond to a second is inside `max_root_dispersion: 2s`. A server that
+stops carrying NTS is carrying valid NTP. **For an estate where the time
+signs logs, orders events, bounds an authentication window and expires a
+certificate, a second either way is the point of the exercise** — so the
+relay says so.
+
+The measurements come from both the monitor's own probes and the exchanges
+it forwards, so an estate whose devices poll once an hour still notices
+within a probe interval. The baseline moves to what was measured whether
+or not a change was reported, which is what makes one change one alert
+rather than one per poll for ever; and an answer with no time in it — a
+kiss-o'-death, an unsynchronised clock — never becomes the baseline, so the
+next real answer is not a change. `action: refuse` drops the answer too,
+and validation warns: refusing stops the corrections rather than merely
+reporting them, and for most estates reading an event beats stopping the
+clocks.
 
 **What the monitor says, and what to do about it.** Four states, kept
 apart because the next action differs: `unreachable` (no answer),
@@ -3421,6 +3635,122 @@ read is a stream you cannot log.
 a deployment robot, an on-call rota by certificate and everyone else,
 and a delivery account that can do nothing but read one directory over
 sftp.
+
+### Turning a policy on without breaking the plant
+
+Every policy in this proxy has the same adoption problem: somebody writes
+the allow list, the command policy, the register range or the topic policy,
+and then cannot switch it on, because nobody knows what it would refuse at
+three in the morning. So it stays in a branch, or goes in at a weekend with
+somebody watching, or goes in allowing everything.
+
+```yaml
+policy:
+  mode: shadow        # the estate's default
+server:
+  listeners:
+    - name: line-2
+      kind: modbus
+      policy: {mode: shadow}    # or this listener alone
+```
+
+In shadow mode the policy is evaluated on real traffic, every decision it
+would have made is written down, and nothing is refused for policy. After a
+week:
+
+```sh
+xproxyctl policy report -top 20
+```
+
+```
+WOULD BLOCK  KIND    LISTENER   REASON                 RULE        FIRST                 LAST                  EXAMPLE
+1184         modbus  line-2     rule_deny              -           2026-09-18T02:11:04Z  2026-09-25T06:02:55Z  unit 4 write_single_register write
+37           ssh     operators  command_refused        -           2026-09-19T08:40:11Z  2026-09-24T17:22:03Z  ansible-playbook --check site.yml
+12           dns     resolver   blocked                -           2026-09-20T23:04:52Z  2026-09-25T04:40:19Z  telemetry.vendor.example
+2            mqtt    fleet      publish_topic_refused  -           2026-09-22T11:15:38Z  2026-09-22T11:16:02Z  plant/line2/debug
+```
+
+That is the list to work through before enforcement goes on: the first line
+is a device nobody knew was writing, the second is an automation account
+that needs a rule, the third and fourth are a vendor and a debug topic
+somebody has to decide about. `xproxyctl policy reset` empties the ledger,
+so the next week's report is about the policy as it is now.
+
+**What it does not switch off.** Shadow mode applies to policy — what an
+estate says its own traffic may do. Authentication, a second factor, a ban,
+a rate limit, a bound and anything the protocol parser could not read are
+refused in shadow mode exactly as they are in enforce mode: a bastion whose
+door opened because a policy was being trialled would be a bastion with a
+trial instead of a door, and forwarding a frame nobody could parse would
+mean sending a PLC bytes this proxy never read. docs/CONFIG.md's `policy`
+section has the table, kind by kind.
+
+On an HTTP listener the same setting reaches the WAF through the mechanism
+the WAF already has: a blocking profile runs as a detecting one, and
+`xproxyctl waf -top 20` says which rule would have blocked what, with the
+rule statistics the ledger could not hold. The route's positive security
+model goes into the ledger like every other policy.
+
+`xproxyctl status` carries `would_refusals` beside `refusals`, per kind and
+reason, so a dashboard can show the two next to each other while a rollout
+is in progress — which is the graph that tells an operator whether the last
+change to the policy helped.
+
+### Who is on now, and getting them off
+
+A recording answers what happened. The live table answers what is
+happening, which is the question an incident starts with:
+
+```sh
+xproxyctl sessions
+```
+
+```
+ID                KIND    LISTENER  CLIENT             USER     TARGET          DETAIL     FOR
+9f3c1e0a77b41d52  ssh     operators 10.4.2.9:51402     alice    db-1:22         shell      18m12s
+a1b7c4e590d2f631  rdp     desks     10.4.2.31:49771    contractor  ws-7:3389    desktop    2h04m
+c80d2f4a19e7b653  modbus  line-2    10.9.0.4:52210     engineer  plc-1:502      unit=2     41m03s
+```
+
+Every gateway that holds a session for longer than a request is in it:
+`ssh` (and its `sftp` channels), `telnet`, `vnc`, `rdp`, `ftp` and the
+Modbus device queues. A session is registered *before* its handshake
+finishes, so one stuck in a handshake — a client that opened a
+connection and never authenticated — is listed and can be closed, which
+is the case a table built from finished logins would miss.
+
+Closing one, and closing a set:
+
+```sh
+xproxyctl sessions -kill 9f3c1e0a77b41d52
+xproxyctl sessions -kill-matching -user contractor      # every session of one person
+xproxyctl sessions -kill-matching -listener desks       # every session of one listener
+xproxyctl sessions -kill-matching -kind rdp -user bob   # both, together
+```
+
+`-kill-matching` with no filter is refused rather than taken as
+*everything*: a command that drops every session in the estate is not
+one to arrive at by forgetting an argument. Each closure is written to
+the audit log with the peer that asked for it, the session's identifier,
+the login and the target, next to every other management action.
+
+The identifiers are random rather than sequential, so one seen in a log
+line an operator pasted into a ticket does not let anybody guess the
+others, and a counter does not leak how many sessions the daemon has
+served. What the table prints — the login, the target, the desktop's
+name, the unit identifier — came off the network, so it is clipped and
+filtered before it reaches a terminal, like every other view.
+
+Closing a session does not remove it from the table: the gateway serving
+it removes it when its own goroutine notices the socket close, so a
+session still draining is reported as still there rather than as gone.
+`xproxyctl status` carries the totals (`sessions_live`, `sessions_opened`,
+`sessions_closed`, `sessions_killed`), and Prometheus has
+`xproxy_sessions_live`, `xproxy_sessions_total` and
+`xproxy_sessions_closed_total{by="operator"}`.
+
+`xproxyctl sessions` is the live table; `xproxyctl session` (singular)
+reads recordings back from disk.
 
 ### A second factor, on SSH and on HTTPS
 
@@ -5020,6 +5350,80 @@ and friends); they reach the log as `automation`, weigh 45 in
 through the CAPTCHA (`automation: captcha`). The identifier and the
 markers are computed by the client and are advisory: treat them as
 correlation, not identity. `examples/security/captcha.yaml` is a complete configuration.
+
+### Failover: telling a check script whether this node should serve
+
+`docs/HA.md` is the full picture -- what survives a failover and what
+does not, a keepalived configuration, and the three daemons' different
+costs when an address moves. This is the mechanism.
+
+```sh
+xproxyctl ready                        # 0 serve, 1 do not, 2 could not ask
+xproxyctl ready -require-upstreams     # a pool with nothing healthy also counts
+xproxyctl ready -step-down "patching"  # take this node out before touching it
+xproxyctl ready -step-up               # and put it back
+```
+
+`GET /v1/ready` is the same answer as an HTTP status (200 or 503) with the
+reasons in a JSON body, for a load balancer that speaks HTTP rather than
+exit codes.
+
+Two things about this are worth stating plainly. **Exit 2 is not exit 1.**
+A script that treats "I could not reach the management socket" the same as
+"the node says no" will move a virtual address because a socket's
+permissions changed during an upgrade. And **a step-down is not
+persisted**: a node that has restarted serves again, which is the safe
+default for a process that has no idea what an operator decided before it
+started, and which means a step-down does not survive
+`systemctl restart`. Take a node out of the balancer's configuration, or
+stop the service, when it has to stay out.
+
+Step down *before* planned work, not during it: the address moves while
+the node is still healthy and can finish the requests it is holding.
+
+```sh
+xproxyctl ready -step-down "kernel update" && systemctl restart xproxy
+# verify, then
+xproxyctl ready -step-up
+```
+
+Whether a pool with no healthy endpoint, or a hardening mechanism that did
+not apply, should move an address is a judgement about your topology, which
+is why both are flags and neither is the default. Load is never a reason: a
+node that stands down under load hands its peer the same traffic and twice
+the connection churn.
+
+### Certificates that are about to stop working
+
+A certificate outliving its validity is the most common way a working
+service stops working, and by default the proxy serves an expired one --
+the client decides whether to trust it, so it is not a security hole, but
+it is an outage every client discovers separately. `tls.expiry` says it in
+one place:
+
+```yaml
+tls:
+  certificates: [{cert_file: /etc/xproxy/tls/site.pem, key_file: /etc/xproxy/tls/site-key.pem}]
+  expiry:
+    refuse_expired: true
+    warn: 336h
+```
+
+```
+$ xproxyctl tls
+EXPIRY edge: certificate api.example.com expires on 2026-10-07T09:00:00Z, in 288h0m0s
+...
+```
+
+`refuse_expired` is about *starting*: an already expired certificate is a
+load error, so a botched renewal cannot replace a working certificate on a
+reload -- the reload is refused and the old one keeps serving. A
+certificate that expires while the proxy is running is reported and
+counted, never unloaded: a listener that stops answering is worse than one
+answering with a certificate the client rejects for itself. Alert on the
+`certificate expiry` security-log entry and on `GET /v1/tls/expiring`;
+do not expect the refusal to save a pair of nodes whose certificates
+expired together.
 
 ## Web GUI
 

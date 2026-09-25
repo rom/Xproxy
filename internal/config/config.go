@@ -53,6 +53,10 @@ type Config struct {
 
 	// Bans enables the ban list when present.
 	Bans *Bans `yaml:"bans"`
+	// Policy is the estate's enforcement mode: whether the listeners
+	// enforce their policies or only evaluate them and write down what
+	// they would have refused.
+	Policy *Policy `yaml:"policy"`
 	// ThreatIntel imports lists of client addresses and TLS
 	// fingerprints somebody else attributed, with what to do about a
 	// match.
@@ -276,6 +280,32 @@ type Listener struct {
 	NTP *NTPListener `yaml:"ntp"`
 	// NTSKE configures a kind: ntske listener.
 	NTSKE *NTSKEListener `yaml:"ntske"`
+	// Policy is whether this listener enforces its policy or only
+	// evaluates it. It overrides the estate's own policy section.
+	Policy *ListenerPolicy `yaml:"policy"`
+}
+
+// Shadowing reports whether this listener evaluates its policy without
+// enforcing it. The default is to enforce: a proxy that shadowed by
+// accident would be a proxy with no policy at all, and the one thing that
+// must never be a default is "allow everything and write it down".
+func (l Listener) Shadowing() bool { return l.Policy != nil && l.Policy.Mode == "shadow" }
+
+// ListenerPolicy is the enforcement mode of one listener.
+type ListenerPolicy struct {
+	// Mode is enforce (the default) or shadow. In shadow mode the policy
+	// is evaluated on real traffic and every decision it would have made
+	// is recorded, and nothing is refused for policy -- which is how an
+	// operator finds out what a new allow list, command policy or
+	// register range would have broken before it breaks it.
+	//
+	// What shadow mode does NOT stop: a malformed message, a failed
+	// authentication or second factor, a ban, a rate limit, a bound
+	// (packet size, table full, connection limit) and a TLS handshake
+	// refusal are refused in shadow mode too. Forwarding those would mean
+	// acting on bytes the code could not read, or admitting somebody who
+	// did not authenticate, which is not a policy question.
+	Mode string `yaml:"mode"`
 }
 
 // ModbusListener is a Modbus relay that reads every frame.
@@ -363,6 +393,11 @@ type ModbusListener struct {
 	// master understands), drop (no answer at all, which a master reads
 	// as a timeout) or close (end the connection).
 	DenyResponse string `yaml:"deny_response"`
+	// MaxValuePoints bounds the addresses whose last value this relay
+	// remembers for the value rules that need one (max_delta,
+	// transitions, require_before). Default 65536. A plant has hundreds;
+	// the bound is here because the addresses come off the network.
+	MaxValuePoints int `yaml:"max_value_points"`
 	// Learn records what actually crosses this listener -- the clients,
 	// the roles, the units, the function codes, the address ranges and
 	// the value ranges -- and writes it out as a rule set to start from.
@@ -520,6 +555,82 @@ type ModbusValueRule struct {
 	// Coils, when set, bounds a coil write instead: true allows setting
 	// a coil in the range, false allows only clearing it.
 	Coils *bool `yaml:"coils"`
+	// MaxDelta bounds how far one write may move the value from the last
+	// one this relay saw at that address: a setpoint that may be nudged
+	// but not jumped. 0 disables it.
+	//
+	// "The last one this relay saw" is exactly that, and it is the honest
+	// limit of the check: a value changed by another master, by a local
+	// panel or by the process itself is not seen here, so OnUnknown says
+	// what to do about a write to an address whose value this relay does
+	// not know.
+	MaxDelta int `yaml:"max_delta"`
+	// Transitions are the value changes permitted, as "from->to" pairs
+	// with numbers or "*" on either side: ["0->1", "1->0"] is a state
+	// register that may be started and stopped but not driven to any
+	// other state. Empty permits every change the other bounds allow.
+	Transitions []string `yaml:"transitions"`
+	// Rate bounds how often this range may be written.
+	Rate *ModbusValueRate `yaml:"rate"`
+	// RequireBefore is select-before-operate: this write is refused
+	// unless another register was set to a given value first, recently.
+	// It is how a two-step confirmation is enforced by the relay rather
+	// than hoped for in the client.
+	RequireBefore *ModbusPrecondition `yaml:"require_before"`
+	// OnUnknown is what happens when a check needs the address's current
+	// value and this relay has not seen one -- after a restart, or before
+	// any master has read it: allow (the default, with a counter and an
+	// event, leaving the absolute Min and Max bounds in force) or refuse.
+	//
+	// It is a real choice. allow means a write straight after a restart
+	// is bounded by the range but not by the delta or the transition
+	// list; refuse means a plant cannot be driven until something has
+	// read the register, which for a relay in front of a running process
+	// is usually a poll away and occasionally an outage.
+	OnUnknown string `yaml:"on_unknown"`
+}
+
+// ModbusValueRate bounds how often a range of addresses may be written.
+//
+// It is not the listener's rate limit, which is about frames from a
+// client. This is about one address: "the setpoint may be moved once a
+// minute" is a statement about the process, and a master that moves it
+// sixty times a minute is either broken or not the master it claims to
+// be -- in both cases the device should not see the writes.
+type ModbusValueRate struct {
+	// Max is how many writes are allowed per Period, counted per unit
+	// identifier and address. Required.
+	Max int `yaml:"max"`
+	// Period is the window. Required, 1s..24h.
+	Period Duration `yaml:"period"`
+	// PerClient counts each master's writes separately rather than
+	// counting every write to the address together. Default false: the
+	// bound is usually about the device, not about who is asking.
+	PerClient bool `yaml:"per_client"`
+}
+
+// ModbusPrecondition is select-before-operate: a write this rule covers
+// is refused unless another register was recently set to a given value.
+//
+// The pattern exists because the dangerous operations in a plant are the
+// ones where a single frame does something physical. IEC 60870-5-104 has
+// it in the protocol; Modbus does not, so a plant that wants it either
+// implements it in every client or has the relay enforce it -- and a
+// client-side confirmation is not a control at all, because the frame
+// that skips it looks exactly like the frame that did not.
+type ModbusPrecondition struct {
+	// Registers is the address that has to have been written, as a
+	// single address or a range. Required.
+	Registers string `yaml:"registers"`
+	// Equals is the value it has to have been given. Required.
+	Equals int `yaml:"equals"`
+	// Within is how long the select stays good. Default 30s: long enough
+	// for an operator to confirm, short enough that a select left behind
+	// yesterday does not arm a write today.
+	Within Duration `yaml:"within"`
+	// Unit is the unit identifier the select was written to, when it is
+	// not the unit this write is for.
+	Unit *int `yaml:"unit"`
 }
 
 // ModbusSchedule is when a rule is in force. The times are local to the
@@ -696,6 +807,11 @@ type NTPListener struct {
 	// Holdover bounds how long a server whose time cannot be verified
 	// is still used.
 	Holdover *NTPHoldover `yaml:"holdover"`
+	// ChangeDetection watches each server for a change in what it is
+	// rather than in what it answered: a new time source, a stratum that
+	// jumped, an offset that stepped, a dispersion that exploded, NTS
+	// that stopped, a leap second announced out of season.
+	ChangeDetection *NTPChangeDetection `yaml:"change_detection"`
 	// KoD is the kiss-o'-death policy: the protocol's own way of saying
 	// "not now".
 	KoD *NTPKoD `yaml:"kod"`
@@ -861,6 +977,54 @@ type NTPQuality struct {
 	// MaxStratum refuses an answer from too far down the tree. 0 leaves
 	// the protocol's own bound of 15.
 	MaxStratum int `yaml:"max_stratum"`
+	// AllowStrata is the exhaustive list of strata accepted, for an
+	// estate that knows exactly what its time tree looks like: [1, 2]
+	// says the servers are a reference clock and its immediate clients
+	// and nothing else may answer. Empty leaves max_stratum to decide.
+	AllowStrata []int `yaml:"allow_strata"`
+	// MaxRootDistance refuses an answer whose synchronisation distance
+	// -- half the root delay plus the root dispersion, RFC 5905's own
+	// measure -- is past it. It is the bound that cannot be satisfied by
+	// reporting a small delay and a large dispersion or the other way
+	// about. 0 disables it.
+	MaxRootDistance Duration `yaml:"max_root_distance"`
+	// RefuseBogusTimestamps refuses an answer whose four timestamps
+	// cannot describe an exchange: a zero transmit or receive
+	// timestamp, an answer sent before the request arrived, a last
+	// synchronisation later than the request. Default true. The check is
+	// between the packet's own fields, never against this relay's clock,
+	// so a relay whose own time is wrong does not refuse correct
+	// answers.
+	RefuseBogusTimestamps *bool `yaml:"refuse_bogus_timestamps"`
+	// RefuseBogusRefID refuses an answer whose reference identifier does
+	// not match the stratum that says how to read it: a stratum 1 answer
+	// whose identifier is not a reference clock's name, or a stratum 2
+	// or worse answer with no identifier at all. Default true.
+	RefuseBogusRefID *bool `yaml:"refuse_bogus_refid"`
+	// ExpectRefID is the reference identifiers a server may report: the
+	// four-character name at stratum 0 and 1 ("GPS", "PPS", "DCFa") and
+	// the dotted quad at stratum 2 and above. Empty accepts any. It is
+	// the cheapest statement of server identity the protocol allows
+	// without authentication: a GPS-backed clock that starts answering
+	// as something else is either a different device or the same device
+	// with a different upstream.
+	ExpectRefID []string `yaml:"expect_refid"`
+	// LeapPolicy is what happens when an answer announces a leap
+	// second: alert (the default -- an announcement outside the window
+	// when a leap second can really happen is a security event), allow
+	// (say nothing), window (refuse an announcement outside the window)
+	// or refuse (refuse every announcement, for an estate that handles
+	// leap seconds another way).
+	//
+	// A leap announcement makes every client that hears it plan to move
+	// its clock, and the IERS only ever uses the end of June, December,
+	// March or September -- so an announcement in August says something.
+	LeapPolicy string `yaml:"leap_policy"`
+	// LeapWindow is how long before the end of such a month an
+	// announcement is plausible. Default 744h, a month, because RFC 5905
+	// sets the indicator during the last day and some servers announce
+	// from the start of the month.
+	LeapWindow Duration `yaml:"leap_window"`
 	// RefuseUnsynchronised refuses an answer from a server that says
 	// its own clock is not synchronised -- by the leap indicator or by
 	// stratum 16, which are two separate statements. Default true.
@@ -885,6 +1049,43 @@ type NTPHoldover struct {
 	// MaxDuration is how long a server may stay unverifiable before the
 	// listener says the holdover has expired. 0 disables the bound.
 	MaxDuration Duration `yaml:"max_duration"`
+}
+
+// NTPChangeDetection watches each time source for a change in what it
+// is, which is a different question from whether one answer was
+// acceptable.
+//
+// Every bound in quality asks "is this answer good enough". These ask
+// "is this still the same server, answering the same way". A source that
+// was a GPS clock at stratum 1 and is now something else at stratum 4,
+// an offset that stepped by fourteen seconds between two polls, a
+// dispersion that grew by two orders of magnitude, a server that stopped
+// carrying NTS: each of those is within every static bound an estate
+// would set, and each is the shape of a time source being replaced,
+// re-pointed or stood in front of.
+type NTPChangeDetection struct {
+	// Enabled turns the watching on. Default true.
+	Enabled *bool `yaml:"enabled"`
+	// MaxStep is how far the measured offset to one server may move
+	// between two measurements. Default 1s. A real clock drifts; it does
+	// not step.
+	MaxStep Duration `yaml:"max_step"`
+	// MaxStratumJump is how far a server's stratum may move at once.
+	// Default 2: a server whose own upstream failed over moves by one or
+	// two, and one that moved by eight is answering for somebody else.
+	MaxStratumJump int `yaml:"max_stratum_jump"`
+	// DispersionGrowth is the factor by which a server's root dispersion
+	// may grow between measurements before it is said. Default 8.
+	DispersionGrowth int `yaml:"dispersion_growth"`
+	// Action is what a detection does: alert (the default -- a security
+	// event and a counter) or refuse (that, and the answer does not
+	// reach the client).
+	//
+	// Refusing is a real choice with a real cost: the estate's clocks
+	// stop being corrected until an operator looks. Alerting keeps the
+	// time flowing and makes somebody read the event, which for most
+	// estates is the right order.
+	Action string `yaml:"action"`
 }
 
 // NTPKoD is the kiss-o'-death policy: a stratum-0 answer whose four
@@ -1979,6 +2180,26 @@ type MQTTListener struct {
 	// off, and without one it is the difference between a client
 	// reading its own topics and reading the estate's.
 	AllowWildcardSubscribe *bool `yaml:"allow_wildcard_subscribe"`
+	// MaxPayloadBytes bounds the payload of one PUBLISH. It is not
+	// max_packet_size, which bounds the packet: a policy about payloads is
+	// a policy about what a device sends, and a fleet whose telemetry is
+	// two hundred octets has no business sending a megabyte. 0 leaves
+	// max_packet_size to decide.
+	MaxPayloadBytes int `yaml:"max_payload_bytes"`
+	// Topics are per-topic rules: the payload bound, the QoS window and
+	// whether retain is allowed, for the topics each entry names. The
+	// first entry whose filters match the topic decides; a topic no entry
+	// matches is left to the listener's own bounds.
+	Topics []MQTTTopicRule `yaml:"topics"`
+	// MaxQoS is the highest quality of service a publication or a
+	// subscription may ask for, 0 to 2. Default 2. QoS 2 costs a broker
+	// four packets and a stored state per message, which is what makes it
+	// worth bounding on a fleet that does not need it.
+	MaxQoS *int `yaml:"max_qos"`
+	// Sparkplug is the Sparkplug B policy: the convention that turns MQTT
+	// into an industrial protocol, and whose command messages are the
+	// MQTT equivalent of a Modbus write.
+	Sparkplug *MQTTSparkplug `yaml:"sparkplug"`
 	// KeepAliveMax bounds the keep alive a client asks for, so a
 	// session cannot sit idle indefinitely on the broker's side.
 	// 0 accepts any. Default 0.
@@ -2000,6 +2221,89 @@ type MQTTListener struct {
 	ProxyProtocol bool `yaml:"proxy_protocol"`
 	// AllowClients restricts clients to these CIDRs.
 	AllowClients []string `yaml:"allow_clients"`
+}
+
+// MQTTTopicRule is what one set of topics may carry: how large a payload,
+// which qualities of service, and whether a publication may be retained.
+//
+// It exists because those three are properties of the *topic* rather than
+// of the listener. A command topic wants QoS at least 1 and a small
+// payload; a firmware topic wants a large payload and retain; telemetry
+// wants QoS 0 and neither. One bound for the listener would be the loosest
+// of the three, which is the same as no bound.
+type MQTTTopicRule struct {
+	// Name identifies the rule in the logs and the counters. Required.
+	Name string `yaml:"name"`
+	// Filters are MQTT topic filters ("plant/+/control", "spBv1.0/#").
+	// Required.
+	Filters []string `yaml:"filters"`
+	// MaxPayloadBytes bounds the payload of a publication to these
+	// topics. 0 leaves the listener's own bound.
+	MaxPayloadBytes int `yaml:"max_payload_bytes"`
+	// MinQoS and MaxQoS bound the quality of service: min_qos 1 on a
+	// command topic is "a command must be acknowledged", which is a
+	// statement about the process and not about the transport.
+	MinQoS *int `yaml:"min_qos"`
+	MaxQoS *int `yaml:"max_qos"`
+	// AllowRetain overrides the listener's own retain policy for these
+	// topics: a configuration topic is the case where a retained message
+	// is the point, and telemetry is the case where it is a device
+	// leaving something behind.
+	AllowRetain *bool `yaml:"allow_retain"`
+}
+
+// MQTTSparkplug is the Sparkplug B policy.
+//
+// Sparkplug B is the convention that makes MQTT an industrial protocol,
+// and it belongs in a proxy for one reason: two of its message types,
+// NCMD and DCMD, are commands to equipment. Everything else is telemetry
+// going up. In most estates the list of publishers with any business
+// sending a command is short and known, and the topic says which is which
+// -- so a relay can enforce it, and a broker's own topic ACLs usually
+// cannot tell a command from a reading.
+//
+// Two more things the convention states, which a relay can check: data
+// from a node nobody has heard a birth from is out of order, and every
+// message carries a sequence number that increments by one and wraps at
+// 255, with a birth resetting it to zero.
+//
+// The metrics are not decoded. A Sparkplug payload is protobuf and the
+// metric set is the plant's own; only the two top-level fields -- the
+// timestamp and the sequence -- are read, and the rest is forwarded
+// untouched.
+type MQTTSparkplug struct {
+	// Enabled turns the policy on. Without it a Sparkplug topic is an
+	// ordinary topic and the publish and subscribe lists are all that
+	// apply.
+	Enabled bool `yaml:"enabled"`
+	// Namespace is the first topic level. Default spBv1.0. A publication
+	// under another namespace is refused when require_namespace is set.
+	Namespace string `yaml:"namespace"`
+	// RequireNamespace refuses a publication whose topic is not a
+	// Sparkplug topic at all, which is how a listener is declared to
+	// carry nothing but Sparkplug.
+	RequireNamespace bool `yaml:"require_namespace"`
+	// AllowMessageTypes are the types accepted. Empty accepts every type
+	// the convention defines.
+	AllowMessageTypes []string `yaml:"allow_message_types"`
+	// CommandClients are the networks that may publish NCMD and DCMD --
+	// the commands to equipment. Empty leaves commands to the ordinary
+	// publish policy, and validation says so, because a Sparkplug
+	// listener whose commands anybody may send is the case this section
+	// exists for.
+	CommandClients []string `yaml:"command_clients"`
+	// RequireBirthBeforeData refuses NDATA or DDATA from an edge node no
+	// birth has been seen from. It is the convention's own ordering, and
+	// a relay is where it can be checked: the broker forwards whatever
+	// arrives.
+	RequireBirthBeforeData bool `yaml:"require_birth_before_data"`
+	// CheckSequence refuses a message whose sequence number is not the
+	// next one for its edge node. A gap or a repeat is a lost message, a
+	// duplicated publisher, or somebody replaying one.
+	CheckSequence bool `yaml:"check_sequence"`
+	// MaxNodes bounds the edge nodes remembered for the birth and
+	// sequence checks. Default 8192; the identifiers come off the network.
+	MaxNodes int `yaml:"max_nodes"`
 }
 
 // SMTPListener is a protocol-aware SMTP proxy: it speaks the session to
@@ -3035,6 +3339,38 @@ type TLS struct {
 	CT *CT `yaml:"ct"`
 	// ECH accepts Encrypted Client Hello on this listener.
 	ECH *ECH `yaml:"ech"`
+	// Expiry decides what an expired certificate does. Without it an
+	// expired certificate is served and every client fails the
+	// handshake on its own, which is an outage nobody can read.
+	Expiry *CertExpiry `yaml:"expiry"`
+}
+
+// CertExpiry is what a listener does about a certificate that has
+// expired, or is about to.
+//
+// A certificate outliving its validity is not an exotic failure: it is
+// the single most common way a working service stops working. What the
+// proxy can do about it is limited -- it cannot issue a new one, and
+// serving an expired certificate is not a security hole, because the
+// client is the one that decides whether to trust it. What it can do is
+// say so, loudly and in one place, rather than leaving every client to
+// discover it separately.
+//
+// So the refusal is opt-in and it is about *starting*: a certificate
+// already expired when the configuration is loaded is a configuration
+// error with refuse_expired, and a reload that would install one is
+// refused, which is the case where refusing is strictly better than
+// serving -- the old certificate keeps working. A certificate that
+// expires while the proxy is running is reported and counted, never
+// unloaded, because a listener that stops answering is worse than one
+// answering with a certificate clients will reject for themselves.
+type CertExpiry struct {
+	// RefuseExpired makes a certificate that has already expired a load
+	// error rather than something to serve.
+	RefuseExpired bool `yaml:"refuse_expired"`
+	// Warn is how long before expiry to start warning. Default 336h
+	// (fourteen days); zero with an expiry section means no warning.
+	Warn Duration `yaml:"warn"`
 }
 
 // ECH configures Encrypted Client Hello: the client encrypts the real
@@ -5241,6 +5577,25 @@ func (d Duration) D() time.Duration { return time.Duration(d) }
 
 // Enabled reports whether a stream is enabled (default true).
 func (s LogStream) IsEnabled() bool { return s.Enabled == nil || *s.Enabled }
+
+// Policy is the estate's enforcement mode.
+//
+// A policy nobody dares switch on is not a control, and the reason nobody
+// dares is always the same: no one knows what it would refuse at three in
+// the morning. So the mode that answers that question is a first-class
+// setting rather than a per-protocol learning flag -- the policy runs on
+// real traffic, every decision is written down, and nothing is refused.
+// `xproxyctl policy report` is then the list of what to fix before
+// enforcement goes on.
+type Policy struct {
+	// Mode is enforce (the default) or shadow, for every listener that
+	// does not say otherwise in its own policy section.
+	Mode string `yaml:"mode"`
+	// MaxReasons bounds the ledger: distinct combinations of kind,
+	// listener, reason and rule. Default 4096. Past it the report says it
+	// is full rather than quietly stopping.
+	MaxReasons int `yaml:"max_reasons"`
+}
 
 // Bans configures the ban list: addresses that are refused outright for a
 // period after repeated security denies or by operator action.

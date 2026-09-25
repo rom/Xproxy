@@ -346,7 +346,11 @@ func (se *session) structuredCommand(clientCh, upCh cssh.Channel, r *cssh.Reques
 	case !d.matched:
 		return cmdFallThrough
 	case !d.allow:
-		se.refuseRequest(r, d.reason, textsafe.Clip256(d.detail+" in "+cmd))
+		if !se.refuseByPolicy(r, d.reason, textsafe.Clip256(d.detail+" in "+cmd)) {
+			// Shadow mode: the rule that would have refused is written
+			// down and the command runs.
+			return cmdFallThrough
+		}
 		return cmdAnswered
 	}
 	se.t.engine.Logs().SecurityEvent(context.Background(), "allow", "ssh_command_rule",

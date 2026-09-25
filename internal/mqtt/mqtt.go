@@ -356,12 +356,29 @@ type Publish struct {
 	PacketID uint16
 	// Size is the whole packet's size on the wire.
 	Size int
+	// PayloadOffset is where the payload begins inside the packet's body,
+	// and PayloadLen how long it is. The payload itself is not copied: it
+	// is forwarded untouched, and a proxy that copied it would only add a
+	// place for it to leak. A policy about its *size*, and the two
+	// top-level protobuf fields a Sparkplug payload carries, are read
+	// from the body in place.
+	PayloadOffset int
+	PayloadLen    int
+}
+
+// Payload is the publication's payload inside the packet it was parsed
+// from. It aliases the packet's body rather than copying it.
+func (pub Publish) Payload(p Packet) []byte {
+	if pub.PayloadOffset < 0 || pub.PayloadOffset > len(p.Body) {
+		return nil
+	}
+	return p.Body[pub.PayloadOffset:]
 }
 
 // ParsePublish reads a PUBLISH header. The payload is not returned: it
 // is forwarded untouched, and a proxy that copies it only adds a place
 // for it to leak.
-func ParsePublish(p Packet) (Publish, error) {
+func ParsePublish(p Packet, version byte) (Publish, error) {
 	if p.Type != PUBLISH {
 		return Publish{}, ErrMalformed
 	}
@@ -389,6 +406,17 @@ func ParsePublish(p Packet) (Publish, error) {
 		if pub.PacketID == 0 {
 			return Publish{}, ErrMalformed
 		}
+	}
+	// MQTT 5.0 puts a property block between the packet identifier and
+	// the payload. Skipping it is what makes the payload's offset the
+	// payload's offset rather than the properties'.
+	if err := r.skipProps(version); err != nil {
+		return Publish{}, err
+	}
+	pub.PayloadOffset = r.pos
+	pub.PayloadLen = len(p.Body) - r.pos
+	if pub.PayloadLen < 0 {
+		return Publish{}, ErrMalformed
 	}
 	pub.Size = len(p.Body) + 5
 	return pub, nil

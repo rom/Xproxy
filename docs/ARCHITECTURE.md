@@ -1329,6 +1329,9 @@ Endpoints:
 | GET | `/v1/pools` | pool level state: circuit breaker, concurrency gate and queue |
 | GET | `/v1/tls` | served certificates per listener with OCSP staple and CT state |
 | GET | `/v1/tls/tickets` | session ticket key epoch, fingerprint and peer agreement (404 without `server.session_tickets`) |
+| GET | `/v1/tls/expiring` | per listener, the served certificates that have expired or fall inside `tls.expiry.warn`, worst first; computed on the question rather than on a timer, so a certificate that expires while nothing reloads is still reported |
+| GET | `/v1/ready` | whether this node should be carrying traffic: 200 or 503 with the reasons, for a failover tool. `require_upstreams=1` and `require_undegraded=1` add the two opt-in judgements (`docs/HA.md`) |
+| POST | `/v1/ready` | step this node down (`{"serving": false, "reason": "..."}`) or back up; audited, and not persisted across a restart |
 | GET | `/v1/telemetry` | OpenTelemetry exporters (metrics, traces, logs) with counters |
 | GET | `/v1/quotas` | usage per tenant, route and rate limit policy; `?top=N` consumers per policy |
 | GET | `/v1/waf` | WAF profiles (plugins, schemas), route assignments, per rule statistics (`?top=N`), learned exclusion proposals, schema violations and the anomaly baseline with flagged clients |
@@ -1345,6 +1348,10 @@ Endpoints:
 | POST | `/v1/reload-certs` | re-read certificates |
 | POST | `/v1/logs/reopen` | reopen log files |
 | GET | `/v1/bans`, POST `/v1/bans`, DELETE `/v1/bans?target=` | ban list |
+| GET | `/v1/policy` | the shadow ledger: what every listener in shadow mode would have refused, most frequent first, with the rule, an example, the counts and the ledger's own totals |
+| DELETE | `/v1/policy` | empty the ledger (audited) |
+| GET | `/v1/sessions` | the sessions this daemon is serving now, oldest first: id, kind, listener, client, login, target, one detail the kind chose, and how long it has been up |
+| DELETE | `/v1/sessions` | close the session named by `id`, or every session matching `kind`, `listener` and `user`; a request naming none of them is refused rather than taken as "all", and every closure is audited |
 | GET | `/v1/mfa` | every listener that asks for a second factor: its kind, its enrolment file, and who is enrolled with the parameters, recovery codes left, failures and lockout this process remembers |
 | POST | `/v1/mfa/enrol` | enrol `user` on `listener`, optionally with `issuer`, `digits`, `period_seconds` and `algo`; answers with the secret, the `otpauth://` URI, that URI drawn as a QR code (a PNG `data:` URI) and the recovery codes, which exist only in that answer (audited) |
 | POST | `/v1/mfa/recovery` | replace a person's recovery codes and return the new ones (audited) |

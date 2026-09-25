@@ -232,6 +232,8 @@ do not know where to look, start at the top.
 | Which certificate is served for a name | `xproxyctl tls` |
 | Whether a managed certificate is stuck | `xproxyctl acme` |
 | Who is banned | `xproxyctl bans` |
+| What a policy would refuse if it were enforced | `xproxyctl policy report -top 20` |
+| Who is on the estate right now, and getting them off | `xproxyctl sessions`, `xproxyctl sessions -kill ID` |
 | Which keys are consuming a rate limit | `xproxyctl quotas -top 20` |
 | Which WAF rules fire | `xproxyctl waf -top 20` |
 | Which filters are configured and what they deny | `xproxyctl filters` |
@@ -2784,6 +2786,60 @@ this bound.
 broker sent something this proxy would not parse. It is not passed
 through: its framing is what the client's next read depends on.
 
+## MQTT topic bounds and Sparkplug
+
+**A publication is refused with `payload_too_large` although
+`max_packet_size` is generous.** Two different bounds: `max_packet_size` is
+the packet, `max_payload_bytes` is what the device sent, and a `topics`
+rule's own bound overrides the listener's for the topics it names. The
+refusal's detail carries the rule's name, so the event says which bound it
+was.
+
+**`qos_too_low`.** A `topics` rule set `min_qos`, and the publication asked
+for less. It is the one bound here that is about the process rather than
+the transport: a command that may be lost is not a command. At QoS 0 there
+is no acknowledgement to refuse with, so the client hears nothing and the
+counter is where the refusal is visible.
+
+**`retain_refused` on one topic and not another.** `allow_retain` on a
+`topics` rule overrides the listener's own policy for those topics, in both
+directions: a listener that refuses retain can still let a configuration
+topic keep it, which is the case where a retained message is the point.
+
+**`sparkplug_not_sparkplug`.** `require_namespace` is on and the topic is
+not a Sparkplug B topic at all. The shapes are strict on purpose: four
+levels for a node message and five for a device one, no empty levels, and a
+message type the convention defines — a topic that is nearly a Sparkplug
+topic is not one, and treating it as one would mean guessing which level
+was the node.
+
+**`sparkplug_command_refused`.** `NCMD` or `DCMD` from a publisher outside
+`command_clients`. This is what the section is for: those two are commands
+to equipment, and the rest of Sparkplug is telemetry going up. With the
+list empty the check does not run and validation warns.
+
+**`sparkplug_no_birth` after a broker restart or a proxy reload.** The
+birth state is this process's own: it knows a node was born because it saw
+the birth. A node that was born before this process started has to be born
+again for the check to pass, which is what `NBIRTH` on reconnect does in
+every Sparkplug implementation — but a node that never reconnects will keep
+being refused until it does. Turn `require_birth_before_data` off if the
+estate has publishers that never re-announce.
+
+**`sparkplug_sequence` on a fleet that is working.** The convention's
+sequence increments by one per message from an edge node and wraps at 255,
+with a birth resetting it to zero. A gap means a message was lost between
+the publisher and this relay, two publishers are using one node
+identifier, or somebody is replaying messages. One gap is one refusal: the
+state moves to what arrived, so the whole fleet does not fall over after a
+single lost packet. A payload carrying no sequence number is not checked
+rather than refused.
+
+**`max_nodes`.** Past the bound, the birth and sequence checks are not made
+for a node the table does not hold — the message is forwarded rather than
+refused, because refusing every message from a node because a table is full
+would be an outage caused by a bound.
+
 ## Authorisation
 
 **Everything is refused with `rule:unauthenticated`.** The policy ran
@@ -3021,6 +3077,40 @@ record a plant is asked for, and it is a line per request — a scan of a
 thousand registers a second is a thousand lines a second, which is why
 it is a choice rather than a default.
 
+**A write is refused with illegal data value although it is inside min and
+max.** One of the three bounds that are about a *change* refused it, and
+the security event names which: `value_delta` (it moved further than
+`max_delta` from the last value this relay saw), `value_transition` (the
+change is not in the `transitions` list) or `value_no_select` (the
+`require_before` register was not written to its value recently enough).
+`value_unknown` is the fourth: the check needed the address's current
+value, this relay has not seen one, and `on_unknown: refuse` says to
+refuse rather than fall back to the range.
+
+**`value_unknown` after a restart, or after a masked write.** Both are the
+same thing: the relay knows a value only because it forwarded a write or
+relayed a read, so a fresh process knows nothing until a master polls, and
+a masked write (function code 22) makes it *forget* the address because the
+result depends on what the register held inside the device. A single read
+from any master re-arms the checks. `modbus_value_unknown` counts how often
+a check ran without a value and `modbus_value_points` how many addresses
+are known.
+
+**A write is refused with server busy.** That is `value_rate`: the address
+has had its allowed writes for the period. It is deliberately a different
+exception from an illegal value, because the same write would be accepted
+later and a master's diagnostics should say so. The window is a sliding
+one, counted per unit identifier and address — or per master with
+`per_client: true`.
+
+**The delta or the transition list is not refusing anything.** Check
+`on_unknown`: with the default `allow`, an address whose value the relay
+has not seen is bounded by `min` and `max` alone, and validation warns
+about exactly that. Check also that something reads the register: in a
+plant where the master only ever writes, the relay learns the value from
+the writes it forwards, so the first write after a restart is the one that
+cannot be checked.
+
 ## NTP and NTS gateway
 
 **Clients get no answer at all.** A datagram cannot be refused, so
@@ -3038,6 +3128,61 @@ server saying so itself — by the leap indicator and by stratum 16, which
 are two separate statements. `stratum_too_high`, `root_delay`,
 `root_dispersion`, `delay` and `offset` are the bounds in `quality`.
 Every one of them names the server in the security event.
+
+**A refusal naming the timestamps, the identifier or the distance.**
+These are the three readings of an answer *against itself*, and each
+catches a forgery that passes every threshold. `bogus_timestamps` is an
+answer whose four timestamps cannot describe an exchange: a zero transmit
+or receive timestamp, an answer sent before the request arrived, a last
+synchronisation later than the request — all read between the packet's own
+fields, never against this relay's clock, so a relay whose own time is
+wrong does not refuse correct answers. `bogus_refid` is an identifier that
+does not match the stratum saying how to read it: a stratum 1 answer whose
+identifier is not a reference clock's name, or a stratum 2-or-worse answer
+naming no upstream at all. `root_distance` is half the root delay plus the
+root dispersion, which is the statement a server cannot dress up by
+keeping one half small. Each can be turned off, and validation warns while
+it is.
+
+**`refid_not_allowed`.** `quality.expect_refid` names the reference
+identifiers the estate's servers report, and this answer's is not one of
+them. It is the cheapest statement of server identity the protocol allows
+without a key — and the reason the refusal is worth reading rather than
+suppressing is that a GPS-backed clock now answering as something else is
+either a different device or the same device with a different upstream.
+
+**A leap second in the log, or refused.** `ntp_leap_unexpected` is an
+announcement outside the window a leap second can happen in — the IERS
+only ever uses the end of June, December, March or September. The default
+`leap_policy: alert` forwards it and says so, because the clients will
+hear it from every other server anyway and an estate that suppressed it
+silently would lose the one event worth reading. `window` refuses those and
+keeps the real ones; `refuse` refuses every announcement, for an estate
+that handles leap seconds another way; `allow` says nothing and warns at
+validation. `leap_window` is how early an announcement counts as real
+(default 744h, a month, because implementations differ).
+
+**A source that changed, rather than an answer that was bad.** The six
+`change_detection` signals are about the server and not the packet:
+`ntp_source_changed` (its reference identifier), `ntp_stratum_jumped`,
+`ntp_offset_stepped`, `ntp_dispersion_grew`, `ntp_nts_lost` and
+`ntp_leap_announced`. Read them when the clocks are fine and something in
+the estate is not: each of these is inside every static bound an operator
+would set, which is exactly why it has a signal of its own. The events
+name the server and carry the old and the new value.
+
+With `action: refuse` the answer is also dropped (`source_changed` in the
+refusals) — and only that one answer: the baseline moves to what the
+server is now, so a source that really did change is the new normal by the
+next poll rather than a permanent outage. That is also why the default is
+`alert`: refusing stops the corrections, which for most estates is worse
+than reading an event.
+
+**`ntp_nts_lost` with no `nts_stripped` beside it.** Two different things.
+`nts_stripped` is one exchange where the request carried NTS fields and
+the answer did not. `ntp_nts_lost` is the *server* no longer carrying NTS
+at all, which the relay's own probes see even when no client is asking for
+protected time.
 
 **One source is marked suspect and the others are not.** That is the
 comparison working: the relay probes every server, takes the median of
@@ -3447,6 +3592,109 @@ before closing the client's channel — a lost exit status or a lost
 reply to the `exec` itself looks to the client like a crash. One such
 race was fixed in 1.4; if you see it again, collect the access line and
 the target's own log.
+
+## Shadow mode and the policy report
+
+**`xproxyctl policy report` is empty although a policy is refusing
+things.** Then the policy *is* being enforced, which is the default: the
+report holds what a listener in shadow mode would have refused and did not.
+Check `xproxyctl config` for the `policy` section and the listener's own
+`policy` — a listener naming `{mode: enforce}` overrides an estate-wide
+shadow, and the estate's mode reaches only the listeners that do not name
+one.
+
+**Traffic a policy should refuse is getting through.** Look at the mode
+before the rule. In shadow mode every policy refusal becomes a ledger entry
+and the traffic goes on, which is what shadow mode is; `xproxyctl status`
+shows `would_refusals` where `refusals` would be. Validation warns at every
+start and reload while a listener is in shadow mode, and the warning is in
+the security log.
+
+**The report says it is full.** `policy.max_reasons` (default 4096) bounds
+distinct combinations of kind, listener, reason and rule; past it new
+combinations are dropped and counted rather than the ledger growing
+without limit on strings that came off the network. What is already in it
+keeps counting, so the busiest entries stay accurate. Raise the bound, or
+reset the ledger once you have read it.
+
+**An entry with a huge count and no rule.** Not every policy has named
+rules: the Modbus rule list does, the client lists and verb lists do not, so
+the rule column is empty for those and the reason names the check
+(`client_not_allowed`, `command_refused`, `publish_topic_refused`).
+
+**The example looks truncated or odd.** It is clipped to 160 bytes and
+filtered before it is printed, like every other view of something that came
+off the network. The first example of each entry is kept rather than the
+latest, so the report does not change while it is being read.
+
+**Something was refused in shadow mode anyway.** By design, and the table
+in docs/CONFIG.md's `policy` section says which: authentication and a second
+factor, a ban, a rate limit, a bound, a malformed message, the protocol's
+own negotiation, an HTTP virtual patch, and the forward proxy's `private`
+rule (which protects the estate from the client rather than the other way
+about). Shadow mode is for the statements an estate makes about its own
+traffic, not for the parts that keep the proxy able to read what it is
+forwarding.
+
+**The WAF still blocks on an HTTP listener in shadow mode.** It should not:
+an estate-wide `policy: {mode: shadow}` turns a blocking WAF profile into a
+detecting one. Check that the mode is on the top-level `policy` section — an
+HTTP listener's own `policy` reaches the route's positive security model but
+not the WAF, because routes and profiles are estate-wide rather than
+per-listener. `xproxyctl waf` shows each profile's mode.
+
+## Live sessions
+
+**`xproxyctl sessions` is empty although somebody is connected.** Only
+the kinds that hold a session register one: `ssh` (with its `sftp`
+channels), `telnet`, `vnc`, `rdp`, `ftp` and the Modbus device queues. An
+HTTP request, a DNS query, a syslog message or an NTP exchange is not a
+session and never appears — those are counted, logged and, for HTTP,
+visible per route. Check also that you are asking the right daemon:
+`xproxyctl -socket /run/xgate/mgmt.sock sessions` is the bastion,
+`/run/xrelay/mgmt.sock` the relay.
+
+**A session is listed with no login and no target.** It has not got that
+far. A session is registered before its handshake finishes on purpose,
+so a client that opened a connection and then stopped — a stalled TLS
+handshake, a client waiting on a second factor, a scanner that connects
+and says nothing — is visible and can be closed. The login appears when
+authentication succeeds and the target when it is dialled.
+
+**A session stays in the list after `-kill`.** That is the design: the
+gateway serving it removes the entry when its own goroutine notices the
+socket close, so a session still draining reads as still there rather
+than as gone. It should disappear within a moment. If it does not, the
+serving goroutine is blocked on the *target* rather than the client —
+look at the target's own state, and at `xproxyctl stats` for that kind's
+counters.
+
+**`-kill` says the session is not there, right after listing it.** Two
+causes, both honest. The session ended between the two commands, or it
+was already closed by an earlier `-kill` (or by a filter that matched
+it): a session already closing is not closed twice, and the command says
+so rather than reporting a closure the gateway never made.
+
+**`-kill-matching` refuses to run.** It needs at least one of `-kind`,
+`-listener` or `-user`. A command that drops every session in the estate
+is not one to arrive at by forgetting an argument; name the set you mean.
+
+**Who closed what.** Every closure is in the audit stream with the
+session's identifier, the kind, the listener, the client, the login, the
+target and how long it had been up, together with the kernel-verified
+identity of the caller that asked:
+
+```sh
+xproxyctl tail audit | jq -c 'select(.action=="session_kill")'
+```
+
+**The totals.** `xproxyctl status` carries `sessions_live`,
+`sessions_opened`, `sessions_closed` and `sessions_killed`; Prometheus
+has `xproxy_sessions_live`, `xproxy_sessions_total` and
+`xproxy_sessions_closed_total{by="operator"}`. `sessions_refused` above
+zero means the bound (65536 live sessions) was reached —
+a session is still served when it cannot be listed, because refusing to
+serve because of a full table would be the table deciding policy.
 
 ## Second factor (MFA)
 
@@ -4037,6 +4285,60 @@ cluster check that they agree with each other, not just with an upstream
 server. `xproxyctl tls tickets` reports which peers derive the same key
 set, which is the fastest clock check in a cluster.
 
+### A certificate expired, or is about to
+
+Symptom: every client fails the handshake, usually all at once, and the
+proxy is otherwise healthy.
+
+```sh
+xproxyctl tls                   # EXPIRY lines, worst first, if tls.expiry.warn is set
+xproxyctl -json tls | jq '.[][] | {names, not_after, managed}'
+journalctl -u xproxy | grep 'certificate expiry'
+```
+
+Three things to know before reaching for a switch:
+
+- **The proxy serves an expired certificate on purpose.** Whether to trust
+  one is the client's decision, and unloading it would turn a late renewal
+  into a total outage. What `tls.expiry.refuse_expired` changes is
+  *starting*: a listener will not come up on an expired certificate, and a
+  reload that would install one is refused while the certificate in use
+  goes on working. That last part is the case it exists for -- a renewal
+  that wrote a bad file no longer replaces a good one.
+- **A refusal will not save you from a certificate that expired under a
+  running proxy.** For that, the `warn` window and the alert on the
+  `certificate expiry` security event are the mechanism, and on a pair of
+  nodes they matter more than the refusal, because both nodes' certificates
+  usually expire together and no failover fixes that (`docs/HA.md`).
+- **`acme` certificates report through the ACME status, not the file list.**
+  If a managed certificate is close to expiry, the question is why renewal
+  is not happening: check the error log for the issuance attempt and that
+  the validation path reaches this node.
+
+### A failover happened, or should have, or should not have
+
+```sh
+xproxyctl ready; echo $?               # 0 serve, 1 do not, 2 could not ask
+xproxyctl -json ready | jq .reasons
+xproxyctl cluster                      # are the peers actually connected?
+```
+
+| Symptom | Likely cause |
+|---------|--------------|
+| The address flaps between nodes | A weightless keepalived script, or `-require-upstreams` on nodes that reach the same servers over the same network, so an upstream outage refuses on both |
+| The address moved and came back on its own | Unequal priorities without `nopreempt`: the recovered node took it back. Take it back deliberately instead, by stepping the other node down |
+| The address moved for no reason the logs show | The check script got exit **2**, not 1 — it could not reach the management socket. Check the socket's group and that keepalived's user is in it; the script runs with keepalived's environment, so pass `-socket` if the path is not the default |
+| A node serves again after a restart although it was stepped down | By design: a step-down is not persisted. Take it out of the balancer's configuration, or stop the service |
+| Rate limits doubled, or a banned client is served | The cluster section is off, or the peers are not connected: two nodes without it enforce half each |
+| Every resumption is a full handshake after a failover | The session ticket master key is not shared; `xproxyctl tls tickets` reports peer agreement |
+| The surviving node's WAF suddenly proposes odd exclusions | Learning is per node and it has seen almost nothing. Freeze the decisions in configuration rather than leaving them to a cold node's learning |
+| A Modbus write that was refused yesterday is allowed after a failover | The value and select state are per node and per what passed through it. With `on_unknown: allow` the first write to each point after a promotion is unchecked; with `refuse` it is an outage instead. `docs/HA.md` covers the trade |
+
+`xproxyctl ready` reporting a fault while still serving is not a bug: the
+two upstream and hardening judgements are opt-in, so the reasons appear on
+a serving verdict as well. That is the state to alert on, before it
+becomes a failover.
+
 ## Clients that misbehave
 
 **A client disconnects mid-request.** The access line records status
@@ -4375,11 +4677,11 @@ actually being refused. What each kind can say:
 | `vnc` | `client_refused`, `banned`, `version`, `auth_failed`, `mfa_failed`, `view_only`, the security negotiation (`security_not_offered`, `security_not_usable`, `security_not_mediated`, `subtype_not_offered`, `vencrypt_subtype_not_mediated`, `tight_auth_not_offered`), the variants' own parameters (`tls`, `mslogon_parameters`, `ard_parameters`, `rsaaes_key`, `rsaaes_random`, `rsaaes_transcript`), and the picture (`framebuffer_too_large`, `rectangle_too_large`, `rectangle_outside_framebuffer`, `too_many_rectangles`, `encoded_rectangle_too_large`, `decode_ratio`, `cut_text_too_large`, `unframable`, `pixel_format`, `pixel_format_changed`, `resize_refused`, `resize_too_large`, `clipboard_to_client`, `clipboard_to_target`, and `encoding_<name>` for each encoding taken out of a client's list) |
 | `rdp` | `client_refused`, `banned`, `mfa_failed`, `negotiate`, `no_protocol`, `tls`, `channels`, `channel_inert`, `channel_message`, `channel_chunk`, `channel_compressed`, `device_announce`, `client_info`, `info_encrypted`, `client_security`, `client_encryption`, `no_encryption_method`, `security_exchange`, `conference`, `no_io_channel`, `fast_path`, `data_unit` |
 | `smtp` | `client_not_allowed`, `max_connections`, the command policy (`unknown_command`, `command_refused`, `ehlo_required`, `mail_required`, `mail_and_rcpt_required`, `transaction_open`, `already_authenticated`), TLS and authentication (`encryption_required`, `encryption_required_for_auth`, `authentication_required`, `tls_unavailable`, `tls_already_active`), the bounds (`message_too_large`, `too_many_recipients`, `line_too_long`) and the protocol abuse (`bare_newline`, `smuggling`, `starttls_injection`) |
-| `mqtt` | `client_not_allowed`, `max_connections`, `not_connect`, `second_connect`, `version_refused`, the client id policy (`empty_client_id`, `client_id_too_long`, `client_id_refused`), `no_username`, `keep_alive_refused`, the topic policy (`publish_topic_refused`, `subscribe_refused`, `retain_refused`, `will_topic_refused`, `will_retain_refused`), `packet_too_large`, `malformed` |
+| `mqtt` | `client_not_allowed`, `max_connections`, `not_connect`, `second_connect`, `version_refused`, the client id policy (`empty_client_id`, `client_id_too_long`, `client_id_refused`), `no_username`, `keep_alive_refused`, the topic policy (`publish_topic_refused`, `subscribe_refused`, `retain_refused`, `will_topic_refused`, `will_retain_refused`), `packet_too_large`, `malformed`, the per-topic bounds (`payload_too_large`, `qos_too_high`, `qos_too_low`, `retain_refused`) and the Sparkplug policy (`sparkplug_not_sparkplug`, `sparkplug_namespace`, `sparkplug_message_type`, `sparkplug_command_refused`, `sparkplug_no_birth`, `sparkplug_sequence`) |
 | `ftp` | `client_refused`, `banned`, `max_connections`, `auth_failed`, `identity_refused`, `mfa_required`, `mfa_failed`, the command and path policy (`unknown_command`, `command_refused`, `path_refused`, `read_only`, `active_refused`, `no_data_connection`), the path shapes it will not guess about (`path_separator`, `path_control`, `path_encoding`), the commands that are half a decision (`rest_invalid`, `rest_unscannable`, `rename_out_of_order`), TLS (`tls_required`, `auth_refused`, `ccc_refused`, `tls_pipelined`), the data channel (`bounce_refused`, `malformed_address`, `data_stranger`, `upstream_address`, `transfer_cut`) and the line discipline (`line_too_long`, `malformed_line`, `malformed_command`) |
 | `syslog` | `sender_refused`, `max_connections`, `rate_limit`, `too_large`, `framing`, `malformed`, the message policy (`facility`, `severity`, `pattern`) and `queue_full` when the collector is behind |
-| `modbus` | `client_not_allowed`, `max_connections`, `rate_limit`, `queue_full`, the session's own locks (`tls_handshake`, `no_client_certificate`, `no_role`, `role_not_allowed`, `security_requires_tls`), the framing (`framing`, `frame_too_large`, `malformed`), the policy (`read_only`, `read_only_unknown_function`, `unit_not_allowed`, `rule_deny`, `no_rule`, `value_out_of_range`, `value_masked_write`, `coil_set_not_allowed`, `coil_clear_not_allowed`), the routing (`no_route_for_unit`) and what the device answered (`malformed_response`, `response_unit_mismatch`) |
-| `ntp` | `banned`, `client_not_allowed`, `rate_limit`, `max_associations`, `outstanding_full`, the dispatch (`control_mode`, `private_mode`, `version5`, `version`, `version_not_allowed`, `mode_not_allowed`), the association shape (`not_a_peer`, `broadcast_not_allowed`), the packet (`malformed`, `packet_too_large`, `too_many_extensions`, `unknown_extension`, `ambiguous_mac`), the identity it demanded (`nts_required`, `auth_required`, `auth_failed`), the egress (`no_server`, `server_not_allowed`) and what the server answered (`malformed_response`, `unsolicited`, `response_mode`, `kiss_of_death`, `unsynchronised`, `unsynchronised_stratum`, `stratum_too_high`, `root_delay`, `root_dispersion`, `delay`, `offset`, `nts_stripped`, `auth_stripped`) |
+| `modbus` | `client_not_allowed`, `max_connections`, `rate_limit`, `queue_full`, the session's own locks (`tls_handshake`, `no_client_certificate`, `no_role`, `role_not_allowed`, `security_requires_tls`), the framing (`framing`, `frame_too_large`, `malformed`), the policy (`read_only`, `read_only_unknown_function`, `unit_not_allowed`, `rule_deny`, `no_rule`, `value_out_of_range`, `value_delta`, `value_transition`, `value_rate`, `value_no_select`, `value_unknown`, `value_masked_write`, `coil_set_not_allowed`, `coil_clear_not_allowed`), the routing (`no_route_for_unit`) and what the device answered (`malformed_response`, `response_unit_mismatch`) |
+| `ntp` | `banned`, `client_not_allowed`, `rate_limit`, `max_associations`, `outstanding_full`, the dispatch (`control_mode`, `private_mode`, `version5`, `version`, `version_not_allowed`, `mode_not_allowed`), the association shape (`not_a_peer`, `broadcast_not_allowed`), the packet (`malformed`, `packet_too_large`, `too_many_extensions`, `unknown_extension`, `ambiguous_mac`), the identity it demanded (`nts_required`, `auth_required`, `auth_failed`), the egress (`no_server`, `server_not_allowed`), what the server answered (`malformed_response`, `unsolicited`, `response_mode`, `kiss_of_death`, `unsynchronised`, `unsynchronised_stratum`, `stratum_too_high`, `stratum_not_allowed`, `root_delay`, `root_dispersion`, `root_distance`, `delay`, `offset`, `bogus_timestamps`, `bogus_refid`, `refid_not_allowed`, `leap_announced`, `leap_unexpected`, `nts_stripped`, `auth_stripped`) and what the server became (`source_changed`, with `change_detection.action: refuse`) |
 | `ntske` | `banned`, `client_not_allowed`, `max_connections`, `handshake_limit`, and what the handshake said (`not_tls`, `no_hello`, `incomplete_hello`, `hello_too_large`, `alpn_not_offered`, `server_name_not_allowed`) |
 
 Two things are deliberately *not* in this family. Refusals by the

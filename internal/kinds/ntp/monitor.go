@@ -156,6 +156,13 @@ func (m *Monitor) round() {
 			m.fail(i, b, StateUnreachable, "kiss-o'-death: "+pkt.KissCode())
 			continue
 		}
+		// The probe is also a measurement of what this server is, and
+		// the probes are the measurement a listener has when no client
+		// is polling: an estate whose devices ask once an hour would
+		// otherwise notice a replaced source an hour late.
+		if changes := m.s.watch.Check(b.addr.String(), pkt, offset); len(changes) > 0 {
+			m.s.watch.Report(b.addr.String(), changes)
+		}
 		m.offset[i] = smooth(m.offset[i], offset)
 		m.delay[i] = smooth(m.delay[i], rtt)
 		samples = append(samples, sample{b: b, offset: m.offset[i], ok: true})

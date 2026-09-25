@@ -50,6 +50,56 @@ on the first line of the file to enable it.
 | `tracing` | object | none | W3C trace context and span export; see `tracing` |
 | `capture` | object | none | pcapng capture of the exchanges the proxy handled; see `capture` |
 | `scim` | object | none | A SCIM 2.0 provisioning endpoint for the second factor and the API keys; see `scim` |
+| `policy` | object | `{mode: enforce}` | Whether the listeners enforce their policies or only evaluate them and write down what they would have refused; see `policy` |
+
+## policy
+
+A policy nobody dares switch on is not a control, and the reason nobody
+dares is always the same: no one knows what it would refuse at three in
+the morning. Shadow mode is the answer the WAF has had for years,
+generalised to every protocol — the policy is evaluated on real traffic,
+every decision it would have made is written down, and nothing is refused
+for policy.
+
+```yaml
+policy:
+  mode: shadow          # enforce (default) or shadow
+  max_reasons: 4096
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `mode` | enum | `enforce` | `enforce` or `shadow`, for every listener that does not name its own in `server.listeners[].policy`. `shadow` warns at validation |
+| `max_reasons` | int | `4096` | The ledger's bound: distinct combinations of kind, listener, reason and rule. Past it the report says it is full rather than quietly stopping |
+
+Read it with `xproxyctl policy report` (`-top N`, `-json`), which lists
+what each listener would have refused, most frequent first, with the rule
+that decided, an example of what was asked for, and when it was first and
+last seen. `xproxyctl policy reset` empties the ledger, which is what an
+operator runs after fixing a policy so the next week's report is about the
+new one. `GET /v1/policy` and `DELETE /v1/policy` are the endpoints; the
+totals are in `xproxyctl status` as `would_refusals` beside `refusals`,
+and `shadow` carries the ledger's own state.
+
+**What shadow mode does and does not stop.** It applies to *policy*: the
+statements an estate writes about what its own traffic may do. It never
+applies to integrity, identity or a bound, because forwarding those would
+mean acting on bytes the code could not read, or admitting somebody who
+did not authenticate — a trial instead of a door.
+
+| Kind | Evaluated and recorded | Still refused |
+|------|------------------------|---------------|
+| `modbus` | every rule: function, unit, address range, value bounds, rate and window | malformed frames, the unit table, the queue bound, rate limits, bans |
+| `ntp` | the client list and every request rule (versions, modes, extension fields, the identity it demands), and every answer rule (stratum, distances, timestamps, identifier, leap) | mode 6 and 7, version 5, malformed packets, bans, rate limits, the association and outstanding bounds |
+| `mqtt` | the client list, the CONNECT policy (version, client id, username, keep alive, will), the publish and subscribe policies, retain | malformed packets, a first packet that is not CONNECT, a second CONNECT, the packet bound, the connection limit, TLS failures |
+| `syslog` | the sender list, the facility, severity and pattern rules | malformed messages, the rate limit, a full queue |
+| `dns` | the client list, the block list, response policy zones, tunnel cooldowns | malformed queries, bans, the rate limit, the worker bound, the cookie requirement |
+| `ssh` | the client list and the command, subsystem, environment and file-transfer rules | an unknown host key, a key that does not authenticate, a certificate extension that itself refuses, MFA, bans, the connection limit, a request it could not parse |
+| `telnet`, `vnc`, `rdp`, `ftp` | the client list; telnet's option list; ftp's verb list | bans, connection limits, MFA, malformed input, the protocol's own version and encryption negotiation |
+| `smtp` | the verb list | the protocol-state refusals, the encryption and authentication requirements, the size bound, malformed commands |
+| `forward` | the destination lists: ports, deny, allow | `private` (which protects the estate *from* the client — shadowing it would turn a trial into a server-side request forgery), a destination that does not resolve, credentials, tunnel bounds |
+| `http` | the route's positive security model (methods, media types, query parameters, shape bounds); a blocking WAF profile runs as a detecting one, and `xproxyctl waf -top` says which rule would have blocked what | bans, rate limits, virtual patches, authentication and authorisation filters, the normalisation guard, the request and body bounds |
+| `tcp`, `udp`, `ntske` | nothing: their refusals are either "no destination exists for this" or a bound, and neither is a policy a shadow run could answer | all of them |
 
 ## server
 
@@ -90,6 +140,7 @@ off) logs a warning and lists them under `mismatched_peers`.
 | `redirect_to_https` | bool | `false` | Answer every request with 308 to `https://host/path?query`. Plaintext listeners only. |
 | `connection_rate` | object | none | `{per_second, burst}`: how fast this listener accepts, replacing `server.limits.connection_rate` for it. See below |
 | `connection_rate_per_source` | object | none | `{per_second, burst, ipv4_prefix, ipv6_prefix, max_sources}`: how fast one source network may connect to this listener |
+| `policy` | object | the estate's `policy` | `{mode: enforce|shadow}` for this listener alone; see `policy` |
 
 ### server.listeners[].tcp (kind: tcp)
 
@@ -1438,12 +1489,62 @@ accept. Changing the `mqtt` section rebinds the listener on reload.
 | `action` | `disconnect`, `drop` | `disconnect` | On a refused PUBLISH or SUBSCRIBE. `drop` refuses the one packet and acknowledges it — PUBACK or PUBREC with `0x87` at QoS 1 and 2, a SUBACK of `0x80` for every filter — so a fleet does not fall off the network over one misconfigured device. A PUBREL for a refused QoS 2 publication is answered by the proxy, since the broker never saw the PUBLISH |
 | `proxy_protocol` | bool | `false` | Send a PROXY protocol v2 header with the client address to the broker |
 | `allow_clients` | list of CIDR | `[]` (any) | Others are closed before the CONNECT is read |
+| `max_payload_bytes` | int | `0` (`max_packet_size` decides) | The payload of one PUBLISH. Not the same bound as `max_packet_size`: a policy about payloads is a policy about what a device sends, and a fleet whose telemetry is two hundred octets has no business sending a megabyte |
+| `max_qos` | int | `2` | The highest quality of service a publication or a subscription may ask for. QoS 2 costs a broker four packets and a stored state per message, which is what makes it worth bounding on a fleet that does not need it |
+| `topics` | list | `[]` | Per-topic bounds, below |
+| `sparkplug` | object | | The Sparkplug B policy, below |
+
+**`topics[]`** is where the payload, QoS and retain bounds belong, because
+all three are properties of the *topic* rather than of the listener: a
+command topic wants QoS at least 1 and a payload of tens of octets, a
+firmware topic wants a large payload and retain, telemetry wants QoS 0 and
+neither. One bound for the listener has to be the loosest of the three,
+which is the same as no bound. The first entry whose filters match decides;
+a topic no entry matches falls back to the listener's own bounds.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | name | required, unique | Carried into the logs and the counters when the rule decides |
+| `filters` | list | required | MQTT topic filters (`plant/+/control`, `spBv1.0/#`) |
+| `max_payload_bytes` | int | `0` (the listener's) | The payload of a publication to these topics |
+| `min_qos`, `max_qos` | int | | The quality of service window. `min_qos: 1` on a command topic is "a command must be acknowledged", which is a statement about the process rather than about the transport |
+| `allow_retain` | bool | the listener's | Retain for these topics. `true` overrides a listener that refuses retain, which is how a configuration topic keeps the one case where a retained message is the point |
+
+**`sparkplug`** is the Sparkplug B policy. Sparkplug B is the convention
+that makes MQTT an industrial protocol, and it belongs in a proxy for one
+reason: of its message types, two — `NCMD` and `DCMD` — are **commands to
+equipment**, the MQTT equivalent of a Modbus write, and the topic says
+which is which. In most estates the publishers with any business sending
+one are a short and known list, and a broker's own topic ACLs usually
+cannot tell a command from a reading.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Read Sparkplug topics and apply this section |
+| `namespace` | string | `spBv1.0` | The first topic level |
+| `require_namespace` | bool | `false` | Refuse a publication whose topic is not a Sparkplug topic at all, which is how a listener is declared to carry nothing else |
+| `allow_message_types` | list | `[]` (all) | `NBIRTH`, `NDEATH`, `DBIRTH`, `DDEATH`, `NDATA`, `DDATA`, `NCMD`, `DCMD`, `STATE` |
+| `command_clients` | list of CIDR | `[]` | The networks that may publish `NCMD` and `DCMD`. Empty leaves commands to the ordinary publish policy, and warns: naming them is what this section is for |
+| `require_birth_before_data` | bool | `false` | Refuse `NDATA` or `DDATA` from an edge node no birth has been seen from — the convention's own ordering, which the broker does not enforce |
+| `check_sequence` | bool | `false` | Refuse a message whose sequence number is not the next one for its edge node (it increments by one and wraps at 255, and a birth resets it to zero). A gap or a repeat is a lost message, a duplicated publisher, or somebody replaying one |
+| `max_nodes` | int | `8192` | Edge nodes remembered for the birth and sequence checks; the identifiers come off the network. Past the bound those two checks are not made for a node the table does not hold rather than the node being refused |
+
+**The metrics are not decoded.** A Sparkplug payload is protobuf and the
+metric set is the plant's own; carrying a schema per estate is not this
+proxy's business. The two top-level fields — the timestamp and the sequence
+number, two varints at a fixed place in every payload — are read, and the
+rest is forwarded untouched.
 
 Every session writes one `mqtt` line to the access log with the client
 address, client id, username, version, subscriptions, publications and
 why it closed. Counters: `mqtt_sessions`, `mqtt_sessions_open`,
 `mqtt_published`, `mqtt_subscribed`, `mqtt_refused`, `mqtt_rejected`,
-`mqtt_protocol_errors`; the matching `xproxy_mqtt_*` metrics. Refusals
+`mqtt_protocol_errors`; the matching `xproxy_mqtt_*` metrics. The refusal
+reasons a `topics` rule or the Sparkplug policy adds are
+`payload_too_large`, `qos_too_high`, `qos_too_low`, `retain_refused`,
+`sparkplug_not_sparkplug`, `sparkplug_namespace`,
+`sparkplug_message_type`, `sparkplug_command_refused`,
+`sparkplug_no_birth` and `sparkplug_sequence`. Refusals
 are `mqtt_denied` deny events, so a `bans.triggers` entry on that reason
 turns a device walking the topic tree into a ban.
 
@@ -1637,6 +1738,45 @@ register that may hold 0 to 100 and nothing else.
 | `min`, `max` | int | required unless `coils` is set | Bound each 16-bit value written into that range, inclusive |
 | `signed` | bool | `false` | Read the value as a signed 16-bit integer, which is how most setpoints are encoded |
 | `coils` | bool | | Bound a coil write instead: `true` allows setting a coil in the range, `false` allows only clearing it. "This client may stop the pump but not start it" |
+| `max_delta` | int | `0` (off) | How far one write may move the value from the last one this relay saw at that address: a setpoint that may be nudged and not jumped |
+| `transitions` | list | `[]` (any) | The value changes permitted, as `from->to` with numbers or `*` on either side: `["0->1", "1->0"]` is a state register that may be started and stopped and not driven anywhere else. `*->*` is refused as a list that permits everything |
+| `rate` | object | | `{max, period, per_client}`: how often this range may be written, counted per unit identifier and address (`per_client` counts each master's writes separately instead). Not the listener's rate limit, which is about frames from a client: this is about one address, and a master that moves a setpoint sixty times a minute is either broken or not the master it claims to be |
+| `require_before` | object | | Select-before-operate: `{registers, equals, within (default 30s), unit}`. The write is refused unless that register was **written** to that value within the window. IEC 60870-5-104 has this in the protocol; Modbus does not, so a plant that wants it either implements it in every client — where the frame that skips it looks exactly like the frame that did not — or has the relay enforce it |
+| `on_unknown` | enum | `allow` | What happens when a check needs the address's current value and this relay has not seen one: `allow` (counted, with `min` and `max` still in force) or `refuse`. It warns while `max_delta` or `transitions` are set with `allow` |
+
+**The three bounds that are about a change**, and the honest limit of all
+three: `max_delta`, `transitions` and `require_before` need to know what
+the value *is*, and what this relay knows is the last value it **saw** — a
+write it forwarded, or a read it relayed back. A value changed by another
+master, by a local panel or by the process itself was never on this path.
+So `on_unknown` says what to do when there is no value, the number of such
+checks is counted (`modbus_value_unknown`), and `min`/`max`, which need
+nothing, are the bounds that always hold. A masked write (function code
+22) makes the relay *forget* the address rather than guess: the result
+depends on what the register held inside the device.
+
+`max_value_points` on the listener bounds how many addresses are
+remembered (default 65536; a plant has hundreds), because the addresses
+come off the network.
+
+```yaml
+rules:
+  - name: setpoint
+    action: allow
+    clients: ["10.30.7.13/32"]        # HMI-3 and nothing else
+    units: ["2"]
+    functions: [write_single_register]
+    addresses: ["40001"]
+    schedule: {days: [sat], from: "06:00", to: "14:00", timezone: Europe/Stockholm}
+    values:
+      - registers: "40001"
+        min: 0
+        max: 1500                      # the range
+        max_delta: 100                 # and not in one jump
+        rate: {max: 1, period: 1m}     # and not more than once a minute
+        require_before: {registers: "40000", equals: 1, within: 30s}
+        on_unknown: refuse
+```
 
 **`schedule`** limits a rule to a time window. A rule with no schedule is
 always in force, so "these rules during the shift and those outside it"
@@ -1748,7 +1888,8 @@ the refusal counters: `client_not_allowed`, `tls_handshake`,
 `malformed_response`, `response_unit_mismatch`, `no_route_for_unit`,
 `max_connections`, `rate_limit`, `queue_full`, `read_only`,
 `read_only_unknown_function`, `unit_not_allowed`, `rule_deny`, `no_rule`,
-`value_out_of_range`, `value_masked_write`, `coil_set_not_allowed`,
+`value_out_of_range`, `value_delta`, `value_transition`, `value_rate`,
+`value_no_select`, `value_unknown`, `value_masked_write`, `coil_set_not_allowed`,
 `coil_clear_not_allowed`. A selector that does not match is not a refusal
 of its own: the frame falls through to the next rule, and to `no_rule` if
 none matches.
@@ -1804,6 +1945,7 @@ hang. NTS key establishment is TCP and is a listener of its own
 | `extensions` | object | | What extension fields a packet may carry, below |
 | `quality` | object | | What is required of a server's answer, and how the servers are compared, below |
 | `holdover` | object | | How long a server whose time cannot be verified is still used, below |
+| `change_detection` | object | | Watch each server for a change in **what it is** rather than in what it answered, below |
 | `kod` | object | | The kiss-o'-death policy, below |
 | `interleaved` | bool | `true` | Accept interleaved mode, where a server's answer echoes its own previous transmit timestamp rather than the client's. It is how a server hands out a hardware-quality transmit timestamp; refusing it means refusing the most accurate exchange the protocol has |
 | `learn` | object | | Learning mode, below |
@@ -1880,6 +2022,13 @@ fields.
 | `max_offset`, `max_delay` | duration | `0` (off) | Refuse an answer whose measured offset or round trip is past them |
 | `max_root_delay`, `max_root_dispersion` | duration | `0` (off) | Refuse an answer whose own statement of its error is past them |
 | `max_stratum` | int | `0` (the protocol's 15) | Refuse an answer from too far down the tree |
+| `allow_strata` | list of int | `[]` (any) | The exhaustive list of strata accepted, 1..15. A bound admits everything below it and a list does not: a plant whose servers are a reference clock and its own two followers has no stratum 5 in it, and an answer claiming one is not a server that got worse |
+| `max_root_distance` | duration | `0` (off) | Refuse an answer whose **synchronisation distance** — half the root delay plus the root dispersion, RFC 5905's own measure — is past it. It is the bound that cannot be satisfied by reporting a small delay and a large dispersion or the other way about |
+| `refuse_bogus_timestamps` | bool | `true` | Refuse an answer whose four timestamps cannot describe an exchange: a zero transmit or receive timestamp, an answer sent before the request arrived, a last synchronisation later than the request. The check is between the packet's own fields, **never against this relay's clock**, so a relay whose own time is wrong does not refuse correct answers; it is not applied to an interleaved answer, whose transmit timestamp is the server's previous one on purpose. Off warns |
+| `refuse_bogus_refid` | bool | `true` | Refuse an answer whose reference identifier does not match the stratum that says how to read it: a stratum 1 answer whose identifier is not a reference clock's name, or a stratum 2-or-worse answer with none at all. At stratum 2 and above only the unset value is called wrong, because the field may be four octets of a hash of an IPv6 address. Off warns |
+| `expect_refid` | list | `[]` (any) | The reference identifiers a server may report: the four-character name at stratum 0 and 1 (`GPS`, `PPS`, `DCFa`) and the dotted quad above. It is the cheapest statement of server identity the protocol allows without a key — a GPS-backed clock that starts answering as something else is either a different device or the same device with a different upstream |
+| `leap_policy` | enum | `alert` | What happens when an answer announces a leap second: `alert` (forward it and raise a security event when it is outside the window a leap second can happen in), `allow` (say nothing — warns), `window` (refuse an announcement outside that window) or `refuse` (refuse every announcement). An announcement makes every client that hears it plan to move its clock, and the IERS only ever uses the end of June, December, March or September |
+| `leap_window` | duration | `744h` (a month) | How long before the end of such a month an announcement is plausible; 1h..2160h. RFC 5905 sets the indicator during the last day and some servers announce from the start of the month |
 | `refuse_unsynchronised` | bool | `true` | Refuse an answer from a server that says its own clock is not synchronised — by the leap indicator **or** by stratum 16, which are two separate statements |
 | `healthy_after`, `unhealthy_after` | int | `3` | The hysteresis: how many probes in a row it takes to change a server's state |
 | `on_all_suspect` | enum | `pass` | What happens when no server is usable: `pass` (keep forwarding and keep saying so) or `refuse`. A blanket fail-closed stops the estate's clocks, which is itself an outage, so `refuse` warns |
@@ -1896,6 +2045,36 @@ says exactly that.
 still used: `max_duration` (0 disables it). Past it the listener says the
 holdover has expired, and the estate's `on_all_suspect` decides whether
 that stops the answers.
+
+**`change_detection`** asks a different question from every bound in
+`quality`. Those ask whether one answer is good enough; this asks whether
+the server is still the same server, answering the same way — which is
+the question the interesting attack leaves open, because it passes every
+static bound. A source that was a GPS clock at stratum 1 and now answers
+as something else at stratum 4 is inside `max_stratum: 8`. An offset that
+steps by fourteen seconds between two polls is inside `max_offset: 30s`. A
+dispersion that grows from a millisecond to a second is inside
+`max_root_dispersion: 2s`. A server that stops carrying NTS is carrying
+valid NTP.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Watch each server. Off warns: nothing else here notices a source being replaced, re-pointed or stood in front of |
+| `max_step` | duration | `1s` | How far the measured offset to one server may move between two measurements. A real clock drifts; it does not step |
+| `max_stratum_jump` | int | `2` | How far a server's stratum may move at once. A server whose own upstream failed over moves by one or two; one that moved by eight is answering for somebody else |
+| `dispersion_growth` | int | `8` | The factor by which a server's root dispersion may grow between measurements before it is said |
+| `action` | enum | `alert` | `alert` (a security event and a counter) or `refuse` (that, and the answer does not reach the client). `refuse` warns: it stops the corrections rather than merely reporting them |
+
+Six detections, each with a counter and a security event of its own:
+`ntp_source_changed` (the reference identifier), `ntp_stratum_jumped`,
+`ntp_offset_stepped`, `ntp_dispersion_grew`, `ntp_nts_lost` and
+`ntp_leap_announced`. They are fed by both the monitor's own probes and
+the exchanges the relay forwards, so an estate whose devices poll once an
+hour still notices within a probe interval. The baseline moves to what
+was measured whether or not the change was reported, so one change is one
+alert rather than one per poll for ever; a kiss-o'-death and an
+unsynchronised answer never become the baseline, since neither carries a
+measurement of the server's time.
 
 **`kod`** is the kiss-o'-death: a stratum-0 answer whose four reference
 identifier octets are a code. It is the protocol's own way of saying "not
@@ -1980,7 +2159,9 @@ Counters: `ntp_requests`, `ntp_forwarded`, `ntp_responses`,
 `ntp_upstream_failed`, `ntp_upstream_unavailable`, `ntp_send_failed`,
 `ntp_interleaved`, `ntp_nts_forwarded`, `ntp_version5`, `ntp_probes`,
 `ntp_probe_failed`, `ntp_disagreements`, `ntp_source_healthy`,
-`ntp_source_unhealthy`, `ntp_holdover_expired`. Refusals are `ntp_denied`
+`ntp_source_unhealthy`, `ntp_holdover_expired`, `ntp_source_changed`,
+`ntp_stratum_jumped`, `ntp_offset_stepped`, `ntp_dispersion_grew`,
+`ntp_nts_lost`, `ntp_leap_announced`, `ntp_leap_unexpected`. Refusals are `ntp_denied`
 for the ban triggers, and the fine-grained reason is in the refusal
 counters: `banned`, `client_not_allowed`, `rate_limit`, `control_mode`,
 `private_mode`, `version5`, `version`, `version_not_allowed`,
@@ -1990,8 +2171,11 @@ counters: `banned`, `client_not_allowed`, `rate_limit`, `control_mode`,
 `max_associations`, `outstanding_full`, `no_server`,
 `server_not_allowed`, `malformed_response`, `unsolicited`,
 `response_mode`, `kiss_of_death`, `unsynchronised`,
-`unsynchronised_stratum`, `stratum_too_high`, `root_delay`,
-`root_dispersion`, `delay`, `offset`, `nts_stripped`, `auth_stripped`.
+`unsynchronised_stratum`, `stratum_too_high`, `stratum_not_allowed`,
+`root_delay`, `root_dispersion`, `root_distance`, `delay`, `offset`,
+`bogus_timestamps`, `bogus_refid`, `refid_not_allowed`,
+`leap_announced`, `leap_unexpected`, `source_changed`, `nts_stripped`,
+`auth_stripped`.
 
 ### server.listeners[].ntske (kind: ntske)
 
@@ -3566,6 +3750,7 @@ upstream `total` for those. 0-RTT is never enabled.
 | `ech` | object | none | Accept Encrypted Client Hello; see below |
 | `ocsp_stapling` | object | none | Fetch OCSP responses for the served certificates in the background and staple them into handshakes; see below |
 | `ct` | object | none | Check the Certificate Transparency SCTs embedded in file certificates at load; see below |
+| `expiry` | object | none | What an expired or nearly expired certificate does; see below |
 
 #### server.listeners[].tls.key_exchange
 
@@ -3663,6 +3848,48 @@ accepted, or give the public name its own backend.
 from, so fingerprinting keeps working; what changes is that the SNI in
 `sni` is the public name for every ECH client. The access log carries
 `ech: true` when ECH was accepted, which is how to tell the two apart.
+
+#### server.listeners[].tls.expiry
+
+A certificate outliving its validity is the single most common way a
+working service stops working, and by default this proxy serves an
+expired certificate: the client is the one that decides whether to trust
+it, so serving one is not a security hole — it is an outage nobody can
+read, because every client discovers it separately.
+
+This section says so in one place instead. What it can do is bounded, and
+the boundary is deliberate:
+
+- `refuse_expired` makes an already expired certificate a **load error**.
+  At start the listener does not come up and the message names the file.
+  On a reload the new configuration is refused and **the certificate
+  already in use keeps working**, which is the case where refusing is
+  strictly better than serving: a botched renewal that wrote an expired
+  file no longer replaces a working one.
+- `warn` is a window before expiry. Certificates inside it are reported,
+  worst first, by `xproxyctl tls` (an `EXPIRY` line each), by
+  `GET /v1/tls/expiring`, and in the security log at every load and
+  reload.
+
+A certificate that expires while the proxy is running is **never**
+unloaded, whatever this section says: a listener that stops answering is
+worse than one answering with a certificate the client will reject for
+itself, and unloading it would turn a renewal that ran late into an
+outage. It is reported and counted, and `docs/HA.md` covers why that
+report matters more than the refusal on a pair of nodes.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `refuse_expired` | bool | `false` | An expired certificate is a load error rather than something to serve |
+| `warn` | duration | `0` | Report certificates this close to expiry (0 for none, otherwise 1h to 8760h) |
+
+```yaml
+tls:
+  certificates: [{cert_file: /etc/xproxy/tls/site.pem, key_file: /etc/xproxy/tls/site-key.pem}]
+  expiry:
+    refuse_expired: true
+    warn: 336h          # fourteen days
+```
 
 #### server.listeners[].tls.ocsp_stapling
 
@@ -4879,7 +5106,9 @@ reason it logged, described in
 `xproxy_account_blocks_active`,
 `xproxy_log_sent_total{sink}`, `xproxy_log_dropped_total{sink}`,
 `xproxy_connections_open`, `xproxy_requests_in_flight`,
-`xproxy_bans_active`, `xproxy_load_level`,
+`xproxy_bans_active`, `xproxy_sessions_live`,
+`xproxy_sessions_total`, `xproxy_sessions_closed_total{by}`,
+`xproxy_load_level`,
 `xproxy_upstream_latency_seconds`, `xproxy_shedding{class}`,
 `xproxy_cluster_peers`, `xproxy_cluster_peers_connected`,
 `xproxy_cluster_messages_total{direction,type}`,

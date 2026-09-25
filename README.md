@@ -932,6 +932,8 @@ script:
 | Defence | `bans`, `ban`, `unban`, `waf`, `botscore`, `accounts`, `patches`, `honeypot`, `filters`, `api` |
 | Traffic | `drain`, `maintenance`, `cache`, `dns`, `ingress`, `icap`, `geoip` |
 | Identity | `mfa`, `apikey`, `htpasswd` |
+| Policy rollout | `policy report` — what every listener in shadow mode would have refused, most frequent first, with the rule that decided and an example of what was asked for; `policy reset` empties the ledger once the policy is fixed |
+| Live sessions | `sessions` — who is on now across SSH, SFTP, telnet, VNC, RDP, FTP and the Modbus device queues, with the login, the target and how long; `-kill ID` closes one and `-kill-matching` closes a set by kind, listener or person (audited, and a filter that names nothing is refused rather than taken as everything) |
 | Records | `tail`, `session` (list, show, play), `capture` (start, stop, status), `reopen-logs` |
 | Views | `tui` — a full screen terminal view; the web GUI is `xproxy-admin`, with viewer and operator roles, validated configuration editing, graphs and live logs |
 | Recordings | `xproxy-replay` reads a session file and shows it: a terminal session replayed with its timing, a VNC one decoded into frames or one self-contained page, an RDP one as the timeline of what it did. It needs no daemon and opens no sockets |
@@ -961,6 +963,7 @@ the stages a request can die at and every deny reason.
 | [docs/SECURITY.md](docs/SECURITY.md) | Security posture, controls, secure development, reporting |
 | [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) | STRIDE analysis per trust boundary |
 | [docs/HARDENING.md](docs/HARDENING.md) | Host hardening checklist |
+| [docs/HA.md](docs/HA.md) | Redundancy and failover: the readiness verdict a VRRP check script runs, stepping a node down before touching it, which state survives a failover and which does not, and what each of the three daemons costs when an address moves |
 | [docs/EXTENDING.md](docs/EXTENDING.md) | Compiled-in middleware and the WebAssembly ABI |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Measured scale and throughput |
 | [docs/TESTS.md](docs/TESTS.md) | Test harness, coverage and mutation gates |

@@ -44,6 +44,7 @@ import (
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/safe"
+	"github.com/rom/xproxy/internal/sessions"
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/upstream"
 )
@@ -252,6 +253,7 @@ type session struct {
 	ip     netip.Addr
 	role   string
 	secure bool
+	live   *sessions.Session
 
 	// workers are the per-route device connections, opened on demand:
 	// one session may reach several devices when the routes send
@@ -312,6 +314,15 @@ func (t *server) handle(client net.Conn) {
 		t.log(se, start, "client_not_allowed")
 		return
 	}
+	// Listed from here: a Modbus session is a device's connection that
+	// lives for as long as the plant runs, so "who is connected and can
+	// you get them off" is the question an operator has during an
+	// incident. Closing the master's socket ends it; the per-device
+	// workers are stopped by the deferred work above.
+	se.live = s.Sessions().Register(sessions.Info{
+		Kind: "modbus", Listener: t.cfg.Name, Client: client.RemoteAddr().String(),
+	}, func() { _ = client.Close() })
+	defer se.live.Done()
 	if t.m.TLSMode == "implicit" || (t.tlsCfg != nil && t.m.TLSMode == "") {
 		tc := tls.Server(client, t.tlsCfg)
 		_ = tc.SetDeadline(time.Now().Add(10 * time.Second))
@@ -376,6 +387,7 @@ func (se *session) readRole(st tls.ConnectionState) string {
 		return "role_not_allowed"
 	}
 	se.role = role
+	se.live.Annotate(role, "", "")
 	return ""
 }
 
@@ -457,11 +469,14 @@ func (se *session) run() string {
 			}
 		}
 		if !decision.Allow {
-			// Learning mode without enforcement: the refusal is recorded
-			// and the frame goes on, which is the only honest way to
-			// find out what a policy would have broken.
+			// Shadow mode, or learning without enforcement: the refusal
+			// is recorded and the frame goes on, which is the only honest
+			// way to find out what a policy would have broken.
 			t.host.Counters().ModbusWouldDeny.Add(1)
+			t.host.Counters().WouldRefuse("modbus", decision.Reason)
 			t.audit(se, frame, pdu, decision, "would_deny")
+			t.host.Shadow().Record("modbus", t.cfg.Name, decision.Reason, decision.Rule,
+				fmt.Sprintf("unit %d %s %s", frame.Unit, wire.FunctionName(pdu.Function), pdu.Access))
 		}
 		if t.m.LogFrames {
 			t.logFrame(se, frame, pdu, decision)
@@ -485,6 +500,17 @@ func (se *session) run() string {
 			se.answerException(frame, pdu.Function, wire.ExServerBusy, nil)
 			continue
 		}
+		// The values this write carries become what the relay knows about
+		// those addresses: the next write's delta, transition and rate are
+		// measured against them. Recorded here, where the frame has been
+		// allowed and is about to reach the device.
+		t.policy.observeWrite(req, time.Now())
+		// The value table's own numbers, so an operator can see how many
+		// addresses the policy knows a value for and how often a check
+		// ran without one.
+		points, unknown, _ := t.policy.ValueState()
+		t.host.Counters().ModbusValuePoints.Store(int64(points))
+		t.host.Counters().ModbusValueUnknown.Store(unknown)
 		j := &job{req: req, raw: raw, frame: frame, txn: frame.Transaction}
 		select {
 		case w.jobs <- j:
@@ -497,8 +523,12 @@ func (se *session) run() string {
 
 // enforcing says whether the policy decides or only records. A learning
 // run is observe-only unless it says otherwise, which is what stops one
-// being left on by accident.
+// being left on by accident, and a listener in shadow mode records
+// without deciding whether or not it is learning.
 func (t *server) enforcing() bool {
+	if t.cfg.Shadowing() {
+		return false
+	}
 	l := t.m.Learn
 	if l == nil || !l.Enabled {
 		return true
@@ -583,6 +613,13 @@ func (se *session) serveWorker(w *worker) {
 			t.host.Counters().ModbusExceptions.Add(1)
 			se.exceptions.Add(1)
 			t.learner.ObserveException(j.req, time.Now())
+		}
+		// A read's answer is the other half of what the relay knows: a
+		// master polling a register tells this policy what the register
+		// holds, which is what a delta or a transition is measured
+		// against. An exception says nothing about a value.
+		if pdu != nil && !pdu.IsException {
+			t.policy.observeRead(j.req, pdu, time.Now())
 		}
 		t.traceResponse(se, w, j, resp, pdu)
 		se.send(resp)
@@ -776,8 +813,17 @@ func exceptionFor(d Decision) byte {
 	switch d.Reason {
 	case "read_only", "read_only_unknown_function", "rule_deny", "no_rule":
 		return wire.ExIllegalFunction
-	case "value_out_of_range", "coil_set_not_allowed", "coil_clear_not_allowed", "value_masked_write":
+	case "value_out_of_range", "coil_set_not_allowed", "coil_clear_not_allowed", "value_masked_write",
+		"value_delta", "value_transition", "value_no_select", "value_unknown":
+		// Every one of these is a statement about the value asked for,
+		// which is what an illegal data value means to a master's own
+		// diagnostics.
 		return wire.ExIllegalValue
+	case "value_rate":
+		// Not an illegal value: the same write would be accepted later.
+		// Server busy is the nearest true thing the protocol has, and a
+		// master reads it as "ask again".
+		return wire.ExServerBusy
 	case "unit_not_allowed":
 		return wire.ExGatewayPathUnavail
 	}

@@ -171,6 +171,14 @@
         }
       ]
     },
+    "policy": {
+      "description": "Policy is the estate's enforcement mode: whether the listeners enforce their policies or only evaluate them and write down what they would have refused.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Policy"
+        }
+      ]
+    },
     "rate_limits": {
       "type": "array",
       "items": {
@@ -737,6 +745,22 @@
           "items": {
             "type": "integer"
           }
+        }
+      },
+      "additionalProperties": false
+    },
+    "CertExpiry": {
+      "description": "CertExpiry is what a listener does about a certificate that has expired, or is about to. A certificate outliving its validity is not an exotic failure: it is the single most common way a working service stops working. What the proxy can do about it is limited -- it cannot issue a new one, and serving an expired certificate is not a security hole, because the client is the one that decides whether to trust it. What it can do is say so, loudly and in one place, rather than leaving every client to discover it separately. So the refusal is opt-in and it is about *starting*: a certificate already expired when the configuration is loaded is a configuration error with refuse_expired, and a reload that would install one is refused, which is the case where refusing is strictly better than serving -- the old certificate keeps working. A certificate that expires while the proxy is running is reported and counted, never unloaded, because a listener that stops answering is worse than one answering with a certificate clients will reject for themselves.",
+      "type": "object",
+      "properties": {
+        "refuse_expired": {
+          "description": "RefuseExpired makes a certificate that has already expired a load error rather than something to serve.",
+          "type": "boolean"
+        },
+        "warn": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
         }
       },
       "additionalProperties": false
@@ -3088,6 +3112,14 @@
             }
           ]
         },
+        "policy": {
+          "description": "Policy is whether this listener enforces its policy or only evaluates it. It overrides the estate's own policy section.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/ListenerPolicy"
+            }
+          ]
+        },
         "protocols": {
           "description": "Protocols accepted. Defaults to [h1, h2] with TLS and [h1] without.",
           "type": "array",
@@ -3174,6 +3206,17 @@
               "$ref": "#/$defs/VNCListener"
             }
           ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ListenerPolicy": {
+      "description": "ListenerPolicy is the enforcement mode of one listener.",
+      "type": "object",
+      "properties": {
+        "mode": {
+          "description": "Mode is enforce (the default) or shadow. In shadow mode the policy is evaluated on real traffic and every decision it would have made is recorded, and nothing is refused for policy -- which is how an operator finds out what a new allow list, command policy or register range would have broken before it breaks it. What shadow mode does NOT stop: a malformed message, a failed authentication or second factor, a ban, a rate limit, a bound (packet size, table full, connection limit) and a TLS handshake refusal are refused in shadow mode too. Forwarding those would mean acting on bytes the code could not read, or admitting somebody who did not authenticate, which is not a policy question.",
+          "type": "string"
         }
       },
       "additionalProperties": false
@@ -3422,6 +3465,14 @@
           "description": "MaxPacketSize bounds one control packet including its header, and is what a 5.0 client is told in CONNACK. Default 1048576.",
           "type": "integer"
         },
+        "max_payload_bytes": {
+          "description": "MaxPayloadBytes bounds the payload of one PUBLISH. It is not max_packet_size, which bounds the packet: a policy about payloads is a policy about what a device sends, and a fleet whose telemetry is two hundred octets has no business sending a megabyte. 0 leaves max_packet_size to decide.",
+          "type": "integer"
+        },
+        "max_qos": {
+          "description": "MaxQoS is the highest quality of service a publication or a subscription may ask for, 0 to 2. Default 2. QoS 2 costs a broker four packets and a stored state per message, which is what makes it worth bounding on a fleet that does not need it.",
+          "type": "integer"
+        },
         "max_subscriptions": {
           "description": "MaxSubscriptions bounds live subscriptions per session. Default 64.",
           "type": "integer"
@@ -3454,6 +3505,14 @@
           "description": "RequireAuth refuses a CONNECT without a username. The broker still verifies the password; this only stops an anonymous session reaching it. Default false.",
           "type": "boolean"
         },
+        "sparkplug": {
+          "description": "Sparkplug is the Sparkplug B policy: the convention that turns MQTT into an industrial protocol, and whose command messages are the MQTT equivalent of a Modbus write.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/MQTTSparkplug"
+            }
+          ]
+        },
         "subscribe_allow": {
           "description": "SubscribeAllow and SubscribeDeny are topic filters checked against every filter a client subscribes to. A subscription is allowed only when an entry of the allow list covers everything it could deliver, and refused when it could reach anything denied — a filter is not a topic, and matching it as one would let \"#\" through an allow list of \"sensors/+\".",
           "type": "array",
@@ -3470,6 +3529,13 @@
         "tls_mode": {
           "description": "TLSMode is implicit (TLS from the first octet, as on 8883, and needs the listener's tls section) or none. Default implicit when tls is set.",
           "type": "string"
+        },
+        "topics": {
+          "description": "Topics are per-topic rules: the payload bound, the QoS window and whether retain is allowed, for the topics each entry names. The first entry whose filters match the topic decides; a topic no entry matches is left to the listener's own bounds.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MQTTTopicRule"
+          }
         },
         "upstream": {
           "description": "Upstream is the broker pool. Required.",
@@ -3493,6 +3559,84 @@
           "items": {
             "type": "string"
           }
+        }
+      },
+      "additionalProperties": false
+    },
+    "MQTTSparkplug": {
+      "description": "MQTTSparkplug is the Sparkplug B policy. Sparkplug B is the convention that makes MQTT an industrial protocol, and it belongs in a proxy for one reason: two of its message types, NCMD and DCMD, are commands to equipment. Everything else is telemetry going up. In most estates the list of publishers with any business sending a command is short and known, and the topic says which is which -- so a relay can enforce it, and a broker's own topic ACLs usually cannot tell a command from a reading. Two more things the convention states, which a relay can check: data from a node nobody has heard a birth from is out of order, and every message carries a sequence number that increments by one and wraps at 255, with a birth resetting it to zero. The metrics are not decoded. A Sparkplug payload is protobuf and the metric set is the plant's own; only the two top-level fields -- the timestamp and the sequence -- are read, and the rest is forwarded untouched.",
+      "type": "object",
+      "properties": {
+        "allow_message_types": {
+          "description": "AllowMessageTypes are the types accepted. Empty accepts every type the convention defines.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "check_sequence": {
+          "description": "CheckSequence refuses a message whose sequence number is not the next one for its edge node. A gap or a repeat is a lost message, a duplicated publisher, or somebody replaying one.",
+          "type": "boolean"
+        },
+        "command_clients": {
+          "description": "CommandClients are the networks that may publish NCMD and DCMD -- the commands to equipment. Empty leaves commands to the ordinary publish policy, and validation says so, because a Sparkplug listener whose commands anybody may send is the case this section exists for.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "enabled": {
+          "description": "Enabled turns the policy on. Without it a Sparkplug topic is an ordinary topic and the publish and subscribe lists are all that apply.",
+          "type": "boolean"
+        },
+        "max_nodes": {
+          "description": "MaxNodes bounds the edge nodes remembered for the birth and sequence checks. Default 8192; the identifiers come off the network.",
+          "type": "integer"
+        },
+        "namespace": {
+          "description": "Namespace is the first topic level. Default spBv1.0. A publication under another namespace is refused when require_namespace is set.",
+          "type": "string"
+        },
+        "require_birth_before_data": {
+          "description": "RequireBirthBeforeData refuses NDATA or DDATA from an edge node no birth has been seen from. It is the convention's own ordering, and a relay is where it can be checked: the broker forwards whatever arrives.",
+          "type": "boolean"
+        },
+        "require_namespace": {
+          "description": "RequireNamespace refuses a publication whose topic is not a Sparkplug topic at all, which is how a listener is declared to carry nothing but Sparkplug.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "MQTTTopicRule": {
+      "description": "MQTTTopicRule is what one set of topics may carry: how large a payload, which qualities of service, and whether a publication may be retained. It exists because those three are properties of the *topic* rather than of the listener. A command topic wants QoS at least 1 and a small payload; a firmware topic wants a large payload and retain; telemetry wants QoS 0 and neither. One bound for the listener would be the loosest of the three, which is the same as no bound.",
+      "type": "object",
+      "properties": {
+        "allow_retain": {
+          "description": "AllowRetain overrides the listener's own retain policy for these topics: a configuration topic is the case where a retained message is the point, and telemetry is the case where it is a device leaving something behind.",
+          "type": "boolean"
+        },
+        "filters": {
+          "description": "Filters are MQTT topic filters (\"plant/+/control\", \"spBv1.0/#\"). Required.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_payload_bytes": {
+          "description": "MaxPayloadBytes bounds the payload of a publication to these topics. 0 leaves the listener's own bound.",
+          "type": "integer"
+        },
+        "max_qos": {
+          "type": "integer"
+        },
+        "min_qos": {
+          "description": "MinQoS and MaxQoS bound the quality of service: min_qos 1 on a command topic is \"a command must be acknowledged\", which is a statement about the process and not about the transport.",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Name identifies the rule in the logs and the counters. Required.",
+          "type": "string"
         }
       },
       "additionalProperties": false
@@ -3777,6 +3921,10 @@
           "description": "MaxPending bounds the requests one session may have outstanding. Default 1 for the serial framings, where the protocol has no transaction identifier and a second request in flight cannot be told from the first; 16 for MBAP.",
           "type": "integer"
         },
+        "max_value_points": {
+          "description": "MaxValuePoints bounds the addresses whose last value this relay remembers for the value rules that need one (max_delta, transitions, require_before). Default 65536. A plant has hundreds; the bound is here because the addresses come off the network.",
+          "type": "integer"
+        },
         "mode": {
           "description": "Mode is reverse (the default: masters connect here and the listener dials the devices) or forward (this listener is the controlled egress a plant's masters use to reach devices elsewhere). The frame handling is the same; what differs is which side the policy is written about, and forward requires the routes to name every destination that may be reached.",
           "type": "string"
@@ -3861,6 +4009,30 @@
         "upstream_tls_mode": {
           "description": "UpstreamTLSMode is none or implicit: whether this listener speaks Modbus/TCP Security to the device.",
           "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ModbusPrecondition": {
+      "description": "ModbusPrecondition is select-before-operate: a write this rule covers is refused unless another register was recently set to a given value. The pattern exists because the dangerous operations in a plant are the ones where a single frame does something physical. IEC 60870-5-104 has it in the protocol; Modbus does not, so a plant that wants it either implements it in every client or has the relay enforce it -- and a client-side confirmation is not a control at all, because the frame that skips it looks exactly like the frame that did not.",
+      "type": "object",
+      "properties": {
+        "equals": {
+          "description": "Equals is the value it has to have been given. Required.",
+          "type": "integer"
+        },
+        "registers": {
+          "description": "Registers is the address that has to have been written, as a single address or a range. Required.",
+          "type": "string"
+        },
+        "unit": {
+          "description": "Unit is the unit identifier the select was written to, when it is not the unit this write is for.",
+          "type": "integer"
+        },
+        "within": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
         }
       },
       "additionalProperties": false
@@ -4059,6 +4231,26 @@
       },
       "additionalProperties": false
     },
+    "ModbusValueRate": {
+      "description": "ModbusValueRate bounds how often a range of addresses may be written. It is not the listener's rate limit, which is about frames from a client. This is about one address: \"the setpoint may be moved once a minute\" is a statement about the process, and a master that moves it sixty times a minute is either broken or not the master it claims to be -- in both cases the device should not see the writes.",
+      "type": "object",
+      "properties": {
+        "max": {
+          "description": "Max is how many writes are allowed per Period, counted per unit identifier and address. Required.",
+          "type": "integer"
+        },
+        "per_client": {
+          "description": "PerClient counts each master's writes separately rather than counting every write to the address together. Default false: the bound is usually about the device, not about who is asking.",
+          "type": "boolean"
+        },
+        "period": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
     "ModbusValueRule": {
       "description": "ModbusValueRule bounds the values a write may carry.",
       "type": "object",
@@ -4070,17 +4262,48 @@
         "max": {
           "type": "integer"
         },
+        "max_delta": {
+          "description": "MaxDelta bounds how far one write may move the value from the last one this relay saw at that address: a setpoint that may be nudged but not jumped. 0 disables it. \"The last one this relay saw\" is exactly that, and it is the honest limit of the check: a value changed by another master, by a local panel or by the process itself is not seen here, so OnUnknown says what to do about a write to an address whose value this relay does not know.",
+          "type": "integer"
+        },
         "min": {
           "description": "Min and Max bound each 16-bit value written into that range, inclusive. Both are required.",
           "type": "integer"
+        },
+        "on_unknown": {
+          "description": "OnUnknown is what happens when a check needs the address's current value and this relay has not seen one -- after a restart, or before any master has read it: allow (the default, with a counter and an event, leaving the absolute Min and Max bounds in force) or refuse. It is a real choice. allow means a write straight after a restart is bounded by the range but not by the delta or the transition list; refuse means a plant cannot be driven until something has read the register, which for a relay in front of a running process is usually a poll away and occasionally an outage.",
+          "type": "string"
+        },
+        "rate": {
+          "description": "Rate bounds how often this range may be written.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/ModbusValueRate"
+            }
+          ]
         },
         "registers": {
           "description": "Registers is the address range this bound applies to, as \"400-499\" or a single address. Empty applies it to every address the rule covers.",
           "type": "string"
         },
+        "require_before": {
+          "description": "RequireBefore is select-before-operate: this write is refused unless another register was set to a given value first, recently. It is how a two-step confirmation is enforced by the relay rather than hoped for in the client.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/ModbusPrecondition"
+            }
+          ]
+        },
         "signed": {
           "description": "Signed reads the value as a signed 16-bit integer, which is how most setpoints are actually encoded.",
           "type": "boolean"
+        },
+        "transitions": {
+          "description": "Transitions are the value changes permitted, as \"from-\u003eto\" pairs with numbers or \"*\" on either side: [\"0-\u003e1\", \"1-\u003e0\"] is a state register that may be started and stopped but not driven to any other state. Empty permits every change the other bounds allow.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false
@@ -4107,6 +4330,34 @@
         "require": {
           "description": "Require refuses a packet that carries no authentication this listener can check. NTS counts as authentication for this purpose -- and the listener says plainly that it has not verified it, because only the party holding the key can.",
           "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "NTPChangeDetection": {
+      "description": "NTPChangeDetection watches each time source for a change in what it is, which is a different question from whether one answer was acceptable. Every bound in quality asks \"is this answer good enough\". These ask \"is this still the same server, answering the same way\". A source that was a GPS clock at stratum 1 and is now something else at stratum 4, an offset that stepped by fourteen seconds between two polls, a dispersion that grew by two orders of magnitude, a server that stopped carrying NTS: each of those is within every static bound an estate would set, and each is the shape of a time source being replaced, re-pointed or stood in front of.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "Action is what a detection does: alert (the default -- a security event and a counter) or refuse (that, and the answer does not reach the client). Refusing is a real choice with a real cost: the estate's clocks stop being corrected until an operator looks. Alerting keeps the time flowing and makes somebody read the event, which for most estates is the right order.",
+          "type": "string"
+        },
+        "dispersion_growth": {
+          "description": "DispersionGrowth is the factor by which a server's root dispersion may grow between measurements before it is said. Default 8.",
+          "type": "integer"
+        },
+        "enabled": {
+          "description": "Enabled turns the watching on. Default true.",
+          "type": "boolean"
+        },
+        "max_step": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_stratum_jump": {
+          "description": "MaxStratumJump is how far a server's stratum may move at once. Default 2: a server whose own upstream failed over moves by one or two, and one that moved by eight is answering for somebody else.",
+          "type": "integer"
         }
       },
       "additionalProperties": false
@@ -4243,6 +4494,14 @@
           "allOf": [
             {
               "$ref": "#/$defs/NTPAuth"
+            }
+          ]
+        },
+        "change_detection": {
+          "description": "ChangeDetection watches each server for a change in what it is rather than in what it answered: a new time source, a stratum that jumped, an offset that stepped, a dispersion that exploded, NTS that stopped, a leap second announced out of season.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/NTPChangeDetection"
             }
           ]
         },
@@ -4415,13 +4674,36 @@
       "description": "NTPQuality is what the listener requires of a server's answer, and how it compares the servers with each other. Every bound here is about *responses*. A client's request carries a stratum, a root delay and a root dispersion too, and they mean nothing -- the protocol does not ask a client to fill them in -- so a listener that applied these to requests would be refusing clients for empty fields.",
       "type": "object",
       "properties": {
+        "allow_strata": {
+          "description": "AllowStrata is the exhaustive list of strata accepted, for an estate that knows exactly what its time tree looks like: [1, 2] says the servers are a reference clock and its immediate clients and nothing else may answer. Empty leaves max_stratum to decide.",
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
         "compare_sources": {
           "description": "CompareSources runs the monitor: the listener sends its own probes to every server, measures each the same way, and compares them. Default true, because a server that is reachable, synchronised, authenticated and wrong is the case every other check passes.",
           "type": "boolean"
         },
+        "expect_refid": {
+          "description": "ExpectRefID is the reference identifiers a server may report: the four-character name at stratum 0 and 1 (\"GPS\", \"PPS\", \"DCFa\") and the dotted quad at stratum 2 and above. Empty accepts any. It is the cheapest statement of server identity the protocol allows without authentication: a GPS-backed clock that starts answering as something else is either a different device or the same device with a different upstream.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "healthy_after": {
           "description": "HealthyAfter and UnhealthyAfter are the hysteresis: how many probes in a row it takes to change a server's state. Default 3 each, because one slow answer on a busy network is not a fault and a relay that moved every client on one sample would be an outage generator with a health check attached.",
           "type": "integer"
+        },
+        "leap_policy": {
+          "description": "LeapPolicy is what happens when an answer announces a leap second: alert (the default -- an announcement outside the window when a leap second can really happen is a security event), allow (say nothing), window (refuse an announcement outside the window) or refuse (refuse every announcement, for an estate that handles leap seconds another way). A leap announcement makes every client that hears it plan to move its clock, and the IERS only ever uses the end of June, December, March or September -- so an announcement in August says something.",
+          "type": "string"
+        },
+        "leap_window": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
         },
         "max_delay": {
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
@@ -4448,6 +4730,11 @@
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
         },
+        "max_root_distance": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
         "max_stratum": {
           "description": "MaxStratum refuses an answer from too far down the tree. 0 leaves the protocol's own bound of 15.",
           "type": "integer"
@@ -4460,6 +4747,14 @@
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "refuse_bogus_refid": {
+          "description": "RefuseBogusRefID refuses an answer whose reference identifier does not match the stratum that says how to read it: a stratum 1 answer whose identifier is not a reference clock's name, or a stratum 2 or worse answer with no identifier at all. Default true.",
+          "type": "boolean"
+        },
+        "refuse_bogus_timestamps": {
+          "description": "RefuseBogusTimestamps refuses an answer whose four timestamps cannot describe an exchange: a zero transmit or receive timestamp, an answer sent before the request arrived, a last synchronisation later than the request. Default true. The check is between the packet's own fields, never against this relay's clock, so a relay whose own time is wrong does not refuse correct answers.",
+          "type": "boolean"
         },
         "refuse_unsynchronised": {
           "description": "RefuseUnsynchronised refuses an answer from a server that says its own clock is not synchronised -- by the leap indicator or by stratum 16, which are two separate statements. Default true.",
@@ -4828,6 +5123,21 @@
           "type": "string"
         },
         "name": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Policy": {
+      "description": "Policy is the estate's enforcement mode. A policy nobody dares switch on is not a control, and the reason nobody dares is always the same: no one knows what it would refuse at three in the morning. So the mode that answers that question is a first-class setting rather than a per-protocol learning flag -- the policy runs on real traffic, every decision is written down, and nothing is refused. `xproxyctl policy report` is then the list of what to fix before enforcement goes on.",
+      "type": "object",
+      "properties": {
+        "max_reasons": {
+          "description": "MaxReasons bounds the ledger: distinct combinations of kind, listener, reason and rule. Default 4096. Past it the report says it is full rather than quietly stopping.",
+          "type": "integer"
+        },
+        "mode": {
+          "description": "Mode is enforce (the default) or shadow, for every listener that does not say otherwise in its own policy section.",
           "type": "string"
         }
       },
@@ -7305,6 +7615,14 @@
           "allOf": [
             {
               "$ref": "#/$defs/ECH"
+            }
+          ]
+        },
+        "expiry": {
+          "description": "Expiry decides what an expired certificate does. Without it an expired certificate is served and every client fails the handshake on its own, which is an outage nobody can read.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/CertExpiry"
             }
           ]
         },

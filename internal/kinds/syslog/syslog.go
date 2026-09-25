@@ -18,6 +18,7 @@ import (
 	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/safe"
 	wire "github.com/rom/xproxy/internal/syslog"
+	"github.com/rom/xproxy/internal/textsafe"
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/upstream"
 )
@@ -343,7 +344,7 @@ func (t *server) senderAllowed(ip netip.Addr) bool {
 // take parses one message and applies the policy to it.
 func (t *server) take(raw []byte, from netip.Addr) {
 	t.host.Counters().SyslogReceived.Add(1)
-	if !t.senderAllowed(from) {
+	if !t.senderAllowed(from) && !t.shadowed("sender_refused", from.String()) {
 		t.refuse(from, "sender_refused", "")
 		return
 	}
@@ -360,7 +361,7 @@ func (t *server) take(raw []byte, from netip.Addr) {
 		t.refuse(from, "malformed", err.Error())
 		return
 	}
-	if reason := t.filter(m); reason != "" {
+	if reason := t.filter(m); reason != "" && !t.shadowed(reason, textsafe.Clip64(m.Message)) {
 		t.host.Counters().SyslogDropped.Add(1)
 		// The reason the message was dropped was until now thrown away
 		// with it: a relay dropping half its traffic could not say
@@ -381,6 +382,20 @@ func (t *server) take(raw []byte, from netip.Addr) {
 		t.host.Counters().SyslogQueueDropped.Add(1)
 		t.host.Counters().Refuse("syslog", "queue_full")
 	}
+}
+
+// shadowed records a policy drop a listener in shadow mode does not
+// enforce, and says whether it was recorded rather than dropped. Only
+// policy reaches it: a malformed message, the rate limit and a full queue
+// are refused in shadow mode too, because none of them is a question
+// about what this estate carries.
+func (t *server) shadowed(what, detail string) bool {
+	if !t.cfg.Shadowing() {
+		return false
+	}
+	t.host.Counters().WouldRefuse("syslog", what)
+	t.host.Shadow().Record("syslog", t.cfg.Name, what, "", detail)
+	return true
 }
 
 // filter applies what a message claims to be. It returns the reason it

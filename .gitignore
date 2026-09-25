@@ -12,3 +12,6 @@ dist/
 /xproxy
 /xproxyctl
 /xproxy-admin
+/xproxy-replay
+/xgate
+/xrelay

@@ -70,6 +70,34 @@ func (b *fakeBroker) saw(kind byte) (mqtt.Packet, bool) {
 	return mqtt.Packet{}, false
 }
 
+// waitSaw waits for one packet of a type to reach the broker, and
+// waitSawN for a count: a publication is forwarded by a goroutine, so a
+// test that read the slice once would be racing it.
+func (b *fakeBroker) waitSaw(t *testing.T, kind byte) bool {
+	t.Helper()
+	return b.waitSawN(t, kind, 1)
+}
+
+func (b *fakeBroker) waitSawN(t *testing.T, kind byte, n int) bool {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		seen := 0
+		for _, p := range b.packets() {
+			if p.Type == kind {
+				seen++
+			}
+		}
+		if seen >= n {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func (b *fakeBroker) session(c net.Conn) {
 	defer func() { _ = c.Close() }()
 	version := byte(mqtt.V311)
@@ -113,7 +141,7 @@ func (b *fakeBroker) session(c net.Conn) {
 			}
 			reply = mqtt.Packet{Type: mqtt.SUBACK, Body: body}
 		case mqtt.PUBLISH:
-			pub, err := mqtt.ParsePublish(p)
+			pub, err := mqtt.ParsePublish(p, version)
 			if err != nil {
 				return
 			}
@@ -215,7 +243,15 @@ func mqttConnect(version byte, clientID, username string) mqtt.Packet {
 	return mqtt.Packet{Type: mqtt.CONNECT, Body: body}
 }
 
+// mqttPublish builds a PUBLISH for a 5.0 session, which is what these
+// tests connect as: the empty property block after the packet identifier
+// is part of the packet in 5.0, and a packet without one is malformed
+// rather than merely old.
 func mqttPublish(topic string, qos byte, id uint16, retain bool, payload string) mqtt.Packet {
+	return mqttPublishAs(mqtt.V5, topic, qos, id, retain, payload)
+}
+
+func mqttPublishAs(version byte, topic string, qos byte, id uint16, retain bool, payload string) mqtt.Packet {
 	flags := qos << 1
 	if retain {
 		flags |= 1
@@ -223,6 +259,9 @@ func mqttPublish(topic string, qos byte, id uint16, retain bool, payload string)
 	body := append([]byte{byte(len(topic) >> 8), byte(len(topic))}, topic...)
 	if qos > 0 {
 		body = append(body, byte(id>>8), byte(id))
+	}
+	if version >= mqtt.V5 {
+		body = append(body, 0) // an empty property block
 	}
 	body = append(body, payload...)
 	return mqtt.Packet{Type: mqtt.PUBLISH, Flags: flags, Body: body}
@@ -609,5 +648,151 @@ upstreams:
 	c.expect(mqtt.CONNACK, "connack over TLS")
 	if _, ok := b.saw(mqtt.CONNECT); !ok {
 		t.Fatal("the CONNECT did not reach the broker")
+	}
+}
+
+// The per-topic bounds: how large a payload, which qualities of service,
+// and whether a publication may be retained. All three are properties of
+// the topic rather than of the listener, which is why one bound for the
+// listener would have to be the loosest of them.
+func TestMQTTPerTopicBounds(t *testing.T) {
+	b := startBroker(t, &fakeBroker{})
+	s, addr := mqttServerFor(t, b, `        max_payload_bytes: 64
+        max_qos: 2
+        allow_retain: false
+        topics:
+          - name: telemetry
+            filters: ["plant/+/telemetry"]
+            max_payload_bytes: 8
+            max_qos: 0
+          - name: control
+            filters: ["plant/+/control"]
+            min_qos: 1
+          - name: config
+            filters: ["plant/+/config"]
+            allow_retain: true
+        action: drop`)
+
+	c := dialMQTT(t, addr)
+	c.send(mqttConnect(mqtt.V5, "hmi-1", "hmi-1"))
+	c.expect(mqtt.CONNACK, "connack")
+
+	// Inside the topic's own payload bound.
+	c.send(mqttPublish("plant/line2/telemetry", 0, 0, false, "21.5C"))
+	if !b.waitSaw(t, mqtt.PUBLISH) {
+		t.Fatal("an allowed publication did not reach the broker")
+	}
+	// Past it, although it is inside the listener's.
+	c.send(mqttPublish("plant/line2/telemetry", 1, 2, false, "a much longer reading than eight"))
+	ack := c.expect(mqtt.PUBACK, "puback for the oversize payload")
+	if len(ack.Body) < 3 || ack.Body[2] != 0x87 {
+		t.Fatalf("puback should carry not-authorized: %v", ack.Body)
+	}
+	// A quality of service the topic does not allow, and one it requires.
+	c.send(mqttPublish("plant/line2/telemetry", 1, 3, false, "21.5C"))
+	c.expect(mqtt.PUBACK, "puback for the QoS the topic refuses")
+	c.send(mqttPublish("plant/line2/control", 0, 0, false, "stop"))
+	// QoS 0 has no acknowledgement, so the refusal is silent to the
+	// client and visible in the counters: a command that may be lost is
+	// not a command, which is what min_qos says.
+	awaitMQTT(t, s, func(sn proxy.Snapshot) bool {
+		return sn.Refusals["mqtt"]["qos_too_low"] >= 1
+	}, "the QoS the control topic requires")
+	// Retain, which the listener refuses and the configuration topic
+	// allows: a retained message is the point of a configuration topic.
+	c.send(mqttPublish("plant/line2/config", 0, 0, true, "on"))
+	if !b.waitSawN(t, mqtt.PUBLISH, 2) {
+		t.Fatal("the retained configuration did not reach the broker")
+	}
+	c.send(mqttPublish("plant/line2/telemetry", 0, 0, true, "21.5C"))
+	awaitMQTT(t, s, func(sn proxy.Snapshot) bool {
+		return sn.Refusals["mqtt"]["retain_refused"] >= 1
+	}, "retain refused on a topic that does not allow it")
+	sn := s.Stats()
+	if sn.Refusals["mqtt"]["payload_too_large"] == 0 || sn.Refusals["mqtt"]["qos_too_high"] == 0 {
+		t.Errorf("refusals %+v", sn.Refusals["mqtt"])
+	}
+}
+
+// Sparkplug B: the message types, who may command equipment, the
+// convention's own ordering, and the sequence.
+func TestMQTTSparkplugPolicy(t *testing.T) {
+	b := startBroker(t, &fakeBroker{})
+	s, addr := mqttServerFor(t, b, `        publish_allow: ["spBv1.0/#"]
+        sparkplug:
+          enabled: true
+          require_namespace: true
+          allow_message_types: [NBIRTH, NDEATH, DBIRTH, DDEATH, NDATA, DDATA, NCMD, DCMD]
+          command_clients: ["192.0.2.0/24"]
+          require_birth_before_data: true
+          check_sequence: true
+        action: drop`)
+
+	c := dialMQTT(t, addr)
+	c.send(mqttConnect(mqtt.V5, "edge-1", "edge-1"))
+	c.expect(mqtt.CONNACK, "connack")
+
+	// Data before a birth: the convention's own ordering, which a broker
+	// does not enforce because it forwards whatever arrives.
+	c.send(mqttPublish("spBv1.0/plant/NDATA/edge-1", 0, 0, false, string(sparkplugPayload(1))))
+	awaitMQTT(t, s, func(sn proxy.Snapshot) bool {
+		return sn.Refusals["mqtt"]["sparkplug_no_birth"] >= 1
+	}, "data before a birth")
+	// The birth, then data with the next sequence.
+	c.send(mqttPublish("spBv1.0/plant/NBIRTH/edge-1", 0, 0, false, string(sparkplugPayload(0))))
+	if !b.waitSaw(t, mqtt.PUBLISH) {
+		t.Fatal("the birth did not reach the broker")
+	}
+	c.send(mqttPublish("spBv1.0/plant/NDATA/edge-1", 0, 0, false, string(sparkplugPayload(1))))
+	if !b.waitSawN(t, mqtt.PUBLISH, 2) {
+		t.Fatal("data after the birth did not reach the broker")
+	}
+	// A sequence that skips: a lost message, a duplicated publisher, or
+	// somebody replaying one.
+	c.send(mqttPublish("spBv1.0/plant/NDATA/edge-1", 0, 0, false, string(sparkplugPayload(9))))
+	awaitMQTT(t, s, func(sn proxy.Snapshot) bool {
+		return sn.Refusals["mqtt"]["sparkplug_sequence"] >= 1
+	}, "a sequence that skips")
+	// A command from a client outside the list: the reason this policy
+	// exists, since NCMD and DCMD are commands to equipment.
+	c.send(mqttPublish("spBv1.0/plant/NCMD/edge-1", 0, 0, false, string(sparkplugPayload(11))))
+	awaitMQTT(t, s, func(sn proxy.Snapshot) bool {
+		return sn.Refusals["mqtt"]["sparkplug_command_refused"] >= 1
+	}, "a command from a publisher that may not send one")
+	// A message type the list does not name, and a topic that is not
+	// Sparkplug at all on a listener declared to carry nothing else.
+	c.send(mqttPublish("spBv1.0/plant/STATE/scada-1", 0, 0, false, "ONLINE"))
+	awaitMQTT(t, s, func(sn proxy.Snapshot) bool {
+		return sn.Refusals["mqtt"]["sparkplug_message_type"] >= 1
+	}, "a message type the policy does not name")
+	c.send(mqttPublish("spBv1.0/plant/not-a-type/edge-1", 0, 0, false, "x"))
+	awaitMQTT(t, s, func(sn proxy.Snapshot) bool {
+		return sn.Refusals["mqtt"]["sparkplug_not_sparkplug"] >= 1
+	}, "a topic that is not a Sparkplug topic")
+}
+
+// sparkplugPayload is a Sparkplug payload carrying a timestamp, a metric
+// set the proxy never decodes, and a sequence number.
+func sparkplugPayload(seq byte) []byte {
+	return []byte{
+		0x08, 0x80, 0x01, // timestamp
+		0x12, 0x03, 'a', 'b', 'c', // metrics, skipped by length
+		0x18, seq, // seq
+	}
+}
+
+// awaitMQTT polls the counters, which are written after the packet the
+// test sent has been decided about.
+func awaitMQTT(t *testing.T, s *proxy.Server, ok func(proxy.Snapshot) bool, what string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if ok(s.Stats()) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("counters never showed %s: %+v", what, s.Stats().Refusals["mqtt"])
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

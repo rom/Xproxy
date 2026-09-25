@@ -26,6 +26,8 @@ import (
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/metrics"
 	"github.com/rom/xproxy/internal/safe"
+	"github.com/rom/xproxy/internal/sessions"
+	"github.com/rom/xproxy/internal/shadow"
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/tracing"
 	"github.com/rom/xproxy/internal/upstream"
@@ -74,6 +76,15 @@ type Server struct {
 	// capture writes exchanges as pcapng, kept across generations so a
 	// recording survives a reload.
 	capture atomic.Pointer[capture.Capturer]
+
+	// step is the operator's "this node should not be carrying traffic"
+	// switch, read by Readiness (readiness.go).
+	step stepDown
+	// live is the table of sessions this daemon is serving now, which
+	// every kind that holds one registers with.
+	live *sessions.Table
+	// wouldDeny is what the listeners in shadow mode would have refused.
+	wouldDeny *shadow.Ledger
 	// tickets manages shared session ticket keys; nil without the section.
 	tickets        *tlsconf.Tickets
 	ticketMismatch bound.Notice
@@ -160,6 +171,8 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 		fingerprints: tlsconf.NewFingerprintTable(max(cfg.Server.Limits.MaxConnections, 1024)),
 		connLimiter:  limits.NewConnLimiter(cfg.Server.Limits.MaxConnections, cfg.Server.Limits.MaxConnectionsPerIP),
 		drains:       upstream.NewDrains(),
+		live:         sessions.New(),
+		wouldDeny:    shadow.NewLedger(shadowBound(cfg)),
 	}
 	// A contained panic is a bug in the proxy, not an event about the
 	// client, so it goes to the error log with its stack rather than to
@@ -342,6 +355,13 @@ func (s *Server) Stats() Snapshot {
 	if bl := s.bans.Load(); bl != nil {
 		snap.BansActive, snap.BansTotal = bl.Stats()
 	}
+	// The live sessions, so a status view says what the table says: how
+	// many are on now, and how many an operator has closed.
+	snap.Shadow = s.wouldDeny.Status()
+	live := s.live.Status()
+	snap.SessionsLive, snap.SessionsOpened = live.Live, live.Opened
+	snap.SessionsClosed, snap.SessionsKilled = live.Closed, live.Killed
+	snap.SessionsRefused = live.Refused
 	if set := s.intel.Load(); set != nil {
 		snap.ThreatLists = set.Status()
 		snap.ThreatIntelReloads = set.Reloads.Load()
@@ -399,6 +419,29 @@ func (s *Server) Certificates() map[string][]tlsconf.CertInfo {
 	for _, bl := range s.listeners {
 		if bl.tlsReload != nil {
 			out[bl.cfg.Name] = bl.tlsReload.Certificates()
+		}
+	}
+	return out
+}
+
+// ExpiringCertificates lists, per listener, the served certificates that
+// have expired or fall inside the listener's warning window.
+//
+// It is computed on the question rather than on a timer, so a monitor
+// that asks gets the answer as of now, and a certificate that expires
+// while nothing reloads is still reported. Listeners without an
+// tls.expiry section do not appear.
+func (s *Server) ExpiringCertificates() map[string][]string {
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string][]string{}
+	for _, bl := range s.listeners {
+		if bl.tlsReload == nil {
+			continue
+		}
+		if w := bl.tlsReload.Expiring(now); len(w) > 0 {
+			out[bl.cfg.Name] = w
 		}
 	}
 	return out
@@ -1144,6 +1187,14 @@ func (s *Server) reloadCapture(cfg *config.Config) error {
 // capture section.
 func (s *Server) Capture() *capture.Capturer { return s.capture.Load() }
 
+// Sessions is the table of live sessions, for the kinds that register
+// and for the management plane that lists and closes them.
+func (s *Server) Sessions() *sessions.Table { return s.live }
+
+// Shadow is the ledger of what the listeners in shadow mode would have
+// refused.
+func (s *Server) Shadow() *shadow.Ledger { return s.wouldDeny }
+
 // CaptureStatus reports the capture state, with Enabled false when the
 // configuration has no capture section.
 func (s *Server) CaptureStatus() capture.Stats { return s.capture.Load().Stats() }
@@ -1217,4 +1268,12 @@ func (s *Server) closeListenersLocked() {
 		bl.acc.close()
 	}
 	s.listeners = nil
+}
+
+// shadowBound is the ledger's size, from the estate's policy section.
+func shadowBound(cfg *config.Config) int {
+	if cfg != nil && cfg.Policy != nil {
+		return cfg.Policy.MaxReasons
+	}
+	return 0
 }

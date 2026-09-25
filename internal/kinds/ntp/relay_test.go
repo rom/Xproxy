@@ -27,8 +27,11 @@ type timeServer struct {
 	got  []*wire.Packet
 	raws [][]byte
 
-	// The shape of its answers.
+	// The shape of its answers. They are read and written under the
+	// mutex, so a test can change what this server is halfway through --
+	// which is what a replaced or re-pointed time source looks like.
 	stratum        byte
+	refid          [4]byte
 	leap           wire.Leap
 	offset         time.Duration
 	rootDelay      time.Duration
@@ -65,6 +68,9 @@ func startTimeServer(t *testing.T, s *timeServer) *timeServer {
 	s.pc = pc
 	if s.stratum == 0 && s.kiss == "" {
 		s.stratum = 2
+	}
+	if s.refid == ([4]byte{}) {
+		s.refid = [4]byte{10, 0, 0, 1}
 	}
 	t.Cleanup(func() { _ = pc.Close() })
 	go s.run()
@@ -133,32 +139,48 @@ func (s *timeServer) run() {
 	}
 }
 
-func (s *timeServer) answer(req *wire.Packet) []byte {
-	now := time.Now().Add(s.offset)
-	origin := req.Transmit
+// set changes what this server answers, under the lock the answers are
+// built with.
+func (s *timeServer) set(edit func(*timeServer)) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	edit(s)
+}
+
+func (s *timeServer) answer(req *wire.Packet) []byte {
+	s.mu.Lock()
+	shape := struct {
+		stratum                       byte
+		refid                         [4]byte
+		leap                          wire.Leap
+		offset, rootDelay, rootDisper time.Duration
+		kiss                          string
+		echo, strip                   bool
+	}{s.stratum, s.refid, s.leap, s.offset, s.rootDelay, s.rootDispersion, s.kiss, s.echo, s.strip}
+	origin := req.Transmit
 	if s.interleave && s.lastTransmit != 0 {
 		origin = s.lastTransmit
 	}
 	s.mu.Unlock()
+	now := time.Now().Add(shape.offset)
 	out := &wire.Packet{
-		Leap: s.leap, Version: req.Version, Mode: wire.ModeServer,
-		Stratum: s.stratum, Poll: req.Poll, Precision: -20,
-		RootDelay:      wire.ShortOf(s.rootDelay),
-		RootDispersion: wire.ShortOf(s.rootDispersion),
+		Leap: shape.leap, Version: req.Version, Mode: wire.ModeServer,
+		Stratum: shape.stratum, Poll: req.Poll, Precision: -20,
+		RootDelay:      wire.ShortOf(shape.rootDelay),
+		RootDispersion: wire.ShortOf(shape.rootDisper),
 		Reference:      wire.TimestampOf(now.Add(-time.Minute)),
 		Origin:         origin,
 		Receive:        wire.TimestampOf(now),
 		Transmit:       wire.TimestampOf(now.Add(time.Millisecond)),
 	}
-	if s.kiss != "" {
+	if shape.kiss != "" {
 		out.Stratum = 0
 		out.Leap = wire.LeapUnsynchronised
-		copy(out.ReferenceID[:], s.kiss)
+		copy(out.ReferenceID[:], shape.kiss)
 	} else {
-		copy(out.ReferenceID[:], []byte{10, 0, 0, 1})
+		out.ReferenceID = shape.refid
 	}
-	if s.echo && !s.strip {
+	if shape.echo && !shape.strip {
 		out.Extensions = append(out.Extensions, req.Extensions...)
 	}
 	s.mu.Lock()
@@ -1241,4 +1263,113 @@ func TestNTPTheMonitorWaitsBeforeItChangesASourcesState(t *testing.T) {
 	if got := s.Stats().NTPSourceHealthy; got != 0 {
 		t.Errorf("a source that says not to use its time was called healthy %d time(s)", got)
 	}
+}
+
+// A source that changes what it is, through a real relay. Every static
+// bound here is generous on purpose: the point is that a stratum jump and
+// a new reference identifier are caught by the watcher and not by any
+// threshold, because that is the case an estate cannot write a threshold
+// for.
+func TestNTPASourceThatChangesIsSaidOutLoud(t *testing.T) {
+	up := startTimeServer(t, &timeServer{stratum: 2, refid: [4]byte{10, 0, 0, 1}})
+	s, addr := ntpServer(t, `        upstream: clocks
+        allow_clients: ["127.0.0.0/8"]
+        quality: {compare_sources: false, max_stratum: 15}
+        change_detection: {enabled: true}`, up)
+
+	c := dialNTP(t, addr)
+	c.ask(request(4, wire.ModeClient))
+
+	// The same server, now answering as something else from further down
+	// the tree: what a replaced or re-pointed clock looks like.
+	up.set(func(ts *timeServer) {
+		ts.stratum = 9
+		ts.refid = [4]byte{192, 0, 2, 9}
+	})
+	got, _ := c.ask(request(4, wire.ModeClient))
+	if got.Stratum != 9 {
+		t.Fatalf("the second answer did not come from the changed server: stratum %d", got.Stratum)
+	}
+	// The answers reached the client and the change was counted. Both are
+	// polled together, because the answered counter is incremented after
+	// the datagram is written.
+	awaitCounters(t, s, func(sn proxy.Snapshot) bool {
+		return sn.NTPSourceChanged >= 1 && sn.NTPStratumJumped >= 1 && sn.NTPAnswered >= 2
+	}, "the source change, the stratum jump and both answers")
+}
+
+// And the same change where the estate said to refuse: the answer does
+// not reach the client at all, which is the choice with an outage in it
+// and therefore not the default.
+func TestNTPASourceThatChangesCanBeRefused(t *testing.T) {
+	up := startTimeServer(t, &timeServer{stratum: 2, refid: [4]byte{10, 0, 0, 1}})
+	s, addr := ntpServer(t, `        upstream: clocks
+        allow_clients: ["127.0.0.0/8"]
+        quality: {compare_sources: false, max_stratum: 15}
+        change_detection: {enabled: true, action: refuse}`, up)
+
+	c := dialNTP(t, addr)
+	c.ask(request(4, wire.ModeClient))
+	up.set(func(ts *timeServer) { ts.refid = [4]byte{192, 0, 2, 9} })
+	c.send(request(4, wire.ModeClient))
+	c.expectSilence("an answer from a source that changed")
+	awaitCounters(t, s, func(sn proxy.Snapshot) bool {
+		return sn.NTPSourceChanged >= 1 && sn.Refusals["ntp"]["source_changed"] >= 1
+	}, "the source change refused")
+	// The next poll is answered again: the baseline moved to what the
+	// server is now, so this is not a permanent outage from one change.
+	// The counter is read by polling, because it is incremented after the
+	// answer is written.
+	c.ask(request(4, wire.ModeClient))
+	awaitCounters(t, s, func(sn proxy.Snapshot) bool { return sn.NTPAnswered >= 2 },
+		"the relay answering again after the change became the new normal")
+}
+
+// A leap second announced in a month the IERS never uses, forwarded and
+// said: the client hears the announcement from every other server too, so
+// hiding it would lose the estate the one event worth reading.
+func TestNTPALeapSecondOutOfSeasonIsSaid(t *testing.T) {
+	up := startTimeServer(t, &timeServer{stratum: 2, leap: wire.LeapAddSecond})
+	s, addr := ntpServer(t, `        upstream: clocks
+        allow_clients: ["127.0.0.0/8"]
+        quality: {compare_sources: false, leap_policy: alert, leap_window: 1h}`, up)
+
+	c := dialNTP(t, addr)
+	got, _ := c.ask(request(4, wire.ModeClient))
+	if got.Leap != wire.LeapAddSecond {
+		t.Fatalf("the announcement did not reach the client: leap %s", got.Leap)
+	}
+	awaitCounters(t, s, func(sn proxy.Snapshot) bool {
+		return sn.NTPLeapUnexpected >= 1 || sn.NTPLeapAnnounced >= 1
+	}, "the leap announcement")
+}
+
+// The answer whose own timestamps cannot describe an exchange: the
+// cheapest forgery there is, and the client would compute an offset from
+// it.
+func TestNTPAnAnswerWithImpossibleTimestampsIsRefused(t *testing.T) {
+	up := startTimeServer(t, &timeServer{stratum: 2})
+	// A server whose answer says it was transmitted before the request
+	// arrived. The test server builds a sound answer, so this is done by
+	// hand: the garbage hook sends exact bytes.
+	bad := &wire.Packet{Version: 4, Mode: wire.ModeServer, Stratum: 2,
+		ReferenceID: [4]byte{10, 0, 0, 1},
+		Receive:     wire.TimestampOf(time.Now().Add(time.Hour)),
+		Transmit:    wire.TimestampOf(time.Now())}
+	s, addr := ntpServer(t, `        upstream: clocks
+        allow_clients: ["127.0.0.0/8"]
+        quality: {compare_sources: false}`, up)
+	c := dialNTP(t, addr)
+	// The origin timestamp has to be this request's, or the answer is
+	// unsolicited and refused earlier for another reason.
+	req := request(4, wire.ModeClient)
+	bad.Origin = req.Transmit
+	up.set(func(ts *timeServer) { ts.garbage = bad.Bytes() })
+	c.send(req)
+	c.expectSilence("an answer whose timestamps cannot describe an exchange")
+	// And refused for that reason rather than for being unsolicited,
+	// which is what an answer with the wrong origin timestamp would be.
+	awaitCounters(t, s, func(sn proxy.Snapshot) bool {
+		return sn.Refusals["ntp"]["bogus_timestamps"] >= 1
+	}, "the refusal naming the timestamps")
 }

@@ -122,6 +122,26 @@ func (ci *customInstance) Request(r *http.Request) filter.Verdict   { return ci.
 func (ci *customInstance) Response(r *http.Response) filter.Verdict { return ci.fix(ci.in.Response(r)) }
 func (ci *customInstance) End() []any                               { return ci.in.End() }
 
+// sameRateLimitShape says whether two versions of a named policy mean the
+// same thing, so that the buckets counted under the old one still answer
+// the new one's question.
+//
+// The bounds have to match, because a bucket's level is measured in the
+// old rate's tokens. So does the *key*: a policy that changes from
+// client_ip to jwt:sub is counting something else, and the levels it
+// inherited would be levels of a different thing. Everything else about a
+// policy -- what it does when it refuses, how long it tarpits, its cluster
+// semantics -- is about the decision rather than the counting, and does
+// not disturb a bucket.
+func sameRateLimitShape(a, b *config.RateLimit) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	return a.Algorithm == b.Algorithm && a.Rate == b.Rate && a.Burst == b.Burst &&
+		a.Limit == b.Limit && a.Window == b.Window &&
+		a.Key == b.Key && a.NetV4 == b.NetV4 && a.NetV6 == b.NetV6
+}
+
 type rateLimit struct {
 	cfg *config.RateLimit
 	lim *limits.KeyedLimiter
@@ -260,15 +280,24 @@ func wafSelection(cfg *config.Config, r *config.Route) (profile string, mode waf
 		return "", waf.ModeOff
 	}
 	if r.WAF != nil {
-		return r.WAF.Profile, waf.Mode(r.WAF.Mode)
+		profile, mode = r.WAF.Profile, waf.Mode(r.WAF.Mode)
+	} else {
+		profile, mode = cfg.WAF.DefaultProfile, waf.Mode(cfg.WAF.DefaultMode)
 	}
-	return cfg.WAF.DefaultProfile, waf.Mode(cfg.WAF.DefaultMode)
+	// The estate's shadow mode reaches the WAF by the mechanism the WAF
+	// already has: a blocking profile runs as a detecting one. The rule
+	// statistics (xproxyctl waf -top) then say which rule would have
+	// blocked what, which is more than the policy ledger could hold.
+	if mode == waf.ModeBlock && cfg.Policy != nil && cfg.Policy.Mode == "shadow" {
+		mode = waf.ModeDetect
+	}
+	return profile, mode
 }
 
 func newRuntime(cfg *config.Config, generation uint64, pools map[string]*upstream.Pool, trusted []netip.Prefix,
 	services map[string]*icap.Service,
 	log *slog.Logger, events *eventBus, wafStats *waf.Stats,
-	patches *patchCounters, tokens *honeytokenCounters) (*runtime, error) {
+	patches *patchCounters, tokens *honeytokenCounters, prev *runtime) (*runtime, error) {
 	rt := &runtime{
 		cfg:        cfg,
 		generation: generation,
@@ -338,17 +367,34 @@ func newRuntime(cfg *config.Config, generation uint64, pools map[string]*upstrea
 	}
 	for i := range cfg.RateLimits {
 		rl := &cfg.RateLimits[i]
-		// Bound tracked keys so that a distributed source cannot grow memory
-		// without limit: 64 shards * 8192 keys * ~64 bytes ≈ 32 MiB worst case
-		// per policy.
+		// A policy whose shape has not changed keeps the limiter it had,
+		// and with it every bucket's level. A reload otherwise hands
+		// whoever is being limited a fresh burst, which turns a reload --
+		// something an operator does *because* an attack is under way --
+		// into a free pass, and makes repeated reloads a way to defeat
+		// the limit entirely.
 		var lim *limits.KeyedLimiter
-		if rl.Algorithm == "sliding_window" {
-			lim = limits.NewWindowLimiter(float64(rl.Limit), rl.Window.D(), 8192)
-		} else {
-			lim = limits.NewKeyedLimiter(rl.Rate, rl.Burst, 8192)
+		if prev != nil {
+			if was := prev.rateLimits[rl.Name]; was != nil && sameRateLimitShape(was.cfg, rl) {
+				lim = was.lim
+			}
+		}
+		if lim == nil {
+			// Bound tracked keys so that a distributed source cannot grow memory
+			// without limit: 64 shards * 8192 keys * ~64 bytes ≈ 32 MiB worst case
+			// per policy.
+			if rl.Algorithm == "sliding_window" {
+				lim = limits.NewWindowLimiter(float64(rl.Limit), rl.Window.D(), 8192)
+			} else {
+				lim = limits.NewKeyedLimiter(rl.Rate, rl.Burst, 8192)
+			}
 		}
 		if cfg.Cluster != nil && cfg.Cluster.SharesRateLimits() {
 			lim.SetPeerStale(cfg.Cluster.PeerStale.D())
+		} else {
+			// A carried limiter must not keep peer accounting the new
+			// configuration no longer asks for.
+			lim.SetPeerStale(0)
 		}
 		rt.rateLimits[rl.Name] = &rateLimit{cfg: rl, lim: lim}
 	}

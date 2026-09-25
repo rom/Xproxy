@@ -151,6 +151,155 @@ none
 T}	T{
 A SCIM 2.0 provisioning endpoint for the second factor and the API keys;\: see \fBscim\fR
 T}
+T{
+\fBpolicy\fR
+T}	T{
+object
+T}	T{
+\fB{mode:\: enforce}\fR
+T}	T{
+Whether the listeners enforce their policies or only evaluate them and write down what they would have refused;\: see \fBpolicy\fR
+T}
+.TE
+.SH "policy"
+.PP
+A policy nobody dares switch on is not a control, and the reason nobody dares is always the same: no one knows what it would refuse at three in the morning. Shadow mode is the answer the WAF has had for years, generalised to every protocol \[u2014] the policy is evaluated on real traffic, every decision it would have made is written down, and nothing is refused for policy.
+.PP
+.RS 4
+.nf
+.ft CR
+policy:
+  mode: shadow          # enforce (default) or shadow
+  max_reasons: 4096
+.ft
+.fi
+.RE
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.6i) lbw(0.8i) lbx
+lw(0.8i) lw(0.6i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBmode\fR
+T}	T{
+enum
+T}	T{
+\fBenforce\fR
+T}	T{
+\fBenforce\fR or \fBshadow\fR,\: for every listener that does not name its own in \fBserver.\:listeners[].\:policy\fR. \fBshadow\fR warns at validation
+T}
+T{
+\fBmax_\:reasons\fR
+T}	T{
+int
+T}	T{
+\fB4096\fR
+T}	T{
+The ledger\(aqs bound: distinct combinations of kind,\: listener,\: reason and rule. Past it the report says it is full rather than quietly stopping
+T}
+.TE
+.PP
+Read it with \fBxproxyctl policy report\fR (\fB\-top N\fR, \fB\-json\fR), which lists what each listener would have refused, most frequent first, with the rule that decided, an example of what was asked for, and when it was first and last seen. \fBxproxyctl policy reset\fR empties the ledger, which is what an operator runs after fixing a policy so the next week\(aqs report is about the new one. \fBGET /v1/policy\fR and \fBDELETE /v1/policy\fR are the endpoints; the totals are in \fBxproxyctl status\fR as \fBwould_refusals\fR beside \fBrefusals\fR, and \fBshadow\fR carries the ledger\(aqs own state.
+.PP
+\fBWhat shadow mode does and does not stop.\fR It applies to \fIpolicy\fR: the statements an estate writes about what its own traffic may do. It never applies to integrity, identity or a bound, because forwarding those would mean acting on bytes the code could not read, or admitting somebody who did not authenticate \[u2014] a trial instead of a door.
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(1.4i) lbx
+lw(0.8i) lw(1.4i) lx.
+T{
+Kind
+T}	T{
+Evaluated and recorded
+T}	T{
+Still refused
+T}
+T{
+\fBmodbus\fR
+T}	T{
+every rule: function,\: unit,\: address range,\: value bounds,\: rate and window
+T}	T{
+malformed frames,\: the unit table,\: the queue bound,\: rate limits,\: bans
+T}
+T{
+\fBntp\fR
+T}	T{
+the client list and every request rule (versions,\: modes,\: extension fields,\: the identity it demands),\: and every answer rule (stratum,\: distances,\: timestamps,\: identifier,\: leap)
+T}	T{
+mode 6 and 7,\: version 5,\: malformed packets,\: bans,\: rate limits,\: the association and outstanding bounds
+T}
+T{
+\fBmqtt\fR
+T}	T{
+the client list,\: the CONNECT policy (version,\: client id,\: username,\: keep alive,\: will),\: the publish and subscribe policies,\: retain
+T}	T{
+malformed packets,\: a first packet that is not CONNECT,\: a second CONNECT,\: the packet bound,\: the connection limit,\: TLS failures
+T}
+T{
+\fBsyslog\fR
+T}	T{
+the sender list,\: the facility,\: severity and pattern rules
+T}	T{
+malformed messages,\: the rate limit,\: a full queue
+T}
+T{
+\fBdns\fR
+T}	T{
+the client list,\: the block list,\: response policy zones,\: tunnel cooldowns
+T}	T{
+malformed queries,\: bans,\: the rate limit,\: the worker bound,\: the cookie requirement
+T}
+T{
+\fBssh\fR
+T}	T{
+the client list and the command,\: subsystem,\: environment and file\-transfer rules
+T}	T{
+an unknown host key,\: a key that does not authenticate,\: a certificate extension that itself refuses,\: MFA,\: bans,\: the connection limit,\: a request it could not parse
+T}
+T{
+\fBtelnet\fR,\: \fBvnc\fR,\: \fBrdp\fR,\: \fBftp\fR
+T}	T{
+the client list;\: telnet\(aqs option list;\: ftp\(aqs verb list
+T}	T{
+bans,\: connection limits,\: MFA,\: malformed input,\: the protocol\(aqs own version and encryption negotiation
+T}
+T{
+\fBsmtp\fR
+T}	T{
+the verb list
+T}	T{
+the protocol\-state refusals,\: the encryption and authentication requirements,\: the size bound,\: malformed commands
+T}
+T{
+\fBforward\fR
+T}	T{
+the destination lists: ports,\: deny,\: allow
+T}	T{
+\fBprivate\fR (which protects the estate \fIfrom\fR the client \[u2014] shadowing it would turn a trial into a server\-side request forgery),\: a destination that does not resolve,\: credentials,\: tunnel bounds
+T}
+T{
+\fBhttp\fR
+T}	T{
+the route\(aqs positive security model (methods,\: media types,\: query parameters,\: shape bounds);\: a blocking WAF profile runs as a detecting one,\: and \fBxproxyctl waf \-\:top\fR says which rule would have blocked what
+T}	T{
+bans,\: rate limits,\: virtual patches,\: authentication and authorisation filters,\: the normalisation guard,\: the request and body bounds
+T}
+T{
+\fBtcp\fR,\: \fBudp\fR,\: \fBntske\fR
+T}	T{
+nothing: their refusals are either "no destination exists for this" or a bound,\: and neither is a policy a shadow run could answer
+T}	T{
+all of them
+T}
 .TE
 .SH "server"
 .PP
@@ -380,6 +529,15 @@ T}	T{
 none
 T}	T{
 \fB{per_\:second,\: burst,\: ipv4_\:prefix,\: ipv6_\:prefix,\: max_\:sources}\fR: how fast one source network may connect to this listener
+T}
+T{
+\fBpolicy\fR
+T}	T{
+object
+T}	T{
+the estate\(aqs \fBpolicy\fR
+T}	T{
+\fB{mode:\: enforce|shadow}\fR for this listener alone;\: see \fBpolicy\fR
 T}
 .TE
 .SS "server.listeners[].tcp (kind: tcp)"
@@ -2949,9 +3107,198 @@ T}	T{
 T}	T{
 Others are closed before the CONNECT is read
 T}
+T{
+\fBmax_\:payload_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (\fBmax_\:packet_\:size\fR decides)
+T}	T{
+The payload of one PUBLISH. Not the same bound as \fBmax_\:packet_\:size\fR: a policy about payloads is a policy about what a device sends,\: and a fleet whose telemetry is two hundred octets has no business sending a megabyte
+T}
+T{
+\fBmax_\:qos\fR
+T}	T{
+int
+T}	T{
+\fB2\fR
+T}	T{
+The highest quality of service a publication or a subscription may ask for. QoS 2 costs a broker four packets and a stored state per message,\: which is what makes it worth bounding on a fleet that does not need it
+T}
+T{
+\fBtopics\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Per\-topic bounds,\: below
+T}
+T{
+\fBsparkplug\fR
+T}	T{
+object
+T}	T{
+
+T}	T{
+The Sparkplug B policy,\: below
+T}
 .TE
 .PP
-Every session writes one \fBmqtt\fR line to the access log with the client address, client id, username, version, subscriptions, publications and why it closed. Counters: \fBmqtt_sessions\fR, \fBmqtt_sessions_open\fR, \fBmqtt_published\fR, \fBmqtt_subscribed\fR, \fBmqtt_refused\fR, \fBmqtt_rejected\fR, \fBmqtt_protocol_errors\fR; the matching \fBxproxy_mqtt_*\fR metrics. Refusals are \fBmqtt_denied\fR deny events, so a \fBbans.triggers\fR entry on that reason turns a device walking the topic tree into a ban.
+\fB\fBtopics[]\fR\fR is where the payload, QoS and retain bounds belong, because all three are properties of the \fItopic\fR rather than of the listener: a command topic wants QoS at least 1 and a payload of tens of octets, a firmware topic wants a large payload and retain, telemetry wants QoS 0 and neither. One bound for the listener has to be the loosest of the three, which is the same as no bound. The first entry whose filters match decides; a topic no entry matches falls back to the listener\(aqs own bounds.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.6i) lbw(1.2i) lbx
+lw(0.9i) lw(0.6i) lw(1.2i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+name
+T}	T{
+required,\: unique
+T}	T{
+Carried into the logs and the counters when the rule decides
+T}
+T{
+\fBfilters\fR
+T}	T{
+list
+T}	T{
+required
+T}	T{
+MQTT topic filters (\fBplant/\:+/\:control\fR,\: \fBspBv1.\:0/\:#\fR)
+T}
+T{
+\fBmax_\:payload_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (the listener\(aqs)
+T}	T{
+The payload of a publication to these topics
+T}
+T{
+\fBmin_\:qos\fR,\: \fBmax_\:qos\fR
+T}	T{
+int
+T}	T{
+
+T}	T{
+The quality of service window. \fBmin_\:qos:\: 1\fR on a command topic is "a command must be acknowledged",\: which is a statement about the process rather than about the transport
+T}
+T{
+\fBallow_\:retain\fR
+T}	T{
+bool
+T}	T{
+the listener\(aqs
+T}	T{
+Retain for these topics. \fBtrue\fR overrides a listener that refuses retain,\: which is how a configuration topic keeps the one case where a retained message is the point
+T}
+.TE
+.PP
+\fB\fBsparkplug\fR\fR is the Sparkplug B policy. Sparkplug B is the convention that makes MQTT an industrial protocol, and it belongs in a proxy for one reason: of its message types, two \[u2014] \fBNCMD\fR and \fBDCMD\fR \[u2014] are \fBcommands to equipment\fR, the MQTT equivalent of a Modbus write, and the topic says which is which. In most estates the publishers with any business sending one are a short and known list, and a broker\(aqs own topic ACLs usually cannot tell a command from a reading.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.7i) lbw(0.8i) lbx
+lw(1.0i) lw(0.7i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Read Sparkplug topics and apply this section
+T}
+T{
+\fBnamespace\fR
+T}	T{
+string
+T}	T{
+\fBspBv1.\:0\fR
+T}	T{
+The first topic level
+T}
+T{
+\fBrequire_\:namespace\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse a publication whose topic is not a Sparkplug topic at all,\: which is how a listener is declared to carry nothing else
+T}
+T{
+\fBallow_\:message_\:types\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (all)
+T}	T{
+\fBNBIRTH\fR,\: \fBNDEATH\fR,\: \fBDBIRTH\fR,\: \fBDDEATH\fR,\: \fBNDATA\fR,\: \fBDDATA\fR,\: \fBNCMD\fR,\: \fBDCMD\fR,\: \fBSTATE\fR
+T}
+T{
+\fBcommand_\:clients\fR
+T}	T{
+list of CIDR
+T}	T{
+\fB[]\fR
+T}	T{
+The networks that may publish \fBNCMD\fR and \fBDCMD\fR. Empty leaves commands to the ordinary publish policy,\: and warns: naming them is what this section is for
+T}
+T{
+\fBrequire_\:birth_\:before_\:data\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse \fBNDATA\fR or \fBDDATA\fR from an edge node no birth has been seen from \[u2014] the convention\(aqs own ordering,\: which the broker does not enforce
+T}
+T{
+\fBcheck_\:sequence\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse a message whose sequence number is not the next one for its edge node (it increments by one and wraps at 255,\: and a birth resets it to zero). A gap or a repeat is a lost message,\: a duplicated publisher,\: or somebody replaying one
+T}
+T{
+\fBmax_\:nodes\fR
+T}	T{
+int
+T}	T{
+\fB8192\fR
+T}	T{
+Edge nodes remembered for the birth and sequence checks;\: the identifiers come off the network. Past the bound those two checks are not made for a node the table does not hold rather than the node being refused
+T}
+.TE
+.PP
+\fBThe metrics are not decoded.\fR A Sparkplug payload is protobuf and the metric set is the plant\(aqs own; carrying a schema per estate is not this proxy\(aqs business. The two top\-level fields \[u2014] the timestamp and the sequence number, two varints at a fixed place in every payload \[u2014] are read, and the rest is forwarded untouched.
+.PP
+Every session writes one \fBmqtt\fR line to the access log with the client address, client id, username, version, subscriptions, publications and why it closed. Counters: \fBmqtt_sessions\fR, \fBmqtt_sessions_open\fR, \fBmqtt_published\fR, \fBmqtt_subscribed\fR, \fBmqtt_refused\fR, \fBmqtt_rejected\fR, \fBmqtt_protocol_errors\fR; the matching \fBxproxy_mqtt_*\fR metrics. The refusal reasons a \fBtopics\fR rule or the Sparkplug policy adds are \fBpayload_too_large\fR, \fBqos_too_high\fR, \fBqos_too_low\fR, \fBretain_refused\fR, \fBsparkplug_not_sparkplug\fR, \fBsparkplug_namespace\fR, \fBsparkplug_message_type\fR, \fBsparkplug_command_refused\fR, \fBsparkplug_no_birth\fR and \fBsparkplug_sequence\fR. Refusals are \fBmqtt_denied\fR deny events, so a \fBbans.triggers\fR entry on that reason turns a device walking the topic tree into a ban.
 .PP
 A note on \fB$\fR: a wildcard at the first level of a filter never matches a topic beginning with \fB$\fR (MQTT 3.1.1 section 4.7), so \fB#\fR does not hand a client the broker\(aqs own \fB$SYS\fR tree. \fBsubscribe_deny: ["$SYS/#"]\fR is still worth writing, because it refuses the client that asks for it by name.
 .SS "server.listeners[].syslog (kind: syslog)"
@@ -3725,8 +4072,8 @@ T}
 .PP
 .TS
 allbox;
-lbw(1.0i) lbw(0.6i) lbw(0.9i) lbx
-lw(1.0i) lw(0.6i) lw(0.9i) lx.
+lbw(1.2i) lbw(0.7i) lbw(0.9i) lbx
+lw(1.2i) lw(0.7i) lw(0.9i) lx.
 T{
 Key
 T}	T{
@@ -3772,7 +4119,79 @@ T}	T{
 T}	T{
 Bound a coil write instead: \fBtrue\fR allows setting a coil in the range,\: \fBfalse\fR allows only clearing it. "This client may stop the pump but not start it"
 T}
+T{
+\fBmax_\:delta\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (off)
+T}	T{
+How far one write may move the value from the last one this relay saw at that address: a setpoint that may be nudged and not jumped
+T}
+T{
+\fBtransitions\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+The value changes permitted,\: as \fBfrom\-\:>to\fR with numbers or \fB*\fR on either side: \fB["0\-\:>1",\: "1\-\:>0"]\fR is a state register that may be started and stopped and not driven anywhere else. \fB*\-\:>*\fR is refused as a list that permits everything
+T}
+T{
+\fBrate\fR
+T}	T{
+object
+T}	T{
+
+T}	T{
+\fB{max,\: period,\: per_\:client}\fR: how often this range may be written,\: counted per unit identifier and address (\fBper_\:client\fR counts each master\(aqs writes separately instead). Not the listener\(aqs rate limit,\: which is about frames from a client: this is about one address,\: and a master that moves a setpoint sixty times a minute is either broken or not the master it claims to be
+T}
+T{
+\fBrequire_\:before\fR
+T}	T{
+object
+T}	T{
+
+T}	T{
+Select\-\:before\-\:operate: \fB{registers,\: equals,\: within (default 30s),\: unit}\fR. The write is refused unless that register was \fBwritten\fR to that value within the window. IEC 60870\-5\-104 has this in the protocol;\: Modbus does not,\: so a plant that wants it either implements it in every client \[u2014] where the frame that skips it looks exactly like the frame that did not \[u2014] or has the relay enforce it
+T}
+T{
+\fBon_\:unknown\fR
+T}	T{
+enum
+T}	T{
+\fBallow\fR
+T}	T{
+What happens when a check needs the address\(aqs current value and this relay has not seen one: \fBallow\fR (counted,\: with \fBmin\fR and \fBmax\fR still in force) or \fBrefuse\fR. It warns while \fBmax_\:delta\fR or \fBtransitions\fR are set with \fBallow\fR
+T}
 .TE
+.PP
+\fBThe three bounds that are about a change\fR, and the honest limit of all three: \fBmax_delta\fR, \fBtransitions\fR and \fBrequire_before\fR need to know what the value \fIis\fR, and what this relay knows is the last value it \fBsaw\fR \[u2014] a write it forwarded, or a read it relayed back. A value changed by another master, by a local panel or by the process itself was never on this path. So \fBon_unknown\fR says what to do when there is no value, the number of such checks is counted (\fBmodbus_value_unknown\fR), and \fBmin\fR/\fBmax\fR, which need nothing, are the bounds that always hold. A masked write (function code 22) makes the relay \fIforget\fR the address rather than guess: the result depends on what the register held inside the device.
+.PP
+\fBmax_value_points\fR on the listener bounds how many addresses are remembered (default 65536; a plant has hundreds), because the addresses come off the network.
+.PP
+.RS 4
+.nf
+.ft CR
+rules:
+  \- name: setpoint
+    action: allow
+    clients: ["10.30.7.13/32"]        # HMI\-3 and nothing else
+    units: ["2"]
+    functions: [write_single_register]
+    addresses: ["40001"]
+    schedule: {days: [sat], from: "06:00", to: "14:00", timezone: Europe/Stockholm}
+    values:
+      \- registers: "40001"
+        min: 0
+        max: 1500                      # the range
+        max_delta: 100                 # and not in one jump
+        rate: {max: 1, period: 1m}     # and not more than once a minute
+        require_before: {registers: "40000", equals: 1, within: 30s}
+        on_unknown: refuse
+.ft
+.fi
+.RE
 .PP
 \fB\fBschedule\fR\fR limits a rule to a time window. A rule with no schedule is always in force, so "these rules during the shift and those outside it" is written as the scheduled rules first and the unscheduled ones after them.
 .PP
@@ -3947,7 +4366,7 @@ T}
 .PP
 \fBLearning is observe\-only unless it says otherwise.\fR \fBlearn.enforce\fR defaults to false, and validation warns while it is off, because a learning run left on by accident is a relay that decides nothing.
 .PP
-Counters: \fBmodbus_sessions\fR, \fBmodbus_sessions_open\fR, \fBmodbus_requests\fR, \fBmodbus_responses\fR, \fBmodbus_denied\fR, \fBmodbus_would_deny\fR, \fBmodbus_exceptions\fR, \fBmodbus_malformed\fR, \fBmodbus_refused\fR, \fBmodbus_rejected\fR, \fBmodbus_rate_limited\fR, \fBmodbus_queue_full\fR, \fBmodbus_upstream_failed\fR, \fBmodbus_traced\fR, \fBmodbus_learned\fR. Refusals are \fBmodbus_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBtls_handshake\fR, \fBno_client_certificate\fR, \fBno_role\fR, \fBrole_not_allowed\fR, \fBsecurity_requires_tls\fR, \fBframing\fR, \fBframe_too_large\fR, \fBmalformed\fR, \fBmalformed_response\fR, \fBresponse_unit_mismatch\fR, \fBno_route_for_unit\fR, \fBmax_connections\fR, \fBrate_limit\fR, \fBqueue_full\fR, \fBread_only\fR, \fBread_only_unknown_function\fR, \fBunit_not_allowed\fR, \fBrule_deny\fR, \fBno_rule\fR, \fBvalue_out_of_range\fR, \fBvalue_masked_write\fR, \fBcoil_set_not_allowed\fR, \fBcoil_clear_not_allowed\fR. A selector that does not match is not a refusal of its own: the frame falls through to the next rule, and to \fBno_rule\fR if none matches.
+Counters: \fBmodbus_sessions\fR, \fBmodbus_sessions_open\fR, \fBmodbus_requests\fR, \fBmodbus_responses\fR, \fBmodbus_denied\fR, \fBmodbus_would_deny\fR, \fBmodbus_exceptions\fR, \fBmodbus_malformed\fR, \fBmodbus_refused\fR, \fBmodbus_rejected\fR, \fBmodbus_rate_limited\fR, \fBmodbus_queue_full\fR, \fBmodbus_upstream_failed\fR, \fBmodbus_traced\fR, \fBmodbus_learned\fR. Refusals are \fBmodbus_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBtls_handshake\fR, \fBno_client_certificate\fR, \fBno_role\fR, \fBrole_not_allowed\fR, \fBsecurity_requires_tls\fR, \fBframing\fR, \fBframe_too_large\fR, \fBmalformed\fR, \fBmalformed_response\fR, \fBresponse_unit_mismatch\fR, \fBno_route_for_unit\fR, \fBmax_connections\fR, \fBrate_limit\fR, \fBqueue_full\fR, \fBread_only\fR, \fBread_only_unknown_function\fR, \fBunit_not_allowed\fR, \fBrule_deny\fR, \fBno_rule\fR, \fBvalue_out_of_range\fR, \fBvalue_delta\fR, \fBvalue_transition\fR, \fBvalue_rate\fR, \fBvalue_no_select\fR, \fBvalue_unknown\fR, \fBvalue_masked_write\fR, \fBcoil_set_not_allowed\fR, \fBcoil_clear_not_allowed\fR. A selector that does not match is not a refusal of its own: the frame falls through to the next rule, and to \fBno_rule\fR if none matches.
 .SS "server.listeners[].ntp (kind: ntp)"
 .PP
 A \fBkind: ntp\fR listener is an NTP and NTS security gateway: it reads every packet, decides about it in the protocol\(aqs own terms, and compares the servers behind it with each other.
@@ -4131,6 +4550,15 @@ T}	T{
 
 T}	T{
 How long a server whose time cannot be verified is still used,\: below
+T}
+T{
+\fBchange_\:detection\fR
+T}	T{
+object
+T}	T{
+
+T}	T{
+Watch each server for a change in \fBwhat it is\fR rather than in what it answered,\: below
 T}
 T{
 \fBkod\fR
@@ -4473,6 +4901,69 @@ T}	T{
 Refuse an answer from too far down the tree
 T}
 T{
+\fBallow_\:strata\fR
+T}	T{
+list of int
+T}	T{
+\fB[]\fR (any)
+T}	T{
+The exhaustive list of strata accepted,\: 1..15. A bound admits everything below it and a list does not: a plant whose servers are a reference clock and its own two followers has no stratum 5 in it,\: and an answer claiming one is not a server that got worse
+T}
+T{
+\fBmax_\:root_\:distance\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR (off)
+T}	T{
+Refuse an answer whose \fBsynchronisation distance\fR \[u2014] half the root delay plus the root dispersion,\: RFC 5905\(aqs own measure \[u2014] is past it. It is the bound that cannot be satisfied by reporting a small delay and a large dispersion or the other way about
+T}
+T{
+\fBrefuse_\:bogus_\:timestamps\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse an answer whose four timestamps cannot describe an exchange: a zero transmit or receive timestamp,\: an answer sent before the request arrived,\: a last synchronisation later than the request. The check is between the packet\(aqs own fields,\: \fBnever against this relay\(aqs clock\fR,\: so a relay whose own time is wrong does not refuse correct answers;\: it is not applied to an interleaved answer,\: whose transmit timestamp is the server\(aqs previous one on purpose. Off warns
+T}
+T{
+\fBrefuse_\:bogus_\:refid\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse an answer whose reference identifier does not match the stratum that says how to read it: a stratum 1 answer whose identifier is not a reference clock\(aqs name,\: or a stratum 2\-or\-worse answer with none at all. At stratum 2 and above only the unset value is called wrong,\: because the field may be four octets of a hash of an IPv6 address. Off warns
+T}
+T{
+\fBexpect_\:refid\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+The reference identifiers a server may report: the four\-character name at stratum 0 and 1 (\fBGPS\fR,\: \fBPPS\fR,\: \fBDCFa\fR) and the dotted quad above. It is the cheapest statement of server identity the protocol allows without a key \[u2014] a GPS\-backed clock that starts answering as something else is either a different device or the same device with a different upstream
+T}
+T{
+\fBleap_\:policy\fR
+T}	T{
+enum
+T}	T{
+\fBalert\fR
+T}	T{
+What happens when an answer announces a leap second: \fBalert\fR (forward it and raise a security event when it is outside the window a leap second can happen in),\: \fBallow\fR (say nothing \[u2014] warns),\: \fBwindow\fR (refuse an announcement outside that window) or \fBrefuse\fR (refuse every announcement). An announcement makes every client that hears it plan to move its clock,\: and the IERS only ever uses the end of June,\: December,\: March or September
+T}
+T{
+\fBleap_\:window\fR
+T}	T{
+duration
+T}	T{
+\fB744h\fR (a month)
+T}	T{
+How long before the end of such a month an announcement is plausible;\: 1h..2160h. RFC 5905 sets the indicator during the last day and some servers announce from the start of the month
+T}
+T{
 \fBrefuse_\:unsynchronised\fR
 T}	T{
 bool
@@ -4504,6 +4995,70 @@ T}
 The monitor keeps four states apart, because the operator\(aqs next action differs: \fBunreachable\fR (no answer), \fBunsynchronised\fR (it answers and says not to use its time), \fBsuspect\fR (it answers, claims to be fine and disagrees with its peers) and \fBhealthy\fR. With three or more sources the median is the estate\(aqs opinion and the outlier is named; with two that disagree neither can be called wrong, so both are marked and the event says exactly that.
 .PP
 \fB\fBholdover\fR\fR bounds how long a server whose time cannot be verified is still used: \fBmax_duration\fR (0 disables it). Past it the listener says the holdover has expired, and the estate\(aqs \fBon_all_suspect\fR decides whether that stops the answers.
+.PP
+\fB\fBchange_detection\fR\fR asks a different question from every bound in \fBquality\fR. Those ask whether one answer is good enough; this asks whether the server is still the same server, answering the same way \[u2014] which is the question the interesting attack leaves open, because it passes every static bound. A source that was a GPS clock at stratum 1 and now answers as something else at stratum 4 is inside \fBmax_stratum: 8\fR. An offset that steps by fourteen seconds between two polls is inside \fBmax_offset: 30s\fR. A dispersion that grows from a millisecond to a second is inside \fBmax_root_dispersion: 2s\fR. A server that stops carrying NTS is carrying valid NTP.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.9i) lbw(0.8i) lbx
+lw(1.2i) lw(0.9i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Watch each server. Off warns: nothing else here notices a source being replaced,\: re\-pointed or stood in front of
+T}
+T{
+\fBmax_\:step\fR
+T}	T{
+duration
+T}	T{
+\fB1s\fR
+T}	T{
+How far the measured offset to one server may move between two measurements. A real clock drifts;\: it does not step
+T}
+T{
+\fBmax_\:stratum_\:jump\fR
+T}	T{
+int
+T}	T{
+\fB2\fR
+T}	T{
+How far a server\(aqs stratum may move at once. A server whose own upstream failed over moves by one or two;\: one that moved by eight is answering for somebody else
+T}
+T{
+\fBdispersion_\:growth\fR
+T}	T{
+int
+T}	T{
+\fB8\fR
+T}	T{
+The factor by which a server\(aqs root dispersion may grow between measurements before it is said
+T}
+T{
+\fBaction\fR
+T}	T{
+enum
+T}	T{
+\fBalert\fR
+T}	T{
+\fBalert\fR (a security event and a counter) or \fBrefuse\fR (that,\: and the answer does not reach the client). \fBrefuse\fR warns: it stops the corrections rather than merely reporting them
+T}
+.TE
+.PP
+Six detections, each with a counter and a security event of its own: \fBntp_source_changed\fR (the reference identifier), \fBntp_stratum_jumped\fR, \fBntp_offset_stepped\fR, \fBntp_dispersion_grew\fR, \fBntp_nts_lost\fR and \fBntp_leap_announced\fR. They are fed by both the monitor\(aqs own probes and the exchanges the relay forwards, so an estate whose devices poll once an hour still notices within a probe interval. The baseline moves to what was measured whether or not the change was reported, so one change is one alert rather than one per poll for ever; a kiss\-o\(aq\-death and an unsynchronised answer never become the baseline, since neither carries a measurement of the server\(aqs time.
 .PP
 \fB\fBkod\fR\fR is the kiss\-o\(aq\-death: a stratum\-0 answer whose four reference identifier octets are a code. It is the protocol\(aqs own way of saying "not now", and a client that gets one backs off.
 .PP
@@ -4566,7 +5121,7 @@ T}
 .PP
 \fBThe relay adds asymmetry, and that is a number.\fR A packet through a relay takes one path out and another back, and the offset a client computes is wrong by half the difference between them: \fB(forward \[u2212] reverse delay) / 2\fR. Nothing can remove it, so the data path is kept short \[u2014] the policy is compiled, the logging and the learning are off the forwarding path, the queues are bounded, and there is no deep inspection of anything, because there is nothing in a time packet to inspect deeply. An estate that needs better than the asymmetry allows puts a time server near its consumers rather than a relay.
 .PP
-Counters: \fBntp_requests\fR, \fBntp_forwarded\fR, \fBntp_responses\fR, \fBntp_answered\fR, \fBntp_denied\fR, \fBntp_would_deny\fR, \fBntp_dropped\fR, \fBntp_malformed\fR, \fBntp_unsolicited\fR, \fBntp_rate_limited\fR, \fBntp_kiss_sent\fR, \fBntp_timed_out\fR, \fBntp_associations\fR, \fBntp_associations_open\fR, \fBntp_upstream_failed\fR, \fBntp_upstream_unavailable\fR, \fBntp_send_failed\fR, \fBntp_interleaved\fR, \fBntp_nts_forwarded\fR, \fBntp_version5\fR, \fBntp_probes\fR, \fBntp_probe_failed\fR, \fBntp_disagreements\fR, \fBntp_source_healthy\fR, \fBntp_source_unhealthy\fR, \fBntp_holdover_expired\fR. Refusals are \fBntp_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBbanned\fR, \fBclient_not_allowed\fR, \fBrate_limit\fR, \fBcontrol_mode\fR, \fBprivate_mode\fR, \fBversion5\fR, \fBversion\fR, \fBversion_not_allowed\fR, \fBmode_not_allowed\fR, \fBnot_a_peer\fR, \fBbroadcast_not_allowed\fR, \fBmalformed\fR, \fBpacket_too_large\fR, \fBtoo_many_extensions\fR, \fBunknown_extension\fR, \fBambiguous_mac\fR, \fBnts_required\fR, \fBauth_required\fR, \fBauth_failed\fR, \fBmax_associations\fR, \fBoutstanding_full\fR, \fBno_server\fR, \fBserver_not_allowed\fR, \fBmalformed_response\fR, \fBunsolicited\fR, \fBresponse_mode\fR, \fBkiss_of_death\fR, \fBunsynchronised\fR, \fBunsynchronised_stratum\fR, \fBstratum_too_high\fR, \fBroot_delay\fR, \fBroot_dispersion\fR, \fBdelay\fR, \fBoffset\fR, \fBnts_stripped\fR, \fBauth_stripped\fR.
+Counters: \fBntp_requests\fR, \fBntp_forwarded\fR, \fBntp_responses\fR, \fBntp_answered\fR, \fBntp_denied\fR, \fBntp_would_deny\fR, \fBntp_dropped\fR, \fBntp_malformed\fR, \fBntp_unsolicited\fR, \fBntp_rate_limited\fR, \fBntp_kiss_sent\fR, \fBntp_timed_out\fR, \fBntp_associations\fR, \fBntp_associations_open\fR, \fBntp_upstream_failed\fR, \fBntp_upstream_unavailable\fR, \fBntp_send_failed\fR, \fBntp_interleaved\fR, \fBntp_nts_forwarded\fR, \fBntp_version5\fR, \fBntp_probes\fR, \fBntp_probe_failed\fR, \fBntp_disagreements\fR, \fBntp_source_healthy\fR, \fBntp_source_unhealthy\fR, \fBntp_holdover_expired\fR, \fBntp_source_changed\fR, \fBntp_stratum_jumped\fR, \fBntp_offset_stepped\fR, \fBntp_dispersion_grew\fR, \fBntp_nts_lost\fR, \fBntp_leap_announced\fR, \fBntp_leap_unexpected\fR. Refusals are \fBntp_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBbanned\fR, \fBclient_not_allowed\fR, \fBrate_limit\fR, \fBcontrol_mode\fR, \fBprivate_mode\fR, \fBversion5\fR, \fBversion\fR, \fBversion_not_allowed\fR, \fBmode_not_allowed\fR, \fBnot_a_peer\fR, \fBbroadcast_not_allowed\fR, \fBmalformed\fR, \fBpacket_too_large\fR, \fBtoo_many_extensions\fR, \fBunknown_extension\fR, \fBambiguous_mac\fR, \fBnts_required\fR, \fBauth_required\fR, \fBauth_failed\fR, \fBmax_associations\fR, \fBoutstanding_full\fR, \fBno_server\fR, \fBserver_not_allowed\fR, \fBmalformed_response\fR, \fBunsolicited\fR, \fBresponse_mode\fR, \fBkiss_of_death\fR, \fBunsynchronised\fR, \fBunsynchronised_stratum\fR, \fBstratum_too_high\fR, \fBstratum_not_allowed\fR, \fBroot_delay\fR, \fBroot_dispersion\fR, \fBroot_distance\fR, \fBdelay\fR, \fBoffset\fR, \fBbogus_timestamps\fR, \fBbogus_refid\fR, \fBrefid_not_allowed\fR, \fBleap_announced\fR, \fBleap_unexpected\fR, \fBsource_changed\fR, \fBnts_stripped\fR, \fBauth_stripped\fR.
 .SS "server.listeners[].ntske (kind: ntske)"
 .PP
 A \fBkind: ntske\fR listener is NTS key establishment (RFC 8915) on TCP 4460: TLS with the ALPN \fBntske/1\fR, relayed to the key establishment servers whose keys it is.
@@ -7549,6 +8104,15 @@ none
 T}	T{
 Check the Certificate Transparency SCTs embedded in file certificates at load;\: see below
 T}
+T{
+\fBexpiry\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+What an expired or nearly expired certificate does;\: see below
+T}
 .TE
 .SS "server.listeners[].tls.key_exchange"
 .PP
@@ -7638,6 +8202,69 @@ Generate a key and the record to publish with \fBxproxyctl ech keygen\fR; the co
 \fBECH and layer 4 routing.\fR A \fBkind: tcp\fR listener routes on the SNI it can see, which with ECH is the \fIouter\fR name: every ECH client looks like a connection to the public name, so a passthrough listener in front of an ECH listener cannot split them. Terminate TLS where ECH is accepted, or give the public name its own backend.
 .PP
 \fBFingerprints.\fR The outer hello is what JA3 and JA4 are computed from, so fingerprinting keeps working; what changes is that the SNI in \fBsni\fR is the public name for every ECH client. The access log carries \fBech: true\fR when ECH was accepted, which is how to tell the two apart.
+.SS "server.listeners[].tls.expiry"
+.PP
+A certificate outliving its validity is the single most common way a working service stops working, and by default this proxy serves an expired certificate: the client is the one that decides whether to trust it, so serving one is not a security hole \[u2014] it is an outage nobody can read, because every client discovers it separately.
+.PP
+This section says so in one place instead. What it can do is bounded, and the boundary is deliberate:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBrefuse_expired\fR makes an already expired certificate a \fBload error\fR. At start the listener does not come up and the message names the file. On a reload the new configuration is refused and \fBthe certificate already in use keeps working\fR, which is the case where refusing is strictly better than serving: a botched renewal that wrote an expired file no longer replaces a working one.
+.PP
+.ti -3n
+\(bu
+\fBwarn\fR is a window before expiry. Certificates inside it are reported, worst first, by \fBxproxyctl tls\fR (an \fBEXPIRY\fR line each), by \fBGET /v1/tls/expiring\fR, and in the security log at every load and reload.
+.RE
+.PP
+.PP
+A certificate that expires while the proxy is running is \fBnever\fR unloaded, whatever this section says: a listener that stops answering is worse than one answering with a certificate the client will reject for itself, and unloading it would turn a renewal that ran late into an outage. It is reported and counted, and \fBdocs/HA.md\fR covers why that report matters more than the refusal on a pair of nodes.
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.9i) lbw(0.8i) lbx
+lw(0.8i) lw(0.9i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBrefuse_\:expired\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+An expired certificate is a load error rather than something to serve
+T}
+T{
+\fBwarn\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR
+T}	T{
+Report certificates this close to expiry (0 for none,\: otherwise 1h to 8760h)
+T}
+.TE
+.PP
+.RS 4
+.nf
+.ft CR
+tls:
+  certificates: [{cert_file: /etc/xproxy/tls/site.pem, key_file: /etc/xproxy/tls/site\-key.pem}]
+  expiry:
+    refuse_expired: true
+    warn: 336h          # fourteen days
+.ft
+.fi
+.RE
 .SS "server.listeners[].tls.ocsp_stapling"
 .PP
 A stapled OCSP response spares clients the responder round trip and keeps working when the responder is down or firewalled from them. The proxy fetches a response for every served certificate (file and ACME alike) from the responder named in the certificate, using the issuer that follows the leaf in the chain file, and refreshes it at half its validity, at \fBrefresh\fR at the latest, and one minute after a failure. A handshake never waits: it carries the current response when there is one and none otherwise, and a still valid response is kept through fetch failures. A \fBrevoked\fR answer is stapled as well, since clients must see it, and logged as an error. \fBxproxyctl tls\fR and \fBGET /v1/tls\fR show the state per certificate.
@@ -11335,7 +11962,7 @@ T}
 .PP
 The OTLP exporter sends the same families as OTLP/HTTP with JSON encoding: counters as cumulative monotonic sums since process start, gauges as gauges, histograms as cumulative explicit bucket histograms; labels become data point attributes. \fBGET /v1/otlp\fR and \fBxproxyctl otlp\fR show pushes, failures, the last error and the size of the last request.
 .PP
-Exposed families: \fBxproxy_requests_total\fR, \fBxproxy_responses_total{class}\fR, \fBxproxy_denied_total{reason}\fR, \fBxproxy_refusals_total{kind,reason}\fR (the same breakdown for the protocols that are not HTTP: the listener kind that refused and the reason it logged, described in TROUBLESHOOTING.md), \fBxproxy_refusals_untracked_total\fR, \fBxproxy_bytes_in_total\fR, \fBxproxy_bytes_out_total\fR, \fBxproxy_waf_detected_total\fR, \fBxproxy_upstream_errors_total\fR, \fBxproxy_upstream_timeouts_total\fR, \fBxproxy_upstream_no_healthy_total\fR, \fBxproxy_client_aborts_total\fR, \fBxproxy_connections_rejected_total\fR, \fBxproxy_reloads_total{result}\fR, \fBxproxy_bans_total\fR, \fBxproxy_challenges_total{result}\fR (\fBissued\fR, \fBpassed\fR, \fBfailed\fR, \fBcaptcha_passed\fR), \fBxproxy_sensitive_findings_total{kind}\fR, \fBxproxy_sensitive_messages_total{direction,outcome}\fR, \fBxproxy_account_actions_total{class,action}\fR, \fBxproxy_account_events_total\fR, \fBxproxy_account_blocks_total\fR, \fBxproxy_account_campaigns_total\fR, \fBxproxy_account_disposable_total\fR, \fBxproxy_account_blocks_active\fR, \fBxproxy_log_sent_total{sink}\fR, \fBxproxy_log_dropped_total{sink}\fR, \fBxproxy_connections_open\fR, \fBxproxy_requests_in_flight\fR, \fBxproxy_bans_active\fR, \fBxproxy_load_level\fR, \fBxproxy_upstream_latency_seconds\fR, \fBxproxy_shedding{class}\fR, \fBxproxy_cluster_peers\fR, \fBxproxy_cluster_peers_connected\fR, \fBxproxy_cluster_messages_total{direction,type}\fR, \fBxproxy_cluster_rejected_total\fR, \fBxproxy_request_duration_seconds\fR (histogram), \fBxproxy_upstream_ttfb_seconds\fR (histogram), \fBxproxy_upstream_endpoint_{healthy,ejected,active}{upstream,endpoint}\fR, \fBxproxy_upstream_endpoint_{requests,errors}_total{upstream,endpoint}\fR, \fBxproxy_route_requests_total{route,outcome}\fR, \fBxproxy_build_info\fR, \fBxproxy_uptime_seconds\fR, \fBxproxy_config_generation\fR, \fBxproxy_panics_total\fR (panics contained on a connection or datagram goroutine; zero in a healthy process, and anything else is a bug worth a report).
+Exposed families: \fBxproxy_requests_total\fR, \fBxproxy_responses_total{class}\fR, \fBxproxy_denied_total{reason}\fR, \fBxproxy_refusals_total{kind,reason}\fR (the same breakdown for the protocols that are not HTTP: the listener kind that refused and the reason it logged, described in TROUBLESHOOTING.md), \fBxproxy_refusals_untracked_total\fR, \fBxproxy_bytes_in_total\fR, \fBxproxy_bytes_out_total\fR, \fBxproxy_waf_detected_total\fR, \fBxproxy_upstream_errors_total\fR, \fBxproxy_upstream_timeouts_total\fR, \fBxproxy_upstream_no_healthy_total\fR, \fBxproxy_client_aborts_total\fR, \fBxproxy_connections_rejected_total\fR, \fBxproxy_reloads_total{result}\fR, \fBxproxy_bans_total\fR, \fBxproxy_challenges_total{result}\fR (\fBissued\fR, \fBpassed\fR, \fBfailed\fR, \fBcaptcha_passed\fR), \fBxproxy_sensitive_findings_total{kind}\fR, \fBxproxy_sensitive_messages_total{direction,outcome}\fR, \fBxproxy_account_actions_total{class,action}\fR, \fBxproxy_account_events_total\fR, \fBxproxy_account_blocks_total\fR, \fBxproxy_account_campaigns_total\fR, \fBxproxy_account_disposable_total\fR, \fBxproxy_account_blocks_active\fR, \fBxproxy_log_sent_total{sink}\fR, \fBxproxy_log_dropped_total{sink}\fR, \fBxproxy_connections_open\fR, \fBxproxy_requests_in_flight\fR, \fBxproxy_bans_active\fR, \fBxproxy_sessions_live\fR, \fBxproxy_sessions_total\fR, \fBxproxy_sessions_closed_total{by}\fR, \fBxproxy_load_level\fR, \fBxproxy_upstream_latency_seconds\fR, \fBxproxy_shedding{class}\fR, \fBxproxy_cluster_peers\fR, \fBxproxy_cluster_peers_connected\fR, \fBxproxy_cluster_messages_total{direction,type}\fR, \fBxproxy_cluster_rejected_total\fR, \fBxproxy_request_duration_seconds\fR (histogram), \fBxproxy_upstream_ttfb_seconds\fR (histogram), \fBxproxy_upstream_endpoint_{healthy,ejected,active}{upstream,endpoint}\fR, \fBxproxy_upstream_endpoint_{requests,errors}_total{upstream,endpoint}\fR, \fBxproxy_route_requests_total{route,outcome}\fR, \fBxproxy_build_info\fR, \fBxproxy_uptime_seconds\fR, \fBxproxy_config_generation\fR, \fBxproxy_panics_total\fR (panics contained on a connection or datagram goroutine; zero in a healthy process, and anything else is a bug worth a report).
 .PP
 Series (per\-second rates for counters, current values for gauges): \fBrequests\fR, \fBresponses_2xx\fR, \fBresponses_4xx\fR, \fBresponses_5xx\fR, \fBdenied\fR, \fBshed\fR, \fBbytes_in\fR, \fBbytes_out\fR, \fBupstream_errors\fR, \fBopen_connections\fR, \fBin_flight\fR, \fBload_level\fR, \fBupstream_latency_ms\fR, \fBbans_active\fR, \fBcluster_connected\fR.
 .SH "api_inventory"

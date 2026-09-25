@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"github.com/rom/xproxy/internal/shadow"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -99,68 +100,73 @@ type Stats struct {
 	// The generic datagram relay. Dropped counts datagrams the relay
 	// would not forward and could not refuse -- there is nothing to
 	// refuse a datagram with -- with the reason in the security log.
-	UDPSessions          atomic.Uint64
-	UDPSessionsOpen      atomic.Int64
-	UDPDatagramsIn       atomic.Uint64
-	UDPDatagramsOut      atomic.Uint64
-	UDPBytesIn           atomic.Uint64
-	UDPBytesOut          atomic.Uint64
-	UDPDropped           atomic.Uint64
-	UDPRejected          atomic.Uint64
-	UDPErrors            atomic.Uint64
-	ForwardRequests      atomic.Uint64
-	ForwardTunnels       atomic.Uint64
-	ForwardTunnelsOpen   atomic.Int64
-	ForwardDenied        atomic.Uint64
-	ForwardAuthFailed    atomic.Uint64
-	ForwardRejected      atomic.Uint64
-	ForwardErrors        atomic.Uint64
-	ForwardBytesIn       atomic.Uint64
-	ForwardBytesOut      atomic.Uint64
-	ForwardSOCKS         atomic.Uint64
-	MasqueUDP            atomic.Uint64
-	MasqueIP             atomic.Uint64
-	MasqueOpen           atomic.Int64
-	MasqueDropped        atomic.Uint64
-	SMTPSessions         atomic.Uint64
-	SMTPSessionsOpen     atomic.Int64
-	SMTPMessages         atomic.Uint64
-	SMTPRefused          atomic.Uint64
-	SMTPRejected         atomic.Uint64
-	SMTPTLSUpgrades      atomic.Uint64
-	SMTPProtocolErrors   atomic.Uint64
-	SMTPBytesIn          atomic.Uint64
-	MQTTSessions         atomic.Uint64
-	MQTTSessionsOpen     atomic.Int64
-	MQTTPublished        atomic.Uint64
-	MQTTSubscribed       atomic.Uint64
-	MQTTRefused          atomic.Uint64
-	MQTTRejected         atomic.Uint64
-	MQTTProtocolErrors   atomic.Uint64
-	SSHSessions          atomic.Uint64
-	SSHSessionsOpen      atomic.Int64
-	SSHChannels          atomic.Uint64
-	SSHRefused           atomic.Uint64
-	FTPSessions          atomic.Uint64
-	FTPSessionsOpen      atomic.Int64
-	FTPRefused           atomic.Uint64
-	FTPRejected          atomic.Uint64
-	FTPAuthFailed        atomic.Uint64
-	FTPTransfers         atomic.Uint64
-	FTPScanned           atomic.Uint64
-	FTPScanBlocked       atomic.Uint64
-	FTPRecorded          atomic.Uint64
-	FTPMFAOK             atomic.Uint64
-	FTPMFAFailed         atomic.Uint64
-	ModbusSessions       atomic.Uint64
-	ModbusSessionsOpen   atomic.Int64
-	ModbusRequests       atomic.Uint64
-	ModbusResponses      atomic.Uint64
-	ModbusDenied         atomic.Uint64
-	ModbusWouldDeny      atomic.Uint64
-	ModbusExceptions     atomic.Uint64
-	ModbusMalformed      atomic.Uint64
-	ModbusRefused        atomic.Uint64
+	UDPSessions        atomic.Uint64
+	UDPSessionsOpen    atomic.Int64
+	UDPDatagramsIn     atomic.Uint64
+	UDPDatagramsOut    atomic.Uint64
+	UDPBytesIn         atomic.Uint64
+	UDPBytesOut        atomic.Uint64
+	UDPDropped         atomic.Uint64
+	UDPRejected        atomic.Uint64
+	UDPErrors          atomic.Uint64
+	ForwardRequests    atomic.Uint64
+	ForwardTunnels     atomic.Uint64
+	ForwardTunnelsOpen atomic.Int64
+	ForwardDenied      atomic.Uint64
+	ForwardAuthFailed  atomic.Uint64
+	ForwardRejected    atomic.Uint64
+	ForwardErrors      atomic.Uint64
+	ForwardBytesIn     atomic.Uint64
+	ForwardBytesOut    atomic.Uint64
+	ForwardSOCKS       atomic.Uint64
+	MasqueUDP          atomic.Uint64
+	MasqueIP           atomic.Uint64
+	MasqueOpen         atomic.Int64
+	MasqueDropped      atomic.Uint64
+	SMTPSessions       atomic.Uint64
+	SMTPSessionsOpen   atomic.Int64
+	SMTPMessages       atomic.Uint64
+	SMTPRefused        atomic.Uint64
+	SMTPRejected       atomic.Uint64
+	SMTPTLSUpgrades    atomic.Uint64
+	SMTPProtocolErrors atomic.Uint64
+	SMTPBytesIn        atomic.Uint64
+	MQTTSessions       atomic.Uint64
+	MQTTSessionsOpen   atomic.Int64
+	MQTTPublished      atomic.Uint64
+	MQTTSubscribed     atomic.Uint64
+	MQTTRefused        atomic.Uint64
+	MQTTRejected       atomic.Uint64
+	MQTTProtocolErrors atomic.Uint64
+	SSHSessions        atomic.Uint64
+	SSHSessionsOpen    atomic.Int64
+	SSHChannels        atomic.Uint64
+	SSHRefused         atomic.Uint64
+	FTPSessions        atomic.Uint64
+	FTPSessionsOpen    atomic.Int64
+	FTPRefused         atomic.Uint64
+	FTPRejected        atomic.Uint64
+	FTPAuthFailed      atomic.Uint64
+	FTPTransfers       atomic.Uint64
+	FTPScanned         atomic.Uint64
+	FTPScanBlocked     atomic.Uint64
+	FTPRecorded        atomic.Uint64
+	FTPMFAOK           atomic.Uint64
+	FTPMFAFailed       atomic.Uint64
+	ModbusSessions     atomic.Uint64
+	ModbusSessionsOpen atomic.Int64
+	ModbusRequests     atomic.Uint64
+	ModbusResponses    atomic.Uint64
+	ModbusDenied       atomic.Uint64
+	ModbusWouldDeny    atomic.Uint64
+	ModbusExceptions   atomic.Uint64
+	ModbusMalformed    atomic.Uint64
+	ModbusRefused      atomic.Uint64
+	// ModbusValueUnknown counts the value checks that needed an address's
+	// current value and had none: a policy running on less than it asks
+	// for should be visible rather than silently permissive.
+	ModbusValueUnknown   atomic.Uint64
+	ModbusValuePoints    atomic.Int64
 	ModbusRejected       atomic.Uint64
 	ModbusRateLimited    atomic.Uint64
 	ModbusQueueFull      atomic.Uint64
@@ -202,6 +208,13 @@ type Stats struct {
 	NTPSourceHealthy       atomic.Uint64
 	NTPSourceUnhealthy     atomic.Uint64
 	NTPHoldoverExpired     atomic.Uint64
+	NTPSourceChanged       atomic.Uint64
+	NTPStratumJumped       atomic.Uint64
+	NTPOffsetStepped       atomic.Uint64
+	NTPDispersionGrew      atomic.Uint64
+	NTPNTSLost             atomic.Uint64
+	NTPLeapAnnounced       atomic.Uint64
+	NTPLeapUnexpected      atomic.Uint64
 
 	// NTS key establishment, which is its own listener on its own port.
 	NTSKESessions          atomic.Uint64
@@ -304,6 +317,8 @@ type Stats struct {
 	// breakdown for them, keyed by the kind and the reason the kind
 	// already logs.
 	refusals refusals
+	// wouldRefusals is the same table for the listeners in shadow mode.
+	wouldRefusals refusals
 	// RefusalsUntracked counts refusals named under a kind the roster
 	// does not have or beyond a kind's reason bound. Zero in a healthy
 	// process; anything else is a bug in a listener kind.
@@ -490,6 +505,8 @@ type Snapshot struct {
 	ModbusExceptions       uint64             `json:"modbus_exceptions"`
 	ModbusMalformed        uint64             `json:"modbus_malformed"`
 	ModbusRefused          uint64             `json:"modbus_refused"`
+	ModbusValueUnknown     uint64             `json:"modbus_value_unknown"`
+	ModbusValuePoints      int64              `json:"modbus_value_points"`
 	ModbusRejected         uint64             `json:"modbus_rejected"`
 	ModbusRateLimited      uint64             `json:"modbus_rate_limited"`
 	ModbusQueueFull        uint64             `json:"modbus_queue_full"`
@@ -522,6 +539,13 @@ type Snapshot struct {
 	NTPSourceHealthy       uint64             `json:"ntp_source_healthy"`
 	NTPSourceUnhealthy     uint64             `json:"ntp_source_unhealthy"`
 	NTPHoldoverExpired     uint64             `json:"ntp_holdover_expired"`
+	NTPSourceChanged       uint64             `json:"ntp_source_changed"`
+	NTPStratumJumped       uint64             `json:"ntp_stratum_jumped"`
+	NTPOffsetStepped       uint64             `json:"ntp_offset_stepped"`
+	NTPDispersionGrew      uint64             `json:"ntp_dispersion_grew"`
+	NTPNTSLost             uint64             `json:"ntp_nts_lost"`
+	NTPLeapAnnounced       uint64             `json:"ntp_leap_announced"`
+	NTPLeapUnexpected      uint64             `json:"ntp_leap_unexpected"`
 	NTSKESessions          uint64             `json:"ntske_sessions"`
 	NTSKERelayed           uint64             `json:"ntske_relayed"`
 	NTSKERefused           uint64             `json:"ntske_refused"`
@@ -592,6 +616,11 @@ type Snapshot struct {
 	ForwardBytesIn         uint64             `json:"forward_bytes_in"`
 	ForwardBytesOut        uint64             `json:"forward_bytes_out"`
 	WAFDetected            uint64             `json:"waf_detected"`
+	SessionsLive           int                `json:"sessions_live"`
+	SessionsOpened         uint64             `json:"sessions_opened"`
+	SessionsClosed         uint64             `json:"sessions_closed"`
+	SessionsKilled         uint64             `json:"sessions_killed"`
+	SessionsRefused        uint64             `json:"sessions_refused"`
 	BansActive             int                `json:"bans_active"`
 	BansTotal              uint64             `json:"bans_total"`
 	ClusterPeers           int                `json:"cluster_peers"`
@@ -638,8 +667,14 @@ type Snapshot struct {
 	// Refusals is what each listener kind refused, kind to reason to
 	// count. Omitted when nothing has been refused, so a quiet
 	// process's snapshot does not carry an empty object per kind.
-	Refusals          map[string]map[string]uint64 `json:"refusals,omitempty"`
-	RefusalsUntracked uint64                       `json:"refusals_untracked"`
+	Refusals map[string]map[string]uint64 `json:"refusals,omitempty"`
+	// WouldRefusals is the same breakdown for the listeners in shadow
+	// mode: what they would have refused and did not. The detail is in
+	// the shadow ledger (xproxyctl policy report).
+	WouldRefusals map[string]map[string]uint64 `json:"would_refusals,omitempty"`
+	// Shadow is the ledger's own totals.
+	Shadow            shadow.Status `json:"shadow"`
+	RefusalsUntracked uint64        `json:"refusals_untracked"`
 }
 
 func (s *Stats) snapshot() Snapshot {
@@ -690,6 +725,7 @@ func (s *Stats) snapshot() Snapshot {
 		HandshakesRefused:      s.HandshakesRefused.Load(),
 		KeyExchange:            s.KeyExchangeCounts(),
 		Refusals:               s.RefusalCounts(),
+		WouldRefusals:          s.WouldRefusalCounts(),
 		RefusalsUntracked:      s.RefusalsUntracked.Load(),
 		KeyExchangePQ:          s.KeyExchangePQ.Load(),
 		Degraded:               s.Degraded.Load(),
@@ -775,6 +811,8 @@ func (s *Stats) snapshot() Snapshot {
 		ModbusExceptions:       s.ModbusExceptions.Load(),
 		ModbusMalformed:        s.ModbusMalformed.Load(),
 		ModbusRefused:          s.ModbusRefused.Load(),
+		ModbusValueUnknown:     s.ModbusValueUnknown.Load(),
+		ModbusValuePoints:      s.ModbusValuePoints.Load(),
 		ModbusRejected:         s.ModbusRejected.Load(),
 		ModbusRateLimited:      s.ModbusRateLimited.Load(),
 		ModbusQueueFull:        s.ModbusQueueFull.Load(),
@@ -807,6 +845,13 @@ func (s *Stats) snapshot() Snapshot {
 		NTPSourceHealthy:       s.NTPSourceHealthy.Load(),
 		NTPSourceUnhealthy:     s.NTPSourceUnhealthy.Load(),
 		NTPHoldoverExpired:     s.NTPHoldoverExpired.Load(),
+		NTPSourceChanged:       s.NTPSourceChanged.Load(),
+		NTPStratumJumped:       s.NTPStratumJumped.Load(),
+		NTPOffsetStepped:       s.NTPOffsetStepped.Load(),
+		NTPDispersionGrew:      s.NTPDispersionGrew.Load(),
+		NTPNTSLost:             s.NTPNTSLost.Load(),
+		NTPLeapAnnounced:       s.NTPLeapAnnounced.Load(),
+		NTPLeapUnexpected:      s.NTPLeapUnexpected.Load(),
 		NTSKESessions:          s.NTSKESessions.Load(),
 		NTSKERelayed:           s.NTSKERelayed.Load(),
 		NTSKERefused:           s.NTSKERefused.Load(),

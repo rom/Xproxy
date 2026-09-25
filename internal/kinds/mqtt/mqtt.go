@@ -42,6 +42,11 @@ type server struct {
 	allow    []netip.Prefix
 	versions map[byte]bool
 	clientID *regexp.Regexp
+	// topics are the per-topic payload, QoS and retain bounds; maxQoS the
+	// listener's own; spark the Sparkplug B policy, nil without one.
+	topics []topicRule
+	maxQoS int
+	spark  *sparkplugPolicy
 
 	open atomic.Int64
 	wg   sync.WaitGroup
@@ -76,6 +81,21 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener, tc *tls.Co
 			return nil, fmt.Errorf("mqtt client_id_pattern: %w", err)
 		}
 		t.clientID = re
+	}
+	t.maxQoS = 2
+	if m.MaxQoS != nil {
+		if *m.MaxQoS < 0 || *m.MaxQoS > 2 {
+			return nil, fmt.Errorf("mqtt max_qos: must be 0, 1 or 2")
+		}
+		t.maxQoS = *m.MaxQoS
+	}
+	rules, err := compileTopicRules(m.Topics)
+	if err != nil {
+		return nil, err
+	}
+	t.topics = rules
+	if t.spark, err = compileSparkplug(m.Sparkplug); err != nil {
+		return nil, err
 	}
 	if m.UpstreamTLSMode != "none" {
 		uc, _, err := tlsconf.Client(m.UpstreamTLS)
@@ -216,7 +236,7 @@ func (t *server) handle(client net.Conn) {
 		_ = se.client.Close()
 	}()
 
-	if !t.allowed(ip) {
+	if !t.allowed(ip) && !t.shadowed(ip, "client_not_allowed", "") {
 		s.Counters().MQTTRejected.Add(1)
 		t.deny(ip, "client_not_allowed", "")
 		t.log(se, start, "client_not_allowed")
@@ -262,6 +282,28 @@ func (t *server) deny(ip netip.Addr, what, detail string) {
 	if bl := t.host.Bans(); bl != nil && ip.IsValid() {
 		bl.Observe(ip, "mqtt_denied")
 	}
+}
+
+// shadowed records a policy refusal a listener in shadow mode does not
+// enforce, and says whether it was recorded rather than refused.
+//
+// Only policy reaches it. A malformed packet, a first packet that is not
+// CONNECT, a second CONNECT, a packet past the bound and the connection
+// limit are refused in shadow mode too: forwarding those means acting on
+// bytes this proxy could not read, or keeping a session whose shape the
+// protocol does not have.
+func (t *server) shadowed(ip netip.Addr, what, detail string) bool {
+	if !t.cfg.Shadowing() {
+		return false
+	}
+	t.host.Counters().WouldRefuse("mqtt", what)
+	t.host.Shadow().Record("mqtt", t.cfg.Name, what, "", detail)
+	attrs := []any{"listener", t.cfg.Name, "client_ip", ip.String(), "proto", "mqtt"}
+	if detail != "" {
+		attrs = append(attrs, "detail", detail)
+	}
+	t.host.Logs().SecurityEvent(context.Background(), "would_deny", "mqtt_"+what, attrs...)
+	return true
 }
 
 func (t *server) log(se *session, start time.Time, reason string) {
@@ -312,7 +354,7 @@ func (se *session) run(time.Time) string {
 		return se.badPacket(err, "connect")
 	}
 	se.version, se.clientID, se.username = c.Version, c.ClientID, c.Username
-	if reason, code := se.checkConnect(c); reason != "" {
+	if reason, code := se.checkConnect(c); reason != "" && !t.shadowed(se.ip, reason, c.ClientID) {
 		se.refuseConnect(code)
 		t.deny(se.ip, reason, "")
 		return reason
@@ -558,24 +600,49 @@ func (se *session) decide(p wire.Packet) (string, bool) {
 
 func (se *session) decidePublish(p wire.Packet) (string, bool) {
 	t := se.t
-	pub, err := wire.ParsePublish(p)
+	pub, err := wire.ParsePublish(p, se.version)
 	if err != nil {
 		return se.badPacket(err, "publish"), false
 	}
-	bad := ""
+	bad, rule := "", ""
 	switch {
-	case pub.Retain && t.m.AllowRetain != nil && !*t.m.AllowRetain:
-		bad = "retain_refused"
 	case !se.topicAllowed(pub.Topic):
 		bad = "publish_topic_refused"
+	default:
+		// The per-topic bounds: how large a payload, which qualities of
+		// service, and whether this topic may be retained. A rule that
+		// allows retain overrides the listener's own policy, which is why
+		// the listener's retain check comes after them.
+		bad, rule = t.checkPublish(pub)
+		if bad == "" && rule == "" && pub.Retain && t.m.AllowRetain != nil && !*t.m.AllowRetain {
+			bad = "retain_refused"
+		}
+		if bad == "" {
+			// Sparkplug B: the namespace, the message types, who may
+			// command equipment, and the convention's own ordering and
+			// sequence. The payload is read in place -- two varints of a
+			// protobuf message -- and never copied.
+			bad = t.spark.check(se.ip, pub, pub.Payload(p))
+		}
 	}
 	if bad == "" {
 		se.published.Add(1)
 		t.host.Counters().MQTTPublished.Add(1)
 		return "", true
 	}
+	detail := mqttClipTopic(pub.Topic)
+	if rule != "" {
+		detail = rule + " " + detail
+	}
+	if t.shadowed(se.ip, bad, detail) {
+		// Shadow mode: the publication goes to the broker and the
+		// ledger says it would not have.
+		se.published.Add(1)
+		t.host.Counters().MQTTPublished.Add(1)
+		return "", true
+	}
 	t.host.Counters().MQTTRefused.Add(1)
-	t.deny(se.ip, bad, mqttClipTopic(pub.Topic))
+	t.deny(se.ip, bad, detail)
 	if t.m.Action == "disconnect" {
 		se.disconnectClient(mqttNotAuthorized(se.version))
 		return bad, false
@@ -607,10 +674,16 @@ func (se *session) decideSubscribe(p wire.Packet) (string, bool) {
 		}
 		return "", true
 	}
-	refused := ""
+	refused, why := "", "subscribe_refused"
 	for _, f := range sub.Filters {
 		if !se.filterAllowed(f.Filter) {
 			refused = f.Filter
+			break
+		}
+		// A subscription asking for QoS 2 costs the broker the same
+		// stored state a publication does, so the same bound applies.
+		if reason, _ := t.checkSubscribeQoS(f.Filter, f.Options&0x03); reason != "" {
+			refused, why = f.Filter, reason
 			break
 		}
 	}
@@ -624,11 +697,18 @@ func (se *session) decideSubscribe(p wire.Packet) (string, bool) {
 		t.host.Counters().MQTTSubscribed.Add(1)
 		return "", true
 	}
+	if t.shadowed(se.ip, why, mqttClipTopic(refused)) {
+		for _, f := range sub.Filters {
+			se.subs[f.Filter] = true
+		}
+		t.host.Counters().MQTTSubscribed.Add(1)
+		return "", true
+	}
 	t.host.Counters().MQTTRefused.Add(1)
-	t.deny(se.ip, "subscribe_refused", mqttClipTopic(refused))
+	t.deny(se.ip, why, mqttClipTopic(refused))
 	if t.m.Action == "disconnect" {
 		se.disconnectClient(mqttNotAuthorized(se.version))
-		return "subscribe_refused", false
+		return why, false
 	}
 	// drop: SUBACK is answered here, with a failure code for every
 	// filter. Refusing the packet as a whole rather than per filter

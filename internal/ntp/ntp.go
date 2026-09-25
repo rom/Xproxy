@@ -440,3 +440,127 @@ func Delay(t1 Timestamp, p *Packet, t4 Timestamp) time.Duration {
 func (p *Packet) AnswersRequest(sent Timestamp) bool {
 	return p.Origin == sent && !sent.IsZero()
 }
+
+// RootDistance is the synchronisation distance: half the total round
+// trip to the reference clock plus the accumulated error (RFC 5905
+// section 11.2's lambda + epsilon). It is the single number that says
+// how far from the reference clock this answer really is, and it is the
+// one a server cannot make look good by reporting a small delay and a
+// large dispersion or the other way about.
+func (p *Packet) RootDistance() time.Duration {
+	return p.RootDelay.Duration()/2 + p.RootDispersion.Duration()
+}
+
+// Announcing reports a leap indicator that announces a leap second,
+// which is different from one that says the clock is unsynchronised.
+func (l Leap) Announcing() bool { return l == LeapAddSecond || l == LeapDeleteSecond }
+
+// LeapPlausible says whether a leap second could be announced at this
+// moment.
+//
+// A leap second is inserted or removed only at the end of a UTC month,
+// and the IERS uses the end of June and December first, the end of March
+// and September only if it must (Bulletin C). So an announcement in the
+// closing window of one of those four months is the real thing, and one
+// in the middle of August is either a fault or somebody's work -- which
+// matters because the announcement makes every client that hears it plan
+// to move its clock.
+//
+// The window is the caller's, because implementations differ: RFC 5905
+// sets the indicator during the last day, and some servers announce from
+// the start of the month.
+func LeapPlausible(now time.Time, window time.Duration) bool {
+	if window <= 0 {
+		window = 24 * time.Hour
+	}
+	u := now.UTC()
+	switch u.Month() {
+	case time.March, time.June, time.September, time.December:
+	default:
+		return false
+	}
+	// The end of the month, as an instant: the first day of the next
+	// month at midnight UTC.
+	end := time.Date(u.Year(), u.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, 1, 0)
+	return !u.Before(end.Add(-window))
+}
+
+// TimestampsConsistent reads the four timestamps of a server's answer
+// against each other and returns why they are not a measurement, or the
+// empty string when they are.
+//
+// This is deliberately a check between the packet's own fields and not
+// against the receiving clock: a relay whose own clock is wrong would
+// otherwise refuse every correct answer, which is the failure mode that
+// makes a check like this get turned off. What it catches is an answer
+// whose numbers cannot describe an exchange -- a zero transmit
+// timestamp, a server that says it answered before it received, a
+// reference epoch after the answer was made -- each of which produces an
+// offset a client will act on and none of which a client checks.
+//
+// It is not applied to an interleaved answer, where the transmit
+// timestamp is the server's *previous* one on purpose and is therefore
+// older than this request's arrival -- the caller knows which kind of
+// answer it matched, and this cannot.
+func (p *Packet) TimestampsConsistent() string {
+	if p.Mode != ModeServer && p.Mode != ModeSymPassive && p.Mode != ModeSymActive {
+		return ""
+	}
+	switch {
+	case p.Transmit.IsZero():
+		return "the transmit timestamp is zero, so the answer says nothing about when it was sent"
+	case p.Receive.IsZero():
+		return "the receive timestamp is zero, so the answer says nothing about when the request arrived"
+	case p.Receive.Sub(p.Transmit) > 0:
+		// The server's own processing time, backwards: it claims to
+		// have sent the answer before the request reached it. Read
+		// modularly, so an exchange across the end of an era is the
+		// small number it is.
+		return "the answer was transmitted before the request was received"
+	case !p.Reference.IsZero() && p.Reference.Sub(p.Receive) > 0:
+		return "the last synchronisation is later than the request's arrival"
+	}
+	return ""
+}
+
+// RefIDSane reads the reference identifier against the stratum that says
+// how to read it, and returns why it is not one, or the empty string.
+//
+// The field is the most often misread in the header, and a wrong value
+// in it is what a server looks like when it is not the server it claims
+// to be: a stratum-1 answer whose identifier is not a reference clock's
+// name is not from a reference clock, and a stratum-2-or-worse answer
+// with no identifier at all is a server saying it synchronises to
+// nothing while claiming a place in the tree.
+//
+// At stratum 2 and above the field may be four octets of a hash of an
+// IPv6 address rather than an IPv4 address, so only the all-zero value
+// is called wrong -- anything else could be a digest, and refusing a
+// digest for looking like a multicast address would refuse a correct
+// server.
+func (p *Packet) RefIDSane() string {
+	switch p.Stratum {
+	case 0:
+		return ""
+	case 1:
+		if printableID(p.ReferenceID) == "" {
+			return "a stratum 1 answer whose reference identifier is not a reference clock's name"
+		}
+	default:
+		if p.ReferenceID == [4]byte{} {
+			return fmt.Sprintf("a stratum %d answer whose reference identifier is unset, so it names no upstream", p.Stratum)
+		}
+	}
+	return ""
+}
+
+// RefIDText is the identifier as a policy compares it: the four-character
+// name at stratum 0 and 1, and the dotted quad at stratum 2 and above.
+// It is also the identity a change of source is measured against, which
+// is why it is one string rather than a formatted sentence.
+func (p *Packet) RefIDText() string {
+	if p.Stratum <= 1 {
+		return printableID(p.ReferenceID)
+	}
+	return fmt.Sprintf("%d.%d.%d.%d", p.ReferenceID[0], p.ReferenceID[1], p.ReferenceID[2], p.ReferenceID[3])
+}

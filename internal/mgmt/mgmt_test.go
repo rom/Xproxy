@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/sandbox"
+	"github.com/rom/xproxy/internal/sessions"
 	"github.com/rom/xproxy/internal/testutil"
 )
 
@@ -388,5 +390,187 @@ routes:
 	status.Mechanism[1].State = sandbox.StateApplied
 	if res := get(); !res.OK || res.Degraded || len(res.Reasons) != 0 {
 		t.Fatalf("health with the sandbox intact: %+v", res)
+	}
+}
+
+// The live session table over the socket: a bastion operator asks who is
+// on, closes one by name and a set by filter, and every closure is in the
+// audit log. The sessions are registered directly on the table here,
+// because what is being tested is the management plane and not any one
+// protocol's handshake.
+func TestSessionAPIListsAndCloses(t *testing.T) {
+	dir := t.TempDir()
+	audit := filepath.Join(dir, "audit.log")
+	cfg, err := config.Parse([]byte(fmt.Sprintf(`
+version: 1
+server:
+  listeners: [{name: main, address: "127.0.0.1:0"}]
+logging:
+  directory: %s
+  audit: {file: audit.log}
+upstreams:
+  - name: u
+    endpoints: [{address: "127.0.0.1:1"}]
+routes:
+  - name: r
+    upstream: u
+`, dir)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	logs, err := logging.Open(cfg.Logging)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logs.Close()
+	p, err := proxy.New(cfg, logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sock := filepath.Join(dir, "m.sock")
+	m := New(config.Management{Socket: sock, SocketMode: "0600"}, p, logs, Actions{})
+	if err := m.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer m.Shutdown(context.Background())
+	c := NewClient(sock)
+
+	if got, err := c.Sessions(); err != nil || len(got) != 0 {
+		t.Fatalf("empty table: %+v %v", got, err)
+	}
+	table := p.Sessions()
+	closed := make(chan string, 4)
+	mk := func(kind, listener, user, client string) *sessions.Session {
+		s := table.Register(sessions.Info{Kind: kind, Listener: listener, Client: client},
+			func() { closed <- kind + "/" + user })
+		s.Annotate(user, "10.1.0.4:22", "shell")
+		return s
+	}
+	ssh1 := mk("ssh", "bastion", "alice", "10.0.0.9:5001")
+	mk("ssh", "bastion", "bob", "10.0.0.9:5002")
+	mk("vnc", "desks", "alice", "10.0.0.9:5003")
+
+	live, err := c.Sessions()
+	if err != nil || len(live) != 3 {
+		t.Fatalf("listed %+v %v", live, err)
+	}
+	if live[0].ID != ssh1.ID || live[0].User != "alice" || live[0].Target != "10.1.0.4:22" {
+		t.Fatalf("oldest first, annotated: %+v", live[0])
+	}
+
+	// By name.
+	got, err := c.KillSessions(ssh1.ID, "", "", "")
+	if err != nil || len(got) != 1 || got[0].ID != ssh1.ID {
+		t.Fatalf("kill by id: %+v %v", got, err)
+	}
+	if name := <-closed; name != "ssh/alice" {
+		t.Fatalf("closed %q", name)
+	}
+	if !ssh1.Killed() {
+		t.Error("the session does not know an operator closed it")
+	}
+	// A name that is not there, and a name already closed, are both not
+	// a closure: an operator repeating the command is told the truth.
+	if _, err := c.KillSessions("0011223344556677", "", "", ""); err == nil {
+		t.Error("a session nobody registered was closed")
+	}
+	if _, err := c.KillSessions(ssh1.ID, "", "", ""); err == nil {
+		t.Error("a session already closing was closed again")
+	}
+	// A request that names nothing is refused rather than treated as
+	// "everything": the filter is what makes this safe to expose.
+	if _, err := c.KillSessions("", "", "", ""); err == nil {
+		t.Error("a request naming no session closed something")
+	}
+	// By login, across kinds.
+	got, err = c.KillSessions("", "", "", "alice")
+	if err != nil || len(got) != 1 || got[0].Kind != "vnc" {
+		t.Fatalf("kill by user: %+v %v", got, err)
+	}
+	if name := <-closed; name != "vnc/alice" {
+		t.Fatalf("closed %q", name)
+	}
+	// Bob is still on, because nothing matched him.
+	if st := table.Status(); st.Killed != 2 || st.Live != 3 {
+		t.Errorf("status %+v", st)
+	}
+
+	// Every closure is in the audit log, with the session named.
+	b, err := os.ReadFile(audit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"session_kill", ssh1.ID, "\"user\":\"alice\"", "\"kind\":\"vnc\""} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("audit log has no %s:\n%s", want, b)
+		}
+	}
+}
+
+// The shadow report over the socket: what the listeners in shadow mode
+// would have refused, worst first, and the reset an operator runs after
+// fixing the policy.
+func TestPolicyReportListsWhatWouldHaveBeenRefused(t *testing.T) {
+	cfg, err := config.Parse([]byte(`
+version: 1
+policy: {mode: shadow}
+server:
+  listeners: [{name: main, address: "127.0.0.1:0"}]
+upstreams:
+  - {name: u, endpoints: [{address: "127.0.0.1:1"}]}
+routes:
+  - {name: r, upstream: u}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := proxy.New(cfg, logging.Discard())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sock := filepath.Join(t.TempDir(), "m.sock")
+	m := New(config.Management{Socket: sock, SocketMode: "0600"}, p, logging.Discard(), Actions{})
+	if err := m.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer m.Shutdown(context.Background())
+	c := NewClient(sock)
+
+	rep, err := c.PolicyReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Entries) != 0 || rep.Status.Entries != 0 {
+		t.Fatalf("a fresh ledger: %+v", rep)
+	}
+	for i := 0; i < 3; i++ {
+		p.Shadow().Record("modbus", "line-2", "rule_deny", "setpoints", "unit 2 write 40010")
+	}
+	p.Shadow().Record("ssh", "operators", "command_refused", "", "rm -rf /")
+
+	rep, err = c.PolicyReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Entries) != 2 || rep.Entries[0].Count != 3 || rep.Entries[0].Kind != "modbus" {
+		t.Fatalf("report %+v", rep.Entries)
+	}
+	if rep.Status.Recorded != 4 || rep.Status.Entries != 2 {
+		t.Fatalf("status %+v", rep.Status)
+	}
+	if rep.Entries[0].Rule != "setpoints" || rep.Entries[0].Sample == "" {
+		t.Errorf("the entry lost the rule or the example: %+v", rep.Entries[0])
+	}
+	// The reset, which is what an operator runs after fixing the policy
+	// so the next week's report is about the new one.
+	if err := c.ResetPolicyReport(); err != nil {
+		t.Fatal(err)
+	}
+	rep, err = c.PolicyReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Entries) != 0 || rep.Status.Recorded != 0 {
+		t.Fatalf("after the reset: %+v", rep)
 	}
 }
