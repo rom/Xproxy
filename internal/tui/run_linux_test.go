@@ -45,7 +45,8 @@ func openPTY(t *testing.T) (master, slave *os.File) {
 	return m, s
 }
 
-// countingSource answers with a fixed view and counts the fetches.
+// countingSource answers with a view the test can change, and counts the
+// fetches.
 type countingSource struct {
 	mu      sync.Mutex
 	fetches int
@@ -65,6 +66,12 @@ func (f *countingSource) count() int {
 	return f.fetches
 }
 
+func (f *countingSource) set(d Data) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.data = d
+}
+
 // until polls for something the terminal is expected to do, instead of
 // assuming one fixed pause covers it. A keystroke goes through a
 // pseudo-terminal, a reader goroutine and a redraw, so how long it
@@ -80,6 +87,24 @@ func until(t *testing.T, what string, ok func() bool) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Errorf("%s never happened", what)
+}
+
+// waitForTheFirstFrame returns once the alternate screen and one frame
+// have been written, and fails if Run gives up before that.
+func waitForTheFirstFrame(t *testing.T, out *lockedBuffer, done <-chan error) {
+	t.Helper()
+	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); {
+		select {
+		case err := <-done:
+			t.Fatalf("Run returned early: %v", err)
+		default:
+		}
+		if out.frames() >= 2 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("no frame was drawn")
 }
 
 func TestRunOverAPseudoTerminal(t *testing.T) {
@@ -104,34 +129,39 @@ func TestRunOverAPseudoTerminal(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		done <- Run(src, act, Options{In: slave, Out: &out, Refresh: 50 * time.Millisecond, Color: true})
+		// The refresh interval is longer than the test so that nothing
+		// but a keystroke draws. Every frame is then one key's frame,
+		// which is what lets the test below wait for the key to have
+		// been read instead of pausing and hoping. The interval on its
+		// own has a test of its own.
+		done <- Run(src, act, Options{In: slave, Out: &out, Refresh: time.Hour, Color: true})
 	}()
 
-	// Wait for the first frame.
-	deadline := time.After(20 * time.Second)
-	for out.len() == 0 {
-		select {
-		case err := <-done:
-			t.Fatalf("Run returned early: %v", err)
-		case <-deadline:
-			t.Fatal("no frame was drawn")
-		default:
-			time.Sleep(10 * time.Millisecond)
-		}
-	}
+	waitForTheFirstFrame(t, &out, done)
 	// The alternate screen is entered and the cursor hidden.
 	if !strings.Contains(out.string(), "\x1b[?1049h") || !strings.Contains(out.string(), "\x1b[?25l") {
 		t.Errorf("the alternate screen was not entered: %q", out.string()[:min(40, out.len())])
 	}
-	// The reader hands one read to handleKey, so a key is one write; a
-	// line is typed one key at a time the way a person types it.
-	typeLine := func(text string) {
+
+	// press sends one key and waits for the frame it causes.
+	//
+	// A key is drawn whatever it does, including a key nothing is bound
+	// to, so the frame is proof the key was read -- which is the thing a
+	// pause between keystrokes can only guess at. It also keeps the
+	// keys apart: the next one is not written until the reader has
+	// finished with this one, so a cursor key cannot be cut in half by a
+	// read that arrived a moment late.
+	press := func(name, keys string) {
 		t.Helper()
-		for _, r := range text {
-			if _, err := master.WriteString(string(r)); err != nil {
-				t.Fatal(err)
-			}
-			time.Sleep(15 * time.Millisecond)
+		before := out.frames()
+		if _, err := master.WriteString(keys); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		until(t, "the frame after "+name, func() bool { return out.frames() > before })
+		select {
+		case err := <-done:
+			t.Fatalf("Run returned on %s: %v", name, err)
+		default:
 		}
 	}
 	type keyPress struct {
@@ -153,48 +183,64 @@ func TestRunOverAPseudoTerminal(t *testing.T) {
 		{"faster", "-"},
 		{"a key nobody bound", "Z"},
 	} {
-		if _, err := master.WriteString(k.keys); err != nil {
-			t.Fatalf("%s: %v", k.name, err)
-		}
-		time.Sleep(20 * time.Millisecond)
-		select {
-		case err := <-done:
-			t.Fatalf("Run returned on %s: %v", k.name, err)
-		default:
-		}
+		press(k.name, k.keys)
 	}
-	// The refresh key fetched again.
-	until(t, "a second fetch", func() bool { return src.count() >= 2 })
-	// The unban prompt: it asks, and only "y" confirms.
-	if _, err := master.WriteString("u"); err != nil {
-		t.Fatal(err)
+	// The refresh key fetched again. The frame comes after the fetch, so
+	// this is settled by now and nothing has to be waited for.
+	if n := src.count(); n < 2 {
+		t.Errorf("the refresh key did not fetch: %d fetches", n)
 	}
-	until(t, "the unban prompt", func() bool { return strings.Contains(out.string(), "unban") })
 	count := func() int {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(unbanned)
 	}
-	typeLine("n\r")
-	// A negative is the one thing polling cannot establish, so it keeps
-	// its pause: nothing is expected to arrive, and the wait is for it
-	// to have had the chance.
-	time.Sleep(100 * time.Millisecond)
+	// The unban prompt: it asks, and only "y" confirms.
+	press("unban", "u")
+	if !strings.Contains(out.last(), "unban 203.0.113.9") {
+		t.Errorf("the unban prompt did not name the selected ban: %q", out.last())
+	}
+	press("a refusal", "n")
+	press("return", "\r")
+	// The submit runs before the frame, so a frame that has arrived is
+	// the proof a pause was standing in for.
 	if n := count(); n != 0 {
 		t.Errorf("an unban happened without confirmation: %d", n)
 	}
-	typeLine("uy\r")
-	until(t, "the confirmed unban", func() bool { return count() == 1 })
-	// The ban prompt takes a line, and backspace edits it.
-	typeLine("b203.0.113.99 1hX\x7f reason\r")
+	press("unban again", "u")
+	press("a confirmation", "y")
+	press("return", "\r")
+	if n := count(); n != 1 {
+		t.Errorf("the confirmed unban did not happen: %d actions", n)
+	}
+	// The ban prompt takes a line, and backspace edits it. The line is
+	// pasted rather than typed a key at a time, which is how an address
+	// gets into this prompt in real use and is the one thing a single
+	// read has to be able to hold.
+	press("the ban prompt", "b")
+	if !strings.Contains(out.last(), "ban <address") {
+		t.Errorf("the ban prompt is not showing: %q", out.last())
+	}
+	if _, err := master.WriteString("203.0.113.99 1hX\x7f reason\r"); err != nil {
+		t.Fatal(err)
+	}
 	until(t, "the ban", func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(unbanned) > 1 && strings.HasPrefix(unbanned[len(unbanned)-1], "ban:203.0.113.99:1h:")
 	})
+	mu.Lock()
+	last := unbanned[len(unbanned)-1]
+	mu.Unlock()
+	if last != "ban:203.0.113.99:1h:reason" {
+		t.Errorf("the pasted line was read as %q", last)
+	}
 	// Escape cancels a prompt.
-	typeLine("b\x1b")
-	time.Sleep(50 * time.Millisecond)
+	press("the ban prompt again", "b")
+	press("escape", "\x1b")
+	if !strings.Contains(out.last(), "cancelled") {
+		t.Errorf("escape did not cancel the prompt: %q", out.last())
+	}
 
 	// q quits, restoring the screen.
 	if _, err := master.WriteString("q"); err != nil {
@@ -213,6 +259,76 @@ func TestRunOverAPseudoTerminal(t *testing.T) {
 	}
 }
 
+// The interval fetches on its own, and it is the one path that can find
+// the selection pointing past the end of a list that has shrunk since
+// the cursor was put there.
+func TestTheIntervalFetchesAndKeepsTheSelectionInRange(t *testing.T) {
+	master, slave := openPTY(t)
+	var out lockedBuffer
+	two := []ban.Entry{{Target: "198.51.100.7", Reason: "waf"}, {Target: "203.0.113.9", Reason: "rate"}}
+	src := &countingSource{data: Data{Bans: two}}
+	var mu sync.Mutex
+	var unbanned []string
+	act := Actions{Unban: func(target string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		unbanned = append(unbanned, target)
+		return nil
+	}}
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(src, act, Options{In: slave, Out: &out, Refresh: 20 * time.Millisecond})
+	}()
+	waitForTheFirstFrame(t, &out, done)
+
+	// Onto the bans and down to the second one. The frames are not
+	// attributable to a key here -- the interval is drawing too -- so
+	// each step waits for what it does to show up in the frame.
+	if _, err := master.WriteString("3"); err != nil {
+		t.Fatal(err)
+	}
+	until(t, "the bans view", func() bool { return strings.Contains(out.last(), "198.51.100.7") })
+	if _, err := master.WriteString("j"); err != nil {
+		t.Fatal(err)
+	}
+	until(t, "the cursor on the second ban", func() bool { return strings.Contains(out.last(), "> 203.0.113.9") })
+
+	// The list shrinks under the cursor. The interval fetches on its own
+	// and has to bring the selection back in range: the row it pointed
+	// at is gone.
+	before := src.count()
+	src.set(Data{Bans: two[:1]})
+	until(t, "a fetch on the interval", func() bool { return src.count() > before+1 })
+	until(t, "the cursor on the remaining ban", func() bool { return strings.Contains(out.last(), "> 198.51.100.7") })
+
+	// And the selection is a row that exists, which is what the prompt
+	// proves: a selection left past the end offers nothing to unban.
+	if _, err := master.WriteString("u"); err != nil {
+		t.Fatal(err)
+	}
+	until(t, "the unban prompt", func() bool { return strings.Contains(out.last(), "unban 198.51.100.7") })
+	if _, err := master.WriteString("y\r"); err != nil {
+		t.Fatal(err)
+	}
+	until(t, "the unban", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(unbanned) == 1 && unbanned[0] == "198.51.100.7"
+	})
+
+	if _, err := master.WriteString("q"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Run: %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("Run did not return on q")
+	}
+}
+
 func TestRunRefusesANonTerminal(t *testing.T) {
 	f, err := os.Open(os.DevNull)
 	if err != nil {
@@ -228,15 +344,19 @@ func TestRunRefusesANonTerminal(t *testing.T) {
 	}
 }
 
-// lockedBuffer collects the frames Run draws.
+// lockedBuffer collects the frames Run draws. Each draw is one write, so
+// the writes are the frames: a test can count them and read the last
+// one, which is the screen as it stands.
 type lockedBuffer struct {
-	mu sync.Mutex
-	b  strings.Builder
+	mu     sync.Mutex
+	b      strings.Builder
+	writes []string
 }
 
 func (l *lockedBuffer) Write(p []byte) (int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.writes = append(l.writes, string(p))
 	return l.b.Write(p)
 }
 
@@ -250,4 +370,21 @@ func (l *lockedBuffer) len() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.b.Len()
+}
+
+// frames is how many times Run has drawn.
+func (l *lockedBuffer) frames() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.writes)
+}
+
+// last is the frame on the screen now.
+func (l *lockedBuffer) last() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.writes) == 0 {
+		return ""
+	}
+	return l.writes[len(l.writes)-1]
 }

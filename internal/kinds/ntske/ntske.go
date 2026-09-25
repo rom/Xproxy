@@ -196,7 +196,11 @@ func (s *server) handle(client net.Conn) {
 	// which is the thing being bounded.
 	select {
 	case s.handshakes <- struct{}{}:
-		defer func() { <-s.handshakes }()
+		c.NTSKEHandshakes.Add(1)
+		defer func() {
+			<-s.handshakes
+			c.NTSKEHandshakes.Add(-1)
+		}()
 	case <-time.After(time.Second):
 		c.NTSKEHandshakeLimited.Add(1)
 		s.deny_(ip, "handshake_limit", "")

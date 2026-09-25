@@ -3010,8 +3010,11 @@ service through a server's own key establishment record will look for
 
 Counters: `ntske_sessions`, `ntske_relayed`, `ntske_refused`,
 `ntske_rejected`, `ntske_not_nts`, `ntske_handshake_limited`,
-`ntske_upstream_failed`. Refusals are `ntske_denied` for the ban
-triggers, with the reasons `banned`, `client_not_allowed`,
+`ntske_upstream_failed`, and `ntske_handshakes`, which is a gauge of the
+handshakes holding a slot right now: it says how close
+`max_concurrent_handshakes` is to being reached, which the limited
+counter only answers once clients are already being turned away.
+Refusals are `ntske_denied` for the ban triggers, with the reasons `banned`, `client_not_allowed`,
 `max_connections`, `handshake_limit`, `not_tls`, `no_hello`,
 `incomplete_hello`, `hello_too_large`, `alpn_not_offered` and
 `server_name_not_allowed`.

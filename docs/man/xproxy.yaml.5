@@ -7561,7 +7561,7 @@ T}
 .PP
 A deployment on a port other than 4460 warns: a client that found this service through a server\(aqs own key establishment record will look for 4460.
 .PP
-Counters: \fBntske_sessions\fR, \fBntske_relayed\fR, \fBntske_refused\fR, \fBntske_rejected\fR, \fBntske_not_nts\fR, \fBntske_handshake_limited\fR, \fBntske_upstream_failed\fR. Refusals are \fBntske_denied\fR for the ban triggers, with the reasons \fBbanned\fR, \fBclient_not_allowed\fR, \fBmax_connections\fR, \fBhandshake_limit\fR, \fBnot_tls\fR, \fBno_hello\fR, \fBincomplete_hello\fR, \fBhello_too_large\fR, \fBalpn_not_offered\fR and \fBserver_name_not_allowed\fR.
+Counters: \fBntske_sessions\fR, \fBntske_relayed\fR, \fBntske_refused\fR, \fBntske_rejected\fR, \fBntske_not_nts\fR, \fBntske_handshake_limited\fR, \fBntske_upstream_failed\fR, and \fBntske_handshakes\fR, which is a gauge of the handshakes holding a slot right now: it says how close \fBmax_concurrent_handshakes\fR is to being reached, which the limited counter only answers once clients are already being turned away. Refusals are \fBntske_denied\fR for the ban triggers, with the reasons \fBbanned\fR, \fBclient_not_allowed\fR, \fBmax_connections\fR, \fBhandshake_limit\fR, \fBnot_tls\fR, \fBno_hello\fR, \fBincomplete_hello\fR, \fBhello_too_large\fR, \fBalpn_not_offered\fR and \fBserver_name_not_allowed\fR.
 .SS "server.listeners[].vnc (kind: vnc)"
 .PP
 A \fBkind: vnc\fR listener is a VNC gateway: the proxy is an RFB server to the client and an RFB client to the target, terminating the handshake of RFC 6143 on both legs.

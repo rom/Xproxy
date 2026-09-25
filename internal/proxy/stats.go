@@ -375,13 +375,18 @@ type Stats struct {
 	NTPLeapUnexpected      atomic.Uint64
 
 	// NTS key establishment, which is its own listener on its own port.
-	NTSKESessions          atomic.Uint64
-	NTSKERelayed           atomic.Uint64
-	NTSKERefused           atomic.Uint64
-	NTSKERejected          atomic.Uint64
-	NTSKENotNTS            atomic.Uint64
-	NTSKEHandshakeLimited  atomic.Uint64
-	NTSKEUpstreamFailed    atomic.Uint64
+	NTSKESessions         atomic.Uint64
+	NTSKERelayed          atomic.Uint64
+	NTSKERefused          atomic.Uint64
+	NTSKERejected         atomic.Uint64
+	NTSKENotNTS           atomic.Uint64
+	NTSKEHandshakeLimited atomic.Uint64
+	NTSKEUpstreamFailed   atomic.Uint64
+	// NTSKEHandshakes is a gauge: the handshakes holding a slot right
+	// now. max_concurrent_handshakes is a bound with nothing else to
+	// read it by -- the limited counter only moves once clients are
+	// being turned away, which is after the answer an operator wanted.
+	NTSKEHandshakes        atomic.Int64
 	SyslogReceived         atomic.Uint64
 	SyslogForwarded        atomic.Uint64
 	SyslogDropped          atomic.Uint64
@@ -807,6 +812,7 @@ type Snapshot struct {
 	NTSKENotNTS            uint64             `json:"ntske_not_nts"`
 	NTSKEHandshakeLimited  uint64             `json:"ntske_handshake_limited"`
 	NTSKEUpstreamFailed    uint64             `json:"ntske_upstream_failed"`
+	NTSKEHandshakes        int64              `json:"ntske_handshakes"`
 	SyslogReceived         uint64             `json:"syslog_received"`
 	SyslogForwarded        uint64             `json:"syslog_forwarded"`
 	SyslogDropped          uint64             `json:"syslog_dropped"`
@@ -1206,6 +1212,7 @@ func (s *Stats) snapshot() Snapshot {
 		NTSKENotNTS:            s.NTSKENotNTS.Load(),
 		NTSKEHandshakeLimited:  s.NTSKEHandshakeLimited.Load(),
 		NTSKEUpstreamFailed:    s.NTSKEUpstreamFailed.Load(),
+		NTSKEHandshakes:        s.NTSKEHandshakes.Load(),
 		SyslogReceived:         s.SyslogReceived.Load(),
 		SyslogForwarded:        s.SyslogForwarded.Load(),
 		SyslogDropped:          s.SyslogDropped.Load(),
