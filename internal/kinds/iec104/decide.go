@@ -328,7 +328,7 @@ func (se *session) logFrame(frame *wire.Frame, d Decision, fromClient bool) {
 	a := frame.ASDU
 	commands := t.m.LogCommands == nil || *t.m.LogCommands
 	interesting := a != nil && (a.Type.Command() || a.Type.System())
-	if !t.m.LogFrames && !(commands && interesting) {
+	if !t.m.LogFrames && (!commands || !interesting) {
 		return
 	}
 	from := "client"

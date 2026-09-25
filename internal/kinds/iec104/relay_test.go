@@ -166,12 +166,6 @@ func (s *station) sawSupervisory() int {
 	return n
 }
 
-func (s *station) frames() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.got)
-}
-
 // centre is a controlling station: the SCADA master's side.
 type centre struct {
 	t    *testing.T
@@ -682,13 +676,12 @@ func TestMalformedFramesEndTheSession(t *testing.T) {
 			// The connection is over: there is no resynchronising on a
 			// protocol framed by a start octet and a length, because the
 			// next 0x68 is as likely to be inside a measurement as at a
-			// frame boundary.
+			// frame boundary. A clean close and a reset are both ends;
+			// what must not happen is another frame arriving.
 			_ = c.conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-			if _, err := io.ReadAll(c.conn); err != nil && err != io.EOF {
-				// A reset is as good as a clean close here.
-				_ = err
+			if n, err := io.ReadAll(c.conn); err == nil && n != nil && len(n) > 0 {
+				t.Errorf("the session carried on and sent %d octets", len(n))
 			}
-			_ = s
 		})
 	}
 }

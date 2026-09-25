@@ -262,11 +262,12 @@ func literalShellCommand(cmd string) (string, bool) {
 				out.WriteByte(c)
 			}
 		case c == '\'' || c == '"':
-			if quote == 0 {
+			switch quote {
+			case 0:
 				quote = c
-			} else if quote == c {
+			case c:
 				quote = 0
-			} else {
+			default:
 				out.WriteByte(c)
 			}
 		case c == '\\':

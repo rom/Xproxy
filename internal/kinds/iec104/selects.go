@@ -215,18 +215,21 @@ func (s *seqState) observe(send uint16, k int) string {
 
 // acknowledge records the receive sequence number a frame from the *other*
 // side carried, which is what releases the window.
+//
+// The arithmetic stays in the protocol's own modular space: how many frames
+// this acknowledgement releases is the unsigned distance from the last
+// number acknowledged, wrapping at the 15-bit sequence space, which is what
+// a station computes too. Doing it with a signed subtraction and a fix-up
+// would be the same number by a route that has to be argued about.
 func (s *seqState) acknowledge(recv uint16, peerSent uint64) string {
+	released := uint64((recv - s.acked) % wire.MaxSeq)
 	// A receive sequence number ahead of what the peer has actually sent
-	// acknowledges a frame that does not exist, which is either a
-	// confused implementation or an attempt to open the window.
-	ahead := int64(recv) - int64(s.acked)
-	if ahead < 0 {
-		ahead += wire.MaxSeq
-	}
-	if uint64(ahead) > peerSent-s.ackedCount {
+	// acknowledges a frame that does not exist, which is either a confused
+	// implementation or an attempt to open the window.
+	if released > peerSent-s.ackedCount {
 		return "iec104_ack_ahead"
 	}
 	s.acked = recv
-	s.ackedCount += uint64(ahead)
+	s.ackedCount += released
 	return ""
 }

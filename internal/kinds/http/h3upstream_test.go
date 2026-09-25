@@ -20,6 +20,12 @@ import (
 
 // h3Backend serves handler over HTTP/3 on a fresh UDP port with the
 // certificate files; it returns the address.
+//
+// Every option h3.New requires has to be here, including HeaderLimiter,
+// which bounds the request streams that can be waiting for their headers.
+// h3.New refuses an incomplete set rather than filling a missing bound in
+// with a default, which is the right choice for a production path and means
+// this helper has to be kept in step with it.
 func h3Backend(t *testing.T, cert, key string, handler http.Handler, wt bool) string {
 	t.Helper()
 	pair, err := tls.LoadX509KeyPair(cert, key)
@@ -34,7 +40,8 @@ func h3Backend(t *testing.T, cert, key string, handler http.Handler, wt bool) st
 		ReadHeaderTimeout: config.Duration(5 * time.Second), IdleTimeout: config.Duration(30 * time.Second)}
 	srv, err := h3.New(h3.Options{Conn: pc, Port: pc.LocalAddr().(*net.UDPAddr).Port, TLS: &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS13},
 		Handler: handler, Limits: lim, H3: config.H3{MaxStreams: 16, ValidateAddresses: "under_load", AltSvcMaxAge: config.Duration(time.Hour)},
-		Limiter: limits.NewConnLimiter(100, 100), Log: slog.New(slog.NewTextHandler(io.Discard, nil)), WebTransport: wt})
+		Limiter: limits.NewConnLimiter(100, 100), HeaderLimiter: limits.NewConcurrency(100),
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), WebTransport: wt})
 	if err != nil {
 		t.Fatal(err)
 	}

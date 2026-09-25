@@ -683,6 +683,19 @@ func (f *wasmFilter) run(c *call, export string, args ...uint64) (int32, error) 
 		return 0, err
 	}
 	f.release(ctx, m, true)
+	// A call that returned *after* its deadline passed has not answered the
+	// question in the time the operator allowed for it, and its verdict is
+	// not trustworthy: a host function whose I/O was interrupted by the
+	// deadline hands the guest an empty body, and a guest that then returns
+	// "allow" is allowing on the strength of something it never saw. wazero
+	// aborts a guest that is still executing when the context is done, but
+	// a guest that finished in the same instant is not aborted -- so the
+	// deadline is checked here as well, and on_error decides what a filter
+	// that did not answer means, which is where that decision belongs.
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		f.Timeouts.Add(1)
+		return 0, fmt.Errorf("guest call exceeded %s", f.cfg.timeout)
+	}
 	if len(res) != 1 {
 		f.Errors.Add(1)
 		return 0, errors.New("guest returned no result")
