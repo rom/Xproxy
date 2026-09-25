@@ -2115,8 +2115,8 @@ answer rather than hanging; `max_filter_terms`, `max_filter_depth` and
 | `request_timeout` | duration | `30s` | How long the directory has to answer before its answer is too late to pair |
 | `connect_timeout` | duration | `5s` | Dialling the directory |
 | `max_message_bytes` | int | `262144` | One message. A directory entry with a photograph or a certificate in it is real. A message past this is refused unread |
-| `rate_limit`, `rate_burst` | int | `0` | Requests per second per client address |
-| `bind_rate_limit`, `bind_rate_burst` | int | `0` | **Binds** per second per client address, separately, because a rate loose enough for an application's searches says nothing about somebody working through a password list |
+| `rate_limit`, `rate_burst` | int | `0` | Requests per second per client address. A request past the limit is refused with `busy` and the connection is kept: LDAP clients hold pooled connections, and closing one on a rate spike makes the application reconnect and retry, which is more load rather than less |
+| `bind_rate_limit`, `bind_rate_burst` | int | `0` | **Binds** per second per client address, separately, because a rate loose enough for an application's searches says nothing about somebody working through a password list. Unlike the request rate, this one **ends the session**: that rate is a credential attack, and leaving the connection open is leaving it somewhere to keep trying |
 | `log_requests` | bool | `false` | An access line per request. A directory front carries a great many searches |
 | `log_binds` | bool | `true` | An access line for every bind and its outcome: who authenticated, from where, as whom, and whether it worked |
 | `log_writes` | bool | `true` | An access line for every operation that changes the directory, and for every refusal |

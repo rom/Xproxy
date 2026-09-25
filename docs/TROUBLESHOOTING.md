@@ -3223,7 +3223,7 @@ The reasons, and what each means:
 | `message_id_zero` | A client used message identifier 0, which is reserved for the server's unsolicited notification |
 | `wrong_direction`, `wrong_direction_response` | A response from the client, or a request from the directory |
 | `malformed`, `malformed_response`, `message_too_large`, `framing` | The message could not be read, was past `max_message_bytes`, or a stream did not begin an LDAPMessage where one was due. None of these is shadowed |
-| `rate_limited`, `bind_rate_limited`, `max_connections` | The request rate, the bind rate, or the session bound |
+| `rate_limited`, `bind_rate_limited`, `max_connections` | The request rate, the bind rate, or the session bound. The request rate refuses the one request with `busy` and keeps the connection, because closing a pooled connection on a rate spike makes the application reconnect and retry; the bind rate ends the session, because that rate is a credential attack |
 
 **Every application broke at once after enabling this.** Look at
 `ldap_bind_failures` first. The most likely cause is the default `methods`

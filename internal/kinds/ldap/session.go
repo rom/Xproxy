@@ -248,8 +248,10 @@ func (se *session) fromClient() string {
 			t.deny(se.ip, "ldap_malformed", perr.Error())
 			return "ldap_malformed"
 		}
-		if reason := se.check(m); reason != "" {
-			return reason
+		if end, handled := se.check(m); end != "" {
+			return end
+		} else if handled {
+			continue
 		}
 		if !m.Op.Request() {
 			// A response arriving from the client is traffic going the wrong
@@ -285,7 +287,16 @@ func (se *session) fromClient() string {
 
 // check is the part of a request that is never policy: the message
 // identifier, the rate limits and the bounds. None of it is shadowed.
-func (se *session) check(m *wire.Message) string {
+//
+// It reports a reason to end the session with, or that it has dealt with the
+// request itself and the loop should carry on. The two are different on
+// purpose. A *request* rate limit refuses the one request and keeps the
+// connection: LDAP clients hold pooled connections, and killing one on a rate
+// spike makes the application reconnect and retry, which is more load rather
+// than less. A *bind* rate limit ends the session, because that rate is a
+// credential attack and leaving the connection open is leaving it somewhere to
+// keep trying.
+func (se *session) check(m *wire.Message) (end string, handled bool) {
 	t := se.t
 	s := t.host
 	if m.ID == 0 {
@@ -295,23 +306,25 @@ func (se *session) check(m *wire.Message) string {
 		s.Counters().LDAPMalformed.Add(1)
 		s.Counters().Refuse("ldap", "message_id_zero")
 		t.deny(se.ip, "ldap_message_id_zero", "")
-		return "ldap_message_id_zero"
+		return "ldap_message_id_zero", false
+	}
+	if m.Op == wire.OpBindRequest && t.binds != nil && !t.binds.Allow(se.ip.String()) {
+		s.Counters().LDAPRateLimited.Add(1)
+		s.Counters().Refuse("ldap", "bind_rate_limited")
+		t.deny(se.ip, "ldap_bind_rate_limited", "")
+		return "ldap_bind_rate_limited", false
 	}
 	if t.limiter != nil && !t.limiter.Allow(se.ip.String()) {
 		s.Counters().LDAPRateLimited.Add(1)
 		s.Counters().Refuse("ldap", "rate_limited")
-		return "ldap_rate_limited"
+		// The directory's own "busy", which is what this is: the relay has
+		// as many requests from this address as it will carry per second.
+		if out := wire.Answer(m.ID, m.Op, wire.ResultBusy, "too many requests"); out != nil {
+			_ = se.writeClient(out)
+		}
+		return "", true
 	}
-	if m.Op == wire.OpBindRequest && t.binds != nil && !t.binds.Allow(se.ip.String()) {
-		// Binds are limited apart from requests, because a rate loose enough
-		// for an application's searches says nothing about somebody working
-		// through a password list.
-		s.Counters().LDAPRateLimited.Add(1)
-		s.Counters().Refuse("ldap", "bind_rate_limited")
-		t.deny(se.ip, "ldap_bind_rate_limited", "")
-		return "ldap_bind_rate_limited"
-	}
-	return ""
+	return "", false
 }
 
 // admit decides about one request and, when it is refused, answers it in the

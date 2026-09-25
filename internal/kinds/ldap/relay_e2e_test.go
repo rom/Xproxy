@@ -40,6 +40,9 @@ type directory struct {
 	mute bool
 	// stray sends an entry against a message identifier nobody used.
 	stray int
+	// reply replaces the answer entirely, for a test about what the relay
+	// does with something a directory should not have sent.
+	reply func(*wire.Message) []byte
 }
 
 func startDirectory(t *testing.T, d *directory) *directory {
@@ -86,7 +89,8 @@ func (d *directory) serve(t *testing.T, c net.Conn) {
 		m, err := wire.Parse(raw)
 		d.mu.Lock()
 		d.got = append(d.got, m)
-		mute, pass, entries, attrs, startTLS, stray := d.mute, d.password, d.entries, d.attrs, d.startTLS, d.stray
+		mute, pass, entries := d.mute, d.password, d.entries
+		attrs, startTLS, stray, reply := d.attrs, d.startTLS, d.stray, d.reply
 		d.mu.Unlock()
 		if err != nil {
 			return
@@ -94,6 +98,14 @@ func (d *directory) serve(t *testing.T, c net.Conn) {
 		if mute {
 			// A directory that is reachable and says nothing, which is what
 			// a request left outstanding looks like from the relay's side.
+			continue
+		}
+		if reply != nil {
+			if out := reply(m); out != nil {
+				if _, err := c.Write(out); err != nil {
+					return
+				}
+			}
 			continue
 		}
 		switch {
@@ -902,4 +914,100 @@ func TestASearchOutsideTheNamingContextNeverReachesTheDirectory(t *testing.T) {
 	awaitCounter(t, s, func(sn proxy.Snapshot) bool {
 		return sn.Refusals["ldap"]["base_dn"] >= 1
 	}, "the boundary was not counted")
+}
+
+// The request rate limit, which refuses the one request and keeps the
+// connection. LDAP clients hold pooled connections, so killing one on a rate
+// spike makes the application reconnect and retry -- more load rather than
+// less. The bind rate is the one that ends a session, because that rate is a
+// credential attack.
+func TestTheRequestRateRefusesTheRequestAndKeepsTheConnection(t *testing.T) {
+	d := startDirectory(t, &directory{entries: 1, attrs: []string{"cn"}})
+	s, addr := ldapServer(t, `        upstream: directories
+        allow_clients: ["127.0.0.0/8"]
+        tls_mode: none
+        read_only: true
+        rate_limit: 1
+        rate_burst: 2
+        default_action: allow`, d.addr())
+
+	cl := dialLDAP(t, addr)
+	busy := false
+	for i := 1; i <= 25 && !busy; i++ {
+		cl.send(search(i, "ou=people,dc=example,dc=com", wire.ScopeSub, present("objectClass"), "cn"))
+		for {
+			got := cl.next(2 * time.Second)
+			if got == nil {
+				t.Fatalf("no answer to search %d", i)
+			}
+			if got.Op == wire.OpSearchResultEntry {
+				continue
+			}
+			if got.Result != nil && got.Result.Code == wire.ResultBusy {
+				busy = true
+			}
+			break
+		}
+	}
+	if !busy {
+		t.Fatal("the rate limit never refused a request")
+	}
+	awaitCounter(t, s, func(sn proxy.Snapshot) bool {
+		return sn.LDAPRateLimited >= 1 && sn.Refusals["ldap"]["rate_limited"] >= 1
+	}, "the rate limit was not counted")
+	// The connection is still there: the next second's allowance carries a
+	// request, which is the whole point of refusing rather than closing.
+	time.Sleep(1200 * time.Millisecond)
+	cl.send(search(99, "ou=people,dc=example,dc=com", wire.ScopeSub, present("objectClass"), "cn"))
+	got := cl.next(3 * time.Second)
+	if got == nil {
+		t.Fatal("the connection did not survive the rate limit")
+	}
+	if got.Result != nil && got.Result.Code == wire.ResultBusy {
+		t.Error("the allowance did not refill")
+	}
+}
+
+// A response arriving from the client. This side asks and the directory
+// answers, so a response from here is traffic going the wrong way -- and on a
+// relay that pairs answers with requests by message identifier, it is an
+// attempt to have one paired with a request nobody made.
+func TestAResponseFromTheClientIsRefused(t *testing.T) {
+	d := startDirectory(t, &directory{})
+	s, addr := ldapServer(t, `        upstream: directories
+        allow_clients: ["127.0.0.0/8"]
+        tls_mode: none
+        default_action: allow`, d.addr())
+
+	cl := dialLDAP(t, addr)
+	cl.send(bindResult(1, wire.ResultSuccess))
+	awaitCounter(t, s, func(sn proxy.Snapshot) bool {
+		return sn.Refusals["ldap"]["wrong_direction"] >= 1
+	}, "a response from the client was not refused")
+	if seen := d.seen(); len(seen) != 0 {
+		t.Errorf("it reached the directory: %s", seen[0].Op)
+	}
+}
+
+// And a request arriving from the directory, which answers questions and does
+// not ask them.
+func TestARequestFromTheDirectoryIsRefused(t *testing.T) {
+	d := startDirectory(t, &directory{reply: func(m *wire.Message) []byte {
+		// A directory that answers a search with a search.
+		return search(m.ID, "dc=example,dc=com", wire.ScopeSub, present("objectClass"), "cn")
+	}})
+	s, addr := ldapServer(t, `        upstream: directories
+        allow_clients: ["127.0.0.0/8"]
+        tls_mode: none
+        read_only: true
+        default_action: allow`, d.addr())
+
+	cl := dialLDAP(t, addr)
+	cl.send(search(1, "ou=people,dc=example,dc=com", wire.ScopeSub, present("objectClass"), "cn"))
+	awaitCounter(t, s, func(sn proxy.Snapshot) bool {
+		return sn.Refusals["ldap"]["wrong_direction_response"] >= 1
+	}, "a request from the directory was not refused")
+	if got := cl.next(500 * time.Millisecond); got != nil && got.Op == wire.OpSearchRequest {
+		t.Error("a search request was forwarded to the client")
+	}
 }

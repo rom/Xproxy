@@ -5115,7 +5115,7 @@ int
 T}	T{
 \fB0\fR
 T}	T{
-Requests per second per client address
+Requests per second per client address. A request past the limit is refused with \fBbusy\fR and the connection is kept: LDAP clients hold pooled connections,\: and closing one on a rate spike makes the application reconnect and retry,\: which is more load rather than less
 T}
 T{
 \fBbind_\:rate_\:limit\fR,\: \fBbind_\:rate_\:burst\fR
@@ -5124,7 +5124,7 @@ int
 T}	T{
 \fB0\fR
 T}	T{
-\fBBinds\fR per second per client address,\: separately,\: because a rate loose enough for an application\(aqs searches says nothing about somebody working through a password list
+\fBBinds\fR per second per client address,\: separately,\: because a rate loose enough for an application\(aqs searches says nothing about somebody working through a password list. Unlike the request rate,\: this one \fBends the session\fR: that rate is a credential attack,\: and leaving the connection open is leaving it somewhere to keep trying
 T}
 T{
 \fBlog_\:requests\fR
