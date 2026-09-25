@@ -410,7 +410,17 @@ func TestAClasslessRouteIsDecodedSoTheRefusalCanSayWhich(t *testing.T) {
 	if rs[1].String() != "192.168.1.0/24 via 10.0.0.9" {
 		t.Errorf("second route %q", rs[1])
 	}
-	for _, bad := range [][]byte{{}, {33, 1, 2, 3, 4, 5}, {24, 192, 168}, {0, 10, 0}} {
+	for _, bad := range [][]byte{
+		{},
+		{33, 1, 2, 3, 4, 5},
+		// A prefix width past 32 *with enough octets behind it to parse*. The
+		// short case above is refused for being short whatever the width says,
+		// so without this one a reader that clamped the width instead of
+		// refusing it would behave identically.
+		{33, 1, 2, 3, 4, 10, 0, 0, 1},
+		{24, 192, 168},
+		{0, 10, 0},
+	} {
 		if _, err := Routes(bad); err == nil {
 			t.Errorf("%v read as routes", bad)
 		}

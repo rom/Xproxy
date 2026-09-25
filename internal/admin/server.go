@@ -278,6 +278,7 @@ func (s *Server) routes() {
 		"telemetry": "/v1/telemetry", "sandbox": "/v1/sandbox", "dns": "/v1/dns", "honeypot": "/v1/honeypot",
 		"geoip": "/v1/geoip", "cache": "/v1/cache", "filters": "/v1/filters", "ingress": "/v1/ingress",
 		"otlp": "/v1/otlp", "history": "/v1/history", "diff": "/v1/diff", "tls-tickets": "/v1/tls/tickets",
+		"assets": "/v1/assets?top=200",
 	} {
 		m.HandleFunc("GET /api/"+name, s.passthrough(path, "application/json"))
 	}

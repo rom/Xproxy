@@ -160,6 +160,7 @@ func (t *server) fromManager(agent net.PacketConn, raw []byte, from net.Addr) {
 		}
 	}
 	t.logMessage(ip, m, d, "manager")
+	t.observeManager(ip, m)
 	// One agent per message: SNMP has no fan-out, and a manager that asked
 	// once expects one answer.
 	addr := t.agentAddr(ip)
@@ -299,6 +300,7 @@ func (t *server) fromAgent(raw []byte, from net.Addr) {
 			"client", e.client.String(), "error", err.Error())
 	}
 	t.logMessage(e.client, m, Decision{Allow: true, Rule: e.rule}, "agent")
+	t.observeAgent(ip, m)
 }
 
 // The stream path. RFC 3430 puts SNMP on TCP with a length-delimited framing
@@ -503,6 +505,7 @@ func (t *server) pumpOne(src, dst net.Conn, ip netip.Addr, fromManager bool, pen
 				}
 			}
 			t.logMessage(ip, m, d, "manager")
+			t.observeManager(ip, m)
 		} else {
 			if len(raw) > t.maxResponse() {
 				// On a stream there is no reflection -- the connection was

@@ -24,6 +24,14 @@
         }
       ]
     },
+    "asset_inventory": {
+      "description": "AssetInventory records the *devices* the proxy has seen and works out what each one is, from the traffic it was already carrying. Where api_inventory answers \"what does this estate serve\", this one answers \"what is on this estate's network\" -- the question an operational network cannot answer with a scanner.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/AssetInventory"
+        }
+      ]
+    },
     "bans": {
       "description": "Bans enables the ban list when present.",
       "allOf": [
@@ -387,6 +395,54 @@
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "AssetInventory": {
+      "description": "AssetInventory is the estate's own record of what is on its network, built from the traffic the proxy was already carrying. An operational network cannot be scanned: an active scan is how a programmable controller gets knocked over, and on a safety network it is a thing people lose their jobs for. So the inventory is a by-product. Nothing here probes, connects or sends anything.",
+      "type": "object",
+      "properties": {
+        "alert_on_change": {
+          "description": "AlertOnChange writes a security event when a device's identity changes: its address taken over by another device, its role changed, its vendor re-resolved. Default true, and this is the setting worth leaving on -- a steady-state inventory is a reference document, and the deltas are the security value.",
+          "type": "boolean"
+        },
+        "alert_on_new": {
+          "description": "AlertOnNew writes a security event for a device that was not in the frozen baseline. It does nothing until a baseline exists (`xproxyctl assets baseline`), because before that everything is new. Default true.",
+          "type": "boolean"
+        },
+        "enabled": {
+          "description": "Enabled turns it on. Default false: an inventory is a record of somebody's estate, and a proxy that started keeping one without being asked would be making a decision about their data for them.",
+          "type": "boolean"
+        },
+        "max_assets": {
+          "description": "MaxAssets bounds the inventory. Default 8192. Past the bound the least recently seen asset goes, which is the opposite of the pairing tables in the relay kinds and is deliberate: forgetting here loses history rather than making a decision wrong, and refusing would stop the inventory noticing the estate at the moment something is filling it up.",
+          "type": "integer"
+        },
+        "roles": {
+          "description": "Roles, when set, is the allow list of roles this estate expects to see. A device classified as something else raises a finding, which is how \"there are no engineering workstations on the process network\" is written down.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "save_interval": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "state_file": {
+          "description": "StateFile is where the inventory is written and read back. Empty keeps it in memory only, which means the estate is reported as new after every restart -- the fastest way to teach an operator to ignore it.",
+          "type": "string"
+        },
+        "ttl": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "vendor_file": {
+          "description": "VendorFile is a list of hardware prefixes and manufacturer names, one per line, which replaces nothing and adds to the built-in seed list. The built-in list is two dozen entries weighted towards the vendors an operational estate is made of; an estate that wants the IEEE's registry points this at a copy of it. The format is a prefix, whitespace or a comma, and a name. A malformed line refuses the file rather than being skipped: a list an operator trusted and which silently dropped half its entries is worse than one that would not load.",
+          "type": "string"
         }
       },
       "additionalProperties": false

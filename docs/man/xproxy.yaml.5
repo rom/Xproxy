@@ -23943,6 +23943,222 @@ T}
 .TE
 .PP
 Selectors within a rule are AND, values within a selector are OR, and rules are tried in order. To capture one route for one client, put both selectors in one rule; to capture two unrelated things, write two rules.
+.SH "asset_inventory"
+.PP
+One record per device, built from traffic the proxy was already carrying.
+.PP
+An operational estate\(aqs oldest problem is that nobody knows what is on the network: the drawings are out of date, the spreadsheet was abandoned, and the one thing nobody may do is run a scanner \-\- an active scan is how a programmable controller gets knocked over. A security proxy is an unusually good place to solve that, because it already parses the protocols. The relay kinds read Modbus function codes, IEC 104 common addresses, SNMP object identifiers, MQTT client identifiers, DHCP vendor classes and TFTP filenames, and each of those says something about what sent it.
+.PP
+Nothing here probes, scans or connects to anything.
+.PP
+Off by default. An inventory is a record of somebody\(aqs estate, and a proxy that started keeping one without being asked would be making a decision about their data for them.
+.PP
+.RS 4
+.nf
+.ft CR
+asset_inventory:
+  enabled: true
+  state_file: /var/lib/xproxy/assets.json
+  ttl: 720h
+  roles: [plc, rtu, hmi, scada_server, field_gateway, network_switch]
+.ft
+.fi
+.RE
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.9i) lbw(0.8i) lbx
+lw(0.9i) lw(0.9i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Keep an inventory
+T}
+T{
+\fBstate_\:file\fR
+T}	T{
+path
+T}	T{
+\fI(none)\fR
+T}	T{
+Where the inventory is written and read back. Empty keeps it in memory,\: which means the whole estate is reported as new after every restart \-\- the fastest way to teach an operator to ignore the alerts
+T}
+T{
+\fBsave_\:interval\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+How often the file is written. It is also written once on shutdown,\: so the last minutes are not lost
+T}
+T{
+\fBmax_\:assets\fR
+T}	T{
+int
+T}	T{
+\fB8192\fR
+T}	T{
+How many devices to hold. Past the bound the least recently seen record goes,\: and the count is exported as \fBassets.\:dropped\fR. This is the opposite of the pairing tables in the relay kinds,\: deliberately: forgetting here loses history rather than making a decision wrong,\: and refusing would stop the inventory noticing the estate at the moment something is filling it up
+T}
+T{
+\fBttl\fR
+T}	T{
+duration
+T}	T{
+\fB720h\fR
+T}	T{
+How long a device nobody has seen is kept,\: so a decommissioned device leaves the record instead of being reported for ever
+T}
+T{
+\fBvendor_\:file\fR
+T}	T{
+path
+T}	T{
+\fI(none)\fR
+T}	T{
+Hardware prefixes and manufacturer names,\: one per line,\: added to the built\-in seed list rather than replacing it. Format: a prefix,\: whitespace or a comma,\: and a name;\: \fB#\fR comments. A malformed line refuses the whole file rather than being skipped,\: because a list an operator trusted and which silently dropped half its entries is worse than one that would not load. Point this at a copy of the IEEE registry for full coverage
+T}
+T{
+\fBalert_\:on_\:new\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Write a security event (\fBasset_\:new_\:asset\fR) for a device that was not in the frozen baseline. Does nothing until a baseline exists,\: because before that everything is new
+T}
+T{
+\fBalert_\:on_\:change\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Write a security event when a device\(aqs identity changes: an address taken over by another device,\: a role that changed,\: a vendor re\-resolved. This is the setting worth leaving on \-\- a steady\-state inventory is a reference document,\: and the deltas are the security value
+T}
+T{
+\fBroles\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+The roles this estate expects. A device classified as anything else raises \fBasset_\:unexpected_\:role\fR,\: which is how "there are no engineering workstations on the process network" gets written down. \fBunknown\fR is always accepted,\: since a role nothing can be classified as would make every unclassified device a finding
+T}
+.TE
+.SS "What each listener kind contributes"
+.PP
+.TS
+allbox;
+lbw(0.7i) lbx
+lw(0.7i) lx.
+T{
+Kind
+T}	T{
+What it can honestly see
+T}
+T{
+\fBdhcp\fR
+T}	T{
+The lease: the one message in which a device states its own hardware address,\: vendor class,\: user class,\: client identifier,\: host name and boot file together
+T}
+T{
+\fBmodbus\fR
+T}	T{
+Unit identifiers and function codes,\: at most 64 of each per device,\: and whether the peer asked or answered
+T}
+T{
+\fBiec104\fR
+T}	T{
+Common addresses,\: the same shape over a different protocol
+T}
+T{
+\fBsnmp\fR
+T}	T{
+The object identifiers a manager asks for and an agent serves \-\- \fBnot\fR their values. The SNMP parser keeps no varbind values by design,\: so \fBsysDescr\fR is not available to read;\: the OID set is weaker evidence and it is the evidence that exists
+T}
+T{
+\fBmqtt\fR
+T}	T{
+The client identifier on CONNECT
+T}
+T{
+\fBtftp\fR
+T}	T{
+The filename and direction of a transfer,\: which on a boot segment is often the only thing that names a device at all
+T}
+.TE
+.PP
+Every other listener kind contributes nothing. An inventory on an estate with no relay listeners will be empty, which is honest rather than broken.
+.SS "Roles"
+.PP
+Each role carries the Purdue level it sits at, so a segmentation review can ask the question it actually asks: what is on this wire that does not belong at this level.
+.PP
+.TS
+allbox;
+lbw(1.3i) lbx
+lw(1.3i) lx.
+T{
+Role
+T}	T{
+Purdue level
+T}
+T{
+\fBsensor\fR,\: \fBdrive\fR
+T}	T{
+0
+T}
+T{
+\fBplc\fR,\: \fBrtu\fR
+T}	T{
+1
+T}
+T{
+\fBhmi\fR,\: \fBscada_\:server\fR,\: \fBfield_\:gateway\fR
+T}	T{
+2
+T}
+T{
+\fBhistorian\fR,\: \fBengineering_\:workstation\fR
+T}	T{
+3
+T}
+T{
+\fBprinter\fR,\: \fBcamera\fR,\: \fBvoip_\:phone\fR,\: \fBserver\fR,\: \fBworkstation\fR
+T}	T{
+4
+T}
+T{
+\fBnetwork_\:switch\fR,\: \fBrouter\fR,\: \fBembedded_\:device\fR,\: \fBunknown\fR
+T}	T{
+\fI(none)\fR \-\- the network carries every level and sits at none
+T}
+.TE
+.SS "How a guess is made, and why it says so"
+.PP
+Behaviour outweighs self\-description. A vendor class, a host name and an SNMP description are strings a device chose, and a hardware address is three bytes of vendor prefix anybody can set. What a device \fIdoes\fR \-\- answering Modbus function 3 on unit 1, carrying IEC 104 interrogations, asking for a firmware image over TFTP \-\- is much harder to fake without becoming the thing it is pretending to be. So rules that fire on behaviour carry more confidence than rules that fire on a string.
+.PP
+Every classification keeps a confidence from 0 to 100 and the evidence that produced it, strongest first. An inventory that reports "PLC" with no confidence and no evidence is one an engineer cannot argue with, and being unable to argue with it is how a wrong entry survives for years. When two rules of equal weight disagree the asset is marked ambiguous and loses ten points rather than one of them silently winning.
+.SS "The baseline"
+.PP
+\fBxproxyctl assets baseline\fR takes the current set of devices as what the estate has. Everything seen afterwards that is not in it is reported as new. This is what turns the inventory from a reference document into a detection, so both freezing and forgetting a baseline (\fBxproxyctl assets baseline \-forget\fR) are written to the audit log with the caller\(aqs kernel\-reported credentials, like a ban.
+.SS "Reading it"
+.PP
+\fBGET /v1/assets\fR answers the summary, the known roles and the devices, with \fBrole\fR, \fBlistener\fR, \fBproto\fR, \fBvendor\fR, \fBnew=1\fR, \fBchanged=1\fR and \fBtop\fR as filters, or \fBid\fR to look one device up by identifier, address or hardware address \-\- whichever a log line happened to carry. \fBxproxyctl assets\fR is the same thing as a table, \fBxproxyctl assets \-long\fR one block per device with the evidence, and \fBxproxyctl assets show KEY\fR one device.
 .SH "Headers set on forwarded requests"
 .PP
 .TS

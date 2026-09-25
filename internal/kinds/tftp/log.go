@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/rom/xproxy/internal/assets"
 	wire "github.com/rom/xproxy/internal/tftp"
 )
 
@@ -101,6 +102,21 @@ func (t *server) logRequest(ip netip.Addr, op wire.Op, pa wire.Path, mode string
 		attrs = append(attrs, "reason", d.Reason)
 	}
 	t.host.Logs().Access.Info("tftp", attrs...)
+}
+
+// observeTransfer tells the estate's inventory what a transfer said.
+//
+// A device fetching firmware over TFTP is telling the inventory two things at
+// once: that it is an embedded device that boots from the network, and which
+// image it boots -- which is closer to a model number than anything else a
+// passive observer gets.
+func (t *server) observeTransfer(x *transfer) {
+	t.host.ObserveAsset(assets.Observation{
+		Listener: t.cfg.Name, Proto: "tftp", Addr: x.ip,
+		BootFile: x.path.Clean,
+		// The device asked; the server answered.
+		Server: false,
+	})
 }
 
 // logTransfer writes the line for a finished transfer: which device got which

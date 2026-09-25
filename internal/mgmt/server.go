@@ -200,6 +200,11 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 	// Closing a session is an operation on the estate, so it is audited
 	// like a ban: who asked, which session, and what it was.
 	mux.HandleFunc("DELETE /v1/sessions", s.killSession)
+	// The device inventory: what is on the network, and what the estate
+	// says is supposed to be.
+	mux.HandleFunc("GET /v1/assets", s.listAssets)
+	mux.HandleFunc("POST /v1/assets/baseline", s.freezeAssets)
+	mux.HandleFunc("DELETE /v1/assets/baseline", s.thawAssets)
 	mux.HandleFunc("GET /v1/cluster", s.clusterStatus)
 	mux.HandleFunc("GET /v1/acme", func(w http.ResponseWriter, _ *http.Request) {
 		if s.proxy.ACME() == nil {

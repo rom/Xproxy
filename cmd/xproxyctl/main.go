@@ -1373,6 +1373,10 @@ func run(args []string, out, errOut io.Writer) int {
 		}
 		_ = tw.Flush()
 		return 0
+	case "assets":
+		// The device inventory: what the proxy has worked out is on the
+		// network, from traffic it was carrying anyway.
+		return assetsCommand(c, fs, out, errOut, *asJSON)
 	case "sessions":
 		// The sessions a daemon is serving now, and the one operation an
 		// operator needs on them. "session" is the recorded ones on

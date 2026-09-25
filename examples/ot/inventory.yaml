@@ -1,0 +1,241 @@
+# The asset inventory: finding out what is on the network without touching
+# it.
+#
+# An operational estate's oldest problem is that nobody knows what is on
+# the network. The drawings are from commissioning, the spreadsheet was
+# abandoned two engineers ago, and the one thing nobody may do is run a
+# scanner -- an active scan is how a programmable controller gets knocked
+# over, and on a safety network it is a thing people lose their jobs for.
+#
+# This configuration solves it from the other end. Every listener here is
+# one an estate would already be running for its own sake: the DHCP relay
+# that reads the answers, the Modbus relay in front of the line, the SNMP
+# relay that keeps the switches from being reconfigured by a datagram, the
+# TFTP relay the access points boot through. Each of them already parses
+# far enough to say something about the device at the other end. The
+# asset_inventory section collects what they saw.
+#
+# Nothing here probes, scans or connects to anything. Every entry is a
+# by-product of traffic that was going to happen anyway.
+#
+# What the inventory is *for* comes in three stages:
+#
+#   1. Read it.   xproxyctl assets
+#      A fortnight of ordinary traffic and the estate has a list of its
+#      own devices, with a guess at what each one is and the evidence for
+#      the guess.
+#
+#   2. Freeze it. xproxyctl assets baseline
+#      Now everything that appears afterwards is a new device, and gets a
+#      security event. This is the line that turns a reference document
+#      into a detection.
+#
+#   3. Say what belongs. The roles list below.
+#      "There are no engineering workstations on the process network" is a
+#      sentence every estate says out loud and almost none of them can
+#      check. Written down, it is checked on every observation.
+#
+# Validate with: xproxyctl -config examples/ot/inventory.yaml validate
+version: 1
+
+logging:
+  directory: /var/log/xproxy
+  access: {file: access.log}
+  security: {file: security.log}
+  audit: {file: audit.log}
+
+management:
+  socket: /run/xproxy/mgmt.sock
+  socket_mode: "0660"
+
+# ---------------------------------------------------------------------
+# The inventory itself.
+#
+# Off by default, everywhere, because an inventory is a record of
+# somebody's estate and a proxy that kept one without being told to would
+# be making a decision about their data for them. Here it is on, and the
+# section says what is kept, for how long, and what counts as normal.
+# ---------------------------------------------------------------------
+asset_inventory:
+  enabled: true
+
+  # Written every five minutes and once on shutdown. Without a file the
+  # inventory is in memory only, which means the whole estate is reported
+  # as new after every restart -- the fastest way there is to teach an
+  # operator to ignore the alerts.
+  state_file: /var/lib/xproxy/assets.json
+  save_interval: 5m
+
+  # Thirty days. A device nobody has seen for a month has been
+  # decommissioned, moved or switched off for the season, and a record
+  # that never expires means the inventory slowly becomes a list of
+  # things that used to be here.
+  ttl: 720h
+
+  # Eight thousand devices is a large plant. Past the bound the least
+  # recently seen record goes and the count is exported: forgetting here
+  # loses history rather than making a decision wrong, so this is the one
+  # bounded table in the proxy that evicts instead of refusing.
+  max_assets: 8192
+
+  # The built-in vendor list is two dozen prefixes weighted towards the
+  # manufacturers an operational estate is made of. An estate that wants
+  # every prefix points this at a copy of the IEEE registry, one prefix
+  # and name per line. A malformed line refuses the whole file rather
+  # than being skipped: a list somebody trusted and which silently
+  # dropped half its entries is worse than one that would not load.
+  #
+  # vendor_file: /etc/xproxy/oui.txt
+
+  # Both on. The second is the one that matters: a steady-state inventory
+  # is a reference document, and the deltas are the security value. An
+  # address that moved to a different hardware address, a controller that
+  # started behaving like an engineering station, a vendor prefix that
+  # re-resolved -- the identity of a device is not supposed to change.
+  alert_on_new: true
+  alert_on_change: true
+
+  # What this estate has. Anything else raises asset_unexpected_role on
+  # every observation, not once at first sighting: a device that keeps
+  # behaving like something it should not be is a thing that keeps
+  # happening, and a single event at first sighting is one an operator
+  # scrolls past.
+  #
+  # Note what is *not* on this list. engineering_workstation is the
+  # machine that changes a controller's program; on the process network
+  # it is either a planned maintenance window or an incident, and either
+  # way somebody should be told. unknown is always accepted -- a role
+  # nothing can be classified as would make every unclassified device a
+  # finding, which is noise rather than detection.
+  roles:
+    - plc
+    - rtu
+    - hmi
+    - scada_server
+    - field_gateway
+    - historian
+    - sensor
+    - drive
+    - network_switch
+    - router
+    - embedded_device
+
+server:
+  listeners:
+    # ---------------------------------------------------------------
+    # DHCP. The richest source there is, and the reason this listener is
+    # first: a lease request is the one message in which a device states
+    # its own hardware address, its vendor class, its user class, its
+    # client identifier, its host name and its boot file, all at once.
+    #
+    # It is also a relay that reads the answers, which is the security
+    # job it was deployed for. The inventory is the by-product.
+    # ---------------------------------------------------------------
+    - name: leases
+      address: "10.30.0.1:67"
+      kind: dhcp
+      dhcp:
+        upstream: dhcp-servers
+        relay_address: 10.30.0.1
+        circuit_id: process-vlan30
+        remote_id: relay-plant
+        allow_gateways: [10.30.0.1]
+        allow_resolvers: [10.30.0.2, 10.30.0.3]
+
+    # ---------------------------------------------------------------
+    # Modbus. Behaviour, which is the evidence that matters.
+    #
+    # A vendor class is a string a device chose. Answering function 3 on
+    # unit 1 is not: to fake it a device has to become a thing that
+    # serves Modbus registers, which is most of the way to being a
+    # controller. So the unit identifiers, the function codes and --
+    # above all -- whether the peer asked or answered are what the
+    # fingerprint rules weigh most heavily.
+    # ---------------------------------------------------------------
+    - name: line1
+      address: "10.30.0.10:502"
+      kind: modbus
+      modbus:
+        upstream: plc_line1
+        framing: tcp
+        allow_clients: ["10.30.1.0/24", "10.30.2.0/24"]
+        read_only: true
+
+    # ---------------------------------------------------------------
+    # IEC 60870-5-104. The same shape over a different protocol: common
+    # addresses, and which side interrogates.
+    # ---------------------------------------------------------------
+    - name: substation
+      address: "10.30.0.11:2404"
+      kind: iec104
+      iec104:
+        upstream: rtus
+        allow_clients: ["10.30.2.0/24"]
+        monitor_only: true
+
+    # ---------------------------------------------------------------
+    # SNMP. The switches, the printers and the building controllers.
+    #
+    # What the inventory takes from here is the set of object
+    # identifiers a manager asks for and an agent serves -- not their
+    # values. The SNMP parser keeps no varbind values by design, so
+    # sysDescr is not available to read, and changing a hot security
+    # parser to carry data it deliberately discards would be a poor
+    # trade for a string the device chose anyway. The OID set is weaker
+    # evidence and it is the evidence that exists.
+    # ---------------------------------------------------------------
+    - name: poll
+      address: "10.30.0.12:161"
+      kind: snmp
+      snmp:
+        upstream: switches
+        allow_clients: ["10.30.4.0/24"]
+        read_only: true
+
+    # ---------------------------------------------------------------
+    # TFTP. On a boot segment this is often the only thing that names a
+    # device at all: an access point with no DHCP options worth reading
+    # and no SNMP agent still asks for its firmware image by name, and
+    # the name says what it is.
+    # ---------------------------------------------------------------
+    - name: boot
+      address: "10.30.0.13:69"
+      kind: tftp
+      tftp:
+        upstream: fileservers
+        allow_clients: ["10.30.0.0/16"]
+        operations: [read]
+        directories: [firmware]
+
+    # ---------------------------------------------------------------
+    # MQTT. The client identifier on CONNECT, which on a Sparkplug
+    # estate is a structured name and everywhere else is whatever the
+    # integrator typed.
+    # ---------------------------------------------------------------
+    - name: telemetry
+      address: "10.30.0.14:1883"
+      kind: mqtt
+      mqtt:
+        upstream: broker
+        allow_clients: ["10.30.0.0/16"]
+
+upstreams:
+  - name: dhcp-servers
+    endpoints:
+      - {address: "10.30.5.10:67"}
+      - {address: "10.30.5.11:67"}
+  - name: plc_line1
+    endpoints:
+      - {address: "10.30.10.20:502"}
+  - name: rtus
+    endpoints:
+      - {address: "10.30.11.30:2404"}
+  - name: switches
+    endpoints:
+      - {address: "10.30.12.40:161"}
+  - name: fileservers
+    endpoints:
+      - {address: "10.30.5.20:69"}
+  - name: broker
+    endpoints:
+      - {address: "10.30.13.50:1883"}

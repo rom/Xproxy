@@ -908,6 +908,7 @@ degradation: null
 capture: null
 fleet: null
 api_inventory: null
+asset_inventory: null
 shedding:
     target_latency: 250ms
     window: 10s

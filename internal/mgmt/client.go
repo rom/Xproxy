@@ -15,6 +15,7 @@ import (
 
 	"github.com/rom/xproxy/internal/acme"
 	"github.com/rom/xproxy/internal/apiinv"
+	"github.com/rom/xproxy/internal/assets"
 	"github.com/rom/xproxy/internal/ban"
 	"github.com/rom/xproxy/internal/capture"
 	"github.com/rom/xproxy/internal/cluster"
@@ -322,6 +323,66 @@ func (c *Client) KillSessions(id, kind, listener, user string) ([]sessions.View,
 	}
 	var out []sessions.View
 	return out, c.doBody("DELETE", "/v1/sessions?"+q.Encode(), nil, &out)
+}
+
+// AssetQuery is the filter a caller puts on the inventory. Every field is
+// optional and an empty query is the whole list.
+type AssetQuery struct {
+	ID       string // one asset, by identifier, address or hardware address
+	Role     string
+	Listener string
+	Proto    string
+	Vendor   string
+	New      bool
+	Changed  bool
+	Top      int
+}
+
+func (q AssetQuery) values() url.Values {
+	v := url.Values{}
+	for k, s := range map[string]string{"id": q.ID, "role": q.Role,
+		"listener": q.Listener, "proto": q.Proto, "vendor": q.Vendor} {
+		if s != "" {
+			v.Set(k, s)
+		}
+	}
+	if q.New {
+		v.Set("new", "1")
+	}
+	if q.Changed {
+		v.Set("changed", "1")
+	}
+	// A count is sent as given, including a nonsense one. The server is
+	// where a query is validated, and a client that quietly dropped a bad
+	// value would answer a filter the caller did not ask for.
+	if q.Top != 0 {
+		v.Set("top", strconv.Itoa(q.Top))
+	}
+	return v
+}
+
+// Assets is the device inventory, filtered.
+func (c *Client) Assets(q AssetQuery) (*AssetReport, error) {
+	var out AssetReport
+	return &out, c.do("GET", "/v1/assets?"+q.values().Encode(), &out)
+}
+
+// Asset is one device, looked up by whatever a log line happened to carry.
+func (c *Client) Asset(key string) (*assets.Asset, error) {
+	var out assets.Asset
+	return &out, c.do("GET", "/v1/assets?id="+url.QueryEscape(key), &out)
+}
+
+// FreezeAssets takes the current inventory as the estate's baseline.
+func (c *Client) FreezeAssets() (map[string]any, error) {
+	var out map[string]any
+	return out, c.doBody("POST", "/v1/assets/baseline", nil, &out)
+}
+
+// ThawAssets forgets the baseline.
+func (c *Client) ThawAssets() (map[string]any, error) {
+	var out map[string]any
+	return out, c.doBody("DELETE", "/v1/assets/baseline", nil, &out)
 }
 
 // PolicyReport is what the listeners in shadow mode would have refused.

@@ -9514,6 +9514,110 @@ Selectors within a rule are AND, values within a selector are OR, and
 rules are tried in order. To capture one route for one client, put both
 selectors in one rule; to capture two unrelated things, write two rules.
 
+## asset_inventory
+
+One record per device, built from traffic the proxy was already carrying.
+
+An operational estate's oldest problem is that nobody knows what is on the
+network: the drawings are out of date, the spreadsheet was abandoned, and
+the one thing nobody may do is run a scanner -- an active scan is how a
+programmable controller gets knocked over. A security proxy is an unusually
+good place to solve that, because it already parses the protocols. The
+relay kinds read Modbus function codes, IEC 104 common addresses, SNMP
+object identifiers, MQTT client identifiers, DHCP vendor classes and TFTP
+filenames, and each of those says something about what sent it.
+
+Nothing here probes, scans or connects to anything.
+
+Off by default. An inventory is a record of somebody's estate, and a proxy
+that started keeping one without being asked would be making a decision
+about their data for them.
+
+```yaml
+asset_inventory:
+  enabled: true
+  state_file: /var/lib/xproxy/assets.json
+  ttl: 720h
+  roles: [plc, rtu, hmi, scada_server, field_gateway, network_switch]
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Keep an inventory |
+| `state_file` | path | *(none)* | Where the inventory is written and read back. Empty keeps it in memory, which means the whole estate is reported as new after every restart -- the fastest way to teach an operator to ignore the alerts |
+| `save_interval` | duration | `5m` | How often the file is written. It is also written once on shutdown, so the last minutes are not lost |
+| `max_assets` | int | `8192` | How many devices to hold. Past the bound the least recently seen record goes, and the count is exported as `assets.dropped`. This is the opposite of the pairing tables in the relay kinds, deliberately: forgetting here loses history rather than making a decision wrong, and refusing would stop the inventory noticing the estate at the moment something is filling it up |
+| `ttl` | duration | `720h` | How long a device nobody has seen is kept, so a decommissioned device leaves the record instead of being reported for ever |
+| `vendor_file` | path | *(none)* | Hardware prefixes and manufacturer names, one per line, added to the built-in seed list rather than replacing it. Format: a prefix, whitespace or a comma, and a name; `#` comments. A malformed line refuses the whole file rather than being skipped, because a list an operator trusted and which silently dropped half its entries is worse than one that would not load. Point this at a copy of the IEEE registry for full coverage |
+| `alert_on_new` | bool | `true` | Write a security event (`asset_new_asset`) for a device that was not in the frozen baseline. Does nothing until a baseline exists, because before that everything is new |
+| `alert_on_change` | bool | `true` | Write a security event when a device's identity changes: an address taken over by another device, a role that changed, a vendor re-resolved. This is the setting worth leaving on -- a steady-state inventory is a reference document, and the deltas are the security value |
+| `roles` | list | any | The roles this estate expects. A device classified as anything else raises `asset_unexpected_role`, which is how "there are no engineering workstations on the process network" gets written down. `unknown` is always accepted, since a role nothing can be classified as would make every unclassified device a finding |
+
+### What each listener kind contributes
+
+| Kind | What it can honestly see |
+|------|--------------------------|
+| `dhcp` | The lease: the one message in which a device states its own hardware address, vendor class, user class, client identifier, host name and boot file together |
+| `modbus` | Unit identifiers and function codes, at most 64 of each per device, and whether the peer asked or answered |
+| `iec104` | Common addresses, the same shape over a different protocol |
+| `snmp` | The object identifiers a manager asks for and an agent serves -- **not** their values. The SNMP parser keeps no varbind values by design, so `sysDescr` is not available to read; the OID set is weaker evidence and it is the evidence that exists |
+| `mqtt` | The client identifier on CONNECT |
+| `tftp` | The filename and direction of a transfer, which on a boot segment is often the only thing that names a device at all |
+
+Every other listener kind contributes nothing. An inventory on an estate
+with no relay listeners will be empty, which is honest rather than broken.
+
+### Roles
+
+Each role carries the Purdue level it sits at, so a segmentation review
+can ask the question it actually asks: what is on this wire that does not
+belong at this level.
+
+| Role | Purdue level |
+|------|--------------|
+| `sensor`, `drive` | 0 |
+| `plc`, `rtu` | 1 |
+| `hmi`, `scada_server`, `field_gateway` | 2 |
+| `historian`, `engineering_workstation` | 3 |
+| `printer`, `camera`, `voip_phone`, `server`, `workstation` | 4 |
+| `network_switch`, `router`, `embedded_device`, `unknown` | *(none)* -- the network carries every level and sits at none |
+
+### How a guess is made, and why it says so
+
+Behaviour outweighs self-description. A vendor class, a host name and an
+SNMP description are strings a device chose, and a hardware address is
+three bytes of vendor prefix anybody can set. What a device *does* --
+answering Modbus function 3 on unit 1, carrying IEC 104 interrogations,
+asking for a firmware image over TFTP -- is much harder to fake without
+becoming the thing it is pretending to be. So rules that fire on behaviour
+carry more confidence than rules that fire on a string.
+
+Every classification keeps a confidence from 0 to 100 and the evidence
+that produced it, strongest first. An inventory that reports "PLC" with no
+confidence and no evidence is one an engineer cannot argue with, and being
+unable to argue with it is how a wrong entry survives for years. When two
+rules of equal weight disagree the asset is marked ambiguous and loses ten
+points rather than one of them silently winning.
+
+### The baseline
+
+`xproxyctl assets baseline` takes the current set of devices as what the
+estate has. Everything seen afterwards that is not in it is reported as
+new. This is what turns the inventory from a reference document into a
+detection, so both freezing and forgetting a baseline
+(`xproxyctl assets baseline -forget`) are written to the audit log with
+the caller's kernel-reported credentials, like a ban.
+
+### Reading it
+
+`GET /v1/assets` answers the summary, the known roles and the devices,
+with `role`, `listener`, `proto`, `vendor`, `new=1`, `changed=1` and `top`
+as filters, or `id` to look one device up by identifier, address or
+hardware address -- whichever a log line happened to carry.
+`xproxyctl assets` is the same thing as a table, `xproxyctl assets -long`
+one block per device with the evidence, and `xproxyctl assets show KEY`
+one device.
+
 ## Headers set on forwarded requests
 
 | Header | Value |

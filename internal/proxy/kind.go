@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/rom/xproxy/internal/acme"
+	"github.com/rom/xproxy/internal/assets"
 	"github.com/rom/xproxy/internal/ban"
 	"github.com/rom/xproxy/internal/capture"
 	"github.com/rom/xproxy/internal/cluster"
@@ -98,6 +99,16 @@ type Host interface {
 	// have refused to. Never nil, so a kind writes no conditionals around
 	// it; a listener that enforces never reaches it.
 	Shadow() *shadow.Ledger
+	// ObserveAsset records what this listener noticed about a device, for
+	// the estate's own inventory: a hardware address, an address, the
+	// protocol, and whatever the exchange said about what the device is.
+	//
+	// It is a no-op when no inventory is configured, so a kind writes no
+	// conditionals around it -- and it must stay cheap, because it is
+	// called from the data path. Nothing it records causes a probe: the
+	// whole point of building an inventory this way is that an
+	// operational network cannot be scanned.
+	ObserveAsset(assets.Observation)
 	// TakeRemote asks the cluster owner of a rate limit key to decide.
 	// decided is false without a cluster, without an owner or when the
 	// answer did not come in time, and the caller falls back to the

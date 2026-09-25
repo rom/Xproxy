@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/rom/xproxy/internal/assets"
 	wire "github.com/rom/xproxy/internal/dhcp"
 	"github.com/rom/xproxy/internal/textsafe"
 )
@@ -101,6 +102,48 @@ func (s *server) logMessage(ip netip.Addr, m *wire.Message, d Decision, side, de
 		attrs = append(attrs, "reason", d.Reason)
 	}
 	s.host.Logs().Access.Info("dhcp", attrs...)
+}
+
+// observeLease tells the estate's inventory what a lease said.
+//
+// DHCP is the richest source there is: it is the only protocol here that sees a
+// hardware address and an address together, which is what lets every other
+// listener's address-only sighting attach to the same device. The vendor class
+// and the parameter list are what a device says it is; the fact that it asked
+// for a boot file at all is closer to what it does.
+func (s *server) observeLease(m *wire.Message, from netip.Addr) {
+	s.host.ObserveAsset(assets.Observation{
+		Listener: s.cfg.Name, Proto: "dhcp", Addr: m.YIAddr, Hardware: m.CHAddr,
+		Hostname: optText(m, wire.OptHostname),
+		BootFile: bootName(m),
+		// The server answered; the device asked.
+		Server: false,
+	})
+	_ = from
+}
+
+// observeRequest tells the inventory what a client's own request said, which is
+// where the vendor class and the parameter list live: a server's reply does not
+// carry either.
+func (s *server) observeRequest(m *wire.Message, from netip.Addr) {
+	o := assets.Observation{
+		Listener: s.cfg.Name, Proto: "dhcp", Hardware: m.CHAddr,
+		VendorClass: optText(m, wire.OptVendorClass),
+		UserClass:   optText(m, wire.OptUserClass),
+		Hostname:    optText(m, wire.OptHostname),
+	}
+	if !m.CIAddr.IsUnspecified() {
+		// A renewing client sends from the address it holds; a booting one has
+		// none, and the inventory keys on the hardware address until the lease
+		// gives it one.
+		o.Addr = m.CIAddr
+	} else if !from.IsUnspecified() {
+		o.Addr = from
+	}
+	if v, ok := m.Get(wire.OptParameterList); ok {
+		o.Params = append([]uint8(nil), v...)
+	}
+	s.host.ObserveAsset(o)
 }
 
 // logLease writes the line for an address handed out.

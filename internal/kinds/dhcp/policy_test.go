@@ -133,6 +133,11 @@ func TestARouteIsAllowedByContainmentAndNotByEquality(t *testing.T) {
 		{what: "the allowed prefix itself", value: []byte{8, 10, 10, 20, 0, 1}},
 		{what: "a default route", value: []byte{0, 10, 20, 0, 9}, strip: true},
 		{what: "a route somewhere else", value: []byte{24, 192, 168, 1, 10, 20, 0, 9}, strip: true},
+		// A route *broader* than the allowed prefix, whose network address is
+		// inside it: 10.0.0.0/7 covers 10.0.0.0 to 11.255.255.255. Containment
+		// of the address alone would admit it, which is the whole difference
+		// between comparing prefixes and comparing addresses.
+		{what: "a route broader than the allowed prefix", value: []byte{7, 10, 10, 20, 0, 1}, strip: true},
 	} {
 		value := c.value
 		d := p.Answer(ask(msg(wire.Ack, func(m *wire.Message) {

@@ -246,6 +246,12 @@ type session struct {
 	closed   atomic.Bool
 	commands atomic.Uint64
 	denied   atomic.Uint64
+
+	// watch accumulates the common addresses this association named, for the
+	// estate's device inventory. Reported once at the start and once at the
+	// end rather than per frame: an IEC 104 link carries interrogations
+	// continuously and stays up for months.
+	watch *watcher
 }
 
 func (t *server) handle(client net.Conn) {
@@ -255,8 +261,18 @@ func (t *server) handle(client net.Conn) {
 	s.Counters().IEC104SessionsOpen.Add(1)
 	defer s.Counters().IEC104SessionsOpen.Add(-1)
 	ip := netutil.AddrOf(client.RemoteAddr().String())
-	se := &session{t: t, id: t.nextSession.Add(1), client: client, ip: ip}
+	se := &session{t: t, id: t.nextSession.Add(1), client: client, ip: ip,
+		watch: newWatcher()}
 	defer func() {
+		if se.watch.anything() {
+			// The controlling station, with every substation it named; and the
+			// controlled station behind the relay, which is the end that
+			// answers.
+			t.observeStation(se)
+			if se.ep != nil {
+				t.observeSubstation(se.ep.Address, se.watch.lists())
+			}
+		}
 		// Every selection this connection held goes with it. A selection
 		// that outlived its connection would let a later client execute
 		// on an earlier one's intention, which is exactly the injection

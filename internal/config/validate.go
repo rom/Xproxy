@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/hex"
+	"github.com/rom/xproxy/internal/assets"
 	dhcpwire "github.com/rom/xproxy/internal/dhcp"
 	"github.com/rom/xproxy/internal/dns"
 	"github.com/rom/xproxy/internal/expr"
@@ -321,6 +322,9 @@ func (v *validator) config(c *Config) {
 		v.ingress(c.Ingress, byName)
 	}
 	v.securityTxt(c)
+	if c.AssetInventory != nil {
+		v.assetInventory(c.AssetInventory)
+	}
 	if c.SCIM != nil {
 		v.scim(c)
 	}
@@ -9309,4 +9313,43 @@ func endpointsOf(c *Config, name string) int {
 		}
 	}
 	return 0
+}
+
+// assetInventory validates the device inventory.
+func (v *validator) assetInventory(a *AssetInventory) {
+	const p = "asset_inventory"
+	if a.MaxAssets < 0 || a.MaxAssets > 1<<20 {
+		v.errf("%s.max_assets: must be between 0 and 1048576", p)
+	}
+	for _, d := range []struct {
+		key    string
+		val    Duration
+		lo, hi time.Duration
+	}{
+		{"save_interval", a.SaveInterval, 10 * time.Second, 24 * time.Hour},
+		{"ttl", a.TTL, time.Hour, 365 * 24 * time.Hour},
+	} {
+		if d.val != 0 && (d.val.D() < d.lo || d.val.D() > d.hi) {
+			v.errf("%s.%s: must be between %s and %s", p, d.key, d.lo, d.hi)
+		}
+	}
+	for i, name := range a.Roles {
+		if _, ok := assets.RoleOf(name); !ok {
+			v.errf("%s.roles[%d]: %q is not a role (%s)", p, i, name, roleNames())
+		}
+	}
+	if a.StateFile != "" && !filepath.IsAbs(a.StateFile) {
+		v.errf("%s.state_file: must be an absolute path", p)
+	}
+	if a.VendorFile != "" && !filepath.IsAbs(a.VendorFile) {
+		v.errf("%s.vendor_file: must be an absolute path", p)
+	}
+	if a.Enabled && a.StateFile == "" {
+		v.warnf("%s.state_file: empty, so the inventory starts from nothing after every restart and reports the whole estate as new -- which is the fastest way to teach an operator to ignore it", p)
+	}
+}
+
+// roleNames lists the roles for a validation message.
+func roleNames() string {
+	return strings.Join(assets.RoleNames(), ", ")
 }

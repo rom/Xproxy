@@ -5975,6 +5975,111 @@ answering with a certificate the client rejects for itself. Alert on the
 do not expect the refusal to save a pair of nodes whose certificates
 expired together.
 
+### The device inventory: finding out what is on the network
+
+An estate that cannot be scanned can still be inventoried, because the
+proxy already parses the protocols it carries. Turn it on and leave it:
+
+```yaml
+asset_inventory:
+  enabled: true
+  state_file: /var/lib/xproxy/assets.json
+```
+
+A fortnight later:
+
+```
+$ xproxyctl assets
+41 devices, 3 unclassified, no baseline, 0 findings
+plc 12, rtu 4, hmi 3, field_gateway 2, historian 1, network_switch 9, printer 5, unknown 3
+
+ID                 ADDRESS      VENDOR       ROLE            L  CONF  PROTOCOLS          SEEN      NAME
+00:0f:bb:01:02:03  10.30.10.20  Phoenix...   plc             1  90    modbus/18422       12s ago
+00:1b:1b:04:05:06  10.30.10.21  Siemens AG   plc             1  90    modbus/9013        31s ago
+00:11:85:07:08:09  10.30.4.9    Hewlett...   printer         4  60    dhcp/3 snmp/288    4m ago    press-2
+```
+
+`-long` is the same thing with the evidence, which is the half worth
+reading when a row looks wrong:
+
+```
+$ xproxyctl assets show 10.30.10.20
+00:0f:bb:01:02:03
+  hardware           00:0f:bb:01:02:03
+  vendor             Phoenix Contact
+  addresses          10.30.10.20
+  role               plc (confidence 90, purdue 1)
+  because            answers a control protocol and never asks
+                     serves a small, stable set of unit identifiers
+  protocols          modbus/18422
+  listeners          line1
+  exchanges          answered 18422, asked 0
+  modbus units       1
+  modbus functions   3 4
+  seen               18422 observations, first 2026-09-11T08:02:14Z, last 2026-09-25T10:41:06Z
+```
+
+Two things to notice. The confidence and the evidence are there so an
+engineer can disagree with the guess; an inventory nobody can argue with
+is one whose wrong entries survive for years. And the strongest evidence
+is behavioural -- *answered 18422, asked 0* -- because a vendor name is a
+string the device chose and answering Modbus is most of the way to being
+a controller.
+
+Once the list looks like the estate, freeze it:
+
+```
+$ xproxyctl assets baseline
+baseline frozen: 41 devices
+```
+
+From here a device that was not in those 41 is reported as new, in the
+security log and in `xproxy_assets_new`:
+
+```
+$ xproxyctl assets -new
+42 devices, 3 unclassified, baseline 41, new 1, 1 findings
+
+ID                 ADDRESS      VENDOR   ROLE                     L  CONF  PROTOCOLS     SEEN     NAME
+aa:bb:cc:0d:0e:0f  10.30.1.88   (none)   engineering_workstation  3  70    modbus/412    2m ago   new
+```
+
+Then say what the estate is supposed to have, and the inventory checks the
+sentence on every observation:
+
+```yaml
+asset_inventory:
+  enabled: true
+  state_file: /var/lib/xproxy/assets.json
+  roles: [plc, rtu, hmi, scada_server, field_gateway, historian, network_switch, printer]
+```
+
+That configuration is the written-down form of "there are no engineering
+workstations on the process network". The laptop above now raises
+`asset_unexpected_role` on every observation rather than once at first
+sighting, because a device that keeps behaving like something it should
+not be is a thing that keeps happening, and a single event at first
+sighting is one an operator scrolls past.
+
+What to alert on, in order of how much it means:
+
+| Signal | What it is |
+|--------|------------|
+| `asset_unexpected_role` | A device behaving like something this estate said it does not have |
+| `asset_address_taken` | An address that now belongs to a different hardware address: a device swapped out, or something standing in for one that is switched off |
+| `asset_role_changed` | A controller that started behaving like an engineering station. The single most interesting line an inventory can produce |
+| `asset_new_asset` | Something that was not in the baseline |
+| `xproxy_asset_save_failures_total` | The record is not reaching disk, so a restart will report the estate as new |
+
+Two things it deliberately does not do. It never probes, scans or connects
+to anything -- every entry is a by-product of traffic that was going to
+happen anyway. And it is off by default, everywhere: an inventory is a
+record of somebody's estate, and a proxy that kept one without being told
+to would be making a decision about their data for them.
+
+`examples/ot/inventory.yaml` is the whole thing: six relay listeners an
+estate would run anyway, and the section that collects what they saw.
+
 ## Web GUI
 
 `xproxy-admin` serves the browser interface. It is a separate process from
