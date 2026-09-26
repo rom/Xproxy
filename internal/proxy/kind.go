@@ -20,6 +20,7 @@ import (
 	"github.com/rom/xproxy/internal/dns"
 	"github.com/rom/xproxy/internal/icap"
 	"github.com/rom/xproxy/internal/intel"
+	"github.com/rom/xproxy/internal/keysource"
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/listener"
 	"github.com/rom/xproxy/internal/logging"
@@ -106,6 +107,16 @@ type Host interface {
 	// the fail-closed answer for a daemon asked to check grants with
 	// nothing to check them against.
 	Access() *access.Ledger
+	// Secrets resolves a configured reference (a path, env: or vault:) to
+	// secret material. Never nil: without a secrets section it answers
+	// paths and the environment and refuses a vault reference, so a kind
+	// that reads a key through it needs no conditional.
+	//
+	// A kind should resolve through this rather than reading a file itself
+	// wherever the configuration calls the setting a reference, because
+	// that is what lets an estate move its secrets into a vault without
+	// touching the daemon.
+	Secrets() *keysource.Resolver
 	// ObserveAsset records what this listener noticed about a device, for
 	// the estate's own inventory: a hardware address, an address, the
 	// protocol, and whatever the exchange said about what the device is.
@@ -284,7 +295,7 @@ func (s *Server) Limits() config.Limits { return s.cfg().Server.Limits }
 // TLS wants all of it, which is why it is here rather than repeated
 // once per kind.
 func (s *Server) listenerTLS(lc config.Listener) (*tls.Config, *tlsconf.Reloadable, error) {
-	tc, rl, err := tlsconf.Server(lc.TLS, lc.Protocols)
+	tc, rl, err := tlsconf.Server(lc.TLS, lc.Protocols, tlsconf.WithSecrets(s.secrets))
 	if err != nil {
 		return nil, nil, err
 	}

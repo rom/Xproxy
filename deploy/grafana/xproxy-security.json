@@ -1935,6 +1935,114 @@
       ],
       "title": "Access refused, approved and used",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Where this estate's TLS private keys are held. file is the number an attacker who reads a machine's file system gets; reference means the key comes from a vault or the environment, so what is on the machine is a token that can be revoked; signer means the key never enters the proxy at all. The number to watch going down is file.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 40,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal"
+            }
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 104
+      },
+      "id": 35,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "refId": "A",
+          "legendFormat": "{{custody}}",
+          "expr": "sum by (custody) (xproxy_private_keys{instance=~\"$instance\"})"
+        }
+      ],
+      "title": "Private keys by custody",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Two counts that mean rotation or negotiation has quietly stopped working. stale is references whose source stopped answering: the previous value is still served on purpose, so nothing breaks and nothing rotates either. fips refused is configured key exchange groups and cipher suites the active module will not do, measured at start, so the clients that ask for them cannot handshake.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 40,
+            "lineWidth": 1,
+            "showPoints": "never"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 104
+      },
+      "id": 36,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "refId": "A",
+          "legendFormat": "stale secrets",
+          "expr": "sum (xproxy_secrets_stale{instance=~\"$instance\"})"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "refId": "B",
+          "legendFormat": "fips refused",
+          "expr": "sum (xproxy_fips_refused_algorithms{instance=~\"$instance\"})"
+        }
+      ],
+      "title": "Secrets not refreshing, and algorithms FIPS refuses",
+      "type": "timeseries"
     }
   ],
   "refresh": "30s",

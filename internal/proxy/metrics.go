@@ -138,6 +138,32 @@ func (s *Server) Collect(e metrics.Collector) {
 				L{"reason": reason}, float64(n))
 		}
 	}
+	// Key custody. The two worth alerting on are a stale secret -- a
+	// reference whose refresh keeps failing, so rotation has stopped without
+	// the proxy stopping -- and an algorithm the active FIPS module refuses,
+	// which is a listener that cannot handshake with the clients asking for
+	// it. keys_on_disk is not an alert but a number an estate should be able
+	// to watch going down.
+	{
+		cu := sn.Custody
+		e.Gauge("xproxy_private_keys", "Configured private keys by where they are held.",
+			L{"custody": "file"}, float64(cu.KeysOnDisk))
+		e.Gauge("xproxy_private_keys", "Configured private keys by where they are held.",
+			L{"custody": "reference"}, float64(cu.KeysReferenced))
+		e.Gauge("xproxy_private_keys", "Configured private keys by where they are held.",
+			L{"custody": "signer"}, float64(cu.KeysExternal))
+		e.Gauge("xproxy_secrets_vault", "1 when a vault is configured.", nil, b2f(cu.Vault))
+		e.Gauge("xproxy_secrets_stale", "References whose last refresh failed and which serve a previous value.",
+			nil, float64(len(cu.Stale)))
+		e.Counter("xproxy_secret_rotations_total", "Certificate keys replaced from their reference without a reload.",
+			nil, float64(cu.Rotations))
+		e.Counter("xproxy_secret_refresh_failures_total", "Refreshes of a referenced key that could not resolve.",
+			nil, float64(cu.RefreshFailures))
+		e.Gauge("xproxy_fips_enabled", "1 when the FIPS 140-3 module is active in this process.", nil, b2f(cu.FIPSEnabled))
+		e.Gauge("xproxy_fips_required", "1 when the configuration requires FIPS.", nil, b2f(cu.FIPSRequired))
+		e.Gauge("xproxy_fips_refused_algorithms", "Configured algorithms the active module will not do.",
+			nil, float64(len(cu.FIPSRefused)))
+	}
 	// The device inventory. The numbers worth alerting on are the last two:
 	// a device nobody accounted for, and a device behaving like something
 	// this estate said it does not have.

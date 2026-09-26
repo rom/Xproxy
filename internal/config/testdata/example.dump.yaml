@@ -52,6 +52,8 @@ server:
             certificates:
                 - cert_file: /etc/xproxy/certs/example.com.pem
                   key_file: /etc/xproxy/certs/example.com-key.pem
+                  key: ""
+                  signer: null
             min_version: "1.2"
             client_auth: none
             client_ca_file: ""
@@ -1033,3 +1035,5 @@ acme:
     renew_before: 720h0m0s
     check_interval: 12h0m0s
 access: null
+secrets: null
+fips: null

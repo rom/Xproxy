@@ -78,10 +78,17 @@ const (
 	DefaultDiscoveryMaxEndpoints = 4096
 	// Access defaults: four eyes, a working afternoon at most, and a
 	// window that may be booked a day ahead.
-	DefaultAccessApprovals       = 1
-	DefaultAccessMaxDuration     = 4 * time.Hour
-	DefaultAccessMaxLead         = 24 * time.Hour
-	DefaultAccessMaxOpen         = 256
+	DefaultAccessApprovals   = 1
+	DefaultAccessMaxDuration = 4 * time.Hour
+	DefaultAccessMaxLead     = 24 * time.Hour
+	DefaultAccessMaxOpen     = 256
+	// DefaultSecretRefresh is how long a resolved secret is used before
+	// its source is asked again; DefaultSignerTimeout bounds one
+	// signature from an external signer and DefaultSignerConns the
+	// connections held open to it.
+	DefaultSecretRefresh         = 5 * time.Minute
+	DefaultSignerTimeout         = 3 * time.Second
+	DefaultSignerConns           = 8
 	DefaultWAFLearningMinHits    = 5
 	DefaultWAFLearningMaxEntries = 10000
 	DefaultCRSParanoia           = 1
@@ -1026,6 +1033,30 @@ func applyDefaults(c *Config) {
 		if o.Compress == nil {
 			t := true
 			o.Compress = &t
+		}
+	}
+	if sec := c.Secrets; sec != nil {
+		setDur(&sec.RefreshInterval, DefaultSecretRefresh)
+		if v := sec.Vault; v != nil {
+			setStr(&v.Mount, "secret")
+			setInt(&v.KVVersion, 2)
+		}
+	}
+	if f := c.FIPS; f != nil && f.Probe == nil {
+		// An estate that asked for the mode is an estate that wants to know
+		// its configuration works in it.
+		f.Probe = ptr(f.Required)
+	}
+	for i := range c.Server.Listeners {
+		t := c.Server.Listeners[i].TLS
+		if t == nil {
+			continue
+		}
+		for j := range t.Certificates {
+			if sg := t.Certificates[j].Signer; sg != nil {
+				setDur(&sg.Timeout, DefaultSignerTimeout)
+				setInt(&sg.MaxConns, DefaultSignerConns)
+			}
 		}
 	}
 	if a := c.Access; a != nil {

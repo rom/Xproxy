@@ -51,6 +51,8 @@ on the first line of the file to enable it.
 | `capture` | object | none | pcapng capture of the exchanges the proxy handled; see `capture` |
 | `scim` | object | none | A SCIM 2.0 provisioning endpoint for the second factor and the API keys; see `scim` |
 | `policy` | object | `{mode: enforce}` | Whether the listeners enforce their policies or only evaluate them and write down what they would have refused; see `policy` |
+| `secrets` | object | none | Where the secrets this file names come from: a path, the environment, or a vault; see `secrets` |
+| `fips` | object | none | Whether this daemon insists on the FIPS 140-3 module, and what it says about the algorithms configured; see `fips` |
 
 ## policy
 
@@ -4542,7 +4544,7 @@ upstream `total` for those. 0-RTT is never enabled.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `certificates` | list | one of `certificates` or `acme` | `{cert_file, key_file}` PEM pairs; selected by SNI, first is the fallback |
+| `certificates` | list | one of `certificates` or `acme` | PEM certificates with a private key, selected by SNI, first is the fallback. Each entry names `cert_file` and then exactly one of `key_file`, `key` or `signer` to say where the private key comes from -- see [Where a private key lives](#where-a-private-key-lives) |
 | `acme` | list | | `{hosts: [...]}` groups issued and renewed through the top-level `acme` section; one certificate per group, named after its first host. Hosts are fully qualified names without wildcards and unique across the listener. Selected by SNI after the file certificates |
 | `min_version` | `"1.2"` or `"1.3"` | `"1.2"` | TLS 1.0 and 1.1 cannot be configured |
 | `client_auth` | `none`, `request`, `require` | `none` | Client certificates; `request` verifies if presented |
@@ -11088,6 +11090,199 @@ on), so bans apply as they always did.
 A listener in `policy: {mode: shadow}` records what it would have refused
 and carries on, which is how an estate turns this on without locking its
 operators out on the first evening.
+
+## secrets
+
+Where the secrets in this configuration come from. Without this section every
+one of them is a path on this machine, which is how the proxy has always worked
+and stays the default.
+
+A proxy holds a great many secrets: TLS private keys, an upstream client key, a
+Consul token, an LDAP bind password, the keyring behind every sealed cookie.
+When each is a path, the material is on the file system of the machine --
+readable by whatever else can read that machine, present in its backups, and
+replaced by whatever can write there. A **reference** says where a secret comes
+from instead:
+
+| Reference | Resolves to |
+|-----------|-------------|
+| `/etc/xproxy/tls/edge.key` | A path, as before. Every configuration written before references existed keeps its meaning |
+| `file:/etc/xproxy/tls/edge.key` | The same, said explicitly |
+| `env:EDGE_KEY` | A variable in this process's environment |
+| `vault:secret/tls/edge#key` | The `key` field of a secret in HashiCorp Vault |
+
+A vault reference must name its field. A secret usually holds several, and
+picking one for the operator is how the wrong key gets served.
+
+```yaml
+secrets:
+  refresh_interval: 5m
+  vault:
+    address: https://vault.internal:8200
+    mount: secret
+    kv_version: 2
+    token_file: /etc/xproxy/vault-token
+    ca_file: /etc/pki/tls/certs/internal-ca.pem
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `refresh_interval` | duration | `5m` | How long a resolved value is used before its source is asked again, and how often a listener re-checks the keys it is serving. A key rotated in the vault reaches a running proxy within one interval, with no reload and no dropped connection -- see [What a rotation does](#what-a-rotation-does). 1m to 24h: below a minute the vault becomes this proxy's hot path, above a day a rotation does not arrive |
+| `vault` | object | none | The vault references are read from; without it only `file:` and `env:` resolve and a `vault:` reference is refused at load |
+
+### secrets.vault
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `address` | URL | required | `https://host:8200`. `http://` needs both `insecure` and `allow_insecure`, because plain HTTP puts the token and every secret it reads in clear on the wire |
+| `mount` | string | `secret` | The KV mount references are relative to |
+| `kv_version` | `1` or `2` | `2` | The KV engine version; version 2 wraps the secret in a `data` envelope and this is what decides how the answer is read |
+| `token_file` | path | one of the two | A file holding the token, nothing else. Mode 0400 is the arrangement to want |
+| `token_env` | name | one of the two | An environment variable holding the token. Warned about: the environment of a process is readable by anything that can read `/proc` for the same user, and every child process inherits it |
+| `namespace` | string | none | Vault Enterprise namespace, sent as `X-Vault-Namespace` |
+| `ca_file` | path | system roots | The CA that signs the vault's certificate |
+| `server_name` | host | from the address | Override the name verified in the certificate |
+| `insecure` | bool | `false` | Do not verify the vault's certificate. Only accepted together with `allow_insecure` and only for an `http://` address; on an `https://` address it is refused, because anything on the path could then hand this proxy its secrets |
+| `allow_insecure` | bool | `false` | The second half of saying yes to plain HTTP, so that serving every secret in clear is two decisions rather than one typo |
+
+### What a rotation does
+
+A certificate is read once at load, so a rotated key would reach a listener only
+at the next reload -- which is why there is a refresh loop rather than only a
+TTL. Once per `refresh_interval`, every listener whose certificate names a `key`
+reference re-resolves it. If the material is the same, nothing happens. If it
+changed, the certificates are rebuilt and served from then on; connections
+already established are untouched, since a TLS connection does not revisit the
+certificate it was made with.
+
+The loop exists only where it is needed: a listener whose keys are all
+`key_file` or `signer` gets no goroutine and no ticker, and neither does a
+daemon with no references at all.
+
+`xproxy_secret_rotations_total` counts the certificates actually replaced, which
+is the number to compare against what the vault says it rotated -- and a
+`refresh_interval` of 5m with a rotation the vault performed an hour ago and
+this counter at zero is the one combination worth investigating.
+
+### What a failed refresh does
+
+**A refresh that fails keeps the previous value and warns.** A vault that is
+down must not take a TLS key away from a proxy that is already serving with it;
+the whole point of the arrangement is that the estate keeps working while
+somebody fixes the vault.
+
+That means the failure mode to watch for is not an outage but silence: a secret
+that has quietly stopped rotating. `xproxy_secrets_stale` counts the references
+whose last refresh failed, `xproxyctl status` lists them, and the error log
+carries a line per failure naming the reference. **A value is never logged,
+wrapped in an error, or put in a dump** -- the configuration holds references
+rather than material, so `xproxyctl dump`, the history and a diff show where a
+secret comes from and never what it is.
+
+### Where a private key lives
+
+Each entry of `server.listeners[].tls.certificates` names `cert_file` and then
+exactly one of three keys, which are the three custody arrangements:
+
+| Key | Where the private key is | What an attacker who reads this machine gets |
+|-----|--------------------------|----------------------------------------------|
+| `key_file` | A PEM file on this machine | The key |
+| `key` | Wherever the reference says: a file, the environment, or a vault | The key, if the reference is a file or the environment; the vault token, if it is a vault -- and a token can be revoked |
+| `signer` | In another process, which may hold it in a PKCS#11 token, an HSM or a TPM | Nothing, as long as that process's own custody holds |
+
+Two of them being set is refused at load, not resolved by precedence: a
+certificate with two keys configured is a certificate whose key nobody can name
+by reading the file.
+
+```yaml
+server:
+  listeners:
+    - name: edge
+      kind: http
+      tls:
+        certificates:
+          # On disk, as before.
+          - cert_file: /etc/xproxy/tls/legacy.pem
+            key_file: /etc/xproxy/tls/legacy-key.pem
+          # From the vault, rotated without a reload.
+          - cert_file: /etc/xproxy/tls/edge.pem
+            key: vault:secret/tls/edge#key
+          # Never in this process at all.
+          - cert_file: /etc/xproxy/tls/hsm.pem
+            signer:
+              socket: /run/xproxy/signer.sock
+              key: edge-rsa
+```
+
+### server.listeners[].tls.certificates[].signer
+
+The strongest arrangement here is the one where the private key never enters
+this process. A helper holds it -- in a PKCS#11 token, an HSM, a TPM, or simply
+in a process with a different user and a tighter sandbox -- and answers signature
+requests over a Unix socket. The proxy sends a digest and gets a signature back;
+it never sees the key, so neither does anything that reads this proxy's memory.
+
+That is also why the helper is a separate process rather than a linked library:
+the daemons are built with `CGO_ENABLED=0`, and a PKCS#11 module is a C library.
+Keeping it out of the proxy is both a build fact and the point.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `socket` | path | required | The Unix socket the helper listens on. Absolute. Connecting to it is a *write* under the sandbox, and the rule is derived for you |
+| `key` | name | required | Which of the helper's keys to use; one helper may hold several |
+| `timeout` | duration | `3s` | Bounds one signature. It is on the handshake path, so a helper that stops answering must fail rather than hold connections open; 100ms to 1m |
+| `max_conns` | int | `8` | Connections held open to the helper. Signatures are serialised per connection, so this is the parallel handshake capacity; 1 to 256 |
+
+At start the proxy asks the helper to sign a known value and checks the
+signature against the public key in `cert_file`. A helper that cannot prove it
+holds the matching key fails the load: the alternative is a listener that comes
+up and then fails every handshake, which looks to everyone else like the
+listener being down.
+
+## fips
+
+Whether this daemon insists on running with the FIPS 140-3 module active, and
+what it says about the algorithms it was configured to offer.
+
+```yaml
+fips:
+  required: true
+  probe: true
+  probe_fails: false
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `required` | bool | `false` | Refuse to start unless the FIPS 140-3 module is active in this process. Not a warning: the value of the setting is that a deployment which must be FIPS cannot quietly stop being it after a rebuild with the wrong toolchain |
+| `probe` | bool | follows `required` | Ask the module at start which of the configured key exchange groups and cipher suites it will actually do, by handshaking over an in-process pipe |
+| `probe_fails` | bool | `false` | Refuse to start when the probe finds a configured algorithm the module will not do. Only meaningful with `required` |
+
+The module is not a build flag in this configuration -- it is a property of the
+binary and of how it was started. Build with `GOFIPS140=v1.0.0` and run with
+`GODEBUG=fips140=on`; `crypto/fips140.Enabled()` is what `required` checks, and
+`xproxyctl status` reports it either way.
+
+### Why probe rather than list
+
+It would be easy to ship a list of approved algorithms and check the
+configuration against it. That list would be wrong: which algorithms an active
+module accepts is a property of the toolchain and the module version, not of
+this project's documentation, and a stale list either refuses a configuration
+that works or blesses one that does not.
+
+So the probe measures instead. It completes a TLS handshake over an in-process
+pipe for each configured group and suite and reports the ones the module
+refused. On the toolchain this was written against, a module in FIPS mode
+refuses `X25519` and `TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256` while
+accepting `X25519MLKEM768` and the P-curves -- which is exactly the sort of
+detail that would be out of date in a list and is never out of date in a
+measurement.
+
+An algorithm the module refuses is not an error by default, because a listener
+offering several groups still works for clients that ask for one of the others.
+It is a warning, `xproxy_fips_refused_algorithms`, and a line in
+`xproxyctl status`. An estate that wants the stricter reading sets
+`probe_fails: true`.
 
 ## Headers set on forwarded requests
 

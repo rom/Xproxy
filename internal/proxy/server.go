@@ -23,7 +23,9 @@ import (
 	"github.com/rom/xproxy/internal/cluster"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/dns"
+	"github.com/rom/xproxy/internal/fipsmode"
 	"github.com/rom/xproxy/internal/intel"
+	"github.com/rom/xproxy/internal/keysource"
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/metrics"
@@ -92,6 +94,18 @@ type Server struct {
 	// with no ledger refuses every session, which is the fail-closed
 	// answer; validation catches that configuration first.
 	grants *access.Ledger
+	// refresher carries a rotated referenced key into a running listener.
+	// nil when no certificate's key is a reference.
+	refresher *secretRefresh
+	// secrets resolves the references in the configuration to material.
+	// It is always non-nil: without a secrets section it answers file: and
+	// env: references and refuses vault: ones, which is exactly what a
+	// configuration written before this existed needs.
+	secrets *keysource.Resolver
+	// fips records what the FIPS 140-3 check found at start, for the status
+	// view and the exposition. Zero when the configuration has no fips
+	// section.
+	fips fipsmode.Status
 	// assets is the device inventory, absent unless the configuration asked
 	// for one.
 	assets atomic.Pointer[assetKeeper]
@@ -184,6 +198,23 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 		live:         sessions.New(),
 		wouldDeny:    shadow.NewLedger(shadowBound(cfg)),
 	}
+	// The secret resolver is built before anything that may hold a
+	// reference -- a TLS key, a bind password, an upstream client key --
+	// because a reference resolved with no resolver is an error and not a
+	// path.
+	res, err := newSecrets(cfg, logs)
+	if err != nil {
+		return nil, err
+	}
+	s.secrets = res
+	// FIPS: asked before any key is generated or any handshake happens, so
+	// that a deployment that requires it and is not running it refuses to
+	// start rather than serving with algorithms nobody approved.
+	st, err := fipsStatus(cfg, logs)
+	if err != nil {
+		return nil, err
+	}
+	s.fips = st
 	if a := cfg.Access; a != nil {
 		l, err := access.Open(a.Ledger, accessPolicy(a))
 		if err != nil {
@@ -363,6 +394,7 @@ func (s *Server) Stats() Snapshot {
 	snap.RateRefusedConns = s.rate().Rejected.Load()
 	snap.Assets = s.AssetReport()
 	snap.Access = s.AccessReport()
+	snap.Custody = s.CustodyReport()
 	s.mu.Lock()
 	for _, bl := range s.listeners {
 		if bl.rate != nil {
@@ -628,8 +660,38 @@ func (s *Server) Start() error {
 	for _, bl := range s.listeners {
 		go s.serve(bl)
 	}
+	// Only where something needs refreshing: a deployment with every key in
+	// a file gets no goroutine and no ticker.
+	if s.anyReferencedKey() {
+		every := config.DefaultSecretRefresh
+		if sec := cfg.Secrets; sec != nil {
+			every = sec.RefreshInterval.D()
+		}
+		s.refresher = newSecretRefresh(every, s.logs, s.boundListeners)
+		s.refresher.start()
+	}
 	s.started = true
 	return nil
+}
+
+// anyReferencedKey says whether any bound listener serves a certificate whose
+// key comes from a reference. Called with s.mu held by Start.
+func (s *Server) anyReferencedKey() bool {
+	for _, bl := range s.listeners {
+		if bl.tlsReload != nil && bl.tlsReload.HasReferencedKeys() {
+			return true
+		}
+	}
+	return false
+}
+
+// boundListeners is the snapshot the refresh loop walks. It takes the lock
+// itself, because the loop runs for the life of the process and the set of
+// listeners changes under it on every reload.
+func (s *Server) boundListeners() []*boundListener {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]*boundListener(nil), s.listeners...)
 }
 
 func (s *Server) bind(lc config.Listener, activated *activated) (*boundListener, error) {
@@ -1267,6 +1329,52 @@ func (s *Server) Shadow() *shadow.Ledger { return s.wouldDeny }
 // refuses every session rather than admitting one unchecked.
 func (s *Server) Access() *access.Ledger { return s.grants }
 
+// Secrets implements Host: the resolver a kind uses to turn a configured
+// reference into material. Never nil.
+func (s *Server) Secrets() *keysource.Resolver { return s.secrets }
+
+// FIPS reports what the FIPS 140-3 check found at start.
+func (s *Server) FIPS() fipsmode.Status { return s.fips }
+
+// CustodyReport says where this daemon's private keys live.
+//
+// It counts the configuration rather than the loaded certificates on purpose:
+// what an auditor is asking is how the estate is arranged, and a certificate
+// that failed to load is still a key the configuration says is on disk.
+func (s *Server) CustodyReport() CustodySummary {
+	cfg := s.cfg()
+	out := CustodySummary{
+		Vault:        cfg.Secrets != nil && cfg.Secrets.Vault != nil,
+		FIPSEnabled:  s.fips.Enabled,
+		FIPSRequired: s.fips.Required,
+		FIPSRefused:  s.fips.Refused,
+	}
+	for i := range cfg.Server.Listeners {
+		t := cfg.Server.Listeners[i].TLS
+		if t == nil {
+			continue
+		}
+		for _, c := range t.Certificates {
+			switch {
+			case c.Signer != nil:
+				out.KeysExternal++
+			case c.Key != "":
+				out.KeysReferenced++
+			default:
+				out.KeysOnDisk++
+			}
+		}
+	}
+	if s.secrets != nil {
+		out.Stale = s.secrets.Stale()
+	}
+	if r := s.refresher; r != nil {
+		out.Rotations = r.rotations.Load()
+		out.RefreshFailures = r.failures.Load()
+	}
+	return out
+}
+
 // AccessReport summarises the ledger for the status view and the exposition,
 // or nil when the configuration has no access section.
 func (s *Server) AccessReport() *AccessSummary {
@@ -1355,6 +1463,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		if s.acme != nil {
 			s.acme.Stop()
 		}
+	}
+	if s.refresher != nil {
+		s.refresher.stop()
 	}
 	if k := s.assets.Load(); k != nil {
 		// After the listeners, so that the last observations they made are in

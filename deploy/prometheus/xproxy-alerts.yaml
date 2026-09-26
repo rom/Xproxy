@@ -191,6 +191,21 @@ groups:
         annotations:
           summary: "Access grants on {{ $labels.instance }} are being used with no approvals recorded"
           description: "Sessions opened against grants in the last day and not one approval was recorded in the same day, which means approvals: 0 or self_approval: true -- just-in-time and time-boxed, but not four eyes. Intended on a single-operator estate; on any other it is the setting an attacker who reaches one account most wants."
+  - name: xproxy.custody
+    rules:
+      - alert: XproxySecretStale
+        expr: max by (instance) (xproxy_secrets_stale) > 0
+        for: 30m
+        labels: {severity: warn}
+        annotations:
+          summary: "A secret on {{ $labels.instance }} has not refreshed for half an hour"
+          description: "A reference's source stopped answering and the previous value is still in force, which is the deliberate behaviour -- a vault that is down must not take a TLS key away from a proxy that is serving with it. But it means rotation has stopped without anything stopping: a revoked key keeps being served until this is fixed. xproxyctl status names the references and the error log carries a line per failure."
+      - alert: XproxyFIPSRefusesConfiguredAlgorithms
+        expr: max by (instance) (xproxy_fips_refused_algorithms) > 0
+        labels: {severity: warn}
+        annotations:
+          summary: "The FIPS module on {{ $labels.instance }} refuses a configured algorithm"
+          description: "A key exchange group or cipher suite a listener offers is one the active module will not do, so clients that ask for it cannot handshake. Measured at start by handshaking over an in-process pipe; xproxyctl status lists which. Either narrow the configuration to what the module does or accept that those clients fall back."
   - name: xproxy.accounts
     rules:
       - alert: XproxyCredentialStuffing

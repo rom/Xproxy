@@ -141,6 +141,12 @@ type Config struct {
 	// require_grant admits sessions against, who has to approve one and how
 	// long it may last.
 	Access *Access `yaml:"access"`
+	// Secrets says where secret references resolve from: a vault, and how
+	// often a resolved value is fetched again. Without it a reference may
+	// still name a file or an environment variable.
+	Secrets *Secrets `yaml:"secrets"`
+	// FIPS is what the estate requires of the runtime's FIPS 140-3 mode.
+	FIPS *FIPS `yaml:"fips"`
 }
 
 // Metrics configures Prometheus exposition and sampled series (AMR-026).
@@ -5746,6 +5752,31 @@ type ACMEGroup struct {
 type Certificate struct {
 	CertFile string `yaml:"cert_file"`
 	KeyFile  string `yaml:"key_file"`
+	// Key is where the private key comes from when it is not a plain file on
+	// this machine: a reference (file:, env: or vault:). Exactly one of
+	// key_file, key and signer is required.
+	Key string `yaml:"key"`
+	// Signer holds the private key in another process: the proxy sends a
+	// digest over a Unix socket and gets a signature back, so the material
+	// never enters this address space at all. That is where an HSM through
+	// PKCS#11, a TPM or a smartcard belongs -- each needs cgo or a device,
+	// and both are better outside the thing that terminates TLS.
+	Signer *CertSigner `yaml:"signer"`
+}
+
+// CertSigner is the helper that holds a certificate's private key.
+type CertSigner struct {
+	// Socket is the Unix socket the helper listens on.
+	Socket string `yaml:"socket"`
+	// Key names which key the helper should use, since one helper may hold
+	// several.
+	Key string `yaml:"key"`
+	// Timeout bounds one signature. It is on the handshake path: a helper
+	// that hangs must fail a handshake rather than hold one. Default 3s.
+	Timeout Duration `yaml:"timeout"`
+	// MaxConns bounds the connections held to the helper, which is the
+	// parallelism of signing. Default 8.
+	MaxConns int `yaml:"max_conns"`
 }
 
 // Normalization decides what the proxy does with encoding tricks in the
@@ -8511,6 +8542,96 @@ type Access struct {
 	// for the estate with one operator, where the alternative is switching
 	// the requirement off altogether; it is warned about every time.
 	SelfApproval bool `yaml:"self_approval"`
+}
+
+// Secrets says where a secret reference resolves from.
+//
+// Every secret this proxy holds was a path until this existed, and a path means
+// the material is on this machine's file system: readable by whatever else reads
+// the machine, in its backups, replaced by whatever writes there. A reference
+// says where a secret comes from instead --
+//
+//	/etc/xproxy/tls/edge.key       a path, as before
+//	file:/etc/xproxy/tls/edge.key  the same, said explicitly
+//	env:EDGE_KEY                   the environment of this process
+//	vault:secret/tls/edge#key      a field of a secret in HashiCorp Vault
+//
+// -- and because the *configuration* holds the reference rather than the
+// material, the management dump, the history and a diff show where each secret
+// comes from and never what it is.
+//
+// The strongest arrangement is not here but in tls.certificates[].signer, where
+// the private key never enters this process at all.
+type Secrets struct {
+	// Vault is the HashiCorp Vault to read vault: references from. Without
+	// it a vault reference fails the load rather than falling back to
+	// anything.
+	Vault *VaultSecrets `yaml:"vault"`
+	// RefreshInterval is how long a resolved value is used before its source
+	// is asked again, so a rotation reaches a running proxy without a
+	// reload. Default 5m; 1m to 24h. A failed refresh keeps the previous
+	// value and warns -- a vault that is down must not take a TLS key away
+	// from a proxy already serving with it.
+	RefreshInterval Duration `yaml:"refresh_interval"`
+}
+
+// VaultSecrets is the Vault a vault: reference reads from. Only reading is
+// implemented, and deliberately: a proxy that could write to the vault would be
+// a proxy whose compromise rewrites the estate's secrets.
+type VaultSecrets struct {
+	// Address is the API base. https unless insecure is set, because http
+	// hands the token and every secret to the network.
+	Address string `yaml:"address"`
+	// Mount is the KV mount a reference uses when it names none. Default
+	// "secret".
+	Mount string `yaml:"mount"`
+	// KVVersion is 2 (the default) or 1. They differ in the request path and
+	// in where the fields sit in the answer, and guessing between them
+	// answers "not found" for a secret that is there.
+	KVVersion int `yaml:"kv_version"`
+	// TokenFile holds the token, and TokenEnv names an environment variable
+	// holding it. Exactly one is required. A token in this document would be
+	// a token in the management dump, the history and every diff; a token in
+	// the environment is readable by more than this process, which is why it
+	// is warned about.
+	TokenFile string `yaml:"token_file"`
+	TokenEnv  string `yaml:"token_env"`
+	// Namespace is the Vault Enterprise namespace, sent as a header. Without
+	// it an estate that uses namespaces gets "not found" for every secret.
+	Namespace string `yaml:"namespace"`
+	// CAFile pins the authority the server's certificate is checked against;
+	// empty uses the system pool. ServerName overrides the name verified.
+	CAFile     string `yaml:"ca_file"`
+	ServerName string `yaml:"server_name"`
+	// Insecure allows http and skips verification, and needs allow_insecure
+	// as well: one flag is a typo, two are a decision.
+	Insecure      bool `yaml:"insecure"`
+	AllowInsecure bool `yaml:"allow_insecure"`
+}
+
+// FIPS is what the estate requires of the runtime's FIPS 140-3 mode.
+//
+// The mode itself is a property of the Go toolchain and the fips140 GODEBUG
+// rather than of this file: nothing here turns it on. What this section does is
+// refuse to serve without it, and -- because a list of approved algorithms in
+// this proxy would be a claim about somebody else's validation certificate --
+// find out what this runtime actually refuses by handshaking with each
+// configured algorithm at start.
+type FIPS struct {
+	// Required refuses to start when the runtime is not in FIPS mode, with
+	// the remedy in the message.
+	Required bool `yaml:"required"`
+	// Probe handshakes once per configured key exchange group and cipher
+	// suite at start and reports the ones this runtime will not do. Default
+	// true when required is set: an estate that asked for the mode is an
+	// estate that wants to know its configuration works in it, at start
+	// rather than at the first client that offers one of them.
+	Probe *bool `yaml:"probe"`
+	// ProbeFails makes a refused algorithm fail the load rather than being
+	// reported. Off by default: a listener that also offers approved
+	// algorithms still serves, and an operator who would rather not serve at
+	// all can say so.
+	ProbeFails bool `yaml:"probe_fails"`
 }
 
 // Challenge configures the browser proof-of-work challenge (AMR-023).

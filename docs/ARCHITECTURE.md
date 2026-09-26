@@ -186,6 +186,15 @@ internal/textsafe   bounding and de-controlling text that came from a peer
 internal/unixsock   binding a listening Unix socket, safely, in one place
 internal/limits     token buckets, connection limiter, concurrency limiter
 internal/tlsconf    hardened tls.Config construction and certificate reload
+internal/keysource  where a secret comes from: a path, the environment, a
+                    vault, or an external signer that holds the private key
+                    on the other side of a Unix socket so it never enters
+                    this process
+internal/fipsmode   whether the FIPS 140-3 module is active, and which of
+                    the configured algorithms it will actually do -- asked
+                    of the runtime by handshaking, never read off a list
+internal/access     the just-in-time access ledger: grants, approvals and
+                    the hash-chained trail the gate kinds admit against
 internal/upstream   endpoints, balancers, health checks, affinity, ejection
 internal/logging    four slog streams, file rotation
 internal/mgmt       management API server and client
