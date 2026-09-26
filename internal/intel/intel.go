@@ -22,10 +22,12 @@ package intel
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net/netip"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -80,8 +82,26 @@ type List struct {
 	Name   string
 	Kind   string
 	Action string
-	// File is where the entries came from.
+	// File is where the entries came from, for a file source.
 	File string
+	// The network sources. Exactly one of File, URL, TAXII and MISP is set;
+	// validation refuses a list with none or several, because a list whose
+	// source is ambiguous is a list nobody can say the contents of.
+	URL   string
+	TAXII *TAXIISpec
+	MISP  *MISPSpec
+	// fetch is the HTTP client for a network source, built once so the
+	// connection pool and the TLS session cache survive a refresh.
+	fetch *fetcher
+	// digest is the SHA-256 of the document the entries came from, which is
+	// how a fetch decides whether anything changed. A feed that answers
+	// identically has not changed, whatever its headers said.
+	digest [32]byte
+	// Fetches, Failures and NotModified count what the source has done since
+	// start. The three are separate because they mean different things: a
+	// failure is something to fix, a 304 is the feed working as intended, and
+	// the ratio of the first to the second is whether this list is current.
+	Fetches, Failures, NotModified atomic.Uint64
 	// Format is how the file is written; see Spec.
 	Format string
 	// Skipped is what the last read of a structured document could not use:
@@ -153,6 +173,17 @@ type ListStatus struct {
 	// numbers is what says which.
 	Format  string `json:"format,omitempty"`
 	Skipped int    `json:"skipped,omitempty"`
+	// Source is the file, URL, TAXII collection or MISP instance this list
+	// came from, in one string an operator can read.
+	Source string `json:"source,omitempty"`
+	// Fetches, Failures and NotModified are what a network source has done
+	// since start. The three are separate because they mean different things:
+	// a failure is something to fix, a 304 is the feed working as intended,
+	// and a list whose failures are climbing while its fetches are not is a
+	// list that has stopped being current while still matching.
+	Fetches     uint64 `json:"fetches,omitempty"`
+	Failures    uint64 `json:"failures,omitempty"`
+	NotModified uint64 `json:"not_modified,omitempty"`
 }
 
 // Spec is one list as configured. The package takes its own shape rather
@@ -160,6 +191,12 @@ type ListStatus struct {
 // without the config package.
 type Spec struct {
 	Name, Kind, Action, File string
+	// Exactly one of File, URL, TAXII and MISP is the source. A network
+	// source shares HTTP for its credential, its trust and its timeout.
+	URL   string
+	TAXII *TAXIISpec
+	MISP  *MISPSpec
+	HTTP  *HTTPSpec
 	// Format is how the file is written: lines, stix, misp, or auto to decide
 	// from the bytes. Empty means auto.
 	//
@@ -175,14 +212,41 @@ type Spec struct {
 func New(specs []Spec) (*Set, error) {
 	s := &Set{}
 	for _, sp := range specs {
-		l := &List{Name: sp.Name, Kind: sp.Kind, Action: sp.Action, File: sp.File, Format: sp.Format}
+		l := &List{Name: sp.Name, Kind: sp.Kind, Action: sp.Action,
+			File: sp.File, Format: sp.Format, URL: sp.URL, TAXII: sp.TAXII, MISP: sp.MISP}
+		if l.network() {
+			spec := HTTPSpec{}
+			if sp.HTTP != nil {
+				spec = *sp.HTTP
+			}
+			if err := checkInsecure(l.sourceURL(), spec); err != nil {
+				return nil, fmt.Errorf("threat_intel list %q: %w", l.Name, err)
+			}
+			fr, err := newFetcher(spec)
+			if err != nil {
+				return nil, fmt.Errorf("threat_intel list %q: %w", l.Name, err)
+			}
+			l.fetch = fr
+		}
 		if l.Kind == "" {
 			l.Kind = KindCIDR
 		}
 		if l.Action == "" {
 			l.Action = ActionLog
 		}
-		if err := s.read(l); err != nil {
+		// The first load is where a source that cannot be reached is fatal.
+		// At start there is nothing to keep, so a proxy that came up with an
+		// empty list it believes is populated is the outcome this package
+		// exists to prevent -- and unlike a stale list, this failure is
+		// visible when somebody is watching.
+		if l.network() {
+			ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout(sp.HTTP))
+			_, err := s.pull(ctx, l)
+			cancel()
+			if err != nil {
+				return nil, fmt.Errorf("threat_intel list %q: %w", l.Name, err)
+			}
+		} else if err := s.read(l); err != nil {
 			return nil, fmt.Errorf("threat_intel list %q: %w", l.Name, err)
 		}
 		s.lists = append(s.lists, l)
@@ -195,6 +259,125 @@ func New(specs []Spec) (*Set, error) {
 // file rather than on the parser's appetite, and a document larger than this is
 // refused with the number rather than read into memory to find out.
 const MaxDocument = 64 << 20
+
+// network reports whether this list's source is fetched rather than read.
+func (l *List) network() bool {
+	return l.URL != "" || l.TAXII != nil || l.MISP != nil
+}
+
+// sourceURL is the source as a URL, for the messages and for the insecure
+// check. Empty for a file.
+func (l *List) sourceURL() string {
+	switch {
+	case l.URL != "":
+		return l.URL
+	case l.TAXII != nil:
+		return l.TAXII.APIRoot
+	case l.MISP != nil:
+		return l.MISP.BaseURL
+	}
+	return ""
+}
+
+// Source is the source in one string, for the status view.
+func (l *List) Source() string {
+	switch {
+	case l.URL != "":
+		return l.URL
+	case l.TAXII != nil:
+		return "taxii " + strings.TrimRight(l.TAXII.APIRoot, "/") + " collection " + l.TAXII.Collection
+	case l.MISP != nil:
+		return "misp " + l.MISP.BaseURL
+	}
+	return l.File
+}
+
+// checkInsecure refuses verification-skipping anywhere but the loopback.
+//
+// A feed fetched without verifying the server is a feed anything on the path can
+// write, and what it writes becomes this proxy's block list -- so the setting
+// exists for a development instance on 127.0.0.1 and nowhere else. Refused
+// rather than warned about: there is no estate where taking a block list from an
+// unauthenticated stranger is the intent.
+func checkInsecure(rawURL string, spec HTTPSpec) error {
+	if !spec.Insecure {
+		return nil
+	}
+	if !spec.AllowInsecure {
+		return errors.New("insecure is set without allow_insecure; skipping verification takes two decisions rather than one")
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("source url: %w", err)
+	}
+	host := u.Hostname()
+	if ip, err := netip.ParseAddr(host); err == nil && ip.IsLoopback() {
+		return nil
+	}
+	if strings.EqualFold(host, "localhost") {
+		return nil
+	}
+	return fmt.Errorf("insecure is set for %s; verification may only be skipped for a loopback address, because a feed nobody authenticated becomes this proxy's block list", host)
+}
+
+// fetchDocument gets a network source's document, or reports that it has not
+// changed. first says whether this is the load rather than a refresh.
+func (l *List) fetchDocument(ctx context.Context) ([]byte, error) {
+	switch {
+	case l.URL != "":
+		return l.fetch.fetchURL(ctx, l.URL)
+	case l.TAXII != nil:
+		return l.fetch.fetchTAXII(ctx, *l.TAXII)
+	case l.MISP != nil:
+		return l.fetch.fetchMISP(ctx, *l.MISP)
+	}
+	return nil, errors.New("no network source")
+}
+
+// pull fetches a network source and loads it, reporting whether anything
+// changed.
+//
+// A fetch that fails leaves the entries in force and is counted -- the same rule
+// the file path has, and for the same reason: a TAXII server having an afternoon
+// must not empty the policy. The one exception is the first load, where there is
+// nothing to keep; New treats that as fatal.
+func (s *Set) pull(ctx context.Context, l *List) (bool, error) {
+	data, err := l.fetchDocument(ctx)
+	switch {
+	case errors.Is(err, errNotModified):
+		l.NotModified.Add(1)
+		s.mu.Lock()
+		l.read = time.Now()
+		s.mu.Unlock()
+		return false, nil
+	case err != nil:
+		l.Failures.Add(1)
+		return false, err
+	}
+	l.Fetches.Add(1)
+	sum := digestOf(data)
+	s.mu.RLock()
+	same := sum == l.digest && l.count > 0
+	s.mu.RUnlock()
+	if same {
+		// Identical bytes. Recording the time still matters: "last read" is
+		// what tells an operator the feed is being polled at all.
+		s.mu.Lock()
+		l.read = time.Now()
+		s.mu.Unlock()
+		return false, nil
+	}
+	ent, err := l.entries(bytes.NewReader(data))
+	if err != nil {
+		l.Failures.Add(1)
+		return false, err
+	}
+	s.mu.Lock()
+	l.nets, l.exact, l.count, l.depth, l.Skipped = ent.nets, ent.exact, ent.count, ent.depth, ent.skipped
+	l.digest, l.size, l.read = sum, int64(len(data)), time.Now()
+	s.mu.Unlock()
+	return true, nil
+}
 
 // read loads a list's file into it.
 func (s *Set) read(l *List) error {
@@ -540,10 +723,23 @@ func covers(nets []netip.Prefix, ip netip.Addr) bool {
 	return false
 }
 
-// Reload re-reads the lists whose file changed, and reports how many
-// were re-read. A file that has become unreadable keeps the entries
-// already loaded: a feed that is being rewritten in place must not empty
-// the policy for the moment it takes.
+// fetchTimeout is the bound on one fetch, defaulted.
+func fetchTimeout(spec *HTTPSpec) time.Duration {
+	if spec != nil && spec.Timeout > 0 {
+		return spec.Timeout
+	}
+	return DefaultFetchTimeout
+}
+
+// Reload re-reads the lists whose file changed and re-fetches the network ones,
+// and reports how many changed.
+//
+// A file that has become unreadable, and a fetch that failed, both keep the
+// entries already loaded: a feed being rewritten in place, or a TAXII server
+// having an afternoon, must not empty the policy for as long as it takes. The
+// failure is returned so the caller can log it and is counted per list, because
+// a list that has quietly stopped updating is the failure mode worth alerting
+// on -- and it looks exactly like a list that is working.
 func (s *Set) Reload() (int, error) {
 	if s == nil {
 		return 0, nil
@@ -555,6 +751,21 @@ func (s *Set) Reload() (int, error) {
 	changed := 0
 	var firstErr error
 	for _, l := range lists {
+		if l.network() {
+			ctx, cancel := context.WithTimeout(context.Background(), l.fetch.timeout())
+			did, err := s.pull(ctx, l)
+			cancel()
+			switch {
+			case err != nil:
+				if firstErr == nil {
+					firstErr = fmt.Errorf("threat_intel list %q: %w", l.Name, err)
+				}
+			case did:
+				changed++
+				s.Reloads.Add(1)
+			}
+			continue
+		}
 		info, err := os.Stat(l.File)
 		if err != nil {
 			if firstErr == nil {
@@ -591,7 +802,8 @@ func (s *Set) Status() []ListStatus {
 	for _, l := range s.lists {
 		out = append(out, ListStatus{Name: l.Name, Kind: l.Kind, Action: l.Action,
 			File: l.File, Entries: l.count, Hits: l.Hits.Load(), Read: l.read,
-			Format: l.Format, Skipped: l.Skipped})
+			Format: l.Format, Skipped: l.Skipped, Source: l.Source(),
+			Fetches: l.Fetches.Load(), Failures: l.Failures.Load(), NotModified: l.NotModified.Load()})
 	}
 	return out
 }
