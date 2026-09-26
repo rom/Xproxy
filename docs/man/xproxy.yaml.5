@@ -14856,7 +14856,7 @@ list
 T}	T{
 \fB[]\fR (all)
 T}	T{
-Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBpostgres_\:denied\fR,\: \fBmysql_\:denied\fR,\: \fBtds_\:denied\fR,\: \fBredis_\:denied\fR,\: \fBbacnet_\:denied\fR,\: \fBamqp_\:denied\fR,\: \fBs7_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fByara\fR
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBtcp_\:denied\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBpostgres_\:denied\fR,\: \fBmysql_\:denied\fR,\: \fBtds_\:denied\fR,\: \fBredis_\:denied\fR,\: \fBbacnet_\:denied\fR,\: \fBamqp_\:denied\fR,\: \fBs7_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fByara\fR
 T}
 T{
 \fBthreshold\fR
@@ -28779,7 +28779,7 @@ T}
 .TE
 .SS "Which listeners it covers"
 .PP
-A kind that did not consult this policy would be a hole in a policy an operator believes covers everything, so a configuration that has an \fBauthorization\fR section \fBand\fR a listener of a kind that does not consult it is refused at load, naming the listener and the kind. The kinds are wired one at a time; today the list is the five gate kinds, the forward proxy, the three database relays whose login packet names an account, and the MQTT and LDAP relays.
+A kind that did not consult this policy would be a hole in a policy an operator believes covers everything, so a configuration that has an \fBauthorization\fR section \fBand\fR a listener of a kind that does not consult it is refused at load, naming the listener and the kind. The kinds are wired one at a time; today the list is the five gate kinds, the forward proxy, the three database relays whose login packet names an account, the MQTT and LDAP relays, and the two generic layer 4 relays.
 .PP
 All of them ask about \fBconnect\fR. None fills \fBgroups\fR: these protocols give the gateway no group membership it could verify, so a rule about a team is written with \fBprincipals\fR on \fBssh\fR and with \fBusers\fR elsewhere.
 .PP
@@ -28871,6 +28871,20 @@ T}	T{
 asserted;\: the broker proves it after
 T}
 T{
+\fBtcp\fR
+T}	T{
+After the route is known \-\- so a rule can name the pool \-\- and before any endpoint is dialled. There is no identity on a generic relay,\: so \fBuser\fR is always empty and a rule here is written with \fBnetworks\fR,\: \fBtargets\fR and \fBschedule\fR
+T}	T{
+none: a generic relay has no identity to decide about
+T}
+T{
+\fBudp\fR
+T}	T{
+Once for a client that has no session,\: and before the endpoint is dialled \-\- once per client rather than once per datagram,\: because a policy walk per datagram would make a flood cheaper to send than to refuse. \fBuser\fR is always empty,\: as on \fBtcp\fR
+T}	T{
+none: a generic relay has no identity to decide about
+T}
+T{
 \fBldap\fR
 T}	T{
 At a \fBbind\fR,\: before it is forwarded \-\- and for nothing else,\: because a bind is the only request that names an identity. \fBuser\fR is the bind DN. An anonymous session names nobody,\: so no rule about people reaches it,\: and what a bound session may read or write stays with the \fBldap\fR policy: \fBallow_\:anonymous\fR and that listener\(aqs \fBrules\fR are where those belong
@@ -28878,6 +28892,8 @@ T}	T{
 asserted;\: the directory proves it after
 T}
 .TE
+.PP
+On the two generic layer 4 relays the same admission point also asks the \fBimported address lists\fR about the client, which until now were consulted only on the \fBhttp\fR and \fBforward\fR listeners \-\- so a \fBcidr\fR feed did nothing at all on a \fBtcp\fR or \fBudp\fR listener. The lists are asked before the policy: a list is an import about an address and says nothing about this estate\(aqs intentions, so a refusal naming the feed sends an operator to the feed rather than to a rule they would not find. A list asking for a \fBchallenge\fR is recorded like a log list there, because there is no request to serve a challenge into.
 .PP
 A refusal here is the reason \fBauthorization\fR on the listener\(aqs usual deny event (\fBssh_authorization\fR and so on), so the counters, the security log and the ban list see it as they see any other refusal. Either shadow switch \-\- a listener in \fBpolicy: {mode: shadow}\fR, or the whole policy with \fBshadow: true\fR \-\- records what it would have refused, with the rule that decided, and carries on.
 .SS "Reading it back"

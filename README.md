@@ -1096,7 +1096,11 @@ describes it, validation refuses what cannot work, and
   than a pool and a rule is an egress policy about people, the three
   database relays whose login packet names an account, and the MQTT and
   LDAP relays — the last at a bind, which is the only request LDAP has
-  that names anybody. The listener
+  that names anybody — and the two generic layer 4 relays, where there is
+  no identity at all and a rule is about networks, pools and hours. That
+  last admission point is also where the imported address lists are now
+  asked about the client, which before this only happened on the HTTP and
+  forward listeners The listener
   kinds that do not consult it yet are named at load rather than left
   as a hole in a policy somebody believes is complete
 

@@ -71,6 +71,35 @@ never expired would accumulate state until it ran out.
 UDP health checks, so an endpoint that has stopped answering is taken out of
 rotation on a protocol that has no way to say so.
 
+### The imported lists, and the estate's authorisation policy
+
+A generic UDP relay knows nothing about who is connecting -- that is what makes it
+generic. So two questions are asked about the client itself, once for a client that has no session, and before the endpoint is dialled:
+
+- **the imported address lists** (`threat_intel`), about the client's address. A
+  list whose action is `block` refuses; one that asks for a `challenge` is
+  recorded like a log list, because there is no request here to serve a challenge
+  into and turning it into a block would be a policy the operator did not write.
+- **the `authorization` section**, on the client address, the listener, the kind,
+  the upstream pool and the hour. A rule naming `users` matches nobody on this
+  kind -- there is no identity to name -- so a rule here is written with
+  `networks`, `targets` and `schedule`.
+
+The lists are asked first: a list is an import about an address and says nothing
+about this estate's intentions, so a refusal naming the feed sends an operator to
+the feed rather than to a rule they would not find.
+
+Asked once per client rather than once per datagram. The session table is keyed by
+client, so a decision made where a session begins is a decision per client, and a
+policy walk for every datagram of a flood would make the flood cheaper to send
+than to refuse.
+
+A refusal is the reason `threat_intel` or `authorization` on this listener's usual
+deny event, so the counters, the security log and the ban list see it as they see
+any other refusal. Either shadow switch -- `policy: {mode: shadow}` on the
+listener, or `shadow: true` on the section -- records what it would have refused
+and carries the traffic.
+
 ## What it does not do
 
 - **It does not parse anything.** No messages, no commands, no addresses inside
@@ -100,6 +129,7 @@ rotation on a protocol that has no way to say so.
 ## See also
 
 - The settings: [docs/CONFIG.md `server.listeners[].udp`](../CONFIG.md#serverlistenersudp-kind-udp)
+- The estate-wide policy above it: [docs/CONFIG.md `authorization`](../CONFIG.md#authorization)
 - A worked configuration: [`examples/layer4/udp.yaml`](../../examples/layer4/udp.yaml)
 - The protocol-aware datagram kinds, which bound the same things *and* read the
   protocol: [dns](dns.md), [snmp](snmp.md), [ntp](ntp.md), [tftp](tftp.md),

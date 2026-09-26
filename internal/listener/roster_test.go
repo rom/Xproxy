@@ -15,8 +15,6 @@ import (
 // force somebody to make.
 var notYetAuthorising = map[string]bool{
 	"http":   true,
-	"tcp":    true,
-	"udp":    true,
 	"dns":    true,
 	"smtp":   true,
 	"syslog": true,

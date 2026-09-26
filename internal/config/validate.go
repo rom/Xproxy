@@ -2569,6 +2569,12 @@ var denyReasons = map[string]bool{
 	"account_abuse": true, "api_abuse": true, "honeytoken": true, "scim": true, "threat_intel": true, "smtp_denied": true, "mqtt_denied": true, "ssh_denied": true, "ftp_denied": true, "syslog_denied": true, "yara": true,
 	"forward_sni_mismatch": true, "dns_tunnel": true, "dns_answer_denied": true,
 	"telnet_denied": true, "vnc_denied": true, "rdp_denied": true, "sftp_icap": true, "udp_denied": true,
+	// tcp_denied is the generic TCP relay's refusal by the imported lists or the
+	// authorisation policy. It is separate from tcp_no_route, which is a client
+	// asking for a name this listener has no route for: a scanner's SNI sweep and
+	// a listed client are different findings and an estate may want to ban on one
+	// and not the other.
+	"tcp_denied":    true,
 	"modbus_denied": true, "iec104_denied": true, "ntp_denied": true, "ntske_denied": true,
 	"snmp_denied": true, "ldap_denied": true, "tftp_denied": true, "dhcp_denied": true, "postgres_denied": true, "mysql_denied": true, "tds_denied": true, "redis_denied": true,
 	"bacnet_denied": true, "amqp_denied": true, "s7_denied": true,

@@ -654,6 +654,34 @@ Open findings of the earlier rounds:
   point at the server's acceptance, which is a design question rather than a
   wiring one; ROADMAP.md records it as such.
 
+- **And the two generic layer 4 relays, `tcp` and `udp`, through one admission
+  point that also closes the imported-lists gap.** A `cidr` feed had until now
+  done nothing at all on any kind but `http` and `forward`: the other kinds check
+  the ban list at accept and never the lists. Both questions belong at the same
+  moment -- the point where a kind has a client and has not yet carried anything
+  for it -- so `internal/admit` is that moment, and building it twice would have
+  been the mistake. It asks the lists about the client's address, then the policy
+  on the address, the listener, the pool and the hour.
+
+  The lists go first, deliberately: a list is an import about an address and says
+  nothing about this estate's intentions, so a refusal naming the feed sends an
+  operator to the feed rather than to a rule they would not find. A list asking
+  for a `challenge` is recorded like a log list there, because there is no request
+  to serve a challenge into and turning it into a block would be a policy the
+  operator did not write.
+
+  There is no identity on a generic relay -- that is what makes it generic -- so a
+  rule naming `users` matches nobody on these kinds, and the reference says so per
+  kind rather than leaving it to be discovered. A rule there is `networks`,
+  `targets` and `schedule`, which is a real policy: which networks may reach which
+  pool, in which hours.
+
+  On `udp` the decision is made once for a client that has no session rather than
+  once per datagram. The session table is keyed by client, so that is a decision
+  per client, and a policy walk for every datagram of a flood would make the flood
+  cheaper to send than to refuse. A test drives five datagrams and asserts the
+  policy decided once.
+
 - **And the LDAP relay, at a bind and nothing else**, before the bind is
   forwarded. A bind is the only request that names an identity, and refusing one
   before it travels matters more here than almost anywhere: a bind that reaches a

@@ -387,13 +387,17 @@ of them is a flaw in front of all of them.
   A hash list with no `upload_guard` filter anywhere draws advice at
   load, because a list nobody asks is worse than no list.
 
-  Not yet: an address list is consulted for the client at the HTTP and
-  forward listeners, and nowhere else. The gate and relay kinds check
-  the ban list at accept but not the imported lists, so a `cidr` feed
-  does nothing on an SSH, RDP, SMTP or Modbus listener. The ban list
-  covers the case an operator is most likely to want there, and the
-  sweep belongs with the unified authorisation work rather than in front
-  of it.
+  Where an address list is consulted: the HTTP gateway and the forward
+  proxy ask about the client, and the two generic layer 4 relays now do
+  too, through internal/admit -- the same admission point the
+  authorisation policy uses, because they are two questions asked at one
+  moment and building that moment twice would have been the mistake.
+
+  Not yet: the remaining relay kinds (dns, syslog, modbus, iec104, snmp,
+  tftp, dhcp, bacnet, s7, ntp, ntske) check the ban list at accept but
+  not the imported lists, so a `cidr` feed still does nothing on a
+  Modbus or syslog listener. They take the same admission point, and it
+  now exists.
 
 - FIDO2 keys and a second factor that is not typed: delivered.
   `require_hardware_key` accepts only a key held in a security token
@@ -491,9 +495,24 @@ of them is a flaw in front of all of them.
     people reaches it, and what a bound session may read or write stays
     with the `ldap` policy -- `allow_anonymous` and that listener's own
     rules are where those two decisions belong.
-  - The identity-less kinds come in the same pass as the
-    `cidr`-lists-per-kind sweep above, because both need the same
-    per-kind admission point.
+  - The two generic layer 4 relays, `tcp` and `udp`, are wired -- and
+    with them the `cidr`-lists-per-kind gap recorded above, because both
+    questions are asked at the same admission point and building that
+    point twice would have been the mistake. internal/admit is that
+    point: the lists about the client's address, then the policy on the
+    address, the listener, the pool and the hour. There is no identity on
+    a generic relay, so a rule naming users matches nobody there, which
+    the reference says per kind.
+
+    On `udp` the decision is made once for a client that has no session
+    rather than once per datagram: the session table is keyed by client,
+    so that is a decision per client, and a policy walk for every
+    datagram of a flood would make the flood cheaper to send than to
+    refuse.
+
+  - The remaining identity-less kinds (dns, syslog, modbus, iec104,
+    snmp, tftp, dhcp, bacnet, s7, ntp, ntske) use the same admission
+    point and are the work left.
   - The HTTP gateway's session-level question is last and is genuinely a
     design question: an HTTP listener has no session, and the
     per-request answer is already the `authz` filter.

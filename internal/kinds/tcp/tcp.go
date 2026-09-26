@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rom/xproxy/internal/admit"
+	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/proxy"
@@ -263,6 +265,14 @@ func (t *server) handle(client net.Conn) {
 		t.finish(client, clientIP, start, sni, "", "", "no_route", 0, 0)
 		return
 	}
+	// The imported lists and the estate's authorisation policy, asked once,
+	// after the route is known -- so a rule can name the pool -- and before any
+	// endpoint is dialled, so a refused client reaches nothing.
+	if reason := t.admitClient(clientIP, upName); reason != "" {
+		s.Counters().TCPRejected.Add(1)
+		t.finish(client, clientIP, start, sni, upName, "", reason, 0, 0)
+		return
+	}
 	pool := s.Pool(upName)
 	if pool == nil {
 		t.finish(client, clientIP, start, sni, upName, "", "no_pool", 0, 0)
@@ -316,6 +326,49 @@ func (t *server) handle(client net.Conn) {
 		s.Counters().TCPBounded.Add(1)
 	}
 	t.finish(client, clientIP, start, sni, upName, ep.Address, end, in+int64(len(buf)), out)
+}
+
+// admitClient is the two questions this listener asks about a client that has no
+// identity: do the imported lists know this address, and does the estate's
+// authorisation policy allow it here. It reports the reason to refuse, or "".
+//
+// A generic layer 4 relay knows nothing about who is connecting -- that is what
+// makes it generic -- so the policy decides on the address, the listener, the
+// pool and the hour. That is a real policy, and it is the only one available
+// here: a rule naming users matches nobody on this kind, which is why the
+// reference says so.
+func (t *server) admitClient(ip netip.Addr, upstreamName string) string {
+	e := t.engine
+	return admit.Client(admit.Deps{
+		Lists:   e.ThreatIntel(),
+		Policy:  e.Authorization(),
+		Logs:    e.Logs(),
+		Matched: func() { e.Counters().ThreatIntelMatched.Add(1) },
+		Blocked: func() { e.Counters().ThreatIntelBlocked.Add(1) },
+	}, authorization.Subject{
+		Listener: t.cfg.Name,
+		Kind:     "tcp",
+		Client:   ip,
+		Target:   upstreamName,
+		Action:   authorization.ActionConnect,
+	}, admit.Gate{
+		Shadowing: t.cfg.Shadowing,
+		Record: func(reason, rule, detail string) {
+			e.Counters().WouldRefuse("tcp", reason)
+			e.Shadow().Record("tcp", t.cfg.Name, reason, rule, detail)
+			e.Logs().SecurityEvent(context.Background(), "would_deny", "tcp_"+reason,
+				"listener", t.cfg.Name, "proto", "tcp", "client_ip", ip.String(), "detail", detail)
+		},
+		Deny: func(reason, rule, detail string) {
+			e.Counters().Refuse("tcp", reason)
+			e.Logs().SecurityEvent(context.Background(), "deny", "tcp_"+reason,
+				"listener", t.cfg.Name, "proto", "tcp", "client_ip", ip.String(),
+				"rule", rule, "detail", detail)
+			if bl := e.Bans(); bl != nil && ip.IsValid() {
+				bl.Observe(ip, "tcp_denied")
+			}
+		},
+	})
 }
 
 func (t *server) finish(client net.Conn, ip netip.Addr, start time.Time, sni, up, endpoint, reason string, in, out int64) {

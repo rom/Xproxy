@@ -6186,7 +6186,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `amqp_denied`, `s7_denied`, `ntp_denied`, `ntske_denied`, `yara` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `tcp_denied`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `amqp_denied`, `s7_denied`, `ntp_denied`, `ntske_denied`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |
@@ -11455,7 +11455,8 @@ believes covers everything, so a configuration that has an `authorization`
 section **and** a listener of a kind that does not consult it is refused at
 load, naming the listener and the kind. The kinds are wired one at a time;
 today the list is the five gate kinds, the forward proxy, the three database
-relays whose login packet names an account, and the MQTT and LDAP relays.
+relays whose login packet names an account, the MQTT and LDAP relays, and the two
+generic layer 4 relays.
 
 All of them ask about `connect`. None fills `groups`: these protocols give the
 gateway no group membership it could verify, so a rule about a team is written
@@ -11489,7 +11490,18 @@ worth (see above).
 | `mysql` | At the login packet, before it is forwarded. `user` is the account; `target` is the pool | asserted; the server proves it after |
 | `tds` | At the Login7 packet, before it is forwarded. `user` is the account, empty for an integrated-authentication login, which the `tds` policy's own `integrated` setting is the place to decide about | asserted; the server proves it after |
 | `mqtt` | At the CONNECT packet, before it is forwarded. `user` is the CONNECT username; the client identifier is **not** an identity and does not reach a rule, because any client may choose one -- a pattern over it belongs in this listener's `client_id_pattern` | asserted; the broker proves it after |
+| `tcp` | After the route is known -- so a rule can name the pool -- and before any endpoint is dialled. There is no identity on a generic relay, so `user` is always empty and a rule here is written with `networks`, `targets` and `schedule` | none: a generic relay has no identity to decide about |
+| `udp` | Once for a client that has no session, and before the endpoint is dialled -- once per client rather than once per datagram, because a policy walk per datagram would make a flood cheaper to send than to refuse. `user` is always empty, as on `tcp` | none: a generic relay has no identity to decide about |
 | `ldap` | At a **bind**, before it is forwarded -- and for nothing else, because a bind is the only request that names an identity. `user` is the bind DN. An anonymous session names nobody, so no rule about people reaches it, and what a bound session may read or write stays with the `ldap` policy: `allow_anonymous` and that listener's `rules` are where those belong | asserted; the directory proves it after |
+
+On the two generic layer 4 relays the same admission point also asks the
+**imported address lists** about the client, which until now were consulted only
+on the `http` and `forward` listeners -- so a `cidr` feed did nothing at all on a
+`tcp` or `udp` listener. The lists are asked before the policy: a list is an
+import about an address and says nothing about this estate's intentions, so a
+refusal naming the feed sends an operator to the feed rather than to a rule they
+would not find. A list asking for a `challenge` is recorded like a log list there,
+because there is no request to serve a challenge into.
 
 A refusal here is the reason `authorization` on the listener's usual deny event
 (`ssh_authorization` and so on), so the counters, the security log and the ban

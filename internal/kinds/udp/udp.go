@@ -30,6 +30,8 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/acceptgroup"
+	"github.com/rom/xproxy/internal/admit"
+	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/proxy"
@@ -243,6 +245,15 @@ func (s *server) admitted(client netip.AddrPort, size int) bool {
 // open starts a session for a client that has none.
 func (s *server) open(client netip.AddrPort) (*session, bool) {
 	c := s.engine.Counters()
+	// The imported lists and the estate's authorisation policy, asked here
+	// rather than in admitted above: this runs once for a client that has no
+	// session, and the session table is keyed by client, so the decision is made
+	// per client rather than per datagram. A policy walk for every datagram of a
+	// flood would make the flood cheaper to send than to refuse.
+	if reason := s.admitClient(client); reason != "" {
+		c.UDPDropped.Add(1)
+		return nil, false
+	}
 	s.mu.Lock()
 	if se, ok := s.sessions[client]; ok { // another datagram won the race
 		s.mu.Unlock()
@@ -426,6 +437,44 @@ func (s *server) deny(client netip.AddrPort, reason string) {
 	if bl := s.engine.Bans(); bl != nil && client.Addr().IsValid() {
 		bl.Observe(client.Addr(), "udp_denied")
 	}
+}
+
+// admitClient is the two questions this listener asks about a client that has no
+// identity: do the imported lists know this address, and does the estate's
+// authorisation policy allow it here. It reports the reason to refuse, or "".
+//
+// A generic datagram relay knows nothing about who is sending -- that is what
+// makes it generic -- so the policy decides on the address, the listener, the
+// pool and the hour. A rule naming users matches nobody on this kind.
+//
+// A refusal is a drop, like every other refusal here: there is nothing to refuse
+// a datagram with.
+func (s *server) admitClient(client netip.AddrPort) string {
+	e := s.engine
+	ip := client.Addr().Unmap()
+	return admit.Client(admit.Deps{
+		Lists:   e.ThreatIntel(),
+		Policy:  e.Authorization(),
+		Logs:    e.Logs(),
+		Matched: func() { e.Counters().ThreatIntelMatched.Add(1) },
+		Blocked: func() { e.Counters().ThreatIntelBlocked.Add(1) },
+	}, authorization.Subject{
+		Listener: s.cfg.Name,
+		Kind:     "udp",
+		Client:   ip,
+		Target:   s.udp.Upstream,
+		Action:   authorization.ActionConnect,
+	}, admit.Gate{
+		Shadowing: s.cfg.Shadowing,
+		Record: func(reason, rule, detail string) {
+			e.Counters().WouldRefuse("udp", reason)
+			e.Shadow().Record("udp", s.cfg.Name, reason, rule, detail)
+			e.Logs().SecurityEvent(context.Background(), "would_deny", "udp_"+reason,
+				"listener", s.cfg.Name, "proto", "udp",
+				"client_ip", ip.String(), "detail", detail)
+		},
+		Deny: func(reason, _, detail string) { s.deny(client, reason) },
+	})
 }
 
 // sweep ends idle sessions and sessions past their absolute bound.
