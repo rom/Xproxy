@@ -4128,8 +4128,33 @@ type SSHListener struct {
 	HostKeys []string `yaml:"host_keys"`
 	// AuthorizedKeys is an OpenSSH authorized_keys file of the public
 	// keys that may connect. Options in the file are ignored; the
-	// policy lives here.
+	// policy lives here. The one exception is no-touch-required, which
+	// is about whether a credential is a credential at all: see
+	// require_touch.
 	AuthorizedKeys string `yaml:"authorized_keys"`
+	// RequireHardwareKey accepts only a key held in a security token:
+	// sk-ssh-ed25519@openssh.com or sk-ecdsa-sha2-nistp256@openssh.com,
+	// and a certificate whose own key is one of those.
+	//
+	// It is the difference between a credential that can be copied and
+	// one that cannot. Every other key here is a file: a backup, a
+	// laptop somebody left on a train and an agent forwarded to the
+	// wrong host are all copies of it, and nothing about the protocol
+	// can tell a copy from the original. A token's key never leaves the
+	// token; what crosses the wire is a signature the token made, and
+	// making one needs the token in somebody's hand.
+	RequireHardwareKey bool `yaml:"require_hardware_key"`
+	// RequireTouch demands that each signature assert user presence --
+	// the touch -- and refuses the opt-outs that would waive it: the
+	// no-touch-required option on an authorized_keys line and the
+	// extension of the same name in a certificate. Default true.
+	//
+	// Without presence a hardware key still cannot be copied, but it can
+	// be used by anything that reaches the machine it is plugged into,
+	// which is most of what the token was bought to prevent. false
+	// honours the opt-outs, as OpenSSH does, for the keys that have to
+	// work unattended.
+	RequireTouch *bool `yaml:"require_touch"`
 	// UsersFile is a users file (as in forward.auth) for password
 	// authentication. Public keys are the better answer; a bastion with
 	// only passwords is one credential away from open.
@@ -9206,6 +9231,10 @@ type MFAPolicy struct {
 	MaxUsers int `yaml:"max_users"`
 }
 
+// Touch reports whether user presence is demanded, with the default
+// filled in.
+func (h *SSHListener) Touch() bool { return h == nil || h.RequireTouch == nil || *h.RequireTouch }
+
 // SSHPrincipal gives one key, or one certificate principal, its own
 // policy on an ssh listener.
 type SSHPrincipal struct {
@@ -9226,6 +9255,16 @@ type SSHPrincipal struct {
 	// falls back to the listener's own setting, so an entry that only
 	// changes the target account says only that.
 	Policy *SSHPolicy `yaml:"policy"`
+	// RequireHardwareKey overrides the listener's setting for this
+	// principal: unset takes the listener's, true demands a token where
+	// the listener does not, and false exempts this principal from a
+	// requirement the listener makes.
+	//
+	// The exemption exists because an estate that moves to tokens moves
+	// one person at a time, and a service account that has no hands
+	// cannot touch anything. It is what it looks like: this principal's
+	// key is a file, and the load says so.
+	RequireHardwareKey *bool `yaml:"require_hardware_key"`
 }
 
 // SSHPolicy is the part of an ssh listener's policy a principal can

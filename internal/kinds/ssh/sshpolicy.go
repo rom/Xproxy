@@ -45,6 +45,9 @@ type sshPrincipal struct {
 	isDefault    bool
 	deny         bool
 	policy       *sshPolicy
+	// hardware is this principal's own answer to whether the key has to be
+	// held in a token: nil takes the listener's.
+	hardware *bool
 }
 
 // compileSSHPolicy builds a policy. base is what an unset field falls

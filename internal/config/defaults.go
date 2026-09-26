@@ -366,6 +366,14 @@ func applyDefaults(c *Config) {
 			if len(h.AllowEnv) == 0 {
 				h.AllowEnv = append([]string(nil), DefaultSSHEnv...)
 			}
+			if h.RequireTouch == nil {
+				// A hardware key whose signatures need no touch is a
+				// hardware key anything on the machine it is plugged into
+				// can use, so the default is to require it and to refuse
+				// the opt-outs that would waive it.
+				t := true
+				h.RequireTouch = &t
+			}
 			if h.AllowFileTransferCommands == nil {
 				// Refused by default exactly where there is an sftp
 				// policy to bypass.

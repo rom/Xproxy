@@ -4043,6 +4043,44 @@ listed as trusted somewhere — and for a certificate it covers the key
 inside it and the authority that signed it.
 
 
+**A key in a token is the one credential here that cannot be copied.**
+Every other key this listener accepts is a file, and a file has copies:
+a backup, a laptop left on a train, an agent forwarded to a host that
+kept it. Nothing in the protocol can tell a copy from the original.
+`require_hardware_key` accepts only the FIDO2 key types, whose private
+half never leaves the token — what crosses the wire is a signature the
+token made, and making one needs the token in somebody's hand.
+
+The touch is the second half, and `require_touch` (on by default) is
+what keeps it. A signature from a token says whether the user was
+present when it was made; without that, the key still cannot be copied
+but anything running on the machine it is plugged into can use it, which
+is most of what the token was bought to prevent. Both opt-outs are
+refused: an `authorized_keys` line carrying `no-touch-required` fails
+the load (the credential would never work, and finding that out at load
+beats finding it out at three in the morning), and a certificate
+carrying the extension is refused at authentication. `require_touch:
+false` honours them, as OpenSSH does, for the keys that have to work
+unattended.
+
+What the requirement does not cover is said at load rather than left to
+be discovered. `require_hardware_key` with `users_file` and no `mfa`
+section is refused outright — a password is a way in that no token
+protects — and with `mfa` it is advice. A `principals` entry may set
+`require_hardware_key: false` to exempt itself, which is how an estate
+moves to tokens one person at a time and how a service account with no
+hands connects at all; the exemption is advised about, because it means
+that principal's key is a file like any other. A requirement with
+neither `authorized_keys` nor `trusted_user_ca_keys`, or with a file
+holding no token key and no authority to issue one, is refused: a
+listener nobody can log into.
+
+`ssh_hardware_auths` and `ssh_hardware_refused` count it, the access log
+and the security events carry `hardware_key`, and
+`xproxy_ssh_hardware_key_total{result}` is the metric — the pair that
+says whether a move to tokens is finished, refusals falling to nothing
+while hardware authentications carry the traffic.
+
 An ssh listener takes `address` and `ssh` and no `tls`: SSH carries its
 own transport security. Bans and the global connection limits apply at
 accept. Changing the `ssh` section rebinds the listener on reload, and
@@ -4053,7 +4091,9 @@ the credentials are read then — not per connection, so a key added to
 |-----|------|---------|-------------|
 | `upstream` | upstream | required | The pool of target hosts, picked with the upstream's balancer |
 | `host_keys` | list of paths | required | The bastion's own host keys, OpenSSH or PEM. Clients pin these |
-| `authorized_keys` | path | | OpenSSH authorized_keys of the clients that may connect. Options in the file are ignored; the policy lives here. A line that does not parse fails the load rather than silently shortening the list |
+| `authorized_keys` | path | | OpenSSH authorized_keys of the clients that may connect. Options in the file are ignored (the policy lives here), with one exception: `no-touch-required`, which is about whether a credential is a credential at all — see `require_touch`. A line that does not parse fails the load rather than silently shortening the list |
+| `require_hardware_key` | bool | `false` | Accept only a key held in a security token: `sk-ssh-ed25519@openssh.com`, `sk-ecdsa-sha2-nistp256@openssh.com`, or a certificate whose own key is one of those. See below |
+| `require_touch` | bool | `true` | Demand that each signature assert user presence, and refuse the two opt-outs that would waive it: the `no-touch-required` option on an `authorized_keys` line and the extension of the same name in a certificate |
 | `trusted_user_ca_keys` | path | | OpenSSH public keys, one per line, that may sign user certificates. A client offering a certificate is accepted when the signature verifies, the validity window covers now and the principal list names the login it is connecting as; without this key a certificate is refused rather than treated as a plain key. What else the certificate says is read too: see below |
 | `revoked_keys` | path | | Public keys, in authorized_keys format, refused whatever else says otherwise: the key itself, a certificate carrying it, and every certificate signed by it. It is the one list that overrides the CA, which is what makes a certificate revocable before it expires |
 | `max_certificate_lifetime` | duration | `0` (none) | Refuse a user certificate whose validity window is longer than this, and any that never expires. The point of certificates over `authorized_keys` is that they expire; a CA issuing for a year has made a credential nobody can take back for a year |
@@ -4112,6 +4152,7 @@ says.
 | `cert_principals` | list | `[]` | Certificate principals this entry covers. Needs `trusted_user_ca_keys`: a certificate is matched by the names its CA signed into it, and by the key it carries |
 | `users` | list | `[]` (any) | Login names the entry applies to, so one key can be one thing as `deploy` and another as `root` |
 | `policy` | object | inherit | What this principal may do; see below |
+| `require_hardware_key` | bool | the listener's | This principal's own answer to the security-token requirement. `false` exempts it from one the listener makes, which is advised about at load: that principal's key is a file like any other |
 
 An entry that names neither a fingerprint nor a certificate principal
 matches every key, which is how a list ends in a default. It must be the

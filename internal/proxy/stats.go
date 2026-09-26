@@ -386,24 +386,31 @@ type Stats struct {
 	// now. max_concurrent_handshakes is a bound with nothing else to
 	// read it by -- the limited counter only moves once clients are
 	// being turned away, which is after the answer an operator wanted.
-	NTSKEHandshakes        atomic.Int64
-	SyslogReceived         atomic.Uint64
-	SyslogForwarded        atomic.Uint64
-	SyslogDropped          atomic.Uint64
-	SyslogQueueDropped     atomic.Uint64
-	SyslogRefused          atomic.Uint64
-	SyslogRejected         atomic.Uint64
-	SyslogRateLimited      atomic.Uint64
-	SyslogRedacted         atomic.Uint64
-	SyslogSendFailed       atomic.Uint64
-	SyslogConnections      atomic.Uint64
-	Intercepted            atomic.Uint64
-	InterceptRefused       atomic.Uint64
-	InterceptPassed        atomic.Uint64
-	InterceptBytes         atomic.Uint64
-	SSHRecorded            atomic.Uint64
-	SSHRejected            atomic.Uint64
-	SSHAuthFailed          atomic.Uint64
+	NTSKEHandshakes    atomic.Int64
+	SyslogReceived     atomic.Uint64
+	SyslogForwarded    atomic.Uint64
+	SyslogDropped      atomic.Uint64
+	SyslogQueueDropped atomic.Uint64
+	SyslogRefused      atomic.Uint64
+	SyslogRejected     atomic.Uint64
+	SyslogRateLimited  atomic.Uint64
+	SyslogRedacted     atomic.Uint64
+	SyslogSendFailed   atomic.Uint64
+	SyslogConnections  atomic.Uint64
+	Intercepted        atomic.Uint64
+	InterceptRefused   atomic.Uint64
+	InterceptPassed    atomic.Uint64
+	InterceptBytes     atomic.Uint64
+	SSHRecorded        atomic.Uint64
+	SSHRejected        atomic.Uint64
+	SSHAuthFailed      atomic.Uint64
+	// SSHHardwareAuths counts authentications by a key held in a security
+	// token, and SSHHardwareRefused the ones refused for not being one (or
+	// for a certificate that asked for the touch to be waived). The pair is
+	// what says whether an estate's move to tokens is finished: refusals
+	// falling to nothing while hardware authentications carry the traffic.
+	SSHHardwareAuths       atomic.Uint64
+	SSHHardwareRefused     atomic.Uint64
 	SSHBytesIn             atomic.Uint64
 	SSHBytesOut            atomic.Uint64
 	SFTPRequests           atomic.Uint64
@@ -840,6 +847,8 @@ type Snapshot struct {
 	SSHRecorded            uint64             `json:"ssh_recorded"`
 	SSHRejected            uint64             `json:"ssh_rejected"`
 	SSHAuthFailed          uint64             `json:"ssh_auth_failed"`
+	SSHHardwareAuths       uint64             `json:"ssh_hardware_auths"`
+	SSHHardwareRefused     uint64             `json:"ssh_hardware_refused"`
 	SSHBytesIn             uint64             `json:"ssh_bytes_in"`
 	SSHBytesOut            uint64             `json:"ssh_bytes_out"`
 	SFTPRequests           uint64             `json:"sftp_requests"`
@@ -1240,6 +1249,8 @@ func (s *Stats) snapshot() Snapshot {
 		SSHRecorded:            s.SSHRecorded.Load(),
 		SSHRejected:            s.SSHRejected.Load(),
 		SSHAuthFailed:          s.SSHAuthFailed.Load(),
+		SSHHardwareAuths:       s.SSHHardwareAuths.Load(),
+		SSHHardwareRefused:     s.SSHHardwareRefused.Load(),
 		SSHBytesIn:             s.SSHBytesIn.Load(),
 		SSHBytesOut:            s.SSHBytesOut.Load(),
 		SFTPRequests:           s.SFTPRequests.Load(),

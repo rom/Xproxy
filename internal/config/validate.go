@@ -3840,6 +3840,7 @@ func (v *validator) sshListener(p string, h *SSHListener) {
 			v.warnf("%s.users_file: password authentication alone puts the whole estate behind one guessable secret; add authorized_keys", p)
 		}
 	}
+	v.sshHardwareKeys(p, h)
 	if h.UpstreamKeyFile == "" {
 		v.errf("%s.upstream_key_file: required (the credential the proxy authenticates to the target with)", p)
 	} else {
@@ -4155,6 +4156,37 @@ func (v *validator) sshPrincipals(p string, h *SSHListener) {
 
 // sshPolicy validates a per principal policy. It is the listener's own
 // vocabulary, so the checks are the listener's.
+// sshHardwareKeys checks the security-token policy: what it is worth being
+// refused for, and what it is worth being told about.
+//
+// The requirement is about a credential that cannot be copied, so the things
+// that quietly restore a copyable one are what this looks for: a password, a
+// principal exempted from the requirement, and the presence opt-out.
+func (v *validator) sshHardwareKeys(p string, h *SSHListener) {
+	if h.RequireHardwareKey {
+		switch {
+		case h.UsersFile != "" && h.MFA == nil:
+			// A password is a second way in, and no token stands behind it:
+			// the requirement would be a requirement on the door nobody uses.
+			v.errf("%s.require_hardware_key: set with users_file and no mfa section, so a password is a way in that no token protects. Drop users_file, or add mfa, or drop the requirement", p)
+		case h.UsersFile != "":
+			v.warnf("%s.require_hardware_key: password authentication is still configured, so the hardware requirement covers public keys only -- a password with a one-time code is a different strength from a key in a token", p)
+		}
+		if h.AuthorizedKeys == "" && h.TrustedUserCAKeys == "" {
+			v.errf("%s.require_hardware_key: set with neither authorized_keys nor trusted_user_ca_keys, so there is no key it could accept", p)
+		}
+	}
+	if !h.Touch() {
+		v.warnf("%s.require_touch: false honours no-touch-required, so a signature no longer proves somebody was there. The key still cannot be copied, but anything running on the machine it is plugged into can use it", p)
+	}
+	for i := range h.Principals {
+		e := &h.Principals[i]
+		if h.RequireHardwareKey && e.RequireHardwareKey != nil && !*e.RequireHardwareKey {
+			v.warnf("%s.principals[%d] (%s): require_hardware_key: false exempts this principal from the listener's requirement, so its key is a file like any other", p, i, e.Name)
+		}
+	}
+}
+
 func (v *validator) sshPolicy(p string, s *SSHPolicy, h *SSHListener) {
 	chans := map[string]bool{}
 	for i, ct := range s.AllowChannels {

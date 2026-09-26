@@ -9207,6 +9207,14 @@ It also means the target never sees the client\(aqs key. The client authenticate
 .PP
 \fBRevocation wins.\fR \fB@revoked\fR refuses the key it names whatever else the file says \[u2014] the case the marker exists for is a key that is still listed as trusted somewhere \[u2014] and for a certificate it covers the key inside it and the authority that signed it.
 .PP
+\fBA key in a token is the one credential here that cannot be copied.\fR Every other key this listener accepts is a file, and a file has copies: a backup, a laptop left on a train, an agent forwarded to a host that kept it. Nothing in the protocol can tell a copy from the original. \fBrequire_hardware_key\fR accepts only the FIDO2 key types, whose private half never leaves the token \[u2014] what crosses the wire is a signature the token made, and making one needs the token in somebody\(aqs hand.
+.PP
+The touch is the second half, and \fBrequire_touch\fR (on by default) is what keeps it. A signature from a token says whether the user was present when it was made; without that, the key still cannot be copied but anything running on the machine it is plugged into can use it, which is most of what the token was bought to prevent. Both opt\-outs are refused: an \fBauthorized_keys\fR line carrying \fBno\-touch\-required\fR fails the load (the credential would never work, and finding that out at load beats finding it out at three in the morning), and a certificate carrying the extension is refused at authentication. \fBrequire_touch: false\fR honours them, as OpenSSH does, for the keys that have to work unattended.
+.PP
+What the requirement does not cover is said at load rather than left to be discovered. \fBrequire_hardware_key\fR with \fBusers_file\fR and no \fBmfa\fR section is refused outright \[u2014] a password is a way in that no token protects \[u2014] and with \fBmfa\fR it is advice. A \fBprincipals\fR entry may set \fBrequire_hardware_key: false\fR to exempt itself, which is how an estate moves to tokens one person at a time and how a service account with no hands connects at all; the exemption is advised about, because it means that principal\(aqs key is a file like any other. A requirement with neither \fBauthorized_keys\fR nor \fBtrusted_user_ca_keys\fR, or with a file holding no token key and no authority to issue one, is refused: a listener nobody can log into.
+.PP
+\fBssh_hardware_auths\fR and \fBssh_hardware_refused\fR count it, the access log and the security events carry \fBhardware_key\fR, and \fBxproxy_ssh_hardware_key_total{result}\fR is the metric \[u2014] the pair that says whether a move to tokens is finished, refusals falling to nothing while hardware authentications carry the traffic.
+.PP
 An ssh listener takes \fBaddress\fR and \fBssh\fR and no \fBtls\fR: SSH carries its own transport security. Bans and the global connection limits apply at accept. Changing the \fBssh\fR section rebinds the listener on reload, and the credentials are read then \[u2014] not per connection, so a key added to \fBauthorized_keys\fR takes effect on reload rather than mid\-session.
 .PP
 .TS
@@ -9247,7 +9255,25 @@ path
 T}	T{
 
 T}	T{
-OpenSSH authorized_keys of the clients that may connect. Options in the file are ignored;\: the policy lives here. A line that does not parse fails the load rather than silently shortening the list
+OpenSSH authorized_keys of the clients that may connect. Options in the file are ignored (the policy lives here),\: with one exception: \fBno\-\:touch\-\:required\fR,\: which is about whether a credential is a credential at all \[u2014] see \fBrequire_\:touch\fR. A line that does not parse fails the load rather than silently shortening the list
+T}
+T{
+\fBrequire_\:hardware_\:key\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Accept only a key held in a security token: \fBsk\-\:ssh\-\:ed25519@openssh.\:com\fR,\: \fBsk\-\:ecdsa\-\:sha2\-\:nistp256@openssh.\:com\fR,\: or a certificate whose own key is one of those. See below
+T}
+T{
+\fBrequire_\:touch\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Demand that each signature assert user presence,\: and refuse the two opt\-outs that would waive it: the \fBno\-\:touch\-\:required\fR option on an \fBauthorized_\:keys\fR line and the extension of the same name in a certificate
 T}
 T{
 \fBtrusted_\:user_\:ca_\:keys\fR
@@ -9582,8 +9608,8 @@ The list is the policy. Once there is one entry, a key no entry covers is refuse
 .PP
 .TS
 allbox;
-lbw(1.3i) lbw(0.7i) lbw(0.9i) lbx
-lw(1.3i) lw(0.7i) lw(0.9i) lx.
+lbw(1.3i) lbw(0.7i) lbw(1.1i) lbx
+lw(1.3i) lw(0.7i) lw(1.1i) lx.
 T{
 Key
 T}	T{
@@ -9637,6 +9663,15 @@ T}	T{
 inherit
 T}	T{
 What this principal may do;\: see below
+T}
+T{
+\fBrequire_\:hardware_\:key\fR
+T}	T{
+bool
+T}	T{
+the listener\(aqs
+T}	T{
+This principal\(aqs own answer to the security\-token requirement. \fBfalse\fR exempts it from one the listener makes,\: which is advised about at load: that principal\(aqs key is a file like any other
 T}
 .TE
 .PP

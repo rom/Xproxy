@@ -288,6 +288,10 @@ func (s *Server) Collect(e metrics.Collector) {
 	e.Counter("xproxy_ssh_refused_total", "SSH channels and requests refused by the bastion's policy.", nil, float64(sn.SSHRefused))
 	e.Counter("xproxy_ssh_rejected_total", "SSH connections closed at accept: over the listener bound, or from a client the policy does not allow.", nil, float64(sn.SSHRejected))
 	e.Counter("xproxy_ssh_auth_failed_total", "Failed SSH authentication attempts.", nil, float64(sn.SSHAuthFailed))
+	// The pair that says whether a move to security tokens is finished:
+	// accepted carrying the traffic while refused falls to nothing.
+	e.Counter("xproxy_ssh_hardware_key_total", "SSH authentications by a key held in a security token, and the ones refused for not being one.", L{"result": "accepted"}, float64(sn.SSHHardwareAuths))
+	e.Counter("xproxy_ssh_hardware_key_total", "SSH authentications by a key held in a security token, and the ones refused for not being one.", L{"result": "refused"}, float64(sn.SSHHardwareRefused))
 	e.Counter("xproxy_ssh_bytes_total", "Bytes relayed through SSH channels.", L{"direction": "in"}, float64(sn.SSHBytesIn))
 	e.Counter("xproxy_ssh_bytes_total", "Bytes relayed through SSH channels.", L{"direction": "out"}, float64(sn.SSHBytesOut))
 	e.Counter("xproxy_sftp_requests_total", "SFTP requests relayed to the target.", nil, float64(sn.SFTPRequests))

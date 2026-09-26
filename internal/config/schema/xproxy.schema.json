@@ -9796,7 +9796,7 @@
           }
         },
         "authorized_keys": {
-          "description": "AuthorizedKeys is an OpenSSH authorized_keys file of the public keys that may connect. Options in the file are ignored; the policy lives here.",
+          "description": "AuthorizedKeys is an OpenSSH authorized_keys file of the public keys that may connect. Options in the file are ignored; the policy lives here. The one exception is no-touch-required, which is about whether a credential is a credential at all: see require_touch.",
           "type": "string"
         },
         "banner": {
@@ -9896,6 +9896,14 @@
         },
         "require_grant": {
           "description": "RequireGrant admits a session only against a live grant from the access ledger: one somebody asked for, somebody else approved, and that ends by itself. Needs the access section. See docs/CONFIG.md.",
+          "type": "boolean"
+        },
+        "require_hardware_key": {
+          "description": "RequireHardwareKey accepts only a key held in a security token: sk-ssh-ed25519@openssh.com or sk-ecdsa-sha2-nistp256@openssh.com, and a certificate whose own key is one of those. It is the difference between a credential that can be copied and one that cannot. Every other key here is a file: a backup, a laptop somebody left on a train and an agent forwarded to the wrong host are all copies of it, and nothing about the protocol can tell a copy from the original. A token's key never leaves the token; what crosses the wire is a signature the token made, and making one needs the token in somebody's hand.",
+          "type": "boolean"
+        },
+        "require_touch": {
+          "description": "RequireTouch demands that each signature assert user presence -- the touch -- and refuses the opt-outs that would waive it: the no-touch-required option on an authorized_keys line and the extension of the same name in a certificate. Default true. Without presence a hardware key still cannot be copied, but it can be used by anything that reaches the machine it is plugged into, which is most of what the token was bought to prevent. false honours the opt-outs, as OpenSSH does, for the keys that have to work unattended.",
           "type": "boolean"
         },
         "revoked_keys": {
@@ -10050,6 +10058,10 @@
               "$ref": "#/$defs/SSHPolicy"
             }
           ]
+        },
+        "require_hardware_key": {
+          "description": "RequireHardwareKey overrides the listener's setting for this principal: unset takes the listener's, true demands a token where the listener does not, and false exempts this principal from a requirement the listener makes. The exemption exists because an estate that moves to tokens moves one person at a time, and a service account that has no hands cannot touch anything. It is what it looks like: this principal's key is a file, and the load says so.",
+          "type": "boolean"
         },
         "users": {
           "description": "Users restricts the entry to these login names. Empty matches any name the key authenticated as.",
