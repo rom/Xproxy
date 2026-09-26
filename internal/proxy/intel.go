@@ -47,7 +47,14 @@ func newIntel(cfg *config.ThreatIntel, res *keysource.Resolver) (*intel.Set, err
 		}
 		specs = append(specs, sp)
 	}
-	return intel.New(specs)
+	set, err := intel.New(specs)
+	if err != nil {
+		return nil, err
+	}
+	// The log_matches decision travels with the set, so every listener kind
+	// that matches a list asks the same object the same question.
+	set.SetLogs(cfg.Logs())
+	return set, nil
 }
 
 // feedToken resolves a feed's credential. A plain value is taken as written, so

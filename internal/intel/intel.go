@@ -155,6 +155,25 @@ type Set struct {
 	startOnce, stopOnce sync.Once
 	done                chan struct{}
 	refreshing          bool
+	// logMatches is the operator's log_matches decision, nil until it is
+	// recorded. It lives on the set rather than being read from the
+	// configuration at each site because four listener kinds ask the same
+	// question, and a kind that reached for the configuration differently
+	// would answer it differently.
+	logMatches *bool
+}
+
+// Logs reports whether a match whose action is log is written to the security
+// log as well. True unless the operator said otherwise: a list nobody can see
+// matching is a list nobody can tune.
+func (s *Set) Logs() bool { return s == nil || s.logMatches == nil || *s.logMatches }
+
+// SetLogs records the log_matches decision. Called once, while the set is
+// still private to whoever built it.
+func (s *Set) SetLogs(v bool) {
+	if s != nil {
+		s.logMatches = &v
+	}
 }
 
 // ListStatus is one list in the status view.

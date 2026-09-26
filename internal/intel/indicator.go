@@ -271,6 +271,12 @@ func urlCandidates(rawURL string, segs int, fn func(string) bool) bool {
 		return false
 	}
 	host, path := key[:slash], key[slash:]
+	// A query is part of the exact key above -- a feed may list one -- but not
+	// of the boundary walk below: a client that could escape an entry for
+	// /dl by asking for /dl?x=1 would have a bypass one character long.
+	if i := strings.Index(path, "?"); i >= 0 {
+		path = path[:i]
+	}
 	// The host with no path, which is how a feed lists a whole site.
 	if fn(host + "/") {
 		return true

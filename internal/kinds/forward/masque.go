@@ -117,7 +117,7 @@ func (f *forwardServer) masqueUDP(w http.ResponseWriter, r *http.Request, p *for
 		return
 	}
 	dest := target.String()
-	ips, reason := f.check(r.Context(), p, target.Host, target.Port)
+	ips, reason := f.check(r.Context(), p, ip, target.Host, target.Port, "")
 	if reason != "" {
 		f.deny(w, r, ip, user, http.StatusForbidden, reason, start)
 		return
@@ -240,7 +240,7 @@ func (f *forwardServer) masqueIP(w http.ResponseWriter, r *http.Request, p *forw
 	}
 	defer func() { _ = dev.Close() }()
 	if target.Target != "*" {
-		if _, reason := f.check(r.Context(), p, target.Target, 0); reason != "" && reason != "port" {
+		if _, reason := f.check(r.Context(), p, ip, target.Target, 0, ""); reason != "" && reason != "port" {
 			f.deny(w, r, ip, user, http.StatusForbidden, reason, start)
 			return
 		}

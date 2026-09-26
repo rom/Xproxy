@@ -43,7 +43,7 @@ func (s *engine) threatIntel(rw *responseWriter, r *http.Request, st *reqState, 
 	}
 	st.extra = append(st.extra, "threat_list", hit.List)
 	s.stats.ThreatIntelMatched.Add(1)
-	if s.cfg().ThreatIntel.Logs() && hit.Action == intel.ActionLog {
+	if set.Logs() && hit.Action == intel.ActionLog {
 		// A list that only logs still says so, once per matching
 		// request: a list nobody can see matching is a list nobody can
 		// tune. The other two actions write their own event.

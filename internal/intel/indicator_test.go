@@ -103,6 +103,9 @@ with-query.example/x?id=1
 		// A trailing slash in the entry carries no information.
 		"trailing.example/p", "trailing.example/p/q",
 		"with-query.example/x?id=1",
+		// A query cannot be used to escape an entry: the boundary walk is
+		// over the path, so /dl?x=1 is still /dl.
+		"evil.example/dl?x=1", "evil.example/dl/payload.bin?a=b",
 	} {
 		if _, ok := s.Match(Subject{URL: u}); !ok {
 			t.Errorf("%q did not match", u)
@@ -112,6 +115,10 @@ with-query.example/x?id=1
 		// The boundary: a different resource whose name starts the same way.
 		// On a shared host this is somebody else's.
 		"evil.example/download", "evil.example/dlx", "evil.example/dl-old",
+		"evil.example/download?x=1",
+		// An entry that names a query names that query: another one is
+		// another request, and the path alone is not the entry either.
+		"with-query.example/x?id=2", "with-query.example/x",
 		// A parent of the entry is not the entry.
 		"evil.example/", "other.example/a", "other.example/a/b",
 		// A different host.

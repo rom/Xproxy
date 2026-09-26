@@ -19,6 +19,7 @@ import (
 	"github.com/rom/xproxy/internal/acceptgroup"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/httpx"
+	"github.com/rom/xproxy/internal/intel"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/passwd"
 	"github.com/rom/xproxy/internal/proxy"
@@ -251,7 +252,13 @@ func (f *forwardServer) shadowed(reason, dest string) bool {
 
 // check applies the destination policy and returns the addresses to
 // dial, or the deny reason.
-func (f *forwardServer) check(ctx context.Context, p *forwardPolicy, host string, port int) ([]netip.Addr, string) {
+//
+// client is who asked and reqURL the whole request target where there is one
+// (a plain http request through the proxy); a CONNECT, a SOCKS request and a
+// MASQUE association name a host and a port and nothing more, and pass "".
+// Both are for the imported threat lists at the end: the policy above them is
+// about the destination alone.
+func (f *forwardServer) check(ctx context.Context, p *forwardPolicy, client netip.Addr, host string, port int, reqURL string) ([]netip.Addr, string) {
 	if !p.ports[port] && !f.shadowed("port", net.JoinHostPort(host, strconv.Itoa(port))) {
 		return nil, "port"
 	}
@@ -287,7 +294,68 @@ func (f *forwardServer) check(ctx context.Context, p *forwardPolicy, host string
 	if len(p.allow) > 0 && !anyRule(p.allow, host, ips) && !f.shadowed("not_allowed", host) {
 		return nil, "not_allowed"
 	}
+	// Imported threat intelligence last, after this estate's own allow and
+	// deny rules. Those are local policy about local destinations; a list is
+	// an import, and a destination an operator here wrote an allow rule for
+	// must not be taken out by somebody else's feed.
+	if list := f.intel(client, host, reqURL); list != "" && !f.shadowed("threat_intel", list+" "+host) {
+		return nil, "threat_intel"
+	}
 	return ips, ""
+}
+
+// intel asks the imported threat lists about one forward request: who is
+// connecting, and where they are going. It returns the name of the list that
+// asks for the request to be refused, or "" to carry on.
+//
+// The name is for the ledger and the caller's detail, not for the refusal
+// counter: that is labelled "threat_intel" whichever list it was, so a
+// configuration with fifty lists cannot grow the counter's label set.
+//
+// The two questions are answered from different kinds of list, and at a
+// forward proxy the second is usually the one worth having: a cidr or ja4
+// entry is about the client, and a domain or url entry about the destination.
+// A hash list cannot match here -- nothing in a CONNECT names a payload -- and
+// a challenge cannot be served into a tunnel, so a list that asks for one is
+// recorded like a log list rather than escalated into a block, which would be
+// a policy the operator did not write.
+//
+// An address feed is deliberately not applied to the destination. A cidr list
+// says "these clients", and reading it as "these destinations" would turn a
+// feed of scanner networks into an egress deny list nobody asked for. The
+// forward listener's own deny rules take networks, and that is where an
+// egress policy about addresses belongs.
+func (f *forwardServer) intel(client netip.Addr, host, reqURL string) string {
+	set := f.host.ThreatIntel()
+	if set == nil {
+		return ""
+	}
+	sub := intel.Subject{IP: client, Domain: host, URL: reqURL}
+	if _, err := netip.ParseAddr(strings.Trim(host, "[]")); err == nil {
+		// A destination written as an address is not a name, and a domain
+		// list asked about one would be answering a question it was not
+		// given entries for.
+		sub.Domain = ""
+	}
+	hit, ok := set.Match(sub)
+	if !ok {
+		return ""
+	}
+	h := f.host
+	h.Counters().ThreatIntelMatched.Add(1)
+	if hit.Action == intel.ActionBlock {
+		h.Counters().ThreatIntelBlocked.Add(1)
+		// The event, the ban observation and the refusal are deny's: it is
+		// the one place that answers a refused forward request, and a
+		// second event here would double-count the same refusal.
+		return hit.List
+	}
+	if set.Logs() {
+		h.Logs().SecurityEvent(context.Background(), "allow", "threat_intel",
+			"listener", f.name, "client_ip", client.String(), "destination", host,
+			"list", hit.List, "kind", hit.Kind, "action", hit.Action)
+	}
+	return ""
 }
 
 // dialChecked dials the addresses that check approved (carried in ctx)
@@ -465,7 +533,7 @@ func (f *forwardServer) connect(w http.ResponseWriter, r *http.Request, p *forwa
 		f.deny(w, r, ip, user, http.StatusBadRequest, "authority", start)
 		return
 	}
-	ips, reason := f.check(r.Context(), p, host, port)
+	ips, reason := f.check(r.Context(), p, ip, host, port, "")
 	if reason != "" {
 		f.deny(w, r, ip, user, http.StatusForbidden, reason, start)
 		return
@@ -684,7 +752,9 @@ func (f *forwardServer) plain(w http.ResponseWriter, r *http.Request, p *forward
 		}
 		port = n
 	}
-	ips, reason := f.check(r.Context(), p, host, port)
+	// A plain request through the proxy has a path, so a url list can be
+	// asked about the whole target rather than the host alone.
+	ips, reason := f.check(r.Context(), p, ip, host, port, r.URL.Host+r.URL.RequestURI())
 	if reason != "" {
 		f.deny(w, r, ip, user, http.StatusForbidden, reason, start)
 		return
