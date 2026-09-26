@@ -102,6 +102,7 @@ var authorises = map[string]bool{
 	"mysql":    true,
 	"tds":      true,
 	"mqtt":     true,
+	"ldap":     true,
 }
 
 // Authorises reports whether a kind consults the estate's authorisation policy.

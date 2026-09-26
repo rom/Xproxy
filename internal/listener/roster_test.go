@@ -23,7 +23,6 @@ var notYetAuthorising = map[string]bool{
 	"modbus": true,
 	"iec104": true,
 	"snmp":   true,
-	"ldap":   true,
 	"tftp":   true,
 	"redis":  true,
 	"dhcp":   true,

@@ -28779,7 +28779,7 @@ T}
 .TE
 .SS "Which listeners it covers"
 .PP
-A kind that did not consult this policy would be a hole in a policy an operator believes covers everything, so a configuration that has an \fBauthorization\fR section \fBand\fR a listener of a kind that does not consult it is refused at load, naming the listener and the kind. The kinds are wired one at a time; today the list is the five gate kinds, the forward proxy, the three database relays whose login packet names an account, and the MQTT relay.
+A kind that did not consult this policy would be a hole in a policy an operator believes covers everything, so a configuration that has an \fBauthorization\fR section \fBand\fR a listener of a kind that does not consult it is refused at load, naming the listener and the kind. The kinds are wired one at a time; today the list is the five gate kinds, the forward proxy, the three database relays whose login packet names an account, and the MQTT and LDAP relays.
 .PP
 All of them ask about \fBconnect\fR. None fills \fBgroups\fR: these protocols give the gateway no group membership it could verify, so a rule about a team is written with \fBprincipals\fR on \fBssh\fR and with \fBusers\fR elsewhere.
 .PP
@@ -28869,6 +28869,13 @@ T}	T{
 At the CONNECT packet,\: before it is forwarded. \fBuser\fR is the CONNECT username;\: the client identifier is \fBnot\fR an identity and does not reach a rule,\: because any client may choose one \-\- a pattern over it belongs in this listener\(aqs \fBclient_\:id_\:pattern\fR
 T}	T{
 asserted;\: the broker proves it after
+T}
+T{
+\fBldap\fR
+T}	T{
+At a \fBbind\fR,\: before it is forwarded \-\- and for nothing else,\: because a bind is the only request that names an identity. \fBuser\fR is the bind DN. An anonymous session names nobody,\: so no rule about people reaches it,\: and what a bound session may read or write stays with the \fBldap\fR policy: \fBallow_\:anonymous\fR and that listener\(aqs \fBrules\fR are where those belong
+T}	T{
+asserted;\: the directory proves it after
 T}
 .TE
 .PP

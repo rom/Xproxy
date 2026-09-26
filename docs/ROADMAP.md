@@ -482,14 +482,15 @@ of them is a flaw in front of all of them.
     identifier deliberately does not reach a rule: any client may choose
     one, and a pattern over it belongs in the listener's own
     `client_id_pattern`.
-  - `ldap` has the bind DN and is the one left of this group. It is
-    genuinely a choice rather than a wiring job: the relay already waits
-    for the directory's answer before adopting an identity, with the
-    comment saying why, so asking at the bind request would decide about
-    a DN nobody has proven, while asking after the answer means the
-    directory has already authenticated whoever it was. LDAP also allows
-    several binds on one connection and anonymous operations, so "the
-    identity of this session" is not one value the way it is elsewhere.
+  - `ldap` is wired, and where matters: at a bind and nothing else,
+    before the bind is forwarded. A bind is the only request that names
+    an identity, and refusing one before it travels matters more here
+    than almost anywhere, because a bind that reaches a directory is a
+    password guess against it. What that leaves out is documented rather
+    than glossed: an anonymous session names nobody, so no rule about
+    people reaches it, and what a bound session may read or write stays
+    with the `ldap` policy -- `allow_anonymous` and that listener's own
+    rules are where those two decisions belong.
   - The identity-less kinds come in the same pass as the
     `cidr`-lists-per-kind sweep above, because both need the same
     per-kind admission point.

@@ -20,20 +20,36 @@ import (
 
 // refused records a request the policy refused.
 func (se *session) refused(m *wire.Message, d Decision) {
-	t := se.t
-	c := t.host.Counters()
-	if !t.enforcing() && !d.Hard {
-		c.LDAPWouldDeny.Add(1)
-		// Counted only as a would-be refusal. The two tables are kept apart so
-		// that a status view cannot add them up, and a listener in shadow mode
-		// that reported refusals it had in fact forwarded would be the one way
-		// to defeat that: an operator reading the refusal count of a listener
-		// being trialled would see enforcement that is not happening.
-		c.WouldRefuse("ldap", d.Reason)
-		t.host.Shadow().Record("ldap", t.cfg.Name, d.Reason, d.Rule, detailOf(m, d))
-		t.logRequest(se, m, d, "would_deny")
+	if !se.t.enforcing() && !d.Hard {
+		se.wouldRefuse(m, d)
 		return
 	}
+	se.enforcedRefusal(m, d)
+}
+
+// wouldRefuse records a decision that is not being enforced, for a caller that
+// has already decided it is not enforcing it: the listener's own monitor mode
+// above, or the estate's authorisation policy, which has a shadow switch of its
+// own and must leave the same record on a listener that enforces.
+//
+// Counted only as a would-be refusal. The two tables are kept apart so that a
+// status view cannot add them up, and a listener in shadow mode that reported
+// refusals it had in fact forwarded would be the one way to defeat that: an
+// operator reading the refusal count of a listener being trialled would see
+// enforcement that is not happening.
+func (se *session) wouldRefuse(m *wire.Message, d Decision) {
+	t := se.t
+	c := t.host.Counters()
+	c.LDAPWouldDeny.Add(1)
+	c.WouldRefuse("ldap", d.Reason)
+	t.host.Shadow().Record("ldap", t.cfg.Name, d.Reason, d.Rule, detailOf(m, d))
+	t.logRequest(se, m, d, "would_deny")
+}
+
+// enforcedRefusal records a refusal that is being enforced.
+func (se *session) enforcedRefusal(m *wire.Message, d Decision) {
+	t := se.t
+	c := t.host.Counters()
 	c.Refuse("ldap", d.Reason)
 	c.LDAPDenied.Add(1)
 	se.mu.Lock()

@@ -654,6 +654,14 @@ Open findings of the earlier rounds:
   point at the server's acceptance, which is a design question rather than a
   wiring one; ROADMAP.md records it as such.
 
+- **And the LDAP relay, at a bind and nothing else**, before the bind is
+  forwarded. A bind is the only request that names an identity, and refusing one
+  before it travels matters more here than almost anywhere: a bind that reaches a
+  directory is a password guess against it. What that leaves out is documented
+  rather than glossed -- an anonymous session names nobody, so no rule about
+  people reaches it, and what a bound session may read or write stays with the
+  `ldap` policy, which is the thing that can say what a search base means.
+
 - **And the MQTT relay**, at the CONNECT packet and before it is forwarded, so a
   client no rule covers never reaches the broker. The CONNECT username is the
   name; the client identifier deliberately does not reach a rule, because any

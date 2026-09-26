@@ -11455,7 +11455,7 @@ believes covers everything, so a configuration that has an `authorization`
 section **and** a listener of a kind that does not consult it is refused at
 load, naming the listener and the kind. The kinds are wired one at a time;
 today the list is the five gate kinds, the forward proxy, the three database
-relays whose login packet names an account, and the MQTT relay.
+relays whose login packet names an account, and the MQTT and LDAP relays.
 
 All of them ask about `connect`. None fills `groups`: these protocols give the
 gateway no group membership it could verify, so a rule about a team is written
@@ -11489,6 +11489,7 @@ worth (see above).
 | `mysql` | At the login packet, before it is forwarded. `user` is the account; `target` is the pool | asserted; the server proves it after |
 | `tds` | At the Login7 packet, before it is forwarded. `user` is the account, empty for an integrated-authentication login, which the `tds` policy's own `integrated` setting is the place to decide about | asserted; the server proves it after |
 | `mqtt` | At the CONNECT packet, before it is forwarded. `user` is the CONNECT username; the client identifier is **not** an identity and does not reach a rule, because any client may choose one -- a pattern over it belongs in this listener's `client_id_pattern` | asserted; the broker proves it after |
+| `ldap` | At a **bind**, before it is forwarded -- and for nothing else, because a bind is the only request that names an identity. `user` is the bind DN. An anonymous session names nobody, so no rule about people reaches it, and what a bound session may read or write stays with the `ldap` policy: `allow_anonymous` and that listener's `rules` are where those belong | asserted; the directory proves it after |
 
 A refusal here is the reason `authorization` on the listener's usual deny event
 (`ssh_authorization` and so on), so the counters, the security log and the ban

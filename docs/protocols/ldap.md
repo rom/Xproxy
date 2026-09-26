@@ -100,6 +100,41 @@ rate, and a separate `bind_rate_limit`, because a password-guessing run and a
 busy application look completely different in every respect except that both
 send LDAP.
 
+### The estate's own authorisation policy
+
+Above this relay's own rules sits the `authorization` section, which is not about
+LDAP: it is the one place that says which identity may reach what, in the same
+words for every protocol.
+
+This relay asks it **for a bind, and for nothing else**, before the bind is
+forwarded. A bind is the only request that names an identity, and refusing one
+before it travels matters more here than almost anywhere: a bind that reaches a
+directory is a password guess against it, and one that does not is not.
+
+What that leaves out, said plainly because an operator who assumed otherwise
+would be wrong: **an anonymous session names nobody**, so no rule about people can
+reach it, and what an already-bound session may read or write is the `ldap`
+policy's own business -- it is the thing that can say what a search base or an
+attribute means. `allow_anonymous` and this listener's `rules` are where those two
+decisions belong.
+
+**What the name is worth here.** The DN is the one the bind asserts, and the
+directory proves it afterwards -- this relay deliberately waits for the
+directory's answer before adopting an identity, because believing the request
+would let anyone be anybody by binding with the wrong password. So the policy
+narrows what the directory would have allowed and never widens it: a deny rule is
+exact, because refusing a claimed DN refuses at least everyone who could have
+proved it, while an allow rule keyed on the DN is a filter on a claim the
+directory still has to verify.
+
+The `target` is the upstream **pool** name; the directory is chosen by balancer
+after this point. A refusal is the reason `authorization`, answered in the
+directory's own vocabulary like every other refusal this relay makes, and counted
+as `xproxy_refusals_total{kind="ldap",reason="authorization"}`. Either shadow
+switch, this listener's `monitor_only` or the section's own `shadow: true`,
+records what it would have refused with the rule that decided and forwards the
+bind.
+
 ## What it does not do
 
 - **It does not replace the directory's access control.** It holds a second
@@ -136,6 +171,7 @@ send LDAP.
 ## See also
 
 - The settings: [docs/CONFIG.md `server.listeners[].ldap`](../CONFIG.md#serverlistenersldap-kind-ldap)
+- The estate-wide policy above it: [docs/CONFIG.md `authorization`](../CONFIG.md#authorization)
 - A worked configuration: [`examples/directory/ldap.yaml`](../../examples/directory/ldap.yaml)
 - LDAP as an *identity source* for HTTP listeners is a filter, not this kind —
   see the `ldap` filter in [docs/CONFIG.md](../CONFIG.md)

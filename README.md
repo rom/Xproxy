@@ -1094,8 +1094,9 @@ describes it, validation refuses what cannot work, and
   All five gate kinds ask it — SSH and SFTP, Telnet, VNC, RDP and FTP —
   as do the forward proxy, where the target is the destination rather
   than a pool and a rule is an egress policy about people, the three
-  database relays whose login packet names an account, and the MQTT
-  relay. The listener
+  database relays whose login packet names an account, and the MQTT and
+  LDAP relays — the last at a bind, which is the only request LDAP has
+  that names anybody. The listener
   kinds that do not consult it yet are named at load rather than left
   as a hole in a policy somebody believes is complete
 

@@ -8,10 +8,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rom/xproxy/internal/authorization"
 	wire "github.com/rom/xproxy/internal/ldap"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/safe"
 	"github.com/rom/xproxy/internal/sessions"
+	"github.com/rom/xproxy/internal/textsafe"
 	"github.com/rom/xproxy/internal/upstream"
 )
 
@@ -336,6 +338,14 @@ func (se *session) admit(m *wire.Message) (string, bool) {
 	req := request{client: se.ip, msg: m, bound: se.bound, boundName: se.boundName,
 		method: se.method, secure: se.secure}
 	se.mu.Unlock()
+	// The estate's own authorisation policy, for a bind: it is the one request
+	// that names an identity, and it is asked before the bind is forwarded so a
+	// DN no rule covers never reaches the directory.
+	if m.Bind != nil {
+		if reason := se.admitByPolicy(m); reason != "" {
+			return se.answer(m, Decision{Reason: reason}), false
+		}
+	}
 	d := t.policy.Decide(req)
 	se.count(m)
 	if !d.Allow {
@@ -360,6 +370,46 @@ func (se *session) admit(m *wire.Message) (string, bool) {
 	}
 	t.logRequest(se, m, d, "allow")
 	return "", true
+}
+
+// admitByPolicy is the estate's authorisation policy, asked for a bind and
+// nothing else: the reason to refuse, or empty to carry on.
+//
+// A bind is the only request that names an identity, so it is the only one the
+// section can decide about. What an already-bound session may then read or write
+// is the `ldap` policy's own business, which is the thing that can say what a
+// search base or an attribute means -- and an anonymous session names nobody, so
+// a rule about people cannot reach it either. `allow_anonymous` on this listener
+// is where that decision belongs, and the protocol page says so, because an
+// operator who believed the section covered anonymous reads would be wrong.
+//
+// The user is the DN the bind asserts, and the directory proves it afterwards --
+// this relay deliberately waits for the directory's answer before adopting an
+// identity, which is settle(). So the policy narrows what the directory would
+// have allowed and never widens it: a deny rule is exact, an allow rule is a
+// filter on a claim the directory still has to verify.
+//
+// The target is the upstream pool's name; the directory is chosen by balancer
+// after this point.
+func (se *session) admitByPolicy(m *wire.Message) string {
+	t := se.t
+	name := m.Bind.Name
+	return t.host.Authorization().Ask(authorization.Subject{
+		Listener: t.cfg.Name,
+		Kind:     "ldap",
+		Client:   se.ip,
+		User:     name,
+		Target:   t.m.Upstream,
+		Action:   authorization.ActionConnect,
+	}, textsafe.Clip64(name), authorization.Gate{
+		Shadowing: func() bool { return !t.enforcing() },
+		Record: func(reason, rule, detail string) {
+			se.wouldRefuse(m, Decision{Reason: reason, Rule: rule, Detail: detail})
+		},
+		Deny: func(reason, rule, detail string) {
+			se.enforcedRefusal(m, Decision{Reason: reason, Rule: rule, Detail: detail})
+		},
+	})
 }
 
 // remember records what an outstanding request asked for, so the answers can
