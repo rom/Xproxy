@@ -255,7 +255,7 @@ func (v *validator) config(c *Config) {
 		}
 	}
 	if c.ThreatIntel != nil {
-		v.threatIntel(c.ThreatIntel)
+		v.threatIntel(c.ThreatIntel, c)
 	}
 	profiles := map[string]bool{}
 	if c.WAF != nil {
@@ -9984,7 +9984,7 @@ func (v *validator) scim(c *Config) {
 	}
 }
 
-func (v *validator) threatIntel(t *ThreatIntel) {
+func (v *validator) threatIntel(t *ThreatIntel, c *Config) {
 	if len(t.Lists) == 0 {
 		v.errf("threat_intel: no lists, so the section does nothing; list them or drop it")
 	}
@@ -9992,7 +9992,7 @@ func (v *validator) threatIntel(t *ThreatIntel) {
 		v.errf("threat_intel.refresh: must be at least 10s, or 0 for never; a feed nobody rewrites that often is a feed this would only stat")
 	}
 	seen := map[string]bool{}
-	challenges := false
+	challenges, hashes := false, false
 	for i := range t.Lists {
 		l := &t.Lists[i]
 		q := fmt.Sprintf("threat_intel.lists[%d]", i)
@@ -10002,6 +10002,9 @@ func (v *validator) threatIntel(t *ThreatIntel) {
 			v.errf("%s.name: duplicate %q", q, l.Name)
 		}
 		seen[l.Name] = true
+		if l.Kind == "hash" {
+			hashes = true
+		}
 		switch l.Kind {
 		case "", "cidr", "ja4", "domain", "url", "hash":
 		default:
@@ -10035,6 +10038,22 @@ func (v *validator) threatIntel(t *ThreatIntel) {
 	}
 	if challenges && !v.hasChallenge {
 		v.errf("threat_intel: a list asks for a challenge and there is no challenge section, so there is nothing to challenge with")
+	}
+	// A hash list is matched where a payload is assembled, which today is the
+	// upload guard. Without one it is a list that loads, refreshes, reports
+	// its entry count and never matches anything -- which is worse than no
+	// list, because the operator believes it works.
+	if hashes {
+		guard := false
+		for i := range c.Filters {
+			if c.Filters[i].Kind == "upload_guard" {
+				guard = true
+				break
+			}
+		}
+		if !guard {
+			v.warnf("threat_intel: a hash list only matches where a payload is assembled, which is the upload_guard filter on a route. With no upload_guard filter configured, the digests are loaded and never asked about")
+		}
 	}
 }
 

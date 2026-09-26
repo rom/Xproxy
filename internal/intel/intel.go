@@ -827,6 +827,22 @@ func (s *Set) Status() []ListStatus {
 	return out
 }
 
+// Hashes reports whether any list is a hash list, so a caller that would have
+// to digest a payload to ask can skip the work when nothing would answer.
+func (s *Set) Hashes() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, l := range s.lists {
+		if l.Kind == KindHash {
+			return true
+		}
+	}
+	return false
+}
+
 // Len is the number of lists.
 func (s *Set) Len() int {
 	if s == nil {

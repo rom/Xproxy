@@ -31,9 +31,12 @@ package uploadguard
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -44,6 +47,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/rom/xproxy/internal/filter"
+	"github.com/rom/xproxy/internal/intel"
 )
 
 // Config is the options schema.
@@ -173,9 +177,23 @@ type guard struct {
 	fields  map[string]bool
 	magic   bool
 	execs   bool
+	// lists is the imported threat intelligence, asked about the digest of
+	// every file. It is the one check here that is not about the shape of an
+	// upload but about this exact file: somebody else has seen it.
+	lists func() *intel.Set
 }
 
 func (g *guard) Name() string { return g.name }
+
+// lists is the imported threat intelligence, or nil. A guard built without an
+// Env that provides it -- a test harness, a validation pass -- asks nothing,
+// rather than every call site checking for the hook.
+func (in *instance) lists() *intel.Set {
+	if in.g.lists == nil {
+		return nil
+	}
+	return in.g.lists()
+}
 
 func (g *guard) Begin(context.Context, *filter.Info) filter.Instance { return &instance{g: g} }
 
@@ -183,6 +201,11 @@ type instance struct {
 	g     *guard
 	files int
 	bytes int64
+	// hits are the lists a file's digest matched, for the access log. A
+	// match is worth a line whatever the list's action: a hash list that
+	// only logs is how an estate finds out a file it already holds is in
+	// somebody's feed.
+	hits []string
 }
 
 // refusal is one failed check.
@@ -190,6 +213,8 @@ type refusal struct {
 	status int
 	check  string
 	file   string
+	// list is the imported list that refused the file, for a digest match.
+	list string
 }
 
 func (in *instance) Request(r *http.Request) filter.Verdict {
@@ -364,7 +389,14 @@ func (in *instance) checkFile(field, name, declared string, rd io.Reader) *refus
 			}
 		}
 	}
-	// Content.
+	// Content. The digest is taken in the pass the guard is already making
+	// over the file, and only when a hash list exists to answer: hashing
+	// every upload for a configuration that asks nothing about digests would
+	// be work nobody ordered.
+	var sum hash.Hash
+	if set := in.lists(); set != nil && set.Hashes() {
+		sum = sha256.New()
+	}
 	head := make([]byte, sniffLen)
 	n, err := io.ReadFull(rd, head)
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
@@ -372,8 +404,17 @@ func (in *instance) checkFile(field, name, declared string, rd io.Reader) *refus
 	}
 	head = head[:n]
 	size := int64(n)
+	if sum != nil {
+		sum.Write(head)
+	}
 	if n == sniffLen {
-		rest, err := io.Copy(io.Discard, rd)
+		var dst io.Writer
+		if sum != nil {
+			dst = sum
+		} else {
+			dst = io.Discard
+		}
+		rest, err := io.Copy(dst, rd)
 		if err != nil {
 			return &refusal{status: http.StatusBadRequest, check: "body_read", file: name}
 		}
@@ -386,6 +427,14 @@ func (in *instance) checkFile(field, name, declared string, rd io.Reader) *refus
 	if g.execs {
 		if kind := executableKind(head); kind != "" {
 			return &refusal{status: http.StatusUnsupportedMediaType, check: "executable:" + kind, file: name}
+		}
+	}
+	// The digest, before the shape checks below: a file somebody else has
+	// attributed is refused for being that file, whatever its extension or
+	// its magic says it is.
+	if sum != nil {
+		if ref := in.checkDigest(sum, name); ref != nil {
+			return ref
 		}
 	}
 	if g.magic && n > 0 {
@@ -406,6 +455,27 @@ func (in *instance) checkFile(field, name, declared string, rd io.Reader) *refus
 		}
 	}
 	return nil
+}
+
+// checkDigest asks the hash lists about one file. A list whose action is block
+// refuses it; any other action is recorded for the access log and the file goes
+// on, because a hash match has nobody to challenge -- the match is on a
+// payload, not on a browser asking for a page.
+func (in *instance) checkDigest(sum hash.Hash, name string) *refusal {
+	set := in.lists()
+	if set == nil {
+		return nil
+	}
+	digest := hex.EncodeToString(sum.Sum(nil))
+	hit, ok := set.Match(intel.Subject{Hashes: []string{digest}})
+	if !ok {
+		return nil
+	}
+	in.hits = append(in.hits, hit.List)
+	if hit.Action != intel.ActionBlock {
+		return nil
+	}
+	return &refusal{status: http.StatusForbidden, check: "threat_intel", file: name, list: hit.List}
 }
 
 // checkName refuses names that carry paths, control characters or are
@@ -471,7 +541,8 @@ func (in *instance) deny(ref *refusal) filter.Verdict {
 		detail += ":" + f
 	}
 	return filter.Verdict{Deny: true, Status: ref.status, Reason: "upload", Detail: detail, Response: resp, //nolint:bodyclose // sent by the data plane
-		Attrs: []any{"upload_files", in.files, "upload_bytes", in.bytes}}
+		ThreatList: ref.list,
+		Attrs:      []any{"upload_files", in.files, "upload_bytes", in.bytes}}
 }
 
 func (in *instance) Response(*http.Response) filter.Verdict { return filter.Continue }
@@ -480,7 +551,11 @@ func (in *instance) End() []any {
 	if in.files == 0 {
 		return nil
 	}
-	return []any{"upload_files", in.files, "upload_bytes", strconv.FormatInt(in.bytes, 10)}
+	out := []any{"upload_files", in.files, "upload_bytes", strconv.FormatInt(in.bytes, 10)}
+	if len(in.hits) > 0 {
+		out = append(out, "threat_list", strings.Join(in.hits, ","))
+	}
+	return out
 }
 
 func init() {
@@ -492,12 +567,13 @@ func init() {
 			_, err := parse(opts)
 			return err
 		},
-		New: func(name string, opts filter.Options, _ filter.Env) (filter.Filter, error) {
+		New: func(name string, opts filter.Options, env filter.Env) (filter.Filter, error) {
 			g, err := parse(opts)
 			if err != nil {
 				return nil, err
 			}
 			g.name = name
+			g.lists = env.Intel
 			return g, nil
 		},
 	})

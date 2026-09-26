@@ -16,6 +16,7 @@ import (
 	"github.com/rom/xproxy/internal/filter"
 	"github.com/rom/xproxy/internal/geoip"
 	"github.com/rom/xproxy/internal/icap"
+	"github.com/rom/xproxy/internal/intel"
 	"github.com/rom/xproxy/internal/jwt"
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/metrics"
@@ -88,6 +89,10 @@ type customFilter struct {
 	// request body; see bodybudget.
 	buffersBody bool
 	denied      atomic.Uint64
+	// stats is where a verdict that came from an imported threat list is
+	// counted, so a match at a filter lands in the same counters as one in
+	// the request path. Nil in the unit tests that build a runtime alone.
+	stats *proxy.Stats
 }
 
 func (c *customFilter) Name() string { return c.cfg.Name }
@@ -106,6 +111,15 @@ type customInstance struct {
 }
 
 func (ci *customInstance) fix(v filter.Verdict) filter.Verdict {
+	// A verdict that came from an imported list is counted here rather than
+	// in the filter, which has no counters: one place for every filter, and
+	// the same two counters the request path uses.
+	if v.ThreatList != "" && ci.c.stats != nil {
+		ci.c.stats.ThreatIntelMatched.Add(1)
+		if v.Deny {
+			ci.c.stats.ThreatIntelBlocked.Add(1)
+		}
+	}
 	if v.Deny {
 		ci.c.denied.Add(1)
 		if v.Reason == "" {
@@ -297,7 +311,8 @@ func wafSelection(cfg *config.Config, r *config.Route) (profile string, mode waf
 func newRuntime(cfg *config.Config, generation uint64, pools map[string]*upstream.Pool, trusted []netip.Prefix,
 	services map[string]*icap.Service,
 	log *slog.Logger, events *eventBus, wafStats *waf.Stats,
-	patches *patchCounters, tokens *honeytokenCounters, prev *runtime) (*runtime, error) {
+	patches *patchCounters, tokens *honeytokenCounters, stats *proxy.Stats,
+	lists func() *intel.Set, prev *runtime) (*runtime, error) {
 	rt := &runtime{
 		cfg:        cfg,
 		generation: generation,
@@ -437,7 +452,7 @@ func newRuntime(cfg *config.Config, generation uint64, pools map[string]*upstrea
 				rt.stop()
 				return nil, fmt.Errorf("filter %s: %w %q", fc.Name, filter.ErrUnknownKind, fc.Kind)
 			}
-			env := filter.Env{Log: log.With("filter", fc.Name, "kind", fc.Kind)}
+			env := filter.Env{Log: log.With("filter", fc.Name, "kind", fc.Kind), Intel: lists}
 			if events != nil {
 				env.Events = events
 			}
@@ -446,7 +461,7 @@ func newRuntime(cfg *config.Config, generation uint64, pools map[string]*upstrea
 				rt.stop()
 				return nil, fmt.Errorf("filter %s: %w", fc.Name, err)
 			}
-			rt.filters[fc.Name] = &customFilter{cfg: fc, f: f, buffersBody: k.BuffersBody}
+			rt.filters[fc.Name] = &customFilter{cfg: fc, f: f, buffersBody: k.BuffersBody, stats: stats}
 		}
 	}
 	if cfg.WAF != nil {

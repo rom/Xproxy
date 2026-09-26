@@ -47,7 +47,11 @@ func (s *engine) Prepare(g proxy.Generation) (commit, discard func(), err error)
 	cfg := g.Config
 	old := s.rt.Load()
 	rt, err := newRuntime(cfg, g.Number, g.Pools, g.Trusted, g.ICAP, s.logs.Error,
-		newEventBus(s), s.wafStats, &s.patches, &s.honeytokenHits, old)
+		newEventBus(s), s.wafStats, &s.patches, &s.honeytokenHits, s.stats,
+		// The lists are read per request rather than captured here: this
+		// generation is compiled before the set it will use is committed,
+		// and the set is refreshed under the filters afterwards.
+		s.host.ThreatIntel, old)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -198,6 +198,21 @@ func TestAFeedSourceLoads(t *testing.T) {
 	}
 }
 
+// And the hash-list advice is about there being nowhere to match, so a
+// configuration that has somewhere does not draw it. A warning an operator
+// cannot act on is a warning they learn to scroll past.
+func TestAHashListWithAnUploadGuardIsNotAdvisedAbout(t *testing.T) {
+	cfg, err := ParseWith([]byte(intelConfig(t, `threat_intel: {lists: [{name: a, kind: hash, file: LIST}]}
+filters:
+  - {name: uploads, kind: upload_guard, options: {max_files: 3}}`)), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasAdvice(cfg, "never asked about") {
+		t.Errorf("advised about a hash list that has an upload_guard: %v", cfg.Advice())
+	}
+}
+
 // The advice a feed draws: what loads but should be reconsidered.
 func TestAFeedIsAdvisedAbout(t *testing.T) {
 	for _, tc := range []struct{ section, want string }{
@@ -217,6 +232,11 @@ func TestAFeedIsAdvisedAbout(t *testing.T) {
 		// And an http section on a file source does nothing.
 		{`threat_intel: {lists: [{name: a, file: LIST, http: {token: "env:K"}}]}`,
 			"the source is a file"},
+		// A hash list with nowhere to match is a list that loads and never
+		// answers: the digests are asked about where a payload is assembled,
+		// which is the upload guard.
+		{`threat_intel: {lists: [{name: a, kind: hash, file: LIST}]}`,
+			"never asked about"},
 	} {
 		cfg, err := ParseWith([]byte(intelConfig(t, tc.section)), false)
 		if err != nil {

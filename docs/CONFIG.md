@@ -6221,11 +6221,14 @@ What the five kinds match:
   which is ignored — this proxy sees one scheme per listener, and a list
   that only matched `http://` would be a list that silently stopped
   working behind TLS.
-- **`hash`** MD5, SHA-1 or SHA-256 digests, of an uploaded body or a file
-  a protocol names. A line may write the algorithm first
-  (`SHA256 <digest>`); the digest is found either way. `challenge` on a
-  hash list is refused: the match is on a payload, not on a browser
-  asking for a page, so there is nobody to challenge.
+- **`hash`** MD5, SHA-1 or SHA-256 digests of a payload. A line may write
+  the algorithm first (`SHA256 <digest>`); the digest is found either
+  way. `challenge` on a hash list is refused: the match is on a payload,
+  not on a browser asking for a page, so there is nobody to challenge.
+  A digest is asked about where a payload is assembled, which is the
+  [`upload_guard`](#kind-upload_guard) filter on a route; with no such
+  filter configured the list is loaded and never asked, and validation
+  advises about it.
 
 What follows from the shape:
 
@@ -8830,9 +8833,21 @@ passes), the size, the content (PE, ELF and Mach-O images, `#!`
 scripts, PHP, JSP and ASP tags are refused whatever the name, unless
 `deny_executables` is off), and the bytes against the extension's
 family and the declared media type (a PNG named `.jpg`, a PDF declared
-as an image). Denials answer 400, 413 or 415 with reason `upload`, a
-detail `check:filename` and a JSON body; the access log carries
-`upload_files` and `upload_bytes`. Malware scanning stays with ICAP.
+as an image), and the file's SHA-256 against the `hash` lists of
+[threat_intel](#threat_intel). Denials answer 400, 403, 413 or 415 with
+reason `upload`, a detail `check:filename` and a JSON body; the access
+log carries `upload_files` and `upload_bytes`, and `threat_list` when a
+digest matched. Malware scanning stays with ICAP.
+
+**The digest is where a hash list matches.** This filter is the one
+place with a whole file assembled, and the digest is taken in the pass
+it is already making over the bytes -- and only when a hash list exists
+to answer, so a configuration that asks nothing about digests pays
+nothing. A list whose action is `block` refuses the upload with 403; any
+other action notes the list in the access log and the file goes on,
+because a payload has nobody to challenge. Without an `upload_guard`
+filter anywhere, a hash list loads and is never asked about, and
+validation says so.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
