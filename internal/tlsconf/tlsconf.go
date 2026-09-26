@@ -69,6 +69,14 @@ type Reloadable struct {
 	// than a path. nil means only key_file and signer are available, which
 	// is every configuration written before secrets existed.
 	secrets *keysource.Resolver
+	// keyDigest is the SHA-256 of the material each referenced key last
+	// resolved to, by the certificate's index in cfgs. It is how
+	// RefreshSecrets tells a rotation from an unchanged value without ever
+	// holding a second copy of the key, and a digest rather than the bytes
+	// because there is no reason for this struct to keep key material it
+	// has already handed to the TLS stack.
+	keyMu     sync.Mutex
+	keyDigest map[int][32]byte
 }
 
 // An Option adjusts how a server config is built. There is one so far and it
@@ -93,10 +101,10 @@ func WithSecrets(r *keysource.Resolver) Option {
 // key fetched differently, because they do not fail the same way: a missing file
 // is a configuration error, an unreachable vault is an outage of something else,
 // and a signer that will not prove it holds the key is a machine to distrust.
-func (r *Reloadable) loadCertificate(c config.Certificate) (tls.Certificate, error) {
+func (r *Reloadable) loadCertificate(idx int, c config.Certificate) (tls.Certificate, error) {
 	switch {
 	case c.Signer != nil:
-		pem, err := os.ReadFile(c.CertFile)
+		pem, err := os.ReadFile(c.CertFile) //nolint:gosec // certificate path from validated configuration
 		if err != nil {
 			return tls.Certificate{}, fmt.Errorf("load certificate %s: %w", c.CertFile, err)
 		}
@@ -114,7 +122,7 @@ func (r *Reloadable) loadCertificate(c config.Certificate) (tls.Certificate, err
 		if r.secrets == nil {
 			return tls.Certificate{}, fmt.Errorf("certificate %s: key: %q is a reference and no secret resolver is configured", c.CertFile, c.Key)
 		}
-		certPEM, err := os.ReadFile(c.CertFile)
+		certPEM, err := os.ReadFile(c.CertFile) //nolint:gosec // certificate path from validated configuration
 		if err != nil {
 			return tls.Certificate{}, fmt.Errorf("load certificate %s: %w", c.CertFile, err)
 		}
@@ -123,6 +131,7 @@ func (r *Reloadable) loadCertificate(c config.Certificate) (tls.Certificate, err
 			// The reference is named, the material never is.
 			return tls.Certificate{}, fmt.Errorf("certificate %s: key: %w", c.CertFile, err)
 		}
+		r.rememberKey(idx, keyPEM)
 		cert, err := tls.X509KeyPair(certPEM, keyPEM)
 		if err != nil {
 			return tls.Certificate{}, fmt.Errorf("certificate %s: key %s does not match: %w", c.CertFile, c.Key, err)
@@ -278,8 +287,8 @@ const ACMEALPN = "acme-tls/1"
 // when managed certificates are configured.
 func (r *Reloadable) Load() error {
 	certs := make([]tls.Certificate, 0, len(r.cfgs))
-	for _, c := range r.cfgs {
-		cert, err := r.loadCertificate(c)
+	for i, c := range r.cfgs {
+		cert, err := r.loadCertificate(i, c)
 		if err != nil {
 			return err
 		}
@@ -720,4 +729,77 @@ func VersionName(v uint16) string {
 	default:
 		return strings.TrimPrefix(tls.VersionName(v), "TLS ")
 	}
+}
+
+// rememberKey records the digest of what a reference resolved to, so that a
+// later refresh can tell a rotation from the same value fetched again.
+func (r *Reloadable) rememberKey(idx int, keyPEM []byte) {
+	r.keyMu.Lock()
+	defer r.keyMu.Unlock()
+	if r.keyDigest == nil {
+		r.keyDigest = map[int][32]byte{}
+	}
+	r.keyDigest[idx] = sha256.Sum256(keyPEM)
+}
+
+// HasReferencedKeys says whether any certificate's key comes from a reference,
+// which is what decides whether a refresh loop is worth running at all.
+func (r *Reloadable) HasReferencedKeys() bool {
+	for _, c := range r.cfgs {
+		if c.Key != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// RefreshSecrets re-resolves every referenced key and reloads the certificates
+// if any of them changed, reporting whether it did.
+//
+// This is what makes "rotate in the vault and the running proxy picks it up"
+// true rather than a claim: without it a rotated key would reach the listener
+// only at the next reload, because a certificate is read once at load. The
+// resolver's own TTL decides how often the source is actually asked; this
+// method may be called more often than that at no cost, since inside the TTL it
+// compares the cached value against itself.
+//
+// A failure is returned and the certificates in force are left alone. That is
+// the same rule the resolver holds to and for the same reason: a vault that is
+// down must not take a key away from a proxy that is serving with it.
+func (r *Reloadable) RefreshSecrets() (bool, error) {
+	if r.secrets == nil {
+		return false, nil
+	}
+	changed := false
+	for i, c := range r.cfgs {
+		if c.Key == "" {
+			continue
+		}
+		keyPEM, err := r.secrets.Bytes(c.Key)
+		if err != nil {
+			// Only reachable for a reference that has *never* resolved: once
+			// there is a cached value the resolver absorbs a failed fetch,
+			// keeps that value and marks the reference stale, so a vault
+			// going down produces no error here and no change. Returning
+			// early is clearer than falling through; it is not observably
+			// different, because Load below would refuse the same reference.
+			return false, fmt.Errorf("certificate %s: key: %w", c.CertFile, err)
+		}
+		sum := sha256.Sum256(keyPEM)
+		r.keyMu.Lock()
+		was, seen := r.keyDigest[i]
+		r.keyMu.Unlock()
+		if !seen || was != sum {
+			changed = true
+		}
+	}
+	if !changed {
+		return false, nil
+	}
+	// Load re-resolves through the same resolver, so it sees the same new
+	// material and records the new digests.
+	if err := r.Load(); err != nil {
+		return false, err
+	}
+	return true, nil
 }

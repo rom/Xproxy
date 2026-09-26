@@ -11127,7 +11127,7 @@ secrets:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `refresh_interval` | duration | `5m` | How long a resolved value is used before its source is asked again, so a rotation in the vault reaches a running proxy without a reload. 1m to 24h: below a minute the vault becomes this proxy's hot path, above a day a rotation does not arrive |
+| `refresh_interval` | duration | `5m` | How long a resolved value is used before its source is asked again, and how often a listener re-checks the keys it is serving. A key rotated in the vault reaches a running proxy within one interval, with no reload and no dropped connection -- see [What a rotation does](#what-a-rotation-does). 1m to 24h: below a minute the vault becomes this proxy's hot path, above a day a rotation does not arrive |
 | `vault` | object | none | The vault references are read from; without it only `file:` and `env:` resolve and a `vault:` reference is refused at load |
 
 ### secrets.vault
@@ -11144,6 +11144,25 @@ secrets:
 | `server_name` | host | from the address | Override the name verified in the certificate |
 | `insecure` | bool | `false` | Do not verify the vault's certificate. Only accepted together with `allow_insecure` and only for an `http://` address; on an `https://` address it is refused, because anything on the path could then hand this proxy its secrets |
 | `allow_insecure` | bool | `false` | The second half of saying yes to plain HTTP, so that serving every secret in clear is two decisions rather than one typo |
+
+### What a rotation does
+
+A certificate is read once at load, so a rotated key would reach a listener only
+at the next reload -- which is why there is a refresh loop rather than only a
+TTL. Once per `refresh_interval`, every listener whose certificate names a `key`
+reference re-resolves it. If the material is the same, nothing happens. If it
+changed, the certificates are rebuilt and served from then on; connections
+already established are untouched, since a TLS connection does not revisit the
+certificate it was made with.
+
+The loop exists only where it is needed: a listener whose keys are all
+`key_file` or `signer` gets no goroutine and no ticker, and neither does a
+daemon with no references at all.
+
+`xproxy_secret_rotations_total` counts the certificates actually replaced, which
+is the number to compare against what the vault says it rotated -- and a
+`refresh_interval` of 5m with a rotation the vault performed an hour ago and
+this counter at zero is the one combination worth investigating.
 
 ### What a failed refresh does
 

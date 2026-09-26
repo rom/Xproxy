@@ -1364,6 +1364,12 @@ type CustodySummary struct {
 	// stopping.
 	Vault bool     `json:"vault"`
 	Stale []string `json:"stale,omitempty"`
+	// Rotations is how many certificates have had their key replaced from a
+	// reference since start, and RefreshFailures how many refreshes could
+	// not resolve. The pair is what tells "rotation is working" from
+	// "rotation has not been tried": zero of both means neither.
+	Rotations       uint64 `json:"rotations"`
+	RefreshFailures uint64 `json:"refresh_failures"`
 	// FIPSEnabled is whether the FIPS 140-3 module is active in this
 	// process, FIPSRequired whether the configuration insists on it, and
 	// FIPSRefused the configured algorithms the active module will not do.

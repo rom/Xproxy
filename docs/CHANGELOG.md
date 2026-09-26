@@ -562,6 +562,119 @@ Open findings of the earlier rounds:
   whose datagram side is taken fails with the reason it failed and nothing left
   bound behind it, and a port 0 listener comes up with both sockets.
 
+### Added (1.4, key custody)
+
+- **Where a private key lives is now something the configuration says:
+  `key_file`, `key` or `signer`.** A TLS private key in a file is the thing
+  every other control in this proxy exists to protect, and it is the one thing
+  a file system hands over whole. Each entry of
+  `server.listeners[].tls.certificates` names `cert_file` and then exactly one
+  of three keys, and two of them being set is refused at load rather than
+  resolved by a precedence nobody remembers -- a certificate with two keys
+  configured is a certificate whose key nobody can name by reading the file.
+
+  - `key_file` is a PEM file on this machine, as it has always been, and stays
+    the default for every configuration written before this existed.
+  - `key` is a **reference**: `file:/path`, `env:NAME` or
+    `vault:secret/path#field`. A value with no scheme is a path, so nothing
+    already written changes meaning, and an unknown scheme is an error rather
+    than a fallback to "file" -- a typo in a scheme must not become a path
+    nobody meant.
+  - `signer` is a helper process on a Unix socket that holds the key -- in a
+    PKCS#11 token, an HSM, a TPM, or simply under a different user with a
+    tighter sandbox. The proxy sends a digest and gets a signature back, so the
+    key never enters this process and anything that reads this process's memory
+    gets nothing. It is a separate process rather than a linked library because
+    the daemons are built with `CGO_ENABLED=0` and a PKCS#11 module is a C
+    library: keeping it out is both a build fact and the point.
+
+  At start the proxy asks the helper to sign a known value and checks it
+  against the public key in `cert_file`. A helper that cannot prove it holds
+  the matching key fails the load, because the alternative is a listener that
+  comes up and then fails every handshake -- which looks to everyone else like
+  the listener being down.
+
+- **`secrets`: where a reference resolves from, with a vault.** A
+  `secrets.vault` section names a HashiCorp Vault, its KV mount and version,
+  and a token from a file or the environment (the environment is warned about:
+  it is readable by anything that can read `/proc` for the same user, and every
+  child process inherits it). Three rules the resolver holds to, because a
+  secret resolver that breaks them is worse than a path:
+
+  - **A value is never logged, wrapped in an error, or put in a dump.** Errors
+    name the reference. The configuration holds references rather than
+    material, so `xproxyctl dump`, the history and a diff show where a secret
+    comes from and never what it is.
+  - **A resolved value is cached and refreshed on `refresh_interval`** (default
+    5m, bounded 1m to 24h), so a rotation in the vault reaches a running proxy
+    with no reload and no restart. That needed more than a TTL: a certificate is
+    read once at load, so there is also a refresh loop that re-resolves each
+    listener's referenced keys once per interval and rebuilds the certificates
+    when the material changed. It runs only where a key is a reference -- a
+    listener with keys in files or behind a signer gets no goroutine -- and
+    `xproxy_secret_rotations_total` counts the certificates actually replaced,
+    which is what an operator compares against what the vault says it rotated.
+  - **A failed refresh keeps the previous value and warns.** A vault that is
+    down must not take a TLS key away from a proxy that is already serving with
+    it; the whole point of the arrangement is that the estate keeps working
+    while somebody fixes the vault.
+
+  That last rule means the failure worth alerting on is not an outage but
+  silence: a secret that has quietly stopped rotating. `xproxy_secrets_stale`
+  counts the references whose last refresh failed, `XproxySecretStale` fires on
+  it after half an hour, and `xproxyctl status` lists them.
+
+  `http://` to a vault takes **both** `insecure` and `allow_insecure`, because
+  plain HTTP puts the token and every secret it reads in clear on the wire and
+  one typo must not do that. `insecure` on an `https://` address is refused
+  outright: skipping verification there means anything on the path can hand
+  this proxy the private keys it will then serve with, which is a worse
+  position than having the keys in a file. Name `ca_file` instead.
+
+- **`fips`: refuse to start unless the FIPS 140-3 module is active, and measure
+  what it will do.** `required: true` is a refusal rather than a warning, and
+  that is the whole value of the setting: a deployment that must be FIPS cannot
+  quietly stop being it after a rebuild with the wrong toolchain. Build with
+  `GOFIPS140=v1.0.0` and run with `GODEBUG=fips140=on`.
+
+  `probe: true` (which follows `required` unless set) asks the module at start
+  which of the configured key exchange groups and cipher suites it will
+  actually do, by completing a TLS handshake over an in-process pipe for each
+  one. It **probes rather than checking against a list of approved
+  algorithms**, because which algorithms an active module accepts is a property
+  of the toolchain and the module version rather than of this project's
+  documentation, and a stale list either refuses a configuration that works or
+  blesses one that does not. On the toolchain this was written against, a
+  module in FIPS mode refuses `X25519` and
+  `TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256` while accepting
+  `X25519MLKEM768` and the P-curves -- exactly the sort of detail that would be
+  out of date in a list and is never out of date in a measurement.
+
+  A refused algorithm is a warning and a counter by default, because a listener
+  offering four groups with one refused still works for every client asking for
+  the other three; `probe_fails: true` is the stricter reading.
+
+- **The derived sandbox knows about all three arrangements.** The signer's
+  socket gets a **write** rule, not a read one: connecting to a Unix socket is
+  a write under Landlock, and a read rule would give a daemon whose every
+  handshake on that certificate fails with permission denied. A `file:`
+  reference gets a read rule, added explicitly because a reference is not spelt
+  like a path and the ordinary walk cannot classify it. A `vault:` reference
+  gets no rule at all, because it is not a path.
+
+- **The status view and the exposition say where the keys are.**
+  `xproxy_private_keys{custody="file"|"reference"|"signer"}` is the count per
+  arrangement -- `file` being how many private keys an attacker who reads this
+  machine's file system gets, and the number an estate should be able to watch
+  going down. Beside it `xproxy_secrets_vault`, `xproxy_secrets_stale`,
+  `xproxy_fips_enabled`, `xproxy_fips_required` and
+  `xproxy_fips_refused_algorithms`, all present at rest so they can be alerted
+  on. Two Grafana panels and two alert rules
+  (`XproxySecretStale`, `XproxyFIPSRefusesConfiguredAlgorithms`).
+
+  `examples/security/key-custody.yaml` is one listener with all three
+  arrangements side by side, so a migration can be read off it.
+
 ### Added (1.4, access)
 
 - **Just-in-time access to the gate kinds: `access`, `require_grant`, and a

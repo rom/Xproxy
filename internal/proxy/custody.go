@@ -1,9 +1,11 @@
 package proxy
 
 import (
-	"fmt"
-
 	"crypto/tls"
+	"fmt"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/fipsmode"
@@ -137,4 +139,81 @@ func fipsProbeSubjects(cfg *config.Config) ([]tls.CurveID, []uint16) {
 		}
 	}
 	return groups, suites
+}
+
+// secretRefresh is the loop that carries a rotated secret into a running
+// listener.
+//
+// It exists because a certificate is read once at load: without it, a key
+// rotated in the vault would reach the listener only at the next reload, and
+// "rotate and the proxy picks it up" would be a claim rather than a behaviour.
+//
+// It runs at the refresh interval and only where a certificate's key is a
+// reference; a listener whose keys are all files or signers gets no goroutine.
+// A failure leaves the certificates in force alone and is warned about, which is
+// the same rule the resolver holds to: a vault that is down must not take a key
+// away from a proxy that is serving with it.
+type secretRefresh struct {
+	every time.Duration
+	logs  *logging.Logs
+	get   func() []*boundListener
+	done  chan struct{}
+	wg    sync.WaitGroup
+	// rotations counts the certificates actually replaced, for the status
+	// view -- a number an operator can compare against what the vault says
+	// it rotated.
+	rotations atomic.Uint64
+	// failures counts the refreshes that could not resolve.
+	failures atomic.Uint64
+}
+
+func newSecretRefresh(every time.Duration, logs *logging.Logs, get func() []*boundListener) *secretRefresh {
+	if every <= 0 {
+		every = config.DefaultSecretRefresh
+	}
+	return &secretRefresh{every: every, logs: logs, get: get, done: make(chan struct{})}
+}
+
+func (r *secretRefresh) start() {
+	r.wg.Add(1)
+	go func() {
+		defer r.wg.Done()
+		t := time.NewTicker(r.every)
+		defer t.Stop()
+		for {
+			select {
+			case <-r.done:
+				return
+			case <-t.C:
+				r.once()
+			}
+		}
+	}()
+}
+
+func (r *secretRefresh) stop() {
+	close(r.done)
+	r.wg.Wait()
+}
+
+// once asks every listener with a referenced key whether its key changed.
+func (r *secretRefresh) once() {
+	for _, bl := range r.get() {
+		rl := bl.tlsReload
+		if rl == nil || !rl.HasReferencedKeys() {
+			continue
+		}
+		changed, err := rl.RefreshSecrets()
+		switch {
+		case err != nil:
+			r.failures.Add(1)
+			r.logs.Error.Warn("a referenced certificate key could not be refreshed; the certificate in force stays",
+				"listener", bl.cfg.Name, "error", err.Error())
+		case changed:
+			r.rotations.Add(1)
+			// The security log, not the error log: a key rotating is a
+			// custody event and belongs beside the others.
+			r.logs.Security.Info("certificate key rotated from its reference", "listener", bl.cfg.Name)
+		}
+	}
 }

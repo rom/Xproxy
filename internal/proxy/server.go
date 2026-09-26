@@ -94,6 +94,9 @@ type Server struct {
 	// with no ledger refuses every session, which is the fail-closed
 	// answer; validation catches that configuration first.
 	grants *access.Ledger
+	// refresher carries a rotated referenced key into a running listener.
+	// nil when no certificate's key is a reference.
+	refresher *secretRefresh
 	// secrets resolves the references in the configuration to material.
 	// It is always non-nil: without a secrets section it answers file: and
 	// env: references and refuses vault: ones, which is exactly what a
@@ -657,8 +660,38 @@ func (s *Server) Start() error {
 	for _, bl := range s.listeners {
 		go s.serve(bl)
 	}
+	// Only where something needs refreshing: a deployment with every key in
+	// a file gets no goroutine and no ticker.
+	if s.anyReferencedKey() {
+		every := config.DefaultSecretRefresh
+		if sec := cfg.Secrets; sec != nil {
+			every = sec.RefreshInterval.D()
+		}
+		s.refresher = newSecretRefresh(every, s.logs, s.boundListeners)
+		s.refresher.start()
+	}
 	s.started = true
 	return nil
+}
+
+// anyReferencedKey says whether any bound listener serves a certificate whose
+// key comes from a reference. Called with s.mu held by Start.
+func (s *Server) anyReferencedKey() bool {
+	for _, bl := range s.listeners {
+		if bl.tlsReload != nil && bl.tlsReload.HasReferencedKeys() {
+			return true
+		}
+	}
+	return false
+}
+
+// boundListeners is the snapshot the refresh loop walks. It takes the lock
+// itself, because the loop runs for the life of the process and the set of
+// listeners changes under it on every reload.
+func (s *Server) boundListeners() []*boundListener {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]*boundListener(nil), s.listeners...)
 }
 
 func (s *Server) bind(lc config.Listener, activated *activated) (*boundListener, error) {
@@ -1335,6 +1368,10 @@ func (s *Server) CustodyReport() CustodySummary {
 	if s.secrets != nil {
 		out.Stale = s.secrets.Stale()
 	}
+	if r := s.refresher; r != nil {
+		out.Rotations = r.rotations.Load()
+		out.RefreshFailures = r.failures.Load()
+	}
 	return out
 }
 
@@ -1426,6 +1463,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		if s.acme != nil {
 			s.acme.Stop()
 		}
+	}
+	if s.refresher != nil {
+		s.refresher.stop()
 	}
 	if k := s.assets.Load(); k != nil {
 		// After the listeners, so that the last observations they made are in

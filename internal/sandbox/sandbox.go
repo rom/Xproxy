@@ -265,7 +265,9 @@ func Derive(cfg *config.Config, cfgPath string) Rules {
 	//   - the signer's socket, which needs a *write* rule: connecting to a
 	//     Unix socket is a write under Landlock, and a read rule gives a
 	//     daemon whose every handshake fails with permission denied;
-	//   - the vault's token file and CA bundle, which are read.
+	//
+	// The vault's token_file and ca_file need nothing here: they are spelt
+	// like paths, so the walk above already reads them.
 	for i := range cfg.Server.Listeners {
 		t := cfg.Server.Listeners[i].TLS
 		if t == nil {
@@ -280,12 +282,6 @@ func Derive(cfg *config.Config, cfgPath string) Rules {
 					addRead(ref.Target, false)
 				}
 			}
-		}
-	}
-	if sec := cfg.Secrets; sec != nil {
-		if v := sec.Vault; v != nil {
-			addRead(v.TokenFile, false)
-			addRead(v.CAFile, false)
 		}
 	}
 	for _, p := range cfg.Sandbox.Landlock.ReadPaths {

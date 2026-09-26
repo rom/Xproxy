@@ -168,6 +168,60 @@ xproxy refuses a world writable configuration file. Nothing under
 `/etc/xproxy` should be writable by the service user; the unit mounts it
 read only.
 
+## 5a. Private keys: get them off the file system
+
+The table above is the best a private key in a file can do, and a file is
+still a file: readable by whatever else can read that directory, present
+in the machine's backups, and replaced by whatever can write there. Three
+arrangements, weakest to strongest:
+
+1. **`key_file`** -- a PEM file on this machine. An attacker who reads
+   `/etc/xproxy/certs` gets the key, and nothing in this document
+   changes that.
+
+2. **`key: vault:secret/tls/site#key`** -- the key comes from HashiCorp
+   Vault. What is on the machine is a token, in a file with mode `0400`
+   owned by `root` and group-readable by `xproxy-config`. A token can be
+   scoped to one path, revoked the moment a machine is suspected, and its
+   every use is in the vault's own audit log -- none of which a file can
+   do. Rotation reaches a running proxy on `refresh_interval` with no
+   reload.
+
+   Name `secrets.vault.ca_file`. Do **not** reach for `insecure` on an
+   `https://` address: validation refuses it, and the reason is that
+   anything on the path between this proxy and the vault could otherwise
+   hand it the private keys it will then serve with.
+
+3. **`signer: {socket: ..., key: ...}`** -- the key never enters this
+   process. A helper holds it, in a PKCS#11 token, an HSM or a TPM, and
+   answers signature requests over a Unix socket; the proxy sends a digest
+   and gets a signature back. Anything that reads this proxy's memory --
+   a Heartbleed-shaped bug, a core dump, a debugger -- gets nothing.
+
+   Run the helper as its own user with its own sandbox, and make the
+   socket's directory reachable by `xproxy` and nothing else
+   (`/run/xproxy-signer`, `0750`, `root:xproxy`). The derived Landlock
+   ruleset gives the proxy a **write** rule on that directory, because
+   connecting to a Unix socket is a write; the helper needs no rule from
+   this proxy at all.
+
+Put the most valuable certificate in the strongest arrangement rather
+than moving everything at once: the three are per certificate, and
+`examples/security/key-custody.yaml` is a listener with all three so a
+migration can be read off it. `xproxyctl status` and
+`xproxy_private_keys{custody="file"}` are how you watch the first number
+go down.
+
+**FIPS 140-3.** Where a deployment must be FIPS, set `fips.required:
+true` and build with `GOFIPS140=v1.0.0`, running with
+`GODEBUG=fips140=on`. The setting is a refusal to start rather than a
+warning, which is its whole value: a rebuild with the wrong toolchain
+cannot quietly leave the estate out of compliance. Note that the module
+refuses `X25519` and the ChaCha20-Poly1305 suites, so a listener's
+`key_exchange` needs `X25519MLKEM768` or a P-curve left in it; the probe
+at start says which of your configured algorithms it will actually do,
+and `xproxy_fips_refused_algorithms` is the number to keep at zero.
+
 ## 5b. Cluster
 
 Use a dedicated private CA for cluster certificates, never the public web

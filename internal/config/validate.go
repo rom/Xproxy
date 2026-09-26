@@ -193,6 +193,12 @@ func (v *validator) config(c *Config) {
 	if c.Version != CurrentVersion {
 		v.errf("version: got %d, this build supports %d", c.Version, CurrentVersion)
 	}
+	// Key custody first: v.server below checks the certificates, and a
+	// certificate whose key is a vault reference has to be able to see that
+	// a vault is configured.
+	v.hasVault = c.Secrets != nil && c.Secrets.Vault != nil
+	v.secrets(c)
+	v.fips(c)
 	v.server(&c.Server)
 	for i := range c.Server.Listeners {
 		ln := &c.Server.Listeners[i]
@@ -224,11 +230,6 @@ func (v *validator) config(c *Config) {
 	// challenge section and no rate limits used to leave this false, so
 	// a later check would say there was nothing to challenge with.
 	v.hasChallenge = c.Challenge != nil
-	// Likewise for the vault: certificates are checked long before the
-	// secrets section would be reached in file order.
-	v.hasVault = c.Secrets != nil && c.Secrets.Vault != nil
-	v.secrets(c)
-	v.fips(c)
 
 	rateLimits := map[string]bool{}
 	for i := range c.RateLimits {

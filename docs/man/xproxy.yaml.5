@@ -28057,7 +28057,7 @@ duration
 T}	T{
 \fB5m\fR
 T}	T{
-How long a resolved value is used before its source is asked again,\: so a rotation in the vault reaches a running proxy without a reload. 1m to 24h: below a minute the vault becomes this proxy\(aqs hot path,\: above a day a rotation does not arrive
+How long a resolved value is used before its source is asked again,\: and how often a listener re\-checks the keys it is serving. A key rotated in the vault reaches a running proxy within one interval,\: with no reload and no dropped connection \-\- see What a rotation does. 1m to 24h: below a minute the vault becomes this proxy\(aqs hot path,\: above a day a rotation does not arrive
 T}
 T{
 \fBvault\fR
@@ -28175,6 +28175,13 @@ T}	T{
 The second half of saying yes to plain HTTP,\: so that serving every secret in clear is two decisions rather than one typo
 T}
 .TE
+.SS "What a rotation does"
+.PP
+A certificate is read once at load, so a rotated key would reach a listener only at the next reload \-\- which is why there is a refresh loop rather than only a TTL. Once per \fBrefresh_interval\fR, every listener whose certificate names a \fBkey\fR reference re\-resolves it. If the material is the same, nothing happens. If it changed, the certificates are rebuilt and served from then on; connections already established are untouched, since a TLS connection does not revisit the certificate it was made with.
+.PP
+The loop exists only where it is needed: a listener whose keys are all \fBkey_file\fR or \fBsigner\fR gets no goroutine and no ticker, and neither does a daemon with no references at all.
+.PP
+\fBxproxy_secret_rotations_total\fR counts the certificates actually replaced, which is the number to compare against what the vault says it rotated \-\- and a \fBrefresh_interval\fR of 5m with a rotation the vault performed an hour ago and this counter at zero is the one combination worth investigating.
 .SS "What a failed refresh does"
 .PP
 \fBA refresh that fails keeps the previous value and warns.\fR A vault that is down must not take a TLS key away from a proxy that is already serving with it; the whole point of the arrangement is that the estate keeps working while somebody fixes the vault.

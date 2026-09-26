@@ -193,3 +193,77 @@ func TestBeneathAny(t *testing.T) {
 		}
 	}
 }
+
+// Key custody produces three kinds of rule, and getting any of them wrong is a
+// daemon that starts and then fails in a way that looks like something else.
+func TestDeriveKeyCustody(t *testing.T) {
+	const custodyYAML = `
+version: 1
+server:
+  listeners:
+    - name: edge
+      address: "127.0.0.1:0"
+      tls:
+        certificates:
+          - cert_file: /srv/certs/legacy.pem
+            key_file: /srv/certs/legacy.key
+          - cert_file: /srv/certs/ref.pem
+            key: file:/srv/keys/ref.key
+          - cert_file: /srv/certs/vaulted.pem
+            key: vault:secret/tls/edge#key
+          - cert_file: /srv/certs/hsm.pem
+            signer: {socket: /run/xproxy-signer/signer.sock, key: edge}
+secrets:
+  vault:
+    address: https://vault.internal:8200
+    token_file: /etc/xproxy/vault/token
+    ca_file: /etc/pki/vault/ca.pem
+management: {socket: /run/xproxy/mgmt.sock}
+upstreams:
+  - name: u
+    endpoints: [{address: "127.0.0.1:1"}]
+routes:
+  - {name: r, upstream: u}
+`
+	cfg, err := config.ParseWith([]byte(custodyYAML), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := Derive(cfg, "/etc/xproxy/xproxy.yaml")
+	// The signer's socket is a WRITE rule. Connecting to a Unix socket needs
+	// write permission under Landlock, so a read rule here gives a daemon
+	// whose every handshake on that certificate fails with permission
+	// denied -- and the error names the socket, not the sandbox.
+	if !slices.Contains(r.Write, "/run/xproxy-signer") {
+		t.Errorf("the signer socket did not produce a write rule: write=%v read=%v", r.Write, r.Read)
+	}
+	if slices.Contains(r.Read, "/run/xproxy-signer") {
+		t.Errorf("the signer socket produced a read rule, which is not enough to connect: %v", r.Read)
+	}
+	// A file: reference is a key on this machine like any other, so its
+	// directory is readable. The walk cannot classify it, because the key is
+	// spelt `key` and a reference may just as well be env: or vault:.
+	if !slices.Contains(r.Read, "/srv/keys") {
+		t.Errorf("a file: key reference did not produce a read rule: %v", r.Read)
+	}
+	// The vault's token and CA are read. These need no rule of their own --
+	// token_file and ca_file are spelt like paths, so the ordinary walk
+	// covers them -- but they are asserted here because they are part of
+	// what a vault-backed key needs and nothing else checks them.
+	for _, p := range []string{"/etc/xproxy/vault", "/etc/pki/vault"} {
+		if !slices.Contains(r.Read, p) {
+			t.Errorf("read rules lack %s: %v", p, r.Read)
+		}
+		if slices.Contains(r.Write, p) {
+			t.Errorf("%s is a write rule; the token and the CA are only read: %v", p, r.Write)
+		}
+	}
+	// A vault reference is not a path and must not become one. "secret" is
+	// a Vault mount, and a rule for /secret or for "secret" relative to
+	// anything would be a rule nobody meant.
+	for _, p := range append(append([]string{}, r.Read...), r.Write...) {
+		if strings.Contains(p, "secret/tls") || p == "/secret" {
+			t.Errorf("a vault reference became a path rule: %s", p)
+		}
+	}
+}

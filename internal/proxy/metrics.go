@@ -155,6 +155,10 @@ func (s *Server) Collect(e metrics.Collector) {
 		e.Gauge("xproxy_secrets_vault", "1 when a vault is configured.", nil, b2f(cu.Vault))
 		e.Gauge("xproxy_secrets_stale", "References whose last refresh failed and which serve a previous value.",
 			nil, float64(len(cu.Stale)))
+		e.Counter("xproxy_secret_rotations_total", "Certificate keys replaced from their reference without a reload.",
+			nil, float64(cu.Rotations))
+		e.Counter("xproxy_secret_refresh_failures_total", "Refreshes of a referenced key that could not resolve.",
+			nil, float64(cu.RefreshFailures))
 		e.Gauge("xproxy_fips_enabled", "1 when the FIPS 140-3 module is active in this process.", nil, b2f(cu.FIPSEnabled))
 		e.Gauge("xproxy_fips_required", "1 when the configuration requires FIPS.", nil, b2f(cu.FIPSRequired))
 		e.Gauge("xproxy_fips_refused_algorithms", "Configured algorithms the active module will not do.",

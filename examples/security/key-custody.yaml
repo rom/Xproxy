@@ -1,0 +1,120 @@
+# Key custody: where this proxy's private keys actually live, and what an
+# attacker who reads the machine gets.
+#
+# A TLS private key in a file is the thing every other control here exists
+# to protect, and it is the one thing a file system hands over whole. There
+# are three arrangements, they are mutually exclusive per certificate, and
+# this file has all three side by side so that a migration can be read off
+# it: the legacy certificate stays on disk, the next one moves to the vault,
+# and the one that matters most never enters this process at all.
+#
+# Validate: xproxy -config examples/security/key-custody.yaml -validate
+#   (the certificate and CA files must exist; the vault token file too)
+version: 1
+
+# Where a reference resolves from. Without this section a reference may
+# still be file: or env:, and vault: is refused at load rather than
+# silently treated as a path.
+secrets:
+  # A resolved value is used for this long and then fetched again, so a
+  # rotation in the vault reaches a running proxy with no reload and no
+  # restart. Ten minutes is a compromise: shorter makes the vault this
+  # proxy's hot path, longer means a revoked key keeps serving.
+  refresh_interval: 10m
+  vault:
+    address: https://vault.internal:8200
+    mount: secret
+    kv_version: 2
+    # A file with mode 0400, not an environment variable: the environment
+    # of a process is readable by anything that can read /proc for the
+    # same user, and every child process inherits it.
+    token_file: /etc/xproxy/vault/token
+    # Name the CA rather than reaching for insecure. Skipping verification
+    # here means anything on the path between this proxy and the vault can
+    # hand it the private keys it will then serve with, which is a worse
+    # position than having the keys in a file.
+    ca_file: /etc/pki/vault/internal-ca.pem
+
+# FIPS 140-3. required: true refuses to start unless the module is active in
+# this process, which is the whole point: a deployment that must be FIPS
+# cannot quietly stop being it after a rebuild with the wrong toolchain.
+#
+# Build with GOFIPS140=v1.0.0 and run with GODEBUG=fips140=on. Note what
+# the probe will tell you on such a build: the module refuses X25519 and
+# ChaCha20-Poly1305, so the key_exchange list below is written to still
+# have something left. That is measured at start rather than asserted here,
+# because which algorithms a module accepts is a property of the toolchain.
+fips:
+  required: true
+  probe: true
+  # Left false on purpose. A listener that offers four groups and has one
+  # refused still works for every client that asks for the other three;
+  # refusing to start would turn a warning into an outage. Turn it on once
+  # the probe is clean and you want it to stay that way.
+  probe_fails: false
+
+server:
+  listeners:
+    - name: public
+      address: "0.0.0.0:443"
+      tls:
+        min_version: "1.3"
+        # No X25519 and no ChaCha20 suites: under FIPS the module refuses
+        # them, and a listener whose whole preference list is refused
+        # handshakes with nothing.
+        key_exchange: [X25519MLKEM768, P-256, P-384]
+        certificates:
+          # 1. On disk, as it has always been. Kept for the certificate
+          #    nobody has got round to moving; it is a real arrangement
+          #    and not a mistake, and it reads as one here.
+          - cert_file: /etc/xproxy/certs/legacy.example.com.pem
+            key_file: /etc/xproxy/certs/legacy.example.com-key.pem
+
+          # 2. From the vault. The key is not on this machine at all; what
+          #    is here is the token that reads it, and a token can be
+          #    revoked, scoped and audited, which a file cannot. The field
+          #    is named because a secret holds several and guessing one is
+          #    how the wrong key gets served.
+          - cert_file: /etc/xproxy/certs/www.example.com.pem
+            key: vault:secret/tls/www.example.com#key
+
+          # 3. Never in this process. A helper holds the key -- in a
+          #    PKCS#11 token, an HSM, a TPM, or simply under a different
+          #    user with a tighter sandbox -- and answers signature
+          #    requests on a Unix socket. The proxy sends a digest and
+          #    gets a signature back, so anything that reads this
+          #    process's memory gets nothing.
+          #
+          #    At start the proxy asks the helper to sign a known value
+          #    and checks it against the public key in cert_file. A helper
+          #    that cannot prove it holds the matching key fails the load,
+          #    because the alternative is a listener that comes up and
+          #    then fails every handshake.
+          - cert_file: /etc/xproxy/certs/pay.example.com.pem
+            signer:
+              socket: /run/xproxy-signer/signer.sock
+              key: pay-p256
+              # One signature is on the handshake path. A helper that
+              # stops answering has to fail rather than hold connections
+              # open waiting for it.
+              timeout: 2s
+              # Signatures are serialised per connection, so this is the
+              # parallel handshake capacity against the helper.
+              max_conns: 16
+
+management:
+  socket: /run/xproxy/mgmt.sock
+logging:
+  directory: /var/log/xproxy
+
+upstreams:
+  - name: app
+    scheme: https
+    tls:
+      ca_file: /etc/pki/vault/internal-ca.pem
+    endpoints: [{address: "10.0.1.10:8443"}]
+
+routes:
+  - name: site
+    paths: ["/"]
+    upstream: app

@@ -162,6 +162,7 @@ func run(args []string, out, errOut io.Writer) int {
 			_, _ = fmt.Fprintf(out, "listener %-12s %s\n", n, st.Listeners[n])
 		}
 		printStats(out, st.Stats)
+		_, _ = fmt.Fprintln(out, "custody", custodySummary(st.Stats.Custody))
 		if sb := st.Sandbox; sb != nil {
 			_, _ = fmt.Fprintln(out, "sandbox", sandboxSummary(sb))
 		}
@@ -1822,6 +1823,35 @@ func cmdWAF(c *mgmt.Client, args []string, asJSON bool, out, errOut io.Writer) i
 		_ = tw.Flush()
 	}
 	return 0
+}
+
+// custodySummary is the one line form used by status: where the private keys
+// are, then what is not working.
+//
+// keys=file:N is the number an auditor is actually asking about -- how many
+// private keys somebody who reads this machine's file system gets -- so it
+// comes first and is printed even at zero. The two failures after it are the
+// ones that are otherwise silent: a reference whose refresh keeps failing
+// serves a value that may be revoked, and an algorithm the FIPS module refuses
+// is a client that cannot handshake.
+func custodySummary(cu proxy.CustodySummary) string {
+	s := fmt.Sprintf("keys=file:%d,reference:%d,signer:%d", cu.KeysOnDisk, cu.KeysReferenced, cu.KeysExternal)
+	if cu.Vault {
+		s += "  vault=yes"
+	}
+	if n := len(cu.Stale); n > 0 {
+		s += fmt.Sprintf("  stale=%d (%s)", n, strings.Join(cu.Stale, ","))
+	}
+	switch {
+	case cu.FIPSRequired:
+		s += "  fips=required"
+	case cu.FIPSEnabled:
+		s += "  fips=on"
+	}
+	if n := len(cu.FIPSRefused); n > 0 {
+		s += fmt.Sprintf("  fips-refused=%s", strings.Join(cu.FIPSRefused, ","))
+	}
+	return s
 }
 
 // sandboxSummary is the one line form used by status: applied mechanisms
