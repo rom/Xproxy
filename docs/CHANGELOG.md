@@ -562,6 +562,32 @@ Open findings of the earlier rounds:
   whose datagram side is taken fails with the reason it failed and nothing left
   bound behind it, and a port 0 listener comes up with both sockets.
 
+### Fixed (1.4, shadow mode told the truth about eleven kinds)
+
+- **A listener in shadow mode counted refusals it did not make.** Eleven relay
+  kinds -- postgres, mysql, tds, redis, amqp, bacnet, dhcp, ldap, s7, snmp and
+  tftp -- counted every policy decision under refusals and, when the listener was
+  in monitor mode, under would-be refusals as well. So a relay being trialled
+  reported enforcement that was not happening: the statement was forwarded and
+  the counter said it had been refused.
+
+  internal/proxy keeps the two tables apart on purpose -- "so a status view
+  cannot add them up" is what the code says -- and this was the one way to defeat
+  that, because the same decision appeared in both. The operator reading the
+  refusal count of a listener under trial is exactly the person who must not be
+  misled about whether the policy is ready to enforce. tftp had a second form of
+  it, counting a filename "refused for its shape" that it had in fact forwarded.
+
+  The cause was the same in every one: the counter sat above the branch rather
+  than inside it, which is invisible when reading either half alone. `ntp` is the
+  shape they all have now -- the refusal counted inside `if enforcing { ...
+  return }`, the would-be refusal after it -- and a hard refusal is unaffected,
+  because monitor mode does not carry those.
+
+  Held for every kind at once by a test that reads the source for the shape
+  rather than one shadow-mode test per kind, so a kind written that way tomorrow
+  fails it.
+
 ### Added (1.4, one authorisation policy above the protocols)
 
 - **`authorization`: which identity may reach which listener, target and

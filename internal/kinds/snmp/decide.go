@@ -50,14 +50,19 @@ func (t *server) count(m *wire.Message) {
 // what enforcing would have cost.
 func (t *server) refused(ip netip.Addr, m *wire.Message, d Decision) {
 	c := t.host.Counters()
-	c.Refuse("snmp", d.Reason)
 	if !t.enforcing() {
 		c.SNMPWouldDeny.Add(1)
+		// Counted only as a would-be refusal. The two tables are kept apart so
+		// that a status view cannot add them up, and a listener in shadow mode
+		// that reported refusals it had in fact forwarded would be the one way
+		// to defeat that: an operator reading the refusal count of a listener
+		// being trialled would see enforcement that is not happening.
 		c.WouldRefuse("snmp", d.Reason)
 		t.host.Shadow().Record("snmp", t.cfg.Name, d.Reason, d.Rule, detailOf(m, d))
 		t.access(ip, m, d, "would_deny", "")
 		return
 	}
+	c.Refuse("snmp", d.Reason)
 	c.SNMPDenied.Add(1)
 	t.access(ip, m, d, "deny", "")
 	if !t.alerts() {

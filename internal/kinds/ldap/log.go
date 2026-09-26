@@ -22,14 +22,19 @@ import (
 func (se *session) refused(m *wire.Message, d Decision) {
 	t := se.t
 	c := t.host.Counters()
-	c.Refuse("ldap", d.Reason)
 	if !t.enforcing() && !d.Hard {
 		c.LDAPWouldDeny.Add(1)
+		// Counted only as a would-be refusal. The two tables are kept apart so
+		// that a status view cannot add them up, and a listener in shadow mode
+		// that reported refusals it had in fact forwarded would be the one way
+		// to defeat that: an operator reading the refusal count of a listener
+		// being trialled would see enforcement that is not happening.
 		c.WouldRefuse("ldap", d.Reason)
 		t.host.Shadow().Record("ldap", t.cfg.Name, d.Reason, d.Rule, detailOf(m, d))
 		t.logRequest(se, m, d, "would_deny")
 		return
 	}
+	c.Refuse("ldap", d.Reason)
 	c.LDAPDenied.Add(1)
 	se.mu.Lock()
 	se.denied++

@@ -21,16 +21,23 @@ import (
 // refused records a request the policy refused.
 func (t *server) refused(ip netip.Addr, op wire.Op, pa wire.Path, mode string, d Decision) {
 	c := t.host.Counters()
-	c.Refuse("tftp", d.Reason)
-	if isPathReason(d.Reason) {
-		c.TFTPPathRefused.Add(1)
-	}
 	if !t.enforcing() && !d.Hard {
 		c.TFTPWouldDeny.Add(1)
+		// Counted only as a would-be refusal. The two tables are kept apart so
+		// that a status view cannot add them up, and a listener in shadow mode
+		// that reported refusals it had in fact forwarded would be the one way
+		// to defeat that: an operator reading the refusal count of a listener
+		// being trialled would see enforcement that is not happening.
 		c.WouldRefuse("tftp", d.Reason)
 		t.host.Shadow().Record("tftp", t.cfg.Name, d.Reason, d.Rule, op.String()+" "+pa.Clean)
 		t.logRequest(ip, op, pa, mode, d, "would_deny")
 		return
+	}
+	c.Refuse("tftp", d.Reason)
+	// On the enforced path with the counter above, for the same reason: a
+	// filename this relay forwarded was not refused for its shape.
+	if isPathReason(d.Reason) {
+		c.TFTPPathRefused.Add(1)
 	}
 	c.TFTPDenied.Add(1)
 	t.logRequest(ip, op, pa, mode, d, "deny")

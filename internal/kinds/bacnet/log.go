@@ -24,12 +24,17 @@ import (
 // refused records a decision the policy refused.
 func (t *server) refused(ip netip.Addr, a *wire.APDU, d Decision, subject string) {
 	c := t.host.Counters()
-	c.Refuse("bacnet", d.Reason)
 	if !t.enforcing() && !d.Hard {
+		// Counted only as a would-be refusal. The two tables are kept apart so
+		// that a status view cannot add them up, and a listener in shadow mode
+		// that reported refusals it had in fact forwarded would be the one way
+		// to defeat that: an operator reading the refusal count of a listener
+		// being trialled would see enforcement that is not happening.
 		c.WouldRefuse("bacnet", d.Reason)
 		t.host.Shadow().Record("bacnet", t.name, d.Reason, d.Rule, subject)
 		return
 	}
+	c.Refuse("bacnet", d.Reason)
 	if !t.alertOnDeny {
 		return
 	}
