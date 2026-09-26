@@ -109,6 +109,12 @@ failure here:
 - **Never log a digest or a signature.** Neither is secret, but a log of every
   handshake's digest is a side channel nobody asked for, and a log line per
   handshake is a write amplification on the busiest path in the estate.
+- **Bound the log on the failure path too.** A client that can reach the
+  socket can send a refusable request as fast as it likes. `xsigner` counts
+  every refusal exactly and writes at most one line a minute per kind, with
+  the number since the last line — the bound is on the log and never on the
+  counters, because a counter that stopped counting under a flood would hide
+  the flood it was there to show.
 - **Never echo an unbounded field into a log.** A client can send a megabyte
   of `alg`. Clip before logging.
 - **Never hang up on a bad request.** Answer with an `error`. Hanging up costs

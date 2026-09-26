@@ -1,6 +1,7 @@
 package signerd_test
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/ed25519"
@@ -13,11 +14,13 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"io"
+	"log/slog"
 	"math/big"
 	"net"
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -327,4 +330,86 @@ func TestWhatAHelperRefusesToBe(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A client that can reach the socket can send refusable requests as fast as it
+// likes. A line per refusal would be that client's write amplification on this
+// machine's journal -- which is the failure SIGNER.md tells a helper's author to
+// avoid, so this one had better not have it.
+//
+// The counters stay exact; only the log is bounded.
+func TestAFloodOfRefusalsIsOneLogLine(t *testing.T) {
+	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf lockedBuffer
+	srv, err := signerd.New([]signerd.Key{{Name: "ec", Signer: ecKey}},
+		slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sock := filepath.Join(t.TempDir(), "signer.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { srv.Close(); _ = ln.Close() })
+
+	c, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	dec := json.NewDecoder(c)
+	digest := "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="
+	const n = 200
+	for i := 0; i < n; i++ {
+		if _, err := c.Write([]byte(`{"v":1,"key":"nope","alg":"ECDSA-SHA256","digest":"` + digest + `"}` + "\n")); err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+		var out map[string]any
+		if err := dec.Decode(&out); err != nil {
+			t.Fatalf("answer %d: %v", i, err)
+		}
+		if s, _ := out["error"].(string); s == "" {
+			t.Fatalf("answer %d was not a refusal: %v", i, out)
+		}
+	}
+	// Every one of them is counted -- the bound is on the log, not on the
+	// truth, because a counter that stopped counting under a flood would hide
+	// exactly the flood it was there to show.
+	if got := srv.Refusals.Load(); got != n {
+		t.Errorf("refusals counted %d, want %d", got, n)
+	}
+	lines := strings.Count(strings.TrimSpace(buf.String()), "\n") + 1
+	if buf.String() == "" {
+		lines = 0
+	}
+	if lines == 0 {
+		t.Error("a flood of refusals produced no log line at all")
+	}
+	if lines > 3 {
+		t.Errorf("%d refusals produced %d log lines; the notice is not bounding them", n, lines)
+	}
+}
+
+// lockedBuffer is a bytes.Buffer safe for the writer goroutine and the test to
+// share, which slog needs because the session runs in its own goroutine.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }

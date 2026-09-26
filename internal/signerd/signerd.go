@@ -45,6 +45,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/rom/xproxy/internal/bound"
 )
 
 // Limits on one exchange. A request is a digest and a few field names; anything
@@ -83,6 +85,19 @@ type Server struct {
 	Signatures atomic.Uint64
 	Refusals   atomic.Uint64
 	Malformed  atomic.Uint64
+
+	// Notices bound the log. A client that can reach the socket can send a
+	// refusable request as fast as it likes, and a line per refusal would be
+	// that client's write amplification on this machine's journal -- which
+	// is exactly the failure SIGNER.md tells a helper's author to avoid, so
+	// this one had better not have it. Each notice counts every occurrence
+	// and warns at most once a minute with the number since the last
+	// warning, so a flood stays one line a minute and the counters stay
+	// exact.
+	unknownKey bound.Notice
+	badAlg     bound.Notice
+	badFrame   bound.Notice
+	signFailed bound.Notice
 
 	mu    sync.Mutex
 	conns map[net.Conn]struct{}
@@ -194,7 +209,7 @@ func (s *Server) session(c net.Conn) {
 			// is not speaking the protocol.
 			if !errors.Is(err, errClosed) {
 				s.Malformed.Add(1)
-				s.log.Warn("a request could not be read", "error", err.Error())
+				s.badFrame.Hit(s.log, "a request could not be read", "error", err.Error())
 			}
 			return
 		}
@@ -224,7 +239,7 @@ func (s *Server) answer(line []byte) response {
 		// caller that can enumerate the keys learns which certificates this
 		// machine serves, and it is not needed to fix a typo.
 		s.Refusals.Add(1)
-		s.log.Warn("a request named a key this helper does not hold", "key", clip(req.Key))
+		s.unknownKey.Hit(s.log, "a request named a key this helper does not hold", "key", clip(req.Key))
 		return response{V: 1, Error: "the key is not loaded"}
 	}
 	digest, err := base64.StdEncoding.DecodeString(req.Digest)
@@ -244,7 +259,7 @@ func (s *Server) answer(line []byte) response {
 	opts, err := optsFor(req.Alg, req.SaltLen, key.Public())
 	if err != nil {
 		s.Refusals.Add(1)
-		s.log.Warn("a request named an algorithm this helper will not sign with",
+		s.badAlg.Hit(s.log, "a request named an algorithm this helper will not sign with",
 			"key", clip(req.Key), "alg", clip(req.Alg), "error", err.Error())
 		return response{V: 1, Error: err.Error()}
 	}
@@ -254,7 +269,9 @@ func (s *Server) answer(line []byte) response {
 		// The error may come from an HSM and is the operator's only clue, so
 		// it is logged; it is also sent back, because the proxy's own log is
 		// where somebody will look first.
-		s.log.Error("signing failed", "key", clip(req.Key), "alg", clip(req.Alg), "error", err.Error())
+		// Bounded like the rest: a device that has come unplugged fails every
+		// request, and the hundredth line says nothing the first did not.
+		s.signFailed.Hit(s.log, "signing failed", "key", clip(req.Key), "alg", clip(req.Alg), "error", err.Error())
 		return response{V: 1, Error: "signing failed: " + err.Error()}
 	}
 	s.Signatures.Add(1)
