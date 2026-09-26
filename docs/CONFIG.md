@@ -11278,8 +11278,12 @@ this project's documentation, and a stale list either refuses a configuration
 that works or blesses one that does not.
 
 So the probe measures instead. It completes a TLS handshake over an in-process
-pipe for each configured group and suite and reports the ones the module
-refused. On the toolchain this was written against, a module in FIPS mode
+pipe for each group and cipher suite the listeners actually offer -- named or
+default -- and reports the ones the module refused. A listener at
+`min_version: "1.3"` contributes no cipher suites, because 1.3's are not
+configurable and it never offers a 1.2 one; probing them there would warn about
+ChaCha20 on an estate that does not offer it, and a warning an operator cannot
+act on is one they learn to ignore. On the toolchain this was written against, a module in FIPS mode
 refuses `X25519` and `TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256` while
 accepting `X25519MLKEM768` and the P-curves -- which is exactly the sort of
 detail that would be out of date in a list and is never out of date in a
