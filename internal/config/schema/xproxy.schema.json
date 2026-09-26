@@ -103,6 +103,14 @@
         "$ref": "#/$defs/FilterConfig"
       }
     },
+    "fips": {
+      "description": "FIPS is what the estate requires of the runtime's FIPS 140-3 mode.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/FIPS"
+        }
+      ]
+    },
     "fleet": {
       "description": "Fleet makes this node fetch its configuration bundle from a fleet controller and report its status there (xproxy-fleet).",
       "allOf": [
@@ -220,6 +228,14 @@
       "allOf": [
         {
           "$ref": "#/$defs/SCIM"
+        }
+      ]
+    },
+    "secrets": {
+      "description": "Secrets says where secret references resolve from: a vault, and how often a resolved value is fetched again. Without it a reference may still name a file or an environment variable.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Secrets"
         }
       ]
     },
@@ -1535,6 +1551,30 @@
       },
       "additionalProperties": false
     },
+    "CertSigner": {
+      "description": "CertSigner is the helper that holds a certificate's private key.",
+      "type": "object",
+      "properties": {
+        "key": {
+          "description": "Key names which key the helper should use, since one helper may hold several.",
+          "type": "string"
+        },
+        "max_conns": {
+          "description": "MaxConns bounds the connections held to the helper, which is the parallelism of signing. Default 8.",
+          "type": "integer"
+        },
+        "socket": {
+          "description": "Socket is the Unix socket the helper listens on.",
+          "type": "string"
+        },
+        "timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
     "Certificate": {
       "description": "Certificate references a PEM certificate chain and private key on disk.",
       "type": "object",
@@ -1546,8 +1586,20 @@
         "cert_file": {
           "type": "string"
         },
+        "key": {
+          "description": "Key is where the private key comes from when it is not a plain file on this machine: a reference (file:, env: or vault:). Exactly one of key_file, key and signer is required.",
+          "type": "string"
+        },
         "key_file": {
           "type": "string"
+        },
+        "signer": {
+          "description": "Signer holds the private key in another process: the proxy sends a digest over a Unix socket and gets a signature back, so the material never enters this address space at all. That is where an HSM through PKCS#11, a TPM or a smartcard belongs -- each needs cgo or a device, and both are better outside the thing that terminates TLS.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/CertSigner"
+            }
+          ]
         }
       },
       "additionalProperties": false
@@ -3015,6 +3067,25 @@
           "additionalProperties": {
             "type": "string"
           }
+        }
+      },
+      "additionalProperties": false
+    },
+    "FIPS": {
+      "description": "FIPS is what the estate requires of the runtime's FIPS 140-3 mode. The mode itself is a property of the Go toolchain and the fips140 GODEBUG rather than of this file: nothing here turns it on. What this section does is refuse to serve without it, and -- because a list of approved algorithms in this proxy would be a claim about somebody else's validation certificate -- find out what this runtime actually refuses by handshaking with each configured algorithm at start.",
+      "type": "object",
+      "properties": {
+        "required": {
+          "description": "Required refuses to start when the runtime is not in FIPS mode, with the remedy in the message.",
+          "type": "boolean"
+        },
+        "probe": {
+          "description": "Probe handshakes once per configured key exchange group and cipher suite at start and reports the ones this runtime will not do. Default true when required is set: an estate that asked for the mode is an estate that wants to know its configuration works in it, at start rather than at the first client that offers one of them.",
+          "type": "boolean"
+        },
+        "probe_fails": {
+          "description": "ProbeFails makes a refused algorithm fail the load rather than being reported. Off by default: a listener that also offers approved algorithms still serves, and an operator who would rather not serve at all can say so.",
+          "type": "boolean"
         }
       },
       "additionalProperties": false
@@ -10017,6 +10088,26 @@
       },
       "additionalProperties": false
     },
+    "Secrets": {
+      "description": "Secrets says where a secret reference resolves from. Every secret this proxy holds was a path until this existed, and a path means the material is on this machine's file system: readable by whatever else reads the machine, in its backups, replaced by whatever writes there. A reference says where a secret comes from instead -- /etc/xproxy/tls/edge.key a path, as before file:/etc/xproxy/tls/edge.key the same, said explicitly env:EDGE_KEY the environment of this process vault:secret/tls/edge#key a field of a secret in HashiCorp Vault -- and because the *configuration* holds the reference rather than the material, the management dump, the history and a diff show where each secret comes from and never what it is. The strongest arrangement is not here but in tls.certificates[].signer, where the private key never enters this process at all.",
+      "type": "object",
+      "properties": {
+        "refresh_interval": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "vault": {
+          "description": "Vault is the HashiCorp Vault to read vault: references from. Without it a vault reference fails the load rather than falling back to anything.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/VaultSecrets"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "SecurityTxt": {
       "type": "object",
       "properties": {
@@ -11988,6 +12079,50 @@
         },
         "user": {
           "description": "User is the login on the SSH host. Required.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "VaultSecrets": {
+      "description": "VaultSecrets is the Vault a vault: reference reads from. Only reading is implemented, and deliberately: a proxy that could write to the vault would be a proxy whose compromise rewrites the estate's secrets.",
+      "type": "object",
+      "properties": {
+        "address": {
+          "description": "Address is the API base. https unless insecure is set, because http hands the token and every secret to the network.",
+          "type": "string"
+        },
+        "allow_insecure": {
+          "type": "boolean"
+        },
+        "ca_file": {
+          "description": "CAFile pins the authority the server's certificate is checked against; empty uses the system pool. ServerName overrides the name verified.",
+          "type": "string"
+        },
+        "insecure": {
+          "description": "Insecure allows http and skips verification, and needs allow_insecure as well: one flag is a typo, two are a decision.",
+          "type": "boolean"
+        },
+        "kv_version": {
+          "description": "KVVersion is 2 (the default) or 1. They differ in the request path and in where the fields sit in the answer, and guessing between them answers \"not found\" for a secret that is there.",
+          "type": "integer"
+        },
+        "mount": {
+          "description": "Mount is the KV mount a reference uses when it names none. Default \"secret\".",
+          "type": "string"
+        },
+        "namespace": {
+          "description": "Namespace is the Vault Enterprise namespace, sent as a header. Without it an estate that uses namespaces gets \"not found\" for every secret.",
+          "type": "string"
+        },
+        "server_name": {
+          "type": "string"
+        },
+        "token_env": {
+          "type": "string"
+        },
+        "token_file": {
+          "description": "TokenFile holds the token, and TokenEnv names an environment variable holding it. Exactly one is required. A token in this document would be a token in the management dump, the history and every diff; a token in the environment is readable by more than this process, which is why it is warned about.",
           "type": "string"
         }
       },

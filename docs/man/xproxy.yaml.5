@@ -160,6 +160,24 @@ T}	T{
 T}	T{
 Whether the listeners enforce their policies or only evaluate them and write down what they would have refused;\: see \fBpolicy\fR
 T}
+T{
+\fBsecrets\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Where the secrets this file names come from: a path,\: the environment,\: or a vault;\: see \fBsecrets\fR
+T}
+T{
+\fBfips\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Whether this daemon insists on the FIPS 140\-3 module,\: and what it says about the algorithms configured;\: see \fBfips\fR
+T}
 .TE
 .SH "policy"
 .PP
@@ -10381,7 +10399,7 @@ list
 T}	T{
 one of \fBcertificates\fR or \fBacme\fR
 T}	T{
-\fB{cert_\:file,\: key_\:file}\fR PEM pairs;\: selected by SNI,\: first is the fallback
+PEM certificates with a private key,\: selected by SNI,\: first is the fallback. Each entry names \fBcert_\:file\fR and then exactly one of \fBkey_\:file\fR,\: \fBkey\fR or \fBsigner\fR to say where the private key comes from \-\- see Where a private key lives
 T}
 T{
 \fBacme\fR
@@ -27965,6 +27983,389 @@ T}
 .TE
 .PP
 A listener in \fBpolicy: {mode: shadow}\fR records what it would have refused and carries on, which is how an estate turns this on without locking its operators out on the first evening.
+.SH "secrets"
+.PP
+Where the secrets in this configuration come from. Without this section every one of them is a path on this machine, which is how the proxy has always worked and stays the default.
+.PP
+A proxy holds a great many secrets: TLS private keys, an upstream client key, a Consul token, an LDAP bind password, the keyring behind every sealed cookie. When each is a path, the material is on the file system of the machine \-\- readable by whatever else can read that machine, present in its backups, and replaced by whatever can write there. A \fBreference\fR says where a secret comes from instead:
+.PP
+.TS
+allbox;
+lbw(1.0i) lbx
+lw(1.0i) lx.
+T{
+Reference
+T}	T{
+Resolves to
+T}
+T{
+\fB/\:etc/\:xproxy/\:tls/\:edge.\:key\fR
+T}	T{
+A path,\: as before. Every configuration written before references existed keeps its meaning
+T}
+T{
+\fBfile:\:/\:etc/\:xproxy/\:tls/\:edge.\:key\fR
+T}	T{
+The same,\: said explicitly
+T}
+T{
+\fBenv:\:EDGE_\:KEY\fR
+T}	T{
+A variable in this process\(aqs environment
+T}
+T{
+\fBvault:\:secret/\:tls/\:edge#key\fR
+T}	T{
+The \fBkey\fR field of a secret in HashiCorp Vault
+T}
+.TE
+.PP
+A vault reference must name its field. A secret usually holds several, and picking one for the operator is how the wrong key gets served.
+.PP
+.RS 4
+.nf
+.ft CR
+secrets:
+  refresh_interval: 5m
+  vault:
+    address: https://vault.internal:8200
+    mount: secret
+    kv_version: 2
+    token_file: /etc/xproxy/vault\-token
+    ca_file: /etc/pki/tls/certs/internal\-ca.pem
+.ft
+.fi
+.RE
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.9i) lbw(0.8i) lbx
+lw(0.9i) lw(0.9i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBrefresh_\:interval\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+How long a resolved value is used before its source is asked again,\: so a rotation in the vault reaches a running proxy without a reload. 1m to 24h: below a minute the vault becomes this proxy\(aqs hot path,\: above a day a rotation does not arrive
+T}
+T{
+\fBvault\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+The vault references are read from;\: without it only \fBfile:\fR and \fBenv:\fR resolve and a \fBvault:\fR reference is refused at load
+T}
+.TE
+.SS "secrets.vault"
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.7i) lbw(0.9i) lbx
+lw(1.0i) lw(0.7i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBaddress\fR
+T}	T{
+URL
+T}	T{
+required
+T}	T{
+\fBhttps:\:/\:/\:host:\:8200\fR. \fBhttp:\:/\:/\fR needs both \fBinsecure\fR and \fBallow_\:insecure\fR,\: because plain HTTP puts the token and every secret it reads in clear on the wire
+T}
+T{
+\fBmount\fR
+T}	T{
+string
+T}	T{
+\fBsecret\fR
+T}	T{
+The KV mount references are relative to
+T}
+T{
+\fBkv_\:version\fR
+T}	T{
+\fB1\fR or \fB2\fR
+T}	T{
+\fB2\fR
+T}	T{
+The KV engine version;\: version 2 wraps the secret in a \fBdata\fR envelope and this is what decides how the answer is read
+T}
+T{
+\fBtoken_\:file\fR
+T}	T{
+path
+T}	T{
+one of the two
+T}	T{
+A file holding the token,\: nothing else. Mode 0400 is the arrangement to want
+T}
+T{
+\fBtoken_\:env\fR
+T}	T{
+name
+T}	T{
+one of the two
+T}	T{
+An environment variable holding the token. Warned about: the environment of a process is readable by anything that can read \fB/\:proc\fR for the same user,\: and every child process inherits it
+T}
+T{
+\fBnamespace\fR
+T}	T{
+string
+T}	T{
+none
+T}	T{
+Vault Enterprise namespace,\: sent as \fBX\-\:Vault\-\:Namespace\fR
+T}
+T{
+\fBca_\:file\fR
+T}	T{
+path
+T}	T{
+system roots
+T}	T{
+The CA that signs the vault\(aqs certificate
+T}
+T{
+\fBserver_\:name\fR
+T}	T{
+host
+T}	T{
+from the address
+T}	T{
+Override the name verified in the certificate
+T}
+T{
+\fBinsecure\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Do not verify the vault\(aqs certificate. Only accepted together with \fBallow_\:insecure\fR and only for an \fBhttp:\:/\:/\fR address;\: on an \fBhttps:\:/\:/\fR address it is refused,\: because anything on the path could then hand this proxy its secrets
+T}
+T{
+\fBallow_\:insecure\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+The second half of saying yes to plain HTTP,\: so that serving every secret in clear is two decisions rather than one typo
+T}
+.TE
+.SS "What a failed refresh does"
+.PP
+\fBA refresh that fails keeps the previous value and warns.\fR A vault that is down must not take a TLS key away from a proxy that is already serving with it; the whole point of the arrangement is that the estate keeps working while somebody fixes the vault.
+.PP
+That means the failure mode to watch for is not an outage but silence: a secret that has quietly stopped rotating. \fBxproxy_secrets_stale\fR counts the references whose last refresh failed, \fBxproxyctl status\fR lists them, and the error log carries a line per failure naming the reference. \fBA value is never logged, wrapped in an error, or put in a dump\fR \-\- the configuration holds references rather than material, so \fBxproxyctl dump\fR, the history and a diff show where a secret comes from and never what it is.
+.SS "Where a private key lives"
+.PP
+Each entry of \fBserver.listeners[].tls.certificates\fR names \fBcert_file\fR and then exactly one of three keys, which are the three custody arrangements:
+.PP
+.TS
+allbox;
+lbw(0.7i) lbw(1.3i) lbx
+lw(0.7i) lw(1.3i) lx.
+T{
+Key
+T}	T{
+Where the private key is
+T}	T{
+What an attacker who reads this machine gets
+T}
+T{
+\fBkey_\:file\fR
+T}	T{
+A PEM file on this machine
+T}	T{
+The key
+T}
+T{
+\fBkey\fR
+T}	T{
+Wherever the reference says: a file,\: the environment,\: or a vault
+T}	T{
+The key,\: if the reference is a file or the environment;\: the vault token,\: if it is a vault \-\- and a token can be revoked
+T}
+T{
+\fBsigner\fR
+T}	T{
+In another process,\: which may hold it in a PKCS#11 token,\: an HSM or a TPM
+T}	T{
+Nothing,\: as long as that process\(aqs own custody holds
+T}
+.TE
+.PP
+Two of them being set is refused at load, not resolved by precedence: a certificate with two keys configured is a certificate whose key nobody can name by reading the file.
+.PP
+.RS 4
+.nf
+.ft CR
+server:
+  listeners:
+    \- name: edge
+      kind: http
+      tls:
+        certificates:
+          # On disk, as before.
+          \- cert_file: /etc/xproxy/tls/legacy.pem
+            key_file: /etc/xproxy/tls/legacy\-key.pem
+          # From the vault, rotated without a reload.
+          \- cert_file: /etc/xproxy/tls/edge.pem
+            key: vault:secret/tls/edge#key
+          # Never in this process at all.
+          \- cert_file: /etc/xproxy/tls/hsm.pem
+            signer:
+              socket: /run/xproxy/signer.sock
+              key: edge\-rsa
+.ft
+.fi
+.RE
+.SS "server.listeners[].tls.certificates[].signer"
+.PP
+The strongest arrangement here is the one where the private key never enters this process. A helper holds it \-\- in a PKCS#11 token, an HSM, a TPM, or simply in a process with a different user and a tighter sandbox \-\- and answers signature requests over a Unix socket. The proxy sends a digest and gets a signature back; it never sees the key, so neither does anything that reads this proxy\(aqs memory.
+.PP
+That is also why the helper is a separate process rather than a linked library: the daemons are built with \fBCGO_ENABLED=0\fR, and a PKCS#11 module is a C library. Keeping it out of the proxy is both a build fact and the point.
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.9i) lbw(0.9i) lbx
+lw(0.8i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBsocket\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+The Unix socket the helper listens on. Absolute. Connecting to it is a \fIwrite\fR under the sandbox,\: and the rule is derived for you
+T}
+T{
+\fBkey\fR
+T}	T{
+name
+T}	T{
+required
+T}	T{
+Which of the helper\(aqs keys to use;\: one helper may hold several
+T}
+T{
+\fBtimeout\fR
+T}	T{
+duration
+T}	T{
+\fB3s\fR
+T}	T{
+Bounds one signature. It is on the handshake path,\: so a helper that stops answering must fail rather than hold connections open;\: 100ms to 1m
+T}
+T{
+\fBmax_\:conns\fR
+T}	T{
+int
+T}	T{
+\fB8\fR
+T}	T{
+Connections held open to the helper. Signatures are serialised per connection,\: so this is the parallel handshake capacity;\: 1 to 256
+T}
+.TE
+.PP
+At start the proxy asks the helper to sign a known value and checks the signature against the public key in \fBcert_file\fR. A helper that cannot prove it holds the matching key fails the load: the alternative is a listener that comes up and then fails every handshake, which looks to everyone else like the listener being down.
+.SH "fips"
+.PP
+Whether this daemon insists on running with the FIPS 140\-3 module active, and what it says about the algorithms it was configured to offer.
+.PP
+.RS 4
+.nf
+.ft CR
+fips:
+  required: true
+  probe: true
+  probe_fails: false
+.ft
+.fi
+.RE
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.6i) lbw(0.9i) lbx
+lw(0.9i) lw(0.6i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBrequired\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse to start unless the FIPS 140\-3 module is active in this process. Not a warning: the value of the setting is that a deployment which must be FIPS cannot quietly stop being it after a rebuild with the wrong toolchain
+T}
+T{
+\fBprobe\fR
+T}	T{
+bool
+T}	T{
+follows \fBrequired\fR
+T}	T{
+Ask the module at start which of the configured key exchange groups and cipher suites it will actually do,\: by handshaking over an in\-process pipe
+T}
+T{
+\fBprobe_\:fails\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse to start when the probe finds a configured algorithm the module will not do. Only meaningful with \fBrequired\fR
+T}
+.TE
+.PP
+The module is not a build flag in this configuration \-\- it is a property of the binary and of how it was started. Build with \fBGOFIPS140=v1.0.0\fR and run with \fBGODEBUG=fips140=on\fR; \fBcrypto/fips140.Enabled()\fR is what \fBrequired\fR checks, and \fBxproxyctl status\fR reports it either way.
+.SS "Why probe rather than list"
+.PP
+It would be easy to ship a list of approved algorithms and check the configuration against it. That list would be wrong: which algorithms an active module accepts is a property of the toolchain and the module version, not of this project\(aqs documentation, and a stale list either refuses a configuration that works or blesses one that does not.
+.PP
+So the probe measures instead. It completes a TLS handshake over an in\-process pipe for each configured group and suite and reports the ones the module refused. On the toolchain this was written against, a module in FIPS mode refuses \fBX25519\fR and \fBTLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256\fR while accepting \fBX25519MLKEM768\fR and the P\-curves \-\- which is exactly the sort of detail that would be out of date in a list and is never out of date in a measurement.
+.PP
+An algorithm the module refuses is not an error by default, because a listener offering several groups still works for clients that ask for one of the others. It is a warning, \fBxproxy_fips_refused_algorithms\fR, and a line in \fBxproxyctl status\fR. An estate that wants the stricter reading sets \fBprobe_fails: true\fR.
 .SH "Headers set on forwarded requests"
 .PP
 .TS

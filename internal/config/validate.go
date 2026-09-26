@@ -9,8 +9,10 @@ import (
 	"github.com/rom/xproxy/internal/dns"
 	"github.com/rom/xproxy/internal/expr"
 	"github.com/rom/xproxy/internal/filter"
+	"github.com/rom/xproxy/internal/fipsmode"
 	"github.com/rom/xproxy/internal/ftp"
 	"github.com/rom/xproxy/internal/iec104"
+	"github.com/rom/xproxy/internal/keysource"
 	ldapwire "github.com/rom/xproxy/internal/ldap"
 	"github.com/rom/xproxy/internal/listener"
 	"github.com/rom/xproxy/internal/modbus"
@@ -96,6 +98,11 @@ type validator struct {
 	// trustedProxies is set when trusted_proxies names anything, which is
 	// what decides whether a forwarded client certificate is ever read.
 	trustedProxies bool
+	// hasVault is set when secrets.vault is configured, so that a vault
+	// reference anywhere in the file is told at load rather than at the
+	// first handshake that needs the key. It is set before any section
+	// that may carry a reference is checked.
+	hasVault bool
 }
 
 // transferICAP checks a scanning section on a kind that moves files.
@@ -217,6 +224,11 @@ func (v *validator) config(c *Config) {
 	// challenge section and no rate limits used to leave this false, so
 	// a later check would say there was nothing to challenge with.
 	v.hasChallenge = c.Challenge != nil
+	// Likewise for the vault: certificates are checked long before the
+	// secrets section would be reached in file order.
+	v.hasVault = c.Secrets != nil && c.Secrets.Vault != nil
+	v.secrets(c)
+	v.fips(c)
 
 	rateLimits := map[string]bool{}
 	for i := range c.RateLimits {
@@ -1150,12 +1162,13 @@ func (v *validator) tls(p string, t *TLS) {
 		}
 	}
 	for i, c := range t.Certificates {
-		if c.CertFile == "" || c.KeyFile == "" {
-			v.errf("%s.certificates[%d]: cert_file and key_file are required", p, i)
+		cp := fmt.Sprintf("%s.certificates[%d]", p, i)
+		if c.CertFile == "" {
+			v.errf("%s: cert_file is required", cp)
 			continue
 		}
-		v.file(fmt.Sprintf("%s.certificates[%d].cert_file", p, i), c.CertFile)
-		v.file(fmt.Sprintf("%s.certificates[%d].key_file", p, i), c.KeyFile)
+		v.file(cp+".cert_file", c.CertFile)
+		v.certificateKey(cp, c)
 	}
 	switch t.MinVersion {
 	case "1.2", "1.3":
@@ -10642,5 +10655,200 @@ func (v *validator) access(c *Config) {
 		v.warnf("%s.self_approval: the person who asks may approve their own access, so four eyes is off. It is here for "+
 			"the estate with one operator; where there are two, this is the setting an attacker who reaches one "+
 			"account most wants", p)
+	}
+}
+
+// certificateKey checks where one certificate's private key comes from.
+//
+// There are three custody arrangements and they are mutually exclusive, because
+// a certificate with two keys configured is a certificate whose key nobody can
+// name from the file:
+//
+//   - key_file: the key is a file on this machine, as it has always been.
+//   - key: a reference, so the key may come from a vault or the environment.
+//   - signer: the key never enters this process; a helper holds it and answers
+//     signature requests over a Unix socket.
+func (v *validator) certificateKey(p string, c Certificate) {
+	var set []string
+	if c.KeyFile != "" {
+		set = append(set, "key_file")
+	}
+	if c.Key != "" {
+		set = append(set, "key")
+	}
+	if c.Signer != nil {
+		set = append(set, "signer")
+	}
+	switch len(set) {
+	case 0:
+		v.errf("%s: one of key_file, key or signer is required to say where the private key comes from", p)
+		return
+	case 1:
+	default:
+		v.errf("%s: %s are all set; exactly one says where the private key comes from", p, strings.Join(set, ", "))
+		return
+	}
+	switch {
+	case c.KeyFile != "":
+		v.file(p+".key_file", c.KeyFile)
+	case c.Key != "":
+		v.secretRef(p+".key", c.Key)
+	case c.Signer != nil:
+		v.signer(p+".signer", c.Signer)
+	}
+}
+
+// secretRef checks one secret reference: that it parses, that a vault reference
+// has a vault to come from, and that a plain path exists.
+func (v *validator) secretRef(p, ref string) {
+	r, err := keysource.Parse(ref)
+	if err != nil {
+		v.errf("%s: %v", p, err)
+		return
+	}
+	switch r.Scheme {
+	case keysource.SchemeFile:
+		if !filepath.IsAbs(r.Target) {
+			v.errf("%s: %q must be an absolute path", p, r.Target)
+			return
+		}
+		v.file(p, r.Target)
+	case keysource.SchemeEnv:
+		// An environment variable is read at resolve time, so there is
+		// nothing to check here beyond the name. It is worth a word,
+		// though: the environment of a process is readable by anything
+		// that can read /proc for the same user, and it is inherited by
+		// anything the proxy execs.
+		if r.Target != strings.ToUpper(r.Target) {
+			v.warnf("%s: env:%s is lower case; environment variables are conventionally upper case, and a name that "+
+				"does not match the one the unit sets resolves to nothing", p, r.Target)
+		}
+	case keysource.SchemeVault:
+		if !v.hasVault {
+			v.errf("%s: %s is a vault reference and there is no secrets.vault section for it to come from", p, ref)
+		}
+	}
+}
+
+// signer checks an external signer: a socket to reach it on, and the bounds on
+// how long one signature may take and how many connections are held.
+func (v *validator) signer(p string, s *CertSigner) {
+	if s.Socket == "" {
+		v.errf("%s.socket: required; it is the Unix socket the signer listens on", p)
+	} else if !filepath.IsAbs(s.Socket) {
+		v.errf("%s.socket: must be an absolute path", p)
+	}
+	if s.Key == "" {
+		v.errf("%s.key: required; it names which key of the signer's to use", p)
+	}
+	if d := s.Timeout.D(); d < 100*time.Millisecond || d > time.Minute {
+		v.errf("%s.timeout: must be between 100ms and 1m; it bounds one signature, which is on the handshake path", p)
+	}
+	if s.MaxConns < 1 || s.MaxConns > 256 {
+		v.errf("%s.max_conns: must be between 1 and 256", p)
+	}
+}
+
+// secrets checks the secrets section: where secret references are resolved from.
+func (v *validator) secrets(c *Config) {
+	const p = "secrets"
+	s := c.Secrets
+	if s == nil {
+		return
+	}
+	if d := s.RefreshInterval.D(); d < time.Minute || d > 24*time.Hour {
+		v.errf("%s.refresh_interval: must be between 1m and 24h; below a minute a vault becomes this proxy's hot path, "+
+			"and above a day a rotation does not reach a running process", p)
+	}
+	vs := s.Vault
+	if vs == nil {
+		v.warnf("%s: a secrets section with no vault, so only file: and env: references resolve. That is a valid "+
+			"arrangement, but this section then only sets the refresh interval", p)
+		return
+	}
+	vp := p + ".vault"
+	switch {
+	case vs.Address == "":
+		v.errf("%s.address: required", vp)
+	case strings.HasPrefix(vs.Address, "https://"):
+	case strings.HasPrefix(vs.Address, "http://"):
+		// Plain HTTP to a vault puts every secret this proxy holds on the
+		// wire in clear, including the token that reads them. It is here
+		// for a development vault on the loopback and it takes two
+		// settings to say so, because one typo must not do it.
+		switch {
+		case !vs.Insecure:
+			v.errf("%s.address: http:// sends the token and every secret in clear; use https://, or set insecure: true "+
+				"and allow_insecure: true if this is a development vault", vp)
+		case !vs.AllowInsecure:
+			v.errf("%s.allow_insecure: insecure is set for an http:// address; allow_insecure must also be true, so "+
+				"that serving secrets in clear is two decisions rather than one", vp)
+		default:
+			v.warnf("%s.address: %s is plain HTTP, so the token and every secret it reads are in clear on the wire. "+
+				"This is a development arrangement", vp, vs.Address)
+		}
+	default:
+		v.errf("%s.address: must be an http:// or https:// URL", vp)
+	}
+	if vs.KVVersion != 1 && vs.KVVersion != 2 {
+		v.errf("%s.kv_version: must be 1 or 2", vp)
+	}
+	switch {
+	case vs.TokenFile != "" && vs.TokenEnv != "":
+		v.errf("%s: token_file and token_env are both set; exactly one says where the token comes from", vp)
+	case vs.TokenFile != "":
+		if !filepath.IsAbs(vs.TokenFile) {
+			v.errf("%s.token_file: must be an absolute path", vp)
+		} else {
+			v.file(vp+".token_file", vs.TokenFile)
+		}
+	case vs.TokenEnv != "":
+		v.warnf("%s.token_env: the token is in this process's environment, which anything that can read /proc for this "+
+			"user can read, and which every child process inherits. A file with mode 0400 is the tighter "+
+			"arrangement", vp)
+	default:
+		v.errf("%s: one of token_file or token_env is required; there is no anonymous read of a vault", vp)
+	}
+	if vs.CAFile != "" {
+		v.file(vp+".ca_file", vs.CAFile)
+	}
+	if vs.Insecure && !strings.HasPrefix(vs.Address, "http://") {
+		v.errf("%s.insecure: set for an https:// address, which would skip verifying the vault's certificate -- and then "+
+			"anything on the path can hand this proxy its secrets. Set ca_file instead", vp)
+	}
+}
+
+// fips checks the fips section.
+//
+// The interesting case is required: true on a binary that was not built for it,
+// which this section exists to turn from a silent non-event into a refusal at
+// start. Validation cannot decide it -- whether the module is active is a
+// property of this process, not of the file -- so it says what will be checked
+// and where.
+func (v *validator) fips(c *Config) {
+	const p = "fips"
+	f := c.FIPS
+	if f == nil {
+		return
+	}
+	if !f.Required {
+		if f.Probe != nil && *f.Probe {
+			v.warnf("%s.probe: set with required: false, so the algorithms are probed and reported but nothing refuses "+
+				"to start. That is a useful reporting arrangement; it is not an enforced one", p)
+		}
+		if f.ProbeFails {
+			v.errf("%s.probe_fails: refusing to start on a probe that fails only makes sense with required: true", p)
+		}
+		return
+	}
+	if f.Probe != nil && !*f.Probe && f.ProbeFails {
+		v.errf("%s.probe_fails: set with probe: false, so there is no probe to fail", p)
+	}
+	if !fipsmode.Enabled() {
+		// Not an error: the same configuration is loaded by xproxyctl and
+		// by a check on a build host, where the module is not active and
+		// the answer would be a false alarm. The daemon refuses at start.
+		v.warnf("%s.required: this build does not have the FIPS 140-3 module active, so a daemon reading this "+
+			"configuration would refuse to start. Build with GOFIPS140=v1.0.0 and run with GODEBUG=fips140=on", p)
 	}
 }

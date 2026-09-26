@@ -774,6 +774,11 @@ type Snapshot struct {
 	// the management view because a grant queue nobody drains and sessions
 	// refused for want of one are both things to alert on.
 	Access *AccessSummary `json:"access,omitempty"`
+	// Custody says where this daemon's private keys live and whether the
+	// FIPS module is active. It is always present, because "no vault, keys
+	// on disk, no FIPS" is an answer somebody auditing an estate needs to
+	// be able to read off a status page rather than infer from silence.
+	Custody CustodySummary `json:"custody"`
 	// Assets is the inventory's own summary, absent when no inventory is
 	// configured.
 	Assets                 *AssetSummary      `json:"assets,omitempty"`
@@ -1339,6 +1344,32 @@ type AccessSummary struct {
 	Revocations uint64            `json:"revocations"`
 	Uses        uint64            `json:"uses"`
 	Refusals    map[string]uint64 `json:"refusals,omitempty"`
+}
+
+// CustodySummary is what the status view and the exposition say about key
+// custody: how many keys are held where, whether a vault is configured and
+// answering, and what the FIPS check found.
+type CustodySummary struct {
+	// KeysOnDisk, KeysReferenced and KeysExternal count the configured
+	// certificates by custody arrangement. The interesting number is
+	// KeysOnDisk: it is how many private keys an attacker who can read this
+	// machine's file system gets.
+	KeysOnDisk     int `json:"keys_on_disk"`
+	KeysReferenced int `json:"keys_referenced"`
+	KeysExternal   int `json:"keys_external"`
+	// Vault is true when a vault is configured, and Stale lists the
+	// references whose last refresh failed and which are therefore being
+	// served from a value that may be out of date. A non-empty Stale is the
+	// one thing here worth an alert: rotation has stopped without the proxy
+	// stopping.
+	Vault bool     `json:"vault"`
+	Stale []string `json:"stale,omitempty"`
+	// FIPSEnabled is whether the FIPS 140-3 module is active in this
+	// process, FIPSRequired whether the configuration insists on it, and
+	// FIPSRefused the configured algorithms the active module will not do.
+	FIPSEnabled  bool     `json:"fips_enabled"`
+	FIPSRequired bool     `json:"fips_required"`
+	FIPSRefused  []string `json:"fips_refused,omitempty"`
 }
 
 type AssetSummary struct {

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/keysource"
 )
 
 // Reloadable holds certificates that can be swapped atomically. Managed
@@ -63,6 +64,77 @@ type Reloadable struct {
 	stapler *stapler
 	ctMu    sync.Mutex
 	ctState map[[32]byte]CTStatus
+
+	// secrets resolves a certificate's key when it is a reference rather
+	// than a path. nil means only key_file and signer are available, which
+	// is every configuration written before secrets existed.
+	secrets *keysource.Resolver
+}
+
+// An Option adjusts how a server config is built. There is one so far and it
+// is about key custody: where the private keys come from.
+type Option func(*Reloadable)
+
+// WithSecrets gives the listener a resolver, so that a certificate whose key
+// is a reference (env: or vault:) can be loaded. A nil resolver is ignored,
+// which keeps the call site free of a conditional.
+func WithSecrets(r *keysource.Resolver) Option {
+	return func(rl *Reloadable) {
+		if r != nil {
+			rl.secrets = r
+		}
+	}
+}
+
+// loadCertificate reads one configured certificate under whichever custody
+// arrangement it names.
+//
+// The three are deliberately separate code paths rather than one path with the
+// key fetched differently, because they do not fail the same way: a missing file
+// is a configuration error, an unreachable vault is an outage of something else,
+// and a signer that will not prove it holds the key is a machine to distrust.
+func (r *Reloadable) loadCertificate(c config.Certificate) (tls.Certificate, error) {
+	switch {
+	case c.Signer != nil:
+		pem, err := os.ReadFile(c.CertFile)
+		if err != nil {
+			return tls.Certificate{}, fmt.Errorf("load certificate %s: %w", c.CertFile, err)
+		}
+		cert, err := keysource.CertificateFor(pem, keysource.SignerConfig{
+			Socket:   c.Signer.Socket,
+			Key:      c.Signer.Key,
+			Timeout:  c.Signer.Timeout.D(),
+			MaxConns: c.Signer.MaxConns,
+		})
+		if err != nil {
+			return tls.Certificate{}, fmt.Errorf("certificate %s: signer: %w", c.CertFile, err)
+		}
+		return cert, nil
+	case c.Key != "":
+		if r.secrets == nil {
+			return tls.Certificate{}, fmt.Errorf("certificate %s: key: %q is a reference and no secret resolver is configured", c.CertFile, c.Key)
+		}
+		certPEM, err := os.ReadFile(c.CertFile)
+		if err != nil {
+			return tls.Certificate{}, fmt.Errorf("load certificate %s: %w", c.CertFile, err)
+		}
+		keyPEM, err := r.secrets.Bytes(c.Key)
+		if err != nil {
+			// The reference is named, the material never is.
+			return tls.Certificate{}, fmt.Errorf("certificate %s: key: %w", c.CertFile, err)
+		}
+		cert, err := tls.X509KeyPair(certPEM, keyPEM)
+		if err != nil {
+			return tls.Certificate{}, fmt.Errorf("certificate %s: key %s does not match: %w", c.CertFile, c.Key, err)
+		}
+		return cert, nil
+	default:
+		cert, err := tls.LoadX509KeyPair(c.CertFile, c.KeyFile)
+		if err != nil {
+			return tls.Certificate{}, fmt.Errorf("load certificate %s: %w", c.CertFile, err)
+		}
+		return cert, nil
+	}
 }
 
 // CertInfo is the management view of one served certificate.
@@ -207,9 +279,9 @@ const ACMEALPN = "acme-tls/1"
 func (r *Reloadable) Load() error {
 	certs := make([]tls.Certificate, 0, len(r.cfgs))
 	for _, c := range r.cfgs {
-		cert, err := tls.LoadX509KeyPair(c.CertFile, c.KeyFile)
+		cert, err := r.loadCertificate(c)
 		if err != nil {
-			return fmt.Errorf("load certificate %s: %w", c.CertFile, err)
+			return err
 		}
 		if cert.Leaf == nil && len(cert.Certificate) > 0 {
 			if leaf, err := x509.ParseCertificate(cert.Certificate[0]); err == nil {
@@ -401,8 +473,11 @@ func (r *Reloadable) getCertificate(hello *tls.ClientHelloInfo) (*tls.Certificat
 
 // Server builds a server tls.Config for a listener. The returned Reloadable
 // can be used to hot reload certificates.
-func Server(cfg *config.TLS, protocols []config.Protocol) (*tls.Config, *Reloadable, error) {
+func Server(cfg *config.TLS, protocols []config.Protocol, opts ...Option) (*tls.Config, *Reloadable, error) {
 	r := &Reloadable{cfgs: cfg.Certificates, ocsp: cfg.OCSPStapling, ct: cfg.CT, echCfg: cfg.ECH, expiry: cfg.Expiry}
+	for _, o := range opts {
+		o(r)
+	}
 	if cfg.CT != nil && cfg.CT.LogListFile != "" {
 		ll, err := LoadLogList(cfg.CT.LogListFile)
 		if err != nil {
@@ -490,6 +565,23 @@ func DefaultCipherSuites() []uint16 {
 		tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
 		tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
 	}
+}
+
+// SuiteIDs resolves configured cipher suite names to their identifiers, or the
+// default allow list when nothing is named -- which is what a listener actually
+// offers, and so what the FIPS probe should ask the module about.
+func SuiteIDs(names []string) []uint16 {
+	if len(names) == 0 {
+		return DefaultCipherSuites()
+	}
+	ids, err := suiteIDs(names)
+	if err != nil {
+		// Validation refuses an unknown name, so this is unreachable from
+		// a loaded configuration; answering with the default beats a
+		// caller that has to handle an error it cannot cause.
+		return DefaultCipherSuites()
+	}
+	return ids
 }
 
 func suiteIDs(names []string) ([]uint16, error) {

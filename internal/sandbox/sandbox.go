@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/keysource"
 	"github.com/rom/xproxy/internal/paths"
 )
 
@@ -253,6 +254,38 @@ func Derive(cfg *config.Config, cfgPath string) Rules {
 			if path, ok := config.UnixSocket(p); ok {
 				addWrite(path, false)
 			}
+		}
+	}
+	// Key custody. Three kinds of path here, and they are added explicitly
+	// rather than by key name because none of them is spelt like a path:
+	//
+	//   - a certificate whose key is a file: reference, which the walk above
+	//     cannot classify because the key is named `key` and a reference may
+	//     just as well be env: or vault:;
+	//   - the signer's socket, which needs a *write* rule: connecting to a
+	//     Unix socket is a write under Landlock, and a read rule gives a
+	//     daemon whose every handshake fails with permission denied;
+	//   - the vault's token file and CA bundle, which are read.
+	for i := range cfg.Server.Listeners {
+		t := cfg.Server.Listeners[i].TLS
+		if t == nil {
+			continue
+		}
+		for _, c := range t.Certificates {
+			if c.Signer != nil {
+				addWrite(c.Signer.Socket, false)
+			}
+			if c.Key != "" {
+				if ref, err := keysource.Parse(c.Key); err == nil && ref.IsFile() {
+					addRead(ref.Target, false)
+				}
+			}
+		}
+	}
+	if sec := cfg.Secrets; sec != nil {
+		if v := sec.Vault; v != nil {
+			addRead(v.TokenFile, false)
+			addRead(v.CAFile, false)
 		}
 	}
 	for _, p := range cfg.Sandbox.Landlock.ReadPaths {

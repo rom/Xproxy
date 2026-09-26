@@ -23,7 +23,9 @@ import (
 	"github.com/rom/xproxy/internal/cluster"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/dns"
+	"github.com/rom/xproxy/internal/fipsmode"
 	"github.com/rom/xproxy/internal/intel"
+	"github.com/rom/xproxy/internal/keysource"
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/metrics"
@@ -92,6 +94,15 @@ type Server struct {
 	// with no ledger refuses every session, which is the fail-closed
 	// answer; validation catches that configuration first.
 	grants *access.Ledger
+	// secrets resolves the references in the configuration to material.
+	// It is always non-nil: without a secrets section it answers file: and
+	// env: references and refuses vault: ones, which is exactly what a
+	// configuration written before this existed needs.
+	secrets *keysource.Resolver
+	// fips records what the FIPS 140-3 check found at start, for the status
+	// view and the exposition. Zero when the configuration has no fips
+	// section.
+	fips fipsmode.Status
 	// assets is the device inventory, absent unless the configuration asked
 	// for one.
 	assets atomic.Pointer[assetKeeper]
@@ -184,6 +195,23 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 		live:         sessions.New(),
 		wouldDeny:    shadow.NewLedger(shadowBound(cfg)),
 	}
+	// The secret resolver is built before anything that may hold a
+	// reference -- a TLS key, a bind password, an upstream client key --
+	// because a reference resolved with no resolver is an error and not a
+	// path.
+	res, err := newSecrets(cfg, logs)
+	if err != nil {
+		return nil, err
+	}
+	s.secrets = res
+	// FIPS: asked before any key is generated or any handshake happens, so
+	// that a deployment that requires it and is not running it refuses to
+	// start rather than serving with algorithms nobody approved.
+	st, err := fipsStatus(cfg, logs)
+	if err != nil {
+		return nil, err
+	}
+	s.fips = st
 	if a := cfg.Access; a != nil {
 		l, err := access.Open(a.Ledger, accessPolicy(a))
 		if err != nil {
@@ -363,6 +391,7 @@ func (s *Server) Stats() Snapshot {
 	snap.RateRefusedConns = s.rate().Rejected.Load()
 	snap.Assets = s.AssetReport()
 	snap.Access = s.AccessReport()
+	snap.Custody = s.CustodyReport()
 	s.mu.Lock()
 	for _, bl := range s.listeners {
 		if bl.rate != nil {
@@ -1266,6 +1295,48 @@ func (s *Server) Shadow() *shadow.Ledger { return s.wouldDeny }
 // has no access section. A gate listener with require_grant and no ledger
 // refuses every session rather than admitting one unchecked.
 func (s *Server) Access() *access.Ledger { return s.grants }
+
+// Secrets implements Host: the resolver a kind uses to turn a configured
+// reference into material. Never nil.
+func (s *Server) Secrets() *keysource.Resolver { return s.secrets }
+
+// FIPS reports what the FIPS 140-3 check found at start.
+func (s *Server) FIPS() fipsmode.Status { return s.fips }
+
+// CustodyReport says where this daemon's private keys live.
+//
+// It counts the configuration rather than the loaded certificates on purpose:
+// what an auditor is asking is how the estate is arranged, and a certificate
+// that failed to load is still a key the configuration says is on disk.
+func (s *Server) CustodyReport() CustodySummary {
+	cfg := s.cfg()
+	out := CustodySummary{
+		Vault:        cfg.Secrets != nil && cfg.Secrets.Vault != nil,
+		FIPSEnabled:  s.fips.Enabled,
+		FIPSRequired: s.fips.Required,
+		FIPSRefused:  s.fips.Refused,
+	}
+	for i := range cfg.Server.Listeners {
+		t := cfg.Server.Listeners[i].TLS
+		if t == nil {
+			continue
+		}
+		for _, c := range t.Certificates {
+			switch {
+			case c.Signer != nil:
+				out.KeysExternal++
+			case c.Key != "":
+				out.KeysReferenced++
+			default:
+				out.KeysOnDisk++
+			}
+		}
+	}
+	if s.secrets != nil {
+		out.Stale = s.secrets.Stale()
+	}
+	return out
+}
 
 // AccessReport summarises the ledger for the status view and the exposition,
 // or nil when the configuration has no access section.
