@@ -45,11 +45,10 @@ TimeoutStopSec=10s
 KillSignal=SIGTERM
 UMask=0077
 
-# The directory the socket lives in comes from tmpfiles.d rather than
+# No LogsDirectory: this process logs to the journal and writes no files at
+# all. The directory the socket lives in comes from tmpfiles.d rather than
 # RuntimeDirectory=, because it needs the setgid bit and a group this unit does
 # not run as, and systemd's RuntimeDirectoryMode does not set setgid.
-LogsDirectory=xsigner
-LogsDirectoryMode=0750
 
 # Sandboxing. Tighter than the proxies', because this process does less: it
 # reads a handful of key files, binds one Unix socket, and computes.
@@ -77,7 +76,10 @@ KeyringMode=private
 PrivateMounts=yes
 NoExecPaths=/
 ExecPaths=/usr/local/bin/xsigner
-RestrictFileSystems=@basic-api tmpfs
+# @common-block is needed for the ordinary file systems the key files are on;
+# without it this process cannot read them and the failure looks like a missing
+# file rather than a policy.
+RestrictFileSystems=@basic-api @common-block tmpfs
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources @mount @reboot @swap @obsolete @cpu-emulation @debug @module @raw-io @clock @keyring @pkey @network-io
@@ -103,7 +105,7 @@ IPAddressDeny=any
 
 # What it may read: its configuration and its keys. Nothing else.
 ReadOnlyPaths=/etc/xsigner
-ReadWritePaths=/run/xsigner /var/log/xsigner
+ReadWritePaths=/run/xsigner
 DevicePolicy=closed
 
 [Install]

@@ -104,6 +104,15 @@ ps -eZ | grep xproxy                # system_u:system_r:xproxy_t
 ausearch -m AVC -c xproxy -ts today # empty
 ```
 
+**What the module does not cover yet.** It confines the edge data plane
+(`xproxy_t`) and the GUI (`xproxy_admin_t`). `xgate`, `xrelay` and
+`xsigner` have no domain of their own and run as `unconfined_service_t`,
+so on those three the systemd directives and the process's own Landlock
+and seccomp layers are the confinement, and SELinux is not. That is a
+real gap and it is on the list for 1.0; until it closes, do not read a
+`getenforce` of `Enforcing` as meaning all five processes are confined by
+policy. `ps -eZ` says which are.
+
 ## 3. Kernel network profile
 
 Install `deploy/sysctl/90-xproxy.conf`: SYN cookies, larger SYN and accept

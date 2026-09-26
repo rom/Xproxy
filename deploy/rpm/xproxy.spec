@@ -180,7 +180,6 @@ install -D -m 0640 deploy/config/xrelay.yaml %{buildroot}%{_sysconfdir}/xproxy/x
 install -d -m 0750 %{buildroot}%{_sysconfdir}/xsigner
 install -d -m 0700 %{buildroot}%{_sysconfdir}/xsigner/keys
 install -D -m 0640 deploy/config/xsigner.yaml %{buildroot}%{_sysconfdir}/xsigner/xsigner.yaml
-install -d -m 0750 %{buildroot}%{_localstatedir}/log/xsigner
 for d in xproxy xgate xrelay; do
   install -d -m 0750 %{buildroot}%{_localstatedir}/log/$d
   install -d -m 0700 %{buildroot}%{_sharedstatedir}/$d
@@ -348,7 +347,6 @@ fi
 %dir %attr(0750,root,xsigner) %{_sysconfdir}/xsigner
 %dir %attr(0700,xsigner,xsigner) %{_sysconfdir}/xsigner/keys
 %config(noreplace) %attr(0640,root,xsigner) %{_sysconfdir}/xsigner/xsigner.yaml
-%dir %attr(0750,xsigner,xsigner) %{_localstatedir}/log/xsigner
 
 %files admin
 %{_bindir}/xproxy-admin
