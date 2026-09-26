@@ -267,7 +267,12 @@ type session struct {
 
 	requests, denied, exceptions atomic.Uint64
 	closed                       atomic.Bool
-	wg                           sync.WaitGroup
+	// wg counts the device workers and writerWG the one writer goroutine.
+	// They are separate because the workers are the senders on writes and
+	// the writer is its receiver: the shutdown order is workers first, then
+	// the channel, then the writer, and one group cannot express that.
+	wg       sync.WaitGroup
+	writerWG sync.WaitGroup
 
 	// watch accumulates what this session did, for the estate's device
 	// inventory. It is reported twice -- on the first frame and at the end --
@@ -411,9 +416,9 @@ func (se *session) readRole(st tls.ConnectionState) string {
 // run reads frames from the master until the connection ends.
 func (se *session) run() string {
 	t := se.t
-	se.wg.Add(1)
+	se.writerWG.Add(1)
 	go func() {
-		defer se.wg.Done()
+		defer se.writerWG.Done()
 		defer safe.Guard("modbus writer")
 		for b := range se.writes {
 			if _, err := se.client.Write(b); err != nil {
@@ -856,12 +861,25 @@ func exceptionFor(d Decision) byte {
 	return wire.ExIllegalAddress
 }
 
+// stop ends the session's goroutines in the one order that is safe.
+//
+// The device workers are the senders on se.writes and the writer goroutine is
+// its receiver, so the channel cannot be closed while a worker might still be
+// in send: closing a channel a sender is using panics, and although the panic
+// is contained it leaves a session that has stopped answering the master --
+// which on a plant floor is a device that has gone quiet for no stated reason.
+//
+// So: tell the workers to finish, wait until they have, and only then close the
+// channel, which lets the writer drain what is already queued and return. The
+// last answers a device gave are written rather than dropped, which is the
+// other half of the same correctness.
 func (se *session) stop() {
-	close(se.writes)
 	for _, w := range se.workers {
 		w.once.Do(func() { close(w.done) })
 	}
 	se.wg.Wait()
+	close(se.writes)
+	se.writerWG.Wait()
 }
 
 // limitedReader bounds what one frame may read, so a length field that
