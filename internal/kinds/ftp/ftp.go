@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rom/xproxy/internal/access"
 	"github.com/rom/xproxy/internal/config"
 	wire "github.com/rom/xproxy/internal/ftp"
 	"github.com/rom/xproxy/internal/mfa"
@@ -55,6 +56,9 @@ type server struct {
 	recorder *sessionrec.Policy
 	// mfaGuard holds the second factor's enrolments and its lockout.
 	mfaGuard *mfa.Guard
+	// grants is the just-in-time access guard, nil unless this listener
+	// sets require_grant.
+	grants *access.Guard
 
 	open atomic.Int64
 	wg   sync.WaitGroup
@@ -149,6 +153,7 @@ func newServer(engine proxy.Host, cfg config.Listener, ln net.Listener, tc *tls.
 		p.yara = g
 	}
 	t.policy = p
+	t.grants = access.NewGuard(engine.Access(), cfg.Name, f.RequireGrant, engine.Logs().Error)
 	return t, nil
 }
 
@@ -312,6 +317,15 @@ type session struct {
 	secure bool // the client's control connection is encrypted
 	user   string
 	authed bool
+	// grant is the access grant this session was admitted under, and
+	// grantChecked that the check has been made. On this protocol the login
+	// arrives on a control connection that is already open, so the grant is
+	// checked when the login completes rather than before the target is
+	// dialled; see grantGate. stopAtExpiry stops the timer that closes the
+	// session when the window ends.
+	grant        *access.Grant
+	grantChecked bool
+	stopAtExpiry func()
 	// prot is the data channel protection the client asked for: C for
 	// clear, P for private.
 	prot string
@@ -399,6 +413,11 @@ func (t *server) handle(client net.Conn) {
 		client, se.client, se.secure = tc, tc, true
 	}
 	defer func() { _ = se.client.Close() }()
+	defer func() {
+		if se.stopAtExpiry != nil {
+			se.stopAtExpiry()
+		}
+	}()
 	se.cr = wire.NewReader(bufio.NewReaderSize(se.client, t.f.MaxCommandLine+2), t.f.MaxCommandLine)
 	se.cw = bufio.NewWriter(se.client)
 
@@ -452,6 +471,7 @@ func (t *server) log(se *session, start time.Time, reason string) {
 	attrs := []any{"listener", t.cfg.Name, "client_ip", se.ip.String(),
 		"user", textsafe.Clip64(se.user), "target", se.target, "tls", se.secure,
 		"duration_ms", float64(time.Since(start).Microseconds()) / 1000}
+	attrs = append(attrs, access.LogAttrs(se.grant)...)
 	if reason != "" {
 		attrs = append(attrs, "closed", reason)
 	}
@@ -768,10 +788,21 @@ func (se *session) relay(c wire.Command) (bool, string) {
 			se.pending = ""
 			out = se.verifyFactor(code)
 		}
+		if reason, line := se.grantGate(); reason != "" {
+			_ = se.toClient(line)
+			return true, reason
+		}
 		if err := se.toClient(out); err != nil {
 			return true, "write"
 		}
 		return false, ""
+	}
+	// The login is complete by here when there is no factor to wait for, so
+	// this is where a session with no grant is refused: the control
+	// connection is open and the target has seen nothing but a greeting.
+	if reason, line := se.grantGate(); reason != "" {
+		_ = se.toClient(line)
+		return true, reason
 	}
 	if err := se.toClient(rep.Format()); err != nil {
 		return true, "write"
@@ -780,6 +811,49 @@ func (se *session) relay(c wire.Command) (bool, string) {
 		return true, "quit"
 	}
 	return false, ""
+}
+
+// grantGate is the just-in-time access decision, made once, at the moment the
+// session becomes logged in. It returns the reason to end the session and the
+// reply to send, or "" to carry on.
+//
+// FTP dials the target before anybody has said who they are -- the greeting
+// comes from the server -- so unlike the SSH and telnet gateways this cannot
+// refuse before the target is reached. What it can do is refuse before any
+// command of the person's is forwarded, which is what it does: the target has
+// seen a connection and a login, and nothing else.
+func (se *session) grantGate() (reason string, line []byte) {
+	t := se.t
+	if t.grants == nil || se.grantChecked || !se.authed || se.mfa == mfaWanted {
+		return "", nil
+	}
+	se.grantChecked = true
+	// The target is already dialled, so the only machine this session can be
+	// about is the one it reached.
+	adm := t.grants.Check(se.user, t.f.Upstream, []string{se.target})
+	if adm.Reason == "" {
+		se.grant = adm.Grant
+		if se.grant != nil {
+			t.grants.Use(se.grant, se.sessionID())
+			se.stopAtExpiry = access.CloseAtExpiry(se.grant, func() { _ = se.client.Close() })
+		}
+		return "", nil
+	}
+	if t.shadowed(se.ip, adm.Reason, textsafe.Clip64(se.user)) {
+		return "", nil
+	}
+	t.engine.Counters().FTPRefused.Add(1)
+	t.deny(se.ip, adm.Reason, textsafe.Clip64(se.user))
+	return adm.Reason, wire.Line(530, "no access grant is in force")
+}
+
+// sessionID is the live table's identifier for this session, or empty when the
+// table refused to register it.
+func (se *session) sessionID() string {
+	if se.live == nil {
+		return ""
+	}
+	return se.live.ID
 }
 
 // follow updates what the proxy knows from a reply it is passing on.

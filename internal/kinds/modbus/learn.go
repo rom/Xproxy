@@ -13,6 +13,8 @@ import (
 
 	"github.com/rom/xproxy/internal/acceptgroup"
 	wire "github.com/rom/xproxy/internal/modbus"
+
+	"github.com/rom/xproxy/internal/numrange"
 )
 
 // Learning mode exists because nobody knows what a plant's Modbus
@@ -26,12 +28,12 @@ import (
 // control gets turned off and stays off.
 //
 // So this records what crosses the listener -- per client, role, unit and
-// function code -- with the address ranges and the value ranges actually
+// function code -- with the address numrange.Set and the value numrange.Set actually
 // used, and writes it out as a rule set to start from. Run it for a week,
 // read the file, paste the rules, turn enforcement on.
 
-// maxObservedRanges bounds the distinct address ranges held for one
-// subject. Past it the ranges are merged into their span, which is
+// maxObservedRanges bounds the distinct address numrange.Set held for one
+// subject. Past it the numrange.Set are merged into their span, which is
 // honest about being a bound rather than dropping what it cannot hold.
 const maxObservedRanges = 32
 
@@ -49,11 +51,11 @@ type observation struct {
 	first, last time.Time
 	frames      uint64
 	denied      uint64
-	// addresses are the ranges read or written, merged as they grow.
-	addresses []rng
-	// writeAddresses are the ranges written, kept apart because that is
+	// addresses are the numrange.Set read or written, merged as they grow.
+	addresses []numrange.Range
+	// writeAddresses are the numrange.Set written, kept apart because that is
 	// the rule an engineer reads most carefully.
-	writeAddresses []rng
+	writeAddresses []numrange.Range
 	// minValue and maxValue are the span of the register values written,
 	// and haveValues says any write carried one.
 	minValue, maxValue int
@@ -228,44 +230,44 @@ func (l *Learner) ObserveException(req request, now time.Time) {
 }
 
 // addRange merges a range into a set, keeping it bounded. Overlapping and
-// adjacent ranges become one, and past the bound the whole set collapses
+// adjacent numrange.Set become one, and past the bound the whole set collapses
 // to its span -- which is wider than the truth and says so, rather than
 // forgetting the parts that did not fit.
-func addRange(rs []rng, lo, hi int) []rng {
+func addRange(rs []numrange.Range, lo, hi int) []numrange.Range {
 	for i := range rs {
-		if lo <= rs[i].hi+1 && hi+1 >= rs[i].lo {
-			if lo < rs[i].lo {
-				rs[i].lo = lo
+		if lo <= rs[i].Hi+1 && hi+1 >= rs[i].Lo {
+			if lo < rs[i].Lo {
+				rs[i].Lo = lo
 			}
-			if hi > rs[i].hi {
-				rs[i].hi = hi
+			if hi > rs[i].Hi {
+				rs[i].Hi = hi
 			}
 			return mergeRanges(rs)
 		}
 	}
-	rs = append(rs, rng{lo, hi})
+	rs = append(rs, numrange.Range{Lo: lo, Hi: hi})
 	if len(rs) > maxObservedRanges {
 		span := rs[0]
 		for _, r := range rs[1:] {
-			if r.lo < span.lo {
-				span.lo = r.lo
+			if r.Lo < span.Lo {
+				span.Lo = r.Lo
 			}
-			if r.hi > span.hi {
-				span.hi = r.hi
+			if r.Hi > span.Hi {
+				span.Hi = r.Hi
 			}
 		}
-		return []rng{span}
+		return []numrange.Range{span}
 	}
 	return mergeRanges(rs)
 }
 
-func mergeRanges(rs []rng) []rng {
-	sort.Slice(rs, func(i, j int) bool { return rs[i].lo < rs[j].lo })
+func mergeRanges(rs []numrange.Range) []numrange.Range {
+	sort.Slice(rs, func(i, j int) bool { return rs[i].Lo < rs[j].Lo })
 	out := rs[:0]
 	for _, r := range rs {
-		if n := len(out); n > 0 && r.lo <= out[n-1].hi+1 {
-			if r.hi > out[n-1].hi {
-				out[n-1].hi = r.hi
+		if n := len(out); n > 0 && r.Lo <= out[n-1].Hi+1 {
+			if r.Hi > out[n-1].Hi {
+				out[n-1].Hi = r.Hi
 			}
 			continue
 		}
@@ -315,7 +317,7 @@ func (l *Learner) Write() error {
 //
 // The rules are deliberately one per client, role and unit rather than
 // one per frame: a rule per observation would be a rule set nobody reads.
-// The addresses are the ranges actually used, widened to nothing, and the
+// The addresses are the numrange.Set actually used, widened to nothing, and the
 // value bounds are the values actually written -- which an engineer then
 // widens on purpose, having seen what the traffic is.
 func (l *Learner) Report() string {
@@ -425,15 +427,15 @@ func (l *Learner) Report() string {
 	return b.String()
 }
 
-// rangeList renders ranges the way the policy reads them.
-func rangeList(rs []rng) string {
+// rangeList renders numrange.Set the way the policy reads them.
+func rangeList(rs []numrange.Range) string {
 	parts := make([]string, 0, len(rs))
 	for _, r := range rs {
-		if r.lo == r.hi {
-			parts = append(parts, fmt.Sprintf("%d", r.lo))
+		if r.Lo == r.Hi {
+			parts = append(parts, fmt.Sprintf("%d", r.Lo))
 			continue
 		}
-		parts = append(parts, fmt.Sprintf("%d-%d", r.lo, r.hi))
+		parts = append(parts, fmt.Sprintf("%d-%d", r.Lo, r.Hi))
 	}
 	return strings.Join(parts, ", ")
 }

@@ -769,6 +769,11 @@ type Snapshot struct {
 	AssetFindings        uint64 `json:"asset_findings"`
 	AssetUnexpected      uint64 `json:"asset_unexpected_role"`
 	AssetSaveFailures    uint64 `json:"asset_save_failures"`
+	// Access is the just-in-time access ledger's summary, absent when the
+	// configuration has no access section. It is here rather than only on
+	// the management view because a grant queue nobody drains and sessions
+	// refused for want of one are both things to alert on.
+	Access *AccessSummary `json:"access,omitempty"`
 	// Assets is the inventory's own summary, absent when no inventory is
 	// configured.
 	Assets                 *AssetSummary      `json:"assets,omitempty"`
@@ -1317,6 +1322,25 @@ func grpcSnapshot(a *[17]atomic.Uint64) [17]uint64 {
 
 // AssetSummary is the device inventory in a status view: how many devices, how
 // many the estate has not accounted for, and the count per role.
+// AccessSummary is what the exposition and the status view say about
+// just-in-time access: how many grants are in each state, and the acts and
+// refusals counted since start.
+type AccessSummary struct {
+	// ByState counts the grants in each state (pending, active, expired and
+	// the rest). Pending is the one to watch: a request nobody answers is an
+	// operator who cannot work, and an approval system that is quietly
+	// ignored is worse than none.
+	ByState map[string]int `json:"by_state,omitempty"`
+	// Requests, Approvals, Denials, Revocations and Uses are the ledger's
+	// own counters, and Refusals the sessions turned away by reason.
+	Requests    uint64            `json:"requests"`
+	Approvals   uint64            `json:"approvals"`
+	Denials     uint64            `json:"denials"`
+	Revocations uint64            `json:"revocations"`
+	Uses        uint64            `json:"uses"`
+	Refusals    map[string]uint64 `json:"refusals,omitempty"`
+}
+
 type AssetSummary struct {
 	Assets   int            `json:"assets"`
 	New      int            `json:"new"`

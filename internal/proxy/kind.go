@@ -10,6 +10,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/rom/xproxy/internal/access"
 	"github.com/rom/xproxy/internal/acme"
 	"github.com/rom/xproxy/internal/assets"
 	"github.com/rom/xproxy/internal/ban"
@@ -99,6 +100,12 @@ type Host interface {
 	// have refused to. Never nil, so a kind writes no conditionals around
 	// it; a listener that enforces never reaches it.
 	Shadow() *shadow.Ledger
+	// Access is the just-in-time access ledger, or nil when the
+	// configuration has no access section. Unlike the two above it may be
+	// nil, and a gate with require_grant must then refuse every session:
+	// the fail-closed answer for a daemon asked to check grants with
+	// nothing to check them against.
+	Access() *access.Ledger
 	// ObserveAsset records what this listener noticed about a device, for
 	// the estate's own inventory: a hardware address, an address, the
 	// protocol, and whatever the exchange said about what the device is.

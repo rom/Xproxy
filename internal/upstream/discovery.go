@@ -45,7 +45,13 @@ type discoverer struct {
 	changes     atomic.Uint64
 	errors      atomic.Uint64
 	count       atomic.Int64
+	truncations atomic.Uint64
 	errNotice   bound.Notice
+	// bigNotice warns about a resolution larger than max_endpoints. It is
+	// throttled because a registry that answers with ten thousand entries
+	// answers that way on every interval, and a log line per resolution
+	// would be the second denial of service.
+	bigNotice bound.Notice
 	// httpClient polls the registry for type http.
 	httpClient *http.Client
 	// refresh wakes the loop early (tests, reload).
@@ -63,6 +69,10 @@ type DiscoveryStatus struct {
 	Resolutions  uint64    `json:"resolutions"`
 	Changes      uint64    `json:"changes"`
 	Errors       uint64    `json:"errors"`
+	// Truncations counts resolutions that exceeded max_endpoints. Not
+	// zero means the pool is serving a subset of what the registry
+	// announced, which an operator has to see.
+	Truncations uint64 `json:"truncations,omitempty"`
 }
 
 func newDiscoverer(cfg *config.Discovery, p *Pool) (*discoverer, error) {
@@ -98,7 +108,8 @@ func (d *discoverer) status() *DiscoveryStatus {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return &DiscoveryStatus{Type: d.cfg.Type, Name: d.cfg.Name, Interval: d.cfg.Interval.D().String(), Endpoints: int(d.count.Load()),
-		LastResolved: d.last, LastError: d.lastErr, Resolutions: d.resolutions.Load(), Changes: d.changes.Load(), Errors: d.errors.Load()}
+		LastResolved: d.last, LastError: d.lastErr, Resolutions: d.resolutions.Load(), Changes: d.changes.Load(), Errors: d.errors.Load(),
+		Truncations: d.truncations.Load()}
 }
 
 // resolve performs one resolution and returns the endpoint specs sorted
@@ -190,6 +201,40 @@ func finalizeSpecs(specs []endpointSpec, name string) ([]endpointSpec, error) {
 	return out, nil
 }
 
+// bound truncates a resolution to max_endpoints, warning and counting when it
+// does.
+//
+// A registry is a remote input, and the answer it gives decides how many
+// health check goroutines this process runs, how large the hash ring is and how
+// much the pool holds. A DNS answer over TCP carries thousands of A records and
+// a four megabyte registry response tens of thousands of entries, so without a
+// bound one answer -- from a registry that is confused, compromised or answering
+// somebody else's question -- sizes the proxy.
+//
+// It truncates rather than refusing the resolution. Refusing would keep the
+// previous set, which for a pool whose backends have all moved is a pool that
+// serves nothing; a bounded subset of what was announced still carries traffic.
+// The specs are sorted by address by this point, so the subset is the same one
+// on every resolution: an unstable subset would churn the pool and the ring
+// on every interval, which is worse than serving fewer endpoints.
+func (d *discoverer) bound(specs []endpointSpec) []endpointSpec {
+	// Validation fills max_endpoints, so an unset one means a caller that
+	// built the configuration itself rather than loading it. That falls back
+	// to the documented default rather than to no bound: a bound that any
+	// path can arrive at unset is not a bound.
+	maxEP := d.cfg.MaxEndpoints
+	if maxEP <= 0 {
+		maxEP = config.DefaultDiscoveryMaxEndpoints
+	}
+	if len(specs) <= maxEP {
+		return specs
+	}
+	d.truncations.Add(1)
+	d.bigNotice.Hit(d.pool.log, "endpoint discovery returned more endpoints than max_endpoints; using the first by address",
+		"name", d.cfg.Name, "returned", len(specs), "max_endpoints", maxEP)
+	return specs[:maxEP]
+}
+
 // once resolves and applies the result; a failure keeps the previous set.
 func (d *discoverer) once(ctx context.Context) {
 	specs, err := d.resolve(ctx)
@@ -205,6 +250,7 @@ func (d *discoverer) once(ctx context.Context) {
 	d.last = time.Now()
 	d.lastErr = ""
 	d.mu.Unlock()
+	specs = d.bound(specs)
 	added, removed := d.pool.setDiscovered(specs)
 	d.count.Store(int64(len(specs)))
 	if added+removed > 0 {

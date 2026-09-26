@@ -1,0 +1,269 @@
+# Siemens S7comm, in front of controllers that cannot be given a password
+# that means anything.
+#
+# This is the protocol with the least security of any in this project. Three
+# layers on TCP 102 — TPKT, COTP, S7comm — and what matters about it is what
+# it does not have. No transport security at all, and no authentication worth
+# the name: the optional password protects a handful of functions on some CPU
+# families and nothing on others, and an S7-300 with no password accepts a
+# stop from anybody who can open a socket to it. An engineering station on the
+# same segment can read and write every byte of memory in every controller on
+# that segment.
+#
+# The equipment cannot be fixed. A controller in a line is replaced on a
+# capital cycle, not a release cycle, and its firmware is qualified against
+# the process it runs. So the boundary is here.
+#
+# Four listeners, each a different answer to "who may reach which CPU, and to
+# do what":
+#   line3     — the panels and the historian on line 3: reads, a bounded
+#               window of setpoints, and nothing else
+#   line3-eng — the same controller on a separate address for the
+#               engineering station, where a download happens inside a
+#               change window and is written down
+#   packaging — a whole cell of controllers, read-only, one line that no
+#               rule can override
+#   trial     — monitor mode, for finding out what a cell actually does
+#               before a policy is written for it
+#
+# Validate: xrelay -config examples/ot/s7.yaml -validate
+version: 1
+server:
+  listeners:
+    # -----------------------------------------------------------------
+    # Line 3: the panels and the historian.
+    # -----------------------------------------------------------------
+    - name: line3
+      address: "10.40.0.10:102"
+      kind: s7
+      s7:
+        upstream: line3_cpu
+
+        # The control network, and nothing else. S7comm on an open port is
+        # a PLC on an open port.
+        allow_clients:
+          - "10.40.1.0/24"        # the operator panels
+          - "10.40.3.7/32"        # the historian
+        deny_clients:
+          - "10.40.1.99/32"       # the contractor's laptop, until it is not
+
+        # One controller: rack 0, slot 2. It arrives in the connection
+        # request, so a client that asks for another is refused before the
+        # PLC is dialled and never takes one of its sixteen connection
+        # resources.
+        racks: ["0"]
+        slots: ["2"]
+
+        # `op` is an operator panel; `pg` is the programming device
+        # connection an engineering station opens. Admitting only `op` has
+        # refused every engineering station on this address without naming
+        # a single function.
+        resources: ["op"]
+
+        # What an HMI and a historian do, plus the one write this line
+        # needs. Everything absent is the policy: no download, no upload,
+        # no control service, no stop, no clock setting, no password
+        # function, no debugger.
+        operations:
+          - setup
+          - read
+          - write
+          - szl
+          - cyclic
+          - time_read
+
+        # The memory a panel reaches. `peripheral` is direct access to the
+        # I/O hardware, past the process image the program reads, so it is
+        # denied by name on any listener that allows writing at all.
+        areas: ["db", "inputs", "outputs", "flags"]
+        deny_areas: ["peripheral"]
+        dbs: ["1-40"]
+
+        # Written in bytes, because that is how an operator thinks about a
+        # data block; the protocol carries a bit address and the relay
+        # divides by eight. A read may cover the first half kilobyte of a
+        # block; a write may only touch the setpoint window.
+        addresses: ["0-511"]
+        write_addresses: ["100-199"]
+
+        # Bounds. A read of a hundred items is one PDU that occupies the
+        # CPU for as long as a hundred reads, and a CPU has very few
+        # connection resources: a bound per client is what stops one panel
+        # taking them all.
+        max_items: 20
+        max_read_bytes: 480
+        max_write_bytes: 64
+        max_pdu_length: 480
+        max_sessions: 12
+        max_sessions_per_client: 2
+        rate_limit: 40
+        rate_burst: 80
+        idle_timeout: 5m
+        handshake_timeout: 10s
+
+        default_action: deny
+        rules:
+          # The panels: setpoints in the window above.
+          - name: panels
+            clients: ["10.40.1.0/24"]
+            operations: [setup, read, write, szl, cyclic, time_read]
+            comment: "line 3 panels: setpoints in DB1..DB40 bytes 100-199"
+
+          # The historian reads and never writes, and the deny list says so
+          # rather than the absence of a word: a reviewer can see it.
+          - name: historian
+            clients: ["10.40.3.7/32"]
+            operations: [setup, read, szl, cyclic, time_read]
+            deny_operations: [write]
+            comment: "line 3 historian, read path only"
+
+    # -----------------------------------------------------------------
+    # The same controller, the engineering station, a change window.
+    # -----------------------------------------------------------------
+    - name: line3-eng
+      address: "10.40.0.11:102"
+      kind: s7
+      s7:
+        upstream: line3_cpu
+        allow_clients: ["10.40.9.0/28"]
+        racks: ["0"]
+        slots: ["2"]
+        resources: ["pg"]
+
+        # Still not everything. An upload is how a plant's control logic
+        # leaves the site, so it is named here deliberately rather than
+        # arriving with the writes — and the password functions and the
+        # debugger are not named at all.
+        operations:
+          - setup
+          - read
+          - write
+          - blocks
+          - upload
+          - download
+          - control
+        deny_operations: [stop, security, programmer, time_write]
+
+        areas: ["db", "instance_db", "inputs", "outputs", "flags", "timer", "counter"]
+        deny_areas: ["peripheral"]
+        block_types: ["db", "fb", "fc"]
+        max_items: 32
+        max_pdu_length: 960
+        max_sessions_per_client: 1
+        session_duration: 4h
+
+        # Every request from this address is written down. It is a great
+        # many lines on a poll loop and this is not one: an engineering
+        # station is used by a person, a few hundred times a shift.
+        log_requests: true
+
+        default_action: deny
+        rules:
+          # Reading is always available: an engineer diagnosing a fault at
+          # two in the morning is not waiting for a change window.
+          - name: diagnose
+            operations: [setup, read, blocks, szl, cyclic, time_read]
+            comment: "read and diagnose, any time"
+
+          # Changing the program is not.
+          - name: change-window
+            operations: [setup, read, write, blocks, upload, download, control]
+            schedule: {days: [sat], from: "06:00", to: "14:00", timezone: "Europe/Stockholm"}
+            comment: "CR-2291: line 3 recipe update, Saturday day shift"
+
+    # -----------------------------------------------------------------
+    # The packaging cell: read-only, and no rule can override it.
+    # -----------------------------------------------------------------
+    - name: packaging
+      address: "10.40.0.12:102"
+      kind: s7
+      s7:
+        upstream: packaging_cpus
+        allow_clients: ["10.40.1.0/24", "10.40.3.7/32"]
+
+        # Six controllers in one rack.
+        racks: ["0"]
+        slots: ["2-7"]
+        resources: ["op", "basic"]
+
+        # One line. Every operation that changes the PLC is refused for
+        # every client before any rule is read — a read-only listener that
+        # one rule could write through is not a read-only listener.
+        read_only: true
+
+        dbs: ["1-99"]
+        max_items: 20
+        max_read_bytes: 480
+        max_sessions_per_client: 4
+
+        default_action: allow
+        alert_on_deny: true
+
+    # -----------------------------------------------------------------
+    # A cell nobody has an inventory of: evaluate, record, carry.
+    # -----------------------------------------------------------------
+    - name: trial
+      address: "10.40.0.13:102"
+      kind: s7
+      s7:
+        upstream: assembly_cpus
+        allow_clients: ["10.40.0.0/16"]
+
+        # The policy to be tried, written as if it were enforcing.
+        racks: ["0"]
+        slots: ["2", "3"]
+        areas: ["db", "inputs", "outputs", "flags"]
+        dbs: ["1-20"]
+        addresses: ["0-255"]
+        default_action: deny
+
+        # Nothing is enforced except the hard decisions: the client list,
+        # the rack and slot, a frame the relay could not read, the bounds —
+        # and every operation that changes the PLC, because a write
+        # forwarded so that it could be written down is a moved actuator
+        # and a stop forwarded is a stopped machine.
+        monitor_only: true
+        log_requests: true
+
+upstreams:
+  - name: line3_cpu
+    endpoints:
+      - {address: "10.40.10.31:102"}
+    # A CPU has sixteen connection resources altogether, so the pool holds
+    # the bound rather than discovering it as a refused connection.
+    max_connections_per_endpoint: 6
+
+  - name: packaging_cpus
+    endpoints:
+      - {address: "10.40.10.41:102"}
+      - {address: "10.40.10.42:102"}
+      - {address: "10.40.10.43:102"}
+    # A session belongs to a controller, not to a pool member chosen per
+    # request: the rack and slot in the connection request name the CPU, and
+    # sending the next frame somewhere else would be sending it to another
+    # machine.
+    balancer: hash
+    max_connections_per_endpoint: 6
+
+  - name: assembly_cpus
+    endpoints:
+      - {address: "10.40.10.51:102"}
+      - {address: "10.40.10.52:102"}
+    balancer: hash
+    max_connections_per_endpoint: 6
+
+logging:
+  access:
+    enabled: true
+  security:
+    enabled: true
+
+# A client walking the rack, the slots or the data block numbers is doing
+# exactly one thing, and it is not operating a plant.
+bans:
+  triggers:
+    - name: s7-probing
+      reasons: [s7_denied]
+      threshold: 8
+      window: 2m
+      duration: 1h

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/rom/xproxy/internal/access"
 	"io"
 	"net"
 	"net/http"
@@ -323,6 +324,60 @@ func (c *Client) KillSessions(id, kind, listener, user string) ([]sessions.View,
 	}
 	var out []sessions.View
 	return out, c.doBody("DELETE", "/v1/sessions?"+q.Encode(), nil, &out)
+}
+
+// Access reads the grants, with an optional state filter (pending, active,
+// expired and the rest), or one grant by id.
+func (c *Client) Access(state string) (AccessReport, error) {
+	var out AccessReport
+	q := ""
+	if state != "" {
+		q = "?state=" + url.QueryEscape(state)
+	}
+	return out, c.do("GET", "/v1/access"+q, &out)
+}
+
+// Grant reads one grant by id.
+func (c *Client) Grant(id string) (access.View, error) {
+	var out access.View
+	return out, c.do("GET", "/v1/access?id="+url.QueryEscape(id), &out)
+}
+
+// AskAccess asks for a window. It is not access until enough other people have
+// approved it, which is what Approve is for.
+func (c *Client) AskAccess(subject, listener, target, reason, by, duration, start string, maxUses int) (*access.Grant, error) {
+	body := map[string]any{"subject": subject, "listener": listener, "target": target,
+		"reason": reason, "by": by, "duration": duration}
+	if start != "" {
+		body["start"] = start
+	}
+	if maxUses > 0 {
+		body["max_uses"] = maxUses
+	}
+	var out access.Grant
+	return &out, c.doBody("POST", "/v1/access", body, &out)
+}
+
+// ApproveAccess, DenyAccess and RevokeAccess are the three acts on a grant.
+func (c *Client) ApproveAccess(id, by, note string) (*access.Grant, error) {
+	return c.actOnGrant("approve", id, by, note)
+}
+
+func (c *Client) DenyAccess(id, by, note string) (*access.Grant, error) {
+	return c.actOnGrant("deny", id, by, note)
+}
+
+func (c *Client) RevokeAccess(id, by, note string) (*access.Grant, error) {
+	return c.actOnGrant("revoke", id, by, note)
+}
+
+func (c *Client) actOnGrant(what, id, by, note string) (*access.Grant, error) {
+	var out access.Grant
+	body := map[string]any{"id": id, "by": by}
+	if note != "" {
+		body["note"] = note
+	}
+	return &out, c.doBody("POST", "/v1/access/"+what, body, &out)
 }
 
 // AssetQuery is the filter a caller puts on the inventory. Every field is

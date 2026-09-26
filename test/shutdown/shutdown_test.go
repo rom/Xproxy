@@ -41,6 +41,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/config"
+	_ "github.com/rom/xproxy/internal/kinds/amqp"
 	_ "github.com/rom/xproxy/internal/kinds/bacnet"
 	_ "github.com/rom/xproxy/internal/kinds/dhcp"
 	_ "github.com/rom/xproxy/internal/kinds/ftp"
@@ -54,6 +55,7 @@ import (
 	_ "github.com/rom/xproxy/internal/kinds/postgres"
 	_ "github.com/rom/xproxy/internal/kinds/rdp"
 	_ "github.com/rom/xproxy/internal/kinds/redis"
+	_ "github.com/rom/xproxy/internal/kinds/s7"
 	_ "github.com/rom/xproxy/internal/kinds/smtp"
 	_ "github.com/rom/xproxy/internal/kinds/snmp"
 	_ "github.com/rom/xproxy/internal/kinds/syslog"
@@ -97,6 +99,8 @@ var cases = map[string]kindCase{
 	"mysql":    {section: "mysql: {upstream: u, require_tls: false}"},
 	"tds":      {section: "tds: {upstream: u, require_tls: false}"},
 	"redis":    {section: "redis: {upstream: u, require_tls: false}"},
+	"amqp":     {section: "amqp: {upstream: u, require_tls: false}"},
+	"s7":       {section: "s7: {upstream: u}"},
 	"rdp": {section: "rdp: {upstream: u}\n      " +
 		"tls: {certificates: [{cert_file: %[1]s/c.pem, key_file: %[1]s/k.pem}]}"},
 	"ntske": {section: "ntske: {upstream: u}\n      " +

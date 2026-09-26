@@ -127,6 +127,34 @@ internal/kinds/bacnet  kind: bacnet -- BACnet/IP relay: the services carried,
                        the objects and properties they may name, the command
                        priority a write may claim, the broadcast and BBMD
                        bounds, invoke identifiers translated per client
+internal/amqpwire      AMQP off the wire: both versions' framing, the 0-9-1
+                       method catalogue and its field tables, the 1.0
+                       performatives over its type system, and the identity
+                       in a SASL exchange -- never the password
+internal/kinds/amqp    kind: amqp -- message broker relay: the version a
+                       client may speak, the mechanism and identity, the
+                       vhost, whether topology may be changed at all, and
+                       every exchange, queue, routing key and link address
+                       an operation names
+internal/numrange      The number-range list a policy is written with: `5`,
+                       `1-16`, `0x10-0x1F`. Hexadecimal because half the
+                       register maps a plant engineer has are written that way
+internal/sesslimit     The bound on sessions held, altogether and per client
+                       address. Six kinds had their own copy and all six could
+                       be pushed past the bound by concurrent accepts
+internal/schedule      The time window a rule can be limited to, in the one
+                       spelling every kind uses. Thirteen kinds had their own
+                       copy and they had drifted: two readings of what a
+                       midnight-spanning window means, and one accepted a day
+                       name the other twelve refused
+internal/s7            S7comm off the wire: TPKT framing, the COTP connection
+                       request with the rack and slot it addresses, and the
+                       S7 layer -- function codes, user-data groups and item
+                       specifications -- mapped onto one operation vocabulary
+internal/kinds/s7      kind: s7 -- Siemens PLC relay: which controller a
+                       client may reach and as what, which of nineteen
+                       operations it may ask for, and which memory areas,
+                       data blocks and byte ranges it may name
 internal/kinds/tftp    kind: tftp -- TFTP relay: the filename read as a path
                        and refused by class, the direction of the transfer,
                        the amplification bounds, one socket per transfer
@@ -1333,6 +1361,79 @@ that protocol's own terms, and bounds what a peer may say.
   directions, because a client's segment acknowledgement names the identifier the
   client chose, and a segment renews the exchange's deadline rather than letting
   a long download expire in the middle of itself.
+- `amqp` reads both AMQP protocols (`internal/amqpwire` for the two framings and
+  the catalogues, `internal/kinds/amqp` for the policy). It is the only kind that
+  reads two protocols on one port, and the reason is the protocol family: a
+  client picks 0-9-1 or 1.0 in its first eight octets, and the framing of
+  everything after it follows from that choice.
+
+  Three things shape the code. **The header is decided before the broker is
+  dialled**, because it decides the framing: a client asking for a version this
+  listener does not serve never reaches the broker, and is answered with a header
+  the listener does serve, which is what both specifications say to do. A header
+  can also arrive *in the middle* of a stream -- AMQP 1.0 starts again with a
+  fresh one after a successful SASL exchange -- so both readers use one peeked
+  octet to tell a header from a frame rather than a flag shared between two
+  goroutines: a header begins with `A`, a 0-9-1 frame begins with a frame type
+  and a 1.0 frame with the high octet of a bounded size, so the octet is
+  unambiguous in both framings.
+
+  **On 1.0 the address is not in the frame that uses it.** An attach names the
+  node and every transfer after it carries a link handle, so the relay keeps the
+  handle table: a transfer is attributed to the address its handle was attached
+  to, and a transfer on a handle this relay never saw attached is refused rather
+  than forwarded with no policy applied to it. The same table is what makes the
+  message bound possible, because a 1.0 message is a run of transfers and
+  bounding each frame would bound nothing.
+
+  And **a refusal ends the connection**, which is different from every other
+  relay kind here. AMQP is stateful in both directions: dropping one frame out of
+  a conversation would leave the client waiting for a reply the broker was never
+  asked for, or the broker answering a method the client never learned was
+  refused. So the refusal is the protocol's own -- a `connection.close` with
+  reply code 403, or a 1.0 `close` carrying `amqp:unauthorized-access` -- and
+  both legs close. It is also the one place in the kind that writes a frame
+  rather than forwarding one, and the boundary is deliberate: the relay renders
+  its own messages and never re-renders a peer's, because a proxy that re-encoded
+  a frame would be a second implementation of the encoder whose disagreements
+  with the first are what an attacker is looking for.
+- `s7` is a relay in front of a Siemens PLC (`internal/s7` for the three layers
+  on TCP 102, `internal/kinds/s7` for the policy). It is the listener for the
+  protocol with the least security of any here: no transport security at all --
+  which is why the kind registers without a TLS section, since a certificate
+  would promise something the protocol cannot do -- and no authentication worth
+  the name, because the optional password protects a handful of functions on
+  some CPU families and nothing on others, and an S7-300 with no password
+  accepts a stop from anybody who can open a socket. The equipment cannot be
+  fixed on a release cycle, so the boundary is the relay.
+
+  Three things shape the code. **The controller is decided before the PLC is
+  dialled.** Which CPU a client asked for is in the COTP connection request --
+  the called TSAP's two octets hold a connection resource, a rack and a slot --
+  so a client that may not reach that controller is refused with a COTP
+  disconnect and never reaches it. That ordering is the point rather than an
+  optimisation: a CPU has very few connection resources, an S7-300 sixteen
+  altogether, and a client that may not reach it should not take one of them.
+
+  **One vocabulary spans two layers.** The protocol puts reading and writing
+  memory behind a function code and the diagnostic buffer, the block list, the
+  clock, the password and the debugger behind a user-data group and subfunction.
+  A policy written against either alone would have nothing to say about half the
+  protocol, so `internal/s7` maps both onto nineteen words and the policy is
+  written in them -- which is also what lets `read_only` mean every operation
+  that changes the controller rather than just a write.
+
+  And **a refused request is answered and the session carries on**, which is the
+  modbus kind's choice and for the same reason: a plant connection is a poll
+  loop, and dropping it because one request was refused turns a refusal into an
+  outage. The answer is an acknowledgement with error class `0x87`, *access
+  fault*, which is what a password-protected CPU answers -- so the client's own
+  library reports a refusal rather than a timeout -- and a refused user-data
+  request is answered in its own layer instead, with the same group and
+  subfunction, because that is where the client looks. Only the frames the relay
+  could not read at all end the connection. As in the amqp kind, `refuse.go` is
+  the one file that writes a frame, and it writes the relay's own messages and
+  never re-renders a peer's.
 - `ntske` is NTS key establishment, TCP 4460, relayed rather than
   terminated: it reads the server name and the application protocol from
   the ClientHello, refuses what is not an NTS client, bounds the
@@ -1341,6 +1442,60 @@ that protocol's own terms, and bounds what a peer may say.
 
 All of them reach the engine through `Host` alone, which is why they link
 into `xrelay` and nowhere else.
+
+What each of these protocols *is* -- its framing, the security it was designed
+with, and what this project decided to read of it -- is one page per kind under
+[docs/protocols/README.md](protocols/README.md). This document is about where
+the code lives; those are about what the code is reading.
+
+`internal/schedule` is the other piece the kinds share, and it is worth a word
+about why it exists now rather than from the start. Thirteen kinds grew a rule
+list with a `schedule` section, and thirteen grew their own copy of a hundred
+lines to read it -- ten byte-identical but for the package clause. That is the
+ordinary cost of copying and it was worth paying while the shape was still being
+found.
+
+What made it worth stopping is that the copies had drifted, and in the direction
+that matters. `internal/config` accepts a day written either way, `mon` or
+`monday`; the modbus copy accepted both and the other twelve accepted only the
+short form -- so a file with `days: [monday]` passed `-validate` and then failed
+at startup, which is validation and the runtime disagreeing about whether a file
+is valid. And the copies held **two different answers** to what a
+midnight-spanning window means, so the same YAML was in force at different times
+on a modbus listener than on an s7 one. Neither answer was the one the
+configuration reference describes. One implementation settles both.
+
+`internal/sesslimit` came out of the same pass and is the one that fixed
+something exploitable. Six kinds bounded their sessions with a load followed by
+an add:
+
+```go
+if n.Load() >= int64(per) {   // check
+    return false
+}
+n.Add(1)                      // act
+```
+
+Nothing holds the counter between those lines, so concurrent accepts all see room
+and all take it. Driven with 512 goroutines against a bound of two, three
+sessions get admitted; the global bound fails the same way and by as many as the
+accepts in flight. The per-client map had a second problem: `release` deleted a
+client's entry at zero while another goroutine held the counter it had already
+fetched, so that increment landed on an orphan and the session went uncounted.
+
+Both are bound evasion by an attacker who opens connections in parallel, which is
+not a sophisticated thing to do. The shared gate is a mutex rather than a pair of
+atomics, because the contended operation is an accept -- one per connection, not
+one per frame -- and a bound that is only approximately enforced is not a bound.
+
+`internal/numrange` came out of the same pass, from two copies rather than
+thirteen. The s7 copy's own comment said it was the modbus spelling *on purpose*
+-- "a plant engineer should not have to remember that the two kinds read `0-99`
+differently" -- and a promise like that held by two copies is one waiting to be
+broken by whoever edits a single file. The decision it carries is that `Covers`
+needs *one* range to hold the whole span: two adjacent ranges do not together
+permit a request that straddles them, because an operator who wrote two ranges
+described two regions.
 
 `internal/acceptgroup` is shared by the database kinds and exists because the
 obvious way to wait for a listener's sessions is wrong. A `sync.WaitGroup` with
@@ -1695,6 +1850,11 @@ Endpoints:
 | DELETE | `/v1/policy` | empty the ledger (audited) |
 | GET | `/v1/sessions` | the sessions this daemon is serving now, oldest first: id, kind, listener, client, login, target, one detail the kind chose, and how long it has been up |
 | DELETE | `/v1/sessions` | close the session named by `id`, or every session matching `kind`, `listener` and `user`; a request naming none of them is refused rather than taken as "all", and every closure is audited |
+| GET | `/v1/access` | the just-in-time access grants, newest first, each with its computed state, and the ledger's own counters; `state=` filters, `id=` reads one. 404 when the daemon has no `access` section |
+| POST | `/v1/access` | ask for a window: `subject`, `listener`, `target`, `reason`, `by`, `duration`, optional `start` and `max_uses`. It is not access until enough other people have approved it (audited) |
+| POST | `/v1/access/approve` | approve the grant `id` as `by`, with an optional `note`. 403 when the approver is the requester or the subject, or has already approved; 409 when the grant is finished (audited) |
+| POST | `/v1/access/deny` | refuse it, which is final and recorded rather than left to expire (audited) |
+| POST | `/v1/access/revoke` | withdraw it, including one in force; no second person is needed (audited) |
 | GET | `/v1/mfa` | every listener that asks for a second factor: its kind, its enrolment file, and who is enrolled with the parameters, recovery codes left, failures and lockout this process remembers |
 | POST | `/v1/mfa/enrol` | enrol `user` on `listener`, optionally with `issuer`, `digits`, `period_seconds` and `algo`; answers with the secret, the `otpauth://` URI, that URI drawn as a QR code (a PNG `data:` URI) and the recovery codes, which exist only in that answer (audited) |
 | POST | `/v1/mfa/recovery` | replace a person's recovery codes and return the new ones (audited) |

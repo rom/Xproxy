@@ -1790,8 +1790,8 @@ them.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `days` | list | `[]` (every day) | `mon`, `tue`, `wed`, `thu`, `fri`, `sat`, `sun` |
-| `from`, `to` | `HH:MM` | | The window in `timezone`. A `to` before its `from` spans midnight, which is how a night shift is written |
+| `days` | list | `[]` (every day) | `mon`, `tue`, `wed`, `thu`, `fri`, `sat`, `sun`, or the long form (`monday`). Every listener kind reads both |
+| `from`, `to` | `HH:MM` | | The window in `timezone`. A `to` before its `from` spans midnight, and the window then **belongs to the day it started on**: `{days: [fri], from: "22:00", to: "06:00"}` runs Friday 22:00 to Saturday 06:00, and covers neither Friday's own small hours nor Saturday evening. The end is exclusive, so two adjacent windows do not overlap on the minute they meet |
 | `timezone` | IANA name | `UTC` | A schedule in the host's local time is a schedule that moves when somebody fixes the host's time zone |
 
 **`learn`** records what actually crosses the listener — the clients, the
@@ -1988,7 +1988,7 @@ bounds which stations may be addressed through it.
 | `addresses` | list | Information object address ranges (0 to 16777215). A frame naming an address outside all of them does not match |
 | `max_objects` | int | Information objects one ASDU may carry (0 leaves the protocol's own 127) |
 | `select` | `select`, `execute` | Which half of a two-step command this rule is about. `select` on one client and `execute` on another is a four-eyes control: one operator arms and another fires |
-| `schedule` | object | `{days, from, to, timezone}`; a window whose `to` is before its `from` spans midnight |
+| `schedule` | object | `{days, from, to, timezone}`; a window whose `to` is before its `from` spans midnight and belongs to the day it started on |
 
 **What is checked before the rules, and cannot be shadowed.** A frame the
 relay could not read is refused whether or not the listener is enforcing:
@@ -2144,7 +2144,7 @@ answer rather than hanging; `max_filter_terms`, `max_filter_depth` and
 | `max_entries` | int | This rule's own bound on entries returned |
 | `max_filter_terms`, `max_filter_depth` | int | This rule's own filter bounds. A rule does not cover a filter past its own bound, so the next rule -- or the default -- decides; matching and then allowing would make the bound a suggestion |
 | `allow_leading_wildcard` | bool | This rule's own setting |
-| `schedule` | object | `{days, from, to, timezone}`; a window whose `to` is before its `from` spans midnight |
+| `schedule` | object | `{days, from, to, timezone}`; a window whose `to` is before its `from` spans midnight and belongs to the day it started on |
 
 **The built-in `deny_attributes` list** is the password and key material of the
 directories people actually run:
@@ -2325,7 +2325,7 @@ DTLS on 10162 is not implemented, so a listener that is TLS throughout is
 | `write_oids` | list | Apply instead of `oids` to a SetRequest, so one rule can allow a wide read and a narrow write. The write list *replaces* the read list rather than adding to it |
 | `max_repetitions` | int | This rule's own GETBULK bound. A rule does not cover traffic past its own bound, so the next rule -- or the default -- decides; matching and then allowing would make the bound a suggestion |
 | `contexts` | list | The v3 context names this rule covers, for an engine that fronts several agents |
-| `schedule` | object | `{days, from, to, timezone}`; a window whose `to` is before its `from` spans midnight |
+| `schedule` | object | `{days, from, to, timezone}`; a window whose `to` is before its `from` spans midnight and belongs to the day it started on |
 
 **What is checked before the rules, and cannot be shadowed.** A message the
 relay could not parse is refused whether or not the listener is enforcing:
@@ -2467,7 +2467,7 @@ of new addresses would exhaust that instead.
 | `boot_files` | list of pattern | This rule's own boot filename patterns |
 | `max_lease_time` | duration | This rule's own lease bound |
 | `circuit_id` | string | Overrides the listener's circuit identifier, so a rule about one segment can tell the server which segment it is |
-| `schedule` | object | `{days, from, to, timezone}`; a window whose `to` is before its `from` spans midnight |
+| `schedule` | object | `{days, from, to, timezone}`; a window whose `to` is before its `from` spans midnight and belongs to the day it started on |
 
 **Saying what an option may contain is how a rule allows it.** This is the one
 turn in the kind worth reading twice, and it is the same one the LDAP attribute
@@ -2644,7 +2644,7 @@ firmware.
 | `allow_path_classes` | list | Widens the listener's list for this rule's traffic only. The three classes the listener cannot allow, a rule cannot allow either |
 | `max_transfer_bytes` | int | This rule's own transfer bound |
 | `max_block_size`, `max_window_size` | int | This rule's own amplification bounds, so "this directory at a window of one" is one rule |
-| `schedule` | object | `{days, from, to, timezone}`; a window whose `to` is before its `from` spans midnight. A firmware window is a schedule: writes allowed during the change window and refused outside it |
+| `schedule` | object | `{days, from, to, timezone}`; a window whose `to` is before its `from` spans midnight and belongs to the day it started on. A firmware window is a schedule: writes allowed during the change window and refused outside it |
 
 **What is checked before the rules, and cannot be shadowed.** A client outside
 the address list; the rate limit; a packet the relay could not parse; a packet
@@ -3220,6 +3220,7 @@ proxy does not hold.
 | `allow_resize` | bool | `true` | Let a client ask the desktop to change size. The size asked for is bounded by `bounds.max_framebuffer_pixels` whatever this says |
 | `recording` | object | none | As `server.listeners[].ssh.recording`; see below for the format |
 | `mfa` | object | none | See below: it needs `x509-plain` |
+| `require_grant` | bool | `false` | Admit a session only against a live grant from the [access](#access) ledger: one somebody asked for, somebody else approved, and that ends by itself |
 | `idle_timeout` | duration | `5m` | No traffic in either direction |
 | `session_timeout` | duration | `0` | Bound on a whole session however active |
 | `handshake_timeout` | duration | `30s` | Bound on the negotiation before the session begins |
@@ -3625,6 +3626,7 @@ policy that quietly did not apply is worse than a session that stops.
 | `devices.allow` | list | `[]` (none) | The redirected device kinds, where `rdpdr` is allowed |
 | `recording` | object | none | As `server.listeners[].ssh.recording`; see below for the format |
 | `mfa` | object | none | See below |
+| `require_grant` | bool | `false` | Admit a session only against a live grant from the [access](#access) ledger: one somebody asked for, somebody else approved, and that ends by itself |
 | `idle_timeout` | duration | `5m` | No traffic in either direction |
 | `session_timeout` | duration | `0` | Bound on a whole session however active |
 | `handshake_timeout` | duration | `30s` | Bound on the connection sequence |
@@ -3733,6 +3735,7 @@ own into the stream before the target is dialled.
 | `max_subnegotiation` | int | `4096` | Bound on one subnegotiation; 64..1048576. A peer that sends `IAC SB` and never sends `IAC SE` is cut off here rather than allowed to grow a buffer |
 | `recording` | object | none | As `server.listeners[].ssh.recording` |
 | `mfa` | object | none | As `server.listeners[].ssh.mfa`; see below for how the code is asked for |
+| `require_grant` | bool | `false` | Admit a session only against a live grant from the [access](#access) ledger: one somebody asked for, somebody else approved, and that ends by itself |
 | `idle_timeout` | duration | `5m` | No traffic in either direction |
 | `session_timeout` | duration | `0` | Bound on a whole session however active; 0 is no bound |
 | `max_connections` | int | `1000` | Sessions on this listener |
@@ -3843,6 +3846,7 @@ assumed.
 | `max_errors` | int | `10` | Refused commands before the session ends |
 | `max_connections` | int | `1000` | Control connections on this listener |
 | `idle_timeout` | duration | `5m` | No traffic on the control connection |
+| `require_grant` | bool | `false` | Admit a session only against a live grant from the [access](#access) ledger: one somebody asked for, somebody else approved, and that ends by itself |
 | `session_timeout` | duration | `0` (none) | A whole session, however active |
 | `proxy_protocol` | bool | `false` | Send a PROXY protocol v2 header with the client address to the target |
 | `allow_clients` | list of CIDR | `[]` (any) | Others are closed at accept |
@@ -4080,6 +4084,7 @@ the credentials are read then — not per connection, so a key added to
 | `upstream_insecure_host_key` | bool | `false` | Accept any host key from the target. Refused unless `allow_insecure` is also set, and warned about: it is the one setting here that leaves nothing to notice a machine in the middle |
 | `recording` | object | none | Record what a session showed, to a file per channel; see below |
 | `mfa` | object | none | Require a second factor after the key or the password; see below |
+| `require_grant` | bool | `false` | Admit a session only against a live grant from the [access](#access) ledger: one somebody asked for, somebody else approved, and that ends by itself |
 | `sftp` | object | none | Inspect the SFTP protocol inside an sftp subsystem channel; see below |
 | `proxy_protocol` | bool | `false` | Send a PROXY protocol v2 header with the client address to the target |
 | `allow_clients` | list of CIDR | `[]` (any) | Others are closed before the handshake |
@@ -5459,6 +5464,7 @@ beyond the first is gated by `retry_budget` when one is set.
 | `weight` | int | `1` | Weight of discovered endpoints that do not carry their own (`dns`, and `http` `list` entries without a `weight`) |
 | `canary` | bool | `false` | Mark discovered endpoints as canaries (needs the pool's `canary` section) |
 | `timeout` | duration | `5s` | Bound on one resolution, including the synchronous first one at start and reload; a failed resolution keeps the previous endpoint set and is counted in `xproxyctl upstreams` |
+| `max_endpoints` | int | `4096` | How many endpoints one resolution may install; 1 to 65536. A larger answer is truncated to the first addresses in sorted order, warned about (throttled) and counted as `truncations` in `xproxyctl upstreams`. A registry is a remote input, and the answer decides how many health-check goroutines this process runs and how large the hash ring is; the sort makes the subset the same one on every resolution, so a truncated pool does not churn its endpoints every interval |
 | `consul` | object | required for `consul` | See below |
 
 #### upstreams[].discovery.consul
@@ -5496,6 +5502,52 @@ as well as asked for in the query: the filter in the query is the agent's
 opinion, and this one is the proxy's. `Weights.Passing` becomes the
 endpoint weight, and a blank service address falls back to the node's.
 
+**How large a resolution may be.** `max_endpoints` bounds one
+resolution. It is not a limit on the estate — 4096 endpoints in one pool
+is more than a load balancer can usefully spread across — but on what a
+single answer can do to this process: a DNS response over TCP carries
+thousands of A records, and a four megabyte registry response tens of
+thousands of entries, each of which would become a health-check goroutine
+and a place in the hash ring. Beyond the bound the resolution is
+**truncated rather than refused**, because refusing keeps the previous
+set, and for a pool whose backends have all moved that is a pool serving
+nothing. `xproxyctl upstreams` counts the truncations, and the log line
+names how many were returned.
+
+#### An endpoint that arrives while the pool is serving
+
+A registry announces an instance when its process starts, not when it is
+ready to answer: the service registers itself, then opens its database
+connections, loads its caches and finally listens. An address appearing
+in a resolution is therefore a weaker claim than it looks, and a pool that
+sends traffic to it immediately produces a burst of failures the proxy
+caused — the outlier ejection then has to clean up after a decision that
+should not have been made.
+
+So with `health_check` configured, an endpoint that **arrives after the
+pool started serving** begins unhealthy and is not picked until it passes
+`healthy_threshold` probes. Its first probe runs at once rather than after
+the usual jitter, so the wait is one probe rather than up to one
+`interval`.
+
+Three cases are deliberately not that:
+
+- **No `health_check`.** There is no probe to wait for, so a discovered
+  endpoint serves as soon as it is resolved. Waiting would mean never.
+- **Nothing else can carry the traffic.** If every other endpoint in the
+  pool is unhealthy, draining, ejected or at its own `max_active`, the new
+  one is used immediately: an unprobed endpoint is better than an empty
+  pool, and there is no all-unhealthy fallback to catch that case.
+- **The endpoints the pool starts with**, both the static `endpoints` and
+  discovery's first resolution, start healthy — at process start nothing
+  has been probed yet, and making them wait would serve nothing at all
+  for a probe interval on every restart.
+
+An address that leaves a resolution and comes back is a new endpoint, so
+it waits again; what is listening there now is not the process that was
+healthy before. `xproxyctl upstreams` shows `healthy: false` for an
+endpoint in this state, the same as for one a probe has failed.
+
 ### upstreams[].health_check
 
 | Key | Type | Default | Description |
@@ -5503,7 +5555,7 @@ endpoint weight, and a blank service address falls back to the node's.
 | `type` | `http`, `grpc`, `tcp`, `udp` | `http` | `grpc` calls the standard `grpc.health.v1.Health/Check` over HTTP/2 and needs `h2c` or `scheme: https`; `path` and `expected_status` are not used. `tcp` and `udp` are the layer 4 probes, for the pools a `kind: tcp` or `kind: udp` listener uses, where there is no request to make — see below |
 | `grpc_service` | string | `""` | Service asked in a grpc check; empty asks about the server as a whole |
 | `path` | path | `/` | GET target |
-| `interval` | duration | `5s` | At least 500ms; start is jittered |
+| `interval` | duration | `5s` | At least 500ms; the first probe of each endpoint is jittered across one interval so that a large pool does not probe in lockstep — except for an endpoint discovery announced into a serving pool, which probes at once because it is waiting on that probe to be used at all |
 | `timeout` | duration | `2s` | Must be shorter than `interval` |
 | `healthy_threshold` | int | `2` | Consecutive successes to mark healthy |
 | `unhealthy_threshold` | int | `3` | Consecutive failures to mark unhealthy |
@@ -5668,6 +5720,32 @@ change; the id dedupe stops the replay itself. HARDENING.md has verifier
 snippets; `internal/originsig` has `Verify` for origins written in Go.
 Combine with mutual TLS (`tls.client_cert_file`) and with network
 filtering: each closes what the others cannot.
+
+## http
+
+`kind: http` has no section of its own here, because it is most of this
+document. The other twenty-seven kinds each get one section, since each reads
+one protocol and has one policy about it; HTTP is a pipeline of policies, and
+they are written up where each belongs.
+
+Where to look, in roughly the order a request passes through:
+
+| What | Section |
+|------|---------|
+| The listener, its address, TLS and the framing limits | [`server`](#server), [`limits`](#limits) |
+| The route, and everything decided per route | [`routes[]`](#routes) |
+| Who is asking, and with what | [`filters[]`](#filters) — the identity filters |
+| Whether the request is what it claims | [`waf`](#waf) |
+| Whether it is a person | [`challenge`](#challenge), and the bot and account filters in [`filters[]`](#filters) |
+| How much and how often | [`shedding`](#shedding), the rate limits in [`routes[]`](#routes), and [`bans`](#bans) |
+| Where it goes | [`upstreams[]`](#upstreams) |
+| What is remembered and what is compressed | [`cache`](#cache), [`compression`](#compression) |
+| What an attacker is told | [`decoys`](#decoys), and [docs/DECEPTION.md](DECEPTION.md) |
+
+The protocol itself -- the three wire formats, what each gives you, and the
+framing ambiguities this listener refuses rather than normalises -- is
+[docs/protocols/http.md](protocols/http.md). Every kind has a page there;
+[docs/protocols/README.md](protocols/README.md) is the index.
 
 ## routes[]
 
@@ -5991,7 +6069,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `ntp_denied`, `ntske_denied`, `yara` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `amqp_denied`, `s7_denied`, `ntp_denied`, `ntske_denied`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |
@@ -10281,6 +10359,455 @@ building's direction -- they are written about the objects a client may reach,
 and applying them backwards would refuse every `i-Am`, which names a device
 object.
 
+## amqp
+
+`kind: amqp` is a relay in front of a message broker. It is the only listener
+here that reads **two protocols on one port**, because AMQP is two protocols: a
+client picks one in its first eight octets.
+
+- **AMQP 0-9-1** is what RabbitMQ speaks and what almost every deployment means
+  by AMQP. A frame protocol with a class-and-method catalogue: declaring an
+  exchange, binding a queue, publishing, consuming and deleting are each a
+  method frame with typed arguments.
+- **AMQP 1.0** (ISO/IEC 19464) is a different protocol that kept the name. Nine
+  performatives over a self-describing type system, where the thing being
+  authorised is the *address a link attaches to* and everything after it is a
+  handle.
+
+Both are read, and one policy decides both: the nouns are an exchange, a queue
+and a routing key on 0-9-1, and a link address on 1.0, which the brokers that
+serve both versions spell `/exchange/X/key` and `/queue/Q`.
+
+### Why a relay in front of a broker
+
+A broker is where an estate's data is in transit -- orders, payments, telemetry,
+the events that drive everything else -- and four things about it are worth a
+listener.
+
+**A broker's permissions are per user and per virtual host.** RabbitMQ's model
+is three regular expressions (configure, write, read) for each user in each
+vhost: more than most brokers offer, administered inside the broker, and outside
+the estate's own review. This holds the same boundary in the configuration that
+is reviewed with everything else, and holds it in front of brokers whose model
+is weaker.
+
+**Topology is not work.** Declaring an exchange, deleting a queue, binding,
+unbinding and purging are the broker's *configuration*, and an application that
+publishes to an exchange somebody else declared needs none of them. So
+`allow_topology` is false by default, and a client library that declares its own
+queue on connect becomes a decision an operator makes rather than a default
+nobody noticed.
+
+**The credential is in the clear.** Both versions authenticate with SASL, and
+PLAIN -- what every deployment uses -- is the username and the password in one
+field separated by zero octets. `require_tls` is therefore the setting that
+matters most. The relay reads the *username* out of the exchange for its rules
+and its logs, and never the password: no code path between the wire and a log
+line holds a broker credential.
+
+**The dangerous arguments are not the obvious ones.** These four name something
+a policy written against the obvious fields would miss:
+
+| Where | What it names | Why it matters |
+|-------|---------------|----------------|
+| `x-dead-letter-exchange` on `queue.declare` | an exchange | where this queue's rejected and expired messages go. A client that may not publish to an exchange can have the broker deliver to it |
+| `alternate-exchange` on `exchange.declare` | an exchange | where this exchange sends what it could not route |
+| `reply-to` in a message's properties | a queue | where a request-reply service will send its answer, named inside the message rather than in the publish |
+| `/exchange/X/key` as a 1.0 link address | an exchange and a routing key | the same boundary in the other protocol's vocabulary |
+
+All four are checked against the same `allow_exchanges`, `allow_queues` and
+`allow_routing_keys` as the fields that carry them.
+
+### The pattern language
+
+The name lists are written in the protocol's own topic language, because that
+is the one an operator already knows from writing bindings. A name is words
+separated by dots:
+
+| Pattern | Matches | Does not match |
+|---------|---------|----------------|
+| `orders` | `orders` | `orders.created` |
+| `orders.*` | `orders.created`, `orders.paid` | `orders`, `orders.eu.created` |
+| `orders.#` | `orders`, `orders.created`, `orders.eu.created` | `payroll.created` |
+| `#` | everything | |
+| `svc-*` | `svc-a`, `svc-billing` | `svc-a.internal` |
+| `app-?` | `app-1` | `app-12` |
+
+`*` is exactly one word and `#` is zero or more, as in a binding. Inside a
+word an ordinary shell glob applies, which is what the last two rows are. A
+name with no metacharacter matches itself, which is what most of these lists
+hold -- and the **default exchange is named by the empty string**, so a policy
+that means to allow publishing to a queue by name has to write `""` in
+`allow_exchanges` deliberately.
+
+```yaml
+- name: broker
+  address: "0.0.0.0:5671"
+  kind: amqp
+  tls:
+    certificates: [{cert_file: /etc/xproxy/tls/amqp.pem, key_file: /etc/xproxy/tls/amqp-key.pem}]
+  amqp:
+    upstream: brokers
+    allow_clients: ["10.0.2.0/24"]
+    allow_vhosts: ["/orders"]
+    allow_exchanges: ["orders", "orders.*"]
+    allow_queues: ["orders.*"]
+    allow_routing_keys: ["orders.*"]
+    require_user_id: true
+    rules:
+      - name: deployment
+        users: [deploy]
+        allow_topology: true
+        schedule: {days: [mon, tue, wed, thu], from: "18:00", to: "22:00"}
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | name | *(required)* | The broker pool |
+| `allow_clients`, `deny_clients` | list of CIDR | any | Networks a client may connect from; deny first |
+| `require_tls` | bool | `true` | Refuse a client that is not speaking TLS. AMQP has no in-protocol upgrade on 0-9-1 -- TLS is the port, 5671 rather than 5672 -- and 1.0's TLS protocol identifier is refused rather than answered: a client asking this relay to negotiate transport security from its first octet should be given a TLS port instead |
+| `upstream_tls_mode` | `require`, `prefer`, `disable` | `disable` | How the relay speaks to the broker. Off by default for the same reason as redis: a great many brokers are reached over a private network with no TLS and there is nothing to negotiate, so requiring it by default would refuse every upstream rather than protect anything |
+| `upstream_tls` | object | *(none)* | Certificate and verification settings for that leg |
+| `versions` | list | both | `0-9-1`, `1.0`. 0-8 and 0-9 are never allowed: a broker answers them for compatibility, and a policy on a revision from 2006 is not one worth writing |
+| `allow_mechanisms` | list | `[PLAIN, EXTERNAL]` | SASL mechanisms a client may choose. ANONYMOUS is not in the default: it is a login with no identity, so the broker has no account to attribute anything to |
+| `deny_mechanisms` | list | `[]` | Evaluated first |
+| `require_auth` | bool | `true` | Refuse every operation until the **broker** has accepted a credential. The outcome is the broker's answer and not the client's claim: a 0-9-1 broker that refuses a password closes the connection instead of sending `connection.tune`, so tune is the answer; on 1.0 it is the `sasl-outcome` |
+| `allow_users`, `deny_users` | list | any | The identities a connection may authenticate *as*, read out of the SASL exchange. The broker decides whether the password is right; this decides which names may be tried |
+| `allow_vhosts`, `deny_vhosts` | list of pattern | any | The virtual hosts a connection may open: `connection.open`'s virtual-host on 0-9-1, `open`'s hostname on 1.0. Decided before the exchange and queue lists, because a name means something different in each vhost |
+| `allow_methods` | list | the application set | 0-9-1 method names, spelled `basic.publish`, `queue.declare`. Empty allows the handshake, the channel methods, publishing, consuming, acknowledging, publisher confirms and transactions -- and no topology method at all |
+| `deny_methods` | list | `[]` | The deny list, which no rule can override |
+| `allow_performatives`, `deny_performatives` | list | all nine | The same for AMQP 1.0, spelled `attach`, `transfer`, `flow`. Empty allows all of them, because on that version the policy is about the address a link attaches to rather than about which performative carries it |
+| `allow_topology` | bool | `false` | Permit the methods that change the broker's configuration: declare, delete, bind, unbind and purge |
+| `allow_publish`, `allow_consume` | bool | `true` | Putting messages in and taking them out. A listener in front of a broker that only ingests events sets consume false; one in front of a read model sets publish false. On 1.0 the same two decide an `attach`, because a sender is publishing and a receiver is consuming |
+| `allow_exchanges`, `deny_exchanges` | list of pattern | any | Exchange names. Checked wherever an exchange is named, including the two arguments in the table above |
+| `allow_queues`, `deny_queues` | list of pattern | any | Queue names, including a message's `reply-to` |
+| `allow_routing_keys`, `deny_routing_keys` | list of pattern | any | Routing keys |
+| `allow_addresses`, `deny_addresses` | list of pattern | any | 1.0 link addresses. A listener that names exchanges and queues already covers the addresses whose shape says which they are; these are for the node names that have no shape, which is what Azure Service Bus and Qpid use |
+| `deny_management_nodes` | bool | `true` | Refuse the names a broker keeps for administering itself: `$management` and `$cbs` on 1.0, and the `amq.rabbitmq.*` exchanges on 0-9-1 -- the log stream, the trace stream and the event stream. An operator who needs one names it in `allow_exchanges` or `allow_addresses` |
+| `require_user_id` | bool | `false` | Refuse a published message with no `user-id` property. It is the one field that ties a message to a person, and nothing makes a publisher set it |
+| `match_user_id` | bool | `true` | Refuse a message whose `user-id` is not this connection's identity. Costs nothing when nobody sets the property |
+| `allow_no_ack` | bool | `true` | Permit `basic.consume` with `no-ack`, which takes messages off a queue without acknowledging them: whatever was in flight when the consumer died is gone |
+| `max_priority` | int | unbounded | Bound on a message's `priority` property. A priority queue serves the highest first, so a publisher that sets the maximum on everything starves the others |
+| `max_frame_bytes` | int | `131072` | One frame, and with it the `frame-max` the two sides negotiate. A negotiation that settles above this is **refused rather than rewritten**: rewriting it would make the relay a party to the negotiation, and a connection that agreed a frame size and then had a frame refused mid-message is a harder fault to find than one that failed at the start |
+| `max_channels` | int | `256` | Channels per connection (sessions, on 1.0), enforced by **counting the channels that are opened** rather than by refusing the negotiation: a broker's own default channel-max is in the thousands and every client echoes it, so refusing that would refuse every ordinary connection |
+| `max_links` | int | `256` | Links per 1.0 session |
+| `max_message_bytes` | int | unbounded | One message. On 0-9-1 it is checked against the size the **content header declares**, before the body arrives; on 1.0 it is the sum over a run of transfers, because a message may be split across them |
+| `require_heartbeat` | bool | `false` | Refuse a connection that negotiated no heartbeat. One with none holds the broker's resources until the kernel notices the socket is gone, which can be hours -- and off by default because a client behind something that keeps the socket open is not doing anything wrong |
+| `max_methods` | int | unbounded | Methods or performatives per connection. Off by default because a broker connection is long-lived; it is here for a bastion front where a session is a person |
+| `rate_limit`, `rate_burst` | int | off | Methods per second per client address |
+| `max_sessions`, `max_sessions_per_client` | int | unbounded | Concurrent connections |
+| `idle_timeout`, `session_duration`, `handshake_timeout` | duration | `0`, `0`, `30s` | |
+| `default_action` | `allow`, `deny` | `deny` | When no rule matched |
+| `deny_response` | `close`, `drop` | `close` | `close` sends the protocol's own statement -- a `connection.close` with reply code 403 on 0-9-1, a `close` carrying `amqp:unauthorized-access` on 1.0 -- so a client library reports a refusal rather than a dropped socket |
+| `log_methods` | bool | `false` | An access line per method, which on a busy broker is a great many lines |
+| `alert_on_deny` | bool | `true` | A security event for every refusal |
+| `monitor_only` | bool | `false` | Evaluate and do not enforce, except the hard decisions below |
+
+### rules[]
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `name` | string | Names the rule in logs and counters |
+| `clients`, `users`, `vhosts` | lists | Selectors; AND within a rule, OR within one |
+| `schedule` | object | `days`, `from`, `to`, `timezone` |
+| `action` | `allow`, `deny`, `observe` | Default `allow` |
+| `allow_methods`, `deny_methods`, `allow_performatives`, `deny_performatives`, `allow_exchanges`, `deny_exchanges`, `allow_queues`, `deny_queues`, `allow_routing_keys`, `deny_routing_keys`, `allow_addresses`, `deny_addresses`, `allow_topology`, `allow_publish`, `allow_consume`, `max_message_bytes`, `max_methods` | | The rule's own narrowing. A rule that names methods **widens** the listener for its own traffic; the deny lists always win |
+
+### A refusal ends the connection
+
+On the other relay kinds a refused operation is answered and the session
+continues. Here it is not, and the reason is the protocol: AMQP is stateful in
+both directions, so dropping one frame out of a conversation leaves the two
+sides disagreeing about what happened -- the client waiting for a reply the
+broker was never asked for, or the broker answering a method the client never
+learned was refused. So a refusal sends the protocol's own statement of why and
+closes both legs. A client library reports that as an access refusal, which is
+what it reports when a broker refuses one of its own.
+
+A refused **protocol header** is answered the way both specifications say
+(0-9-1 §4.2.2, 1.0 §2.2): with a header this listener does serve, and then the
+socket closes. A client library reports "the server speaks 0-9-1" rather than
+"the connection dropped".
+
+### What monitor mode never shadows
+
+| Refusal | Why it is hard |
+|---------|----------------|
+| `client_not_allowed`, `tls_required` | An address that may not connect; a credential that would go on the wire |
+| `protocol_version_not_allowed`, `protocol_version_unknown`, `tls_negotiation_refused` | The header decides the framing of everything after it, so there is no "observe" for it |
+| `not_authenticated` | Forwarding an operation before the broker accepted a credential means the operation ran |
+| `unreadable_frame`, `frame_type_unknown`, `arguments_unreadable` | The relay has no opinion to observe |
+| `mechanism_not_allowed`, `mechanism_missing` | A mechanism is chosen once, at the start, and a downgrade observed is a downgrade |
+| `vhost_not_allowed` | The vhost decides what every name after it means |
+| `frame_max_unbounded`, `frame_max_too_large`, `heartbeat_disabled`, `too_many_channels`, `too_many_links`, `too_many_methods`, `message_too_large`, `rate_limited`, `body_past_declared_size` | Bounds |
+| `management_node_denied` | The broker's own administration |
+| `delivery_denied` | The message is already on its way to the client |
+| `no_such_link` | A 1.0 transfer on a handle this relay never saw attached, so its address was never checked |
+| any refusal of a `queue.delete`, `exchange.delete`, `queue.purge` or `connection.update-secret` | A purge forwarded so that it could be written down is a queue that is empty |
+
+A method merely *off* the allow list is a **soft** refusal, which is what makes
+monitor mode useful: it is most likely an application nobody has listed yet.
+
+### The inbound direction
+
+The deny lists apply to what the broker hands the client -- `basic.deliver`,
+`basic.get-ok`, `basic.return` -- and the allow lists do not. The difference is
+deliberate. An allow list says what a client may *ask for*; a delivery names
+where the message came *from*, which the consumer need not be allowed to name:
+a queue bound to an exchange by somebody else delivers messages carrying that
+exchange's name, and a relay that required it on the allow list would break
+every ordinary consumer. A deny list says something else -- this connection must
+never see messages from there, whoever routed them -- and that one holds in both
+directions.
+
+Refusals are `amqp_denied` for the ban triggers, with the reasons in the table
+above plus `method_not_allowed`, `method_denied`, `method_unknown`,
+`performative_not_allowed`, `performative_denied`, `performative_unknown`,
+`topology_not_allowed`, `publish_not_allowed`, `consume_not_allowed`,
+`exchange_not_allowed`, `exchange_denied`, `queue_not_allowed`, `queue_denied`,
+`routing_key_not_allowed`, `routing_key_denied`, `address_not_allowed`,
+`address_denied`, `reply_to_not_allowed`, `user_not_allowed`,
+`user_id_missing`, `user_id_mismatch`, `priority_too_high`,
+`no_ack_not_allowed`, `address_missing`, `administrative_not_allowed`,
+`no_rule_matched`, `rule_denied`, `outside_schedule`, `too_many_sessions`,
+`too_many_sessions_per_client`, `no_protocol_header`, `tls_handshake` and
+`upstream_unavailable`.
+
+## s7
+
+`kind: s7` is a relay in front of a Siemens PLC. It is the listener for the
+protocol with the least security of any in this project.
+
+S7comm is three layers on TCP 102: **TPKT** (RFC 1006, a four-octet length),
+**COTP** (X.224 class 0, whose connection request carries the address of the
+CPU) and **S7comm** itself. What matters about it is what it does not have.
+There is no transport security at all, which is why this listener takes no
+`tls` section -- a certificate here would promise something the protocol cannot
+do. And there is no authentication worth the name: the optional password
+protects a handful of functions on some CPU families and nothing on others, and
+an S7-300 with no password accepts a **stop** from anybody who can open a socket
+to it. An engineering station on the same segment can read and write every byte
+of memory in every controller on that segment.
+
+The equipment cannot be fixed. A controller in a line is replaced on a capital
+cycle, not a release cycle, and its firmware is qualified against the process it
+runs. So the boundary has to be somewhere else, and this is somewhere else.
+
+### The vocabulary
+
+A relay's job here is to know what an operation *is*, and this protocol spreads
+that across two layers: a **function code** for reading and writing memory and
+for the block and control services, and a **user-data group and subfunction**
+for everything else -- the diagnostic buffer, the block list, the clock, the
+password, the debugger. A policy written against function codes would have
+nothing to say about setting the clock; one written against user-data groups
+would have nothing to say about a write.
+
+So both are mapped onto one vocabulary of nineteen words, and every list in this
+section is written in it:
+
+| Word | What it is |
+|------|------------|
+| `read` | Reading memory: a data block, the process image, a timer |
+| `write` | Writing it -- on a plant, the operation that moves something physical |
+| `setup` | The connection negotiation, without which there is no session |
+| `upload` | Reading a block **out** of the PLC: the program, as source an engineering tool can open |
+| `download` | Writing one in, which is changing the program the machine runs |
+| `control` | The control service: a warm restart, inserting or deleting a block, compressing memory |
+| `stop` | Stopping the CPU |
+| `cpu_services` | Function code 0, which the families in the field answer in ways nobody has documented |
+| `szl` | Reading a system status list: the CPU's type, its firmware, its diagnostic buffer |
+| `diagnostics` | The rest of the CPU function group: the message service and the alarm machinery |
+| `blocks` | Listing the blocks and reading their headers |
+| `cyclic` | Subscribing to cyclic data, which is how an HMI reads a screenful of values |
+| `time_read` | Reading the CPU clock |
+| `time_write` | Setting it -- and the clock is what every log line and batch record is stamped with |
+| `security` | The password functions: supplying one, clearing one, asking how protected the CPU is |
+| `programmer` | The debugger: forcing a variable, setting a breakpoint, stepping the program |
+| `mode` | The mode transitions requested through the user-data layer rather than the control service |
+| `pbc` | The programmable block communication a pair of PLCs uses between themselves |
+| `nc` | The numerical control layer of a machine tool |
+
+`operations` defaults to `setup`, `read`, `szl`, `blocks`, `cyclic`,
+`time_read` and `diagnostics`: what an HMI, a historian and an inventory do, and
+nothing that changes anything. **The absences are the policy.** No write, no
+download, no control service, no stop, no mode transition, no clock setting, no
+password function, no programmer command -- and **no upload**, which is the one
+worth pausing on, because an upload changes nothing and is still off. Reading a
+block out of a PLC is how a plant's control logic leaves the site.
+
+An engineering station needs several of those. Naming them in the file is a line
+a reviewer can see.
+
+### The address is the rack and the slot
+
+Which controller a client asked for arrives in the **COTP connection request**,
+before any S7 request exists: the called TSAP's two octets hold a connection
+resource, a rack (0-7) and a slot (0-31). So a client that may not reach that
+CPU is refused **before the PLC is dialled**, and that ordering is the point
+rather than an optimisation -- a CPU has very few connection resources, an
+S7-300 sixteen altogether, and a client that may not reach it should not take
+one of them.
+
+`resources` is the cheapest useful line in this section. `pg` is the programming
+device connection an engineering station opens, `op` is an operator panel and
+`basic` is what one PLC opens to another; a listener that admits only `op` has
+refused every engineering station without naming a single function.
+
+### The memory is the boundary inside the CPU
+
+`areas` and `dbs` say which memory a client may reach at all, and `addresses`
+and `write_addresses` bound it by byte. The areas are `db`, `instance_db`,
+`inputs`, `outputs`, `flags` (Siemens calls them merkers), `timer`, `counter`,
+`local`, `previous_local`, `peripheral`, and the 200-family areas
+`sysinfo_200`, `sysflags_200`, `analog_in_200`, `analog_out_200`,
+`counter_200` and `timer_200`.
+
+`peripheral` is the one worth putting on `deny_areas` on any listener that
+allows writing: it is direct access to the I/O hardware, past the process image
+the program reads.
+
+Two details of how the ranges are applied:
+
+- The protocol carries a **bit** address. The configuration is written in
+  **bytes**, because that is how an operator thinks about a data block, and the
+  relay divides by eight rather than making anybody else do it.
+- A range is checked against the **whole span** a request covers, not its first
+  byte. A read of bytes 0 to 200 against a range of `0-99` is a read of bytes
+  the policy does not name, and it is refused rather than split: splitting it
+  would be this relay deciding which half the operator meant.
+
+```yaml
+- name: line-3-plc
+  address: "0.0.0.0:102"
+  kind: s7
+  s7:
+    upstream: plc-line-3
+    allow_clients: ["10.20.4.0/24"]
+    racks: ["0"]
+    slots: ["2"]
+    resources: ["op"]
+    areas: ["db", "inputs", "outputs", "flags"]
+    deny_areas: ["peripheral"]
+    dbs: ["1-40"]
+    addresses: ["0-511"]
+    write_addresses: ["100-199"]
+    max_items: 20
+    max_read_bytes: 480
+    max_pdu_length: 480
+    max_sessions_per_client: 2
+    rules:
+      - name: hmi
+        clients: ["10.20.4.10"]
+        operations: ["setup", "read", "write", "szl", "cyclic", "time_read"]
+        comment: "line 3 panel: setpoints in DB1 bytes 100-199"
+      - name: integrator
+        clients: ["10.20.9.0/28"]
+        resources: ["pg"]
+        operations: ["setup", "read", "write", "download", "control", "blocks"]
+        schedule: {days: [sat], from: "06:00", to: "14:00"}
+        comment: "change window CR-2291"
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | name | *(required)* | The PLC pool |
+| `allow_clients`, `deny_clients` | list of CIDR | any | Networks a client may connect from; deny first. An empty allow list is allowed and advised against, because this listener reaches a controller |
+| `racks`, `slots` | list of number or range | any | The rack and slot numbers a client may address, read out of the connection request. A rack is 0-7 and a slot 0-31 |
+| `resources` | list | any | `pg`, `op`, `basic`: the connection type a client may ask for |
+| `read_only` | bool | `false` | Refuse every operation that changes the PLC, for every client, before any rule is read. **No rule can override it** -- a read-only listener one rule could write through is not a read-only listener |
+| `operations` | list | the HMI set | The allow list, in the vocabulary above |
+| `deny_operations` | list | `[]` | The deny list, which no rule can override |
+| `areas` | list | any | The memory areas a request may name |
+| `deny_areas` | list | `[]` | The deny list. `peripheral` belongs here on a listener that allows writing |
+| `dbs` | list of number or range | any | The data block numbers a request may name |
+| `addresses` | list of byte range | any | The byte ranges a request may name, as `0-255` or a single number. The whole span must be inside one range |
+| `write_addresses` | list of byte range | `addresses` | Applies to the writing operations when set, so one listener can allow a wide read and a narrow write |
+| `block_types` | list | any | `db`, `fb`, `fc`, `sdb`, `sfb`, `sfc`: the block types an upload or a download may name. It matters only where one of those is allowed at all |
+| `max_items` | int | `0` | Items one read or write may carry, 0 for no bound. A read of a hundred items is one PDU that occupies the CPU for as long as a hundred reads |
+| `max_read_bytes`, `max_write_bytes` | int | `0` | Octets one request may read or write across all of its items |
+| `max_pdu_length` | int | `0` | Bound on the PDU length the two sides negotiate. The families in the field negotiate 240, 480 or 960 and an S7-1500 negotiates 2048. A negotiation above this is **refused rather than rewritten**: rewriting it would make this relay a party to it |
+| `max_frame_bytes` | int | `8192` | Bound on one TPKT frame |
+| `max_requests` | int | `0` | Requests one connection may send. A plant connection is long-lived, so this is off by default |
+| `rate_limit`, `rate_burst` | int | `0` | Requests per second per client address |
+| `max_sessions`, `max_sessions_per_client` | int | `0` | Concurrent connections. A CPU has very few connection resources, so a bound here is what stops one client taking them all |
+| `idle_timeout`, `session_duration`, `handshake_timeout` | duration | `0`, `0`, `30s` | Bounds on a connection. The handshake timeout is what a client that opens a socket and says nothing costs |
+| `rules` | list | `[]` | Per-client rules, first match wins |
+| `default_action` | `deny`, `allow` | `deny` | What a request matching no rule gets |
+| `deny_response` | `error`, `drop`, `close` | `error` | How a refusal is answered. `error` is an S7 acknowledgement carrying an **access fault** -- what a protected CPU answers -- so the client's own library reports a refusal rather than a timeout |
+| `log_requests` | bool | `false` | An access line per request, which on a plant polling every second is a great many lines |
+| `alert_on_deny` | bool | `true` | A security event per refusal |
+| `monitor_only` | bool | `false` | Evaluate and enforce nothing, except the hard decisions below |
+
+### Rules
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `name` | string | Names the rule in logs and counters |
+| `action` | `allow`, `deny`, `observe` | Default `allow` |
+| `clients`, `racks`, `slots`, `resources` | lists | Selectors; AND within a rule, OR within one |
+| `schedule` | object | `days`, `from`, `to`, `timezone`. This is how "the integrator may download during the shutdown window" is written |
+| `operations`, `deny_operations`, `areas`, `deny_areas`, `dbs`, `addresses`, `write_addresses`, `block_types`, `max_items` | | The rule's own narrowing. A rule that names operations **widens** the listener for its own traffic; the deny lists and `read_only` always win |
+| `comment` | string | Carried into every log line the rule decides, for the change record a plant keeps |
+
+### How a refusal is answered
+
+A refused **request** is answered and the connection carries on, which is the
+modbus kind's choice and for the same reason: a plant connection is a poll loop,
+and dropping it because one request was refused turns a refusal into an outage.
+The answer is an acknowledgement with error class `0x87`, *access fault* -- what
+a password-protected CPU answers a client that has not supplied one -- so the
+client library reports the refusal it would have reported from the controller
+itself. A refused **user-data** request is answered in its own layer instead:
+the same group and subfunction, with the error code for a function the CPU does
+not offer, because that is where a client that asked to set the clock looks.
+
+A refused **connection** is answered with a COTP disconnect request, which is
+what a CPU with no free connection resources sends. A silent close reads to an
+engineering station as a network fault, and an engineer chasing a network fault
+that is really a policy is an afternoon wasted.
+
+The exceptions -- the cases that end the connection -- are the frames the relay
+could not read at all: a COTP PDU type it does not know, and a data PDU that is
+not an S7 PDU. There is nothing left to be sure of after either.
+
+### What monitor mode never shadows
+
+| Refusal | Why it is hard |
+|---------|----------------|
+| `client_not_allowed`, `rack_not_allowed`, `slot_not_allowed`, `resource_not_allowed` | An address or a controller a client may not reach. The connection is what would be forwarded |
+| `not_a_connection_request`, `destination_unreadable`, `cotp_type_unknown`, `unreadable_frame`, `unreadable_pdu`, `items_unreadable`, `item_not_addressable`, `unexpected_message` | The relay has no opinion to observe. An operation it cannot read is one it cannot have a policy about |
+| `operation_unknown` | A function code or user-data group with no name is an operation with no policy |
+| `read_only` | The listener said so |
+| `too_many_items`, `too_many_bytes`, `too_many_requests`, `pdu_length_too_large`, `rate_limited`, `too_many_sessions`, `too_many_sessions_per_client` | Bounds |
+| any refusal of `write`, `download`, `control`, `stop`, `mode`, `time_write`, `security` or `programmer` | A write forwarded so that it could be written down is a moved actuator, and a stop forwarded is a stopped machine. A report afterwards undoes none of it |
+
+An operation merely *off* the allow list -- a read of a data block nobody has
+listed, an upload -- is a **soft** refusal, which is what makes monitor mode
+useful on a plant nobody has an inventory of.
+
+### What the PLC itself refuses
+
+One record here is not a refusal by this relay and is the one that matters most
+after an incident: an **access fault from the controller**, logged as
+`s7_plc_refused`. That is the CPU refusing something this listener allowed,
+which on this protocol almost always means the controller is
+password-protected and the client has not supplied a password. It is the case
+where the two policies disagree, and an operator needs to know which one to
+change.
+
+What is never logged is a **value**. A write's payload is a process value, and
+on a plant those are pressures, temperatures and recipe parameters: not secrets,
+but not something a relay should copy into a log file at poll rate either. The
+*address* is logged, because an address is what a policy is written about, and a
+refusal nobody can attribute to a byte range is a refusal nobody can act on.
+
+Refusals are `s7_denied` for the ban triggers, with the reasons in the table
+above plus `operation_not_allowed`, `operation_denied`, `area_not_allowed`,
+`area_denied`, `db_not_allowed`, `address_not_allowed`, `block_type_not_allowed`, `no_rule_matched`,
+`rule_denied`, `outside_schedule`, `no_connection_request` and
+`upstream_unavailable`.
+
 ## asset_inventory
 
 One record per device, built from traffic the proxy was already carrying.
@@ -10384,6 +10911,183 @@ hardware address -- whichever a log line happened to carry.
 `xproxyctl assets` is the same thing as a table, `xproxyctl assets -long`
 one block per device with the evidence, and `xproxyctl assets show KEY`
 one device.
+
+## access
+
+Just-in-time access to the gate listeners: nobody opens a session unless
+there is a live grant naming them, the listener and the target.
+
+A bastion with standing access is a bastion whose accounts are worth as
+much as the machines behind it. The keys sit in the estate all the time,
+so whoever reaches a key, a laptop or a session reaches production at a
+moment of their choosing. This is the other arrangement: a grant somebody
+asked for, somebody else approved, that ends by itself, and that is written
+down.
+
+```yaml
+access:
+  ledger: /var/lib/xgate/access.log
+  approvals: 1            # four eyes: the person who asked and one other
+  max_duration: 4h
+  max_lead: 24h
+  max_uses: 0             # the window is the bound
+  max_open: 256
+
+server:
+  listeners:
+    - name: bastion
+      kind: ssh
+      ssh:
+        upstream: prod-hosts
+        require_grant: true
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `ledger` | path | none | The append-only file every request, approval, denial, revocation and use is written to, with a hash chain over the records. Absolute. Without it the grants live only in this process -- gone at the next restart, with no trail -- which is warned about rather than refused, because a test estate legitimately runs that way |
+| `approvals` | int | `1` | Approvals a grant needs **in addition to** the request. 1 is four eyes: the person who asked and one other. 0 means a request is in force the moment it is made -- still just-in-time and time-boxed, but nobody else has to agree, and it is warned about. At most 8 |
+| `max_duration` | duration | `4h` | The longest window a grant may cover; 1m to 24h |
+| `max_lead` | duration | `24h` | How far ahead of now a window may start, so an approval today cannot be a key for next quarter; 0 to 720h |
+| `max_uses` | int | `0` | Sessions one grant may open. 0 leaves the window as the only bound; 1 is a one-shot grant. 0 to 1000 |
+| `max_open` | int | `256` | Grants that may be pending or in force at once. A request queue nobody drains is how an approval system becomes a rubber stamp; 1 to 4096 |
+| `self_approval` | bool | `false` | Let the requester approve their own request. It is here for the estate with one operator, where the alternative is switching the requirement off altogether. Warned about every time |
+
+Each gate kind -- `ssh`, `telnet`, `vnc`, `rdp` and `ftp` -- takes
+`require_grant: true`, in that one spelling, so an estate does not have to
+remember which protocol calls it what. A listener that requires a grant
+with no `access` section fails the load; an `access` section no listener
+asks is warned about.
+
+### What a grant names
+
+A grant names a **subject**, a **listener** and a **target**.
+
+The subject is the identity the estate knows after authentication -- the
+SSH principal entry when a key matched one, otherwise the login -- rather
+than a name a client is free to offer. The listener is one listener by
+name: a grant on the jump host is not a grant on the bastion. The target
+is either the listener's `upstream` pool, which means any machine in it, or
+the `host:port` of one endpoint in that pool, which means that machine and
+**pins the dial to it** -- otherwise "alice may reach db-2 to restart a
+service" would be access to whichever machine the balancer felt like.
+
+An address that leaves the pool and comes back is the same address; a
+*grant* that is revoked, denied, spent or expired is finished and cannot be
+approved back to life.
+
+### Four eyes
+
+A grant is in force only once `approvals` people have approved it, and
+**neither the person who asked nor the person who gains the access may be
+one of them**. Names are compared trimmed and case-insensitively, so
+`Alice` approving what `alice` asked for is one person rather than two, and
+one approver cannot count twice.
+
+The approvals a grant needs are fixed when it is requested. Loosening
+`approvals` later does not bring a half-approved grant into force, and the
+record says what was required at the time rather than what is required now.
+
+Revocation is not slowed down the same way: anybody who can reach the
+management API may revoke a grant, including one in force. Taking access
+away is not the decision this requirement exists to guard.
+
+### The time box
+
+Every grant carries a window, checked against the policy when the request
+is made rather than left to an approver to notice. `max_duration` bounds
+its length and `max_lead` how far ahead it may start.
+
+The window ends the session **that is running**, not only the next one
+somebody opens: a gate sets the session's deadline to the earlier of its own
+`session_timeout` and the end of the window. Without that, a four-hour grant
+used at the last minute is a session that lasts as long as the operator
+likes.
+
+A request nobody approved before its window closed is expired rather than
+pending: it cannot come into force any more, and leaving it in the queue
+would hide the ones that still can.
+
+### Tying a session to its approval
+
+Each gate's access log line carries `grant` -- the identifier of the grant the
+session was opened under -- and the ledger's `use` record carries the session's
+identifier. So an investigation holding a recording can find the approval that
+allowed it, and one holding an approval can find every session opened under it.
+One direction alone leaves a reviewer guessing which window produced the
+session in front of them.
+
+### The trail
+
+Every act is one line of the ledger, and each line carries a hash over the
+previous one. A removed, edited, reordered or forged line is found when the
+file is read at start, and the daemon refuses to serve a trail it cannot
+stand behind rather than presenting it as intact. One process holds the file
+exclusively -- two daemons appending would interleave their chains -- so a
+second daemon pointed at the same path fails to start and says so.
+
+A record is written, flushed and synced **before** the grant it describes is
+in force. A grant that is in force in memory but not on disk is a grant
+nobody approved after the next restart, and an approval the caller was told
+about but that was never written is worse than one that was refused.
+`max_uses` is durable for the same reason: a one-shot grant that refills
+itself on restart is not one shot.
+
+### Asking, approving and taking it back
+
+A grant is asked for, approved by somebody else, and used -- all through the
+management socket, so the same audit trail covers every step:
+
+```
+# the person who needs it, or somebody on their behalf
+xproxyctl access ask -subject alice -listener bastion -target prod-db \
+    -reason "incident 4711" -for 2h
+
+# somebody else -- not the requester, not alice
+xproxyctl access approve 9f2c4ab1 -note "spoke to alice"
+
+# what is in force now, and one grant in full
+xproxyctl access -state active
+xproxyctl access show 9f2c4ab1
+
+# and taking it back, which needs nobody else
+xproxyctl access revoke 9f2c4ab1 -note "laptop stolen"
+```
+
+`-by` is the name the act is recorded under, and it defaults to the account
+running the command (`SUDO_USER` first, because somebody who reached the
+socket through `sudo` is still a person and `root` is not a name). Four eyes
+is enforced on that name; the audit log records the caller's uid, gid and pid
+beside it. The two can disagree, which is worth seeing: an estate where
+everybody reaches the socket as one account gets its accountability from the
+names and from the socket's group rather than from the kernel, and should
+know that. An identifier may be given in full or as any unambiguous prefix;
+an ambiguous one is refused rather than resolved to the first match.
+
+The same five calls are `GET /v1/access`, `POST /v1/access` and
+`POST /v1/access/{approve,deny,revoke}`; see docs/ARCHITECTURE.md.
+
+### What a refusal says
+
+A session turned away is counted under its own reason, because an operator
+answering a call needs to know which. They are the listener's ordinary
+refusal counters (`xproxyctl status`, the `_refusals_total` metrics) and
+each is a deny event on the listener's usual reason (`ssh_denied` and so
+on), so bans apply as they always did.
+
+| Reason | What happened |
+|--------|---------------|
+| `no_grant` | Nobody has asked for access for this subject on this listener |
+| `grant_pending` | A request exists and not enough people have approved it |
+| `grant_not_yet` | Approved, and its window has not opened |
+| `grant_expired` | The window closed, or nobody approved in time |
+| `grant_denied` | An approver refused it |
+| `grant_revoked` | It was withdrawn |
+| `grant_spent` | `max_uses` is used up |
+| `grant_wrong_target` | There is a grant for this subject on this listener, for another machine -- named separately because "wrong target" is the mistake an operator makes and "no grant" would send them looking for the wrong thing |
+
+A listener in `policy: {mode: shadow}` records what it would have refused
+and carries on, which is how an estate turns this on without locking its
+operators out on the first evening.
 
 ## Headers set on forwarded requests
 

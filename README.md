@@ -112,7 +112,7 @@ estate — and binds only the kinds of its own role:
 |--------|-------|----------------|
 | `xproxy` | the open internet | `http`, `forward`, `tcp`, `udp`, `dns` |
 | `xgate` | people | `ssh`, `telnet`, `vnc`, `rdp` |
-| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `snmp`, `ldap`, `tftp`, `dhcp`, `postgres`, `mysql`, `tds`, `redis`, `bacnet`, `ntp`, `ntske` |
+| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `snmp`, `ldap`, `tftp`, `dhcp`, `postgres`, `mysql`, `tds`, `redis`, `bacnet`, `amqp`, `s7`, `ntp`, `ntske` |
 
 A kind a binary did not link is never bound and never falls through to
 the HTTP data plane: it is an error naming the daemon that serves it.
@@ -185,6 +185,8 @@ its own for what is deliberately *not* implemented and why.
 | Industrial | Modbus/TCP (MBAP), Modbus over Serial Line RTU and ASCII tunnelled over TCP, and Modbus/TCP Security with the role in the client certificate | `modbus` |
 | Telecontrol | IEC 60870-5-104 (APCI/APDU, the I, S and U formats, the type identifications and causes of transmission of IEC 60870-5-101), with IEC 62351-3 TLS | `iec104` |
 | Building automation | BACnet/IP (ASHRAE 135 Annex J): the BVLC functions, the network layer of clause 6 with its routing and security messages, the application layer of clause 20 with the confirmed and unconfirmed services, and the object, property and command priority each request names | `bacnet` |
+| Industrial control | Siemens S7comm on TCP 102: TPKT (RFC 1006), COTP (X.224 class 0, whose connection request addresses a CPU by rack and slot), and the S7 layer -- the function codes for memory, blocks and the control service, and the user-data groups for the diagnostic buffer, the clock, the password and the debugger | `s7` |
+| Messaging | AMQP 0-9-1 (the class and method catalogue RabbitMQ speaks) and AMQP 1.0 (ISO/IEC 19464: the nine performatives, its self-describing type system, and the SASL layer), read on one port because a client picks which of the two it speaks in its first eight octets | `amqp` |
 | Management | SNMP v1 (RFC 1157), v2c (RFC 1901–1908) and v3 with USM (RFC 3410–3418), over UDP and over TCP (RFC 3430), with RFC 6353 TLS on the stream side | `snmp` |
 | Directory | LDAP v3 (RFC 4511–4515, 4517, 4519) with LDAPS and the StartTLS of RFC 4513, as a relay: the bind methods, the search filter's shape, distinguished names compared per relative name, the attribute lists in both directions | `ldap`, filters |
 | Addressing | DHCP (RFC 2131) with its options (RFC 2132), relay agent information (RFC 3046), long options (RFC 3396) and classless static routes (RFC 3442), as a relay agent that reads what it relays: the server a reply came from, and the configuration the reply carries | `dhcp` |
@@ -194,6 +196,11 @@ its own for what is deliberately *not* implemented and why.
 | Identity | OpenID Connect Core 1.0, OAuth 2.0 (RFC 6749) with introspection (RFC 7662), PKCE (RFC 7636) and token exchange (RFC 8693); JWT, JWS and JWKS (RFC 7515–7519); DPoP (RFC 9449); certificate-bound tokens (RFC 8705); SAML 2.0 as a service provider; SCIM 2.0 (RFC 7642–7644); WebAuthn level 2; LDAP (RFC 4511–4515); TOTP (RFC 6238); HTTP Basic (RFC 7617); client certificate identity as `Client-Cert` (RFC 9440) or Envoy's `X-Forwarded-Client-Cert` | filters |
 | Inspection | ModSecurity SecLang with the OWASP Core Rule Set through Coraza; a documented subset of YARA; ICAP (RFC 3507); OpenAPI 3 descriptions; GraphQL; XML and XSD with exclusive canonicalization; protobuf structure without a schema; WebAssembly with WASI preview 1 | filters |
 | Operations | Prometheus exposition; OpenTelemetry OTLP for traces, metrics and logs; SIEM export as NDJSON, Splunk HEC, CEF or LEEF; pcapng capture files; asciicast v2 session recordings; journald and syslog log sinks; the Consul catalogue; Kubernetes Ingress and Gateway API | the control plane |
+
+Each protocol has a page of its own -- what it looks like on the wire, what
+security it was designed with, what this proxy decided to read and what it
+deliberately does not do -- indexed at
+[docs/protocols/README.md](docs/protocols/README.md).
 
 ## Every listener kind
 
@@ -225,6 +232,8 @@ protocol so that a policy can be written in that protocol's own terms:
 | `mysql` | `xrelay` | MySQL and MariaDB protocol, handshake v10, the capability flags, the command set | The capability bits a client may even see offered, which of the protocol's commands may cross, whether the connection may be unencrypted, which user and database may be claimed (re-checked on COM_CHANGE_USER), which authentication plugins, which statement shapes, LOAD DATA in either form |
 | `tds` | `xrelay` | TDS 7.x for SQL Server: the PRELOGIN negotiation, LOGIN7, SQLBATCH and RPC, and the TLS handshake carried inside TDS packets | Whether the connection may be unencrypted at all -- and the relay answers the negotiation itself rather than forwarding the server's octet -- whether a password may cross in the clear, which login, database and application name may be claimed, whether a login carrying no user name is admitted, which message types, which stored procedures, and which statement shapes, applied to a batch and to the SQL inside an sp_executesql alike |
 | `redis` | `xrelay` | RESP2 and RESP3, multibulk and inline, with a table of where each command's keys are | Whether the connection may be unencrypted, whether a command may arrive before the connection has authenticated -- with the answer taken from the server's reply -- which ACL user may be named, which commands and subcommands may cross, which keys by prefix, which numbered databases, and whether anything may write |
+| `amqp` | `xrelay` | AMQP 0-9-1 and AMQP 1.0: the frame layer of each, the 0-9-1 method catalogue with its arguments and field tables, the 1.0 performatives over its type system, and the SASL exchange of both | Which of the two versions may be spoken; which SASL mechanisms and which identities; which virtual host; whether the broker's own *topology* may be changed at all, which is off by default; which exchanges, queues, routing keys and link addresses a connection may name -- including the dead-letter exchange of a queue, the alternate exchange of an exchange and the reply-to inside a message, which a policy written against the obvious fields would miss; whether every message must say who published it; and the frame, channel, link and message bounds |
+| `s7` | `xrelay` | Siemens S7comm: the TPKT framing, the COTP connection request with the rack and slot it addresses, and the S7 layer -- function codes, user-data groups and subfunctions, and the item specifications of a read or a write | Which controller a client may reach, decided from the connection request *before the PLC is dialled*, and as what -- an operator panel, an engineering station or another PLC; which of nineteen operations it may ask for, where the default is what an HMI does and an upload is off with the writes because a block read is how control logic leaves a site; `read_only` as one line no rule can override; which memory areas, data blocks and byte ranges a request may name, checked against the whole span rather than its first byte; the block types an upload or a download may name; and the item, octet, PDU-length and connection bounds, because a CPU has sixteen connection resources altogether |
 | `tftp` | `xrelay` | TFTP with RFC 2347–2349 options and RFC 7440 windows | The client list, the direction, the transfer mode, the filename read as a path and refused by class, the directories, and the block, window and transfer bounds |
 | `bacnet` | `xrelay` | BACnet/IP: the BVLC functions, the network layer, the confirmed and unconfirmed services, and where each service keeps its object | Which addresses may speak to the building at all -- the only identity the protocol has -- which services may be sent, which objects and properties they may name, and at which *command priority*, so nobody takes a piece of plant at a life safety slot the management system cannot override; whether a broadcast is carried and how many answers it may bring back; whether foreign-device registration with the estate's broadcast management is carried at all |
 | `ntp` | `xrelay` | NTP v1–v4, SNTP, NTS-protected NTP | Versions, modes, extension fields, authentication, and whether the servers agree |
@@ -609,6 +618,100 @@ protocol so that a policy can be written in that protocol's own terms:
   rather than checking the wrong argument, because a prefix policy applied to a
   `STORE` option's value or a Lua script's text is one that passes exactly what it
   was meant to stop
+
+- `kind: amqp`: a **message broker relay**, and the only kind here that reads
+  **two protocols on one port** -- because AMQP is two protocols. A client picks
+  one in its first eight octets: 0-9-1, which is what RabbitMQ speaks and what
+  almost every deployment means by AMQP, or 1.0 (ISO/IEC 19464), which is a
+  different protocol that kept the name. On the first, every operation is a
+  method frame with typed arguments; on the second there are nine performatives
+  over a self-describing type system, and the thing being authorised is the
+  *address a link attaches to*, with everything after it carrying a handle. Both
+  are read, and one policy decides both: the brokers that serve both versions
+  spell an address `/exchange/X/key` and `/queue/Q`, so the same exchange and
+  queue lists cover it.
+
+  A broker is where an estate's data is in transit -- orders, payments,
+  telemetry, the events that drive every other service -- and its own
+  permissions are a per-user, per-vhost matter administered inside the broker.
+  This holds that boundary in the configuration that is reviewed with everything
+  else, and adds three lines the broker's model does not draw.
+
+  **Topology is not work.** Declaring an exchange, deleting a queue, binding,
+  unbinding and purging are the broker's *configuration*, and a service that
+  publishes to an exchange somebody else declared needs none of them -- so they
+  are off until named, and a client library that declares its own queue on
+  connect becomes a decision an operator makes rather than a default nobody
+  noticed. **The credential is in the clear**: PLAIN, which is what every
+  deployment uses, is the username and the password in one field separated by a
+  zero octet, so `require_tls` is the setting that matters most -- and the relay
+  reads the *username* out of the exchange for its rules and its logs and never
+  the password, so no code path between the wire and a log line holds a broker
+  credential. And **the dangerous argument is not the obvious one**:
+  `x-dead-letter-exchange` on a queue and `alternate-exchange` on an exchange
+  each name an exchange the broker will route to, and `reply-to` inside a
+  message names a queue a responder will deliver to, so a policy that checked
+  only the field being declared would let a client have the broker reach what
+  the client may not. All three go through the same lists.
+
+  Two smaller things fall out of the protocol being stateful in both directions.
+  A refusal **ends the connection**, with the protocol's own statement of why --
+  dropping one frame out of a conversation would leave the two sides disagreeing
+  about what happened. And the inbound direction gets the *deny* lists only: an
+  allow list says what a client may ask for, while a delivery names where a
+  message came from, which a consumer need not be allowed to name
+
+- `kind: s7`: a relay in front of a **Siemens PLC**, and the listener for the
+  protocol with the least security of any here. S7comm is three layers on TCP
+  102 -- TPKT, COTP, S7comm -- and what matters about it is what it does not
+  have. There is **no transport security at all**, which is why this kind takes
+  no TLS section: a certificate here would promise something the protocol cannot
+  do. And there is **no authentication worth the name**, because the optional
+  password protects a handful of functions on some CPU families and nothing on
+  others, and an S7-300 with no password accepts a **stop** from anybody who can
+  open a socket to it. The equipment cannot be fixed: a controller in a line is
+  replaced on a capital cycle, not a release cycle, and its firmware is
+  qualified against the process it runs. So the boundary has to be somewhere
+  else, and this is somewhere else.
+
+  Four things are the whole of this kind. **The controller is decided before the
+  PLC is dialled**: which CPU a client asked for is in the COTP connection
+  request, where the called TSAP's two octets hold a connection resource, a rack
+  and a slot -- so a client that may not reach that controller is answered with
+  a COTP disconnect and never takes one of its connection resources, of which an
+  S7-300 has sixteen altogether. The *resource* is the cheapest useful line in
+  the section, because `pg` is the programming device connection an engineering
+  station opens and `op` is an operator panel: a listener admitting only `op` has
+  refused every engineering station without naming a single function.
+
+  **One vocabulary spans two layers.** The protocol puts reading and writing
+  memory behind a function code, and the diagnostic buffer, the block list, the
+  clock, the password and the debugger behind a user-data group and subfunction
+  -- so a policy written against either alone would have nothing to say about
+  half the protocol. Both are mapped onto nineteen words, the default allows what
+  an HMI, a historian and an inventory do and nothing that changes anything, and
+  `read_only` therefore means every operation that changes the controller rather
+  than just a write -- one line no rule can override, because a read-only
+  listener one rule could write through is not one. **An upload is off with the
+  writes** although it changes nothing, because reading a block out of a PLC is
+  how a plant's control logic leaves the site.
+
+  **The memory is the boundary inside the CPU**: the area, the data block and the
+  byte range, checked against the whole span a request covers rather than its
+  first byte -- a read of bytes 0 to 200 against a range of 0 to 99 is a read of
+  bytes the policy does not name, and it is refused rather than split, because
+  splitting it would be the relay deciding which half the operator meant. The
+  ranges are written in **bytes** and the protocol carries bits, so the relay
+  divides by eight rather than making an operator do it.
+
+  And **a refused request is answered, not dropped**: an acknowledgement carrying
+  error class `0x87`, *access fault*, which is what a password-protected CPU
+  answers -- so the client's own library reports a refusal rather than a timeout,
+  and the poll loop a plant runs on carries on. A refused user-data request is
+  answered in its own layer, with the same group and subfunction, because that is
+  where a client that asked to set the clock looks. What is never written down is
+  a **value**: a write's payload is a pressure, a temperature or a recipe
+  parameter, and the address is what a policy is written about
 
 - `kind: tftp`: a **TFTP** relay in front of the servers that move firmware,
   configurations and boot images. This is the protocol under provisioning: a

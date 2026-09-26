@@ -1,0 +1,122 @@
+# BACnet/IP — the building
+
+`kind: bacnet`, served by **xrelay**, UDP port **47808** (0xBAC0).
+
+ASHRAE 135, and the protocol behind the air handling, the lighting, the lifts
+and the access control in most commercial buildings built in the last twenty
+years. It is an object model as much as a protocol: every controller presents
+*objects* with *properties*, and reading or writing a property is how a
+management system does everything it does.
+
+## On the wire
+
+BACnet is a family with several data links — MS/TP over twisted pair, BACnet/IP
+over UDP, and others. This listener reads **BACnet/IP**, Annex J.
+
+Four layers, and each has something a policy needs:
+
+| Layer | What it is |
+|-------|-----------|
+| **BVLC** | The virtual link control: a type octet, a function, a length. The function says whether this is a unicast, a broadcast, a *forwarded* message from a broadcast management device, or a foreign-device registration |
+| **NPDU** | Clause 6's network layer: hop count, optional source and destination network numbers, and — when the network-layer-message bit is set — a routing or security message rather than an application one |
+| **APDU** | Clause 20's application layer: confirmed request, unconfirmed request, simple ack, complex ack, segment ack, error, reject, abort. A confirmed request carries an *invoke identifier* the answer echoes |
+| **Service** | `readProperty`, `writeProperty`, `readPropertyMultiple`, `writePropertyMultiple`, `subscribeCOV`, `who-is`, `i-am`, `reinitializeDevice`, `deviceCommunicationControl` and about thirty more |
+
+The part that matters most for a policy is **command priority**. A commandable
+object holds sixteen command slots; the plant follows the highest-priority slot
+that is filled; and slots 1 and 2 are *manual life safety* and *automatic life
+safety*. A value written at priority 1 cannot be overridden by the management
+system, by the building's own program, or by anybody who does not know it is
+there.
+
+`out-of-service` is the other one. Writing it true cuts a point loose from the
+physical world: the object then reports whatever was written to its present
+value, and every graphic, trend and alarm above it believes the number.
+
+## What the protocol gives you
+
+Almost nothing. There is **no user, no session and no password that means
+anything**. The only identity in the protocol is the source address of the
+datagram, and it is UDP.
+
+ASHRAE 135 clause 24 defines *network security* — the security messages the
+NPDU can carry — and it is effectively undeployed; the later
+BACnet/SC (secure connect) addendum puts the protocol inside TLS WebSockets and
+is only now reaching equipment. What is installed is a controller with a
+twenty-year service life on a flat building network.
+
+## What this listener decides
+
+**The services, named one at a time.** `services` defaults to the reading,
+discovery and notification services and nothing that changes anything, so a
+relay somebody put in front of a building without reading the manual carries
+what a graphics page needs and nothing that moves plant.
+
+**The objects and properties**, because a service on its own is too coarse:
+`writeProperty` to a setpoint and `writeProperty` to `out-of-service` are the
+same service.
+
+`deny_sensitive_writes` is that distinction made a default rather than a list
+somebody has to remember to write. It is **on**, and it refuses writes to the
+properties that are the device's own behaviour rather than a measurement or a
+setpoint: `object-name`, `out-of-service`, `program-change`, the notification
+recipient lists and the MS/TP timing properties. `refuse_unlocated_objects`
+covers the other half of the same idea — a request whose object this relay
+cannot place is a request no object policy was applied to.
+
+**The command priority.** `max_command_priority` defaults to 8, refusing the
+seven slots above it — so nobody takes a piece of plant at a life safety slot
+the management system cannot override. It is the single most useful line in the
+section, and it has no equivalent in any other protocol here.
+
+**The broadcasts.** `who-is` with no range brings back an `i-am` from every
+device on the network, which is this protocol's amplification vector as well as
+its discovery mechanism. So a broadcast is carried or not, the replies one
+broadcast may bring back are bounded, the window they may arrive in is bounded,
+and `max_whois_range`/`require_whois_range` make a sweep of the whole instance
+space a decision somebody made.
+
+**The network layer.** Routing messages, security messages, foreign-device
+registration with a broadcast management device, and forwarded messages are
+each carried or not. Foreign-device registration is the one worth refusing by
+default: it asks the estate's BBMD to forward every broadcast to whoever
+registered.
+
+**The invoke identifiers are translated per client**, in both directions, so
+two clients behind one relay cannot collide on an identifier and read each
+other's answers.
+
+## What it does not do
+
+- **It does not authenticate.** The client list is an address list and this is
+  UDP, so the list is worth what the network path makes it worth. There is no
+  credential in the protocol to check.
+- **It does not implement clause 24 security or BACnet/SC.** The security
+  messages are carried or refused, not originated or verified.
+- **It does not read MS/TP.** The twisted-pair data link is a different
+  physical world; a router between MS/TP and BACnet/IP is where that boundary
+  is.
+- **It does not rewrite a priority.** A write above the bound is refused, not
+  lowered. Lowering it would mean the management system believes it holds a
+  slot it does not.
+- **It does not reassemble segments to inspect them.** `allow_segmented`
+  decides whether segmented requests are carried at all; a policy applied to
+  half a reassembled request would be a policy with a hole in it.
+
+## Standards
+
+| Document | What it covers |
+|----------|----------------|
+| ANSI/ASHRAE 135 | BACnet: the object model, the services of clause 20, the network layer of clause 6 |
+| ANSI/ASHRAE 135 Annex J | BACnet/IP: the BVLC functions, BBMDs and foreign-device registration |
+| ANSI/ASHRAE 135 clause 24 | Network security services (largely undeployed) |
+| ANSI/ASHRAE 135 Addendum BACnet/SC | Secure connect: the protocol over TLS WebSockets |
+| ISO 16484-5 | The international edition of the same standard |
+
+## See also
+
+- The settings: [docs/CONFIG.md `## bacnet`](../CONFIG.md#bacnet)
+- A worked configuration: [`examples/ot/bacnet.yaml`](../../examples/ot/bacnet.yaml)
+- Operating it: [docs/TROUBLESHOOTING.md `## BACnet`](../TROUBLESHOOTING.md#bacnet)
+- The other protocols on a plant: [modbus](modbus.md), [s7](s7.md),
+  [iec104](iec104.md)

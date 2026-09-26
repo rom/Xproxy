@@ -8,6 +8,7 @@ import (
 
 	"github.com/rom/xproxy/internal/config"
 	wire "github.com/rom/xproxy/internal/mysqlwire"
+	"github.com/rom/xproxy/internal/schedule"
 	"github.com/rom/xproxy/internal/sqlkind"
 )
 
@@ -84,7 +85,7 @@ type rule struct {
 	users    []string
 	dbs      []string
 	programs []string
-	sched    *schedule
+	sched    *schedule.Window
 	observe  bool
 	action   string
 
@@ -231,7 +232,7 @@ func compileRule(rc *config.MySQLRule, i int) (*rule, error) {
 		r.readOnly = &v
 	}
 	if rc.Schedule != nil {
-		if r.sched, err = compileSchedule(rc.Schedule); err != nil {
+		if r.sched, err = schedule.Compile(rc.Schedule); err != nil {
 			return nil, fmt.Errorf("rules[%d].schedule: %w", i, err)
 		}
 	}
@@ -376,7 +377,7 @@ func (p *policy) identity(se *Session, user, db string) Decision {
 	if r.action == "deny" {
 		return Decision{Reason: "rule_denied", Rule: r.name}
 	}
-	if r.sched != nil && !r.sched.inForce(se.At) {
+	if r.sched != nil && !r.sched.InForce(se.At) {
 		return Decision{Reason: "outside_schedule", Rule: r.name}
 	}
 	return Decision{Allow: true, Rule: r.name}
@@ -516,7 +517,7 @@ func (p *policy) Statement(se *Session, st sqlkind.Statement, text string) Decis
 		if r.action == "deny" {
 			return Decision{Reason: "rule_denied", Rule: r.name}
 		}
-		if r.sched != nil && !r.sched.inForce(se.At) {
+		if r.sched != nil && !r.sched.InForce(se.At) {
 			return Decision{Reason: "outside_schedule", Rule: r.name}
 		}
 		return Decision{Allow: true, Rule: r.name}

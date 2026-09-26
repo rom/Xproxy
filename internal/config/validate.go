@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/hex"
+	amqpwire "github.com/rom/xproxy/internal/amqpwire"
 	"github.com/rom/xproxy/internal/assets"
 	bacnetwire "github.com/rom/xproxy/internal/bacnet"
 	dhcpwire "github.com/rom/xproxy/internal/dhcp"
@@ -20,6 +21,7 @@ import (
 	"github.com/rom/xproxy/internal/rdp"
 	respwire "github.com/rom/xproxy/internal/respwire"
 	"github.com/rom/xproxy/internal/rfb"
+	s7wire "github.com/rom/xproxy/internal/s7"
 	snmpwire "github.com/rom/xproxy/internal/snmp"
 	"github.com/rom/xproxy/internal/syslog"
 	tdswire "github.com/rom/xproxy/internal/tdswire"
@@ -345,6 +347,7 @@ func (v *validator) config(c *Config) {
 	if c.Maintenance != nil {
 		v.maintenance(c.Maintenance)
 	}
+	v.access(c)
 	jwtProviders := map[string]bool{}
 	if c.JWT != nil {
 		v.jwt(c.JWT, jwtProviders)
@@ -875,6 +878,24 @@ func (v *validator) server(s *Server) {
 				v.errf("%s.bacnet: required for kind bacnet", p)
 			} else {
 				v.bacnetListener(p+".bacnet", ln.BACnet)
+			}
+		case "s7":
+			// No tls section: S7comm has no transport security of any
+			// kind, and a listener carrying a certificate would be
+			// promising something the protocol cannot do.
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C || ln.TLS != nil {
+				v.errf("%s: an s7 listener takes only address and s7: the protocol has no TLS", p)
+			}
+			if ln.S7 == nil {
+				v.errf("%s.s7: required for kind s7", p)
+			} else {
+				v.s7Listener(p+".s7", ln.S7)
+			}
+		case "amqp":
+			if ln.AMQP == nil {
+				v.errf("%s.amqp: required for kind amqp", p)
+			} else {
+				v.amqpListener(p+".amqp", ln.AMQP, ln.TLS != nil)
 			}
 		case "redis":
 			if ln.Redis == nil {
@@ -1792,6 +1813,9 @@ func (v *validator) upstream(i int, u *Upstream, seen map[string]bool) {
 		if d.Weight < 1 || d.Weight > 1000 {
 			v.errf("%s.weight: must be between 1 and 1000", dp)
 		}
+		if d.MaxEndpoints < 1 || d.MaxEndpoints > 65536 {
+			v.errf("%s.max_endpoints: must be between 1 and 65536", dp)
+		}
 		if d.Canary && u.Canary == nil {
 			v.errf("%s.canary: set without a canary section", dp)
 		}
@@ -2532,7 +2556,7 @@ var denyReasons = map[string]bool{
 	"telnet_denied": true, "vnc_denied": true, "rdp_denied": true, "sftp_icap": true, "udp_denied": true,
 	"modbus_denied": true, "iec104_denied": true, "ntp_denied": true, "ntske_denied": true,
 	"snmp_denied": true, "ldap_denied": true, "tftp_denied": true, "dhcp_denied": true, "postgres_denied": true, "mysql_denied": true, "tds_denied": true, "redis_denied": true,
-	"bacnet_denied": true,
+	"bacnet_denied": true, "amqp_denied": true, "s7_denied": true,
 }
 
 // securityTxtFieldRE bounds an extra field name to the token RFC 9116
@@ -6676,6 +6700,13 @@ func (v *validator) vncListener(p string, c *VNCListener, hasTLS bool) {
 			v.errf("%s.mfa: needs a security type whose credential carries a user name -- a plain VeNCrypt subtype (x509-plain), or mslogon2 -- since a DES challenge proves a shared desktop password and says nothing about who holds it", p)
 		}
 	}
+	// A grant names a person, so this listener has to learn one. RFB carries
+	// a name in the same two places the factor needs, and without either the
+	// subject would be empty -- which fails closed, refusing every session,
+	// and is better said here than discovered in a change window.
+	if c.RequireGrant && c.MFA == nil && !hasPlain(c.VeNCryptSubtypes) && !namesUser {
+		v.errf("%s.require_grant: needs a security type whose credential carries a user name -- a plain VeNCrypt subtype (x509-plain), or mslogon2 -- or an mfa section, because a grant names a person and there would be nobody to match it against", p)
+	}
 	if up, ok := rfb.SecurityByName(strings.ToLower(strings.TrimSpace(c.UpstreamSecurity))); ok && rfb.RSAAESFamily[up] {
 		wantsRSA = true
 		if c.UpstreamRSAFingerprint == "" {
@@ -6816,6 +6847,16 @@ func (v *validator) sshCertPolicy(p string, h *SSHListener) {
 
 // telnetListener checks a telnet gateway.
 func (v *validator) telnetListener(p string, c *TelnetListener, hasTLS bool) {
+	// Telnet carries no identity of its own for a proxy to read: the login
+	// the target asks for is between the client and the target, and this
+	// gateway never sees it. The name a grant is matched against is the one
+	// the factor prompt asks for, so require_grant needs that prompt --
+	// without it the subject would be empty, every session would be refused,
+	// and the operator would find out in a change window.
+	if c.RequireGrant && c.MFA == nil {
+		v.errf("%s.require_grant: needs an mfa section on this kind: telnet has no identity of its own, and the login the "+
+			"factor prompt asks for is the name a grant is matched against", p)
+	}
 	if c.Upstream == "" {
 		v.errf("%s.upstream: required", p)
 	}
@@ -7636,6 +7677,392 @@ func (v *validator) mysqlLoad(p string, in []string) {
 }
 
 // redisListener validates a kind: redis section.
+// s7Listener validates a kind: s7 section.
+func (v *validator) s7Listener(p string, m *S7Listener) {
+	if m.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	v.modbusCIDRs(p+".allow_clients", m.AllowClients)
+	v.modbusCIDRs(p+".deny_clients", m.DenyClients)
+	if len(m.AllowClients) == 0 {
+		v.warnf("%s.allow_clients: empty, so every client the deny list does not refuse may "+
+			"reach a controller. On a plant network that is the whole segment", p)
+	}
+	// A rack is three bits and a slot five, which is what the one octet
+	// holds: a number outside them is a policy line nothing can match.
+	v.modbusRanges(p+".racks", m.Racks, 7)
+	v.modbusRanges(p+".slots", m.Slots, 31)
+	v.s7Resources(p+".resources", m.Resources)
+	v.s7Operations(p+".operations", m.Operations)
+	v.s7Operations(p+".deny_operations", m.DenyOperations)
+	v.s7Areas(p+".areas", m.Areas)
+	v.s7Areas(p+".deny_areas", m.DenyAreas)
+	v.modbusRanges(p+".dbs", m.DBs, 65535)
+	// A byte address is the protocol's bit address divided by eight, so the
+	// top of the range is a little over two million.
+	v.modbusRanges(p+".addresses", m.Addresses, 1<<21-1)
+	v.modbusRanges(p+".write_addresses", m.WriteAddresses, 1<<21-1)
+	v.s7BlockTypes(p+".block_types", m.BlockTypes)
+
+	for name, val := range map[string]int{
+		"max_items": m.MaxItems, "max_read_bytes": m.MaxReadBytes,
+		"max_write_bytes": m.MaxWriteBytes, "max_pdu_length": m.MaxPDULength,
+		"max_frame_bytes": m.MaxFrameBytes, "max_requests": m.MaxRequests,
+		"rate_limit": m.RateLimit, "rate_burst": m.RateBurst,
+		"max_sessions": m.MaxSessions, "max_sessions_per_client": m.MaxSessionsPerClient,
+	} {
+		if val < 0 {
+			v.errf("%s.%s: must not be negative", p, name)
+		}
+	}
+	if m.MaxFrameBytes != 0 && m.MaxFrameBytes < s7wire.MinFrame {
+		v.errf("%s.max_frame_bytes: %d is below the %d a COTP header needs",
+			p, m.MaxFrameBytes, s7wire.MinFrame)
+	}
+	if m.MaxPDULength > 0 && m.MaxFrameBytes > 0 && m.MaxPDULength > m.MaxFrameBytes {
+		v.warnf("%s.max_pdu_length: %d is above max_frame_bytes (%d), so the frame bound "+
+			"decides and this value never applies", p, m.MaxPDULength, m.MaxFrameBytes)
+	}
+
+	// The operations that change a controller, named where an operator can
+	// see what they have just allowed.
+	if !m.ReadOnly {
+		for i, o := range m.Operations {
+			op, ok := s7wire.OpOf(strings.TrimSpace(o))
+			if !ok || !s7wire.Writes(op) {
+				continue
+			}
+			switch op {
+			case s7wire.OpStop:
+				v.warnf("%s.operations[%d]: stop lets a client stop the CPU, which stops the "+
+					"machine", p, i)
+			case s7wire.OpDownload:
+				v.warnf("%s.operations[%d]: download lets a client change the program the "+
+					"machine runs", p, i)
+			case s7wire.OpProgrammer:
+				v.warnf("%s.operations[%d]: programmer is the debugger -- forcing a variable, "+
+					"setting a breakpoint -- which no application needs", p, i)
+			case s7wire.OpSecurity:
+				v.warnf("%s.operations[%d]: security is the password functions, so a client "+
+					"may unlock a protected CPU through this listener", p, i)
+			default:
+				v.warnf("%s.operations[%d]: %s changes the controller", p, i, op)
+			}
+		}
+	}
+	if len(m.Operations) > 0 && m.ReadOnly {
+		for _, o := range m.Operations {
+			if op, ok := s7wire.OpOf(strings.TrimSpace(o)); ok && s7wire.Writes(op) {
+				v.warnf("%s.operations: %s is named and read_only is set, so it is refused "+
+					"anyway -- read_only is not overridden by a list", p, op)
+			}
+		}
+	}
+
+	switch m.DefaultAction {
+	case "", "allow", "deny":
+	default:
+		v.errf("%s.default_action: %q is not allow or deny", p, m.DefaultAction)
+	}
+	if m.DefaultAction == "allow" && len(m.Rules) == 0 && !m.MonitorOnly && !m.ReadOnly {
+		v.warnf("%s: default_action allow with no rules, without monitor_only and without "+
+			"read_only relays every request to the controller", p)
+	}
+	switch m.DenyResponse {
+	case "", "error", "drop", "close":
+	default:
+		v.errf("%s.deny_response: %q is not error, drop or close", p, m.DenyResponse)
+	}
+
+	for i := range m.Rules {
+		r := &m.Rules[i]
+		rp := fmt.Sprintf("%s.rules[%d]", p, i)
+		if r.Name == "" {
+			v.errf("%s.name: required, because it is what a refusal names", rp)
+		}
+		switch r.Action {
+		case "", "allow", "deny", "observe":
+		default:
+			v.errf("%s.action: %q is not allow, deny or observe", rp, r.Action)
+		}
+		v.modbusCIDRs(rp+".clients", r.Clients)
+		v.modbusRanges(rp+".racks", r.Racks, 7)
+		v.modbusRanges(rp+".slots", r.Slots, 31)
+		v.s7Resources(rp+".resources", r.Resources)
+		v.s7Operations(rp+".operations", r.Operations)
+		v.s7Operations(rp+".deny_operations", r.DenyOperations)
+		v.s7Areas(rp+".areas", r.Areas)
+		v.s7Areas(rp+".deny_areas", r.DenyAreas)
+		v.modbusRanges(rp+".dbs", r.DBs, 65535)
+		v.modbusRanges(rp+".addresses", r.Addresses, 1<<21-1)
+		v.modbusRanges(rp+".write_addresses", r.WriteAddresses, 1<<21-1)
+		v.s7BlockTypes(rp+".block_types", r.BlockTypes)
+		if r.MaxItems < 0 {
+			v.errf("%s.max_items: must not be negative", rp)
+		}
+		if r.Schedule != nil {
+			v.modbusSchedule(rp+".schedule", r.Schedule)
+		}
+	}
+}
+
+// s7Operations checks the operation names.
+func (v *validator) s7Operations(p string, in []string) {
+	for i, o := range in {
+		if _, ok := s7wire.OpOf(strings.TrimSpace(o)); !ok {
+			v.errf("%s[%d]: %q is not an S7 operation (read, write, setup, upload, download, "+
+				"control, stop, cpu_services, szl, diagnostics, blocks, cyclic, time_read, "+
+				"time_write, security, programmer, mode, pbc, nc)", p, i, o)
+		}
+	}
+}
+
+// s7Areas checks the memory area names.
+func (v *validator) s7Areas(p string, in []string) {
+	for i, a := range in {
+		if _, ok := s7wire.AreaOf(strings.TrimSpace(a)); !ok {
+			v.errf("%s[%d]: %q is not a memory area (db, inputs, outputs, flags, timer, "+
+				"counter, instance_db, local, previous_local, peripheral and the 200-family "+
+				"areas)", p, i, a)
+		}
+	}
+}
+
+// s7Resources checks the connection resource names.
+func (v *validator) s7Resources(p string, in []string) {
+	for i, r := range in {
+		if _, ok := s7wire.ResourceOf(strings.TrimSpace(r)); !ok {
+			v.errf("%s[%d]: %q is not a connection resource (pg, op, basic)", p, i, r)
+		}
+	}
+}
+
+// s7BlockTypes checks the block type names.
+func (v *validator) s7BlockTypes(p string, in []string) {
+	for i, b := range in {
+		switch strings.TrimSpace(b) {
+		case "db", "fb", "fc", "sdb", "sfb", "sfc":
+		default:
+			v.errf("%s[%d]: %q is not a block type (db, fb, fc, sdb, sfb, sfc)", p, i, b)
+		}
+	}
+}
+
+// amqpListener validates a kind: amqp section.
+func (v *validator) amqpListener(p string, m *AMQPListener, hasTLS bool) {
+	if m.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	v.modbusCIDRs(p+".allow_clients", m.AllowClients)
+	v.modbusCIDRs(p+".deny_clients", m.DenyClients)
+
+	requireTLS := m.RequireTLS == nil || *m.RequireTLS
+	if requireTLS && !hasTLS {
+		v.errf("%s.require_tls: set (it defaults on) but the listener has no tls section; "+
+			"AMQP has no in-protocol upgrade, so the port is either TLS or it is not", p)
+	}
+	if !requireTLS {
+		v.warnf("%s.require_tls: false lets a client authenticate in the clear, and AMQP's "+
+			"PLAIN mechanism is the username and the password in one field", p)
+	}
+	switch m.UpstreamTLSMode {
+	case "", "require", "prefer", "disable":
+	default:
+		v.errf("%s.upstream_tls_mode: %q is not require, prefer or disable", p, m.UpstreamTLSMode)
+	}
+	if m.RequireAuth != nil && !*m.RequireAuth {
+		v.warnf("%s.require_auth: false lets an operation through before the broker has "+
+			"accepted a credential", p)
+	}
+
+	for i, ver := range m.Versions {
+		switch ver {
+		case "0-9-1", "1.0":
+		case "0-8", "0-9":
+			v.errf("%s.versions[%d]: %q is not a version this relay reads; a broker answers it "+
+				"for compatibility, and a policy on a revision from 2006 is not one worth "+
+				"writing", p, i, ver)
+		default:
+			v.errf("%s.versions[%d]: %q is not 0-9-1 or 1.0", p, i, ver)
+		}
+	}
+	v.amqpMechanisms(p+".allow_mechanisms", m.AllowMechanisms)
+	v.amqpMechanisms(p+".deny_mechanisms", m.DenyMechanisms)
+
+	v.amqpMethods(p+".allow_methods", m.AllowMethods)
+	v.amqpMethods(p+".deny_methods", m.DenyMethods)
+	v.amqpPerformatives(p+".allow_performatives", m.AllowPerformatives)
+	v.amqpPerformatives(p+".deny_performatives", m.DenyPerformatives)
+
+	for name, list := range map[string][]string{
+		"allow_exchanges": m.AllowExchanges, "deny_exchanges": m.DenyExchanges,
+		"allow_queues": m.AllowQueues, "deny_queues": m.DenyQueues,
+		"allow_routing_keys": m.AllowRoutingKeys, "deny_routing_keys": m.DenyRoutingKeys,
+		"allow_addresses": m.AllowAddresses, "deny_addresses": m.DenyAddresses,
+		"allow_vhosts": m.AllowVhosts, "deny_vhosts": m.DenyVhosts,
+	} {
+		v.amqpPatterns(p+"."+name, list)
+	}
+
+	if m.AllowTopology {
+		v.warnf("%s.allow_topology: true lets a client declare and delete exchanges and "+
+			"queues, and purge them; almost no application needs to", p)
+	}
+	if m.MaxPriority < 0 || m.MaxPriority > 255 {
+		v.errf("%s.max_priority: %d is not a message priority", p, m.MaxPriority)
+	}
+	if m.MaxFrameBytes != 0 && m.MaxFrameBytes < amqpwire.MinFrameMax091 {
+		v.errf("%s.max_frame_bytes: %d is below the %d the protocol requires a peer to accept",
+			p, m.MaxFrameBytes, amqpwire.MinFrameMax091)
+	}
+	for name, val := range map[string]int{
+		"max_frame_bytes": m.MaxFrameBytes, "max_channels": m.MaxChannels,
+		"max_links": m.MaxLinks, "max_message_bytes": m.MaxMessageBytes,
+		"max_methods": m.MaxMethods, "rate_limit": m.RateLimit, "rate_burst": m.RateBurst,
+		"max_sessions": m.MaxSessions, "max_sessions_per_client": m.MaxSessionsPerClient,
+	} {
+		if val < 0 {
+			v.errf("%s.%s: must not be negative", p, name)
+		}
+	}
+	// A message bound below the frame bound never applies on 0-9-1: the
+	// content header declares the message size, and a message that fits in
+	// one frame is refused by neither.
+	if m.MaxMessageBytes > 0 && m.MaxFrameBytes > 0 && m.MaxMessageBytes < m.MaxFrameBytes {
+		v.warnf("%s.max_message_bytes: %d is below max_frame_bytes (%d), so a single frame may "+
+			"carry a message this bound would refuse", p, m.MaxMessageBytes, m.MaxFrameBytes)
+	}
+	if m.RequireUserID && m.MatchUserID != nil && !*m.MatchUserID {
+		v.warnf("%s.require_user_id: set with match_user_id false, so every message must "+
+			"carry a user identifier and none of them has to be this connection's", p)
+	}
+
+	switch m.DefaultAction {
+	case "", "allow", "deny":
+	default:
+		v.errf("%s.default_action: %q is not allow or deny", p, m.DefaultAction)
+	}
+	switch m.DenyResponse {
+	case "", "close", "drop":
+	default:
+		v.errf("%s.deny_response: %q is not close or drop", p, m.DenyResponse)
+	}
+	for i := range m.Rules {
+		r := &m.Rules[i]
+		rp := fmt.Sprintf("%s.rules[%d]", p, i)
+		v.modbusCIDRs(rp+".clients", r.Clients)
+		switch r.Action {
+		case "", "allow", "deny", "observe":
+		default:
+			v.errf("%s.action: %q is not allow, deny or observe", rp, r.Action)
+		}
+		v.amqpMethods(rp+".allow_methods", r.AllowMethods)
+		v.amqpMethods(rp+".deny_methods", r.DenyMethods)
+		v.amqpPerformatives(rp+".allow_performatives", r.AllowPerformatives)
+		v.amqpPerformatives(rp+".deny_performatives", r.DenyPerformatives)
+		for name, list := range map[string][]string{
+			"allow_exchanges": r.AllowExchanges, "deny_exchanges": r.DenyExchanges,
+			"allow_queues": r.AllowQueues, "deny_queues": r.DenyQueues,
+			"allow_routing_keys": r.AllowRoutingKeys, "deny_routing_keys": r.DenyRoutingKeys,
+			"allow_addresses": r.AllowAddresses, "deny_addresses": r.DenyAddresses,
+			"vhosts": r.Vhosts,
+		} {
+			v.amqpPatterns(rp+"."+name, list)
+		}
+		if r.MaxMessageBytes < 0 || r.MaxMethods < 0 {
+			v.errf("%s: max_message_bytes and max_methods must not be negative", rp)
+		}
+		if r.Schedule != nil {
+			v.modbusSchedule(rp+".schedule", r.Schedule)
+		}
+	}
+}
+
+// amqpMethods checks 0-9-1 method names, and says what an operator has just
+// allowed when the name is one that changes the broker rather than using it.
+func (v *validator) amqpMethods(p string, in []string) {
+	allowing := strings.HasSuffix(p, ".allow_methods")
+	for i, n := range in {
+		name := strings.ToLower(strings.TrimSpace(n))
+		if name == "" {
+			v.errf("%s[%d]: empty", p, i)
+			continue
+		}
+		if _, _, ok := amqpwire.MethodID(name); !ok {
+			// An error rather than a warning: unlike a redis command,
+			// this catalogue is fixed by the specification, so a name
+			// outside it is a typo and a policy line that matches
+			// nothing.
+			v.errf("%s[%d]: %q is not an AMQP 0-9-1 method (they are spelled "+
+				"`basic.publish`, `queue.declare`)", p, i, n)
+			continue
+		}
+		if !allowing {
+			continue
+		}
+		switch {
+		case amqpwire.Destructive(name):
+			v.warnf("%s[%d]: %s deletes or empties something, and no rule below can take it "+
+				"back", p, i, name)
+		case amqpwire.Topology(name):
+			v.warnf("%s[%d]: %s changes the broker's own configuration", p, i, name)
+		case amqpwire.Administrative(name):
+			v.warnf("%s[%d]: %s reaches past this connection", p, i, name)
+		}
+	}
+}
+
+// amqpPerformatives checks AMQP 1.0 performative names.
+func (v *validator) amqpPerformatives(p string, in []string) {
+	for i, n := range in {
+		name := strings.ToLower(strings.TrimSpace(n))
+		if name == "" {
+			v.errf("%s[%d]: empty", p, i)
+			continue
+		}
+		if _, ok := amqpwire.PerformativeCode(name); !ok {
+			v.errf("%s[%d]: %q is not an AMQP 1.0 performative (they are spelled `attach`, "+
+				"`transfer`, `sasl-init`)", p, i, n)
+		}
+	}
+}
+
+// amqpMechanisms checks SASL mechanism names.
+func (v *validator) amqpMechanisms(p string, in []string) {
+	allowing := strings.HasSuffix(p, ".allow_mechanisms")
+	for i, n := range in {
+		name := strings.ToUpper(strings.TrimSpace(n))
+		if name == "" {
+			v.errf("%s[%d]: empty", p, i)
+			continue
+		}
+		if allowing && name == "ANONYMOUS" {
+			v.warnf("%s[%d]: ANONYMOUS is a login with no identity, so nothing this listener "+
+				"logs or bans can be attributed to an account", p, i)
+		}
+	}
+}
+
+// amqpPatterns checks a name pattern list.
+func (v *validator) amqpPatterns(p string, in []string) {
+	for i, pat := range in {
+		if pat == "" {
+			// An empty pattern is not nothing on this protocol: the
+			// default exchange is named by the empty string, and a
+			// publish to it with a routing key is how every client
+			// library sends to a queue by name. So it has to be written
+			// deliberately, as `""`, and an accidental blank line in a
+			// list is an error.
+			v.errf("%s[%d]: empty; the default exchange is matched by the pattern \"\" "+
+				"written deliberately, not by a blank entry", p, i)
+			continue
+		}
+		if _, err := path.Match(pat, "x"); err != nil {
+			v.errf("%s[%d]: %q is not a pattern: %v", p, i, pat, err)
+		}
+	}
+}
+
 func (v *validator) redisListener(p string, m *RedisListener, hasTLS bool) {
 	if m.Upstream == "" {
 		v.errf("%s.upstream: required", p)
@@ -10140,5 +10567,80 @@ func (v *validator) bacnetRanges(p string, specs []string) {
 		if high < low {
 			v.errf("%s: %q runs backwards", p, s)
 		}
+	}
+}
+
+// access checks the access section and the listeners that require a grant.
+//
+// The two halves are checked together on purpose: a listener that requires a
+// grant with no ledger to ask would refuse every session, and a ledger no
+// listener asks is a queue of approvals nobody's access depends on. Each is a
+// configuration that reads as if it did something.
+func (v *validator) access(c *Config) {
+	const p = "access"
+	var need []string
+	for i := range c.Server.Listeners {
+		l := &c.Server.Listeners[i]
+		for _, g := range []struct {
+			kind string
+			on   bool
+		}{
+			{"ssh", l.SSH != nil && l.SSH.RequireGrant},
+			{"telnet", l.Telnet != nil && l.Telnet.RequireGrant},
+			{"vnc", l.VNC != nil && l.VNC.RequireGrant},
+			{"rdp", l.RDP != nil && l.RDP.RequireGrant},
+			{"ftp", l.FTP != nil && l.FTP.RequireGrant},
+		} {
+			if g.on {
+				need = append(need, l.Name+" ("+g.kind+")")
+			}
+		}
+	}
+	a := c.Access
+	if a == nil {
+		if len(need) > 0 {
+			v.errf("access: %s require a grant, and there is no access section for the grants to come from; "+
+				"without one every session on them would be refused", strings.Join(need, ", "))
+		}
+		return
+	}
+	if len(need) == 0 {
+		v.warnf("%s: no listener sets require_grant, so nothing consults these grants: requests would be approved and "+
+			"never used", p)
+	}
+	if a.Ledger == "" {
+		v.warnf("%s.ledger: empty, so the grants live only in this process -- gone at the next restart, with no trail "+
+			"of who approved what, which is the record this arrangement exists to produce", p)
+	} else if !filepath.IsAbs(a.Ledger) {
+		v.errf("%s.ledger: must be an absolute path", p)
+	}
+	if n := a.Approvals; n != nil {
+		switch {
+		case *n < 0:
+			v.errf("%s.approvals: must not be negative", p)
+		case *n > 8:
+			v.errf("%s.approvals: at most 8; a grant needing more approvals than an estate has operators is a grant "+
+				"nobody can use", p)
+		case *n == 0:
+			v.warnf("%s.approvals: 0, so a request is in force the moment it is made. Access is still just-in-time and "+
+				"time-boxed, but nobody else has to agree -- which is not four eyes", p)
+		}
+	}
+	if d := a.MaxDuration.D(); d < time.Minute || d > 24*time.Hour {
+		v.errf("%s.max_duration: must be between 1m and 24h", p)
+	}
+	if d := a.MaxLead.D(); d < 0 || d > 30*24*time.Hour {
+		v.errf("%s.max_lead: must be between 0 and 720h", p)
+	}
+	if a.MaxUses < 0 || a.MaxUses > 1000 {
+		v.errf("%s.max_uses: must be between 0 and 1000", p)
+	}
+	if a.MaxOpen < 1 || a.MaxOpen > 4096 {
+		v.errf("%s.max_open: must be between 1 and 4096", p)
+	}
+	if a.SelfApproval {
+		v.warnf("%s.self_approval: the person who asks may approve their own access, so four eyes is off. It is here for "+
+			"the estate with one operator; where there are two, this is the setting an attacker who reaches one "+
+			"account most wants", p)
 	}
 }

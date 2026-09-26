@@ -562,7 +562,375 @@ Open findings of the earlier rounds:
   whose datagram side is taken fails with the reason it failed and nothing left
   bound behind it, and a port 0 listener comes up with both sockets.
 
+### Added (1.4, access)
+
+- **Just-in-time access to the gate kinds: `access`, `require_grant`, and a
+  ledger with a hash chain.** A bastion with standing access is a bastion whose
+  accounts are worth as much as the machines behind it: the keys sit in the
+  estate all the time, so whoever reaches a key, a laptop or a session reaches
+  production at a moment of their choosing. The other arrangement is now
+  available -- nobody opens a session unless a live grant names them, the
+  listener and the target; the grant ends by itself; and a second person had to
+  agree to it.
+
+  **Four eyes.** A grant is in force only once `approvals` people have approved
+  it, and neither the person who asked nor the person who gains the access may
+  be one of them. Names are compared trimmed and case-insensitively, so `Alice`
+  approving what `alice` asked for is one person rather than two; one approver
+  cannot count twice; and the approvals a grant needs are fixed when it is
+  requested, so loosening the policy later does not bring a half-approved grant
+  into force. `self_approval` is an explicit, warned-about opt-in for the estate
+  with one operator, where the alternative is switching the requirement off.
+
+  **A time box.** `max_duration` bounds the window and `max_lead` how far ahead
+  it may start, both checked when the request is made rather than left to an
+  approver to notice. The window ends the session **that is running**, not only
+  the next one somebody opens. A request nobody approved before its window
+  closed is expired rather than pending.
+
+  **A written record.** Every request, approval, denial, revocation and use is
+  one line of an append-only trail carrying a hash chain, so a removed, edited,
+  reordered or forged line is found when the file is read and the daemon refuses
+  to serve a trail it cannot stand behind. One process holds the file
+  exclusively. A record is written, flushed and synced *before* the grant it
+  describes is in force, and `max_uses` is durable for the same reason: a
+  one-shot grant that refills itself on restart is not one shot.
+
+  All five gate kinds take `require_grant`, in that one spelling. Where the
+  protocol names the person before the target is dialled (ssh, telnet, vnc)
+  nothing is reached without a grant; where it cannot (rdp's credential and
+  ftp's login both arrive after the connection is open) the grant is checked
+  before the credential or any command of the person's is forwarded, and against
+  the machine already reached. telnet and vnc now refuse `require_grant` at load
+  when they have no way to learn a name, rather than failing closed on the first
+  evening. A grant naming one machine **pins the dial to it**.
+
+  Each gate's access log line names the grant the session was opened under,
+  and the ledger's use record names the session, so an investigation holding a
+  recording can find the approval and one holding an approval can find the
+  recordings. Without both directions a reviewer has to guess which window
+  produced the session in front of them.
+
+  The exposition carries it: `xproxy_access_grants{state}` with every state
+  present even at zero (a gauge that disappears when it reaches zero is a gauge
+  an alert cannot be written against), the acts as counters, and
+  `xproxy_access_refusals_total{reason}`. Three alerts come with it -- a request
+  that has been pending for half an hour, sessions refused for want of a grant,
+  and grants being *used* over a day with no approval recorded in the same day,
+  which is four eyes switched off -- and two panels on the security dashboard.
+
+  Eight refusal reasons, each its own counter (`no_grant`, `grant_pending`,
+  `grant_not_yet`, `grant_expired`, `grant_denied`, `grant_revoked`,
+  `grant_spent`, `grant_wrong_target`), because an operator answering a call
+  needs to know which; a listener in `policy: {mode: shadow}` records what it
+  would have refused and carries on. `xproxyctl access [ask|approve|deny|revoke]`
+  and five management calls under `/v1/access` are the interface, audited with
+  the caller's kernel-reported credentials beside the name each act was recorded
+  under.
+
+### Changed (1.4)
+
+- **A discovered endpoint now earns its place with a probe.** Active health
+  checking, passive outlier ejection, DNS and Consul discovery, drain and
+  per-endpoint bounds were all in place, but they met each other wrongly at one
+  point: an endpoint an announcement added to a **serving** pool started
+  `healthy: true` and was picked immediately, before any probe had run.
+
+  That is right at process start -- nothing has been probed then, and waiting
+  would serve nothing at all for an interval -- and wrong for an announcement,
+  because a registry announces an instance when its *process* starts, not when it
+  is ready: the service registers, then opens its database connections, loads its
+  caches and finally listens. The proxy was sending real requests into that gap
+  and then ejecting the endpoint for failing them, so every deploy and every
+  scale-up cost a burst of errors the proxy itself caused.
+
+  An endpoint that arrives while the pool is serving now begins unhealthy and
+  waits for `healthy_threshold` probes, and its **first probe runs at once**
+  rather than after the usual start jitter -- otherwise "wait for a probe" would
+  mean "sit out up to one `interval`", five minutes on a common setting.
+
+  The three exceptions are the point of the change rather than caveats to it. An
+  endpoint serves immediately when there is no `health_check` (no probe to wait
+  for, so waiting would mean never), when **nothing else in the pool can carry
+  the traffic** -- every other endpoint unhealthy, draining, ejected or at its
+  own `max_active` -- since there is no all-unhealthy fallback and an unprobed
+  endpoint beats an empty pool, and for the endpoints the pool starts with,
+  discovery's own first resolution included. An address that leaves a resolution
+  and comes back waits again: what is listening there now is not the process that
+  was healthy before.
+
+- **A resolution can no longer size the process: `discovery.max_endpoints`.**
+  Endpoint discovery installed however many endpoints an answer carried, and
+  each one is a health-check goroutine, a place in the hash ring and a slice of
+  the pool. A DNS answer over TCP carries thousands of A records and the four
+  megabyte registry body limit allows tens of thousands of entries, so one
+  answer -- from a registry that is confused, compromised, or answering somebody
+  else's question -- decided how large this process is, on every interval.
+
+  `max_endpoints` bounds one resolution; default 4096, 1 to 65536. Beyond it the
+  resolution is **truncated rather than refused**: refusing keeps the previous
+  set, and for a pool whose backends have all moved that is a pool serving
+  nothing, while a bounded subset still carries traffic. The specs are already
+  sorted by address when the bound is applied, so the subset is the same one on
+  every resolution -- an unstable subset would remove and add endpoints every
+  interval, losing their statistics, restarting their ramps and rebuilding the
+  ring each time. The truncation is warned about through the throttled notice
+  (a registry that answers that way answers that way every interval) and
+  counted as `truncations` in `xproxyctl upstreams`, so a pool serving a subset
+  of what was announced is visible rather than quiet. A configuration built in
+  code rather than loaded falls back to the default instead of to no bound.
+
+- **`internal/schedule`: one time window, shared by the thirteen kinds that had
+  their own.** A refactor that turned into two bug fixes, because the copies had
+  drifted.
+
+  Thirteen listener kinds have a rule list with a `schedule` section, and
+  thirteen had their own hundred lines to read it -- ten of them byte-identical
+  but for the package clause and a paragraph of comment. 1,404 lines out, 56 in.
+
+  **The day names disagreed with validation.** `internal/config` accepts a day
+  written either way, `mon` or `monday`, because that is what an operator writes.
+  The modbus copy accepted both; the other twelve accepted only the short form
+  and returned an error for the long one. So a configuration with
+  `days: [monday]` on any listener but a modbus one passed
+  `xrelay -config … -validate`, which said OK, and then refused to start with
+  `"monday" is not a day`. Validation and the runtime disagreeing about whether a
+  file is valid is the worst class of configuration bug there is: the check an
+  operator runs before a change window told them the change was safe. Both
+  spellings now work everywhere, and a test asserts that every day name
+  validation accepts is one the runtime compiles.
+
+  **The copies held two different answers to what a midnight-spanning window
+  means**, so the same YAML was in force at different times depending on which
+  listener it was written for. Twelve checked the day list against the day the
+  moment falls on, which reads `{days: [fri], from: "22:00", to: "06:00"}` as
+  Friday's *own* small hours -- nobody's night shift -- and refuses Saturday's,
+  which is the shift that was written. The modbus copy did that *and* reached
+  into Saturday morning, so it was the union of both readings and in force three
+  times over.
+
+  Neither is what `docs/CONFIG.md` describes. A window now **belongs to the day
+  it started on**: Friday 22:00 to Saturday 06:00, and nothing else. This
+  **changes when a midnight-spanning rule with a day list is in force** -- the
+  small hours of a named day are no longer covered by that day's own evening
+  window, and the small hours after it now are. Measured across every named day
+  and every hour of a week, 84 of 3,528 (window, hour) pairs change, and all 84
+  are midnight-spanning: a rule with no day list, or whose window sits inside one
+  day, is unaffected, which is almost every rule anybody has written. An operator
+  who wants a plain "these hours on these days" window is not affected at all.
+
+  `internal/schedule` is at 98.5% coverage, and its tests pin both fixes,
+  including a regression that asserts the old reading in both directions -- a fix
+  that only closed the wrong window would have left the right one closed too.
+
+- **`internal/sesslimit`: the session bound, and the race six kinds shared.**
+  `max_sessions` and `max_sessions_per_client` could each be **exceeded by
+  concurrent connections**, because every copy read the counter and then
+  incremented it with nothing holding it in between. Driven with 512 goroutines
+  against a bound of two, three sessions were admitted; the global bound failed
+  the same way and by as many as the accepts in flight.
+
+  The per-client table had a second fault: the release path deleted a client's
+  entry when its count reached zero while another goroutine held the counter it
+  had already fetched, so that increment landed on an orphaned counter and the
+  session went uncounted for the rest of its life.
+
+  Both are bound evasion by an attacker opening connections in parallel. It
+  matters most concretely on `kind: s7`, where the bound exists because an S7-300
+  has sixteen connection resources altogether and a client that takes more than
+  its share denies the plant its own HMI -- and on the four database kinds, where
+  the bound is what keeps one client from consuming a server's connection slots.
+
+  The shared gate takes the count under the lock that checked it. It is a mutex
+  rather than a pair of atomics on purpose: the contended operation is an
+  *accept*, one per connection rather than one per frame, and a bound only
+  approximately enforced is not a bound. 100% coverage, and the concurrency tests
+  spin on a flag rather than parking on a WaitGroup, because a barrier that wakes
+  goroutines spreads their arrival out far enough to hide the original defect.
+
+  Six kinds migrated: amqp, mysql, postgres, redis, s7, tds. Refusal reasons are
+  unchanged, so a listener's counters and alerts keep their names across this.
+
+- **`internal/numrange`: the range list, from two copies.** `5`, `1-16`,
+  `0x10-0x1F`, shared by the modbus and s7 kinds. Smaller than the schedule and
+  with no behaviour question attached -- both copies were byte-identical in the
+  parser and in `covers` -- but worth doing for what the s7 copy's comment
+  claimed: that it used the modbus spelling deliberately, so an estate with both
+  listeners does not have to remember that the two read `0-99` differently. A
+  promise held by two copies is one waiting to be broken. 100% coverage, and
+  `ParseNum` is exported because a policy reads bare numbers in the same two
+  spellings as the ends of a range.
+
 ### Added (1.4)
+
+- **`docs/protocols/`: one page per protocol, and a test that keeps the set
+  honest.** `docs/CONFIG.md` answers "which settings are there", and a
+  reflection test keeps it from falling behind the schema. Nothing answered the
+  question an engineer has first: what is this protocol, what security was it
+  designed with, and what did this relay decide to read?
+
+  Twenty-eight pages, one per listener kind, each with the same five sections in
+  the same order -- on the wire, what the protocol gives you, what this listener
+  decides, what it does not do, and the standards -- and each handing the reader
+  on to its `docs/CONFIG.md` section rather than repeating it.
+
+  The **"what it does not do"** section is the one worth reading before relying
+  on a listener, and the one that took the longest to write. A page that only
+  says what a listener decides reads as a claim to cover a protocol; the honest
+  version names the client list that is only an address list on UDP, the segment
+  a listener is not a firewall for, the negotiation refused rather than
+  rewritten, the content bounded rather than inspected, and — for the four
+  database kinds — that a statement-shape policy is not a SQL firewall.
+
+  `test/docs` ties the set to the roster in both directions and checks that no
+  page is a stub: each of the five headings present, in order, with something
+  under it. `TestEveryPageLinksToItsSettings` resolves the anchor rather than
+  matching a string, and found twenty links that rendered as links going
+  nowhere — because `docs/CONFIG.md` spells its per-kind headings two ways, the
+  twenty-two older kinds as `### server.listeners[].<kind>` and the seven newest
+  as `## <kind>`, so the anchor is not derivable from the kind's name.
+
+  `docs/CONFIG.md` gained a `## http` section in the process. It is a map rather
+  than a reference — HTTP is most of that document, and a reader looking for
+  `## http` beside `## s7` and `## amqp` was not finding one.
+
+- **`kind: s7`: a relay in front of a Siemens PLC.** `internal/s7` reads the
+  three layers off the wire and `internal/kinds/s7` holds the policy.
+
+  This is the protocol with the least security of any in this project. S7comm is
+  TPKT (RFC 1006), COTP (X.224 class 0) and the S7 layer on TCP 102, and what
+  matters about it is what it does not have. There is no transport security at
+  all -- so the kind registers without a TLS section, because a certificate here
+  would promise something the protocol cannot do -- and no authentication worth
+  the name: the optional password protects a handful of functions on some CPU
+  families and nothing on others, and an S7-300 with no password accepts a stop
+  from anybody who can open a socket to it. The equipment cannot be fixed on a
+  release cycle, so the boundary is the relay.
+
+  **The controller is decided before the PLC is dialled.** Which CPU a client
+  asked for is in the COTP connection request: the called TSAP's two octets hold
+  a connection resource, a rack and a slot. A client that may not reach that
+  controller is answered with a COTP disconnect -- what a CPU with no free
+  connection resources sends -- and never reaches it, which matters because an
+  S7-300 has sixteen connection resources altogether. `resources` is the cheapest
+  line in the section: `pg` is the programming device connection an engineering
+  station opens and `op` is an operator panel, so a listener admitting only `op`
+  has refused every engineering station without naming a function.
+
+  **One vocabulary spans two layers.** The protocol puts memory, blocks and the
+  control service behind function codes, and the diagnostic buffer, the block
+  list, the clock, the password and the debugger behind user-data groups and
+  subfunctions. `internal/s7` maps both onto nineteen words and the policy is
+  written in them -- which is what lets `read_only` mean every operation that
+  changes the controller rather than just a write, one line no rule can override.
+  The default allows what an HMI, a historian and an inventory do and nothing
+  else; an **upload** is off with the writes although it changes nothing, because
+  reading a block out of a PLC is how a plant's control logic leaves the site.
+
+  **The memory is bounded by area, data block and byte range**, checked against
+  the whole span a request covers rather than its first byte: a read of bytes 0
+  to 200 against a range of 0 to 99 is refused rather than clipped, because
+  clipping it would be the relay deciding which half the operator meant. The
+  ranges are written in bytes and the protocol carries bit addresses, so the
+  relay divides by eight rather than making an operator do it. `write_addresses`
+  is separate, so one listener can allow a wide read and a narrow setpoint
+  window, and `peripheral` on `deny_areas` shuts off direct access to the I/O
+  hardware past the process image.
+
+  A refused request is **answered and the session carries on**, which is the
+  modbus kind's choice and for the same reason: a plant connection is a poll loop
+  and dropping it turns a refusal into an outage. The answer is an
+  acknowledgement with error class `0x87`, *access fault* -- what a
+  password-protected CPU answers -- so the client's own library reports a
+  refusal rather than a timeout; a refused user-data request is answered in its
+  own layer, with the same group and subfunction and the error code for a
+  function the CPU does not offer, because that is where a client that asked to
+  set the clock looks. Only the frames the relay could not read at all end the
+  connection. An access fault *from the controller* is logged as
+  `s7_plc_refused`, because that is the case where the two policies disagree --
+  usually a protected CPU and a client with no password.
+
+  What is never logged is a value: a write's payload is a pressure, a temperature
+  or a recipe parameter, and the address is what a policy is written about.
+
+  `examples/ot/s7.yaml` has four listeners: the panels and the historian on a
+  line, the engineering station on a separate address with a change window, a
+  packaging cell that is `read_only`, and a cell nobody has an inventory of in
+  monitor mode. Refusals are `s7_denied` for the ban triggers.
+
+- **`kind: amqp`: a message broker relay that reads both protocols.** `internal/amqpwire`
+  reads them off the wire and `internal/kinds/amqp` holds the policy.
+
+  AMQP is two protocols sharing a name and a port, and a client picks one in its
+  first eight octets. **0-9-1** is what RabbitMQ speaks and what almost every
+  deployment means by AMQP: a frame protocol with a class-and-method catalogue
+  where declaring an exchange, binding a queue, publishing and deleting are each
+  a method frame with typed arguments. **1.0** (ISO/IEC 19464) is a different
+  protocol that kept the name: nine performatives over a self-describing type
+  system, where the thing being authorised is the address a link attaches to and
+  everything after it carries a handle. Both are read, and **one policy decides
+  both** -- the brokers that serve both versions spell an address
+  `/exchange/X/key` and `/queue/Q`, so the same exchange and queue lists cover
+  it and an operator writes the boundary once.
+
+  A broker is where an estate's data is in transit, and its own permissions are a
+  per-user, per-vhost matter administered inside the broker -- RabbitMQ's model is
+  three regular expressions per user per vhost, which is more than most brokers
+  offer and still outside the estate's own review. This listener holds that
+  boundary in the configuration reviewed with everything else, and adds three
+  lines the broker's model does not draw.
+
+  **Topology is not work.** Declaring an exchange, deleting a queue, binding,
+  unbinding and purging are the broker's *configuration*, and a service that
+  publishes to an exchange somebody else declared needs none of them. So
+  `allow_topology` is false by default, and a client library that declares its own
+  queue on connect becomes a decision an operator makes rather than a default
+  nobody noticed.
+
+  **The credential is in the clear.** PLAIN -- what every deployment uses -- is
+  the username and the password in one field separated by a zero octet, so
+  `require_tls` defaults on and is the setting that matters most. The relay reads
+  the *username* out of the SASL exchange for its rules and its logs and steps
+  over the password, so no code path between the wire and a log line holds a
+  broker credential. ANONYMOUS is not on the default mechanism list, because it
+  is a login with no identity; a broker that *offers* it gets an
+  `amqp_anonymous_offered` alert, since anything reaching that broker without
+  passing this listener can use it.
+
+  **The dangerous argument is not the obvious one.** `x-dead-letter-exchange` on
+  a queue and `alternate-exchange` on an exchange each name an exchange the
+  broker will route to, and `reply-to` inside a message names a queue a responder
+  will deliver to. A policy that checked only the field being declared would let
+  a client have the broker reach what the client may not, so all three go through
+  the same lists -- as does the node address of a 1.0 attach. The name lists are
+  written in the protocol's own topic language (`*` one word, `#` zero or more),
+  because that is the one an operator already knows from writing bindings.
+
+  Four more things follow from what the protocol is. A message is refused on the
+  size its **content header declares**, before its body arrives, and on 1.0 by
+  the sum over a run of transfers, because a message there may be split across
+  them and bounding each frame would bound nothing. `require_user_id` with
+  `match_user_id` turns "somebody published this" into an attributable act: it is
+  the one field that ties a message to a person and nothing makes a publisher set
+  it. A **refusal ends the connection**, with the protocol's own statement of why
+  -- a `connection.close` carrying reply code 403, or a 1.0 `close` carrying
+  `amqp:unauthorized-access` -- because AMQP is stateful in both directions and
+  dropping one frame out of a conversation leaves the two sides disagreeing about
+  what happened. And the **inbound direction gets the deny lists only**: an allow
+  list says what a client may ask for, while a delivery names where a message came
+  from, which a consumer need not be allowed to name -- a queue bound to an
+  exchange by somebody else delivers messages carrying that exchange's name, and
+  requiring it on the allow list would break every ordinary consumer.
+
+  Two defects were found while writing the tests, both in the shape of the policy
+  rather than in the parsing. `allow_topology: true` did not widen the method
+  allow list, so a listener that permitted topology still refused
+  `queue.declare` for being off a list the operator had not written -- the flag
+  widens the list now, and the class is decided before the list so a refusal names
+  the reason rather than the symptom. And the name patterns were being matched as
+  shell globs over the whole string, in which `*` crosses a dot: `orders.*` then
+  covered `orders.eu.created`, which is precisely the distinction a routing key
+  policy exists to draw.
 
 - **`kind: bacnet`: a BACnet/IP relay in front of a building.**
   `internal/bacnet` reads the three layers of ASHRAE 135 Annex J and holds the

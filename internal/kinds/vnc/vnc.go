@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/acceptgroup"
+	"github.com/rom/xproxy/internal/access"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/mfa"
 	"github.com/rom/xproxy/internal/netutil"
@@ -59,7 +60,10 @@ type server struct {
 	// px is the policy over the pixel stream, built once.
 	px       pixelPolicy
 	mfaGuard *mfa.Guard
-	ssh      *sshDialer
+	// grants is the just-in-time access guard, nil unless this listener
+	// sets require_grant.
+	grants *access.Guard
+	ssh    *sshDialer
 	// rsaKey is this listener's own key for the rsa-aes types.
 	rsaKey *rsa.PrivateKey
 
@@ -137,6 +141,7 @@ func newServer(engine proxy.Host, cfg config.Listener, ln net.Listener, tc *tls.
 			Duration: c.MFA.Duration.D(), MaxUsers: c.MFA.MaxUsers,
 		})
 	}
+	t.grants = access.NewGuard(engine.Access(), cfg.Name, c.RequireGrant, engine.Logs().Error)
 	return t, nil
 }
 
@@ -313,6 +318,11 @@ type session struct {
 	live *sessions.Session
 	pool *upstream.Pool
 	ep   *upstream.Endpoint
+	// grant is the access grant this session was admitted under, and
+	// pinned the one machine it names, when it names one rather than the
+	// pool.
+	grant  *access.Grant
+	pinned string
 }
 
 func (t *server) handle(client net.Conn) {
@@ -401,6 +411,13 @@ func (se *session) run(start time.Time) string {
 	if err != nil {
 		return "client_init"
 	}
+	// The grant is checked after the client has identified itself and
+	// before the desktop is dialled, so a session with no grant never
+	// reaches a machine.
+	if reason := se.admitByGrant(); reason != "" {
+		return reason
+	}
+	defer access.CloseAtExpiry(se.grant, func() { _ = se.client.Close() })()
 	if err := se.connect(); err != nil {
 		t.engine.Logs().Error.Warn("vnc target unavailable", "listener", t.cfg.Name, "err", err.Error())
 		return "upstream_unavailable"
@@ -422,17 +439,53 @@ func (se *session) run(start time.Time) string {
 }
 
 func (t *server) log(se *session, start time.Time, reason string) {
-	t.engine.Logs().Access.Info("vnc", "listener", t.cfg.Name, "client_ip", se.ip.String(),
+	attrs := []any{"listener", t.cfg.Name, "client_ip", se.ip.String(),
 		"user", textsafe.Clip64(se.user), "target", se.target,
 		"desktop", textsafe.Clip64(se.desktop),
 		"client_version", se.clientVersion.String(), "client_security", rfb.SecurityName(se.clientSec),
 		"upstream_version", se.upVersion.String(), "upstream_security", rfb.SecurityName(se.upSec),
 		"width", se.width, "height", se.height, "view_only", t.v.ViewOnly,
-		"reason", reason, "duration_ms", time.Since(start).Milliseconds())
+		"reason", reason, "duration_ms", time.Since(start).Milliseconds()}
+	t.engine.Logs().Access.Info("vnc", append(attrs, access.LogAttrs(se.grant)...)...)
 }
 
 // connect dials the target: through SSH where one is configured, and
 // otherwise straight.
+// sessionID is the live table's identifier for this session, or empty when the
+// table refused to register it.
+func (se *session) sessionID() string {
+	if se.live == nil {
+		return ""
+	}
+	return se.live.ID
+}
+
+// admitByGrant is the just-in-time access decision: the reason to refuse, or
+// empty to carry on. The subject is the name the client authenticated with,
+// which on this protocol is the plain credential's user or the name the factor
+// prompt asked for -- which is why require_grant needs one of the two.
+func (se *session) admitByGrant() string {
+	t := se.t
+	if t.grants == nil {
+		return ""
+	}
+	var addrs []string
+	if pool := t.engine.Pool(t.v.Upstream); pool != nil {
+		addrs = pool.Addresses()
+	}
+	adm := t.grants.Check(se.user, t.v.Upstream, addrs)
+	if adm.Reason == "" {
+		se.grant, se.pinned = adm.Grant, adm.Pinned
+		return ""
+	}
+	if t.shadowed(se.ip, adm.Reason, textsafe.Clip64(se.user)) {
+		return ""
+	}
+	t.engine.Counters().VNCRefused.Add(1)
+	t.deny(se.ip, adm.Reason, textsafe.Clip64(se.user))
+	return adm.Reason
+}
+
 func (se *session) connect() error {
 	t := se.t
 	pool := t.engine.Pool(t.v.Upstream)
@@ -456,6 +509,8 @@ func (se *session) connect() error {
 			continue
 		}
 		se.up, se.ep, se.target = conn, ep, ep.Address
+		// The window is spent once a machine was actually reached.
+		t.grants.Use(se.grant, se.sessionID())
 		se.live.Annotate(se.user, se.target, se.desktop)
 		_ = conn.SetDeadline(time.Now().Add(t.v.HandshakeTimeout.D()))
 		return nil

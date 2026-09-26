@@ -21,6 +21,7 @@ import (
 	"os"
 
 	"github.com/rom/xproxy/internal/daemon"
+	_ "github.com/rom/xproxy/internal/kinds/amqp"     // listener kind: amqp
 	_ "github.com/rom/xproxy/internal/kinds/bacnet"   // listener kind: bacnet
 	_ "github.com/rom/xproxy/internal/kinds/dhcp"     // listener kind: dhcp
 	_ "github.com/rom/xproxy/internal/kinds/ftp"      // listener kind: ftp
@@ -33,6 +34,7 @@ import (
 	_ "github.com/rom/xproxy/internal/kinds/ntske"    // listener kind: ntske
 	_ "github.com/rom/xproxy/internal/kinds/postgres" // listener kind: postgres
 	_ "github.com/rom/xproxy/internal/kinds/redis"    // listener kind: redis
+	_ "github.com/rom/xproxy/internal/kinds/s7"       // listener kind: s7
 	_ "github.com/rom/xproxy/internal/kinds/smtp"     // listener kind: smtp
 	_ "github.com/rom/xproxy/internal/kinds/snmp"     // listener kind: snmp
 	_ "github.com/rom/xproxy/internal/kinds/syslog"   // listener kind: syslog

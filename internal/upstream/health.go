@@ -41,11 +41,20 @@ func (p *Pool) healthLoop(ctx context.Context, e *Endpoint) {
 		url = p.Scheme + "://" + e.URLHost()
 	}
 	var ok, bad int
-	// Initial jitter of up to one interval.
-	select {
-	case <-ctx.Done():
-		return
-	case <-time.After(time.Duration(rand.Int64N(int64(hc.Interval.D())))): //nolint:gosec // jitter only, not security relevant
+	// Initial jitter of up to one interval, so that a fleet of proxies
+	// starting together does not probe a backend in lock-step.
+	//
+	// An endpoint waiting on its first probe to join skips it. The jitter is
+	// there to spread a *herd*, and a single address a registry announced
+	// mid-flight is not one -- while the wait it would impose is the whole
+	// interval during which the new capacity sits idle. So it is probed at
+	// once, and joins after one round trip rather than after an interval.
+	if !e.joinOnProbe {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Duration(rand.Int64N(int64(hc.Interval.D())))): //nolint:gosec // jitter only, not security relevant
+		}
 	}
 	t := time.NewTicker(hc.Interval.D())
 	defer t.Stop()

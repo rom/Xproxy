@@ -1,0 +1,132 @@
+# A bastion where nobody has standing access: every session is opened
+# against a grant somebody asked for, somebody else approved, and that
+# ends by itself.
+#
+# The difference from bastion/ssh.yaml is not the protocol policy -- that
+# is the same -- but *when* an operator may use it. Here the keys in
+# authorized_keys are necessary and not sufficient: they say who this
+# person is, and the grant says whether they may be on this machine now.
+# An attacker who reaches a laptop, a key or an agent socket reaches a
+# bastion that will not let them in without a second person agreeing.
+#
+# Run it: an operator asks, a colleague approves, and the window closes
+# by itself.
+#
+#   xproxyctl access ask -subject alice -listener bastion \
+#       -target prod-hosts -reason "incident 4711" -for 2h
+#   xproxyctl access approve 9f2c4ab1 -note "spoke to alice"
+#   xproxyctl access -state active
+#   xproxyctl access revoke 9f2c4ab1 -note "laptop stolen"
+#
+# Validate: xgate -config examples/bastion/jit.yaml -validate
+version: 1
+
+# One section for the daemon: the ledger is one file with one writer, and
+# an approval is about a person and a machine rather than about a port.
+access:
+  # Every request, approval, denial, revocation and use is a line here,
+  # each carrying a hash over the previous one. An edited, removed,
+  # reordered or forged line is found when the file is read at start, and
+  # the daemon refuses to serve a trail it cannot stand behind. Archive
+  # it the way an audit log is archived; do not edit it.
+  ledger: /var/lib/xgate/access.log
+
+  # Four eyes: the person who asked and one other. Neither the requester
+  # nor the person who gains the access may be the approver, and one
+  # approver cannot count twice. Raise it to 2 where a change needs two
+  # colleagues; leave self_approval alone.
+  approvals: 1
+
+  # The time box. An approver cannot be asked to check arithmetic, so the
+  # bounds are applied when the request is made: at most an afternoon,
+  # and bookable at most a day ahead.
+  max_duration: 4h
+  max_lead: 24h
+
+  # 0 leaves the window as the only bound, which is what an operator
+  # working an incident needs -- several sessions inside one window. Set
+  # it to 1 for the grants that are meant to be one look at one machine.
+  max_uses: 0
+
+  # A request queue nobody drains is how an approval system becomes a
+  # rubber stamp, so the grants that are pending or in force are bounded.
+  max_open: 256
+
+server:
+  listeners:
+    - name: bastion
+      address: "0.0.0.0:22"
+      kind: ssh
+      connection_rate: {per_second: 20, burst: 40}
+      connection_rate_per_source: {per_second: 2, burst: 5}
+      ssh:
+        upstream: prod-hosts
+
+        # The grant is checked after authentication and before the target
+        # is dialled: a session with no grant never reaches a machine, and
+        # the refusal is counted under its own reason (no_grant,
+        # grant_pending, grant_expired and the rest) so an operator on the
+        # phone knows whether they are waiting for a person or for a fix.
+        require_grant: true
+
+        host_keys: [/etc/xgate/ssh/host_ed25519]
+        authorized_keys: /etc/xgate/ssh/authorized_keys
+
+        # A second factor as well: the grant says this person may be here
+        # now, the factor says the person at the keyboard is them. Neither
+        # replaces the other.
+        mfa:
+          file: /etc/xgate/mfa
+          max_failures: 5
+          window: 15m
+          lockout: 15m
+
+        # The session onwards uses the bastion's own credential, so a key
+        # that leaves the estate is not a key that opens a server in it.
+        upstream_user: operator
+        upstream_key_file: /etc/xgate/ssh/id_ed25519
+        upstream_known_hosts: /etc/xgate/ssh/known_hosts
+
+        # What the session may do once it is in, which is a separate
+        # question from whether it may be in at all.
+        allow_channels: [session]
+        allow_requests: [pty-req, env, shell, exec, window-change, signal]
+        allow_env: [TERM, LANG, "LC_*"]
+        max_channels: 8
+        idle_timeout: 15m
+
+        # The window ends the session that is running: the connection's
+        # deadline is the earlier of this and the end of the grant, so a
+        # two-hour grant used at the last minute does not become a shell
+        # that lasts the night.
+        session_timeout: 8h
+
+        recording:
+          directory: /var/lib/xgate/recordings
+          # The grant's id is in the access log line and in the ledger, so
+          # a recording can be tied to the approval that allowed it.
+          max_file_bytes: 268435456
+
+upstreams:
+  - name: prod-hosts
+    # A grant may name this pool, meaning any machine behind the
+    # listener, or one of these addresses, meaning that machine -- and
+    # then the dial is pinned to it. "alice may reach db-2 to restart a
+    # service" is then access to db-2 and to nothing else.
+    endpoints:
+      - {address: "10.20.0.11:22"}
+      - {address: "10.20.0.12:22"}
+    health_check: {type: tcp, interval: 10s, timeout: 2s}
+
+management:
+  # Asking, approving, denying and revoking all go through this socket, so
+  # the group that owns it is the group that can approve. Give each
+  # operator their own account on this host: four eyes is enforced on the
+  # name an act is recorded under, and the audit log records the caller's
+  # uid beside it -- an estate where everybody arrives as root gets its
+  # accountability from the names rather than from the kernel.
+  socket: /run/xgate/xgate.sock
+  socket_mode: "0660"
+
+logging:
+  directory: /var/log/xgate

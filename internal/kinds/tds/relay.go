@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/rom/xproxy/internal/acceptgroup"
@@ -16,6 +15,7 @@ import (
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/safe"
+	"github.com/rom/xproxy/internal/sesslimit"
 	"github.com/rom/xproxy/internal/sqlkind"
 	wire "github.com/rom/xproxy/internal/tdswire"
 	"github.com/rom/xproxy/internal/tlsconf"
@@ -35,8 +35,8 @@ type server struct {
 	upTLSMode string
 	upTLSCfg  *tls.Config
 
-	live      atomic.Int64
-	perClient sync.Map
+	// gate bounds the sessions held, altogether and per client address.
+	gate *sesslimit.Gate
 
 	// sessions tracks what has been accepted, so shutdown waits for it. A bare
 	// WaitGroup would not do: its Add must not race its Wait, and an accept loop
@@ -50,7 +50,8 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener, tlsCfg *tl
 		return nil, fmt.Errorf("listener %s: %w", cfg.Name, err)
 	}
 	t := &server{host: host, cfg: cfg, name: cfg.Name, tc: cfg.TDS, policy: p,
-		ln: ln, tlsCfg: tlsCfg, upTLSMode: cfg.TDS.UpstreamTLSMode}
+		ln: ln, tlsCfg: tlsCfg, upTLSMode: cfg.TDS.UpstreamTLSMode,
+		gate: sesslimit.New(cfg.TDS.MaxSessions, cfg.TDS.MaxSessionsPerClient)}
 	if t.upTLSMode == "" {
 		t.upTLSMode = "require"
 	}
@@ -133,32 +134,20 @@ func (t *server) handle(c net.Conn) {
 	t.relay(se)
 }
 
+// admit and release bound the sessions this listener holds, and the counting
+// is internal/sesslimit's rather than this file's. Six kinds had their own copy
+// and all six read a counter and then incremented it, so concurrent accepts
+// could pass the bound; the shared gate takes the count under the lock that
+// checked it.
 func (t *server) admit(se *session) bool {
-	if max := t.tc.MaxSessions; max > 0 && t.live.Load() >= int64(max) {
-		t.deny(se.ip, "too_many_sessions", "")
-		return false
+	ok, reason := t.gate.Enter(se.ip)
+	if !ok {
+		t.deny(se.ip, reason, "")
 	}
-	if per := t.tc.MaxSessionsPerClient; per > 0 {
-		v, _ := t.perClient.LoadOrStore(se.ip, new(atomic.Int64))
-		n := v.(*atomic.Int64)
-		if n.Load() >= int64(per) {
-			t.deny(se.ip, "too_many_sessions_per_client", "")
-			return false
-		}
-		n.Add(1)
-	}
-	t.live.Add(1)
-	return true
+	return ok
 }
 
-func (t *server) release(se *session) {
-	t.live.Add(-1)
-	if v, ok := t.perClient.Load(se.ip); ok {
-		if n := v.(*atomic.Int64).Add(-1); n <= 0 {
-			t.perClient.Delete(se.ip)
-		}
-	}
-}
+func (t *server) release(se *session) { t.gate.Leave(se.ip) }
 
 // handshake runs the PRELOGIN negotiation on both legs and then the LOGIN7.
 //

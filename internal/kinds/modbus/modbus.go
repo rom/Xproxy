@@ -42,6 +42,7 @@ import (
 	"github.com/rom/xproxy/internal/limits"
 	wire "github.com/rom/xproxy/internal/modbus"
 	"github.com/rom/xproxy/internal/netutil"
+	"github.com/rom/xproxy/internal/numrange"
 	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/safe"
 	"github.com/rom/xproxy/internal/sessions"
@@ -80,7 +81,7 @@ type server struct {
 // route is a compiled unit-identifier route.
 type route struct {
 	name     string
-	units    ranges
+	units    numrange.Set
 	upstream string
 	framing  wire.Framing
 	override int // -1 for none
@@ -107,7 +108,7 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener, tc *tls.Co
 	for i := range m.Routes {
 		r := &m.Routes[i]
 		cr := &route{name: r.Name, upstream: r.Upstream, framing: t.upFraming, override: -1}
-		if cr.units, err = parseRanges("routes."+r.Name+".units", r.Units, 255); err != nil {
+		if cr.units, err = numrange.Parse("routes."+r.Name+".units", r.Units, 255); err != nil {
 			return nil, err
 		}
 		if r.Framing != "" {
@@ -565,7 +566,7 @@ func (se *session) workerFor(unit byte) (*worker, string) {
 	t := se.t
 	var chosen *route
 	for _, r := range t.routes {
-		if r.units.has(int(unit)) {
+		if r.units.Has(int(unit)) {
 			chosen = r
 			break
 		}

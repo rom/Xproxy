@@ -9,6 +9,7 @@ import (
 	"github.com/rom/xproxy/internal/config"
 	wire "github.com/rom/xproxy/internal/ldap"
 	"github.com/rom/xproxy/internal/netutil"
+	"github.com/rom/xproxy/internal/schedule"
 )
 
 // The policy is written in LDAP's own terms, because those terms are what a
@@ -174,7 +175,7 @@ type rule struct {
 	maxTerms    int
 	maxDepth    int
 	wildcard    *bool
-	sched       *schedule
+	sched       *schedule.Window
 }
 
 // Policy is the compiled listener policy.
@@ -423,7 +424,7 @@ func compileRule(c *config.LDAPRule) (*rule, error) {
 	}
 	r.attributes = newAttrSet(c.Attributes)
 	r.denyAttrs = newAttrSet(c.DenyAttributes)
-	if r.sched, err = compileSchedule(c.Schedule); err != nil {
+	if r.sched, err = schedule.Compile(c.Schedule); err != nil {
 		return nil, fmt.Errorf("%s: %w", where, err)
 	}
 	return r, nil
@@ -672,7 +673,7 @@ func (p *Policy) effectiveFilter(r *rule) (terms, depth int, wildcard bool) {
 // not match when one thing is the reason.
 func (r *rule) matches(req request, now time.Time) (bool, string) {
 	m := req.msg
-	if !r.sched.inForce(now) {
+	if !r.sched.InForce(now) {
 		return false, ""
 	}
 	if len(r.clients) > 0 && !netutil.Contains(r.clients, req.client) {

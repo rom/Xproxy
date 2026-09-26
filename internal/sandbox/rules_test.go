@@ -19,6 +19,7 @@ management: {socket: /run/xproxy/mgmt.sock, history_dir: /var/lib/xproxy/history
 logging:
   directory: /var/log/xproxy
 bans: {state_file: /var/lib/xproxy/bans.db}
+access: {ledger: /var/lib/xproxy/access/grants.log}
 capture: {enabled: true, directory: /var/lib/xproxy/capture}
 waf:
   default_profile: p
@@ -90,9 +91,13 @@ func TestDerive(t *testing.T) {
 	// a file in it for every recording window. A read rule here means a
 	// capture that is configured, switched on, and silently writes
 	// nothing under the sandbox that is on by default.
+	// The access ledger is appended to for the life of the process, so its
+	// directory is a write rule. A read rule there is a daemon that refuses
+	// every session until somebody works out that the sandbox, not the
+	// policy, was the reason.
 	wantWrite := []string{"/run/xproxy", "/var/lib/xproxy/history", "/var/log/xproxy",
 		"/var/lib/xproxy", "/var/lib/xproxy/acme", "/var/spool/xproxy",
-		"/var/lib/xproxy/capture"}
+		"/var/lib/xproxy/capture", "/var/lib/xproxy/access"}
 	for _, p := range wantWrite {
 		if !slices.Contains(r.Write, p) {
 			t.Errorf("write rules lack %s: %v", p, r.Write)

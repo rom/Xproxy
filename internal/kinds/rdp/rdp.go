@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/acceptgroup"
+	"github.com/rom/xproxy/internal/access"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/mfa"
 	"github.com/rom/xproxy/internal/netutil"
@@ -58,6 +59,9 @@ type server struct {
 	upUser, upDomain, upPassword string
 	recorder                     *sessionrec.Policy
 	mfaGuard                     *mfa.Guard
+	// grants is the just-in-time access guard, nil unless this listener
+	// sets require_grant.
+	grants *access.Guard
 	// legacyKey is what a client on the protocol's own encryption is
 	// given in a certificate. One per listener rather than one per
 	// session: a real server does the same, and drawing a key is the
@@ -134,6 +138,7 @@ func newServer(engine proxy.Host, cfg config.Listener, ln net.Listener, tc *tls.
 			Duration: c.MFA.Duration.D(), MaxUsers: c.MFA.MaxUsers,
 		})
 	}
+	t.grants = access.NewGuard(engine.Access(), cfg.Name, c.RequireGrant, engine.Logs().Error)
 	return t, nil
 }
 
@@ -297,6 +302,13 @@ type session struct {
 	upProtocol     uint32
 	// user and domain are who the credential said was connecting.
 	user, domain string
+	// grant is the access grant this session was admitted under. On this
+	// protocol the credential arrives after the desktop has been dialled,
+	// so the grant is checked against the machine already reached rather
+	// than deciding which one to reach; see credential(). stopAtExpiry
+	// stops the timer that closes the session when the window ends.
+	grant        *access.Grant
+	stopAtExpiry func()
 	// asked and granted are the channels the client wanted and the
 	// ones the policy let through, for the log. wanted is the same
 	// length as the client's list with a name where the channel was
@@ -366,6 +378,9 @@ func (t *server) handle(client net.Conn) {
 	_ = se.client.SetDeadline(time.Now().Add(t.v.HandshakeTimeout.D()))
 
 	reason := se.run(start)
+	if se.stopAtExpiry != nil {
+		se.stopAtExpiry()
+	}
 	t.log(se, start, reason)
 }
 
@@ -402,14 +417,15 @@ func (se *session) run(start time.Time) string {
 }
 
 func (t *server) log(se *session, start time.Time, reason string) {
-	t.engine.Logs().Access.Info("rdp", "listener", t.cfg.Name, "client_ip", se.ip.String(),
+	attrs := []any{"listener", t.cfg.Name, "client_ip", se.ip.String(),
 		"user", textsafe.Clip64(se.user), "domain", textsafe.Clip64(se.domain),
 		"cookie", textsafe.Clip64(se.cookie), "target", se.target,
 		"client_security", rdp.ProtocolName(se.clientProtocol),
 		"upstream_security", rdp.ProtocolName(se.upProtocol),
 		"channels_asked", strings.Join(se.asked, ","),
 		"channels_granted", strings.Join(se.granted, ","),
-		"reason", reason, "duration_ms", time.Since(start).Milliseconds())
+		"reason", reason, "duration_ms", time.Since(start).Milliseconds()}
+	t.engine.Logs().Access.Info("rdp", append(attrs, access.LogAttrs(se.grant)...)...)
 }
 
 // connect dials the desktop.

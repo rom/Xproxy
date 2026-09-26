@@ -234,6 +234,7 @@ do not know where to look, start at the top.
 | Who is banned | `xproxyctl bans` |
 | What a policy would refuse if it were enforced | `xproxyctl policy report -top 20` |
 | Who is on the estate right now, and getting them off | `xproxyctl sessions`, `xproxyctl sessions -kill ID` |
+| Who may be on it at all, and until when | `xproxyctl access`, `xproxyctl access show ID`, `xproxyctl access revoke ID` |
 | Which keys are consuming a rate limit | `xproxyctl quotas -top 20` |
 | Which WAF rules fire | `xproxyctl waf -top 20` |
 | Which filters are configured and what they deny | `xproxyctl filters` |
@@ -4813,6 +4814,79 @@ would refuse every upstream in the common deployment rather than protect anythin
 If your server does speak it, set `upstream_tls_mode: require` -- and the
 `examples/databases/redis.yaml` application front does.
 
+## AMQP
+
+**Every client fails at `connection.open` with `vhost_not_allowed`.** The
+virtual host a client library sends is often `/` and is often *not*: a
+connection string of `amqp://user:pass@host/orders` opens the vhost `orders`
+without a leading slash, while `amqp://user:pass@host/%2Forders` opens
+`/orders` with one. They are two different vhosts to the broker and to this
+listener. Read the refusal's `detail`, which is the name the client actually
+sent, and put that in `allow_vhosts`.
+
+**A client library fails on connect with `topology_not_allowed` and nothing
+in the application declares anything.** It does: most client libraries declare
+the queue they are about to consume from, every time they connect, so that a
+queue somebody deleted comes back. That is `queue.declare` -- topology -- and
+it is off by default. Either name the account in a rule with `allow_topology:
+true` (with a schedule, if the declaring happens at deployment rather than at
+every connect) or turn the library's declaration off, which is usually one
+argument.
+
+**`arguments_unreadable` on a `queue.declare` that works without the relay.**
+The declare carries a field table, and one of its entries has a type code this
+relay does not read. The likely cause is a broker or client extension using a
+type outside the 0-9-1 table -- and the refusal is deliberate: the table is
+where `x-dead-letter-exchange` lives, so a table read halfway is a policy
+checking a list against whatever survived. The refusal's `detail` names the
+method; the log line from the client's side names the argument.
+
+**`frame_max_too_large` at the start of every connection.** The two sides
+negotiated a frame size above `max_frame_bytes`. The default here is 128 KiB,
+which is RabbitMQ's own default, so this means the broker was configured
+upward. Raise `max_frame_bytes` to match the broker rather than lowering the
+broker: the bound exists so this relay never reads an unbounded frame, not to
+be smaller than the broker's.
+
+```sh
+xproxyctl -json stats | jq '.refusals.amqp'
+```
+
+**A 1.0 client connects and then hangs.** Check whether it sent a SASL
+header: a 1.0 connection may skip the SASL layer entirely, which is a
+connection with no identity at all, and `require_auth` refuses the first
+performative after it. The event is `amqp_not_authenticated` with the
+performative in `detail`. A client that should be authenticating with a
+certificate wants `EXTERNAL`, which is in the default mechanism list.
+
+**`no_such_link` on an AMQP 1.0 connection that works elsewhere.** A transfer
+arrived on a link handle this relay never saw attached, which happens for two
+reasons. The connection was already open when this listener was reloaded --
+in which case reconnecting resolves it, because the relay is not a broker and
+does not carry link state across its own restarts. Or the client is reusing a
+handle it detached, which a broker tolerates and this does not: the address
+behind the handle is what the policy decided, and a handle with no attach has
+no address.
+
+**`amqp_broker_refused` in the security log.** This is the *broker* refusing
+something this listener allowed -- reply code 403 on 0-9-1,
+`amqp:unauthorized-access` on 1.0 -- which means the two policies disagree.
+The line carries the user and the vhost; the broker's own log says which of
+its three permissions (configure, write, read) did not match. Decide which
+policy is right rather than widening both.
+
+**`amqp_anonymous_offered`.** The broker offers the ANONYMOUS mechanism. A
+client that chooses it is refused here, but the offer means anything that
+reaches the broker without passing this listener can authenticate as nobody.
+On RabbitMQ that is the `rabbit.auth_mechanisms` setting, and the guest
+account it usually goes with.
+
+**Deliveries stop with `delivery_denied`.** A `deny_exchanges` or
+`deny_queues` entry matched what the broker was handing this connection. The
+allow lists are not applied to that direction -- a consumer need not be
+allowed to name the exchange a message was published to -- so this is a deny
+list doing exactly what it says. The `detail` names the exchange or queue.
+
 ## BACnet
 
 **Every write is refused with `service_not_allowed`.** `services` defaults to the
@@ -4927,6 +5001,113 @@ The bounds that are never shadowed are `command_priority_too_high`,
 `whois_unbounded`, `whois_range_too_wide` and `rate_limited`. Everything else is a
 policy choice, and monitor mode is for finding out what an estate actually sends
 before refusing any of it.
+
+## S7 (Siemens PLCs)
+
+**The connection is refused before the client says anything, and there is
+nothing in the PLC's own log.** That is the ordering working. The rack and the
+slot arrive in the COTP connection request, so a client asking for a controller
+`racks`/`slots` does not name is answered with a COTP disconnect and the PLC is
+never dialled -- which is the point, because a CPU has very few connection
+resources and an S7-300 has sixteen altogether. Look for
+`s7_rack_not_allowed` or `s7_slot_not_allowed` in the security log; the event
+carries the rack, the slot and the connection resource the client asked for.
+
+```
+xproxyctl -json stats | jq '.refusals.s7'
+```
+
+**Everything from the engineering station is refused with
+`resource_not_allowed`.** `resources` names the connection types, and an
+engineering station opens `pg` -- the programming device connection -- while an
+operator panel opens `op`. A listener with `resources: ["op"]` has refused every
+engineering station by design. Give the station its own listener address with
+`resources: ["pg"]` and the operations it needs, rather than widening the panel
+listener: those are different populations and the log should be able to tell
+them apart.
+
+**The client reports an error the PLC's manual describes as a protection
+fault.** That is this relay's refusal, and it is deliberate. A refused request is
+answered with an acknowledgement carrying error class `0x87`, *access fault*,
+which is what a password-protected CPU answers a client that has not supplied a
+password -- so the client library reports a refusal rather than sitting in a
+timeout. The relay's own log line says which listener, which rule and which
+reason. A refused user-data request (the clock, the diagnostic buffer, the
+password functions) is answered in that layer instead, with the same group and
+subfunction and the error code for a function the CPU does not offer.
+
+**`s7_plc_refused` in the security log.** This is the *controller* refusing
+something this listener allowed. On this protocol it almost always means the CPU
+is password-protected and the client has not supplied one -- which is the case
+where the two policies disagree, and you have to decide which to change. The
+event carries the error class, the error code and the function.
+
+**A write is refused although `write` is in `operations`.** Four things refuse a
+write past the operation list, in this order:
+
+1. `read_only: true` on the listener. It refuses every operation that changes
+   the controller before any rule is read, and **no rule can override it**.
+2. `deny_operations`, on the listener or the rule. The deny lists always win.
+3. `area_not_allowed` or `db_not_allowed` -- the memory, not the operation.
+4. `address_not_allowed`. If `write_addresses` is set it applies to the writing
+   operations *instead of* `addresses`, so a write outside the setpoint window is
+   refused even where a read of the same bytes is allowed.
+
+**A read is refused with `address_not_allowed` and the address looks like it is
+inside my range.** A range applies to the **whole span** a request covers, not
+its first byte: a read of 20 bytes from byte 90 against `addresses: ["0-99"]`
+covers bytes 90 to 109 and is refused. It is not clipped, because clipping it
+would be the relay deciding which half of the request you meant. The ranges are
+written in bytes; the protocol carries a bit address and the relay divides by
+eight, so no configuration needs bit arithmetic.
+
+**An upload is refused and I did not deny it.** `upload` is off by default even
+though it changes nothing, because reading a block out of a PLC is how a plant's
+control logic leaves the site. Name it in `operations`, and name `block_types`
+while you are there.
+
+**The negotiation itself is refused with `pdu_length_too_large`.** The two sides
+agreed a PDU length above `max_pdu_length`. It is refused rather than rewritten,
+because rewriting a negotiation would make this relay a party to it, and a
+session that agreed a length and then had a transfer refused half way through is
+a harder fault to find than one that failed at the start. The families in the
+field negotiate 240, 480 or 960 octets and an S7-1500 negotiates 2048; set the
+bound to what the equipment behind this listener actually uses.
+
+**Requests stop being answered under load, and the session stays open.** A rate
+limit refuses the request and keeps the connection, on purpose: a plant
+connection is a poll loop, and dropping it because one request was refused turns
+a refusal into an outage. `rate_limited` in the counters is the signal. If it is
+a legitimate poller, raise `rate_limit`/`rate_burst`; a bound that a running
+plant trips is a bound set from a guess rather than from the poll rate.
+
+**The connection dropped instead of getting an answer.** Three things end it:
+`deny_response: close`, a COTP PDU type this relay does not know
+(`cotp_type_unknown`), and a data PDU that is not an S7 PDU (`unreadable_pdu`).
+The last two are not configurable -- there is nothing left to be sure of after
+either, and forwarding it would be forwarding something to a controller with no
+policy applied at all.
+
+**Monitor mode carried a read and still refused a write.** That is
+`monitor_only` working as documented. The refusals it never shadows are the
+client and controller lists, the frames the relay could not read, the bounds,
+and **every operation that changes the PLC** -- because a write forwarded so
+that it could be written down is a moved actuator, and a stop forwarded is a
+stopped machine. An operation merely off the allow list is shadowed, which is
+what the mode is for.
+
+**I want to know what a cell actually does before writing a policy.** Run a
+listener with `monitor_only: true` and `log_requests: true`, the policy you
+intend written as if it were enforcing, and read the refusals after a shift.
+Note that `log_requests` on a listener a plant polls every second is a great
+many lines; it belongs on an engineering address, where a person generates a few
+hundred requests a shift.
+
+**There is no `tls` section and the schema rejects mine.** S7comm has no
+transport security and no in-protocol upgrade, so this kind takes no TLS
+section: a certificate here would promise something the protocol cannot do. If
+the traffic has to cross anything the plant does not own, carry it in a tunnel
+whose security is real, and put this listener at the far end of it.
 
 ## The device inventory
 

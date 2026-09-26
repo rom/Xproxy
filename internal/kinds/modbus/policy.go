@@ -3,13 +3,14 @@ package modbus
 import (
 	"fmt"
 	"net/netip"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/rom/xproxy/internal/config"
 	wire "github.com/rom/xproxy/internal/modbus"
 	"github.com/rom/xproxy/internal/netutil"
+	"github.com/rom/xproxy/internal/numrange"
+	"github.com/rom/xproxy/internal/schedule"
 )
 
 // The policy is written in Modbus's own terms, because that is the only
@@ -40,81 +41,9 @@ type Decision struct {
 	Observed bool
 }
 
-// rng is an inclusive numeric range, which is how every list in this
-// policy is written: unit identifiers, addresses, values.
-type rng struct{ lo, hi int }
-
-func (r rng) has(v int) bool { return v >= r.lo && v <= r.hi }
-
-// ranges is a set of them.
-type ranges []rng
-
-func (rs ranges) has(v int) bool {
-	for _, r := range rs {
-		if r.has(v) {
-			return true
-		}
-	}
-	return false
-}
-
-// covers says whether the whole span from lo to hi is inside one range.
-// A request is not allowed by a rule that covers half of what it asks
-// for: a read of 0 to 200 against a rule for 0 to 99 is a read of
-// addresses the rule does not name, and splitting it is not this relay's
-// decision to make.
-func (rs ranges) covers(lo, hi int) bool {
-	for _, r := range rs {
-		if lo >= r.lo && hi <= r.hi {
-			return true
-		}
-	}
-	return false
-}
-
-// parseRanges reads "5", "1-16" and "0x10-0x1F" the way an engineer
-// writes them.
-func parseRanges(what string, in []string, max int) (ranges, error) {
-	out := make(ranges, 0, len(in))
-	for _, s := range in {
-		text := strings.TrimSpace(s)
-		if text == "" {
-			return nil, fmt.Errorf("%s: an empty range", what)
-		}
-		lo, hi := text, text
-		if i := strings.IndexByte(text, '-'); i > 0 {
-			lo, hi = strings.TrimSpace(text[:i]), strings.TrimSpace(text[i+1:])
-		}
-		l, err := parseNum(lo)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %q: %w", what, s, err)
-		}
-		h, err := parseNum(hi)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %q: %w", what, s, err)
-		}
-		if l > h {
-			return nil, fmt.Errorf("%s: %q starts after it ends", what, s)
-		}
-		if l < 0 || h > max {
-			return nil, fmt.Errorf("%s: %q is outside 0 to %d", what, s, max)
-		}
-		out = append(out, rng{l, h})
-	}
-	return out, nil
-}
-
-func parseNum(s string) (int, error) {
-	if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
-		v, err := strconv.ParseInt(s[2:], 16, 32)
-		return int(v), err
-	}
-	return strconv.Atoi(s)
-}
-
 // valueRule is a compiled value bound: the deep inspection a plant needs.
 type valueRule struct {
-	registers ranges
+	registers numrange.Set
 	min, max  int
 	signed    bool
 	coils     *bool
@@ -146,7 +75,7 @@ type valueRate struct {
 // precondition is select-before-operate: the register that has to have
 // been written, the value it has to hold, and for how long that counts.
 type precondition struct {
-	registers ranges
+	registers numrange.Set
 	equals    int
 	within    time.Duration
 	unit      *int
@@ -160,57 +89,20 @@ type rule struct {
 
 	clients   []netip.Prefix
 	roles     map[string]bool
-	units     ranges
+	units     numrange.Set
 	functions map[byte]bool
 	access    map[wire.Access]bool
-	addresses ranges
-	writeAddr ranges
+	addresses numrange.Set
+	writeAddr numrange.Set
 	maxQty    int
 	values    []valueRule
-	schedule  *schedule
-}
-
-// schedule is when a rule is in force.
-type schedule struct {
-	days map[time.Weekday]bool
-	// from and to are minutes past midnight in loc. to before from
-	// spans midnight.
-	from, to int
-	loc      *time.Location
-}
-
-func (s *schedule) active(now time.Time) bool {
-	if s == nil {
-		return true
-	}
-	t := now.In(s.loc)
-	if len(s.days) > 0 && !s.days[t.Weekday()] {
-		// A window spanning midnight belongs to the day it started on,
-		// so the small hours of Saturday are still Friday's night
-		// shift.
-		if s.to >= s.from {
-			return false
-		}
-		yesterday := t.AddDate(0, 0, -1).Weekday()
-		if !s.days[yesterday] {
-			return false
-		}
-		return t.Hour()*60+t.Minute() < s.to
-	}
-	mins := t.Hour()*60 + t.Minute()
-	if s.from == s.to {
-		return true
-	}
-	if s.to > s.from {
-		return mins >= s.from && mins < s.to
-	}
-	return mins >= s.from || mins < s.to
+	schedule  *schedule.Window
 }
 
 // Policy is the compiled listener policy.
 type Policy struct {
 	readOnly      bool
-	units         ranges
+	units         numrange.Set
 	rules         []*rule
 	defaultAllow  bool
 	allow, deny   []netip.Prefix
@@ -243,7 +135,7 @@ func compile(l *config.ModbusListener, now func() time.Time) (*Policy, error) {
 		p.now = time.Now
 	}
 	var err error
-	if p.units, err = parseRanges("units", l.Units, 255); err != nil {
+	if p.units, err = numrange.Parse("units", l.Units, 255); err != nil {
 		return nil, err
 	}
 	if p.allow, err = prefixes("allow_clients", l.AllowClients); err != nil {
@@ -304,13 +196,13 @@ func compileRule(c *config.ModbusRule) (*rule, error) {
 			r.roles[role] = true
 		}
 	}
-	if r.units, err = parseRanges("rules."+c.Name+".units", c.Units, 255); err != nil {
+	if r.units, err = numrange.Parse("rules."+c.Name+".units", c.Units, 255); err != nil {
 		return nil, err
 	}
-	if r.addresses, err = parseRanges("rules."+c.Name+".addresses", c.Addresses, 0xFFFF); err != nil {
+	if r.addresses, err = numrange.Parse("rules."+c.Name+".addresses", c.Addresses, 0xFFFF); err != nil {
 		return nil, err
 	}
-	if r.writeAddr, err = parseRanges("rules."+c.Name+".write_addresses", c.WriteAddresses, 0xFFFF); err != nil {
+	if r.writeAddr, err = numrange.Parse("rules."+c.Name+".write_addresses", c.WriteAddresses, 0xFFFF); err != nil {
 		return nil, err
 	}
 	if len(c.Functions) > 0 {
@@ -345,10 +237,8 @@ func compileRule(c *config.ModbusRule) (*rule, error) {
 		}
 		r.values = append(r.values, v)
 	}
-	if c.Schedule != nil {
-		if r.schedule, err = compileSchedule(c.Name, c.Schedule); err != nil {
-			return nil, err
-		}
+	if r.schedule, err = schedule.Compile(c.Schedule); err != nil {
+		return nil, fmt.Errorf("rules.%s.%w", c.Name, err)
 	}
 	return r, nil
 }
@@ -358,7 +248,7 @@ func functionCode(s string) (byte, error) {
 	if fc, ok := wire.FunctionCode(s); ok {
 		return fc, nil
 	}
-	n, err := parseNum(strings.TrimSpace(s))
+	n, err := numrange.ParseNum(strings.TrimSpace(s))
 	if err != nil || n < 1 || n > 127 {
 		return 0, fmt.Errorf("%q is not a function code name or a number from 1 to 127", s)
 	}
@@ -368,7 +258,7 @@ func functionCode(s string) (byte, error) {
 func compileValue(rule string, c *config.ModbusValueRule) (valueRule, error) {
 	v := valueRule{signed: c.Signed, coils: c.Coils}
 	if c.Registers != "" {
-		rs, err := parseRanges("rules."+rule+".values.registers", []string{c.Registers}, 0xFFFF)
+		rs, err := numrange.Parse("rules."+rule+".values.registers", []string{c.Registers}, 0xFFFF)
 		if err != nil {
 			return v, err
 		}
@@ -432,7 +322,7 @@ func compileValueState(rule string, c *config.ModbusValueRule, v *valueRule) err
 		if b.Registers == "" {
 			return fmt.Errorf("%s.require_before.registers: required", where)
 		}
-		rs, err := parseRanges(where+".require_before.registers", []string{b.Registers}, 0xFFFF)
+		rs, err := numrange.Parse(where+".require_before.registers", []string{b.Registers}, 0xFFFF)
 		if err != nil {
 			return err
 		}
@@ -468,7 +358,7 @@ func parseTransition(where, s string) (transition, error) {
 			}
 			continue
 		}
-		n, err := parseNum(text)
+		n, err := numrange.ParseNum(text)
 		if err != nil || n < -32768 || n > 65535 {
 			return transition{}, fmt.Errorf("%s.transitions: %q in %q is not a value or *", where, text, s)
 		}
@@ -550,81 +440,6 @@ func (v valueRule) checkChange(state *valueState, req request, addr, val int, no
 	return ""
 }
 
-func compileSchedule(rule string, c *config.ModbusSchedule) (*schedule, error) {
-	s := &schedule{loc: time.UTC}
-	if c.Timezone != "" {
-		loc, err := time.LoadLocation(c.Timezone)
-		if err != nil {
-			return nil, fmt.Errorf("rules.%s.schedule.timezone: %w", rule, err)
-		}
-		s.loc = loc
-	}
-	if len(c.Days) > 0 {
-		s.days = map[time.Weekday]bool{}
-		for _, d := range c.Days {
-			wd, ok := weekday(d)
-			if !ok {
-				return nil, fmt.Errorf("rules.%s.schedule.days: %q is not a day", rule, d)
-			}
-			s.days[wd] = true
-		}
-	}
-	from, err := clock(c.From)
-	if err != nil {
-		return nil, fmt.Errorf("rules.%s.schedule.from: %w", rule, err)
-	}
-	to, err := clock(c.To)
-	if err != nil {
-		return nil, fmt.Errorf("rules.%s.schedule.to: %w", rule, err)
-	}
-	s.from, s.to = from, to
-	return s, nil
-}
-
-func weekday(s string) (time.Weekday, bool) {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "mon", "monday":
-		return time.Monday, true
-	case "tue", "tuesday":
-		return time.Tuesday, true
-	case "wed", "wednesday":
-		return time.Wednesday, true
-	case "thu", "thursday":
-		return time.Thursday, true
-	case "fri", "friday":
-		return time.Friday, true
-	case "sat", "saturday":
-		return time.Saturday, true
-	case "sun", "sunday":
-		return time.Sunday, true
-	}
-	return 0, false
-}
-
-// clock reads "HH:MM". An empty time is midnight, which with an equal
-// from and to means the whole day.
-func clock(s string) (int, error) {
-	if s == "" {
-		return 0, nil
-	}
-	h, m, ok := strings.Cut(s, ":")
-	if !ok {
-		return 0, fmt.Errorf("%q is not HH:MM", s)
-	}
-	hh, err := strconv.Atoi(h)
-	if err != nil {
-		return 0, fmt.Errorf("%q is not HH:MM", s)
-	}
-	mm, err := strconv.Atoi(m)
-	if err != nil {
-		return 0, fmt.Errorf("%q is not HH:MM", s)
-	}
-	if hh < 0 || hh > 23 || mm < 0 || mm > 59 {
-		return 0, fmt.Errorf("%q is not a time of day", s)
-	}
-	return hh*60 + mm, nil
-}
-
 // ClientAllowed applies the address lists. It is separate from the frame
 // policy because it decides before a frame exists: a master that may not
 // connect is refused at accept, without a PLC hearing from it at all.
@@ -670,7 +485,7 @@ func (p *Policy) Decide(req request) Decision {
 		// something it cannot check.
 		return Decision{Reason: "read_only_unknown_function", Rule: "read_only"}
 	}
-	if len(p.units) > 0 && !p.units.has(int(req.unit)) {
+	if len(p.units) > 0 && !p.units.Has(int(req.unit)) {
 		return Decision{Reason: "unit_not_allowed"}
 	}
 	now := p.now()
@@ -760,7 +575,7 @@ func (p *Policy) Observed(req request) []string {
 
 // matches says whether every selector the rule sets holds.
 func (r *rule) matches(req request, now time.Time) bool {
-	if !r.schedule.active(now) {
+	if !r.schedule.InForce(now) {
 		return false
 	}
 	if len(r.clients) > 0 && !netutil.Contains(r.clients, req.client) {
@@ -773,7 +588,7 @@ func (r *rule) matches(req request, now time.Time) bool {
 			return false
 		}
 	}
-	if len(r.units) > 0 && !r.units.has(int(req.unit)) {
+	if len(r.units) > 0 && !r.units.Has(int(req.unit)) {
 		return false
 	}
 	if len(r.functions) > 0 && !r.functions[req.pdu.Function] {
@@ -790,7 +605,7 @@ func (r *rule) matches(req request, now time.Time) bool {
 			return false
 		}
 		last, ok := req.pdu.Last()
-		if !ok || !r.addresses.covers(int(req.pdu.Address), int(last)) {
+		if !ok || !r.addresses.Covers(int(req.pdu.Address), int(last)) {
 			return false
 		}
 	}
@@ -799,7 +614,7 @@ func (r *rule) matches(req request, now time.Time) bool {
 		if !ok {
 			return false
 		}
-		if hi >= 0 && !r.writeAddr.covers(lo, hi) {
+		if hi >= 0 && !r.writeAddr.Covers(lo, hi) {
 			return false
 		}
 	}
@@ -851,7 +666,7 @@ func (r *rule) checkValues(req request, state *valueState, now time.Time) string
 		// written about values cannot be applied to them, and applying
 		// it anyway would be inventing a meaning.
 		for _, v := range r.values {
-			if len(v.registers) == 0 || v.registers.has(base) {
+			if len(v.registers) == 0 || v.registers.Has(base) {
 				return "value_masked_write"
 			}
 		}
@@ -860,7 +675,7 @@ func (r *rule) checkValues(req request, state *valueState, now time.Time) string
 	for i, raw := range p.Registers {
 		addr := base + i
 		for _, v := range r.values {
-			if len(v.registers) > 0 && !v.registers.has(addr) {
+			if len(v.registers) > 0 && !v.registers.Has(addr) {
 				continue
 			}
 			if v.coils != nil {
@@ -884,7 +699,7 @@ func (r *rule) checkValues(req request, state *valueState, now time.Time) string
 			if v.coils == nil {
 				continue
 			}
-			if len(v.registers) > 0 && !v.registers.has(addr) {
+			if len(v.registers) > 0 && !v.registers.Has(addr) {
 				continue
 			}
 			// The bound says which way this rule may drive the coil:

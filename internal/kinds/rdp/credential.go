@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rom/xproxy/internal/access"
 	"github.com/rom/xproxy/internal/mfa"
 	"github.com/rom/xproxy/internal/rdp"
 	"github.com/rom/xproxy/internal/textsafe"
@@ -26,6 +27,15 @@ func (se *session) credential(info *rdp.ClientInfo) string {
 		if reason := se.checkFactor(info); reason != "" {
 			return reason
 		}
+	}
+	// The grant is checked here, which on this protocol is the earliest
+	// there is anybody to check: the client info packet is the only place a
+	// person appears, and it arrives after the desktop has been dialled. So
+	// the grant is checked against the machine already reached -- a grant
+	// naming another one refuses rather than moving the session -- and the
+	// desktop sees a TCP connection and no credential.
+	if reason := se.admitByGrant(); reason != "" {
+		return reason
 	}
 	if t.upUser != "" {
 		// The person proved themselves to the gateway; the desktop is
@@ -120,4 +130,40 @@ func splitCode(arg string) (pass, code string) {
 		}
 	}
 	return arg[:i], code
+}
+
+// admitByGrant is the just-in-time access decision. It runs after the factor,
+// so a client that cannot answer one never spends a grant, and before the
+// credential goes anywhere.
+func (se *session) admitByGrant() string {
+	t := se.t
+	if t.grants == nil {
+		return ""
+	}
+	// The desktop is already dialled, so the only machine this session can
+	// be about is the one it reached.
+	adm := t.grants.Check(se.user, t.v.Upstream, []string{se.target})
+	if adm.Reason == "" {
+		se.grant = adm.Grant
+		if se.grant != nil {
+			t.grants.Use(se.grant, se.sessionID())
+			se.stopAtExpiry = access.CloseAtExpiry(se.grant, func() { _ = se.client.Close() })
+		}
+		return ""
+	}
+	if t.shadowed(se.ip, adm.Reason, textsafe.Clip64(se.user)) {
+		return ""
+	}
+	t.engine.Counters().RDPRefused.Add(1)
+	t.deny(se.ip, adm.Reason, textsafe.Clip64(se.user))
+	return adm.Reason
+}
+
+// sessionID is the live table's identifier for this session, or empty when the
+// table refused to register it.
+func (se *session) sessionID() string {
+	if se.live == nil {
+		return ""
+	}
+	return se.live.ID
 }
