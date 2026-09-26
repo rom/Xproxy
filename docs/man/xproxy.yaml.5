@@ -241,8 +241,8 @@ Read it with \fBxproxyctl policy report\fR (\fB\-top N\fR, \fB\-json\fR), which 
 .PP
 .TS
 allbox;
-lbw(0.8i) lbw(1.5i) lbx
-lw(0.8i) lw(1.5i) lx.
+lbw(1.4i) lbw(1.5i) lbx
+lw(1.4i) lw(1.5i) lx.
 T{
 Kind
 T}	T{
@@ -356,11 +356,53 @@ T}	T{
 bans,\: rate limits,\: virtual patches,\: authentication and authorisation filters,\: the normalisation guard,\: the request and body bounds
 T}
 T{
+\fBpostgres\fR,\: \fBmysql\fR,\: \fBtds\fR
+T}	T{
+every statement or command rule,\: \fBread_\:only\fR,\: the database and schema lists;\: \fBmonitor_\:only\fR
+T}	T{
+the login packet\(aqs own bounds,\: malformed messages,\: a statement the relay could not read,\: \fBcopy from program\fR and its siblings,\: rate limits,\: the client list,\: bans
+T}
+T{
+\fBredis\fR
+T}	T{
+every command rule,\: \fBread_\:only\fR,\: the key and database lists;\: \fBmonitor_\:only\fR
+T}	T{
+\fBrequire_\:tls\fR and \fBrequire_\:auth\fR (admitting somebody who did not authenticate is not a trial),\: the commands that are a way out of the data path \-\- \fBconfig set\fR,\: \fBflushall\fR,\: \fBkeys\fR,\: \fBeval\fR \-\- malformed messages,\: the message and element bounds,\: bans
+T}
+T{
+\fBamqp\fR
+T}	T{
+every rule: the exchange,\: queue and routing\-key policies,\: the mechanism and vhost lists;\: \fBmonitor_\:only\fR
+T}	T{
+\fBrequire_\:tls\fR,\: a mechanism of \fBANONYMOUS\fR,\: malformed frames,\: the frame and method bounds,\: the broker\(aqs own refusal,\: bans
+T}
+T{
+\fBs7\fR
+T}	T{
+every rule: the function,\: the data block and the address range;\: \fBread_\:only\fR;\: \fBmonitor_\:only\fR
+T}	T{
+malformed frames,\: the frame bound,\: a rack and slot with no route,\: the connection bound,\: bans
+T}
+T{
+\fBbacnet\fR
+T}	T{
+every rule: the service,\: the object type and instance,\: the property and the command priority;\: the link\-layer function list
+T}	T{
+malformed BVLC and APDU,\: the message bound,\: foreign\-device registration,\: rate limits,\: the client list,\: bans
+T}
+T{
 \fBtcp\fR,\: \fBudp\fR,\: \fBntske\fR
 T}	T{
-nothing: their refusals are either "no destination exists for this" or a bound,\: and neither is a policy a shadow run could answer
+the \fBauthorization\fR section and the imported address lists,\: which is what those kinds have that a shadow run can answer
 T}	T{
-all of them
+everything else: their own refusals are either "no destination exists for this" or a bound,\: and neither is a policy
+T}
+T{
+every kind that asks the \fBauthorization\fR section
+T}	T{
+the section\(aqs own decision,\: under either switch \-\- this one or \fBauthorization:\: {shadow:\: true}\fR \-\- with the rule that decided in the ledger entry
+T}	T{
+nothing extra: a policy refusal is exactly what a shadow run is for
 T}
 .TE
 .SH "server"

@@ -107,7 +107,13 @@ did not authenticate — a trial instead of a door.
 | `smtp` | the verb list | the protocol-state refusals, the encryption and authentication requirements, the size bound, malformed commands |
 | `forward` | the destination lists: ports, deny, allow | `private` (which protects the estate *from* the client — shadowing it would turn a trial into a server-side request forgery), a destination that does not resolve, credentials, tunnel bounds |
 | `http` | the route's positive security model (methods, media types, query parameters, shape bounds); a blocking WAF profile runs as a detecting one, and `xproxyctl waf -top` says which rule would have blocked what | bans, rate limits, virtual patches, authentication and authorisation filters, the normalisation guard, the request and body bounds |
-| `tcp`, `udp`, `ntske` | nothing: their refusals are either "no destination exists for this" or a bound, and neither is a policy a shadow run could answer | all of them |
+| `postgres`, `mysql`, `tds` | every statement or command rule, `read_only`, the database and schema lists; `monitor_only` | the login packet's own bounds, malformed messages, a statement the relay could not read, `copy from program` and its siblings, rate limits, the client list, bans |
+| `redis` | every command rule, `read_only`, the key and database lists; `monitor_only` | `require_tls` and `require_auth` (admitting somebody who did not authenticate is not a trial), the commands that are a way out of the data path -- `config set`, `flushall`, `keys`, `eval` -- malformed messages, the message and element bounds, bans |
+| `amqp` | every rule: the exchange, queue and routing-key policies, the mechanism and vhost lists; `monitor_only` | `require_tls`, a mechanism of `ANONYMOUS`, malformed frames, the frame and method bounds, the broker's own refusal, bans |
+| `s7` | every rule: the function, the data block and the address range; `read_only`; `monitor_only` | malformed frames, the frame bound, a rack and slot with no route, the connection bound, bans |
+| `bacnet` | every rule: the service, the object type and instance, the property and the command priority; the link-layer function list | malformed BVLC and APDU, the message bound, foreign-device registration, rate limits, the client list, bans |
+| `tcp`, `udp`, `ntske` | the `authorization` section and the imported address lists, which is what those kinds have that a shadow run can answer | everything else: their own refusals are either "no destination exists for this" or a bound, and neither is a policy |
+| every kind that asks the `authorization` section | the section's own decision, under either switch -- this one or `authorization: {shadow: true}` -- with the rule that decided in the ledger entry | nothing extra: a policy refusal is exactly what a shadow run is for |
 
 ## server
 

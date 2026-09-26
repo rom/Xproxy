@@ -69,7 +69,13 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener, tlsCfg *tl
 	return t, nil
 }
 
-func (t *server) enforcing() bool { return !t.mc.MonitorOnly }
+// enforcing says whether a policy decision here is applied or only written down.
+//
+// Two switches, and either is enough: this kind's own monitor_only, and the
+// listener's policy: {mode: shadow}, which is the estate-wide spelling. This kind
+// read only the first, so an operator who trialled its policy the way the
+// reference documents got enforcement instead of a ledger.
+func (t *server) enforcing() bool { return !t.mc.MonitorOnly && !t.cfg.Shadowing() }
 
 func (t *server) serve() {
 	for {

@@ -72,7 +72,13 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener, tlsCfg *tl
 	return t, nil
 }
 
-func (t *server) enforcing() bool { return !t.rc.MonitorOnly }
+// enforcing says whether a policy decision here is applied or only written down.
+//
+// Two switches, and either is enough: this kind's own monitor_only, and the
+// listener's policy: {mode: shadow}, which is the estate-wide spelling every
+// other kind honours. This kind honoured only the first, so an operator who
+// trialled a redis policy the documented way got enforcement.
+func (t *server) enforcing() bool { return !t.rc.MonitorOnly && !t.cfg.Shadowing() }
 
 func (t *server) serve() {
 	for {

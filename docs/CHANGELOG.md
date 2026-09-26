@@ -12,6 +12,31 @@ A **seventh round**, sweeping the sixth's two finding classes across
 the gate kinds beside the one they were found on, and one finding of
 its own.
 
+- **Four listener kinds enforced a policy they were told to shadow.**
+  `policy: {mode: shadow}` on a listener is the estate's spelling of "evaluate
+  and do not enforce", and the reference documents it for every listener. Four
+  kinds read only their own `monitor_only` and never `config.Listener.Shadowing()`
+  -- `postgres`, `mysql`, `tds` and `redis` -- so an operator who trialled one of
+  those policies the documented way got a refused statement, a refused write, and
+  a refusal counter telling them enforcement was happening. That is the one thing
+  a trial must never do: the whole purpose of shadow mode is that nobody has to
+  guess what a policy would refuse at three in the morning, and on the four
+  relays that hold an estate's data it guessed wrong in the enforcing direction.
+
+  Verified before it was asserted: a redis listener with the switch on was driven
+  over a socket and answered `-NOPERM refused by xproxy: read_only`, with the
+  refusal in `refusals` and nothing in `would_refusals`. All four now read both
+  switches, either is enough, and a test drives it on redis and on postgres. A
+  second test reads the source of every kind that has an `enforcing()` and fails
+  on one that does not mention the switch, so a kind written tomorrow cannot
+  leave it out quietly -- the same shape as the ban-reason test below, and for
+  the same reason: the defect is not per protocol even though the behaviour is.
+
+  The shadow-mode table in CONFIG.md was missing rows for seven kinds
+  (`postgres`, `mysql`, `tds`, `redis`, `amqp`, `s7`, `bacnet`) and said of
+  `tcp`, `udp` and `ntske` that nothing on them is shadowable, which stopped
+  being true when they were wired to the `authorization` section. Both are fixed.
+
 - **Four listener kinds reported a refusal nobody could ban on.** The
   telnet, VNC and RDP gateways each hand the ban list a reason of their
   own (`telnet_denied`, `vnc_denied`, `rdp_denied`), as does the SFTP
