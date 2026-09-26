@@ -11,6 +11,7 @@ import (
 
 	"github.com/rom/xproxy/internal/acceptgroup"
 	"github.com/rom/xproxy/internal/assets"
+	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/proxy"
@@ -18,6 +19,7 @@ import (
 	"github.com/rom/xproxy/internal/sesslimit"
 	"github.com/rom/xproxy/internal/sqlkind"
 	wire "github.com/rom/xproxy/internal/tdswire"
+	"github.com/rom/xproxy/internal/textsafe"
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/upstream"
 )
@@ -263,6 +265,14 @@ func (t *server) handshake(se *session, hs time.Duration) error {
 	se.mu.Unlock()
 	se.cliReader, se.srvReader = cli, srv
 
+	// The estate's own authorisation policy first, because it is the broader
+	// question: whether this account may reach this server at all, rather than
+	// what the connection may then run. It is asked here because the Login7
+	// packet is the first place an account appears, and before it is forwarded.
+	if reason := t.admitByPolicy(se); reason != "" {
+		se.fatal(Decision{Reason: reason})
+		return errRefused
+	}
 	if d := t.policy.Login(se.sess(), l); !d.Allow {
 		t.refused(se, d, "connect")
 		if t.enforcing() || d.Hard {
@@ -340,6 +350,37 @@ func handshakeContext(hs time.Duration) (context.Context, context.CancelFunc) {
 		return context.Background(), func() {}
 	}
 	return context.WithTimeout(context.Background(), hs)
+}
+
+// admitByPolicy is the estate's authorisation policy: the reason to refuse, or
+// empty to carry on.
+//
+// The target is the upstream pool's name -- the server is chosen by balancer
+// after this point -- and the user is the account the Login7 packet named. An
+// integrated-authentication login names no account here, so a rule about users
+// does not match one: that is what the `tds` policy's own integrated setting is
+// for, and it is the thing that can say what integrated authentication means.
+func (t *server) admitByPolicy(se *session) string {
+	s := se.sess()
+	return t.host.Authorization().Ask(authorization.Subject{
+		Listener: t.name,
+		Kind:     "tds",
+		Client:   se.ip,
+		User:     s.User,
+		Target:   t.tc.Upstream,
+		Action:   authorization.ActionConnect,
+	}, textsafe.Clip64(s.User), authorization.Gate{
+		Shadowing: func() bool { return !t.enforcing() },
+		// Record goes straight to wouldRefuse rather than through refused,
+		// which would count a real refusal when the policy is shadowed and this
+		// listener is not.
+		Record: func(reason, rule, detail string) {
+			t.wouldRefuse(Decision{Reason: reason, Rule: rule, Detail: detail}, "connect")
+		},
+		Deny: func(reason, rule, detail string) {
+			t.refused(se, Decision{Reason: reason, Rule: rule, Detail: detail}, "connect")
+		},
+	})
 }
 
 // dial opens the connection to the server.

@@ -614,6 +614,20 @@ Open findings of the earlier rounds:
   one rule reads the same on all of them, and the per-machine question stays the
   grant's.
 
+- **And the three database relays whose login packet names an account**:
+  `postgres` at the startup packet, which is the first and only place a role
+  appears -- the relay never sees the password -- and `mysql` and `tds` at their
+  login packets, each before that packet is forwarded. The pool is the target;
+  what may be reached inside the server stays with each kind's own policy, which
+  is the thing that can say what a database or a statement means.
+
+  `redis` and `amqp` are deliberately not wired: both confirm an identity only
+  after the relay has forwarded the credential and the server has accepted it,
+  so their connect-time hook has no user, and a section about people would have
+  listeners where no rule about people can match. They need a second admission
+  point at the server's acceptance, which is a design question rather than a
+  wiring one; ROADMAP.md records it as such.
+
 - **And the forward proxy**, on every request, tunnel and association --
   CONNECT, a plain proxied request, SOCKS5 and MASQUE alike -- after the
   destination policy and before the destination is dialled. Here the target is

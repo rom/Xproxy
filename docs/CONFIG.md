@@ -11433,18 +11433,24 @@ A kind that did not consult this policy would be a hole in a policy an operator
 believes covers everything, so a configuration that has an `authorization`
 section **and** a listener of a kind that does not consult it is refused at
 load, naming the listener and the kind. The kinds are wired one at a time;
-today the list is the five gate kinds and the forward proxy.
+today the list is the five gate kinds, the forward proxy, and the three database
+relays whose login packet names an account.
 
 All of them ask about `connect`. None fills `groups`: these protocols give the
 gateway no group membership it could verify, so a rule about a team is written
 with `principals` on `ssh` and with `users` elsewhere.
 
-What `target` means differs in the one place it has to. On the gate kinds it is
-the **upstream pool name**, not an endpoint address, so that one rule reads the
-same on all five; the per-machine question belongs to the JIT access grant (see
-`access`), which does check the endpoint. On a `forward` listener there is no
-pool -- the destination *is* what the client asked for -- so `target` is
-`host:port`, which is what a rule about egress has to be able to name.
+What `target` means differs in the one place it has to. On the gate kinds and the
+database relays it is the **upstream pool name**, not an endpoint address, so that
+one rule reads the same on all of them; the per-server question belongs to the JIT
+access grant (see `access`), which does check the endpoint. On a `forward`
+listener there is no pool -- the destination *is* what the client asked for -- so
+`target` is `host:port`, which is what a rule about egress has to be able to name.
+
+On the database relays the section decides whether the account may reach the
+server at all; what it may then do *inside* the server -- which database, which
+statement shapes -- stays with that kind's own policy, which is the thing that
+can say what a statement means.
 
 | Kind | When it asks, and what it has |
 |------|------------------------------|
@@ -11454,6 +11460,9 @@ pool -- the destination *is* what the client asked for -- so `target` is
 | `rdp` | At the client info packet, which is the only place a person appears in RDP and arrives **after** the desktop has been dialled. So a refusal here means the desktop saw a TCP connection from the gateway and never the person's name or password |
 | `ftp` | At the login, for the same reason: FTP's greeting comes from the server, so the target is dialled before anybody has said who they are. A refusal is a 530 on the login, and no command of the person's is forwarded |
 | `forward` | On every request, tunnel and association -- CONNECT, a plain proxied request, SOCKS5 and MASQUE alike -- after the destination policy and before the destination is dialled. `target` is the destination `host:port`, so a rule reads `targets: ["*.vendor.example:443"]`, and `*` does not cross the colon, which keeps one host's ports from being one pattern's worth of the whole internet. `user` is the proxy credential's name, empty on a listener with no `auth` -- which means a rule about users matches nobody there, and such a listener wants rules about networks and destinations instead |
+| `postgres` | At the startup packet, the first and only place a role appears -- the relay never sees the password -- and before the server is dialled. `user` is the role; `target` is the pool |
+| `mysql` | At the login packet, before it is forwarded. `user` is the account; `target` is the pool |
+| `tds` | At the Login7 packet, before it is forwarded. `user` is the account, empty for an integrated-authentication login, which the `tds` policy's own `integrated` setting is the place to decide about |
 
 A refusal here is the reason `authorization` on the listener's usual deny event
 (`ssh_authorization` and so on), so the counters, the security log and the ban

@@ -102,6 +102,28 @@ and a secret, and is therefore the one message with no session to attribute.
 **The bounds**: statements per session, statement size, message size, sessions
 overall and per client, and the session's idle and total duration.
 
+### The estate's own authorisation policy
+
+Above this relay's own policy sits the `authorization` section, which is not
+about PostgreSQL: it is the one place that says which identity may reach what, in the
+same words for every protocol. This relay asks it at the startup packet, which is the first
+and only place a role appears -- this relay never sees the password -- and before
+the server is dialled, so a role no rule covers never reaches it.
+
+The `target` is the upstream **pool** name -- the server is chosen by balancer
+after this point -- and the `user` is the role the packet named. Neither a
+principal nor groups reaches a rule here: PostgreSQL gives the relay a name and nothing
+it could verify about who holds it, so a rule about a team is a rule listing
+roles, and what may be reached *inside* the server is the `postgres` policy's own business,
+which is the thing that can say what a database or a statement means.
+
+A refusal is the reason `authorization` -- the event `postgres_authorization`, the
+counter `xproxy_refusals_total{kind="postgres",reason="authorization"}` -- so it reads
+like every other refusal this relay makes. Either shadow switch, this listener's
+`monitor_only` or the section's own `shadow: true`, records what it would have
+refused with the rule that decided and lets the session through; a refusal that
+is not enforced is counted only as a would-be refusal, never as one made.
+
 ## What it does not do
 
 - **It is not a SQL firewall.** A shape policy says what kind of statement may
@@ -131,5 +153,6 @@ overall and per client, and the session's idle and total duration.
 ## See also
 
 - The settings: [docs/CONFIG.md `## postgres`](../CONFIG.md#postgres)
+- The estate-wide policy above it: [docs/CONFIG.md `authorization`](../CONFIG.md#authorization)
 - A worked configuration: [`examples/databases/postgres.yaml`](../../examples/databases/postgres.yaml)
 - The other database protocols: [mysql](mysql.md), [tds](tds.md), [redis](redis.md)

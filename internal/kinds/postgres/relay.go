@@ -11,12 +11,14 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/acceptgroup"
+	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/netutil"
 	wire "github.com/rom/xproxy/internal/pgwire"
 	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/safe"
 	"github.com/rom/xproxy/internal/sesslimit"
+	"github.com/rom/xproxy/internal/textsafe"
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/upstream"
 )
@@ -249,6 +251,15 @@ func (t *server) startupWith(se *session, s *wire.Startup, raw []byte, hs time.D
 	se.app = s.Get("application_name")
 	se.startupRaw = raw
 	se.hs = hs
+	// The estate's own authorisation policy first, because it is the broader
+	// question: whether this role may reach this database at all, rather than
+	// what the connection may then do. It is asked here because the startup
+	// packet is the first and only place a role appears -- this relay never
+	// sees the password -- and before the server is dialled.
+	if reason := t.admitByPolicy(se); reason != "" {
+		se.fatal(Decision{Reason: reason})
+		return errRefused
+	}
 	d := t.policy.Startup(&Session{IP: se.ip, User: se.user, Database: se.database,
 		App: se.app, Secure: se.secure, At: time.Now()}, s)
 	if !d.Allow && (t.enforcing() || d.Hard) {
@@ -261,6 +272,45 @@ func (t *server) startupWith(se *session, s *wire.Startup, raw []byte, hs time.D
 	}
 	se.observe()
 	return nil
+}
+
+// admitByPolicy is the estate's authorisation policy: the reason to refuse, or
+// empty to carry on.
+//
+// The target is the upstream pool's name -- the server is chosen by balancer
+// after this point -- and the user is the role the startup packet named. Neither
+// a principal nor groups reaches a rule here: PostgreSQL gives the relay a role
+// name and nothing it could verify about who holds it, so a rule about a team is
+// a rule listing roles.
+//
+// A rule about the database is written with `not_targets` and `targets` on the
+// pool, not on the database name: what may be reached inside the server is the
+// `postgres` policy's own business, and it is the thing that can say what a
+// database means.
+//
+// The refusal goes through this relay's own refused path, so a listener in
+// shadow mode records it like every other decision here, and the policy's own
+// shadow switch does the same on a listener that enforces.
+func (t *server) admitByPolicy(se *session) string {
+	return t.host.Authorization().Ask(authorization.Subject{
+		Listener: t.name,
+		Kind:     "postgres",
+		Client:   se.ip,
+		User:     se.user,
+		Target:   t.pc.Upstream,
+		Action:   authorization.ActionConnect,
+	}, textsafe.Clip64(se.user), authorization.Gate{
+		Shadowing: func() bool { return !t.enforcing() },
+		// Record goes straight to wouldRefuse rather than through refused,
+		// which would count a real refusal when the policy is shadowed and this
+		// listener is not.
+		Record: func(reason, rule, detail string) {
+			t.wouldRefuse(se, Decision{Reason: reason, Rule: rule, Detail: detail}, "connect")
+		},
+		Deny: func(reason, rule, detail string) {
+			t.refused(se, Decision{Reason: reason, Rule: rule, Detail: detail}, "connect")
+		},
+	})
 }
 
 // forwardCancel sends a cancel request on and closes.

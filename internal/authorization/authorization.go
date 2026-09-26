@@ -449,12 +449,13 @@ type Gate struct {
 	// decided in its own field.
 	Record func(reason, rule, detail string)
 	// Deny counts and logs an enforced refusal, and hands the ban list the
-	// kind's usual reason.
+	// kind's usual reason. It takes the rule for the same reason Record does: a
+	// refusal an operator has to argue with names the rule that made it.
 	//
 	// It may be nil, for a kind whose own shape is to return a reason and have
 	// the caller count and log it -- the forward listener works that way, and
 	// a Deny there would count every refusal twice.
-	Deny func(reason, detail string)
+	Deny func(reason, rule, detail string)
 }
 
 // Ask asks the policy about one subject and reports the reason to refuse, or
@@ -491,7 +492,7 @@ func (p *Policy) Ask(sub Subject, subject string, g Gate) string {
 		return ""
 	}
 	if g.Deny != nil {
-		g.Deny(Reason, detail)
+		g.Deny(Reason, d.Rule, detail)
 	}
 	return Reason
 }

@@ -444,13 +444,31 @@ of them is a flaw in front of all of them.
   than a pool -- a forward proxy has no pool, and the destination is
   what a rule about egress needs to name.
 
-  Not yet: the relays that authenticate a user (smtp, mqtt, ldap, the
-  four database kinds, amqp); then the identity-less kinds, in the same
-  pass as the `cidr`-lists-per-kind sweep above, because both need the
-  same per-kind admission point. The HTTP gateway's session-level
-  question is last and is genuinely a design question: an HTTP listener
-  has no session, and the per-request answer is already the `authz`
-  filter.
+  The three database relays whose login packet names an account ask it
+  too -- `postgres` at the startup packet, `mysql` and `tds` at their
+  login packets -- each before that packet is forwarded, with the pool as
+  the target. What may be reached inside the server stays with each
+  kind's own policy, which is the thing that can say what a statement
+  means.
+
+  Not yet, and for a reason worth recording rather than a queue:
+
+  - `redis` and `amqp` confirm an identity only after the relay has
+    forwarded the credential and the server has accepted it. Their
+    connect-time hook has no user at all, so wiring the policy there
+    would give a section about people a listener where no rule about
+    people can match. What they need is a decision at the point the
+    server's acceptance comes back -- a second admission point neither
+    kind has yet -- and that is a design question, not a wiring one.
+  - `smtp`, `mqtt` and `ldap` each do have an identity at a definite
+    point (AUTH, the CONNECT username, the bind DN) and are the next
+    ones to wire.
+  - The identity-less kinds come in the same pass as the
+    `cidr`-lists-per-kind sweep above, because both need the same
+    per-kind admission point.
+  - The HTTP gateway's session-level question is last and is genuinely a
+    design question: an HTTP listener has no session, and the
+    per-request answer is already the `authz` filter.
 
 ## After 1.4 (candidates, unranked)
 

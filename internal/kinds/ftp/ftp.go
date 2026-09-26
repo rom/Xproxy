@@ -316,7 +316,7 @@ func (t *server) authzGate(ip netip.Addr) authorization.Gate {
 	return authorization.Gate{
 		Shadowing: t.cfg.Shadowing,
 		Record:    func(reason, rule, detail string) { t.recordWouldDeny(ip, reason, rule, detail) },
-		Deny: func(reason, detail string) {
+		Deny: func(reason, _, detail string) {
 			t.engine.Counters().FTPRefused.Add(1)
 			t.deny(ip, reason, detail)
 		},

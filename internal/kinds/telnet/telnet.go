@@ -212,7 +212,7 @@ func (t *server) authzGate(ip netip.Addr) authorization.Gate {
 	return authorization.Gate{
 		Shadowing: t.cfg.Shadowing,
 		Record:    func(reason, rule, detail string) { t.recordWouldDeny(ip, reason, rule, detail) },
-		Deny:      func(reason, detail string) { t.deny(ip, reason, detail) },
+		Deny:      func(reason, _, detail string) { t.deny(ip, reason, detail) },
 	}
 }
 

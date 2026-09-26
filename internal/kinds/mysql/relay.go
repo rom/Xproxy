@@ -12,6 +12,7 @@ import (
 
 	"github.com/rom/xproxy/internal/acceptgroup"
 	"github.com/rom/xproxy/internal/assets"
+	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/config"
 	wire "github.com/rom/xproxy/internal/mysqlwire"
 	"github.com/rom/xproxy/internal/netutil"
@@ -19,6 +20,7 @@ import (
 	"github.com/rom/xproxy/internal/safe"
 	"github.com/rom/xproxy/internal/sesslimit"
 	"github.com/rom/xproxy/internal/sqlkind"
+	"github.com/rom/xproxy/internal/textsafe"
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/upstream"
 )
@@ -254,6 +256,16 @@ func (t *server) handshake(se *session, hs time.Duration) error {
 	}
 	se.cliReader, se.srvReader = cli, srv
 
+	// The estate's own authorisation policy first, because it is the broader
+	// question: whether this account may reach this server at all, rather than
+	// what the connection may then run. It is asked here because the login
+	// packet is the first place an account appears -- this relay never sees the
+	// password, only the handshake around it -- and before the login is
+	// forwarded.
+	if reason := t.admitByPolicy(se); reason != "" {
+		se.fatal(Decision{Reason: reason}, first.Seq+1)
+		return errRefused
+	}
 	d := t.policy.Login(se.sess(), l)
 	if !d.Allow && (t.enforcing() || d.Hard) {
 		t.refused(se, d, "connect")
@@ -277,6 +289,37 @@ func (t *server) handshake(se *session, hs time.Duration) error {
 		return err
 	}
 	return nil
+}
+
+// admitByPolicy is the estate's authorisation policy: the reason to refuse, or
+// empty to carry on.
+//
+// The target is the upstream pool's name -- the server is chosen by balancer
+// after this point -- and the user is the account the login packet named. MySQL
+// gives the relay no principal and no group membership it could verify, so a
+// rule about a team is a rule listing accounts, and what may be reached inside
+// the server is the `mysql` policy's own business.
+func (t *server) admitByPolicy(se *session) string {
+	s := se.sess()
+	return t.host.Authorization().Ask(authorization.Subject{
+		Listener: t.name,
+		Kind:     "mysql",
+		Client:   se.ip,
+		User:     s.User,
+		Target:   t.mc.Upstream,
+		Action:   authorization.ActionConnect,
+	}, textsafe.Clip64(s.User), authorization.Gate{
+		Shadowing: func() bool { return !t.enforcing() },
+		// Record goes straight to wouldRefuse rather than through refused,
+		// which would count a real refusal when the policy is shadowed and this
+		// listener is not.
+		Record: func(reason, rule, detail string) {
+			t.wouldRefuse(Decision{Reason: reason, Rule: rule, Detail: detail}, "connect")
+		},
+		Deny: func(reason, rule, detail string) {
+			t.refused(se, Decision{Reason: reason, Rule: rule, Detail: detail}, "connect")
+		},
+	})
 }
 
 // dial opens the connection to the server, upgrading the leg to TLS when the
