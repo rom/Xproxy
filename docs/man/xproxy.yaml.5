@@ -28494,7 +28494,24 @@ Which identity may reach which listener, target and operation. One section, abov
 .PP
 Every kind here already decides things about a session: an \fBssh\fR listener has principals with channel and command lists, a \fBpostgres\fR relay has a statement policy, a \fBmodbus\fR relay has function codes and register ranges. Those stay where they are, because nothing else can say what a write to holding register 40001 means. What this adds is the question above them \-\- may Alice reach the production database at all, from where she is, at this hour \-\- asked once instead of in every kind\(aqs own spelling.
 .PP
-It decides nothing on its own authority. Every value a rule matches on was established by the listener that asked: a name it authenticated, a principal it resolved, groups a directory or a certificate gave it, the target the client asked for. A value a client simply sent never reaches a rule here.
+It decides nothing on its own authority. Every value a rule matches on is filled in by the listener that asks, from the protocol\(aqs own login rather than from anything a rule here could be talked into believing.
+.PP
+\fBHow much a name is worth differs by kind, and it changes what a rule means.\fR On the kinds that authenticate the client themselves \[u2014] \fBssh\fR with a key or a certificate, \fBtelnet\fR with a second factor, \fBvnc\fR with a credential it checks, \fBftp\fR once the target\(aqs own login has succeeded \[u2014] the name has been proven before the policy is asked, and a rule about it means what it says.
+.PP
+On \fBpostgres\fR, \fBmysql\fR, \fBtds\fR and \fBrdp\fR the far side does the authenticating, and the policy is asked \fIbefore\fR the login or the credential is forwarded \[u2014] which is the point, because it is what keeps a refused session off the server entirely. There the name is the one the client\(aqs login asserts and is proven afterwards, so the policy narrows what the far side would have allowed and never widens it:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+a \fBdeny\fR rule is exact \[u2014] refusing a claimed name refuses at least everyone who could have proved it;
+.PP
+.ti -3n
+\(bu
+an \fBallow\fR rule is a filter on a claim, and the server\(aqs own authentication is still what proves it. It is not an authenticated grant, and an estate that needs one on these kinds should put the narrow rules in \fBtargets\fR and \fBnetworks\fR, which nobody can assert.
+.RE
+.PP
+.PP
+The per\-kind table below says which kind is which. The kinds that have no name at all at their decision point are not wired to the policy, for the same reason.
 .PP
 This is not the \fBauthz\fR filter kind under \fBfilters\fR. That one decides what a verified identity may do with \fBone HTTP request\fR \[u2014] its method, its path, its scopes and claims \[u2014] and runs inside a route\(aqs filter chain. This one decides whether a \fBsession\fR happens at all, at a listener\(aqs admission point, in words every protocol can be asked in. The two share a vocabulary on purpose (deny by default, first match wins, the negative selectors as their own keys) and nothing else; an HTTP deployment can reasonably want both.
 .PP
@@ -28770,59 +28787,81 @@ What \fBtarget\fR means differs in the one place it has to. On the gate kinds an
 .PP
 On the database relays the section decides whether the account may reach the server at all; what it may then do \fIinside\fR the server \-\- which database, which statement shapes \-\- stays with that kind\(aqs own policy, which is the thing that can say what a statement means.
 .PP
+The "name" column says whether the identity has been proven by the time the policy is asked, which is what decides how much an \fBallow\fR rule keyed on it is worth (see above).
+.PP
 .TS
 allbox;
-lbw(0.9i) lbx
-lw(0.9i) lx.
+lbw(0.9i) lbw(1.5i) lbx
+lw(0.9i) lw(1.5i) lx.
 T{
 Kind
 T}	T{
 When it asks,\: and what it has
+T}	T{
+Name
 T}
 T{
 \fBssh\fR
 T}	T{
 After authentication and before the target is dialled,\: so a refused session never reaches a machine. \fBuser\fR is the login,\: \fBprincipal\fR the \fBprincipals\fR entry the key or certificate matched. SFTP inside the session is covered by the same decision
+T}	T{
+proven (key or certificate)
 T}
 T{
 \fBtelnet\fR
 T}	T{
 After the second factor and before the equipment is dialled. Telnet carries no identity of its own,\: so \fBuser\fR is whatever the factor prompt established \-\- which is why a telnet listener under a policy about people wants \fBmfa\fR,\: exactly as \fBrequire_\:grant\fR does
+T}	T{
+proven (second factor)
 T}
 T{
 \fBvnc\fR
 T}	T{
 After the client has identified itself and before the desktop is dialled. \fBuser\fR is the plain credential\(aqs user or the name the factor prompt asked for,\: so the listener needs a security type that carries one (\fBmslogon2\fR,\: or VeNCrypt with a named credential)
+T}	T{
+proven (credential or factor)
 T}
 T{
 \fBrdp\fR
 T}	T{
 At the client info packet,\: which is the only place a person appears in RDP and arrives \fBafter\fR the desktop has been dialled. So a refusal here means the desktop saw a TCP connection from the gateway and never the person\(aqs name or password
+T}	T{
+asserted;\: the desktop proves it after
 T}
 T{
 \fBftp\fR
 T}	T{
 At the login,\: for the same reason: FTP\(aqs greeting comes from the server,\: so the target is dialled before anybody has said who they are. A refusal is a 530 on the login,\: and no command of the person\(aqs is forwarded
+T}	T{
+proven (the target\(aqs own login succeeded)
 T}
 T{
 \fBforward\fR
 T}	T{
 On every request,\: tunnel and association \-\- CONNECT,\: a plain proxied request,\: SOCKS5 and MASQUE alike \-\- after the destination policy and before the destination is dialled. \fBtarget\fR is the destination \fBhost:\:port\fR,\: so a rule reads \fBtargets:\: ["*.\:vendor.\:example:\:443"]\fR,\: and \fB*\fR does not cross the colon,\: which keeps one host\(aqs ports from being one pattern\(aqs worth of the whole internet. \fBuser\fR is the proxy credential\(aqs name,\: empty on a listener with no \fBauth\fR \-\- which means a rule about users matches nobody there,\: and such a listener wants rules about networks and destinations instead
+T}	T{
+proven (proxy credential),\: or absent with no \fBauth\fR
 T}
 T{
 \fBpostgres\fR
 T}	T{
 At the startup packet,\: the first and only place a role appears \-\- the relay never sees the password \-\- and before the server is dialled. \fBuser\fR is the role;\: \fBtarget\fR is the pool
+T}	T{
+asserted;\: the server proves it after
 T}
 T{
 \fBmysql\fR
 T}	T{
 At the login packet,\: before it is forwarded. \fBuser\fR is the account;\: \fBtarget\fR is the pool
+T}	T{
+asserted;\: the server proves it after
 T}
 T{
 \fBtds\fR
 T}	T{
 At the Login7 packet,\: before it is forwarded. \fBuser\fR is the account,\: empty for an integrated\-\:authentication login,\: which the \fBtds\fR policy\(aqs own \fBintegrated\fR setting is the place to decide about
+T}	T{
+asserted;\: the server proves it after
 T}
 .TE
 .PP

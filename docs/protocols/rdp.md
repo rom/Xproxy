@@ -121,6 +121,16 @@ happened to reach, so that a rule reads the same here as on an `ssh` listener;
 the per-machine question belongs to the access grant, which does check the
 machine. `principal` and `groups` are empty.
 
+**What the name is worth here.** The policy is asked before the credential travels, which is the
+point: it is what keeps a refused session off the desktop entirely. But it means the account
+is the one the client's login *asserts*, and the desktop proves it afterwards. So the
+policy narrows what the desktop would have allowed and never widens it: a deny rule is
+exact, because refusing a claimed name refuses at least everyone who could have
+proved it, while an allow rule keyed on the name is a filter on a claim that
+still has to be proven. It is not an authenticated grant. A rule that has to
+hold whatever a client asserts belongs in `targets` and `networks`, which nobody
+can choose for themselves.
+
 A refusal is the reason `authorization` (the event `rdp_authorization`, the
 counter `xproxy_refusals_total{kind="rdp",reason="authorization"}`). Either
 shadow switch -- `policy: {mode: shadow}` on the listener, or `shadow: true` on

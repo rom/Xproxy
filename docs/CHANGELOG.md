@@ -652,6 +652,21 @@ Open findings of the earlier rounds:
   switches (`shadow`, `default: allow`) that change what every other
   number means.
 
+- **How much a name is worth differs by kind, and the documentation says which
+  is which.** On the kinds that authenticate the client themselves -- ssh with a
+  key or certificate, telnet with a second factor, vnc with a credential it
+  checks, ftp once the target's own login succeeded -- the name is proven before
+  the policy is asked. On postgres, mysql, tds and rdp the far side does the
+  authenticating and the policy is asked *before* the login or the credential is
+  forwarded, which is the point: it keeps a refused session off the server
+  entirely. But it means the name is asserted and proven afterwards, so the
+  policy narrows what the far side would have allowed and never widens it -- a
+  deny rule is exact, an allow rule is a filter on a claim the server still has
+  to verify. That is a real property and not an authenticated grant, so the
+  reference carries it in a column of the per-kind table and each protocol page
+  states it, rather than leaving the stronger reading to be assumed. A rule that
+  must hold whatever a client asserts belongs in `targets` and `networks`.
+
   Both shadow switches leave the same record, rule included. The kinds hand the
   policy their own counters, security event and ban list through one small
   interface, so the ordering that is easy to get wrong -- which switch is

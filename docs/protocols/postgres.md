@@ -117,6 +117,16 @@ it could verify about who holds it, so a rule about a team is a rule listing
 roles, and what may be reached *inside* the server is the `postgres` policy's own business,
 which is the thing that can say what a database or a statement means.
 
+**What the name is worth here.** The policy is asked before the startup packet is forwarded, which is the
+point: it is what keeps a refused session off the server entirely. But it means the role
+is the one the client's login *asserts*, and the server proves it afterwards. So the
+policy narrows what the server would have allowed and never widens it: a deny rule is
+exact, because refusing a claimed name refuses at least everyone who could have
+proved it, while an allow rule keyed on the name is a filter on a claim that
+still has to be proven. It is not an authenticated grant. A rule that has to
+hold whatever a client asserts belongs in `targets` and `networks`, which nobody
+can choose for themselves.
+
 A refusal is the reason `authorization` -- the event `postgres_authorization`, the
 counter `xproxy_refusals_total{kind="postgres",reason="authorization"}` -- so it reads
 like every other refusal this relay makes. Either shadow switch, this listener's

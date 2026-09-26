@@ -22,10 +22,31 @@
 // before anybody can say what Alice may do -- and nineteen places for the
 // answer to differ. This package is that question, asked once.
 //
-// It decides nothing on its own authority. Every field of a Subject is
-// something a listener kind established: a name it authenticated, a principal
-// it resolved, groups a directory or a certificate gave it, the target the
-// client asked for. A value a client simply sent never reaches a rule here.
+// It decides nothing on its own authority. Every field of a Subject is filled in
+// by the listener kind that asks, from the protocol's own login rather than from
+// anything a rule here could be talked into believing.
+//
+// # How much a name is worth
+//
+// Where the *name* comes from differs by kind, and it decides what a rule means.
+// On the kinds that authenticate the client themselves -- ssh with a key or a
+// certificate, telnet with a second factor, vnc with a credential it checks,
+// ftp once the target's own login has succeeded -- the name has been proven
+// before this package is asked, and a rule about it means what it says.
+//
+// On the kinds where the far side does the authenticating, the name is the one
+// the client's login packet asserts, and it is proven afterwards: postgres,
+// mysql and tds refuse before the login is forwarded, and rdp before the
+// credential travels. There the policy narrows what the far side would have
+// allowed and never widens it -- a deny rule is exact, because refusing a
+// claimed name refuses at least everyone who could have proved it, while an
+// allow rule is a filter on a claim that still has to be proven to the server.
+// Which is a real property and not the same as an authenticated grant, so the
+// reference and each protocol page say which kind is which rather than leaving
+// an operator to assume the stronger reading.
+//
+// The kinds that have no name at all at their decision point are not wired at
+// all, for that reason: see listener.Authorises.
 //
 // # What a decision is
 //

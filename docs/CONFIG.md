@@ -11339,10 +11339,31 @@ where they are, because nothing else can say what a write to holding register
 production database at all, from where she is, at this hour -- asked once
 instead of in every kind's own spelling.
 
-It decides nothing on its own authority. Every value a rule matches on was
-established by the listener that asked: a name it authenticated, a principal it
-resolved, groups a directory or a certificate gave it, the target the client
-asked for. A value a client simply sent never reaches a rule here.
+It decides nothing on its own authority. Every value a rule matches on is filled
+in by the listener that asks, from the protocol's own login rather than from
+anything a rule here could be talked into believing.
+
+**How much a name is worth differs by kind, and it changes what a rule means.**
+On the kinds that authenticate the client themselves — `ssh` with a key or a
+certificate, `telnet` with a second factor, `vnc` with a credential it checks,
+`ftp` once the target's own login has succeeded — the name has been proven before
+the policy is asked, and a rule about it means what it says.
+
+On `postgres`, `mysql`, `tds` and `rdp` the far side does the authenticating, and
+the policy is asked *before* the login or the credential is forwarded — which is
+the point, because it is what keeps a refused session off the server entirely.
+There the name is the one the client's login asserts and is proven afterwards, so
+the policy narrows what the far side would have allowed and never widens it:
+
+- a **deny** rule is exact — refusing a claimed name refuses at least everyone
+  who could have proved it;
+- an **allow** rule is a filter on a claim, and the server's own authentication
+  is still what proves it. It is not an authenticated grant, and an estate that
+  needs one on these kinds should put the narrow rules in `targets` and
+  `networks`, which nobody can assert.
+
+The per-kind table below says which kind is which. The kinds that have no name at
+all at their decision point are not wired to the policy, for the same reason.
 
 This is not the `authz` filter kind under `filters`. That one decides what a
 verified identity may do with **one HTTP request** — its method, its path, its
@@ -11452,17 +11473,21 @@ server at all; what it may then do *inside* the server -- which database, which
 statement shapes -- stays with that kind's own policy, which is the thing that
 can say what a statement means.
 
-| Kind | When it asks, and what it has |
-|------|------------------------------|
-| `ssh` | After authentication and before the target is dialled, so a refused session never reaches a machine. `user` is the login, `principal` the `principals` entry the key or certificate matched. SFTP inside the session is covered by the same decision |
-| `telnet` | After the second factor and before the equipment is dialled. Telnet carries no identity of its own, so `user` is whatever the factor prompt established -- which is why a telnet listener under a policy about people wants `mfa`, exactly as `require_grant` does |
-| `vnc` | After the client has identified itself and before the desktop is dialled. `user` is the plain credential's user or the name the factor prompt asked for, so the listener needs a security type that carries one (`mslogon2`, or VeNCrypt with a named credential) |
-| `rdp` | At the client info packet, which is the only place a person appears in RDP and arrives **after** the desktop has been dialled. So a refusal here means the desktop saw a TCP connection from the gateway and never the person's name or password |
-| `ftp` | At the login, for the same reason: FTP's greeting comes from the server, so the target is dialled before anybody has said who they are. A refusal is a 530 on the login, and no command of the person's is forwarded |
-| `forward` | On every request, tunnel and association -- CONNECT, a plain proxied request, SOCKS5 and MASQUE alike -- after the destination policy and before the destination is dialled. `target` is the destination `host:port`, so a rule reads `targets: ["*.vendor.example:443"]`, and `*` does not cross the colon, which keeps one host's ports from being one pattern's worth of the whole internet. `user` is the proxy credential's name, empty on a listener with no `auth` -- which means a rule about users matches nobody there, and such a listener wants rules about networks and destinations instead |
-| `postgres` | At the startup packet, the first and only place a role appears -- the relay never sees the password -- and before the server is dialled. `user` is the role; `target` is the pool |
-| `mysql` | At the login packet, before it is forwarded. `user` is the account; `target` is the pool |
-| `tds` | At the Login7 packet, before it is forwarded. `user` is the account, empty for an integrated-authentication login, which the `tds` policy's own `integrated` setting is the place to decide about |
+The "name" column says whether the identity has been proven by the time the
+policy is asked, which is what decides how much an `allow` rule keyed on it is
+worth (see above).
+
+| Kind | When it asks, and what it has | Name |
+|------|------------------------------|------|
+| `ssh` | After authentication and before the target is dialled, so a refused session never reaches a machine. `user` is the login, `principal` the `principals` entry the key or certificate matched. SFTP inside the session is covered by the same decision | proven (key or certificate) |
+| `telnet` | After the second factor and before the equipment is dialled. Telnet carries no identity of its own, so `user` is whatever the factor prompt established -- which is why a telnet listener under a policy about people wants `mfa`, exactly as `require_grant` does | proven (second factor) |
+| `vnc` | After the client has identified itself and before the desktop is dialled. `user` is the plain credential's user or the name the factor prompt asked for, so the listener needs a security type that carries one (`mslogon2`, or VeNCrypt with a named credential) | proven (credential or factor) |
+| `rdp` | At the client info packet, which is the only place a person appears in RDP and arrives **after** the desktop has been dialled. So a refusal here means the desktop saw a TCP connection from the gateway and never the person's name or password | asserted; the desktop proves it after |
+| `ftp` | At the login, for the same reason: FTP's greeting comes from the server, so the target is dialled before anybody has said who they are. A refusal is a 530 on the login, and no command of the person's is forwarded | proven (the target's own login succeeded) |
+| `forward` | On every request, tunnel and association -- CONNECT, a plain proxied request, SOCKS5 and MASQUE alike -- after the destination policy and before the destination is dialled. `target` is the destination `host:port`, so a rule reads `targets: ["*.vendor.example:443"]`, and `*` does not cross the colon, which keeps one host's ports from being one pattern's worth of the whole internet. `user` is the proxy credential's name, empty on a listener with no `auth` -- which means a rule about users matches nobody there, and such a listener wants rules about networks and destinations instead | proven (proxy credential), or absent with no `auth` |
+| `postgres` | At the startup packet, the first and only place a role appears -- the relay never sees the password -- and before the server is dialled. `user` is the role; `target` is the pool | asserted; the server proves it after |
+| `mysql` | At the login packet, before it is forwarded. `user` is the account; `target` is the pool | asserted; the server proves it after |
+| `tds` | At the Login7 packet, before it is forwarded. `user` is the account, empty for an integrated-authentication login, which the `tds` policy's own `integrated` setting is the place to decide about | asserted; the server proves it after |
 
 A refusal here is the reason `authorization` on the listener's usual deny event
 (`ssh_authorization` and so on), so the counters, the security log and the ban

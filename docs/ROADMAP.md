@@ -460,9 +460,32 @@ of them is a flaw in front of all of them.
     people can match. What they need is a decision at the point the
     server's acceptance comes back -- a second admission point neither
     kind has yet -- and that is a design question, not a wiring one.
-  - `smtp`, `mqtt` and `ldap` each do have an identity at a definite
-    point (AUTH, the CONNECT username, the bind DN) and are the next
-    ones to wire.
+
+  Worth stating once, because it is the property an operator has to
+  understand: on the kinds where the far side does the authenticating --
+  `postgres`, `mysql`, `tds`, `rdp` -- the policy is asked before the
+  login or the credential is forwarded, which is what keeps a refused
+  session off the server, and which also means the name it decides about
+  is asserted rather than proven. The policy can only narrow what the far
+  side would have allowed: a deny rule is exact, an allow rule is a
+  filter on a claim the server still has to verify. CONFIG.md and each
+  protocol page say so per kind rather than leaving the stronger reading
+  to be assumed.
+  - `smtp` has no name at all to decide about. The relay forwards the
+    SASL exchange without parsing it -- deliberately, because those
+    lines carry the password -- so it never learns who authenticated,
+    only that the server said 235. What it does have is the envelope,
+    and `MAIL FROM` is an address rather than an identity, which is the
+    `smtp` policy's own business.
+  - `mqtt` has the CONNECT username and `ldap` the bind DN, and both are
+    the asserted-then-proven shape described above -- `ldap` already
+    waits for the directory's answer before adopting an identity, with
+    the comment saying why. They are the next two to wire, and the
+    decision worth making first is whether to ask at the assertion (as
+    the database relays do, to keep a refused session off the server) or
+    at the acceptance (as `ftp` does, for a name that has been proven),
+    because the answer is not the same for a broker as for a
+    directory.
   - The identity-less kinds come in the same pass as the
     `cidr`-lists-per-kind sweep above, because both need the same
     per-kind admission point.
