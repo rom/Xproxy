@@ -1,0 +1,148 @@
+# Threat feeds: the lists fetched rather than waiting for somebody's cron
+# job, and the three kinds of indicator that are about what a client asked
+# for rather than where it came from.
+#
+# threat-intel.yaml is the same feature with files on disk: read this one
+# once that shape is understood. What is added here is where the entries
+# come from -- a plain URL, a TAXII 2.1 collection, a MISP instance -- and
+# what they can be about: a host name and every name under it, a host and
+# path at a path boundary, and the digest of a payload.
+#
+# The two rules worth carrying away:
+#
+#   * Exactly one of file, url, taxii and misp says where a list's entries
+#     come from. Two is refused rather than resolved by precedence,
+#     because a list whose source is ambiguous is a list nobody can say
+#     the contents of.
+#
+#   * A fetch that fails keeps the entries already read. A publisher
+#     having an outage must not empty the policy for as long as that
+#     takes -- but the list has then stopped being current while it goes
+#     on matching, which is what xproxy_threat_feed_fetches_total and the
+#     XproxyThreatFeedFailing alert are for.
+#
+# Validate: xproxy -config examples/security/threat-feeds.yaml -validate
+version: 1
+server:
+  listeners:
+    - name: edge
+      address: "0.0.0.0:443"
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/certs/site.pem, key_file: /etc/xproxy/certs/site.key}
+
+challenge:
+  secret_file: /etc/xproxy/challenge.key
+
+# The credentials feeds are reached with live here rather than in the
+# lists, so a TAXII token or a MISP API key can be rotated where it is
+# held and revoked where a file cannot be.
+secrets:
+  refresh_interval: 5m
+  vault:
+    address: https://vault.internal:8200
+    token_file: /etc/xproxy/vault/token
+
+threat_intel:
+  # Every list is re-checked on this interval: a file whose size or
+  # modification time moved is re-read, and a network feed is re-fetched
+  # conditionally -- an unchanged feed costs a 304, not a download.
+  refresh: 30m
+  lists:
+    # A plain feed of one name per line. Nothing about it is special: the
+    # format is decided from the bytes, and could be named with
+    # `format: lines` so a publisher who changes shape fails loudly
+    # instead of quietly yielding nothing.
+    - name: malware-domains
+      kind: domain
+      url: https://feeds.example/malware-domains.txt
+      action: challenge
+
+    # A TAXII 2.1 collection, which answers STIX. Only the patterns a
+    # proxy can act on are read -- an address, a name, a URL, a digest --
+    # and everything else in the bundle is counted as skipped, so
+    # ten thousand skipped behind four entries says the feed or the kind
+    # is wrong.
+    #
+    # added_after is a floor on age, not incremental state: every fetch
+    # sends the same value, so the list stays the whole answer to the same
+    # question and an indicator the publisher revokes disappears from it.
+    - name: community-urls
+      kind: url
+      taxii:
+        api_root: https://taxii.example/api1/
+        collection: 91a7b528-80eb-42ed-a74d-c6fbd5a26116
+        added_after: "2026-01-01T00:00:00Z"
+      http:
+        token: "vault:kv/xproxy/taxii#token"
+        timeout: 90s
+      action: challenge
+
+    # A MISP instance, searched for the attribute types this proxy can
+    # match on. Only attributes the analyst marked to_ids are taken: one
+    # that was not is context, not policy. Narrowed to one sharing
+    # community by tag, and to published events, which is MISP's own
+    # boundary between a draft and intelligence.
+    - name: misp-payloads
+      kind: hash
+      misp:
+        url: https://misp.example
+        tags: ["tlp:amber"]
+        published: true
+      http:
+        token: "vault:kv/xproxy/misp#api_key"
+      action: block
+
+    # A feed inside this estate, over http:// because it never leaves the
+    # management network. It draws advice at load: anything on the path
+    # between here and there chooses what the proxy blocks.
+    - name: internal-domains
+      kind: domain
+      url: http://intel.internal/domains.txt
+      action: block
+
+# A digest is matched where a payload is assembled, and that is the upload
+# guard: it already reads every byte of every file to sniff its type, so
+# the SHA-256 costs the pass it was making anyway. Without this filter the
+# hash list above would load, refresh, report its entry count and never be
+# asked -- which validation says at load rather than leaving to be
+# discovered.
+filters:
+  - name: uploads
+    kind: upload_guard
+    options:
+      max_files: 5
+      max_file_bytes: 20971520
+      allowed_extensions: [pdf, png, jpg, jpeg, docx, xlsx]
+
+bans:
+  triggers:
+    - name: intel-persistent
+      reasons: [threat_intel]
+      threshold: 5
+      window: 10m
+      duration: 24h
+
+upstreams:
+  - name: app
+    endpoints: [{address: "10.0.0.10:8080"}]
+
+routes:
+  - name: uploads
+    paths: ["/upload"]
+    upstream: app
+    filters: [uploads]
+
+  - name: app
+    upstream: app
+
+  # The endpoint an operator watches the outage with is exempt from every
+  # list: an import must not be able to take away the thing that says
+  # whether the estate is up.
+  - name: health
+    paths: ["/healthz", "/readyz"]
+    upstream: app
+    threat_intel: false
+
+logging:
+  access: {enabled: true}

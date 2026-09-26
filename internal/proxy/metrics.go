@@ -337,6 +337,21 @@ func (s *Server) Collect(e metrics.Collector) {
 	e.Counter("xproxy_threat_intel_total", "Requests an imported threat intelligence list matched, by what was done.", L{"result": "logged"}, float64(sn.ThreatIntelMatched-sn.ThreatIntelBlocked-sn.ThreatIntelChallenged))
 	e.Counter("xproxy_threat_intel_total", "Requests an imported threat intelligence list matched, by what was done.", L{"result": "blocked"}, float64(sn.ThreatIntelBlocked))
 	e.Counter("xproxy_threat_intel_total", "Requests an imported threat intelligence list matched, by what was done.", L{"result": "challenged"}, float64(sn.ThreatIntelChallenged))
+	// Per list, because an imported list is only as good as its last read:
+	// a feed whose fetches have stopped while its failures climb still
+	// matches, on entries nobody has refreshed.
+	for _, tl := range sn.ThreatLists {
+		e.Gauge("xproxy_threat_list_entries", "Entries an imported threat list holds.", L{"list": tl.Name, "kind": listKind(tl.Kind)}, float64(tl.Entries))
+		e.Counter("xproxy_threat_list_hits_total", "Matches by the list that made them.", L{"list": tl.Name}, float64(tl.Hits))
+		e.Gauge("xproxy_threat_list_age_seconds", "Seconds since an imported threat list was last read.", L{"list": tl.Name}, sinceSeconds(tl.Read))
+		e.Gauge("xproxy_threat_list_skipped", "Objects a structured feed held that this list did not take: indicators of other kinds, and objects that are not indicators.", L{"list": tl.Name}, float64(tl.Skipped))
+		if tl.Fetches+tl.Failures+tl.NotModified == 0 {
+			continue // a file source: nothing is fetched
+		}
+		e.Counter("xproxy_threat_feed_fetches_total", "Fetches of a network threat feed, by outcome.", L{"list": tl.Name, "result": "fetched"}, float64(tl.Fetches))
+		e.Counter("xproxy_threat_feed_fetches_total", "Fetches of a network threat feed, by outcome.", L{"list": tl.Name, "result": "not_modified"}, float64(tl.NotModified))
+		e.Counter("xproxy_threat_feed_fetches_total", "Fetches of a network threat feed, by outcome.", L{"list": tl.Name, "result": "failed"}, float64(tl.Failures))
+	}
 	e.Counter("xproxy_scim_requests_total", "Requests the SCIM provisioning endpoint acted on, by outcome.", L{"result": "answered"}, float64(sn.SCIMRequests-sn.SCIMDenied))
 	e.Counter("xproxy_scim_requests_total", "Requests the SCIM provisioning endpoint acted on, by outcome.", L{"result": "refused"}, float64(sn.SCIMDenied))
 	e.Counter("xproxy_ranges_total", "Byte range requests the range policy acted on.", L{"result": "dropped"}, float64(sn.RangesDropped))
@@ -477,4 +492,25 @@ func b2f(b bool) float64 {
 		return 1
 	}
 	return 0
+}
+
+// listKind is a threat list's kind for a label, with the default spelled
+// out: an empty label reads as a broken exporter, and "cidr" is what the
+// configuration means by leaving it out.
+func listKind(kind string) string {
+	if kind == "" {
+		return "cidr"
+	}
+	return kind
+}
+
+// sinceSeconds is how long ago something happened, for a staleness gauge. A
+// zero time means it has not happened at all, which is reported as 0 rather
+// than as the seconds since the epoch: a gauge of 1.7e9 on a list that was
+// never read would fire every threshold there is and say nothing.
+func sinceSeconds(t time.Time) float64 {
+	if t.IsZero() {
+		return 0
+	}
+	return time.Since(t).Seconds()
 }

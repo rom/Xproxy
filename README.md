@@ -1201,7 +1201,7 @@ documentation for the same thing.
 | `upstreams` | Endpoint pools: balancing, health checks, outlier ejection, retries and budgets, hedging, circuit breaking, affinity, discovery, TLS and origin signatures |
 | `routes` | What matches and what happens: the action, the filters, caching, CORS, ranges, honeypots, deception, mirroring, WebSocket inspection and a DoH endpoint |
 | `bans` | Escalating temporary bans, dropped at accept, persisted and shared, with the triggers that place them |
-| `threat_intel` | Imported CIDR and JA4 lists, refreshed on disk, with an action each and routes that can be exempt |
+| `threat_intel` | Imported lists of addresses, fingerprints, names, URLs and payload digests -- from a file, a URL, a TAXII 2.1 collection or a MISP instance -- refreshed on their own, with an action each and routes that can be exempt |
 | `waf` | Coraza with the bundled Core Rule Set: profiles per route, learning mode, anomaly scoring, per-rule confidence and JSON body schemas |
 | `cluster` | Peers on other machines over mutual TLS, or the sibling daemons of one host over a Unix socket, sharing limits, bans, marks and ticket keys |
 | `virtual_patches` | Published vulnerabilities blocked by request shape, with counters and an expiry |

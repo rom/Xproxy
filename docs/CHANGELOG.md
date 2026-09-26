@@ -562,6 +562,102 @@ Open findings of the earlier rounds:
   whose datagram side is taken fails with the reason it failed and nothing left
   bound behind it, and a port 0 listener comes up with both sockets.
 
+### Added (1.4, threat feeds)
+
+- **A threat list may say where its entries come from: a file, a URL, a
+  TAXII 2.1 collection or a MISP instance.** A list used to be a file
+  somebody else's cron job dropped on the machine, which means the feed an
+  estate subscribes to and the policy this proxy enforces are joined by a
+  shell script nobody owns. Exactly one of `file`, `url`, `taxii` and
+  `misp` is the source; two is refused rather than resolved by precedence,
+  because a list whose source is ambiguous is a list nobody can say the
+  contents of.
+
+  A URL feed is fetched conditionally, so an unchanged feed costs a 304
+  rather than a download. A TAXII collection is polled through its API
+  root with `added_after` as a floor on age rather than incremental state:
+  every fetch sends the same value, so the list stays the whole answer to
+  the same question and an indicator the publisher revokes disappears from
+  it. A MISP instance is searched through `/attributes/restSearch`, for the
+  attribute types this proxy can match on rather than all two hundred, and
+  only attributes the analyst marked `to_ids` are taken -- one that was not
+  is context, not policy.
+
+  A fetch that fails keeps the entries already read, which is deliberate:
+  a publisher having an outage must not empty the policy for as long as
+  that takes. It does mean the list has stopped being current while it goes
+  on matching, so `xproxy_threat_feed_fetches_total` counts fetches, 304s
+  and failures apart, `xproxy_threat_list_age_seconds` says how long since
+  the last read, and three alerts (`XproxyThreatFeedFailing`,
+  `XproxyThreatListStale`, `XproxyThreatListEmpty`) say so out loud.
+
+  One fetch, every page of a paginated collection included, is bounded by
+  `http.timeout`. Redirects are followed only to the same host: a feed
+  whose publisher can redirect anywhere is a feed whose publisher can point
+  this proxy's block list at a document they do not control. Verification
+  may be skipped only with `insecure` **and** `allow_insecure`, and only
+  for a loopback address, because a feed nobody authenticated becomes this
+  proxy's block list.
+
+- **Three indicator kinds that are about what the client asked for:
+  `domain`, `url` and `hash`.** An address says who is connecting, which a
+  compromised machine on a network nobody has attributed will pass. A name,
+  a URL or a digest says what was asked for, and it is often the better
+  question.
+
+  A `domain` entry covers the names under it, and a `url` entry matches at
+  a path boundary, so an entry for `/dl` does not match `/download`, which
+  on a shared host is somebody else's. Both walks run from the shortest
+  suffix down and are bounded by the deepest entry the list holds, because
+  walking down from the request would let a client escape a listed name by
+  padding what it sends with labels -- 65 of them still fit in a Host
+  header -- or a listed path by appending segments. A query cannot be used
+  for it either: `/dl?x=1` is `/dl` under the boundary rule.
+
+  A `hash` entry is an MD5, SHA-1 or SHA-256 digest, recognised by its
+  length, so a feed that writes the algorithm beside it still parses.
+  `challenge` on a hash list is refused at load: the match is on a payload,
+  not on a browser asking for a page, so there is nobody to challenge.
+
+- **STIX 2.1 bundles and MISP exports are read for the parts a proxy can
+  act on**, and what was not taken is counted. A bundle of ten thousand
+  objects behind four entries is either the wrong feed or the wrong kind,
+  and the pair of numbers -- entries and `skipped` -- is what says which. A
+  STIX pattern is read as a whole or not at all: a mixed pattern used to
+  contribute the half that was readable and then report nothing, which is
+  an entry nobody asked for.
+
+- **The lists are asked at three more places.** The forward proxy asks
+  about the destination -- a name, and on the plain path the whole target
+  -- after this estate's own allow and deny rules, because those are local
+  policy and a destination an operator wrote an allow rule for must not be
+  taken out by somebody else's feed. The resolver asks about the query
+  name, last of three: the operator's block list wins, then a policy zone,
+  whose `passthru` rule exempts a name from the lists as well. And the
+  upload guard asks about a file's SHA-256, in the pass it is already
+  making over the bytes and only when a hash list exists to answer.
+
+  A hash list with no `upload_guard` filter configured anywhere draws
+  advice at load, because a list nobody asks is worse than no list.
+
+  Not covered: an address list is consulted for the client at the HTTP and
+  forward listeners and nowhere else. The gate and relay kinds check the
+  ban list at accept but not the imported lists.
+
+- **`xproxyctl status` prints a line per list** -- kind, action, entries,
+  hits, how long since it was read, format, skipped, fetches, 304s,
+  failures and the source -- and two dashboard panels carry the same
+  numbers. An imported list is only as good as its last read, and the
+  status view said nothing about reads at all.
+
+- The middleware contract gained `Env.Intel` and `Verdict.ThreatList`
+  (additive; `filter.APIVersion` stays 1), so a filter that reads a payload
+  can ask the hash lists about it and the data plane counts the match where
+  every other match is counted. `Env.Intel` is a function rather than the
+  set because the set is replaced on a reload and its entries re-read
+  underneath: a filter holding the one it was built with would go on
+  matching a feed nobody publishes any more.
+
 ### Added (1.4, key custody)
 
 - **Where a private key lives is now something the configuration says:

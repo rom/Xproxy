@@ -226,6 +226,14 @@ internal/masque internal/mitm internal/grpcmsg internal/asciicast
 internal/ingress    Kubernetes ingress controller
 internal/waf        Coraza + OWASP CRS engine as a filter; its wafstatus
                     subpackage is the report, as a leaf every daemon can serve
+internal/intel      imported threat intelligence: the indicator kinds and
+                    their matching rules, the readers for a line-per-entry
+                    feed, a STIX 2.1 bundle and a MISP export, and the
+                    fetchers for a URL, a TAXII collection and a MISP
+                    search. One place for the rules because the same feed
+                    is asked about an HTTP Host, a DNS question, a CONNECT
+                    target and an uploaded file, and a rule that differed
+                    between them would be four policies wearing one name
 internal/ban        ban list with triggers, escalation and persistence
 internal/cluster    peer sharing of limits, bans and events: mutual TLS
                     between hosts, a Unix socket between the daemons of one

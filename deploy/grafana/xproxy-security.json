@@ -2043,6 +2043,138 @@
       ],
       "title": "Secrets not refreshing, and algorithms FIPS refuses",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Every fetch of a network threat feed, by what came back. not_modified is the feed working as intended -- an unchanged feed costs a 304 rather than a download. failed climbing while fetched does not means the list has stopped being current and is still matching: an indicator the publisher withdrew goes on blocking and a new one never arrives.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "showPoints": "never"
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 112
+      },
+      "id": 37,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "refId": "A",
+          "legendFormat": "{{list}} fetched",
+          "expr": "sum by (list) (rate(xproxy_threat_feed_fetches_total{instance=~\"$instance\",result=\"fetched\"}[5m]))"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "refId": "B",
+          "legendFormat": "{{list}} not modified",
+          "expr": "sum by (list) (rate(xproxy_threat_feed_fetches_total{instance=~\"$instance\",result=\"not_modified\"}[5m]))"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "refId": "C",
+          "legendFormat": "{{list}} failed",
+          "expr": "sum by (list) (rate(xproxy_threat_feed_fetches_total{instance=~\"$instance\",result=\"failed\"}[5m]))"
+        }
+      ],
+      "title": "Threat feeds: fetches by outcome",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Per list, the three numbers that say whether an import is doing anything. entries at 0 is a list that matches nothing while the configuration says it is enforced. age is seconds since the list was last read, so a line that climbs without falling is a policy frozen where it was loaded. skipped is what a structured feed held that this list did not take -- ten thousand skipped behind four entries is either the wrong feed or the wrong kind.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "showPoints": "never"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 112
+      },
+      "id": 38,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "refId": "A",
+          "legendFormat": "{{list}} entries",
+          "expr": "max by (list) (xproxy_threat_list_entries{instance=~\"$instance\"})"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "refId": "B",
+          "legendFormat": "{{list}} age (s)",
+          "expr": "max by (list) (xproxy_threat_list_age_seconds{instance=~\"$instance\"})"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "refId": "C",
+          "legendFormat": "{{list}} skipped",
+          "expr": "max by (list) (xproxy_threat_list_skipped{instance=~\"$instance\"})"
+        }
+      ],
+      "title": "Threat lists: entries, age and what was skipped",
+      "type": "timeseries"
     }
   ],
   "refresh": "30s",

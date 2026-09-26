@@ -373,6 +373,28 @@ of them is a flaw in front of all of them.
   it holds the keys and is the easiest domain to write, because it reads
   a handful of files, binds one Unix socket and needs no network.
 
+- Threat intelligence that is fetched rather than dropped on the machine
+  by somebody's cron job: delivered. A list's entries come from a file,
+  a URL, a TAXII 2.1 collection or a MISP instance (exactly one of the
+  four), and STIX bundles and MISP exports are read for the parts a proxy
+  can act on. Three indicator kinds beside addresses and fingerprints:
+  `domain` (a name and every name under it), `url` (a host and path at a
+  path boundary) and `hash` (MD5, SHA-1 or SHA-256 of a payload).
+
+  Where each is asked: a name and a URL at the HTTP gateway and at the
+  forward proxy's destination, a name at the resolver, and a digest at
+  the upload guard, which is the one place with a whole file assembled.
+  A hash list with no `upload_guard` filter anywhere draws advice at
+  load, because a list nobody asks is worse than no list.
+
+  Not yet: an address list is consulted for the client at the HTTP and
+  forward listeners, and nowhere else. The gate and relay kinds check
+  the ban list at accept but not the imported lists, so a `cidr` feed
+  does nothing on an SSH, RDP, SMTP or Modbus listener. The ban list
+  covers the case an operator is most likely to want there, and the
+  sweep belongs with the unified authorisation work rather than in front
+  of it.
+
 ## After 1.4 (candidates, unranked)
 
 - The remote access protocols this release did not take (Citrix ICA,
