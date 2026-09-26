@@ -64,13 +64,13 @@ func TestAListIsReadAsAFeedIsWritten(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		hit, ok := s.Match(ip, tc.ja4)
+		hit, ok := s.MatchClient(ip, tc.ja4)
 		if ok != tc.want || hit.List != tc.list {
 			t.Errorf("Match(%s, %q) = %+v %v, want %q %v", tc.ip, tc.ja4, hit, ok, tc.list, tc.want)
 		}
 	}
 	// The action comes from the list that matched, not from the set.
-	if hit, _ := s.Match(netip.MustParseAddr("10.0.0.1"), ""); hit.Action != ActionBlock {
+	if hit, _ := s.MatchClient(netip.MustParseAddr("10.0.0.1"), ""); hit.Action != ActionBlock {
 		t.Errorf("action %q, want %q", hit.Action, ActionBlock)
 	}
 	if s.Matches.Load() == 0 {
@@ -90,7 +90,7 @@ func TestTheFirstListThatMatchesDecides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if hit, _ := s.Match(netip.MustParseAddr("10.1.2.3"), ""); hit.List != "broad" {
+	if hit, _ := s.MatchClient(netip.MustParseAddr("10.1.2.3"), ""); hit.List != "broad" {
 		t.Errorf("%+v, want the first list", hit)
 	}
 }
@@ -114,7 +114,7 @@ func TestAListThatCannotBeReadIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := s.Match(netip.MustParseAddr("10.9.9.9"), ""); !ok {
+	if _, ok := s.MatchClient(netip.MustParseAddr("10.9.9.9"), ""); !ok {
 		t.Error("a network with host bits set did not match its own range")
 	}
 	// A fingerprint list refuses a line no fingerprint could be.
@@ -150,7 +150,7 @@ func TestOnlyAChangedFileIsReRead(t *testing.T) {
 	if n != 1 {
 		t.Errorf("%d lists re-read, want 1", n)
 	}
-	if _, ok := s.Match(netip.MustParseAddr("203.0.113.9"), ""); !ok {
+	if _, ok := s.MatchClient(netip.MustParseAddr("203.0.113.9"), ""); !ok {
 		t.Error("the new entry does not match")
 	}
 	if s.Reloads.Load() != 1 {
@@ -168,7 +168,7 @@ func TestOnlyAChangedFileIsReRead(t *testing.T) {
 	if n != 0 {
 		t.Errorf("%d lists counted as re-read, want 0", n)
 	}
-	if _, ok := s.Match(netip.MustParseAddr("203.0.113.9"), ""); !ok {
+	if _, ok := s.MatchClient(netip.MustParseAddr("203.0.113.9"), ""); !ok {
 		t.Error("the entries were dropped for a file that stopped parsing")
 	}
 	if s.Reloads.Load() != 1 {
@@ -183,7 +183,7 @@ func TestOnlyAChangedFileIsReRead(t *testing.T) {
 	if _, err := s.Reload(); err == nil {
 		t.Error("a missing file should be reported")
 	}
-	if _, ok := s.Match(netip.MustParseAddr("203.0.113.9"), ""); !ok {
+	if _, ok := s.MatchClient(netip.MustParseAddr("203.0.113.9"), ""); !ok {
 		t.Error("the entries were dropped when the file went away")
 	}
 }
@@ -192,7 +192,7 @@ func TestOnlyAChangedFileIsReRead(t *testing.T) {
 // about it may panic.
 func TestANilSetMatchesNothing(t *testing.T) {
 	var s *Set
-	if _, ok := s.Match(netip.MustParseAddr("10.0.0.1"), "x"); ok {
+	if _, ok := s.MatchClient(netip.MustParseAddr("10.0.0.1"), "x"); ok {
 		t.Error("a nil set matched")
 	}
 	if n, err := s.Reload(); n != 0 || err != nil {
@@ -206,7 +206,7 @@ func TestANilSetMatchesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := empty.Match(netip.MustParseAddr("10.0.0.1"), ""); ok {
+	if _, ok := empty.MatchClient(netip.MustParseAddr("10.0.0.1"), ""); ok {
 		t.Error("an empty set matched")
 	}
 }
@@ -227,7 +227,7 @@ func TestTheRefreshLoopReReadsAChangedFile(t *testing.T) {
 	write(t, dir, "a.txt", "10.0.0.0/8\n203.0.113.0/24\n")
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		if _, ok := s.Match(netip.MustParseAddr("203.0.113.9"), ""); ok {
+		if _, ok := s.MatchClient(netip.MustParseAddr("203.0.113.9"), ""); ok {
 			break
 		}
 		if time.Now().After(deadline) {

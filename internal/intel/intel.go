@@ -32,9 +32,17 @@ import (
 )
 
 // Kinds of list.
+//
+// The first two are about the client -- who is connecting. The rest are about
+// what the client asked for, which is a different question and often a more
+// useful one: a compromised machine on a network nobody has attributed still
+// reaches for a domain somebody has.
 const (
-	KindCIDR = "cidr" // client addresses and networks
-	KindJA4  = "ja4"  // TLS client fingerprints
+	KindCIDR   = "cidr"   // client addresses and networks
+	KindJA4    = "ja4"    // TLS client fingerprints
+	KindDomain = "domain" // host names, and every name under them
+	KindURL    = "url"    // host and path, matched at a path boundary
+	KindHash   = "hash"   // MD5, SHA-1 or SHA-256 digests of a payload
 )
 
 // Actions a match may take.
@@ -49,6 +57,22 @@ const (
 // so it is refused with the number rather than loaded halfway.
 const MaxEntries = 1 << 20
 
+// Bounds on what one subject may be matched against.
+const (
+	// maxLabels bounds the suffix walk a domain match does. A name with more
+	// labels than this is not a name any feed lists; walking it would be a
+	// client choosing how much work the match costs.
+	maxLabels = 64
+	// maxSegments bounds the path-boundary walk a url match does, for the
+	// same reason.
+	maxSegments = 64
+	// maxName bounds a name or a URL a list may hold, and one offered for
+	// matching. 255 is the DNS limit; a URL gets more because a path may be
+	// long, and a feed line longer than this is not an indicator.
+	maxName = 255
+	maxURL  = 2048
+)
+
 // List is one imported list.
 type List struct {
 	Name   string
@@ -60,8 +84,20 @@ type List struct {
 	Hits atomic.Uint64
 
 	// entries, guarded by the Set's lock.
+	//
+	// nets holds the cidr kind. exact holds every other kind: a ja4
+	// fingerprint, a normalised domain, a normalised host-and-path, or a
+	// lower-case hex digest. One map serves them all because the lookup is
+	// the same -- what differs is how a *subject* is turned into the keys
+	// to look up, which is the matcher's job rather than the store's.
 	nets  []netip.Prefix
 	exact map[string]struct{}
+	// depth is how far a match has to walk for this list: the label count of
+	// its deepest domain entry, or the segment count of its deepest url one.
+	// It comes from the entries rather than from a constant so that the cost
+	// of a match is a property of the feed an operator chose and not of the
+	// name or path an attacker composed -- see domainCandidates.
+	depth int
 	// read state, so a reload only re-reads what changed.
 	modTime time.Time
 	size    int64
@@ -145,8 +181,9 @@ func (s *Set) read(l *List) error {
 		nets  []netip.Prefix
 		exact map[string]struct{}
 		n     int
+		depth int
 	)
-	if l.Kind == KindJA4 {
+	if l.Kind != KindCIDR && l.Kind != "" {
 		exact = map[string]struct{}{}
 	}
 	sc := bufio.NewScanner(f)
@@ -161,8 +198,14 @@ func (s *Set) read(l *List) error {
 		if text == "" || strings.HasPrefix(text, "#") || strings.HasPrefix(text, ";") || strings.HasPrefix(text, "//") {
 			continue
 		}
-		if i := strings.IndexAny(text, " \t#"); i > 0 {
-			text = strings.TrimSpace(text[:i])
+		// A trailing label or comment on the line is not part of the entry --
+		// except for a hash list, where the digest may be the *second* field
+		// ("sha256 <digest>") and cutting at the space would keep the
+		// algorithm's name instead. hashKey searches the whole line.
+		if l.Kind != KindHash {
+			if i := strings.IndexAny(text, " \t#"); i > 0 {
+				text = strings.TrimSpace(text[:i])
+			}
 		}
 		if n++; n > MaxEntries {
 			return fmt.Errorf("more than %d entries", MaxEntries)
@@ -173,6 +216,36 @@ func (s *Set) read(l *List) error {
 				return fmt.Errorf("line %d: %q is too long for a fingerprint", line, text)
 			}
 			exact[text] = struct{}{}
+		case KindDomain:
+			key, err := domainKey(text)
+			if err != nil {
+				return fmt.Errorf("line %d: %q: %w", line, text, err)
+			}
+			if n := labelCount(key); n > maxDomainDepth {
+				return fmt.Errorf("line %d: %q: %d labels; at most %d, because every request would walk that many candidates",
+					line, text, n, maxDomainDepth)
+			} else if n > depth {
+				depth = n
+			}
+			exact[key] = struct{}{}
+		case KindURL:
+			key, err := urlKey(text)
+			if err != nil {
+				return fmt.Errorf("line %d: %q: %w", line, text, err)
+			}
+			if n := segmentCount(key); n > maxSegments {
+				return fmt.Errorf("line %d: %q: %d path segments; at most %d, because every request would walk that many candidates",
+					line, text, n, maxSegments)
+			} else if n > depth {
+				depth = n
+			}
+			exact[key] = struct{}{}
+		case KindHash:
+			key, err := hashKey(text)
+			if err != nil {
+				return fmt.Errorf("line %d: %q: %w", line, text, err)
+			}
+			exact[key] = struct{}{}
 		default:
 			p, err := parsePrefix(text)
 			if err != nil {
@@ -185,7 +258,7 @@ func (s *Set) read(l *List) error {
 		return err
 	}
 	s.mu.Lock()
-	l.nets, l.exact, l.count = nets, exact, n
+	l.nets, l.exact, l.count, l.depth = nets, exact, n, depth
 	l.modTime, l.size, l.read = info.ModTime(), info.Size(), time.Now()
 	s.mu.Unlock()
 	return nil
@@ -208,35 +281,102 @@ func parsePrefix(text string) (netip.Prefix, error) {
 	return netip.PrefixFrom(a, a.BitLen()), nil
 }
 
-// Match reports the first list that covers this client. An address is
-// matched against the cidr lists and a fingerprint against the ja4 ones,
-// in the order they were configured.
-func (s *Set) Match(ip netip.Addr, ja4 string) (Hit, bool) {
+// A Subject is what one check offers the lists: whatever of it the caller
+// knows. A zero field is not matched against, so an HTTP request offers an
+// address, a fingerprint, a host and a URL, a DNS question offers a name, and
+// an upload offers digests -- each against the lists of the kinds it can
+// answer, and never against the others.
+//
+// It is a struct rather than a list of arguments because the kinds will grow
+// again: a caller that does not know about a kind added later passes a zero
+// field for it and keeps compiling, which is the difference between adding an
+// indicator kind and editing every listener.
+type Subject struct {
+	// IP is the client's address, for the cidr lists.
+	IP netip.Addr
+	// JA4 is the client's TLS fingerprint, for the ja4 lists.
+	JA4 string
+	// Domain is a name the client asked for: an HTTP Host, a DNS question, a
+	// CONNECT target, a SNI. For the domain lists.
+	Domain string
+	// URL is a host and path the client asked for, with or without a scheme.
+	// For the url lists.
+	URL string
+	// Hashes are hex digests of a payload -- an uploaded file, a scanned
+	// body. For the hash lists. Any of MD5, SHA-1 and SHA-256.
+	Hashes []string
+}
+
+// Match reports the first list that covers this subject, in the order the
+// lists were configured -- which is the policy: the first list that matches
+// decides, so a narrow allowance cannot be written after the broad list it was
+// meant to soften.
+func (s *Set) Match(sub Subject) (Hit, bool) {
 	if s == nil {
 		return Hit{}, false
 	}
-	ip = ip.Unmap()
+	ip := sub.IP.Unmap()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, l := range s.lists {
-		switch l.Kind {
-		case KindJA4:
-			// A client with no fingerprint -- a plaintext listener --
-			// cannot match: an empty line is never an entry, so the
-			// empty string is never in the map.
-			if _, ok := l.exact[ja4]; !ok {
-				continue
-			}
-		default:
-			if !ip.IsValid() || !covers(l.nets, ip) {
-				continue
-			}
+		if !l.matches(ip, sub) {
+			continue
 		}
 		l.Hits.Add(1)
 		s.Matches.Add(1)
 		return Hit{List: l.Name, Action: l.Action, Kind: l.Kind}, true
 	}
 	return Hit{}, false
+}
+
+// MatchClient is Match for the callers that know only who is connecting, which
+// is every listener kind that has no request to look at.
+func (s *Set) MatchClient(ip netip.Addr, ja4 string) (Hit, bool) {
+	return s.Match(Subject{IP: ip, JA4: ja4})
+}
+
+// matches reports whether one list covers the subject. Called with the Set's
+// lock held for reading.
+func (l *List) matches(ip netip.Addr, sub Subject) bool {
+	switch l.Kind {
+	case KindJA4:
+		// A client with no fingerprint -- a plaintext listener -- cannot
+		// match: an empty line is never an entry, so the empty string is
+		// never in the map.
+		_, ok := l.exact[sub.JA4]
+		return ok
+	case KindDomain:
+		if sub.Domain == "" {
+			return false
+		}
+		return domainCandidates(sub.Domain, l.depth, func(k string) bool {
+			_, ok := l.exact[k]
+			return ok
+		})
+	case KindURL:
+		if sub.URL == "" {
+			return false
+		}
+		return urlCandidates(sub.URL, l.depth, func(k string) bool {
+			_, ok := l.exact[k]
+			return ok
+		})
+	case KindHash:
+		for _, h := range sub.Hashes {
+			// Normalised the same way an entry was, so a caller that hands
+			// over an upper-case digest still matches.
+			k, err := hashKey(h)
+			if err != nil {
+				continue
+			}
+			if _, ok := l.exact[k]; ok {
+				return true
+			}
+		}
+		return false
+	default:
+		return ip.IsValid() && covers(l.nets, ip)
+	}
 }
 
 // covers reports whether any prefix contains the address. The lists are
