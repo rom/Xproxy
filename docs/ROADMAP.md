@@ -418,7 +418,8 @@ of them is a flaw in front of all of them.
   replay rule and the lockout are already shared, so what is left is the
   per-kind prompt rather than the factor.
 
-- One authorisation policy above the protocols: partly delivered. The
+- One authorisation policy above the protocols: delivered for every kind
+  but five. The
   `authorization` section compiles to a rule set every listener kind can
   ask at its admission point -- who (`users`, `principals`, `groups`),
   where from (`networks`), where to (`listeners`, `kinds`, `targets`),
@@ -510,9 +511,36 @@ of them is a flaw in front of all of them.
     datagram of a flood would make the flood cheaper to send than to
     refuse.
 
-  - The remaining identity-less kinds (dns, syslog, modbus, iec104,
-    snmp, tftp, dhcp, bacnet, s7, ntp, ntske) use the same admission
-    point and are the work left.
+  - The identity-less kinds are wired, all of them through that same
+    admission point: `modbus`, `iec104`, `s7`, `snmp`, `tftp`, `dhcp`,
+    `bacnet`, `ntske`, `syslog` and `dns`. On the stream kinds the
+    question is asked on the connection, before the device, station, PLC
+    or handshake slot is taken; on the datagram kinds it is asked per
+    datagram, because a datagram relay has no session to hang the answer
+    on, and the refusal goes through each kind's own deny path so a
+    client that keeps sending earns a ban rather than a record per
+    packet. `dns` is asked after its own `allow_clients` and aggregates
+    a record from an unproven source rather than attributing it, which is
+    the treatment its blocked-name events already had.
+
+    Two of them are worth stating plainly rather than listing. On `dhcp`
+    the client address is `0.0.0.0` for exactly the clients an operator
+    most wants to think about, so `networks` decides little there and a
+    rule is written with `listeners`, `targets` and `schedule`. On `dns`
+    there is no upstream pool at all -- a list of resolvers instead -- so
+    the subject carries no target and `targets` names nothing; a rule
+    about where a query may point is a rule about a domain, which is the
+    `dns` policy's business.
+
+    Wiring `dns` also turned up two ban reasons this proxy emitted that
+    no ban trigger could name -- `dns_threat_intel` and the new
+    `dns_denied` -- and one refusal path in `iec104` that was counted by
+    no reason at all. Both are fixed.
+  - Five kinds are left outside, each for a reason rather than a queue
+    position: `http`, `smtp`, `redis`, `amqp` and `ntp`, as the four
+    entries above and this one say. `ntp` answers datagrams with no
+    client state; `ntske`, which is where a client is admitted before it
+    gets cookies, does ask.
   - The HTTP gateway's session-level question is last and is genuinely a
     design question: an HTTP listener has no session, and the
     per-request answer is already the `authz` filter.

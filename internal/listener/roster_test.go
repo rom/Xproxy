@@ -14,21 +14,21 @@ import (
 // a kind in neither list fails below, which is the decision this test exists to
 // force somebody to make.
 var notYetAuthorising = map[string]bool{
-	"http":   true,
-	"dns":    true,
-	"smtp":   true,
-	"syslog": true,
-	"modbus": true,
-	"iec104": true,
-	"snmp":   true,
-	"tftp":   true,
-	"redis":  true,
-	"dhcp":   true,
-	"bacnet": true,
-	"amqp":   true,
-	"s7":     true,
-	"ntp":    true,
-	"ntske":  true,
+	// The HTTP gateway asks the imported lists already; what it does not have is
+	// a session-level question to ask the policy, because a gateway's unit of
+	// work is a request and a request is decided by its route. That is a design
+	// question rather than an omission, and it is written down in ROADMAP.md.
+	"http": true,
+	// smtp has no name to offer: the SASL exchange is deliberately not parsed, so
+	// there is nothing this proxy could put in a rule that it did not invent.
+	"smtp": true,
+	// redis and amqp both authenticate at the server rather than here, so their
+	// admission point is the server's acceptance and not the connection.
+	"redis": true,
+	"amqp":  true,
+	// ntp answers datagrams with no client state at all; ntske, which is where a
+	// client is admitted before it gets cookies, does consult the policy.
+	"ntp": true,
 }
 
 // Every kind is on exactly one side of the authorisation line, and nothing

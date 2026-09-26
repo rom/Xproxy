@@ -1091,18 +1091,24 @@ describes it, validation refuses what cannot work, and
   nineteen protocol policies that can disagree. Each kind keeps its own
   policy for what only it can express (which Modbus register, which SQL
   shape, which SSH channel); this answers the question above them all.
-  All five gate kinds ask it — SSH and SFTP, Telnet, VNC, RDP and FTP —
-  as do the forward proxy, where the target is the destination rather
-  than a pool and a rule is an egress policy about people, the three
-  database relays whose login packet names an account, and the MQTT and
-  LDAP relays — the last at a bind, which is the only request LDAP has
-  that names anybody — and the two generic layer 4 relays, where there is
-  no identity at all and a rule is about networks, pools and hours. That
-  last admission point is also where the imported address lists are now
-  asked about the client, which before this only happened on the HTTP and
-  forward listeners The listener
-  kinds that do not consult it yet are named at load rather than left
-  as a hole in a policy somebody believes is complete
+  Every kind but five asks it. All five gate kinds — SSH and SFTP,
+  Telnet, VNC, RDP and FTP — as does the forward proxy, where the target
+  is the destination rather than a pool and a rule is an egress policy
+  about people; the three database relays whose login packet names an
+  account; the MQTT and LDAP relays — the last at a bind, which is the
+  only request LDAP has that names anybody; and the twelve kinds whose
+  clients have no identity at all — the two generic layer 4 relays plus
+  Modbus, IEC 104, S7comm, SNMP, TFTP, DHCP, BACnet, NTS-KE, syslog and
+  DNS — where a rule is about networks, pools, listeners and hours.
+  That same admission point is where the imported address lists are now
+  asked about the client, which before this happened only on the HTTP and
+  forward listeners: a `cidr` feed did nothing at all on a plant network,
+  which is exactly where one is worth having. The five kinds outside the
+  policy are outside for stated reasons — an HTTP request is decided by
+  its route, SMTP's SASL exchange is deliberately not parsed, Redis and
+  AMQP authenticate at the server, and NTP keeps no client state — and a
+  configuration naming one is refused at load rather than left as a hole
+  in a policy somebody believes is complete
 
 ### The estate: clusters, fleets and Kubernetes
 

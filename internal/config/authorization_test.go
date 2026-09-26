@@ -62,7 +62,13 @@ func TestTheAuthorizationPolicyIsCheckedAtLoad(t *testing.T) {
 // The second listener has to be a kind that is still outside the policy, so this
 // fixture needs changing each time one is wired -- which is the test doing its
 // job rather than a maintenance cost: it failed on the commit that wired mqtt,
-// which is exactly the notice an author of the next kind should get.
+// and again on the one that wired syslog, which is exactly the notice an author
+// of the next kind should get.
+//
+// Five kinds are left outside: http, smtp, redis, amqp and ntp, each for a reason
+// written down in internal/listener/roster_test.go. When the last one is wired
+// there is no kind left to build this fixture from, and this test becomes the
+// opposite assertion -- that AuthorisingKinds() is every kind there is.
 func TestAListenerOutsideThePolicyIsRefused(t *testing.T) {
 	yaml := `
 version: 1
@@ -78,12 +84,12 @@ server:
         upstream_key_file: /etc/xproxy/ssh/upstream_ed25519
         upstream_known_hosts: /etc/xproxy/ssh/known_hosts
     - name: relay
-      address: ":514"
-      kind: syslog
-      syslog: {upstream: collectors}
+      address: ":123"
+      kind: ntp
+      ntp: {upstream: clocks}
 upstreams:
   - {name: hosts, endpoints: [{address: "10.0.0.5:22"}]}
-  - {name: collectors, endpoints: [{address: "10.0.0.9:514"}]}
+  - {name: clocks, endpoints: [{address: "10.0.0.9:123"}]}
 authorization:
   rules:
     - {name: everything, allow: true}
@@ -92,7 +98,7 @@ authorization:
 	if err == nil {
 		t.Fatal("a listener outside the policy was accepted")
 	}
-	for _, want := range []string{`listener "relay"`, `kind "syslog"`, "does not consult"} {
+	for _, want := range []string{`listener "relay"`, `kind "ntp"`, "does not consult"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %v, want it to mention %q", err, want)
 		}

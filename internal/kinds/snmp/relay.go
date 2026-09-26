@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rom/xproxy/internal/admit"
+	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/safe"
 	"github.com/rom/xproxy/internal/sessions"
@@ -81,6 +83,46 @@ func (t *server) agentSocket() (net.PacketConn, error) {
 	return lc.ListenPacket(context.Background(), "udp", ":0")
 }
 
+// admitClient is the two questions this relay asks about a client that has no
+// identity: do the imported lists know this address, and does the estate's
+// authorisation policy allow it here.
+//
+// SNMP names a community or a USM user, and neither is an identity the estate
+// can carry into a rule: a v1 or v2c community is a shared word travelling in
+// clear, and a USM user is the agent's own account rather than a person's. So
+// the policy decides on the address, the listener, the pool and the hour. Which
+// operations and which subtrees that manager may touch is the `snmp` policy's own
+// business, because it is the thing that can say what a set on sysName means.
+//
+// It is asked once per datagram, like this relay's own address lists, because a
+// datagram relay has no session to hang the answer on. A refusal goes through
+// deny, so a client that keeps sending earns a ban the same way one refused by
+// the address lists does -- which is what stops the record from being written at
+// packet rate.
+func (t *server) admitClient(ip netip.Addr) string {
+	h := t.host
+	return admit.Client(admit.Deps{
+		Lists:   h.ThreatIntel(),
+		Policy:  h.Authorization(),
+		Logs:    h.Logs(),
+		Matched: func() { h.Counters().ThreatIntelMatched.Add(1) },
+		Blocked: func() { h.Counters().ThreatIntelBlocked.Add(1) },
+	}, authorization.Subject{
+		Listener: t.cfg.Name,
+		Kind:     "snmp",
+		Client:   ip,
+		Target:   t.m.Upstream,
+		Action:   authorization.ActionConnect,
+	}, admit.Gate{
+		Shadowing: func() bool { return !t.enforcing() },
+		Record: func(reason, rule, detail string) {
+			h.Counters().WouldRefuse("snmp", reason)
+			h.Shadow().Record("snmp", t.cfg.Name, reason, rule, detail)
+		},
+		Deny: func(reason, _, detail string) { t.deny(ip, reason, detail) },
+	})
+}
+
 // fromManager decides about one datagram from a manager and, when it is
 // allowed, forwards it to an agent.
 func (t *server) fromManager(agent net.PacketConn, raw []byte, from net.Addr) {
@@ -91,6 +133,15 @@ func (t *server) fromManager(agent net.PacketConn, raw []byte, from net.Addr) {
 		s.Counters().SNMPRejected.Add(1)
 		s.Counters().Refuse("snmp", "client_not_allowed")
 		t.deny(ip, "client_not_allowed", "")
+		return
+	}
+	// The imported lists and the estate's authorisation policy, after this
+	// listener's own address lists -- those are local policy about local
+	// clients, and a feed must not overrule an allow rule an operator wrote --
+	// and before the agent is spoken to.
+	if reason := t.admitClient(ip); reason != "" {
+		s.Counters().SNMPRejected.Add(1)
+		s.Counters().Refuse("snmp", reason)
 		return
 	}
 	// The rate limit is a bound rather than policy, so it is never shadowed:
@@ -333,6 +384,12 @@ func (t *server) handleStream(client net.Conn) {
 		s.Counters().Refuse("snmp", "client_not_allowed")
 		t.deny(ip, "client_not_allowed", "")
 		t.logSession(ip, start, false, "client_not_allowed")
+		return
+	}
+	if reason := t.admitClient(ip); reason != "" {
+		s.Counters().SNMPRejected.Add(1)
+		s.Counters().Refuse("snmp", reason)
+		t.logSession(ip, start, false, reason)
 		return
 	}
 	live := s.Sessions().Register(sessions.Info{

@@ -708,6 +708,74 @@ Open findings of the earlier rounds:
   about users matches nobody there, and such a listener wants rules about
   networks and destinations instead.
 
+- **And the ten kinds whose clients have no identity at all**, through the same
+  admission point: `modbus`, `iec104`, `s7`, `snmp`, `tftp`, `dhcp`, `bacnet`,
+  `ntske`, `syslog` and `dns`. This is the half of the estate a rule about people
+  can say nothing about, and until now it was also the half a `cidr` feed did
+  nothing on: an OT network is exactly where an imported list of known-bad
+  addresses is worth having, and a Modbus or SNMP listener asked for none of them.
+  Both questions are now asked once, in one place, for all of them, so the order
+  cannot drift from kind to kind.
+
+  On the stream kinds the question is asked on the connection, after that
+  listener's own `allow_clients` and before the device, station, PLC or handshake
+  slot is taken -- which matters most on `s7`, because an S7-300 has sixteen
+  connection resources altogether and a client that may not reach the CPU should
+  not take one while being refused, and on `ntske`, where the handshake is the
+  expensive thing the port has to protect.
+
+  On the datagram kinds it is asked per datagram, because a datagram relay has no
+  session to hang the answer on. A refusal goes through each kind's own deny path,
+  so a client that keeps sending earns a ban exactly as one refused by that
+  listener's own address lists does -- which is what keeps the record from being
+  written at packet rate, and is the answer the ban list already gave for those
+  paths.
+
+  Two of them are worth being plain about rather than counting as coverage. On
+  `dhcp` a client with no lease sends from `0.0.0.0` -- that is what DHCP is for --
+  so `networks` decides nothing about exactly the clients an operator most wants to
+  think about, and the imported lists have nothing to match; what decides there is
+  `listeners`, `targets`, `actions` and `schedule`, and the reference says so
+  instead of implying a rule about networks would help. On `dns` there is no
+  upstream pool at all, only a list of resolvers, so the subject carries no target
+  and `targets` names nothing on that kind: a rule about where a query may point is
+  a rule about a domain, which belongs to the `dns` policy.
+
+  `dns` also needed care the others did not. A query's source address is a
+  datagram's unproven claim about itself, and this listener already refused to
+  attribute a blocked-name event to one -- one aggregated record rather than one
+  per packet against whatever address it named. The admission point reuses that
+  same path rather than writing a second one, so a refusal on an unverified
+  datagram is counted and attributed to nobody, and a flood cannot have records
+  written, or bans earned, against a third party.
+
+  `syslog` asks about `write` rather than `connect`, because a sender does not open
+  a session with a collector -- it delivers records -- and it asks once per
+  connection on a stream and once per datagram on UDP rather than for every line a
+  connection sends. The host name inside a syslog message stays out of the policy:
+  it is a field the sender wrote and nothing checks it, which is why the relay
+  rewrites it from the address the message came from.
+
+  Five kinds are left outside, each for a reason rather than a queue position, and
+  each recorded where a reader will find it: `http` (a gateway's unit of work is a
+  request, and the per-request answer is already the `authz` filter), `smtp` (the
+  SASL exchange is deliberately not parsed, so there is no name this proxy did not
+  invent), `redis` and `amqp` (both authenticate at the server, so their admission
+  point is its acceptance), and `ntp` (no client state at all; `ntske`, which is
+  where a client is admitted before it gets cookies, does ask).
+
+- **Two ban reasons nobody could ban on, and one refusal nobody could count.**
+  Wiring `dns` turned up that the reason it hands the ban list for a name on a
+  domain list, `dns_threat_intel`, was not in the table a ban trigger is validated
+  against -- so a trigger naming it did not load, and the `dns_denied` the new
+  admission point emits would have had the same gap. Both are nameable now. And
+  `iec104` counted no refusal reason for the decisions it makes before a
+  controlling station has said anything -- a client that may not connect, a
+  malformed frame, a bound -- while counting every decision about an ASDU, so an
+  operator reading that listener's refusals saw the protocol and not the door. It
+  counts them now, before the alert switch, because a listener with alerts off is
+  one that does not want the records and still wants the numbers.
+
 - **Readable while it is being trialled.** `shadow: true` evaluates the
   whole policy and records what it would have refused without refusing
   anything -- section-wide rather than per rule, because half a policy in

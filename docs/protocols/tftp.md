@@ -96,6 +96,36 @@ into somebody else's firmware download.
 window size, concurrent transfers overall and per client, and the transfer and
 idle timeouts.
 
+### The imported lists, and the estate's authorisation policy
+
+TFTP names nobody at all -- it has no authentication of any kind, which is most of
+why a relay in front of it is worth having. So two questions are asked about the
+client itself, after this listener's own `allow_clients` and before a transfer is
+started:
+
+- **the imported address lists** (`threat_intel`), about the client's address. A
+  list whose action is `block` refuses; one that asks for a `challenge` is
+  recorded like a log list, because there is no request here to serve a challenge
+  into and turning it into a block would be a policy the operator did not write.
+- **the `authorization` section**, on the client address, the listener, the kind,
+  the upstream pool and the hour. A rule naming `users` matches nobody on this
+  kind, so a rule here is written with `networks`, `targets` and `schedule`.
+
+Asked on each request datagram, because the request is all there is: a transfer
+runs between two ephemeral ports afterwards and never returns to this socket.
+Which paths may be read, and whether writing is allowed at all, stays with this
+listener's own policy above.
+
+The lists are asked first: a list is an import about an address and says nothing
+about this estate's intentions, so a refusal naming the feed sends an operator to
+the feed rather than to a rule they would not find.
+
+A refusal is the reason `threat_intel` or `authorization` on this listener's usual
+deny event, so the counters, the security log and the ban list see it as they see
+any other refusal. Either shadow switch -- `policy: {mode: shadow}` on the
+listener, or `shadow: true` on the section -- records what it would have refused
+and carries the traffic.
+
 ## What it does not do
 
 - **It does not authenticate, because there is nothing to authenticate.** The
@@ -124,6 +154,7 @@ idle timeouts.
 
 ## See also
 
+- The estate-wide policy above it: [docs/CONFIG.md `authorization`](../CONFIG.md#authorization)
 - The settings: [docs/CONFIG.md `server.listeners[].tftp`](../CONFIG.md#serverlistenerstftp-kind-tftp)
 - A worked configuration: [`examples/provisioning/tftp.yaml`](../../examples/provisioning/tftp.yaml)
 - The other protocol in a provisioning path: [dhcp](dhcp.md)

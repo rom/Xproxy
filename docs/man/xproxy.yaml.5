@@ -28779,11 +28779,13 @@ T}
 .TE
 .SS "Which listeners it covers"
 .PP
-A kind that did not consult this policy would be a hole in a policy an operator believes covers everything, so a configuration that has an \fBauthorization\fR section \fBand\fR a listener of a kind that does not consult it is refused at load, naming the listener and the kind. The kinds are wired one at a time; today the list is the five gate kinds, the forward proxy, the three database relays whose login packet names an account, the MQTT and LDAP relays, and the two generic layer 4 relays.
+A kind that did not consult this policy would be a hole in a policy an operator believes covers everything, so a configuration that has an \fBauthorization\fR section \fBand\fR a listener of a kind that does not consult it is refused at load, naming the listener and the kind. The kinds are wired one at a time, and today the list is every kind but five: the gate kinds, the forward proxy, the database relays, MQTT, LDAP, the two generic layer 4 relays, and the eleven kinds whose clients have no identity at all \-\- \fBmodbus\fR, \fBiec104\fR, \fBs7\fR, \fBsnmp\fR, \fBtftp\fR, \fBdhcp\fR, \fBbacnet\fR, \fBntske\fR, \fBsyslog\fR and \fBdns\fR.
 .PP
-All of them ask about \fBconnect\fR. None fills \fBgroups\fR: these protocols give the gateway no group membership it could verify, so a rule about a team is written with \fBprincipals\fR on \fBssh\fR and with \fBusers\fR elsewhere.
+The five outside it are outside for reasons rather than by omission. \fBhttp\fR asks the imported lists already, but a gateway\(aqs unit of work is a request and a request is decided by its route, so what a session\-level question would mean there is still a design question. \fBsmtp\fR has no name to offer, because the SASL exchange is deliberately not parsed and a policy cannot be given a name this proxy invented. \fBredis\fR and \fBamqp\fR both authenticate at the server rather than at the relay, so their admission point is the server\(aqs acceptance and not the connection. \fBntp\fR answers datagrams with no client state at all; \fBntske\fR, which is where a client is admitted before it gets cookies, does consult the policy.
 .PP
-What \fBtarget\fR means differs in the one place it has to. On the gate kinds and the database relays it is the \fBupstream pool name\fR, not an endpoint address, so that one rule reads the same on all of them; the per\-server question belongs to the JIT access grant (see \fBaccess\fR), which does check the endpoint. On a \fBforward\fR listener there is no pool \-\- the destination \fIis\fR what the client asked for \-\- so \fBtarget\fR is \fBhost:port\fR, which is what a rule about egress has to be able to name.
+All of them ask about \fBconnect\fR, except \fBsyslog\fR, which asks about \fBwrite\fR: a sender does not open a session with a collector, it delivers records. None fills \fBgroups\fR: these protocols give the gateway no group membership it could verify, so a rule about a team is written with \fBprincipals\fR on \fBssh\fR and with \fBusers\fR elsewhere.
+.PP
+What \fBtarget\fR means differs in the one place it has to. On the gate kinds and the database relays it is the \fBupstream pool name\fR, not an endpoint address, so that one rule reads the same on all of them; the per\-server question belongs to the JIT access grant (see \fBaccess\fR), which does check the endpoint. On a \fBforward\fR listener there is no pool \-\- the destination \fIis\fR what the client asked for \-\- so \fBtarget\fR is \fBhost:port\fR, which is what a rule about egress has to be able to name. On a \fBdns\fR listener there is neither: a dns listener has a list of resolvers rather than a pool, so the subject carries no target and a rule\(aqs \fBtargets\fR names nothing there. A rule that wants to say where a query may point is talking about a domain, which is the \fBdns\fR policy\(aqs business.
 .PP
 On the database relays the section decides whether the account may reach the server at all; what it may then do \fIinside\fR the server \-\- which database, which statement shapes \-\- stays with that kind\(aqs own policy, which is the thing that can say what a statement means.
 .PP
@@ -28791,8 +28793,8 @@ The "name" column says whether the identity has been proven by the time the poli
 .PP
 .TS
 allbox;
-lbw(0.9i) lbw(1.5i) lbx
-lw(0.9i) lw(1.5i) lx.
+lbw(0.9i) lbw(1.6i) lbx
+lw(0.9i) lw(1.6i) lx.
 T{
 Kind
 T}	T{
@@ -28891,9 +28893,83 @@ At a \fBbind\fR,\: before it is forwarded \-\- and for nothing else,\: because a
 T}	T{
 asserted;\: the directory proves it after
 T}
+T{
+\fBmodbus\fR
+T}	T{
+On the connection,\: after this listener\(aqs own \fBallow_\:clients\fR and before the device is dialled. Which unit identifiers and which registers that master may touch stays with the \fBmodbus\fR policy,\: which is the thing that can say what a write to holding register 40001 means
+T}	T{
+none: a master is an address and a unit identifier
+T}
+T{
+\fBiec104\fR
+T}	T{
+On the connection,\: before the station is dialled. Which type identifications and which information objects,\: and the select\-\:before\-\:execute rule,\: stay with the \fBiec104\fR policy
+T}	T{
+none: a controlling station is an address and a common address
+T}
+T{
+\fBs7\fR
+T}	T{
+On the connection,\: before the PLC is dialled \-\- which matters more here than elsewhere,\: because an S7\-300 has sixteen connection resources altogether and a client that may not reach it should not take one
+T}	T{
+none: a client is an address and a rack and slot
+T}
+T{
+\fBsnmp\fR
+T}	T{
+On each datagram from a manager,\: and on each stream connection,\: after this listener\(aqs own \fBallow_\:clients\fR. A community is a shared word travelling in clear and a USM user is the agent\(aqs own account,\: so neither is a name the estate can put in a rule;\: which operations and which subtrees are the \fBsnmp\fR policy\(aqs business
+T}	T{
+none: neither a community nor a USM user is an identity
+T}
+T{
+\fBtftp\fR
+T}	T{
+On each request datagram,\: before a transfer is started. Which paths may be read,\: and whether writing is allowed at all,\: stay with the \fBtftp\fR policy
+T}	T{
+none: TFTP has no authentication of any kind
+T}
+T{
+\fBdhcp\fR
+T}	T{
+On each message from the segment,\: before anything reaches a server. A client with no lease sends from \fB0.\:0.\:0.\:0\fR,\: so \fBnetworks\fR decides nothing about exactly the clients an operator most wants to think about: a rule here is written with \fBlisteners\fR,\: \fBtargets\fR and \fBschedule\fR,\: and the hardware address and message type belong to the \fBdhcp\fR policy
+T}	T{
+none,\: and the address is often \fB0.\:0.\:0.\:0\fR
+T}
+T{
+\fBbacnet\fR
+T}	T{
+On each datagram,\: before anything reaches the building. Which services and which objects stay with the \fBbacnet\fR policy,\: which is the thing that can say what a write to analog\-output 3 means
+T}	T{
+none: a client is an address,\: a network number and a MAC address
+T}
+T{
+\fBntske\fR
+T}	T{
+On the connection,\: before a handshake slot is taken \-\- the handshake being the expensive thing this port has to protect. NTS\-KE authenticates the \fIserver\fR to the client,\: so nothing in it names a person;\: a client certificate in front of it is checked in the handshake,\: which is after this
+T}	T{
+none: the protocol authenticates the server,\: not the client
+T}
+T{
+\fBsyslog\fR
+T}	T{
+Once per connection on a stream and once per datagram on UDP,\: after this listener\(aqs own \fBallow_\:senders\fR. The action is \fBwrite\fR. The host name inside a message is a field the sender wrote and no part of the protocol checks it,\: which is why this relay rewrites it from the address the message came from
+T}	T{
+none: the host field in a message is the sender\(aqs own claim
+T}
+T{
+\fBdns\fR
+T}	T{
+On each query,\: after this listener\(aqs own \fBallow_\:clients\fR. Which names a client may resolve stays with the \fBdns\fR policy,\: the RPZ zones and the domain lists. A refusal on an unverified datagram is counted but attributed to nobody,\: for the same reason a blocked name is: a record written against an address anybody could have put in a datagram is a record anybody could have written against a third party
+T}	T{
+none: a query names nobody
+T}
 .TE
 .PP
-On the two generic layer 4 relays the same admission point also asks the \fBimported address lists\fR about the client, which until now were consulted only on the \fBhttp\fR and \fBforward\fR listeners \-\- so a \fBcidr\fR feed did nothing at all on a \fBtcp\fR or \fBudp\fR listener. The lists are asked before the policy: a list is an import about an address and says nothing about this estate\(aqs intentions, so a refusal naming the feed sends an operator to the feed rather than to a rule they would not find. A list asking for a \fBchallenge\fR is recorded like a log list there, because there is no request to serve a challenge into.
+On every kind whose client has no identity \-\- the two generic layer 4 relays and the ten in the block below them \-\- the same admission point also asks the \fBimported address lists\fR about the client, which were once consulted only on the \fBhttp\fR and \fBforward\fR listeners, so a \fBcidr\fR feed did nothing at all on a \fBtcp\fR, \fBmodbus\fR or \fBsyslog\fR listener. Both questions are asked in one place for all of them, so the order cannot drift from kind to kind.
+.PP
+The lists are asked before the policy: a list is an import about an address and says nothing about this estate\(aqs intentions, so a refusal naming the feed sends an operator to the feed rather than to a rule they would not find, and a client the estate has no rule about is refused as "not in the policy" rather than as "on somebody\(aqs list", which is the truer of the two. A list asking for a \fBchallenge\fR is recorded like a log list on these kinds, because there is no request to serve a challenge into.
+.PP
+On the datagram kinds the question is asked per datagram, because a datagram relay has no session to hang the answer on. A refusal goes through the kind\(aqs own deny path, so a client that keeps sending earns a ban exactly as one refused by the kind\(aqs own address lists does \-\- which is what keeps the record from being written at packet rate. The exceptions are \fBudp\fR, which has a session and decides once per client, and \fBdns\fR, which aggregates a record from an unproven source rather than attributing it.
 .PP
 A refusal here is the reason \fBauthorization\fR on the listener\(aqs usual deny event (\fBssh_authorization\fR and so on), so the counters, the security log and the ban list see it as they see any other refusal. Either shadow switch \-\- a listener in \fBpolicy: {mode: shadow}\fR, or the whole policy with \fBshadow: true\fR \-\- records what it would have refused, with the rule that decided, and carries on.
 .SS "Reading it back"

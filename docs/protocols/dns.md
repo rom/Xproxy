@@ -103,6 +103,43 @@ resolver has an encrypted version.
 
 **`dns64`**, for the IPv6-only networks that need synthesised addresses.
 
+### The imported lists, and the estate's authorisation policy
+
+A query names nobody: the protocol carries no identity at all, and the one field
+that looks like one -- the source address -- is a datagram's unproven claim about
+itself. So two questions are asked about the client itself, after this listener's
+own `allow_clients`:
+
+- **the imported address lists** (`threat_intel`), about the client's address. A
+  list whose action is `block` refuses; one that asks for a `challenge` is
+  recorded like a log list, because there is no request here to serve a challenge
+  into and turning it into a block would be a policy the operator did not write.
+- **the `authorization` section**, on the client address, the listener, the kind,
+  and the hour. A `dns` listener has a list of resolvers rather than an upstream
+  pool, so the subject carries no target and a rule's `targets` names nothing
+  here; a rule that wants to say where a query may point is talking about a
+  domain, which belongs to this listener's own policy above. A rule naming `users`
+  matches nobody either, so a rule here is written with `networks`, `listeners`
+  and `schedule`.
+
+The imported lists asked here are asked about the **address**, which is separate
+from the domain lists this listener already consults about a **name**. A refusal
+on an unverified datagram is counted but attributed to nobody -- aggregated into
+one record rather than written against the address the packet claims to come
+from -- for the same reason a blocked name is: a record written against an address
+anybody could have put in a datagram is a record anybody could have written
+against a third party.
+
+The lists are asked first: a list is an import about an address and says nothing
+about this estate's intentions, so a refusal naming the feed sends an operator to
+the feed rather than to a rule they would not find.
+
+A refusal is the reason `threat_intel` or `authorization` on this listener's usual
+deny event, so the counters, the security log and the ban list see it as they see
+any other refusal. Either shadow switch -- `policy: {mode: shadow}` on the
+listener, or `shadow: true` on the section -- records what it would have refused
+and carries the traffic.
+
 ## What it does not do
 
 - **It is not authoritative.** `records` serves the handful of names an estate
@@ -146,6 +183,7 @@ resolver has an encrypted version.
 ## See also
 
 - The settings: [docs/CONFIG.md `server.listeners[].dns`](../CONFIG.md#serverlistenersdns-kind-dns)
+- The estate-wide policy above it: [docs/CONFIG.md `authorization`](../CONFIG.md#authorization)
 - Worked configurations: [`examples/blocklists/dns.yaml`](../../examples/blocklists/dns.yaml), [`dns-encrypted.yaml`](../../examples/blocklists/dns-encrypted.yaml), [`dns-rpz.yaml`](../../examples/blocklists/dns-rpz.yaml) and [`dns-tunnel.yaml`](../../examples/blocklists/dns-tunnel.yaml)
 - The generic datagram relay, for a UDP protocol with no kind of its own:
   [udp](udp.md)

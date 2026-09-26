@@ -86,6 +86,38 @@ registered.
 two clients behind one relay cannot collide on an identifier and read each
 other's answers.
 
+### The imported lists, and the estate's authorisation policy
+
+BACnet names nobody: a client is an address and, on a routed network, a network
+number and a MAC address. So two questions are asked about the client itself,
+after this listener's own `allow_clients` and before anything reaches the
+building:
+
+- **the imported address lists** (`threat_intel`), about the client's address. A
+  list whose action is `block` refuses; one that asks for a `challenge` is
+  recorded like a log list, because there is no request here to serve a challenge
+  into and turning it into a block would be a policy the operator did not write.
+- **the `authorization` section**, on the client address, the listener, the kind,
+  the upstream pool and the hour. A rule naming `users` matches nobody on this
+  kind, so a rule here is written with `networks`, `targets` and `schedule`.
+
+Asked on each datagram, because BACnet/IP has no session to hang the answer on. A
+refusal goes through this listener's deny path, so a client that keeps sending
+earns a ban exactly as one refused by `allow_clients` does. Which services and
+which objects it may touch stays with this listener's own policy above, because
+that is the thing that can say what a write to analog-output 3 means in a
+building.
+
+The lists are asked first: a list is an import about an address and says nothing
+about this estate's intentions, so a refusal naming the feed sends an operator to
+the feed rather than to a rule they would not find.
+
+A refusal is the reason `threat_intel` or `authorization` on this listener's usual
+deny event, so the counters, the security log and the ban list see it as they see
+any other refusal. Either shadow switch -- `policy: {mode: shadow}` on the
+listener, or `shadow: true` on the section -- records what it would have refused
+and carries the traffic.
+
 ## What it does not do
 
 - **It does not authenticate.** The client list is an address list and this is
@@ -115,6 +147,7 @@ other's answers.
 
 ## See also
 
+- The estate-wide policy above it: [docs/CONFIG.md `authorization`](../CONFIG.md#authorization)
 - The settings: [docs/CONFIG.md `## bacnet`](../CONFIG.md#bacnet)
 - A worked configuration: [`examples/ot/bacnet.yaml`](../../examples/ot/bacnet.yaml)
 - Operating it: [docs/TROUBLESHOOTING.md `## BACnet`](../TROUBLESHOOTING.md#bacnet)

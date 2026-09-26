@@ -2574,7 +2574,12 @@ var denyReasons = map[string]bool{
 	// asking for a name this listener has no route for: a scanner's SNI sweep and
 	// a listed client are different findings and an estate may want to ban on one
 	// and not the other.
-	"tcp_denied":    true,
+	"tcp_denied": true,
+	// dns_denied is the dns listener's refusal by the imported lists or the
+	// authorisation policy, and dns_threat_intel is a name on a domain list. Both
+	// are observations this listener already made; neither could be named by a ban
+	// trigger until they were written here.
+	"dns_denied": true, "dns_threat_intel": true,
 	"modbus_denied": true, "iec104_denied": true, "ntp_denied": true, "ntske_denied": true,
 	"snmp_denied": true, "ldap_denied": true, "tftp_denied": true, "dhcp_denied": true, "postgres_denied": true, "mysql_denied": true, "tds_denied": true, "redis_denied": true,
 	"bacnet_denied": true, "amqp_denied": true, "s7_denied": true,

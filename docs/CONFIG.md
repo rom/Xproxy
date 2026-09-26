@@ -11453,14 +11453,27 @@ page under `docs/protocols/` says which of its operations map to which.
 A kind that did not consult this policy would be a hole in a policy an operator
 believes covers everything, so a configuration that has an `authorization`
 section **and** a listener of a kind that does not consult it is refused at
-load, naming the listener and the kind. The kinds are wired one at a time;
-today the list is the five gate kinds, the forward proxy, the three database
-relays whose login packet names an account, the MQTT and LDAP relays, and the two
-generic layer 4 relays.
+load, naming the listener and the kind. The kinds are wired one at a time, and
+today the list is every kind but five: the gate kinds, the forward proxy, the
+database relays, MQTT, LDAP, the two generic layer 4 relays, and the eleven kinds
+whose clients have no identity at all -- `modbus`, `iec104`, `s7`, `snmp`, `tftp`,
+`dhcp`, `bacnet`, `ntske`, `syslog` and `dns`.
 
-All of them ask about `connect`. None fills `groups`: these protocols give the
-gateway no group membership it could verify, so a rule about a team is written
-with `principals` on `ssh` and with `users` elsewhere.
+The five outside it are outside for reasons rather than by omission. `http` asks
+the imported lists already, but a gateway's unit of work is a request and a
+request is decided by its route, so what a session-level question would mean there
+is still a design question. `smtp` has no name to offer, because the SASL exchange
+is deliberately not parsed and a policy cannot be given a name this proxy
+invented. `redis` and `amqp` both authenticate at the server rather than at the
+relay, so their admission point is the server's acceptance and not the connection.
+`ntp` answers datagrams with no client state at all; `ntske`, which is where a
+client is admitted before it gets cookies, does consult the policy.
+
+All of them ask about `connect`, except `syslog`, which asks about `write`: a
+sender does not open a session with a collector, it delivers records. None fills
+`groups`: these protocols give the gateway no group membership it could verify, so
+a rule about a team is written with `principals` on `ssh` and with `users`
+elsewhere.
 
 What `target` means differs in the one place it has to. On the gate kinds and the
 database relays it is the **upstream pool name**, not an endpoint address, so that
@@ -11468,6 +11481,10 @@ one rule reads the same on all of them; the per-server question belongs to the J
 access grant (see `access`), which does check the endpoint. On a `forward`
 listener there is no pool -- the destination *is* what the client asked for -- so
 `target` is `host:port`, which is what a rule about egress has to be able to name.
+On a `dns` listener there is neither: a dns listener has a list of resolvers
+rather than a pool, so the subject carries no target and a rule's `targets` names
+nothing there. A rule that wants to say where a query may point is talking about a
+domain, which is the `dns` policy's business.
 
 On the database relays the section decides whether the account may reach the
 server at all; what it may then do *inside* the server -- which database, which
@@ -11493,15 +11510,39 @@ worth (see above).
 | `tcp` | After the route is known -- so a rule can name the pool -- and before any endpoint is dialled. There is no identity on a generic relay, so `user` is always empty and a rule here is written with `networks`, `targets` and `schedule` | none: a generic relay has no identity to decide about |
 | `udp` | Once for a client that has no session, and before the endpoint is dialled -- once per client rather than once per datagram, because a policy walk per datagram would make a flood cheaper to send than to refuse. `user` is always empty, as on `tcp` | none: a generic relay has no identity to decide about |
 | `ldap` | At a **bind**, before it is forwarded -- and for nothing else, because a bind is the only request that names an identity. `user` is the bind DN. An anonymous session names nobody, so no rule about people reaches it, and what a bound session may read or write stays with the `ldap` policy: `allow_anonymous` and that listener's `rules` are where those belong | asserted; the directory proves it after |
+| `modbus` | On the connection, after this listener's own `allow_clients` and before the device is dialled. Which unit identifiers and which registers that master may touch stays with the `modbus` policy, which is the thing that can say what a write to holding register 40001 means | none: a master is an address and a unit identifier |
+| `iec104` | On the connection, before the station is dialled. Which type identifications and which information objects, and the select-before-execute rule, stay with the `iec104` policy | none: a controlling station is an address and a common address |
+| `s7` | On the connection, before the PLC is dialled -- which matters more here than elsewhere, because an S7-300 has sixteen connection resources altogether and a client that may not reach it should not take one | none: a client is an address and a rack and slot |
+| `snmp` | On each datagram from a manager, and on each stream connection, after this listener's own `allow_clients`. A community is a shared word travelling in clear and a USM user is the agent's own account, so neither is a name the estate can put in a rule; which operations and which subtrees are the `snmp` policy's business | none: neither a community nor a USM user is an identity |
+| `tftp` | On each request datagram, before a transfer is started. Which paths may be read, and whether writing is allowed at all, stay with the `tftp` policy | none: TFTP has no authentication of any kind |
+| `dhcp` | On each message from the segment, before anything reaches a server. A client with no lease sends from `0.0.0.0`, so `networks` decides nothing about exactly the clients an operator most wants to think about: a rule here is written with `listeners`, `targets` and `schedule`, and the hardware address and message type belong to the `dhcp` policy | none, and the address is often `0.0.0.0` |
+| `bacnet` | On each datagram, before anything reaches the building. Which services and which objects stay with the `bacnet` policy, which is the thing that can say what a write to analog-output 3 means | none: a client is an address, a network number and a MAC address |
+| `ntske` | On the connection, before a handshake slot is taken -- the handshake being the expensive thing this port has to protect. NTS-KE authenticates the *server* to the client, so nothing in it names a person; a client certificate in front of it is checked in the handshake, which is after this | none: the protocol authenticates the server, not the client |
+| `syslog` | Once per connection on a stream and once per datagram on UDP, after this listener's own `allow_senders`. The action is `write`. The host name inside a message is a field the sender wrote and no part of the protocol checks it, which is why this relay rewrites it from the address the message came from | none: the host field in a message is the sender's own claim |
+| `dns` | On each query, after this listener's own `allow_clients`. Which names a client may resolve stays with the `dns` policy, the RPZ zones and the domain lists. A refusal on an unverified datagram is counted but attributed to nobody, for the same reason a blocked name is: a record written against an address anybody could have put in a datagram is a record anybody could have written against a third party | none: a query names nobody |
 
-On the two generic layer 4 relays the same admission point also asks the
-**imported address lists** about the client, which until now were consulted only
-on the `http` and `forward` listeners -- so a `cidr` feed did nothing at all on a
-`tcp` or `udp` listener. The lists are asked before the policy: a list is an
-import about an address and says nothing about this estate's intentions, so a
-refusal naming the feed sends an operator to the feed rather than to a rule they
-would not find. A list asking for a `challenge` is recorded like a log list there,
-because there is no request to serve a challenge into.
+On every kind whose client has no identity -- the two generic layer 4 relays and
+the ten in the block below them -- the same admission point also asks the
+**imported address lists** about the client, which were once consulted only on the
+`http` and `forward` listeners, so a `cidr` feed did nothing at all on a `tcp`,
+`modbus` or `syslog` listener. Both questions are asked in one place for all of
+them, so the order cannot drift from kind to kind.
+
+The lists are asked before the policy: a list is an import about an address and
+says nothing about this estate's intentions, so a refusal naming the feed sends an
+operator to the feed rather than to a rule they would not find, and a client the
+estate has no rule about is refused as "not in the policy" rather than as "on
+somebody's list", which is the truer of the two. A list asking for a `challenge`
+is recorded like a log list on these kinds, because there is no request to serve a
+challenge into.
+
+On the datagram kinds the question is asked per datagram, because a datagram relay
+has no session to hang the answer on. A refusal goes through the kind's own deny
+path, so a client that keeps sending earns a ban exactly as one refused by the
+kind's own address lists does -- which is what keeps the record from being written
+at packet rate. The exceptions are `udp`, which has a session and decides once per
+client, and `dns`, which aggregates a record from an unproven source rather than
+attributing it.
 
 A refusal here is the reason `authorization` on the listener's usual deny event
 (`ssh_authorization` and so on), so the counters, the security log and the ban

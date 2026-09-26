@@ -105,6 +105,16 @@ var authorises = map[string]bool{
 	"ldap":     true,
 	"tcp":      true,
 	"udp":      true,
+	"modbus":   true,
+	"iec104":   true,
+	"s7":       true,
+	"snmp":     true,
+	"tftp":     true,
+	"dhcp":     true,
+	"bacnet":   true,
+	"ntske":    true,
+	"syslog":   true,
+	"dns":      true,
 }
 
 // Authorises reports whether a kind consults the estate's authorisation policy.

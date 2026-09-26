@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/rom/xproxy/internal/admit"
+	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/safe"
 	wire "github.com/rom/xproxy/internal/tftp"
@@ -43,6 +45,44 @@ func (t *server) serveRequests() {
 	}
 }
 
+// admitClient is the two questions this relay asks about a client that has no
+// identity: do the imported lists know this address, and does the estate's
+// authorisation policy allow it here.
+//
+// TFTP names nobody at all -- it has no authentication of any kind, which is the
+// whole reason a relay in front of it is worth having -- so the policy decides on
+// the address, the listener, the pool and the hour. Which paths that client may
+// read, and whether it may write at all, is the `tftp` policy's own business.
+//
+// It is asked once per request datagram, like this relay's own address lists,
+// because the request is all there is: a transfer runs between two ephemeral
+// ports afterwards and never comes back to this socket. A refusal goes through
+// deny, so a client that keeps asking earns a ban the same way one refused by the
+// address lists does.
+func (t *server) admitClient(ip netip.Addr) string {
+	h := t.host
+	return admit.Client(admit.Deps{
+		Lists:   h.ThreatIntel(),
+		Policy:  h.Authorization(),
+		Logs:    h.Logs(),
+		Matched: func() { h.Counters().ThreatIntelMatched.Add(1) },
+		Blocked: func() { h.Counters().ThreatIntelBlocked.Add(1) },
+	}, authorization.Subject{
+		Listener: t.cfg.Name,
+		Kind:     "tftp",
+		Client:   ip,
+		Target:   t.m.Upstream,
+		Action:   authorization.ActionConnect,
+	}, admit.Gate{
+		Shadowing: func() bool { return !t.enforcing() },
+		Record: func(reason, rule, detail string) {
+			h.Counters().WouldRefuse("tftp", reason)
+			h.Shadow().Record("tftp", t.cfg.Name, reason, rule, detail)
+		},
+		Deny: func(reason, _, detail string) { t.deny(ip, reason, detail) },
+	})
+}
+
 // request decides about one datagram on the listener's socket and, when it is
 // allowed, starts a transfer for it.
 func (t *server) request(raw []byte, from net.Addr) {
@@ -53,6 +93,15 @@ func (t *server) request(raw []byte, from net.Addr) {
 		c.TFTPRejected.Add(1)
 		c.Refuse("tftp", "client_not_allowed")
 		t.deny(ip, "client_not_allowed", "")
+		return
+	}
+	// The imported lists and the estate's authorisation policy, after this
+	// listener's own address lists -- those are local policy about local
+	// clients, and a feed must not overrule an allow rule an operator wrote --
+	// and before a transfer is started.
+	if reason := t.admitClient(ip); reason != "" {
+		c.TFTPRejected.Add(1)
+		c.Refuse("tftp", reason)
 		return
 	}
 	// The rate limit is a bound rather than policy, so it is never shadowed.

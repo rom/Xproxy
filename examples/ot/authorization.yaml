@@ -1,0 +1,222 @@
+# One authorisation policy over a plant, where nobody has a name.
+#
+# The bastion example next door (examples/bastion/authorization.yaml) is
+# the same section asked about people: who may reach production, from
+# where, at which hour. This is the other half of an estate, and it is
+# the larger half in an industrial network -- Modbus, S7comm, SNMP, TFTP
+# and syslog all carry clients that the protocol never names. A Modbus
+# master is an address and a unit identifier. TFTP has no authentication
+# at all. The host field in a syslog message is a string the sender
+# wrote.
+#
+# So a rule here names no users, and one that did would match nobody.
+# What it names instead is real policy and is the policy an OT network
+# actually needs written down: which network may reach which pool,
+# through which listener, in which hours. "The engineering subnet may
+# reach the line PLCs during the change window, and the historian may
+# reach them at any hour but may not reach the boot server at all" is a
+# sentence about this plant, and until this section existed it had to be
+# written five times in five protocols' own spellings.
+#
+# Each listener keeps its own policy for what only it can express -- the
+# function codes, the object subtrees, the TFTP paths -- because nothing
+# above them can say what a write to holding register 40001 means. This
+# section is the door; those are the rooms.
+#
+# Validate: xrelay -config examples/ot/authorization.yaml -validate
+version: 1
+
+authorization:
+  # Deny, and leave it alone. The number to watch while the rules are
+  # still being written is xproxy_authz_default_total: the decisions this
+  # default made because nothing matched, which is the measure of how
+  # much of the plant the rules below actually describe.
+  default: deny
+
+  rules:
+    # The exclusions first, because the first matching rule decides.
+    #
+    # The boot server holds firmware images, and TFTP is the protocol
+    # with no authentication whatsoever. Nothing but the provisioning
+    # network has business there -- and this is written as a deny of
+    # everybody else rather than an allow of the one network, so that a
+    # later, broader grant cannot quietly include it.
+    - name: no-general-access-to-the-boot-server
+      not_networks: ["10.40.9.0/24"]
+      kinds: [tftp]
+
+    # The lift controllers are read by the building management system and
+    # are never written by anybody. On a protocol whose write is a moved
+    # actuator, the narrow rule goes above every grant.
+    - name: lifts-are-never-written
+      targets: [lift-controllers]
+      actions: [write]
+
+    # The historian reads the line at any hour: it is the thing that
+    # makes a shift reviewable, and a gap in its data is a gap in the
+    # record of what the plant did.
+    - name: historian
+      allow: true
+      networks: ["10.40.3.7/32"]
+      targets: [line-plcs, line-rtus]
+      actions: [connect, read]
+
+    # The operator panels, during the shifts they are used in. A panel
+    # that can command the line at three in the morning is a panel
+    # somebody else can command the line from at three in the morning.
+    - name: operator-panels
+      allow: true
+      networks: ["10.40.1.0/24"]
+      targets: [line-plcs]
+      schedule:
+        days: [mon, tue, wed, thu, fri]
+        from: "06:00"
+        to: "22:00"
+        timezone: Europe/Stockholm
+
+    # The engineering workstations, inside the change window and nowhere
+    # near the boot server -- the deny above already settled that, and
+    # this rule does not have to remember it.
+    - name: engineering
+      allow: true
+      networks: ["10.40.2.0/24"]
+      targets: [line-plcs, line-rtus]
+      schedule:
+        days: [tue, thu]
+        from: "09:00"
+        to: "12:00"
+        timezone: Europe/Stockholm
+
+    # Provisioning: the boot server, from the one network the deny above
+    # left standing.
+    - name: provisioning
+      allow: true
+      networks: ["10.40.9.0/24"]
+      kinds: [tftp]
+
+    # The monitoring system polls the switches. An SNMP community is a
+    # cleartext password in every datagram, so the address is the only
+    # thing worth deciding on here -- which is exactly what this section
+    # is for on a kind with no identity.
+    - name: monitoring
+      allow: true
+      networks: ["10.40.4.0/24"]
+      kinds: [snmp]
+      actions: [connect, read]
+
+    # And the plant's own equipment shipping its logs. The action is
+    # `write`, because a sender does not open a session with a collector,
+    # it delivers records. Anything on the process networks may; nothing
+    # else may, and that is the whole rule.
+    - name: log-senders
+      allow: true
+      networks: ["10.40.0.0/16"]
+      kinds: [syslog]
+      actions: [write]
+
+server:
+  listeners:
+    # The line. `allow_clients` stays where it is: it is this listener's
+    # own policy about its own clients, it is asked first, and a policy
+    # section above it is not a reason to delete the local list.
+    - name: line
+      address: "0.0.0.0:502"
+      kind: modbus
+      modbus:
+        upstream: line-plcs
+        allow_clients: ["10.40.1.0/24", "10.40.2.0/24", "10.40.3.7/32"]
+        # A plant asked to show who wrote what needs the frames, not one
+        # line per session.
+        log_frames: true
+        # What only this kind can say: which function codes, and which
+        # registers. The section above decides whether a client is at the
+        # door at all; this decides what it may do once it is through, and
+        # neither can be written in the other's words.
+        rules:
+          - name: setpoints
+            action: allow
+            clients: ["10.40.1.0/24", "10.40.2.0/24"]
+            functions: [read_holding_registers, write_single_register]
+            addresses: ["400-499"]
+            write_addresses: ["400-499"]
+          - name: reads
+            action: allow
+            access: [read, identify]
+            addresses: ["0-1999"]
+
+    - name: substation
+      address: "0.0.0.0:2404"
+      kind: iec104
+      iec104:
+        upstream: line-rtus
+        allow_clients: ["10.40.2.0/24", "10.40.3.7/32"]
+
+    # The CPUs. The connection is refused before the PLC is dialled,
+    # which matters here more than anywhere: an S7-300 has sixteen
+    # connection resources altogether.
+    - name: cells
+      address: "0.0.0.0:102"
+      kind: s7
+      s7:
+        upstream: line-plcs
+        allow_clients: ["10.40.1.0/24", "10.40.2.0/24"]
+
+    - name: switches
+      address: "0.0.0.0:161"
+      kind: snmp
+      snmp:
+        upstream: switches
+        allow_clients: ["10.40.4.0/24"]
+        read_only: true
+        versions: [v2c, v3]
+        # A GETBULK's repetition count is the amplification factor of the
+        # best-known SNMP reflection attack.
+        max_repetitions: 50
+
+    - name: boot
+      address: "0.0.0.0:69"
+      kind: tftp
+      tftp:
+        upstream: fileservers
+        allow_clients: ["10.40.9.0/24"]
+        operations: [read]
+        directories: [firmware]
+        # How much a twenty-octet request may bring back. This protocol's
+        # amplification factor is RFC 7440's window.
+        max_transfer_bytes: 67108864
+        max_window_size: 8
+
+    - name: logs
+      address: "0.0.0.0:514"
+      kind: syslog
+      syslog:
+        upstream: collectors
+        allow_senders: ["10.40.0.0/16"]
+        # Without this one sender fills the collector and pushes older
+        # records out of whatever window it keeps.
+        rate_limit: 500
+        rate_burst: 2000
+
+logging:
+  directory: /var/log/xrelay
+
+upstreams:
+  - name: line-plcs
+    endpoints:
+      - {address: "10.41.1.10:502"}
+      - {address: "10.41.1.11:502"}
+  - name: line-rtus
+    endpoints:
+      - {address: "10.41.2.10:2404"}
+  - name: lift-controllers
+    endpoints:
+      - {address: "10.41.6.10:47808"}
+  - name: switches
+    endpoints:
+      - {address: "10.41.4.10:161"}
+  - name: fileservers
+    endpoints:
+      - {address: "10.41.9.10:69"}
+  - name: collectors
+    endpoints:
+      - {address: "10.41.8.10:514"}

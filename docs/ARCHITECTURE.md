@@ -417,7 +417,18 @@ otherwise — and a configuration carrying an `authorization` section then
 refuses to load, naming the listener, rather than quietly leaving a hole
 in a policy an operator believes covers everything. Every kind is on one
 side or the other and a test in `internal/listener` fails on a kind in
-neither, which is what forces the decision when a kind is added.
+neither, which is what forces the decision when a kind is added. Every
+kind but five is on the consulting side today; the five that are not are
+`http`, `smtp`, `redis`, `amqp` and `ntp`, each for a reason recorded in
+`internal/listener/roster_test.go` beside the list itself.
+
+The admission point the kinds share is `internal/admit`: the imported
+address lists about the client, then the policy. It exists because those
+two questions have one right order and repeating that order in nineteen
+kinds is how it drifts. Where a kind has no identity to offer — a Modbus
+master, a syslog sender, a DNS client — that package is the whole of the
+decision; where a kind has one, the kind asks the policy directly with
+the name it proved.
 
 ### The refusal
 

@@ -88,6 +88,40 @@ than guessed at.
 **RFC 6353 TLS** on the stream side, which is SNMP over TLS on its own port
 with real transport security, for the parts of an estate that can use it.
 
+### The imported lists, and the estate's authorisation policy
+
+SNMP does carry something that looks like a name -- a community on v1 and v2c, a
+USM user on v3 -- and neither is an identity this estate can put in a rule: a
+community is a shared word travelling in clear, and a USM user is the agent's own
+account rather than a person's. So two questions are asked about the client
+itself, after this listener's own `allow_clients`:
+
+- **the imported address lists** (`threat_intel`), about the client's address. A
+  list whose action is `block` refuses; one that asks for a `challenge` is
+  recorded like a log list, because there is no request here to serve a challenge
+  into and turning it into a block would be a policy the operator did not write.
+- **the `authorization` section**, on the client address, the listener, the kind,
+  the upstream pool and the hour. A rule naming `users` matches nobody on this
+  kind, so a rule here is written with `networks`, `targets` and `schedule`.
+
+Asked on each datagram from a manager, and on each stream connection: a datagram
+relay has no session to hang the answer on. A refusal goes through this
+listener's deny path, so a client that keeps sending earns a ban exactly as one
+refused by `allow_clients` does, which is what keeps the record from being written
+at packet rate. Which operations and which subtrees are allowed stays with this
+listener's own policy above, because that is the thing that can say what a set on
+`sysName` means.
+
+The lists are asked first: a list is an import about an address and says nothing
+about this estate's intentions, so a refusal naming the feed sends an operator to
+the feed rather than to a rule they would not find.
+
+A refusal is the reason `threat_intel` or `authorization` on this listener's usual
+deny event, so the counters, the security log and the ban list see it as they see
+any other refusal. Either shadow switch -- `policy: {mode: shadow}` on the
+listener, or `shadow: true` on the section -- records what it would have refused
+and carries the traffic.
+
 ## What it does not do
 
 - **It does not verify v3 cryptography on behalf of the device.** The
@@ -120,6 +154,7 @@ with real transport security, for the parts of an estate that can use it.
 
 ## See also
 
+- The estate-wide policy above it: [docs/CONFIG.md `authorization`](../CONFIG.md#authorization)
 - The settings: [docs/CONFIG.md `server.listeners[].snmp`](../CONFIG.md#serverlistenerssnmp-kind-snmp)
 - A worked configuration: [`examples/ot/snmp.yaml`](../../examples/ot/snmp.yaml)
 - The asset inventory built partly from what this listener sees:

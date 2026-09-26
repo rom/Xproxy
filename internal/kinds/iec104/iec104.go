@@ -58,6 +58,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rom/xproxy/internal/admit"
+	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/config"
 	wire "github.com/rom/xproxy/internal/iec104"
 	"github.com/rom/xproxy/internal/limits"
@@ -254,6 +256,39 @@ type session struct {
 	watch *watcher
 }
 
+// admitClient is the two questions this relay asks about a client that has no
+// identity: do the imported lists know this address, and does the estate's
+// authorisation policy allow it here.
+//
+// IEC 104 names nobody -- a controlling station is an address and a common
+// address -- so the policy decides on the address, the listener, the pool and the
+// hour. Which type identifications and which information objects that station may
+// touch is the `iec104` policy's own business, and the select-before-execute rule
+// is the thing only it can enforce.
+func (t *server) admitClient(ip netip.Addr) string {
+	h := t.host
+	return admit.Client(admit.Deps{
+		Lists:   h.ThreatIntel(),
+		Policy:  h.Authorization(),
+		Logs:    h.Logs(),
+		Matched: func() { h.Counters().ThreatIntelMatched.Add(1) },
+		Blocked: func() { h.Counters().ThreatIntelBlocked.Add(1) },
+	}, authorization.Subject{
+		Listener: t.cfg.Name,
+		Kind:     "iec104",
+		Client:   ip,
+		Target:   t.m.Upstream,
+		Action:   authorization.ActionConnect,
+	}, admit.Gate{
+		Shadowing: func() bool { return !t.enforcing() },
+		Record: func(reason, rule, detail string) {
+			h.Counters().WouldRefuse("iec104", reason)
+			h.Shadow().Record("iec104", t.cfg.Name, reason, rule, detail)
+		},
+		Deny: func(reason, _, detail string) { t.deny(ip, reason, detail) },
+	})
+}
+
 func (t *server) handle(client net.Conn) {
 	s := t.host
 	start := time.Now()
@@ -287,6 +322,15 @@ func (t *server) handle(client net.Conn) {
 		s.Counters().IEC104Rejected.Add(1)
 		t.deny(ip, "client_not_allowed", "")
 		t.log(se, start, "client_not_allowed")
+		return
+	}
+	// The imported lists and the estate's authorisation policy, after this
+	// listener's own address lists -- those are local policy about local
+	// clients, and a feed must not overrule an allow rule an operator wrote --
+	// and before the station is dialled.
+	if reason := t.admitClient(ip); reason != "" {
+		s.Counters().IEC104Rejected.Add(1)
+		t.log(se, start, reason)
 		return
 	}
 	se.live = s.Sessions().Register(sessions.Info{

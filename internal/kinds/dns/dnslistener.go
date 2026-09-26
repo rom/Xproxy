@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/rom/xproxy/internal/admit"
+	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/bound"
 	"github.com/rom/xproxy/internal/config"
 	wire "github.com/rom/xproxy/internal/dns"
@@ -339,24 +341,74 @@ func newServer(host proxy.Host, lc config.Listener, udp net.PacketConn, tcp net.
 	// names into the ban list. It belongs to this listener, so one
 	// listener's flood does not quieten another's records.
 	var unverified bound.Notice
+	// event is the security-event path, lifted out of the hooks literal because
+	// the admission point below has to get exactly the same treatment of an
+	// unverified source: a refusal recorded against an address anybody could have
+	// written into a datagram is a refusal anybody can have written against a
+	// third party.
+	event := func(client netip.Addr, reason string, verified bool, attrs ...any) {
+		if !verified {
+			// An unverified datagram: record the fact in aggregate
+			// and attribute it to nobody. One record and one ban
+			// observation per packet would let a flood fill the
+			// disk, drown other clients' records out of the bounded
+			// export queues, and drive whatever address it names
+			// into the ban list.
+			unverified.Hit(host.Logs().Error, "dns security events from unverified sources are aggregated",
+				append([]any{"reason", reason}, attrs...)...)
+			return
+		}
+		host.Logs().SecurityEvent(context.Background(), "deny", reason, append([]any{"client_ip", client.String()}, attrs...)...)
+		if bl := host.Bans(); bl != nil {
+			bl.Observe(client, reason)
+		}
+	}
 	hooks := wire.Hooks{
 		Access: func(attrs ...any) { host.Logs().Access.Info("dns", attrs...) },
-		Event: func(client netip.Addr, reason string, verified bool, attrs ...any) {
-			if !verified {
-				// An unverified datagram: record the fact in aggregate
-				// and attribute it to nobody. One record and one ban
-				// observation per packet would let a flood fill the
-				// disk, drown other clients' records out of the bounded
-				// export queues, and drive whatever address it names
-				// into the ban list.
-				unverified.Hit(host.Logs().Error, "dns security events from unverified sources are aggregated",
-					append([]any{"reason", reason}, attrs...)...)
-				return
-			}
-			host.Logs().SecurityEvent(context.Background(), "deny", reason, append([]any{"client_ip", client.String()}, attrs...)...)
-			if bl := host.Bans(); bl != nil {
-				bl.Observe(client, reason)
-			}
+		Event:  event,
+		// The estate's two questions about a client with no identity, asked
+		// after this listener's own allow_clients.
+		//
+		// A query names nobody: the protocol carries no identity at all, and the
+		// one field that looks like one -- the source address -- is a datagram's
+		// unproven claim about itself. So the policy decides on the address, the
+		// listener, the pool and the hour, and a rule naming users matches nobody
+		// on this kind. Which names a client may resolve is the `dns` policy's
+		// own business, along with the RPZ zones and the domain lists.
+		//
+		// The subject carries no target, because a dns listener has no upstream
+		// pool -- it has a list of resolvers -- so there is nothing for a rule's
+		// `targets` to name. A rule that wants to talk about where a query may
+		// point is talking about a domain, and that belongs to the `dns` policy.
+		Admit: func(client netip.Addr, verified bool) string {
+			return admit.Client(admit.Deps{
+				Lists:   host.ThreatIntel(),
+				Policy:  host.Authorization(),
+				Logs:    host.Logs(),
+				Matched: func() { host.Counters().ThreatIntelMatched.Add(1) },
+				Blocked: func() { host.Counters().ThreatIntelBlocked.Add(1) },
+			}, authorization.Subject{
+				Listener: lc.Name,
+				Kind:     "dns",
+				Client:   client,
+				Action:   authorization.ActionConnect,
+			}, admit.Gate{
+				Shadowing: lc.Shadowing,
+				Record: func(reason, rule, detail string) {
+					host.Counters().WouldRefuse("dns", reason)
+					host.Shadow().Record("dns", lc.Name, reason, rule, detail)
+				},
+				Deny: func(reason, rule, detail string) {
+					attrs := []any{"listener", lc.Name, "proto", "dns", "reason", reason}
+					if rule != "" {
+						attrs = append(attrs, "rule", rule)
+					}
+					if detail != "" {
+						attrs = append(attrs, "detail", detail)
+					}
+					event(client, "dns_denied", verified, attrs...)
+				},
+			})
 		},
 		Banned: func(client netip.Addr) bool {
 			bl := host.Bans()
