@@ -245,6 +245,16 @@ func (cl *client) send(raw []byte) {
 	}
 }
 
+// trySend writes and reports whether it got through, for the tests that drive a
+// client past the point where the relay ends the connection. There a failed
+// write is the expected outcome rather than a test failure, and send's Fatal
+// would make the test depend on how quickly the relay closed.
+func (cl *client) trySend(raw []byte) bool {
+	cl.t.Helper()
+	_, err := cl.c.Write(raw)
+	return err == nil
+}
+
 // next reads one response, or reports that none came within the window. A
 // refusal that is an error and a refusal that is a hang are different things
 // to a client, so a test has to be able to tell them apart.
@@ -790,12 +800,32 @@ func TestTheBindRateIsBoundedSeparately(t *testing.T) {
         default_action: allow`+tlsSection(cert, key), d.addr())
 
 	cl := dialLDAPS(t, addr, ca)
+	// A bind over the rate ends the connection rather than being answered, so
+	// the writes after it fail -- and which one fails depends on how quickly
+	// the relay got there. That is the behaviour being relied on, so the loop
+	// stops at the first refused write instead of failing on it: a fixed count
+	// of writes would make this test a race against the close it is asserting.
 	for i := 0; i < 20; i++ {
-		cl.send(bind(i+1, fmt.Sprintf("cn=user%d,dc=example,dc=com", i), "guess"))
+		if !cl.trySend(bind(i+1, fmt.Sprintf("cn=user%d,dc=example,dc=com", i), "guess")) {
+			break
+		}
 	}
 	awaitCounter(t, s, func(sn proxy.Snapshot) bool {
 		return sn.LDAPRateLimited >= 1 && sn.Refusals["ldap"]["bind_rate_limited"] >= 1
 	}, "the bind rate did not hold")
+	// And the other half of the refusal: the directory never saw the guesses.
+	// This is asserted at the directory rather than at the client, because the
+	// relay closes on a connection with unread requests still in its receive
+	// queue -- which the kernel answers with a reset, discarding whatever
+	// answers were already on their way back. So what the client did or did
+	// not read is a race; what reached the equipment is not.
+	//
+	// At most burst binds may arrive: the rate is one a second and the test
+	// takes milliseconds. Fewer is fine -- a slower machine gets fewer through
+	// before the relay closes -- and more would mean the bound did nothing.
+	if n := len(d.seen()); n > 2 {
+		t.Errorf("the directory saw %d binds; the burst of 2 was not the bound", n)
+	}
 }
 
 // Shadow mode: the policy is evaluated, the refusal is recorded, and the

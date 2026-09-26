@@ -8,6 +8,7 @@
 #                   logrotate, sysusers, tmpfiles, example configuration
 #   xproxy-xgate    gate daemon (interactive access by people)
 #   xproxy-xrelay   relay daemon (the protocols machines speak)
+#   xproxy-signer   the process that holds the private keys instead
 #   xproxy-admin    web GUI, its unit and polkit rule
 #   xproxy-selinux  SELinux policy module (noarch)
 #
@@ -71,6 +72,27 @@ submission, MQTT, FTP and syslog -- with the same policy, logging and
 management surface as its siblings. It runs as its own user under its
 own hardened unit and reads its own file in /etc/xproxy.
 
+%package        signer
+Summary:        Signing helper for xproxy: the process that holds the private keys
+Requires:       %{name} = %{version}-%{release}
+%{?systemd_requires}
+
+%description    signer
+xsigner holds the TLS private keys so the proxies do not have to: they send a
+digest over a Unix socket and get a signature back, and the key never crosses
+the socket. Anything that can read a proxy's memory -- a core dump, a debugger,
+a bug -- gets nothing, because there is nothing there to get.
+
+It is also where cgo belongs: a PKCS#11 module is a vendor C library and the
+daemons are built without cgo on purpose, so an HSM, a TPM or a smartcard is
+reached from here rather than from the process that terminates TLS. This build
+serves keys it reads as PEM from a file, the environment or a vault; the
+protocol is documented in SIGNER.md so a helper for anything else can be
+written against it.
+
+It runs as its own user, with no network at all under the shipped unit, and its
+socket's permissions are its authentication.
+
 %package        admin
 Summary:        Web GUI for xproxy
 Requires:       %{name} = %{version}-%{release}
@@ -123,13 +145,14 @@ install -D -m 0755 bin/xproxyctl     %{buildroot}%{_bindir}/xproxyctl
 install -D -m 0755 bin/xproxy-replay %{buildroot}%{_bindir}/xproxy-replay
 install -D -m 0755 bin/xproxy-admin  %{buildroot}%{_bindir}/xproxy-admin
 install -D -m 0755 bin/xproxy-fleet  %{buildroot}%{_bindir}/xproxy-fleet
+install -D -m 0755 bin/xsigner       %{buildroot}%{_bindir}/xsigner
 install -d -m 0750 %{buildroot}%{_sharedstatedir}/xproxy-fleet
 
 # Units, sysctl, logrotate, sysusers, polkit. The shipped files reference
 # /usr/local/bin for source installs; rewrite for the packaged layout.
 for u in xproxy.service xproxy.socket xproxy-https.socket xproxy-h3.socket \
          xgate.service xgate.socket xrelay.service xrelay.socket \
-         xproxy-admin.service xproxy-fleet.service; do
+         xproxy-admin.service xproxy-fleet.service xsigner.service; do
   sed 's|/usr/local/bin|%{_bindir}|g' deploy/systemd/$u > $u.tmp
   install -D -m 0644 $u.tmp %{buildroot}%{_unitdir}/$u
 done
@@ -141,6 +164,7 @@ install -D -m 0644 deploy/sysctl/90-xproxy.conf  %{buildroot}%{_sysctldir}/90-xp
 install -D -m 0644 deploy/sysusers/xproxy.conf   %{buildroot}%{_sysusersdir}/xproxy.conf
 install -D -m 0644 deploy/tmpfiles/xproxy-config.conf  %{buildroot}%{_tmpfilesdir}/xproxy-config.conf
 install -D -m 0644 deploy/tmpfiles/xproxy-cluster.conf %{buildroot}%{_tmpfilesdir}/xproxy-cluster.conf
+install -D -m 0644 deploy/tmpfiles/xsigner.conf        %{buildroot}%{_tmpfilesdir}/xsigner.conf
 install -D -m 0644 deploy/polkit/50-xproxy-admin.rules %{buildroot}%{_datadir}/polkit-1/rules.d/50-xproxy-admin.rules
 
 # Configuration and directories. systemd also creates the runtime, log and
@@ -150,6 +174,13 @@ install -d -m 0750 %{buildroot}%{_sysconfdir}/xproxy
 install -D -m 0640 deploy/config/xproxy.yaml %{buildroot}%{_sysconfdir}/xproxy/xproxy.yaml
 install -D -m 0640 deploy/config/xgate.yaml  %{buildroot}%{_sysconfdir}/xproxy/xgate.yaml
 install -D -m 0640 deploy/config/xrelay.yaml %{buildroot}%{_sysconfdir}/xproxy/xrelay.yaml
+# The signer's configuration is NOT under /etc/xproxy: that directory is
+# readable by the xproxy-config group, which is the three proxy daemons, and
+# the point of this process is that they cannot read what it reads.
+install -d -m 0750 %{buildroot}%{_sysconfdir}/xsigner
+install -d -m 0700 %{buildroot}%{_sysconfdir}/xsigner/keys
+install -D -m 0640 deploy/config/xsigner.yaml %{buildroot}%{_sysconfdir}/xsigner/xsigner.yaml
+install -d -m 0750 %{buildroot}%{_localstatedir}/log/xsigner
 for d in xproxy xgate xrelay; do
   install -d -m 0750 %{buildroot}%{_localstatedir}/log/$d
   install -d -m 0700 %{buildroot}%{_sharedstatedir}/$d
@@ -164,6 +195,7 @@ install -D -m 0644 docs/man/xrelay.8     %{buildroot}%{_mandir}/man8/xrelay.8
 install -D -m 0644 docs/man/xproxyctl.8   %{buildroot}%{_mandir}/man8/xproxyctl.8
 install -D -m 0644 docs/man/xproxy-replay.8 %{buildroot}%{_mandir}/man8/xproxy-replay.8
 install -D -m 0644 docs/man/xproxy-fleet.8 %{buildroot}%{_mandir}/man8/xproxy-fleet.8
+install -D -m 0644 docs/man/xsigner.8     %{buildroot}%{_mandir}/man8/xsigner.8
 install -D -m 0644 docs/man/xproxy.yaml.5 %{buildroot}%{_mandir}/man5/xproxy.yaml.5
 install -D -m 0644 internal/config/schema/xproxy.schema.json %{buildroot}%{_datadir}/xproxy/xproxy.schema.json
 install -D -m 0644 deploy/grafana/xproxy-overview.json %{buildroot}%{_datadir}/xproxy/grafana/xproxy-overview.json
@@ -204,6 +236,15 @@ sysctl -q -p %{_sysctldir}/90-xproxy.conf >/dev/null 2>&1 || :
 
 %postun xgate
 %systemd_postun_with_restart xgate.service
+
+%post signer
+%systemd_post xsigner.service
+
+%preun signer
+%systemd_preun xsigner.service
+
+%postun signer
+%systemd_postun_with_restart xsigner.service
 
 %post xrelay
 %systemd_post xrelay.service xrelay.socket
@@ -296,6 +337,18 @@ fi
 %config(noreplace) %attr(0640,root,xproxy-config) %{_sysconfdir}/xproxy/xrelay.yaml
 %dir %attr(0750,xrelay,xrelay) %{_localstatedir}/log/xrelay
 %dir %attr(0700,xrelay,xrelay) %{_sharedstatedir}/xrelay
+
+%files signer
+%{_bindir}/xsigner
+%{_mandir}/man8/xsigner.8*
+%{_unitdir}/xsigner.service
+%{_tmpfilesdir}/xsigner.conf
+# 0750 root:xsigner so the helper can read it and nothing else can look, and
+# the keys directory 0700 xsigner so only the helper can list it at all.
+%dir %attr(0750,root,xsigner) %{_sysconfdir}/xsigner
+%dir %attr(0700,xsigner,xsigner) %{_sysconfdir}/xsigner/keys
+%config(noreplace) %attr(0640,root,xsigner) %{_sysconfdir}/xsigner/xsigner.yaml
+%dir %attr(0750,xsigner,xsigner) %{_localstatedir}/log/xsigner
 
 %files admin
 %{_bindir}/xproxy-admin

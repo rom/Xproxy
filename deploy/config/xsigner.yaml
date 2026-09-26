@@ -1,0 +1,52 @@
+# xsigner: the process that holds the TLS private keys so the proxies do not.
+#
+# Validate: xsigner -config /etc/xsigner/xsigner.yaml -validate
+# Check what loaded against the certificates that will use it:
+#   xsigner -config /etc/xsigner/xsigner.yaml -print-keys
+#
+# The socket's permissions are the authentication. A digest says nothing about
+# what it is a digest of, so anything that can connect can have anything signed
+# by these keys.
+#
+# /run/xsigner is 2750 xsigner:xsigner-clients (tmpfiles.d), and the socket in
+# it is 0660, inheriting that group from the setgid directory. Connecting to a
+# Unix socket needs *write* permission on it, so 0660 is what lets the proxy
+# connect and 0600 would not; the directory is what stops anything else getting
+# near it. Widen neither.
+#
+# The default when this is omitted is 0600, which is the safe answer for a
+# helper whose socket lives somewhere else -- and which no proxy can connect to,
+# so say 0660 here on purpose.
+socket: /run/xsigner/signer.sock
+socket_mode: "0660"
+
+keys:
+  # The name is what the proxy's `signer: {key: ...}` asks for. One helper may
+  # hold several; a name appearing twice is refused at start.
+  #
+  # The reference is a path, file:, env: or vault:mount/path#field. A file is
+  # the ordinary case and should be mode 0400 owned by xsigner -- which is the
+  # whole gain over the proxy holding it: the process that terminates TLS for
+  # the estate cannot read this file.
+  - name: edge
+    key: /etc/xsigner/keys/edge.key
+
+  # A second key, to show that one helper serves several certificates.
+  - name: pay
+    key: /etc/xsigner/keys/pay.key
+
+# A vault instead of files. Read the note in xsigner.service before turning
+# this on: the unit runs with PrivateNetwork=yes, and a helper that can reach
+# the network is a helper a bug in can send a key somewhere.
+#
+# Unlike the proxy's own vault client there is no insecure escape hatch here:
+# this process exists to hold private keys, and reading them over plain HTTP
+# would undo the reason it exists.
+#
+# secrets:
+#   vault:
+#     address: https://vault.internal:8200
+#     mount: secret
+#     kv_version: 2
+#     token_file: /etc/xsigner/vault-token
+#     ca_file: /etc/pki/vault/internal-ca.pem

@@ -38,7 +38,7 @@ func TestPagesCurrent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(pages) != 7 {
+	if len(pages) != 8 {
 		names := make([]string, 0, len(pages))
 		for n := range pages {
 			names = append(names, n)

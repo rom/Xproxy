@@ -190,6 +190,10 @@ internal/keysource  where a secret comes from: a path, the environment, a
                     vault, or an external signer that holds the private key
                     on the other side of a Unix socket so it never enters
                     this process
+internal/signerd    the other side of that socket: the helper xsigner(8) is
+                    built from, which holds keys and answers digests. It is
+                    also where cgo would go for PKCS#11, which is why it is
+                    a process and not a library
 internal/fipsmode   whether the FIPS 140-3 module is active, and which of
                     the configured algorithms it will actually do -- asked
                     of the runtime by handshaking, never read off a list

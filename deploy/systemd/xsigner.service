@@ -1,0 +1,110 @@
+# xsigner, the signing helper: it holds the TLS private keys so that the
+# proxies do not have to. The proxy sends a digest over a Unix socket and
+# gets a signature back, and the key never crosses the socket.
+#
+# The custody this buys is only as good as this unit. Two things matter more
+# than anything else here:
+#
+#   1. The socket's permissions ARE the authentication. A digest says nothing
+#      about what it is a digest of, so anything that can connect can have
+#      anything signed by these keys. /run/xsigner is 2750
+#      xsigner:xsigner-clients (tmpfiles.d) and the socket inside it is 0660 in
+#      that same group, so the three proxy daemons can connect and nothing else
+#      can enter the directory at all. Connecting to a Unix socket needs write
+#      permission on it, which is why the socket is 0660 rather than 0600; it
+#      is the pair that makes this safe, not either one alone. Widen neither.
+#   2. This process must be harder to reach than the proxy. It runs as its
+#      own user, it has no network at all (PrivateNetwork=yes: it needs a
+#      Unix socket and nothing else, unless a key comes from a vault -- see
+#      below), and it reads its keys and nothing else.
+#
+# Install:  cp xsigner.service /etc/systemd/system/
+#           systemctl daemon-reload && systemctl enable --now xsigner
+#
+# The proxy must start after it, or its first load fails: add
+#   [Unit]
+#   After=xsigner.service
+#   Wants=xsigner.service
+# to a drop-in on the proxy's unit. The proxy refuses to start when a signer
+# cannot prove it holds the matching key, which is deliberate -- a listener
+# that came up and then failed every handshake would look like the listener
+# being down.
+[Unit]
+Description=xsigner TLS signing helper
+Documentation=https://github.com/rom/xproxy/tree/main/docs/SIGNER.md
+Before=xproxy.service xgate.service xrelay.service
+
+[Service]
+Type=exec
+User=xsigner
+Group=xsigner
+ExecStart=/usr/local/bin/xsigner -config /etc/xsigner/xsigner.yaml
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=10s
+KillSignal=SIGTERM
+UMask=0077
+
+# The directory the socket lives in comes from tmpfiles.d rather than
+# RuntimeDirectory=, because it needs the setgid bit and a group this unit does
+# not run as, and systemd's RuntimeDirectoryMode does not set setgid.
+LogsDirectory=xsigner
+LogsDirectoryMode=0750
+
+# Sandboxing. Tighter than the proxies', because this process does less: it
+# reads a handful of key files, binds one Unix socket, and computes.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateUsers=no
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+KeyringMode=private
+PrivateMounts=yes
+NoExecPaths=/
+ExecPaths=/usr/local/bin/xsigner
+RestrictFileSystems=@basic-api tmpfs
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @reboot @swap @obsolete @cpu-emulation @debug @module @raw-io @clock @keyring @pkey @network-io
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# No network. A signing helper has no business reaching anything: it answers
+# a Unix socket. This is also the strongest single line in the file -- a bug
+# in this process cannot exfiltrate a key it cannot send anywhere.
+#
+# If a key comes from a vault, this has to come off and be replaced with
+#   RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+#   IPAddressAllow=<the vault's address>
+#   IPAddressDeny=any
+# and the @network-io line above has to go. Prefer keeping the keys in files
+# this unit can read, and letting the *proxy* be the thing that talks to the
+# vault, unless the estate's reason for the vault is that the keys must not
+# be in files at all.
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+
+# What it may read: its configuration and its keys. Nothing else.
+ReadOnlyPaths=/etc/xsigner
+ReadWritePaths=/run/xsigner /var/log/xsigner
+DevicePolicy=closed
+
+[Install]
+WantedBy=multi-user.target

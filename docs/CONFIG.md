@@ -11226,6 +11226,13 @@ That is also why the helper is a separate process rather than a linked library:
 the daemons are built with `CGO_ENABLED=0`, and a PKCS#11 module is a C library.
 Keeping it out of the proxy is both a build fact and the point.
 
+`xsigner`(8) is the helper this project ships; it serves keys it can read as PEM
+from a file, the environment or a vault, runs as its own user with no network,
+and its socket's permissions are its authentication. For a key in an HSM, a TPM,
+a smartcard or a cloud KMS, the answer is a helper of your own:
+[SIGNER.md](SIGNER.md) specifies the protocol, which is one JSON object each way
+over a Unix socket, and includes a working helper in about forty lines.
+
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `socket` | path | required | The Unix socket the helper listens on. Absolute. Connecting to it is a *write* under the sandbox, and the rule is derived for you |

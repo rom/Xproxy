@@ -1,0 +1,166 @@
+.\" Generated from Markdown by internal/manpage; do not edit.
+.TH XSIGNER 8 "" "Xproxy" "System administration"
+.nh
+.ad l
+.SH "NAME"
+.PP
+xsigner \- hold TLS private keys so the proxies do not have to
+.SH "SYNOPSIS"
+.PP
+\fBxsigner\fR [\fB\-config\fR \fIFILE\fR] [\fB\-validate\fR] [\fB\-print\-keys\fR] [\fB\-version\fR]
+.SH "DESCRIPTION"
+.PP
+\fBxsigner\fR listens on a Unix socket and answers signature requests. A proxy sends a digest and gets a signature back, and the private key never crosses the socket.
+.PP
+What that buys is custody. A TLS private key in the proxy\(aqs memory is reachable by anything that can read that memory \[u2014] a core dump, a debugger, a read primitive in a bug. Moving the key into another process means there is nothing there to read: an attacker who owns the proxy can ask for signatures while they own it, which is bounded in time, and that is not the same as walking away with the key.
+.PP
+It is also where cgo belongs. A PKCS#11 module is a vendor C library and \fBxproxy\fR(8) and its siblings are built with \fBCGO_ENABLED=0\fR on purpose, so an HSM, a TPM or a smartcard is reached from here rather than from the process that terminates TLS for the estate. This build serves keys it can read as PEM \[u2014] from a file, the environment or a vault. The protocol is one JSON object each way over a Unix socket and is specified in \fBdocs/SIGNER.md\fR, so a helper for a device this build cannot reach can be written in whatever language that device has bindings for.
+.PP
+\fBThe socket\(aqs permissions are the authentication.\fR A digest says nothing about what it is a digest of, so anything that can connect to the socket can have anything signed by the keys this helper holds. There is no credential on the wire and there is deliberately no request that returns a key. The shipped arrangement is \fB/run/xsigner\fR at mode 2750 owned \fBxsigner:xsigner\-clients\fR with the socket inside it at 0660 \[u2014] the proxy daemons are members of that group, connecting to a Unix socket needs write permission on it, and the directory is what keeps everything else away. Widen neither.
+.PP
+Every key is resolved and parsed before the socket is bound, so a helper that could not answer for one of its keys is found out by an operator rather than by a handshake.
+.SH "OPTIONS"
+.PP
+.TS
+allbox;
+lbw(0.9i) lbx
+lw(0.9i) lx.
+T{
+Option
+T}	T{
+Description
+T}
+T{
+\fB\-\:config\fR \fIFILE\fR
+T}	T{
+Configuration file. Default \fB/\:etc/\:xsigner/\:xsigner.\:yaml\fR.
+T}
+T{
+\fB\-\:validate\fR
+T}	T{
+Load the configuration and every key,\: report what loaded,\: and exit.
+T}
+T{
+\fB\-\:print\-\:keys\fR
+T}	T{
+Print the public half of each key that loaded,\: in PEM,\: with its name and type. This is the answer to the one question the protocol cannot answer from the proxy\(aqs side without a certificate in hand: which key is behind this name.
+T}
+T{
+\fB\-\:version\fR
+T}	T{
+Print the version and exit.
+T}
+.TE
+.SH "CONFIGURATION"
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(1.0i) lbw(0.9i) lbx
+lw(0.9i) lw(1.0i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBsocket\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+The Unix socket to listen on. Absolute.
+T}
+T{
+\fBsocket_\:mode\fR
+T}	T{
+octal string
+T}	T{
+\fB0600\fR
+T}	T{
+The socket\(aqs permission mode. \fB0600\fR is the safe default and no proxy can connect to it;\: the shipped arrangement uses \fB0660\fR with the group from a setgid directory. A world\-writable mode is refused,\: because it makes this a signing oracle for anything on the machine.
+T}
+T{
+\fBkeys[].\:name\fR
+T}	T{
+name
+T}	T{
+required
+T}	T{
+What a request names this key by. One helper may hold several;\: a name twice is refused.
+T}
+T{
+\fBkeys[].\:key\fR
+T}	T{
+reference
+T}	T{
+required
+T}	T{
+Where the private key comes from: an absolute path,\: \fBfile:\fR,\: \fBenv:\:NAME\fR or \fBvault:\:mount/\:path#field\fR. PEM,\: in PKCS#1,\: SEC 1 or PKCS#8. An encrypted legacy PEM is refused rather than prompted for \[u2014] a helper started by systemd has nowhere to prompt,\: and a passphrase in the configuration is not a passphrase.
+T}
+T{
+\fBsecrets.\:vault\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Where a \fBvault:\fR reference resolves from: \fBaddress\fR (https only \[u2014] there is no insecure escape hatch here,\: unlike the proxy\(aqs own vault client,\: because this process exists to hold private keys),\: \fBmount\fR,\: \fBkv_\:version\fR,\: exactly one of \fBtoken_\:file\fR or \fBtoken_\:env\fR,\: \fBnamespace\fR,\: \fBca_\:file\fR,\: \fBserver_\:name\fR.
+T}
+.TE
+.SH "THE PROXY SIDE"
+.PP
+A certificate in \fBxproxy.yaml\fR(5) names this helper instead of a key file:
+.PP
+.RS 4
+.nf
+.ft CR
+certificates:
+  \- cert_file: /etc/xproxy/certs/pay.example.com.pem
+    signer:
+      socket: /run/xsigner/signer.sock
+      key: pay\-p256
+      timeout: 2s
+      max_conns: 16
+.ft
+.fi
+.RE
+.PP
+At start the proxy asks the helper to sign a known value and checks the signature against the public key in \fBcert_file\fR. A helper that cannot prove it holds the matching key fails the proxy\(aqs load, because the alternative is a listener that comes up and then fails every handshake \[u2014] which looks to everyone else like the listener being down. So the helper must be running before the proxy starts; the shipped unit orders itself \fBBefore=\fR the three daemons.
+.SH "SIGNALS"
+.PP
+\fBSIGTERM\fR and \fBSIGINT\fR shut down. A signature in flight fails rather than holding the shutdown open: a handshake waiting on a socket has already lost.
+.SH "EXIT STATUS"
+.PP
+0 on success, 1 on a configuration or key error, 2 on a usage mistake.
+.SH "EXAMPLES"
+.PP
+Check the configuration and every key without binding anything:
+.PP
+.RS 4
+.nf
+.ft CR
+xsigner \-config /etc/xsigner/xsigner.yaml \-validate
+.ft
+.fi
+.RE
+.PP
+Check what loaded against the certificate that will use it:
+.PP
+.RS 4
+.nf
+.ft CR
+xsigner \-config /etc/xsigner/xsigner.yaml \-print\-keys
+openssl x509 \-in /etc/xproxy/certs/pay.example.com.pem \-noout \-pubkey
+.ft
+.fi
+.RE
+.PP
+The two public keys must be identical. If they are not, the proxy will refuse to start and say so, which is the same check from the other side.
+.SH "SEE ALSO"
+.PP
+\fBxproxy\fR(8), \fBxgate\fR(8), \fBxrelay\fR(8), \fBxproxy.yaml\fR(5), \fBdocs/SIGNER.md\fR, \fBdocs/HARDENING.md\fR
