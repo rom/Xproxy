@@ -131,6 +131,14 @@ func fipsProbeSubjects(cfg *config.Config) ([]tls.CurveID, []uint16) {
 				groups = append(groups, id)
 			}
 		}
+		// Cipher suites are a TLS 1.2 matter: 1.3's are not configurable and
+		// a listener at min_version 1.3 never offers one. Probing them there
+		// would warn about ChaCha20 -- which a FIPS module does refuse -- on
+		// an estate that does not offer it, and a warning an operator cannot
+		// act on is one they learn to ignore.
+		if t.MinVersion == "1.3" {
+			continue
+		}
 		for _, id := range tlsconf.SuiteIDs(t.CipherSuites) {
 			if !seenS[id] {
 				seenS[id] = true

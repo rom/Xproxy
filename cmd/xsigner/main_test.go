@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -242,7 +243,13 @@ func TestTheHelperRunsAndStops(t *testing.T) {
 	cfg := write(t, filepath.Join(dir, "xsigner.yaml"),
 		"socket: "+sock+"\nkeys:\n  - {name: edge, key: "+keyPath+"}\n")
 
-	var out, errOut bytes.Buffer
+	// The helper logs from the goroutine running it, and this test reads what
+	// it logged, so the buffer has to be safe for both. A bytes.Buffer here is
+	// a data race the detector finds -- and one worth having found, since the
+	// same mistake in the product would be a log writer shared between
+	// sessions.
+	var out bytes.Buffer
+	var errOut lockedBuffer
 	done := make(chan int, 1)
 	go func() { done <- run([]string{"-config", cfg}, &out, &errOut) }()
 
@@ -304,4 +311,23 @@ func selfSignedFor(t *testing.T, key *ecdsa.PrivateKey) []byte {
 		t.Fatal(err)
 	}
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
+// lockedBuffer is a bytes.Buffer safe for the goroutine running the helper and
+// the test to share, which the helper's own log writer needs.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }

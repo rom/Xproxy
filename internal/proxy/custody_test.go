@@ -174,3 +174,78 @@ fips: {required: true}
 		t.Errorf("error %q does not say how to turn it on", err)
 	}
 }
+
+// What the FIPS probe asks about, and what it deliberately does not.
+//
+// Cipher suites are a TLS 1.2 matter: 1.3's are not configurable and a listener
+// at min_version 1.3 never offers one. Probing them there would warn about
+// ChaCha20 -- which a FIPS module does refuse -- on an estate that does not
+// offer it, and a warning an operator cannot act on is one they learn to
+// ignore.
+func TestTheProbeAsksAboutWhatTheListenersOffer(t *testing.T) {
+	dir := t.TempDir()
+	certPath, keyPath := testutil.WriteCert(t, dir, "probe.test")
+	cfg, err := config.Parse([]byte(`
+version: 1
+server:
+  listeners:
+    - name: modern
+      address: "127.0.0.1:0"
+      tls:
+        min_version: "1.3"
+        key_exchange: [X25519MLKEM768, P-256]
+        certificates: [{cert_file: ` + certPath + `, key_file: ` + keyPath + `}]
+logging: {access: {enabled: false}}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups, suites := fipsProbeSubjects(cfg)
+	if len(groups) != 2 {
+		t.Errorf("groups %v, want the two named", groups)
+	}
+	if len(suites) != 0 {
+		t.Errorf("suites %v, want none from a 1.3-only listener", suites)
+	}
+
+	// A 1.2 listener that names nothing still has the default suites probed,
+	// because the default is what it actually offers.
+	cfg12, err := config.Parse([]byte(`
+version: 1
+server:
+  listeners:
+    - name: legacy
+      address: "127.0.0.1:0"
+      tls:
+        min_version: "1.2"
+        certificates: [{cert_file: ` + certPath + `, key_file: ` + keyPath + `}]
+logging: {access: {enabled: false}}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups12, suites12 := fipsProbeSubjects(cfg12)
+	if len(groups12) == 0 {
+		t.Error("a listener that names no groups had none probed; the default is what it offers")
+	}
+	if len(suites12) == 0 {
+		t.Error("a 1.2 listener that names no suites had none probed; the default is what it offers")
+	}
+
+	// A listener with no TLS at all contributes nothing, and neither does a
+	// configuration with no TLS listener: no goroutine, no handshakes, no
+	// warnings about algorithms nobody offers.
+	plain, err := config.Parse([]byte(`
+version: 1
+server:
+  listeners:
+    - {name: plain, address: "127.0.0.1:0"}
+logging: {access: {enabled: false}}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g, s := fipsProbeSubjects(plain); len(g) != 0 || len(s) != 0 {
+		t.Errorf("a configuration with no TLS listener probed %v %v", g, s)
+	}
+}

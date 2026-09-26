@@ -221,7 +221,16 @@ func TestAnAnnouncedEndpointIsProbedAtOnce(t *testing.T) {
 	fl.set("backend.example.", "127.0.0.1")
 	p.ResolveNowForTest()
 	e := find(t, p, "127.0.0.1:"+port)
-	if e.Healthy() {
+	// The precondition is asserted on the flag rather than on Healthy(),
+	// because the probe this test is about succeeds against a real listener in
+	// microseconds: under load it can land before the next line runs, and
+	// "e.Healthy() is false" would then fail for the very reason the test
+	// exists. joinOnProbe is set once and never cleared, so it says the same
+	// thing whenever it is read. That an endpoint waiting on a probe really is
+	// out of the pool meanwhile is asserted where it can be asserted
+	// stably -- TestAnAnnouncedEndpointWaitsForItsFirstProbe, whose addresses
+	// no probe can reach.
+	if !e.joinOnProbe {
 		t.Fatal("the announcement did not wait for a probe, so this proves nothing")
 	}
 	// An hour of jitter would leave it unhealthy here; a probe run at once
