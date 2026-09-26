@@ -681,11 +681,7 @@ func (se *session) admitByGrant() bool {
 // trials a policy.
 func (se *session) admitByPolicy() bool {
 	t := se.t
-	pol := t.engine.Authorization()
-	if pol == nil {
-		return true
-	}
-	d := pol.Decide(authorization.Subject{
+	reason := t.engine.Authorization().Ask(authorization.Subject{
 		Listener:  t.cfg.Name,
 		Kind:      "ssh",
 		Client:    se.ip,
@@ -693,24 +689,23 @@ func (se *session) admitByPolicy() bool {
 		Principal: se.principal,
 		Target:    t.h.Upstream,
 		Action:    authorization.ActionConnect,
-	})
-	if d.Allow {
+	}, se.principalKey(), t.authzGate(se.ip))
+	if reason == "" {
 		return true
 	}
-	detail := se.principalKey()
-	if d.Rule != "" {
-		detail += " (" + d.Rule + ")"
-	}
-	se.grantRefusal = authorization.Reason
-	if pol.Shadows() {
-		t.recordWouldDeny(se.ip, authorization.Reason, d.Rule, detail)
-		return true
-	}
-	if t.shadowed(se.ip, authorization.Reason, detail) {
-		return true
-	}
-	t.deny(se.ip, authorization.Reason, detail)
+	se.grantRefusal = reason
 	return false
+}
+
+// authzGate lends the policy this listener's own refusal machinery, so a
+// refusal it makes is counted, logged and banned on exactly as one this
+// listener made itself.
+func (t *server) authzGate(ip netip.Addr) authorization.Gate {
+	return authorization.Gate{
+		Shadowing: t.cfg.Shadowing,
+		Record:    func(reason, rule, detail string) { t.recordWouldDeny(ip, reason, rule, detail) },
+		Deny:      func(reason, detail string) { t.deny(ip, reason, detail) },
+	}
 }
 
 // poolAddresses is the machines behind this listener, which a grant may name

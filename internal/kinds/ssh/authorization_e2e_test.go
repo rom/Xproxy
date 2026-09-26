@@ -122,9 +122,13 @@ func TestARuleMayNameTheUpstreamPool(t *testing.T) {
 // before it decides anything. The record is the deliverable, so it has to be
 // there.
 func TestAShadowedPolicyRecordsAndAdmits(t *testing.T) {
+	// A named deny rule, so the record has a rule to name. (Where the default
+	// decides instead, there is no rule and the field is empty -- which is
+	// itself the useful distinction: "no rule covered this" reads differently
+	// from "this rule refused it".)
 	s, addr, key, tg := authzBastion(t, `  shadow: true
   rules:
-    - {name: robots-only, allow: true, users: [robot]}
+    - {name: not-alice, users: [alice]}
 `)
 
 	if _, err := sshSession(t, addr, key); err != nil {
@@ -140,6 +144,41 @@ func TestAShadowedPolicyRecordsAndAdmits(t *testing.T) {
 			if !strings.Contains(e.Sample, "alice") {
 				t.Errorf("shadow entry sample %q, want the subject in it", e.Sample)
 			}
+			// The rule reaches its own field, so a report an operator reads
+			// names the rule that decided rather than only the reason.
+			if e.Rule != "not-alice" {
+				t.Errorf("shadow entry rule %q, want not-alice", e.Rule)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("no shadow entry for the refusal: %+v", s.Shadow().Report())
+	}
+	if s.Counters().SSHRejected.Load() != 0 {
+		t.Error("a shadowed refusal was counted as a refusal")
+	}
+}
+
+// The other shadow switch: the policy enforces, and the listener is the thing in
+// shadow mode. An estate turning the policy on one listener at a time needs this
+// half to work, and it is a different code path from the policy's own switch.
+func TestAShadowedListenerRecordsAPolicyRefusal(t *testing.T) {
+	s, addr, key, tg := bastionWith(t, "", `policy: {mode: shadow}
+authorization:
+  rules:
+    - {name: not-alice, users: [alice]}
+`)
+
+	if _, err := sshSession(t, addr, key); err != nil {
+		t.Fatalf("a shadowed listener refused a session: %v", err)
+	}
+	if n := len(tg.seen()); n == 0 {
+		t.Error("the target saw nothing, so the session was not really admitted")
+	}
+	found := false
+	for _, e := range s.Shadow().Report() {
+		if e.Kind == "ssh" && e.Reason == "authorization" && e.Rule == "not-alice" {
+			found = true
 		}
 	}
 	if !found {

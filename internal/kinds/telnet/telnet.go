@@ -23,6 +23,7 @@ import (
 
 	"github.com/rom/xproxy/internal/acceptgroup"
 	"github.com/rom/xproxy/internal/access"
+	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/mfa"
 	"github.com/rom/xproxy/internal/netutil"
@@ -187,12 +188,32 @@ func (t *server) shadowed(ip netip.Addr, what, detail string) bool {
 	if !t.cfg.Shadowing() {
 		return false
 	}
+	t.recordWouldDeny(ip, what, "", detail)
+	return true
+}
+
+// recordWouldDeny writes a refusal that is not being enforced, for a caller
+// that has already decided it is not enforcing it: the listener's own shadow
+// mode above, or the estate's authorisation policy, which has a shadow switch
+// of its own and must leave the same record on a listener that enforces. rule
+// names the rule that decided, where the policy that decided names its rules.
+func (t *server) recordWouldDeny(ip netip.Addr, what, rule, detail string) {
 	t.engine.Counters().WouldRefuse("telnet", what)
-	t.engine.Shadow().Record("telnet", t.cfg.Name, what, "", detail)
+	t.engine.Shadow().Record("telnet", t.cfg.Name, what, rule, detail)
 	t.engine.Logs().SecurityEvent(context.Background(), "would_deny", "telnet_"+what,
 		"listener", t.cfg.Name, "client_ip", ip.String(), "what", what,
 		"detail", textsafe.Clip256(detail))
-	return true
+}
+
+// authzGate lends the estate's authorisation policy this listener's own refusal
+// machinery, so a refusal it makes is counted, logged and banned on exactly as
+// one this listener made itself.
+func (t *server) authzGate(ip netip.Addr) authorization.Gate {
+	return authorization.Gate{
+		Shadowing: t.cfg.Shadowing,
+		Record:    func(reason, rule, detail string) { t.recordWouldDeny(ip, reason, rule, detail) },
+		Deny:      func(reason, detail string) { t.deny(ip, reason, detail) },
+	}
 }
 
 func (t *server) clientAllowed(ip netip.Addr) bool {
@@ -268,6 +289,32 @@ func (se *session) admitByGrant() string {
 	return adm.Reason
 }
 
+// admitByPolicy is the estate's authorisation policy, asked at the same point
+// as the access grant and for the same reason: after the second factor, so the
+// subject is the name the factor was checked against rather than anything the
+// client chose, and before the target is dialled, so a refused session never
+// reaches the equipment.
+//
+// Telnet carries no identity of its own, so the user is whatever the factor
+// prompt established and the principal is empty. A listener with no factor has
+// no name to decide about, and a rule that names users will not match one --
+// which is why a telnet listener under a policy about people wants the factor,
+// exactly as require_grant does.
+//
+// The target is the upstream pool's name: the machine is chosen by balancer
+// after this point, and the per-machine question is the access grant's.
+func (se *session) admitByPolicy() string {
+	t := se.t
+	return t.engine.Authorization().Ask(authorization.Subject{
+		Listener: t.cfg.Name,
+		Kind:     "telnet",
+		Client:   se.ip,
+		User:     se.user,
+		Target:   t.t.Upstream,
+		Action:   authorization.ActionConnect,
+	}, textsafe.Clip64(se.user), t.authzGate(se.ip))
+}
+
 func (t *server) handle(client net.Conn) {
 	s := t.engine
 	start := time.Now()
@@ -328,6 +375,15 @@ func (t *server) handle(client net.Conn) {
 	// And the grant is checked after the factor, so the subject is the name
 	// the factor was checked against. Telnet carries no identity of its own,
 	// which is why require_grant needs the factor prompt.
+	// The estate's own policy is asked first, because it is the broader
+	// question: whether this person may be on this equipment at all, rather
+	// than whether somebody approved a window for them today.
+	if reason := se.admitByPolicy(); reason != "" {
+		s.Counters().TelnetRejected.Add(1)
+		_, _ = se.client.Write(wire.EscapeData([]byte("not authorised\r\n")))
+		t.log(se, start, reason)
+		return
+	}
 	if reason := se.admitByGrant(); reason != "" {
 		s.Counters().TelnetRejected.Add(1)
 		_, _ = se.client.Write(wire.EscapeData([]byte("no access grant is in force\r\n")))

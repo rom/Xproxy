@@ -599,11 +599,20 @@ Open findings of the earlier rounds:
   kinds that do. The list lives beside the listener roster and is a list
   of what *does* consult it, so a kind added tomorrow is outside the
   policy until somebody decides otherwise -- and a test holds every kind
-  against both lists, failing on a kind in neither. `ssh` is wired in
-  this release: it asks at the same point as the access grant, after
-  authentication and before the target is dialled, with the upstream pool
-  as the target, because a bastion picks the machine by balancer after
-  that point and the per-machine question is the grant's.
+  against both lists, failing on a kind in neither.
+
+- **All five gate kinds ask it**, each at the point where it has an identity
+  and the protocol allows. `ssh` (and SFTP inside it), `telnet` and `vnc` ask
+  before the target is dialled, so a refused session never reaches a machine.
+  On `rdp` and `ftp` the person appears only *after* the target is reached --
+  RDP carries the credential in one packet that arrives after the desktop is
+  dialled, and FTP's greeting comes from the server -- so there the refusal is
+  before the credential or any command of theirs travels: the far side has seen
+  a connection and nothing else. That is a fact about those protocols rather
+  than a choice, it is the same constraint the access grant has, and each
+  protocol page says so. All five take the upstream **pool** as the target, so
+  one rule reads the same on all of them, and the per-machine question stays the
+  grant's.
 
 - **Readable while it is being trialled.** `shadow: true` evaluates the
   whole policy and records what it would have refused without refusing
@@ -618,10 +627,19 @@ Open findings of the earlier rounds:
   switches (`shadow`, `default: allow`) that change what every other
   number means.
 
+  Both shadow switches leave the same record, rule included. The kinds hand the
+  policy their own counters, security event and ban list through one small
+  interface, so the ordering that is easy to get wrong -- which switch is
+  checked, whether a shadowed refusal counts as a refusal (it does not),
+  whether the rule reaches the report -- is written once rather than five
+  times.
+
   Not the `authz` filter, which decides one HTTP request by method, path,
   scopes and claims inside a route's filter chain. This decides whether a
   session happens at all. They share a vocabulary deliberately and
-  nothing else, and an HTTP deployment can reasonably want both.
+  nothing else, and an HTTP deployment can reasonably want both. The package
+  is `internal/authorization` so the two are apart by name as well as by
+  layer.
 
 ### Added (1.4, the factors that are not typed)
 

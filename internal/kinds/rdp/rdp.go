@@ -25,6 +25,7 @@ import (
 
 	"github.com/rom/xproxy/internal/acceptgroup"
 	"github.com/rom/xproxy/internal/access"
+	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/mfa"
 	"github.com/rom/xproxy/internal/netutil"
@@ -263,12 +264,35 @@ func (t *server) shadowed(ip netip.Addr, what, detail string) bool {
 	if !t.cfg.Shadowing() {
 		return false
 	}
+	t.recordWouldDeny(ip, what, "", detail)
+	return true
+}
+
+// recordWouldDeny writes a refusal that is not being enforced, for a caller
+// that has already decided it is not enforcing it: the listener's own shadow
+// mode above, or the estate's authorisation policy, which has a shadow switch
+// of its own and must leave the same record on a listener that enforces. rule
+// names the rule that decided, where the policy that decided names its rules.
+func (t *server) recordWouldDeny(ip netip.Addr, what, rule, detail string) {
 	t.engine.Counters().WouldRefuse("rdp", what)
-	t.engine.Shadow().Record("rdp", t.cfg.Name, what, "", detail)
+	t.engine.Shadow().Record("rdp", t.cfg.Name, what, rule, detail)
 	t.engine.Logs().SecurityEvent(context.Background(), "would_deny", "rdp_"+what,
 		"listener", t.cfg.Name, "client_ip", ip.String(), "what", what,
 		"detail", textsafe.Clip256(detail))
-	return true
+}
+
+// authzGate lends the estate's authorisation policy this listener's own refusal
+// machinery, so a refusal it makes is counted, logged and banned on exactly as
+// one this listener made itself.
+func (t *server) authzGate(ip netip.Addr) authorization.Gate {
+	return authorization.Gate{
+		Shadowing: t.cfg.Shadowing,
+		Record:    func(reason, rule, detail string) { t.recordWouldDeny(ip, reason, rule, detail) },
+		Deny: func(reason, detail string) {
+			t.engine.Counters().RDPRefused.Add(1)
+			t.deny(ip, reason, detail)
+		},
+	}
 }
 
 func (t *server) clientAllowed(ip netip.Addr) bool {

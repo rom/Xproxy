@@ -430,15 +430,21 @@ of them is a flaw in front of all of them.
   kind. So the coverage cannot silently be less than an operator reading
   the file believes.
 
-  Not yet: `ssh` is the only kind wired. The rest of the gate kinds
-  (sftp inside ssh, telnet, vnc, rdp, ftp) come next, since
-  `require_grant` already gives them the admission point to hang it on;
-  then forward and the relays that authenticate a user; then the
-  identity-less kinds, in the same pass as the `cidr`-lists-per-kind
-  sweep above, because both need the same per-kind admission point. The
-  HTTP gateway's session-level question is last and is genuinely a
-  design question: an HTTP listener has no session, and the per-request
-  answer is already the `authz` filter.
+  All five gate kinds ask it: `ssh` (SFTP inside it covered by the same
+  decision), `telnet`, `vnc`, `rdp` and `ftp`. Each asks at the point
+  where it has an identity and the protocol allows -- before the target
+  is dialled on `ssh`, `telnet` and `vnc`; on `rdp` and `ftp` the person
+  appears only after the target is reached, so the refusal is before the
+  credential or any command of theirs travels, and the pages under
+  `docs/protocols/` say so per kind. All five take the upstream pool as
+  the target, so one rule reads the same on all of them.
+
+  Not yet: the forward proxy and the relays that authenticate a user;
+  then the identity-less kinds, in the same pass as the
+  `cidr`-lists-per-kind sweep above, because both need the same per-kind
+  admission point. The HTTP gateway's session-level question is last and
+  is genuinely a design question: an HTTP listener has no session, and
+  the per-request answer is already the `authz` filter.
 
 ## After 1.4 (candidates, unranked)
 

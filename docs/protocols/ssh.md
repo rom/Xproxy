@@ -151,7 +151,12 @@ A refusal is the reason `authorization` — the event `ssh_authorization`, the
 counter `xproxy_refusals_total{kind="ssh",reason="authorization"}` — so it reads
 like every other refusal this listener makes, and the ban list sees it. Either
 shadow switch (`policy: {mode: shadow}` on the listener, or `shadow: true` on
-the section) records what it would have refused and admits the session.
+the section) records what it would have refused -- with the rule that decided --
+and admits the session.
+
+An SFTP session inside this listener is covered by the same decision: it is a
+subsystem of a session the policy already allowed, and what may be read or
+written inside it is the `sftp` policy's business.
 
 ## What it does not do
 

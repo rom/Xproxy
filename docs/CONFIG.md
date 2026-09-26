@@ -11433,17 +11433,28 @@ A kind that did not consult this policy would be a hole in a policy an operator
 believes covers everything, so a configuration that has an `authorization`
 section **and** a listener of a kind that does not consult it is refused at
 load, naming the listener and the kind. The kinds are wired one at a time;
-today the list is:
+today the list is the five gate kinds.
 
-| Kind | Asks about |
-|------|-----------|
-| `ssh` | `connect`, after authentication and before the target is dialled. `target` is the upstream **pool** name, because a bastion picks the machine by balancer after this point and the per-machine question is the access grant's (see `access`). `groups` is empty: SSH gives the gate no group membership it could verify, so a rule about a team is written with `principals`, which is what a `principals` entry already is |
+Every one of them asks about `connect` and takes `target` as the **upstream pool
+name**, not an endpoint address, so that one rule reads the same on all of them;
+the per-machine question belongs to the JIT access grant (see `access`), which
+does check the endpoint. None of them fills `groups`: these protocols give the
+gateway no group membership it could verify, so a rule about a team is written
+with `principals` on `ssh` and with `users` elsewhere.
+
+| Kind | When it asks, and what it has |
+|------|------------------------------|
+| `ssh` | After authentication and before the target is dialled, so a refused session never reaches a machine. `user` is the login, `principal` the `principals` entry the key or certificate matched. SFTP inside the session is covered by the same decision |
+| `telnet` | After the second factor and before the equipment is dialled. Telnet carries no identity of its own, so `user` is whatever the factor prompt established -- which is why a telnet listener under a policy about people wants `mfa`, exactly as `require_grant` does |
+| `vnc` | After the client has identified itself and before the desktop is dialled. `user` is the plain credential's user or the name the factor prompt asked for, so the listener needs a security type that carries one (`mslogon2`, or VeNCrypt with a named credential) |
+| `rdp` | At the client info packet, which is the only place a person appears in RDP and arrives **after** the desktop has been dialled. So a refusal here means the desktop saw a TCP connection from the gateway and never the person's name or password |
+| `ftp` | At the login, for the same reason: FTP's greeting comes from the server, so the target is dialled before anybody has said who they are. A refusal is a 530 on the login, and no command of the person's is forwarded |
 
 A refusal here is the reason `authorization` on the listener's usual deny event
 (`ssh_authorization` and so on), so the counters, the security log and the ban
-list see it as they see any other refusal. A listener in `policy: {mode:
-shadow}`, or the whole policy with `shadow: true`, records what it would have
-refused and carries on.
+list see it as they see any other refusal. Either shadow switch -- a listener in
+`policy: {mode: shadow}`, or the whole policy with `shadow: true` -- records what
+it would have refused, with the rule that decided, and carries on.
 
 ### Reading it back
 

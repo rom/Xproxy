@@ -28762,25 +28762,47 @@ T}
 .TE
 .SS "Which listeners it covers"
 .PP
-A kind that did not consult this policy would be a hole in a policy an operator believes covers everything, so a configuration that has an \fBauthorization\fR section \fBand\fR a listener of a kind that does not consult it is refused at load, naming the listener and the kind. The kinds are wired one at a time; today the list is:
+A kind that did not consult this policy would be a hole in a policy an operator believes covers everything, so a configuration that has an \fBauthorization\fR section \fBand\fR a listener of a kind that does not consult it is refused at load, naming the listener and the kind. The kinds are wired one at a time; today the list is the five gate kinds.
+.PP
+Every one of them asks about \fBconnect\fR and takes \fBtarget\fR as the \fBupstream pool name\fR, not an endpoint address, so that one rule reads the same on all of them; the per\-machine question belongs to the JIT access grant (see \fBaccess\fR), which does check the endpoint. None of them fills \fBgroups\fR: these protocols give the gateway no group membership it could verify, so a rule about a team is written with \fBprincipals\fR on \fBssh\fR and with \fBusers\fR elsewhere.
 .PP
 .TS
 allbox;
-lbw(0.6i) lbx
-lw(0.6i) lx.
+lbw(0.7i) lbx
+lw(0.7i) lx.
 T{
 Kind
 T}	T{
-Asks about
+When it asks,\: and what it has
 T}
 T{
 \fBssh\fR
 T}	T{
-\fBconnect\fR,\: after authentication and before the target is dialled. \fBtarget\fR is the upstream \fBpool\fR name,\: because a bastion picks the machine by balancer after this point and the per\-machine question is the access grant\(aqs (see \fBaccess\fR). \fBgroups\fR is empty: SSH gives the gate no group membership it could verify,\: so a rule about a team is written with \fBprincipals\fR,\: which is what a \fBprincipals\fR entry already is
+After authentication and before the target is dialled,\: so a refused session never reaches a machine. \fBuser\fR is the login,\: \fBprincipal\fR the \fBprincipals\fR entry the key or certificate matched. SFTP inside the session is covered by the same decision
+T}
+T{
+\fBtelnet\fR
+T}	T{
+After the second factor and before the equipment is dialled. Telnet carries no identity of its own,\: so \fBuser\fR is whatever the factor prompt established \-\- which is why a telnet listener under a policy about people wants \fBmfa\fR,\: exactly as \fBrequire_\:grant\fR does
+T}
+T{
+\fBvnc\fR
+T}	T{
+After the client has identified itself and before the desktop is dialled. \fBuser\fR is the plain credential\(aqs user or the name the factor prompt asked for,\: so the listener needs a security type that carries one (\fBmslogon2\fR,\: or VeNCrypt with a named credential)
+T}
+T{
+\fBrdp\fR
+T}	T{
+At the client info packet,\: which is the only place a person appears in RDP and arrives \fBafter\fR the desktop has been dialled. So a refusal here means the desktop saw a TCP connection from the gateway and never the person\(aqs name or password
+T}
+T{
+\fBftp\fR
+T}	T{
+At the login,\: for the same reason: FTP\(aqs greeting comes from the server,\: so the target is dialled before anybody has said who they are. A refusal is a 530 on the login,\: and no command of the person\(aqs is forwarded
 T}
 .TE
 .PP
-A refusal here is the reason \fBauthorization\fR on the listener\(aqs usual deny event (\fBssh_authorization\fR and so on), so the counters, the security log and the ban list see it as they see any other refusal. A listener in \fBpolicy: {mode: shadow}\fR, or the whole policy with \fBshadow: true\fR, records what it would have refused and carries on.
+A refusal here is the reason \fBauthorization\fR on the listener\(aqs usual deny event (\fBssh_authorization\fR and so on), so the counters, the security log and the ban list see it as they see any other refusal. Either shadow switch \-\- a listener in \fBpolicy: {mode: shadow}\fR, or the whole policy with \fBshadow: true\fR \-\- records what it would have refused, with the rule that decided, and carries on.
 .SS "Reading it back"
 .PP
 \fBxproxyctl status\fR prints the policy and then each rule with its hit count, and says where the rule never matched \-\- which is either a rule about traffic that does not happen or a rule something above it shadows.

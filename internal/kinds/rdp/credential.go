@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/access"
+	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/mfa"
 	"github.com/rom/xproxy/internal/rdp"
 	"github.com/rom/xproxy/internal/textsafe"
@@ -34,6 +35,12 @@ func (se *session) credential(info *rdp.ClientInfo) string {
 	// the grant is checked against the machine already reached -- a grant
 	// naming another one refuses rather than moving the session -- and the
 	// desktop sees a TCP connection and no credential.
+	// The estate's own policy is asked first, because it is the broader
+	// question: whether this person may be on this desktop at all, rather than
+	// whether somebody approved a window for them today.
+	if reason := se.admitByPolicy(); reason != "" {
+		return reason
+	}
 	if reason := se.admitByGrant(); reason != "" {
 		return reason
 	}
@@ -130,6 +137,32 @@ func splitCode(arg string) (pass, code string) {
 		}
 	}
 	return arg[:i], code
+}
+
+// admitByPolicy is the estate's authorisation policy, asked where the grant is
+// asked and for the same reason: this is the earliest point on this protocol
+// where there is anybody to decide about.
+//
+// That point is later than on the other gate kinds, and the difference is worth
+// knowing: the client info packet is the only place a person appears in RDP, and
+// it arrives after the desktop has been dialled. So a refusal here means the
+// desktop saw a TCP connection from the gateway and no credential -- nobody
+// logged in, and nothing the person sent went any further.
+//
+// The target is the upstream pool's name rather than the machine already
+// reached, so that a rule reads the same on an rdp listener as on the others;
+// the per-machine question is the access grant's, which does check the machine
+// this session actually got.
+func (se *session) admitByPolicy() string {
+	t := se.t
+	return t.engine.Authorization().Ask(authorization.Subject{
+		Listener: t.cfg.Name,
+		Kind:     "rdp",
+		Client:   se.ip,
+		User:     se.user,
+		Target:   t.v.Upstream,
+		Action:   authorization.ActionConnect,
+	}, textsafe.Clip64(se.user), t.authzGate(se.ip))
 }
 
 // admitByGrant is the just-in-time access decision. It runs after the factor,

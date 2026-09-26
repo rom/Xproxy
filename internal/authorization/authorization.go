@@ -430,3 +430,62 @@ func globMatch(pattern, s string) bool {
 // caller that shadows still logs and counts the decision, and then does what it
 // would have done without a policy at all.
 func (p *Policy) Shadows() bool { return p != nil && p.shadow }
+
+// Gate is the three things a listener kind lends the policy so that a refusal
+// made here reads exactly like every other refusal that kind makes: its own
+// counters, its own security event, its own ban list entry.
+//
+// It is an interface of functions rather than of the engine, because the kinds
+// spell all three differently -- one takes an address, another has the address
+// on the session -- and the part that must not differ between them is the order
+// they are called in, which is Ask's job below and not each kind's.
+type Gate struct {
+	// Shadowing reports whether this listener is in shadow mode. It is a
+	// predicate and nothing else: the recording below is the same whichever of
+	// the two shadow switches is set, which is what keeps a report readable
+	// while an estate turns the policy on one listener at a time.
+	Shadowing func() bool
+	// Record writes a refusal that is not being enforced, with the rule that
+	// decided in its own field.
+	Record func(reason, rule, detail string)
+	// Deny counts and logs an enforced refusal, and hands the ban list the
+	// kind's usual reason.
+	Deny func(reason, detail string)
+}
+
+// Ask asks the policy about one subject and reports the reason to refuse, or
+// empty to carry on. subject is the name the refusal is logged under -- the
+// principal, the login, whatever the kind counts identities by.
+//
+// Every kind consulting the policy goes through here, because the part that is
+// easy to get wrong is not the decision but what surrounds it: which of the two
+// shadow switches is checked first, whether a shadowed refusal is counted as a
+// refusal (it is not), and whether the rule that decided reaches the record (it
+// does, in its own field, so a report an operator reads names the rule rather
+// than only the reason). Written once, those hold for every kind; written
+// nineteen times they would hold for some.
+func (p *Policy) Ask(sub Subject, subject string, g Gate) string {
+	if p == nil {
+		return ""
+	}
+	d := p.Decide(sub)
+	if d.Allow {
+		return ""
+	}
+	detail := subject
+	if d.Rule != "" {
+		detail += " (" + d.Rule + ")"
+	}
+	// Either shadow switch is enough not to enforce: the policy's own, which
+	// says the whole policy is being read rather than enforced, and the
+	// listener's, which is how an estate turns the policy on one listener at a
+	// time. Both leave the same record, rule included -- a report that named the
+	// rule under one switch and not the other would be a report an operator
+	// cannot compare across listeners.
+	if p.shadow || g.Shadowing() {
+		g.Record(Reason, d.Rule, detail)
+		return ""
+	}
+	g.Deny(Reason, detail)
+	return Reason
+}

@@ -92,7 +92,11 @@ var roster = map[string]Role{
 // listener, rather than quietly leaving a hole in a policy an operator believes
 // covers everything.
 var authorises = map[string]bool{
-	"ssh": true,
+	"ssh":    true,
+	"telnet": true,
+	"vnc":    true,
+	"rdp":    true,
+	"ftp":    true,
 }
 
 // Authorises reports whether a kind consults the estate's authorisation policy.

@@ -26,6 +26,7 @@ import (
 
 	"github.com/rom/xproxy/internal/acceptgroup"
 	"github.com/rom/xproxy/internal/access"
+	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/mfa"
 	"github.com/rom/xproxy/internal/netutil"
@@ -252,12 +253,35 @@ func (t *server) shadowed(ip netip.Addr, what, detail string) bool {
 	if !t.cfg.Shadowing() {
 		return false
 	}
+	t.recordWouldDeny(ip, what, "", detail)
+	return true
+}
+
+// recordWouldDeny writes a refusal that is not being enforced, for a caller
+// that has already decided it is not enforcing it: the listener's own shadow
+// mode above, or the estate's authorisation policy, which has a shadow switch
+// of its own and must leave the same record on a listener that enforces. rule
+// names the rule that decided, where the policy that decided names its rules.
+func (t *server) recordWouldDeny(ip netip.Addr, what, rule, detail string) {
 	t.engine.Counters().WouldRefuse("vnc", what)
-	t.engine.Shadow().Record("vnc", t.cfg.Name, what, "", detail)
+	t.engine.Shadow().Record("vnc", t.cfg.Name, what, rule, detail)
 	t.engine.Logs().SecurityEvent(context.Background(), "would_deny", "vnc_"+what,
 		"listener", t.cfg.Name, "client_ip", ip.String(), "what", what,
 		"detail", textsafe.Clip256(detail))
-	return true
+}
+
+// authzGate lends the estate's authorisation policy this listener's own refusal
+// machinery, so a refusal it makes is counted, logged and banned on exactly as
+// one this listener made itself.
+func (t *server) authzGate(ip netip.Addr) authorization.Gate {
+	return authorization.Gate{
+		Shadowing: t.cfg.Shadowing,
+		Record:    func(reason, rule, detail string) { t.recordWouldDeny(ip, reason, rule, detail) },
+		Deny: func(reason, detail string) {
+			t.engine.Counters().VNCRefused.Add(1)
+			t.deny(ip, reason, detail)
+		},
+	}
 }
 
 func (t *server) clientAllowed(ip netip.Addr) bool {
@@ -414,6 +438,12 @@ func (se *session) run(start time.Time) string {
 	// The grant is checked after the client has identified itself and
 	// before the desktop is dialled, so a session with no grant never
 	// reaches a machine.
+	// The estate's own policy is asked first, because it is the broader
+	// question: whether this person may be on this desktop at all, rather than
+	// whether somebody approved a window for them today.
+	if reason := se.admitByPolicy(); reason != "" {
+		return reason
+	}
 	if reason := se.admitByGrant(); reason != "" {
 		return reason
 	}
@@ -484,6 +514,27 @@ func (se *session) admitByGrant() string {
 	t.engine.Counters().VNCRefused.Add(1)
 	t.deny(se.ip, adm.Reason, textsafe.Clip64(se.user))
 	return adm.Reason
+}
+
+// admitByPolicy is the estate's authorisation policy, asked at the same point
+// as the access grant: after the client has identified itself and before the
+// desktop is dialled, so a refused session never reaches a machine.
+//
+// The user is the name the client authenticated with, which on this protocol is
+// the plain credential's user or the name the factor prompt asked for; RFB has
+// no principal and no groups the gateway could verify. The target is the
+// upstream pool's name, because the machine is chosen by balancer after this
+// point and the per-machine question is the access grant's.
+func (se *session) admitByPolicy() string {
+	t := se.t
+	return t.engine.Authorization().Ask(authorization.Subject{
+		Listener: t.cfg.Name,
+		Kind:     "vnc",
+		Client:   se.ip,
+		User:     se.user,
+		Target:   t.v.Upstream,
+		Action:   authorization.ActionConnect,
+	}, textsafe.Clip64(se.user), t.authzGate(se.ip))
 }
 
 func (se *session) connect() error {

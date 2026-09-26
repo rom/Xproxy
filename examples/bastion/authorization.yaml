@@ -80,6 +80,20 @@ authorization:
       targets: [batch-hosts]
       actions: [exec]
 
+    # And the same policy over a different protocol, which is the whole
+    # point of the section: one rule, written once, for the console
+    # gateway in front of the switches. `kinds` is what makes it about
+    # every telnet listener rather than one by name.
+    - name: network-team
+      allow: true
+      groups: ["cn=network,ou=groups,dc=example,dc=com"]
+      kinds: [telnet]
+      schedule:
+        days: [mon, tue, wed, thu, fri]
+        from: "07:00"
+        to: "19:00"
+        timezone: Europe/Stockholm
+
 # Just-in-time access underneath it. The two are different questions and
 # both are asked: the policy above says whether this identity may ever be
 # on this pool, the grant says whether they may be on it right now. A
@@ -136,6 +150,21 @@ server:
         recording:
           directory: /var/lib/xgate/recordings
 
+    # The console gateway the network-team rule above is about. Telnet
+    # carries no identity of its own, so the factor prompt is what gives
+    # the policy a name to decide about -- the same reason require_grant
+    # needs it on this kind. Without it, a rule naming users or groups
+    # matches nobody here and the default refuses everybody, which is
+    # fail-closed but not what the author meant.
+    - name: consoles
+      address: "0.0.0.0:23"
+      kind: telnet
+      telnet:
+        upstream: console-servers
+        mfa: {file: /etc/xgate/mfa}
+        recording:
+          directory: /var/lib/xgate/recordings
+
 logging:
   directory: /var/log/xgate
 
@@ -150,3 +179,6 @@ upstreams:
   - name: batch-hosts
     endpoints:
       - {address: "10.0.5.11:22"}
+  - name: console-servers
+    endpoints:
+      - {address: "10.0.7.11:23"}

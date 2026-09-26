@@ -94,6 +94,29 @@ has one weak factor and no way to add another.
 **The bounds**: the command line length, `max_errors`, `max_file_bytes`,
 connections, and the idle, session and data timeouts.
 
+### The estate's own authorisation policy
+
+Above this listener's own policy sits the `authorization` section, which is not
+about FTP: it is the one place that says which identity may reach which listener
+and target, in the same words for every protocol.
+
+Where it is asked is a fact about the protocol. FTP's greeting comes from the
+server, so the target is dialled before anybody has said who they are -- the
+login is the first point at which there is a person to decide about, and the
+access grant has the same constraint. So the refusal is a 530 on the login: the
+target has seen a connection and a login attempt, and no command of the person's
+is forwarded.
+
+The `target` is the upstream **pool** name rather than the machine this session
+reached, so that a rule reads the same here as on an `ssh` listener; the
+per-machine question belongs to the access grant. `principal` and `groups` are
+empty.
+
+A refusal is the reason `authorization` (the event `ftp_authorization`, the
+counter `xproxy_refusals_total{kind="ftp",reason="authorization"}`). Either
+shadow switch -- `policy: {mode: shadow}` on the listener, or `shadow: true` on
+the section -- records what it would have refused and admits.
+
 ## What it does not do
 
 - **It does not rewrite addresses in a reply it did not construct.** The `PASV`
@@ -128,6 +151,7 @@ connections, and the idle, session and data timeouts.
 ## See also
 
 - The settings: [docs/CONFIG.md `server.listeners[].ftp`](../CONFIG.md#serverlistenersftp-kind-ftp)
+- The estate-wide policy above it: [docs/CONFIG.md `authorization`](../CONFIG.md#authorization)
 - A worked configuration: [`examples/files/ftp.yaml`](../../examples/files/ftp.yaml)
 - The other file transfer protocols here: [ssh](ssh.md) (SFTP),
   [tftp](tftp.md)
