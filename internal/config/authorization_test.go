@@ -58,6 +58,11 @@ func TestTheAuthorizationPolicyIsCheckedAtLoad(t *testing.T) {
 // A listener whose kind does not consult the policy is refused, and the message
 // says which kinds do. This is what lets the section be delivered a few kinds at
 // a time without ever being a lie.
+//
+// The second listener has to be a kind that is still outside the policy, so this
+// fixture needs changing each time one is wired -- which is the test doing its
+// job rather than a maintenance cost: it failed on the commit that wired mqtt,
+// which is exactly the notice an author of the next kind should get.
 func TestAListenerOutsideThePolicyIsRefused(t *testing.T) {
 	yaml := `
 version: 1
@@ -73,12 +78,12 @@ server:
         upstream_key_file: /etc/xproxy/ssh/upstream_ed25519
         upstream_known_hosts: /etc/xproxy/ssh/known_hosts
     - name: relay
-      address: ":1883"
-      kind: mqtt
-      mqtt: {upstream: brokers}
+      address: ":514"
+      kind: syslog
+      syslog: {upstream: collectors}
 upstreams:
   - {name: hosts, endpoints: [{address: "10.0.0.5:22"}]}
-  - {name: brokers, endpoints: [{address: "10.0.0.9:1883"}]}
+  - {name: collectors, endpoints: [{address: "10.0.0.9:514"}]}
 authorization:
   rules:
     - {name: everything, allow: true}
@@ -87,7 +92,7 @@ authorization:
 	if err == nil {
 		t.Fatal("a listener outside the policy was accepted")
 	}
-	for _, want := range []string{`listener "relay"`, `kind "mqtt"`, "does not consult"} {
+	for _, want := range []string{`listener "relay"`, `kind "syslog"`, "does not consult"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %v, want it to mention %q", err, want)
 		}

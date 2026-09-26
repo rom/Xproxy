@@ -477,15 +477,19 @@ of them is a flaw in front of all of them.
     only that the server said 235. What it does have is the envelope,
     and `MAIL FROM` is an address rather than an identity, which is the
     `smtp` policy's own business.
-  - `mqtt` has the CONNECT username and `ldap` the bind DN, and both are
-    the asserted-then-proven shape described above -- `ldap` already
-    waits for the directory's answer before adopting an identity, with
-    the comment saying why. They are the next two to wire, and the
-    decision worth making first is whether to ask at the assertion (as
-    the database relays do, to keep a refused session off the server) or
-    at the acceptance (as `ftp` does, for a name that has been proven),
-    because the answer is not the same for a broker as for a
-    directory.
+  - `mqtt` is wired, at the CONNECT packet and before it is forwarded, so
+    a client no rule covers never reaches the broker. The client
+    identifier deliberately does not reach a rule: any client may choose
+    one, and a pattern over it belongs in the listener's own
+    `client_id_pattern`.
+  - `ldap` has the bind DN and is the one left of this group. It is
+    genuinely a choice rather than a wiring job: the relay already waits
+    for the directory's answer before adopting an identity, with the
+    comment saying why, so asking at the bind request would decide about
+    a DN nobody has proven, while asking after the answer means the
+    directory has already authenticated whoever it was. LDAP also allows
+    several binds on one connection and anonymous operations, so "the
+    identity of this session" is not one value the way it is elsewhere.
   - The identity-less kinds come in the same pass as the
     `cidr`-lists-per-kind sweep above, because both need the same
     per-kind admission point.

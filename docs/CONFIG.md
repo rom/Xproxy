@@ -11454,8 +11454,8 @@ A kind that did not consult this policy would be a hole in a policy an operator
 believes covers everything, so a configuration that has an `authorization`
 section **and** a listener of a kind that does not consult it is refused at
 load, naming the listener and the kind. The kinds are wired one at a time;
-today the list is the five gate kinds, the forward proxy, and the three database
-relays whose login packet names an account.
+today the list is the five gate kinds, the forward proxy, the three database
+relays whose login packet names an account, and the MQTT relay.
 
 All of them ask about `connect`. None fills `groups`: these protocols give the
 gateway no group membership it could verify, so a rule about a team is written
@@ -11488,6 +11488,7 @@ worth (see above).
 | `postgres` | At the startup packet, the first and only place a role appears -- the relay never sees the password -- and before the server is dialled. `user` is the role; `target` is the pool | asserted; the server proves it after |
 | `mysql` | At the login packet, before it is forwarded. `user` is the account; `target` is the pool | asserted; the server proves it after |
 | `tds` | At the Login7 packet, before it is forwarded. `user` is the account, empty for an integrated-authentication login, which the `tds` policy's own `integrated` setting is the place to decide about | asserted; the server proves it after |
+| `mqtt` | At the CONNECT packet, before it is forwarded. `user` is the CONNECT username; the client identifier is **not** an identity and does not reach a rule, because any client may choose one -- a pattern over it belongs in this listener's `client_id_pattern` | asserted; the broker proves it after |
 
 A refusal here is the reason `authorization` on the listener's usual deny event
 (`ssh_authorization` and so on), so the counters, the security log and the ban

@@ -89,6 +89,38 @@ with protobuf payloads — and `sparkplug` makes the relay read the message type
 out of the topic, so the node command and device command messages that change
 plant are a decision rather than one topic among many.
 
+### The estate's own authorisation policy
+
+Above this relay's own topic policy sits the `authorization` section, which is not
+about MQTT: it is the one place that says which identity may reach what, in the
+same words for every protocol. This relay asks it from the CONNECT packet and
+before that packet is forwarded, so a client no rule covers never reaches the
+broker.
+
+The `user` is the CONNECT username. **The client identifier is not an identity and
+does not reach a rule** -- it is a string any client may choose and the broker
+keys sessions by, so a pattern over it belongs in this listener's own
+`client_id_pattern`, which is where it is. The `target` is the upstream **pool**
+name; what may be published or subscribed to inside the session stays with the
+`mqtt` policy, because a topic filter is a thing only it can read.
+
+**What the name is worth here.** The policy is asked before the CONNECT is
+forwarded, which is the point: it is what keeps a refused client off the broker
+entirely. But MQTT has no exchange in which this relay could verify the username
+-- the broker's CONNACK is what proves it -- so the name is asserted and proven
+afterwards. The policy narrows what the broker would have allowed and never
+widens it: a deny rule is exact, because refusing a claimed username refuses at
+least everyone who could have proved it, while an allow rule keyed on the username
+is a filter on a claim the broker still has to check. A rule that must hold
+whatever a client asserts belongs in `targets` and `networks`.
+
+A refusal is the reason `authorization` -- the event `mqtt_authorization`, the
+counter `xproxy_refusals_total{kind="mqtt",reason="authorization"}` -- answered
+with a CONNACK that says not authorised, so it reads like every other refusal this
+relay makes. Either shadow switch, this listener's `policy: {mode: shadow}` or the
+section's own `shadow: true`, records what it would have refused with the rule that
+decided and lets the client through.
+
 ## What it does not do
 
 - **It does not authenticate against a directory.** The credential is forwarded
@@ -118,5 +150,6 @@ plant are a decision rather than one topic among many.
 ## See also
 
 - The settings: [docs/CONFIG.md `server.listeners[].mqtt`](../CONFIG.md#serverlistenersmqtt-kind-mqtt)
+- The estate-wide policy above it: [docs/CONFIG.md `authorization`](../CONFIG.md#authorization)
 - A worked configuration: [`examples/iot/mqtt.yaml`](../../examples/iot/mqtt.yaml)
 - The other messaging protocol here: [amqp](amqp.md)

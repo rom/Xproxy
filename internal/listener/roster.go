@@ -101,6 +101,7 @@ var authorises = map[string]bool{
 	"postgres": true,
 	"mysql":    true,
 	"tds":      true,
+	"mqtt":     true,
 }
 
 // Authorises reports whether a kind consults the estate's authorisation policy.

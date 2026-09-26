@@ -654,6 +654,13 @@ Open findings of the earlier rounds:
   point at the server's acceptance, which is a design question rather than a
   wiring one; ROADMAP.md records it as such.
 
+- **And the MQTT relay**, at the CONNECT packet and before it is forwarded, so a
+  client no rule covers never reaches the broker. The CONNECT username is the
+  name; the client identifier deliberately does not reach a rule, because any
+  client may choose one and a pattern over it belongs in the listener's own
+  `client_id_pattern` -- an identity rule written against a string the client
+  picks is not an identity rule.
+
 - **And the forward proxy**, on every request, tunnel and association --
   CONNECT, a plain proxied request, SOCKS5 and MASQUE alike -- after the
   destination policy and before the destination is dialled. Here the target is
