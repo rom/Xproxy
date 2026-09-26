@@ -199,6 +199,10 @@ internal/fipsmode   whether the FIPS 140-3 module is active, and which of
                     of the runtime by handshaking, never read off a list
 internal/access     the just-in-time access ledger: grants, approvals and
                     the hash-chained trail the gate kinds admit against
+internal/authorization  the estate's authorisation policy: one compiled set
+                    of rules every listener kind asks at its admission
+                    point, above each kind's own protocol policy. Not
+                    internal/filters/authz, which decides one HTTP request
 internal/upstream   endpoints, balancers, health checks, affinity, ejection
 internal/logging    four slog streams, file rotation
 internal/mgmt       management API server and client
@@ -402,6 +406,18 @@ is the part that carries the code, the dependencies and the risk.
 
 Configuration validation reads the roster, so `kind: ssh` is a valid
 value in every daemon's file. Building a listener reads the registry.
+
+Beside the roster is a second table, for the same reason: the kinds that
+consult the estate's authorisation policy (`internal/authorization`). A
+daemon has to be able to say "that kind does not consult the policy"
+about a kind it does not serve, because it validates configurations that
+name one. It is a list of what does consult it rather than of what does
+not, so a kind added tomorrow is outside the policy until somebody says
+otherwise — and a configuration carrying an `authorization` section then
+refuses to load, naming the listener, rather than quietly leaving a hole
+in a policy an operator believes covers everything. Every kind is on one
+side or the other and a test in `internal/listener` fails on a kind in
+neither, which is what forces the decision when a kind is added.
 
 ### The refusal
 

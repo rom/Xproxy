@@ -361,6 +361,7 @@ func (v *validator) config(c *Config) {
 		v.maintenance(c.Maintenance)
 	}
 	v.access(c)
+	v.authorization(c)
 	jwtProviders := map[string]bool{}
 	if c.JWT != nil {
 		v.jwt(c.JWT, jwtProviders)
@@ -4422,6 +4423,134 @@ func (v *validator) mfaPush(p string, s *MFAPush) {
 	}
 	if s.Token == "" && s.Header == "" {
 		v.warnf("%s: no token and no header, so the approval service is asked anonymously. A service that answers 401 for every request is a second factor that refuses everybody", p)
+	}
+}
+
+// authorization validates the estate's authorisation policy, and refuses the
+// one arrangement that would make it a lie: a listener whose kind does not
+// consult it.
+//
+// That check is the reason this section can be delivered a few kinds at a time.
+// A policy an operator believes covers the estate, with a listener quietly
+// outside it, is worse than no policy at all -- so the load says which kinds
+// consult it and which listener does not, and the operator decides whether to
+// wait or to move that listener.
+func (v *validator) authorization(c *Config) {
+	a := c.Authorization
+	if a == nil {
+		return
+	}
+	switch a.Default {
+	case "", "deny", "allow":
+	default:
+		v.errf("authorization.default: must be deny or allow")
+	}
+	if len(a.Rules) == 0 {
+		v.errf("authorization.rules: at least one is required; a section with no rules and a deny default refuses the whole estate")
+	}
+	if a.Allows() {
+		v.warnf("authorization.default: allow means anything no rule mentions is permitted, so the policy's gaps are invisible. deny is what makes a rule list a policy")
+	}
+	if a.Shadow {
+		v.warnf("authorization: shadow evaluates the policy and enforces nothing, which is what a first reading wants and not what a policy is for. Take it out once the decisions read right")
+	}
+	// The listener names a rule may point at, and the kinds in use.
+	names := map[string]bool{}
+	for i := range c.Server.Listeners {
+		names[c.Server.Listeners[i].Name] = true
+	}
+	seen := map[string]bool{}
+	for i := range a.Rules {
+		r := &a.Rules[i]
+		q := fmt.Sprintf("authorization.rules[%d]", i)
+		switch {
+		case r.Name == "":
+			v.errf("%s.name: required; a decision nobody can name is a decision nobody can find in a log", q)
+		case !nameRE.MatchString(r.Name):
+			v.errf("%s.name: %q is not a valid name", q, r.Name)
+		case seen[r.Name]:
+			v.errf("%s.name: duplicate %q", q, r.Name)
+		}
+		seen[r.Name] = true
+		for j, act := range r.Actions {
+			if !AuthzActions[act] {
+				v.errf("%s.actions[%d]: %q is not an action; the vocabulary is connect, session, exec, forward, read, write and admin", q, j, act)
+			}
+		}
+		v.authzNetworks(q+".networks", r.Networks)
+		v.authzNetworks(q+".not_networks", r.NotNetworks)
+		for j, l := range r.Listeners {
+			if !names[l] {
+				v.errf("%s.listeners[%d]: no listener is called %q", q, j, l)
+			}
+		}
+		for j, k := range r.Kinds {
+			if _, ok := listener.RoleOf(k); !ok {
+				v.errf("%s.kinds[%d]: %q is not a listener kind", q, j, k)
+			}
+		}
+		for j, t := range r.Targets {
+			v.authzTarget(fmt.Sprintf("%s.targets[%d]", q, j), t)
+		}
+		for j, t := range r.NotTargets {
+			v.authzTarget(fmt.Sprintf("%s.not_targets[%d]", q, j), t)
+		}
+		v.modbusSchedule(q+".schedule", r.Schedule)
+		if r.Allow && len(r.Users) == 0 && len(r.Principals) == 0 && len(r.Groups) == 0 &&
+			len(r.Networks) == 0 && len(r.Listeners) == 0 && len(r.Kinds) == 0 && len(r.Targets) == 0 &&
+			len(r.Actions) == 0 && r.Schedule == nil {
+			v.warnf("%s (%s): allows everything, because it names nothing to match on. Every rule after it is unreachable", q, r.Name)
+		}
+	}
+	// The kinds that do not consult the policy. Named individually because an
+	// operator has to know which listener to move or to wait for.
+	for i := range c.Server.Listeners {
+		l := &c.Server.Listeners[i]
+		k := l.Kind
+		if k == "" {
+			k = "http"
+		}
+		if listener.Authorises(k) {
+			continue
+		}
+		v.errf("authorization: listener %q is kind %q, which does not consult the authorization policy, so the section would not cover it. The kinds that do are %s; move the listener, or drop the section until this kind is one of them",
+			l.Name, k, kindList())
+	}
+}
+
+// kindList is the kinds that consult the policy, for a message that has to
+// name them. "none yet" rather than an empty list, because a message ending in
+// "the kinds that do are ." is a message nobody can act on.
+func kindList() string {
+	k := listener.AuthorisingKinds()
+	if len(k) == 0 {
+		return "none yet"
+	}
+	return strings.Join(k, ", ")
+}
+
+// authzNetworks checks an address list, where a bare address means that one
+// address.
+func (v *validator) authzNetworks(p string, list []string) {
+	for i, n := range list {
+		if _, err := netip.ParsePrefix(n); err == nil {
+			continue
+		}
+		if _, err := netip.ParseAddr(n); err != nil {
+			v.errf("%s[%d]: %q is not an address or a CIDR", p, i, n)
+		}
+	}
+}
+
+// authzTarget checks a target pattern. The rule is narrow on purpose: * does
+// not cross a colon or a slash, so a pattern cannot quietly widen past the host
+// or the directory it looks like it names.
+func (v *validator) authzTarget(p, pattern string) {
+	switch {
+	case pattern == "":
+		v.errf("%s: empty", p)
+	case strings.Contains(pattern, "**"):
+		v.errf("%s: ** is not a target pattern here; * already matches a whole host or path element, and a pattern that crossed a colon or a slash would widen the rule past what it looks like", p)
 	}
 }
 

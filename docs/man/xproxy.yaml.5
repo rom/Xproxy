@@ -23,8 +23,8 @@ This reference is also installed as the manual page \fBxproxy.yaml(5)\fR, and a 
 .PP
 .TS
 allbox;
-lbw(1.2i) lbw(0.7i) lbw(0.9i) lbx
-lw(1.2i) lw(0.7i) lw(0.9i) lx.
+lbw(1.4i) lbw(0.7i) lbw(0.9i) lbx
+lw(1.4i) lw(0.7i) lw(0.9i) lx.
 T{
 Key
 T}	T{
@@ -159,6 +159,15 @@ T}	T{
 \fB{mode:\: enforce}\fR
 T}	T{
 Whether the listeners enforce their policies or only evaluate them and write down what they would have refused;\: see \fBpolicy\fR
+T}
+T{
+\fBauthorization\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Which identity may reach which listener,\: target and operation,\: above each kind\(aqs own policy;\: see \fBauthorization\fR
 T}
 T{
 \fBsecrets\fR
@@ -28479,6 +28488,344 @@ T}
 .TE
 .PP
 A listener in \fBpolicy: {mode: shadow}\fR records what it would have refused and carries on, which is how an estate turns this on without locking its operators out on the first evening.
+.SH "authorization"
+.PP
+Which identity may reach which listener, target and operation. One section, above the protocol policies rather than inside them.
+.PP
+Every kind here already decides things about a session: an \fBssh\fR listener has principals with channel and command lists, a \fBpostgres\fR relay has a statement policy, a \fBmodbus\fR relay has function codes and register ranges. Those stay where they are, because nothing else can say what a write to holding register 40001 means. What this adds is the question above them \-\- may Alice reach the production database at all, from where she is, at this hour \-\- asked once instead of in every kind\(aqs own spelling.
+.PP
+It decides nothing on its own authority. Every value a rule matches on was established by the listener that asked: a name it authenticated, a principal it resolved, groups a directory or a certificate gave it, the target the client asked for. A value a client simply sent never reaches a rule here.
+.PP
+This is not the \fBauthz\fR filter kind under \fBfilters\fR. That one decides what a verified identity may do with \fBone HTTP request\fR \[u2014] its method, its path, its scopes and claims \[u2014] and runs inside a route\(aqs filter chain. This one decides whether a \fBsession\fR happens at all, at a listener\(aqs admission point, in words every protocol can be asked in. The two share a vocabulary on purpose (deny by default, first match wins, the negative selectors as their own keys) and nothing else; an HTTP deployment can reasonably want both.
+.PP
+.RS 4
+.nf
+.ft CR
+authorization:
+  rules:
+    # Contractors: the jump hosts, office hours, never production.
+    \- name: contractors
+      allow: true
+      groups: ["cn=contractors,ou=groups,dc=example,dc=com"]
+      kinds: [ssh]
+      targets: [jump\-hosts]
+      actions: [connect, session]
+      schedule: {days: [mon, tue, wed, thu, fri], from: "08:00", to: "18:00"}
+
+    # Staff: anywhere the estate runs, from the office networks.
+    \- name: staff
+      allow: true
+      groups: ["cn=staff,ou=groups,dc=example,dc=com"]
+      networks: ["10.0.0.0/8", "192.168.0.0/16"]
+
+    # The batch account, which is not a person and has no business
+    # anywhere but its own pool.
+    \- name: batch
+      allow: true
+      users: [batch]
+      targets: [batch\-hosts]
+      actions: [exec]
+.ft
+.fi
+.RE
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.6i) lbw(0.9i) lbx
+lw(0.8i) lw(0.6i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBdefault\fR
+T}	T{
+\fBdeny\fR or \fBallow\fR
+T}	T{
+\fBdeny\fR
+T}	T{
+What happens when no rule matches. Deny,\: because a policy that lets through whatever nobody wrote a rule for is a policy whose gaps are invisible. \fBallow\fR loads and is warned about
+T}
+T{
+\fBrules\fR
+T}	T{
+list
+T}	T{
+required
+T}	T{
+Tried in order;\: the first one that matches decides. At least one is required: a section with no rules and a deny default refuses the estate
+T}
+T{
+\fBshadow\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Evaluate the policy and write down what it would have refused,\: without refusing it. Section\-wide rather than per rule,\: because half a policy in force is not a policy. Warned about,\: every load
+T}
+.TE
+.SS "A rule"
+.PP
+Every selector a rule names has to hold. A rule that names none matches everything, which is how a catch\-all is written \-\- and why a catch\-all \fBallow\fR makes every rule after it unreachable, which the load says out loud.
+.PP
+The negative forms are separate keys rather than a \fB!\fR prefix on a value, because a user name, a group name or a target may begin with any character, and a policy language in which a name cannot be written literally has a hole in it.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.9i) lbw(0.9i) lbx
+lw(1.2i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+What the security event and the status view call this rule. A decision nobody can name is a decision nobody can find in a log. Letters,\: digits,\: \fB\-\fR,\: \fB_\fR and \fB.\fR;\: unique in the section
+T}
+T{
+\fBallow\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+What the rule does when it matches. Default deny: a rule somebody forgot to finish refuses rather than permits
+T}
+T{
+\fBusers\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The name the listener authenticated
+T}
+T{
+\fBprincipals\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The policy identity the listener resolved for that name \-\- on an \fBssh\fR listener,\: the \fBprincipals\fR entry the key matched
+T}
+T{
+\fBgroups\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Groups something the listener trusts said the identity is in: a directory bind,\: a certificate\(aqs principals,\: a token\(aqs claim. Compared without case,\: because a directory returns a distinguished name in whatever case it likes
+T}
+T{
+\fBnot_\:users\fR,\: \fBnot_\:principals\fR,\: \fBnot_\:groups\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Everybody but these. A rule matches only when the identity is in none of them;\: an identity with no name at all is not "everybody but alice",\: so an empty user does not match \fBnot_\:users\fR
+T}
+T{
+\fBnetworks\fR
+T}	T{
+list of CIDR or address
+T}	T{
+\fB[]\fR
+T}	T{
+The client address the listener decided on,\: which behind a chain in \fBtrusted_\:proxies\fR is the forwarded one. A bare address means that address
+T}
+T{
+\fBnot_\:networks\fR
+T}	T{
+list of CIDR or address
+T}	T{
+\fB[]\fR
+T}	T{
+Everywhere but these
+T}
+T{
+\fBlisteners\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Listener names,\: as \fBserver.\:listeners[].\:name\fR spells them. Validated: a rule naming a listener this file does not have is a rule that never matches
+T}
+T{
+\fBkinds\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Listener kinds \-\- \fBssh\fR and the rest \-\- for a rule about every listener of a kind
+T}
+T{
+\fBtargets\fR
+T}	T{
+list of patterns
+T}	T{
+\fB[]\fR
+T}	T{
+What was asked for,\: in the form the protocol uses. A glob in which \fB*\fR does not cross a \fB:\fR or a \fB/\fR,\: so \fB10.\:0.\:0.\:5:\:*\fR is one host\(aqs ports and \fB/\:srv/\:*\fR is one directory\(aqs entries. \fB**\fR is refused: a pattern that widens past the host or the directory it names is a pattern whose author meant something narrower
+T}
+T{
+\fBnot_\:targets\fR
+T}	T{
+list of patterns
+T}	T{
+\fB[]\fR
+T}	T{
+Everything but these. The opposite of \fBtargets\fR,\: so a per\-pool exception is written by naming the pool here and letting the rule below decide
+T}
+T{
+\fBactions\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The operations this rule is about: \fBconnect\fR,\: \fBsession\fR,\: \fBexec\fR,\: \fBforward\fR,\: \fBread\fR,\: \fBwrite\fR,\: \fBadmin\fR. Empty means every operation
+T}
+T{
+\fBschedule\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Limit the rule to certain hours,\: in the same spelling \fBmodbus\fR uses: \fBdays\fR,\: \fBfrom\fR,\: \fBto\fR,\: \fBtimezone\fR. A rule outside its window does not match,\: so the next rule \-\- or the default \-\- decides
+T}
+.TE
+.SS "The actions"
+.PP
+The vocabulary is the policy\(aqs own rather than each protocol\(aqs, so a rule written for \fBwrite\fR means the same thing on SFTP as on Modbus. Each protocol page under \fBdocs/protocols/\fR says which of its operations map to which.
+.PP
+.TS
+allbox;
+lbw(0.8i) lbx
+lw(0.8i) lx.
+T{
+Action
+T}	T{
+What it is
+T}
+T{
+\fBconnect\fR
+T}	T{
+A session being opened at all. Every kind asks this one,\: and a policy that names nothing else is a policy about who may reach what
+T}
+T{
+\fBsession\fR
+T}	T{
+An interactive session inside a connection: a shell,\: a desktop,\: a terminal
+T}
+T{
+\fBexec\fR
+T}	T{
+One command run without an interactive session
+T}
+T{
+\fBforward\fR
+T}	T{
+A tunnel through the session,\: in either direction
+T}
+T{
+\fBread\fR,\: \fBwrite\fR
+T}	T{
+A payload moving: a file read or written,\: a register read or written,\: a row selected or changed
+T}
+T{
+\fBadmin\fR
+T}	T{
+An operation that changes the far side\(aqs own configuration rather than its data
+T}
+.TE
+.SS "Which listeners it covers"
+.PP
+A kind that did not consult this policy would be a hole in a policy an operator believes covers everything, so a configuration that has an \fBauthorization\fR section \fBand\fR a listener of a kind that does not consult it is refused at load, naming the listener and the kind. The kinds are wired one at a time; today the list is:
+.PP
+.TS
+allbox;
+lbw(0.6i) lbx
+lw(0.6i) lx.
+T{
+Kind
+T}	T{
+Asks about
+T}
+T{
+\fBssh\fR
+T}	T{
+\fBconnect\fR,\: after authentication and before the target is dialled. \fBtarget\fR is the upstream \fBpool\fR name,\: because a bastion picks the machine by balancer after this point and the per\-machine question is the access grant\(aqs (see \fBaccess\fR). \fBgroups\fR is empty: SSH gives the gate no group membership it could verify,\: so a rule about a team is written with \fBprincipals\fR,\: which is what a \fBprincipals\fR entry already is
+T}
+.TE
+.PP
+A refusal here is the reason \fBauthorization\fR on the listener\(aqs usual deny event (\fBssh_authorization\fR and so on), so the counters, the security log and the ban list see it as they see any other refusal. A listener in \fBpolicy: {mode: shadow}\fR, or the whole policy with \fBshadow: true\fR, records what it would have refused and carries on.
+.SS "Reading it back"
+.PP
+\fBxproxyctl status\fR prints the policy and then each rule with its hit count, and says where the rule never matched \-\- which is either a rule about traffic that does not happen or a rule something above it shadows.
+.PP
+.RS 4
+.nf
+.ft CR
+authorization default=deny  allowed=1412 denied=7 default\-decided=0
+authorization   contractors              allow hits=64
+authorization   staff                    allow hits=1348
+authorization   batch                    allow hits=0  (never matched)
+.ft
+.fi
+.RE
+.PP
+.TS
+allbox;
+lbw(1.5i) lbx
+lw(1.5i) lx.
+T{
+Metric
+T}	T{
+What it says
+T}
+T{
+\fBxproxy_\:authz_\:decisions_\:total{outcome}\fR
+T}	T{
+Decisions,\: allow and deny
+T}
+T{
+\fBxproxy_\:authz_\:default_\:total\fR
+T}	T{
+Decisions no rule matched,\: so the default decided. \fBThis is the gap measure\fR: rising means the rules cover less of the estate than whoever wrote them believes,\: and with a deny default it is an estate about to find that out one refusal at a time
+T}
+T{
+\fBxproxy_\:authz_\:rule_\:hits_\:total{rule,\:action}\fR
+T}	T{
+What each rule has decided,\: so an audit can see which rules do the work
+T}
+T{
+\fBxproxy_\:authz_\:shadow\fR,\: \fBxproxy_\:authz_\:default_\:allows\fR
+T}	T{
+1 when the policy enforces nothing,\: and 1 when an unmatched subject is allowed. Both belong on a dashboard beside the counts,\: because the counts mean the opposite thing without them
+T}
+.TE
 .SH "secrets"
 .PP
 Where the secrets in this configuration come from. Without this section every one of them is a path on this machine, which is how the proxy has always worked and stays the default.

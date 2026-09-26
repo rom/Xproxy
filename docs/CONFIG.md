@@ -51,6 +51,7 @@ on the first line of the file to enable it.
 | `capture` | object | none | pcapng capture of the exchanges the proxy handled; see `capture` |
 | `scim` | object | none | A SCIM 2.0 provisioning endpoint for the second factor and the API keys; see `scim` |
 | `policy` | object | `{mode: enforce}` | Whether the listeners enforce their policies or only evaluate them and write down what they would have refused; see `policy` |
+| `authorization` | object | none | Which identity may reach which listener, target and operation, above each kind's own policy; see `authorization` |
 | `secrets` | object | none | Where the secrets this file names come from: a path, the environment, or a vault; see `secrets` |
 | `fips` | object | none | Whether this daemon insists on the FIPS 140-3 module, and what it says about the algorithms configured; see `fips` |
 
@@ -11324,6 +11325,146 @@ on), so bans apply as they always did.
 A listener in `policy: {mode: shadow}` records what it would have refused
 and carries on, which is how an estate turns this on without locking its
 operators out on the first evening.
+
+## authorization
+
+Which identity may reach which listener, target and operation. One section,
+above the protocol policies rather than inside them.
+
+Every kind here already decides things about a session: an `ssh` listener has
+principals with channel and command lists, a `postgres` relay has a statement
+policy, a `modbus` relay has function codes and register ranges. Those stay
+where they are, because nothing else can say what a write to holding register
+40001 means. What this adds is the question above them -- may Alice reach the
+production database at all, from where she is, at this hour -- asked once
+instead of in every kind's own spelling.
+
+It decides nothing on its own authority. Every value a rule matches on was
+established by the listener that asked: a name it authenticated, a principal it
+resolved, groups a directory or a certificate gave it, the target the client
+asked for. A value a client simply sent never reaches a rule here.
+
+This is not the `authz` filter kind under `filters`. That one decides what a
+verified identity may do with **one HTTP request** — its method, its path, its
+scopes and claims — and runs inside a route's filter chain. This one decides
+whether a **session** happens at all, at a listener's admission point, in words
+every protocol can be asked in. The two share a vocabulary on purpose (deny by
+default, first match wins, the negative selectors as their own keys) and nothing
+else; an HTTP deployment can reasonably want both.
+
+```yaml
+authorization:
+  rules:
+    # Contractors: the jump hosts, office hours, never production.
+    - name: contractors
+      allow: true
+      groups: ["cn=contractors,ou=groups,dc=example,dc=com"]
+      kinds: [ssh]
+      targets: [jump-hosts]
+      actions: [connect, session]
+      schedule: {days: [mon, tue, wed, thu, fri], from: "08:00", to: "18:00"}
+
+    # Staff: anywhere the estate runs, from the office networks.
+    - name: staff
+      allow: true
+      groups: ["cn=staff,ou=groups,dc=example,dc=com"]
+      networks: ["10.0.0.0/8", "192.168.0.0/16"]
+
+    # The batch account, which is not a person and has no business
+    # anywhere but its own pool.
+    - name: batch
+      allow: true
+      users: [batch]
+      targets: [batch-hosts]
+      actions: [exec]
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `default` | `deny` or `allow` | `deny` | What happens when no rule matches. Deny, because a policy that lets through whatever nobody wrote a rule for is a policy whose gaps are invisible. `allow` loads and is warned about |
+| `rules` | list | required | Tried in order; the first one that matches decides. At least one is required: a section with no rules and a deny default refuses the estate |
+| `shadow` | bool | `false` | Evaluate the policy and write down what it would have refused, without refusing it. Section-wide rather than per rule, because half a policy in force is not a policy. Warned about, every load |
+
+### A rule
+
+Every selector a rule names has to hold. A rule that names none matches
+everything, which is how a catch-all is written -- and why a catch-all `allow`
+makes every rule after it unreachable, which the load says out loud.
+
+The negative forms are separate keys rather than a `!` prefix on a value,
+because a user name, a group name or a target may begin with any character, and
+a policy language in which a name cannot be written literally has a hole in it.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | string | required | What the security event and the status view call this rule. A decision nobody can name is a decision nobody can find in a log. Letters, digits, `-`, `_` and `.`; unique in the section |
+| `allow` | bool | `false` | What the rule does when it matches. Default deny: a rule somebody forgot to finish refuses rather than permits |
+| `users` | list | `[]` | The name the listener authenticated |
+| `principals` | list | `[]` | The policy identity the listener resolved for that name -- on an `ssh` listener, the `principals` entry the key matched |
+| `groups` | list | `[]` | Groups something the listener trusts said the identity is in: a directory bind, a certificate's principals, a token's claim. Compared without case, because a directory returns a distinguished name in whatever case it likes |
+| `not_users`, `not_principals`, `not_groups` | list | `[]` | Everybody but these. A rule matches only when the identity is in none of them; an identity with no name at all is not "everybody but alice", so an empty user does not match `not_users` |
+| `networks` | list of CIDR or address | `[]` | The client address the listener decided on, which behind a chain in `trusted_proxies` is the forwarded one. A bare address means that address |
+| `not_networks` | list of CIDR or address | `[]` | Everywhere but these |
+| `listeners` | list | `[]` | Listener names, as `server.listeners[].name` spells them. Validated: a rule naming a listener this file does not have is a rule that never matches |
+| `kinds` | list | `[]` | Listener kinds -- `ssh` and the rest -- for a rule about every listener of a kind |
+| `targets` | list of patterns | `[]` | What was asked for, in the form the protocol uses. A glob in which `*` does not cross a `:` or a `/`, so `10.0.0.5:*` is one host's ports and `/srv/*` is one directory's entries. `**` is refused: a pattern that widens past the host or the directory it names is a pattern whose author meant something narrower |
+| `not_targets` | list of patterns | `[]` | Everything but these. The opposite of `targets`, so a per-pool exception is written by naming the pool here and letting the rule below decide |
+| `actions` | list | `[]` | The operations this rule is about: `connect`, `session`, `exec`, `forward`, `read`, `write`, `admin`. Empty means every operation |
+| `schedule` | object | none | Limit the rule to certain hours, in the same spelling `modbus` uses: `days`, `from`, `to`, `timezone`. A rule outside its window does not match, so the next rule -- or the default -- decides |
+
+### The actions
+
+The vocabulary is the policy's own rather than each protocol's, so a rule
+written for `write` means the same thing on SFTP as on Modbus. Each protocol
+page under `docs/protocols/` says which of its operations map to which.
+
+| Action | What it is |
+|--------|-----------|
+| `connect` | A session being opened at all. Every kind asks this one, and a policy that names nothing else is a policy about who may reach what |
+| `session` | An interactive session inside a connection: a shell, a desktop, a terminal |
+| `exec` | One command run without an interactive session |
+| `forward` | A tunnel through the session, in either direction |
+| `read`, `write` | A payload moving: a file read or written, a register read or written, a row selected or changed |
+| `admin` | An operation that changes the far side's own configuration rather than its data |
+
+### Which listeners it covers
+
+A kind that did not consult this policy would be a hole in a policy an operator
+believes covers everything, so a configuration that has an `authorization`
+section **and** a listener of a kind that does not consult it is refused at
+load, naming the listener and the kind. The kinds are wired one at a time;
+today the list is:
+
+| Kind | Asks about |
+|------|-----------|
+| `ssh` | `connect`, after authentication and before the target is dialled. `target` is the upstream **pool** name, because a bastion picks the machine by balancer after this point and the per-machine question is the access grant's (see `access`). `groups` is empty: SSH gives the gate no group membership it could verify, so a rule about a team is written with `principals`, which is what a `principals` entry already is |
+
+A refusal here is the reason `authorization` on the listener's usual deny event
+(`ssh_authorization` and so on), so the counters, the security log and the ban
+list see it as they see any other refusal. A listener in `policy: {mode:
+shadow}`, or the whole policy with `shadow: true`, records what it would have
+refused and carries on.
+
+### Reading it back
+
+`xproxyctl status` prints the policy and then each rule with its hit count, and
+says where the rule never matched -- which is either a rule about traffic that
+does not happen or a rule something above it shadows.
+
+```
+authorization default=deny  allowed=1412 denied=7 default-decided=0
+authorization   contractors              allow hits=64
+authorization   staff                    allow hits=1348
+authorization   batch                    allow hits=0  (never matched)
+```
+
+| Metric | What it says |
+|--------|--------------|
+| `xproxy_authz_decisions_total{outcome}` | Decisions, allow and deny |
+| `xproxy_authz_default_total` | Decisions no rule matched, so the default decided. **This is the gap measure**: rising means the rules cover less of the estate than whoever wrote them believes, and with a deny default it is an estate about to find that out one refusal at a time |
+| `xproxy_authz_rule_hits_total{rule,action}` | What each rule has decided, so an audit can see which rules do the work |
+| `xproxy_authz_shadow`, `xproxy_authz_default_allows` | 1 when the policy enforces nothing, and 1 when an unmatched subject is allowed. Both belong on a dashboard beside the counts, because the counts mean the opposite thing without them |
+
 
 ## secrets
 

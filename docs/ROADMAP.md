@@ -414,6 +414,32 @@ of them is a flaw in front of all of them.
   replay rule and the lockout are already shared, so what is left is the
   per-kind prompt rather than the factor.
 
+- One authorisation policy above the protocols: partly delivered. The
+  `authorization` section compiles to a rule set every listener kind can
+  ask at its admission point -- who (`users`, `principals`, `groups`),
+  where from (`networks`), where to (`listeners`, `kinds`, `targets`),
+  what (`connect`, `session`, `exec`, `forward`, `read`, `write`,
+  `admin`) and when (`schedule`) -- with a negative form for every
+  selector, deny by default and the first matching rule deciding.
+  Refusals read as the reason `authorization` on each kind's usual deny
+  event, and the whole policy can be trialled with `shadow: true`.
+
+  It is fail-closed while it is being wired rather than aspirational: a
+  configuration carrying the section **and** a listener of a kind that
+  does not consult it is refused at load, naming the listener and the
+  kind. So the coverage cannot silently be less than an operator reading
+  the file believes.
+
+  Not yet: `ssh` is the only kind wired. The rest of the gate kinds
+  (sftp inside ssh, telnet, vnc, rdp, ftp) come next, since
+  `require_grant` already gives them the admission point to hang it on;
+  then forward and the relays that authenticate a user; then the
+  identity-less kinds, in the same pass as the `cidr`-lists-per-kind
+  sweep above, because both need the same per-kind admission point. The
+  HTTP gateway's session-level question is last and is genuinely a
+  design question: an HTTP listener has no session, and the per-request
+  answer is already the `authz` filter.
+
 ## After 1.4 (candidates, unranked)
 
 - The remote access protocols this release did not take (Citrix ICA,

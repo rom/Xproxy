@@ -147,6 +147,9 @@ type Config struct {
 	Secrets *Secrets `yaml:"secrets"`
 	// FIPS is what the estate requires of the runtime's FIPS 140-3 mode.
 	FIPS *FIPS `yaml:"fips"`
+	// Authorization is the estate's own answer to "who may reach what",
+	// asked by every listener kind rather than written per kind.
+	Authorization *Authorization `yaml:"authorization"`
 }
 
 // Metrics configures Prometheus exposition and sampled series (AMR-026).
@@ -9295,6 +9298,103 @@ func (p *MFAPush) ShowsNumbers() bool { return p == nil || p.Numbers == nil || *
 // Touch reports whether user presence is demanded, with the default
 // filled in.
 func (h *SSHListener) Touch() bool { return h == nil || h.RequireTouch == nil || *h.RequireTouch }
+
+// Authorization is the estate's authorisation policy: which identity may reach
+// which listener, target and operation.
+//
+// Every kind here already decides things about a session -- an ssh listener's
+// channels and commands, a postgres relay's statements, a modbus relay's
+// function codes -- and those stay where they are, because nothing else can say
+// what a write to holding register 40001 means. What this adds is the question
+// above them: may this person reach this thing at all, from where they are, at
+// this hour. Asked in nineteen places, that question has nineteen answers.
+//
+// It decides nothing on its own authority. Every value a rule matches on was
+// established by the listener: a name it authenticated, a principal it
+// resolved, groups something signed for, the target the client asked for.
+type Authorization struct {
+	// Default is what happens when no rule matches: deny (the default) or
+	// allow. Deny, because a policy that lets through whatever nobody wrote a
+	// rule for is a policy whose gaps are invisible.
+	Default string `yaml:"default"`
+	// Rules are tried in order and the first one that matches decides, which
+	// is how every other list here works. At least one is required: a section
+	// with no rules and a deny default refuses the estate.
+	Rules []AuthzRule `yaml:"rules"`
+	// Shadow evaluates the policy and writes down what it would have refused
+	// without refusing it, so a policy can be read against real traffic before
+	// it decides anything. It is a section-wide switch rather than per rule
+	// because half a policy in force is not a policy.
+	Shadow bool `yaml:"shadow"`
+}
+
+// Allows reports whether an unmatched subject is allowed, with the default
+// filled in.
+func (a *Authorization) Allows() bool { return a != nil && a.Default == "allow" }
+
+// AuthzRule is one decision. Every selector it names has to hold, and a rule
+// that names none matches everything -- which is how a catch-all is written,
+// and why the order matters.
+//
+// The negative forms are separate keys rather than a "!" prefix on a value,
+// because a user name, a group name or a target may begin with any character
+// and a policy language in which a name cannot be written literally has a hole
+// in it.
+type AuthzRule struct {
+	// Name is what the security event and the status view call this rule. A
+	// decision nobody can name is a decision nobody can find in a log.
+	Name string `yaml:"name"`
+	// Allow is what the rule does when it matches. Default false: a rule
+	// somebody forgot to finish refuses rather than permits.
+	Allow bool `yaml:"allow"`
+
+	// Who: the name the listener authenticated, the principal it resolved,
+	// and the groups something it trusts said the identity is in. Groups are
+	// compared without case, because a directory returns a distinguished name
+	// in whatever case it likes.
+	Users      []string `yaml:"users"`
+	Principals []string `yaml:"principals"`
+	Groups     []string `yaml:"groups"`
+	// The negative forms: everybody but these.
+	NotUsers      []string `yaml:"not_users"`
+	NotPrincipals []string `yaml:"not_principals"`
+	NotGroups     []string `yaml:"not_groups"`
+
+	// Where from: the client address the listener decided on, which behind a
+	// trusted proxy chain is the forwarded one. A bare address means that
+	// address.
+	Networks    []string `yaml:"networks"`
+	NotNetworks []string `yaml:"not_networks"`
+
+	// Where to: listener names, listener kinds, and the target the client
+	// asked for. A target pattern is a glob in which * does not cross a colon
+	// or a slash, so "10.0.0.5:*" is one host's ports and "/srv/*" is one
+	// directory's entries.
+	Listeners  []string `yaml:"listeners"`
+	Kinds      []string `yaml:"kinds"`
+	Targets    []string `yaml:"targets"`
+	NotTargets []string `yaml:"not_targets"`
+
+	// What: the operations this rule is about, in the policy's own vocabulary
+	// rather than each protocol's -- connect, session, exec, forward, read,
+	// write, admin. Each kind's own documentation says which of its operations
+	// map to which, and a rule written for "write" means the same thing on
+	// SFTP as on Modbus.
+	Actions []string `yaml:"actions"`
+
+	// Schedule limits the rule to certain hours, in the one spelling the rest
+	// of the configuration uses. A rule outside its window does not match, so
+	// the next rule -- or the default -- decides.
+	Schedule *ModbusSchedule `yaml:"schedule"`
+}
+
+// AuthzActions are the operations a rule may name. It is one list, used by
+// validation here and by the runtime through the configuration, so the
+// vocabulary cannot differ between what loads and what is enforced.
+var AuthzActions = map[string]bool{
+	"connect": true, "session": true, "exec": true, "forward": true,
+	"read": true, "write": true, "admin": true,
+}
 
 // SSHPrincipal gives one key, or one certificate principal, its own
 // policy on an ssh listener.

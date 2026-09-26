@@ -1084,6 +1084,15 @@ describes it, validation refuses what cannot work, and
   "who"; `authz` answers "what may they do", deciding on the subject,
   groups, scopes and claims those filters verified — default deny, first
   match wins, and nothing a client sent can reach a rule
+- **And one policy above the protocols**: the `authorization` section
+  says which identity may reach which listener, target and operation for
+  every listener kind, in one place and in one vocabulary — `connect`,
+  `session`, `exec`, `forward`, `read`, `write`, `admin` — rather than in
+  nineteen protocol policies that can disagree. Each kind keeps its own
+  policy for what only it can express (which Modbus register, which SQL
+  shape, which SSH channel); this answers the question above them all,
+  and the listener kinds that do not consult it yet are named at load
+  rather than left as a hole in a policy somebody believes is complete
 
 ### The estate: clusters, fleets and Kubernetes
 

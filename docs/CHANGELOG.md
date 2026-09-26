@@ -562,6 +562,67 @@ Open findings of the earlier rounds:
   whose datagram side is taken fails with the reason it failed and nothing left
   bound behind it, and a port 0 listener comes up with both sockets.
 
+### Added (1.4, one authorisation policy above the protocols)
+
+- **`authorization`: which identity may reach which listener, target and
+  operation -- once, for every listener kind.** Every kind here already
+  decides things about a session: the SSH bastion has channel and command
+  lists, the PostgreSQL relay has a statement policy, the Modbus relay has
+  function codes and register ranges. Those belong where they are, because
+  nothing else can say what a write to holding register 40001 means. The
+  question they cannot answer is the one above them -- may this person
+  reach this thing at all, from where they are, at this hour -- and asked
+  inside nineteen protocol policies it has nineteen answers, in nineteen
+  spellings, in nineteen places to drift apart.
+
+  A rule names who (`users`, `principals`, `groups`), where from
+  (`networks`), where to (`listeners`, `kinds`, `targets`), what
+  (`connect`, `session`, `exec`, `forward`, `read`, `write`, `admin`) and
+  when (`schedule`), with a negative form for every selector as its own
+  key rather than a `!` prefix -- because a user or a target may begin
+  with any character, and a policy language in which a name cannot be
+  written literally has a hole in it. Rules are tried in order and the
+  first that matches decides; the section default decides what none
+  matched, and it is deny, because a policy that lets through whatever
+  nobody wrote a rule for is a policy whose gaps are invisible.
+
+  It decides nothing on its own authority: every field of a subject was
+  established by the listener that asked -- a name it authenticated, a
+  principal it resolved, the target the client asked for -- so nothing a
+  client merely sent reaches a rule.
+
+- **Fail-closed while it is being wired, rather than aspirational.** A
+  kind that did not consult the policy would be a hole in a policy an
+  operator believes covers everything, so a configuration carrying an
+  `authorization` section **and** a listener of a kind that does not
+  consult it is refused at load, naming the listener, its kind and the
+  kinds that do. The list lives beside the listener roster and is a list
+  of what *does* consult it, so a kind added tomorrow is outside the
+  policy until somebody decides otherwise -- and a test holds every kind
+  against both lists, failing on a kind in neither. `ssh` is wired in
+  this release: it asks at the same point as the access grant, after
+  authentication and before the target is dialled, with the upstream pool
+  as the target, because a bastion picks the machine by balancer after
+  that point and the per-machine question is the grant's.
+
+- **Readable while it is being trialled.** `shadow: true` evaluates the
+  whole policy and records what it would have refused without refusing
+  anything -- section-wide rather than per rule, because half a policy in
+  force is not a policy -- and a listener's own `policy: {mode: shadow}`
+  does the same for that listener. `xproxyctl status` prints the default,
+  the counts and every rule with its hit count, marking the rules that
+  have never matched. The metric worth alerting on is
+  `xproxy_authz_default_total`, the decisions the default made because no
+  rule matched: it is the measure of how much of the estate the rules
+  actually describe, and three alerts ship for it and for the two
+  switches (`shadow`, `default: allow`) that change what every other
+  number means.
+
+  Not the `authz` filter, which decides one HTTP request by method, path,
+  scopes and claims inside a route's filter chain. This decides whether a
+  session happens at all. They share a vocabulary deliberately and
+  nothing else, and an HTTP deployment can reasonably want both.
+
 ### Added (1.4, the factors that are not typed)
 
 - **`require_hardware_key`: only a key held in a security token

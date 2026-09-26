@@ -40,6 +40,14 @@
         }
       ]
     },
+    "authorization": {
+      "description": "Authorization is the estate's own answer to \"who may reach what\", asked by every listener kind rather than written per kind.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Authorization"
+        }
+      ]
+    },
     "bans": {
       "description": "Bans enables the ban list when present.",
       "allOf": [
@@ -913,6 +921,134 @@
         "vendor_file": {
           "description": "VendorFile is a list of hardware prefixes and manufacturer names, one per line, which replaces nothing and adds to the built-in seed list. The built-in list is two dozen entries weighted towards the vendors an operational estate is made of; an estate that wants the IEEE's registry points this at a copy of it. The format is a prefix, whitespace or a comma, and a name. A malformed line refuses the file rather than being skipped: a list an operator trusted and which silently dropped half its entries is worse than one that would not load.",
           "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Authorization": {
+      "description": "Authorization is the estate's authorisation policy: which identity may reach which listener, target and operation. Every kind here already decides things about a session -- an ssh listener's channels and commands, a postgres relay's statements, a modbus relay's function codes -- and those stay where they are, because nothing else can say what a write to holding register 40001 means. What this adds is the question above them: may this person reach this thing at all, from where they are, at this hour. Asked in nineteen places, that question has nineteen answers. It decides nothing on its own authority. Every value a rule matches on was established by the listener: a name it authenticated, a principal it resolved, groups something signed for, the target the client asked for.",
+      "type": "object",
+      "properties": {
+        "default": {
+          "description": "Default is what happens when no rule matches: deny (the default) or allow. Deny, because a policy that lets through whatever nobody wrote a rule for is a policy whose gaps are invisible.",
+          "type": "string"
+        },
+        "rules": {
+          "description": "Rules are tried in order and the first one that matches decides, which is how every other list here works. At least one is required: a section with no rules and a deny default refuses the estate.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AuthzRule"
+          }
+        },
+        "shadow": {
+          "description": "Shadow evaluates the policy and writes down what it would have refused without refusing it, so a policy can be read against real traffic before it decides anything. It is a section-wide switch rather than per rule because half a policy in force is not a policy.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "AuthzRule": {
+      "description": "AuthzRule is one decision. Every selector it names has to hold, and a rule that names none matches everything -- which is how a catch-all is written, and why the order matters. The negative forms are separate keys rather than a \"!\" prefix on a value, because a user name, a group name or a target may begin with any character and a policy language in which a name cannot be written literally has a hole in it.",
+      "type": "object",
+      "properties": {
+        "actions": {
+          "description": "What: the operations this rule is about, in the policy's own vocabulary rather than each protocol's -- connect, session, exec, forward, read, write, admin. Each kind's own documentation says which of its operations map to which, and a rule written for \"write\" means the same thing on SFTP as on Modbus.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow": {
+          "description": "Allow is what the rule does when it matches. Default false: a rule somebody forgot to finish refuses rather than permits.",
+          "type": "boolean"
+        },
+        "groups": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "kinds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "listeners": {
+          "description": "Where to: listener names, listener kinds, and the target the client asked for. A target pattern is a glob in which * does not cross a colon or a slash, so \"10.0.0.5:*\" is one host's ports and \"/srv/*\" is one directory's entries.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "description": "Name is what the security event and the status view call this rule. A decision nobody can name is a decision nobody can find in a log.",
+          "type": "string"
+        },
+        "networks": {
+          "description": "Where from: the client address the listener decided on, which behind a trusted proxy chain is the forwarded one. A bare address means that address.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "not_groups": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "not_networks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "not_principals": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "not_targets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "not_users": {
+          "description": "The negative forms: everybody but these.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "principals": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "schedule": {
+          "description": "Schedule limits the rule to certain hours, in the one spelling the rest of the configuration uses. A rule outside its window does not match, so the next rule -- or the default -- decides.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/ModbusSchedule"
+            }
+          ]
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "users": {
+          "description": "Who: the name the listener authenticated, the principal it resolved, and the groups something it trusts said the identity is in. Groups are compared without case, because a directory returns a distinguished name in whatever case it likes.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false

@@ -18,6 +18,7 @@ import (
 	cssh "golang.org/x/crypto/ssh"
 
 	"github.com/rom/xproxy/internal/access"
+	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/keysource"
 	"github.com/rom/xproxy/internal/mfa"
@@ -566,14 +567,27 @@ func (t *server) shadowed(ip netip.Addr, what, detail string) bool {
 	if !t.cfg.Shadowing() {
 		return false
 	}
+	t.recordWouldDeny(ip, what, "", detail)
+	return true
+}
+
+// recordWouldDeny writes a refusal that is not being enforced, for a caller
+// that has already decided it is not enforcing it. The listener's own shadow
+// mode goes through shadowed above; the authorisation policy's own shadow
+// setting comes here directly, so a policy being trialled over listeners that
+// enforce still leaves the same record.
+//
+// rule names the rule that decided, where the policy that decided has named
+// rules -- which is the difference between a report an operator can act on and
+// a count of refusals they then have to go looking for.
+func (t *server) recordWouldDeny(ip netip.Addr, what, rule, detail string) {
 	t.engine.Counters().WouldRefuse("ssh", what)
-	t.engine.Shadow().Record("ssh", t.cfg.Name, what, "", detail)
+	t.engine.Shadow().Record("ssh", t.cfg.Name, what, rule, detail)
 	attrs := []any{"listener", t.cfg.Name, "client_ip", ip.String(), "proto", "ssh"}
 	if detail != "" {
 		attrs = append(attrs, "detail", detail)
 	}
 	t.engine.Logs().SecurityEvent(context.Background(), "would_deny", "ssh_"+what, attrs...)
-	return true
 }
 
 // session is one client connection and the target connection behind
@@ -642,6 +656,60 @@ func (se *session) admitByGrant() bool {
 		return true
 	}
 	t.deny(se.ip, reason, se.principalKey())
+	return false
+}
+
+// admitByPolicy is the estate's authorisation policy, asked at the same point
+// as the access grant and for the same reason: after authentication, so the
+// subject is the identity the gate established rather than a name a client
+// offered, and before the target is dialled, so a session the policy refuses
+// never reaches a machine.
+//
+// The target is the upstream pool's name, not an endpoint address. A bastion
+// chooses the machine by balancer after this point, so an address here would be
+// whichever one the balancer happened to pick -- and the per-machine question
+// is the access grant's, which already asks it against the pool's addresses.
+// A rule that means "this pool" is therefore the rule to write.
+//
+// Groups are empty on an ssh listener. SSH gives the gate no group membership
+// it could verify: what it has is the key, the certificate and the principals
+// entry the key matched, and that entry is already the name for a set of
+// people. A rule about a team is written with principals.
+//
+// A policy in shadow mode, or a listener in shadow mode, records what it would
+// have refused and carries on -- the same two ways the rest of this listener
+// trials a policy.
+func (se *session) admitByPolicy() bool {
+	t := se.t
+	pol := t.engine.Authorization()
+	if pol == nil {
+		return true
+	}
+	d := pol.Decide(authorization.Subject{
+		Listener:  t.cfg.Name,
+		Kind:      "ssh",
+		Client:    se.ip,
+		User:      se.user,
+		Principal: se.principal,
+		Target:    t.h.Upstream,
+		Action:    authorization.ActionConnect,
+	})
+	if d.Allow {
+		return true
+	}
+	detail := se.principalKey()
+	if d.Rule != "" {
+		detail += " (" + d.Rule + ")"
+	}
+	se.grantRefusal = authorization.Reason
+	if pol.Shadows() {
+		t.recordWouldDeny(se.ip, authorization.Reason, d.Rule, detail)
+		return true
+	}
+	if t.shadowed(se.ip, authorization.Reason, detail) {
+		return true
+	}
+	t.deny(se.ip, authorization.Reason, detail)
 	return false
 }
 
@@ -743,7 +811,7 @@ func (t *server) handle(raw net.Conn) {
 	// identity the estate knows rather than the name a client offered, and
 	// before the target is dialled, so a session with no grant never
 	// reaches a machine.
-	if !se.admitByGrant() {
+	if !se.admitByPolicy() || !se.admitByGrant() {
 		s.Counters().SSHRejected.Add(1)
 		t.log(se, start, se.grantRefusal)
 		return

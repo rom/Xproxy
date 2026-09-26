@@ -17,6 +17,7 @@ import (
 
 	"github.com/rom/xproxy/internal/access"
 	"github.com/rom/xproxy/internal/acme"
+	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/ban"
 	"github.com/rom/xproxy/internal/bound"
 	"github.com/rom/xproxy/internal/capture"
@@ -94,6 +95,11 @@ type Server struct {
 	// with no ledger refuses every session, which is the fail-closed
 	// answer; validation catches that configuration first.
 	grants *access.Ledger
+	// policy is the estate's authorisation policy, nil unless the
+	// configuration has an authorization section. Nil allows: a listener
+	// with no policy over it keeps the policy it had before there was one,
+	// and validation refuses a section that does not cover every listener.
+	policy *authorization.Policy
 	// refresher carries a rotated referenced key into a running listener.
 	// nil when no certificate's key is a reference.
 	refresher *secretRefresh
@@ -222,6 +228,14 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 		}
 		s.grants = l
 	}
+	// The authorisation policy is compiled before any listener binds, so a
+	// section that does not compile refuses to start rather than admitting
+	// sessions while the operator believes it is deciding.
+	pol, err := authorization.New(cfg.Authorization)
+	if err != nil {
+		return nil, err
+	}
+	s.policy = pol
 	// A contained panic is a bug in the proxy, not an event about the
 	// client, so it goes to the error log with its stack rather than to
 	// the security log. Set here because every deployment builds a
@@ -380,6 +394,28 @@ func banStore(bl *ban.List) cluster.BanStore {
 // absent.
 func (s *Server) ThreatIntel() *intel.Set { return s.intel.Load() }
 
+// Authorization returns the estate's authorisation policy, or nil when the
+// configuration has no authorization section.
+func (s *Server) Authorization() *authorization.Policy { return s.policy }
+
+// AuthorizationReport is the policy's own summary, nil when there is no policy. A
+// deployment with no authorization section reports nothing rather than reporting
+// a policy that allows everything, which would read as a policy somebody wrote.
+func (s *Server) AuthorizationReport() *AuthzSummary {
+	p := s.policy
+	if p == nil {
+		return nil
+	}
+	return &AuthzSummary{
+		DefaultAllows: p.DefaultAllows(),
+		Shadow:        p.Shadows(),
+		Allowed:       p.Allowed.Load(),
+		Denied:        p.Denied.Load(),
+		NoRule:        p.NoRule.Load(),
+		Rules:         p.Rules(),
+	}
+}
+
 // Bans returns the ban list, or nil when bans are not configured.
 func (s *Server) Bans() *ban.List { return s.bans.Load() }
 
@@ -396,6 +432,7 @@ func (s *Server) Stats() Snapshot {
 	snap.RateRefusedConns = s.rate().Rejected.Load()
 	snap.Assets = s.AssetReport()
 	snap.Access = s.AccessReport()
+	snap.Authz = s.AuthorizationReport()
 	snap.Custody = s.CustodyReport()
 	s.mu.Lock()
 	for _, bl := range s.listeners {

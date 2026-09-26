@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/bodybudget"
 	"github.com/rom/xproxy/internal/intel"
 	"github.com/rom/xproxy/internal/metrics"
@@ -790,6 +791,11 @@ type Snapshot struct {
 	// the management view because a grant queue nobody drains and sessions
 	// refused for want of one are both things to alert on.
 	Access *AccessSummary `json:"access,omitempty"`
+	// Authz is the estate's authorisation policy, absent when there is no
+	// authorization section. The number to watch is NoRule: decisions the
+	// default made because nothing matched, which is what says whether the
+	// rules describe the estate or only the part somebody remembered.
+	Authz *AuthzSummary `json:"authorization,omitempty"`
 	// Custody says where this daemon's private keys live and whether the
 	// FIPS module is active. It is always present, because "no vault, keys
 	// on disk, no FIPS" is an answer somebody auditing an estate needs to
@@ -1374,6 +1380,26 @@ type AccessSummary struct {
 	Revocations uint64            `json:"revocations"`
 	Uses        uint64            `json:"uses"`
 	Refusals    map[string]uint64 `json:"refusals,omitempty"`
+}
+
+// AuthzSummary is what the status view and the exposition say about the
+// authorisation policy: how it is set up and what it has decided.
+type AuthzSummary struct {
+	// DefaultAllows says which way an unmatched subject goes. It is here
+	// because a hit count means the opposite thing depending on it, and
+	// Shadow says whether any of it is being enforced at all.
+	DefaultAllows bool `json:"default_allows"`
+	Shadow        bool `json:"shadow"`
+	// Allowed, Denied and NoRule are the decisions. NoRule is the gap
+	// measure: high and rising means the rules cover less of the estate than
+	// whoever wrote them believes.
+	Allowed uint64 `json:"allowed"`
+	Denied  uint64 `json:"denied"`
+	NoRule  uint64 `json:"no_rule"`
+	// Rules is every rule in order with its hit count, so a rule that has
+	// never decided anything is visible as such -- which is either a rule
+	// about traffic that does not happen or a rule shadowed by one above it.
+	Rules []authorization.Status `json:"rules,omitempty"`
 }
 
 // CustodySummary is what the status view and the exposition say about key
