@@ -11433,14 +11433,18 @@ A kind that did not consult this policy would be a hole in a policy an operator
 believes covers everything, so a configuration that has an `authorization`
 section **and** a listener of a kind that does not consult it is refused at
 load, naming the listener and the kind. The kinds are wired one at a time;
-today the list is the five gate kinds.
+today the list is the five gate kinds and the forward proxy.
 
-Every one of them asks about `connect` and takes `target` as the **upstream pool
-name**, not an endpoint address, so that one rule reads the same on all of them;
-the per-machine question belongs to the JIT access grant (see `access`), which
-does check the endpoint. None of them fills `groups`: these protocols give the
+All of them ask about `connect`. None fills `groups`: these protocols give the
 gateway no group membership it could verify, so a rule about a team is written
 with `principals` on `ssh` and with `users` elsewhere.
+
+What `target` means differs in the one place it has to. On the gate kinds it is
+the **upstream pool name**, not an endpoint address, so that one rule reads the
+same on all five; the per-machine question belongs to the JIT access grant (see
+`access`), which does check the endpoint. On a `forward` listener there is no
+pool -- the destination *is* what the client asked for -- so `target` is
+`host:port`, which is what a rule about egress has to be able to name.
 
 | Kind | When it asks, and what it has |
 |------|------------------------------|
@@ -11449,6 +11453,7 @@ with `principals` on `ssh` and with `users` elsewhere.
 | `vnc` | After the client has identified itself and before the desktop is dialled. `user` is the plain credential's user or the name the factor prompt asked for, so the listener needs a security type that carries one (`mslogon2`, or VeNCrypt with a named credential) |
 | `rdp` | At the client info packet, which is the only place a person appears in RDP and arrives **after** the desktop has been dialled. So a refusal here means the desktop saw a TCP connection from the gateway and never the person's name or password |
 | `ftp` | At the login, for the same reason: FTP's greeting comes from the server, so the target is dialled before anybody has said who they are. A refusal is a 530 on the login, and no command of the person's is forwarded |
+| `forward` | On every request, tunnel and association -- CONNECT, a plain proxied request, SOCKS5 and MASQUE alike -- after the destination policy and before the destination is dialled. `target` is the destination `host:port`, so a rule reads `targets: ["*.vendor.example:443"]`, and `*` does not cross the colon, which keeps one host's ports from being one pattern's worth of the whole internet. `user` is the proxy credential's name, empty on a listener with no `auth` -- which means a rule about users matches nobody there, and such a listener wants rules about networks and destinations instead |
 
 A refusal here is the reason `authorization` on the listener's usual deny event
 (`ssh_authorization` and so on), so the counters, the security log and the ban

@@ -1092,8 +1092,10 @@ describes it, validation refuses what cannot work, and
   policy for what only it can express (which Modbus register, which SQL
   shape, which SSH channel); this answers the question above them all.
   All five gate kinds ask it — SSH and SFTP, Telnet, VNC, RDP and FTP —
-  and the listener kinds that do not consult it yet are named at load
-  rather than left as a hole in a policy somebody believes is complete
+  and so does the forward proxy, where the target is the destination
+  rather than a pool and a rule is an egress policy about people. The
+  listener kinds that do not consult it yet are named at load rather
+  than left as a hole in a policy somebody believes is complete
 
 ### The estate: clusters, fleets and Kubernetes
 

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/acceptgroup"
+	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/httpx"
 	"github.com/rom/xproxy/internal/intel"
@@ -24,6 +25,7 @@ import (
 	"github.com/rom/xproxy/internal/passwd"
 	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/relay"
+	"github.com/rom/xproxy/internal/textsafe"
 )
 
 // forwardServer serves a kind: forward listener: an explicit proxy that
@@ -253,12 +255,13 @@ func (f *forwardServer) shadowed(reason, dest string) bool {
 // check applies the destination policy and returns the addresses to
 // dial, or the deny reason.
 //
-// client is who asked and reqURL the whole request target where there is one
-// (a plain http request through the proxy); a CONNECT, a SOCKS request and a
-// MASQUE association name a host and a port and nothing more, and pass "".
-// Both are for the imported threat lists at the end: the policy above them is
-// about the destination alone.
-func (f *forwardServer) check(ctx context.Context, p *forwardPolicy, client netip.Addr, host string, port int, reqURL string) ([]netip.Addr, string) {
+// client is who asked, user the name they authenticated as where this listener
+// asks for one, and reqURL the whole request target where there is one (a plain
+// http request through the proxy); a CONNECT, a SOCKS request and a MASQUE
+// association name a host and a port and nothing more, and pass "". client and
+// reqURL are for the imported threat lists at the end; user is for the estate's
+// authorisation policy, which is the one question here that is about a person.
+func (f *forwardServer) check(ctx context.Context, p *forwardPolicy, client netip.Addr, user, host string, port int, reqURL string) ([]netip.Addr, string) {
 	if !p.ports[port] && !f.shadowed("port", net.JoinHostPort(host, strconv.Itoa(port))) {
 		return nil, "port"
 	}
@@ -301,7 +304,54 @@ func (f *forwardServer) check(ctx context.Context, p *forwardPolicy, client neti
 	if list := f.intel(client, host, reqURL); list != "" && !f.shadowed("threat_intel", list+" "+host) {
 		return nil, "threat_intel"
 	}
+	// The estate's own policy last, after everything about the destination, so
+	// that a destination nothing else objects to is the only kind this has to
+	// answer about -- and a refusal here is about the person rather than the
+	// place, which is what the rule an operator reads says.
+	if reason := f.admitByPolicy(client, user, host, port); reason != "" {
+		return nil, reason
+	}
 	return ips, ""
+}
+
+// admitByPolicy is the estate's authorisation policy: may this identity, from
+// here, reach this destination at all.
+//
+// Unlike the gate kinds the target is the destination itself, host and port,
+// because a forward proxy has no upstream pool -- the destination *is* what the
+// client asked for, and it is what a rule about egress has to be able to name.
+// So a rule reads targets: ["*.example.com:443"], and the glob does not cross a
+// colon, which is what keeps one host's ports from being one pattern's worth of
+// the whole internet.
+//
+// The user is empty on a listener that does not ask for proxy credentials. That
+// is not a hole so much as a fact the operator chose: a rule naming users then
+// matches nobody here, and the default decides -- which with the default deny
+// means such a listener needs a rule about networks or destinations rather than
+// about people.
+func (f *forwardServer) admitByPolicy(client netip.Addr, user, host string, port int) string {
+	dest := host
+	if port > 0 {
+		dest = net.JoinHostPort(host, strconv.Itoa(port))
+	}
+	return f.host.Authorization().Ask(authorization.Subject{
+		Listener: f.name,
+		Kind:     "forward",
+		Client:   client,
+		User:     user,
+		Target:   dest,
+		Action:   authorization.ActionConnect,
+	}, textsafe.Clip64(user), authorization.Gate{
+		Shadowing: func() bool { return f.shadow },
+		Record: func(reason, rule, detail string) {
+			f.host.Counters().WouldRefuse("forward", reason)
+			f.host.Shadow().Record("forward", f.name, reason, rule, detail+" -> "+dest)
+		},
+		// No Deny: on this listener check returns the reason and the caller
+		// counts, logs and bans on it, the same as for every other refusal
+		// here. Counting it twice would put the policy's refusals at double
+		// everything else's.
+	})
 }
 
 // intel asks the imported threat lists about one forward request: who is
@@ -533,7 +583,7 @@ func (f *forwardServer) connect(w http.ResponseWriter, r *http.Request, p *forwa
 		f.deny(w, r, ip, user, http.StatusBadRequest, "authority", start)
 		return
 	}
-	ips, reason := f.check(r.Context(), p, ip, host, port, "")
+	ips, reason := f.check(r.Context(), p, ip, user, host, port, "")
 	if reason != "" {
 		f.deny(w, r, ip, user, http.StatusForbidden, reason, start)
 		return
@@ -754,7 +804,7 @@ func (f *forwardServer) plain(w http.ResponseWriter, r *http.Request, p *forward
 	}
 	// A plain request through the proxy has a path, so a url list can be
 	// asked about the whole target rather than the host alone.
-	ips, reason := f.check(r.Context(), p, ip, host, port, r.URL.Host+r.URL.RequestURI())
+	ips, reason := f.check(r.Context(), p, ip, user, host, port, r.URL.Host+r.URL.RequestURI())
 	if reason != "" {
 		f.deny(w, r, ip, user, http.StatusForbidden, reason, start)
 		return

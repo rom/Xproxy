@@ -17,7 +17,6 @@ var notYetAuthorising = map[string]bool{
 	"http":     true,
 	"tcp":      true,
 	"udp":      true,
-	"forward":  true,
 	"dns":      true,
 	"smtp":     true,
 	"mqtt":     true,

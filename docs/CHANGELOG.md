@@ -614,6 +614,17 @@ Open findings of the earlier rounds:
   one rule reads the same on all of them, and the per-machine question stays the
   grant's.
 
+- **And the forward proxy**, on every request, tunnel and association --
+  CONNECT, a plain proxied request, SOCKS5 and MASQUE alike -- after the
+  destination policy and before the destination is dialled. Here the target is
+  the destination `host:port` rather than a pool, because a forward proxy has no
+  pool and the destination is exactly what a rule about egress needs to name;
+  `*` does not cross the colon, so `*.vendor.example:443` is one set of hosts on
+  one port rather than one pattern's worth of the whole internet. The user is
+  the proxy credential's name, empty on a listener with no `auth` -- so a rule
+  about users matches nobody there, and such a listener wants rules about
+  networks and destinations instead.
+
 - **Readable while it is being trialled.** `shadow: true` evaluates the
   whole policy and records what it would have refused without refusing
   anything -- section-wide rather than per rule, because half a policy in

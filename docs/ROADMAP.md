@@ -439,12 +439,18 @@ of them is a flaw in front of all of them.
   `docs/protocols/` say so per kind. All five take the upstream pool as
   the target, so one rule reads the same on all of them.
 
-  Not yet: the forward proxy and the relays that authenticate a user;
-  then the identity-less kinds, in the same pass as the
-  `cidr`-lists-per-kind sweep above, because both need the same per-kind
-  admission point. The HTTP gateway's session-level question is last and
-  is genuinely a design question: an HTTP listener has no session, and
-  the per-request answer is already the `authz` filter.
+  The forward proxy asks it too, on every request, tunnel and
+  association, with the destination `host:port` as the target rather
+  than a pool -- a forward proxy has no pool, and the destination is
+  what a rule about egress needs to name.
+
+  Not yet: the relays that authenticate a user (smtp, mqtt, ldap, the
+  four database kinds, amqp); then the identity-less kinds, in the same
+  pass as the `cidr`-lists-per-kind sweep above, because both need the
+  same per-kind admission point. The HTTP gateway's session-level
+  question is last and is genuinely a design question: an HTTP listener
+  has no session, and the per-request answer is already the `authz`
+  filter.
 
 ## After 1.4 (candidates, unranked)
 
