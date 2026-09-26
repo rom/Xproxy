@@ -21,8 +21,10 @@ package intel
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"net/netip"
 	"os"
 	"strings"
@@ -80,6 +82,14 @@ type List struct {
 	Action string
 	// File is where the entries came from.
 	File string
+	// Format is how the file is written; see Spec.
+	Format string
+	// Skipped is what the last read of a structured document could not use:
+	// objects and attributes that are not indicators this proxy can match on.
+	// Reported rather than hidden -- a bundle of ten thousand objects that
+	// yields four entries is either the wrong feed or a feed of things this
+	// cannot act on, and an operator should see which.
+	Skipped int
 	// Hits counts the requests this list matched.
 	Hits atomic.Uint64
 
@@ -136,6 +146,13 @@ type ListStatus struct {
 	Entries int       `json:"entries"`
 	Hits    uint64    `json:"hits"`
 	Read    time.Time `json:"read"`
+	// Format is how the file was read, and Skipped what a structured document
+	// held that this list did not take: indicators of other kinds, and objects
+	// that are not indicators at all. A bundle of ten thousand objects behind
+	// four entries is either the wrong feed or the wrong kind, and the pair of
+	// numbers is what says which.
+	Format  string `json:"format,omitempty"`
+	Skipped int    `json:"skipped,omitempty"`
 }
 
 // Spec is one list as configured. The package takes its own shape rather
@@ -143,6 +160,13 @@ type ListStatus struct {
 // without the config package.
 type Spec struct {
 	Name, Kind, Action, File string
+	// Format is how the file is written: lines, stix, misp, or auto to decide
+	// from the bytes. Empty means auto.
+	//
+	// Naming it is better than sniffing it. A feed whose format is named fails
+	// loudly when its publisher changes shape; a sniffed one quietly starts
+	// yielding nothing, which is the failure this package exists to refuse.
+	Format string
 }
 
 // New reads every list. A file that cannot be read, or an entry that
@@ -151,7 +175,7 @@ type Spec struct {
 func New(specs []Spec) (*Set, error) {
 	s := &Set{}
 	for _, sp := range specs {
-		l := &List{Name: sp.Name, Kind: sp.Kind, Action: sp.Action, File: sp.File}
+		l := &List{Name: sp.Name, Kind: sp.Kind, Action: sp.Action, File: sp.File, Format: sp.Format}
 		if l.Kind == "" {
 			l.Kind = KindCIDR
 		}
@@ -166,6 +190,12 @@ func New(specs []Spec) (*Set, error) {
 	return s, nil
 }
 
+// MaxDocument bounds a structured feed document. A STIX bundle or a MISP export
+// is read whole -- there is no streaming JSON here -- so the bound is on the
+// file rather than on the parser's appetite, and a document larger than this is
+// refused with the number rather than read into memory to find out.
+const MaxDocument = 64 << 20
+
 // read loads a list's file into it.
 func (s *Set) read(l *List) error {
 	f, err := os.Open(l.File) //nolint:gosec // a configured path
@@ -177,16 +207,137 @@ func (s *Set) read(l *List) error {
 	if err != nil {
 		return err
 	}
-	var (
-		nets  []netip.Prefix
-		exact map[string]struct{}
-		n     int
-		depth int
-	)
-	if l.Kind != KindCIDR && l.Kind != "" {
-		exact = map[string]struct{}{}
+	if info.Size() > MaxDocument {
+		return fmt.Errorf("%d bytes; at most %d", info.Size(), MaxDocument)
 	}
-	sc := bufio.NewScanner(f)
+	ent, err := l.entries(f)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	l.nets, l.exact, l.count, l.depth, l.Skipped = ent.nets, ent.exact, ent.count, ent.depth, ent.skipped
+	l.modTime, l.size, l.read = info.ModTime(), info.Size(), time.Now()
+	s.mu.Unlock()
+	return nil
+}
+
+// entrySet is what one read produced.
+type entrySet struct {
+	nets    []netip.Prefix
+	exact   map[string]struct{}
+	count   int
+	depth   int
+	skipped int
+}
+
+// entries reads a document in whichever format the list is, and keeps the
+// indicators of the list's own kind.
+//
+// A structured document carries several kinds -- a bundle has domains, URLs,
+// digests and addresses in it -- and a list has one kind and one action. So a
+// list takes the indicators of its kind and counts the rest as skipped. An
+// estate that wants to block the domains and only log the digests configures
+// two lists over the same file, which is the same shape the package already
+// has and says the two policies out loud rather than inferring one.
+func (l *List) entries(r io.Reader) (entrySet, error) {
+	format := l.Format
+	if format == "" {
+		format = FormatAuto
+	}
+	if format == FormatLines {
+		return l.entriesFromLines(r)
+	}
+	data, err := io.ReadAll(io.LimitReader(r, MaxDocument+1))
+	if err != nil {
+		return entrySet{}, err
+	}
+	if len(data) > MaxDocument {
+		return entrySet{}, fmt.Errorf("more than %d bytes", MaxDocument)
+	}
+	if format == FormatAuto {
+		format = detectFormat(data)
+		if format == FormatLines {
+			return l.entriesFromLines(bytes.NewReader(data))
+		}
+	}
+	var p *parsed
+	switch format {
+	case FormatSTIX:
+		p, err = parseSTIX(data)
+	case FormatMISP:
+		p, err = parseMISP(data)
+	default:
+		return entrySet{}, fmt.Errorf("format %q is not lines, stix, misp or auto", format)
+	}
+	if err != nil {
+		return entrySet{}, err
+	}
+	return l.entriesFromParsed(p)
+}
+
+// entriesFromParsed keeps the indicators of this list's kind out of a parsed
+// document, and counts everything else as skipped.
+func (l *List) entriesFromParsed(p *parsed) (entrySet, error) {
+	kind := l.Kind
+	if kind == "" {
+		kind = KindCIDR
+	}
+	mine := p.byKind[kind]
+	// Every indicator of another kind is skipped for this list, on top of what
+	// the parser itself could not read. Both numbers are the same thing from
+	// the operator's side: what was in the document and is not in the list.
+	skipped := p.skipped + p.total() - len(mine)
+	if len(mine) == 0 {
+		return entrySet{}, fmt.Errorf("no %s indicators in the document (it held %d of other kinds, and %d objects could not be read)",
+			kind, p.total(), p.skipped)
+	}
+	if len(mine) > MaxEntries {
+		return entrySet{}, fmt.Errorf("more than %d entries", MaxEntries)
+	}
+	out := entrySet{count: len(mine), skipped: skipped}
+	if kind == KindCIDR {
+		out.nets = make([]netip.Prefix, 0, len(mine))
+		for _, v := range mine {
+			pfx, err := parsePrefix(v)
+			if err != nil {
+				// The parsers check this before adding, so reaching here is a
+				// bug rather than a bad feed; say which.
+				return entrySet{}, fmt.Errorf("internal: %q from a parsed document is not an address: %w", v, err)
+			}
+			out.nets = append(out.nets, pfx)
+		}
+		return out, nil
+	}
+	out.exact = make(map[string]struct{}, len(mine))
+	for _, v := range mine {
+		out.exact[v] = struct{}{}
+		switch kind {
+		case KindDomain:
+			if n := labelCount(v); n > out.depth {
+				out.depth = n
+			}
+		case KindURL:
+			if n := segmentCount(v); n > out.depth {
+				out.depth = n
+			}
+		}
+	}
+	// The parsers normalise, so an entry deeper than the walk bound would be a
+	// document this cannot match on rather than a line an operator mistyped.
+	if out.depth > maxSegments {
+		return entrySet{}, fmt.Errorf("an indicator with %d parts; at most %d, because every request would walk that many candidates",
+			out.depth, maxSegments)
+	}
+	return out, nil
+}
+
+// entriesFromLines reads the plain form: one indicator per line.
+func (l *List) entriesFromLines(r io.Reader) (entrySet, error) {
+	var out entrySet
+	if l.Kind != KindCIDR && l.Kind != "" {
+		out.exact = map[string]struct{}{}
+	}
+	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	line := 0
 	for sc.Scan() {
@@ -207,61 +358,57 @@ func (s *Set) read(l *List) error {
 				text = strings.TrimSpace(text[:i])
 			}
 		}
-		if n++; n > MaxEntries {
-			return fmt.Errorf("more than %d entries", MaxEntries)
+		if out.count++; out.count > MaxEntries {
+			return entrySet{}, fmt.Errorf("more than %d entries", MaxEntries)
 		}
 		switch l.Kind {
 		case KindJA4:
 			if len(text) > 128 {
-				return fmt.Errorf("line %d: %q is too long for a fingerprint", line, text)
+				return entrySet{}, fmt.Errorf("line %d: %q is too long for a fingerprint", line, text)
 			}
-			exact[text] = struct{}{}
+			out.exact[text] = struct{}{}
 		case KindDomain:
 			key, err := domainKey(text)
 			if err != nil {
-				return fmt.Errorf("line %d: %q: %w", line, text, err)
+				return entrySet{}, fmt.Errorf("line %d: %q: %w", line, text, err)
 			}
 			if n := labelCount(key); n > maxDomainDepth {
-				return fmt.Errorf("line %d: %q: %d labels; at most %d, because every request would walk that many candidates",
+				return entrySet{}, fmt.Errorf("line %d: %q: %d labels; at most %d, because every request would walk that many candidates",
 					line, text, n, maxDomainDepth)
-			} else if n > depth {
-				depth = n
+			} else if n > out.depth {
+				out.depth = n
 			}
-			exact[key] = struct{}{}
+			out.exact[key] = struct{}{}
 		case KindURL:
 			key, err := urlKey(text)
 			if err != nil {
-				return fmt.Errorf("line %d: %q: %w", line, text, err)
+				return entrySet{}, fmt.Errorf("line %d: %q: %w", line, text, err)
 			}
 			if n := segmentCount(key); n > maxSegments {
-				return fmt.Errorf("line %d: %q: %d path segments; at most %d, because every request would walk that many candidates",
+				return entrySet{}, fmt.Errorf("line %d: %q: %d path segments; at most %d, because every request would walk that many candidates",
 					line, text, n, maxSegments)
-			} else if n > depth {
-				depth = n
+			} else if n > out.depth {
+				out.depth = n
 			}
-			exact[key] = struct{}{}
+			out.exact[key] = struct{}{}
 		case KindHash:
 			key, err := hashKey(text)
 			if err != nil {
-				return fmt.Errorf("line %d: %q: %w", line, text, err)
+				return entrySet{}, fmt.Errorf("line %d: %q: %w", line, text, err)
 			}
-			exact[key] = struct{}{}
+			out.exact[key] = struct{}{}
 		default:
 			p, err := parsePrefix(text)
 			if err != nil {
-				return fmt.Errorf("line %d: %q: %w", line, text, err)
+				return entrySet{}, fmt.Errorf("line %d: %q: %w", line, text, err)
 			}
-			nets = append(nets, p)
+			out.nets = append(out.nets, p)
 		}
 	}
 	if err := sc.Err(); err != nil {
-		return err
+		return entrySet{}, err
 	}
-	s.mu.Lock()
-	l.nets, l.exact, l.count, l.depth = nets, exact, n, depth
-	l.modTime, l.size, l.read = info.ModTime(), info.Size(), time.Now()
-	s.mu.Unlock()
-	return nil
+	return out, nil
 }
 
 // parsePrefix reads an address or a network, the two forms every feed of
@@ -443,7 +590,8 @@ func (s *Set) Status() []ListStatus {
 	out := make([]ListStatus, 0, len(s.lists))
 	for _, l := range s.lists {
 		out = append(out, ListStatus{Name: l.Name, Kind: l.Kind, Action: l.Action,
-			File: l.File, Entries: l.count, Hits: l.Hits.Load(), Read: l.read})
+			File: l.File, Entries: l.count, Hits: l.Hits.Load(), Read: l.read,
+			Format: l.Format, Skipped: l.Skipped})
 	}
 	return out
 }
