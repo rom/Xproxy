@@ -7,6 +7,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/rom/xproxy/internal/intel"
 )
 
 // APIVersion is the version of the middleware contract in this package.
@@ -56,6 +58,15 @@ type Env struct {
 	// theirs. Publish is a no-op and Subscribe never fires when the proxy
 	// runs alone. Nil in test harnesses that do not provide one.
 	Events Events
+	// Intel returns the imported threat-intelligence lists, or nil when
+	// the configuration has none. It is a function rather than the set
+	// itself because the set is replaced on a reload and its entries are
+	// re-read under the filter's feet: a filter holding the set it was
+	// built with would go on matching a feed nobody publishes any more.
+	//
+	// A filter that reads a payload -- the upload guard -- asks the hash
+	// lists about its digest. Nil in test harnesses that provide none.
+	Intel func() *intel.Set
 }
 
 // Event is one fact shared between nodes: Kind names it and selects the

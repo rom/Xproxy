@@ -2,16 +2,22 @@ package uploadguard
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/textproto"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/rom/xproxy/internal/filter"
 	"github.com/rom/xproxy/internal/filter/filtertest"
+	"github.com/rom/xproxy/internal/intel"
 )
 
 type part struct {
@@ -214,5 +220,92 @@ func TestHelpers(t *testing.T) {
 	}
 	if !looksLikeExtension("html") || looksLikeExtension("2024") || looksLikeExtension("v2") || looksLikeExtension("holiday") {
 		t.Fatal("looksLikeExtension")
+	}
+}
+
+// A file's digest is asked about, and the answer is the list's action: block
+// refuses the upload, anything else notes it and lets the file through.
+//
+// The guard is where this happens because it is already reading every byte of
+// every file: the digest costs the pass it was making anyway, and no other
+// filter has the file assembled.
+func TestAnUploadIsAskedAboutByItsDigest(t *testing.T) {
+	// Two payloads, one listed with block and one with log. The list holds the
+	// SHA-256 of each, which is how a feed names a file.
+	bad := []byte("this exact file has been seen elsewhere")
+	noted := []byte("this one is only worth a line in the log")
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	sum := func(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
+	set, err := intel.New([]intel.Spec{
+		{Name: "bad-files", Kind: "hash", Action: "block", File: write("bad.txt", sum(bad)+"\n")},
+		{Name: "noted-files", Kind: "hash", Action: "log", File: write("noted.txt", sum(noted)+"\n")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := filtertest.BuildWithEnv("upload_guard", "uploads",
+		filter.Options{"max_file_bytes": 4096, "check_magic": false, "deny_executables": false, "raw_uploads": true},
+		filter.Env{Intel: func() *intel.Set { return set }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The listed file: refused, and the verdict names the list so the data
+	// plane counts it where every other match is counted.
+	v := filtertest.Run(f, multipartRequest(t, part{"f", "invoice.txt", "text/plain", bad}), nil).Request
+	if !v.Deny || v.Status != http.StatusForbidden {
+		t.Fatalf("a listed digest: deny=%v status=%d detail=%q", v.Deny, v.Status, v.Detail)
+	}
+	if v.ThreatList != "bad-files" {
+		t.Errorf("ThreatList %q, want bad-files", v.ThreatList)
+	}
+	if !strings.HasPrefix(v.Detail, "threat_intel:") {
+		t.Errorf("detail %q, want the check named", v.Detail)
+	}
+	// The log-only file goes through, with the list in the access log: a hash
+	// list has nobody to challenge, so the third action does not exist here
+	// and a log list must not become a block.
+	res := filtertest.Run(f, multipartRequest(t, part{"f", "notes.txt", "text/plain", noted}), nil)
+	if res.Request.Deny {
+		t.Fatalf("a log-only list refused an upload: %+v", res.Request)
+	}
+	if !strings.Contains(fmt.Sprint(res.Attrs...), "noted-files") {
+		t.Errorf("the access log does not name the list: %v", res.Attrs)
+	}
+	// A file nothing lists is untouched.
+	if v := filtertest.Run(f, multipartRequest(t, part{"f", "ok.txt", "text/plain", []byte("ordinary")}), nil).Request; v.Deny {
+		t.Errorf("an unlisted file was refused: %+v", v)
+	}
+	// And a raw body is one file too, so an upload that is not multipart is
+	// asked about as well -- a client that could skip the digest by sending
+	// the payload as the whole body would have a bypass one header long.
+	raw := httptest.NewRequest("POST", "http://app.test/upload", bytes.NewReader(bad))
+	raw.Header.Set("Content-Type", "application/octet-stream")
+	if v := filtertest.Run(f, raw, nil).Request; !v.Deny || v.ThreatList != "bad-files" {
+		t.Errorf("a raw upload of a listed file: %+v", v)
+	}
+	// A file longer than the sniff window is digested whole, not only its
+	// first 512 bytes.
+	long := append(append([]byte{}, bytes.Repeat([]byte("a"), 600)...), "tail"...)
+	longSet, err := intel.New([]intel.Spec{
+		{Name: "long-files", Kind: "hash", Action: "block", File: write("long.txt", sum(long)+"\n")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f2, err := filtertest.BuildWithEnv("upload_guard", "uploads",
+		filter.Options{"max_file_bytes": 4096, "check_magic": false, "deny_executables": false},
+		filter.Env{Intel: func() *intel.Set { return longSet }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := filtertest.Run(f2, multipartRequest(t, part{"f", "big.txt", "text/plain", long}), nil).Request; !v.Deny {
+		t.Error("a file past the sniff window was not digested whole")
 	}
 }

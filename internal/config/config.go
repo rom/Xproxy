@@ -4128,8 +4128,33 @@ type SSHListener struct {
 	HostKeys []string `yaml:"host_keys"`
 	// AuthorizedKeys is an OpenSSH authorized_keys file of the public
 	// keys that may connect. Options in the file are ignored; the
-	// policy lives here.
+	// policy lives here. The one exception is no-touch-required, which
+	// is about whether a credential is a credential at all: see
+	// require_touch.
 	AuthorizedKeys string `yaml:"authorized_keys"`
+	// RequireHardwareKey accepts only a key held in a security token:
+	// sk-ssh-ed25519@openssh.com or sk-ecdsa-sha2-nistp256@openssh.com,
+	// and a certificate whose own key is one of those.
+	//
+	// It is the difference between a credential that can be copied and
+	// one that cannot. Every other key here is a file: a backup, a
+	// laptop somebody left on a train and an agent forwarded to the
+	// wrong host are all copies of it, and nothing about the protocol
+	// can tell a copy from the original. A token's key never leaves the
+	// token; what crosses the wire is a signature the token made, and
+	// making one needs the token in somebody's hand.
+	RequireHardwareKey bool `yaml:"require_hardware_key"`
+	// RequireTouch demands that each signature assert user presence --
+	// the touch -- and refuses the opt-outs that would waive it: the
+	// no-touch-required option on an authorized_keys line and the
+	// extension of the same name in a certificate. Default true.
+	//
+	// Without presence a hardware key still cannot be copied, but it can
+	// be used by anything that reaches the machine it is plugged into,
+	// which is most of what the token was bought to prevent. false
+	// honours the opt-outs, as OpenSSH does, for the keys that have to
+	// work unattended.
+	RequireTouch *bool `yaml:"require_touch"`
 	// UsersFile is a users file (as in forward.auth) for password
 	// authentication. Public keys are the better answer; a bastion with
 	// only passwords is one credential away from open.
@@ -8106,17 +8131,107 @@ func (t *ThreatIntel) Logs() bool { return t == nil || t.LogMatches == nil || *t
 // ThreatList is one imported list.
 type ThreatList struct {
 	Name string `yaml:"name"`
-	// Kind is cidr (client addresses and networks) or ja4 (TLS client
-	// fingerprints). Default cidr.
+	// Kind is what the list is matched against:
+	//
+	//	cidr    client addresses and networks (the default)
+	//	ja4     TLS client fingerprints
+	//	domain  host names, and every name under them
+	//	url     a host and path, matched at a path boundary
+	//	hash    MD5, SHA-1 or SHA-256 digests of a payload
+	//
+	// The first two are about who is connecting; the rest are about what the
+	// client asked for, which is a different question and often a better one.
 	Kind string `yaml:"kind"`
 	// File holds the entries: one per line, with #, ; and // comments
 	// and a trailing comment after whitespace. A network may be written
 	// with host bits set; it is masked.
+	//
+	// Exactly one of file, url, taxii and misp is the source.
 	File string `yaml:"file"`
+	// URL is a feed fetched over HTTP, conditionally: an unchanged feed costs
+	// a 304 rather than a download.
+	URL string `yaml:"url"`
+	// TAXII is a TAXII 2.1 collection to poll.
+	TAXII *TAXIIFeed `yaml:"taxii"`
+	// MISP is a MISP instance to search.
+	MISP *MISPFeed `yaml:"misp"`
+	// HTTP is how a network source is reached: the credential, the trust and
+	// the timeout. Ignored for a file.
+	HTTP *FeedHTTP `yaml:"http"`
+	// Format is how the source is written: lines (one indicator per line),
+	// stix (a STIX 2.1 bundle), misp (a MISP export) or auto. Default auto for
+	// a file or a url; a taxii source is always stix and a misp source always
+	// misp, and saying otherwise is refused.
+	//
+	// Naming it is better than letting it be sniffed. A feed whose format is
+	// named fails loudly when its publisher changes shape; a sniffed one
+	// quietly starts yielding nothing.
+	Format string `yaml:"format"`
 	// Action is log (record it and serve the request), challenge (make
 	// the client prove it is a browser, which needs the challenge
 	// section) or block. Default log.
 	Action string `yaml:"action"`
+}
+
+// TAXIIFeed is a TAXII 2.1 collection.
+type TAXIIFeed struct {
+	// APIRoot is the API root URL as the server's discovery document gives it,
+	// for example https://taxii.example/api1/.
+	APIRoot string `yaml:"api_root"`
+	// Collection is the collection's id.
+	Collection string `yaml:"collection"`
+	// AddedAfter asks the server for objects added after this RFC 3339
+	// timestamp. It is a floor on age rather than incremental state: every
+	// fetch sends the same value, so the list stays the whole answer to the
+	// same question and an indicator the publisher revokes disappears.
+	AddedAfter string `yaml:"added_after"`
+}
+
+// MISPFeed is a MISP instance searched for attributes.
+type MISPFeed struct {
+	// URL is the instance, for example https://misp.example.
+	URL string `yaml:"url"`
+	// Types narrows the attribute types asked for. Empty asks for the ones
+	// this proxy can match on, which is the useful default: asking for all two
+	// hundred and discarding most of them makes the instance do work for
+	// nothing.
+	Types []string `yaml:"types"`
+	// Tags narrows by MISP tag, which is how an estate subscribes to part of a
+	// sharing community rather than all of it.
+	Tags []string `yaml:"tags"`
+	// Published asks only for attributes of published events, which is MISP's
+	// own boundary between a draft and intelligence. Default true.
+	Published *bool `yaml:"published"`
+	// Limit bounds the attributes one search returns; 0 lets the instance
+	// decide.
+	Limit int `yaml:"limit"`
+}
+
+// FeedHTTP is how a network feed is reached.
+type FeedHTTP struct {
+	// Timeout bounds one fetch, including every page of a paginated TAXII
+	// collection. Default 60s, between 1s and 10m.
+	Timeout Duration `yaml:"timeout"`
+	// Token is the credential: a bearer token for a TAXII server or a plain
+	// feed, and the API key for MISP, which sends it bare as MISP expects.
+	// A reference (env: or vault:) rather than the value keeps it out of the
+	// configuration; see the secrets section.
+	Token string `yaml:"token"`
+	// Header and HeaderValue are one extra header, for the feeds whose
+	// credential is neither of the above.
+	Header      string `yaml:"header"`
+	HeaderValue string `yaml:"header_value"`
+	// CAFile is the trust anchor for the server's certificate; empty means the
+	// system roots.
+	CAFile string `yaml:"ca_file"`
+	// ServerName overrides the name verified in the certificate.
+	ServerName string `yaml:"server_name"`
+	// Insecure and AllowInsecure together skip verification, and are refused
+	// for anything but a loopback address. A feed nobody authenticated becomes
+	// this proxy's block list, so this exists for a development instance and
+	// nowhere else.
+	Insecure      bool `yaml:"insecure"`
+	AllowInsecure bool `yaml:"allow_insecure"`
 }
 
 // WAF configures the web application firewall engine.
@@ -9116,6 +9231,10 @@ type MFAPolicy struct {
 	MaxUsers int `yaml:"max_users"`
 }
 
+// Touch reports whether user presence is demanded, with the default
+// filled in.
+func (h *SSHListener) Touch() bool { return h == nil || h.RequireTouch == nil || *h.RequireTouch }
+
 // SSHPrincipal gives one key, or one certificate principal, its own
 // policy on an ssh listener.
 type SSHPrincipal struct {
@@ -9136,6 +9255,16 @@ type SSHPrincipal struct {
 	// falls back to the listener's own setting, so an entry that only
 	// changes the target account says only that.
 	Policy *SSHPolicy `yaml:"policy"`
+	// RequireHardwareKey overrides the listener's setting for this
+	// principal: unset takes the listener's, true demands a token where
+	// the listener does not, and false exempts this principal from a
+	// requirement the listener makes.
+	//
+	// The exemption exists because an estate that moves to tokens moves
+	// one person at a time, and a service account that has no hands
+	// cannot touch anything. It is what it looks like: this principal's
+	// key is a file, and the load says so.
+	RequireHardwareKey *bool `yaml:"require_hardware_key"`
 }
 
 // SSHPolicy is the part of an ssh listener's policy a principal can

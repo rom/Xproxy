@@ -66,6 +66,7 @@ import (
 	"github.com/rom/xproxy/internal/config/schema"
 	_ "github.com/rom/xproxy/internal/filters" // built-in filter kinds for validate
 	"github.com/rom/xproxy/internal/filters/apikey"
+	"github.com/rom/xproxy/internal/intel"
 	"github.com/rom/xproxy/internal/mgmt"
 	"github.com/rom/xproxy/internal/passwd"
 	"github.com/rom/xproxy/internal/paths"
@@ -163,6 +164,9 @@ func run(args []string, out, errOut io.Writer) int {
 		}
 		printStats(out, st.Stats)
 		_, _ = fmt.Fprintln(out, "custody", custodySummary(st.Stats.Custody))
+		for _, tl := range st.Stats.ThreatLists {
+			_, _ = fmt.Fprintln(out, "threat_list", threatListSummary(tl))
+		}
 		if sb := st.Sandbox; sb != nil {
 			_, _ = fmt.Fprintln(out, "sandbox", sandboxSummary(sb))
 		}
@@ -1850,6 +1854,43 @@ func custodySummary(cu proxy.CustodySummary) string {
 	}
 	if n := len(cu.FIPSRefused); n > 0 {
 		s += fmt.Sprintf("  fips-refused=%s", strings.Join(cu.FIPSRefused, ","))
+	}
+	return s
+}
+
+// threatListSummary is the one line form used by status: what the list holds,
+// where it came from, and how its last read went.
+//
+// An imported list is only as good as its last read, so the line answers that
+// before anything else: entries and age together say whether this is policy or
+// a frozen snapshot, and a fetch count that has stopped while failures climb
+// says which.
+func threatListSummary(l intel.ListStatus) string {
+	kind := l.Kind
+	if kind == "" {
+		kind = "cidr"
+	}
+	action := l.Action
+	if action == "" {
+		action = "log"
+	}
+	s := fmt.Sprintf("%-16s kind=%-6s action=%-9s entries=%d hits=%d", l.Name, kind, action, l.Entries, l.Hits)
+	if !l.Read.IsZero() {
+		s += fmt.Sprintf("  read=%s ago", time.Since(l.Read).Round(time.Second))
+	} else {
+		s += "  read=never"
+	}
+	if l.Format != "" {
+		s += "  format=" + l.Format
+	}
+	if l.Skipped > 0 {
+		s += fmt.Sprintf("  skipped=%d", l.Skipped)
+	}
+	if l.Fetches+l.Failures+l.NotModified > 0 {
+		s += fmt.Sprintf("  fetches=%d not-modified=%d failed=%d", l.Fetches, l.NotModified, l.Failures)
+	}
+	if l.Source != "" {
+		s += "  source=" + l.Source
 	}
 	return s
 }

@@ -248,9 +248,10 @@ func bastion(t *testing.T, extra string) (*proxy.Server, string, cssh.Signer, *t
 	return bastionWith(t, extra, "")
 }
 
-// bastionWith is bastion with sections outside the listener too, for
-// the icap services a policy refers to.
-func bastionWith(t *testing.T, extra, top string) (*proxy.Server, string, cssh.Signer, *targetSSH) {
+// bastionWith is bastion with sections outside the listener too, for the icap
+// services a policy refers to, and with extra authorized_keys lines for the
+// tests that need a second kind of key in the file.
+func bastionWith(t *testing.T, extra, top string, authorized ...string) (*proxy.Server, string, cssh.Signer, *targetSSH) {
 	t.Helper()
 	dir := t.TempDir()
 	hostKeyPath, hostSigner, _ := sshKey(t, dir, "host")
@@ -261,8 +262,12 @@ func bastionWith(t *testing.T, extra, top string) (*proxy.Server, string, cssh.S
 
 	tg := startTargetSSH(t, targetHostSigner)
 
-	authorized := filepath.Join(dir, "authorized_keys")
-	if err := os.WriteFile(authorized, []byte(clientAuthorized), 0o600); err != nil {
+	authorizedPath := filepath.Join(dir, "authorized_keys")
+	lines := clientAuthorized
+	for _, l := range authorized {
+		lines += strings.TrimRight(l, "\n") + "\n"
+	}
+	if err := os.WriteFile(authorizedPath, []byte(lines), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	known := filepath.Join(dir, "known_hosts")
@@ -292,7 +297,7 @@ upstreams:
   - name: hosts
     endpoints: [{address: %s}]
 %s
-`, hostKeyPath, authorized, upKeyPath, known, extra, tg.addr(), top)
+`, hostKeyPath, authorizedPath, upKeyPath, known, extra, tg.addr(), top)
 	s := proxytest.Start(t, yaml)
 	return s, s.Addrs()["bastion"], clientSigner, tg
 }

@@ -1,6 +1,9 @@
 package http
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"os"
@@ -155,5 +158,66 @@ routes:
 	}
 	if _, err := proxy.New(cfg, logging.Discard()); err == nil {
 		t.Error("a server with an unreadable list was built")
+	}
+}
+
+// A hash list matched at a filter is counted where every other match is
+// counted. The upload guard is the one filter with a payload assembled, and a
+// digest match there is as much a threat-list decision as a domain match in
+// the request path -- an operator watching threat_intel_blocked must see it.
+func TestAHashMatchAtAFilterIsCounted(t *testing.T) {
+	payload := []byte("a file somebody else has attributed")
+	digest := sha256.Sum256(payload)
+	dir := t.TempDir()
+	list := filepath.Join(dir, "hashes.txt")
+	if err := os.WriteFile(list, []byte(hex.EncodeToString(digest[:])+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b := newBackend(t, "app")
+	yaml := fmt.Sprintf(`
+version: 1
+server:
+  listeners: [{name: main, address: "127.0.0.1:0"}]
+logging: {access: {enabled: false}}
+upstreams:
+  - {name: app, endpoints: [{address: %s}]}
+threat_intel:
+  refresh: 0
+  lists:
+    - {name: bad-files, kind: hash, file: %s, action: block}
+filters:
+  - name: uploads
+    kind: upload_guard
+    options: {raw_uploads: true, check_magic: false, deny_executables: false}
+routes:
+  - {name: app, hosts: [app.test], upstream: app, filters: [uploads]}
+`, b.addr(), list)
+	srv, url := startServer(t, yaml)
+	post := func(body []byte) int {
+		t.Helper()
+		r, _ := http.NewRequest(http.MethodPost, url+"/upload", bytes.NewReader(body))
+		r.Host = "app.test"
+		r.Header.Set("Content-Type", "application/octet-stream")
+		resp, err := http.DefaultClient.Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	if code := post([]byte("something nobody lists")); code != http.StatusOK {
+		t.Errorf("an unlisted upload answered %d, want 200", code)
+	}
+	if got := srv.Stats().ThreatIntelMatched; got != 0 {
+		t.Errorf("an unlisted upload counted a match: %d", got)
+	}
+	if code := post(payload); code != http.StatusForbidden {
+		t.Errorf("a listed upload answered %d, want 403", code)
+	}
+	if got := srv.Stats().ThreatIntelMatched; got != 1 {
+		t.Errorf("threat_intel_matched %d, want 1", got)
+	}
+	if got := srv.Stats().ThreatIntelBlocked; got != 1 {
+		t.Errorf("threat_intel_blocked %d, want 1", got)
 	}
 }

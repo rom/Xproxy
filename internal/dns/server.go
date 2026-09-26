@@ -121,6 +121,19 @@ type Hooks struct {
 	// is what stops a spoofed source spending this resolver's work on
 	// somebody else's behalf.
 	Shadow func(reason, detail string) bool
+	// Intel asks the imported threat lists about the name a query asks for.
+	// It returns the list that matched and whether the query is to be
+	// refused: a list whose action is not block is recorded by the hook
+	// itself and the query is answered normally, because a resolver has
+	// nobody to challenge -- a client that gets no answer learns only that
+	// the name did not resolve.
+	//
+	// It is asked about the name alone. An address list is about who is
+	// connecting, and at a resolver that is the ban list's question: a UDP
+	// datagram proves nothing about its source, and refusing one by an
+	// imported address list would let anybody have a third party's resolver
+	// answers taken away by spoofing them.
+	Intel func(name string) (list string, block bool)
 }
 
 // Server answers DNS over one UDP socket and one TCP listener. When the
@@ -759,28 +772,37 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 		if s.hooks.Event != nil {
 			s.hooks.Event(client, "dns_blocked", a.verified, "listener", s.Name, "name", q.Name, "type", TypeName(q.Type), "proto", proto, "view", ans.view)
 		}
-		var resp []byte
-		switch ans.action {
-		case "refuse":
-			resp = Reply(query, qEnd, h, RcodeRefused)
-		case "sinkhole":
-			addr := ans.sinkhole4
-			if q.Type == TypeAAAA {
-				addr = ans.sinkhole6
-			}
-			resp = Sinkhole(query, qEnd, h, q, addr, p.SinkholeTTL)
-		default:
-			resp = Reply(query, qEnd, h, RcodeNXDomain)
-		}
-		return s.finish(a, q, "blocked", resp)
+		return s.finish(a, q, "blocked", blockedReply(query, qEnd, h, q, ans, p.SinkholeTTL))
 	}
 	// A response policy zone, after the operator's own block list and
 	// before anything is asked: the point of a policy zone is that the
 	// query does not reach the name the feed named.
+	passthru := false
 	if hit, ok := p.RPZ.Match(q.Name); ok {
+		passthru = hit.Action == RPZPassthru
 		s.RPZMatched.Add(1)
 		if resp, handled := s.applyRPZ(a, client, proto, query, qEnd, h, q, hit, tcp); handled {
 			return resp
+		}
+	}
+	// Imported threat intelligence about the name, last of the three: the
+	// operator's own block list is local policy and wins, and a policy zone
+	// carries an exemption a list does not -- a passthru rule is where an
+	// operator writes "this name resolves whatever a feed says", and an
+	// exemption that covered only one of the two imported sources would be an
+	// exemption nobody can reason about.
+	//
+	// It is answered exactly as the block list is, because how a blocked name
+	// is answered is one decision an operator makes once.
+	if !passthru && s.hooks.Intel != nil {
+		if list, block := s.hooks.Intel(q.Name); block && !s.shadowed("threat_intel", list+" "+q.Name) {
+			s.Blocked.Add(1)
+			s.refuse("threat_intel")
+			if s.hooks.Event != nil {
+				s.hooks.Event(client, "dns_threat_intel", a.verified, "listener", s.Name,
+					"list", list, "name", q.Name, "type", TypeName(q.Type), "proto", proto, "view", ans.view)
+			}
+			return s.finish(a, q, "threat_intel", blockedReply(query, qEnd, h, q, ans, p.SinkholeTTL))
 		}
 	}
 	// A domain this client was caught tunnelling under stays refused
@@ -1263,4 +1285,25 @@ func TypeName(t uint16) string {
 		return "HTTPS"
 	}
 	return "TYPE" + strconv.Itoa(int(t))
+}
+
+// blockedReply is what a blocked name is answered with: the operator's
+// choice of refusal, a sinkhole address or NXDOMAIN.
+//
+// One function for every source of a block -- the operator's own list and an
+// imported one -- because how a blocked name is answered is a decision made
+// once, in the policy, and two copies of this switch would be two policies.
+func blockedReply(query []byte, qEnd int, h Header, q Question, ans answers, sinkholeTTL uint32) []byte {
+	switch ans.action {
+	case "refuse":
+		return Reply(query, qEnd, h, RcodeRefused)
+	case "sinkhole":
+		addr := ans.sinkhole4
+		if q.Type == TypeAAAA {
+			addr = ans.sinkhole6
+		}
+		return Sinkhole(query, qEnd, h, q, addr, sinkholeTTL)
+	default:
+		return Reply(query, qEnd, h, RcodeNXDomain)
+	}
 }

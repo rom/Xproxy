@@ -7,9 +7,9 @@ import (
 	"github.com/rom/xproxy/internal/intel"
 )
 
-// Imported threat intelligence: lists of client addresses and TLS
-// fingerprints somebody else attributed, and what the operator asked for
-// about a match.
+// Imported threat intelligence: lists of client addresses, TLS fingerprints,
+// domains, URLs and payload digests somebody else attributed, and what the
+// operator asked for about a match.
 //
 // The check sits after routing, so a route can be exempt from it, and
 // before the challenge gate, so a list that asks for a challenge gets
@@ -26,13 +26,24 @@ func (s *engine) threatIntel(rw *responseWriter, r *http.Request, st *reqState, 
 	if set == nil || exempt {
 		return false
 	}
-	hit, ok := set.Match(st.clientIP, st.ja4)
+	// Everything the lists could be asked about: who is connecting, and what
+	// they asked for. st.host and st.path are the normalised forms the rest of
+	// the request path already decided on, so a domain or url list sees the
+	// same name and path the route match and the access log did -- rather than
+	// the raw header, which is where a mismatch between what was checked and
+	// what was served would live.
+	hit, ok := set.Match(intel.Subject{
+		IP:     st.clientIP,
+		JA4:    st.ja4,
+		Domain: st.host,
+		URL:    st.host + st.path,
+	})
 	if !ok {
 		return false
 	}
 	st.extra = append(st.extra, "threat_list", hit.List)
 	s.stats.ThreatIntelMatched.Add(1)
-	if s.cfg().ThreatIntel.Logs() && hit.Action == intel.ActionLog {
+	if set.Logs() && hit.Action == intel.ActionLog {
 		// A list that only logs still says so, once per matching
 		// request: a list nobody can see matching is a list nobody can
 		// tune. The other two actions write their own event.

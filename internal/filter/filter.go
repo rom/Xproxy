@@ -91,6 +91,13 @@ type Verdict struct {
 	// redirect, a logout): the response is sent but no security event is
 	// logged, no ban reason observed and no deny counted.
 	Silent bool
+	// ThreatList names the imported threat-intelligence list this verdict
+	// came from, when it came from one. Set it on a deny and on a verdict
+	// that lets the request through, because a list whose action is log
+	// matched just as truly as one that blocks: the data plane counts the
+	// match either way, so a match at a filter is counted like a match
+	// anywhere else.
+	ThreatList string
 }
 
 // Continue is the verdict that lets a request proceed.

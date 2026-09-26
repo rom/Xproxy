@@ -13,6 +13,7 @@ import (
 	"github.com/rom/xproxy/internal/bound"
 	"github.com/rom/xproxy/internal/config"
 	wire "github.com/rom/xproxy/internal/dns"
+	"github.com/rom/xproxy/internal/intel"
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/proxy"
@@ -362,6 +363,36 @@ func newServer(host proxy.Host, lc config.Listener, udp net.PacketConn, tcp net.
 			return bl != nil && bl.Banned(client)
 		},
 		Refuse: func(reason string) { host.Counters().Refuse("dns", reason) },
+		// The imported threat lists, asked about the name. A domain list is
+		// the useful kind here: a machine resolving a name somebody else
+		// attributed is worth knowing about whatever its address, and the
+		// address question belongs to the ban list, which does not take an
+		// unverified datagram's word for who sent it.
+		//
+		// The event for a list that only logs carries no client address for
+		// the same reason: a UDP source is unproven, so the fact is recorded
+		// against the name rather than attributed to whoever the packet
+		// claims to be from.
+		Intel: func(name string) (string, bool) {
+			set := host.ThreatIntel()
+			if set == nil {
+				return "", false
+			}
+			hit, ok := set.Match(intel.Subject{Domain: name})
+			if !ok {
+				return "", false
+			}
+			host.Counters().ThreatIntelMatched.Add(1)
+			if hit.Action == intel.ActionBlock {
+				host.Counters().ThreatIntelBlocked.Add(1)
+				return hit.List, true
+			}
+			if set.Logs() {
+				host.Logs().SecurityEvent(context.Background(), "allow", "threat_intel",
+					"listener", lc.Name, "name", name, "list", hit.List, "kind", hit.Kind, "action", hit.Action)
+			}
+			return hit.List, false
+		},
 		// Shadow mode: the policy decides, the decision is written down,
 		// and the query is answered as if it had been allowed.
 		Shadow: func(reason, detail string) bool {

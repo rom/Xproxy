@@ -58,6 +58,7 @@ type Verdict struct {
     Response *http.Response    // full response to send instead of a status page (block pages)
     Challenge bool             // serve the browser challenge instead of the status page (when configured and the client is unverified)
     Captcha   bool             // with Challenge: ask for the CAPTCHA tier (the proof of work when none is configured)
+    ThreatList string          // the imported threat list this verdict came from, on a deny and on a pass alike
 }
 ```
 
@@ -203,6 +204,16 @@ Rules for `Validate` and `New`:
   proxy's own security headers added.
 - Request body limits apply before the chain; a filter that reads the
   body reads at most the route's limit.
+- `Env.Intel` returns the imported threat-intelligence lists, or nil
+  when the configuration has none. It is a function, not the set: the
+  set is replaced on a reload and its entries are re-read under the
+  filter, so a filter that captured one would go on matching a feed
+  nobody publishes any more. A filter that reads a payload asks the hash
+  lists about its digest and names the list in `Verdict.ThreatList`; the
+  data plane counts that in `threat_intel_matched` and, on a deny, in
+  `threat_intel_blocked`, so a match at a filter is counted like a match
+  anywhere else. Set it whatever the list's action: a list whose action
+  is `log` matched just as truly as one that blocks.
 
 ## Testing a filter
 
@@ -211,6 +222,14 @@ Rules for `Validate` and `New`:
 ```go
 f, err := filtertest.Build("my_filter", "instance", filter.Options{"header": "X-Tenant", "values": []any{"a"}})
 res := filtertest.Run(f, req, nil)     // res.Request, res.Response, res.Attrs
+```
+
+`filtertest.BuildWithEnv` is the same for a filter that uses what the
+data plane hands it -- the event bus, or the threat lists:
+
+```go
+f, err := filtertest.BuildWithEnv("upload_guard", "uploads", opts,
+    filter.Env{Intel: func() *intel.Set { return set }})
 ```
 
 `internal/filters/headerguard` (stateless, patterns) and
@@ -340,7 +359,8 @@ Version 1 guarantees:
   `Info.ALPN`, `Info.ChallengeVerified` and `Verdict.Challenge` in 1.1
   this way, `Info.HoneypotMarked` and `Verdict.Silent` in 1.2,
   `Env.Events`, `Info.CaptchaVerified`, `Info.DeviceID`, `Info.Automation`
-  and `Verdict.Captcha` in 1.3. The
+  and `Verdict.Captcha` in 1.3, and `Env.Intel` and `Verdict.ThreatList`
+  in 1.4. The
   WebAssembly ABI gained body `get` kinds and `set_body` in 1.3 at
   version 1.
 - Incompatible changes bump `APIVersion`, are recorded in CHANGELOG.md

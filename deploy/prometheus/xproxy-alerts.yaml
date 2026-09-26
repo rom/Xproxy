@@ -206,6 +206,29 @@ groups:
         annotations:
           summary: "The FIPS module on {{ $labels.instance }} refuses a configured algorithm"
           description: "A key exchange group or cipher suite a listener offers is one the active module will not do, so clients that ask for it cannot handshake. Measured at start by handshaking over an in-process pipe; xproxyctl status lists which. Either narrow the configuration to what the module does or accept that those clients fall back."
+  - name: xproxy.feeds
+    rules:
+      - alert: XproxyThreatFeedFailing
+        expr: sum by (instance, list) (increase(xproxy_threat_feed_fetches_total{result="failed"}[30m])) > 2
+        for: 30m
+        labels: {severity: warn}
+        annotations:
+          summary: "The threat feed {{ $labels.list }} on {{ $labels.instance }} has failed to fetch repeatedly"
+          description: "A fetch that fails keeps the entries already read, which is deliberate -- a publisher having an outage must not empty the policy. But the list has stopped being current while it goes on matching, so an indicator the publisher withdrew is still blocking and a new one is not. xproxyctl status names the source and the error log carries a line per failure."
+      - alert: XproxyThreatListStale
+        expr: max by (instance, list) (xproxy_threat_list_age_seconds) > 86400
+        for: 1h
+        labels: {severity: warn}
+        annotations:
+          summary: "The threat list {{ $labels.list }} on {{ $labels.instance }} has not been read for a day"
+          description: "Either refresh is 0 and nothing re-reads it, or every attempt since has failed. An imported list nobody refreshes is a policy frozen at the moment it was loaded."
+      - alert: XproxyThreatListEmpty
+        expr: min by (instance, list) (xproxy_threat_list_entries) == 0
+        for: 15m
+        labels: {severity: warn}
+        annotations:
+          summary: "The threat list {{ $labels.list }} on {{ $labels.instance }} holds no entries"
+          description: "A list with no entries matches nothing while the configuration says it is enforced, which is the failure this project refuses to have silently: a structured feed whose shape changed, or a kind that does not match what the feed carries. xproxy_threat_list_skipped says whether the objects were there and went unread."
   - name: xproxy.accounts
     rules:
       - alert: XproxyCredentialStuffing

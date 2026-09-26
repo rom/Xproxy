@@ -65,6 +65,11 @@ type server struct {
 	// It is the one list that overrides the CA, which is what makes a
 	// certificate revocable before it expires.
 	revoked map[string]bool
+	// noTouch are the authorized_keys whose line carries
+	// no-touch-required. The option is remembered rather than obeyed: with
+	// require_touch (the default) such a line is refused at load, and only
+	// a listener that has said it will honour the opt-out gets it.
+	noTouch map[string]bool
 
 	// grants is the just-in-time access guard, nil unless this listener
 	// sets require_grant. A session is admitted against a grant somebody
@@ -104,6 +109,7 @@ func newServer(engine proxy.Host, cfg config.Listener, ln net.Listener) (*server
 	h := cfg.SSH
 	t := &server{engine: engine, cfg: cfg, h: h, ln: ln,
 		keys: map[string]bool{}, caKeys: map[string]bool{}, revoked: map[string]bool{},
+		noTouch:      map[string]bool{},
 		perPrincipal: map[string]int{},
 		cons:         map[net.Conn]struct{}{}, done: make(chan struct{})}
 	base, err := compileSSHPolicy(&config.SSHPolicy{
@@ -140,6 +146,7 @@ func newServer(engine proxy.Host, cfg config.Listener, ln net.Listener) (*server
 			pr.users[u] = true
 		}
 		pr.isDefault = len(pr.fingerprints) == 0 && len(pr.certs) == 0
+		pr.hardware = e.RequireHardwareKey
 		if e.Policy != nil {
 			pr.deny = e.Policy.Deny
 			p, err := compileSSHPolicy(e.Policy, base)
@@ -188,8 +195,9 @@ func (t *server) loadCredentials() error {
 		if err != nil {
 			return fmt.Errorf("ssh authorized_keys: %w", err)
 		}
+		hardware := 0
 		for len(raw) > 0 {
-			key, _, _, rest, err := cssh.ParseAuthorizedKey(raw)
+			key, _, options, rest, err := cssh.ParseAuthorizedKey(raw)
 			if err != nil {
 				// One unreadable line must not silently shorten the
 				// list: a key that was meant to be accepted and is not
@@ -198,10 +206,33 @@ func (t *server) loadCredentials() error {
 				return fmt.Errorf("ssh authorized_keys: %w", err)
 			}
 			t.keys[string(key.Marshal())] = true
+			if hardwareBacked(key) {
+				hardware++
+			}
+			// The one option this file's options are not ignored for. A line
+			// asking for the presence check to be waived, on a listener that
+			// requires presence, is refused here rather than at the first
+			// handshake: the credential would never work, and an operator
+			// finds that out at load or at three in the morning.
+			for _, o := range options {
+				if o != noTouchRequired {
+					continue
+				}
+				if h.Touch() {
+					return fmt.Errorf("ssh authorized_keys: a line carries %s and this listener requires user presence; drop the option or set require_touch: false", noTouchRequired)
+				}
+				t.noTouch[string(key.Marshal())] = true
+			}
 			raw = rest
 		}
 		if len(t.keys) == 0 {
 			return errors.New("ssh authorized_keys: no keys in the file")
+		}
+		// A listener that accepts only tokens, whose file holds none and
+		// which has no authority to issue one, is a listener nobody can log
+		// into. Said at load, where somebody is watching.
+		if h.RequireHardwareKey && hardware == 0 && h.TrustedUserCAKeys == "" {
+			return errors.New("ssh require_hardware_key: authorized_keys holds no sk-ssh-ed25519 or sk-ecdsa key and there is no trusted_user_ca_keys, so no client could authenticate")
 		}
 	}
 	if h.TrustedUserCAKeys != "" {
@@ -302,9 +333,30 @@ func (t *server) buildServerConfig() error {
 			if pr != nil && pr.deny {
 				return nil, fmt.Errorf("principal %q is denied", pr.name)
 			}
+			// Where the key lives, which the principal can have its own
+			// answer to, so it is asked after the principal is known.
+			if err := t.checkHardwareKey(key, pr); err != nil {
+				t.engine.Counters().SSHHardwareRefused.Add(1)
+				return nil, err
+			}
 			ext := map[string]string{
 				"auth":        kind,
 				"fingerprint": cssh.FingerprintSHA256(key),
+			}
+			if hardwareBacked(key) {
+				// In the extensions because that is the only thing the
+				// crypto library carries from the authentication into the
+				// session, and an audit that cannot tell a token from a
+				// file cannot answer the question this feature exists for.
+				ext["hardware_key"] = "yes"
+				t.engine.Counters().SSHHardwareAuths.Add(1)
+				if !t.h.Touch() && t.noTouch[string(key.Marshal())] {
+					// The listener has said it will honour the opt-out and
+					// this key's line asks for it. The extension is what
+					// the crypto library reads to waive the presence check
+					// before it verifies the signature.
+					ext[noTouchRequired] = ""
+				}
 			}
 			if pr != nil {
 				ext["principal"] = pr.name

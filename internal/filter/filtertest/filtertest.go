@@ -22,6 +22,13 @@ type Result struct {
 // Build constructs a filter of a registered kind with options, as the
 // data plane would, validating first.
 func Build(kind, name string, opts filter.Options) (filter.Filter, error) {
+	return BuildWithEnv(kind, name, opts, filter.Env{})
+}
+
+// BuildWithEnv is Build for a filter that uses something the data plane hands
+// it: the event bus, or the imported threat lists. A zero Env gets the
+// discarding logger Build uses, and a Log already set is kept.
+func BuildWithEnv(kind, name string, opts filter.Options, env filter.Env) (filter.Filter, error) {
 	k, ok := filter.Lookup(kind)
 	if !ok {
 		return nil, filter.ErrUnknownKind
@@ -29,7 +36,10 @@ func Build(kind, name string, opts filter.Options) (filter.Filter, error) {
 	if err := k.Validate(opts); err != nil {
 		return nil, err
 	}
-	return k.New(name, opts, filter.Env{Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if env.Log == nil {
+		env.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	return k.New(name, opts, env)
 }
 
 // Run begins an instance for r, runs the request phase, then the response
