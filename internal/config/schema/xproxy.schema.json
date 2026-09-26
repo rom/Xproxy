@@ -3253,6 +3253,44 @@
       },
       "additionalProperties": false
     },
+    "FeedHTTP": {
+      "description": "FeedHTTP is how a network feed is reached.",
+      "type": "object",
+      "properties": {
+        "allow_insecure": {
+          "type": "boolean"
+        },
+        "ca_file": {
+          "description": "CAFile is the trust anchor for the server's certificate; empty means the system roots.",
+          "type": "string"
+        },
+        "header": {
+          "description": "Header and HeaderValue are one extra header, for the feeds whose credential is neither of the above.",
+          "type": "string"
+        },
+        "header_value": {
+          "type": "string"
+        },
+        "insecure": {
+          "description": "Insecure and AllowInsecure together skip verification, and are refused for anything but a loopback address. A feed nobody authenticated becomes this proxy's block list, so this exists for a development instance and nowhere else.",
+          "type": "boolean"
+        },
+        "server_name": {
+          "description": "ServerName overrides the name verified in the certificate.",
+          "type": "string"
+        },
+        "timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "token": {
+          "description": "Token is the credential: a bearer token for a TAXII server or a plain feed, and the API key for MISP, which sends it bare as MISP expects. A reference (env: or vault:) rather than the value keeps it out of the configuration; see the secrets section.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "FilterConfig": {
       "description": "FilterConfig is one middleware instance.",
       "type": "object",
@@ -5173,6 +5211,39 @@
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "MISPFeed": {
+      "description": "MISPFeed is a MISP instance searched for attributes.",
+      "type": "object",
+      "properties": {
+        "limit": {
+          "description": "Limit bounds the attributes one search returns; 0 lets the instance decide.",
+          "type": "integer"
+        },
+        "published": {
+          "description": "Published asks only for attributes of published events, which is MISP's own boundary between a draft and intelligence. Default true.",
+          "type": "boolean"
+        },
+        "tags": {
+          "description": "Tags narrows by MISP tag, which is how an estate subscribes to part of a sharing community rather than all of it.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "types": {
+          "description": "Types narrows the attribute types asked for. Empty asks for the ones this proxy can match on, which is the useful default: asking for all two hundred and discarding most of them makes the instance do work for nothing.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "url": {
+          "description": "URL is the instance, for example https://misp.example.",
+          "type": "string"
         }
       },
       "additionalProperties": false
@@ -10582,6 +10653,25 @@
       },
       "additionalProperties": false
     },
+    "TAXIIFeed": {
+      "description": "TAXIIFeed is a TAXII 2.1 collection.",
+      "type": "object",
+      "properties": {
+        "added_after": {
+          "description": "AddedAfter asks the server for objects added after this RFC 3339 timestamp. It is a floor on age rather than incremental state: every fetch sends the same value, so the list stays the whole answer to the same question and an indicator the publisher revokes disappears.",
+          "type": "string"
+        },
+        "api_root": {
+          "description": "APIRoot is the API root URL as the server's discovery document gives it, for example https://taxii.example/api1/.",
+          "type": "string"
+        },
+        "collection": {
+          "description": "Collection is the collection's id.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "TCPListener": {
       "description": "TCPListener routes raw connections to upstream pools. TLS connections are routed by the server name of the ClientHello (peeked, never terminated); other connections and unmatched names go to the default upstream when one is set and are closed otherwise.",
       "type": "object",
@@ -11377,14 +11467,46 @@
           "type": "string"
         },
         "file": {
-          "description": "File holds the entries: one per line, with #, ; and // comments and a trailing comment after whitespace. A network may be written with host bits set; it is masked.",
+          "description": "File holds the entries: one per line, with #, ; and // comments and a trailing comment after whitespace. A network may be written with host bits set; it is masked. Exactly one of file, url, taxii and misp is the source.",
           "type": "string"
+        },
+        "format": {
+          "description": "Format is how the source is written: lines (one indicator per line), stix (a STIX 2.1 bundle), misp (a MISP export) or auto. Default auto for a file or a url; a taxii source is always stix and a misp source always misp, and saying otherwise is refused. Naming it is better than letting it be sniffed. A feed whose format is named fails loudly when its publisher changes shape; a sniffed one quietly starts yielding nothing.",
+          "type": "string"
+        },
+        "http": {
+          "description": "HTTP is how a network source is reached: the credential, the trust and the timeout. Ignored for a file.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/FeedHTTP"
+            }
+          ]
         },
         "kind": {
-          "description": "Kind is cidr (client addresses and networks) or ja4 (TLS client fingerprints). Default cidr.",
+          "description": "Kind is what the list is matched against: cidr client addresses and networks (the default) ja4 TLS client fingerprints domain host names, and every name under them url a host and path, matched at a path boundary hash MD5, SHA-1 or SHA-256 digests of a payload The first two are about who is connecting; the rest are about what the client asked for, which is a different question and often a better one.",
           "type": "string"
         },
+        "misp": {
+          "description": "MISP is a MISP instance to search.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/MISPFeed"
+            }
+          ]
+        },
         "name": {
+          "type": "string"
+        },
+        "taxii": {
+          "description": "TAXII is a TAXII 2.1 collection to poll.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/TAXIIFeed"
+            }
+          ]
+        },
+        "url": {
+          "description": "URL is a feed fetched over HTTP, conditionally: an unchanged feed costs a 304 rather than a download.",
           "type": "string"
         }
       },

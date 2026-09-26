@@ -267,3 +267,53 @@ routes:
 		}
 	}
 }
+
+// A network feed needs its trust anchor readable and nothing else: the URL,
+// the collection id and the credential reference are not paths, and a rule
+// derived from one of them would be a rule nobody meant.
+func TestDeriveFeedPaths(t *testing.T) {
+	const feedYAML = `
+version: 1
+server:
+  listeners: [{name: edge, address: "127.0.0.1:0"}]
+threat_intel:
+  lists:
+    - name: community
+      kind: domain
+      taxii: {api_root: "https://taxii.example/api1/", collection: 91a7b528-80eb}
+      http: {token: "env:TAXII_TOKEN", ca_file: /etc/pki/feeds/ca.pem}
+    - name: local
+      file: /var/lib/xproxy/intel/deny.txt
+management: {socket: /run/xproxy/mgmt.sock}
+upstreams:
+  - name: u
+    endpoints: [{address: "127.0.0.1:1"}]
+routes:
+  - {name: r, upstream: u}
+`
+	cfg, err := config.ParseWith([]byte(feedYAML), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := Derive(cfg, "/etc/xproxy/xproxy.yaml")
+	// The trust anchor is spelt like a path, so the ordinary walk reads it.
+	// It is asserted here because a feed whose CA is unreachable fails every
+	// fetch with a TLS error that names the certificate, not the sandbox.
+	if !slices.Contains(r.Read, "/etc/pki/feeds") {
+		t.Errorf("a feed's ca_file did not produce a read rule: %v", r.Read)
+	}
+	if slices.Contains(r.Write, "/etc/pki/feeds") {
+		t.Errorf("a feed's ca_file produced a write rule: %v", r.Write)
+	}
+	// The file source's directory is reachable.
+	if !slices.Contains(r.Read, "/var/lib/xproxy/intel") && !slices.Contains(r.Write, "/var/lib/xproxy/intel") {
+		t.Errorf("a list file did not produce a rule: read=%v write=%v", r.Read, r.Write)
+	}
+	// And nothing that is not a path became one.
+	for _, p := range append(append([]string{}, r.Read...), r.Write...) {
+		if strings.Contains(p, "taxii.example") || strings.Contains(p, "api1") ||
+			strings.Contains(p, "TAXII_TOKEN") || strings.Contains(p, "91a7b528") {
+			t.Errorf("a feed setting that is not a path became a rule: %s", p)
+		}
+	}
+}

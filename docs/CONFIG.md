@@ -6091,8 +6091,8 @@ not at accept; at most 4096 are held.
 
 ## threat_intel
 
-Imported lists of client addresses and TLS fingerprints somebody else
-attributed, and what to do about a match.
+Imported lists of client addresses, TLS fingerprints, host names, URLs and
+payload digests somebody else attributed, and what to do about a match.
 
 **It is deliberately not the ban list beside it.** A ban is earned here:
 this proxy watched a client do something and decided. A list is imported
@@ -6104,7 +6104,7 @@ logs, which is why `log` is the default action and why `block` warns.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `lists` | list | required | The lists, in order. **The first list that matches decides**, so a narrow list belongs before the broad one it softens |
-| `refresh` | duration | `5m` | How often the files are checked; only a file whose size or modification time moved is re-read. At least `10s`, or 0 for never — a reload of the configuration still re-reads every list |
+| `refresh` | duration | `5m` | How often a source is re-checked: a file whose size or modification time moved is re-read, and a network feed is re-fetched conditionally. At least `10s`, or 0 for never — a reload of the configuration still re-reads every list |
 | `log_matches` | bool | `true` | Write a security event for a match whose action is `log` as well. A list nobody can see matching is a list nobody can tune |
 
 ### threat_intel.lists[]
@@ -6112,9 +6112,58 @@ logs, which is why `log` is the default action and why `block` warns.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required | What the security event, the counters and `xproxyctl status` call this list |
-| `kind` | `cidr`, `ja4` | `cidr` | Client addresses and networks, or TLS client fingerprints |
-| `file` | path | required | The entries. One per line, with `#`, `;` and `//` comment lines and a trailing comment after whitespace; a network may be written with host bits set and is masked. An address list matches IPv4 and its IPv6-mapped form alike |
+| `kind` | `cidr`, `ja4`, `domain`, `url`, `hash` | `cidr` | What the entries are matched against; see below |
+| `file` | path | — | A local file. One entry per line, with `#`, `;` and `//` comment lines and a trailing comment after whitespace; a network may be written with host bits set and is masked |
+| `url` | URL | — | A feed fetched over HTTP. Conditionally: an unchanged feed costs a 304 rather than a download |
+| `taxii` | section | — | A TAXII 2.1 collection to poll; see below |
+| `misp` | section | — | A MISP instance to search; see below |
+| `http` | section | — | How a network source is reached: the credential, the trust and the timeout. Ignored for a `file` |
+| `format` | `lines`, `stix`, `misp`, `auto` | `auto` | How the source is written. A `taxii` source is always `stix` and a `misp` source always `misp`; saying otherwise is refused |
 | `action` | `log`, `challenge`, `block` | `log` | Record it and serve the request; make the client prove it is a browser (needs the `challenge` section); or refuse it with 403 |
+
+**Exactly one of `file`, `url`, `taxii` and `misp` says where the entries
+come from.** Two of them is refused rather than resolved by precedence: a
+list whose source is ambiguous is a list nobody can say the contents of.
+
+### threat_intel.lists[].taxii
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `api_root` | URL | required | The API root as the server's discovery document gives it, for example `https://taxii.example/api1/` |
+| `collection` | string | required | The collection's id |
+| `added_after` | timestamp | — | Ask only for objects added after this RFC 3339 timestamp |
+
+`added_after` is a floor on age, not incremental state: every fetch sends
+the same value, so the list stays the whole answer to the same question
+and an indicator the publisher revokes disappears from it. A feed that
+accumulated would keep blocking on intelligence its author withdrew.
+
+### threat_intel.lists[].misp
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `url` | URL | required | The instance, for example `https://misp.example` |
+| `types` | list | the matchable ones | Attribute types to ask for. Empty asks for the types this proxy can match on, rather than all two hundred |
+| `tags` | list | `[]` | Narrow by MISP tag, which is how an estate subscribes to part of a sharing community rather than all of it |
+| `published` | bool | `true` | Ask only for attributes of published events — MISP's own boundary between a draft and intelligence. `false` warns |
+| `limit` | int | `0` | Bound the attributes one search returns; 0 lets the instance decide. Up to 1000000 |
+
+Only attributes MISP marks `to_ids` are taken: an attribute the analyst
+did not mark for detection is context, not policy. A composite
+(`domain|ip`, `filename|sha256`) contributes the half this proxy can
+match on.
+
+### threat_intel.lists[].http
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `timeout` | duration | `60s` | Bounds one fetch, **including every page** of a paginated TAXII collection. 1s to 10m |
+| `token` | string or ref | — | The credential: a bearer token for a TAXII server or a plain feed, the API key for MISP (sent bare, as MISP expects). A `env:` or `vault:` reference keeps it out of the file; see [secrets](#secrets) |
+| `header`, `header_value` | string | — | One extra header, for the feeds whose credential is neither of the above. They go together |
+| `ca_file` | path | system roots | The trust anchor for the server's certificate |
+| `server_name` | string | the URL's host | The name verified in the certificate |
+| `insecure` | bool | `false` | Skip verification. Needs `allow_insecure` as well, and is refused unless the host is a loopback address |
+| `allow_insecure` | bool | `false` | The second half of the opt-in above |
 
 ```yaml
 threat_intel:
@@ -6124,19 +6173,75 @@ threat_intel:
     - {name: known-good, file: /etc/xproxy/intel/office.txt, action: log}
     - {name: tor-exits, file: /etc/xproxy/intel/tor-exits.txt, action: challenge}
     - {name: scanner-fingerprints, kind: ja4, file: /etc/xproxy/intel/scanners.txt, action: challenge}
+    # A plain feed of one name per line, fetched rather than waiting for
+    # somebody's cron job to drop a file on this machine.
+    - name: malware-domains
+      kind: domain
+      url: https://feeds.example/malware-domains.txt
+      action: challenge
+    # A TAXII collection, which answers STIX. Only the patterns a proxy
+    # can act on are read; the rest of the bundle is counted as skipped.
+    - name: community-stix
+      kind: domain
+      taxii:
+        api_root: https://taxii.example/api1/
+        collection: 91a7b528-80eb-42ed-a74d-c6fbd5a26116
+        added_after: "2026-01-01T00:00:00Z"
+      http: {token: "vault:kv/xproxy/taxii#token"}
+      action: log
+    # A MISP instance, searched for the attribute types this proxy
+    # matches on, narrowed to one sharing community.
+    - name: misp-hashes
+      kind: hash
+      misp:
+        url: https://misp.example
+        tags: ["tlp:amber"]
+      http: {token: "env:MISP_KEY"}
+      action: block
     # A feed this estate maintains itself, so blocking on it is a
     # decision somebody here can be asked about.
     - {name: internal-deny, file: /etc/xproxy/intel/deny.txt, action: block}
 ```
 
+What the five kinds match:
+
+- **`cidr`** the client address the proxy decided on — so behind a
+  trusted proxy chain, the forwarded one. An address list matches IPv4
+  and its IPv6-mapped form alike, and a network entry may be written with
+  host bits set.
+- **`ja4`** the fingerprint of the TLS handshake, which a plaintext
+  listener does not have.
+- **`domain`** a host name **and every name under it**: an entry
+  `evil.example` matches `evil.example` and `www.evil.example`. The walk
+  is from the shortest suffix down, bounded by the deepest entry the list
+  holds, so a client cannot escape a listed name by padding the one it
+  sends with labels.
+- **`url`** a host and path, at a path boundary: `evil.example/a` matches
+  `/a` and `/a/b` but not `/ab`. An entry may be written with a scheme,
+  which is ignored — this proxy sees one scheme per listener, and a list
+  that only matched `http://` would be a list that silently stopped
+  working behind TLS.
+- **`hash`** MD5, SHA-1 or SHA-256 digests, of an uploaded body or a file
+  a protocol names. A line may write the algorithm first
+  (`SHA256 <digest>`); the digest is found either way. `challenge` on a
+  hash list is refused: the match is on a payload, not on a browser
+  asking for a page, so there is nobody to challenge.
+
 What follows from the shape:
 
-- **A list that cannot be read fails the load**, and a reload that cannot
-  read one is refused whole. An imported list that silently matches
-  nothing is worse than no list, because the operator believes it works.
-  A file that disappears *after* the load keeps the entries already read:
-  a feed being rewritten in place must not empty the policy for the
-  moment that takes.
+- **A source that cannot be read fails the load**, and a reload that
+  cannot read one is refused whole. An imported list that silently
+  matches nothing is worse than no list, because the operator believes it
+  works. A file that disappears, or a fetch that fails, *after* the load
+  keeps the entries already read: a feed being rewritten in place, or a
+  publisher having an outage, must not empty the policy for the moment
+  that takes.
+- **A network feed is fetched with its own timeout and nothing else's.**
+  One fetch, every page included, is bounded by `http.timeout`; a feed
+  that hangs delays that list's refresh and no request. Redirects are
+  followed only to the same host, because a feed that can redirect
+  anywhere is a feed whose publisher can point this proxy's block list at
+  a document they do not control.
 - **The check runs after routing**, so `threat_intel: false` on a route
   exempts it — which is what a health endpoint or a status page wants.
   The ban list is checked earlier and applies to everything, because a
@@ -6147,17 +6252,17 @@ What follows from the shape:
   a block: that would be a policy the operator did not write. Validation
   refuses the combination at load, so it only arises if the section is
   removed later.
-- **An entry is a whole match or nothing.** `cidr` matches the client
-  address the proxy decided on (so behind a trusted proxy chain, the
-  forwarded one), and `ja4` the fingerprint of the TLS handshake, which a
-  plaintext listener does not have.
+- **An entry is a whole match or nothing.** There is no substring
+  matching in any kind: `evil.example` does not match `notevil.example`,
+  and a URL entry does not match half a path segment.
 - **A block hands the ban list `threat_intel`**, so a trigger can
   escalate a client that keeps arriving from a listed network into a real
   ban. `log` and `challenge` do not.
 
 `threat_intel_matched`, `threat_intel_blocked`, `threat_intel_challenged`
 and `threat_intel_reloads` are in `xproxyctl status`, which also lists
-every list with its entry count, hits and when it was last read;
+every list with its source, format, entry count, hits, fetches, failures,
+how many objects it skipped as unmatchable and when it was last read;
 `xproxy_threat_intel_total{result="logged"|"blocked"|"challenged"}` is
 the metric. A match adds `threat_list` to the access log line.
 

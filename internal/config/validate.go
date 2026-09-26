@@ -10003,29 +10003,212 @@ func (v *validator) threatIntel(t *ThreatIntel) {
 		}
 		seen[l.Name] = true
 		switch l.Kind {
-		case "", "cidr", "ja4":
+		case "", "cidr", "ja4", "domain", "url", "hash":
 		default:
-			v.errf("%s.kind: must be cidr (addresses and networks) or ja4 (TLS client fingerprints)", q)
+			v.errf("%s.kind: must be cidr (addresses and networks), ja4 (TLS client fingerprints), domain (host names and the names under them), url (a host and path at a path boundary) or hash (MD5, SHA-1 or SHA-256 digests)", q)
 		}
 		switch l.Action {
 		case "", "log", "block":
 		case "challenge":
 			challenges = true
+			// A challenge answers a browser. A digest is computed from a
+			// payload the client sent, and a name is asked for by a resolver
+			// or a machine; neither has anybody to show a page to, so the
+			// action would silently become nothing.
+			if l.Kind == "hash" {
+				v.errf("%s.action: challenge on a hash list has nobody to challenge -- the match is on a payload, not on a browser asking for a page. Use log or block", q)
+			}
 		default:
 			v.errf("%s.action: must be log, challenge or block", q)
 		}
-		if l.File == "" {
-			v.errf("%s.file: required; the entries come from a file so that a feed can be rewritten without a reload", q)
-		} else {
-			v.file(q+".file", l.File)
-		}
+		v.threatSource(q, l)
 		if l.Action == "block" {
-			v.warnf("%s.action: block refuses every request from an address this feed names, and a feed with one wrong line in it is an outage nobody can explain from the logs. challenge lets a browser through and stops everything else", q)
+			switch l.Kind {
+			case "domain", "url":
+				v.warnf("%s.action: block refuses every request for a name this feed covers, and a domain entry covers the names under it -- so one wrong line takes a whole zone. challenge lets a browser through and stops everything else", q)
+			case "hash":
+				v.warnf("%s.action: block refuses every payload whose digest this feed names. That is the one kind where a wrong line is cheap, because a digest names one exact payload -- but it is still somebody else's list deciding", q)
+			default:
+				v.warnf("%s.action: block refuses every request from an address this feed names, and a feed with one wrong line in it is an outage nobody can explain from the logs. challenge lets a browser through and stops everything else", q)
+			}
 		}
 	}
 	if challenges && !v.hasChallenge {
 		v.errf("threat_intel: a list asks for a challenge and there is no challenge section, so there is nothing to challenge with")
 	}
+}
+
+// threatSource checks where one list's entries come from: exactly one source,
+// and whatever that source needs.
+func (v *validator) threatSource(q string, l *ThreatList) {
+	var set []string
+	if l.File != "" {
+		set = append(set, "file")
+	}
+	if l.URL != "" {
+		set = append(set, "url")
+	}
+	if l.TAXII != nil {
+		set = append(set, "taxii")
+	}
+	if l.MISP != nil {
+		set = append(set, "misp")
+	}
+	switch len(set) {
+	case 0:
+		v.errf("%s: one of file, url, taxii or misp is required to say where the entries come from", q)
+		return
+	case 1:
+	default:
+		v.errf("%s: %s are all set; exactly one says where the entries come from, because a list whose source is ambiguous is a list nobody can say the contents of",
+			q, strings.Join(set, ", "))
+		return
+	}
+	switch l.Format {
+	case "", "auto", "lines", "stix", "misp":
+	default:
+		v.errf("%s.format: must be lines, stix, misp or auto", q)
+	}
+	switch {
+	case l.File != "":
+		v.file(q+".file", l.File)
+		if l.HTTP != nil {
+			v.warnf("%s.http: the source is a file, so nothing here is used", q)
+		}
+	case l.URL != "":
+		v.feedURL(q+".url", l.URL)
+	case l.TAXII != nil:
+		t := l.TAXII
+		v.feedURL(q+".taxii.api_root", t.APIRoot)
+		if t.Collection == "" {
+			v.errf("%s.taxii.collection: required; it is the collection's id in the server's discovery document", q)
+		}
+		if t.AddedAfter != "" {
+			if _, err := time.Parse(time.RFC3339, t.AddedAfter); err != nil {
+				v.errf("%s.taxii.added_after: %q is not an RFC 3339 timestamp", q, t.AddedAfter)
+			}
+		}
+		// A TAXII collection answers STIX. Saying otherwise would be a list
+		// that fetches correctly and then reads the answer with the wrong
+		// parser, which yields nothing and fails the load -- confusingly.
+		if l.Format != "" && l.Format != "auto" && l.Format != "stix" {
+			v.errf("%s.format: a taxii source answers STIX; %q cannot read it", q, l.Format)
+		}
+	case l.MISP != nil:
+		m := l.MISP
+		v.feedURL(q+".misp.url", m.URL)
+		if m.Limit < 0 || m.Limit > 1000000 {
+			v.errf("%s.misp.limit: must be between 0 (the instance decides) and 1000000", q)
+		}
+		if l.Format != "" && l.Format != "auto" && l.Format != "misp" {
+			v.errf("%s.format: a misp source answers MISP JSON; %q cannot read it", q, l.Format)
+		}
+		if m.Published != nil && !*m.Published {
+			v.warnf("%s.misp.published: false includes attributes of unpublished events, which is MISP's own boundary between somebody's draft and intelligence. This proxy would then act on a report its author has not finished", q)
+		}
+	}
+	if l.HTTP != nil && l.File == "" {
+		v.feedHTTP(q+".http", l.HTTP, l)
+	}
+	// A TAXII server or a MISP instance with no credential is either open to
+	// the world or about to answer 401 for ever. Neither is what an operator
+	// wrote, and the second one leaves a list that never updates and still
+	// matches -- which looks exactly like a list that is working.
+	//
+	// Checked here rather than in feedHTTP, because the case that needs saying
+	// is the one with no http section at all.
+	if l.TAXII != nil || l.MISP != nil {
+		if l.HTTP == nil || (l.HTTP.Token == "" && l.HTTP.Header == "") {
+			v.warnf("%s: no http.token and no http.header, so this feed is fetched anonymously. A TAXII server or a MISP instance that answers 401 every time leaves a list that never updates and still matches", q)
+		}
+	}
+}
+
+// feedURL checks a feed's URL: absolute, http or https, with a host.
+func (v *validator) feedURL(p, raw string) {
+	if raw == "" {
+		v.errf("%s: required", p)
+		return
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		v.errf("%s: %v", p, err)
+		return
+	}
+	switch u.Scheme {
+	case "https":
+	case "http":
+		// Not refused: a feed on a loopback address or inside an estate's own
+		// network is a real arrangement. But the whole content of the list
+		// arrives over it, so anything on the path chooses what this proxy
+		// blocks.
+		v.warnf("%s: http:// means anything on the path between this proxy and the feed chooses what the proxy blocks, and the credential is in clear. Use https", p)
+	default:
+		v.errf("%s: must be an http:// or https:// URL", p)
+		return
+	}
+	if u.Host == "" {
+		v.errf("%s: no host", p)
+	}
+	if u.Fragment != "" {
+		v.errf("%s: a fragment is not sent, so it cannot be part of a feed's address", p)
+	}
+}
+
+// feedHTTP checks how a network feed is reached.
+func (v *validator) feedHTTP(p string, h *FeedHTTP, l *ThreatList) {
+	if d := h.Timeout.D(); d != 0 && (d < time.Second || d > 10*time.Minute) {
+		v.errf("%s.timeout: must be between 1s and 10m, or 0 for the default", p)
+	}
+	if (h.Header == "") != (h.HeaderValue == "") {
+		v.errf("%s: header and header_value go together", p)
+	}
+	if h.Token != "" {
+		v.secretRef(p+".token", h.Token)
+	}
+	if h.CAFile != "" {
+		v.file(p+".ca_file", h.CAFile)
+	}
+	switch {
+	case !h.Insecure:
+	case !h.AllowInsecure:
+		v.errf("%s.insecure: set without allow_insecure; skipping verification takes two decisions rather than one", p)
+	default:
+		// The package refuses this for anything but a loopback address, and
+		// says so at load. Checking here as well means an operator finds out
+		// from -validate rather than from a daemon that will not start.
+		host := feedHost(l)
+		if !isLoopbackHost(host) {
+			v.errf("%s.insecure: %s is not a loopback address. A feed nobody authenticated becomes this proxy's block list, so verification may only be skipped for a development instance on this machine", p, host)
+		} else {
+			v.warnf("%s.insecure: the feed's certificate is not verified. Only defensible because %s is on this machine", p, host)
+		}
+	}
+}
+
+// feedHost is the host of whichever source a list has.
+func feedHost(l *ThreatList) string {
+	raw := l.URL
+	switch {
+	case l.TAXII != nil:
+		raw = l.TAXII.APIRoot
+	case l.MISP != nil:
+		raw = l.MISP.URL
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	return u.Hostname()
+}
+
+// isLoopbackHost reports whether a host is this machine.
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip, err := netip.ParseAddr(host)
+	return err == nil && ip.IsLoopback()
 }
 
 // ntpListener checks the NTP and NTS gateway.

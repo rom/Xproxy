@@ -237,7 +237,9 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 		s.assets.Store(k)
 	}
 	if ti := cfg.ThreatIntel; ti != nil {
-		set, err := newIntel(ti)
+		// After newSecrets above, so a feed's credential can be a reference
+		// resolved from a vault rather than a token in the configuration.
+		set, err := newIntel(ti, s.secrets)
 		if err != nil {
 			return nil, err
 		}
@@ -963,7 +965,7 @@ func (s *Server) Reload(cfg *config.Config) error {
 	// matches nothing.
 	var newIntelSet *intel.Set
 	if cfg.ThreatIntel != nil {
-		set, err := newIntel(cfg.ThreatIntel)
+		set, err := newIntel(cfg.ThreatIntel, s.secrets)
 		if err != nil {
 			discardPlane()
 			rt.stop()

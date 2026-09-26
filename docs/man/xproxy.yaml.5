@@ -14720,7 +14720,7 @@ T}
 Manual bans (\fBxproxyctl ban\fR) accept addresses, CIDRs no wider than /8 (IPv4) or /32 (IPv6) and fingerprints as \fBja4:<fp>\fR; loopback and unspecified addresses are refused. A network overlapping an exempt range is never banned, by trigger, operator or peer; a fingerprint ban is not applied to clients in exempt ranges. Fingerprint bans apply at the request stage (the fingerprint is known after the TLS handshake), not at accept; at most 4096 are held.
 .SH "threat_intel"
 .PP
-Imported lists of client addresses and TLS fingerprints somebody else attributed, and what to do about a match.
+Imported lists of client addresses, TLS fingerprints, host names, URLs and payload digests somebody else attributed, and what to do about a match.
 .PP
 \fBIt is deliberately not the ban list beside it.\fR A ban is earned here: this proxy watched a client do something and decided. A list is imported \[u2014] a feed of scanner networks, of exit nodes, of addresses seen attacking somebody else \[u2014] and it says nothing about what the client did \fIhere\fR. A feed with one wrong line in it is an outage nobody can explain from the logs, which is why \fBlog\fR is the default action and why \fBblock\fR warns.
 .PP
@@ -14753,7 +14753,7 @@ duration
 T}	T{
 \fB5m\fR
 T}	T{
-How often the files are checked;\: only a file whose size or modification time moved is re\-read. At least \fB10s\fR,\: or 0 for never \[u2014] a reload of the configuration still re\-reads every list
+How often a source is re\-checked: a file whose size or modification time moved is re\-read,\: and a network feed is re\-fetched conditionally. At least \fB10s\fR,\: or 0 for never \[u2014] a reload of the configuration still re\-reads every list
 T}
 T{
 \fBlog_\:matches\fR
@@ -14792,20 +14792,65 @@ T}
 T{
 \fBkind\fR
 T}	T{
-\fBcidr\fR,\: \fBja4\fR
+\fBcidr\fR,\: \fBja4\fR,\: \fBdomain\fR,\: \fBurl\fR,\: \fBhash\fR
 T}	T{
 \fBcidr\fR
 T}	T{
-Client addresses and networks,\: or TLS client fingerprints
+What the entries are matched against;\: see below
 T}
 T{
 \fBfile\fR
 T}	T{
 path
 T}	T{
-required
+\[u2014]
 T}	T{
-The entries. One per line,\: with \fB#\fR,\: \fB;\fR and \fB/\:/\fR comment lines and a trailing comment after whitespace;\: a network may be written with host bits set and is masked. An address list matches IPv4 and its IPv6\-mapped form alike
+A local file. One entry per line,\: with \fB#\fR,\: \fB;\fR and \fB/\:/\fR comment lines and a trailing comment after whitespace;\: a network may be written with host bits set and is masked
+T}
+T{
+\fBurl\fR
+T}	T{
+URL
+T}	T{
+\[u2014]
+T}	T{
+A feed fetched over HTTP. Conditionally: an unchanged feed costs a 304 rather than a download
+T}
+T{
+\fBtaxii\fR
+T}	T{
+section
+T}	T{
+\[u2014]
+T}	T{
+A TAXII 2.1 collection to poll;\: see below
+T}
+T{
+\fBmisp\fR
+T}	T{
+section
+T}	T{
+\[u2014]
+T}	T{
+A MISP instance to search;\: see below
+T}
+T{
+\fBhttp\fR
+T}	T{
+section
+T}	T{
+\[u2014]
+T}	T{
+How a network source is reached: the credential,\: the trust and the timeout. Ignored for a \fBfile\fR
+T}
+T{
+\fBformat\fR
+T}	T{
+\fBlines\fR,\: \fBstix\fR,\: \fBmisp\fR,\: \fBauto\fR
+T}	T{
+\fBauto\fR
+T}	T{
+How the source is written. A \fBtaxii\fR source is always \fBstix\fR and a \fBmisp\fR source always \fBmisp\fR;\: saying otherwise is refused
 T}
 T{
 \fBaction\fR
@@ -14815,6 +14860,195 @@ T}	T{
 \fBlog\fR
 T}	T{
 Record it and serve the request;\: make the client prove it is a browser (needs the \fBchallenge\fR section);\: or refuse it with 403
+T}
+.TE
+.PP
+\fBExactly one of \fBfile\fR, \fBurl\fR, \fBtaxii\fR and \fBmisp\fR says where the entries come from.\fR Two of them is refused rather than resolved by precedence: a list whose source is ambiguous is a list nobody can say the contents of.
+.SS "threat_intel.lists[].taxii"
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(1.0i) lbw(0.9i) lbx
+lw(1.1i) lw(1.0i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBapi_\:root\fR
+T}	T{
+URL
+T}	T{
+required
+T}	T{
+The API root as the server\(aqs discovery document gives it,\: for example \fBhttps:\:/\:/\:taxii.\:example/\:api1/\fR
+T}
+T{
+\fBcollection\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+The collection\(aqs id
+T}
+T{
+\fBadded_\:after\fR
+T}	T{
+timestamp
+T}	T{
+\[u2014]
+T}	T{
+Ask only for objects added after this RFC 3339 timestamp
+T}
+.TE
+.PP
+\fBadded_after\fR is a floor on age, not incremental state: every fetch sends the same value, so the list stays the whole answer to the same question and an indicator the publisher revokes disappears from it. A feed that accumulated would keep blocking on intelligence its author withdrew.
+.SS "threat_intel.lists[].misp"
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.6i) lbw(1.0i) lbx
+lw(1.0i) lw(0.6i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBurl\fR
+T}	T{
+URL
+T}	T{
+required
+T}	T{
+The instance,\: for example \fBhttps:\:/\:/\:misp.\:example\fR
+T}
+T{
+\fBtypes\fR
+T}	T{
+list
+T}	T{
+the matchable ones
+T}	T{
+Attribute types to ask for. Empty asks for the types this proxy can match on,\: rather than all two hundred
+T}
+T{
+\fBtags\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Narrow by MISP tag,\: which is how an estate subscribes to part of a sharing community rather than all of it
+T}
+T{
+\fBpublished\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Ask only for attributes of published events \[u2014] MISP\(aqs own boundary between a draft and intelligence. \fBfalse\fR warns
+T}
+T{
+\fBlimit\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Bound the attributes one search returns;\: 0 lets the instance decide. Up to 1000000
+T}
+.TE
+.PP
+Only attributes MISP marks \fBto_ids\fR are taken: an attribute the analyst did not mark for detection is context, not policy. A composite (\fBdomain|ip\fR, \fBfilename|sha256\fR) contributes the half this proxy can match on.
+.SS "threat_intel.lists[].http"
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.9i) lbw(0.8i) lbx
+lw(0.9i) lw(0.9i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBtimeout\fR
+T}	T{
+duration
+T}	T{
+\fB60s\fR
+T}	T{
+Bounds one fetch,\: \fBincluding every page\fR of a paginated TAXII collection. 1s to 10m
+T}
+T{
+\fBtoken\fR
+T}	T{
+string or ref
+T}	T{
+\[u2014]
+T}	T{
+The credential: a bearer token for a TAXII server or a plain feed,\: the API key for MISP (sent bare,\: as MISP expects). A \fBenv:\fR or \fBvault:\fR reference keeps it out of the file;\: see secrets
+T}
+T{
+\fBheader\fR,\: \fBheader_\:value\fR
+T}	T{
+string
+T}	T{
+\[u2014]
+T}	T{
+One extra header,\: for the feeds whose credential is neither of the above. They go together
+T}
+T{
+\fBca_\:file\fR
+T}	T{
+path
+T}	T{
+system roots
+T}	T{
+The trust anchor for the server\(aqs certificate
+T}
+T{
+\fBserver_\:name\fR
+T}	T{
+string
+T}	T{
+the URL\(aqs host
+T}	T{
+The name verified in the certificate
+T}
+T{
+\fBinsecure\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Skip verification. Needs \fBallow_\:insecure\fR as well,\: and is refused unless the host is a loopback address
+T}
+T{
+\fBallow_\:insecure\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+The second half of the opt\-in above
 T}
 .TE
 .PP
@@ -14828,6 +15062,31 @@ threat_intel:
     \- {name: known\-good, file: /etc/xproxy/intel/office.txt, action: log}
     \- {name: tor\-exits, file: /etc/xproxy/intel/tor\-exits.txt, action: challenge}
     \- {name: scanner\-fingerprints, kind: ja4, file: /etc/xproxy/intel/scanners.txt, action: challenge}
+    # A plain feed of one name per line, fetched rather than waiting for
+    # somebody's cron job to drop a file on this machine.
+    \- name: malware\-domains
+      kind: domain
+      url: https://feeds.example/malware\-domains.txt
+      action: challenge
+    # A TAXII collection, which answers STIX. Only the patterns a proxy
+    # can act on are read; the rest of the bundle is counted as skipped.
+    \- name: community\-stix
+      kind: domain
+      taxii:
+        api_root: https://taxii.example/api1/
+        collection: 91a7b528\-80eb\-42ed\-a74d\-c6fbd5a26116
+        added_after: "2026\-01\-01T00:00:00Z"
+      http: {token: "vault:kv/xproxy/taxii#token"}
+      action: log
+    # A MISP instance, searched for the attribute types this proxy
+    # matches on, narrowed to one sharing community.
+    \- name: misp\-hashes
+      kind: hash
+      misp:
+        url: https://misp.example
+        tags: ["tlp:amber"]
+      http: {token: "env:MISP_KEY"}
+      action: block
     # A feed this estate maintains itself, so blocking on it is a
     # decision somebody here can be asked about.
     \- {name: internal\-deny, file: /etc/xproxy/intel/deny.txt, action: block}
@@ -14835,12 +15094,41 @@ threat_intel:
 .fi
 .RE
 .PP
+What the five kinds match:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fB\fBcidr\fR\fR the client address the proxy decided on \[u2014] so behind a trusted proxy chain, the forwarded one. An address list matches IPv4 and its IPv6\-mapped form alike, and a network entry may be written with host bits set.
+.PP
+.ti -3n
+\(bu
+\fB\fBja4\fR\fR the fingerprint of the TLS handshake, which a plaintext listener does not have.
+.PP
+.ti -3n
+\(bu
+\fB\fBdomain\fR\fR a host name \fBand every name under it\fR: an entry \fBevil.example\fR matches \fBevil.example\fR and \fBwww.evil.example\fR. The walk is from the shortest suffix down, bounded by the deepest entry the list holds, so a client cannot escape a listed name by padding the one it sends with labels.
+.PP
+.ti -3n
+\(bu
+\fB\fBurl\fR\fR a host and path, at a path boundary: \fBevil.example/a\fR matches \fB/a\fR and \fB/a/b\fR but not \fB/ab\fR. An entry may be written with a scheme, which is ignored \[u2014] this proxy sees one scheme per listener, and a list that only matched \fBhttp://\fR would be a list that silently stopped working behind TLS.
+.PP
+.ti -3n
+\(bu
+\fB\fBhash\fR\fR MD5, SHA\-1 or SHA\-256 digests, of an uploaded body or a file a protocol names. A line may write the algorithm first (\fBSHA256 <digest>\fR); the digest is found either way. \fBchallenge\fR on a hash list is refused: the match is on a payload, not on a browser asking for a page, so there is nobody to challenge.
+.RE
+.PP
+.PP
 What follows from the shape:
 .RS 3n
 .PP
 .ti -3n
 \(bu
-\fBA list that cannot be read fails the load\fR, and a reload that cannot read one is refused whole. An imported list that silently matches nothing is worse than no list, because the operator believes it works. A file that disappears \fIafter\fR the load keeps the entries already read: a feed being rewritten in place must not empty the policy for the moment that takes.
+\fBA source that cannot be read fails the load\fR, and a reload that cannot read one is refused whole. An imported list that silently matches nothing is worse than no list, because the operator believes it works. A file that disappears, or a fetch that fails, \fIafter\fR the load keeps the entries already read: a feed being rewritten in place, or a publisher having an outage, must not empty the policy for the moment that takes.
+.PP
+.ti -3n
+\(bu
+\fBA network feed is fetched with its own timeout and nothing else\(aqs.\fR One fetch, every page included, is bounded by \fBhttp.timeout\fR; a feed that hangs delays that list\(aqs refresh and no request. Redirects are followed only to the same host, because a feed that can redirect anywhere is a feed whose publisher can point this proxy\(aqs block list at a document they do not control.
 .PP
 .ti -3n
 \(bu
@@ -14852,7 +15140,7 @@ What follows from the shape:
 .PP
 .ti -3n
 \(bu
-\fBAn entry is a whole match or nothing.\fR \fBcidr\fR matches the client address the proxy decided on (so behind a trusted proxy chain, the forwarded one), and \fBja4\fR the fingerprint of the TLS handshake, which a plaintext listener does not have.
+\fBAn entry is a whole match or nothing.\fR There is no substring matching in any kind: \fBevil.example\fR does not match \fBnotevil.example\fR, and a URL entry does not match half a path segment.
 .PP
 .ti -3n
 \(bu
@@ -14860,7 +15148,7 @@ What follows from the shape:
 .RE
 .PP
 .PP
-\fBthreat_intel_matched\fR, \fBthreat_intel_blocked\fR, \fBthreat_intel_challenged\fR and \fBthreat_intel_reloads\fR are in \fBxproxyctl status\fR, which also lists every list with its entry count, hits and when it was last read; \fBxproxy_threat_intel_total{result="logged"|"blocked"|"challenged"}\fR is the metric. A match adds \fBthreat_list\fR to the access log line.
+\fBthreat_intel_matched\fR, \fBthreat_intel_blocked\fR, \fBthreat_intel_challenged\fR and \fBthreat_intel_reloads\fR are in \fBxproxyctl status\fR, which also lists every list with its source, format, entry count, hits, fetches, failures, how many objects it skipped as unmatchable and when it was last read; \fBxproxy_threat_intel_total{result="logged"|"blocked"|"challenged"}\fR is the metric. A match adds \fBthreat_list\fR to the access log line.
 .SH "waf"
 .PP
 Present means enabled. Routes without a \fBwaf\fR block use \fBdefault_mode\fR and \fBdefault_profile\fR. Profiles compile at load and at reload; a broken rule set fails the reload.

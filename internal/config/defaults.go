@@ -86,7 +86,10 @@ const (
 	// its source is asked again; DefaultSignerTimeout bounds one
 	// signature from an external signer and DefaultSignerConns the
 	// connections held open to it.
-	DefaultSecretRefresh         = 5 * time.Minute
+	DefaultSecretRefresh = 5 * time.Minute
+	// DefaultFeedTimeout bounds one threat-feed fetch, including every page
+	// of a paginated TAXII collection.
+	DefaultFeedTimeout           = 60 * time.Second
 	DefaultSignerTimeout         = 3 * time.Second
 	DefaultSignerConns           = 8
 	DefaultWAFLearningMinHits    = 5
@@ -1040,6 +1043,20 @@ func applyDefaults(c *Config) {
 		if v := sec.Vault; v != nil {
 			setStr(&v.Mount, "secret")
 			setInt(&v.KVVersion, 2)
+		}
+	}
+	// Feed defaults: a published-only MISP search, and the fetch timeout. A
+	// MISP instance's unpublished events are somebody's drafts, so asking for
+	// them has to be a decision rather than an omission.
+	if t := c.ThreatIntel; t != nil {
+		for i := range t.Lists {
+			l := &t.Lists[i]
+			if l.MISP != nil && l.MISP.Published == nil {
+				l.MISP.Published = ptr(true)
+			}
+			if l.HTTP != nil {
+				setDur(&l.HTTP.Timeout, DefaultFeedTimeout)
+			}
 		}
 	}
 	if f := c.FIPS; f != nil && f.Probe == nil {
