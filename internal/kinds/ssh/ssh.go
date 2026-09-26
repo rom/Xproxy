@@ -19,6 +19,7 @@ import (
 
 	"github.com/rom/xproxy/internal/access"
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/keysource"
 	"github.com/rom/xproxy/internal/mfa"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/passwd"
@@ -76,6 +77,9 @@ type server struct {
 	// asked for and somebody else approved, and ends when the grant does.
 	grants *access.Guard
 
+	// pusher is the approval service, when one is configured: the second
+	// factor that is approved on a device rather than typed.
+	pusher *mfa.Pusher
 	// mfaGuard is the second factor, when one is configured. It is
 	// shared with every other listener reading the same enrolment file
 	// only in the sense that the file is the same: the replay memory
@@ -168,16 +172,35 @@ func newServer(engine proxy.Host, cfg config.Listener, ln net.Listener) (*server
 		return nil, err
 	}
 	if h.MFA != nil {
-		store, err := mfa.Load(h.MFA.File)
-		if err != nil {
-			return nil, fmt.Errorf("ssh mfa: %w", err)
+		if h.MFA.File != "" {
+			store, err := mfa.Load(h.MFA.File)
+			if err != nil {
+				return nil, fmt.Errorf("ssh mfa: %w", err)
+			}
+			t.mfaGuard = mfa.NewGuard(store, h.MFA.Skew, mfa.Lockout{
+				MaxFailures: h.MFA.MaxFailures,
+				Window:      h.MFA.Window.D(),
+				Duration:    h.MFA.Duration.D(),
+				MaxUsers:    h.MFA.MaxUsers,
+			})
 		}
-		t.mfaGuard = mfa.NewGuard(store, h.MFA.Skew, mfa.Lockout{
-			MaxFailures: h.MFA.MaxFailures,
-			Window:      h.MFA.Window.D(),
-			Duration:    h.MFA.Duration.D(),
-			MaxUsers:    h.MFA.MaxUsers,
-		})
+		if ps := h.MFA.Push; ps != nil {
+			token, err := keysource.Token(ps.Token, t.engine.Secrets())
+			if err != nil {
+				return nil, fmt.Errorf("ssh mfa.push.token: %w", err)
+			}
+			pusher, err := mfa.NewPusher(mfa.PushConfig{
+				URL: ps.URL, Timeout: ps.Timeout.D(), Poll: ps.Poll.D(),
+				Token: token, Header: ps.Header, HeaderValue: ps.HeaderValue,
+				CAFile: ps.CAFile, ServerName: ps.ServerName,
+				Insecure: ps.Insecure, AllowInsecure: ps.AllowInsecure,
+				PerWindow: ps.PerWindow, Window: ps.Window.D(), Numbers: ps.Numbers,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("ssh %w", err)
+			}
+			t.pusher = pusher
+		}
 	}
 	t.grants = access.NewGuard(engine.Access(), cfg.Name, h.RequireGrant, engine.Logs().Error)
 	if err := t.buildServerConfig(); err != nil {
@@ -371,7 +394,7 @@ func (t *server) buildServerConfig() error {
 			if cert.forceCommand != "" {
 				ext[permForceCommand] = cert.forceCommand
 			}
-			if t.mfaGuard != nil {
+			if t.secondFactorNeeded() {
 				// The key is right and the session is not authorised
 				// yet: RFC 4252 partial success, and the client is
 				// told which method comes next.
@@ -392,7 +415,7 @@ func (t *server) buildServerConfig() error {
 			if !passwd.Verify(hash, string(pass)) {
 				return nil, errors.New("authentication failed")
 			}
-			if t.mfaGuard != nil {
+			if t.secondFactorNeeded() {
 				return nil, t.secondFactor("password", map[string]string{"auth": "password"})
 			}
 			return &cssh.Permissions{Extensions: map[string]string{"auth": "password"}}, nil
@@ -1429,9 +1452,83 @@ func sshStringPayload(b []byte) string {
 func (t *server) secondFactor(first string, ext map[string]string) error {
 	return &cssh.PartialSuccessError{Next: cssh.ServerAuthCallbacks{
 		KeyboardInteractiveCallback: func(c cssh.ConnMetadata, challenge cssh.KeyboardInteractiveChallenge) (*cssh.Permissions, error) {
+			if t.pushesFor(c.User()) {
+				return t.approve(c, challenge, first, ext)
+			}
 			return t.verifyCode(c, challenge, first, ext)
 		},
 	}}
+}
+
+// secondFactorNeeded reports whether a factor is configured at all: an
+// enrolment file, an approval service, or both.
+func (t *server) secondFactorNeeded() bool { return t.mfaGuard != nil || t.pusher != nil }
+
+// pushesFor reports whether this user's factor is an approval rather than a
+// code: with both configured, a user in the enrolment file types a code and
+// everybody else is pushed, which is the shape an estate moving between the two
+// has. With no file at all, every user is pushed and the approval service is
+// what decides whether they exist.
+func (t *server) pushesFor(user string) bool {
+	if t.pusher == nil {
+		return false
+	}
+	return t.mfaGuard == nil || !t.mfaGuard.Enrolled(user)
+}
+
+// approve runs the push factor: the number is shown through the prompt the
+// protocol has, the notification goes out, and the session waits.
+//
+// Every way this can fail is a refusal, and the client is told the same thing
+// each time: a user who is not known to the approval service, one who refused,
+// one who did not answer and a service that could not be reached are one
+// answer, because telling them apart is how an attacker learns which accounts
+// are worth the attempt.
+func (t *server) approve(c cssh.ConnMetadata, challenge cssh.KeyboardInteractiveChallenge, first string, ext map[string]string) (*cssh.Permissions, error) {
+	ip := netutil.AddrOf(c.RemoteAddr().String())
+	user := c.User()
+	req, err := t.pusher.Begin(user, time.Now())
+	if err != nil {
+		// The fatigue bounds, which refuse without sending anything. The client
+		// is told authentication failed, and the log says which bound it was.
+		t.engine.Counters().MFAPushThrottled.Add(1)
+		t.engine.Counters().MFAFailed.Add(1)
+		t.deny(ip, "mfa_push_throttled", err.Error())
+		return nil, errors.New("authentication failed")
+	}
+	defer t.pusher.Done(req)
+	// A keyboard-interactive round with no questions is how the protocol shows
+	// a message: the client prints it and answers nothing, which is exactly
+	// what a number to compare needs.
+	if _, err := challenge(user, req.Prompt(), nil, nil); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	t.engine.Counters().MFAPushSent.Add(1)
+	if err := t.pusher.Wait(ctx, req, mfa.PushSubject{
+		User: user, Listener: t.cfg.Name, Protocol: "ssh", ClientIP: ip.String(),
+	}); err != nil {
+		// A refusal and an outage are counted apart: one is a person saying no,
+		// the other is something for an operator to fix. The client is told the
+		// same thing either way.
+		if errors.Is(err, mfa.ErrPushDenied) {
+			t.engine.Counters().MFAPushDenied.Add(1)
+		} else {
+			t.engine.Counters().MFAPushFailed.Add(1)
+		}
+		t.engine.Counters().MFAFailed.Add(1)
+		t.deny(ip, "mfa_push_refused", err.Error())
+		return nil, errors.New("authentication failed")
+	}
+	t.engine.Counters().MFAPushApproved.Add(1)
+	t.engine.Counters().MFAVerified.Add(1)
+	out := map[string]string{}
+	for k, v := range ext {
+		out[k] = v
+	}
+	out["auth"] = first + "+push"
+	return &cssh.Permissions{Extensions: out}, nil
 }
 
 // verifyCode runs the keyboard-interactive round and checks the answer.

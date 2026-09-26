@@ -89,8 +89,18 @@ const (
 	DefaultSecretRefresh = 5 * time.Minute
 	// DefaultFeedTimeout bounds one threat-feed fetch, including every page
 	// of a paginated TAXII collection.
-	DefaultFeedTimeout           = 60 * time.Second
-	DefaultSignerTimeout         = 3 * time.Second
+	DefaultFeedTimeout   = 60 * time.Second
+	DefaultSignerTimeout = 3 * time.Second
+	// DefaultPushTimeout is how long a person has to answer an approval
+	// request, and bounds the whole exchange including every poll of a
+	// pending one. DefaultPushPoll is how often a pending request is asked
+	// about, which sends no second notification. DefaultPushPerWindow and
+	// DefaultPushWindow bound the notifications one user may be sent, which
+	// is the push-fatigue attack's rate.
+	DefaultPushTimeout           = 60 * time.Second
+	DefaultPushPoll              = 2 * time.Second
+	DefaultPushPerWindow         = 3
+	DefaultPushWindow            = 5 * time.Minute
 	DefaultSignerConns           = 8
 	DefaultWAFLearningMinHits    = 5
 	DefaultWAFLearningMaxEntries = 10000
@@ -1292,6 +1302,12 @@ func mfaDefaults(m *MFAPolicy) {
 	setDur(&m.Window, 5*time.Minute)
 	setDur(&m.Duration, 15*time.Minute)
 	setInt(&m.MaxUsers, 10000)
+	if p := m.Push; p != nil {
+		setDur(&p.Timeout, DefaultPushTimeout)
+		setDur(&p.Poll, DefaultPushPoll)
+		setInt(&p.PerWindow, DefaultPushPerWindow)
+		setDur(&p.Window, DefaultPushWindow)
+	}
 }
 
 // hasPlain reports whether a subtype list carries one that sends a

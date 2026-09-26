@@ -75,6 +75,18 @@ are honoured, so host certificates work on the far side too.
 
 **A second factor**, with `mfa`, which is the thing SSH itself has no notion of
 beyond `keyboard-interactive`, and the reason this is a gate rather than a relay.
+Either a one-time code or, with `mfa.push`, an approval on the device the person
+already carries -- a keyboard-interactive round with no questions is how the
+protocol shows a message, which is where the number to compare goes. The push
+factor's bounds are about MFA fatigue rather than about guessing: one request in
+flight per user, a bound per window, and a number the user has to recognise.
+
+**Where the key lives**, with `require_hardware_key`: only a FIDO2 key held in a
+security token (`sk-ssh-ed25519@openssh.com`, `sk-ecdsa-sha2-nistp256@openssh.com`,
+or a certificate over one) authenticates. It is the one property of a credential
+this gateway can actually check -- every other key it accepts is a file, and a
+file has copies. `require_touch`, on by default, keeps the presence assertion and
+refuses the two opt-outs that would waive it.
 
 **The channels**, with `allow_channels`. This is the setting that matters most,
 and the default is the point: a listener that allows `session` and nothing else

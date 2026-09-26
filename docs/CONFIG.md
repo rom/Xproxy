@@ -4422,7 +4422,8 @@ weakest door decides.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `file` | path | required | The enrolment file (`xproxyctl mfa enrol` writes the lines). Refused if world readable: it holds every second factor. Re-read when it changes on disk, at most once a second, so enrolling and removing take effect without a reload |
+| `file` | path | required unless `push` | The enrolment file (`xproxyctl mfa enrol` writes the lines). Refused if world readable: it holds every second factor. Re-read when it changes on disk, at most once a second, so enrolling and removing take effect without a reload |
+| `push` | section | | An approval sent to a device the user already carries, instead of a code they type; see below |
 | `issuer` | name | `xproxy` | The name an authenticator application shows |
 | `prompt` | string | `One-time code: ` | What the user is asked |
 | `skew` | int | `1` | Steps either side of now that are accepted, for a clock that is a little off. Each step is a window an observed code can be replayed in, so above 2 it warns |
@@ -4448,6 +4449,78 @@ screen — enrol, replace recovery codes, remove, unlock. An enrolment is
 shared by every listener reading the same file; a lockout is not, since
 it lives in the process that counted the wrong codes. See
 `docs/USAGE.md`.
+
+#### server.listeners[].ssh.mfa.push
+
+The second factor that is not typed. The user is shown a number, a
+notification goes to the device they already carry, and the session waits
+for them to approve it there. No code to read off a screen and type, and
+nothing for a phishing page to collect.
+
+It is also the factor with an attack of its own, and the section is
+shaped by that attack rather than by the happy path. Somebody who has the
+password can send notification after notification until the person taps
+approve to stop their phone buzzing — MFA fatigue, and it works. So:
+
+- **One request in flight per user.** A second attempt while one is
+  waiting is refused and sends nothing.
+- **A bound per user per window** (`per_window`, `window`), which is the
+  attack's rate. Over it the attempt is refused and counted in
+  `mfa_push_throttled`, and again no notification is sent.
+- **A number the user has to recognise.** The proxy generates it, shows
+  it through the protocol's own prompt, and sends it with the request. A
+  person who did not cause the notification has nothing that matches.
+- **Every failure is a refusal.** A timeout, a non-200, an answer whose
+  nonce is not the one asked about, a reply this cannot read: all
+  refused. A second factor that passes when the service is unreachable is
+  not a second factor.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `url` | URL | required | The approval service. `https`, or `http://` on the loopback for a development instance |
+| `timeout` | duration | `60s` | How long somebody has to answer, and the bound on the whole exchange including every poll. 5s to 5m — it is also how long a half-authenticated session is held open |
+| `poll` | duration | `2s` | How often a service that answered `pending` is asked again. A poll sends no second notification |
+| `token` | string or ref | | The credential, sent as `Authorization: Bearer`. An `env:` or `vault:` reference keeps it out of the file; see [secrets](#secrets) |
+| `header`, `header_value` | string | | One extra header, for a service whose credential is neither. They go together |
+| `ca_file` | path | system roots | The trust anchor for the service's certificate |
+| `server_name` | string | the URL's host | The name verified in the certificate |
+| `insecure`, `allow_insecure` | bool | `false` | Skip verification. Both are needed and the host must be a loopback address: whatever can answer for the approval service decides who gets in |
+| `per_window` | int | `3` | Notifications one user may be sent within `window`. Above 5 it warns — the number exists to make fatigue expensive |
+| `window` | duration | `5m` | The window those notifications are counted in |
+| `numbers` | bool | `true` | Ask the user to recognise a number. `false` warns: an approval that says nothing about which sign-in it is for is one a person cannot check |
+
+**The protocol**, so a service can be written for it. One POST per
+approval, and a GET to ask about a pending one:
+
+```
+POST <url>
+{"nonce":"<32 hex>","user":"alice","listener":"bastion","protocol":"ssh",
+ "client_ip":"203.0.113.7","number":"42","requested_at":"2026-01-02T03:04:05Z"}
+
+200 {"nonce":"<the same>","result":"approved"}          # let in
+200 {"nonce":"<the same>","result":"denied"}            # refused
+200 {"nonce":"<the same>","result":"pending"}           # ask again shortly
+
+GET <url>?nonce=<32 hex>        # the same three answers; sends no notification
+```
+
+The nonce is 128 bits and is checked on every answer: a reply about
+another request is not an answer about this one. Anything else — a
+redirect, another status, a body that is not this JSON, a `result` this
+does not know — is a refusal.
+
+**Which factor a user gets.** With `push` alone, every user is pushed and
+the approval service is what decides whether they exist. With `file` and
+`push` together, a user in the enrolment file is asked for a code and
+everybody else is pushed, which is the shape an estate migrating between
+the two has.
+
+Counters: `mfa_push_sent`, `mfa_push_approved`, `mfa_push_denied`,
+`mfa_push_failed` (the service could not be reached, or answered
+something this cannot read) and `mfa_push_throttled` (the fatigue bounds
+refusing an attempt). `xproxy_mfa_push_total{result}` is the metric. A
+denial and an outage are counted apart on purpose: one is a person saying
+no and the other is something to fix.
 
 #### server.listeners[].ssh.sftp
 

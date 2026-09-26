@@ -773,6 +773,13 @@ protocol so that a policy can be written in that protocol's own terms:
   is an allow list from which the loader and interpreter variables are
   struck whatever it says; and `scp` and `rsync` are refused wherever
   there is an SFTP policy for them to walk past.
+  **A key held in a security token** can be required (`require_hardware_key`):
+  FIDO2 `sk-` keys and certificates over them, with the touch demanded
+  and the opt-outs refused — the one property of a credential this
+  gateway can check, because every other key it accepts is a file and a
+  file has copies. The **second factor** is a one-time code or an
+  approval on the device somebody already carries, whose bounds are about
+  MFA fatigue rather than guessing.
   Sessions can be **recorded to a replayable file** (asciicast v2, one
   per channel) — output by default, keystrokes only if you say so.
   **SFTP is inspected inside the subsystem channel** — read-only, path
@@ -1235,7 +1242,7 @@ and referenced by routes, in the order the route lists them:
 |--------|--------------|
 | `header_guard` | Required and denied request headers, and the security headers on the way back |
 | `basic_auth` | HTTP Basic against a file of PBKDF2 hashes, with the user forwarded |
-| `mfa` | A second factor in front of a web application, from the same TOTP enrolment file the gateways use |
+| `mfa` | A second factor in front of a web application, from the same TOTP enrolment file the gateways use. The gateways can also take the factor as an approval on a device (`mfa.push`) instead of a typed code |
 | `yara` | YARA rules over request and response bodies, per file rather than per stream |
 | `ldap_auth` | A directory bind, in bind or search-then-bind mode, with a group requirement |
 | `oidc` | OpenID Connect login with sealed session cookies, required claims and logout |

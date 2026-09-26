@@ -57,47 +57,11 @@ func newIntel(cfg *config.ThreatIntel, res *keysource.Resolver) (*intel.Set, err
 	return set, nil
 }
 
-// feedToken resolves a feed's credential. A plain value is taken as written, so
-// nothing already configured changes; a reference goes through the resolver, so
-// the token can live in a vault and be rotated there.
+// feedToken resolves a feed's credential: a literal value as written, or a
+// reference through the resolver so the token can live in a vault and be
+// rotated there. The rule is keysource's, because an approval service's
+// credential is written the same way and two answers to "is this a reference"
+// would be two behaviours.
 func feedToken(ref string, res *keysource.Resolver) (string, error) {
-	if ref == "" {
-		return "", nil
-	}
-	if res == nil {
-		// Only reachable where a Set is built with no resolver. Saying so beats
-		// sending a literal "env:TOKEN" to a TAXII server, which answers 401
-		// and leaves a list that never updates.
-		if _, err := keysource.Parse(ref); err == nil && !isPlainToken(ref) {
-			return "", fmt.Errorf("%q is a reference and no secret resolver is configured", ref)
-		}
-		return ref, nil
-	}
-	if isPlainToken(ref) {
-		return ref, nil
-	}
-	return res.StringValue(ref)
-}
-
-// isPlainToken reports whether a value is a literal credential rather than a
-// reference. A token is opaque, so the test is whether it names a scheme this
-// resolves -- and a path is not one, because a bare path in this field is far
-// more likely to be a token that happens to start with a slash than a file
-// somebody meant to read.
-func isPlainToken(v string) bool {
-	r, err := keysource.Parse(v)
-	if err != nil {
-		return true
-	}
-	return r.Scheme == keysource.SchemeFile && !hasScheme(v)
-}
-
-// hasScheme reports whether a reference was written with one.
-func hasScheme(v string) bool {
-	for _, p := range []string{keysource.SchemeFile + ":", keysource.SchemeEnv + ":", keysource.SchemeVault + ":"} {
-		if len(v) >= len(p) && v[:len(p)] == p {
-			return true
-		}
-	}
-	return false
+	return keysource.Token(ref, res)
 }

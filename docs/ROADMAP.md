@@ -395,6 +395,25 @@ of them is a flaw in front of all of them.
   sweep belongs with the unified authorisation work rather than in front
   of it.
 
+- FIDO2 keys and a second factor that is not typed: delivered.
+  `require_hardware_key` accepts only a key held in a security token
+  (`sk-ssh-ed25519@openssh.com`, `sk-ecdsa-sha2-nistp256@openssh.com`, or
+  a certificate over one), and `require_touch` keeps the presence
+  assertion, refusing the `no-touch-required` option in `authorized_keys`
+  at load and the certificate extension of that name at authentication.
+  `mfa.push` is an approval on the device somebody already carries, with
+  the bounds that make MFA fatigue expensive: one request in flight per
+  user, a bound per window, a number to recognise, and fail-closed on
+  every way of not getting an answer.
+
+  Not yet: the push factor is wired into the ssh gate only. The other
+  kinds that ask for a factor (ftp, sftp, telnet, vnc, rdp, and the http
+  `mfa` filter) still ask for a code, because each takes the code through
+  its own protocol's prompt and a push needs somewhere to show the number
+  -- which some of them have and FTP does not. The enrolment file, the
+  replay rule and the lockout are already shared, so what is left is the
+  per-kind prompt rather than the factor.
+
 ## After 1.4 (candidates, unranked)
 
 - The remote access protocols this release did not take (Citrix ICA,

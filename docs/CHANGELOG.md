@@ -562,6 +562,81 @@ Open findings of the earlier rounds:
   whose datagram side is taken fails with the reason it failed and nothing left
   bound behind it, and a port 0 listener comes up with both sockets.
 
+### Added (1.4, the factors that are not typed)
+
+- **`require_hardware_key`: only a key held in a security token
+  authenticates.** FIDO2 keys already worked at the bastion -- x/crypto
+  parses `sk-ssh-ed25519@openssh.com` and
+  `sk-ecdsa-sha2-nistp256@openssh.com` and verifies the token's signature
+  envelope, presence flag included -- and what was missing is the policy.
+  It is the one property of a credential this gateway can check: every
+  other key it accepts is a file, and a file has copies (a backup, a
+  laptop left on a train, an agent forwarded to a host that kept it) that
+  nothing in the protocol can tell from the original. A token's private
+  half never leaves the token.
+
+  `require_touch`, on by default, keeps the other half. A signature says
+  whether the user was present when it was made; without that the key
+  cannot be copied but anything on the machine it is plugged into can use
+  it. Both opt-outs are refused: a `no-touch-required` option in
+  `authorized_keys` fails the load, because the credential would never
+  work and finding that out at load beats finding it out at three in the
+  morning, and the certificate extension of that name is refused at
+  authentication -- an authority can hand out a credential that needs no
+  touch, and this listener's answer to that is no. `require_touch: false`
+  honours both, as OpenSSH does, for the keys that work unattended.
+
+  What the requirement does not cover is said at load. A password beside
+  it with no second factor is refused outright: it is a way in that no
+  token protects. A `principals` entry may exempt itself, because an
+  estate moves to tokens one person at a time and a service account has no
+  hands, and the exemption draws advice. A requirement with no `sk-` key
+  in the file and no authority to issue one is refused -- a listener
+  nobody could log into.
+
+  The tests implement the token's half of the protocol rather than mocking
+  it, so a real handshake meets the same verification code a real token's
+  signature does.
+
+- **`mfa.push`: the second factor approved on a device instead of typed.**
+  The user is shown a number, a notification goes to the device they
+  already carry, and the session waits. It is the factor people actually
+  use, and the one with an attack of its own: somebody who has the
+  password can send notification after notification until the person taps
+  approve to stop the buzzing.
+
+  So the section is shaped by that attack rather than by the happy path.
+  One request in flight per user. A bound per user per window
+  (`per_window`, `window`), over which the attempt is refused and counted
+  and **no notification is sent** -- the notifications are the attack. A
+  number this proxy generates, shows through the protocol's own prompt and
+  sends with the request, so a person who did not cause the notification
+  has nothing that matches. And every way of not getting an answer is a
+  refusal: a timeout, a non-200, a `result` this cannot read, an answer
+  whose nonce is not the one asked about.
+
+  The protocol is specified in CONFIG.md so a service can be written for
+  it: one POST per approval, and a GET with the nonce to ask about a
+  pending one, which sends no second notification. With `push` alone every
+  user is pushed and the approval service decides whether they exist; with
+  `file` and `push` together an enrolled user types a code and everybody
+  else is pushed, which is the shape of an estate moving between the two.
+
+  `mfa_push_sent`, `_approved`, `_denied`, `_failed` and `_throttled`
+  count it, with a denial and an outage apart on purpose, and two alerts
+  page: one for the fatigue bounds refusing attempts, one for an approval
+  service that has stopped answering (it fails closed, so that is
+  everybody with that factor locked out).
+
+  It is wired into the ssh gate. The other kinds that ask for a factor
+  still ask for a code; the enrolment, the replay rule and the lockout are
+  already shared, so what is left per kind is the prompt.
+
+- A credential written as a literal or as a reference (`env:`, `vault:`)
+  is now resolved in one place, `keysource.Token`, because a threat feed
+  and an approval service are written the same way and two answers to "is
+  this a reference" would be two behaviours.
+
 ### Added (1.4, threat feeds)
 
 - **A threat list may say where its entries come from: a file, a URL, a

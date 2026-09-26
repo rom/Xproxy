@@ -4330,9 +4330,18 @@ func sshForwardOK(d string) error {
 
 // mfaPolicy validates a second factor wherever it is configured.
 func (v *validator) mfaPolicy(p string, m *MFAPolicy) {
-	if m.File == "" {
-		v.errf("%s.file: required", p)
-	} else {
+	if m.File == "" && m.Push == nil {
+		v.errf("%s: file or push is required; a second factor with neither asks for nothing", p)
+	}
+	if m.File == "" && m.Push != nil {
+		// Every user is pushed, and the approval service decides whether a
+		// user exists at all. The enrolment settings below then describe
+		// nothing, which is worth saying rather than checking silently.
+		if m.RequireEnrolment != nil {
+			v.warnf("%s.require_enrolment: there is no enrolment file, so every user is pushed and the approval service is what decides whether they exist", p)
+		}
+	}
+	if m.File != "" {
 		v.file(p+".file", m.File)
 		if st, err := os.Stat(m.File); err == nil && st.Mode().Perm()&0o004 != 0 {
 			v.errf("%s.file: %s must not be world readable: it holds every second factor", p, m.File)
@@ -4362,8 +4371,57 @@ func (v *validator) mfaPolicy(p string, m *MFAPolicy) {
 	if m.MaxUsers < 1 {
 		v.errf("%s.max_users: must be positive", p)
 	}
-	if m.RequireEnrolment != nil && !*m.RequireEnrolment {
+	if m.RequireEnrolment != nil && !*m.RequireEnrolment && m.Push == nil {
 		v.warnf("%s.require_enrolment: false lets a user who never enrolled past the second factor, which is the account an attacker will use", p)
+	}
+	if m.Push != nil {
+		v.mfaPush(p+".push", m.Push)
+	}
+}
+
+// mfaPush validates the approval service: where it is, how long a person has,
+// and the bounds that make the fatigue attack expensive rather than free.
+func (v *validator) mfaPush(p string, s *MFAPush) {
+	v.feedURL(p+".url", s.URL) // the same rules a threat feed's URL is held to
+	if d := s.Timeout.D(); d != 0 && (d < 5*time.Second || d > 5*time.Minute) {
+		v.errf("%s.timeout: must be between 5s and 5m, or 0 for the default; it is how long somebody has to find their phone, and how long a half-authenticated session is held open", p)
+	}
+	if d := s.Poll.D(); d != 0 && (d < time.Second || d > time.Minute) {
+		v.errf("%s.poll: must be between 1s and 1m, or 0 for the default", p)
+	}
+	if s.Poll.D() > s.Timeout.D() && s.Timeout.D() > 0 {
+		v.errf("%s.poll: longer than the timeout, so a pending request would never be asked about again", p)
+	}
+	if (s.Header == "") != (s.HeaderValue == "") {
+		v.errf("%s: header and header_value go together", p)
+	}
+	if s.CAFile != "" {
+		v.file(p+".ca_file", s.CAFile)
+	}
+	if s.PerWindow < 1 || s.PerWindow > 100 {
+		v.errf("%s.per_window: must be 1..100", p)
+	}
+	if s.Window <= 0 || s.Window > Duration(24*time.Hour) {
+		v.errf("%s.window: must be positive and at most 24h", p)
+	}
+	if s.PerWindow > 5 {
+		v.warnf("%s.per_window: %d notifications per %s to one person is the push-fatigue attack most of the way done; the number exists to make it expensive", p, s.PerWindow, s.Window.D())
+	}
+	if !s.ShowsNumbers() {
+		v.warnf("%s.numbers: false leaves an approval that says nothing about which sign-in it is for, so a person who did not cause it has nothing to compare", p)
+	}
+	switch {
+	case s.Insecure && !s.AllowInsecure:
+		v.errf("%s.insecure: needs allow_insecure as well, so skipping verification is two decisions rather than one", p)
+	case s.Insecure:
+		if u, err := url.Parse(s.URL); err == nil && !isLoopbackHost(u.Hostname()) {
+			v.errf("%s.insecure: %s is not a loopback address, and whatever can answer for the approval service decides who gets in", p, u.Hostname())
+		} else {
+			v.warnf("%s.insecure: the approval service's certificate is not verified. Only a development instance on this machine", p)
+		}
+	}
+	if s.Token == "" && s.Header == "" {
+		v.warnf("%s: no token and no header, so the approval service is asked anonymously. A service that answers 401 for every request is a second factor that refuses everybody", p)
 	}
 }
 

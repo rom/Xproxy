@@ -298,6 +298,15 @@ func (s *Server) Collect(e metrics.Collector) {
 	e.Counter("xproxy_sftp_refused_total", "SFTP requests refused by the policy.", nil, float64(sn.SFTPRefused))
 	e.Counter("xproxy_mfa_total", "Second factor checks, by outcome.", L{"outcome": "verified"}, float64(sn.MFAVerified))
 	e.Counter("xproxy_mfa_total", "Second factor checks, by outcome.", L{"outcome": "failed"}, float64(sn.MFAFailed))
+	// The push factor's own outcomes. throttled is the fatigue bounds refusing
+	// an attempt, and it climbing is somebody trying the attack rather than a
+	// service having a bad day.
+	for result, n := range map[string]uint64{
+		"sent": sn.MFAPushSent, "approved": sn.MFAPushApproved, "denied": sn.MFAPushDenied,
+		"failed": sn.MFAPushFailed, "throttled": sn.MFAPushThrottled,
+	} {
+		e.Counter("xproxy_mfa_push_total", "Approval requests for the push second factor, by outcome.", L{"result": result}, float64(n))
+	}
 	e.Counter("xproxy_yara_matches_total", "Streams and bodies where a YARA rule fired.", nil, float64(sn.YARAMatches))
 	e.Counter("xproxy_yara_bytes_total", "Bytes given to the YARA scanner.", nil, float64(sn.YARAScanned))
 	e.Counter("xproxy_forward_socks_total", "SOCKS5 connections accepted on forward listeners.", nil, float64(sn.ForwardSOCKS))

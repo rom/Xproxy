@@ -409,42 +409,51 @@ type Stats struct {
 	// for a certificate that asked for the touch to be waived). The pair is
 	// what says whether an estate's move to tokens is finished: refusals
 	// falling to nothing while hardware authentications carry the traffic.
-	SSHHardwareAuths       atomic.Uint64
-	SSHHardwareRefused     atomic.Uint64
-	SSHBytesIn             atomic.Uint64
-	SSHBytesOut            atomic.Uint64
-	SFTPRequests           atomic.Uint64
-	VNCSessions            atomic.Uint64
-	VNCSessionsOpen        atomic.Int64
-	VNCRejected            atomic.Uint64
-	VNCRefused             atomic.Uint64
-	VNCRecorded            atomic.Uint64
-	VNCMFAOK               atomic.Uint64
-	VNCMFAFailed           atomic.Uint64
-	RDPSessions            atomic.Uint64
-	RDPSessionsOpen        atomic.Int64
-	RDPRejected            atomic.Uint64
-	RDPRefused             atomic.Uint64
-	RDPRecorded            atomic.Uint64
-	RDPMFAOK               atomic.Uint64
-	RDPMFAFailed           atomic.Uint64
-	RDPChannelsRefused     atomic.Uint64
-	RDPDevicesRefused      atomic.Uint64
-	RDPLegacySessions      atomic.Uint64
-	RDPLegacyClients       atomic.Uint64
-	TelnetSessions         atomic.Uint64
-	TelnetSessionsOpen     atomic.Int64
-	TelnetRejected         atomic.Uint64
-	TelnetRefused          atomic.Uint64
-	TelnetOptionsRefused   atomic.Uint64
-	TelnetRecorded         atomic.Uint64
-	TelnetMFAOK            atomic.Uint64
-	TelnetMFAFailed        atomic.Uint64
-	SFTPRefused            atomic.Uint64
-	SFTPScanned            atomic.Uint64
-	SFTPScanBlocked        atomic.Uint64
-	MFAVerified            atomic.Uint64
-	MFAFailed              atomic.Uint64
+	SSHHardwareAuths     atomic.Uint64
+	SSHHardwareRefused   atomic.Uint64
+	SSHBytesIn           atomic.Uint64
+	SSHBytesOut          atomic.Uint64
+	SFTPRequests         atomic.Uint64
+	VNCSessions          atomic.Uint64
+	VNCSessionsOpen      atomic.Int64
+	VNCRejected          atomic.Uint64
+	VNCRefused           atomic.Uint64
+	VNCRecorded          atomic.Uint64
+	VNCMFAOK             atomic.Uint64
+	VNCMFAFailed         atomic.Uint64
+	RDPSessions          atomic.Uint64
+	RDPSessionsOpen      atomic.Int64
+	RDPRejected          atomic.Uint64
+	RDPRefused           atomic.Uint64
+	RDPRecorded          atomic.Uint64
+	RDPMFAOK             atomic.Uint64
+	RDPMFAFailed         atomic.Uint64
+	RDPChannelsRefused   atomic.Uint64
+	RDPDevicesRefused    atomic.Uint64
+	RDPLegacySessions    atomic.Uint64
+	RDPLegacyClients     atomic.Uint64
+	TelnetSessions       atomic.Uint64
+	TelnetSessionsOpen   atomic.Int64
+	TelnetRejected       atomic.Uint64
+	TelnetRefused        atomic.Uint64
+	TelnetOptionsRefused atomic.Uint64
+	TelnetRecorded       atomic.Uint64
+	TelnetMFAOK          atomic.Uint64
+	TelnetMFAFailed      atomic.Uint64
+	SFTPRefused          atomic.Uint64
+	SFTPScanned          atomic.Uint64
+	SFTPScanBlocked      atomic.Uint64
+	MFAVerified          atomic.Uint64
+	MFAFailed            atomic.Uint64
+	// The push factor, counted apart from the typed one because its failures
+	// mean different things: denied is a person saying no, failed is the
+	// approval service not answering usefully, and throttled is the fatigue
+	// bounds refusing an attempt without sending anything.
+	MFAPushSent            atomic.Uint64
+	MFAPushApproved        atomic.Uint64
+	MFAPushDenied          atomic.Uint64
+	MFAPushFailed          atomic.Uint64
+	MFAPushThrottled       atomic.Uint64
 	YARAMatches            atomic.Uint64
 	YARAScanned            atomic.Uint64
 	WSConnections          atomic.Uint64
@@ -883,6 +892,11 @@ type Snapshot struct {
 	SFTPScanBlocked        uint64             `json:"sftp_scan_blocked"`
 	MFAVerified            uint64             `json:"mfa_verified"`
 	MFAFailed              uint64             `json:"mfa_failed"`
+	MFAPushSent            uint64             `json:"mfa_push_sent"`
+	MFAPushApproved        uint64             `json:"mfa_push_approved"`
+	MFAPushDenied          uint64             `json:"mfa_push_denied"`
+	MFAPushFailed          uint64             `json:"mfa_push_failed"`
+	MFAPushThrottled       uint64             `json:"mfa_push_throttled"`
 	YARAMatches            uint64             `json:"yara_matches"`
 	YARAScanned            uint64             `json:"yara_scanned"`
 	WSConnections          uint64             `json:"websocket_connections"`
@@ -1284,6 +1298,11 @@ func (s *Stats) snapshot() Snapshot {
 		SFTPScanned:            s.SFTPScanned.Load(),
 		SFTPScanBlocked:        s.SFTPScanBlocked.Load(),
 		MFAVerified:            s.MFAVerified.Load(),
+		MFAPushSent:            s.MFAPushSent.Load(),
+		MFAPushApproved:        s.MFAPushApproved.Load(),
+		MFAPushDenied:          s.MFAPushDenied.Load(),
+		MFAPushFailed:          s.MFAPushFailed.Load(),
+		MFAPushThrottled:       s.MFAPushThrottled.Load(),
 		MFAFailed:              s.MFAFailed.Load(),
 		YARAMatches:            s.YARAMatches.Load(),
 		YARAScanned:            s.YARAScanned.Load(),

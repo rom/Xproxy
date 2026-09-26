@@ -9203,8 +9203,17 @@ var SFTPOperations = map[string]bool{
 // same lockout have to hold everywhere, or the weakest door decides.
 type MFAPolicy struct {
 	// File is the enrolment file (xproxyctl mfa enrol writes the
-	// lines). Required. It must not be world readable.
+	// lines). Required unless push is configured. It must not be world
+	// readable.
 	File string `yaml:"file"`
+	// Push is an approval sent to a device the user already carries,
+	// instead of a code they type.
+	//
+	// With both, a user in the enrolment file is asked for a code and
+	// everyone else is pushed, which is the shape an estate migrating
+	// between the two has. With push alone, every user is pushed and the
+	// approval service is what decides whether they exist.
+	Push *MFAPush `yaml:"push"`
 	// Issuer is the name an authenticator application shows. Default
 	// "xproxy".
 	Issuer string `yaml:"issuer"`
@@ -9230,6 +9239,58 @@ type MFAPolicy struct {
 	// failures. Default 10000.
 	MaxUsers int `yaml:"max_users"`
 }
+
+// MFAPush is the second factor that is not typed: a notification the user
+// approves on a device they already carry.
+//
+// It is the factor people actually use, and the one with an attack of its own.
+// A code is only as good as the user's typing; a push is only as good as their
+// attention, and somebody who has the password can send notification after
+// notification until the person taps approve to stop the buzzing. The bounds
+// below are that attack refused: one request in flight per user, a bound per
+// window, and a number the user has to recognise.
+type MFAPush struct {
+	// URL is the approval service. A request is POSTed to it and the answer
+	// says approved, denied or pending; a pending request is polled at the
+	// same URL with its nonce, which sends no second notification. See
+	// docs/CONFIG.md for the two messages.
+	URL string `yaml:"url"`
+	// Timeout is how long a person has to answer, and bounds the whole
+	// approval including every poll. Default 60s, between 5s and 5m.
+	Timeout Duration `yaml:"timeout"`
+	// Poll is how often a pending request is asked about. Default 2s.
+	Poll Duration `yaml:"poll"`
+	// Token is the credential, sent as a bearer token; header and
+	// header_value are one extra header for a service whose credential is
+	// neither. A reference (env: or vault:) keeps it out of the file.
+	Token       string `yaml:"token"`
+	Header      string `yaml:"header"`
+	HeaderValue string `yaml:"header_value"`
+	// CAFile is the trust anchor for the service's certificate, and
+	// ServerName overrides the name verified in it.
+	CAFile     string `yaml:"ca_file"`
+	ServerName string `yaml:"server_name"`
+	// Insecure and AllowInsecure together skip verification, and are refused
+	// for anything but a loopback address: whatever can answer for the
+	// approval service decides who gets in.
+	Insecure      bool `yaml:"insecure"`
+	AllowInsecure bool `yaml:"allow_insecure"`
+	// PerWindow and Window bound the notifications one user may be sent.
+	// Defaults 3 and 5m. This is the fatigue attack's rate limit, so it is
+	// not a knob to raise for convenience.
+	PerWindow int      `yaml:"per_window"`
+	Window    Duration `yaml:"window"`
+	// Numbers asks the user to recognise a number this proxy generates and
+	// shows them. Default true: it is what makes an approval about the
+	// session in front of them rather than about a notification.
+	Numbers *bool `yaml:"numbers"`
+}
+
+// Pushes reports whether the policy has an approval service.
+func (m *MFAPolicy) Pushes() bool { return m != nil && m.Push != nil }
+
+// ShowsNumbers reports whether a push asks the user to recognise a number.
+func (p *MFAPush) ShowsNumbers() bool { return p == nil || p.Numbers == nil || *p.Numbers }
 
 // Touch reports whether user presence is demanded, with the default
 // filled in.
