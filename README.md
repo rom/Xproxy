@@ -852,6 +852,19 @@ describes it, validation refuses what cannot work, and
   WebTransport relays (streams and datagrams) to HTTP/3 upstreams
 - Mutual TLS and public key pinning to upstreams; PROXY protocol
   towards layer 4 upstreams
+- **Key custody said out loud.** Each certificate names `cert_file` and
+  then exactly one of three things, so an operator reading the file can
+  say where every private key is: `key_file` (a file on this machine, as
+  before), `key` (a reference -- `env:`, or `vault:secret/path#field`,
+  rotated into a running proxy without a reload), or `signer` (a helper
+  on a Unix socket that holds the key, so it never enters this process at
+  all -- `xsigner` is shipped, and an HSM, TPM or KMS helper is written
+  against [docs/SIGNER.md](docs/SIGNER.md)). Two of them set is refused at
+  load rather than resolved by a precedence nobody remembers
+- FIPS 140-3 as a refusal rather than a hope: `fips.required` will not
+  start without the module active, and the probe *measures* which of the
+  configured groups and suites the module will actually do rather than
+  checking them against a list that would be out of date
 
 ### Routing, load balancing and traffic management
 
@@ -1249,7 +1262,7 @@ and referenced by routes, in the order the route lists them:
 **From source.** Go 1.25 or newer, no cgo, no C toolchain:
 
 ```sh
-make build      # bin/{xproxy,xgate,xrelay,xproxyctl,xproxy-admin,xproxy-fleet,xproxy-replay}, static and stripped
+make build      # bin/{xproxy,xgate,xrelay,xproxyctl,xproxy-admin,xproxy-fleet,xproxy-replay,xsigner}, static and stripped
 make check      # fmt, vet, race tests, lint — what CI runs
 sudo make install                 # PREFIX=/usr/local: binaries, units, man pages,
                                   # completions, the JSON schema, Grafana and Prometheus assets
@@ -1430,6 +1443,7 @@ the stages a request can die at and every deny reason.
 | [docs/HARDENING.md](docs/HARDENING.md) | Host hardening checklist |
 | [docs/HA.md](docs/HA.md) | Redundancy and failover: the readiness verdict a VRRP check script runs, stepping a node down before touching it, which state survives a failover and which does not, and what each of the three daemons costs when an address moves |
 | [docs/EXTENDING.md](docs/EXTENDING.md) | Compiled-in middleware and the WebAssembly ABI |
+| [docs/SIGNER.md](docs/SIGNER.md) | The signer protocol: how a process that holds a private key answers a proxy that needs a signature, what a helper must check and must never do, why the socket's permissions are the authentication — and how to write a helper for an HSM, a TPM or a KMS this project does not support |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Measured scale and throughput |
 | [docs/TESTS.md](docs/TESTS.md) | Test harness, coverage and mutation gates |
 | [docs/ASR.md](docs/ASR.md) | Architecturally significant requirements with traceability |

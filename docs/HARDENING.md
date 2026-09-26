@@ -104,6 +104,15 @@ ps -eZ | grep xproxy                # system_u:system_r:xproxy_t
 ausearch -m AVC -c xproxy -ts today # empty
 ```
 
+**What the module does not cover yet.** It confines the edge data plane
+(`xproxy_t`) and the GUI (`xproxy_admin_t`). `xgate`, `xrelay` and
+`xsigner` have no domain of their own and run as `unconfined_service_t`,
+so on those three the systemd directives and the process's own Landlock
+and seccomp layers are the confinement, and SELinux is not. That is a
+real gap and it is on the list for 1.0; until it closes, do not read a
+`getenforce` of `Enforcing` as meaning all five processes are confined by
+policy. `ps -eZ` says which are.
+
 ## 3. Kernel network profile
 
 Install `deploy/sysctl/90-xproxy.conf`: SYN cookies, larger SYN and accept
@@ -198,12 +207,24 @@ arrangements, weakest to strongest:
    and gets a signature back. Anything that reads this proxy's memory --
    a Heartbleed-shaped bug, a core dump, a debugger -- gets nothing.
 
-   Run the helper as its own user with its own sandbox, and make the
-   socket's directory reachable by `xproxy` and nothing else
-   (`/run/xproxy-signer`, `0750`, `root:xproxy`). The derived Landlock
-   ruleset gives the proxy a **write** rule on that directory, because
-   connecting to a Unix socket is a write; the helper needs no rule from
-   this proxy at all.
+   `xsigner`(8) is the shipped helper, with its own user, its own unit and
+   `PrivateNetwork=yes` -- a bug in a process that cannot send anywhere
+   cannot exfiltrate a key. Its socket lives in `/run/xsigner` at mode
+   2750 `xsigner:xsigner-clients`, with the socket itself at 0660
+   inheriting that group from the setgid directory: connecting to a Unix
+   socket needs **write** permission on it, so the group is the access
+   list and the directory is the wall. The derived Landlock ruleset gives
+   the proxy a write rule on that directory for the same reason; the
+   helper needs no rule from the proxy at all.
+
+   The helper's configuration and keys are under `/etc/xsigner`, **not**
+   `/etc/xproxy`: that directory is readable by the `xproxy-config` group,
+   which is the three proxy daemons, and the whole point of this
+   arrangement is that they cannot read what the helper reads.
+
+   For a key in an HSM, a TPM, a smartcard or a cloud KMS, write a helper
+   of your own -- [SIGNER.md](SIGNER.md) specifies the protocol and what a
+   helper must and must not do.
 
 Put the most valuable certificate in the strongest arrangement rather
 than moving everything at once: the three are per certificate, and

@@ -47,6 +47,7 @@ build:
 	$(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BIN)/xproxy-admin ./cmd/xproxy-admin
 	$(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BIN)/xproxy-fleet ./cmd/xproxy-fleet
 	$(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BIN)/xproxy-replay ./cmd/xproxy-replay
+	$(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BIN)/xsigner ./cmd/xsigner
 
 test:
 	$(GO) test -count=1 -tags $(CORAZATAGS) ./...
@@ -214,6 +215,7 @@ install: build
 	install -D -m 0755 $(BIN)/xproxy-admin $(DESTDIR)$(PREFIX)/bin/xproxy-admin
 	install -D -m 0755 $(BIN)/xproxy-fleet $(DESTDIR)$(PREFIX)/bin/xproxy-fleet
 	install -D -m 0755 $(BIN)/xproxy-replay $(DESTDIR)$(PREFIX)/bin/xproxy-replay
+	install -D -m 0755 $(BIN)/xsigner $(DESTDIR)$(PREFIX)/bin/xsigner
 	install -D -m 0644 deploy/systemd/xproxy-fleet.service $(DESTDIR)/etc/systemd/system/xproxy-fleet.service
 	install -D -m 0644 docs/man/xproxy-fleet.8 $(DESTDIR)$(PREFIX)/share/man/man8/xproxy-fleet.8
 	install -D -m 0644 deploy/systemd/xproxy-admin.service $(DESTDIR)/etc/systemd/system/xproxy-admin.service
@@ -236,11 +238,15 @@ install: build
 	install -D -m 0644 deploy/sysusers/xproxy.conf $(DESTDIR)/usr/lib/sysusers.d/xproxy.conf
 	install -D -m 0644 deploy/tmpfiles/xproxy-cluster.conf $(DESTDIR)/usr/lib/tmpfiles.d/xproxy-cluster.conf
 	install -D -m 0644 deploy/tmpfiles/xproxy-config.conf $(DESTDIR)/usr/lib/tmpfiles.d/xproxy-config.conf
+	install -D -m 0644 deploy/systemd/xsigner.service $(DESTDIR)/etc/systemd/system/xsigner.service
+	install -D -m 0644 deploy/tmpfiles/xsigner.conf $(DESTDIR)/usr/lib/tmpfiles.d/xsigner.conf
+	install -D -m 0640 -b deploy/config/xsigner.yaml $(DESTDIR)/etc/xsigner/xsigner.yaml
 	install -D -m 0644 docs/man/xproxy.8 $(DESTDIR)$(PREFIX)/share/man/man8/xproxy.8
 	install -D -m 0644 docs/man/xgate.8 $(DESTDIR)$(PREFIX)/share/man/man8/xgate.8
 	install -D -m 0644 docs/man/xrelay.8 $(DESTDIR)$(PREFIX)/share/man/man8/xrelay.8
 	install -D -m 0644 docs/man/xproxyctl.8 $(DESTDIR)$(PREFIX)/share/man/man8/xproxyctl.8
 	install -D -m 0644 docs/man/xproxy-replay.8 $(DESTDIR)$(PREFIX)/share/man/man8/xproxy-replay.8
+	install -D -m 0644 docs/man/xsigner.8 $(DESTDIR)$(PREFIX)/share/man/man8/xsigner.8
 	install -D -m 0644 docs/man/xproxy.yaml.5 $(DESTDIR)$(PREFIX)/share/man/man5/xproxy.yaml.5
 	install -D -m 0644 internal/config/schema/xproxy.schema.json $(DESTDIR)$(PREFIX)/share/xproxy/xproxy.schema.json
 	install -D -m 0644 deploy/grafana/xproxy-overview.json $(DESTDIR)$(PREFIX)/share/xproxy/grafana/xproxy-overview.json

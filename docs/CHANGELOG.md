@@ -654,6 +654,45 @@ Open findings of the earlier rounds:
   offering four groups with one refused still works for every client asking for
   the other three; `probe_fails: true` is the stricter reading.
 
+- **`xsigner`(8): the helper is shipped, not just described.** The `signer`
+  setting was a socket an operator had to put something behind, which made the
+  strongest of the three arrangements the only one nobody could actually use.
+  There is now a helper.
+
+  It holds keys it reads as PEM -- from a file, the environment or a vault --
+  and answers signature requests. It runs as its own user, its configuration
+  and keys live under `/etc/xsigner` rather than `/etc/xproxy` (that directory
+  is readable by the `xproxy-config` group, which is the three proxy daemons,
+  and the whole point is that they cannot read what the helper reads), and the
+  shipped unit gives it `PrivateNetwork=yes` -- the strongest single line in
+  it, because a bug in a process that cannot send anywhere cannot exfiltrate a
+  key. `-validate` loads every key before anything binds; `-print-keys` prints
+  the public halves, which is the answer to the one question the protocol
+  cannot answer from the proxy's side: which key is behind this name.
+
+  **The socket's permissions are the authentication**, and there is no
+  credential on the wire because whatever the proxy could present, anything
+  that had taken the proxy could present too. `/run/xsigner` is 2750
+  `xsigner:xsigner-clients` and the socket inside it 0660, inheriting that
+  group from the setgid directory: connecting to a Unix socket needs *write*
+  permission on it, so the group is the access list and the directory is the
+  wall. A world-writable mode is refused outright rather than warned about --
+  it would make the helper a signing oracle for every key it holds, and there
+  is no deployment where it is right.
+
+- **[SIGNER.md](SIGNER.md): the protocol, specified.** One JSON object each way
+  over a Unix socket. It is written so that a helper for an HSM, a TPM, a
+  smartcard or a cloud KMS can be written against it -- including what a helper
+  must check (the key exists, the algorithm suits the key type, the digest is
+  short enough to be a digest) and what it must never do (return a key, log a
+  digest, echo an unbounded field, hang up on a bad request), plus a working
+  forty-line helper.
+
+  Two details in it are where a helper gets written wrongly, so they are stated
+  twice: Ed25519 signs the *message* rather than a pre-hash, and RSA-PSS needs
+  the salt length on the wire because a verifier that assumes the wrong one
+  rejects a correct signature.
+
 - **The derived sandbox knows about all three arrangements.** The signer's
   socket gets a **write** rule, not a read one: connecting to a Unix socket is
   a write under Landlock, and a read rule would give a daemon whose every

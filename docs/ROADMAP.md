@@ -349,6 +349,30 @@ of them is a flaw in front of all of them.
   every packet, compares its servers and passes NTS through without
   pretending to have verified it: delivered
 
+- Health checking with dynamic pool membership: delivered (an announced
+  endpoint waits for its first probe; `discovery.max_endpoints`)
+- Just-in-time, four-eyes, time-boxed bastion access: delivered
+  (`access`, `require_grant` on the five gate kinds, a hash-chained
+  ledger, `xproxyctl access`)
+- Key custody: delivered. A certificate names `key_file`, `key` (a
+  reference, resolved from the environment or HashiCorp Vault and
+  refreshed into a running proxy) or `signer` (a helper that holds the
+  key outside this process). `xsigner`(8) is that helper, and
+  [SIGNER.md](SIGNER.md) specifies the protocol so a helper for an HSM,
+  a TPM, a smartcard or a KMS can be written. FIPS 140-3 as a refusal to
+  start plus a probe that *measures* which configured algorithms the
+  active module will do.
+
+  PKCS#11 itself is deliberately not in any shipped binary: it needs cgo
+  to dlopen a vendor module, which is ASR-C3, and the protocol is how
+  that constraint is honoured rather than worked around.
+
+  Not yet: an SELinux domain for `xsigner`, `xgate` and `xrelay`. All
+  three run as `unconfined_service_t`, which is recorded in
+  HARDENING.md §2 and is the next thing to close, `xsigner` first --
+  it holds the keys and is the easiest domain to write, because it reads
+  a handful of files, binds one Unix socket and needs no network.
+
 ## After 1.4 (candidates, unranked)
 
 - The remote access protocols this release did not take (Citrix ICA,

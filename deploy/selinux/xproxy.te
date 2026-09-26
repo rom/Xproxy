@@ -22,6 +22,13 @@
 #                   xproxy_admin_port_t, and may restart xproxy.service
 #                   through systemd when the boolean below is on.
 #
+# Not covered yet: xgate, xrelay and xsigner. They run as
+# unconfined_service_t, so on those three the systemd directives and the
+# process's own Landlock and seccomp layers are the confinement and this
+# module is not. xsigner is the one that matters most -- it holds the private
+# keys -- and it is also the easiest to write a domain for, because it reads
+# a handful of files, binds one Unix socket and needs no network at all.
+#
 # Booleans:
 #   xproxy_connect_any           let the data plane connect to any TCP port
 #                                (instead of http_port_t and
