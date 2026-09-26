@@ -10090,9 +10090,18 @@ T{
 T}	T{
 path
 T}	T{
-required
+required unless \fBpush\fR
 T}	T{
 The enrolment file (\fBxproxyctl mfa enrol\fR writes the lines). Refused if world readable: it holds every second factor. Re\-read when it changes on disk,\: at most once a second,\: so enrolling and removing take effect without a reload
+T}
+T{
+\fBpush\fR
+T}	T{
+section
+T}	T{
+
+T}	T{
+An approval sent to a device the user already carries,\: instead of a code they type;\: see below
 T}
 T{
 \fBissuer\fR
@@ -10173,6 +10182,168 @@ A code is spent when it is used: a later attempt at the same step, or at an earl
 What the client is told never distinguishes a wrong code from a replayed one, from a locked account, or from a name that never enrolled. The prompt is shown even to a user with no enrolment, because refusing before asking says the name is not enrolled.
 .PP
 The file can also be changed while the proxy runs, through the management API (\fB/v1/mfa*\fR), the GUI\(aqs MFA page or the TUI\(aqs MFA screen \[u2014] enrol, replace recovery codes, remove, unlock. An enrolment is shared by every listener reading the same file; a lockout is not, since it lives in the process that counted the wrong codes. See \fBdocs/USAGE.md\fR.
+.SS "server.listeners[].ssh.mfa.push"
+.PP
+The second factor that is not typed. The user is shown a number, a notification goes to the device they already carry, and the session waits for them to approve it there. No code to read off a screen and type, and nothing for a phishing page to collect.
+.PP
+It is also the factor with an attack of its own, and the section is shaped by that attack rather than by the happy path. Somebody who has the password can send notification after notification until the person taps approve to stop their phone buzzing \[u2014] MFA fatigue, and it works. So:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBOne request in flight per user.\fR A second attempt while one is waiting is refused and sends nothing.
+.PP
+.ti -3n
+\(bu
+\fBA bound per user per window\fR (\fBper_window\fR, \fBwindow\fR), which is the attack\(aqs rate. Over it the attempt is refused and counted in \fBmfa_push_throttled\fR, and again no notification is sent.
+.PP
+.ti -3n
+\(bu
+\fBA number the user has to recognise.\fR The proxy generates it, shows it through the protocol\(aqs own prompt, and sends it with the request. A person who did not cause the notification has nothing that matches.
+.PP
+.ti -3n
+\(bu
+\fBEvery failure is a refusal.\fR A timeout, a non\-200, an answer whose nonce is not the one asked about, a reply this cannot read: all refused. A second factor that passes when the service is unreachable is not a second factor.
+.RE
+.PP
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.9i) lbw(0.9i) lbx
+lw(1.0i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBurl\fR
+T}	T{
+URL
+T}	T{
+required
+T}	T{
+The approval service. \fBhttps\fR,\: or \fBhttp:\:/\:/\fR on the loopback for a development instance
+T}
+T{
+\fBtimeout\fR
+T}	T{
+duration
+T}	T{
+\fB60s\fR
+T}	T{
+How long somebody has to answer,\: and the bound on the whole exchange including every poll. 5s to 5m \[u2014] it is also how long a half\-authenticated session is held open
+T}
+T{
+\fBpoll\fR
+T}	T{
+duration
+T}	T{
+\fB2s\fR
+T}	T{
+How often a service that answered \fBpending\fR is asked again. A poll sends no second notification
+T}
+T{
+\fBtoken\fR
+T}	T{
+string or ref
+T}	T{
+
+T}	T{
+The credential,\: sent as \fBAuthorization:\: Bearer\fR. An \fBenv:\fR or \fBvault:\fR reference keeps it out of the file;\: see secrets
+T}
+T{
+\fBheader\fR,\: \fBheader_\:value\fR
+T}	T{
+string
+T}	T{
+
+T}	T{
+One extra header,\: for a service whose credential is neither. They go together
+T}
+T{
+\fBca_\:file\fR
+T}	T{
+path
+T}	T{
+system roots
+T}	T{
+The trust anchor for the service\(aqs certificate
+T}
+T{
+\fBserver_\:name\fR
+T}	T{
+string
+T}	T{
+the URL\(aqs host
+T}	T{
+The name verified in the certificate
+T}
+T{
+\fBinsecure\fR,\: \fBallow_\:insecure\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Skip verification. Both are needed and the host must be a loopback address: whatever can answer for the approval service decides who gets in
+T}
+T{
+\fBper_\:window\fR
+T}	T{
+int
+T}	T{
+\fB3\fR
+T}	T{
+Notifications one user may be sent within \fBwindow\fR. Above 5 it warns \[u2014] the number exists to make fatigue expensive
+T}
+T{
+\fBwindow\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+The window those notifications are counted in
+T}
+T{
+\fBnumbers\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Ask the user to recognise a number. \fBfalse\fR warns: an approval that says nothing about which sign\-in it is for is one a person cannot check
+T}
+.TE
+.PP
+\fBThe protocol\fR, so a service can be written for it. One POST per approval, and a GET to ask about a pending one:
+.PP
+.RS 4
+.nf
+.ft CR
+POST <url>
+{"nonce":"<32 hex>","user":"alice","listener":"bastion","protocol":"ssh",
+ "client_ip":"203.0.113.7","number":"42","requested_at":"2026\-01\-02T03:04:05Z"}
+
+200 {"nonce":"<the same>","result":"approved"}          # let in
+200 {"nonce":"<the same>","result":"denied"}            # refused
+200 {"nonce":"<the same>","result":"pending"}           # ask again shortly
+
+GET <url>?nonce=<32 hex>        # the same three answers; sends no notification
+.ft
+.fi
+.RE
+.PP
+The nonce is 128 bits and is checked on every answer: a reply about another request is not an answer about this one. Anything else \[u2014] a redirect, another status, a body that is not this JSON, a \fBresult\fR this does not know \[u2014] is a refusal.
+.PP
+\fBWhich factor a user gets.\fR With \fBpush\fR alone, every user is pushed and the approval service is what decides whether they exist. With \fBfile\fR and \fBpush\fR together, a user in the enrolment file is asked for a code and everybody else is pushed, which is the shape an estate migrating between the two has.
+.PP
+Counters: \fBmfa_push_sent\fR, \fBmfa_push_approved\fR, \fBmfa_push_denied\fR, \fBmfa_push_failed\fR (the service could not be reached, or answered something this cannot read) and \fBmfa_push_throttled\fR (the fatigue bounds refusing an attempt). \fBxproxy_mfa_push_total{result}\fR is the metric. A denial and an outage are counted apart on purpose: one is a person saying no and the other is something to fix.
 .SS "server.listeners[].ssh.sftp"
 .PP
 Without this section the proxy can say only that a session may use \fBsftp\fR. That is the difference between reading a file and deleting a tree: the whole of it happens inside the channel. With it, each SFTP request is decided, and a refusal is answered with a permission\-denied status, so the session continues and the client is told which operation was refused rather than losing its connection.

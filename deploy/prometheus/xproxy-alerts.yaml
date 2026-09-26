@@ -229,6 +229,21 @@ groups:
         annotations:
           summary: "The threat list {{ $labels.list }} on {{ $labels.instance }} holds no entries"
           description: "A list with no entries matches nothing while the configuration says it is enforced, which is the failure this project refuses to have silently: a structured feed whose shape changed, or a kind that does not match what the feed carries. xproxy_threat_list_skipped says whether the objects were there and went unread."
+  - name: xproxy.mfa
+    rules:
+      - alert: XproxyPushFatigue
+        expr: sum by (instance) (increase(xproxy_mfa_push_total{result="throttled"}[10m])) > 3
+        labels: {severity: page}
+        annotations:
+          summary: "Approval requests on {{ $labels.instance }} are being refused by the fatigue bounds"
+          description: "Somebody is asking for more approvals than the policy allows, which is what an attacker with a working first factor does: send notifications until the person taps approve to stop the buzzing. The bounds refused them and no notification was sent, but a first factor is being used that should not be. Look at the security log for the user and the client address, and consider revoking that credential."
+      - alert: XproxyApprovalServiceFailing
+        expr: sum by (instance) (increase(xproxy_mfa_push_total{result="failed"}[15m])) > 2
+        for: 15m
+        labels: {severity: page}
+        annotations:
+          summary: "The approval service for {{ $labels.instance }} is not answering usefully"
+          description: "The push second factor fails closed, so an approval service that cannot be reached means nobody with that factor can sign in. Counted apart from a denial on purpose: this is an outage rather than somebody saying no."
   - name: xproxy.accounts
     rules:
       - alert: XproxyCredentialStuffing

@@ -284,3 +284,39 @@ func bound(ref Reference, b []byte) ([]byte, error) {
 	}
 	return b, nil
 }
+
+// Token resolves a credential that may be written either way: a literal value
+// as it stands, or a reference (env:, vault:, file:) through the resolver.
+//
+// A token is opaque, so the test is whether the value names a scheme this
+// package resolves. A bare path is not one: in a token field it is far more
+// likely to be a credential that happens to start with a slash than a file
+// somebody meant to be read. That is the whole ambiguity, and it is resolved
+// in one place because three callers -- a threat feed, an approval service, and
+// whatever asks next -- must not each decide it differently.
+//
+// A nil resolver answers a literal and refuses a reference, rather than sending
+// "env:TOKEN" to a service that will answer 401 and leave a control that
+// silently never works.
+func Token(ref string, r *Resolver) (string, error) {
+	if ref == "" {
+		return "", nil
+	}
+	if plainToken(ref) {
+		return ref, nil
+	}
+	if r == nil {
+		return "", fmt.Errorf("%q is a reference and no secret resolver is configured", ref)
+	}
+	return r.StringValue(ref)
+}
+
+// plainToken reports whether a value is a literal credential rather than a
+// reference.
+func plainToken(v string) bool {
+	p, err := Parse(v)
+	if err != nil {
+		return true
+	}
+	return p.Scheme == SchemeFile && !strings.HasPrefix(v, SchemeFile+":")
+}

@@ -1,0 +1,108 @@
+# The two factors that are not typed: a key held in a security token, and
+# an approval on the device somebody already carries.
+#
+# bastion.yaml beside this file is the same bastion with a one-time code.
+# Read that one first; what changes here is the kind of credential rather
+# than the shape of the configuration.
+#
+# What each one is actually for:
+#
+#   * require_hardware_key is the only property of a credential this
+#     gateway can check. Every other key it accepts is a file, and a file
+#     has copies -- a backup, a laptop left on a train, an agent
+#     forwarded to a host that kept it -- and nothing in the protocol can
+#     tell a copy from the original. A FIDO2 key's private half never
+#     leaves the token; what crosses the wire is a signature the token
+#     made, which needs the token in somebody's hand.
+#
+#   * push is the factor people actually use, and the one with an attack
+#     of its own. Somebody who has the first factor can send notification
+#     after notification until the person taps approve to stop their
+#     phone buzzing. The bounds here are that attack refused: one request
+#     in flight per user, three per five minutes, and a number the user
+#     has to recognise.
+#
+# Validate: xgate -config examples/mfa/hardware-and-push.yaml -validate
+version: 1
+
+# The approval service's credential lives where it can be rotated and
+# revoked, rather than in this file.
+secrets:
+  vault:
+    address: https://vault.internal:8200
+    token_file: /etc/xproxy/vault/token
+
+server:
+  listeners:
+    # The people who administer the estate: a token, a touch per
+    # signature, and an approval on a phone. Two factors, neither of them
+    # a string that can be read off a screen or typed into a phishing
+    # page.
+    - name: bastion
+      address: "0.0.0.0:22"
+      kind: ssh
+      ssh:
+        upstream: hosts
+        host_keys: [/etc/xproxy/ssh/host_ed25519]
+        authorized_keys: /etc/xproxy/ssh/authorized_keys
+        upstream_key_file: /etc/xproxy/ssh/id_ed25519
+        upstream_known_hosts: /etc/xproxy/ssh/known_hosts
+        upstream_user: operator
+
+        # Only sk-ssh-ed25519@openssh.com and
+        # sk-ecdsa-sha2-nistp256@openssh.com, or a certificate over one.
+        # A line in authorized_keys that carries no-touch-required fails
+        # the load rather than quietly working without a touch.
+        require_hardware_key: true
+        require_touch: true
+
+        # The second factor: an approval rather than a code. There is no
+        # enrolment file here at all, so every user is pushed and the
+        # approval service is what decides whether they exist.
+        mfa:
+          push:
+            url: https://approvals.internal/v1/xproxy
+            token: "vault:kv/xproxy/approvals#token"
+            ca_file: /etc/pki/internal/ca.pem
+            timeout: 45s
+            # The fatigue bounds. Three notifications per five minutes to
+            # one person, and never two at once. Raising these is raising
+            # the attack's budget.
+            per_window: 3
+            window: 5m
+            numbers: true
+
+        principals:
+          # The estate's automation has no hands, so it cannot touch a
+          # token and cannot approve a notification. It is exempted from
+          # the hardware requirement and named in the log, which is the
+          # honest version of the exception: this key is a file.
+          - name: deploy-robot
+            fingerprints: ["SHA256:LXEWQrcmsEQBYnyp+6wy9chTD7GQPMTbAiWHF5IaSIE"]
+            require_hardware_key: false
+            policy:
+              upstream_user: deploy
+              allow_channels: [session]
+              allow_requests: [exec]
+              allow_commands: ["^/usr/local/bin/deploy [a-z0-9-]+$"]
+
+          # Everybody else: a token, and the listener's own policy.
+          - name: administrators
+
+upstreams:
+  - name: hosts
+    endpoints: [{address: "10.0.0.20:22"}, {address: "10.0.0.21:22"}]
+
+# A refused approval and a refused key are deny events, so the ladder
+# that answers a credential attack applies to both.
+bans:
+  triggers:
+    - name: ssh-persistent
+      reasons: [ssh_denied]
+      threshold: 5
+      window: 10m
+      duration: 24h
+
+logging:
+  access: {enabled: true}
+  security: {enabled: true}

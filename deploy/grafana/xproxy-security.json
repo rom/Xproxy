@@ -2175,6 +2175,138 @@
       ],
       "title": "Threat lists: entries, age and what was skipped",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "The push factor's outcomes. approved and denied are people answering; failed is the approval service not answering usefully, which fails closed and stops everybody with that factor signing in. throttled is the fatigue bounds refusing an attempt without sending a notification -- it climbing means somebody with a working first factor is trying to buzz a person into approving.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "showPoints": "never"
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 120
+      },
+      "id": 39,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "refId": "A",
+          "legendFormat": "approved",
+          "expr": "sum(rate(xproxy_mfa_push_total{instance=~\"$instance\",result=\"approved\"}[5m]))"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "refId": "B",
+          "legendFormat": "denied",
+          "expr": "sum(rate(xproxy_mfa_push_total{instance=~\"$instance\",result=\"denied\"}[5m]))"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "refId": "C",
+          "legendFormat": "failed",
+          "expr": "sum(rate(xproxy_mfa_push_total{instance=~\"$instance\",result=\"failed\"}[5m]))"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "refId": "D",
+          "legendFormat": "throttled",
+          "expr": "sum(rate(xproxy_mfa_push_total{instance=~\"$instance\",result=\"throttled\"}[5m]))"
+        }
+      ],
+      "title": "Second factor: approvals and the fatigue bounds",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Authentications by a key held in a security token, and the ones refused for not being one. A move to hardware keys is finished when refused has fallen to nothing and accepted carries the traffic; refusals continuing means somebody still has only a file.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "showPoints": "never"
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 120
+      },
+      "id": 40,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "refId": "A",
+          "legendFormat": "in a token",
+          "expr": "sum(rate(xproxy_ssh_hardware_key_total{instance=~\"$instance\",result=\"accepted\"}[5m]))"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "refId": "B",
+          "legendFormat": "refused (a file)",
+          "expr": "sum(rate(xproxy_ssh_hardware_key_total{instance=~\"$instance\",result=\"refused\"}[5m]))"
+        }
+      ],
+      "title": "SSH keys: tokens against files",
+      "type": "timeseries"
     }
   ],
   "refresh": "30s",

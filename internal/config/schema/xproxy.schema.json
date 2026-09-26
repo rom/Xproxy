@@ -5175,7 +5175,7 @@
       "type": "object",
       "properties": {
         "file": {
-          "description": "File is the enrolment file (xproxyctl mfa enrol writes the lines). Required. It must not be world readable.",
+          "description": "File is the enrolment file (xproxyctl mfa enrol writes the lines). Required unless push is configured. It must not be world readable.",
           "type": "string"
         },
         "issuer": {
@@ -5199,6 +5199,14 @@
           "description": "Prompt is what the user is asked. Default \"One-time code: \".",
           "type": "string"
         },
+        "push": {
+          "description": "Push is an approval sent to a device the user already carries, instead of a code they type. With both, a user in the enrolment file is asked for a code and everyone else is pushed, which is the shape an estate migrating between the two has. With push alone, every user is pushed and the approval service is what decides whether they exist.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/MFAPush"
+            }
+          ]
+        },
         "require_enrolment": {
           "description": "RequireEnrolment refuses a user who has no enrolment. Default true: an optional second factor is one an attacker can decline by using an account that never enrolled.",
           "type": "boolean"
@@ -5206,6 +5214,64 @@
         "skew": {
           "description": "Skew is how many time steps either side of now are accepted. Default 1, which is the usual allowance for a clock that is a little off. Each step accepted is a step an observer could replay in, so this is not a knob to raise casually.",
           "type": "integer"
+        },
+        "window": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "MFAPush": {
+      "description": "MFAPush is the second factor that is not typed: a notification the user approves on a device they already carry. It is the factor people actually use, and the one with an attack of its own. A code is only as good as the user's typing; a push is only as good as their attention, and somebody who has the password can send notification after notification until the person taps approve to stop the buzzing. The bounds below are that attack refused: one request in flight per user, a bound per window, and a number the user has to recognise.",
+      "type": "object",
+      "properties": {
+        "allow_insecure": {
+          "type": "boolean"
+        },
+        "ca_file": {
+          "description": "CAFile is the trust anchor for the service's certificate, and ServerName overrides the name verified in it.",
+          "type": "string"
+        },
+        "header": {
+          "type": "string"
+        },
+        "header_value": {
+          "type": "string"
+        },
+        "insecure": {
+          "description": "Insecure and AllowInsecure together skip verification, and are refused for anything but a loopback address: whatever can answer for the approval service decides who gets in.",
+          "type": "boolean"
+        },
+        "numbers": {
+          "description": "Numbers asks the user to recognise a number this proxy generates and shows them. Default true: it is what makes an approval about the session in front of them rather than about a notification.",
+          "type": "boolean"
+        },
+        "per_window": {
+          "description": "PerWindow and Window bound the notifications one user may be sent. Defaults 3 and 5m. This is the fatigue attack's rate limit, so it is not a knob to raise for convenience.",
+          "type": "integer"
+        },
+        "poll": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "server_name": {
+          "type": "string"
+        },
+        "timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "token": {
+          "description": "Token is the credential, sent as a bearer token; header and header_value are one extra header for a service whose credential is neither. A reference (env: or vault:) keeps it out of the file.",
+          "type": "string"
+        },
+        "url": {
+          "description": "URL is the approval service. A request is POSTed to it and the answer says approved, denied or pending; a pending request is polled at the same URL with its nonce, which sends no second notification. See docs/CONFIG.md for the two messages.",
+          "type": "string"
         },
         "window": {
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
