@@ -565,6 +565,10 @@ type IEC104Listener struct {
 	// and what a control centre's alarm list understands), drop (no
 	// answer, which the centre reads as a timeout) or close.
 	DenyResponse string `yaml:"deny_response"`
+	// Deception answers as a substation that is not there: a refused
+	// activation confirmed instead of refused, or a whole listener that is
+	// a fabricated station. See IEC104Deception.
+	Deception *IEC104Deception `yaml:"deception"`
 	// Setpoints bound the *value* a setpoint command may carry, per
 	// information object address. Without them a setpoint is bounded only
 	// by which point it names and when it may be sent, so a control
@@ -2780,7 +2784,86 @@ type SNMPRule struct {
 	Schedule *ModbusSchedule `yaml:"schedule"`
 }
 
-// IEC104Rule decides one frame.
+// IEC104Deception answers as a substation that is not there.
+//
+// A refusal is information. This relay answers a refused activation the
+// way the standard says a station does -- the same ASDU back with the
+// negative-confirm bit -- and a common address outside common_addresses
+// the same way, so a control centre's alarm list says something true.
+// Which means a scanner sweeping common addresses learns which stations
+// exist, and one walking type identifications learns which the policy
+// permits. The scan is refused and the survey completes.
+//
+// This answers instead. **On a grid the failure mode is not a confused
+// scanner**: it is a control room acting on a measurement nothing
+// measured, or believing a command landed that did not. So the same rule
+// the modbus section holds to holds here, and it is a test rather than an
+// intention: a frame that was going to reach a station is never answered
+// by the fabrication. Deception replaces a refusal and never an answer,
+// and mode answer will not load without clients.
+type IEC104Deception struct {
+	// Enabled turns the section off without removing it; it defaults to
+	// true wherever the section is present.
+	Enabled *bool `yaml:"enabled"`
+	// Mode is answer (the default: an activation this listener was going
+	// to refuse is confirmed by the fabrication instead, and never
+	// reaches the station) or decoy (the whole listener is a fabricated
+	// station: no upstream, and nothing behind it).
+	Mode string `yaml:"mode"`
+	// Clients are the networks that get the fabrication. Required in mode
+	// answer. In mode decoy an empty list means every client, which is
+	// what a honeypot wants.
+	Clients []string `yaml:"clients"`
+	// Profile is the fabricated station's shape: generic-substation (the
+	// default) or generic-rtu. It decides which points the station has
+	// and what they report.
+	Profile string `yaml:"profile"`
+	// CommonAddresses are the stations the fabrication answers for, as
+	// numbers or "1-4" ranges. Default "1". Everything else is answered
+	// the way a station answers an address it is not, because one
+	// association carrying twenty substations is not a substation.
+	CommonAddresses []string `yaml:"common_addresses"`
+	// Points are what the fabricated station has, in the order they are
+	// reported to a general interrogation. Empty takes the profile's.
+	Points []IEC104DecoyPoints `yaml:"points"`
+	// Tripwire are information object addresses no legitimate control
+	// centre reads. A read or a command naming one is answered -- the
+	// answer is what keeps the visitor reading -- and raised as an
+	// iec104_tripwire security event, which is what somebody acts on.
+	Tripwire []string `yaml:"tripwire"`
+	// Spontaneous sends unsolicited reports while data transfer is
+	// started, which is what a live station does between interrogations.
+	// Default true: a station that says nothing until spoken to is a
+	// station somebody looks at twice.
+	Spontaneous *bool `yaml:"spontaneous"`
+	// Seed makes the fabricated values reproducible. Zero derives one from
+	// the listener name, which is stable across restarts.
+	Seed uint64 `yaml:"seed"`
+	// Period is how long one sample of a value lasts, and how often a
+	// spontaneous report is sent. Default 30s; 1s to 1h.
+	Period Duration `yaml:"period"`
+	// MaxClients bounds the record of who has been answered. Default 1024.
+	MaxClients int `yaml:"max_clients"`
+}
+
+// IEC104DecoyPoints is one run of information object addresses and what
+// the fabricated station reports them as.
+type IEC104DecoyPoints struct {
+	// Addresses is the run, as "1-32".
+	Addresses string `yaml:"addresses"`
+	// Type is the ASDU type identification these are reported as:
+	// M_SP_NA_1 (a single point), M_DP_NA_1 (a double point), M_ME_NB_1
+	// (a scaled measurement), M_ME_NC_1 (a short float) or M_IT_NA_1 (an
+	// integrated total). A type outside that list is not something this
+	// can fabricate a value for.
+	Type string `yaml:"type"`
+	// Min and Max bound a measurement. Defaults 0 and 27648.
+	Min int `yaml:"min"`
+	Max int `yaml:"max"`
+	// Rate is how much a total adds each period.
+	Rate int `yaml:"rate"`
+}
+
 // IEC104Setpoint bounds the value a setpoint command may carry.
 //
 // It is the bound a rule about type identifications cannot express. A rule says

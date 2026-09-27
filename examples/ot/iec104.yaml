@@ -261,6 +261,59 @@ server:
           - {name: telemetry, action: allow, class: [monitoring]}
           - {name: switching, action: allow, types: [C_SC_NA_1], addresses: ["4000-4099"]}
 
+    # ---------------------------------------------------------------
+    # A substation that is not there: an address in the control centre's
+    # own range with no station behind it at all.
+    #
+    # The reason it earns its place on a grid network is the shape of a
+    # scan here. The common address is two octets and a centre names it in
+    # every ASDU, so a relay that refuses the addresses it does not carry
+    # has published the substation list; the interrogation that follows
+    # each answer publishes the point list. This listener answers, so the
+    # sweep finishes with the wrong map — and anything that arrives here
+    # arrived somewhere nothing operational lives.
+    #
+    # tripwire names the points nothing legitimate reads. They are
+    # answered, because the answer is what keeps the visitor reading, and
+    # raised as iec104_tripwire, which is the event to act on.
+    # ---------------------------------------------------------------
+    - name: substation-spare
+      address: "10.40.0.41:2404"
+      kind: iec104
+      iec104:
+        deception:
+          mode: decoy
+          profile: generic-substation
+          common_addresses: ["1-4"]
+          tripwire: ["9000-9099"]
+        log_commands: true
+        alert_on_deny: true
+
+    # ---------------------------------------------------------------
+    # And the other shape, on a listener that fronts a real station: a
+    # client on the network that has no business commanding anything gets
+    # its refusals confirmed instead of refused.
+    #
+    # The bound on this is a test and not an intention: a frame that was
+    # going to reach the station is never answered from here. Deception
+    # replaces the negative confirmation a refusal would have sent, so
+    # the worst case is a centre told "no" in a way that looks like
+    # "yes" — never an operator reading a fabricated measurement off a
+    # real point. mode: answer will not load without clients.
+    # ---------------------------------------------------------------
+    - name: substation-d-decoyed
+      address: "10.40.0.14:2404"
+      kind: iec104
+      iec104:
+        upstream: rtu-c
+        common_addresses: ["3"]
+        monitor_only: true
+        default_action: allow
+        deception:
+          mode: answer
+          clients: ["10.40.9.0/24"]
+          tripwire: ["9000-9099"]
+
 upstreams:
   - name: rtu-a
     endpoints: [{address: "10.40.2.10:2404"}]

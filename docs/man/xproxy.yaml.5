@@ -4824,6 +4824,15 @@ T}	T{
 \fBnegative\fR returns the same ASDU with the negative\-confirm bit and cause \fBactcon\fR,\: which is what a station does and what a control centre\(aqs alarm list understands
 T}
 T{
+\fBdeception\fR
+T}	T{
+object
+T}	T{
+
+T}	T{
+Answer as a substation that is not there: a refused activation confirmed instead of refused,\: or a whole listener that is a fabricated station;\: see below
+T}
+T{
 \fBsetpoints\fR
 T}	T{
 list
@@ -5182,6 +5191,197 @@ The first bound that covers a point decides, so a narrow bound written above a w
 So the relay numbers what it writes, acknowledges what it reads at \fBw\fR (and on a timer, for a link too quiet to carry one), and terminates the supervisory frames \-\- an acknowledgement is about the stream this relay wrote, not about the stream the other end wrote. The application layer is still forwarded untouched: the ASDU that arrives is the ASDU that leaves, because re\-encoding it is how a relay and a station come to disagree about what was said. What \fBcheck_sequence\fR and \fBmax_unacknowledged\fR decide is whether a \fIpeer\(aqs\fR numbering is checked: a gap, a replay, or an end that has \fBk\fR frames outstanding that this relay has not acknowledged.
 .PP
 Counters: \fBiec104_sessions\fR, \fBiec104_sessions_open\fR, \fBiec104_frames\fR, \fBiec104_commands\fR, \fBiec104_system_commands\fR, \fBiec104_denied\fR, \fBiec104_would_deny\fR, \fBiec104_malformed\fR, \fBiec104_rejected\fR, \fBiec104_rate_limited\fR, \fBiec104_selects\fR, \fBiec104_executes\fR, \fBiec104_unselected\fR, \fBiec104_selects_held\fR, \fBiec104_setpoints\fR, \fBiec104_setpoint_points\fR, \fBiec104_setpoint_unknown\fR, \fBiec104_sequence_gaps\fR, \fBiec104_window_full\fR, \fBiec104_upstream_failed\fR. Refusals are \fBiec104_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBtls_handshake\fR, \fBmalformed\fR, \fBframe_too_long\fR, \fBmax_connections\fR, \fBrate_limited\fR, \fBcommand_rate_limited\fR, \fBmonitor_only\fR, \fBcommon_address\fR, \fBrule\fR, \fBdefault_deny\fR, \fBcontrol\fR, \fBstation_command\fR, \fBsequence\fR, \fBwindow\fR, \fBack_ahead\fR, \fBunselected\fR, \fBselect_unavailable\fR, \fBsetpoint_range\fR, \fBsetpoint_delta\fR, \fBsetpoint_unknown\fR.
+.SS "server.listeners[].iec104.deception"
+.PP
+\fBA refusal is information, and on this protocol it is cheap to collect.\fR The common address is two octets, a control centre names it in every ASDU, and a relay that refuses the ones it does not carry has answered the question. A probe of a listener carrying stations 1 and 41:
+.PP
+.RS 4
+.nf
+.ft CR
+common address 1  \-> interrogation answered, 64 points
+common address 2  \-> negative confirmation
+common address 3  \-> negative confirmation
+common address 41 \-> interrogation answered, 12 points
+.ft
+.fi
+.RE
+.PP
+Two answers in a sweep is the substation list; the interrogation that follows each one is the point list. The scan was refused throughout and the survey completed.
+.PP
+This section answers instead, as a station whose points are stable per address and move slowly with time. The sweep finishes, the map is wrong, and the address that would have worked looks like the one that did not.
+.PP
+\fBThe failure mode here is not a confused scanner.\fR It is a control room that believes a breaker is open when it is closed. One rule holds, and it is a test rather than an intention: \fBa frame that was going to reach a station is never answered from here.\fR Deception replaces the negative confirmation a refusal would have sent, and nothing else \-\- which is why \fBmode: answer\fR refuses to load without \fBclients\fR, and why a \fBmode: decoy\fR listener refuses to load with an \fBupstream\fR.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(1.2i) lbw(1.1i) lbx
+lw(1.2i) lw(1.2i) lw(1.1i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Turns the section off without removing it
+T}
+T{
+\fBmode\fR
+T}	T{
+\fBanswer\fR,\: \fBdecoy\fR
+T}	T{
+\fBanswer\fR
+T}	T{
+\fBanswer\fR confirms an activation this listener was going to refuse,\: on a listener that fronts a real station. \fBdecoy\fR is the whole listener: a fabricated station with no upstream,\: where no frame reaches anything
+T}
+T{
+\fBclients\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+The networks that get the fabrication. \fBRequired in \fBmode:\: answer\fR.\fR Empty in \fBmode:\: decoy\fR means every client,\: which is what a honeypot is for
+T}
+T{
+\fBprofile\fR
+T}	T{
+\fBgeneric\-\:substation\fR,\: \fBgeneric\-\:rtu\fR
+T}	T{
+\fBgeneric\-\:substation\fR
+T}	T{
+The fabricated station\(aqs shape: which points it has and what they report
+T}
+T{
+\fBcommon_\:addresses\fR
+T}	T{
+list
+T}	T{
+\fB["1"]\fR
+T}	T{
+The stations the fabrication answers for,\: as numbers or \fB"1\-\:4"\fR ranges. Everything else is answered the way a station answers an address it is not \-\- negatively,\: cause 47 \-\- because one association carrying twenty substations is not a substation
+T}
+T{
+\fBpoints\fR
+T}	T{
+list
+T}	T{
+the profile\(aqs
+T}	T{
+What the station has,\: in the order a general interrogation reports them;\: see below
+T}
+T{
+\fBtripwire\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Information object addresses no legitimate centre reads. One named in a read or a command is \fBanswered\fR,\: and raised as an \fBiec104_\:tripwire\fR security event: the answer keeps the visitor reading and the event is what an operator acts on
+T}
+T{
+\fBspontaneous\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Send unsolicited reports between interrogations while data transfer is started. A station that says nothing until spoken to is a station somebody looks at twice
+T}
+T{
+\fBseed\fR
+T}	T{
+int
+T}	T{
+from the listener name
+T}	T{
+Makes the fabricated values reproducible. The default is stable across restarts
+T}
+T{
+\fBperiod\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+How long one sample of a value lasts,\: and how often a spontaneous report is sent;\: 1s to 1h
+T}
+T{
+\fBmax_\:clients\fR
+T}	T{
+int
+T}	T{
+\fB1024\fR
+T}	T{
+Bounds the record of who has been answered
+T}
+.TE
+.PP
+Each \fBpoints\fR entry:
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.6i) lbw(0.9i) lbx
+lw(1.0i) lw(0.6i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBaddresses\fR
+T}	T{
+range
+T}	T{
+required
+T}	T{
+The run of information object addresses,\: as \fB"1\-\:32"\fR
+T}
+T{
+\fBtype\fR
+T}	T{
+\fBM_\:SP_\:NA_\:1\fR,\: \fBM_\:DP_\:NA_\:1\fR,\: \fBM_\:ME_\:NB_\:1\fR,\: \fBM_\:ME_\:NC_\:1\fR,\: \fBM_\:IT_\:NA_\:1\fR
+T}	T{
+required
+T}	T{
+What these are reported as: a single point,\: a double point,\: a scaled measurement,\: a short float or an integrated total. A type outside that list is not one this can fabricate a value for
+T}
+T{
+\fBmin\fR,\: \fBmax\fR
+T}	T{
+int
+T}	T{
+\fB0\fR,\: \fB27648\fR
+T}	T{
+The range of a measurement
+T}
+T{
+\fBrate\fR
+T}	T{
+int
+T}	T{
+\fB1\fR
+T}	T{
+How much a total adds each period. \fBA totaliser that goes backwards is the tell\fR,\: so it is monotone by construction
+T}
+.TE
+.PP
+\fBWhat a decoy station has to get right.\fR A control centre\(aqs own software checks this protocol harder than any Modbus master checks that one, so the fabrication speaks the association the standard describes: nothing at all before STARTDT_act, a confirmation, and then \fBM_EI_NA_1\fR \-\- the end of initialisation, which is how a centre knows a station has restarted. A general interrogation is answered ACTCON, then the points at cause 20, then ACTTERM; a counter interrogation the same way with the totalisers. Values are derived from the seed, the address and which period of the clock it is, so two interrogations a moment apart agree, a month of them never repeats, and nothing is stored.
+.PP
+\fBdeny_response: close\fR and \fBdrop\fR do not apply to the clients this section covers in \fBmode: answer\fR: their refused activations are confirmed by the fabrication instead, and validation says so at load.
 .SS "server.listeners[].ldap (kind: ldap)"
 .PP
 A directory is the one service in an estate that knows who everybody is, and LDAP is how everything asks. That makes it two things at once: the authentication path for every application that has not moved to OIDC, and the most complete map of an organisation that exists anywhere on its network \-\- every person, every group, every service account, every machine, with the memberships that say who is an administrator.

@@ -35,6 +35,7 @@ exist.
 - [The slow lane](#the-slow-lane)
 - [Deceptive answers on real routes](#deceptive-answers-on-real-routes)
 - [A device that is not there](#a-device-that-is-not-there)
+- [A substation that is not there](#a-substation-that-is-not-there)
 - [Refusal at the TLS handshake](#refusal-at-the-tls-handshake)
 - [What it produces](#what-it-produces)
 - [Building it out](#building-it-out)
@@ -457,6 +458,87 @@ answered -- the answer keeps the visitor reading -- and raised as
 which puts it in the same class as a honeytoken: nothing legitimate walks
 into a room that does not exist. `xproxyctl honeypot` lists the visitors
 with what each one touched.
+
+## A substation that is not there
+
+Modbus gives away its estate one unit identifier at a time. IEC 104 gives
+away a whole grid one common address at a time, and it is a shorter walk:
+the common address is two octets, a control centre names it in every ASDU,
+and a relay that refuses the ones it does not carry has answered the
+question.
+
+```
+common address 1  -> interrogation answered, 64 points
+common address 2  -> negative confirmation
+common address 3  -> negative confirmation
+common address 41 -> interrogation answered, 12 points
+```
+
+Two answers in a sweep of 65535 is the substation list, and the
+interrogation that follows each one is the point list: which breakers,
+which measurements, which totalisers. The scan was refused throughout.
+
+`iec104.deception` answers instead:
+
+```yaml
+# A honeypot: a control centre's own address range, with no station
+# behind it at all.
+- name: substation-spare
+  address: "10.30.0.41:2404"
+  kind: iec104
+  iec104:
+    deception:
+      mode: decoy
+      profile: generic-substation
+      common_addresses: ["1-4"]
+      tripwire: ["9000-9099"]
+
+# A real relay, where only these clients are lied to, and only about
+# activations it was going to refuse anyway.
+- name: grid-north
+  address: "10.30.0.10:2404"
+  kind: iec104
+  iec104:
+    upstream: substation
+    monitor_only: true
+    deception:
+      mode: answer
+      clients: ["10.90.0.0/24"]
+```
+
+**The one rule again, and it bites harder here.** A fabricated tank level
+is one operator reading one number. A fabricated *breaker confirmation* is
+a control room that believes a circuit is open when it is closed, which is
+how a linesman gets hurt. So the same test holds, and it is the reason
+`mode: answer` never touches a frame the policy allowed: deception
+replaces the negative confirmation a refusal would have sent, and nothing
+else. `mode: answer` will not load without `clients`, and a decoy listener
+will not load with an upstream.
+
+**What makes a fabricated station answerable.** A control centre's own
+software checks the protocol harder than any Modbus master does, so the
+decoy speaks the association the way the standard describes it:
+
+- Nothing at all before STARTDT_act, a confirmation for it, and then
+  M_EI_NA_1 -- the end of initialisation, which is how a centre knows a
+  station has restarted. A station that has apparently been running since
+  before the centre was born is a station somebody looks at twice.
+- A general interrogation answered with ACTCON, then the points at cause
+  20, then ACTTERM. A counter interrogation answered the same way with
+  the totalisers, which only go up.
+- A common address the fabrication is not, answered the way a station
+  answers one: negatively, with cause 47. One association carrying twenty
+  substations is not a substation.
+- Values stable for a period, drifting by a little between periods, and
+  derived from the information object address, so two interrogations a
+  moment apart agree and a month of them never repeats exactly.
+- Spontaneous reports between interrogations, because a station that
+  says nothing until spoken to is not a station.
+
+**The tripwire is the signal**, as it is everywhere else here: information
+object addresses no legitimate centre reads are answered -- the answer is
+what keeps the visitor reading -- and raised as `iec104_tripwire`.
+`xproxyctl honeypot` lists who arrived and what they touched.
 
 ## Refusal at the TLS handshake
 

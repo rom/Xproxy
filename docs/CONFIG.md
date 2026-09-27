@@ -2041,6 +2041,7 @@ bounds which stations may be addressed through it.
 | `rules` | list | | Per-frame rules, first match wins; see below |
 | `default_action` | `deny`, `allow` | `deny` | What a frame no rule matched gets |
 | `deny_response` | `negative`, `drop`, `close` | `negative` | `negative` returns the same ASDU with the negative-confirm bit and cause `actcon`, which is what a station does and what a control centre's alarm list understands |
+| `deception` | object | | Answer as a substation that is not there: a refused activation confirmed instead of refused, or a whole listener that is a fabricated station; see below |
 | `setpoints` | list | | Value bounds on setpoint commands: what a point may be *set to*, and how far it may move in one step; see below |
 | `require_select` | bool | `false` | Make the two-step form mandatory for every command type that has one |
 | `select_timeout` | duration | `30s` | How long a selection stays valid (1s to 10m) |
@@ -2207,6 +2208,74 @@ refusal counters: `client_not_allowed`, `tls_handshake`, `malformed`,
 `default_deny`, `control`, `station_command`, `sequence`, `window`,
 `ack_ahead`, `unselected`, `select_unavailable`, `setpoint_range`,
 `setpoint_delta`, `setpoint_unknown`.
+
+#### server.listeners[].iec104.deception
+
+**A refusal is information, and on this protocol it is cheap to collect.**
+The common address is two octets, a control centre names it in every ASDU,
+and a relay that refuses the ones it does not carry has answered the
+question. A probe of a listener carrying stations 1 and 41:
+
+```
+common address 1  -> interrogation answered, 64 points
+common address 2  -> negative confirmation
+common address 3  -> negative confirmation
+common address 41 -> interrogation answered, 12 points
+```
+
+Two answers in a sweep is the substation list; the interrogation that
+follows each one is the point list. The scan was refused throughout and the
+survey completed.
+
+This section answers instead, as a station whose points are stable per
+address and move slowly with time. The sweep finishes, the map is wrong, and
+the address that would have worked looks like the one that did not.
+
+**The failure mode here is not a confused scanner.** It is a control room
+that believes a breaker is open when it is closed. One rule holds, and it is
+a test rather than an intention: **a frame that was going to reach a station
+is never answered from here.** Deception replaces the negative confirmation
+a refusal would have sent, and nothing else -- which is why `mode: answer`
+refuses to load without `clients`, and why a `mode: decoy` listener refuses
+to load with an `upstream`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Turns the section off without removing it |
+| `mode` | `answer`, `decoy` | `answer` | `answer` confirms an activation this listener was going to refuse, on a listener that fronts a real station. `decoy` is the whole listener: a fabricated station with no upstream, where no frame reaches anything |
+| `clients` | list | | The networks that get the fabrication. **Required in `mode: answer`.** Empty in `mode: decoy` means every client, which is what a honeypot is for |
+| `profile` | `generic-substation`, `generic-rtu` | `generic-substation` | The fabricated station's shape: which points it has and what they report |
+| `common_addresses` | list | `["1"]` | The stations the fabrication answers for, as numbers or `"1-4"` ranges. Everything else is answered the way a station answers an address it is not -- negatively, cause 47 -- because one association carrying twenty substations is not a substation |
+| `points` | list | the profile's | What the station has, in the order a general interrogation reports them; see below |
+| `tripwire` | list | `[]` | Information object addresses no legitimate centre reads. One named in a read or a command is **answered**, and raised as an `iec104_tripwire` security event: the answer keeps the visitor reading and the event is what an operator acts on |
+| `spontaneous` | bool | `true` | Send unsolicited reports between interrogations while data transfer is started. A station that says nothing until spoken to is a station somebody looks at twice |
+| `seed` | int | from the listener name | Makes the fabricated values reproducible. The default is stable across restarts |
+| `period` | duration | `30s` | How long one sample of a value lasts, and how often a spontaneous report is sent; 1s to 1h |
+| `max_clients` | int | `1024` | Bounds the record of who has been answered |
+
+Each `points` entry:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `addresses` | range | required | The run of information object addresses, as `"1-32"` |
+| `type` | `M_SP_NA_1`, `M_DP_NA_1`, `M_ME_NB_1`, `M_ME_NC_1`, `M_IT_NA_1` | required | What these are reported as: a single point, a double point, a scaled measurement, a short float or an integrated total. A type outside that list is not one this can fabricate a value for |
+| `min`, `max` | int | `0`, `27648` | The range of a measurement |
+| `rate` | int | `1` | How much a total adds each period. **A totaliser that goes backwards is the tell**, so it is monotone by construction |
+
+**What a decoy station has to get right.** A control centre's own software
+checks this protocol harder than any Modbus master checks that one, so the
+fabrication speaks the association the standard describes: nothing at all
+before STARTDT_act, a confirmation, and then `M_EI_NA_1` -- the end of
+initialisation, which is how a centre knows a station has restarted. A
+general interrogation is answered ACTCON, then the points at cause 20, then
+ACTTERM; a counter interrogation the same way with the totalisers. Values
+are derived from the seed, the address and which period of the clock it is,
+so two interrogations a moment apart agree, a month of them never repeats,
+and nothing is stored.
+
+`deny_response: close` and `drop` do not apply to the clients this section
+covers in `mode: answer`: their refused activations are confirmed by the
+fabrication instead, and validation says so at load.
 
 ### server.listeners[].ldap (kind: ldap)
 

@@ -17,20 +17,25 @@ type Cause byte
 
 // The causes of transmission the standard defines.
 const (
-	CausePeriodic       Cause = 1
-	CauseBackground     Cause = 2
-	CauseSpontaneous    Cause = 3
-	CauseInitialised    Cause = 4
-	CauseRequest        Cause = 5
-	CauseActivation     Cause = 6
-	CauseActCon         Cause = 7
-	CauseDeactivation   Cause = 8
-	CauseDeactCon       Cause = 9
-	CauseActTerm        Cause = 10
-	CauseRetRem         Cause = 11
-	CauseRetLoc         Cause = 12
-	CauseFile           Cause = 13
-	CauseIntroGeneral   Cause = 20
+	CausePeriodic     Cause = 1
+	CauseBackground   Cause = 2
+	CauseSpontaneous  Cause = 3
+	CauseInitialised  Cause = 4
+	CauseRequest      Cause = 5
+	CauseActivation   Cause = 6
+	CauseActCon       Cause = 7
+	CauseDeactivation Cause = 8
+	CauseDeactCon     Cause = 9
+	CauseActTerm      Cause = 10
+	CauseRetRem       Cause = 11
+	CauseRetLoc       Cause = 12
+	CauseFile         Cause = 13
+	CauseIntroGeneral Cause = 20
+	// CauseReqCounter is "requested by general counter interrogation": the
+	// answer to a counter interrogation, which the standard keeps separate
+	// from the general one because totals are read differently from
+	// measurements.
+	CauseReqCounter     Cause = 37
 	CauseUnknownType    Cause = 44
 	CauseUnknownCause   Cause = 45
 	CauseUnknownCommon  Cause = 46
@@ -50,6 +55,7 @@ var causeNames = map[string]Cause{
 	"introgen":     CauseIntroGeneral,
 	"unknown_type": CauseUnknownType, "unknown_cause": CauseUnknownCause,
 	"unknown_common": CauseUnknownCommon, "unknown_address": CauseUnknownAddress,
+	"reqcogen": CauseReqCounter, "req_counter": CauseReqCounter,
 }
 
 var causeByValue = func() map[Cause]string {
@@ -63,6 +69,7 @@ var causeByValue = func() map[Cause]string {
 		CauseFile: "file", CauseIntroGeneral: "introgen",
 		CauseUnknownType: "unknown_type", CauseUnknownCause: "unknown_cause",
 		CauseUnknownCommon: "unknown_common", CauseUnknownAddress: "unknown_address",
+		CauseReqCounter: "reqcogen",
 	}
 	// Interrogation causes 21 to 36 are "interrogated by group n", and a
 	// policy may well name one.

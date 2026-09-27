@@ -9353,13 +9353,103 @@ func normalisedOnly(types []string) bool {
 	return true
 }
 
+// iec104DecoyOnly says whether this listener is nothing but a fabricated
+// station, which is the one shape that needs no upstream: there is no
+// station behind it to reach.
+func iec104DecoyOnly(m *IEC104Listener) bool {
+	d := m.Deception
+	return d != nil && (d.Enabled == nil || *d.Enabled) && d.Mode == "decoy"
+}
+
+// IEC104DecoyProfiles are the fabricated station shapes the listener has
+// built in. The list lives here so the error can name them.
+var IEC104DecoyProfiles = []string{"generic-substation", "generic-rtu"}
+
+// IEC104DecoyTypes are the type identifications a point run may be
+// reported as: the ones a value can be fabricated for.
+var IEC104DecoyTypes = []string{"M_SP_NA_1", "M_DP_NA_1", "M_ME_NB_1", "M_ME_NC_1", "M_IT_NA_1"}
+
+func (v *validator) iec104Deception(p string, m *IEC104Listener) {
+	d := m.Deception
+	if d == nil || (d.Enabled != nil && !*d.Enabled) {
+		return
+	}
+	switch d.Mode {
+	case "", "answer":
+		if len(d.Clients) == 0 {
+			v.errf("%s.clients: required in mode answer; this listener reaches a real station, and a section that "+
+				"would fabricate a confirmation for any client that connects is not a decision to arrive at by default", p)
+		}
+	case "decoy":
+		if m.Upstream != "" {
+			v.errf("%s.mode: decoy is the whole listener, so it has no upstream: "+
+				"use mode answer to fabricate refusals on a listener that fronts a station", p)
+		}
+		if len(d.Clients) == 0 {
+			// Not an error: a honeypot with nothing behind it is exactly
+			// the case where answering every client is the point.
+			v.warnf("%s: no clients, so every client that connects is answered by the fabricated station. "+
+				"That is what a honeypot is for; it is worth being sure this listener is one", p)
+		}
+	default:
+		v.errf("%s.mode: must be answer or decoy", p)
+	}
+	v.modbusCIDRs(p+".clients", d.Clients)
+	// deny_response is what a refused client is told, and a deceived client
+	// is told something else instead. Saying so at load is cheaper than an
+	// engineer wondering why the connection they expected to be closed
+	// stayed open.
+	if d.Mode != "decoy" && (m.DenyResponse == "close" || m.DenyResponse == "drop") {
+		v.warnf("%s: deny_response %s does not apply to the clients this section covers -- their refused "+
+			"activations are confirmed by the fabricated station rather than closed or ignored", p, m.DenyResponse)
+	}
+	if d.Profile != "" && !slices.Contains(IEC104DecoyProfiles, d.Profile) {
+		v.errf("%s.profile: %q is not a profile; the built-in ones are %s",
+			p, d.Profile, strings.Join(IEC104DecoyProfiles, ", "))
+	}
+	v.modbusRanges(p+".common_addresses", d.CommonAddresses, 65535)
+	v.modbusRanges(p+".tripwire", d.Tripwire, 1<<24-1)
+	if n := d.MaxClients; n < 0 || n > 1<<20 {
+		v.errf("%s.max_clients: must be between 0 and 1048576", p)
+	}
+	if period := d.Period.D(); period != 0 && (period < time.Second || period > time.Hour) {
+		v.errf("%s.period: must be between 1s and 1h", p)
+	}
+	for i := range d.Points {
+		q := fmt.Sprintf("%s.points[%d]", p, i)
+		pt := &d.Points[i]
+		if pt.Addresses == "" {
+			v.errf("%s.addresses: required", q)
+		} else {
+			v.modbusRanges(q+".addresses", []string{pt.Addresses}, 1<<24-1)
+		}
+		if pt.Type == "" {
+			v.errf("%s.type: required; a point run with no type identification is not something a value can be "+
+				"fabricated for", q)
+		} else if !slices.Contains(IEC104DecoyTypes, pt.Type) {
+			v.errf("%s.type: %q is not a type this can fabricate a value for; the list is %s",
+				q, pt.Type, strings.Join(IEC104DecoyTypes, ", "))
+		}
+		if pt.Min < -1<<31 || pt.Max > 1<<31-1 {
+			v.errf("%s: min and max must fit a 32-bit integer", q)
+		}
+		if pt.Max != 0 && pt.Max <= pt.Min {
+			v.errf("%s: max must be above min", q)
+		}
+		if pt.Rate < 0 {
+			v.errf("%s.rate: must not be negative; a totaliser that went backwards is the one thing a "+
+				"fabricated station cannot do and be believed", q)
+		}
+	}
+}
+
 func (v *validator) iec104Listener(p string, m *IEC104Listener, hasTLS bool) {
 	switch m.Mode {
 	case "", "reverse", "forward":
 	default:
 		v.errf("%s.mode: must be reverse or forward", p)
 	}
-	if m.Upstream == "" {
+	if m.Upstream == "" && !iec104DecoyOnly(m) {
 		v.errf("%s.upstream: required; an IEC 104 connection is one association with one controlled station, so this listener relays to one pool", p)
 	}
 	switch m.TLSMode {
@@ -9400,6 +9490,7 @@ func (v *validator) iec104Listener(p string, m *IEC104Listener, hasTLS bool) {
 		}
 	}
 	v.iec104Setpoints(p+".setpoints", m.Setpoints)
+	v.iec104Deception(p+".deception", m)
 	if m.MonitorOnly && m.RequireSelect {
 		v.warnf("%s.require_select: monitor_only already refuses every command, so there is nothing left to select", p)
 	}

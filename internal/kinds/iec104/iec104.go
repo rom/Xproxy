@@ -82,6 +82,7 @@ type server struct {
 
 	policy  *Policy
 	selects *selects
+	decoy   *decoy
 	limiter *limits.KeyedLimiter
 	cmdRate *limits.KeyedLimiter
 
@@ -105,6 +106,9 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener, tc *tls.Co
 		return nil, err
 	}
 	t.selects = newSelects(m.MaxSelections, m.SelectTimeout.D(), time.Now)
+	if t.decoy, err = newDecoy(m.Deception, cfg.Name); err != nil {
+		return nil, fmt.Errorf("iec104 %s: %w", cfg.Name, err)
+	}
 	if m.UpstreamTLSMode == "implicit" {
 		uc, _, err := tlsconf.Client(m.UpstreamTLS)
 		if err != nil {
@@ -353,6 +357,15 @@ func (t *server) handle(client net.Conn) {
 	// The relay's own end of the association with this client, which is
 	// whatever the octets finally travel over.
 	se.clientEnd.attach(se.client, t.writeWait())
+	// A listener that is nothing but a fabricated station answers here, and
+	// nothing is dialled: there is no station behind it to reach. The client
+	// has already passed this listener's own address lists and the imported
+	// feeds above, so what arrives here is a client an operator did not
+	// allow to reach a real station.
+	if d := t.decoy; d != nil && d.whole && d.admits(ip) {
+		t.log(se, start, se.serveDecoy())
+		return
+	}
 	if err := se.dial(); err != nil {
 		s.Counters().IEC104UpstreamFail.Add(1)
 		s.Logs().Error.Warn("iec104 station dial failed", "listener", t.cfg.Name,
@@ -545,6 +558,13 @@ func (se *session) pump(fromClient bool) string {
 			// actcon, which is what a station does when it will not carry
 			// out a command, and what a control centre's alarm list
 			// already understands.
+			// The fabrication answers instead, for the clients it
+			// covers, and only here: this is the path where the frame has
+			// already been kept from the station.
+			if fromClient && se.deceive(frame, reason) {
+				se.payAck(from, w)
+				continue
+			}
 			switch se.t.m.DenyResponse {
 			case "", "negative":
 				se.answerNegative(frame, fromClient)

@@ -109,6 +109,68 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   known type and requires the addresses that went in to come back out -- the
   property the policy depends on and the one nothing was checking.
 
+### Added (deception past HTTP: a substation that is not there)
+
+- **`iec104.deception`.** Modbus gives up an estate one unit identifier at a
+  time; IEC 104 gives up a grid one common address at a time, and it is a
+  shorter walk. The common address is two octets, a control centre names it in
+  every ASDU, and a relay that refuses the ones it does not carry has answered
+  the question:
+
+  ```
+  common address 1  -> interrogation answered, 64 points
+  common address 2  -> negative confirmation
+  common address 3  -> negative confirmation
+  common address 41 -> interrogation answered, 12 points
+  ```
+
+  Two answers in a sweep of 65535 is the substation list, and the interrogation
+  that follows each one is the point list. The scan was refused throughout and
+  the survey completed.
+
+  Two shapes, as on the Modbus side. `mode: decoy` is a whole listener with no
+  upstream, where every frame is answered by a fabricated station.
+  `mode: answer` is a real relay where a refused *activation* is confirmed by
+  the fabrication instead, for the clients named -- so a scanner's command
+  reads as having operated a breaker and reaches nothing.
+
+  **The rule that bounds it, and it bites harder here than on Modbus.** A
+  fabricated tank level is one operator reading one number; a fabricated
+  breaker confirmation is a control room that believes a circuit is open when
+  it is closed. So: a frame that was going to reach a station is never answered
+  by the fabrication. Deception replaces the negative confirmation a refusal
+  would have sent and nothing else -- tested, not intended -- and only an
+  activation is answered, because the protocol has no confirmation for a
+  measurement and an ASDU no station would send is the tell rather than the
+  deception. `mode: answer` will not load without `clients`; a decoy will not
+  load with an `upstream`.
+
+  **A control centre's own software checks this protocol harder than any
+  Modbus master checks that one**, so the decoy speaks the association the way
+  the standard describes it: nothing at all before STARTDT_act, a confirmation
+  for it, then `M_EI_NA_1` -- the end of initialisation, which is how a centre
+  knows a station has restarted, and whose absence would make this a station
+  that has apparently been running since before the centre was born. A general
+  interrogation is answered ACTCON, then the points at cause 20, then ACTTERM;
+  a counter interrogation the same way with the totalisers, which only go up; a
+  common address the fabrication is not is refused with cause 47, because one
+  association carrying twenty substations is not a substation. Values are
+  derived from a seed, the information object address and which period of the
+  clock it is, so two interrogations a moment apart agree, a month of them
+  never repeats, and nothing is stored. `tripwire` names the addresses nothing
+  legitimate reads: those are answered too, and raised as `iec104_tripwire`.
+
+  A confirmation is now the octets that arrived with the cause changed, rather
+  than an ASDU re-encoded from the parsed fields. The tests found the reason:
+  the parser keeps a *command's* qualifier and not a system command's, so a
+  re-encoded confirmation of `C_IC_NA_1` -- the general interrogation, the
+  commonest system command on the protocol -- came out one octet short of its
+  own object count and would not parse at the control centre. Echoing the
+  octets is also what a confirmation is, and it is what the relay's own
+  refusals already did.
+
+  Twenty mutations of the new guards and the new validation, all killed.
+
 ### Added (deception past HTTP: a device that is not there)
 
 - **`modbus.deception`, and `internal/deception` for the kinds that follow.**

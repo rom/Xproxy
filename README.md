@@ -1220,7 +1220,15 @@ describes it, validation refuses what cannot work, and
   noise, by stillness and by impossibility. One rule holds and is tested: a
   frame that was going to reach a device is never answered by the fabrication,
   since the failure mode here is not a confused scanner but an operator acting
-  on a tank level that was never measured
+  on a tank level that was never measured. An `iec104` listener does the same
+  for a substation, where the walk is shorter still — the common address is two
+  octets and a control centre names it in every ASDU, so a relay that refuses
+  the ones it does not carry has published the estate. The fabrication speaks
+  the association the way the standard describes it, because a control centre's
+  own software checks this protocol harder than any Modbus master checks that
+  one: nothing before STARTDT_act, then the end of initialisation, an
+  interrogation answered ACTCON, the points, ACTTERM, and an address it is not
+  refused the way a station refuses one
 - **A device inventory built from traffic, not from scanning.** An
   operational estate's oldest problem is that nobody knows what is on the
   network: the drawings are from commissioning, the spreadsheet was

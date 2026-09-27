@@ -4052,6 +4052,96 @@
       },
       "additionalProperties": false
     },
+    "IEC104Deception": {
+      "description": "IEC104Deception answers as a substation that is not there. A refusal is information. This relay answers a refused activation the way the standard says a station does -- the same ASDU back with the negative-confirm bit -- and a common address outside common_addresses the same way, so a control centre's alarm list says something true. Which means a scanner sweeping common addresses learns which stations exist, and one walking type identifications learns which the policy permits. The scan is refused and the survey completes. This answers instead. **On a grid the failure mode is not a confused scanner**: it is a control room acting on a measurement nothing measured, or believing a command landed that did not. So the same rule the modbus section holds to holds here, and it is a test rather than an intention: a frame that was going to reach a station is never answered by the fabrication. Deception replaces a refusal and never an answer, and mode answer will not load without clients.",
+      "type": "object",
+      "properties": {
+        "clients": {
+          "description": "Clients are the networks that get the fabrication. Required in mode answer. In mode decoy an empty list means every client, which is what a honeypot wants.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "common_addresses": {
+          "description": "CommonAddresses are the stations the fabrication answers for, as numbers or \"1-4\" ranges. Default \"1\". Everything else is answered the way a station answers an address it is not, because one association carrying twenty substations is not a substation.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "enabled": {
+          "description": "Enabled turns the section off without removing it; it defaults to true wherever the section is present.",
+          "type": "boolean"
+        },
+        "max_clients": {
+          "description": "MaxClients bounds the record of who has been answered. Default 1024.",
+          "type": "integer"
+        },
+        "mode": {
+          "description": "Mode is answer (the default: an activation this listener was going to refuse is confirmed by the fabrication instead, and never reaches the station) or decoy (the whole listener is a fabricated station: no upstream, and nothing behind it).",
+          "type": "string"
+        },
+        "period": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "points": {
+          "description": "Points are what the fabricated station has, in the order they are reported to a general interrogation. Empty takes the profile's.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/IEC104DecoyPoints"
+          }
+        },
+        "profile": {
+          "description": "Profile is the fabricated station's shape: generic-substation (the default) or generic-rtu. It decides which points the station has and what they report.",
+          "type": "string"
+        },
+        "seed": {
+          "description": "Seed makes the fabricated values reproducible. Zero derives one from the listener name, which is stable across restarts.",
+          "type": "integer"
+        },
+        "spontaneous": {
+          "description": "Spontaneous sends unsolicited reports while data transfer is started, which is what a live station does between interrogations. Default true: a station that says nothing until spoken to is a station somebody looks at twice.",
+          "type": "boolean"
+        },
+        "tripwire": {
+          "description": "Tripwire are information object addresses no legitimate control centre reads. A read or a command naming one is answered -- the answer is what keeps the visitor reading -- and raised as an iec104_tripwire security event, which is what somebody acts on.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "IEC104DecoyPoints": {
+      "description": "IEC104DecoyPoints is one run of information object addresses and what the fabricated station reports them as.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "description": "Type is the ASDU type identification these are reported as: M_SP_NA_1 (a single point), M_DP_NA_1 (a double point), M_ME_NB_1 (a scaled measurement), M_ME_NC_1 (a short float) or M_IT_NA_1 (an integrated total). A type outside that list is not something this can fabricate a value for.",
+          "type": "string"
+        },
+        "addresses": {
+          "description": "Addresses is the run, as \"1-32\".",
+          "type": "string"
+        },
+        "max": {
+          "type": "integer"
+        },
+        "min": {
+          "description": "Min and Max bound a measurement. Defaults 0 and 27648.",
+          "type": "integer"
+        },
+        "rate": {
+          "description": "Rate is how much a total adds each period.",
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
     "IEC104Listener": {
       "description": "IEC104Listener configures a kind: iec104 listener: an IEC 60870-5-104 relay for electricity transmission and distribution. The protocol is the grid's Modbus, with the same absence of security -- no authentication, no integrity, no session -- and the same reason a relay is the only place a policy can live: the controlled stations are substation gateways and RTUs with twenty-year service lives. What it *has*, and Modbus does not, is a structure that says what a message means. Every I-format frame carries a type identification (what this is), a cause of transmission (why it was sent) and a common address (which station), and the process commands are a small numbered set. So the policy here is written in those terms rather than in register numbers: which stations a control centre may address, which commands it may send them, whether a dangerous command has to be selected before it is executed, and which information object addresses each command may name.",
       "type": "object",
@@ -4096,6 +4186,14 @@
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "deception": {
+          "description": "Deception answers as a substation that is not there: a refused activation confirmed instead of refused, or a whole listener that is a fabricated station. See IEC104Deception.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/IEC104Deception"
+            }
+          ]
         },
         "default_action": {
           "description": "DefaultAction is deny (the default) or allow.",
@@ -4292,7 +4390,7 @@
       "additionalProperties": false
     },
     "IEC104Setpoint": {
-      "description": "IEC104Rule decides one frame. IEC104Setpoint bounds the value a setpoint command may carry. It is the bound a rule about type identifications cannot express. A rule says a control centre may send C_SE_NB_1 to point 4711; this says the value it carries has to be between 0 and 40, and may not move by more than 5 at a time. On a turbine or a tap changer that difference is the difference between a policy about who may act and a policy about what may happen. **What the number means depends on the encoding**, and this relay cannot always tell. A scaled value (C_SE_NB_1) is an integer in the point's own unit, which is what an engineer means by a setpoint. A short float (C_SE_NC_1) likewise. But a normalised value (C_SE_NA_1) is a *fraction of full scale*, from -1 to very nearly +1, and the full scale is configured in the device where this relay cannot see it -- so a bound on a normalised point is a bound on the fraction, and writing min: 0 / max: 40 for one is a mistake the load will not catch. The reference says so beside this, and the protocol page says it again.",
+      "description": "IEC104Setpoint bounds the value a setpoint command may carry. It is the bound a rule about type identifications cannot express. A rule says a control centre may send C_SE_NB_1 to point 4711; this says the value it carries has to be between 0 and 40, and may not move by more than 5 at a time. On a turbine or a tap changer that difference is the difference between a policy about who may act and a policy about what may happen. **What the number means depends on the encoding**, and this relay cannot always tell. A scaled value (C_SE_NB_1) is an integer in the point's own unit, which is what an engineer means by a setpoint. A short float (C_SE_NC_1) likewise. But a normalised value (C_SE_NA_1) is a *fraction of full scale*, from -1 to very nearly +1, and the full scale is configured in the device where this relay cannot see it -- so a bound on a normalised point is a bound on the fraction, and writing min: 0 / max: 40 for one is a mistake the load will not catch. The reference says so beside this, and the protocol page says it again.",
       "type": "object",
       "properties": {
         "common_addresses": {
