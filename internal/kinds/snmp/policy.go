@@ -446,11 +446,16 @@ func (r *rule) matches(req request, now time.Time) (bool, string) {
 	if r.access != nil && !r.access[accessOf(pdu.Type)] {
 		return false, ""
 	}
-	if r.maxReps > 0 && pdu.Type == wire.GetBulkRequest && pdu.MaxRepetitions > int64(r.maxReps) {
+	if r.maxReps > 0 && pdu.Type == wire.GetBulkRequest &&
+		(pdu.MaxRepetitions < 0 || pdu.MaxRepetitions > int64(r.maxReps)) {
 		// A rule that raises or lowers the repetition bound does not match
 		// traffic past its own bound, so the next rule -- or the default --
 		// decides. Matching and then allowing would make the bound a
 		// suggestion.
+		//
+		// A negative count is past the bound rather than under it, for the
+		// reason lowerRepetitions gives: signed it compares small, and an agent
+		// that reads it unsigned sees an enormous one.
 		return false, ""
 	}
 	// The object identifiers last, because they are the expensive test and

@@ -342,10 +342,12 @@ const MaxCommunity = 255
 
 // Parse reads one SNMP message.
 //
-// It reads as far as it can and says how far that was. A v3 message with an
-// encrypted scoped PDU parses successfully with a nil PDU: the header is
-// readable and the payload is not, and that distinction is the whole of
-// what a relay can decide about such a message.
+// A v3 message with an encrypted scoped PDU parses successfully with a nil
+// PDU: the header is readable and the payload is not, and that distinction
+// is the whole of what a relay can decide about such a message. That is the
+// only case where something is missing without an error; an error always
+// comes with a nil message, so a caller never has to wonder whether the
+// fields it is about to read were filled in.
 func Parse(raw []byte) (*Message, error) {
 	if len(raw) == 0 || len(raw) > MaxMessage {
 		return nil, ErrTruncated
@@ -379,7 +381,16 @@ func Parse(raw []byte) (*Message, error) {
 		return nil, fmt.Errorf("%w: %d", ErrVersion, v)
 	}
 	if m.Version == V3 {
-		return m, parseV3(r, m)
+		if err := parseV3(r, m); err != nil {
+			// nil rather than the half-built message. A caller that reads a
+			// field off a message this refused would be reading whatever the
+			// header happened to fill before it failed, and every caller here
+			// already discards it -- returning it invites the one that does
+			// not. The "reads as far as it can" above is about the encrypted
+			// scoped PDU, which is a success with a nil PDU, not about errors.
+			return nil, err
+		}
+		return m, nil
 	}
 	ce, err := r.expect(TagOctetStr)
 	if err != nil {

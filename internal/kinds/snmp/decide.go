@@ -244,7 +244,20 @@ func (t *server) lowerRepetitions(m *wire.Message, d Decision) (out []byte, lowe
 		return nil, false, false
 	}
 	max := t.policy.MaxRepetitions(request{msg: m}, d.Rule)
-	if max <= 0 || m.PDU.MaxRepetitions <= int64(max) {
+	// A negative repetition count is past every bound, not under them.
+	//
+	// RFC 3416 gives this field the range 0..2147483647, so a negative one is
+	// malformed -- but it is malformed in the direction that matters here. Read
+	// as a signed value it compares under any configured bound and was forwarded
+	// unlowered; read by an agent that puts it in an unsigned or a narrower
+	// counter, it is an enormous repetition count, which is the amplification
+	// this bound exists to take away. The devices behind this relay are the ones
+	// that cannot be patched, so their conformance is not something to rely on.
+	//
+	// It is rewritten to the bound rather than refused, which both enforces the
+	// bound and takes the malformed value off the wire before the agent sees it.
+	// A fuzzer found this: -839632 against a bound of 50.
+	if max <= 0 || (m.PDU.MaxRepetitions >= 0 && m.PDU.MaxRepetitions <= int64(max)) {
 		return nil, false, false
 	}
 	if m.Version == wire.V3 {
