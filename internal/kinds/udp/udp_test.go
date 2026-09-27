@@ -151,8 +151,20 @@ func TestUDPRelay(t *testing.T) {
 	if got := exchange(t, c2, "other"); got != "echo:other" {
 		t.Fatalf("second client answer %q", got)
 	}
-	eventually(t, 5*time.Second, "both sessions to be counted", func() bool {
-		return s.Stats().UDPSessions == 2
+	// Wait for the datagram counters too, not only for the sessions.
+	//
+	// A client has read an answer before the relay has finished counting it:
+	// the out counter is incremented around the relay's own write, on the
+	// relay's goroutine, while `exchange` returns as soon as the client's read
+	// does. And the session count cannot stand in for it -- a session is
+	// counted when it is created, which is *before* its first datagram is
+	// forwarded -- so waiting on that and then reading the datagram counters
+	// in the same breath asserted a number that was still being written. It
+	// failed as "out 6" once in a full run, which is exactly the last answer
+	// read but not yet counted.
+	eventually(t, 5*time.Second, "both sessions and all seven datagrams to be counted", func() bool {
+		sn := s.Stats()
+		return sn.UDPSessions == 2 && sn.UDPDatagramsIn == 7 && sn.UDPDatagramsOut == 7
 	})
 	sn := s.Stats()
 	if sn.UDPSessionsOpen != 2 {
