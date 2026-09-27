@@ -2041,13 +2041,14 @@ bounds which stations may be addressed through it.
 | `rules` | list | | Per-frame rules, first match wins; see below |
 | `default_action` | `deny`, `allow` | `deny` | What a frame no rule matched gets |
 | `deny_response` | `negative`, `drop`, `close` | `negative` | `negative` returns the same ASDU with the negative-confirm bit and cause `actcon`, which is what a station does and what a control centre's alarm list understands |
+| `deception` | object | | Answer as a substation that is not there: a refused activation confirmed instead of refused, or a whole listener that is a fabricated station; see below |
 | `setpoints` | list | | Value bounds on setpoint commands: what a point may be *set to*, and how far it may move in one step; see below |
 | `require_select` | bool | `false` | Make the two-step form mandatory for every command type that has one |
 | `select_timeout` | duration | `30s` | How long a selection stays valid (1s to 10m) |
 | `max_selections` | int | `4096` | Outstanding selections this relay remembers |
 | `allow_controls` | list | all | The U-format control functions a client may send: `STARTDT_act`, `STARTDT_con`, `STOPDT_act`, `STOPDT_con`, `TESTFR_act`, `TESTFR_con`. Naming an activation names its confirmation |
-| `k` | int | `12` | The sending window: how many I frames may be unacknowledged |
-| `w` | int | `8` | After how many received frames a station acknowledges. Must not exceed `k` |
+| `k` | int | `12` | The sending window: how many I frames an end may have unacknowledged. An end that exceeds it is refused |
+| `w` | int | `8` | After how many received frames this relay acknowledges. Must not exceed `k` |
 | `check_sequence` | bool | `true` | Refuse an I frame whose send sequence number is not the next one |
 | `max_unacknowledged` | bool | `true` | Refuse a station with more than `k` frames outstanding, and one acknowledging frames nobody sent |
 | `max_connections` | int | `32` | Live sessions |
@@ -2172,6 +2173,27 @@ command's qualifier -- which is what a policy is written about. On a
 *sequence* ASDU only the first information object address is on the wire, so
 that is the one an `addresses` rule checks.
 
+**The relay is an end of the association, and has to be.** This protocol
+numbers every I frame in each direction, contiguously, and a conforming
+implementation closes the connection on a gap rather than trying to recover
+-- the reference implementation does it on both sides. A relay that forwarded
+the two ends' own sequence numbers would therefore be transparent only for as
+long as it forwarded everything: the moment it refuses one frame the stream
+it writes is short a number, and the end reading it drops the association,
+taking the substation's telemetry away with the refused command. The same
+arithmetic runs the other way, because the refused frame consumed one of the
+sender's numbers and never reached the station.
+
+So the relay numbers what it writes, acknowledges what it reads at `w` (and
+on a timer, for a link too quiet to carry one), and terminates the
+supervisory frames -- an acknowledgement is about the stream this relay
+wrote, not about the stream the other end wrote. The application layer is
+still forwarded untouched: the ASDU that arrives is the ASDU that leaves,
+because re-encoding it is how a relay and a station come to disagree about
+what was said. What `check_sequence` and `max_unacknowledged` decide is
+whether a *peer's* numbering is checked: a gap, a replay, or an end that has
+`k` frames outstanding that this relay has not acknowledged.
+
 Counters: `iec104_sessions`, `iec104_sessions_open`, `iec104_frames`,
 `iec104_commands`, `iec104_system_commands`, `iec104_denied`,
 `iec104_would_deny`, `iec104_malformed`, `iec104_rejected`,
@@ -2186,6 +2208,74 @@ refusal counters: `client_not_allowed`, `tls_handshake`, `malformed`,
 `default_deny`, `control`, `station_command`, `sequence`, `window`,
 `ack_ahead`, `unselected`, `select_unavailable`, `setpoint_range`,
 `setpoint_delta`, `setpoint_unknown`.
+
+#### server.listeners[].iec104.deception
+
+**A refusal is information, and on this protocol it is cheap to collect.**
+The common address is two octets, a control centre names it in every ASDU,
+and a relay that refuses the ones it does not carry has answered the
+question. A probe of a listener carrying stations 1 and 41:
+
+```
+common address 1  -> interrogation answered, 64 points
+common address 2  -> negative confirmation
+common address 3  -> negative confirmation
+common address 41 -> interrogation answered, 12 points
+```
+
+Two answers in a sweep is the substation list; the interrogation that
+follows each one is the point list. The scan was refused throughout and the
+survey completed.
+
+This section answers instead, as a station whose points are stable per
+address and move slowly with time. The sweep finishes, the map is wrong, and
+the address that would have worked looks like the one that did not.
+
+**The failure mode here is not a confused scanner.** It is a control room
+that believes a breaker is open when it is closed. One rule holds, and it is
+a test rather than an intention: **a frame that was going to reach a station
+is never answered from here.** Deception replaces the negative confirmation
+a refusal would have sent, and nothing else -- which is why `mode: answer`
+refuses to load without `clients`, and why a `mode: decoy` listener refuses
+to load with an `upstream`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Turns the section off without removing it |
+| `mode` | `answer`, `decoy` | `answer` | `answer` confirms an activation this listener was going to refuse, on a listener that fronts a real station. `decoy` is the whole listener: a fabricated station with no upstream, where no frame reaches anything |
+| `clients` | list | | The networks that get the fabrication. **Required in `mode: answer`.** Empty in `mode: decoy` means every client, which is what a honeypot is for |
+| `profile` | `generic-substation`, `generic-rtu` | `generic-substation` | The fabricated station's shape: which points it has and what they report |
+| `common_addresses` | list | `["1"]` | The stations the fabrication answers for, as numbers or `"1-4"` ranges. Everything else is answered the way a station answers an address it is not -- negatively, cause 47 -- because one association carrying twenty substations is not a substation |
+| `points` | list | the profile's | What the station has, in the order a general interrogation reports them; see below |
+| `tripwire` | list | `[]` | Information object addresses no legitimate centre reads. One named in a read or a command is **answered**, and raised as an `iec104_tripwire` security event: the answer keeps the visitor reading and the event is what an operator acts on |
+| `spontaneous` | bool | `true` | Send unsolicited reports between interrogations while data transfer is started. A station that says nothing until spoken to is a station somebody looks at twice |
+| `seed` | int | from the listener name | Makes the fabricated values reproducible. The default is stable across restarts |
+| `period` | duration | `30s` | How long one sample of a value lasts, and how often a spontaneous report is sent; 1s to 1h |
+| `max_clients` | int | `1024` | Bounds the record of who has been answered |
+
+Each `points` entry:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `addresses` | range | required | The run of information object addresses, as `"1-32"` |
+| `type` | `M_SP_NA_1`, `M_DP_NA_1`, `M_ME_NB_1`, `M_ME_NC_1`, `M_IT_NA_1` | required | What these are reported as: a single point, a double point, a scaled measurement, a short float or an integrated total. A type outside that list is not one this can fabricate a value for |
+| `min`, `max` | int | `0`, `27648` | The range of a measurement |
+| `rate` | int | `1` | How much a total adds each period. **A totaliser that goes backwards is the tell**, so it is monotone by construction |
+
+**What a decoy station has to get right.** A control centre's own software
+checks this protocol harder than any Modbus master checks that one, so the
+fabrication speaks the association the standard describes: nothing at all
+before STARTDT_act, a confirmation, and then `M_EI_NA_1` -- the end of
+initialisation, which is how a centre knows a station has restarted. A
+general interrogation is answered ACTCON, then the points at cause 20, then
+ACTTERM; a counter interrogation the same way with the totalisers. Values
+are derived from the seed, the address and which period of the clock it is,
+so two interrogations a moment apart agree, a month of them never repeats,
+and nothing is stored.
+
+`deny_response: close` and `drop` do not apply to the clients this section
+covers in `mode: answer`: their refused activations are confirmed by the
+fabrication instead, and validation says so at load.
 
 ### server.listeners[].ldap (kind: ldap)
 
@@ -11404,7 +11494,81 @@ Two details of how the ranges are applied:
 | `deny_response` | `error`, `drop`, `close` | `error` | How a refusal is answered. `error` is an S7 acknowledgement carrying an **access fault** -- what a protected CPU answers -- so the client's own library reports a refusal rather than a timeout |
 | `log_requests` | bool | `false` | An access line per request, which on a plant polling every second is a great many lines |
 | `alert_on_deny` | bool | `true` | A security event per refusal |
+| `deception` | object | | Answer as a controller that is not there: a refused request answered by a fabricated CPU, or a whole listener that is one; see below |
 | `monitor_only` | bool | `false` | Evaluate and enforce nothing, except the hard decisions below |
+
+### Deception
+
+**A refusal is information, and on this protocol it is unusually cheap to
+collect.** A read of a data block the policy does not name is answered with an
+access fault; one it does name is answered with data. So a sweep of block
+numbers reports which blocks exist, and the system status list -- which every
+scanner reads first, and which no policy in this section can make less
+informative without breaking the asset tools that also read it -- hands over
+the order number, the module type and the firmware of the controller itself:
+
+```
+DB1  read -> 4 octets
+DB2  read -> access fault
+DB3  read -> access fault
+SZL 0x0011 -> 6ES7 315-2EH14-0AB0, firmware 3.2.7
+```
+
+This section answers instead, as a CPU whose blocks hold values that are stable
+per address and move slowly with time.
+
+**The failure mode here is not a confused scanner**; it is an engineer reading a
+fabricated value off a real machine. One rule holds, and it is a test rather
+than an intention: **a request that was going to reach the controller is never
+answered from here.** Deception replaces a refusal -- a policy denial, or a
+block the fabrication does not have -- and never an answer. So `mode: answer`
+refuses to load without `clients`, and only a read, a write and the
+identification lists are fabricated: every other refused function keeps the
+access fault, because a fabrication that acknowledged a stop would be telling a
+client a machine had stopped.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Turns the section off without removing it |
+| `mode` | `answer`, `decoy` | `answer` | `answer` fabricates what this listener was going to refuse, on a listener that fronts a real controller. `decoy` is the whole listener: a fabricated CPU with no upstream, where no request reaches anything |
+| `clients` | list | | The networks that get the fabrication. **Required in `mode: answer`.** Empty in `mode: decoy` means every client, which is what a honeypot is for |
+| `profile` | `generic-s7-300`, `generic-s7-400` | `generic-s7-300` | The fabricated controller's identity and shape. **Both are classic S7comm families on purpose**: an S7-1200 or S7-1500 speaks S7comm-plus, whose session is integrity-protected from firmware 4 onward, so a decoy answering classic S7comm while claiming to be a 1500 is a contradiction a scanner sees in one exchange — this one answers an S7comm-plus request with a COTP disconnect, which is what a 300 does |
+| `order_number` | string | the profile's | The MlfB the module identification list reports, up to 20 characters, such as `"6ES7 315-2EH14-0AB0"` |
+| `module_type`, `plant`, `serial` | string | the profile's | What the component identification list reports, up to 32 characters each: the module name, the plant designation and the module serial number. An unset serial is derived from the seed, so the controller has one and keeps the same one across a restart. **A decoy should claim the make the plant actually runs** — a 315 on a site that is all 416s is the tell that ends the pretence, and only you know which it is |
+| `version` | string | the profile's | The firmware version as `3.2.7`, which is what a scanner prints beside the order number |
+| `pdu_length` | int | the profile's | The length the fabrication negotiates: 240, 480 or 960, the sizes the families use |
+| `blocks` | list | the profile's | The data blocks it has; see below. A read of a block outside them is answered the way a CPU answers one it does not have, and a read past the end of one it does have gets an address error — because a controller with 65535 data blocks of unbounded length is not a controller |
+| `bands` | list | the profile's | How the bytes inside a block behave; see below |
+| `tripwire` | list | `[]` | Data block numbers no legitimate client reads. One named in a read is **answered**, and raised as an `s7_tripwire` security event: the answer keeps the visitor reading and the event is what an operator acts on |
+| `seed` | int | from the listener name | Makes the fabricated values reproducible, and stable across restarts |
+| `period` | duration | `30s` | How long one sample of a value lasts; 1s to 1h |
+| `max_clients` | int | `1024` | Bounds the record of who has been answered |
+
+Each `blocks` entry:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `dbs` | range | required | The run of data block numbers, as `"1-8"` |
+| `bytes` | int | `512` | The size of each block in the run |
+
+Each `bands` entry:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `addresses` | range | required | The run of byte addresses inside a block, as `"0-199"` |
+| `shape` | `analogue`, `discrete`, `counter` | `analogue` | `analogue` drifts inside `min`..`max`; `discrete` mostly stays where it is; `counter` only increases — **a totaliser that goes backwards is the tell**, so it is monotone by construction |
+| `min`, `max` | int | `0`, `27648` | The analogue band's range |
+| `rate` | int | `1` | How much a counter adds each period |
+
+The areas are the ones a CPU offers: data blocks, instance data blocks, the
+process image, the flags, the timers and the counters. The **direct peripheral**
+area is not among them, and neither are the 200-family areas: a fabrication that
+claimed direct access to I/O hardware would be claiming hardware, so a read of
+one is answered the way a CPU answers an area it does not have.
+
+`deny_response: close` and `drop` do not apply to the clients this section
+covers in `mode: answer`: their refused requests are answered by the fabricated
+controller instead, and validation says so at load.
 
 ### Rules
 

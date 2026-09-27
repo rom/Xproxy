@@ -31,6 +31,7 @@ type server struct {
 	name   string
 	sc     *config.S7Listener
 	policy *policy
+	decoy  *decoy
 	ln     net.Listener
 
 	// limiter bounds requests per second per client address.
@@ -52,6 +53,9 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener) (*server, 
 	}
 	t := &server{host: host, cfg: cfg, name: cfg.Name, sc: cfg.S7, policy: p, ln: ln,
 		gate: sesslimit.New(cfg.S7.MaxSessions, cfg.S7.MaxSessionsPerClient)}
+	if t.decoy, err = newDecoy(cfg.S7.Deception, cfg.Name); err != nil {
+		return nil, fmt.Errorf("listener %s: %w", cfg.Name, err)
+	}
 	if n := cfg.S7.RateLimit; n > 0 {
 		burst := cfg.S7.RateBurst
 		if burst <= 0 {
@@ -267,6 +271,18 @@ func (t *server) handle(c net.Conn) {
 	se.addressedAs(s)
 	t.observe(se, cr)
 
+	// A listener that is nothing but a fabricated controller answers here,
+	// and nothing is dialled: there is no CPU behind it to reach. The
+	// client has already passed this listener's own address lists, the
+	// imported feeds and the rack and slot policy above.
+	if d := t.decoy; d != nil && d.whole && d.admits(ip) {
+		reason := se.serveDecoy(cr)
+		s := se.sess()
+		t.host.Logs().Access.Info("s7 decoy session", "listener", t.name,
+			"client_ip", ip.String(), "proto", "s7", "rack", s.Rack, "slot", s.Slot,
+			"requests", se.count()-1, "reason", reason)
+		return
+	}
 	up, err := t.dial(se)
 	if err != nil {
 		t.deny(ip, "upstream_unavailable", err.Error())
@@ -518,6 +534,12 @@ func (t *server) refusal(se *session, pdu *wire.PDU, d Decision) (forward, fatal
 	t.refused(se, d, describe(pdu))
 	if !t.enforcing() && !d.Hard {
 		return true, false
+	}
+	// The fabrication answers instead, for the clients it covers, and only
+	// here: this is the path where the request has already been kept from
+	// the controller.
+	if se.deceive(pdu, d.Reason) {
+		return false, false
 	}
 	switch t.policy.respond {
 	case "drop":

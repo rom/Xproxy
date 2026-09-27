@@ -287,6 +287,69 @@ server:
         monitor_only: true
         log_requests: true
 
+    # ---------------------------------------------------------------
+    # A controller that is not there: an address on the cell network with
+    # no CPU behind it at all.
+    #
+    # The reason it earns its place here is the system status list. It is
+    # the first thing any scanner asks a Siemens PLC, the estate's own
+    # asset tools read the same list, and it hands over the order number,
+    # the module type and the firmware. Refusing it says there is a relay
+    # in front of something; forwarding it says which controller. This
+    # listener answers as a CPU instead, and anything that arrives here
+    # arrived somewhere nothing operational lives.
+    #
+    # The identity below should be the make this plant actually runs: a
+    # 315 on a site that is all 416s is the tell that ends the pretence.
+    # ---------------------------------------------------------------
+    - name: cell-9-spare
+      address: "10.40.0.41:102"
+      kind: s7
+      s7:
+        deception:
+          mode: decoy
+          profile: generic-s7-300
+          order_number: "6ES7 315-2EH14-0AB0"
+          module_type: "CPU 315-2 PN/DP"
+          plant: "CELL9"
+          version: "3.2.7"
+          blocks:
+            - {dbs: "1-8", bytes: 512}
+            - {dbs: "100-104", bytes: 1024}
+          bands:
+            - {addresses: "0-199", shape: analogue, min: 0, max: 27648}
+            - {addresses: "200-299", shape: discrete}
+            - {addresses: "300-399", shape: counter, rate: 7}
+          # A block no legitimate client reads. The answer keeps the
+          # visitor reading; the s7_tripwire event is what to act on.
+          tripwire: ["666"]
+        alert_on_deny: true
+
+    # ---------------------------------------------------------------
+    # And the other shape, on a listener that fronts a real controller: a
+    # client on the network that has no business reading the plant gets
+    # its refusals answered by a fabricated CPU rather than told no.
+    #
+    # The bound is a test and not an intention: a request that was going
+    # to reach the controller is never answered from here, and only a
+    # read, a write and the identification lists are fabricated at all --
+    # a stop or a download keeps the access fault, because acknowledging
+    # one would tell a client a machine had stopped.
+    # ---------------------------------------------------------------
+    - name: line-4-decoyed
+      address: "10.40.0.15:102"
+      kind: s7
+      s7:
+        upstream: packaging_cpus
+        read_only: true
+        dbs: ["1-16"]
+        deception:
+          mode: answer
+          clients: ["10.40.9.0/24"]
+          blocks:
+            - {dbs: "1-64", bytes: 2048}
+          tripwire: ["666"]
+
 upstreams:
   - name: line3_cpu
     endpoints:

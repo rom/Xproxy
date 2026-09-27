@@ -35,6 +35,8 @@ exist.
 - [The slow lane](#the-slow-lane)
 - [Deceptive answers on real routes](#deceptive-answers-on-real-routes)
 - [A device that is not there](#a-device-that-is-not-there)
+- [A substation that is not there](#a-substation-that-is-not-there)
+- [A controller that is not there](#a-controller-that-is-not-there)
 - [Refusal at the TLS handshake](#refusal-at-the-tls-handshake)
 - [What it produces](#what-it-produces)
 - [Building it out](#building-it-out)
@@ -457,6 +459,158 @@ answered -- the answer keeps the visitor reading -- and raised as
 which puts it in the same class as a honeytoken: nothing legitimate walks
 into a room that does not exist. `xproxyctl honeypot` lists the visitors
 with what each one touched.
+
+## A substation that is not there
+
+Modbus gives away its estate one unit identifier at a time. IEC 104 gives
+away a whole grid one common address at a time, and it is a shorter walk:
+the common address is two octets, a control centre names it in every ASDU,
+and a relay that refuses the ones it does not carry has answered the
+question.
+
+```
+common address 1  -> interrogation answered, 64 points
+common address 2  -> negative confirmation
+common address 3  -> negative confirmation
+common address 41 -> interrogation answered, 12 points
+```
+
+Two answers in a sweep of 65535 is the substation list, and the
+interrogation that follows each one is the point list: which breakers,
+which measurements, which totalisers. The scan was refused throughout.
+
+`iec104.deception` answers instead:
+
+```yaml
+# A honeypot: a control centre's own address range, with no station
+# behind it at all.
+- name: substation-spare
+  address: "10.30.0.41:2404"
+  kind: iec104
+  iec104:
+    deception:
+      mode: decoy
+      profile: generic-substation
+      common_addresses: ["1-4"]
+      tripwire: ["9000-9099"]
+
+# A real relay, where only these clients are lied to, and only about
+# activations it was going to refuse anyway.
+- name: grid-north
+  address: "10.30.0.10:2404"
+  kind: iec104
+  iec104:
+    upstream: substation
+    monitor_only: true
+    deception:
+      mode: answer
+      clients: ["10.90.0.0/24"]
+```
+
+**The one rule again, and it bites harder here.** A fabricated tank level
+is one operator reading one number. A fabricated *breaker confirmation* is
+a control room that believes a circuit is open when it is closed, which is
+how a linesman gets hurt. So the same test holds, and it is the reason
+`mode: answer` never touches a frame the policy allowed: deception
+replaces the negative confirmation a refusal would have sent, and nothing
+else. `mode: answer` will not load without `clients`, and a decoy listener
+will not load with an upstream.
+
+**What makes a fabricated station answerable.** A control centre's own
+software checks the protocol harder than any Modbus master does, so the
+decoy speaks the association the way the standard describes it:
+
+- Nothing at all before STARTDT_act, a confirmation for it, and then
+  M_EI_NA_1 -- the end of initialisation, which is how a centre knows a
+  station has restarted. A station that has apparently been running since
+  before the centre was born is a station somebody looks at twice.
+- A general interrogation answered with ACTCON, then the points at cause
+  20, then ACTTERM. A counter interrogation answered the same way with
+  the totalisers, which only go up.
+- A common address the fabrication is not, answered the way a station
+  answers one: negatively, with cause 47. One association carrying twenty
+  substations is not a substation.
+- Values stable for a period, drifting by a little between periods, and
+  derived from the information object address, so two interrogations a
+  moment apart agree and a month of them never repeats exactly.
+- Spontaneous reports between interrogations, because a station that
+  says nothing until spoken to is not a station.
+
+**The tripwire is the signal**, as it is everywhere else here: information
+object addresses no legitimate centre reads are answered -- the answer is
+what keeps the visitor reading -- and raised as `iec104_tripwire`.
+`xproxyctl honeypot` lists who arrived and what they touched.
+
+## A controller that is not there
+
+The third of these, and the one where the disclosure is hardest to avoid by
+policy alone. `s7` fronts a Siemens PLC, and the first thing any scanner asks
+for is the system status list: the order number, the module type, the firmware
+version. Refuse it and the scanner has learned there is a relay in front of
+something; forward it and it has the controller. The asset tools an estate runs
+itself read the same list, so making it less informative breaks them too.
+
+```
+DB1  read    -> 4 octets
+DB2  read    -> access fault
+DB3  read    -> access fault
+SZL 0x0011   -> 6ES7 315-2EH14-0AB0, firmware 3.2.7
+SZL 0x001c   -> CPU 315-2 PN/DP, plant CELL4
+```
+
+`s7.deception` answers as a controller instead:
+
+```yaml
+# A honeypot: an address on the cell network with no CPU behind it.
+- name: cell-9-spare
+  address: "10.20.9.41:102"
+  kind: s7
+  s7:
+    deception:
+      mode: decoy
+      profile: generic-s7-300
+      order_number: "…the make this plant actually runs…"
+      blocks: [{dbs: "1-8", bytes: 512}]
+      tripwire: ["666"]
+
+# A real relay, where only these clients are answered, and only about
+# requests it was going to refuse anyway.
+- name: line1
+  address: "10.20.0.10:102"
+  kind: s7
+  s7:
+    upstream: plc
+    read_only: true
+    deception:
+      mode: answer
+      clients: ["10.90.0.0/24"]
+```
+
+**The same rule, and the same reason.** A request that was going to reach the
+controller is never answered by the fabrication: deception replaces a refusal
+and never an answer. Beyond that, only a read, a write and the identification
+lists are fabricated at all — every other refused function keeps the access
+fault a protected CPU sends, because a fabrication that acknowledged a stop or a
+download would be telling a client a machine had stopped or a block had landed.
+
+**What makes a fabricated CPU answerable.** The identity is most of it, and the
+profiles are deliberately ordinary — a plant should set the make it actually
+runs, since a 315 on a site that is all 416s is the tell that ends the
+pretence. The rest is what a controller *cannot* do:
+
+- It does not have every data block. A read of one it does not claim is
+  answered "object does not exist", and a read past the end of one it does
+  claim gets an address error.
+- It does not offer the direct peripheral area or the 200-family areas.
+  Claiming direct access to I/O hardware would be claiming hardware.
+- It does not speak S7comm-plus. That is the 1200 and 1500 families, whose
+  sessions are integrity-protected; a decoy claiming to be a 300 answers such a
+  request with a COTP disconnect, which is what a 300 does.
+- It negotiates a PDU length its family negotiates: 240 for a 300, 480 for a
+  400. A number no controller sends is one a client library prints.
+
+`tripwire` names the data blocks nothing legitimate reads — DB666 is the
+traditional choice — answered, and raised as `s7_tripwire`.
 
 ## Refusal at the TLS handshake
 

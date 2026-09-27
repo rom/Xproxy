@@ -56,6 +56,12 @@ const (
 	MEpTF1 Type = 40 // packed output circuit with CP56Time2a
 )
 
+// MEiNA1 is the end of initialisation: a station says it has restarted
+// and with what cause. A control centre uses it to know that everything
+// it believed about the station's state is stale, which is why it is the
+// first thing a station sends once data transfer is up.
+const MEiNA1 Type = 70
+
 // The control directions: process commands travelling down to the
 // controlled station. These are the reason this relay exists.
 const (

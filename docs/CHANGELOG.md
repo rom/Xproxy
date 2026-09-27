@@ -6,6 +6,63 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Fixed (iec104: a refusal took the association down with it)
+
+- **Refusing one frame desynchronised the sequence numbering in both
+  directions, and a conforming control centre or station then dropped the
+  association.** This is the headline behaviour of the kind -- carry the
+  telemetry, refuse the command -- and against equipment that checks the
+  numbering it did not work.
+
+  IEC 60870-5-104 numbers every I-format frame per direction, contiguously,
+  and the reference implementation closes the connection on a gap rather than
+  trying to recover: `cs104_connection.c`, "check the receive sequence number
+  N(R) -- connection will be closed on an unexpected value", and
+  `cs104_slave.c` the same. The relay forwarded the two ends' own numbers and
+  answered a refusal with a copy of the frame it refused, so:
+
+  - the refused frame consumed one of the centre's numbers and never reached
+    the station, leaving every later forwarded frame one ahead of what the
+    station expected;
+  - the injected negative confirmation consumed one of the numbers the centre
+    was counting, leaving every later station frame one behind;
+  - and the negative confirmation itself carried the centre's own send
+    sequence number, which is not a number any station would send.
+
+  The probe, on a listener allowing one range of breakers -- one allowed
+  command, one refused, then another allowed:
+
+  ```
+  the confirmation after a refusal: N(S) = 1, the centre was counting on 2
+  telemetry after a refusal:        N(S) = 2, the centre was counting on 3
+  the station's frame 2:            N(S) = 2, the station was counting on 1
+  ```
+
+  A second defect in the same bookkeeping: the acknowledgement that releases
+  the sending window was only read off supervisory frames, and the standard
+  lets an end piggyback N(R) on every I frame it sends -- which is what an end
+  with data to send does. So the window never reopened on an ordinary
+  exchange, and the thirteenth command of a session was refused with
+  `iec104_window` while the station had confirmed all twelve before it. The
+  S-frame path also credited the acknowledgement to the sending direction's
+  state rather than the acknowledged one.
+
+  **The relay is now an end of the association at the APCI layer.** It numbers
+  the frames it writes from its own count per direction, acknowledges what it
+  reads at `w` and on a timer (the standard's t1 is 15 seconds and an end that
+  is not acknowledged inside it closes), and terminates the supervisory frames
+  -- an acknowledgement is about the stream this relay wrote, so passing one
+  on would tell the station something the centre never said. The application
+  layer is untouched: the ASDU that arrives is the ASDU that leaves, and only
+  the six control octets are the relay's own. What `check_sequence` and
+  `max_unacknowledged` decide is unchanged -- whether a *peer's* numbering is
+  checked -- and a gap is still refused and counted rather than patched over.
+
+  The numbering check now lives in the shared test harness, so every test in
+  the package makes it: the control centre in those tests closes the
+  association on a frame whose N(S) is not the one it was counting on, exactly
+  as a real one does. It was the absence of that check that let this ship.
+
 ### Fixed (iec104: an address policy was checked against numbers nobody sent)
 
 - **Seven information element sizes were wrong, five of them measurements.**
@@ -51,6 +108,117 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   the fields the standard names, and a second that sends three objects of every
   known type and requires the addresses that went in to come back out -- the
   property the policy depends on and the one nothing was checking.
+
+### Added (deception past HTTP: a controller that is not there)
+
+- **`s7.deception`.** The third OT kind, and the one where the disclosure is
+  hardest to avoid by policy alone. A read of a data block the policy does not
+  name is answered with an access fault and one it does name with data, so a
+  sweep of block numbers reports the estate; and the system status list, which
+  every scanner reads first, hands over the order number, the module type and
+  the firmware:
+
+  ```
+  DB1  read  -> 4 octets
+  DB2  read  -> access fault
+  SZL 0x0011 -> 6ES7 315-2EH14-0AB0, firmware 3.2.7
+  SZL 0x001c -> CPU 315-2 PN/DP, plant CELL4
+  ```
+
+  That list cannot be narrowed by policy without breaking the asset tools an
+  estate runs itself, which is why a fabrication is the answer rather than a
+  refusal.
+
+  `mode: decoy` is a whole listener with no upstream: it answers the COTP
+  connection, negotiates the PDU length its family negotiates, answers reads
+  from fabricated blocks, acknowledges writes that go nowhere, and answers the
+  two identification lists with an identity an operator chooses. `mode: answer`
+  fabricates, on a listener that fronts a real CPU, the answers to requests it
+  was going to refuse.
+
+  **The rule that bounds it**, as on the other two kinds: a request that was
+  going to reach the controller is never answered by the fabrication. Beyond
+  that, only a read, a write and the identification lists are fabricated at
+  all -- every other refused function keeps the access fault a protected CPU
+  sends, because a fabrication that acknowledged a stop or a download would be
+  telling a client a machine had stopped or a block had landed.
+
+  **What a fabricated CPU has to get wrong to be believed** is mostly what it
+  cannot do. It does not have every data block (a read of one it does not claim
+  is "object does not exist"; a read past the end of one it does claim is an
+  address error), it does not offer the direct peripheral area or the
+  200-family areas, it negotiates 240 or 480 rather than a number no controller
+  sends, and it does not speak S7comm-plus -- that is the 1200 and 1500
+  families, so a decoy claiming to be a 300 answers such a request with a COTP
+  disconnect, which is what a 300 does. Both built-in profiles are classic
+  families for the same reason.
+
+  Twenty-four mutations of the new guards and the new validation, all killed;
+  two guards were deleted rather than tested, because `Items` already bounds the
+  fabrication to a read and a write and the list switch already bounds the
+  record length.
+
+### Added (deception past HTTP: a substation that is not there)
+
+- **`iec104.deception`.** Modbus gives up an estate one unit identifier at a
+  time; IEC 104 gives up a grid one common address at a time, and it is a
+  shorter walk. The common address is two octets, a control centre names it in
+  every ASDU, and a relay that refuses the ones it does not carry has answered
+  the question:
+
+  ```
+  common address 1  -> interrogation answered, 64 points
+  common address 2  -> negative confirmation
+  common address 3  -> negative confirmation
+  common address 41 -> interrogation answered, 12 points
+  ```
+
+  Two answers in a sweep of 65535 is the substation list, and the interrogation
+  that follows each one is the point list. The scan was refused throughout and
+  the survey completed.
+
+  Two shapes, as on the Modbus side. `mode: decoy` is a whole listener with no
+  upstream, where every frame is answered by a fabricated station.
+  `mode: answer` is a real relay where a refused *activation* is confirmed by
+  the fabrication instead, for the clients named -- so a scanner's command
+  reads as having operated a breaker and reaches nothing.
+
+  **The rule that bounds it, and it bites harder here than on Modbus.** A
+  fabricated tank level is one operator reading one number; a fabricated
+  breaker confirmation is a control room that believes a circuit is open when
+  it is closed. So: a frame that was going to reach a station is never answered
+  by the fabrication. Deception replaces the negative confirmation a refusal
+  would have sent and nothing else -- tested, not intended -- and only an
+  activation is answered, because the protocol has no confirmation for a
+  measurement and an ASDU no station would send is the tell rather than the
+  deception. `mode: answer` will not load without `clients`; a decoy will not
+  load with an `upstream`.
+
+  **A control centre's own software checks this protocol harder than any
+  Modbus master checks that one**, so the decoy speaks the association the way
+  the standard describes it: nothing at all before STARTDT_act, a confirmation
+  for it, then `M_EI_NA_1` -- the end of initialisation, which is how a centre
+  knows a station has restarted, and whose absence would make this a station
+  that has apparently been running since before the centre was born. A general
+  interrogation is answered ACTCON, then the points at cause 20, then ACTTERM;
+  a counter interrogation the same way with the totalisers, which only go up; a
+  common address the fabrication is not is refused with cause 47, because one
+  association carrying twenty substations is not a substation. Values are
+  derived from a seed, the information object address and which period of the
+  clock it is, so two interrogations a moment apart agree, a month of them
+  never repeats, and nothing is stored. `tripwire` names the addresses nothing
+  legitimate reads: those are answered too, and raised as `iec104_tripwire`.
+
+  A confirmation is now the octets that arrived with the cause changed, rather
+  than an ASDU re-encoded from the parsed fields. The tests found the reason:
+  the parser keeps a *command's* qualifier and not a system command's, so a
+  re-encoded confirmation of `C_IC_NA_1` -- the general interrogation, the
+  commonest system command on the protocol -- came out one octet short of its
+  own object count and would not parse at the control centre. Echoing the
+  octets is also what a confirmation is, and it is what the relay's own
+  refusals already did.
+
+  Twenty mutations of the new guards and the new validation, all killed.
 
 ### Added (deception past HTTP: a device that is not there)
 
