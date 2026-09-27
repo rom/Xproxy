@@ -1130,9 +1130,10 @@ func run(args []string, out, errOut io.Writer) int {
 			return 0
 		}
 		var hv struct {
-			Marks       []proxy.Mark             `json:"marks"`
-			Decoys      []string                 `json:"decoys"`
-			Honeytokens []proxy.HoneytokenStatus `json:"honeytokens"`
+			Marks        []proxy.Mark             `json:"marks"`
+			Decoys       []string                 `json:"decoys"`
+			Honeytokens  []proxy.HoneytokenStatus `json:"honeytokens"`
+			DeviceDecoys []proxy.DecoyStatus      `json:"device_decoys"`
 		}
 		if err := c.Do("GET", "/v1/honeypot", nil, &hv); err != nil {
 			return fail(err)
@@ -1141,6 +1142,37 @@ func run(args []string, out, errOut io.Writer) int {
 			return printJSON(out, hv)
 		}
 		_, _ = fmt.Fprintf(out, "decoys: %s\n\n", strings.Join(hv.Decoys, ", "))
+		// The fabricated devices, and who has been reading them. TRIPPED
+		// is the column to look at: nothing legitimate touches a tripwire
+		// address, so a number there is a finding rather than a statistic.
+		if len(hv.DeviceDecoys) > 0 {
+			dt := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+			_, _ = fmt.Fprintln(dt, "LISTENER\tKIND\tMODE\tPROFILE\tCLIENTS\tSERVED\tTRIPPED")
+			for _, d := range hv.DeviceDecoys {
+				who := "listed"
+				if d.Anyone {
+					who = "anybody"
+				}
+				_, _ = fmt.Fprintf(dt, "%s\t%s\t%s\t%s\t%s\t%d\t%d\n",
+					d.Listener, d.Kind, d.Mode, d.Profile, who, d.Served, d.Tripped)
+			}
+			_ = dt.Flush()
+			_, _ = fmt.Fprintln(out)
+			vt := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+			var any bool
+			_, _ = fmt.Fprintln(vt, "LISTENER\tVISITOR\tFRAMES\tTRIPPED\tFIRST\tLAST")
+			for _, d := range hv.DeviceDecoys {
+				for _, v := range d.Visitors {
+					any = true
+					_, _ = fmt.Fprintf(vt, "%s\t%s\t%d\t%d\t%s\t%s\n",
+						d.Listener, v.ClientIP, v.Frames, v.Tripped, v.FirstSeen, v.LastSeen)
+				}
+			}
+			if any {
+				_ = vt.Flush()
+				_, _ = fmt.Fprintln(out)
+			}
+		}
 		if len(hv.Honeytokens) > 0 {
 			tt := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 			_, _ = fmt.Fprintln(tt, "TOKEN\tACTION\tMATCH\tVALUES\tFIELDS\tHITS\tLAST HIT\tPLANTED")

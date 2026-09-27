@@ -155,6 +155,12 @@ type Instance interface {
 // Closer is an instance with resources to release after it has drained.
 type Closer interface{ Close() }
 
+// Decoy is an instance that answers as a device which is not there, for
+// the status view. It is optional: a kind without deception does not
+// implement it, and the second return says a listener has the section
+// turned off.
+type Decoy interface{ DecoyStatus() (DecoyStatus, bool) }
+
 // ExtraAddrs is an instance listening on more than the accept socket
 // the engine bound: the HTTP/3 endpoint beside an http listener, and
 // DNS over QUIC beside DNS over TLS. The keys are suffixes, appended to

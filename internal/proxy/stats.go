@@ -174,6 +174,11 @@ type Stats struct {
 	ModbusUpstreamFailed atomic.Uint64
 	ModbusTraced         atomic.Uint64
 	ModbusLearned        atomic.Uint64
+	// ModbusDeceived counts the frames answered by a device that is not
+	// there, and ModbusTripwire the ones that touched an address no
+	// legitimate master has a reason to touch.
+	ModbusDeceived atomic.Uint64
+	ModbusTripwire atomic.Uint64
 
 	// The IEC 60870-5-104 relay.
 	//
@@ -705,6 +710,8 @@ type Snapshot struct {
 	ModbusUpstreamFailed  uint64 `json:"modbus_upstream_failed"`
 	ModbusTraced          uint64 `json:"modbus_traced"`
 	ModbusLearned         uint64 `json:"modbus_learned"`
+	ModbusDeceived        uint64 `json:"modbus_deceived"`
+	ModbusTripwire        uint64 `json:"modbus_tripwire"`
 	IEC104Sessions        uint64 `json:"iec104_sessions"`
 	IEC104SessionsOpen    int64  `json:"iec104_sessions_open"`
 	IEC104Frames          uint64 `json:"iec104_frames"`
@@ -1134,6 +1141,8 @@ func (s *Stats) snapshot() Snapshot {
 		ModbusUpstreamFailed:   s.ModbusUpstreamFailed.Load(),
 		ModbusTraced:           s.ModbusTraced.Load(),
 		ModbusLearned:          s.ModbusLearned.Load(),
+		ModbusDeceived:         s.ModbusDeceived.Load(),
+		ModbusTripwire:         s.ModbusTripwire.Load(),
 		IEC104Sessions:         s.IEC104Sessions.Load(),
 		IEC104SessionsOpen:     s.IEC104SessionsOpen.Load(),
 		IEC104Frames:           s.IEC104Frames.Load(),

@@ -1890,11 +1890,89 @@ exception 04 (server failure) and the event is logged.
 defaults to false, and validation warns while it is off, because a
 learning run left on by accident is a relay that decides nothing.
 
+#### server.listeners[].modbus.deception
+
+**A refusal is information.** The relay answers "gateway path unavailable"
+for a unit identifier nothing is behind, which is exactly what the
+specification says a gateway should do — and a sweep of 1 to 247 therefore
+draws the map. Here is a probe of a relay routing unit 1 only:
+
+```
+unit 1 read  -> 2 registers [4660 0]
+unit 2 read  -> exception 0x0a
+unit 3 read  -> exception 0x0a
+unit 17 read -> exception 0x0a
+```
+
+Every refused frame answers the same way, so the same sweep also reports
+which function codes the policy permits. The scan is refused and the survey
+completes.
+
+This section answers instead, from a fabricated device whose values are
+stable per address and move slowly with time. The crawl finishes, the map is
+wrong, and the request that would have worked looks like the one that did
+not.
+
+**On a plant floor the failure mode of this is not a confused scanner.** It
+is an operator reading a fabricated tank level off an HMI and acting on it.
+One rule holds, and it is a test rather than an intention: **a frame that
+was going to reach a device is never answered from here.** Deception
+replaces a refusal — a policy denial, or a unit identifier nothing is
+behind — and never an answer. The worst case is then bounded, and what is
+left is a policy refusing something legitimate by mistake, which is why
+`mode: answer` refuses to load without `clients`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Turns the section off without removing it |
+| `mode` | `answer`, `decoy` | `answer` | `answer` fabricates what this listener was going to refuse, on a listener that fronts real devices. `decoy` is the whole listener: a honeypot with no upstream and no routes, where no frame reaches anything |
+| `clients` | list | | The networks that get the fabrication. **Required in `mode: answer`.** Empty in `mode: decoy` means every client, which is what a honeypot is for |
+| `profile` | `generic-plc`, `generic-rtu`, `generic-meter` | `generic-plc` | The fabricated device's shape: which function codes it implements and how its address space behaves |
+| `vendor`, `product`, `revision`, `serial` | string | generic | What the device says about itself in function code 17 and in 43/14, which is what a scanner fingerprints on. **A decoy should claim the make the plant actually runs**, and only you know what that is: a Schneider identity on a Rockwell site is the tell that ends the pretence. An unset serial is derived from the seed, so the device keeps one and keeps the same one |
+| `units` | list | `["1"]` | The unit identifiers the fabricated device answers for. Everything outside it answers the way a gateway answers a unit nothing is behind, because no gateway has 247 devices on it |
+| `functions` | list | the profile's | The function codes it implements, by name or number. A code outside the list answers an illegal-function exception, which is what the real device would say — a decoy that implements everything is answering for a PLC nobody makes |
+| `bands` | list | the profile's | How the address space behaves; see below |
+| `tripwire` | list | `[]` | Addresses no legitimate master has a reason to touch. Reading one is **answered**, and raised as a `modbus_tripwire` security event: the answer keeps the visitor reading and the event is what an operator acts on |
+| `seed` | int | from the listener name | Makes the fabricated values reproducible. The default is stable across restarts, because a decoy whose serial number changes when the proxy is upgraded is a decoy somebody has noticed |
+| `period` | duration | `30s` | How long one sample of a value lasts; 1s to 1h. Slow enough that reading an address twice gives the same answer, fast enough that a trend moves |
+| `max_clients` | int | `1024` | Bounds the record of who has been answered |
+
+Each `bands` entry:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `addresses` | range | required | The run this band covers, as `"0-999"` |
+| `shape` | `analogue`, `discrete`, `counter` | `analogue` | `analogue` is a measurement inside `min`..`max` that drifts; `discrete` a bit that mostly stays where it is; `counter` a totaliser that only increases — **a totaliser that goes backwards is the tell**, so it is monotone by construction |
+| `min`, `max` | int | `0`, `27648` | The analogue band's range. The default is what a scaled analogue input reports on much of the installed base |
+| `rate` | int | `1` | How much a counter adds each period |
+
+**Why the values are derived rather than invented.** A decoy that answers a
+register with a random number lasts about four seconds, because no process
+reads differently twice in a row; one that answers zero is worse, because
+zero is what an unconfigured device says. So a value is a function of the
+seed, the address and which period of the clock it is: stable while you
+read it, moved when you come back, inside its band, and nothing is stored —
+a sweep of all 65536 addresses costs the relay no memory at all.
+
+`deny_response: close` and `drop` do not apply to the clients this section
+covers: they are answered by the fabricated device instead, and validation
+says so at load.
+
+Where a decoy is worth having: an address on the plant network with nothing
+behind it (`mode: decoy`), so that anything talking Modbus to it is either
+lost or looking. `xproxyctl honeypot` lists the visitors, `modbus_deceived`
+and `modbus_tripwire` count them, and the `modbus_deceived` /
+`modbus_tripwire` security events carry the client, the unit and the
+function. **A decoy nobody reads is an ornament**; the tripwire is the
+signal worth alerting on, because nothing legitimate touches those
+addresses.
+
 Counters: `modbus_sessions`, `modbus_sessions_open`, `modbus_requests`,
 `modbus_responses`, `modbus_denied`, `modbus_would_deny`,
 `modbus_exceptions`, `modbus_malformed`, `modbus_refused`,
 `modbus_rejected`, `modbus_rate_limited`, `modbus_queue_full`,
-`modbus_upstream_failed`, `modbus_traced`, `modbus_learned`. Refusals are
+`modbus_upstream_failed`, `modbus_traced`, `modbus_learned`,
+`modbus_deceived`, `modbus_tripwire`. Refusals are
 `modbus_denied` for the ban triggers, and the fine-grained reason is in
 the refusal counters: `client_not_allowed`, `tls_handshake`,
 `no_client_certificate`, `no_role`, `role_not_allowed`,

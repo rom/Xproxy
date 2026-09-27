@@ -34,6 +34,7 @@ exist.
 - [WAF rules that feed the same signals](#waf-rules-that-feed-the-same-signals)
 - [The slow lane](#the-slow-lane)
 - [Deceptive answers on real routes](#deceptive-answers-on-real-routes)
+- [A device that is not there](#a-device-that-is-not-there)
 - [Refusal at the TLS handshake](#refusal-at-the-tls-handshake)
 - [What it produces](#what-it-produces)
 - [Building it out](#building-it-out)
@@ -364,6 +365,98 @@ means a real client silently loses data. Put `deceive` behind `marked`
 `bot_score_at` high if you use it at all, and read
 `xproxy_deceived_total{route}` before trusting it. Validation refuses a
 block that names no condition and warns on every route that carries one.
+
+## A device that is not there
+
+Everything above is HTTP. The relay kinds had the opposite posture --
+forward or refuse -- and refusing is how a scan of an operational estate
+turns into a survey. A probe of a Modbus relay routing unit 1:
+
+```
+unit 1 read  -> 2 registers [4660 0]
+unit 2 read  -> exception 0x0a
+unit 3 read  -> exception 0x0a
+unit 17 read -> exception 0x0a
+```
+
+`0x0a` is "gateway path unavailable", which is the honest answer for a
+unit identifier nothing is behind, and the relay was right to send it.
+Sweep 1 to 247 and the answers draw the map: which unit identifiers
+exist, and — since a refused function code answers `0x01` while a
+permitted one answers data — which functions the policy allows. The scan
+is refused and the survey completes.
+
+`modbus.deception` answers instead:
+
+```yaml
+# A honeypot: an address on the plant network with nothing behind it.
+- name: cell-4-spare
+  address: "10.20.0.41:502"
+  kind: modbus
+  modbus:
+    default_action: allow
+    deception:
+      mode: decoy
+      profile: generic-plc
+      vendor: "…the make this plant actually runs…"
+      units: ["1-4"]
+      tripwire: ["9000-9099"]
+
+# A real relay, where only these clients are lied to, and only about
+# frames it was going to refuse anyway.
+- name: line1
+  address: "10.20.0.10:502"
+  kind: modbus
+  modbus:
+    upstream: plc
+    read_only: true
+    deception:
+      mode: answer
+      clients: ["10.90.0.0/24"]
+      units: ["1-32"]
+```
+
+**The one rule, in the form a plant needs it.** On a web gateway the
+worst case of a deceptive answer is a client receiving nonsense. Here it
+is an operator reading a fabricated tank level off an HMI and acting on
+it. So: *a frame that was going to reach a device is never answered by
+the fabrication*. Deception replaces a refusal -- a policy denial, or a
+unit identifier nothing is behind -- and never an answer. That is a test,
+not an intention, and `mode: answer` will not load without `clients`.
+
+**A fabricated device has to be answerable.** Three things give a decoy
+away, and each is a property the values here hold to:
+
+- **Noise.** A register that reads differently twice in a row is not a
+  process. Values are stable for a period (30s by default) and derived
+  from the address, so two reads a moment apart agree.
+- **Stillness.** A register that never moves is a device nothing drives.
+  A period later the value has drifted, by a little.
+- **Impossibility.** A totaliser that goes backwards, a device on all
+  247 unit identifiers, a PLC that implements every function code in the
+  standard. Counters are monotone by construction, `units` defaults to
+  one, and a function code the profile does not list answers `0x01` --
+  which is what the real device would say.
+
+None of it is stored: a value is a function of the seed, the address and
+which period of the clock it is, so a sweep of all 65536 addresses costs
+the relay no memory. The seed defaults to the listener name, so the
+fabricated device is the same device after a restart -- a decoy whose
+serial number changes when the proxy is upgraded is a decoy somebody has
+noticed.
+
+**The identity is yours to choose.** Function code 17 and 43/14 are what
+a scanner fingerprints on, and the built-in profiles say something
+deliberately generic. A decoy should claim the make the plant actually
+runs, because a Schneider identity on a Rockwell site is the tell that
+ends the pretence, and only you know which it is.
+
+**The tripwire is the signal.** Addresses no legitimate master reads are
+answered -- the answer keeps the visitor reading -- and raised as
+`modbus_tripwire`. That event has no false-positive rate to argue about,
+which puts it in the same class as a honeytoken: nothing legitimate walks
+into a room that does not exist. `xproxyctl honeypot` lists the visitors
+with what each one touched.
 
 ## Refusal at the TLS handshake
 

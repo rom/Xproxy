@@ -351,6 +351,15 @@ func (s *Server) Collect(e metrics.Collector) {
 	for _, d := range s.Deceptions() {
 		e.Counter("xproxy_deceived_total", "Requests answered with a deceptive response instead of the origin's.", L{"route": d.Route}, float64(d.Served))
 	}
+	for _, d := range s.DeviceDecoys() {
+		e.Counter("xproxy_decoy_frames_total", "Frames answered by a fabricated device instead of a real one.",
+			L{"listener": d.Listener, "kind": d.Kind, "mode": d.Mode}, float64(d.Served))
+		// Worth its own series rather than a label on the one above: a
+		// tripwire is the number to alert on, because nothing legitimate
+		// reads those addresses.
+		e.Counter("xproxy_decoy_tripwire_total", "Frames that touched an address no legitimate client reads.",
+			L{"listener": d.Listener, "kind": d.Kind}, float64(d.Tripped))
+	}
 	for _, d := range s.Degradation() {
 		e.Counter("xproxy_degraded_total", "Responses served on a degradation level.", L{"level": d.Name}, float64(d.Applied))
 	}

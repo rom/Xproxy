@@ -301,3 +301,210 @@ func TestModbusAdvice(t *testing.T) {
 		}
 	}
 }
+
+// deceptionConfig is a modbus listener with whatever deception section
+// the test is about.
+func deceptionConfig(section string) string {
+	return `
+version: 1
+server:
+  listeners:
+    - name: plant
+      address: "127.0.0.1:0"
+      kind: modbus
+      modbus:
+` + section + `
+upstreams:
+  - name: plc
+    endpoints: [{address: "10.0.0.9:502"}]
+`
+}
+
+// The client list is the rule worth being strict about. On a web gateway a
+// deceptive answer goes to a scanner; on a plant floor the same answer can
+// put a fabricated tank level in front of an operator, so a section that
+// would lie to anybody on a listener that reaches real devices does not
+// load.
+func TestModbusDeceptionInsistsOnAClientList(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		section string
+		wants   string
+	}{
+		{
+			name: "answer mode with a client list",
+			section: `        upstream: plc
+        deception:
+          mode: answer
+          clients: ["10.9.0.0/24"]`,
+		},
+		{
+			name: "answer mode with no client list",
+			section: `        upstream: plc
+        deception:
+          mode: answer`,
+			wants: "clients: required in mode answer",
+		},
+		{
+			name: "the default mode is answer, so the same rule holds",
+			section: `        upstream: plc
+        deception:
+          profile: generic-plc`,
+			wants: "clients: required in mode answer",
+		},
+		{
+			name: "a decoy listener needs no upstream and no clients",
+			section: `        deception:
+          mode: decoy`,
+		},
+		{
+			name: "a decoy listener with an upstream is a contradiction",
+			section: `        upstream: plc
+        deception:
+          mode: decoy`,
+			wants: "decoy is the whole listener",
+		},
+		{
+			name: "a mode that does not exist",
+			section: `        upstream: plc
+        deception:
+          mode: pretend
+          clients: ["10.9.0.0/24"]`,
+			wants: "must be answer or decoy",
+		},
+		{
+			name: "turned off, and then nothing else has to make sense",
+			section: `        upstream: plc
+        deception:
+          enabled: false`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseNoFiles([]byte(deceptionConfig(tc.section)))
+			switch {
+			case tc.wants == "" && err != nil:
+				t.Fatalf("did not load: %v", err)
+			case tc.wants == "":
+			case err == nil:
+				t.Fatalf("loaded, want %q", tc.wants)
+			case !strings.Contains(err.Error(), tc.wants):
+				t.Fatalf("error %v, want %q", err, tc.wants)
+			}
+		})
+	}
+}
+
+// The rest of the section is held to the same bounds every other one is.
+func TestModbusDeceptionFieldsAreChecked(t *testing.T) {
+	for _, tc := range []struct{ name, section, wants string }{
+		{
+			name: "a profile that does not exist",
+			section: `        deception:
+          mode: decoy
+          profile: siemens-s7`,
+			wants: "is not a profile",
+		},
+		{
+			name: "a unit outside the protocol",
+			section: `        deception:
+          mode: decoy
+          units: ["300"]`,
+			wants: "units",
+		},
+		{
+			name: "a tripwire outside the address space",
+			section: `        deception:
+          mode: decoy
+          tripwire: ["70000"]`,
+			wants: "tripwire",
+		},
+		{
+			name: "a function code that does not exist",
+			section: `        deception:
+          mode: decoy
+          functions: [read_the_future]`,
+			wants: "is not a function code",
+		},
+		{
+			name: "a band with no addresses",
+			section: `        deception:
+          mode: decoy
+          bands: [{shape: analogue}]`,
+			wants: "addresses: required",
+		},
+		{
+			name: "a shape that does not exist",
+			section: `        deception:
+          mode: decoy
+          bands: [{addresses: "0-99", shape: sawtooth}]`,
+			wants: "must be analogue, discrete or counter",
+		},
+		{
+			name: "an analogue band whose range is the wrong way round",
+			section: `        deception:
+          mode: decoy
+          bands: [{addresses: "0-99", shape: analogue, min: 900, max: 100}]`,
+			wants: "max must be above min",
+		},
+		{
+			name: "a period nobody meant",
+			section: `        deception:
+          mode: decoy
+          period: 24h`,
+			wants: "period: must be between 1s and 1h",
+		},
+		{
+			name: "a sensible section",
+			section: `        deception:
+          mode: decoy
+          profile: generic-meter
+          units: ["1-8"]
+          tripwire: ["9000-9099"]
+          functions: [read_holding_registers, 4]
+          period: 45s
+          max_clients: 256
+          bands:
+            - {addresses: "0-99", shape: analogue, min: 21000, max: 24500}
+            - {addresses: "100-299", shape: counter, rate: 7}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseNoFiles([]byte(deceptionConfig(tc.section)))
+			switch {
+			case tc.wants == "" && err != nil:
+				t.Fatalf("did not load: %v", err)
+			case tc.wants == "":
+			case err == nil:
+				t.Fatalf("loaded, want %q", tc.wants)
+			case !strings.Contains(err.Error(), tc.wants):
+				t.Fatalf("error %v, want %q", err, tc.wants)
+			}
+		})
+	}
+}
+
+// Two things are worth saying at load rather than at three in the morning.
+func TestModbusDeceptionWarnings(t *testing.T) {
+	cfg, err := ParseWith([]byte(deceptionConfig(`        deception:
+          mode: decoy`)), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasAdvice(cfg, "every client that connects is answered by the fabricated device") {
+		t.Errorf("no warning about a decoy with no client list: %v", cfg.Advice())
+	}
+	// deny_response is what a refused client is told, and a deceived one
+	// is told something else: an engineer should not have to discover that
+	// from a connection that stayed open.
+	cfg, err = ParseWith([]byte(deceptionConfig(`        upstream: plc
+        deny_response: close
+        deception:
+          mode: answer
+          clients: ["10.9.0.0/24"]`)), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasAdvice(cfg, "deny_response close does not apply") {
+		t.Errorf("no warning about deny_response: %v", cfg.Advice())
+	}
+}

@@ -441,6 +441,9 @@ type ModbusListener struct {
 	// transitions, require_before). Default 65536. A plant has hundreds;
 	// the bound is here because the addresses come off the network.
 	MaxValuePoints int `yaml:"max_value_points"`
+	// Deception answers a refused frame, or a whole listener, as a device
+	// that is not there. See ModbusDeception.
+	Deception *ModbusDeception `yaml:"deception"`
 	// Learn records what actually crosses this listener -- the clients,
 	// the roles, the units, the function codes, the address ranges and
 	// the value ranges -- and writes it out as a rule set to start from.
@@ -3115,6 +3118,107 @@ type ModbusLearn struct {
 	// a learning run is normally observe-only, and saying so here is
 	// what stops one being left on by accident.
 	Enforce bool `yaml:"enforce"`
+}
+
+// ModbusDeception answers as a device that is not there.
+//
+// A refusal is information. A relay that answers "gateway path
+// unavailable" for every unit identifier nothing is behind is doing
+// exactly what the specification says, and a sweep of 1 to 247 therefore
+// draws the map: which units exist, and by the same argument which
+// function codes the policy permits. The scan is refused and the survey
+// completes.
+//
+// This answers instead, from a fabricated device whose values are stable
+// per address and move slowly with time, so the crawl finishes and the map
+// is wrong.
+//
+// **On a plant floor the failure mode of this tool is not a confused
+// scanner.** It is an operator reading a fabricated tank level off an HMI
+// and acting on it. So one rule holds, and it is tested rather than
+// intended: a frame the policy allowed is never deceived -- deception
+// replaces a refusal and never an answer. In mode answer, where there are
+// real devices behind the listener, clients is required: a section that
+// would lie to anybody who connects is not something to arrive at by
+// leaving a field out.
+type ModbusDeception struct {
+	// Enabled turns the section off without removing it; it defaults to
+	// true wherever the section is present.
+	Enabled *bool `yaml:"enabled"`
+	// Mode is answer (the default: a frame this listener was going to
+	// refuse is answered by the fabricated device instead) or decoy (the
+	// whole listener is the fabricated device and no frame reaches
+	// anything -- this is a honeypot, and it needs no upstream).
+	Mode string `yaml:"mode"`
+	// Clients are the networks that get the fabrication. Required in mode
+	// answer. In mode decoy an empty list means every client, which is
+	// what a honeypot wants, since nothing real is behind it.
+	Clients []string `yaml:"clients"`
+	// Profile is the fabricated device's shape: generic-plc (the
+	// default), generic-rtu or generic-meter. It decides which function
+	// codes the device implements and how its address ranges behave.
+	Profile string `yaml:"profile"`
+	// Vendor, Product, Revision and Serial are what the device says about
+	// itself, in the server identity of function code 17 and the device
+	// identification of 43/14 -- which is what a scanner fingerprints on.
+	// The defaults are deliberately generic: **a decoy should claim the
+	// make of device the plant actually runs**, and only the operator
+	// knows what that is. A Schneider identity on a Rockwell site is the
+	// tell that ends the pretence.
+	Vendor   string `yaml:"vendor"`
+	Product  string `yaml:"product"`
+	Revision string `yaml:"revision"`
+	Serial   string `yaml:"serial"`
+	// Units are the unit identifiers the fabricated device answers for,
+	// as numbers or "1-8" ranges. Default "1". Everything outside it is
+	// answered the way a real gateway answers an address nothing is
+	// behind, because a decoy that answers for all 247 units is a decoy:
+	// no gateway has 247 devices on it.
+	Units []string `yaml:"units"`
+	// Functions are the function codes the fabricated device implements,
+	// by name or number. Empty takes the profile's list. A code outside
+	// it is answered with an illegal-function exception, which is what the
+	// real device would say -- a decoy that implements everything is
+	// answering for a PLC nobody makes.
+	Functions []string `yaml:"functions"`
+	// Bands describe how the address space behaves. Empty takes the
+	// profile's.
+	Bands []ModbusDecoyBand `yaml:"bands"`
+	// Tripwire are register or coil addresses no legitimate master has a
+	// reason to touch. Reading one is not refused -- it is answered, and
+	// raised as a security event, because the answer is what keeps the
+	// visitor reading and the event is what an operator acts on.
+	Tripwire []string `yaml:"tripwire"`
+	// Seed makes the fabricated values reproducible. Zero derives one
+	// from the listener name, which is stable across restarts: a decoy
+	// whose serial number changes when the proxy is upgraded is a decoy
+	// somebody has noticed.
+	Seed uint64 `yaml:"seed"`
+	// Period is how long one sample of a value lasts. Default 30s: slow
+	// enough that reading an address twice gives the same answer, fast
+	// enough that a trend moves.
+	Period Duration `yaml:"period"`
+	// MaxClients bounds the record of who has been answered. Default
+	// 1024.
+	MaxClients int `yaml:"max_clients"`
+}
+
+// ModbusDecoyBand is how one run of addresses behaves.
+type ModbusDecoyBand struct {
+	// Addresses is the run this band covers, as "0-999".
+	Addresses string `yaml:"addresses"`
+	// Shape is analogue (a measurement inside min..max that drifts),
+	// discrete (a bit that mostly stays where it is) or counter (a
+	// totaliser that only increases). A totaliser that goes backwards is
+	// the tell that ends the pretence, so counter is monotone by
+	// construction.
+	Shape string `yaml:"shape"`
+	// Min and Max bound an analogue band. Default 0..27648, which is the
+	// range a scaled analogue input reports on much of the installed base.
+	Min int `yaml:"min"`
+	Max int `yaml:"max"`
+	// Rate is how much a counter adds each period.
+	Rate int `yaml:"rate"`
 }
 
 // ModbusTrace writes one line per frame.
