@@ -4116,6 +4116,7 @@ func (v *validator) sessionRecording(p string, r *SessionRecording, reqs map[str
 	if r.Input {
 		v.warnf("%s.input: the input stream carries what the screen never showed, including every password typed into a sudo or su prompt", p)
 	}
+	v.recordingIntegrity(p+".integrity", r.Integrity)
 	// reqs is the ssh request policy, and nil for a kind whose sessions
 	// are not made of ssh channel requests: an ftp control channel is
 	// always recordable, so there is nothing here that could make the
@@ -11351,6 +11352,28 @@ func (v *validator) certificateKey(p string, c Certificate) {
 		v.secretRef(p+".key", c.Key)
 	case c.Signer != nil:
 		v.signer(p+".signer", c.Signer)
+	}
+}
+
+// recordingIntegrity checks the manifest section: the key reference resolves to
+// something, and one record covers a sensible run of the file.
+func (v *validator) recordingIntegrity(p string, i *RecordingIntegrity) {
+	if i == nil || (i.Enabled != nil && !*i.Enabled) {
+		return
+	}
+	if i.Key == "" {
+		// Worth saying rather than refusing. A chain with no key is useful
+		// -- it catches corruption, a shortened file and a partial edit --
+		// and it is not what an operator who asked for evidence thinks
+		// they configured, because whoever can write the recording can
+		// write the manifest too.
+		v.warnf("%s.key: no key, so the manifest detects corruption and truncation but anybody who can write the "+
+			"recording can recompute the chain; name a key to make the records unforgeable without it", p)
+	} else {
+		v.secretRef(p+".key", i.Key)
+	}
+	if i.SegmentBytes < 4096 || i.SegmentBytes > 1<<30 {
+		v.errf("%s.segment_bytes: must be 4096..1073741824", p)
 	}
 }
 

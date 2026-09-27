@@ -4011,6 +4011,40 @@ written, so the gap is visible rather than silent. Check that the
 directory exists — the proxy does not create it — and that the proxy
 user can write to it.
 
+**`xproxy-replay` refuses a recording: it does not match its manifest.**
+The file is not the one the proxy wrote, and the error names what does
+not add up — a segment whose bytes do not match their digest (something
+edited that part), a manifest that covers fewer bytes than the file holds
+(something appended), a record that does not link to the one before it
+(the manifest itself was rebuilt). Take the pair as they are, verify on a
+machine the recording host cannot write to, and treat it as an incident
+rather than a tooling problem. `-force` shows it anyway and says on stderr
+that it is showing a file that no longer matches; do not quote from a
+`-force` replay without saying so.
+
+**The manifest verifies but `-verify` says it carries no MACs.** No `key`
+was configured, so anybody who can write the recording can also recompute
+the chain. It still catches corruption and truncation. For evidence,
+configure `recording.integrity.key` from custody and keep the key where
+the recording host cannot read it.
+
+**`-verify` says a key was given and the manifest carries no MAC**, or
+asks for a key. The two do not match: this recording was written under a
+different integrity setting from the one being checked. A recording keeps
+the chain it was written with, so a listener whose key was added or
+removed has recordings of both kinds in one directory.
+
+**No recording at all, and the event says the recording failed.** With
+`integrity.key` set, a key that has never resolved is one of the reasons,
+and the warning beside the event names the reference and the error — a
+missing file, an unset environment variable, a vault that cannot be
+reached. (A reference that resolved once and then failed to refresh keeps
+its previous value and appears in `xproxyctl status` as `stale`; one that
+never resolved has nothing to fall back to, so the log line is where to
+look.) The proxy would rather write no recording than one with a manifest
+anybody could forge, so fix the reference and the recordings come back;
+what is lost is the sessions that ran meanwhile, which the events name.
+
 **A recording stops before the session did.** `max_file_bytes`, almost
 always: the file carries a marker saying so, and the `ssh_recording`
 line has `truncated: true`. The bound is on the session's bytes, so the

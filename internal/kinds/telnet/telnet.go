@@ -82,7 +82,7 @@ func newServer(engine proxy.Host, cfg config.Listener, ln net.Listener, tc *tls.
 		}
 		t.allow = append(t.allow, pre)
 	}
-	t.recorder = sessionrec.New(c.Recording)
+	t.recorder = sessionrec.New(c.Recording, sessionrec.WithSecrets(engine.Secrets()))
 	if c.MFA != nil {
 		store, err := mfa.Load(c.MFA.File)
 		if err != nil {

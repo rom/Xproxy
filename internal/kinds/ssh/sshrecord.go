@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/keysource"
 	"github.com/rom/xproxy/internal/sessionrec"
 	"github.com/rom/xproxy/internal/textsafe"
 )
@@ -15,8 +16,12 @@ import (
 // are recorded at all, what the file is called, and what the log says
 // when it closes.
 
-// newSSHRecorder returns the listener's or a principal's policy.
-func newSSHRecorder(c *config.SessionRecording) *sessionrec.Policy { return sessionrec.New(c) }
+// newSSHRecorder returns the listener's or a principal's policy. The
+// resolver is where an integrity key comes from, and is nil in a test
+// that configures none.
+func newSSHRecorder(c *config.SessionRecording, secrets *keysource.Resolver) *sessionrec.Policy {
+	return sessionrec.New(c, sessionrec.WithSecrets(secrets))
+}
 
 // records reports whether this kind of session is written at all. An
 // exec session is one command rather than a terminal, and a section
@@ -68,7 +73,7 @@ func closeSSHRecording(rec *sessionrec.Recording, se *session) {
 	t.engine.Counters().SSHRecorded.Add(1)
 	t.engine.Logs().Access.Info("ssh_recording", "listener", t.cfg.Name, "client_ip", se.ip.String(),
 		"user", textsafe.Clip64(se.user), "principal", se.principal, "target", se.target,
-		"file", res.File, "bytes", res.Bytes, "truncated", res.Truncated)
+		"file", res.File, "chain", res.Chain, "bytes", res.Bytes, "truncated", res.Truncated)
 	if res.Truncated {
 		attrs := []any{"listener", t.cfg.Name, "file", res.File}
 		if res.Err != nil {

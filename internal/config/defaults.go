@@ -1339,6 +1339,15 @@ func sessionRecordingDefaults(r *SessionRecording) {
 	if r.MaxFileBytes == 0 {
 		r.MaxFileBytes = 32 << 20
 	}
+	if i := r.Integrity; i != nil {
+		if i.Enabled == nil {
+			t := true
+			i.Enabled = &t
+		}
+		if i.SegmentBytes == 0 {
+			i.SegmentBytes = 1 << 20
+		}
+	}
 }
 
 // sftpDefaults fills one sftp section, the listener's or a

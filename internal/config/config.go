@@ -4561,6 +4561,45 @@ type SessionRecording struct {
 	// terminal. Default true: a command run without a pty is still a
 	// command run on the target.
 	Commands *bool `yaml:"commands"`
+	// Integrity hash-chains each recording into a manifest beside it, so
+	// that a file edited after the session can be told from one that was
+	// not.
+	Integrity *RecordingIntegrity `yaml:"integrity"`
+}
+
+// RecordingIntegrity writes a hash-chained manifest beside each
+// recording.
+//
+// The access ledger is hash-chained and the recordings were not, which
+// is the wrong way round for what the two are used for: the ledger says
+// a session was approved, and the recording is the only account of what
+// happened inside it. After an incident the recording is the artefact
+// somebody is asked to stand behind, and a file that can be edited
+// afterwards with nothing to show it had been is not evidence.
+//
+// The manifest is <recording>.chain, one JSON record per line, each
+// carrying the previous record's hash and the digest of a run of the
+// recording's bytes. Without a key that detects corruption, a shortened
+// file and any partial edit by somebody who does not rewrite every
+// record after it. With a key -- and the key is a secret reference, so
+// it can live in a vault or an HSM rather than on the recording host --
+// the records cannot be rewritten by somebody who holds filesystem
+// access and not the key, which is the case that matters: an intruder
+// on the box, or an administrator editing their own session. It is a
+// MAC and not a signature, so anybody who can read the key can forge a
+// record too.
+type RecordingIntegrity struct {
+	// Enabled turns the manifest off where a section above turned it on;
+	// it defaults to true wherever this section is present.
+	Enabled *bool `yaml:"enabled"`
+	// Key is a secret reference (a path, env:NAME, vault:path#field)
+	// whose material keys the chain. Without it the manifest is still a
+	// chain and still detects corruption and truncation, and anybody who
+	// can write the recording can recompute it.
+	Key string `yaml:"key"`
+	// SegmentBytes is how much of a recording one record covers, which is
+	// how precisely an edit is located. Default 1048576.
+	SegmentBytes int64 `yaml:"segment_bytes"`
 }
 
 // SFTPPolicy inspects the SFTP protocol inside an sftp subsystem

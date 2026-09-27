@@ -28,6 +28,7 @@ import (
 
 	"github.com/rom/xproxy/internal/asciicast"
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/keysource"
 	"github.com/rom/xproxy/internal/textsafe"
 )
 
@@ -36,6 +37,12 @@ import (
 // so the count it prunes to is the count that section asked for.
 type Policy struct {
 	cfg *config.SessionRecording
+	// secrets resolves the integrity key, where the section named one. It
+	// is the resolver rather than the material so that a key rotated in
+	// custody reaches a running proxy, and so that the value is asked for
+	// once a session actually records rather than held for the life of
+	// the process.
+	secrets *keysource.Resolver
 	// mu guards files, which is the list this policy wrote and is
 	// therefore the list it may remove from. Files another process put
 	// in the directory are not this one's to delete.
@@ -43,14 +50,61 @@ type Policy struct {
 	files []string
 }
 
+// An Option adjusts a policy at construction.
+type Option func(*Policy)
+
+// WithSecrets gives the policy the resolver its integrity key comes
+// from. Without it a section that names a key cannot record at all,
+// which is the fail-closed half of asking for a keyed manifest.
+func WithSecrets(r *keysource.Resolver) Option {
+	return func(p *Policy) { p.secrets = r }
+}
+
 // New returns a policy, or nil when the section is absent or turned
 // off. Every method is safe on a nil policy, so a caller that records
 // nothing writes no conditionals.
-func New(c *config.SessionRecording) *Policy {
+func New(c *config.SessionRecording, opts ...Option) *Policy {
 	if c == nil || (c.Enabled != nil && !*c.Enabled) {
 		return nil
 	}
-	return &Policy{cfg: c}
+	p := &Policy{cfg: c}
+	for _, o := range opts {
+		o(p)
+	}
+	return p
+}
+
+// integrity is the manifest section, or nil where nothing is chained.
+func (p *Policy) integrity() *config.RecordingIntegrity {
+	i := p.cfg.Integrity
+	if i == nil || (i.Enabled != nil && !*i.Enabled) {
+		return nil
+	}
+	return i
+}
+
+// chainKey resolves the manifest's key.
+//
+// An error here fails the open, which means the session is recorded not
+// at all rather than recorded into a file whose manifest anybody could
+// forge -- the caller treats it as it treats a directory it cannot write
+// to, with a warning and a recording_failed event. The resolver caches
+// and keeps the previous value across a failed refresh, so this is a
+// vault that was never reachable rather than one that went away.
+func (p *Policy) chainKey(i *config.RecordingIntegrity) ([]byte, error) {
+	if i.Key == "" {
+		return nil, nil
+	}
+	if p.secrets == nil {
+		return nil, fmt.Errorf("recording integrity key %s: no secret resolver", i.Key)
+	}
+	// keysource refuses an empty value rather than handing back a key of
+	// length zero, so a reference that resolves is material.
+	key, err := p.secrets.Bytes(i.Key)
+	if err != nil {
+		return nil, fmt.Errorf("recording integrity key: %w", err)
+	}
+	return key, nil
 }
 
 // Enabled reports whether anything is recorded at all.
@@ -104,6 +158,7 @@ type Recording struct {
 	f         *os.File
 	bw        *bufio.Writer
 	w         *asciicast.Writer
+	chain     *chain
 	written   int64
 	charged   int64
 	truncated bool
@@ -146,7 +201,27 @@ func (p *Policy) Open(h Header) (*Recording, error) {
 			return nil, err
 		}
 	}
-	bw := bufio.NewWriterSize(f, 32<<10)
+	// The chain sits between the buffer and the file, not between the
+	// writer and the buffer: what it digests has to be what reached the
+	// disk, so that a verifier compares the manifest against the same
+	// bytes a reviewer reads.
+	var dst io.Writer = f
+	var ch *chain
+	if i := p.integrity(); i != nil {
+		key, err := p.chainKey(i)
+		if err != nil {
+			_ = f.Close()
+			_ = os.Remove(name)
+			return nil, err
+		}
+		if ch, err = newChain(name, filepath.Base(name), key, i.SegmentBytes); err != nil {
+			_ = f.Close()
+			_ = os.Remove(name)
+			return nil, err
+		}
+		dst = chainWriter{w: f, c: ch}
+	}
+	bw := bufio.NewWriterSize(dst, 32<<10)
 	w, err := asciicast.NewWriter(bw, asciicast.Header{
 		Width: h.Width, Height: h.Height,
 		Title:   h.Title,
@@ -154,11 +229,12 @@ func (p *Policy) Open(h Header) (*Recording, error) {
 		Env:     h.Env,
 	})
 	if err != nil {
+		_ = ch.abandon(name)
 		_ = f.Close()
 		_ = os.Remove(name)
 		return nil, err
 	}
-	rec := &Recording{p: p, name: name, f: f, bw: bw, w: w}
+	rec := &Recording{p: p, name: name, f: f, bw: bw, w: w, chain: ch}
 	p.mu.Lock()
 	p.files = append(p.files, name)
 	p.pruneLocked()
@@ -173,6 +249,10 @@ func (p *Policy) pruneLocked() {
 		oldest := p.files[0]
 		p.files = p.files[1:]
 		_ = os.Remove(oldest)
+		// The manifest goes with the recording it describes. Left behind it
+		// would be a chain for a file nobody has, which reads in a
+		// directory listing as a recording somebody removed.
+		_ = os.Remove(oldest + ChainExt)
 	}
 }
 
@@ -297,7 +377,9 @@ func (rec *Recording) failLocked(err error) {
 // writes the log line, because only it knows what to call the person
 // and the target.
 type Result struct {
-	File      string
+	File string
+	// Chain is the manifest written beside the file, where one was.
+	Chain     string
 	Bytes     int64
 	Truncated bool
 	Err       error
@@ -316,9 +398,19 @@ func (rec *Recording) Close() Result {
 	}
 	_ = rec.w.Flush()
 	_ = rec.bw.Flush()
+	// The chain closes before the file, because it digests what the flush
+	// just pushed through it and its last record says how long the
+	// recording is.
+	var chainName string
+	if rec.chain != nil {
+		chainName = rec.name + ChainExt
+		if err := rec.chain.finish(rec.truncated); err != nil && rec.err == nil {
+			rec.err = err
+		}
+	}
 	_ = rec.f.Close()
 	rec.f = nil
-	return Result{File: rec.name, Bytes: rec.written, Truncated: rec.truncated, Err: rec.err}
+	return Result{File: rec.name, Chain: chainName, Bytes: rec.written, Truncated: rec.truncated, Err: rec.err}
 }
 
 // Writer tees what is delivered into a recording. It writes to the real

@@ -4157,6 +4157,29 @@ in the output. RDP's graphics are not decoded at all, by the same
 argument; its framing, channels and marks are, so `-summary` still says
 what the session did.
 
+**A manifest is checked before anything is replayed.** Where the
+recording section asked for integrity, the gateway writes
+`<recording>.chain` beside the file, and this program verifies it before
+it shows anything -- a reviewer about to describe a session should not
+have to remember to ask whether the file is the one the proxy wrote:
+
+```sh
+xproxy-replay -verify -key env:XPROXY_CHAIN_KEY s.cast  # the answer on its own
+xproxy-replay s.cast                                    # verified, then played
+xproxy-replay -force s.cast                             # played anyway, and it says so
+```
+
+A recording that does not match its manifest is refused; `-force` shows
+it and says on stderr that it is showing a file that no longer matches.
+A recording with no manifest replays as before. Without `-key` the
+chain's links and digests are checked, which catches corruption, a
+shortened file and a partial edit; with the key the records are also
+MACs, which is what somebody who has the box but not the key cannot
+forge. Verify somewhere the recording host is not -- the key is
+`env:`, a file or a vault reference, and a MAC protects nobody from
+whoever can read it. See
+[CONFIG.md](CONFIG.md#serverlistenerssshrecordingintegrity).
+
 **The event data is base64** where the stream is binary, and the header
 says so (`XPROXY_ENCODING: base64`). That is why `xproxyctl session show`
 refuses those files and names this program instead: a protocol stream
@@ -4176,7 +4199,7 @@ listener's, so one entry can be recorded and another spared with
 
 Every session writes an `ssh` access line, every allowed `exec` is a
 security event with the command line, every closed recording writes an
-`ssh_recording` line with the file and its size, and every inspected
+`ssh_recording` line with the file, its size and the manifest beside it, and every inspected
 SFTP request writes an `sftp` line with the operation and the path. That record is
 the other reason to terminate rather than forward: a stream you cannot
 read is a stream you cannot log.
