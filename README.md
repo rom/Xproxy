@@ -1228,7 +1228,13 @@ describes it, validation refuses what cannot work, and
   own software checks this protocol harder than any Modbus master checks that
   one: nothing before STARTDT_act, then the end of initialisation, an
   interrogation answered ACTCON, the points, ACTTERM, and an address it is not
-  refused the way a station refuses one
+  refused the way a station refuses one. And an `s7` listener does it for a
+  Siemens controller, where the hardest part to hide by policy is the system
+  status list: every scanner reads it first, the estate's own asset tools read
+  the same list, and it hands over the order number, the module type and the
+  firmware. A fabricated CPU answers it instead — and gets the things a
+  controller cannot do right as well as the things it can, down to not speaking
+  the protocol its family does not speak
 - **A device inventory built from traffic, not from scanning.** An
   operational estate's oldest problem is that nobody knows what is on the
   network: the drawings are from commissioning, the spreadsheet was

@@ -109,6 +109,55 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   known type and requires the addresses that went in to come back out -- the
   property the policy depends on and the one nothing was checking.
 
+### Added (deception past HTTP: a controller that is not there)
+
+- **`s7.deception`.** The third OT kind, and the one where the disclosure is
+  hardest to avoid by policy alone. A read of a data block the policy does not
+  name is answered with an access fault and one it does name with data, so a
+  sweep of block numbers reports the estate; and the system status list, which
+  every scanner reads first, hands over the order number, the module type and
+  the firmware:
+
+  ```
+  DB1  read  -> 4 octets
+  DB2  read  -> access fault
+  SZL 0x0011 -> 6ES7 315-2EH14-0AB0, firmware 3.2.7
+  SZL 0x001c -> CPU 315-2 PN/DP, plant CELL4
+  ```
+
+  That list cannot be narrowed by policy without breaking the asset tools an
+  estate runs itself, which is why a fabrication is the answer rather than a
+  refusal.
+
+  `mode: decoy` is a whole listener with no upstream: it answers the COTP
+  connection, negotiates the PDU length its family negotiates, answers reads
+  from fabricated blocks, acknowledges writes that go nowhere, and answers the
+  two identification lists with an identity an operator chooses. `mode: answer`
+  fabricates, on a listener that fronts a real CPU, the answers to requests it
+  was going to refuse.
+
+  **The rule that bounds it**, as on the other two kinds: a request that was
+  going to reach the controller is never answered by the fabrication. Beyond
+  that, only a read, a write and the identification lists are fabricated at
+  all -- every other refused function keeps the access fault a protected CPU
+  sends, because a fabrication that acknowledged a stop or a download would be
+  telling a client a machine had stopped or a block had landed.
+
+  **What a fabricated CPU has to get wrong to be believed** is mostly what it
+  cannot do. It does not have every data block (a read of one it does not claim
+  is "object does not exist"; a read past the end of one it does claim is an
+  address error), it does not offer the direct peripheral area or the
+  200-family areas, it negotiates 240 or 480 rather than a number no controller
+  sends, and it does not speak S7comm-plus -- that is the 1200 and 1500
+  families, so a decoy claiming to be a 300 answers such a request with a COTP
+  disconnect, which is what a 300 does. Both built-in profiles are classic
+  families for the same reason.
+
+  Twenty-four mutations of the new guards and the new validation, all killed;
+  two guards were deleted rather than tested, because `Items` already bounds the
+  fabrication to a read and a write and the list switch already bounds the
+  record length.
+
 ### Added (deception past HTTP: a substation that is not there)
 
 - **`iec104.deception`.** Modbus gives up an estate one unit identifier at a

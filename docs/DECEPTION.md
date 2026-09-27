@@ -36,6 +36,7 @@ exist.
 - [Deceptive answers on real routes](#deceptive-answers-on-real-routes)
 - [A device that is not there](#a-device-that-is-not-there)
 - [A substation that is not there](#a-substation-that-is-not-there)
+- [A controller that is not there](#a-controller-that-is-not-there)
 - [Refusal at the TLS handshake](#refusal-at-the-tls-handshake)
 - [What it produces](#what-it-produces)
 - [Building it out](#building-it-out)
@@ -539,6 +540,77 @@ decoy speaks the association the way the standard describes it:
 object addresses no legitimate centre reads are answered -- the answer is
 what keeps the visitor reading -- and raised as `iec104_tripwire`.
 `xproxyctl honeypot` lists who arrived and what they touched.
+
+## A controller that is not there
+
+The third of these, and the one where the disclosure is hardest to avoid by
+policy alone. `s7` fronts a Siemens PLC, and the first thing any scanner asks
+for is the system status list: the order number, the module type, the firmware
+version. Refuse it and the scanner has learned there is a relay in front of
+something; forward it and it has the controller. The asset tools an estate runs
+itself read the same list, so making it less informative breaks them too.
+
+```
+DB1  read    -> 4 octets
+DB2  read    -> access fault
+DB3  read    -> access fault
+SZL 0x0011   -> 6ES7 315-2EH14-0AB0, firmware 3.2.7
+SZL 0x001c   -> CPU 315-2 PN/DP, plant CELL4
+```
+
+`s7.deception` answers as a controller instead:
+
+```yaml
+# A honeypot: an address on the cell network with no CPU behind it.
+- name: cell-9-spare
+  address: "10.20.9.41:102"
+  kind: s7
+  s7:
+    deception:
+      mode: decoy
+      profile: generic-s7-300
+      order_number: "…the make this plant actually runs…"
+      blocks: [{dbs: "1-8", bytes: 512}]
+      tripwire: ["666"]
+
+# A real relay, where only these clients are answered, and only about
+# requests it was going to refuse anyway.
+- name: line1
+  address: "10.20.0.10:102"
+  kind: s7
+  s7:
+    upstream: plc
+    read_only: true
+    deception:
+      mode: answer
+      clients: ["10.90.0.0/24"]
+```
+
+**The same rule, and the same reason.** A request that was going to reach the
+controller is never answered by the fabrication: deception replaces a refusal
+and never an answer. Beyond that, only a read, a write and the identification
+lists are fabricated at all — every other refused function keeps the access
+fault a protected CPU sends, because a fabrication that acknowledged a stop or a
+download would be telling a client a machine had stopped or a block had landed.
+
+**What makes a fabricated CPU answerable.** The identity is most of it, and the
+profiles are deliberately ordinary — a plant should set the make it actually
+runs, since a 315 on a site that is all 416s is the tell that ends the
+pretence. The rest is what a controller *cannot* do:
+
+- It does not have every data block. A read of one it does not claim is
+  answered "object does not exist", and a read past the end of one it does
+  claim gets an address error.
+- It does not offer the direct peripheral area or the 200-family areas.
+  Claiming direct access to I/O hardware would be claiming hardware.
+- It does not speak S7comm-plus. That is the 1200 and 1500 families, whose
+  sessions are integrity-protected; a decoy claiming to be a 300 answers such a
+  request with a COTP disconnect, which is what a 300 does.
+- It negotiates a PDU length its family negotiates: 240 for a 300, 480 for a
+  400. A number no controller sends is one a client library prints.
+
+`tripwire` names the data blocks nothing legitimate reads — DB666 is the
+traditional choice — answered, and raised as `s7_tripwire`.
 
 ## Refusal at the TLS handshake
 

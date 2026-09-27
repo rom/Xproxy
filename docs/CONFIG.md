@@ -11494,7 +11494,81 @@ Two details of how the ranges are applied:
 | `deny_response` | `error`, `drop`, `close` | `error` | How a refusal is answered. `error` is an S7 acknowledgement carrying an **access fault** -- what a protected CPU answers -- so the client's own library reports a refusal rather than a timeout |
 | `log_requests` | bool | `false` | An access line per request, which on a plant polling every second is a great many lines |
 | `alert_on_deny` | bool | `true` | A security event per refusal |
+| `deception` | object | | Answer as a controller that is not there: a refused request answered by a fabricated CPU, or a whole listener that is one; see below |
 | `monitor_only` | bool | `false` | Evaluate and enforce nothing, except the hard decisions below |
+
+### Deception
+
+**A refusal is information, and on this protocol it is unusually cheap to
+collect.** A read of a data block the policy does not name is answered with an
+access fault; one it does name is answered with data. So a sweep of block
+numbers reports which blocks exist, and the system status list -- which every
+scanner reads first, and which no policy in this section can make less
+informative without breaking the asset tools that also read it -- hands over
+the order number, the module type and the firmware of the controller itself:
+
+```
+DB1  read -> 4 octets
+DB2  read -> access fault
+DB3  read -> access fault
+SZL 0x0011 -> 6ES7 315-2EH14-0AB0, firmware 3.2.7
+```
+
+This section answers instead, as a CPU whose blocks hold values that are stable
+per address and move slowly with time.
+
+**The failure mode here is not a confused scanner**; it is an engineer reading a
+fabricated value off a real machine. One rule holds, and it is a test rather
+than an intention: **a request that was going to reach the controller is never
+answered from here.** Deception replaces a refusal -- a policy denial, or a
+block the fabrication does not have -- and never an answer. So `mode: answer`
+refuses to load without `clients`, and only a read, a write and the
+identification lists are fabricated: every other refused function keeps the
+access fault, because a fabrication that acknowledged a stop would be telling a
+client a machine had stopped.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Turns the section off without removing it |
+| `mode` | `answer`, `decoy` | `answer` | `answer` fabricates what this listener was going to refuse, on a listener that fronts a real controller. `decoy` is the whole listener: a fabricated CPU with no upstream, where no request reaches anything |
+| `clients` | list | | The networks that get the fabrication. **Required in `mode: answer`.** Empty in `mode: decoy` means every client, which is what a honeypot is for |
+| `profile` | `generic-s7-300`, `generic-s7-400` | `generic-s7-300` | The fabricated controller's identity and shape. **Both are classic S7comm families on purpose**: an S7-1200 or S7-1500 speaks S7comm-plus, whose session is integrity-protected from firmware 4 onward, so a decoy answering classic S7comm while claiming to be a 1500 is a contradiction a scanner sees in one exchange — this one answers an S7comm-plus request with a COTP disconnect, which is what a 300 does |
+| `order_number` | string | the profile's | The MlfB the module identification list reports, up to 20 characters, such as `"6ES7 315-2EH14-0AB0"` |
+| `module_type`, `plant`, `serial` | string | the profile's | What the component identification list reports, up to 32 characters each: the module name, the plant designation and the module serial number. An unset serial is derived from the seed, so the controller has one and keeps the same one across a restart. **A decoy should claim the make the plant actually runs** — a 315 on a site that is all 416s is the tell that ends the pretence, and only you know which it is |
+| `version` | string | the profile's | The firmware version as `3.2.7`, which is what a scanner prints beside the order number |
+| `pdu_length` | int | the profile's | The length the fabrication negotiates: 240, 480 or 960, the sizes the families use |
+| `blocks` | list | the profile's | The data blocks it has; see below. A read of a block outside them is answered the way a CPU answers one it does not have, and a read past the end of one it does have gets an address error — because a controller with 65535 data blocks of unbounded length is not a controller |
+| `bands` | list | the profile's | How the bytes inside a block behave; see below |
+| `tripwire` | list | `[]` | Data block numbers no legitimate client reads. One named in a read is **answered**, and raised as an `s7_tripwire` security event: the answer keeps the visitor reading and the event is what an operator acts on |
+| `seed` | int | from the listener name | Makes the fabricated values reproducible, and stable across restarts |
+| `period` | duration | `30s` | How long one sample of a value lasts; 1s to 1h |
+| `max_clients` | int | `1024` | Bounds the record of who has been answered |
+
+Each `blocks` entry:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `dbs` | range | required | The run of data block numbers, as `"1-8"` |
+| `bytes` | int | `512` | The size of each block in the run |
+
+Each `bands` entry:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `addresses` | range | required | The run of byte addresses inside a block, as `"0-199"` |
+| `shape` | `analogue`, `discrete`, `counter` | `analogue` | `analogue` drifts inside `min`..`max`; `discrete` mostly stays where it is; `counter` only increases — **a totaliser that goes backwards is the tell**, so it is monotone by construction |
+| `min`, `max` | int | `0`, `27648` | The analogue band's range |
+| `rate` | int | `1` | How much a counter adds each period |
+
+The areas are the ones a CPU offers: data blocks, instance data blocks, the
+process image, the flags, the timers and the counters. The **direct peripheral**
+area is not among them, and neither are the 200-family areas: a fabrication that
+claimed direct access to I/O hardware would be claiming hardware, so a read of
+one is answered the way a CPU answers an area it does not have.
+
+`deny_response: close` and `drop` do not apply to the clients this section
+covers in `mode: answer`: their refused requests are answered by the fabricated
+controller instead, and validation says so at load.
 
 ### Rules
 

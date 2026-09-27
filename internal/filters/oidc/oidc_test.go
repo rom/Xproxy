@@ -84,7 +84,16 @@ func TestSealOpen(t *testing.T) {
 	if err := f.open(sealed, "session", &ls); err == nil {
 		t.Fatal("state cookie accepted as a session")
 	}
-	if err := f.open(sealed[:len(sealed)-2]+"zz", "state", &ls); err == nil {
+	// A tamper that is certainly one. Replacing the last two characters
+	// with a fixed pair is not: the nonce is random, so about one sealed
+	// cookie in four thousand already ends in them, and the test then
+	// "tampered" with nothing and failed -- a flake nobody would find
+	// twice.
+	tampered := sealed[:len(sealed)-2] + "zz"
+	if tampered == sealed {
+		tampered = sealed[:len(sealed)-2] + "yy"
+	}
+	if err := f.open(tampered, "state", &ls); err == nil {
 		t.Fatal("tampered cookie accepted")
 	}
 	if err := f.open("!!", "state", &ls); err == nil {

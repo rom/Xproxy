@@ -28772,6 +28772,15 @@ T}	T{
 A security event per refusal
 T}
 T{
+\fBdeception\fR
+T}	T{
+object
+T}	T{
+
+T}	T{
+Answer as a controller that is not there: a refused request answered by a fabricated CPU,\: or a whole listener that is one;\: see below
+T}
+T{
 \fBmonitor_\:only\fR
 T}	T{
 bool
@@ -28781,6 +28790,257 @@ T}	T{
 Evaluate and enforce nothing,\: except the hard decisions below
 T}
 .TE
+.SS "Deception"
+.PP
+\fBA refusal is information, and on this protocol it is unusually cheap to collect.\fR A read of a data block the policy does not name is answered with an access fault; one it does name is answered with data. So a sweep of block numbers reports which blocks exist, and the system status list \-\- which every scanner reads first, and which no policy in this section can make less informative without breaking the asset tools that also read it \-\- hands over the order number, the module type and the firmware of the controller itself:
+.PP
+.RS 4
+.nf
+.ft CR
+DB1  read \-> 4 octets
+DB2  read \-> access fault
+DB3  read \-> access fault
+SZL 0x0011 \-> 6ES7 315\-2EH14\-0AB0, firmware 3.2.7
+.ft
+.fi
+.RE
+.PP
+This section answers instead, as a CPU whose blocks hold values that are stable per address and move slowly with time.
+.PP
+\fBThe failure mode here is not a confused scanner\fR; it is an engineer reading a fabricated value off a real machine. One rule holds, and it is a test rather than an intention: \fBa request that was going to reach the controller is never answered from here.\fR Deception replaces a refusal \-\- a policy denial, or a block the fabrication does not have \-\- and never an answer. So \fBmode: answer\fR refuses to load without \fBclients\fR, and only a read, a write and the identification lists are fabricated: every other refused function keeps the access fault, because a fabrication that acknowledged a stop would be telling a client a machine had stopped.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.9i) lbw(1.0i) lbx
+lw(0.9i) lw(0.9i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Turns the section off without removing it
+T}
+T{
+\fBmode\fR
+T}	T{
+\fBanswer\fR,\: \fBdecoy\fR
+T}	T{
+\fBanswer\fR
+T}	T{
+\fBanswer\fR fabricates what this listener was going to refuse,\: on a listener that fronts a real controller. \fBdecoy\fR is the whole listener: a fabricated CPU with no upstream,\: where no request reaches anything
+T}
+T{
+\fBclients\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+The networks that get the fabrication. \fBRequired in \fBmode:\: answer\fR.\fR Empty in \fBmode:\: decoy\fR means every client,\: which is what a honeypot is for
+T}
+T{
+\fBprofile\fR
+T}	T{
+\fBgeneric\-\:s7\-\:300\fR,\: \fBgeneric\-\:s7\-\:400\fR
+T}	T{
+\fBgeneric\-\:s7\-\:300\fR
+T}	T{
+The fabricated controller\(aqs identity and shape. \fBBoth are classic S7comm families on purpose\fR: an S7\-1200 or S7\-1500 speaks S7comm\-plus,\: whose session is integrity\-protected from firmware 4 onward,\: so a decoy answering classic S7comm while claiming to be a 1500 is a contradiction a scanner sees in one exchange \[u2014] this one answers an S7comm\-plus request with a COTP disconnect,\: which is what a 300 does
+T}
+T{
+\fBorder_\:number\fR
+T}	T{
+string
+T}	T{
+the profile\(aqs
+T}	T{
+The MlfB the module identification list reports,\: up to 20 characters,\: such as \fB"6ES7 315\-\:2EH14\-\:0AB0"\fR
+T}
+T{
+\fBmodule_\:type\fR,\: \fBplant\fR,\: \fBserial\fR
+T}	T{
+string
+T}	T{
+the profile\(aqs
+T}	T{
+What the component identification list reports,\: up to 32 characters each: the module name,\: the plant designation and the module serial number. An unset serial is derived from the seed,\: so the controller has one and keeps the same one across a restart. \fBA decoy should claim the make the plant actually runs\fR \[u2014] a 315 on a site that is all 416s is the tell that ends the pretence,\: and only you know which it is
+T}
+T{
+\fBversion\fR
+T}	T{
+string
+T}	T{
+the profile\(aqs
+T}	T{
+The firmware version as \fB3.\:2.\:7\fR,\: which is what a scanner prints beside the order number
+T}
+T{
+\fBpdu_\:length\fR
+T}	T{
+int
+T}	T{
+the profile\(aqs
+T}	T{
+The length the fabrication negotiates: 240,\: 480 or 960,\: the sizes the families use
+T}
+T{
+\fBblocks\fR
+T}	T{
+list
+T}	T{
+the profile\(aqs
+T}	T{
+The data blocks it has;\: see below. A read of a block outside them is answered the way a CPU answers one it does not have,\: and a read past the end of one it does have gets an address error \[u2014] because a controller with 65535 data blocks of unbounded length is not a controller
+T}
+T{
+\fBbands\fR
+T}	T{
+list
+T}	T{
+the profile\(aqs
+T}	T{
+How the bytes inside a block behave;\: see below
+T}
+T{
+\fBtripwire\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Data block numbers no legitimate client reads. One named in a read is \fBanswered\fR,\: and raised as an \fBs7_\:tripwire\fR security event: the answer keeps the visitor reading and the event is what an operator acts on
+T}
+T{
+\fBseed\fR
+T}	T{
+int
+T}	T{
+from the listener name
+T}	T{
+Makes the fabricated values reproducible,\: and stable across restarts
+T}
+T{
+\fBperiod\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+How long one sample of a value lasts;\: 1s to 1h
+T}
+T{
+\fBmax_\:clients\fR
+T}	T{
+int
+T}	T{
+\fB1024\fR
+T}	T{
+Bounds the record of who has been answered
+T}
+.TE
+.PP
+Each \fBblocks\fR entry:
+.PP
+.TS
+allbox;
+lbw(0.6i) lbw(0.6i) lbw(0.9i) lbx
+lw(0.6i) lw(0.6i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBdbs\fR
+T}	T{
+range
+T}	T{
+required
+T}	T{
+The run of data block numbers,\: as \fB"1\-\:8"\fR
+T}
+T{
+\fBbytes\fR
+T}	T{
+int
+T}	T{
+\fB512\fR
+T}	T{
+The size of each block in the run
+T}
+.TE
+.PP
+Each \fBbands\fR entry:
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(1.0i) lbw(0.9i) lbx
+lw(1.0i) lw(1.0i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBaddresses\fR
+T}	T{
+range
+T}	T{
+required
+T}	T{
+The run of byte addresses inside a block,\: as \fB"0\-\:199"\fR
+T}
+T{
+\fBshape\fR
+T}	T{
+\fBanalogue\fR,\: \fBdiscrete\fR,\: \fBcounter\fR
+T}	T{
+\fBanalogue\fR
+T}	T{
+\fBanalogue\fR drifts inside \fBmin\fR..\fBmax\fR;\: \fBdiscrete\fR mostly stays where it is;\: \fBcounter\fR only increases \[u2014] \fBa totaliser that goes backwards is the tell\fR,\: so it is monotone by construction
+T}
+T{
+\fBmin\fR,\: \fBmax\fR
+T}	T{
+int
+T}	T{
+\fB0\fR,\: \fB27648\fR
+T}	T{
+The analogue band\(aqs range
+T}
+T{
+\fBrate\fR
+T}	T{
+int
+T}	T{
+\fB1\fR
+T}	T{
+How much a counter adds each period
+T}
+.TE
+.PP
+The areas are the ones a CPU offers: data blocks, instance data blocks, the process image, the flags, the timers and the counters. The \fBdirect peripheral\fR area is not among them, and neither are the 200\-family areas: a fabrication that claimed direct access to I/O hardware would be claiming hardware, so a read of one is answered the way a CPU answers an area it does not have.
+.PP
+\fBdeny_response: close\fR and \fBdrop\fR do not apply to the clients this section covers in \fBmode: answer\fR: their refused requests are answered by the fabricated controller instead, and validation says so at load.
 .SS "Rules"
 .PP
 .TS

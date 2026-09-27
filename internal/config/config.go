@@ -1562,6 +1562,11 @@ type S7Listener struct {
 	// which is what a listener written for classic S7comm meant.
 	CommPlus *S7CommPlus `yaml:"s7comm_plus"`
 
+	// Deception answers as a controller that is not there: a refused
+	// request answered by a fabricated CPU, or a whole listener that is
+	// one. See S7Deception.
+	Deception *S7Deception `yaml:"deception"`
+
 	// Rules decide each request, in order, first match wins. A request
 	// that matches no rule takes DefaultAction.
 	Rules []S7Rule `yaml:"rules"`
@@ -1582,6 +1587,118 @@ type S7Listener struct {
 	// -- because a write forwarded so that it could be written down is a
 	// moved actuator, and a stop forwarded is a stopped machine.
 	MonitorOnly bool `yaml:"monitor_only"`
+}
+
+// S7Deception answers as a controller that is not there.
+//
+// A refusal is information here as it is everywhere else on a plant, and on
+// this protocol it is unusually cheap to collect. A read of a data block the
+// policy does not name is answered with an access fault; one it does name is
+// answered with data. So a sweep of data block numbers reports which blocks
+// exist, and a sweep of the rack and slot numbers reports where the CPU is --
+// and the system status list, which every scanner reads first, hands over the
+// order number, the module type and the firmware version of the controller
+// itself.
+//
+// This section answers instead, as a CPU whose blocks hold values that are
+// stable per address and move slowly with time.
+//
+// **The rule that bounds it is the same one the Modbus and IEC 104 sections
+// hold to**: a request that was going to reach the controller is never
+// answered from here. Deception replaces a refusal -- a policy denial, or a
+// block the fabrication does not have -- and never an answer, because the
+// failure mode on a plant floor is not a confused scanner but an engineer
+// reading a fabricated value off a real machine. mode: answer therefore
+// refuses to load without clients.
+type S7Deception struct {
+	// Enabled turns the section off without removing it; it defaults to
+	// true wherever the section is present.
+	Enabled *bool `yaml:"enabled"`
+	// Mode is answer (the default: a request this listener was going to
+	// refuse is answered by the fabrication instead, and never reaches the
+	// controller) or decoy (the whole listener is a fabricated CPU: no
+	// upstream, and nothing behind it).
+	Mode string `yaml:"mode"`
+	// Clients are the networks that get the fabrication. Required in mode
+	// answer. In mode decoy an empty list means every client, which is what
+	// a honeypot wants.
+	Clients []string `yaml:"clients"`
+	// Profile is the fabricated controller's shape: generic-s7-300 (the
+	// default) or generic-s7-400.
+	//
+	// Both are classic S7comm families on purpose. An S7-1200 or S7-1500
+	// driven by TIA Portal speaks S7comm-plus, whose session is
+	// integrity-protected from firmware 4 onward, so a decoy answering
+	// classic S7comm while claiming to be a 1500 is a contradiction a
+	// scanner sees in one exchange.
+	Profile string `yaml:"profile"`
+	// OrderNumber is the MlfB -- the order number the module identification
+	// list reports, such as "6ES7 315-2EH14-0AB0". ModuleType is the name
+	// the component identification list reports ("CPU 315-2 PN/DP"), Plant
+	// the plant designation, Serial the module serial number and Version
+	// the firmware version as "3.2.7".
+	//
+	// **A decoy should claim the make the plant actually runs.** A 315 on a
+	// site that is all 416s is the tell that ends the pretence, and only you
+	// know which it is. An unset serial is derived from the seed, so the
+	// controller keeps one and keeps the same one.
+	OrderNumber string `yaml:"order_number"`
+	ModuleType  string `yaml:"module_type"`
+	Plant       string `yaml:"plant"`
+	Serial      string `yaml:"serial"`
+	Version     string `yaml:"version"`
+	// PDULength is the length the fabrication negotiates in its answer to
+	// Setup Communication: 240, 480 or 960, the sizes the families use.
+	// Zero takes the profile's.
+	PDULength int `yaml:"pdu_length"`
+	// Blocks are the data blocks the fabricated controller has. A read of a
+	// block outside them is answered the way a CPU answers a block it does
+	// not have, because a controller with 65535 data blocks is not a
+	// controller.
+	Blocks []S7DecoyBlocks `yaml:"blocks"`
+	// Bands are how the bytes inside a block behave; see S7DecoyBand.
+	// Empty takes the profile's.
+	Bands []S7DecoyBand `yaml:"bands"`
+	// Tripwire are data block numbers no legitimate client reads. A read of
+	// one is answered -- the answer is what keeps the visitor reading -- and
+	// raised as an s7_tripwire security event, which is what somebody acts
+	// on.
+	Tripwire []string `yaml:"tripwire"`
+	// Seed makes the fabricated values reproducible. Zero derives one from
+	// the listener name, which is stable across restarts.
+	Seed uint64 `yaml:"seed"`
+	// Period is how long one sample of a value lasts. Default 30s; 1s to 1h.
+	Period Duration `yaml:"period"`
+	// MaxClients bounds the record of who has been answered. Default 1024.
+	MaxClients int `yaml:"max_clients"`
+}
+
+// S7DecoyBlocks is a run of data block numbers the fabrication has, and how
+// large each of them is.
+type S7DecoyBlocks struct {
+	// DBs is the run, as "1-8" or a single number.
+	DBs string `yaml:"dbs"`
+	// Bytes is the size of each block in the run. Default 512. A read past
+	// the end of a block is answered the way a CPU answers one: with an
+	// address error, because a block whose length nothing bounds is not a
+	// block.
+	Bytes int `yaml:"bytes"`
+}
+
+// S7DecoyBand is how one run of byte addresses inside a block behaves.
+type S7DecoyBand struct {
+	// Addresses is the run of byte addresses, as "0-199".
+	Addresses string `yaml:"addresses"`
+	// Shape is analogue (a measurement inside min..max that drifts),
+	// discrete (a bit that mostly stays where it is) or counter (a
+	// totaliser that only increases).
+	Shape string `yaml:"shape"`
+	// Min and Max bound an analogue band. Defaults 0 and 27648, which is
+	// what a scaled analogue input reports on much of the installed base.
+	Min int `yaml:"min"`
+	Max int `yaml:"max"`
+	// Rate is how much a counter adds each period.
+	Rate int `yaml:"rate"`
 }
 
 // S7CommPlus is the policy for S7comm-plus on an s7 listener.

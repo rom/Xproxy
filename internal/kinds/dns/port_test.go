@@ -63,10 +63,26 @@ func TestAPortWhoseDatagramSideIsTakenIsReported(t *testing.T) {
 		_ = extra.Close()
 		t.Error("the datagram port came free, so the engine had taken it")
 	}
-	if ln, err := net.Listen("tcp", "127.0.0.1:"+port); err != nil {
-		t.Errorf("the accept socket was left behind: %v", err)
-	} else {
-		_ = ln.Close()
+	// The accept socket is free again. Bounded rather than immediate,
+	// because the port is an ephemeral one and this suite runs packages in
+	// parallel: another test taking it for a moment is indistinguishable
+	// from a leak in one attempt, and it happens. A socket this process
+	// leaked is held for the life of the process, so it fails every
+	// attempt and the test still says so.
+	deadline := time.Now().Add(2 * time.Second)
+	var last error
+	for {
+		ln, err := net.Listen("tcp", "127.0.0.1:"+port)
+		if err == nil {
+			_ = ln.Close()
+			break
+		}
+		last = err
+		if time.Now().After(deadline) {
+			t.Errorf("the accept socket was left behind: %v", last)
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

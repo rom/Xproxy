@@ -194,8 +194,14 @@ type Stats struct {
 	// IEC104Deceived counts the frames answered by a station that is not
 	// there, and IEC104Tripwire the ones naming an information object
 	// address no legitimate control centre reads.
-	IEC104Deceived    atomic.Uint64
-	IEC104Tripwire    atomic.Uint64
+	IEC104Deceived atomic.Uint64
+	IEC104Tripwire atomic.Uint64
+
+	// S7Deceived counts the requests answered by a controller that is not
+	// there, and S7Tripwire the ones naming a data block no legitimate
+	// client reads.
+	S7Deceived        atomic.Uint64
+	S7Tripwire        atomic.Uint64
 	IEC104Commands    atomic.Uint64
 	IEC104SystemCmds  atomic.Uint64
 	IEC104Denied      atomic.Uint64
@@ -722,6 +728,8 @@ type Snapshot struct {
 	IEC104Frames          uint64 `json:"iec104_frames"`
 	IEC104Deceived        uint64 `json:"iec104_deceived"`
 	IEC104Tripwire        uint64 `json:"iec104_tripwire"`
+	S7Deceived            uint64 `json:"s7_deceived"`
+	S7Tripwire            uint64 `json:"s7_tripwire"`
 	IEC104Commands        uint64 `json:"iec104_commands"`
 	IEC104SystemCmds      uint64 `json:"iec104_system_commands"`
 	IEC104Denied          uint64 `json:"iec104_denied"`
@@ -1155,6 +1163,8 @@ func (s *Stats) snapshot() Snapshot {
 		IEC104Frames:           s.IEC104Frames.Load(),
 		IEC104Deceived:         s.IEC104Deceived.Load(),
 		IEC104Tripwire:         s.IEC104Tripwire.Load(),
+		S7Deceived:             s.S7Deceived.Load(),
+		S7Tripwire:             s.S7Tripwire.Load(),
 		IEC104Commands:         s.IEC104Commands.Load(),
 		IEC104SystemCmds:       s.IEC104SystemCmds.Load(),
 		IEC104Denied:           s.IEC104Denied.Load(),
