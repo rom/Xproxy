@@ -62,6 +62,7 @@ type server struct {
 	upTLS  *tls.Config
 
 	policy    *Policy
+	decoy     *decoy
 	framing   wire.Framing
 	upFraming wire.Framing
 	routes    []*route
@@ -129,6 +130,9 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener, tc *tls.Co
 			return nil, fmt.Errorf("modbus upstream_tls: %w", err)
 		}
 		t.upTLS = uc
+	}
+	if t.decoy, err = newDecoy(m.Deception, cfg.Name); err != nil {
+		return nil, fmt.Errorf("modbus %s: %w", cfg.Name, err)
 	}
 	if l := m.Learn; l != nil && l.Enabled {
 		t.learner = NewLearner(cfg.Name, l.File, l.Interval.D(), l.MaxSubjects)
@@ -491,6 +495,13 @@ func (se *session) run() string {
 			se.denied.Add(1)
 			t.host.Counters().ModbusDenied.Add(1)
 			t.refuse(se, frame, pdu, decision)
+			// The refusal is counted and logged either way. What the
+			// client is told can be a fabrication instead of an
+			// exception, which is the whole of the deception: it replaces
+			// a refusal and never an answer.
+			if se.deceive(frame, pdu, decision.Reason) {
+				continue
+			}
 			switch t.m.DenyResponse {
 			case "drop":
 				continue
@@ -515,11 +526,28 @@ func (se *session) run() string {
 			t.logFrame(se, frame, pdu, decision)
 		}
 		t.observeFrame(se, frame, pdu)
+		// A listener that is nothing but a decoy answers here: there is
+		// no device to dial and no route to find, which is also why this
+		// is the one mode that needs no upstream.
+		if d := t.decoy; d != nil && d.whole && d.admits(se.ip) {
+			if se.deceive(frame, pdu, "decoy") {
+				continue
+			}
+			// The fabricated device does not implement this function
+			// code, and says so the way the real one would.
+			se.answerException(frame, pdu.Function, wire.ExIllegalFunction, nil)
+			continue
+		}
 		w, reason := se.workerFor(frame.Unit)
 		if reason != "" {
 			t.host.Counters().ModbusDenied.Add(1)
 			se.denied.Add(1)
 			t.deny(se.ip, reason, fmt.Sprintf("unit %d", frame.Unit))
+			// A unit identifier nothing is behind is the answer that maps
+			// an estate, so it is the first one worth fabricating.
+			if se.deceive(frame, pdu, reason) {
+				continue
+			}
 			se.answerException(frame, pdu.Function, wire.ExGatewayPathUnavail, nil)
 			continue
 		}

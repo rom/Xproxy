@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -592,6 +593,30 @@ func (s *Server) ECH() map[string]*tlsconf.ECHStatus {
 			out[bl.cfg.Name] = st
 		}
 	}
+	return out
+}
+
+// DeviceDecoys returns what every listener's fabricated device has seen.
+// The name keeps it apart from Decoys, which is the list of canned bodies
+// the HTTP honeypot carries.
+//
+// Sorted by listener, so the view is stable between calls: an operator
+// comparing two reads of it is looking for a new visitor, not for the map
+// iteration to have moved.
+func (s *Server) DeviceDecoys() []DecoyStatus {
+	s.mu.Lock()
+	var out []DecoyStatus
+	for _, bl := range s.listeners {
+		d, ok := bl.inst.(Decoy)
+		if !ok {
+			continue
+		}
+		if st, on := d.DecoyStatus(); on {
+			out = append(out, st)
+		}
+	}
+	s.mu.Unlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].Listener < out[j].Listener })
 	return out
 }
 

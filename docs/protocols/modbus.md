@@ -119,6 +119,40 @@ any other refusal. Either shadow switch -- `policy: {mode: shadow}` on the
 listener, or `shadow: true` on the section -- records what it would have refused
 and carries the traffic.
 
+## Answering as a device that is not there
+
+The relay is an honest gateway, and that is a disclosure: `0x0a` for a unit
+identifier nothing is behind is what the specification asks for, so a sweep of 1
+to 247 maps which devices exist, and a refused function code answering `0x01`
+while a permitted one answers data maps the policy. The scan is refused and the
+survey completes.
+
+`deception` answers from a fabricated device instead. Two shapes:
+
+- `mode: decoy` is a honeypot -- an address on the plant network with no upstream
+  and nothing behind it. Anything speaking Modbus to it is lost or looking.
+- `mode: answer` is a real relay where the frames it was going to refuse are
+  answered by the fabrication instead, for the clients named in `clients`.
+
+**The rule that makes it safe here:** a frame that was going to reach a device is
+never answered by the fabrication. Deception replaces a refusal and never an
+answer, because the failure mode on a plant floor is not a confused scanner but
+an operator acting on a tank level that was never measured. `mode: answer`
+therefore refuses to load without a client list.
+
+The fabricated values are derived rather than invented -- stable while you read
+them, drifting between periods, inside a band the profile declares, with
+totalisers that only increase -- so the device survives a second look. Function
+code 17 and 43/14 carry the identity a scanner fingerprints on, and it should be
+the make this plant runs: a profile claiming another vendor's controller is the
+tell that ends the pretence. `tripwire` addresses are answered and raised as
+`modbus_tripwire`, which is a detection with no false-positive rate, because
+nothing legitimate reads them.
+
+See [docs/DECEPTION.md](../DECEPTION.md#a-device-that-is-not-there) for the
+family this belongs to and
+[docs/CONFIG.md](../CONFIG.md#serverlistenersmodbusdeception) for every setting.
+
 ## What it does not do
 
 - **It does not rewrite values.** A setpoint outside the bounds is refused, not
@@ -136,6 +170,12 @@ and carries the traffic.
   guess is a bound that trips during a legitimate ramp.
 - **It is not a substitute for segmentation.** A master that can reach TCP 502
   on the device directly is not covered by anything here.
+- **A decoy does not know your plant.** The fabricated values are plausible, not
+  meaningful: they are inside their bands and they move, and nothing here knows
+  that register 40010 is a tank level in centimetres. Somebody who knows the
+  process can tell. That is the honest limit of it -- a decoy costs an
+  opportunist a survey, and it will not fool the engineer who commissioned the
+  line.
 
 ## Standards
 

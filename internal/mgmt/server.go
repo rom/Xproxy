@@ -341,7 +341,12 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 	})
 	mux.HandleFunc("GET /v1/honeypot", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, 200, map[string]any{"marks": s.proxy.HoneypotMarks(), "marks_dropped": s.proxy.HoneypotMarksDropped(),
-			"decoys": s.proxy.Decoys(), "honeytokens": s.proxy.Honeytokens()})
+			"decoys": s.proxy.Decoys(), "honeytokens": s.proxy.Honeytokens(),
+			// The fabricated devices of the protocol kinds. They belong in
+			// the same view as the HTTP honeypot's: an operator asking
+			// "what has been probing us" should not have to know which
+			// listener kind answered.
+			"device_decoys": s.proxy.DeviceDecoys()})
 	})
 	mux.HandleFunc("DELETE /v1/honeypot", func(w http.ResponseWriter, r *http.Request) {
 		ip, err := netip.ParseAddr(r.URL.Query().Get("ip"))

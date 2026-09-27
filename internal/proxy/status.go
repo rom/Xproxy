@@ -164,6 +164,35 @@ type DeceiveStatus struct {
 	Bytes  int    `json:"body_bytes"`
 }
 
+// DecoyStatus is one listener answering as a device that is not there.
+//
+// A decoy nobody reads is an ornament, so this carries who has been
+// answered rather than only how often: the visitors are the finding.
+type DecoyStatus struct {
+	Listener string `json:"listener"`
+	Kind     string `json:"kind"`
+	// Mode is answer (a refused frame is fabricated) or decoy (the whole
+	// listener is the fabricated device).
+	Mode    string `json:"mode"`
+	Profile string `json:"profile"`
+	Served  uint64 `json:"served"`
+	// Tripped counts what touched an address nothing legitimate reads.
+	Tripped uint64 `json:"tripped"`
+	// Anyone says the listener will fabricate for any client, which is
+	// only allowed where nothing real is behind it.
+	Anyone   bool           `json:"anyone,omitempty"`
+	Visitors []DecoyVisitor `json:"visitors,omitempty"`
+}
+
+// DecoyVisitor is one address a decoy has answered.
+type DecoyVisitor struct {
+	ClientIP  string `json:"client_ip"`
+	FirstSeen string `json:"first_seen"`
+	LastSeen  string `json:"last_seen"`
+	Frames    uint64 `json:"frames"`
+	Tripped   uint64 `json:"tripped"`
+}
+
 // DegradeStatus is one row of the management view.
 type DegradeStatus struct {
 	Name           string `json:"name"`

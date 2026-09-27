@@ -4469,8 +4469,210 @@ T}
 \fBThe device\(aqs own answer is checked too.\fR A response the relay cannot parse, or one answering for a different unit identifier, is not handed to the master: the two would read the same bytes differently, which is the whole class of bug this relay exists to prevent. The master gets exception 04 (server failure) and the event is logged.
 .PP
 \fBLearning is observe\-only unless it says otherwise.\fR \fBlearn.enforce\fR defaults to false, and validation warns while it is off, because a learning run left on by accident is a relay that decides nothing.
+.SS "server.listeners[].modbus.deception"
 .PP
-Counters: \fBmodbus_sessions\fR, \fBmodbus_sessions_open\fR, \fBmodbus_requests\fR, \fBmodbus_responses\fR, \fBmodbus_denied\fR, \fBmodbus_would_deny\fR, \fBmodbus_exceptions\fR, \fBmodbus_malformed\fR, \fBmodbus_refused\fR, \fBmodbus_rejected\fR, \fBmodbus_rate_limited\fR, \fBmodbus_queue_full\fR, \fBmodbus_upstream_failed\fR, \fBmodbus_traced\fR, \fBmodbus_learned\fR. Refusals are \fBmodbus_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBtls_handshake\fR, \fBno_client_certificate\fR, \fBno_role\fR, \fBrole_not_allowed\fR, \fBsecurity_requires_tls\fR, \fBframing\fR, \fBframe_too_large\fR, \fBmalformed\fR, \fBmalformed_response\fR, \fBresponse_unit_mismatch\fR, \fBno_route_for_unit\fR, \fBmax_connections\fR, \fBrate_limit\fR, \fBqueue_full\fR, \fBread_only\fR, \fBread_only_unknown_function\fR, \fBunit_not_allowed\fR, \fBrule_deny\fR, \fBno_rule\fR, \fBvalue_out_of_range\fR, \fBvalue_delta\fR, \fBvalue_transition\fR, \fBvalue_rate\fR, \fBvalue_no_select\fR, \fBvalue_unknown\fR, \fBvalue_masked_write\fR, \fBcoil_set_not_allowed\fR, \fBcoil_clear_not_allowed\fR. A selector that does not match is not a refusal of its own: the frame falls through to the next rule, and to \fBno_rule\fR if none matches.
+\fBA refusal is information.\fR The relay answers "gateway path unavailable" for a unit identifier nothing is behind, which is exactly what the specification says a gateway should do \[u2014] and a sweep of 1 to 247 therefore draws the map. Here is a probe of a relay routing unit 1 only:
+.PP
+.RS 4
+.nf
+.ft CR
+unit 1 read  \-> 2 registers [4660 0]
+unit 2 read  \-> exception 0x0a
+unit 3 read  \-> exception 0x0a
+unit 17 read \-> exception 0x0a
+.ft
+.fi
+.RE
+.PP
+Every refused frame answers the same way, so the same sweep also reports which function codes the policy permits. The scan is refused and the survey completes.
+.PP
+This section answers instead, from a fabricated device whose values are stable per address and move slowly with time. The crawl finishes, the map is wrong, and the request that would have worked looks like the one that did not.
+.PP
+\fBOn a plant floor the failure mode of this is not a confused scanner.\fR It is an operator reading a fabricated tank level off an HMI and acting on it. One rule holds, and it is a test rather than an intention: \fBa frame that was going to reach a device is never answered from here.\fR Deception replaces a refusal \[u2014] a policy denial, or a unit identifier nothing is behind \[u2014] and never an answer. The worst case is then bounded, and what is left is a policy refusing something legitimate by mistake, which is why \fBmode: answer\fR refuses to load without \fBclients\fR.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.9i) lbw(1.0i) lbx
+lw(1.0i) lw(0.9i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Turns the section off without removing it
+T}
+T{
+\fBmode\fR
+T}	T{
+\fBanswer\fR,\: \fBdecoy\fR
+T}	T{
+\fBanswer\fR
+T}	T{
+\fBanswer\fR fabricates what this listener was going to refuse,\: on a listener that fronts real devices. \fBdecoy\fR is the whole listener: a honeypot with no upstream and no routes,\: where no frame reaches anything
+T}
+T{
+\fBclients\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+The networks that get the fabrication. \fBRequired in \fBmode:\: answer\fR.\fR Empty in \fBmode:\: decoy\fR means every client,\: which is what a honeypot is for
+T}
+T{
+\fBprofile\fR
+T}	T{
+\fBgeneric\-\:plc\fR,\: \fBgeneric\-\:rtu\fR,\: \fBgeneric\-\:meter\fR
+T}	T{
+\fBgeneric\-\:plc\fR
+T}	T{
+The fabricated device\(aqs shape: which function codes it implements and how its address space behaves
+T}
+T{
+\fBvendor\fR,\: \fBproduct\fR,\: \fBrevision\fR,\: \fBserial\fR
+T}	T{
+string
+T}	T{
+generic
+T}	T{
+What the device says about itself in function code 17 and in 43/\:14,\: which is what a scanner fingerprints on. \fBA decoy should claim the make the plant actually runs\fR,\: and only you know what that is: a Schneider identity on a Rockwell site is the tell that ends the pretence. An unset serial is derived from the seed,\: so the device keeps one and keeps the same one
+T}
+T{
+\fBunits\fR
+T}	T{
+list
+T}	T{
+\fB["1"]\fR
+T}	T{
+The unit identifiers the fabricated device answers for. Everything outside it answers the way a gateway answers a unit nothing is behind,\: because no gateway has 247 devices on it
+T}
+T{
+\fBfunctions\fR
+T}	T{
+list
+T}	T{
+the profile\(aqs
+T}	T{
+The function codes it implements,\: by name or number. A code outside the list answers an illegal\-function exception,\: which is what the real device would say \[u2014] a decoy that implements everything is answering for a PLC nobody makes
+T}
+T{
+\fBbands\fR
+T}	T{
+list
+T}	T{
+the profile\(aqs
+T}	T{
+How the address space behaves;\: see below
+T}
+T{
+\fBtripwire\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Addresses no legitimate master has a reason to touch. Reading one is \fBanswered\fR,\: and raised as a \fBmodbus_\:tripwire\fR security event: the answer keeps the visitor reading and the event is what an operator acts on
+T}
+T{
+\fBseed\fR
+T}	T{
+int
+T}	T{
+from the listener name
+T}	T{
+Makes the fabricated values reproducible. The default is stable across restarts,\: because a decoy whose serial number changes when the proxy is upgraded is a decoy somebody has noticed
+T}
+T{
+\fBperiod\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+How long one sample of a value lasts;\: 1s to 1h. Slow enough that reading an address twice gives the same answer,\: fast enough that a trend moves
+T}
+T{
+\fBmax_\:clients\fR
+T}	T{
+int
+T}	T{
+\fB1024\fR
+T}	T{
+Bounds the record of who has been answered
+T}
+.TE
+.PP
+Each \fBbands\fR entry:
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(1.0i) lbw(0.9i) lbx
+lw(1.0i) lw(1.0i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBaddresses\fR
+T}	T{
+range
+T}	T{
+required
+T}	T{
+The run this band covers,\: as \fB"0\-\:999"\fR
+T}
+T{
+\fBshape\fR
+T}	T{
+\fBanalogue\fR,\: \fBdiscrete\fR,\: \fBcounter\fR
+T}	T{
+\fBanalogue\fR
+T}	T{
+\fBanalogue\fR is a measurement inside \fBmin\fR..\fBmax\fR that drifts;\: \fBdiscrete\fR a bit that mostly stays where it is;\: \fBcounter\fR a totaliser that only increases \[u2014] \fBa totaliser that goes backwards is the tell\fR,\: so it is monotone by construction
+T}
+T{
+\fBmin\fR,\: \fBmax\fR
+T}	T{
+int
+T}	T{
+\fB0\fR,\: \fB27648\fR
+T}	T{
+The analogue band\(aqs range. The default is what a scaled analogue input reports on much of the installed base
+T}
+T{
+\fBrate\fR
+T}	T{
+int
+T}	T{
+\fB1\fR
+T}	T{
+How much a counter adds each period
+T}
+.TE
+.PP
+\fBWhy the values are derived rather than invented.\fR A decoy that answers a register with a random number lasts about four seconds, because no process reads differently twice in a row; one that answers zero is worse, because zero is what an unconfigured device says. So a value is a function of the seed, the address and which period of the clock it is: stable while you read it, moved when you come back, inside its band, and nothing is stored \[u2014] a sweep of all 65536 addresses costs the relay no memory at all.
+.PP
+\fBdeny_response: close\fR and \fBdrop\fR do not apply to the clients this section covers: they are answered by the fabricated device instead, and validation says so at load.
+.PP
+Where a decoy is worth having: an address on the plant network with nothing behind it (\fBmode: decoy\fR), so that anything talking Modbus to it is either lost or looking. \fBxproxyctl honeypot\fR lists the visitors, \fBmodbus_deceived\fR and \fBmodbus_tripwire\fR count them, and the \fBmodbus_deceived\fR / \fBmodbus_tripwire\fR security events carry the client, the unit and the function. \fBA decoy nobody reads is an ornament\fR; the tripwire is the signal worth alerting on, because nothing legitimate touches those addresses.
+.PP
+Counters: \fBmodbus_sessions\fR, \fBmodbus_sessions_open\fR, \fBmodbus_requests\fR, \fBmodbus_responses\fR, \fBmodbus_denied\fR, \fBmodbus_would_deny\fR, \fBmodbus_exceptions\fR, \fBmodbus_malformed\fR, \fBmodbus_refused\fR, \fBmodbus_rejected\fR, \fBmodbus_rate_limited\fR, \fBmodbus_queue_full\fR, \fBmodbus_upstream_failed\fR, \fBmodbus_traced\fR, \fBmodbus_learned\fR, \fBmodbus_deceived\fR, \fBmodbus_tripwire\fR. Refusals are \fBmodbus_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBtls_handshake\fR, \fBno_client_certificate\fR, \fBno_role\fR, \fBrole_not_allowed\fR, \fBsecurity_requires_tls\fR, \fBframing\fR, \fBframe_too_large\fR, \fBmalformed\fR, \fBmalformed_response\fR, \fBresponse_unit_mismatch\fR, \fBno_route_for_unit\fR, \fBmax_connections\fR, \fBrate_limit\fR, \fBqueue_full\fR, \fBread_only\fR, \fBread_only_unknown_function\fR, \fBunit_not_allowed\fR, \fBrule_deny\fR, \fBno_rule\fR, \fBvalue_out_of_range\fR, \fBvalue_delta\fR, \fBvalue_transition\fR, \fBvalue_rate\fR, \fBvalue_no_select\fR, \fBvalue_unknown\fR, \fBvalue_masked_write\fR, \fBcoil_set_not_allowed\fR, \fBcoil_clear_not_allowed\fR. A selector that does not match is not a refusal of its own: the frame falls through to the next rule, and to \fBno_rule\fR if none matches.
 .SS "server.listeners[].iec104 (kind: iec104)"
 .PP
 IEC 60870\-5\-104 is the protocol that operates electricity transmission and distribution, and it is the grid\(aqs Modbus: a controlling station (the SCADA master) and a controlled station (a substation gateway or an RTU) exchange application service data units over a plain TCP connection on port 2404, with no authentication, no integrity and no confidentiality anywhere in the standard. Anyone who can reach the gateway can trip a breaker on it. IEC 62351\-3 adds TLS and is almost nowhere deployed, because the controlled stations are substation equipment with twenty\-year service lives.

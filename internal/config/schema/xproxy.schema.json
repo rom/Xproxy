@@ -5922,6 +5922,112 @@
       },
       "additionalProperties": false
     },
+    "ModbusDeception": {
+      "description": "ModbusDeception answers as a device that is not there. A refusal is information. A relay that answers \"gateway path unavailable\" for every unit identifier nothing is behind is doing exactly what the specification says, and a sweep of 1 to 247 therefore draws the map: which units exist, and by the same argument which function codes the policy permits. The scan is refused and the survey completes. This answers instead, from a fabricated device whose values are stable per address and move slowly with time, so the crawl finishes and the map is wrong. **On a plant floor the failure mode of this tool is not a confused scanner.** It is an operator reading a fabricated tank level off an HMI and acting on it. So one rule holds, and it is tested rather than intended: a frame the policy allowed is never deceived -- deception replaces a refusal and never an answer. In mode answer, where there are real devices behind the listener, clients is required: a section that would lie to anybody who connects is not something to arrive at by leaving a field out.",
+      "type": "object",
+      "properties": {
+        "bands": {
+          "description": "Bands describe how the address space behaves. Empty takes the profile's.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ModbusDecoyBand"
+          }
+        },
+        "clients": {
+          "description": "Clients are the networks that get the fabrication. Required in mode answer. In mode decoy an empty list means every client, which is what a honeypot wants, since nothing real is behind it.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "enabled": {
+          "description": "Enabled turns the section off without removing it; it defaults to true wherever the section is present.",
+          "type": "boolean"
+        },
+        "functions": {
+          "description": "Functions are the function codes the fabricated device implements, by name or number. Empty takes the profile's list. A code outside it is answered with an illegal-function exception, which is what the real device would say -- a decoy that implements everything is answering for a PLC nobody makes.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_clients": {
+          "description": "MaxClients bounds the record of who has been answered. Default 1024.",
+          "type": "integer"
+        },
+        "mode": {
+          "description": "Mode is answer (the default: a frame this listener was going to refuse is answered by the fabricated device instead) or decoy (the whole listener is the fabricated device and no frame reaches anything -- this is a honeypot, and it needs no upstream).",
+          "type": "string"
+        },
+        "period": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "product": {
+          "type": "string"
+        },
+        "profile": {
+          "description": "Profile is the fabricated device's shape: generic-plc (the default), generic-rtu or generic-meter. It decides which function codes the device implements and how its address ranges behave.",
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        },
+        "seed": {
+          "description": "Seed makes the fabricated values reproducible. Zero derives one from the listener name, which is stable across restarts: a decoy whose serial number changes when the proxy is upgraded is a decoy somebody has noticed.",
+          "type": "integer"
+        },
+        "serial": {
+          "type": "string"
+        },
+        "tripwire": {
+          "description": "Tripwire are register or coil addresses no legitimate master has a reason to touch. Reading one is not refused -- it is answered, and raised as a security event, because the answer is what keeps the visitor reading and the event is what an operator acts on.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "units": {
+          "description": "Units are the unit identifiers the fabricated device answers for, as numbers or \"1-8\" ranges. Default \"1\". Everything outside it is answered the way a real gateway answers an address nothing is behind, because a decoy that answers for all 247 units is a decoy: no gateway has 247 devices on it.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "vendor": {
+          "description": "Vendor, Product, Revision and Serial are what the device says about itself, in the server identity of function code 17 and the device identification of 43/14 -- which is what a scanner fingerprints on. The defaults are deliberately generic: **a decoy should claim the make of device the plant actually runs**, and only the operator knows what that is. A Schneider identity on a Rockwell site is the tell that ends the pretence.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ModbusDecoyBand": {
+      "description": "ModbusDecoyBand is how one run of addresses behaves.",
+      "type": "object",
+      "properties": {
+        "addresses": {
+          "description": "Addresses is the run this band covers, as \"0-999\".",
+          "type": "string"
+        },
+        "max": {
+          "type": "integer"
+        },
+        "min": {
+          "description": "Min and Max bound an analogue band. Default 0..27648, which is the range a scaled analogue input reports on much of the installed base.",
+          "type": "integer"
+        },
+        "rate": {
+          "description": "Rate is how much a counter adds each period.",
+          "type": "integer"
+        },
+        "shape": {
+          "description": "Shape is analogue (a measurement inside min..max that drifts), discrete (a bit that mostly stays where it is) or counter (a totaliser that only increases). A totaliser that goes backwards is the tell that ends the pretence, so counter is monotone by construction.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "ModbusLearn": {
       "description": "ModbusLearn records what crosses the listener and writes it out as a rule set to start from. It exists because nobody knows what a plant's Modbus traffic actually is. The drawings say what it was meant to be; the traffic says what the integrator left behind. Run this for a week and the file is the answer, written as rules that can be pasted in.",
       "type": "object",
@@ -5969,6 +6075,14 @@
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "deception": {
+          "description": "Deception answers a refused frame, or a whole listener, as a device that is not there. See ModbusDeception.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/ModbusDeception"
+            }
+          ]
         },
         "default_action": {
           "description": "DefaultAction is deny (the default) or allow: what happens to a frame no rule matched. Allow with no rules is a relay that only watches, which is what learning mode is for.",

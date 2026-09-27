@@ -6,6 +6,121 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Fixed (iec104: an address policy was checked against numbers nobody sent)
+
+- **Seven information element sizes were wrong, five of them measurements.**
+  `objectSize` is how the parser steps from one information object to the next,
+  so a size one octet short reads every address after the first out of the middle
+  of the previous object's value. It is not a parse failure, so the addresses came
+  back silently wrong -- and `ASDU.Addresses` is what an `iec104` rule's
+  `addresses` list is checked against and what the OT inventory records. For any
+  ASDU carrying more than one object of an affected type, both directions of error
+  were available: an object outside an allowed range reading as inside it, and
+  legitimate traffic refused. The affected types are the measurement family, which
+  is the bulk of what a substation sends.
+
+  Found by round-tripping a frame builder through the parser. The probe, two
+  scaled measurements at IOA 1000 and 1001:
+
+  ```
+  addresses read back as [1000 256256]
+  objectSize(M_ME_NB_1) = 2; the standard's element is SVA(2) + QDS(1) = 3
+  ```
+
+  | Type | was | is | composed of |
+  |------|-----|----|-------------|
+  | `M_ME_NA_1` | 2 | 3 | NVA + QDS |
+  | `M_ME_NB_1` | 2 | 3 | SVA + QDS |
+  | `M_ME_ND_1` | 1 | 2 | NVA, and no quality descriptor |
+  | `M_ME_TA_1` | 5 | 6 | NVA + QDS + CP24Time2a |
+  | `M_ME_TB_1` | 5 | 6 | SVA + QDS + CP24Time2a |
+  | `C_CD_NA_1` | 1 | 2 | CP16Time2a, not a qualifier octet |
+  | `C_TS_TA_1` | 10 | 9 | TSC + CP56Time2a |
+
+  Every one confirmed against the encoders of `mz-automation/lib60870` by counting
+  the octets each writes rather than by reading its size reservations: the
+  bitstring commands reserve one octet more than they write, and taking the
+  reservation as the element size would have introduced two new defects while
+  fixing these. The standard's own naming settles the first three by itself --
+  `M_ME_ND_1` exists *because* NA and NB carry a quality descriptor, so a table
+  where NA is two octets and ND is one has them the wrong way round.
+
+  Two existing fixtures were built to the wrong size and now fail to parse, which
+  is the right answer: they were malformed ASDUs that only read because the parser
+  was walking short. The size table now has a test that composes every size from
+  the fields the standard names, and a second that sends three objects of every
+  known type and requires the addresses that went in to come back out -- the
+  property the policy depends on and the one nothing was checking.
+
+### Added (deception past HTTP: a device that is not there)
+
+- **`modbus.deception`, and `internal/deception` for the kinds that follow.**
+  Deception was an HTTP feature -- honeypot routes, decoy bodies, honeytokens,
+  deceptive answers -- and every other kind either forwarded or refused. That
+  asymmetry is a disclosure, and the probe is the argument:
+
+  ```
+  unit 1 read  -> 2 registers [4660 0]
+  unit 2 read  -> exception 0x0a
+  unit 3 read  -> exception 0x0a
+  unit 17 read -> exception 0x0a
+  ```
+
+  `0x0a` is "gateway path unavailable" and the relay is right to send it. Sweep 1
+  to 247 and the answers draw the map of the estate; since a refused function
+  code answers `0x01` where a permitted one answers data, the same sweep also
+  reports the policy. The scan is refused and the survey completes.
+
+  Two shapes now. `mode: decoy` is a honeypot: a listener with no upstream and
+  nothing behind it, where every frame is answered by a fabricated device.
+  `mode: answer` is a real relay where the frames it was going to refuse are
+  answered by the fabrication instead, for the clients named -- so a unit
+  identifier nothing is behind reads as a device, and a refused write is echoed
+  as though it landed and reaches nothing.
+
+  **The rule that makes this usable in a plant.** On a web gateway the worst case
+  of a deceptive answer is a client receiving nonsense; here it is an operator
+  reading a fabricated tank level off an HMI and acting on it. So a frame that
+  was going to reach a device is never answered by the fabrication: deception
+  replaces a refusal and never an answer. That is a test rather than an
+  intention, and it is the one mutation in this work whose survival would have
+  mattered. `mode: answer` refuses to load without `clients`, and
+  `deny_response: close` is warned about, since a deceived client is not closed.
+
+  **A fabricated device has to survive a second look**, which is most of the
+  design. Noise gives a decoy away, so a value is stable for a period and derived
+  from the address. Stillness gives it away, so it drifts between periods.
+  Impossibility gives it away, so counters are monotone by construction, `units`
+  defaults to one (no gateway has 247 devices on it), and a function code the
+  profile does not implement answers `0x01` -- what the real device would say. A
+  decoy that implements every code in the standard is answering for a PLC nobody
+  makes. Nothing is stored: a value is a function of the seed, the address and
+  which period of the clock it is, so a sweep of all 65536 addresses costs no
+  memory, and the seed defaults to the listener name so the device is the same
+  device after a restart.
+
+  Writing the test that a band is filled uniformly found a real defect in the
+  first draft: every value is taken modulo a small range, which is the low bits of
+  the hash, and FNV's low bits are its weakest -- a band a thousand wide answered
+  only between 1443 and 1889 across a hundred addresses. Every register reading
+  inside the middle half of its range is exactly the statistical tell that ends a
+  pretence. The hash output is now avalanched before anybody takes a remainder of
+  it.
+
+  The identity is the operator's to choose. Function code 17 and 43/14 are what a
+  scanner fingerprints on, and the built-in profiles (`generic-plc`,
+  `generic-rtu`, `generic-meter`) say something deliberately generic: a decoy
+  should claim the make the plant actually runs, because another vendor's
+  controller on this site is the tell, and only the operator knows which it is.
+
+  `tripwire` addresses are answered and raised as a `modbus_tripwire` security
+  event -- the answer keeps the visitor reading, the event is what somebody acts
+  on -- and it is a detection with no false-positive rate, because nothing
+  legitimate reads them. `xproxyctl honeypot` lists the visitors with what each
+  one touched, `xproxy_decoy_frames_total` and `xproxy_decoy_tripwire_total` are
+  the series, and `modbus_deceived` / `modbus_tripwire` the counters. A decoy
+  nobody reads is an ornament.
+
 ### Added (evidence: session recordings can be shown not to have been edited)
 
 - **A hash-chained manifest beside every recording**, under

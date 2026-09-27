@@ -1208,6 +1208,19 @@ describes it, validation refuses what cannot work, and
   to show it had been is not evidence. The manifest covers the ciphertext,
   so an auditor can be given the manifest key and establish that the file is
   the one the proxy wrote without being able to read the session in it
+- **A device that is not there.** Deception used to stop at HTTP, and every
+  other kind either forwarded or refused — which on a plant network is a
+  disclosure, because an honest gateway answering "no device here" for 246 of
+  247 unit identifiers has drawn the map for whoever asked. A `modbus` listener
+  can now answer as a fabricated device instead: as a whole honeypot with
+  nothing behind it, or, on a real relay, for the frames it was going to refuse
+  anyway and only for the clients named. The values are derived rather than
+  invented — stable while you read them, drifting between periods, inside their
+  bands, with totalisers that only increase — because a decoy is given away by
+  noise, by stillness and by impossibility. One rule holds and is tested: a
+  frame that was going to reach a device is never answered by the fabrication,
+  since the failure mode here is not a confused scanner but an operator acting
+  on a tank level that was never measured
 - **A device inventory built from traffic, not from scanning.** An
   operational estate's oldest problem is that nobody knows what is on the
   network: the drawings are from commissioning, the spreadsheet was

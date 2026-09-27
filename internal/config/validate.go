@@ -9543,9 +9543,13 @@ func (v *validator) modbusListener(p string, m *ModbusListener, hasTLS bool) {
 	default:
 		v.errf("%s.mode: must be reverse or forward", p)
 	}
-	if m.Upstream == "" && len(m.Routes) == 0 {
+	// A listener that is nothing but a decoy has nowhere to send a frame
+	// and is not supposed to: that is the one shape where an upstream is
+	// not a missing field.
+	if m.Upstream == "" && len(m.Routes) == 0 && !modbusDecoyOnly(m) {
 		v.errf("%s.upstream: required unless routes name every destination", p)
 	}
+	v.modbusDeception(p+".deception", m)
 	for _, f := range []struct{ key, val string }{{"framing", m.Framing}, {"upstream_framing", m.UpstreamFraming}} {
 		switch f.val {
 		case "", "tcp", "rtu", "ascii":
@@ -9651,7 +9655,7 @@ func (v *validator) modbusListener(p string, m *ModbusListener, hasTLS bool) {
 		v.modbusRanges(q+".addresses", r.Addresses, 0xFFFF)
 		v.modbusRanges(q+".write_addresses", r.WriteAddresses, 0xFFFF)
 		for j, f := range r.Functions {
-			if _, ok := modbusFunction(f); !ok {
+			if !modbusFunction(f) {
 				v.errf("%s.functions[%d]: %q is not a function code name or a number from 1 to 127", q, j, f)
 			}
 		}
@@ -9835,6 +9839,118 @@ func modbusTransition(s string) bool {
 	return stars < 2
 }
 
+// modbusDecoyOnly reports whether this listener is a honeypot: the whole
+// of it is a device that is not there.
+func modbusDecoyOnly(m *ModbusListener) bool {
+	d := m.Deception
+	return d != nil && (d.Enabled == nil || *d.Enabled) && d.Mode == "decoy"
+}
+
+// modbusDeception checks the deception section.
+//
+// The one rule worth being strict about is the client list. On a web
+// gateway a deceptive answer goes to a scanner; on a plant floor the same
+// answer can put a fabricated tank level in front of an operator. The
+// relay never deceives a frame that was going to reach a device -- that is
+// the code's invariant and it is tested -- but a policy refusing something
+// legitimate by mistake is exactly how a real master ends up being lied
+// to, and a section that would lie to anybody who connects is not
+// something to arrive at by leaving a field out.
+func (v *validator) modbusDeception(p string, m *ModbusListener) {
+	d := m.Deception
+	if d == nil || (d.Enabled != nil && !*d.Enabled) {
+		return
+	}
+	switch d.Mode {
+	case "", "answer":
+		if len(d.Clients) == 0 {
+			v.errf("%s.clients: required in mode answer; this listener reaches real devices, and a section that "+
+				"would fabricate an answer for any client that connects is not a decision to arrive at by default", p)
+		}
+	case "decoy":
+		if m.Upstream != "" || len(m.Routes) > 0 {
+			v.errf("%s.mode: decoy is the whole listener, so it has no upstream and no routes: "+
+				"use mode answer to fabricate refusals on a listener that fronts devices", p)
+		}
+		if len(d.Clients) == 0 {
+			// Not an error: a honeypot with nothing behind it is exactly
+			// the case where lying to every client is the point.
+			v.warnf("%s: no clients, so every client that connects is answered by the fabricated device. "+
+				"That is what a honeypot is for; it is worth being sure this listener is one", p)
+		}
+	default:
+		v.errf("%s.mode: must be answer or decoy", p)
+	}
+	v.modbusCIDRs(p+".clients", d.Clients)
+	// deny_response is what a refused client is told, and a deceived
+	// client is told something else instead. Saying so at load is cheaper
+	// than an engineer wondering why the connection they expected to be
+	// closed stayed open.
+	if d.Mode != "decoy" && (m.DenyResponse == "close" || m.DenyResponse == "drop") {
+		v.warnf("%s: deny_response %s does not apply to the clients this section covers -- they are answered by the "+
+			"fabricated device rather than closed or ignored", p, m.DenyResponse)
+	}
+	if d.Profile != "" && !modbusDecoyProfile(d.Profile) {
+		v.errf("%s.profile: %q is not a profile; the built-in ones are %s",
+			p, d.Profile, strings.Join(ModbusDecoyProfiles, ", "))
+	}
+	v.modbusRanges(p+".units", d.Units, 255)
+	v.modbusRanges(p+".tripwire", d.Tripwire, 65535)
+	if n := d.MaxClients; n < 0 || n > 1<<20 {
+		v.errf("%s.max_clients: must be between 0 and 1048576", p)
+	}
+	if period := d.Period.D(); period != 0 && (period < time.Second || period > time.Hour) {
+		v.errf("%s.period: must be between 1s and 1h", p)
+	}
+	for i := range d.Bands {
+		b := &d.Bands[i]
+		q := fmt.Sprintf("%s.bands[%d]", p, i)
+		if b.Addresses == "" {
+			v.errf("%s.addresses: required", q)
+		} else {
+			v.modbusRanges(q+".addresses", []string{b.Addresses}, 65535)
+		}
+		switch b.Shape {
+		case "", "analogue", "discrete", "counter":
+		default:
+			v.errf("%s.shape: must be analogue, discrete or counter", q)
+		}
+		if b.Min < 0 || b.Min > 65535 || b.Max < 0 || b.Max > 65535 {
+			v.errf("%s: min and max must be between 0 and 65535", q)
+		}
+		if b.Shape == "analogue" && b.Max != 0 && b.Max <= b.Min {
+			v.errf("%s: max must be above min", q)
+		}
+		if b.Rate < 0 || b.Rate > 65535 {
+			v.errf("%s.rate: must be between 0 and 65535", q)
+		}
+	}
+	for i, fc := range d.Functions {
+		if !modbusFunction(fc) {
+			v.errf("%s.functions[%d]: %q is not a function code", p, i, fc)
+		}
+	}
+}
+
+// ModbusDecoyProfiles are the fabricated device shapes a deception
+// section may name.
+//
+// The list is here because the validator has to refuse a name the kind
+// would not know, and the shapes themselves are in internal/kinds/modbus
+// because they are made of function codes and address bands. A test there
+// keeps the two exactly in step, which is the arrangement that stops a
+// profile existing in one and not the other.
+var ModbusDecoyProfiles = []string{"generic-plc", "generic-rtu", "generic-meter"}
+
+func modbusDecoyProfile(name string) bool {
+	for _, p := range ModbusDecoyProfiles {
+		if p == name {
+			return true
+		}
+	}
+	return false
+}
+
 func (v *validator) modbusCIDRs(p string, in []string) {
 	for i, c := range in {
 		if _, err := netip.ParsePrefix(c); err != nil {
@@ -9906,12 +10022,12 @@ func modbusNum(s string) (int, bool) {
 
 // modbusFunction says whether a function code is written as a name this
 // build knows or as a number the protocol has.
-func modbusFunction(s string) (int, bool) {
+func modbusFunction(s string) bool {
 	if _, ok := modbus.FunctionCode(s); ok {
-		return 0, true
+		return true
 	}
 	n, ok := modbusNum(strings.TrimSpace(s))
-	return n, ok && n >= 1 && n <= 127
+	return ok && n >= 1 && n <= 127
 }
 
 func modbusDay(s string) bool {

@@ -232,16 +232,24 @@ func qualifierOffset(t Type) (int, bool) {
 // is forwarded with its addresses unread rather than guessed at.
 func objectSize(t Type) (int, bool) {
 	switch t {
-	case MSpNA1, MDpNA1, MMeND1:
+	case MSpNA1, MDpNA1:
 		return 1, true
-	case MStNA1, MMeNA1, MMeNB1:
+	case MStNA1, MMeND1:
 		return 2, true
+	// A normalised or scaled measurement is its two value octets *and* a
+	// quality descriptor. The type without one exists separately -- that
+	// is what the D in M_ME_ND_1 is for -- so a size that left the
+	// quality out of NA and NB would make the two indistinguishable, and
+	// would read every address after the first from one octet short.
+	case MMeNA1, MMeNB1:
+		return 3, true
 	case MSpTA1, MDpTA1:
 		return 4, true
 	case MStTA1, MMeNC1, MBoNA1:
 		return 5, true
 	case MMeTA1, MMeTB1:
-		return 5, true
+		// The same, plus a three-octet CP24Time2a.
+		return 6, true
 	case MItNA1:
 		return 5, true
 	case MBoTA1, MMeTC1, MItTA1:
@@ -275,8 +283,12 @@ func objectSize(t Type) (int, bool) {
 		return 11, true
 	// The system commands carry one qualifier octet, except the two that
 	// carry a time and the test command's fixed pattern.
-	case CIcNA1, CCiNA1, CCdNA1:
+	case CIcNA1, CCiNA1:
 		return 1, true
+	case CCdNA1:
+		// A delay acquisition command carries a CP16Time2a, which is two
+		// octets and not the one a qualifier would be.
+		return 2, true
 	case CRdNA1:
 		return 0, true
 	case CRpNA1:
@@ -286,7 +298,8 @@ func objectSize(t Type) (int, bool) {
 	case CCsNA1:
 		return 7, true
 	case CTsTA1:
-		return 10, true
+		// The test sequence counter and a CP56Time2a.
+		return 9, true
 	}
 	return 0, false
 }

@@ -169,10 +169,13 @@ func TestTheASDUHeaderIsReadFieldByField(t *testing.T) {
 // depends on getting this right, and a sequence is how a station sends a
 // hundred measurements in one frame.
 func TestAddressesAreReadInBothShapes(t *testing.T) {
-	// Three separate objects, each with its own address.
+	// Three separate objects, each with its own address. A scaled
+	// measurement is two value octets and a quality descriptor, so each
+	// object is six octets -- an element one short is how every address
+	// after the first comes out wrong.
 	var body []byte
 	for _, a := range []uint32{100, 1000, 0x010203} {
-		body = append(body, obj(a, 0x11, 0x22)...)
+		body = append(body, obj(a, 0x11, 0x22, 0x00)...)
 	}
 	f, err := Parse(iframe(0, 0, asdu(MMeNB1, 3, false, CausePeriodic, 1, body...)...))
 	if err != nil {
@@ -184,7 +187,7 @@ func TestAddressesAreReadInBothShapes(t *testing.T) {
 	// A sequence: one address then the elements. Only the first address
 	// is on the wire, so only the first is reported -- reporting three
 	// would be inventing two.
-	seq := append(obj(500), 0x11, 0x22, 0x33, 0x44, 0x55, 0x66)
+	seq := append(obj(500), 0x11, 0x22, 0x00, 0x33, 0x44, 0x00, 0x55, 0x66, 0x00)
 	f, err = Parse(iframe(0, 0, asdu(MMeNB1, 3, true, CausePeriodic, 1, seq...)...))
 	if err != nil {
 		t.Fatal(err)
