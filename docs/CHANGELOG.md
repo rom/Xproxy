@@ -109,6 +109,61 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   known type and requires the addresses that went in to come back out -- the
   property the policy depends on and the one nothing was checking.
 
+### Added (deception past HTTP: an agent that is not there)
+
+- **`snmp.deception`.** The most scanned management protocol there is, and the
+  one where a refusal is about a *credential*: a community string that is wrong
+  is answered noAccess or noSuchName and one that is right is answered with
+  data, so the refusal is the oracle a password list needs. The system group is
+  the other half -- every scanner reads `sysDescr`, `sysObjectID` and `sysName`
+  first, and no policy can make that answer less informative because the
+  estate's own monitoring reads the same objects.
+
+  ```
+  community "public"    -> noSuchName
+  community "s3cret"    -> 24-port managed Ethernet switch
+  a walk of 1.3.6.1.2.1 -> every port, every counter
+  ```
+
+  `mode: decoy` is a whole listener with no upstream, answering as a device
+  whose counters rise and whose uptime is the uptime of nothing; `mode: answer`
+  fabricates, on a listener that fronts a real agent, the answers to requests
+  it was going to refuse.
+
+  **The bound this protocol adds.** A fabricated agent is a UDP service that
+  answers a small request with a larger response, which is exactly what a
+  reflection amplifier is: a GETBULK of forty octets asking for a thousand
+  repetitions is half a megabyte sent wherever the source address claimed to
+  be. So the listener's own `max_repetitions`, `max_var_binds` and
+  `max_response_bytes` bound the fabrication as they bound an agent's answer --
+  the repetition count before the answer is built, the binding count while it
+  is built, and an oversize answer replaced with `tooBig`. A honeypot that is
+  also an amplifier is a liability rather than a sensor, and each of those three
+  bounds has a test of its own.
+
+  **What makes it answerable** is mostly that it can be walked: the system group
+  and thirteen columns of the interface table, every GETNEXT strictly after the
+  name asked about, and an end rather than a loop. Beyond that it is what a
+  device cannot do. It does not have every object (`noSuchObject` in version 2c,
+  `noSuchName` with the binding's index in version 1, which is the same
+  statement in the only vocabulary a version 1 manager has). It does not answer
+  version 3, because the response would carry a digest this relay cannot
+  compute and an unauthenticated fabrication of an authenticated protocol is a
+  worse tell than silence. It does not answer a notification. A `SetRequest` is
+  answered as though it landed and nothing is written, which is the same choice
+  the Modbus section makes about a refused write.
+
+  The wire package gained what a fabrication needs and nothing there had needed
+  before: an OID encoder, the unsigned value forms, a response builder, and an
+  OID comparison -- with round-trip tests for each, because a name a manager
+  cannot read is an answer it discards, and a comparison written on the dotted
+  string puts `1.10` before `1.2` and turns a walk of an interface table into a
+  walk that skips most of it.
+
+  Twenty mutations of the new guards, nineteen killed and one equivalent: the
+  version 3 refusal is enforced twice over, once here and once by the envelope
+  builder, which refuses to put a v1/v2c community envelope round a v3 message.
+
 ### Added (deception past HTTP: a controller that is not there)
 
 - **`s7.deception`.** The third OT kind, and the one where the disclosure is

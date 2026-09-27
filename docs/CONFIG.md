@@ -2545,10 +2545,89 @@ DTLS on 10162 is not implemented, so a listener that is TLS throughout is
 | `connect_timeout` | duration | `5s` | Dialling the agent on the stream path |
 | `max_message_bytes` | int | `8192` | One message; the protocol's own floor is 484 octets and 1472 is what fits an Ethernet datagram. A message past this is refused unread |
 | `rate_limit`, `rate_burst` | int | `0` | Messages per second per client address. An SNMP poll is periodic and its rate is known, so this bound is unusually easy to set correctly |
+| `deception` | object | | Answer as an agent that is not there: a refused request answered by a fabricated device, or a whole listener that is one; see below |
 | `log_messages` | bool | `false` | An access line per message. A poller asks the same questions every thirty seconds, so this is a lot of lines |
 | `log_writes` | bool | `true` | An access line for every SetRequest and every refusal, leaving the polling alone: what was *changed* through this relay is the record an estate is asked for |
 | `alert_on_deny` | bool | `true` | A security event per refusal |
 | `proxy_protocol` | bool | `false` | Send a PROXY protocol v2 header to the agent on the stream path |
+
+#### server.listeners[].snmp.deception
+
+**A refusal is information, and here it is information about a credential.** A
+community string that is wrong is answered with noAccess or noSuchName; one
+that is right is answered with data. So a run through a password list finds
+the string, and the run before it finds which addresses have an agent on them
+at all — because an agent answers something and an address with nothing on it
+answers nothing.
+
+And the system group is the other half. Every scanner reads `sysDescr`,
+`sysObjectID` and `sysName` first, which is the inventory of an estate; no
+policy here can make that answer less informative, because the estate's own
+monitoring reads the same objects.
+
+```
+community "public"  -> noSuchName
+community "s3cret"  -> 24-port managed Ethernet switch
+sysObjectID         -> 1.3.6.1.4.1.8072.3.2.10
+a walk of 1.3.6.1.2.1 -> 60 objects, every port and every counter
+```
+
+This section answers instead, as a device whose counters rise, whose
+interfaces are up and whose uptime is the uptime of nothing.
+
+**The rule the other kinds hold to holds here**: a request that was going to
+reach the agent is never answered from here. Deception replaces a refusal — a
+policy denial, or an object the fabrication does not have — and never an
+answer, so `mode: answer` refuses to load without `clients`.
+
+**And one bound of its own, which matters more on this protocol than on any
+other in this file.** A fabricated agent is a UDP service that answers a small
+request with a larger response, and that is what an amplifier is: a GETBULK of
+forty octets asking for a thousand repetitions is half a megabyte of answer
+sent wherever the source address said. So `max_repetitions`, `max_var_binds`
+and `max_response_bytes` apply to what the fabrication answers exactly as they
+apply to what an agent answers — the repetition count is bounded before the
+answer is built, the binding count while it is built, and an answer past the
+size bound is replaced with `tooBig`, which is what an agent sends and what a
+manager retries in smaller pieces.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Turns the section off without removing it |
+| `mode` | `answer`, `decoy` | `answer` | `answer` fabricates what this listener was going to refuse, on a listener that fronts a real agent. `decoy` is the whole listener: a fabricated agent with no upstream, where no request reaches anything |
+| `clients` | list | | The networks that get the fabrication. **Required in `mode: answer`.** Empty in `mode: decoy` means every client, which is what a honeypot is for — and on a datagram protocol it is also what an amplifier is, which is why the bounds above are not optional |
+| `profile` | `generic-switch`, `generic-router` | `generic-switch` | The fabricated device's shape: how many interfaces it has and what it says it is |
+| `sys_descr`, `sys_object_id`, `sys_name`, `sys_contact`, `sys_location` | string | the profile's | The system group: what every scanner reads first and what an inventory tool records. **A decoy should say what the estate's own devices say** — a switch that describes itself as something nobody on the site runs is the tell that ends the pretence |
+| `interfaces` | int | the profile's | How many ports the fabricated device has, 1 to 256. The interface table is what a walk spends its time in |
+| `tripwire` | list of OID | `[]` | Subtrees no legitimate manager reads — a vendor's configuration-download branch, say. A binding under one is **answered**, and raised as an `snmp_tripwire` security event |
+| `seed` | int | from the listener name | Makes the fabricated values reproducible, and stable across restarts |
+| `period` | duration | `30s` | How long one sample of a counter or a gauge lasts; 1s to 1h |
+| `max_clients` | int | `1024` | Bounds the record of who has been answered |
+
+**What the fabrication answers for** is RFC 1213's system group and the
+interface table: `sysDescr` through `sysServices`, `ifNumber`, and thirteen
+columns of `ifTable` for each port — the index, the description, the type, the
+MTU, the speed, the physical address, the administrative and operational
+status, the last change, and the octet and error counters. A **walk** of it is
+a walk: every answer is strictly after the name asked about and the table
+ends, rather than looping, which is the first thing any manager notices.
+
+Three things a device cannot do, which this one therefore does not:
+
+- It does not have every object. A name outside the table is answered
+  `noSuchObject` in version 2c, and with `noSuchName` and the binding's index
+  in version 1 — which is the same statement in the only vocabulary a version
+  1 manager has.
+- It does not answer version 3. A version 3 response carries a digest
+  computed with a key this relay does not have, so an answer would be one no
+  manager accepts, and an unauthenticated fabrication of an authenticated
+  protocol is a worse tell than silence.
+- It does not answer a notification. A trap is not a question, and an agent
+  that sent a response to one would be answering something no agent answers.
+
+A `SetRequest` **is** answered, as though it took effect, and nothing is
+written: there is nothing behind the listener to write to. That is the bait,
+and it is the same choice the Modbus section makes about a refused write.
 
 #### server.listeners[].snmp.rules[]
 

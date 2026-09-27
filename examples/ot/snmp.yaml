@@ -251,6 +251,71 @@ server:
         rules:
           - {name: system-only, action: allow, access: [read], oids: ["1.3.6.1.2.1.1"]}
 
+    # ---------------------------------------------------------------
+    # An agent that is not there: an address on the management network
+    # with nothing on it.
+    #
+    # It earns its place here because of what a scan of this protocol
+    # looks for. A community string that is wrong is refused and one that
+    # is right is answered, so the refusal is the oracle a password list
+    # needs; and the system group is the estate's own inventory, which
+    # every scanner reads first. This listener answers as a switch
+    # instead, and anything that arrives here arrived at an address
+    # nothing operational uses.
+    #
+    # The identity should be what the estate's own switches say. A decoy
+    # describing itself as something nobody on the site runs is the tell
+    # that ends the pretence.
+    #
+    # The three bounds below are not decoration. A fabricated agent is a
+    # UDP service answering a small request with a larger response, which
+    # is what a reflection amplifier is, and they are what keep this a
+    # sensor rather than a liability.
+    # ---------------------------------------------------------------
+    - name: sw-spare
+      address: "10.50.0.41:161"
+      kind: snmp
+      snmp:
+        transport: udp
+        deception:
+          mode: decoy
+          profile: generic-switch
+          sys_descr: "24-port managed Ethernet switch"
+          sys_name: "sw-cell9"
+          sys_location: "Cell 9, north wall"
+          interfaces: 24
+          # A vendor configuration branch nothing legitimate reads.
+          tripwire: ["1.3.6.1.4.1.9.9.96"]
+        max_repetitions: 25
+        max_var_binds: 64
+        max_response_bytes: 4096
+        rate_limit: 20
+        rate_burst: 40
+        alert_on_deny: true
+
+    # ---------------------------------------------------------------
+    # And the other shape, on a listener that fronts real agents: a
+    # client on the network that has no business polling gets its
+    # refusals answered by a fabricated switch rather than told no.
+    #
+    # The bound is a test and not an intention: a request that was going
+    # to reach the agent is never answered from here.
+    # ---------------------------------------------------------------
+    - name: poll-decoyed
+      address: "10.50.0.42:161"
+      kind: snmp
+      snmp:
+        transport: udp
+        upstream: switches
+        communities: ["${SNMP_POLL_COMMUNITY}"]
+        default_action: deny
+        deception:
+          mode: answer
+          clients: ["10.50.9.0/24"]
+          sys_descr: "24-port managed Ethernet switch"
+        max_repetitions: 25
+        max_response_bytes: 4096
+
 upstreams:
   - name: switches
     endpoints:

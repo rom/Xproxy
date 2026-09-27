@@ -78,6 +78,7 @@ type server struct {
 	upTLS  *tls.Config
 
 	policy  *Policy
+	decoy   *decoy
 	limiter *limits.KeyedLimiter
 	// upgrade is the version requests are forwarded in, or -1 to forward
 	// the version that arrived.
@@ -108,6 +109,9 @@ func newServer(host proxy.Host, cfg config.Listener, pc net.PacketConn, ln net.L
 	var err error
 	if t.policy, err = compile(m, time.Now); err != nil {
 		return nil, err
+	}
+	if t.decoy, err = newDecoy(m.Deception, cfg.Name); err != nil {
+		return nil, fmt.Errorf("snmp %s: %w", cfg.Name, err)
 	}
 	if m.UpgradeVersion != "" {
 		v, ok := wire.VersionOf(m.UpgradeVersion)
@@ -179,6 +183,19 @@ func (t *server) maxResponse() int {
 		return n
 	}
 	return 8192
+}
+
+// repetitionBound and varBindBound are the listener's own amplification
+// bounds, which the fabrication is held to exactly as an agent's answer is.
+func (t *server) repetitionBound(m *wire.Message) int {
+	return t.policy.MaxRepetitions(request{msg: m}, "")
+}
+
+func (t *server) varBindBound() int {
+	if n := t.m.MaxVarBinds; n > 0 {
+		return n
+	}
+	return 128
 }
 
 func (t *server) maxRatio() int {

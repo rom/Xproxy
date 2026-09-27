@@ -1234,7 +1234,13 @@ describes it, validation refuses what cannot work, and
   the same list, and it hands over the order number, the module type and the
   firmware. A fabricated CPU answers it instead — and gets the things a
   controller cannot do right as well as the things it can, down to not speaking
-  the protocol its family does not speak
+  the protocol its family does not speak. And an `snmp` listener does it for
+  the management network, where the refusal is about a *credential* -- a
+  community string that is wrong is refused and one that is right is answered,
+  which is the oracle a password list needs -- with the amplification bounds
+  applying to the fabrication as they do to an agent, because a honeypot that
+  answers a forty-octet GETBULK with half a megabyte is a liability rather than
+  a sensor
 - **A device inventory built from traffic, not from scanning.** An
   operational estate's oldest problem is that nobody knows what is on the
   network: the drawings are from commissioning, the spreadsheet was

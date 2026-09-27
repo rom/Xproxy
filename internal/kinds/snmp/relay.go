@@ -160,11 +160,29 @@ func (t *server) fromManager(agent net.PacketConn, raw []byte, from net.Addr) {
 		return
 	}
 	t.count(m)
+	// A listener that is nothing but a fabricated agent answers here, and
+	// nothing is forwarded: there is no agent behind it to reach. The
+	// client has already passed this listener's own address lists, the
+	// imported feeds and the rate limit above.
+	if dec := t.decoy; dec != nil && dec.whole && dec.admits(ip) {
+		if t.deceive(m, from, "decoy") {
+			return
+		}
+		// A message the fabrication has no answer for -- a version 3
+		// message, or a notification -- is dropped, which is what an
+		// address with nothing on it does.
+		return
+	}
 	d := t.policy.Decide(request{client: ip, msg: m})
 	if !d.Allow {
 		t.refused(ip, m, d)
 		if t.enforcing() {
-			t.answerRefusal(m, from)
+			// The fabrication answers instead, for the clients it covers,
+			// and only here: this is the path where the request has
+			// already been kept from the agent.
+			if !t.deceive(m, from, d.Reason) {
+				t.answerRefusal(m, from)
+			}
 			return
 		}
 	}

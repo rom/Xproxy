@@ -246,6 +246,31 @@ func (o OID) String() string {
 	return b.String()
 }
 
+// Compare orders two object identifiers the way the protocol does:
+// subidentifier by subidentifier, and a prefix before what extends it.
+//
+// It is what a walk is: GETNEXT answers with the least name greater than the
+// one asked about, so an agent whose ordering disagreed with its manager's
+// would either loop or skip -- and a manager whose walk loops is a manager
+// that never finishes.
+func Compare(a, b OID) int {
+	for i := 0; i < len(a) && i < len(b); i++ {
+		switch {
+		case a[i] < b[i]:
+			return -1
+		case a[i] > b[i]:
+			return 1
+		}
+	}
+	switch {
+	case len(a) < len(b):
+		return -1
+	case len(a) > len(b):
+		return 1
+	}
+	return 0
+}
+
 // Under says whether this OID is at or below a subtree.
 //
 // The comparison is per sub-identifier, which is the point: 1.3.6.1.2.11 is
