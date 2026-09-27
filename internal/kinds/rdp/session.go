@@ -203,10 +203,24 @@ func (se *session) pumpToTarget() string {
 		if drop {
 			continue
 		}
-		if _, err := se.up.Write(out); err != nil {
+		if err := se.writeUp(out); err != nil {
 			return "write"
 		}
 	}
+}
+
+// writeUp is the one place anything is written to the desktop.
+//
+// It exists because two goroutines write there now. The client's units travel
+// up on one; the refusal of a dynamic channel is written from the *other*, the
+// one reading the desktop, because a create request arrives there and the
+// answer belongs to the same exchange. Two goroutines writing a TLS connection
+// without a lock interleave two records and break the stream.
+func (se *session) writeUp(b []byte) error {
+	se.upMu.Lock()
+	defer se.upMu.Unlock()
+	_, err := se.up.Write(b)
+	return err
 }
 
 // fromTarget turns one unit from the desktop into what the client's
@@ -216,7 +230,11 @@ func (se *session) pumpToTarget() string {
 // way and because a recording of ciphertext is of no use to anybody.
 func (se *session) fromTarget(pdu rdp.PDU) ([]byte, string) {
 	if se.legacy == nil {
-		return pdu.Raw, ""
+		// A TLS leg, where nothing has to be decrypted. This used to return
+		// the unit untouched, which meant the desktop-to-client direction was
+		// not inspected at all -- and that is the direction a dynamic channel
+		// is *opened* in, so the whole of drdynvc went past unexamined.
+		return se.fromTargetPlain(pdu)
 	}
 	if pdu.FastPath {
 		out, err := se.legacy.openFast(pdu.Raw)
@@ -246,6 +264,30 @@ func (se *session) fromTarget(pdu rdp.PDU) ([]byte, string) {
 		return nil, "upstream_encryption"
 	}
 	return out, ""
+}
+
+// fromTargetPlain inspects a unit from the desktop on a leg that needs no
+// decryption. Only drdynvc is looked at: everything else the desktop sends is
+// the session itself -- the screen, the pointer, the capability exchange -- and
+// a gateway that rewrote any of it would be a second implementation of a
+// protocol whose client is the thing being protected.
+func (se *session) fromTargetPlain(pdu rdp.PDU) ([]byte, string) {
+	if pdu.FastPath {
+		// Screen updates. There is nothing in them to decide.
+		return pdu.Raw, ""
+	}
+	payload, err := rdp.X224Payload(pdu.Body)
+	if err != nil {
+		return pdu.Raw, "" // the connection sequence's own units
+	}
+	data, ok, err := rdp.ParseSendData(payload)
+	if err != nil || !ok {
+		return pdu.Raw, ""
+	}
+	if !rdp.EqualNames(se.channelName[data.Channel], rdp.ChannelDynamic) {
+		return pdu.Raw, ""
+	}
+	return se.decideDynamicDown(data)
 }
 
 // decide says what to do with one unit from the client: forward it as
@@ -290,6 +332,8 @@ func (se *session) decide(pdu rdp.PDU) (out []byte, drop bool, reason string) {
 		return se.decideIO(data)
 	case rdp.EqualNames(se.channelName[data.Channel], rdp.ChannelDeviceRedirection):
 		return se.decideDevices(data)
+	case rdp.EqualNames(se.channelName[data.Channel], rdp.ChannelDynamic):
+		return se.decideDynamicUp(data)
 	}
 	return se.toTarget(data, data.Payload)
 }

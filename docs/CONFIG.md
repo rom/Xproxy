@@ -3656,9 +3656,56 @@ identifiers still line up, and the gateway drops whatever the client
 sends on it. The desktop never registers the real channel, which is the
 property that matters.
 
-`drdynvc` is warned about: dynamic channels carry more redirection
-inside them, and what rides one is decided by the two ends rather than
-by this list.
+#### channels.dynamic: the channels opened inside `drdynvc`
+
+`drdynvc` is not a channel. It is a **multiplexer**, and inside it channels are
+opened and closed by name at any point during a session. On a current Windows
+client the graphics pipeline, display control, geometry tracking, the camera,
+audio and -- this is the point -- device and clipboard redirection all ride
+there. So allowing `drdynvc` in `channels.allow`, which an operator must do for
+a usable session on anything recent, allows every one of them: including ones
+`channels.allow` has just refused by name.
+
+That was verified rather than assumed. A desktop opened a dynamic channel called
+`cliprdr` through a gateway whose static policy allowed only `drdynvc`, and the
+client received it.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `allow` | list | | The dynamic channels a session may have, matched without regard to case as the static names are |
+| `deny` | list | | Refused whatever `allow` says, which is how an estate allows the pipeline it needs and keeps redirection out of it |
+
+```yaml
+channels:
+  allow: [drdynvc]
+  dynamic:
+    allow: ['Microsoft::Windows::RDS::Graphics', 'Microsoft::Windows::RDS::DisplayControl']
+    deny: [rdpdr, cliprdr]
+```
+
+**The desktop opens them, not the client.** The create request travels from the
+desktop to the client carrying the channel's name, and the client answers with a
+status -- so this policy runs on the direction a gateway has least reason to be
+reading, and before this existed the gateway did not inspect that direction at
+all on a TLS leg. A refused channel is answered with the status a client that has
+no listener of that name would have sent (`E_NOTIMPL`), so the desktop stops
+waiting rather than hanging on a create nobody replied to, and the create itself
+never reaches the client. The data PDUs that follow on a refused identifier are
+dropped in both directions; a close forgets the identifier, because a desktop
+reuses numbers and a refusal kept for ever would refuse a later channel that
+happens to be given the same one.
+
+**Absent this block the dynamic channels are carried, not refused,** and the load
+warns that nothing is deciding about them. Refusing by default would break every
+session that works today, which is the wrong way round for a gateway people are
+already using; the warning and the `rdp_dynamic_channels_seen` counter are what
+make the gap visible instead. Writing the block with no names refuses every
+dynamic channel, which on a current client includes the pipeline a session draws
+through -- the load warns about that too.
+
+**A dynamic channel name is not a static one.** Static names are at most seven
+characters; these are listener names, long and vendor-shaped, and matched whole.
+The protocol page lists the ones worth knowing.
 
 #### File transfer and ports
 

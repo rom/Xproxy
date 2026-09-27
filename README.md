@@ -844,7 +844,16 @@ protocol so that a policy can be written in that protocol's own terms:
   redirection RDP has rides one, that is where file transfer and port
   redirection are switched on and off — by channel, and inside the
   redirection channel by device kind, applied to the announcement that
-  nothing can be redirected without. **Whose credential opens the
+  nothing can be redirected without. **And inside `drdynvc`, by name**:
+  that channel is not a channel but a multiplexer, and a current client
+  opens the graphics pipeline, display control, the camera, audio *and
+  device and clipboard redirection* by name inside it — so a gateway
+  that policed only the static list could be walked around by opening
+  the refused channel again in the one that was allowed, which this was
+  verified doing before it was fixed. The dynamic channels are decided
+  on the create request the **desktop** sends, since that is the only
+  place the name appears, and a refusal is answered with the status a
+  client that has no such listener would send. **Whose credential opens the
   desktop** is a separate decision from who proved themselves to the
   gateway. A second factor rides the password field, since RDP has
   nowhere to ask, and is taken off before the password travels on. A
