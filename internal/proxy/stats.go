@@ -207,6 +207,13 @@ type Stats struct {
 	// manager reads.
 	SNMPDeceived atomic.Uint64
 	SNMPTripwire atomic.Uint64
+	// SSHDeceived counts the exchanges answered by a bastion that is not
+	// there -- a login attempt, a key offered, and every command after it --
+	// and SSHTripwire the ones reaching for the escalation or for this
+	// proxy's network: fetching a payload, running it, or asking the
+	// fabrication to forward a connection somewhere.
+	SSHDeceived atomic.Uint64
+	SSHTripwire atomic.Uint64
 	// TelnetDeceived counts the exchanges answered by a device that is not
 	// there -- a login attempt and every command after it -- and
 	// TelnetTripwire the commands reaching for the escalation: fetching a
@@ -777,6 +784,8 @@ type Snapshot struct {
 	S7Tripwire            uint64 `json:"s7_tripwire"`
 	SNMPDeceived          uint64 `json:"snmp_deceived"`
 	SNMPTripwire          uint64 `json:"snmp_tripwire"`
+	SSHDeceived           uint64 `json:"ssh_deceived"`
+	SSHTripwire           uint64 `json:"ssh_tripwire"`
 	TelnetDeceived        uint64 `json:"telnet_deceived"`
 	TelnetTripwire        uint64 `json:"telnet_tripwire"`
 	PostgresDeceived      uint64 `json:"postgres_deceived"`
@@ -1226,6 +1235,8 @@ func (s *Stats) snapshot() Snapshot {
 		S7Tripwire:             s.S7Tripwire.Load(),
 		SNMPDeceived:           s.SNMPDeceived.Load(),
 		SNMPTripwire:           s.SNMPTripwire.Load(),
+		SSHDeceived:            s.SSHDeceived.Load(),
+		SSHTripwire:            s.SSHTripwire.Load(),
 		TelnetDeceived:         s.TelnetDeceived.Load(),
 		TelnetTripwire:         s.TelnetTripwire.Load(),
 		PostgresDeceived:       s.PostgresDeceived.Load(),

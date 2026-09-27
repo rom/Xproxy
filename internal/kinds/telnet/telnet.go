@@ -261,6 +261,10 @@ type session struct {
 	// was seen.
 	cols, rows int
 	refused    atomic.Int64
+	// asked reads the proxy's own questions' answers. It belongs to the
+	// session rather than to one question, because what arrives after a
+	// line's terminator is the next answer and has to be kept.
+	asked *asked
 }
 
 // sessionID is the live table's identifier for this session, or empty when the

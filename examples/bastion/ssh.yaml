@@ -325,6 +325,72 @@ server:
             rules_dir: /etc/xproxy/yara
             action: close
 
+    # A bastion that is not there: a honeypot beside the real one, on a
+    # port an estate plausibly runs SSH on and nothing here uses. 2222 is
+    # the operators' second listener above, so this is 2022.
+    #
+    # What scans port 22 is a list of account names an estate actually
+    # uses -- git, jenkins, postgres, deploy, ansible -- tried with a few
+    # passwords each. Refusing collects the address the firewall log
+    # already had; answering collects the list, and then what the session
+    # came to do.
+    - name: build-spare
+      address: "0.0.0.0:2022"
+      kind: ssh
+      ssh:
+        # A host key of its own, and never a real bastion's: a client
+        # that pinned the real one would be told this is it.
+        host_keys: [/etc/xproxy/ssh/decoy_host_ed25519]
+
+        # No upstream, no authorized_keys, no users_file, no
+        # trusted_user_ca_keys, no upstream_key_file and no
+        # upstream_known_hosts: there is no machine behind this and
+        # nobody real to let in. No mfa and no require_grant either --
+        # the fabricated login accepts everybody by design, so a factor
+        # in front of it would refuse the visitors it exists to collect.
+        # Validation refuses all three rather than ignoring them.
+        deception:
+          mode: decoy
+
+          # A server, which is what an SSH port fronts. `busybox` is the
+          # other profile, and is the telnet trap's default.
+          profile: linux
+
+          # Name it after something this estate really has. A visitor who
+          # finds "build-03" on a site whose build hosts are called
+          # something else has found the fabrication.
+          hostname: build-03
+
+          # Two credentials taken before the login is accepted. Which one
+          # it was makes no difference: a login that accepted the right
+          # password and refused the wrong one would be a credential
+          # oracle, which is the one thing a password list needs.
+          #
+          # A public key is recorded by fingerprint and then refused
+          # whatever this is set to, so the client falls back to a
+          # password -- which is what a trap on port 22 is for.
+          attempts: 2
+
+          # The escalation is already a tripwire and needs no listing:
+          # wget, curl, chmod, nohup, crontab, systemctl, and the file
+          # names a credential lives in. This is the one that means
+          # something on this estate and nowhere else.
+          tripwire: [payroll-export]
+
+        # The transcript is the commands. The credential exchange is not
+        # in it: it happened in the authentication, which had already
+        # reduced it to a length and a handle.
+        recording:
+          directory: /var/log/xproxy/sessions
+          input: true
+          max_file_bytes: 8388608
+          max_files: 2000
+        idle_timeout: 5m
+        session_timeout: 30m
+        # The bound this listener has instead of max_connections: a script in
+        # a loop is what finds a port like this.
+        max_sessions: 200
+
 upstreams:
   - name: hosts
     endpoints:
@@ -341,6 +407,15 @@ bans:
       threshold: 8
       window: 10m
       duration: 2h
+    # A tripwire on a fabrication nothing is configured to use is about as
+    # clear a signal as this estate produces, so it acts on the first. The
+    # ordinary fabricated exchange is deliberately not named here: banning
+    # it would end the collection.
+    - name: ssh-decoy
+      reasons: [ssh_tripwire]
+      threshold: 1
+      window: 1h
+      duration: 24h
 
 logging:
   access: {enabled: true}

@@ -6,6 +6,57 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (ssh: a bastion that is not there)
+
+- **`ssh.deception` answers a refused credential with a fabricated bastion**,
+  either where a refusal would otherwise be written (`mode: answer`) or as a whole
+  listener with no machine behind it (`mode: decoy`). Port 22 is scanned as
+  continuously as port 23, but with a different list: the account names an estate
+  actually uses -- `git`, `jenkins`, `postgres`, `deploy`, `ansible` -- tried with a
+  few passwords each. The list is the intelligence, and an account name in it that
+  an operator recognises is a finding on its own.
+
+- **A public key is recorded by fingerprint and then refused**, so the client falls
+  back to a password as it would against a server that trusts no keys -- and the
+  password is what a trap on port 22 is for. A visitor let in on a key would have
+  proved only that it holds one.
+
+- **In `mode: answer` the section adds no authentication method the listener did
+  not already offer.** It wraps the callbacks that are there, because a key-only
+  bastion that started advertising password authentication when a deception section
+  was added would have had its front door changed by a logging feature. Collecting
+  passwords on purpose is a `mode: decoy` listener of its own.
+
+- **A partial success is not a refusal.** RFC 4252 partial success is the protocol
+  saying that credential was right and another factor comes next, so the factor
+  after it is asked for as usual and the wrapping is carried into that round. Read
+  as a refusal it would have handed out a shell instead of asking for the second
+  factor -- the second factor removed by the feature that exists to watch people
+  fail it.
+
+- **It replaces the refusals that happen after the proxy has spoken**: a refused
+  credential, a failed second factor, the estate's `authorization` policy and a
+  missing access grant. The last two are asked at all only where there is a
+  target to be authorised for, so a `decoy` listener is not asked and produces no
+  refusal against a session that was never going anywhere. It does not replace
+  `allow_clients` or a ban, and it never replaces an outage.
+
+- **Nothing is forwarded and nothing is run.** `direct-tcpip`, `tcpip-forward` and
+  `x11` are refused and are tripwires, because an open relay would put this
+  estate's address on somebody else's work; a `subsystem` request (sftp, so an
+  upload rather than a fetch) is refused too, because there is no fabricated file
+  system to put a payload in. The credential is kept as a user name, a length and a
+  correlation handle under a process-lifetime key, exactly as for telnet.
+
+- Counters `ssh_deceived` and `ssh_tripwire`; the refusal counters still move, so
+  `ssh_auth_failed` and the `auth_failed` deny events say what happened even where
+  the client was told it got in. `ssh_tripwire` is nameable in a ban trigger's
+  `reasons`; the ordinary fabricated exchange is not, because banning it would end
+  the collection. A decoy listener needs no `upstream`, `authorized_keys`,
+  `users_file`, `trusted_user_ca_keys`, `upstream_key_file` or
+  `upstream_known_hosts`, and will not compile with `upstream`, `mfa` or
+  `require_grant`.
+
 ### Added (telnet: a login that is not there)
 
 - **`telnet.deception` answers as a fabricated device**, either where a refusal

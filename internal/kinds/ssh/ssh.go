@@ -47,6 +47,9 @@ type server struct {
 	h      *config.SSHListener
 	ln     net.Listener
 	scfg   *cssh.ServerConfig
+	// decoy is the fabricated bastion, nil without a deception section
+	// (decoy.go).
+	decoy *decoy
 
 	upstreamAuth cssh.AuthMethod
 	hostKeyCheck cssh.HostKeyCallback
@@ -204,6 +207,13 @@ func newServer(engine proxy.Host, cfg config.Listener, ln net.Listener) (*server
 		}
 	}
 	t.grants = access.NewGuard(engine.Access(), cfg.Name, h.RequireGrant, engine.Logs().Error)
+	// Before buildServerConfig, which installs or wraps the authentication
+	// callbacks with the fabrication's.
+	d, err := newDecoy(h.Deception, cfg.Name)
+	if err != nil {
+		return nil, fmt.Errorf("ssh deception: %w", err)
+	}
+	t.decoy = d
 	if err := t.buildServerConfig(); err != nil {
 		return nil, err
 	}
@@ -302,15 +312,20 @@ func (t *server) loadCredentials() error {
 		}
 		t.users = users
 	}
-	raw, err := os.ReadFile(h.UpstreamKeyFile) //nolint:gosec // a path from the configuration
-	if err != nil {
-		return fmt.Errorf("ssh upstream_key_file: %w", err)
+	// A listener that is nothing but a fabrication has nothing to
+	// authenticate onwards to, and validation lets it leave the credential
+	// out; every other listener is required to have one.
+	if h.UpstreamKeyFile != "" {
+		raw, err := os.ReadFile(h.UpstreamKeyFile) //nolint:gosec // a path from the configuration
+		if err != nil {
+			return fmt.Errorf("ssh upstream_key_file: %w", err)
+		}
+		signer, err := cssh.ParsePrivateKey(raw)
+		if err != nil {
+			return fmt.Errorf("ssh upstream_key_file: %w", err)
+		}
+		t.upstreamAuth = cssh.PublicKeys(signer)
 	}
-	signer, err := cssh.ParsePrivateKey(raw)
-	if err != nil {
-		return fmt.Errorf("ssh upstream_key_file: %w", err)
-	}
-	t.upstreamAuth = cssh.PublicKeys(signer)
 	if h.UpstreamKnownHosts != "" {
 		cb, err := knownHostsCallback(h.UpstreamKnownHosts)
 		if err != nil {
@@ -420,6 +435,17 @@ func (t *server) buildServerConfig() error {
 				return nil, t.secondFactor("password", map[string]string{"auth": "password"})
 			}
 			return &cssh.Permissions{Extensions: map[string]string{"auth": "password"}}, nil
+		}
+	}
+	// The fabrication, which either replaces the authentication entirely or
+	// wraps what is above. It comes after the real callbacks because in mode
+	// answer it wraps them, and before AuthLogCallback because a credential the
+	// fabrication accepted is not a failure to log.
+	if d := t.decoy; d != nil {
+		if d.whole {
+			t.installDecoyAuth(cfg)
+		} else {
+			t.wrapDecoyAuth(cfg)
 		}
 	}
 	cfg.AuthLogCallback = func(c cssh.ConnMetadata, method string, err error) {
@@ -625,7 +651,12 @@ type session struct {
 	// grantRefusal is the reason the access ledger gave, for the log line
 	// and the ban list.
 	grantRefusal string
-	wg           sync.WaitGroup
+	// deceived says this session reached the fabrication rather than a
+	// machine, and why: "decoy" for a listener with nothing behind it,
+	// "auth_failed" for a credential the listener refused. Empty for an
+	// ordinary session, which is the only kind that is ever dialled.
+	deceived string
+	wg       sync.WaitGroup
 }
 
 // admitByGrant is the just-in-time access decision, made after authentication
@@ -778,6 +809,7 @@ func (t *server) handle(raw net.Conn) {
 	se.live.Annotate(se.user, "", "")
 	if sconn.Permissions != nil {
 		se.auth = sconn.Permissions.Extensions["auth"]
+		se.deceived = sconn.Permissions.Extensions[permDeceived]
 		se.principal = sconn.Permissions.Extensions["principal"]
 		se.cert = certGrants(sconn.Permissions)
 		se.forceCommand, _ = forcedCommand(sconn.Permissions)
@@ -806,10 +838,23 @@ func (t *server) handle(raw net.Conn) {
 	// identity the estate knows rather than the name a client offered, and
 	// before the target is dialled, so a session with no grant never
 	// reaches a machine.
-	if !se.admitByPolicy() || !se.admitByGrant() {
+	//
+	// A session the fabrication has already answered is not asked: the policy
+	// and the grant are questions about reaching a target, and this one has
+	// none to reach.
+	if se.deceived == "" && (!se.admitByPolicy() || !se.admitByGrant()) {
 		s.Counters().SSHRejected.Add(1)
-		t.log(se, start, se.grantRefusal)
-		return
+		if !t.decoy.admits(ip) {
+			t.log(se, start, se.grantRefusal)
+			return
+		}
+		// The fabrication replaces this refusal too, for the clients the
+		// section covers: a session the estate's policy refused, or one with
+		// no grant, was never going to reach a machine -- which is the one
+		// condition deception has. The refusal itself has already been
+		// counted, logged and given to the ban ladder where every other
+		// refusal is.
+		se.deceived = se.grantRefusal
 	}
 	// The session ends at the earlier of its own timeout and the end of the
 	// window it was admitted under: a grant that expires has to end the
@@ -819,6 +864,14 @@ func (t *server) handle(raw net.Conn) {
 		defer timer.Stop()
 	}
 
+	// A session the fabrication answered is never dialled: there is either no
+	// machine behind this listener or the credential that got here was one the
+	// listener refused. That is the invariant the whole feature rests on.
+	if se.deceived != "" {
+		t.decoy.forget(sconn.SessionID())
+		t.log(se, start, t.serveDecoy(se, chans, reqs))
+		return
+	}
 	if err := se.connect(); err != nil {
 		s.Logs().Error.Warn("ssh target unavailable", "listener", t.cfg.Name, "user", textsafe.Clip64(se.user), "err", err.Error())
 		t.log(se, start, "upstream_unavailable")

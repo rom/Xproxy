@@ -158,6 +158,33 @@ An SFTP session inside this listener is covered by the same decision: it is a
 subsystem of a session the policy already allowed, and what may be read or
 written inside it is the `sftp` policy's business.
 
+### A bastion that is not there
+
+`deception` answers a credential this listener refused with a fabricated machine
+instead of a refusal, or -- `mode: decoy`, with no `upstream` -- makes the whole
+listener a honeypot. What port 22 is scanned with is a list of **account names an
+estate uses**, tried with a few passwords each, and the list is the intelligence.
+
+Three things about it are specific to this protocol:
+
+- **A key is recorded and then refused**, so the client falls back to a password as
+  it would against a server that trusts no keys. A visitor let in on a key would
+  have proved only that it holds one.
+- **A partial success is not a refusal.** RFC 4252 partial success says the
+  credential was right and another factor comes next, so the second factor is asked
+  for as usual and the wrapping is carried into that round -- otherwise a
+  fabrication would have removed the second factor it exists to watch people fail.
+- **In `mode: answer` no authentication method is added.** The section wraps what
+  the listener already offers, so a key-only bastion collects fingerprints and
+  nothing else.
+
+Nothing is forwarded (`direct-tcpip`, `tcpip-forward` and `x11` are refused and are
+tripwires), no `subsystem` is accepted, and no command is run. The credential is
+kept as a name, a length and a correlation handle, never in a form a guess can be
+tested against. The details are in
+[docs/CONFIG.md](../CONFIG.md#serverlistenerssshdeception) and the reasoning is in
+[docs/DECEPTION.md](../DECEPTION.md#a-bastion-that-is-not-there).
+
 ## What it does not do
 
 - **It does not sit inside the shell.** Once a shell is running, what the person
