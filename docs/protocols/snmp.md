@@ -68,6 +68,34 @@ presented, `users` the USM users, and `min_security_level` refuses a v3 message
 that is authenticated but not encrypted. `upstream_community` lets the string
 the device expects differ from the one the estate uses.
 
+**Version 3, read rather than taken on trust.** `usm_users` gives the listener
+the pass phrases of the v3 users whose traffic it should be able to read. The
+key derivation is RFC 3414 §2.6 -- a megabyte of repeated pass phrase hashed and
+then localised to the engine identifier in the message -- so the relay derives
+the same key both ends derived, verifies the digest, and at `authPriv` decrypts
+the scoped PDU.
+
+This closes a gap that was the wrong way round. Without keys, a v3 message was
+a header and an opaque payload: the user, the engine and the level were checked
+and nothing else could be, so `read_only` and every rule about an operation or
+an object subtree applied to v1 and v2c and silently did not apply to v3 -- the
+version an operator is told to insist on. With keys they apply to all three.
+
+It also makes an `authPriv` exchange work end to end on the datagram path. An
+encrypted answer has no readable request identifier, and the identifier is the
+only thing that pairs an answer with its question, so before the keys existed
+such an answer could not be matched to the manager that asked and was dropped.
+
+Two refusals exist because of the keys. A user with keys arriving at
+`noAuthNoPriv` is refused (`snmp_usm_downgrade`): clearing the flags asks the
+relay to stop checking rather than to produce a digest, and it is the cheapest
+forgery on this protocol. And a message whose clock has gone backwards past
+`replay_window` is refused (`snmp_replay`), which is RFC 3414 §2.2.3's own time
+window and the one thing a digest alone does not give.
+
+Nothing is re-signed or re-encrypted. The octets forwarded to the agent are the
+octets that arrived.
+
 **`read_only`.** One line, no rule can override it, and it refuses every
 `SetRequest`. It is the setting most SNMP deployments should have and almost
 none do.
@@ -149,9 +177,13 @@ and carries the traffic.
 
 ## What it does not do
 
-- **It does not verify v3 cryptography on behalf of the device.** The
-  authentication and privacy parameters are read for the user name and the
-  security level; the keys belong to the agent and the manager.
+- **It does not produce v3 cryptography.** With `usm_users` it verifies a
+  digest and decrypts a payload, because reading is what a policy needs. It
+  never signs and never encrypts, and it never re-encodes a message it
+  forwards, so there is no way for it to hand the agent octets the manager did
+  not write. The agent still verifies for itself; the relay's check is in
+  addition to that, not instead of it. Without `usm_users` the authentication
+  and privacy parameters are read for their extent only.
 - **It does not rewrite a community string into a v3 credential.** The version
   upgrade is between the relay and each side separately: the estate's v3 user is
   authenticated by the relay's upstream configuration, not derived from the
@@ -159,9 +191,13 @@ and carries the traffic.
 - **It does not resolve MIBs.** The policy is written in OIDs, because a MIB
   file is a naming convenience and a relay that depended on having the right one
   loaded would be a relay with a configuration-dependent policy.
+- **It does not suppress duplicates.** The replay window refuses a datagram
+  whose clock has gone backwards, which is what a capture replayed later looks
+  like. A datagram replayed *within* the window is indistinguishable from the
+  original to anything but the agent's own request-identifier cache.
 - **It does not make UDP authenticated.** A client list on UDP is worth what the
   network path makes it worth. v3 with `authPriv` is the answer, and this
-  listener will require it.
+  listener will require it -- and, with `usm_users`, check it.
 - **It does not aggregate.** A walk is still a walk; this is a relay, not a
   caching poller.
 
@@ -173,6 +209,7 @@ and carries the traffic.
 | RFC 1901–1908 | SNMP v2c: the community-based framework, the protocol operations, `GetBulk` |
 | RFC 3410–3418 | The SNMPv3 framework, the message processing model, USM and the MIBs |
 | RFC 3826 | The AES cipher in USM |
+| RFC 7860 | HMAC-SHA-2 authentication in USM |
 | RFC 3430 | SNMP over TCP |
 | RFC 6353 | Transport Layer Security Transport Model for SNMP |
 | RFC 5343 | Context engine discovery |

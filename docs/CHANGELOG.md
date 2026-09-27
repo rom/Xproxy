@@ -6,6 +6,130 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (redis: a cache that is not there)
+
+- **`redis.deception` answers as a fabricated Redis**, either where a refusal
+  would otherwise be written on a real listener (`mode: answer`) or as a whole
+  listener with nothing behind it (`mode: decoy`). The rule is the one every other
+  fabrication in this project follows: a command on its way to a real server is
+  never answered from here.
+
+  This is the protocol where that earns the most, because the attacker on it is a
+  script rather than a person, and it is always the same script. An exposed
+  instance with no password is found by a scanner, and what follows is `INFO`,
+  `CONFIG GET dir`, `CONFIG GET dbfilename`, `CONFIG SET` both of them somewhere
+  that executes, a `SET` carrying a cron line, and `SAVE` -- remote code execution
+  built entirely out of commands the protocol considers ordinary, with no exploit
+  in it and nothing to patch. A refusal stops that at the first step and sends its
+  author to the next address. Answering it collects the directory, the file name
+  and the payload.
+
+- **The tripwires need no configuring.** On a PLC only the operator knows which
+  registers nobody legitimate reads. Here the answer is universal, so `CONFIG SET`,
+  `MODULE`, `SLAVEOF`, `REPLICAOF`, `DEBUG`, `EVAL`, `EVALSHA`, `FUNCTION`,
+  `SCRIPT`, `MIGRATE`, `SHUTDOWN`, `SAVE`, `BGSAVE`, `BGREWRITEAOF`, `FLUSHALL`,
+  `FLUSHDB` and `ACL` raise `redis_tripwire` from the start and `tripwire` adds to
+  that list rather than replacing it.
+
+- **Two things the fabrication will not pretend.** `EVAL` and `MODULE LOAD` answer
+  the error the real server answers when it cannot, because a `+OK` to either
+  would be a claim that code was running and nothing said afterwards would be
+  consistent with it. `SCRIPT LOAD` answers a digest and keeps nothing, and
+  `EVALSHA` of it then says `NOSCRIPT` -- which is what a server that had evicted
+  the script would say, so the pair stays consistent.
+
+- **A password is never recorded.** `AUTH`'s arguments become the user name and the
+  password's *length* in the event, for the reason the SNMP relay does not log a
+  community string. Every other command's arguments are recorded, clipped and
+  reduced to one line, because on this protocol they are the message.
+
+- Three profiles (`generic-cache`, `session-store`, `queue`), a configurable
+  `version` and keyspace, and `require_auth` for a decoy that asks for a password
+  and then accepts any of them. New counters `redis_deceived` and
+  `redis_tripwire`, and the fabrication appears in `xproxyctl decoys` like the
+  others. `internal/respwire` gained the reply builders a server needs, which it
+  had never needed as a reader.
+
+### Fixed (redis: a key with a slash in it was hidden from the glob)
+
+- The fabrication's `KEYS` and `SCAN` matched with `path.Match`, which is the
+  obvious matcher for a glob and the wrong one here: it will not let a wildcard
+  cross a slash, and a Redis key is an opaque string in which a slash means
+  nothing. A configured key named `cache:img/logo.png` was not listed by the
+  `cache:*` that was supposed to list it. The matcher is now Redis's own --
+  `*`, `?`, `[...]` with `^` and ranges, and `\` to escape -- with no separator
+  semantics, and a run of stars collapsed to one, because each star costs a scan
+  of what is left of the key and thirty of them in a client-supplied pattern
+  would be exponential in the length of every key compared against it.
+
+### Added (snmp: version 3, read rather than taken on trust)
+
+- **The rules now apply to v3 traffic.** `usm_users` gives a listener the pass
+  phrases of the version 3 users whose messages it should be able to read. With
+  them the keyed digest is verified and, at `authPriv`, the scoped PDU is
+  decrypted -- and then `read_only`, a rule's `pdus`, `access`, `oids`,
+  `deny_oids`, `write_oids` and `contexts` all decide about a v3 message exactly
+  as they decide about a v2c one.
+
+  The gap this closes was the wrong way round. Without the keys a v3 message was
+  a header and an opaque payload: the user, the engine and the security level
+  were checked and nothing else could be, so every rule an operator wrote about
+  an operation or an object subtree applied to v1 and v2c and silently did not
+  apply to the version an operator is told to insist on. A `read_only` listener
+  relayed an encrypted `SetRequest`, with the honest but useless decision
+  `snmp_encrypted`.
+
+  Nothing is re-encrypted and nothing is re-signed: the octets forwarded to the
+  agent are the octets that arrived. The keys are here for reading.
+
+- **An `authPriv` exchange now works end to end on the datagram path.** An
+  encrypted answer has no readable request identifier, and that identifier is
+  the only thing in the protocol that pairs an answer with its question, so such
+  an answer could not be matched to the manager that asked and was dropped
+  (`encrypted_response`). With the user's keys it is decrypted, paired and
+  forwarded.
+
+- **Two refusals that only a listener holding keys can make.** A user with keys
+  arriving at `noAuthNoPriv` is refused (`snmp_usm_downgrade`): clearing the
+  flags in `msgFlags` asks the relay to stop checking rather than to produce a
+  digest, and it is the cheapest forgery on this protocol. And a message whose
+  clock has gone backwards -- a lower boot count, or the same boot count with a
+  clock more than `replay_window` behind where the elapsed wall clock says it
+  should be -- is refused (`snmp_replay`), which is RFC 3414 §2.2.3's own time
+  window and the one thing a digest alone does not give. A higher boot count is
+  an agent restarting and the mark follows it, so a power cut does not lock out
+  an estate.
+
+- **Key derivation is bounded.** RFC 3414 §2.6 hashes a megabyte of repeated
+  pass phrase on purpose, so that guessing a pass phrase costs a megabyte per
+  guess -- and the engine identifier that decides *which* key is needed arrives
+  in the message. Keys are derived once per engine and cached, and
+  `max_usm_engines` (default 8) bounds how many engines one user's keys are
+  derived for; past the bound a message naming a new engine is refused
+  (`snmp_usm_engines`) rather than paid for. Pinning a user's `engine_id`
+  derives the one key at load instead.
+
+- All of these are shadowable with `policy: {mode: shadow}` on the listener,
+  which is what an operator trials the section with: a wrong pass phrase would
+  otherwise stop every poll on the estate the moment it is added. Shadow mode
+  cannot make a message readable, so a shadowed listener forwards it exactly as
+  it arrived and decides about its header alone.
+
+- New counters `snmp_verified`, `snmp_decrypted`, `snmp_auth_failed` and
+  `snmp_replayed`; new refusal reasons `usm_downgrade`, `usm_engine`,
+  `usm_engines`, `auth_failed`, `replay`, `usm_no_privacy_key` and
+  `unreadable`. Validation refuses a hash too narrow for the cipher beside it
+  (USM has one key derivation and the cipher truncates it, so `md5` cannot key
+  `aes256`), an `authPriv` floor with a user that has no privacy key, and the
+  usual shapes; it warns about `md5`, `sha1` and `des`, about one pass phrase
+  keying both the digest and the cipher, and about a listener that accepts v3
+  and holds no keys.
+
+- The reader itself is `internal/snmp/usm.go`: RFC 3414's derivation and two
+  digests, RFC 7860's four more, RFC 3414's DES-CBC and RFC 3826's AES-CFB in
+  three widths. The derivation is tested against RFC 3414 Appendix A.3's own
+  vectors rather than against ourselves.
+
 ### Fixed (iec104: a refusal took the association down with it)
 
 - **Refusing one frame desynchronised the sequence numbering in both

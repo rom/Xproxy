@@ -8317,6 +8317,71 @@
       },
       "additionalProperties": false
     },
+    "RedisDeception": {
+      "description": "RedisDeception answers as a Redis server that is not there. This protocol is the one where a fabricated server is worth the most, because the attack on it is a script rather than a person. An exposed Redis with no password is found by a scanner, and what arrives next is a fixed sequence: INFO to see what it is, CONFIG GET dir and dbfilename to find where it writes, CONFIG SET to point that somewhere executable, SET to put a cron line or an SSH key in a value, and SAVE to write the file. A refusal stops the script at the first step and tells its author to look elsewhere. Answering it collects the whole payload.",
+      "type": "object",
+      "properties": {
+        "clients": {
+          "description": "Clients are the networks that get the fabrication. Required in mode answer. In mode decoy an empty list means every client, which is what a honeypot wants.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "enabled": {
+          "description": "Enabled turns the section off without removing it; it defaults to true wherever the section is present.",
+          "type": "boolean"
+        },
+        "key_count": {
+          "description": "KeyCount is how many keys the fabrication generates from the profile's naming pattern, 0 to 4096. Zero takes the profile's.",
+          "type": "integer"
+        },
+        "keys": {
+          "description": "Keys are the key names the fabrication holds, in addition to the ones the profile generates. They are what KEYS and SCAN list and what GET answers for, so they are the part of the fabrication a visitor reads most closely.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_clients": {
+          "description": "MaxClients bounds the record of who has been answered. Default 1024.",
+          "type": "integer"
+        },
+        "mode": {
+          "description": "Mode is answer (the default: a command this listener was going to refuse is answered by the fabrication instead, and never reaches the server) or decoy (the whole listener is a fabricated server: no upstream, and nothing behind it).",
+          "type": "string"
+        },
+        "period": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "profile": {
+          "description": "Profile is the fabricated server's shape: generic-cache (the default), session-store or queue. It decides the version it reports, the key names it holds and the size of the dataset it claims.",
+          "type": "string"
+        },
+        "require_auth": {
+          "description": "RequireAuth makes the fabrication demand AUTH before anything else, and then accept any password. Default false, which is what a honeypot usually wants: an unprotected Redis is what the scanning is looking for, and a decoy that asks for a password is a decoy most scripts move on from. Where it is set, the attempt is recorded -- the user name and the password's length, never the password, because a log holding every credential sprayed at the estate is a list of the estate's own credentials as often as not.",
+          "type": "boolean"
+        },
+        "seed": {
+          "description": "Seed makes the fabricated values reproducible. Zero derives one from the listener name, which is stable across restarts.",
+          "type": "integer"
+        },
+        "tripwire": {
+          "description": "Tripwire are command names, or \"NAME SUB\" pairs, that raise a redis_tripwire security event when they arrive. They are in addition to a built-in set, which is the remote-code-execution chain and its neighbours: CONFIG SET, MODULE, SLAVEOF, REPLICAOF, DEBUG, EVAL, EVALSHA, FUNCTION, SCRIPT, MIGRATE, SHUTDOWN, SAVE, BGSAVE, BGREWRITEAOF, FLUSHALL, FLUSHDB and ACL. Nothing legitimate sends those to a fabricated server, so they do not need to be configured to be worth waking somebody for.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "version": {
+          "description": "Version is the redis_version INFO reports, which is the first thing a scanner records and the thing a vulnerability database is indexed by. Empty takes the profile's. **A decoy should say what the estate's own servers say.** A version nobody on the site runs is the tell that ends the pretence, and only you know what that is.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "RedisListener": {
       "description": "RedisListener is the settings of a kind: redis listener: a relay in front of a Redis or Valkey server. This is the protocol with the least structure and the most dangerous default posture in the project. A command is an array of opaque byte strings; there is no schema, no statement grammar, and nothing to classify by shape the way a SQL statement can be. What there is instead is a command name, and on this protocol the distance between \"administrative\" and \"remote code execution\" is one command: CONFIG SET dir /var/spool/cron + CONFIG SET dbfilename root + SAVE writes a file of the attacker's choosing wherever the server can write. Pointed at a cron directory or an authorized_keys it is a shell, and it has been used that way for a decade against instances exposed with no password because the default configuration had none. So this kind's policy is an allow list of commands defaulting to what an application does to a cache, a set that is refused even in monitor mode, and a key prefix policy -- which is the closest this protocol has to the database-and-table boundary the SQL kinds leave to GRANT, and which only works because the wire package knows where each command's keys are and says so when it does not.",
       "type": "object",
@@ -8366,6 +8431,14 @@
           "items": {
             "type": "string"
           }
+        },
+        "deception": {
+          "description": "Deception answers as a server that is not there: a refused command answered by a fabricated cache, or a whole listener that is one. See RedisDeception.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/RedisDeception"
+            }
+          ]
         },
         "default_action": {
           "description": "DefaultAction is allow or deny when no rule matched. Default deny.",
@@ -10289,6 +10362,10 @@
           "description": "MaxResponseRatio refuses a response more than this many times the size of the request that asked for it. Default 50. It is the bound that is about *reflection* rather than about size: a large response to a large request is a walk, and a large response to a tiny request is an amplifier.",
           "type": "integer"
         },
+        "max_usm_engines": {
+          "description": "MaxUSMEngines bounds the distinct authoritative engines one user's keys are derived for. Default 8. It is a bound on work rather than on policy. Deriving a key is a megabyte of hashing by design (RFC 3414 s2.6, so that a dictionary attack costs a megabyte per candidate), and the engine identifier that decides which key is needed comes out of the message. Without a bound, a sender that varied that field would be buying milliseconds of this relay's processor per datagram.",
+          "type": "integer"
+        },
         "max_var_binds": {
           "description": "MaxVarBinds bounds the variable bindings one message may carry. Default 128.",
           "type": "integer"
@@ -10315,6 +10392,11 @@
         "read_only": {
           "description": "ReadOnly refuses every SetRequest, for every client, before any rule is read, and no rule can override it. SNMP has exactly one writing operation, so this is a one-line policy that covers the whole of \"nobody reconfigures anything through this relay\" -- and a read-only listener that one rule could write through is not a read-only listener.",
           "type": "boolean"
+        },
+        "replay_window": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
         },
         "request_timeout": {
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
@@ -10369,6 +10451,13 @@
           "type": "array",
           "items": {
             "type": "string"
+          }
+        },
+        "usm_users": {
+          "description": "USMUsers are the version 3 users whose traffic this listener can read. Without them a v3 message is a header and an opaque payload: the user, the engine and the security level are visible and nothing else is, so no rule about an operation or an object can apply to it. With the user's pass phrases the digest is verified and, at authPriv, the payload is decrypted -- and then the ordinary rules decide about a v3 message exactly as they do about a v2c one. Nothing is re-encrypted or re-signed: the octets forwarded to the agent are the octets that arrived. The keys are here so that this relay can *read*, which is the only thing it needs them for.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SNMPUser"
           }
         },
         "versions": {
@@ -10478,6 +10567,37 @@
           "items": {
             "type": "string"
           }
+        }
+      },
+      "additionalProperties": false
+    },
+    "SNMPUser": {
+      "description": "SNMPUser is one version 3 USM user whose traffic this listener can read. The pass phrases are the same ones a manager is configured with -- what net-snmp's -A and -X take -- because the key is derived from the pass phrase and the agent's engine identifier, and both ends have to derive the same one. The relay derives it too, which is how it verifies a digest nobody else could have produced.",
+      "type": "object",
+      "properties": {
+        "auth": {
+          "description": "Auth is the authentication protocol: md5, sha1, sha224, sha256, sha384 or sha512. Required.",
+          "type": "string"
+        },
+        "auth_secret": {
+          "description": "AuthSecret is the authentication pass phrase, in the usual file:/env:/vault: form. Required.",
+          "type": "string"
+        },
+        "engine_id": {
+          "description": "EngineID pins the authoritative engine this user's messages must name, as hexadecimal (with optional 0x, colons or dashes). Empty accepts whatever engine the message names and derives a key for it, up to max_usm_engines. Pinning it is the stronger setting where an operator knows the identifier: a key is then derived once, at load, and a message naming a different engine is refused rather than costing a derivation.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Name is the USM user name, as it appears in the message.",
+          "type": "string"
+        },
+        "privacy": {
+          "description": "Privacy is the privacy protocol: des, aes128, aes192 or aes256. Empty means this user is not expected to encrypt, and an authPriv message from it is refused rather than forwarded unread -- a listener that holds keys in order to read the traffic should not have one user able to opt out of being read.",
+          "type": "string"
+        },
+        "privacy_secret": {
+          "description": "PrivacySecret is the privacy pass phrase. Required with privacy.",
+          "type": "string"
         }
       },
       "additionalProperties": false

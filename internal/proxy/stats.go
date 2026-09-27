@@ -205,8 +205,14 @@ type Stats struct {
 	// SNMPDeceived counts the requests answered by an agent that is not
 	// there, and SNMPTripwire the ones naming an object no legitimate
 	// manager reads.
-	SNMPDeceived      atomic.Uint64
-	SNMPTripwire      atomic.Uint64
+	SNMPDeceived atomic.Uint64
+	SNMPTripwire atomic.Uint64
+	// RedisDeceived counts the commands answered by a server that is not
+	// there, and RedisTripwire the ones nothing legitimate sends: the
+	// remote-code-execution chain, which on this protocol is where the
+	// fabrication earns its place.
+	RedisDeceived     atomic.Uint64
+	RedisTripwire     atomic.Uint64
 	IEC104Commands    atomic.Uint64
 	IEC104SystemCmds  atomic.Uint64
 	IEC104Denied      atomic.Uint64
@@ -264,6 +270,17 @@ type Stats struct {
 	SNMPTimedOut     atomic.Uint64
 	SNMPUpstreamFail atomic.Uint64
 	SNMPUnsolicited  atomic.Uint64
+	// The version 3 security model, where this listener holds the user's
+	// keys. SNMPVerified counts the messages whose digest checked out and
+	// SNMPDecrypted the ones whose payload was then read, so the two
+	// together say how much v3 traffic the rules actually apply to.
+	// SNMPAuthFailed and SNMPReplayed are the two ways a v3 message fails
+	// that nothing else on this listener can see: a digest that was not
+	// produced by the key holder, and one that was -- earlier.
+	SNMPVerified   atomic.Uint64
+	SNMPDecrypted  atomic.Uint64
+	SNMPAuthFailed atomic.Uint64
+	SNMPReplayed   atomic.Uint64
 	// The LDAP relay.
 	//
 	// Binds are counted apart from requests and failures apart from binds,
@@ -737,6 +754,8 @@ type Snapshot struct {
 	S7Tripwire            uint64 `json:"s7_tripwire"`
 	SNMPDeceived          uint64 `json:"snmp_deceived"`
 	SNMPTripwire          uint64 `json:"snmp_tripwire"`
+	RedisDeceived         uint64 `json:"redis_deceived"`
+	RedisTripwire         uint64 `json:"redis_tripwire"`
 	IEC104Commands        uint64 `json:"iec104_commands"`
 	IEC104SystemCmds      uint64 `json:"iec104_system_commands"`
 	IEC104Denied          uint64 `json:"iec104_denied"`
@@ -771,6 +790,10 @@ type Snapshot struct {
 	SNMPTimedOut          uint64 `json:"snmp_timed_out"`
 	SNMPUpstreamFail      uint64 `json:"snmp_upstream_failed"`
 	SNMPUnsolicited       uint64 `json:"snmp_unsolicited"`
+	SNMPVerified          uint64 `json:"snmp_verified"`
+	SNMPDecrypted         uint64 `json:"snmp_decrypted"`
+	SNMPAuthFailed        uint64 `json:"snmp_auth_failed"`
+	SNMPReplayed          uint64 `json:"snmp_replayed"`
 	SNMPPending           int64  `json:"snmp_pending"`
 	LDAPSessions          uint64 `json:"ldap_sessions"`
 	LDAPSessionsOpen      int64  `json:"ldap_sessions_open"`
@@ -1174,6 +1197,8 @@ func (s *Stats) snapshot() Snapshot {
 		S7Tripwire:             s.S7Tripwire.Load(),
 		SNMPDeceived:           s.SNMPDeceived.Load(),
 		SNMPTripwire:           s.SNMPTripwire.Load(),
+		RedisDeceived:          s.RedisDeceived.Load(),
+		RedisTripwire:          s.RedisTripwire.Load(),
 		IEC104Commands:         s.IEC104Commands.Load(),
 		IEC104SystemCmds:       s.IEC104SystemCmds.Load(),
 		IEC104Denied:           s.IEC104Denied.Load(),
@@ -1208,6 +1233,10 @@ func (s *Stats) snapshot() Snapshot {
 		SNMPTimedOut:           s.SNMPTimedOut.Load(),
 		SNMPUpstreamFail:       s.SNMPUpstreamFail.Load(),
 		SNMPUnsolicited:        s.SNMPUnsolicited.Load(),
+		SNMPVerified:           s.SNMPVerified.Load(),
+		SNMPDecrypted:          s.SNMPDecrypted.Load(),
+		SNMPAuthFailed:         s.SNMPAuthFailed.Load(),
+		SNMPReplayed:           s.SNMPReplayed.Load(),
 		SNMPPending:            s.SNMPPending.Load(),
 		LDAPSessions:           s.LDAPSessions.Load(),
 		LDAPSessionsOpen:       s.LDAPSessionsOpen.Load(),

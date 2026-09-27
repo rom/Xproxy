@@ -751,6 +751,38 @@ type SNMPListener struct {
 	// upgrade_version v1 or v2c when the arriving message is v3, because
 	// there is no community string in a v3 message to carry over.
 	UpstreamCommunity string `yaml:"upstream_community"`
+	// USMUsers are the version 3 users whose traffic this listener can
+	// read. Without them a v3 message is a header and an opaque payload:
+	// the user, the engine and the security level are visible and nothing
+	// else is, so no rule about an operation or an object can apply to it.
+	// With the user's pass phrases the digest is verified and, at authPriv,
+	// the payload is decrypted -- and then the ordinary rules decide about
+	// a v3 message exactly as they do about a v2c one.
+	//
+	// Nothing is re-encrypted or re-signed: the octets forwarded to the
+	// agent are the octets that arrived. The keys are here so that this
+	// relay can *read*, which is the only thing it needs them for.
+	USMUsers []SNMPUser `yaml:"usm_users"`
+	// ReplayWindow is how far behind an authenticated message's notion of
+	// the agent's clock may be before it is refused as a replay, which is
+	// RFC 3414 s2.2.3's own check. Default 150s, which is the value the
+	// standard names. Zero disables it.
+	//
+	// It applies only to messages this listener can verify -- an
+	// unverifiable message has no trustworthy clock in it -- and only to
+	// authenticated ones, because discovery is unauthenticated and carries
+	// a clock of zero by design.
+	ReplayWindow Duration `yaml:"replay_window"`
+	// MaxUSMEngines bounds the distinct authoritative engines one user's
+	// keys are derived for. Default 8.
+	//
+	// It is a bound on work rather than on policy. Deriving a key is a
+	// megabyte of hashing by design (RFC 3414 s2.6, so that a dictionary
+	// attack costs a megabyte per candidate), and the engine identifier
+	// that decides which key is needed comes out of the message. Without a
+	// bound, a sender that varied that field would be buying milliseconds
+	// of this relay's processor per datagram.
+	MaxUSMEngines int `yaml:"max_usm_engines"`
 	// Deception answers as an agent that is not there: a refused request
 	// answered by a fabricated device, or a whole listener that is one.
 	// See SNMPDeception.
@@ -1373,6 +1405,11 @@ type RedisListener struct {
 	// cover twice.
 	AllowInline bool `yaml:"allow_inline"`
 
+	// Deception answers as a server that is not there: a refused command
+	// answered by a fabricated cache, or a whole listener that is one. See
+	// RedisDeception.
+	Deception *RedisDeception `yaml:"deception"`
+
 	// Rules narrow or widen the listener for traffic that matches them.
 	Rules []RedisRule `yaml:"rules"`
 	// DefaultAction is allow or deny when no rule matched. Default deny.
@@ -1386,6 +1423,79 @@ type RedisListener struct {
 	// which on this protocol includes KEYS, because it is O(n) on the single
 	// thread that serves every client and one of them stops the estate.
 	MonitorOnly bool `yaml:"monitor_only"`
+}
+
+// RedisDeception answers as a Redis server that is not there.
+//
+// This protocol is the one where a fabricated server is worth the most, because
+// the attack on it is a script rather than a person. An exposed Redis with no
+// password is found by a scanner, and what arrives next is a fixed sequence:
+// INFO to see what it is, CONFIG GET dir and dbfilename to find where it writes,
+// CONFIG SET to point that somewhere executable, SET to put a cron line or an
+// SSH key in a value, and SAVE to write the file. A refusal stops the script at
+// the first step and tells its author to look elsewhere. Answering it collects
+// the whole payload.
+type RedisDeception struct {
+	// Enabled turns the section off without removing it; it defaults to true
+	// wherever the section is present.
+	Enabled *bool `yaml:"enabled"`
+	// Mode is answer (the default: a command this listener was going to refuse
+	// is answered by the fabrication instead, and never reaches the server) or
+	// decoy (the whole listener is a fabricated server: no upstream, and nothing
+	// behind it).
+	Mode string `yaml:"mode"`
+	// Clients are the networks that get the fabrication. Required in mode
+	// answer. In mode decoy an empty list means every client, which is what a
+	// honeypot wants.
+	Clients []string `yaml:"clients"`
+	// Profile is the fabricated server's shape: generic-cache (the default),
+	// session-store or queue. It decides the version it reports, the key names
+	// it holds and the size of the dataset it claims.
+	Profile string `yaml:"profile"`
+	// Version is the redis_version INFO reports, which is the first thing a
+	// scanner records and the thing a vulnerability database is indexed by.
+	// Empty takes the profile's.
+	//
+	// **A decoy should say what the estate's own servers say.** A version
+	// nobody on the site runs is the tell that ends the pretence, and only you
+	// know what that is.
+	Version string `yaml:"version"`
+	// Keys are the key names the fabrication holds, in addition to the ones the
+	// profile generates. They are what KEYS and SCAN list and what GET answers
+	// for, so they are the part of the fabrication a visitor reads most
+	// closely.
+	Keys []string `yaml:"keys"`
+	// KeyCount is how many keys the fabrication generates from the profile's
+	// naming pattern, 0 to 4096. Zero takes the profile's.
+	KeyCount int `yaml:"key_count"`
+	// RequireAuth makes the fabrication demand AUTH before anything else, and
+	// then accept any password.
+	//
+	// Default false, which is what a honeypot usually wants: an unprotected
+	// Redis is what the scanning is looking for, and a decoy that asks for a
+	// password is a decoy most scripts move on from. Where it is set, the
+	// attempt is recorded -- the user name and the password's length, never the
+	// password, because a log holding every credential sprayed at the estate is
+	// a list of the estate's own credentials as often as not.
+	RequireAuth bool `yaml:"require_auth"`
+	// Tripwire are command names, or "NAME SUB" pairs, that raise a
+	// redis_tripwire security event when they arrive.
+	//
+	// They are in addition to a built-in set, which is the remote-code-execution
+	// chain and its neighbours: CONFIG SET, MODULE, SLAVEOF, REPLICAOF, DEBUG,
+	// EVAL, EVALSHA, FUNCTION, SCRIPT, MIGRATE, SHUTDOWN, SAVE, BGSAVE,
+	// BGREWRITEAOF, FLUSHALL, FLUSHDB and ACL. Nothing legitimate sends those to
+	// a fabricated server, so they do not need to be configured to be worth
+	// waking somebody for.
+	Tripwire []string `yaml:"tripwire"`
+	// Seed makes the fabricated values reproducible. Zero derives one from the
+	// listener name, which is stable across restarts.
+	Seed uint64 `yaml:"seed"`
+	// Period is how long one sample of a counter or a gauge lasts. Default 30s;
+	// 1s to 1h.
+	Period Duration `yaml:"period"`
+	// MaxClients bounds the record of who has been answered. Default 1024.
+	MaxClients int `yaml:"max_clients"`
 }
 
 // RedisRule is one rule of a redis listener's policy.
@@ -2934,6 +3044,42 @@ type SNMPDeception struct {
 	Period Duration `yaml:"period"`
 	// MaxClients bounds the record of who has been answered. Default 1024.
 	MaxClients int `yaml:"max_clients"`
+}
+
+// SNMPUser is one version 3 USM user whose traffic this listener can read.
+//
+// The pass phrases are the same ones a manager is configured with -- what
+// net-snmp's -A and -X take -- because the key is derived from the pass
+// phrase and the agent's engine identifier, and both ends have to derive the
+// same one. The relay derives it too, which is how it verifies a digest
+// nobody else could have produced.
+type SNMPUser struct {
+	// Name is the USM user name, as it appears in the message.
+	Name string `yaml:"name"`
+	// EngineID pins the authoritative engine this user's messages must
+	// name, as hexadecimal (with optional 0x, colons or dashes). Empty
+	// accepts whatever engine the message names and derives a key for it,
+	// up to max_usm_engines.
+	//
+	// Pinning it is the stronger setting where an operator knows the
+	// identifier: a key is then derived once, at load, and a message
+	// naming a different engine is refused rather than costing a
+	// derivation.
+	EngineID string `yaml:"engine_id"`
+	// Auth is the authentication protocol: md5, sha1, sha224, sha256,
+	// sha384 or sha512. Required.
+	Auth string `yaml:"auth"`
+	// AuthSecret is the authentication pass phrase, in the usual
+	// file:/env:/vault: form. Required.
+	AuthSecret string `yaml:"auth_secret"`
+	// Privacy is the privacy protocol: des, aes128, aes192 or aes256.
+	// Empty means this user is not expected to encrypt, and an authPriv
+	// message from it is refused rather than forwarded unread -- a
+	// listener that holds keys in order to read the traffic should not
+	// have one user able to opt out of being read.
+	Privacy string `yaml:"privacy"`
+	// PrivacySecret is the privacy pass phrase. Required with privacy.
+	PrivacySecret string `yaml:"privacy_secret"`
 }
 
 // SNMPRule decides one message.

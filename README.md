@@ -187,7 +187,7 @@ its own for what is deliberately *not* implemented and why.
 | Building automation | BACnet/IP (ASHRAE 135 Annex J): the BVLC functions, the network layer of clause 6 with its routing and security messages, the application layer of clause 20 with the confirmed and unconfirmed services, and the object, property and command priority each request names | `bacnet` |
 | Industrial control | Siemens S7comm on TCP 102: TPKT (RFC 1006), COTP (X.224 class 0, whose connection request addresses a CPU by rack and slot), and the S7 layer -- the function codes for memory, blocks and the control service, and the user-data groups for the diagnostic buffer, the clock, the password and the debugger. **S7comm-plus** (protocol identifier `0x72`), which is what TIA Portal speaks to an S7-1200 or S7-1500, read as far as its function code -- which is as far as anything in the path can read it | `s7` |
 | Messaging | AMQP 0-9-1 (the class and method catalogue RabbitMQ speaks) and AMQP 1.0 (ISO/IEC 19464: the nine performatives, its self-describing type system, and the SASL layer), read on one port because a client picks which of the two it speaks in its first eight octets | `amqp` |
-| Management | SNMP v1 (RFC 1157), v2c (RFC 1901–1908) and v3 with USM (RFC 3410–3418), over UDP and over TCP (RFC 3430), with RFC 6353 TLS on the stream side | `snmp` |
+| Management | SNMP v1 (RFC 1157), v2c (RFC 1901–1908) and v3 with USM (RFC 3410–3418, RFC 3826, RFC 7860) read and verified, over UDP and over TCP (RFC 3430), with RFC 6353 TLS on the stream side | `snmp` |
 | Directory | LDAP v3 (RFC 4511–4515, 4517, 4519) with LDAPS and the StartTLS of RFC 4513, as a relay: the bind methods, the search filter's shape, distinguished names compared per relative name, the attribute lists in both directions | `ldap`, filters |
 | Addressing | DHCP (RFC 2131) with its options (RFC 2132), relay agent information (RFC 3046), long options (RFC 3396) and classless static routes (RFC 3442), as a relay agent that reads what it relays: the server a reply came from, and the configuration the reply carries | `dhcp` |
 | Provisioning | TFTP (RFC 1350) with the option extension (RFC 2347), block size (RFC 2348), timeout and transfer size (RFC 2349) and windowed transfer (RFC 7440), as a relay: the filename read as a path, the direction of the transfer, and the bounds on what comes back | `tftp` |
@@ -225,13 +225,13 @@ protocol so that a policy can be written in that protocol's own terms:
 | `syslog` | `xrelay` | RFC 5424 and RFC 3164 over UDP, TCP, TLS | Facility, severity, sender, the text; re-emitted in one dialect |
 | `modbus` | `xrelay` | Modbus/TCP, RTU and ASCII, Modbus/TCP Security | Unit identifiers, function codes, register ranges, values, roles, schedules |
 | `iec104` | `xrelay` | IEC 60870-5-104, IEC 62351-3 TLS | Type identifications, causes of transmission, common and originator addresses, information object ranges, select-before-operate, setpoint value and step bounds, schedules |
-| `snmp` | `xrelay` | SNMP v1, v2c and v3 (USM), UDP and TCP, RFC 6353 TLS | Versions, community strings and USM users, security levels, operations, object subtrees, the amplification bounds |
+| `snmp` | `xrelay` | SNMP v1, v2c and v3 (USM), UDP and TCP, RFC 6353 TLS | Versions, community strings and USM users, security levels, operations, object subtrees, the amplification bounds; with the user's pass phrases, v3 digests verified and payloads decrypted so the rules apply to v3 too |
 | `ldap` | `xrelay` | LDAP v3, LDAPS, StartTLS | Bind methods, the bound identity, operations, naming contexts and subtrees, scopes, attributes in both directions, filter and entry bounds |
 | `dhcp` | `xrelay` | DHCPv4 with RFC 2132 options, RFC 3046 relay agent information, RFC 3442 routes | The server a reply came from, the options and addresses a reply may carry, the boot file, the lease bounds, the hardware-address rate |
 | `postgres` | `xrelay` | PostgreSQL protocol v3, both query protocols, the cleartext TLS negotiation | Whether the connection may be unencrypted at all, which role and database may be claimed, which authentication methods may cross, which *shapes* of statement are allowed, replication, the fast-path call, cancel requests |
 | `mysql` | `xrelay` | MySQL and MariaDB protocol, handshake v10, the capability flags, the command set | The capability bits a client may even see offered, which of the protocol's commands may cross, whether the connection may be unencrypted, which user and database may be claimed (re-checked on COM_CHANGE_USER), which authentication plugins, which statement shapes, LOAD DATA in either form |
 | `tds` | `xrelay` | TDS 7.x for SQL Server: the PRELOGIN negotiation, LOGIN7, SQLBATCH and RPC, and the TLS handshake carried inside TDS packets | Whether the connection may be unencrypted at all -- and the relay answers the negotiation itself rather than forwarding the server's octet -- whether a password may cross in the clear, which login, database and application name may be claimed, whether a login carrying no user name is admitted, which message types, which stored procedures, and which statement shapes, applied to a batch and to the SQL inside an sp_executesql alike |
-| `redis` | `xrelay` | RESP2 and RESP3, multibulk and inline, with a table of where each command's keys are | Whether the connection may be unencrypted, whether a command may arrive before the connection has authenticated -- with the answer taken from the server's reply -- which ACL user may be named, which commands and subcommands may cross, which keys by prefix, which numbered databases, and whether anything may write |
+| `redis` | `xrelay` | RESP2 and RESP3, multibulk and inline, with a table of where each command's keys are | Whether the connection may be unencrypted, whether a command may arrive before the connection has authenticated -- with the answer taken from the server's reply -- which ACL user may be named, which commands and subcommands may cross, which keys by prefix, which numbered databases, and whether anything may write; and, with `deception`, answering a refused command as a fabricated cache so the exploit chain is collected rather than deflected |
 | `amqp` | `xrelay` | AMQP 0-9-1 and AMQP 1.0: the frame layer of each, the 0-9-1 method catalogue with its arguments and field tables, the 1.0 performatives over its type system, and the SASL exchange of both | Which of the two versions may be spoken; which SASL mechanisms and which identities; which virtual host; whether the broker's own *topology* may be changed at all, which is off by default; which exchanges, queues, routing keys and link addresses a connection may name -- including the dead-letter exchange of a queue, the alternate exchange of an exchange and the reply-to inside a message, which a policy written against the obvious fields would miss; whether every message must say who published it; and the frame, channel, link and message bounds |
 | `s7` | `xrelay` | Siemens S7comm: the TPKT framing, the COTP connection request with the rack and slot it addresses, and the S7 layer -- function codes, user-data groups and subfunctions, and the item specifications of a read or a write | Which controller a client may reach, decided from the connection request *before the PLC is dialled*, and as what -- an operator panel, an engineering station or another PLC; which of nineteen operations it may ask for, where the default is what an HMI does and an upload is off with the writes because a block read is how control logic leaves a site; `read_only` as one line no rule can override; which memory areas, data blocks and byte ranges a request may name, checked against the whole span rather than its first byte; the block types an upload or a download may name; and the item, octet, PDU-length and connection bounds, because a CPU has sixteen connection resources altogether. For **S7comm-plus** on an S7-1200 or S7-1500, where the addressing is encrypted and only the framing is visible: the function code by name or class, with a function this relay cannot name failing closed |
 | `tftp` | `xrelay` | TFTP with RFC 2347–2349 options and RFC 7440 windows | The client list, the direction, the transfer mode, the filename read as a path and refused by class, the directories, and the block, window and transfer bounds |
@@ -387,7 +387,14 @@ protocol so that a policy can be written in that protocol's own terms:
   sub-identifier rather than per character, because `1.3.6.1.2.1` is a
   string prefix of `1.3.6.1.2.11` and not its parent. `read_only` is one
   line that no rule can override, because SNMP has exactly one writing
-  operation. The **amplification is bounded in two directions**: a
+  operation. Given the v3 users' pass phrases in `usm_users`, the relay
+  **reads** v3 as well: it derives the same key both ends derive, verifies
+  the digest, decrypts an `authPriv` payload, and applies those same rules
+  to it — which matters because without the keys every rule about an
+  operation or an object subtree applied to v1 and v2c and silently did
+  not apply to the version an operator is told to insist on. It never
+  signs and never encrypts: the octets forwarded to the agent are the
+  octets that arrived. The **amplification is bounded in two directions**: a
   forty-octet GETBULK with a repetition count of ten thousand asks for
   megabytes, aimed at whatever address the datagram claimed to come from,
   so a count past the bound is **lowered rather than refused** — a
@@ -1240,7 +1247,20 @@ describes it, validation refuses what cannot work, and
   which is the oracle a password list needs -- with the amplification bounds
   applying to the fabrication as they do to an agent, because a honeypot that
   answers a forty-octet GETBULK with half a megabyte is a liability rather than
-  a sensor
+  a sensor. And a `redis` listener does it for a cache, which is the one of
+  these where the attacker is a **script** rather than a person and always the
+  same script: an exposed instance is found by a scanner, and what follows is
+  `INFO`, `CONFIG GET dir`, `CONFIG GET dbfilename`, `CONFIG SET` both of them
+  somewhere that executes, a `SET` carrying a cron line, and `SAVE` — remote code
+  execution built entirely out of commands the protocol considers ordinary, with
+  no exploit in it and nothing to patch. A refusal stops that at the first step
+  and sends its author to the next address; answering it collects the directory,
+  the file name and the payload. The tripwires there need no configuring,
+  because nothing legitimate sends any of that chain to a fabricated cache — and
+  two things the fabrication will not pretend, `EVAL` and `MODULE LOAD`, answer
+  the error the real server answers when it cannot, since a `+OK` to either
+  would be a claim that code was running and nothing said afterwards would be
+  consistent with it
 - **A device inventory built from traffic, not from scanning.** An
   operational estate's oldest problem is that nobody knows what is on the
   network: the drawings are from commissioning, the spreadsheet was

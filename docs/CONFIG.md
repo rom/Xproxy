@@ -2492,15 +2492,33 @@ with an `upstream_community` the manager never needs to know. A response is
 rebuilt in the version its request arrived in, so the manager sees the version
 it spoke.
 
-Two rewrites this relay will not do, both because it holds no USM keys and
-will not forge an authentication that did not happen. It cannot *produce* v3,
-which is refused at load. And it cannot downgrade a v3 **request**: the
-answer would come back as v2c and handing that to a v3 manager means
-authenticating it with a key that is not here, so such a request is refused
-rather than half-translated. A v3 **notification** downgrades cleanly,
+Two rewrites this relay will not do, both because it reads USM messages and
+never writes one, and will not forge an authentication that did not happen. It
+cannot *produce* v3, which is refused at load. And it cannot downgrade a v3
+**request**: the answer would come back as v2c and handing that to a v3
+manager means signing it, which this relay does not do, so such a request is
+refused rather than half-translated. A v3 **notification** downgrades cleanly,
 because nothing comes back -- a modern device sending v3 traps to a collector
 that understands only v2c is exactly what `traps: true` with
 `upgrade_version: v2c` is for.
+
+**Version 3 is read, with the user's keys.** Without `usm_users` a v3 message
+is a header and an opaque payload: the user, the engine and the security level
+are checked and nothing else can be, so every rule written about an operation
+or an object subtree applied to v1 and v2c and silently did not apply to v3 --
+which is the version an operator is told to insist on. With the user's pass
+phrases in `usm_users` the digest is verified and, at `authPriv`, the payload
+is decrypted, and then the ordinary rules decide about a v3 message exactly as
+they decide about a v2c one: `read_only` refuses an encrypted SetRequest, a
+rule's `oids` cover an encrypted GetRequest, `contexts` matches the context
+name inside the payload.
+
+Nothing is re-encrypted and nothing is re-signed. The octets forwarded to the
+agent are the octets that arrived, so a message this relay misread cannot be a
+message the agent receives differently, and the keys are here for reading only.
+See `usm_users` below for the two refusals that exist because of them -- a
+stripped authentication flag and a replayed clock -- and for the bound on key
+derivation.
 
 **The values are not interpreted.** A binding's type and extent are read;
 what a `Counter64` *means* is not. A policy about values would need a MIB per
@@ -2527,6 +2545,9 @@ DTLS on 10162 is not implemented, so a listener that is TLS throughout is
 | `versions` | list | all | `v1`, `v2c`, `v3`. "v3 only" is the single most useful line an operator can write here |
 | `communities` | list | any | The community strings v1 and v2c may use. Empty allows any, which validation warns about: the defaults are known to everyone and scanned for constantly |
 | `users` | list | any | The v3 USM user names |
+| `usm_users` | list | | The v3 users whose traffic this listener can *read*: name, protocols and pass phrases. See below |
+| `replay_window` | duration | `150s` | How far behind an authenticated message's notion of the agent's clock may be before it is refused as a replay, which is RFC 3414 §2.2.3's own check. `0` disables it |
+| `max_usm_engines` | int | `8` | Distinct authoritative engines one user's keys are derived for. A bound on work, not on policy: see below |
 | `min_security_level` | `noAuthNoPriv`, `authNoPriv`, `authPriv` | `noAuthNoPriv` | The lowest v3 level accepted. `noAuthNoPriv` refuses nothing, so a listener that went to the trouble of requiring v3 usually wants `authNoPriv` at least |
 | `read_only` | bool | `false` | Refuse every SetRequest, for every client, before any rule is read. SNMP has exactly one writing operation, so this is a one-line policy covering the whole of "nobody reconfigures anything through this relay". **No rule can override it** |
 | `upgrade_version` | `v1`, `v2c` | | Rewrite the version a message is forwarded in. `v3` is refused at load |
@@ -2550,6 +2571,105 @@ DTLS on 10162 is not implemented, so a listener that is TLS throughout is
 | `log_writes` | bool | `true` | An access line for every SetRequest and every refusal, leaving the polling alone: what was *changed* through this relay is the record an estate is asked for |
 | `alert_on_deny` | bool | `true` | A security event per refusal |
 | `proxy_protocol` | bool | `false` | Send a PROXY protocol v2 header to the agent on the stream path |
+
+#### server.listeners[].snmp.usm_users
+
+The version 3 users whose traffic this listener can read.
+
+```yaml
+snmp:
+  upstream: agents
+  versions: [v3]
+  min_security_level: authPriv
+  read_only: true
+  usm_users:
+    - name: nms-poller
+      auth: sha256
+      auth_secret: "file:/etc/xproxy/snmp/poller.auth"
+      privacy: aes128
+      privacy_secret: "file:/etc/xproxy/snmp/poller.priv"
+    - name: nms-writer
+      # The engine identifier a `snmpget -v3` prints, pinned: the key is then
+      # derived once at load and a message naming another engine is refused.
+      engine_id: "80:00:1f:88:80:8f:3e:4c:5d"
+      auth: sha512
+      auth_secret: "vault:secret/xproxy/snmp/writer#auth"
+      privacy: aes256
+      privacy_secret: "vault:secret/xproxy/snmp/writer#priv"
+```
+
+The pass phrases are the same ones the manager is configured with -- what
+`snmpwalk`'s `-A` and `-X` take -- because RFC 3414 §2.6 derives the key from
+the pass phrase and the agent's engine identifier, and both ends have to derive
+the same one. This relay derives it too, which is how it verifies a digest
+nobody else could have produced. They are resolved at load, in the usual
+`file:`/`env:`/`vault:` form, so a missing secret is a configuration that does
+not start rather than a listener that refuses every message at three in the
+morning; a rotated pass phrase needs a reload.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | string | required | The USM user name, as it appears in the message |
+| `engine_id` | hex | any | The authoritative engine this user's messages must name, as hexadecimal with optional `0x`, colons or dashes. Empty accepts whatever engine the message names |
+| `auth` | `md5`, `sha1`, `sha224`, `sha256`, `sha384`, `sha512` | required | The authentication protocol. `md5` and `sha1` are RFC 3414's originals and are weak; RFC 7860's `sha256` is the same configuration with a different word |
+| `auth_secret` | secret ref | required | The authentication pass phrase |
+| `privacy` | `des`, `aes128`, `aes192`, `aes256` | | The privacy protocol. Empty means this user is not expected to encrypt |
+| `privacy_secret` | secret ref | required with `privacy` | The privacy pass phrase |
+
+USM has one key derivation and the cipher truncates it, so a hash narrower
+than the cipher's key cannot key it: `md5` with `aes256` is sixteen octets
+where thirty-two are needed, and it is refused at load rather than padded.
+
+Five things a configured user changes about how a v3 message is decided.
+
+**The rules apply.** An operation and an object subtree can be read out of the
+payload, so `read_only`, a rule's `pdus`, `access`, `oids`, `deny_oids`,
+`write_oids` and `contexts` all decide about v3 traffic. Without keys they
+could not, and a v3 message was allowed with the reason `snmp_encrypted` --
+honest, and not a policy.
+
+**A stripped authentication flag is a refusal** (`snmp_usm_downgrade`). Clearing
+the flags in `msgFlags` is the cheapest forgery on this protocol, because it
+asks the relay to stop checking rather than to produce a digest. A user this
+listener holds keys for, arriving at `noAuthNoPriv`, is refused. A user it
+holds no keys for is not this section's business: `users` is where an operator
+says who may send at all.
+
+**An unreadable encrypted message is a refusal**, not a pass. A user with
+`auth` and no `privacy`, sending at `authPriv`, is refused
+(`snmp_usm_no_privacy_key`) rather than forwarded unread -- otherwise privacy
+would be the way round every rule on the listener. Validation refuses the
+configuration outright when `min_security_level: authPriv` is set and a user
+has no privacy key, because then *every* message from that user would be
+refused.
+
+**A replayed clock is a refusal** (`snmp_replay`). This is RFC 3414 §2.2.3 from
+the outside: the highest boot count and clock seen from each engine are
+remembered, and a message that goes backwards -- a lower boot count, or the
+same boot count with a clock more than `replay_window` behind where the elapsed
+wall clock says it should be -- is refused. A higher boot count is the agent
+restarting and the mark follows it, so a power cut does not lock out an estate.
+What this catches is a captured datagram sent again later; it is not a
+duplicate-suppression cache, and a datagram replayed within the window is
+indistinguishable from the original to anything but the agent itself.
+
+**Key derivation is bounded** (`snmp_usm_engines`). Deriving a key is a
+megabyte of hashing by design, so that guessing a pass phrase costs a megabyte
+per guess -- and the engine identifier that decides *which* key is needed
+arrives in the message. Keys are derived once per engine and cached;
+`max_usm_engines` bounds how many engines one user's keys are derived for, and
+past the bound a message naming a new engine is refused rather than paid for.
+Pinning `engine_id` avoids the question: the one key is derived at load.
+
+All five are shadowable (`policy: {mode: shadow}` on the listener), which is
+what an operator trials this section with -- a wrong pass phrase would
+otherwise stop every poll on the estate the moment it is added. What shadow
+mode cannot do is make the message readable, so a shadowed listener forwards
+the message exactly as it arrived and decides about its header alone.
+
+Counters: `snmp_verified` and `snmp_decrypted` say how much v3 traffic the
+rules actually apply to; `snmp_auth_failed` and `snmp_replayed` are the two
+ways a v3 message fails that nothing else on this listener can see.
 
 #### server.listeners[].snmp.deception
 
@@ -2661,12 +2781,14 @@ whose amplification bounds were in shadow mode would be a working amplifier.
 A read-only listener that a single rule could write through is not a
 read-only listener.
 
-**An encrypted v3 payload is decided about, not inspected.** When the
-security level is `authPriv` the scoped PDU is ciphertext: the header parses,
-the user and the level are checked, and there is no operation and no object
-identifier to decide about. The decision says `snmp_encrypted` rather than
-refusing traffic the listener was configured to carry or pretending it was
-inspected.
+**An encrypted v3 payload is decided about, not inspected -- unless the
+listener holds the user's keys.** When the security level is `authPriv` and
+there is no `usm_users` entry for the user, the scoped PDU is ciphertext: the
+header parses, the user and the level are checked, and there is no operation and
+no object identifier to decide about. The decision says `snmp_encrypted` rather
+than refusing traffic the listener was configured to carry or pretending it was
+inspected. With the user's pass phrases configured the payload is decrypted and
+the ordinary rules decide about what was inside it -- see `usm_users`.
 
 **A community string is never written to a log.** It is a credential, and an
 access log or security event that printed every guessed one would be a list
@@ -2677,14 +2799,17 @@ Counters: `snmp_messages`, `snmp_sessions`, `snmp_sessions_open`,
 `snmp_reads`, `snmp_writes`, `snmp_traps`, `snmp_denied`, `snmp_would_deny`,
 `snmp_malformed`, `snmp_rejected`, `snmp_rate_limited`, `snmp_amplified`,
 `snmp_truncated`, `snmp_upgraded`, `snmp_timed_out`, `snmp_upstream_failed`,
-`snmp_unsolicited`, `snmp_pending`. Refusals are `snmp_denied` for the ban triggers, and the
+`snmp_unsolicited`, `snmp_pending`, `snmp_verified`, `snmp_decrypted`,
+`snmp_auth_failed`, `snmp_replayed`. Refusals are `snmp_denied` for the ban triggers, and the
 fine-grained reason is in the refusal counters: `client_not_allowed`,
 `tls_handshake`, `upstream_tls`, `malformed`, `malformed_response`, `message_too_large`,
 `framing`, `max_connections`, `rate_limited`, `version`, `community`, `user`,
 `security_level`, `read_only`, `direction`, `var_binds`, `rule`,
 `default_deny`, `max_repetitions`, `response_too_large`, `response_ratio`,
 `response_too_late`, `unsolicited_response`, `encrypted_response`,
-`wrong_direction`, `too_many_pending`, `upgrade_failed`.
+`wrong_direction`, `too_many_pending`, `upgrade_failed`, `usm_downgrade`,
+`usm_engine`, `usm_engines`, `auth_failed`, `replay`, `usm_no_privacy_key`,
+`unreadable`.
 
 ### server.listeners[].dhcp (kind: dhcp)
 
@@ -10871,6 +10996,85 @@ A command merely *off* the allow list is a **soft** refusal, which is the
 distinction that makes monitor mode useful: it is most likely an application nobody
 has listed yet, and finding those is what the mode is for. An operator who names
 one of the hard set in `allow_commands` has said so, and is not overruled.
+
+### server.listeners[].redis.deception
+
+A Redis that is not there.
+
+This is the protocol where a fabricated server is worth the most, because the
+attack on it is a script rather than a person and the script is always the same
+one. An exposed instance with no password is found by a scanner, and what arrives
+next is:
+
+```
+INFO                            what is this, and what version
+CONFIG GET dir                  where does it write
+CONFIG GET dbfilename           what does it write
+CONFIG SET dir /var/spool/cron  point that somewhere that executes
+CONFIG SET dbfilename root
+SET x "\n* * * * * curl ...\n"  the payload, as a value
+SAVE                            write the file
+```
+
+A refusal stops that at the first step, and tells its author to try the next
+address. Answering it collects the whole chain -- the directory, the file name and
+the payload -- in the security log, which is the difference between knowing that
+somebody scanned the estate and knowing what they intended to run on it.
+
+```yaml
+redis:
+  # A honeypot: no upstream, because there is nothing behind it.
+  deception:
+    mode: decoy
+    version: "7.0.15"
+    profile: session-store
+    key_count: 256
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Turns the section off without removing it |
+| `mode` | `answer`, `decoy` | `answer` | `answer`: a command this listener was going to refuse is answered by the fabrication instead, and never reaches the server. `decoy`: the whole listener is a fabricated server, with no `upstream` |
+| `clients` | list of CIDR | | The networks that get the fabrication. **Required in mode `answer`.** In mode `decoy` an empty list means every client |
+| `profile` | `generic-cache`, `session-store`, `queue` | `generic-cache` | The shape: the version reported, how the keys are named, and how large a dataset it claims |
+| `version` | string | the profile's | The `redis_version` `INFO` reports, which is the first thing a scanner records and what a vulnerability database is indexed by |
+| `keys` | list | | Key names the fabrication holds, in addition to the generated ones. What `KEYS` and `SCAN` list and what `GET` answers for |
+| `key_count` | int | the profile's | How many keys are generated from the profile's pattern, 0 to 4096 |
+| `require_auth` | bool | `false` | Demand `AUTH` and then accept any password. Off by default: an unprotected instance is what the scanning is looking for, and a decoy that asks for a password is one most scripts move on from |
+| `tripwire` | list | | Command names, or `"NAME SUB"` pairs, that raise a `redis_tripwire` event. **In addition to** the built-in set below |
+| `seed` | int | from the listener name | Makes the fabricated values reproducible across restarts |
+| `period` | duration | `30s` | How long one sample of a gauge lasts |
+| `max_clients` | int | `1024` | Bounds the record of who has been answered |
+
+**The tripwires need no configuring.** `CONFIG SET`, `MODULE`, `SLAVEOF`,
+`REPLICAOF`, `DEBUG`, `EVAL`, `EVALSHA`, `FUNCTION`, `SCRIPT`, `MIGRATE`,
+`SHUTDOWN`, `SAVE`, `BGSAVE`, `BGREWRITEAOF`, `FLUSHALL`, `FLUSHDB` and `ACL` are
+in the set from the start, because nothing legitimate sends any of them to a
+fabricated cache. `tripwire` adds to that rather than replacing it.
+
+**Two things the fabrication will not pretend.** `EVAL` and `MODULE LOAD` answer
+the error the real server answers when it cannot, because a `+OK` to either would
+be a claim that code was running and nothing said afterwards would be consistent
+with it. `SCRIPT LOAD` answers a digest and keeps nothing, and `EVALSHA` of it
+then says `NOSCRIPT` -- which is exactly what a server that had evicted the
+script would say, so the pair stays consistent.
+
+**Nothing is stored.** A value is a function of the key name and the period, so a
+visitor who wrote a payload and read it back gets what they wrote for the length
+of one reply and the fabrication remembers nothing. `FLUSHALL` answers `+OK` and
+deletes nothing, because there was nothing.
+
+**A password is never recorded.** `AUTH`'s arguments are replaced in the event by
+the user name and the password's *length*, for the reason the SNMP relay does not
+log a community string: a log holding every credential sprayed at the estate is a
+list of the estate's own credentials as often as not. Every other command's
+arguments *are* recorded, clipped and reduced to one line, because on this
+protocol they are the message.
+
+Counters: `redis_deceived` and `redis_tripwire`. Security events: `redis_deceived`
+and `redis_tripwire`, with the command, the arguments and the reason the command
+was not going to reach the server. `xproxyctl decoys` lists what each fabrication
+has seen.
 
 ## bacnet
 

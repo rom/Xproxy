@@ -114,11 +114,18 @@ func (a *agent) record(raw []byte) []byte {
 		return nil
 	}
 	a.got = append(a.got, m)
-	if a.mute || m.PDU == nil || m.PDU.Type.Notification() {
+	if a.mute {
 		return nil
 	}
+	// The reply hook is the test taking the answer over entirely, so it comes
+	// before the shapes this agent declines to answer -- a v3 message whose
+	// payload this agent cannot read is one of them, and a test about such an
+	// exchange has to be able to answer it.
 	if a.reply != nil {
 		return a.reply(m)
+	}
+	if m.PDU == nil || m.PDU.Type.Notification() {
+		return nil
 	}
 	id := m.PDU.RequestID
 	if a.unsolicited != 0 {
