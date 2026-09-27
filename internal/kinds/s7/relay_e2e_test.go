@@ -123,6 +123,22 @@ func (p *fakePLC) session(c net.Conn) {
 			p.record("cotp " + cotp.TypeName())
 			continue
 		}
+		if wire.IsPlus(cotp.Data) {
+			// An S7-1200 or S7-1500 speaking to TIA Portal. The fake
+			// controller records what arrived and answers with a response
+			// carrying the same function, which is enough for a test to say
+			// whether the relay let the request through.
+			plus, err := wire.ParsePlus(cotp.Data)
+			if err != nil {
+				return
+			}
+			name, _ := plus.FunctionName()
+			p.record("plus " + name)
+			if plus.HasFunction {
+				_, _ = c.Write(plusFrame(wire.PlusResponse, plus.Function))
+			}
+			continue
+		}
 		pdu, err := wire.ParseS7(cotp.Data)
 		if err != nil {
 			return

@@ -99,6 +99,10 @@ type policy struct {
 	allowByDef bool
 	monitor    bool
 	respond    string
+
+	// plus is the S7comm-plus policy: a different protocol on the same
+	// stack, with its own vocabulary and much less of it visible.
+	plus *commPlus
 }
 
 type rule struct {
@@ -182,6 +186,9 @@ func compile(c *config.S7Listener) (*policy, error) {
 		return nil, err
 	}
 	if p.blockTypes, err = blockSet(c.BlockTypes); err != nil {
+		return nil, err
+	}
+	if p.plus, err = compilePlus(c); err != nil {
 		return nil, err
 	}
 	for i := range c.Rules {

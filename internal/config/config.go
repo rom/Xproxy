@@ -1537,6 +1537,18 @@ type S7Listener struct {
 	SessionDuration  Duration `yaml:"session_duration"`
 	HandshakeTimeout Duration `yaml:"handshake_timeout"`
 
+	// CommPlus decides what happens to S7comm-plus: the protocol an
+	// S7-1200 or S7-1500 speaks to TIA Portal, announced by a protocol
+	// identifier of 0x72 where classic S7comm uses 0x32.
+	//
+	// It needs its own section because it is a different protocol with a
+	// different vocabulary, and because a relay can see much less of it: from
+	// firmware 4 onward the session is integrity-protected and the interesting
+	// parts of a request are encrypted, so what is left to police is the
+	// function code. Absent this section an S7comm-plus PDU is refused --
+	// which is what a listener written for classic S7comm meant.
+	CommPlus *S7CommPlus `yaml:"s7comm_plus"`
+
 	// Rules decide each request, in order, first match wins. A request
 	// that matches no rule takes DefaultAction.
 	Rules []S7Rule `yaml:"rules"`
@@ -1557,6 +1569,68 @@ type S7Listener struct {
 	// -- because a write forwarded so that it could be written down is a
 	// moved actuator, and a stop forwarded is a stopped machine.
 	MonitorOnly bool `yaml:"monitor_only"`
+}
+
+// S7CommPlus is the policy for S7comm-plus on an s7 listener.
+//
+// **Why this is a smaller policy than the classic one.** Classic S7comm says
+// on the wire which memory area a request names, which data block and which
+// bytes, so a policy can be written about the plant. S7comm-plus does not: on
+// the controllers that speak it the session is integrity-protected and the
+// object and variable addressing is encrypted under a key the two ends derive,
+// so a relay in the middle can read the outer framing and nothing under it.
+// What is left is the *function code* -- whether this is a read, a write, a
+// method call or a program change -- and that is what this section decides
+// about. A section here that claimed to bound data blocks would be claiming to
+// read something no relay can see.
+//
+// **The function names are read from the wire, not from a specification.**
+// Siemens publishes none, for either protocol. The names come from public
+// reverse engineering, and a function code this relay cannot name is reported
+// as unnamed and decided by DefaultAction -- so a table that is wrong or out
+// of date fails closed rather than passing an operation through unexamined.
+type S7CommPlus struct {
+	// Mode is what happens to S7comm-plus on this listener:
+	//
+	//   refuse      (the default) no S7comm-plus reaches the controller. This
+	//               is what an s7 listener written before this section existed
+	//               meant, so adding the section changes nothing until a mode
+	//               is chosen -- but the refusal is now answered and named
+	//               rather than being a connection this relay dropped without
+	//               saying why.
+	//   policy      decide each PDU by the lists below. This is what makes an
+	//               S7-1500 usable through this relay.
+	//   passthrough forward every S7comm-plus PDU, with the session's frame
+	//               bounds and rate limits still in force. It is here for the
+	//               estate that must have TIA Portal working today and will
+	//               write the policy next week, and the reference says plainly
+	//               what it gives up.
+	Mode string `yaml:"mode"`
+	// Functions is the allow list, by the names public reverse engineering
+	// uses -- explore, get_link, get_multi_variables, get_var_sub_streamed,
+	// set_variable, set_multi_variables, create_object, delete_object,
+	// invoke, begin_sequence, end_sequence -- or by number ("0x054c"). Empty
+	// names none, and then Classes decides.
+	Functions []string `yaml:"functions"`
+	// DenyFunctions is the deny list, which no allow can override.
+	DenyFunctions []string `yaml:"deny_functions"`
+	// Classes is the allow list in the three words a plant policy is written
+	// in: read, write, admin. The fourth, unknown, is every function this
+	// relay could not name -- nameable so that an estate can decide about it
+	// rather than inherit a default it cannot see.
+	//
+	// The mapping from function to class is a judgement rather than something
+	// the protocol states: a download and a run-stop on this protocol family
+	// are both Invoke calls, so invoke is admin. An engineer who disagrees
+	// can name the function itself in Functions, which is checked first.
+	Classes []string `yaml:"classes"`
+	// DenyClasses is the deny list, which no allow can override.
+	DenyClasses []string `yaml:"deny_classes"`
+	// DefaultAction is deny (the default) or allow: what a PDU no list names
+	// gets. It is the switch that decides an unnamed function, so `allow` here
+	// is the one setting in this section that can let an operation through
+	// that this relay did not recognise.
+	DefaultAction string `yaml:"default_action"`
 }
 
 // S7Rule is one rule of an s7 listener's policy.

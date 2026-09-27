@@ -110,7 +110,7 @@ did not authenticate — a trial instead of a door.
 | `postgres`, `mysql`, `tds` | every statement or command rule, `read_only`, the database and schema lists; `monitor_only` | the login packet's own bounds, malformed messages, a statement the relay could not read, `copy from program` and its siblings, rate limits, the client list, bans |
 | `redis` | every command rule, `read_only`, the key and database lists; `monitor_only` | `require_tls` and `require_auth` (admitting somebody who did not authenticate is not a trial), the commands that are a way out of the data path -- `config set`, `flushall`, `keys`, `eval` -- malformed messages, the message and element bounds, bans |
 | `amqp` | every rule: the exchange, queue and routing-key policies, the mechanism and vhost lists; `monitor_only` | `require_tls`, a mechanism of `ANONYMOUS`, malformed frames, the frame and method bounds, the broker's own refusal, bans |
-| `s7` | every rule: the function, the data block and the address range; `read_only`; `monitor_only` | malformed frames, the frame bound, a rack and slot with no route, the connection bound, bans |
+| `s7` | every rule: the function, the data block and the address range; `read_only`; `monitor_only`; the S7comm-plus function policy (but not `s7comm_plus.mode: refuse`, which is not a policy a trial should carry) | malformed frames, the frame bound, a rack and slot with no route, the connection bound, bans |
 | `bacnet` | every rule: the service, the object type and instance, the property and the command priority; the link-layer function list | malformed BVLC and APDU, the message bound, foreign-device registration, rate limits, the client list, bans |
 | `tcp`, `udp`, `ntske` | the `authorization` section and the imported address lists, which is what those kinds have that a shadow run can answer | everything else: their own refusals are either "no destination exists for this" or a bound, and neither is a policy |
 | every kind that asks the `authorization` section | the section's own decision, under either switch -- this one or `authorization: {shadow: true}` -- with the rule that decided in the ledger entry | nothing extra: a policy refusal is exactly what a shadow run is for |
@@ -10963,6 +10963,97 @@ device connection an engineering station opens, `op` is an operator panel and
 `basic` is what one PLC opens to another; a listener that admits only `op` has
 refused every engineering station without naming a single function.
 
+### S7comm-plus, the protocol an S7-1200 or S7-1500 speaks
+
+Everything above is *classic* S7comm, which is what an S7-300 or S7-400 speaks
+and what a Siemens controller bought before about 2012 speaks. TIA Portal
+talking to an S7-1200 or S7-1500 speaks **S7comm-plus**: the same TPKT and COTP
+stack, a protocol identifier of `0x72` where classic S7comm uses `0x32`, and a
+different protocol above them.
+
+A relay that read only `0x32` was not a relay in front of those controllers. It
+ended the connection on the first S7comm-plus PDU, with no answer in the
+protocol and nothing in the counters an operator would read as a policy -- so
+the newest half of a Siemens estate could not be put behind it, and the failure
+looked like a network fault.
+
+`s7comm_plus` decides what happens to it:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `mode` | `refuse`, `policy`, `passthrough` | `refuse` | `refuse`: no S7comm-plus reaches the controller, which is what an `s7` listener written before this section existed meant -- but the refusal is now named (`s7comm_plus_refused`), counted, and leaves the session up. `policy`: decide each PDU by the lists below. `passthrough`: forward every one |
+| `functions` | list | | The allow list, by name -- `explore`, `get_link`, `get_multi_variables`, `get_var_sub_streamed`, `set_variable`, `set_multi_variables`, `create_object`, `delete_object`, `invoke`, `begin_sequence`, `end_sequence` -- or by number (`"0x054c"`) |
+| `deny_functions` | list | | The deny list, which no allow overrides |
+| `classes` | list | | The allow list by class: `read`, `write`, `admin`, `unknown` |
+| `deny_classes` | list | | The deny list by class |
+| `default_action` | `deny`, `allow` | `deny` | What a PDU no list names gets |
+
+**This is a smaller policy than the classic one, and honestly so.** Classic
+S7comm says on the wire which memory area a request names, which data block and
+which bytes, so `areas`, `dbs` and `addresses` can be written about the plant.
+S7comm-plus does not. On the controllers that speak it the session is
+integrity-protected and the object and variable addressing is encrypted under a
+key the two ends derive, so a relay in the middle sees the outer framing and
+nothing under it. What is left is the **function code**, and that is what this
+section decides about. A `dbs` line does not apply to S7comm-plus, and a
+section here that claimed to bound data blocks would be claiming to read
+something no relay can see.
+
+**The function names are read from the wire, not from a specification.** Siemens
+publishes none, for either protocol. These names are the ones public reverse
+engineering agrees on, which is a weaker footing than an RFC -- and the design
+accounts for it in one specific way. A function code this relay cannot name is
+the `unknown` class, and `default_action` decides it, which is `deny` unless an
+operator says otherwise. So a table that is incomplete or wrong costs a refusal
+rather than passing an operation through unexamined. `unknown` is a class an
+operator can name in a list precisely so that the decision about it is visible
+rather than inherited.
+
+**The classification is a judgement.** `read` is the browsing and reading an
+HMI or historian does; `write` changes a value; `admin` creates or deletes an
+object, calls a method or runs one of the sequences a download sits inside. On
+this protocol family a download and a run-stop are both `invoke` calls, which is
+why `invoke` is `admin`. An engineer who disagrees can name the function itself
+in `functions`, which is checked before the classes.
+
+**`read_only` holds here too, and no list can widen it.** On a read-only
+listener every class but `read` is refused, and that includes `unknown`: a
+function this relay cannot name is exactly the one it must not carry there.
+
+**There is no way to say no in this protocol.** Classic S7comm has one -- an
+acknowledgement carrying an access fault, which is what a password-protected CPU
+answers -- so a refused classic request is answered and the poll loop carries
+on. S7comm-plus has no response this relay can build: the response format is not
+pinned down well enough by public reverse engineering to render, and inventing
+one would put octets on the wire no controller would send. So
+`deny_response: error` **degrades to `drop`** for S7comm-plus -- the request is
+swallowed and the engineering station reads a timeout for that one request --
+and `deny_response: close` is available for an estate that would rather a
+refusal end the session. The load warns about the degradation rather than
+leaving it to be discovered in the field.
+
+```yaml
+- name: line-7-s71500
+  address: "0.0.0.0:102"
+  kind: s7
+  s7:
+    upstream: plc-line-7
+    allow_clients: ["10.20.4.0/24"]
+    resources: ["op", "pg"]
+    # Classic S7comm from the HMI, policed by data block as usual.
+    areas: ["db", "inputs", "outputs"]
+    dbs: ["1-40"]
+    # And TIA Portal, policed by what it asks the controller to do.
+    s7comm_plus:
+      mode: policy
+      classes: [read]
+      # The engineering station may write a value during commissioning, and
+      # never change the program through this relay.
+      functions: [set_multi_variables]
+      deny_classes: [admin]
+    deny_response: close
+```
+
 ### The memory is the boundary inside the CPU
 
 `areas` and `dbs` say which memory a client may reach at all, and `addresses`
@@ -11114,8 +11205,13 @@ refusal nobody can attribute to a byte range is a refusal nobody can act on.
 Refusals are `s7_denied` for the ban triggers, with the reasons in the table
 above plus `operation_not_allowed`, `operation_denied`, `area_not_allowed`,
 `area_denied`, `db_not_allowed`, `address_not_allowed`, `block_type_not_allowed`, `no_rule_matched`,
-`rule_denied`, `outside_schedule`, `no_connection_request` and
-`upstream_unavailable`.
+`rule_denied`, `outside_schedule`, `no_connection_request`,
+`upstream_unavailable` and, for S7comm-plus, `s7comm_plus_refused` (the variant
+is not enabled on this listener), `s7comm_plus_denied` (a deny list named it)
+and `s7comm_plus_not_allowed` (no list named it, including every function this
+relay could not name). The first two of those and `read_only` are hard; the
+third is soft, so monitor mode is useful for finding out what TIA Portal
+actually asks for before a policy is written about it.
 
 ## asset_inventory
 

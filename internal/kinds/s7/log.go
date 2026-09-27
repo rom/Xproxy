@@ -124,6 +124,27 @@ func (t *server) plcRefused(se *session, pdu *wire.PDU) {
 // The operation, the controller, and what the request named -- the area, the
 // data block and the byte range for a read or a write, the service name for a
 // control operation, the block for an upload or a download. Never a value.
+// logPlus writes the access line for an S7comm-plus request. It is a shorter
+// line than the classic one because there is less to say: the function, and
+// whether this relay could name it. What the request touches is encrypted, so
+// a line claiming an area and a data block would be a line made up.
+func (t *server) logPlus(se *session, pdu *wire.PlusPDU) {
+	s := se.sess()
+	name, known := pdu.FunctionName()
+	attrs := []any{"listener", t.name, "client_ip", se.ip.String(), "proto", "s7",
+		"variant", "s7comm_plus", "pdu", pdu.TypeName()}
+	if op := pdu.OpcodeName(); op != "" {
+		attrs = append(attrs, "opcode", op)
+	}
+	if name != "" {
+		attrs = append(attrs, "function", name, "class", string(pdu.Class()), "named", known)
+	}
+	if s.Addressed {
+		attrs = append(attrs, "rack", s.Rack, "slot", s.Slot)
+	}
+	t.host.Logs().Access.Info("s7", attrs...)
+}
+
 func (t *server) logRequest(se *session, pdu *wire.PDU) {
 	op, known := pdu.Op()
 	if !known {
