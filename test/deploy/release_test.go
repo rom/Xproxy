@@ -24,8 +24,9 @@ func built(t *testing.T) []string {
 	t.Helper()
 	mk := read(t, "Makefile")
 	re := regexp.MustCompile(`-o \$\(BIN\)/([a-z-]+) \./cmd/`)
-	var out []string
-	for _, m := range re.FindAllStringSubmatch(mk, -1) {
+	ms := re.FindAllStringSubmatch(mk, -1)
+	out := make([]string, 0, len(ms))
+	for _, m := range ms {
 		out = append(out, m[1])
 	}
 	if len(out) < 5 {
