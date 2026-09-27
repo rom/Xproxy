@@ -53,7 +53,7 @@ func TestSetpointValuesAreReadPerEncoding(t *testing.T) {
 		{"single command", CScNA1, []byte{0x81}, 0, false},
 		{"regulating step", CRcNA1, []byte{0x01}, 0, false},
 		{"bitstring command", CBoNA1, []byte{1, 2, 3, 4}, 0, false},
-		{"a measurement", MMeNB1, []byte{0x64, 0x00}, 0, false},
+		{"a measurement", MMeNB1, []byte{0x64, 0x00, 0x00}, 0, false},
 	} {
 		body := append([]byte{0x0a, 0x00, 0x00}, tc.elem...)
 		f, err := Parse(iframe(1, 1, asdu(tc.typ, 1, false, CauseActivation, 1, body...)...))

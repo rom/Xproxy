@@ -6,6 +6,52 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Fixed (iec104: an address policy was checked against numbers nobody sent)
+
+- **Seven information element sizes were wrong, five of them measurements.**
+  `objectSize` is how the parser steps from one information object to the next,
+  so a size one octet short reads every address after the first out of the middle
+  of the previous object's value. It is not a parse failure, so the addresses came
+  back silently wrong -- and `ASDU.Addresses` is what an `iec104` rule's
+  `addresses` list is checked against and what the OT inventory records. For any
+  ASDU carrying more than one object of an affected type, both directions of error
+  were available: an object outside an allowed range reading as inside it, and
+  legitimate traffic refused. The affected types are the measurement family, which
+  is the bulk of what a substation sends.
+
+  Found by round-tripping a frame builder through the parser. The probe, two
+  scaled measurements at IOA 1000 and 1001:
+
+  ```
+  addresses read back as [1000 256256]
+  objectSize(M_ME_NB_1) = 2; the standard's element is SVA(2) + QDS(1) = 3
+  ```
+
+  | Type | was | is | composed of |
+  |------|-----|----|-------------|
+  | `M_ME_NA_1` | 2 | 3 | NVA + QDS |
+  | `M_ME_NB_1` | 2 | 3 | SVA + QDS |
+  | `M_ME_ND_1` | 1 | 2 | NVA, and no quality descriptor |
+  | `M_ME_TA_1` | 5 | 6 | NVA + QDS + CP24Time2a |
+  | `M_ME_TB_1` | 5 | 6 | SVA + QDS + CP24Time2a |
+  | `C_CD_NA_1` | 1 | 2 | CP16Time2a, not a qualifier octet |
+  | `C_TS_TA_1` | 10 | 9 | TSC + CP56Time2a |
+
+  Every one confirmed against the encoders of `mz-automation/lib60870` by counting
+  the octets each writes rather than by reading its size reservations: the
+  bitstring commands reserve one octet more than they write, and taking the
+  reservation as the element size would have introduced two new defects while
+  fixing these. The standard's own naming settles the first three by itself --
+  `M_ME_ND_1` exists *because* NA and NB carry a quality descriptor, so a table
+  where NA is two octets and ND is one has them the wrong way round.
+
+  Two existing fixtures were built to the wrong size and now fail to parse, which
+  is the right answer: they were malformed ASDUs that only read because the parser
+  was walking short. The size table now has a test that composes every size from
+  the fields the standard names, and a second that sends three objects of every
+  known type and requires the addresses that went in to come back out -- the
+  property the policy depends on and the one nothing was checking.
+
 ### Added (deception past HTTP: a device that is not there)
 
 - **`modbus.deception`, and `internal/deception` for the kinds that follow.**
