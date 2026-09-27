@@ -200,8 +200,13 @@ type Stats struct {
 	// S7Deceived counts the requests answered by a controller that is not
 	// there, and S7Tripwire the ones naming a data block no legitimate
 	// client reads.
-	S7Deceived        atomic.Uint64
-	S7Tripwire        atomic.Uint64
+	S7Deceived atomic.Uint64
+	S7Tripwire atomic.Uint64
+	// SNMPDeceived counts the requests answered by an agent that is not
+	// there, and SNMPTripwire the ones naming an object no legitimate
+	// manager reads.
+	SNMPDeceived      atomic.Uint64
+	SNMPTripwire      atomic.Uint64
 	IEC104Commands    atomic.Uint64
 	IEC104SystemCmds  atomic.Uint64
 	IEC104Denied      atomic.Uint64
@@ -730,6 +735,8 @@ type Snapshot struct {
 	IEC104Tripwire        uint64 `json:"iec104_tripwire"`
 	S7Deceived            uint64 `json:"s7_deceived"`
 	S7Tripwire            uint64 `json:"s7_tripwire"`
+	SNMPDeceived          uint64 `json:"snmp_deceived"`
+	SNMPTripwire          uint64 `json:"snmp_tripwire"`
 	IEC104Commands        uint64 `json:"iec104_commands"`
 	IEC104SystemCmds      uint64 `json:"iec104_system_commands"`
 	IEC104Denied          uint64 `json:"iec104_denied"`
@@ -1165,6 +1172,8 @@ func (s *Stats) snapshot() Snapshot {
 		IEC104Tripwire:         s.IEC104Tripwire.Load(),
 		S7Deceived:             s.S7Deceived.Load(),
 		S7Tripwire:             s.S7Tripwire.Load(),
+		SNMPDeceived:           s.SNMPDeceived.Load(),
+		SNMPTripwire:           s.SNMPTripwire.Load(),
 		IEC104Commands:         s.IEC104Commands.Load(),
 		IEC104SystemCmds:       s.IEC104SystemCmds.Load(),
 		IEC104Denied:           s.IEC104Denied.Load(),

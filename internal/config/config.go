@@ -751,6 +751,10 @@ type SNMPListener struct {
 	// upgrade_version v1 or v2c when the arriving message is v3, because
 	// there is no community string in a v3 message to carry over.
 	UpstreamCommunity string `yaml:"upstream_community"`
+	// Deception answers as an agent that is not there: a refused request
+	// answered by a fabricated device, or a whole listener that is one.
+	// See SNMPDeception.
+	Deception *SNMPDeception `yaml:"deception"`
 	// Rules decide each message, in order, first match wins. A message
 	// that matches no rule takes DefaultAction.
 	Rules []SNMPRule `yaml:"rules"`
@@ -2852,6 +2856,84 @@ type DHCPRule struct {
 	CircuitID string `yaml:"circuit_id"`
 	// Schedule limits the rule to a time window.
 	Schedule *ModbusSchedule `yaml:"schedule"`
+}
+
+// SNMPDeception answers as an agent that is not there.
+//
+// A refusal is information here as it is on the plant protocols, and on this
+// one it is the *credential* a refusal is about. A community string that is
+// wrong is answered with noAccess or noSuchName; one that is right is
+// answered with data. So a run through a password list finds the string, and
+// the run before it finds which devices are there at all -- because an agent
+// that exists answers something and an address that has nothing on it
+// answers nothing.
+//
+// And the system group is the other half. Every scanner asks for sysDescr,
+// sysObjectID and sysName first, which is exactly the inventory of an estate
+// an intruder wants; no policy in this section can make that answer less
+// informative, because the estate's own monitoring reads the same objects.
+//
+// This section answers instead, as a device whose counters rise, whose
+// interfaces are up and whose uptime is the uptime of nothing.
+//
+// **The rule is the one the other kinds hold to**: a request that was going
+// to reach the agent is never answered from here. Deception replaces a
+// refusal -- a policy denial, or an object the fabrication does not have --
+// and never an answer. mode: answer therefore refuses to load without
+// clients.
+//
+// **And one bound of its own.** A fabricated agent is a UDP service that
+// answers a small request with a larger response, which is an amplifier if
+// it answers anybody. So the listener's own max_repetitions, max_var_binds
+// and max_response_bytes apply to what the fabrication answers exactly as
+// they apply to what an agent answers, and a GETBULK is bounded before it is
+// fabricated rather than after.
+type SNMPDeception struct {
+	// Enabled turns the section off without removing it; it defaults to
+	// true wherever the section is present.
+	Enabled *bool `yaml:"enabled"`
+	// Mode is answer (the default: a request this listener was going to
+	// refuse is answered by the fabrication instead, and never reaches the
+	// agent) or decoy (the whole listener is a fabricated agent: no
+	// upstream, and nothing behind it).
+	Mode string `yaml:"mode"`
+	// Clients are the networks that get the fabrication. Required in mode
+	// answer. In mode decoy an empty list means every client, which is what
+	// a honeypot wants.
+	Clients []string `yaml:"clients"`
+	// Profile is the fabricated device's shape: generic-switch (the
+	// default) or generic-router. It decides how many interfaces it has and
+	// what it says it is.
+	Profile string `yaml:"profile"`
+	// SysDescr, SysObjectID, SysName, SysContact and SysLocation are the
+	// system group: what every scanner reads first and what an inventory
+	// tool records.
+	//
+	// **A decoy should say what the estate's own devices say.** A switch
+	// that describes itself as something nobody on the site runs is the
+	// tell that ends the pretence, and only you know what that is.
+	SysDescr    string `yaml:"sys_descr"`
+	SysObjectID string `yaml:"sys_object_id"`
+	SysName     string `yaml:"sys_name"`
+	SysContact  string `yaml:"sys_contact"`
+	SysLocation string `yaml:"sys_location"`
+	// Interfaces is how many ports the fabricated device has, 1 to 256.
+	// Zero takes the profile's.
+	Interfaces int `yaml:"interfaces"`
+	// Tripwire are object identifier subtrees no legitimate manager reads:
+	// a vendor's configuration-download branch, say. A binding under one is
+	// answered -- the answer is what keeps the visitor reading -- and
+	// raised as an snmp_tripwire security event, which is what somebody
+	// acts on.
+	Tripwire []string `yaml:"tripwire"`
+	// Seed makes the fabricated values reproducible. Zero derives one from
+	// the listener name, which is stable across restarts.
+	Seed uint64 `yaml:"seed"`
+	// Period is how long one sample of a counter or a gauge lasts. Default
+	// 30s; 1s to 1h.
+	Period Duration `yaml:"period"`
+	// MaxClients bounds the record of who has been answered. Default 1024.
+	MaxClients int `yaml:"max_clients"`
 }
 
 // SNMPRule decides one message.

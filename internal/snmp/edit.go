@@ -39,6 +39,10 @@ const (
 	// that "you may not" stopped having to be spelled as "no such
 	// object".
 	StatusNoAccess = 6
+	// StatusTooBig is what an agent answers when the response would not
+	// fit: the manager is expected to ask for less, which is what every
+	// manager does.
+	StatusTooBig = 1
 )
 
 // encodeTLV encodes one element: a tag, a length in the shortest form that holds

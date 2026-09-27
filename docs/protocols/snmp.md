@@ -88,6 +88,31 @@ than guessed at.
 **RFC 6353 TLS** on the stream side, which is SNMP over TLS on its own port
 with real transport security, for the parts of an estate that can use it.
 
+### An agent that is not there
+
+`deception` answers as a device the estate does not have: `mode: decoy` is a
+whole listener with no upstream, and `mode: answer` fabricates, on a listener
+that fronts a real agent, the answers to requests it was going to refuse.
+
+Two things make it worth having on this protocol in particular. A refusal here
+is about a *credential*, so it is the oracle a community-string list needs.
+And the system group is the estate's own inventory, read first by every
+scanner and by the monitoring the estate runs itself — which means no policy
+can make that answer less informative without breaking both.
+
+What bounds it is the usual test — a request that was going to reach the agent
+is never answered from here — and one bound this protocol adds: a fabricated
+agent is a UDP service answering a small request with a larger response, which
+is what an amplifier is. The listener's own `max_repetitions`, `max_var_binds`
+and `max_response_bytes` therefore bound the fabrication exactly as they bound
+an agent's answer, and an answer past the size bound becomes `tooBig`.
+
+The fabrication serves the system group and the interface table, and a walk of
+it is a walk: strictly increasing, and it ends. It does not answer version 3 —
+the response would carry a digest this relay cannot compute — and it does not
+answer a notification. See
+[docs/DECEPTION.md](../DECEPTION.md#an-agent-that-is-not-there).
+
 ### The imported lists, and the estate's authorisation policy
 
 SNMP does carry something that looks like a name -- a community on v1 and v2c, a

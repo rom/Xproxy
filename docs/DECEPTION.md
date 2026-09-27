@@ -37,6 +37,7 @@ exist.
 - [A device that is not there](#a-device-that-is-not-there)
 - [A substation that is not there](#a-substation-that-is-not-there)
 - [A controller that is not there](#a-controller-that-is-not-there)
+- [An agent that is not there](#an-agent-that-is-not-there)
 - [Refusal at the TLS handshake](#refusal-at-the-tls-handshake)
 - [What it produces](#what-it-produces)
 - [Building it out](#building-it-out)
@@ -611,6 +612,70 @@ pretence. The rest is what a controller *cannot* do:
 
 `tripwire` names the data blocks nothing legitimate reads — DB666 is the
 traditional choice — answered, and raised as `s7_tripwire`.
+
+## An agent that is not there
+
+The three above are plant protocols. This one runs the switches, the routers,
+the printers and the UPSs on the same network, and it is the most scanned
+management protocol there is — so it is where a fabrication earns the most,
+and where it has to be built most carefully.
+
+Two things make it different. The refusal is about a **credential**: a
+community string that is wrong is refused and one that is right is answered,
+so the refusal is the oracle a password list needs. And the system group is
+the estate's own inventory, read first by every scanner and by the monitoring
+the estate runs itself, so no policy can make that answer less informative
+without breaking both.
+
+```
+community "public"    -> noSuchName
+community "s3cret"    -> 24-port managed Ethernet switch
+a walk of 1.3.6.1.2.1 -> every port, every counter
+```
+
+`snmp.deception` answers instead:
+
+```yaml
+# A honeypot: an address on the management network with nothing on it.
+- name: sw-spare
+  address: "10.50.0.41:161"
+  kind: snmp
+  snmp:
+    deception:
+      mode: decoy
+      profile: generic-switch
+      sys_descr: "…what the estate's own switches say…"
+      sys_name: "sw-cell9"
+      interfaces: 24
+      tripwire: ["1.3.6.1.4.1.9.9.96"]
+    # The bounds below are not optional on a datagram protocol.
+    max_repetitions: 25
+    max_var_binds: 64
+    max_response_bytes: 4096
+```
+
+**The rule is the same one**: a request that was going to reach the agent is
+never answered by the fabrication. **The bound is the one this protocol adds.**
+A fabricated agent is a UDP service that answers a small request with a larger
+response, which is precisely what a reflection amplifier is: a GETBULK of
+forty octets asking for a thousand repetitions is half a megabyte sent
+wherever the source address claimed to be. So the listener's own
+`max_repetitions`, `max_var_binds` and `max_response_bytes` bound the
+fabrication exactly as they bound an agent's answer, and an answer that would
+exceed the last of them is replaced with `tooBig` — what an agent sends, and
+what a manager retries in smaller pieces. A honeypot that is also an amplifier
+is a liability, not a sensor.
+
+**What makes a fabricated agent answerable** is mostly that it can be walked.
+Every answer is strictly after the name asked about and the table ends rather
+than looping, which is the first thing any manager notices. Beyond that it is
+the things a device cannot do: it does not have every object (a name outside
+its table is `noSuchObject`, or `noSuchName` with an index for a version 1
+manager), it does not answer version 3 (the response would need a digest this
+relay cannot compute, and an unauthenticated answer to an authenticated
+protocol is a worse tell than silence), and it does not answer a notification.
+A `SetRequest` is answered as though it landed, and nothing is written — the
+same choice the Modbus section makes about a refused write.
 
 ## Refusal at the TLS handshake
 

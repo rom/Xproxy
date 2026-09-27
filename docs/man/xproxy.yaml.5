@@ -6202,6 +6202,15 @@ T}	T{
 Messages per second per client address. An SNMP poll is periodic and its rate is known,\: so this bound is unusually easy to set correctly
 T}
 T{
+\fBdeception\fR
+T}	T{
+object
+T}	T{
+
+T}	T{
+Answer as an agent that is not there: a refused request answered by a fabricated device,\: or a whole listener that is one;\: see below
+T}
+T{
 \fBlog_\:messages\fR
 T}	T{
 bool
@@ -6238,6 +6247,154 @@ T}	T{
 Send a PROXY protocol v2 header to the agent on the stream path
 T}
 .TE
+.SS "server.listeners[].snmp.deception"
+.PP
+\fBA refusal is information, and here it is information about a credential.\fR A community string that is wrong is answered with noAccess or noSuchName; one that is right is answered with data. So a run through a password list finds the string, and the run before it finds which addresses have an agent on them at all \[u2014] because an agent answers something and an address with nothing on it answers nothing.
+.PP
+And the system group is the other half. Every scanner reads \fBsysDescr\fR, \fBsysObjectID\fR and \fBsysName\fR first, which is the inventory of an estate; no policy here can make that answer less informative, because the estate\(aqs own monitoring reads the same objects.
+.PP
+.RS 4
+.nf
+.ft CR
+community "public"  \-> noSuchName
+community "s3cret"  \-> 24\-port managed Ethernet switch
+sysObjectID         \-> 1.3.6.1.4.1.8072.3.2.10
+a walk of 1.3.6.1.2.1 \-> 60 objects, every port and every counter
+.ft
+.fi
+.RE
+.PP
+This section answers instead, as a device whose counters rise, whose interfaces are up and whose uptime is the uptime of nothing.
+.PP
+\fBThe rule the other kinds hold to holds here\fR: a request that was going to reach the agent is never answered from here. Deception replaces a refusal \[u2014] a policy denial, or an object the fabrication does not have \[u2014] and never an answer, so \fBmode: answer\fR refuses to load without \fBclients\fR.
+.PP
+\fBAnd one bound of its own, which matters more on this protocol than on any other in this file.\fR A fabricated agent is a UDP service that answers a small request with a larger response, and that is what an amplifier is: a GETBULK of forty octets asking for a thousand repetitions is half a megabyte of answer sent wherever the source address said. So \fBmax_repetitions\fR, \fBmax_var_binds\fR and \fBmax_response_bytes\fR apply to what the fabrication answers exactly as they apply to what an agent answers \[u2014] the repetition count is bounded before the answer is built, the binding count while it is built, and an answer past the size bound is replaced with \fBtooBig\fR, which is what an agent sends and what a manager retries in smaller pieces.
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(0.9i) lbw(1.0i) lbx
+lw(1.1i) lw(0.9i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Turns the section off without removing it
+T}
+T{
+\fBmode\fR
+T}	T{
+\fBanswer\fR,\: \fBdecoy\fR
+T}	T{
+\fBanswer\fR
+T}	T{
+\fBanswer\fR fabricates what this listener was going to refuse,\: on a listener that fronts a real agent. \fBdecoy\fR is the whole listener: a fabricated agent with no upstream,\: where no request reaches anything
+T}
+T{
+\fBclients\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+The networks that get the fabrication. \fBRequired in \fBmode:\: answer\fR.\fR Empty in \fBmode:\: decoy\fR means every client,\: which is what a honeypot is for \[u2014] and on a datagram protocol it is also what an amplifier is,\: which is why the bounds above are not optional
+T}
+T{
+\fBprofile\fR
+T}	T{
+\fBgeneric\-\:switch\fR,\: \fBgeneric\-\:router\fR
+T}	T{
+\fBgeneric\-\:switch\fR
+T}	T{
+The fabricated device\(aqs shape: how many interfaces it has and what it says it is
+T}
+T{
+\fBsys_\:descr\fR,\: \fBsys_\:object_\:id\fR,\: \fBsys_\:name\fR,\: \fBsys_\:contact\fR,\: \fBsys_\:location\fR
+T}	T{
+string
+T}	T{
+the profile\(aqs
+T}	T{
+The system group: what every scanner reads first and what an inventory tool records. \fBA decoy should say what the estate\(aqs own devices say\fR \[u2014] a switch that describes itself as something nobody on the site runs is the tell that ends the pretence
+T}
+T{
+\fBinterfaces\fR
+T}	T{
+int
+T}	T{
+the profile\(aqs
+T}	T{
+How many ports the fabricated device has,\: 1 to 256. The interface table is what a walk spends its time in
+T}
+T{
+\fBtripwire\fR
+T}	T{
+list of OID
+T}	T{
+\fB[]\fR
+T}	T{
+Subtrees no legitimate manager reads \[u2014] a vendor\(aqs configuration\-\:download branch,\: say. A binding under one is \fBanswered\fR,\: and raised as an \fBsnmp_\:tripwire\fR security event
+T}
+T{
+\fBseed\fR
+T}	T{
+int
+T}	T{
+from the listener name
+T}	T{
+Makes the fabricated values reproducible,\: and stable across restarts
+T}
+T{
+\fBperiod\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+How long one sample of a counter or a gauge lasts;\: 1s to 1h
+T}
+T{
+\fBmax_\:clients\fR
+T}	T{
+int
+T}	T{
+\fB1024\fR
+T}	T{
+Bounds the record of who has been answered
+T}
+.TE
+.PP
+\fBWhat the fabrication answers for\fR is RFC 1213\(aqs system group and the interface table: \fBsysDescr\fR through \fBsysServices\fR, \fBifNumber\fR, and thirteen columns of \fBifTable\fR for each port \[u2014] the index, the description, the type, the MTU, the speed, the physical address, the administrative and operational status, the last change, and the octet and error counters. A \fBwalk\fR of it is a walk: every answer is strictly after the name asked about and the table ends, rather than looping, which is the first thing any manager notices.
+.PP
+Three things a device cannot do, which this one therefore does not:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+It does not have every object. A name outside the table is answered \fBnoSuchObject\fR in version 2c, and with \fBnoSuchName\fR and the binding\(aqs index in version 1 \[u2014] which is the same statement in the only vocabulary a version 1 manager has.
+.PP
+.ti -3n
+\(bu
+It does not answer version 3. A version 3 response carries a digest computed with a key this relay does not have, so an answer would be one no manager accepts, and an unauthenticated fabrication of an authenticated protocol is a worse tell than silence.
+.PP
+.ti -3n
+\(bu
+It does not answer a notification. A trap is not a question, and an agent that sent a response to one would be answering something no agent answers.
+.RE
+.PP
+.PP
+A \fBSetRequest\fR \fBis\fR answered, as though it took effect, and nothing is written: there is nothing behind the listener to write to. That is the bait, and it is the same choice the Modbus section makes about a refused write.
 .SS "server.listeners[].snmp.rules[]"
 .PP
 .TS

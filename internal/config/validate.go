@@ -9168,15 +9168,97 @@ func (v *validator) tftpPatterns(p string, in []string) {
 	}
 }
 
+// snmpDecoyOnly says whether this listener is nothing but a fabricated
+// agent, which is the one shape that needs no upstream: there is no agent
+// behind it to reach.
+func snmpDecoyOnly(m *SNMPListener) bool {
+	d := m.Deception
+	return d != nil && (d.Enabled == nil || *d.Enabled) && d.Mode == "decoy"
+}
+
+// SNMPDecoyProfiles are the fabricated device shapes the listener has built
+// in. The list lives here so the error can name them, and a test in the kind
+// keeps the two in step.
+var SNMPDecoyProfiles = []string{"generic-switch", "generic-router"}
+
+func (v *validator) snmpDeception(p string, m *SNMPListener) {
+	d := m.Deception
+	if d == nil || (d.Enabled != nil && !*d.Enabled) {
+		return
+	}
+	switch d.Mode {
+	case "", "answer":
+		if len(d.Clients) == 0 {
+			v.errf("%s.clients: required in mode answer; this listener reaches a real agent, and a section "+
+				"that would fabricate an answer for any client that connects is not a decision to arrive at "+
+				"by default", p)
+		}
+	case "decoy":
+		if m.Upstream != "" {
+			v.errf("%s.mode: decoy is the whole listener, so it has no upstream: "+
+				"use mode answer to fabricate refusals on a listener that fronts an agent", p)
+		}
+		if len(d.Clients) == 0 {
+			// Not an error, but worth saying out loud on this protocol in
+			// particular: an SNMP listener answering every client is a UDP
+			// service answering strangers, and the amplification bounds are
+			// what keep that from being an amplifier.
+			v.warnf("%s: no clients, so every client that sends a datagram is answered by the fabricated "+
+				"agent. That is what a honeypot is for, and on a datagram protocol it is also what an "+
+				"amplifier is: max_repetitions, max_var_binds and max_response_bytes are the bounds that "+
+				"make the difference, and they apply to the fabrication too", p)
+		}
+	default:
+		v.errf("%s.mode: must be answer or decoy", p)
+	}
+	v.modbusCIDRs(p+".clients", d.Clients)
+	if d.Mode != "decoy" && m.DenyResponse == "drop" {
+		v.warnf("%s: deny_response drop does not apply to the clients this section covers -- their refused "+
+			"requests are answered by the fabricated agent rather than ignored", p)
+	}
+	if d.Profile != "" && !slices.Contains(SNMPDecoyProfiles, d.Profile) {
+		v.errf("%s.profile: %q is not a profile; the built-in ones are %s",
+			p, d.Profile, strings.Join(SNMPDecoyProfiles, ", "))
+	}
+	if d.SysObjectID != "" {
+		if _, err := snmpwire.ParseOID(d.SysObjectID); err != nil {
+			v.errf("%s.sys_object_id: %v", p, err)
+		}
+	}
+	for i, o := range d.Tripwire {
+		if _, err := snmpwire.ParseOID(o); err != nil {
+			v.errf("%s.tripwire[%d]: %v", p, i, err)
+		}
+	}
+	for _, f := range []struct{ name, text string }{
+		{"sys_descr", d.SysDescr}, {"sys_name", d.SysName},
+		{"sys_contact", d.SysContact}, {"sys_location", d.SysLocation},
+	} {
+		if len(f.text) > 255 {
+			v.errf("%s.%s: %d characters, and one of these objects carries 255", p, f.name, len(f.text))
+		}
+	}
+	if n := d.Interfaces; n < 0 || n > 256 {
+		v.errf("%s.interfaces: must be between 0 and 256", p)
+	}
+	if n := d.MaxClients; n < 0 || n > 1<<20 {
+		v.errf("%s.max_clients: must be between 0 and 1048576", p)
+	}
+	if period := d.Period.D(); period != 0 && (period < time.Second || period > time.Hour) {
+		v.errf("%s.period: must be between 1s and 1h", p)
+	}
+}
+
 func (v *validator) snmpListener(p string, m *SNMPListener, hasTLS bool) {
 	switch m.Mode {
 	case "", "reverse", "forward":
 	default:
 		v.errf("%s.mode: must be reverse or forward", p)
 	}
-	if m.Upstream == "" {
+	if m.Upstream == "" && !snmpDecoyOnly(m) {
 		v.errf("%s.upstream: required", p)
 	}
+	v.snmpDeception(p+".deception", m)
 	switch m.Transport {
 	case "", "udp", "tcp":
 	default:
