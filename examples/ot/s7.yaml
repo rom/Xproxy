@@ -200,6 +200,68 @@ server:
         alert_on_deny: true
 
     # -----------------------------------------------------------------
+    # An S7-1500, which speaks a different protocol: S7comm-plus, the one
+    # TIA Portal uses. Same port, same TPKT and COTP stack, protocol
+    # identifier 0x72 instead of 0x32.
+    #
+    # Two things to understand before writing this section.
+    #
+    # There is far less to police. On these controllers the session is
+    # integrity-protected and the object and variable addressing is
+    # *encrypted*, so no relay in the path can see which data block a
+    # request touches. The areas and dbs lines below apply to the classic
+    # S7comm an HMI may also be speaking to the same CPU; they say nothing
+    # about what goes through s7comm_plus, and a section pretending
+    # otherwise would be pretending to read what it cannot.
+    #
+    # And there is no way to say no. Classic S7comm has a refusal — an
+    # access-fault acknowledgement, what a protected CPU answers — and
+    # S7comm-plus has none this relay can build. So a refused request is
+    # swallowed and TIA Portal reads a timeout for it, unless
+    # deny_response: close is set, as it is here: an engineering station
+    # that was refused should be told, and a session that ends is clearer
+    # than a request that vanished.
+    # -----------------------------------------------------------------
+    - name: line7-s71500
+      address: "10.40.0.14:102"
+      kind: s7
+      s7:
+        upstream: line7_cpu
+        allow_clients: ["10.40.1.0/24", "10.40.3.7/32"]
+        resources: ["op", "pg"]
+
+        # The classic half, for the panels and the historian.
+        areas: ["db", "inputs", "outputs", "flags"]
+        dbs: ["1-40"]
+        addresses: ["0-511"]
+
+        # And the S7comm-plus half, for TIA Portal.
+        s7comm_plus:
+          mode: policy
+
+          # Browsing and reading, which is what an engineer does all day
+          # and what the panels do through this protocol.
+          classes: [read]
+
+          # One write, named rather than taken by class, so that allowing
+          # the commissioning engineer to set a value does not also allow
+          # every other write this protocol has.
+          functions: [set_multi_variables]
+
+          # And never the program. On this family a download and a
+          # run-stop are both invoke calls, so admin is the class that
+          # covers changing what the machine does.
+          deny_classes: [admin]
+
+          # A function this relay cannot name is refused. The table is
+          # read from the wire rather than from a specification Siemens
+          # publishes, so deny is what makes an incomplete table safe.
+          default_action: deny
+
+        deny_response: close
+        log_requests: true
+
+    # -----------------------------------------------------------------
     # A cell nobody has an inventory of: evaluate, record, carry.
     # -----------------------------------------------------------------
     - name: trial
@@ -233,6 +295,11 @@ upstreams:
     # the bound rather than discovering it as a refused connection.
     max_connections_per_endpoint: 6
 
+  - name: line7_cpu
+    endpoints:
+      - {address: "10.40.10.37:102"}
+    max_connections_per_endpoint: 4
+    health_check: {type: tcp, interval: 30s, timeout: 3s}
   - name: packaging_cpus
     endpoints:
       - {address: "10.40.10.41:102"}

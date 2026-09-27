@@ -6,6 +6,76 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (1.4, the protocol the newest Siemens controllers actually speak)
+
+- **S7comm-plus, and a relay that stopped breaking S7-1200 and S7-1500
+  connections.** TIA Portal talking to an S7-1200 or S7-1500 does not speak
+  classic S7comm: it speaks S7comm-plus, the same TPKT and COTP stack with a
+  protocol identifier of `0x72` where classic S7comm uses `0x32`. The `s7` kind
+  read only `0x32`, and the effect was worse than a missing feature. The first
+  S7comm-plus PDU failed the protocol-identifier check, was treated as
+  `unreadable_pdu`, and **ended the connection** -- no answer in the protocol,
+  nothing an operator reading the refusal counters would recognise as a policy.
+  So the newest half of a Siemens estate could not be put behind this relay at
+  all, and the failure presented as a network fault.
+
+  Verified by probe before it was asserted: a client sent one S7comm-plus
+  request through the relay and got `EOF`, with the controller having seen only
+  the connect and the negotiation. That probe is now a test.
+
+  `s7comm_plus` on an `s7` listener has three modes. `refuse` is the default,
+  because it is what a listener written before this section existed meant -- but
+  the refusal is now named (`s7comm_plus_refused`), counted, and leaves the
+  session up, so an HMI on classic S7comm and TIA Portal on the same CPU no
+  longer take each other down. `policy` decides each PDU by function code or by
+  class (`read`, `write`, `admin`, `unknown`), which is what makes an S7-1500
+  usable through the relay. `passthrough` forwards the lot, with the frame
+  bounds, rate limits and rack and slot still in force, for an estate that needs
+  TIA Portal working today.
+
+  Three decisions are worth reading, because they are about the limits of what
+  any relay can honestly claim on this protocol.
+
+  **The policy is smaller than the classic one, deliberately.** Classic S7comm
+  says on the wire which memory area a request names, which data block and which
+  bytes. S7comm-plus does not: on the controllers that speak it the session is
+  integrity-protected and the object and variable addressing is encrypted under a
+  key the two ends derive, so a relay in the middle sees the outer framing and
+  nothing under it. What is left is the function code, and that is what this
+  decides about. `areas` and `dbs` do not apply, and the reference and the
+  protocol page both say so -- a section claiming to bound data blocks here would
+  be claiming to read something no relay can see, which is worse than the gap.
+
+  **A function this relay cannot name fails closed.** Siemens publishes no
+  specification for either protocol, so the function table is read from the wire
+  the way the classic one is, and it is incomplete by construction. That is made
+  safe by one property rather than by hoping: an unnamed function code is the
+  `unknown` class, `default_action` decides it (deny unless an operator says
+  otherwise), and `read_only` refuses it outright -- on a read-only listener the
+  function nobody can name is exactly the one that must not be carried. `unknown`
+  is nameable in a list so the decision about it is visible rather than
+  inherited, and the load warns when `default_action: allow` takes that property
+  away. The parser reinforces it: it reads the PDU type, the opcode and the
+  function code and stops, because nothing in a policy needs the sequence number
+  and reading it would be a field this relay could misread for no gain.
+
+  **There is no way to say no in this protocol.** Classic S7comm has a refusal --
+  an acknowledgement carrying an access fault, which is what a password-protected
+  CPU answers -- so a refused classic request is answered and the poll loop
+  carries on. S7comm-plus has no response this relay can build, and inventing one
+  would put octets on the wire no controller would send. So `deny_response: error`
+  degrades to `drop` for S7comm-plus, `close` is available for an estate that
+  wants a refusal to end the session, and the load warns about the degradation
+  rather than leaving it to be discovered in the field.
+
+  The declared data length is checked against the octets that arrived, which is
+  what makes the rest safe to rely on: it is the one header field the frame
+  itself can contradict, so a header misread shows up as a frame that does not
+  add up rather than as a policy decided on a bad field. A new fuzz target
+  (`FuzzParsePlus`, 4.2M executions clean) holds the invariants the policy rests
+  on, chiefly that "no function" and "function zero" never look the same. Fifteen
+  mutations of the new guards were tried.
+
 ### Added (1.4, what a setpoint may be set to)
 
 - **A value policy for IEC 104 setpoint commands.** A rule on this kind could

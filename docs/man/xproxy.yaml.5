@@ -379,7 +379,7 @@ T}
 T{
 \fBs7\fR
 T}	T{
-every rule: the function,\: the data block and the address range;\: \fBread_\:only\fR;\: \fBmonitor_\:only\fR
+every rule: the function,\: the data block and the address range;\: \fBread_\:only\fR;\: \fBmonitor_\:only\fR;\: the S7comm\-plus function policy (but not \fBs7comm_\:plus.\:mode:\: refuse\fR,\: which is not a policy a trial should carry)
 T}	T{
 malformed frames,\: the frame bound,\: a rack and slot with no route,\: the connection bound,\: bans
 T}
@@ -27753,6 +27753,118 @@ An engineering station needs several of those. Naming them in the file is a line
 Which controller a client asked for arrives in the \fBCOTP connection request\fR, before any S7 request exists: the called TSAP\(aqs two octets hold a connection resource, a rack (0\-7) and a slot (0\-31). So a client that may not reach that CPU is refused \fBbefore the PLC is dialled\fR, and that ordering is the point rather than an optimisation \-\- a CPU has very few connection resources, an S7\-300 sixteen altogether, and a client that may not reach it should not take one of them.
 .PP
 \fBresources\fR is the cheapest useful line in this section. \fBpg\fR is the programming device connection an engineering station opens, \fBop\fR is an operator panel and \fBbasic\fR is what one PLC opens to another; a listener that admits only \fBop\fR has refused every engineering station without naming a single function.
+.SS "S7comm\-plus, the protocol an S7\-1200 or S7\-1500 speaks"
+.PP
+Everything above is \fIclassic\fR S7comm, which is what an S7\-300 or S7\-400 speaks and what a Siemens controller bought before about 2012 speaks. TIA Portal talking to an S7\-1200 or S7\-1500 speaks \fBS7comm\-plus\fR: the same TPKT and COTP stack, a protocol identifier of \fB0x72\fR where classic S7comm uses \fB0x32\fR, and a different protocol above them.
+.PP
+A relay that read only \fB0x32\fR was not a relay in front of those controllers. It ended the connection on the first S7comm\-plus PDU, with no answer in the protocol and nothing in the counters an operator would read as a policy \-\- so the newest half of a Siemens estate could not be put behind it, and the failure looked like a network fault.
+.PP
+\fBs7comm_plus\fR decides what happens to it:
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(1.2i) lbw(0.8i) lbx
+lw(1.0i) lw(1.2i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBmode\fR
+T}	T{
+\fBrefuse\fR,\: \fBpolicy\fR,\: \fBpassthrough\fR
+T}	T{
+\fBrefuse\fR
+T}	T{
+\fBrefuse\fR: no S7comm\-plus reaches the controller,\: which is what an \fBs7\fR listener written before this section existed meant \-\- but the refusal is now named (\fBs7comm_\:plus_\:refused\fR),\: counted,\: and leaves the session up. \fBpolicy\fR: decide each PDU by the lists below. \fBpassthrough\fR: forward every one
+T}
+T{
+\fBfunctions\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+The allow list,\: by name \-\- \fBexplore\fR,\: \fBget_\:link\fR,\: \fBget_\:multi_\:variables\fR,\: \fBget_\:var_\:sub_\:streamed\fR,\: \fBset_\:variable\fR,\: \fBset_\:multi_\:variables\fR,\: \fBcreate_\:object\fR,\: \fBdelete_\:object\fR,\: \fBinvoke\fR,\: \fBbegin_\:sequence\fR,\: \fBend_\:sequence\fR \-\- or by number (\fB"0x054c"\fR)
+T}
+T{
+\fBdeny_\:functions\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+The deny list,\: which no allow overrides
+T}
+T{
+\fBclasses\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+The allow list by class: \fBread\fR,\: \fBwrite\fR,\: \fBadmin\fR,\: \fBunknown\fR
+T}
+T{
+\fBdeny_\:classes\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+The deny list by class
+T}
+T{
+\fBdefault_\:action\fR
+T}	T{
+\fBdeny\fR,\: \fBallow\fR
+T}	T{
+\fBdeny\fR
+T}	T{
+What a PDU no list names gets
+T}
+.TE
+.PP
+\fBThis is a smaller policy than the classic one, and honestly so.\fR Classic S7comm says on the wire which memory area a request names, which data block and which bytes, so \fBareas\fR, \fBdbs\fR and \fBaddresses\fR can be written about the plant. S7comm\-plus does not. On the controllers that speak it the session is integrity\-protected and the object and variable addressing is encrypted under a key the two ends derive, so a relay in the middle sees the outer framing and nothing under it. What is left is the \fBfunction code\fR, and that is what this section decides about. A \fBdbs\fR line does not apply to S7comm\-plus, and a section here that claimed to bound data blocks would be claiming to read something no relay can see.
+.PP
+\fBThe function names are read from the wire, not from a specification.\fR Siemens publishes none, for either protocol. These names are the ones public reverse engineering agrees on, which is a weaker footing than an RFC \-\- and the design accounts for it in one specific way. A function code this relay cannot name is the \fBunknown\fR class, and \fBdefault_action\fR decides it, which is \fBdeny\fR unless an operator says otherwise. So a table that is incomplete or wrong costs a refusal rather than passing an operation through unexamined. \fBunknown\fR is a class an operator can name in a list precisely so that the decision about it is visible rather than inherited.
+.PP
+\fBThe classification is a judgement.\fR \fBread\fR is the browsing and reading an HMI or historian does; \fBwrite\fR changes a value; \fBadmin\fR creates or deletes an object, calls a method or runs one of the sequences a download sits inside. On this protocol family a download and a run\-stop are both \fBinvoke\fR calls, which is why \fBinvoke\fR is \fBadmin\fR. An engineer who disagrees can name the function itself in \fBfunctions\fR, which is checked before the classes.
+.PP
+\fB\fBread_only\fR holds here too, and no list can widen it.\fR On a read\-only listener every class but \fBread\fR is refused, and that includes \fBunknown\fR: a function this relay cannot name is exactly the one it must not carry there.
+.PP
+\fBThere is no way to say no in this protocol.\fR Classic S7comm has one \-\- an acknowledgement carrying an access fault, which is what a password\-protected CPU answers \-\- so a refused classic request is answered and the poll loop carries on. S7comm\-plus has no response this relay can build: the response format is not pinned down well enough by public reverse engineering to render, and inventing one would put octets on the wire no controller would send. So \fBdeny_response: error\fR \fBdegrades to \fBdrop\fR\fR for S7comm\-plus \-\- the request is swallowed and the engineering station reads a timeout for that one request \-\- and \fBdeny_response: close\fR is available for an estate that would rather a refusal end the session. The load warns about the degradation rather than leaving it to be discovered in the field.
+.PP
+.RS 4
+.nf
+.ft CR
+\- name: line\-7\-s71500
+  address: "0.0.0.0:102"
+  kind: s7
+  s7:
+    upstream: plc\-line\-7
+    allow_clients: ["10.20.4.0/24"]
+    resources: ["op", "pg"]
+    # Classic S7comm from the HMI, policed by data block as usual.
+    areas: ["db", "inputs", "outputs"]
+    dbs: ["1\-40"]
+    # And TIA Portal, policed by what it asks the controller to do.
+    s7comm_plus:
+      mode: policy
+      classes: [read]
+      # The engineering station may write a value during commissioning, and
+      # never change the program through this relay.
+      functions: [set_multi_variables]
+      deny_classes: [admin]
+    deny_response: close
+.ft
+.fi
+.RE
 .SS "The memory is the boundary inside the CPU"
 .PP
 \fBareas\fR and \fBdbs\fR say which memory a client may reach at all, and \fBaddresses\fR and \fBwrite_addresses\fR bound it by byte. The areas are \fBdb\fR, \fBinstance_db\fR, \fBinputs\fR, \fBoutputs\fR, \fBflags\fR (Siemens calls them merkers), \fBtimer\fR, \fBcounter\fR, \fBlocal\fR, \fBprevious_local\fR, \fBperipheral\fR, and the 200\-family areas \fBsysinfo_200\fR, \fBsysflags_200\fR, \fBanalog_in_200\fR, \fBanalog_out_200\fR, \fBcounter_200\fR and \fBtimer_200\fR.
@@ -28178,7 +28290,7 @@ One record here is not a refusal by this relay and is the one that matters most 
 .PP
 What is never logged is a \fBvalue\fR. A write\(aqs payload is a process value, and on a plant those are pressures, temperatures and recipe parameters: not secrets, but not something a relay should copy into a log file at poll rate either. The \fIaddress\fR is logged, because an address is what a policy is written about, and a refusal nobody can attribute to a byte range is a refusal nobody can act on.
 .PP
-Refusals are \fBs7_denied\fR for the ban triggers, with the reasons in the table above plus \fBoperation_not_allowed\fR, \fBoperation_denied\fR, \fBarea_not_allowed\fR, \fBarea_denied\fR, \fBdb_not_allowed\fR, \fBaddress_not_allowed\fR, \fBblock_type_not_allowed\fR, \fBno_rule_matched\fR, \fBrule_denied\fR, \fBoutside_schedule\fR, \fBno_connection_request\fR and \fBupstream_unavailable\fR.
+Refusals are \fBs7_denied\fR for the ban triggers, with the reasons in the table above plus \fBoperation_not_allowed\fR, \fBoperation_denied\fR, \fBarea_not_allowed\fR, \fBarea_denied\fR, \fBdb_not_allowed\fR, \fBaddress_not_allowed\fR, \fBblock_type_not_allowed\fR, \fBno_rule_matched\fR, \fBrule_denied\fR, \fBoutside_schedule\fR, \fBno_connection_request\fR, \fBupstream_unavailable\fR and, for S7comm\-plus, \fBs7comm_plus_refused\fR (the variant is not enabled on this listener), \fBs7comm_plus_denied\fR (a deny list named it) and \fBs7comm_plus_not_allowed\fR (no list named it, including every function this relay could not name). The first two of those and \fBread_only\fR are hard; the third is soft, so monitor mode is useful for finding out what TIA Portal actually asks for before a policy is written about it.
 .SH "asset_inventory"
 .PP
 One record per device, built from traffic the proxy was already carrying.

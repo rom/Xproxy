@@ -9054,6 +9054,49 @@
       },
       "additionalProperties": false
     },
+    "S7CommPlus": {
+      "description": "S7CommPlus is the policy for S7comm-plus on an s7 listener. **Why this is a smaller policy than the classic one.** Classic S7comm says on the wire which memory area a request names, which data block and which bytes, so a policy can be written about the plant. S7comm-plus does not: on the controllers that speak it the session is integrity-protected and the object and variable addressing is encrypted under a key the two ends derive, so a relay in the middle can read the outer framing and nothing under it. What is left is the *function code* -- whether this is a read, a write, a method call or a program change -- and that is what this section decides about. A section here that claimed to bound data blocks would be claiming to read something no relay can see. **The function names are read from the wire, not from a specification.** Siemens publishes none, for either protocol. The names come from public reverse engineering, and a function code this relay cannot name is reported as unnamed and decided by DefaultAction -- so a table that is wrong or out of date fails closed rather than passing an operation through unexamined.",
+      "type": "object",
+      "properties": {
+        "classes": {
+          "description": "Classes is the allow list in the three words a plant policy is written in: read, write, admin. The fourth, unknown, is every function this relay could not name -- nameable so that an estate can decide about it rather than inherit a default it cannot see. The mapping from function to class is a judgement rather than something the protocol states: a download and a run-stop on this protocol family are both Invoke calls, so invoke is admin. An engineer who disagrees can name the function itself in Functions, which is checked first.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "default_action": {
+          "description": "DefaultAction is deny (the default) or allow: what a PDU no list names gets. It is the switch that decides an unnamed function, so `allow` here is the one setting in this section that can let an operation through that this relay did not recognise.",
+          "type": "string"
+        },
+        "deny_classes": {
+          "description": "DenyClasses is the deny list, which no allow can override.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_functions": {
+          "description": "DenyFunctions is the deny list, which no allow can override.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "functions": {
+          "description": "Functions is the allow list, by the names public reverse engineering uses -- explore, get_link, get_multi_variables, get_var_sub_streamed, set_variable, set_multi_variables, create_object, delete_object, invoke, begin_sequence, end_sequence -- or by number (\"0x054c\"). Empty names none, and then Classes decides.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "mode": {
+          "description": "Mode is what happens to S7comm-plus on this listener: refuse (the default) no S7comm-plus reaches the controller. This is what an s7 listener written before this section existed meant, so adding the section changes nothing until a mode is chosen -- but the refusal is now answered and named rather than being a connection this relay dropped without saying why. policy decide each PDU by the lists below. This is what makes an S7-1500 usable through this relay. passthrough forward every S7comm-plus PDU, with the session's frame bounds and rate limits still in force. It is here for the estate that must have TIA Portal working today and will write the policy next week, and the reference says plainly what it gives up.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "S7Listener": {
       "description": "S7Listener is the settings of a kind: s7 listener: a relay in front of a Siemens PLC. The protocol is three layers on TCP 102 -- TPKT, COTP and S7comm -- and what matters about it is what it does not have. There is **no authentication worth the name**: the optional password protects a handful of functions on some CPU families and nothing on others, an S7-300 with no password accepts a stop from anybody who can open a socket, and the protocol has no transport security at all, which is why this listener takes no TLS section. An engineering station on the same segment can read and write every byte of memory in every controller on it. So a relay's job here is to know what an operation *is*, and this protocol spreads that across two layers: a function code for reading and writing memory, and a user-data group and subfunction for everything else -- the diagnostic buffer, the block list, the clock, the password, the debugger. `internal/s7` maps both onto one vocabulary of nineteen words, and the policy is written in those words. Four things shape the settings. **The default is what an HMI does.** `operations` defaults to reading memory, reading the system status lists, listing blocks, subscribing to cyclic data, reading the clock and the diagnostic machinery -- and nothing that changes anything. Writing, downloading a program, uploading one, stopping the CPU, setting the clock, the password functions and the programmer commands are each off until named. **The address is the rack and the slot**, and it arrives in the connection request rather than in any request that follows: the called TSAP's two octets hold a connection resource and the rack and slot of the CPU. A listener that named nothing else could still say which controller a client may reach -- and `resources` says *how*, because `pg` is the programming device connection an engineering station opens and `op` is an operator panel. **An upload is a read, and it is the one that takes the plant with it.** Reading a block out of a PLC is how control logic leaves the site, so it is off by default even though nothing about it changes the machine. **The areas and the data blocks are the boundary inside the CPU.** `areas` and `dbs` say which memory a client may reach at all, and `addresses` and `write_addresses` bound it by byte -- which is how an operator thinks about a data block, so the relay divides the protocol's bit address by eight rather than making anybody else do it.",
       "type": "object",
@@ -9211,6 +9254,14 @@
           "items": {
             "$ref": "#/$defs/S7Rule"
           }
+        },
+        "s7comm_plus": {
+          "description": "CommPlus decides what happens to S7comm-plus: the protocol an S7-1200 or S7-1500 speaks to TIA Portal, announced by a protocol identifier of 0x72 where classic S7comm uses 0x32. It needs its own section because it is a different protocol with a different vocabulary, and because a relay can see much less of it: from firmware 4 onward the session is integrity-protected and the interesting parts of a request are encrypted, so what is left to police is the function code. Absent this section an S7comm-plus PDU is refused -- which is what a listener written for classic S7comm meant.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/S7CommPlus"
+            }
+          ]
         },
         "session_duration": {
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",

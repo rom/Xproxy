@@ -104,3 +104,72 @@ func readPDU(t *testing.T, b []byte) {
 	p.Setup()
 	p.FunctionName()
 }
+
+// FuzzParsePlus drives the S7comm-plus parser with arbitrary octets.
+//
+// The invariants are the ones the listener kind's policy rests on. The
+// important one is the third: a PDU that parsed must never carry a function
+// code the policy would read as an operation unless the opcode said there was
+// one -- because "no function" and "function zero" are different facts, and a
+// policy that confused them would be deciding about an operation nobody asked
+// for.
+func FuzzParsePlus(f *testing.F) {
+	f.Add([]byte{PlusProtocolID, PlusData, 0x00, 0x05, PlusRequest, 0x00, 0x00, 0x04, 0xBB})
+	f.Add([]byte{PlusProtocolID, PlusKeepalive, 0x00, 0x00})
+	f.Add([]byte{PlusProtocolID, PlusConnect, 0x00, 0x01, 0x00})
+	f.Add([]byte{PlusProtocolID, PlusData, 0x00, 0x01, PlusNotification})
+	f.Add([]byte{ProtocolID, 0x01, 0x00, 0x00})
+	f.Fuzz(func(t *testing.T, in []byte) {
+		p, err := ParsePlus(in)
+		if err != nil {
+			if p != nil {
+				t.Fatalf("both a PDU and an error for %x", in)
+			}
+			return
+		}
+		// A parse only succeeds when the octets say so, and IsPlus is the
+		// cheap test the relay uses to choose this parser: the two must agree,
+		// or a PDU would be routed to one parser and read by the other.
+		if !IsPlus(in) {
+			t.Fatalf("parsed something IsPlus rejects: %x", in)
+		}
+		if PlusHeaderLen+p.DataLen > len(in) {
+			t.Fatalf("data length %d past the %d octets of %x", p.DataLen, len(in), in)
+		}
+		if p.HasFunction {
+			// A function is only read where the opcode said there is one.
+			if !p.HasOpcode || (p.Opcode != PlusRequest && p.Opcode != PlusResponse) {
+				t.Fatalf("a function code on opcode %#x (has=%v): %x", p.Opcode, p.HasOpcode, in)
+			}
+			if p.DataLen < 5 {
+				t.Fatalf("a function code out of %d octets of data: %x", p.DataLen, in)
+			}
+		} else {
+			// With no function there is no class but unknown, and no name.
+			if p.Class() != PlusUnknown {
+				t.Fatalf("class %q with no function: %x", p.Class(), in)
+			}
+			if name, known := p.FunctionName(); name != "" || known {
+				t.Fatalf("named %q with no function: %x", name, in)
+			}
+		}
+		// A class is always one of the four the configuration can name, so a
+		// policy list can never be written that a PDU falls outside of.
+		if _, ok := PlusClassNamed(string(p.Class())); !ok {
+			t.Fatalf("class %q is not one the configuration accepts: %x", p.Class(), in)
+		}
+		// An answer is never a request, which is what the relay's direction
+		// check depends on.
+		if p.IsAnswer() && p.HasOpcode && p.Opcode == PlusRequest {
+			t.Fatalf("a request read as an answer: %x", in)
+		}
+		// The names never panic and never come back empty for a PDU that has
+		// the field, because they end up in a refusal an engineer reads.
+		if p.TypeName() == "" {
+			t.Fatalf("a PDU type with no name: %x", in)
+		}
+		if p.HasOpcode && p.OpcodeName() == "" {
+			t.Fatalf("an opcode with no name: %x", in)
+		}
+	})
+}

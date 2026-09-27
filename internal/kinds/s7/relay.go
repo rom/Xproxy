@@ -414,6 +414,14 @@ func (t *server) fromClient(se *session) {
 
 // decide applies the policy to one COTP data PDU.
 func (t *server) decide(se *session, c *wire.COTP) (forward, fatal bool) {
+	// Which of the two protocols this is, which is one octet's worth of
+	// question. An S7-1200 or S7-1500 driven by TIA Portal speaks
+	// S7comm-plus, and a relay that read only classic S7comm ended the
+	// connection on its first PDU -- so the controllers an estate has
+	// actually bought since about 2012 could not be put behind it at all.
+	if wire.IsPlus(c.Data) {
+		return t.decidePlus(se, c)
+	}
 	pdu, err := wire.ParseS7(c.Data)
 	if err != nil {
 		// Not an S7 PDU. It is a data PDU on an ISO-on-TCP connection to a
@@ -440,6 +448,62 @@ func (t *server) decide(se *session, c *wire.COTP) (forward, fatal bool) {
 		t.logRequest(se, pdu)
 	}
 	return true, false
+}
+
+// decidePlus applies the S7comm-plus policy to one PDU.
+func (t *server) decidePlus(se *session, c *wire.COTP) (forward, fatal bool) {
+	pdu, err := wire.ParsePlus(c.Data)
+	if err != nil {
+		// The declared length did not agree with the frame, or a request
+		// carried no function code where the opcode said it would. Either way
+		// this is a PDU the relay could not read, and forwarding one to a
+		// controller is forwarding what it cannot decide about.
+		t.refuse(se, hard("unreadable_pdu", err.Error()), "")
+		return false, true
+	}
+	if pdu.IsAnswer() {
+		// A response or a notification arriving from the client's side. The
+		// controller answers; a client that answers is not a client. Only what
+		// is positively an answer is refused here -- a connect PDU and a
+		// keepalive are neither requests nor answers, and a session cannot
+		// start without the first of them.
+		t.refuse(se, hard("unexpected_message", plusDetail(pdu)), "")
+		return false, true
+	}
+	d := t.policy.plus.Plus(pdu)
+	if !d.Allow {
+		return t.plusRefusal(se, pdu, d)
+	}
+	if t.sc.LogRequests {
+		t.logPlus(se, pdu)
+	}
+	return true, false
+}
+
+// plusRefusal is what the relay does about a refused S7comm-plus PDU.
+//
+// **There is no refusal to write in this protocol.** Classic S7comm has one --
+// an acknowledgement carrying an access fault, which is what a password-
+// protected CPU answers -- so a refused classic request is answered and the
+// poll loop carries on. S7comm-plus has no response this relay can build: the
+// response format is not something public reverse engineering pins down well
+// enough to render, and inventing one would put octets on the wire that no
+// controller would send, which is worse for the engineering station than
+// silence. So `deny_response: error` degrades to `drop` here -- the request is
+// swallowed and the client reads a timeout for it -- and `close` is available
+// for an estate that would rather the session end loudly. The load warns about
+// the degradation, because an operator should hear it from the reference
+// rather than from the field.
+func (t *server) plusRefusal(se *session, pdu *wire.PlusPDU, d Decision) (forward, fatal bool) {
+	se.refusal()
+	t.refused(se, d, plusDetail(pdu))
+	if !t.enforcing() && !d.Hard {
+		return true, false
+	}
+	if t.policy.respond == "close" {
+		return false, true
+	}
+	return false, false
 }
 
 // refusal turns a refused decision into what the relay does about it.

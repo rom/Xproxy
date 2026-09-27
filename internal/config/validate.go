@@ -7921,6 +7921,88 @@ func (v *validator) mysqlLoad(p string, in []string) {
 }
 
 // redisListener validates a kind: redis section.
+// s7CommPlus checks the S7comm-plus section.
+//
+// Two of these checks exist because of something the reference cannot make an
+// operator read: a policy written in a mode that never reads it, and the fact
+// that there is no way to say no in this protocol, so the error response an
+// operator configured degrades to a timeout.
+func (v *validator) s7CommPlus(p string, m *S7CommPlus, l *S7Listener) {
+	if m == nil {
+		return
+	}
+	switch m.Mode {
+	case "", "refuse", "policy", "passthrough":
+	default:
+		v.errf("%s.mode: %q is not refuse, policy or passthrough", p, m.Mode)
+	}
+	switch m.DefaultAction {
+	case "", "allow", "deny":
+	default:
+		v.errf("%s.default_action: %q is not allow or deny", p, m.DefaultAction)
+	}
+	v.s7PlusFunctions(p+".functions", m.Functions)
+	v.s7PlusFunctions(p+".deny_functions", m.DenyFunctions)
+	v.s7PlusClasses(p+".classes", m.Classes)
+	v.s7PlusClasses(p+".deny_classes", m.DenyClasses)
+	lists := len(m.Functions) + len(m.DenyFunctions) + len(m.Classes) + len(m.DenyClasses)
+	if m.Mode != "policy" && lists > 0 {
+		mode := m.Mode
+		if mode == "" {
+			mode = "refuse"
+		}
+		v.errf("%s: functions and classes are read only in mode: policy, and this listener is "+
+			"mode: %s, so the policy written here would decide nothing", p, mode)
+	}
+	if m.Mode == "policy" && lists == 0 && m.DefaultAction != "allow" {
+		v.warnf("%s: mode: policy with no functions or classes named and default_action deny "+
+			"refuses every S7comm-plus request, which is what mode: refuse says more plainly", p)
+	}
+	if m.Mode == "passthrough" {
+		v.warnf("%s.mode: passthrough forwards every S7comm-plus request unexamined -- the "+
+			"frame bounds, the rate limits and the rack and slot still hold, and nothing else "+
+			"does. read_only and the operations list do not apply to what goes through here", p)
+	}
+	if m.Mode == "policy" && (l.DenyResponse == "" || l.DenyResponse == "error") {
+		v.warnf("%s: there is no refusal to write in S7comm-plus, so deny_response error "+
+			"degrades to drop for it: a refused request is swallowed and the engineering "+
+			"station reads a timeout for that one request. Set deny_response close if a "+
+			"refusal should end the session instead", p)
+	}
+	if m.Mode == "policy" && m.DefaultAction == "allow" {
+		v.warnf("%s.default_action: allow carries an S7comm-plus function this relay could not "+
+			"name. The function table is read from the wire rather than from a specification "+
+			"Siemens publishes, so it is incomplete by construction -- deny is what makes that "+
+			"safe", p)
+	}
+}
+
+// s7PlusFunctions checks a list of S7comm-plus function codes.
+func (v *validator) s7PlusFunctions(p string, in []string) {
+	for i, f := range in {
+		name := strings.TrimSpace(f)
+		if _, ok := s7wire.PlusFunctionOf(name); ok {
+			continue
+		}
+		hex := strings.TrimPrefix(strings.TrimPrefix(name, "0x"), "0X")
+		if _, err := strconv.ParseUint(hex, 16, 16); err != nil {
+			v.errf("%s[%d]: %q is not an S7comm-plus function name (explore, get_link, "+
+				"get_multi_variables, get_var_sub_streamed, set_variable, set_multi_variables, "+
+				"create_object, delete_object, invoke, begin_sequence, end_sequence) or a "+
+				"16-bit hex code such as 0x054c", p, i, f)
+		}
+	}
+}
+
+// s7PlusClasses checks a list of S7comm-plus classes.
+func (v *validator) s7PlusClasses(p string, in []string) {
+	for i, c := range in {
+		if _, ok := s7wire.PlusClassNamed(strings.TrimSpace(c)); !ok {
+			v.errf("%s[%d]: %q is not read, write, admin or unknown", p, i, c)
+		}
+	}
+}
+
 // s7Listener validates a kind: s7 section.
 func (v *validator) s7Listener(p string, m *S7Listener) {
 	if m.Upstream == "" {
@@ -7947,6 +8029,7 @@ func (v *validator) s7Listener(p string, m *S7Listener) {
 	v.modbusRanges(p+".addresses", m.Addresses, 1<<21-1)
 	v.modbusRanges(p+".write_addresses", m.WriteAddresses, 1<<21-1)
 	v.s7BlockTypes(p+".block_types", m.BlockTypes)
+	v.s7CommPlus(p+".s7comm_plus", m.CommPlus, m)
 
 	for name, val := range map[string]int{
 		"max_items": m.MaxItems, "max_read_bytes": m.MaxReadBytes,
