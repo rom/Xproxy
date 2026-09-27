@@ -79,6 +79,10 @@ type Policy struct {
 	// The first view whose networks contain the client wins; a client in
 	// none of them gets the listener's own records and block list.
 	Views []*View
+	// Decoy answers as a resolver that is not there: where a refusal
+	// would otherwise be written, or as a whole listener with nothing
+	// behind it (decoy.go). nil disables it.
+	Decoy *Decoy
 }
 
 // staleSeconds is the TTL a stale answer carries, in seconds.
@@ -210,6 +214,12 @@ type Server struct {
 	// upstream had nothing, and Prefetched the refreshes started before
 	// an entry expired.
 	Stale, Prefetched atomic.Uint64
+	// Deceived counts the queries answered by a resolver that is not
+	// there, and Tripwire the ones asking it for something nothing
+	// legitimate asks a fabrication for: a zone transfer, a signature
+	// set, the record type that carries arbitrary octets, or a name long
+	// enough to be the payload.
+	Deceived, Tripwire atomic.Uint64
 	// CookiesIssued counts the cookies handed out, CookiesVerified the
 	// UDP queries whose source a cookie proved, and CookiesRefused the
 	// queries turned back for the want of one.
@@ -326,6 +336,11 @@ type Status struct {
 	DNSSEC *DNSSECStatus `json:"dnssec,omitempty"`
 	// Tunnel reports the tunnelling detector when one is configured.
 	Tunnel *TunnelStatus `json:"tunnel,omitempty"`
+	// Deceived counts the queries a resolver that is not there answered,
+	// and Tripwire the ones that asked it for something nothing
+	// legitimate asks a fabrication for.
+	Deceived uint64 `json:"deceived"`
+	Tripwire uint64 `json:"tripwire"`
 }
 
 // TunnelStatus is the management view of the tunnelling detector.
@@ -403,7 +418,8 @@ func (s *Server) Status() Status {
 		CookiesIssued: s.CookiesIssued.Load(), CookiesVerified: s.CookiesVerified.Load(), CookiesRefused: s.CookiesRefused.Load(),
 		QueriesViewed: s.Viewed.Load(), QueriesSynthesised: s.Synthesised.Load(),
 		QueriesNSEC: s.NSECDenied.Load(),
-		RPZMatched:  s.RPZMatched.Load(), RPZPassthru: s.RPZPassthru.Load()}
+		RPZMatched:  s.RPZMatched.Load(), RPZPassthru: s.RPZPassthru.Load(),
+		Deceived: s.Deceived.Load(), Tripwire: s.Tripwire.Load()}
 	if p != nil {
 		st.LocalNames = p.Local.Names()
 		st.Views = p.ViewNames()
@@ -791,11 +807,25 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 		return s.finish(a, q, "local",
 			s.fit(a, query, qEnd, h, AnswerLocal(query, qEnd, h, q, recs), len(query)))
 	}
+	// A listener that is nothing but a fabricated resolver answers here, and
+	// nothing is asked upstream: there is no resolver behind it, which is also
+	// why this is the one shape that needs no upstreams. It is after the local
+	// records because the discovery name of RFC 9462 is this listener's own
+	// answer to give, and a honeypot that got that wrong is a honeypot whose
+	// clients cannot find it.
+	if p.Decoy.Whole() {
+		if resp, ok := s.deceive(a, p, query, qEnd, h, q, "decoy"); ok {
+			return s.finish(a, q, "decoy", resp)
+		}
+	}
 	if ans.block != nil && ans.block.Match(q.Name) && !s.shadowed("blocked", q.Name) {
 		s.Blocked.Add(1)
 		s.refuse("blocked")
 		if s.hooks.Event != nil {
 			s.hooks.Event(client, "dns_blocked", a.verified, "listener", s.Name, "name", q.Name, "type", TypeName(q.Type), "proto", proto, "view", ans.view)
+		}
+		if resp, ok := s.deceive(a, p, query, qEnd, h, q, "blocked"); ok {
+			return s.finish(a, q, "blocked:deceive", resp)
 		}
 		return s.finish(a, q, "blocked", blockedReply(query, qEnd, h, q, ans, p.SinkholeTTL))
 	}
@@ -806,7 +836,7 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 	if hit, ok := p.RPZ.Match(q.Name); ok {
 		passthru = hit.Action == RPZPassthru
 		s.RPZMatched.Add(1)
-		if resp, handled := s.applyRPZ(a, client, proto, query, qEnd, h, q, hit, tcp); handled {
+		if resp, handled := s.applyRPZ(a, p, client, proto, query, qEnd, h, q, hit, tcp); handled {
 			return resp
 		}
 	}
@@ -827,6 +857,9 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 				s.hooks.Event(client, "dns_threat_intel", a.verified, "listener", s.Name,
 					"list", list, "name", q.Name, "type", TypeName(q.Type), "proto", proto, "view", ans.view)
 			}
+			if resp, ok := s.deceive(a, p, query, qEnd, h, q, "threat_intel"); ok {
+				return s.finish(a, q, "threat_intel:deceive", resp)
+			}
 			return s.finish(a, q, "threat_intel", blockedReply(query, qEnd, h, q, ans, p.SinkholeTTL))
 		}
 	}
@@ -841,6 +874,13 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 		if s.hooks.Event != nil {
 			s.hooks.Event(client, "dns_tunnel", a.verified, "listener", s.Name,
 				"domain", dom, "name", q.Name, "type", TypeName(q.Type), "proto", proto, "detail", "cooldown")
+		}
+		// The fabrication earns the most here. A tunnel told NXDOMAIN moves to
+		// another channel, and the next channel is the one nobody is watching;
+		// one that is answered keeps sending, and every query after this is the
+		// rest of what was leaving.
+		if resp, ok := s.deceive(a, p, query, qEnd, h, q, "tunnel"); ok {
+			return s.finish(a, q, "tunnel:deceive", resp)
 		}
 		return s.finish(a, q, "tunnel", Reply(query, qEnd, h, RcodeNXDomain))
 	}

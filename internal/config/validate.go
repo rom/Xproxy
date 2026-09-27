@@ -2569,6 +2569,16 @@ var denyReasons = map[string]bool{
 	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true, "honeypot": true, "dns_blocked": true, "dns_bogus": true, "dns_rpz": true,
 	"account_abuse": true, "api_abuse": true, "honeytoken": true, "scim": true, "threat_intel": true, "smtp_denied": true, "mqtt_denied": true, "ssh_denied": true, "ftp_denied": true, "syslog_denied": true, "yara": true,
 	"forward_sni_mismatch": true, "dns_tunnel": true, "dns_answer_denied": true,
+	// dns_deceived and dns_tripwire are the fabricated resolver's own events
+	// (decoy.go). Only the dns listener's events reach the ban list, which is why
+	// the other kinds' tripwire reasons are not here: a trigger naming one would
+	// load and never fire.
+	//
+	// The tripwire is the one worth banning on. A client that asked a fabricated
+	// resolver for a zone transfer has said something; one that was merely
+	// answered has said that it resolved a name a feed named, and banning it ends
+	// the deception that was about to tell you more.
+	"dns_deceived": true, "dns_tripwire": true,
 	"telnet_denied": true, "vnc_denied": true, "rdp_denied": true, "sftp_icap": true, "udp_denied": true,
 	// tcp_denied is the generic TCP relay's refusal by the imported lists or the
 	// authorisation policy. It is separate from tcp_no_route, which is a client
@@ -4689,6 +4699,113 @@ func (v *validator) ingress(in *Ingress, listeners map[string]*Listener) {
 	}
 }
 
+// cookieModeName is the cookie mode as an operator sees it, with the default
+// spelled out: a warning quoting "" tells nobody anything.
+func cookieModeName(s string) string {
+	if s == "" {
+		return "respond"
+	}
+	return s
+}
+
+// dnsDecoyOnly says this listener is nothing but a fabricated resolver, which is
+// the one shape that needs no upstreams: there is nothing behind it to ask.
+func dnsDecoyOnly(d *DNSListener) bool {
+	c := d.Deception
+	return c != nil && (c.Enabled == nil || *c.Enabled) && c.Mode == "decoy"
+}
+
+// DNSDecoyProfiles are the fabricated resolver shapes the listener has built in.
+var DNSDecoyProfiles = []string{"documentation", "loopback", "unroutable"}
+
+// dnsDeception checks the fabricated resolver.
+func (v *validator) dnsDeception(p string, d *DNSListener) {
+	c := d.Deception
+	if c == nil || (c.Enabled != nil && !*c.Enabled) {
+		return
+	}
+	switch c.Mode {
+	case "", "answer":
+		if len(c.Clients) == 0 {
+			v.errf("%s.clients: required in mode answer; this listener resolves for real clients, and "+
+				"a section that would fabricate an answer for any of them is not a decision to arrive "+
+				"at by default", p)
+		}
+	case "decoy":
+		if len(d.Upstreams) > 0 {
+			v.errf("%s.mode: decoy is the whole listener, so it has no upstreams: use mode answer to "+
+				"fabricate the refusals of a listener that really resolves", p)
+		}
+		if len(c.Clients) == 0 {
+			v.warnf("%s: no clients, so every client that connects is answered by the fabricated "+
+				"resolver. That is what a honeypot is for, and on port 53 it will be found -- which "+
+				"is why cookies: require is worth its compatibility cost here", p)
+		}
+		if d.Cookies != "require" {
+			// A resolver is an amplifier, and a honeypot on port 53 is found in
+			// hours. The fabrication bounds an unverified answer against the
+			// query, which is what keeps it from being a reflector; cookies are
+			// what make the *record* mean anything.
+			v.warnf("%s: cookies is %q, so the address in this fabrication's record is the one the "+
+				"datagram claimed. A fabricated answer is bounded against the query it answers, so "+
+				"nothing here amplifies either way -- but cookies: require is what makes the record of "+
+				"who visited worth reading", p, cookieModeName(d.Cookies))
+		}
+	default:
+		v.errf("%s.mode: must be answer or decoy", p)
+	}
+	v.modbusCIDRs(p+".clients", c.Clients)
+	if c.Profile != "" && !slices.Contains(DNSDecoyProfiles, c.Profile) {
+		v.errf("%s.profile: %q is not a profile; the built-in ones are %s",
+			p, c.Profile, strings.Join(DNSDecoyProfiles, ", "))
+	}
+	var seen4, seen6 bool
+	for i, a := range c.Addresses {
+		pfx, err := netip.ParsePrefix(a)
+		if err != nil {
+			v.errf("%s.addresses[%d]: %v", p, i, err)
+			continue
+		}
+		switch {
+		case pfx.Addr().Is4():
+			if seen4 {
+				v.errf("%s.addresses[%d]: a second IPv4 pool; one prefix per family", p, i)
+			}
+			seen4 = true
+		default:
+			if seen6 {
+				v.errf("%s.addresses[%d]: a second IPv6 pool; one prefix per family", p, i)
+			}
+			seen6 = true
+		}
+		if pfx.Addr().Is4In6() {
+			v.errf("%s.addresses[%d]: %s is an IPv4 address written as IPv6; write it as IPv4", p, i, a)
+		}
+		// A pool a visitor is sent into. Naming the estate's own network here is
+		// a decision, and one worth saying out loud at load rather than
+		// discovering from the traffic that arrives at a real host.
+		if pfx.Addr().IsPrivate() || pfx.Addr().IsLinkLocalUnicast() {
+			v.warnf("%s.addresses[%d]: %s is inside the estate, so every name this fabrication "+
+				"answers sends the visitor there. That is worth doing on purpose -- a honeypot "+
+				"listener of this proxy's own is a good answer -- and a mistake anywhere else", p, i, a)
+		}
+	}
+	for i, n := range c.Tripwire {
+		if strings.TrimSpace(n) == "" || strings.ContainsAny(n, " \t\r\n") {
+			v.errf("%s.tripwire[%d]: %q is not a name; one name per entry", p, i, n)
+		}
+	}
+	if ttl := c.TTL.D(); ttl != 0 && (ttl < time.Second || ttl > time.Hour) {
+		v.errf("%s.ttl: must be between 1s and 1h", p)
+	}
+	if n := c.MaxClients; n < 0 || n > 1<<20 {
+		v.errf("%s.max_clients: must be between 0 and 1048576", p)
+	}
+	if period := c.Period.D(); period != 0 && (period < time.Second || period > time.Hour) {
+		v.errf("%s.period: must be between 1s and 1h", p)
+	}
+}
+
 func (v *validator) dnsListener(p string, d *DNSListener) {
 	if ds := d.DNSSEC; ds != nil {
 		for i, a := range ds.TrustAnchors {
@@ -4703,7 +4820,8 @@ func (v *validator) dnsListener(p string, d *DNSListener) {
 			v.errf("%s.dnssec.max_lookups: must be between 4 and 1000", p)
 		}
 	}
-	if len(d.Upstreams) == 0 {
+	v.dnsDeception(p+".deception", d)
+	if len(d.Upstreams) == 0 && !dnsDecoyOnly(d) {
 		v.errf("%s.upstreams: at least one resolver is required", p)
 	}
 	for i, u := range d.Upstreams {
@@ -4790,7 +4908,12 @@ func (v *validator) dnsListener(p string, d *DNSListener) {
 	// which is most stub resolvers. On a listener open to the internet
 	// that is a resolver nobody can use; on one with a client list it is
 	// a deliberate choice about known clients.
-	if d.Cookies == "require" && len(d.AllowClients) == 0 {
+	//
+	// Not on a decoy listener, which is the one shape where refusing the
+	// clients that do not implement cookies is the point: nothing on the
+	// estate is configured to use it, so it has no clients to break, and
+	// the section above asks for require by name.
+	if d.Cookies == "require" && len(d.AllowClients) == 0 && !dnsDecoyOnly(d) {
 		v.warnf("%s.cookies: require refuses any UDP client that does not implement DNS cookies (RFC 7873), "+
 			"which most stub resolvers do not; name the clients in allow_clients, or use respond", p)
 	}

@@ -5805,6 +5805,10 @@ type DNSListener struct {
 	// life is replaced in the answer, so a client that keeps asking
 	// never reaches the end of one.
 	CookieLifetime Duration `yaml:"cookie_lifetime"`
+	// Deception answers as a resolver that is not there: a query this
+	// listener was going to refuse answered by a fabrication, or a whole
+	// listener that is one. See DNSDeception.
+	Deception *DNSDeception `yaml:"deception"`
 	// ECS is what happens to a client's EDNS Client Subnet option on
 	// the way upstream: strip (the default) or forward.
 	//
@@ -5814,6 +5818,86 @@ type DNSListener struct {
 	// subnet chooses what the next thousand are told. Forward it only
 	// where the clients of this listener are one network.
 	ECS string `yaml:"ecs"`
+}
+
+// DNSDeception answers as a DNS resolver that is not there.
+//
+// On this protocol the refusal is itself information, and the query that drew it
+// is the only thing the other end ever sends. A name on a threat feed answered
+// NXDOMAIN tells an implant that something here is deciding, and a tunnel told
+// NXDOMAIN moves to another channel -- which is the channel nobody is watching.
+// A fabricated answer does not: the name resolves, the client keeps going, and
+// every query after the first is collected.
+//
+// Two things are specific to DNS and both are about not becoming a weapon.
+//
+// A resolver is an amplifier: a datagram proves nothing about its source, so a
+// fabricated answer to a client whose address is unproved is bounded against the
+// query that asked for it and truncated past that bound -- a real client comes
+// back over TCP and a spoofed source cannot.
+//
+// And a fabricated address is somewhere a visitor then goes, so the default pool
+// is the documentation range of RFC 5737 and RFC 3849, which nothing routes.
+type DNSDeception struct {
+	// Enabled turns the section off without removing it; it defaults to
+	// true wherever the section is present.
+	Enabled *bool `yaml:"enabled"`
+	// Mode is answer (the default: a query this listener was going to
+	// refuse is answered by the fabrication instead) or decoy (the whole
+	// listener is a fabricated resolver, with no upstreams).
+	//
+	// In mode answer the fabrication replaces the four refusals that say
+	// "this name does not exist": the block list, an imported name list,
+	// a response policy zone whose action is nxdomain, and the cooldown
+	// on a domain a client was caught tunnelling under. It never replaces
+	// an answer a rule named, and never a query on its way upstream.
+	Mode string `yaml:"mode"`
+	// Clients are the networks that get the fabrication. Required in
+	// mode answer. In mode decoy an empty list means every client, which
+	// is what a honeypot wants.
+	Clients []string `yaml:"clients"`
+	// Profile decides where a fabricated answer points, which on this
+	// protocol is the whole of the shape: documentation (the default,
+	// RFC 5737 and RFC 3849, which nothing routes), loopback (the
+	// client's own machine, so an implant connects to itself) or
+	// unroutable (0.0.0.0 and ::, the classic sinkhole).
+	Profile string `yaml:"profile"`
+	// Addresses replaces the profile's pools: one IPv4 prefix, one IPv6
+	// prefix, or both.
+	//
+	// **A pool inside the estate is a pool a visitor is then sent to.**
+	// Point it at a honeypot deliberately -- an http listener of this
+	// proxy's own is a good answer -- and never at a host that does
+	// something else.
+	//
+	// A name is answered with a different address from the pool each
+	// time, stable for the life of the configuration. That is the
+	// difference between this and sinkhole_ipv4: a sinkhole answers one
+	// address for everything, which is how a sinkhole is recognised in
+	// one extra lookup.
+	Addresses []string `yaml:"addresses"`
+	// TTL is the TTL a fabricated answer carries. Default 5m; 1s to 1h.
+	// It is never zero: a zero TTL is a tell, and it also makes every
+	// client ask again for every lookup.
+	TTL Duration `yaml:"ttl"`
+	// Tripwire are names -- a domain and its subdomains -- that raise a
+	// dns_tripwire security event when a query asks for one.
+	//
+	// They are in addition to a built-in set, which is what nothing
+	// legitimate asks a fabricated resolver: the fingerprint names
+	// (version.bind, hostname.bind, id.server and the rest), a zone
+	// transfer, a signature set, the NULL record type, a query in a
+	// class that is not IN, and a name long enough to be the payload.
+	Tripwire []string `yaml:"tripwire"`
+	// Seed makes the fabricated values reproducible. Zero derives one
+	// from the listener name, which is stable across restarts.
+	Seed uint64 `yaml:"seed"`
+	// Period is how long one sample of a fabricated value lasts, which
+	// on this kind is the nonce a TXT answer is built from. Default 30s;
+	// 1s to 1h.
+	Period Duration `yaml:"period"`
+	// MaxClients bounds the record of who has been answered. Default 1024.
+	MaxClients int `yaml:"max_clients"`
 }
 
 // DNSAnswerPolicy screens the addresses an upstream answer carries.

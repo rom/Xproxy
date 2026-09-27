@@ -1,0 +1,123 @@
+# A resolver that is not there.
+#
+# Every other refusal in this proxy costs the other end a request. On DNS
+# it costs them the conversation, because the query is the only thing
+# they ever send: a name on a threat feed answered NXDOMAIN tells an
+# implant that something on this network is deciding, and it has a list
+# of other names to try. A tunnel told NXDOMAIN moves to another channel,
+# and the channel it moves to is the one nobody is watching.
+#
+# Answered, both keep talking. Every query after the first is the next
+# domain in the rotation, or the next chunk of what was leaving.
+#
+# Two listeners here: the estate's real resolver, which fabricates the
+# refusals it was going to write, and a honeypot resolver on the same
+# network with nothing behind it at all.
+#
+# Validate: xproxy -config examples/blocklists/dns-decoy.yaml -validate
+version: 1
+server:
+  listeners:
+    # ---------------------------------------------------------------
+    # The real resolver. It resolves; the fabrication only ever answers
+    # in the four places a refusal would have said the name does not
+    # exist -- the block list, an imported name list, a policy zone whose
+    # action is nxdomain, and the cooldown on a domain a client was
+    # caught tunnelling under.
+    #
+    # A query on its way upstream is never answered from there. That is
+    # the invariant the whole feature rests on.
+    # ---------------------------------------------------------------
+    - name: resolver
+      address: "10.0.0.5:53"
+      kind: dns
+      dns:
+        upstreams: ["tls://dns.quad9.net:853", "9.9.9.9:53"]
+        allow_clients: ["10.0.0.0/8"]
+        cache: {max_entries: 50000}
+        rate_limit: {qps: 50, burst: 100}
+
+        block: [malware-c2.example, coinhive.com]
+
+        tunnel_detection:
+          # Read the detections for a fortnight under "log" before
+          # letting this refuse anything. Once it does refuse, the
+          # fabrication is what keeps the tunnel talking instead of
+          # sending its author looking for another way out.
+          action: block
+          min_signals: 2
+          cooldown: 30m
+
+        deception:
+          mode: answer
+
+          # Required in this mode: a listener that resolves for real
+          # clients does not fabricate for any of them by default.
+          clients: ["10.0.0.0/8"]
+
+          # Where a fabricated answer points. The documentation ranges of
+          # RFC 5737 and RFC 3849 route nowhere, so an answer cannot send
+          # a visitor at a real host -- and an operator reading a firewall
+          # log recognises 192.0.2.0/24 on sight.
+          profile: documentation
+
+          # Long enough that a client is not asking again every second,
+          # short enough that a change of mind takes effect today.
+          ttl: 300s
+
+          # The escalation shapes need no listing: a zone transfer, a
+          # signature set, ANY, the NULL record, a query outside class
+          # IN, a name over a hundred octets, and the fingerprint names.
+          # This is the name that is interesting on this estate and
+          # nowhere else.
+          tripwire: [payroll.internal]
+
+    # ---------------------------------------------------------------
+    # The honeypot. No upstreams, because there is nothing behind it:
+    # every query is answered by the fabrication, and what a visitor asks
+    # is the whole product.
+    #
+    # Nothing on this estate is configured to use it. A client that
+    # arrives here either found it by scanning or was pointed at it by
+    # something it should not have been running.
+    # ---------------------------------------------------------------
+    - name: resolver-spare
+      address: "10.70.0.53:53"
+      kind: dns
+      dns:
+        # A datagram proves nothing about where it came from. The
+        # fabrication is bounded against the query it answers either way,
+        # so nothing here amplifies -- but without cookies the address in
+        # the record is the one the packet *claimed*, and on a honeypot
+        # that record is the product. Requiring them costs the clients
+        # that do not implement cookies, and a honeypot has none.
+        cookies: require
+        rate_limit: {qps: 20, burst: 40}
+
+        deception:
+          mode: decoy
+          profile: documentation
+          ttl: 300s
+
+          # An operator's own pool instead would collect the next step as
+          # well: the name resolves here, the connection is accepted
+          # there. Point it at a honeypot on purpose and never at a host
+          # that does something else -- the validator says so too.
+          #
+          # addresses: ["10.70.0.80/28"]
+
+          tripwire: [payroll.internal, backup.internal]
+
+bans:
+  triggers:
+    # A tripwire on a resolver nothing is configured to use is about as
+    # clear a signal as this estate produces.
+    - {name: dns-decoy, reasons: [dns_tripwire], threshold: 1, window: 1h, duration: 24h}
+management:
+  socket: /run/xproxy/mgmt.sock
+logging:
+  directory: /var/log/xproxy
+upstreams:
+  - name: unused
+    endpoints: [{address: "127.0.0.1:1"}]
+routes: []

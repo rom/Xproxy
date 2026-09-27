@@ -139,7 +139,7 @@ func compileView(vc config.DNSView) (*wire.View, error) {
 
 // dnsPolicy compiles a listener configuration into the DNS server's
 // reloadable policy.
-func dnsPolicy(cfg *config.DNSListener) (*wire.Policy, error) {
+func dnsPolicy(name string, cfg *config.DNSListener) (*wire.Policy, error) {
 	block, err := wire.NewBlockList(cfg.Block)
 	if err != nil {
 		return nil, err
@@ -302,7 +302,35 @@ func dnsPolicy(cfg *config.DNSListener) (*wire.Policy, error) {
 		v.MaxLookups = d.MaxLookups
 		p.DNSSEC = v
 	}
+	if p.Decoy, err = decoy(name, cfg.Deception); err != nil {
+		return nil, err
+	}
 	return p, nil
+}
+
+// decoy compiles the fabricated resolver, or nil where the section is absent or
+// off.
+func decoy(name string, c *config.DNSDeception) (*wire.Decoy, error) {
+	if c == nil || (c.Enabled != nil && !*c.Enabled) {
+		return nil, nil
+	}
+	o := wire.DecoyOptions{
+		Whole: c.Mode == "decoy", Profile: c.Profile, TTL: c.TTL.D(),
+		Tripwire: c.Tripwire, Clients: netutil.ParsePrefixes(c.Clients),
+		Seed: c.Seed, Name: name, Period: c.Period.D(), MaxClients: c.MaxClients,
+	}
+	for _, a := range c.Addresses {
+		pfx, err := netip.ParsePrefix(a)
+		if err != nil {
+			return nil, fmt.Errorf("deception.addresses: %q: %w", a, err)
+		}
+		if pfx.Addr().Is4() {
+			o.V4 = pfx
+			continue
+		}
+		o.V6 = pfx
+	}
+	return wire.NewDecoy(o)
 }
 
 // answerPolicy compiles the answer screen: where an upstream answer may
@@ -330,7 +358,7 @@ func answerPolicy(a *config.DNSAnswerPolicy) (*wire.AnswerPolicy, error) {
 // newDNSServer binds the hooks of a kind: dns listener to the proxy's
 // logs and ban list.
 func newServer(host proxy.Host, lc config.Listener, udp net.PacketConn, tcp net.Listener) (*wire.Server, error) {
-	p, err := dnsPolicy(lc.DNS)
+	p, err := dnsPolicy(lc.Name, lc.DNS)
 	if err != nil {
 		return nil, err
 	}

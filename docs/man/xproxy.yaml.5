@@ -1774,6 +1774,15 @@ T}	T{
 T}	T{
 How long a server cookie stays valid;\: at most 24h
 T}
+T{
+\fBdeception\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Answer as a resolver that is not there: where a refusal would be written,\: or as a whole listener with nothing behind it;\: see below
+T}
 .TE
 .SS "server.listeners[].dns.cache: serve\-stale and prefetch"
 .PP
@@ -2099,6 +2108,147 @@ dns:
 .ft
 .fi
 .RE
+.SS "server.listeners[].dns.deception"
+.PP
+A resolver that is not there.
+.PP
+On this protocol the refusal is \fIitself\fR information, and the query that drew it is the only thing the other end ever sends. A name on a threat feed answered NXDOMAIN tells an implant that something here is deciding. A domain a client was caught tunnelling under, refused for the cooldown, tells the tunnel to move to another channel \[u2014] and the next channel is the one nobody is watching.
+.PP
+A fabricated answer does not. The name resolves, the client keeps going, and every query after the first is collected: the next domain in the rotation, the next chunk of the payload, the next name the implant was told to try.
+.PP
+.RS 4
+.nf
+.ft CR
+dns:
+  # A honeypot resolver: no upstreams, because there is nothing behind it.
+  cookies: require          # so the record of who visited means something
+  deception:
+    mode: decoy
+    profile: documentation
+    ttl: 300s
+    tripwire: [payroll.internal]
+.ft
+.fi
+.RE
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(1.5i) lbw(1.4i) lbx
+lw(1.0i) lw(1.5i) lw(1.4i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Turns the section off without removing it
+T}
+T{
+\fBmode\fR
+T}	T{
+\fBanswer\fR,\: \fBdecoy\fR
+T}	T{
+\fBanswer\fR
+T}	T{
+\fBanswer\fR: a query this listener was going to refuse is answered by the fabrication instead. \fBdecoy\fR: the whole listener is a fabricated resolver,\: with no \fBupstreams\fR
+T}
+T{
+\fBclients\fR
+T}	T{
+list of CIDR
+T}	T{
+
+T}	T{
+The networks that get the fabrication. \fBRequired in mode \fBanswer\fR.\fR In mode \fBdecoy\fR an empty list means every client
+T}
+T{
+\fBprofile\fR
+T}	T{
+\fBdocumentation\fR,\: \fBloopback\fR,\: \fBunroutable\fR
+T}	T{
+\fBdocumentation\fR
+T}	T{
+Where a fabricated answer points,\: which on this protocol is the whole of the shape: RFC 5737 and RFC 3849 (nothing routes there),\: the client\(aqs own machine,\: or \fB0.\:0.\:0.\:0\fR and \fB:\::\fR
+T}
+T{
+\fBaddresses\fR
+T}	T{
+list of CIDR
+T}	T{
+the profile\(aqs
+T}	T{
+Replaces the pools: one IPv4 prefix,\: one IPv6 prefix,\: or both. \fBA pool inside the estate is a pool a visitor is then sent to\fR \[u2014] point it at a honeypot on purpose,\: never at a host that does something else
+T}
+T{
+\fBttl\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+The TTL a fabricated answer carries;\: 1s to 1h,\: and never zero
+T}
+T{
+\fBtripwire\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+Names \[u2014] a domain and its subdomains \[u2014] that raise a \fBdns_\:tripwire\fR event. \fBIn addition to\fR the built\-in set below
+T}
+T{
+\fBseed\fR
+T}	T{
+int
+T}	T{
+from the listener name
+T}	T{
+Makes the fabricated addresses reproducible across restarts
+T}
+T{
+\fBperiod\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+How long one sample of a fabricated value lasts,\: which here is the nonce a TXT answer is built from
+T}
+T{
+\fBmax_\:clients\fR
+T}	T{
+int
+T}	T{
+\fB1024\fR
+T}	T{
+Bounds the record of who has been answered
+T}
+.TE
+.PP
+\fBIn mode \fBanswer\fR it replaces the four refusals that say the name does not exist\fR: the \fBblock\fR list, an imported name list (\fBthreat_intel\fR), a response policy zone whose action is \fBnxdomain\fR, and the cooldown on a domain a client was caught tunnelling under. It never replaces an answer a rule named \[u2014] RPZ \fBlocal\fR, \fBnodata\fR and \fBtcp_only\fR are answers an operator or a feed wrote \[u2014] and it never touches a query on its way upstream.
+.PP
+\fBA different address per name, which is what a sinkhole is not.\fR \fBsinkhole_ipv4\fR answers one address for every blocked name, so a visitor who looks up two of them and gets one address has found the sinkhole in one extra query. A fabricated answer is drawn from the pool by the name, stable for the life of the configuration, so the map a visitor draws looks like hosting rather than like a list.
+.PP
+\fBA resolver is an amplifier, and this fabrication is not one.\fR A UDP datagram proves nothing about where it came from, so an answer to a client whose address nothing has verified is bounded against the query that asked for it \[u2014] twice its size, which no honest answer here reaches \[u2014] and truncated past that bound. A real client comes back over TCP; a spoofed source cannot. A datagram whose source a DNS cookie proved, and any query over TCP, DoT, DoH or DoQ, gets the full answer.
+.PP
+\fBOn a \fBdecoy\fR listener, set \fBcookies: require\fR.\fR Nothing amplifies either way, but without cookies the address in the record is the one the datagram \fIclaimed\fR, and a honeypot\(aqs record of who visited is the whole product. Validation says so at load.
+.PP
+\fBWhat it answers\fR: A, AAAA, TXT and PTR. Everything else is NODATA \[u2014] an empty NOERROR, which is the commonest truthful answer on this protocol. Inventing an MX would mean inventing a mail host to go with it, and an NS or SOA would be a claim of authority a forwarding resolver is not making. The TXT answer is the one a tunnel is waiting for: it carries no command, because this fabrication does not know the other end\(aqs protocol and will not guess, but it is the shape a tunnel accepts \[u2014] and a tunnel that accepts an answer sends the next chunk.
+.PP
+\fBThe tripwires need no configuring\fR, and on this protocol they are mostly \fItypes\fR rather than names: a zone transfer (AXFR, IXFR), a signature set (DNSKEY), ANY, the NULL record that exists to carry arbitrary octets, a query in a class that is not IN, a name over 100 octets (a hostname somebody typed is not, and a tunnel\(aqs is every time), and the fingerprint names \[u2014] \fBversion.bind\fR, \fBhostname.bind\fR, \fBid.server\fR, \fBauthors.bind\fR, \fBversion.server\fR, \fBtrustanchor.unbound\fR. Those last are never answered either: a resolver that names itself has handed over the list of what it is vulnerable to, and one that names something else is caught by whoever knows what that version really says.
+.PP
+Counters: \fBdns_deceived\fR and \fBdns_tripwire\fR. Security events: \fBdns_deceived\fR and \fBdns_tripwire\fR, with the name, the type, the transport and the refusal the fabrication replaced \[u2014] each carrying whether the client\(aqs address was verified, for the reason every other event on this listener does. \fBxproxyctl decoys\fR lists what each fabrication has seen.
 .SS "server.listeners[].dns.doq"
 .PP
 DNS over QUIC. DoT and DoH both carry DNS over TCP, so they inherit its head\-of\-line blocking: one slow answer holds up every query behind it on the same connection, which is precisely the shape of a resolver\(aqs traffic. DoQ puts each query on its own QUIC stream, so the answers are independent, while keeping DoT\(aqs privacy properties \[u2014] the same certificate, the same server name, no HTTP layer.
@@ -15890,7 +16040,7 @@ list
 T}	T{
 \fB[]\fR (all)
 T}	T{
-Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBtcp_\:denied\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBpostgres_\:denied\fR,\: \fBmysql_\:denied\fR,\: \fBtds_\:denied\fR,\: \fBredis_\:denied\fR,\: \fBbacnet_\:denied\fR,\: \fBamqp_\:denied\fR,\: \fBs7_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fBdns_\:denied\fR,\: \fBdns_\:threat_\:intel\fR,\: \fByara\fR
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBtcp_\:denied\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBpostgres_\:denied\fR,\: \fBmysql_\:denied\fR,\: \fBtds_\:denied\fR,\: \fBredis_\:denied\fR,\: \fBbacnet_\:denied\fR,\: \fBamqp_\:denied\fR,\: \fBs7_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fBdns_\:denied\fR,\: \fBdns_\:threat_\:intel\fR,\: \fBdns_\:deceived\fR,\: \fBdns_\:tripwire\fR,\: \fByara\fR
 T}
 T{
 \fBthreshold\fR

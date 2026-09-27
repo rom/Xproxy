@@ -103,6 +103,35 @@ resolver has an encrypted version.
 
 **`dns64`**, for the IPv6-only networks that need synthesised addresses.
 
+**A resolver that is not there.** `deception` answers as a fabricated resolver: on
+a real listener, in the four places a refusal would otherwise say the name does not
+exist -- the block list, an imported name list, a policy zone whose action is
+`nxdomain`, and the cooldown on a domain a client was caught tunnelling under -- or
+as a whole listener with nothing behind it.
+
+The refusal is the reason this earns its keep here. On every other protocol in this
+set a refusal costs the other end a request; here it costs them the *conversation*,
+because the query is all they ever send. A name on a feed answered NXDOMAIN tells
+an implant something on this network is deciding, and it has a list of other names
+to try. A tunnel told NXDOMAIN moves channel, and the channel it moves to is the
+one nobody is watching. A fabricated answer keeps both of them talking.
+
+Two things here are specific to DNS, and both are about not becoming a weapon.
+A resolver is an amplifier, so a fabricated answer to a client whose address
+nothing has verified is bounded against the query that asked for it and truncated
+past that bound: a real client comes back over TCP, a spoofed source cannot. And a
+fabricated address is somewhere a visitor then goes, so the default pool is the
+documentation range of RFC 5737 and RFC 3849, which nothing routes. Pointing the
+pool at your own honeypot collects the next step as well, and is the one
+configuration that has to be deliberate.
+
+It answers a different address for every name, which is the difference between
+this and `sinkhole_ipv4`: a sinkhole answers one address for everything, so two
+lookups find it. On a decoy listener, `cookies: require` is worth its
+compatibility cost -- nothing amplifies either way, but without cookies the
+address in the record is the one the datagram claimed. See
+[docs/DECEPTION.md](../DECEPTION.md#a-resolver-that-is-not-there).
+
 ### The imported lists, and the estate's authorisation policy
 
 A query names nobody: the protocol carries no identity at all, and the one field
@@ -155,6 +184,17 @@ and carries the traffic.
 - **It cannot see a client that resolves elsewhere.** A machine using DoH to a
   public resolver is not using this one, and the control for that is the network
   and the endpoint configuration, not this listener.
+- **A fabrication answers four types and invents nothing else.** A, AAAA, TXT and
+  PTR; everything else is NODATA. Inventing an MX would mean inventing a mail host
+  to go with it, and an NS or SOA would be a claim of authority a forwarding
+  resolver is not making. The TXT answer carries no command: the fabrication does
+  not know the other end's protocol and will not guess at one. What it has is the
+  right shape, and a tunnel that accepts an answer sends the next chunk.
+- **A fabrication does not name itself.** `version.bind`, `hostname.bind` and
+  `id.server` raise the tripwire and are never answered, because a resolver that
+  names its own version has handed over the list of what it is vulnerable to --
+  and one that names a version it is not is caught by whoever knows what that
+  version really says.
 - **It does not catch every tunnel.** Tunnel detection is a set of signals with
   thresholds. A slow, low-entropy tunnel inside a domain an estate legitimately
   uses is hard, and the honest statement is that the detection raises the cost

@@ -6,6 +6,63 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (dns: a resolver that is not there)
+
+- **`dns.deception` answers as a fabricated resolver**, either where a refusal
+  would otherwise be written on a real listener (`mode: answer`) or as a whole
+  listener with nothing behind it (`mode: decoy`). In mode answer it sits in the
+  four places that say the name does not exist -- the block list, an imported name
+  list, a policy zone whose action is nxdomain, and the cooldown on a domain a
+  client was caught tunnelling under -- and nowhere else; an RPZ rule that named
+  local data, nodata or tcp_only is an answer somebody wrote and is not overruled.
+
+  On every other protocol a refusal costs the other end a request. Here it costs
+  them the conversation, because the query is all they ever send: a name on a feed
+  answered NXDOMAIN tells an implant that something on this network is deciding,
+  and a tunnel told NXDOMAIN moves to the channel nobody is watching. A fabricated
+  answer keeps both of them talking, and every query after the first is the next
+  domain in the rotation or the next chunk of what was leaving.
+
+- **A different address for every name**, which is the difference between this and
+  the `sinkhole_ipv4` this listener has always had: a sinkhole answers one address
+  for everything, so a visitor who looks up two blocked names and gets one address
+  has found it in one extra query. A fabricated answer is drawn from the pool by
+  the name, stable for the life of the configuration.
+
+- **A resolver is an amplifier, and this fabrication is not one.** A datagram
+  proves nothing about its source, so an answer to a client whose address nothing
+  has verified is bounded against the query that asked for it -- twice its size,
+  which no honest answer here reaches -- and truncated past that bound: a real
+  client comes back over TCP and a spoofed source cannot. A datagram whose source a
+  DNS cookie proved, and any query over a stream transport, gets the full answer.
+  Validation says out loud that a decoy listener wants `cookies: require`, because
+  without it the address in the record is the one the packet claimed.
+
+- **A fabricated address is somewhere a visitor then goes**, so the default pool is
+  the documentation range of RFC 5737 and RFC 3849, which nothing routes and nobody
+  hosts in. `loopback` and `unroutable` are the other two profiles, `addresses`
+  names your own pool, and validation warns when that pool is inside the estate --
+  pointing it at a honeypot of this proxy's own collects the next step too, and is
+  the one configuration that has to be deliberate.
+
+- **It answers A, AAAA, TXT and PTR and invents nothing else.** Everything else is
+  NODATA: inventing an MX would mean inventing a mail host, and an NS or SOA would
+  be a claim of authority a forwarding resolver is not making. The TXT answer is
+  the one a tunnel is waiting for and carries no command -- the fabrication does not
+  know the other end's protocol and will not guess -- but it is the shape a tunnel
+  accepts, and one that accepts an answer sends the next chunk.
+
+- **The tripwires need no configuring, and here they are mostly types**: a zone
+  transfer, a signature set, ANY, the NULL record that exists to carry arbitrary
+  octets, a query in a class that is not IN, a name over a hundred octets, and the
+  fingerprint names (`version.bind`, `hostname.bind`, `id.server`,
+  `authors.bind`). Those are never answered either, for the reason the S7
+  fabrication does not answer the system status list.
+
+- New counters `dns_deceived` and `dns_tripwire`, on the resolver's own status view
+  as well, and an entry in `xproxyctl decoys` like the others. A decoy listener
+  needs no `upstreams`, which is the one shape of dns listener that does not.
+
 ### Added (postgres: a database that is not there)
 
 - **`postgres.deception` answers as a fabricated PostgreSQL**, either where a
