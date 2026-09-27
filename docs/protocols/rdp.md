@@ -43,13 +43,44 @@ channels by name, and the standard ones include:
 | `rdpdr` | **Device redirection**: drives, printers, smart cards, serial and parallel ports |
 | `cliprdr` | The clipboard, including files |
 | `rdpsnd`, `audin` | Audio out and in (the microphone) |
-| `drdynvc` | Dynamic virtual channels, inside which more channels are negotiated |
+| `drdynvc` | Dynamic virtual channels: a multiplexer, inside which more channels are opened *by name* at any point in a session — decided by `channels.dynamic` |
 | `rail` | Remote applications |
 | `tsmf`, `urdpdr` | Multimedia and USB redirection |
 
 `rdpdr` with drive redirection means the desktop can read and write the client's
 filesystem, and `cliprdr` file transfer means copy and paste moves files. Those
 two are the reason a channel policy exists.
+
+### Inside `drdynvc`
+
+`drdynvc` is the one entry above that is not a channel. It is a multiplexer, and
+the channels inside it are opened **by name** at any point in a session, by the
+*desktop* — the create request travels down to the client, which answers with a
+status. A gateway that policed only the static list therefore had a hole of a
+specific shape: allowing `drdynvc`, which a current client needs, allowed
+everything inside it, including a channel the static list had just refused by
+name. `channels.dynamic` is the policy for them.
+
+| Dynamic channel | What it carries |
+|-----------------|----------------|
+| `Microsoft::Windows::RDS::Graphics` | The **graphics pipeline** (MS-RDPEGFX). A modern session draws through it; without it the client falls back to the slower path or fails |
+| `Microsoft::Windows::RDS::DisplayControl` | Resolution and monitor layout changes during a session |
+| `Microsoft::Windows::RDS::Geometry` | Window geometry tracking, for multimedia redirection |
+| `Microsoft::Windows::RDS::Video::Control::v08.01`, `…::Video::Data::v08.01` | Video redirection |
+| `AUDIO_PLAYBACK_DVC`, `AUDIO_INPUT` | Audio out and the microphone, where they ride dynamically rather than on `rdpsnd`/`audin` |
+| `rdpdr`, `cliprdr` | Device and clipboard redirection, which a current client opens **here** as well as statically — which is why the static refusal alone was not enough |
+| `ECHO`, `echo` | A round-trip measurement |
+
+The names are matched whole and without regard to case. A useful starting point
+is the pipeline and display control allowed, and redirection denied:
+
+```yaml
+channels:
+  allow: [drdynvc]
+  dynamic:
+    allow: ['Microsoft::Windows::RDS::Graphics', 'Microsoft::Windows::RDS::DisplayControl']
+    deny: [rdpdr, cliprdr]
+```
 
 ## What the protocol gives you
 
@@ -146,9 +177,12 @@ the section -- records what it would have refused and admits.
 - **It does not authenticate CredSSP itself.** The SPNEGO exchange is relayed to
   the server, or the relay presents its own configured credential. There is no
   domain membership in this process.
-- **It does not inspect dynamic virtual channels' contents.** `drdynvc` is
-  carried or not; the channels negotiated inside it are bounded by whether
-  `drdynvc` is allowed at all.
+- **It does not read what a dynamic channel carries.** The channels opened
+  inside `drdynvc` are decided **by name** — `channels.dynamic` allows and
+  denies them, and a refused one is answered with the status a client with no
+  such listener sends. What travels on an allowed one is not inspected: the
+  graphics pipeline is a compressed bitstream, and a gateway that claimed to
+  police its contents would be claiming to re-implement it.
 - **It does not fix the certificate problem for the server.** A client that
   connects directly still sees a self-signed certificate. What this listener can
   do is present a certificate the estate's own trust store validates on the leg

@@ -4235,6 +4235,44 @@ type RDPChannelPolicy struct {
 	// Allow names the channels a client may have. The default is
 	// none: a session that can see the desktop and nothing else.
 	Allow []string `yaml:"allow"`
+	// Dynamic is the policy for the channels opened *inside* `drdynvc`.
+	//
+	// `drdynvc` is not a channel, it is a multiplexer: channels are opened
+	// and closed by name inside it at any point in a session, and on a current
+	// Windows client the graphics pipeline, display control, geometry, camera,
+	// audio and device and clipboard redirection all ride there. So allowing
+	// `drdynvc` in Allow -- which an operator must do for a usable session on
+	// anything recent -- allows every dynamic channel inside it unless this
+	// says otherwise, including ones Allow refused by name.
+	//
+	// Absent this block the dynamic channels are carried and counted, and the
+	// load warns that they are not being decided about. They are not refused
+	// by default, because that would break every working session on an
+	// upgrade; the warning is what makes the gap visible.
+	Dynamic *RDPDynamicChannelPolicy `yaml:"dynamic"`
+}
+
+// RDPDynamicChannelPolicy decides the channels opened inside `drdynvc`.
+//
+// **The desktop opens them, not the client.** The create request travels from
+// the desktop to the client carrying the channel's name, and the client answers
+// with a status -- so this policy is applied in the direction a gateway has
+// least reason to be reading, and a refusal is written as the answer a client
+// with no such listener would have sent.
+type RDPDynamicChannelPolicy struct {
+	// Allow names the dynamic channels a session may have, matched without
+	// regard to case as the static list is. Empty allows none once this block
+	// exists, which is the same shape as the static policy's default.
+	//
+	// The names are the listener names the desktop asks for, and they are long
+	// and vendor-shaped: `Microsoft::Windows::RDS::Graphics` is the graphics
+	// pipeline a modern session draws through, and a session without it falls
+	// back to the slower path or fails outright. The protocol page lists the
+	// ones worth knowing.
+	Allow []string `yaml:"allow"`
+	// Deny names the ones refused whatever Allow says, which is how an estate
+	// allows the pipeline it needs and keeps redirection out of it.
+	Deny []string `yaml:"deny"`
 }
 
 // RDPDevicePolicy decides which kinds of redirected device a session

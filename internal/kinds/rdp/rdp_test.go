@@ -47,6 +47,17 @@ type desktop struct {
 	// got is everything that came in on a channel, so a test can check
 	// that a refused one carried nothing.
 	got map[uint16][]byte
+	// push carries payloads for the desktop to send *down* a channel. The
+	// dynamic channel extension needs it: the desktop is the side that opens
+	// a dynamic channel, so a test about that policy has to drive the
+	// desktop-to-client direction rather than the other one.
+	push chan pushed
+}
+
+// pushed is one payload the desktop sends down a channel.
+type pushed struct {
+	channel uint16
+	payload []byte
 }
 
 func startDesktop(t *testing.T, d *desktop) *desktop {
@@ -60,6 +71,9 @@ func startDesktop(t *testing.T, d *desktop) *desktop {
 	d.got = map[uint16][]byte{}
 	if d.shown == nil {
 		d.shown = []byte("DESKTOP-UPDATE")
+	}
+	if d.push == nil {
+		d.push = make(chan pushed, 8)
 	}
 	t.Cleanup(func() { _ = ln.Close() })
 	go func() {
@@ -145,6 +159,22 @@ func (d *desktop) serve(c net.Conn) {
 	// how a real one sends the screen.
 	if _, err := c.Write(fastPath(d.shown)); err != nil {
 		return
+	}
+	// And anything a test asks the desktop to send down a channel.
+	if d.push != nil {
+		go func() {
+			for p := range d.push {
+				data := rdp.SendData{Initiator: 1002, Channel: p.channel,
+					Priority: 0x70, Payload: p.payload}
+				out, err := rdp.DataPDU(data.Encode())
+				if err != nil {
+					return
+				}
+				if _, err := c.Write(out); err != nil {
+					return
+				}
+			}
+		}()
 	}
 	// Then whatever the client sends, kept per channel.
 	for {

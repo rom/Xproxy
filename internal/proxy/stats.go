@@ -418,42 +418,46 @@ type Stats struct {
 	// for a certificate that asked for the touch to be waived). The pair is
 	// what says whether an estate's move to tokens is finished: refusals
 	// falling to nothing while hardware authentications carry the traffic.
-	SSHHardwareAuths     atomic.Uint64
-	SSHHardwareRefused   atomic.Uint64
-	SSHBytesIn           atomic.Uint64
-	SSHBytesOut          atomic.Uint64
-	SFTPRequests         atomic.Uint64
-	VNCSessions          atomic.Uint64
-	VNCSessionsOpen      atomic.Int64
-	VNCRejected          atomic.Uint64
-	VNCRefused           atomic.Uint64
-	VNCRecorded          atomic.Uint64
-	VNCMFAOK             atomic.Uint64
-	VNCMFAFailed         atomic.Uint64
-	RDPSessions          atomic.Uint64
-	RDPSessionsOpen      atomic.Int64
-	RDPRejected          atomic.Uint64
-	RDPRefused           atomic.Uint64
-	RDPRecorded          atomic.Uint64
-	RDPMFAOK             atomic.Uint64
-	RDPMFAFailed         atomic.Uint64
-	RDPChannelsRefused   atomic.Uint64
-	RDPDevicesRefused    atomic.Uint64
-	RDPLegacySessions    atomic.Uint64
-	RDPLegacyClients     atomic.Uint64
-	TelnetSessions       atomic.Uint64
-	TelnetSessionsOpen   atomic.Int64
-	TelnetRejected       atomic.Uint64
-	TelnetRefused        atomic.Uint64
-	TelnetOptionsRefused atomic.Uint64
-	TelnetRecorded       atomic.Uint64
-	TelnetMFAOK          atomic.Uint64
-	TelnetMFAFailed      atomic.Uint64
-	SFTPRefused          atomic.Uint64
-	SFTPScanned          atomic.Uint64
-	SFTPScanBlocked      atomic.Uint64
-	MFAVerified          atomic.Uint64
-	MFAFailed            atomic.Uint64
+	SSHHardwareAuths   atomic.Uint64
+	SSHHardwareRefused atomic.Uint64
+	SSHBytesIn         atomic.Uint64
+	SSHBytesOut        atomic.Uint64
+	SFTPRequests       atomic.Uint64
+	VNCSessions        atomic.Uint64
+	VNCSessionsOpen    atomic.Int64
+	VNCRejected        atomic.Uint64
+	VNCRefused         atomic.Uint64
+	VNCRecorded        atomic.Uint64
+	VNCMFAOK           atomic.Uint64
+	VNCMFAFailed       atomic.Uint64
+	RDPSessions        atomic.Uint64
+	RDPSessionsOpen    atomic.Int64
+	RDPRejected        atomic.Uint64
+	RDPRefused         atomic.Uint64
+	RDPRecorded        atomic.Uint64
+	RDPMFAOK           atomic.Uint64
+	RDPMFAFailed       atomic.Uint64
+	RDPChannelsRefused atomic.Uint64
+	RDPDevicesRefused  atomic.Uint64
+	// RDPDynamicChannelsSeen counts the channels opened inside drdynvc that
+	// were carried. On a listener with no dynamic policy written it is the
+	// number that says how much of a session is going past undecided.
+	RDPDynamicChannelsSeen atomic.Uint64
+	RDPLegacySessions      atomic.Uint64
+	RDPLegacyClients       atomic.Uint64
+	TelnetSessions         atomic.Uint64
+	TelnetSessionsOpen     atomic.Int64
+	TelnetRejected         atomic.Uint64
+	TelnetRefused          atomic.Uint64
+	TelnetOptionsRefused   atomic.Uint64
+	TelnetRecorded         atomic.Uint64
+	TelnetMFAOK            atomic.Uint64
+	TelnetMFAFailed        atomic.Uint64
+	SFTPRefused            atomic.Uint64
+	SFTPScanned            atomic.Uint64
+	SFTPScanBlocked        atomic.Uint64
+	MFAVerified            atomic.Uint64
+	MFAFailed              atomic.Uint64
 	// The push factor, counted apart from the typed one because its failures
 	// mean different things: denied is a person saying no, failed is the
 	// approval service not answering usefully, and throttled is the fatigue
@@ -894,6 +898,7 @@ type Snapshot struct {
 	RDPMFAFailed           uint64             `json:"rdp_mfa_failed"`
 	RDPChannelsRefused     uint64             `json:"rdp_channels_refused"`
 	RDPDevicesRefused      uint64             `json:"rdp_devices_refused"`
+	RDPDynamicChannelsSeen uint64             `json:"rdp_dynamic_channels_seen"`
 	RDPLegacySessions      uint64             `json:"rdp_legacy_sessions"`
 	RDPLegacyClients       uint64             `json:"rdp_legacy_clients"`
 	TelnetSessions         uint64             `json:"telnet_sessions"`
@@ -1304,6 +1309,7 @@ func (s *Stats) snapshot() Snapshot {
 		RDPMFAFailed:           s.RDPMFAFailed.Load(),
 		RDPChannelsRefused:     s.RDPChannelsRefused.Load(),
 		RDPDevicesRefused:      s.RDPDevicesRefused.Load(),
+		RDPDynamicChannelsSeen: s.RDPDynamicChannelsSeen.Load(),
 		RDPLegacySessions:      s.RDPLegacySessions.Load(),
 		RDPLegacyClients:       s.RDPLegacyClients.Load(),
 		TelnetSessions:         s.TelnetSessions.Load(),

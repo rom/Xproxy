@@ -55,6 +55,9 @@ type server struct {
 	// and devices the redirection kinds, both lower case.
 	channels map[string]bool
 	devices  map[uint32]bool
+	// dynamic decides the channels opened inside drdynvc, which the
+	// static list above cannot see into.
+	dynamic *dynamicPolicy
 	// upUser, upDomain and upPassword are the credential this proxy
 	// opens a desktop with, where an operator gave one.
 	upUser, upDomain, upPassword string
@@ -84,6 +87,7 @@ func newServer(engine proxy.Host, cfg config.Listener, ln net.Listener, tc *tls.
 	t := &server{engine: engine, cfg: cfg, v: c, ln: ln, tlsCfg: tc,
 		channels: map[string]bool{}, devices: map[uint32]bool{},
 		cons: map[net.Conn]struct{}{}}
+	t.dynamic = compileDynamic(c.Channels)
 	for _, name := range c.Security {
 		if p, ok := rdp.ProtocolByName(strings.ToLower(strings.TrimSpace(name))); ok {
 			t.offered |= protocolBit(p)
@@ -347,8 +351,24 @@ type session struct {
 	// standing in for channels the desktop was never asked for.
 	inert map[uint16]bool
 	// pending collects a virtual channel message across its chunks,
-	// since a gateway cannot filter half of one.
+	// since a gateway cannot filter half of one. It belongs to the
+	// redirection channel travelling up.
 	pending []byte
+	// dvcDown and dvcUp collect the drdynvc messages of each direction.
+	// They are separate from pending and from each other because all
+	// three are reassembled at once: the redirection channel's messages
+	// come up from the client while the dynamic channel's creates come
+	// down from the desktop, and interleaving any two of them into one
+	// buffer would splice two messages together.
+	dvcDown, dvcUp []byte
+	// dynamic is what this session knows about the channels inside its
+	// drdynvc: the ones opened, and the ones refused, so that the data
+	// which follows a refusal goes nowhere.
+	dynamic *dynamicState
+	// upMu guards the writes to the desktop, which two goroutines make:
+	// the client's units travel up on one, and a refused dynamic channel
+	// is answered from the one reading the desktop.
+	upMu sync.Mutex
 	// legacy is the desktop's leg when it uses the protocol's own
 	// encryption rather than TLS, and nil when it does not.
 	legacy *legacyLeg
@@ -367,7 +387,8 @@ func (t *server) handle(client net.Conn) {
 	s := t.engine
 	start := time.Now()
 	se := &session{t: t, client: client, ip: netutil.AddrOf(client.RemoteAddr().String()),
-		channelName: map[uint16]string{}, inert: map[uint16]bool{}}
+		channelName: map[uint16]string{}, inert: map[uint16]bool{},
+		dynamic: newDynamicState()}
 	s.Counters().RDPSessions.Add(1)
 	s.Counters().RDPSessionsOpen.Add(1)
 	defer s.Counters().RDPSessionsOpen.Add(-1)
@@ -448,6 +469,7 @@ func (t *server) log(se *session, start time.Time, reason string) {
 		"upstream_security", rdp.ProtocolName(se.upProtocol),
 		"channels_asked", strings.Join(se.asked, ","),
 		"channels_granted", strings.Join(se.granted, ","),
+		"dynamic_channels", strings.Join(se.dynamic.names(), ","),
 		"reason", reason, "duration_ms", time.Since(start).Milliseconds()}
 	t.engine.Logs().Access.Info("rdp", append(attrs, access.LogAttrs(se.grant)...)...)
 }

@@ -6,6 +6,66 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Security (1.4, the RDP channel policy could be walked around)
+
+- **A dynamic channel could reopen a static channel the policy had just
+  refused.** `channels.allow` was the whole of this gateway's channel policy,
+  and `drdynvc` was one entry on it. But `drdynvc` is not a channel: it is a
+  multiplexer, and inside it channels are opened by name at any point in a
+  session. On a current Windows client the graphics pipeline, display control,
+  geometry, camera, audio **and device and clipboard redirection** all ride
+  there. So allowing `drdynvc` -- which an operator must do for a usable session
+  on anything recent -- allowed every one of them, unexamined and unlogged,
+  including the ones `channels.allow` had refused by name.
+
+  Verified before it was asserted, and the probe is now a test: a desktop opened
+  a dynamic channel called `cliprdr` through a gateway whose static policy
+  allowed only `drdynvc`, and the client received it.
+
+  `channels.dynamic` decides them, with an `allow` and a `deny` list matched
+  whole and without regard to case. Three things about the protocol shaped the
+  implementation, and two of them are the reverse of the obvious guess -- both
+  came from MS-RDPEDYC rather than from expectation.
+
+  **The desktop opens a dynamic channel, not the client.** `DYNVC_CREATE_REQ`
+  travels desktop to client carrying the name; the client answers with a
+  creation status. So the name a policy decides about appears in the
+  desktop-to-client direction -- and this gateway did not inspect that direction
+  *at all* on a TLS leg, returning the unit untouched. That inspection is new,
+  and it is deliberately narrow: only `drdynvc` is looked at, because everything
+  else the desktop sends is the session itself and a gateway that rewrote any of
+  it would be re-implementing the protocol its client depends on.
+
+  **Command 0x01 is two different PDUs depending on direction** -- a create
+  request with a name from the server, a create response with a 32-bit status
+  from the client -- and nothing in the octets distinguishes them. The parser is
+  told which side sent the PDU rather than guessing; one that guessed would read
+  a status as a name.
+
+  **A refusal is written in the protocol's own words.** The gateway answers the
+  desktop with the status a client that has no listener of that name would send
+  (`E_NOTIMPL`), so the desktop gives up on the channel instead of waiting on a
+  create nobody replied to, and the create never reaches the client. The data
+  PDUs that follow on a refused identifier are dropped in both directions, and a
+  close forgets the identifier, because a desktop reuses numbers and a refusal
+  kept for ever would refuse a later channel given the same one.
+
+  Absent a `dynamic` block the channels are **carried and counted**
+  (`rdp_dynamic_channels_seen`), not refused, and the load warns that nothing is
+  deciding about them. Refusing by default would break every session that works
+  today, which is the wrong way round for a gateway people are already using.
+  The warning that was already there -- that `drdynvc` carries contents "this
+  gateway does not decide" -- was true when written and is now replaced, since
+  it does decide once the block exists.
+
+  Two smaller things fell out of the work. Writes to the desktop now go through
+  one place under a lock, because two goroutines write there: the client's units
+  on one, and a dynamic channel's refusal from the one reading the desktop, and
+  two goroutines writing a TLS connection interleave records and break the
+  stream. And `drdynvc` is reassembled in its own buffer per direction --
+  the redirection channel's buffer was shared, and splicing the desktop's create
+  onto the client's answer would have produced a message neither sent.
+
 ### Fixed (1.4, three S7comm-plus defects the dissector's own source found)
 
 The S7comm-plus support shipped with its function table taken from two agreeing

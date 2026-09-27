@@ -8480,8 +8480,62 @@ A desktop that asks for no encryption at all (\fBENCRYPTION_LEVEL_NONE\fR) is se
 \fBchannels.allow\fR names the static virtual channels a session may have, and \fBthe default is none\fR: a session that can see the desktop and drive it, and nothing else. The usual names are \fBrdpdr\fR (device redirection), \fBcliprdr\fR (clipboard, including file copy), \fBrdpsnd\fR (audio out), \fBaudin\fR (microphone), \fBdrdynvc\fR (dynamic channels) and \fBrail\fR (seamless applications).
 .PP
 A refused channel is \fBnot removed from the list\fR, and the reason is worth knowing: the desktop answers with one identifier per channel the client asked for, in the order it asked, and a client that gets back a different number of identifiers does not recover. So the gateway replaces the \fIname\fR of a refused channel with one nothing speaks \[u2014] the name field is a fixed eight bytes, so the lengths do not move. The desktop registers a channel no software has a handler for, the identifiers still line up, and the gateway drops whatever the client sends on it. The desktop never registers the real channel, which is the property that matters.
+.SS "channels.dynamic: the channels opened inside \fBdrdynvc\fR"
 .PP
-\fBdrdynvc\fR is warned about: dynamic channels carry more redirection inside them, and what rides one is decided by the two ends rather than by this list.
+\fBdrdynvc\fR is not a channel. It is a \fBmultiplexer\fR, and inside it channels are opened and closed by name at any point during a session. On a current Windows client the graphics pipeline, display control, geometry tracking, the camera, audio and \-\- this is the point \-\- device and clipboard redirection all ride there. So allowing \fBdrdynvc\fR in \fBchannels.allow\fR, which an operator must do for a usable session on anything recent, allows every one of them: including ones \fBchannels.allow\fR has just refused by name.
+.PP
+That was verified rather than assumed. A desktop opened a dynamic channel called \fBcliprdr\fR through a gateway whose static policy allowed only \fBdrdynvc\fR, and the client received it.
+.PP
+.TS
+allbox;
+lbw(0.6i) lbw(0.6i) lbw(0.8i) lbx
+lw(0.6i) lw(0.6i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBallow\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+The dynamic channels a session may have,\: matched without regard to case as the static names are
+T}
+T{
+\fBdeny\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+Refused whatever \fBallow\fR says,\: which is how an estate allows the pipeline it needs and keeps redirection out of it
+T}
+.TE
+.PP
+.RS 4
+.nf
+.ft CR
+channels:
+  allow: [drdynvc]
+  dynamic:
+    allow: ['Microsoft::Windows::RDS::Graphics', 'Microsoft::Windows::RDS::DisplayControl']
+    deny: [rdpdr, cliprdr]
+.ft
+.fi
+.RE
+.PP
+\fBThe desktop opens them, not the client.\fR The create request travels from the desktop to the client carrying the channel\(aqs name, and the client answers with a status \-\- so this policy runs on the direction a gateway has least reason to be reading, and before this existed the gateway did not inspect that direction at all on a TLS leg. A refused channel is answered with the status a client that has no listener of that name would have sent (\fBE_NOTIMPL\fR), so the desktop stops waiting rather than hanging on a create nobody replied to, and the create itself never reaches the client. The data PDUs that follow on a refused identifier are dropped in both directions; a close forgets the identifier, because a desktop reuses numbers and a refusal kept for ever would refuse a later channel that happens to be given the same one.
+.PP
+\fBAbsent this block the dynamic channels are carried, not refused,\fR and the load warns that nothing is deciding about them. Refusing by default would break every session that works today, which is the wrong way round for a gateway people are already using; the warning and the \fBrdp_dynamic_channels_seen\fR counter are what make the gap visible instead. Writing the block with no names refuses every dynamic channel, which on a current client includes the pipeline a session draws through \-\- the load warns about that too.
+.PP
+\fBA dynamic channel name is not a static one.\fR Static names are at most seven characters; these are listener names, long and vendor\-shaped, and matched whole. The protocol page lists the ones worth knowing.
 .SS "File transfer and ports"
 .PP
 Both are device redirection, which rides \fBrdpdr\fR, and both are decided by \fBdevices.allow\fR:

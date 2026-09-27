@@ -10072,6 +10072,60 @@ func wantsUpstreamName(c *VNCListener) bool {
 }
 
 // rdpListener checks a Remote Desktop gateway.
+// rdpDynamicChannels checks the policy for the channels opened inside drdynvc,
+// and warns when drdynvc is allowed with no such policy.
+//
+// That warning is the whole point of the block being optional. drdynvc is a
+// multiplexer, not a channel: the graphics pipeline, display control, geometry,
+// camera, audio and -- on a current client -- device and clipboard redirection
+// are all opened by name inside it, so allowing drdynvc without a dynamic
+// policy allows all of them, including ones channels.allow refused by name.
+// Refusing them by default would break every session that works today, so the
+// traffic is carried and this says so at load.
+func (v *validator) rdpDynamicChannels(p string, c *RDPDynamicChannelPolicy, allowed bool) {
+	if c == nil {
+		if allowed {
+			v.warnf("%s: the %s channel is allowed and nothing here decides what is opened "+
+				"inside it. It is a multiplexer rather than a channel: the graphics pipeline, "+
+				"display control, cameras, audio and on a current client device and clipboard "+
+				"redirection are all opened by name within it, so a channel refused in "+
+				"channels.allow can be opened again in here. Those channels are carried and "+
+				"counted as rdp_dynamic_channels_seen; name the ones a session needs in "+
+				"%s.allow to decide about them", p, rdp.ChannelDynamic, p)
+		}
+		return
+	}
+	if !allowed {
+		v.errf("%s: names dynamic channels while the %s channel is not in channels.allow, so "+
+			"nothing could open one. Allow the channel or drop this section", p, rdp.ChannelDynamic)
+	}
+	for what, list := range map[string][]string{"allow": c.Allow, "deny": c.Deny} {
+		for _, name := range list {
+			n := strings.TrimSpace(name)
+			if n == "" {
+				v.errf("%s.%s: an empty dynamic channel name", p, what)
+				continue
+			}
+			if len(n) > rdp.MaxDVCName {
+				v.errf("%s.%s: %q is over %d characters, which is longer than any listener name",
+					p, what, name, rdp.MaxDVCName)
+			}
+			for _, ch := range []byte(n) {
+				if ch < 0x20 || ch == 0x7f {
+					v.errf("%s.%s: %q has a control character in it, and no listener name does",
+						p, what, name)
+					break
+				}
+			}
+		}
+	}
+	if len(c.Allow) == 0 && len(c.Deny) == 0 {
+		v.warnf("%s: written with no names, which refuses every dynamic channel. On a current "+
+			"client that includes the graphics pipeline a session draws through, so this is "+
+			"usually a block somebody meant to fill in", p)
+	}
+}
+
 func (v *validator) rdpListener(p string, c *RDPListener, hasTLS bool) {
 	if c.Upstream == "" {
 		v.errf("%s.upstream: required", p)
@@ -10129,7 +10183,7 @@ func (v *validator) rdpListener(p string, c *RDPListener, hasTLS bool) {
 	if (c.UpstreamUser == "") != (c.UpstreamPasswordFile == "") {
 		v.errf("%s.upstream_user: name it with upstream_password_file or with neither; half a credential opens nothing", p)
 	}
-	hasRDPDR := false
+	hasRDPDR, hasDynamic := false, false
 	if c.Channels != nil {
 		for _, name := range c.Channels.Allow {
 			n := strings.ToLower(strings.TrimSpace(name))
@@ -10144,9 +10198,15 @@ func (v *validator) rdpListener(p string, c *RDPListener, hasTLS bool) {
 				hasRDPDR = true
 			}
 			if n == rdp.ChannelDynamic {
-				v.warnf("%s.channels.allow: %s carries dynamic channels, whose contents this gateway does not decide -- audio, cameras, and on some clients redirection that the devices policy would otherwise have refused. Allow it only where something needs it", p, rdp.ChannelDynamic)
+				hasDynamic = true
 			}
 		}
+		v.rdpDynamicChannels(p+".channels.dynamic", c.Channels.Dynamic, hasDynamic)
+	}
+	if c.Channels == nil && hasDynamic {
+		// Unreachable as written, and here so that a later change cannot
+		// silently take the warning away.
+		v.warnf("%s.channels: %s is allowed with no policy for what it carries", p, rdp.ChannelDynamic)
 	}
 	if c.Devices != nil {
 		for _, name := range c.Devices.Allow {
