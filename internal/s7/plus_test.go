@@ -101,10 +101,8 @@ func TestALengthThatDoesNotAgreeWithTheFrameIsRefused(t *testing.T) {
 func TestThePDUsThatCarryNoFunction(t *testing.T) {
 	t.Parallel()
 	for what, b := range map[string][]byte{
-		"a keepalive":        plusBuild(PlusKeepalive, 0, nil),
-		"a connect":          plusBuild(PlusConnect, 1, []byte{0x00}),
+		"a keepalive":        {PlusProtocolID, PlusKeepalive, 0x07, 0x00},
 		"a notification":     plusBuild(PlusData, 1, []byte{PlusNotification}),
-		"an unknown opcode":  plusBuild(PlusData, 1, []byte{0x77}),
 		"an empty data part": plusBuild(PlusData, 0, nil),
 	} {
 		p, err := ParsePlus(b)
@@ -121,6 +119,21 @@ func TestThePDUsThatCarryNoFunction(t *testing.T) {
 			t.Errorf("%s named a function %q", what, name)
 		}
 	}
+	// A connect PDU is not one of them: the session setup carries a request
+	// with a function code in the same place a data PDU does, so a connect
+	// whose data part is too short to hold one is malformed rather than a
+	// connect with nothing to decide.
+	if _, err := ParsePlus(plusBuild(PlusConnect, 1, []byte{0x00})); err == nil {
+		t.Error("a connect PDU too short for its function code parsed")
+	}
+	full := []byte{PlusRequest, 0x00, 0x00, 0x04, 0xCA} // create_object, the session setup
+	c, err := ParsePlus(plusBuild(PlusConnect, len(full), full))
+	if err != nil {
+		t.Fatalf("a connect PDU carrying its request was refused: %v", err)
+	}
+	if !c.HasFunction || c.Function != PlusCreateObject {
+		t.Errorf("the connect PDU's function was not read: %+v", c)
+	}
 }
 
 // Only what is positively an answer is an answer. A connect PDU's data starts
@@ -136,8 +149,8 @@ func TestOnlyAResponseOrANotificationIsAnAnswer(t *testing.T) {
 		"a request":      {plusRequest(PlusExplore), false},
 		"a response":     {plusBuild(PlusData, 5, []byte{PlusResponse, 0, 0, 0x04, 0xBB}), true},
 		"a notification": {plusBuild(PlusData, 1, []byte{PlusNotification}), true},
-		"a keepalive":    {plusBuild(PlusKeepalive, 0, nil), false},
-		"a connect":      {plusBuild(PlusConnect, 1, []byte{0x00}), false},
+		"a keepalive":    {[]byte{PlusProtocolID, PlusKeepalive, 0x07, 0x00}, false},
+		"a connect":      {plusBuild(PlusConnect, 5, []byte{PlusRequest, 0, 0, 0x04, 0xCA}), false},
 	} {
 		p, err := ParsePlus(c.b)
 		if err != nil {
@@ -224,5 +237,103 @@ func TestTheClassificationSaysWhatItMeans(t *testing.T) {
 			name, _ := PlusFunctionName(f)
 			t.Errorf("%s: class %q, want %q", name, got, want)
 		}
+	}
+}
+
+// The three things reading the dissector's own source corrected, each of which
+// was a defect in this package rather than a gap.
+
+// A keepalive has no length field. Its two octets after the PDU type are a
+// sequence number and a reserved octet, so reading them as a data length made a
+// keepalive with a large sequence number look like a PDU that overran its
+// frame -- and an overrun is refused, so an idle link was dropped.
+func TestAKeepaliveHasNoLengthField(t *testing.T) {
+	t.Parallel()
+	for _, seq := range []byte{0x00, 0x01, 0x40, 0x7f, 0xff} {
+		b := []byte{PlusProtocolID, PlusKeepalive, seq, 0x00}
+		p, err := ParsePlus(b)
+		if err != nil {
+			t.Fatalf("a keepalive with sequence %#x was refused: %v", seq, err)
+		}
+		if p.HasOpcode || p.HasFunction || p.DataLen != 0 {
+			t.Errorf("sequence %#x: %+v", seq, p)
+		}
+		if p.Class() != PlusUnknown {
+			t.Errorf("sequence %#x: class %q", seq, p.Class())
+		}
+	}
+}
+
+// A function code is read for every opcode but the notification, which is what
+// the protocol does. Reading it only for the two opcodes this package first
+// knew about left a hole one octet wide: opcode 0x02 is a second response the
+// V13 HMI uses, and a client that set it carried a function code past a policy
+// that never looked at one.
+func TestEveryOpcodeButANotificationCarriesAFunction(t *testing.T) {
+	t.Parallel()
+	for _, op := range []uint8{PlusRequest, PlusResponse, PlusResponse2, 0x77} {
+		d := []byte{op, 0x00, 0x00, 0x05, 0x6B} // invoke
+		p, err := ParsePlus(plusBuild(PlusData, len(d), d))
+		if err != nil {
+			t.Fatalf("opcode %#x: %v", op, err)
+		}
+		if !p.HasFunction || p.Function != PlusInvoke {
+			t.Errorf("opcode %#x did not carry its function: %+v", op, p)
+		}
+		if p.Class() != PlusAdmin {
+			t.Errorf("opcode %#x: class %q, want admin", op, p.Class())
+		}
+	}
+	// The notification is the exception, and its data part has another shape.
+	d := []byte{PlusNotification, 0x00, 0x00, 0x05, 0x6B}
+	p, err := ParsePlus(plusBuild(PlusData, len(d), d))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.HasFunction {
+		t.Errorf("a notification was given a function code: %+v", p)
+	}
+}
+
+// A second response opcode is still a response, so a client sending one is a
+// client answering -- which it has no business doing.
+func TestTheSecondResponseOpcodeIsAnAnswer(t *testing.T) {
+	t.Parallel()
+	d := []byte{PlusResponse2, 0x00, 0x00, 0x05, 0x4C}
+	p, err := ParsePlus(plusBuild(PlusData, len(d), d))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.IsAnswer() {
+		t.Error("opcode 0x02 was not read as an answer")
+	}
+}
+
+// Firmware 1.5 moved a variable-length integrity block to the front of the data
+// part, so the opcode is not at a fixed offset there. This package says it
+// cannot locate the function rather than reading one out of a digest, and the
+// PDU gets a class of its own so an operator answers the question knowingly.
+func TestAFirmware15DataPDUIsOpaqueRatherThanGuessedAt(t *testing.T) {
+	t.Parallel()
+	// The octets that would be an opcode and a function if the integrity
+	// block were not in front of them.
+	d := []byte{PlusRequest, 0x00, 0x00, 0x05, 0x6B, 0x20}
+	p, err := ParsePlus(plusBuild(PlusDataFW15, len(d), d))
+	if err != nil {
+		t.Fatalf("a firmware 1.5 data PDU was refused: %v", err)
+	}
+	if p.HasOpcode || p.HasFunction {
+		t.Errorf("the integrity block was read as an opcode and a function: %+v", p)
+	}
+	if p.Class() != PlusOpaque {
+		t.Errorf("class %q, want opaque", p.Class())
+	}
+	if _, ok := PlusClassNamed("opaque"); !ok {
+		t.Error("opaque is not a class the configuration accepts")
+	}
+	// And it is a different answer from unknown, because it asks the operator
+	// a different question.
+	if PlusOpaque == PlusUnknown {
+		t.Error("opaque and unknown are the same class")
 	}
 }
