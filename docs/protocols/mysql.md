@@ -138,6 +138,24 @@ like every other refusal this relay makes. Either shadow switch, this listener's
 refused with the rule that decided and lets the session through; a refusal that
 is not enforced is counted only as a would-be refusal, never as one made.
 
+**A server that is not there.** `deception` answers as a fabricated MySQL: on a
+real listener, where a refusal would otherwise be written; or as a whole listener
+with nothing behind it.
+
+The reconnaissance on this protocol is the attack's first half and it is made
+entirely of legitimate statements: the version, `SHOW DATABASES`, `@@datadir`,
+`@@secure_file_priv`, `SHOW GRANTS`, `mysql.user`. Their answers decide which of
+four things the next statement is -- `INTO OUTFILE`, `LOAD_FILE`,
+`LOAD DATA LOCAL INFILE`, or `CREATE FUNCTION ... SONAME`. A refusal at the
+greeting ends that; answering it says which one they were reaching for.
+
+What takes care is that the answers agree with each other, because that is what a
+fingerprinting tool checks: `@@secure_file_priv` NULL and the file statements
+refused 1290, `SHOW GRANTS` without `FILE` and `mysql.user` refused 1142, and no
+`caching_sha2_password` on a MariaDB version. Three things the fabrication will
+not do: ask the client for a file, sleep, or invent rows. See
+[docs/DECEPTION.md](../DECEPTION.md#a-database-that-is-not-there).
+
 ## What it does not do
 
 - **It is not a SQL firewall**, for the same reasons as the postgres kind: a

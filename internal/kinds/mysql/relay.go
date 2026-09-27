@@ -32,6 +32,7 @@ type server struct {
 	name   string
 	mc     *config.MySQLListener
 	policy *policy
+	decoy  *decoy
 	ln     net.Listener
 	tlsCfg *tls.Config
 
@@ -55,6 +56,9 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener, tlsCfg *tl
 	t := &server{host: host, cfg: cfg, name: cfg.Name, mc: cfg.MySQL, policy: p,
 		ln: ln, tlsCfg: tlsCfg, upTLSMode: cfg.MySQL.UpstreamTLSMode,
 		gate: sesslimit.New(cfg.MySQL.MaxSessions, cfg.MySQL.MaxSessionsPerClient)}
+	if t.decoy, err = newDecoy(cfg.MySQL.Deception, cfg.Name); err != nil {
+		return nil, fmt.Errorf("listener %s: %w", cfg.Name, err)
+	}
 	if t.upTLSMode == "" {
 		t.upTLSMode = "require"
 	}
@@ -135,6 +139,16 @@ func (t *server) handle(c net.Conn) {
 	if hs <= 0 {
 		hs = 30 * time.Second
 	}
+	// A listener that is nothing but a fabricated server answers here, and
+	// nothing is dialled: there is no server behind it to reach, which is also
+	// why this is the one mode that needs no upstream. It speaks first, as the
+	// protocol requires -- the greeting is the only packet a server sends
+	// unprompted, and it is the packet every scanner reads.
+	if d := t.decoy; d != nil && d.whole && d.admits(se.ip) {
+		t.serveDecoy(se)
+		return
+	}
+
 	up, err := t.dial(se)
 	if err != nil {
 		t.deny(se.ip, "upstream_unavailable", err.Error())
@@ -459,6 +473,12 @@ func (t *server) decide(se *session, p wire.Packet) (ok, fatal bool) {
 	if !d.Allow {
 		t.refused(se, d, wire.CommandName(cmd))
 		if t.enforcing() || d.Hard {
+			// The fabrication answers instead, for the clients it covers, and
+			// only here: this is the path where the command has already been
+			// kept from the server.
+			if se.deceive(cmd, rest, p.Seq, d.Reason) {
+				return false, false
+			}
 			if err := se.refuse(d, p.Seq+1); err != nil {
 				return false, true
 			}
@@ -530,6 +550,12 @@ func (t *server) decideStatements(se *session, text string, seq byte) (ok, fatal
 		se.denied++
 		t.refused(se, d, string(st.Kind))
 		if t.enforcing() || d.Hard {
+			// The statement path is where the fabrication earns its place: the
+			// reconnaissance of this protocol is all SELECTs and SHOWs, and a
+			// refusal of one is a refusal the visitor learns from.
+			if se.deceive(wire.ComQuery, []byte(text), seq, d.Reason) {
+				return false, false
+			}
 			if err := se.refuse(d, seq+1); err != nil {
 				return false, true
 			}

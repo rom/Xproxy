@@ -3,6 +3,7 @@ package iec104_test
 import (
 	"strconv"
 	"testing"
+	"time"
 
 	wire "github.com/rom/xproxy/internal/iec104"
 )
@@ -153,9 +154,18 @@ func TestAStationStreamingTelemetryDoesNotRunOutOfWindow(t *testing.T) {
 	if n := s.Stats().Refusals["iec104"]["window"]; n != 0 {
 		t.Errorf("the relay refused %d frames for want of a window", n)
 	}
-	// The station has been acknowledged, which is what let it keep
-	// sending.
-	if got := st.sawSupervisory(); got == 0 {
-		t.Error("the relay never acknowledged the stream it was reading")
+	// The station has been acknowledged, which is what let it keep sending.
+	//
+	// Polled rather than sampled: the relay writes that supervisory frame to
+	// the *station's* socket, and the centre reading the thirteenth measurement
+	// says nothing about whether the station has read it yet. Sampling the
+	// counter once passes on an idle machine and fails under load, which is a
+	// test that reports the scheduler rather than the relay.
+	deadline := time.Now().Add(3 * time.Second)
+	for st.sawSupervisory() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the relay never acknowledged the stream it was reading")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }

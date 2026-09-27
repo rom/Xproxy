@@ -7785,12 +7785,109 @@ func (v *validator) dhcpPatterns(p string, in []string) {
 }
 
 // mysqlListener validates a kind: mysql section.
+// mysqlDecoyOnly says this listener is nothing but a fabricated server, which is
+// the one shape that needs no upstream: there is nothing behind it to reach.
+func mysqlDecoyOnly(m *MySQLListener) bool {
+	d := m.Deception
+	return d != nil && (d.Enabled == nil || *d.Enabled) && d.Mode == "decoy"
+}
+
+// MySQLDecoyProfiles are the fabricated server shapes the listener has built in.
+var MySQLDecoyProfiles = []string{"generic-mysql", "mariadb", "wordpress"}
+
+// mysqlDeception checks the fabricated server.
+func (v *validator) mysqlDeception(p string, m *MySQLListener) {
+	d := m.Deception
+	if d == nil || (d.Enabled != nil && !*d.Enabled) {
+		return
+	}
+	switch d.Mode {
+	case "", "answer":
+		if len(d.Clients) == 0 {
+			v.errf("%s.clients: required in mode answer; this listener reaches a real server, and a "+
+				"section that would fabricate an answer for any client that connects is not a decision "+
+				"to arrive at by default", p)
+		}
+	case "decoy":
+		if m.Upstream != "" {
+			v.errf("%s.mode: decoy is the whole listener, so it has no upstream: use mode answer to "+
+				"fabricate refusals on a listener that fronts a real server", p)
+		}
+		if len(d.Clients) == 0 {
+			v.warnf("%s: no clients, so every client that connects is answered by the fabricated "+
+				"server. That is what a honeypot is for, and on port 3306 it will be found", p)
+		}
+		if m.RequireTLS == nil || *m.RequireTLS {
+			// The greeting does not offer CLIENT_SSL, so a listener that requires
+			// it refuses every client before the fabrication says a word.
+			v.errf("%s.mode: decoy needs require_tls: false. The fabricated greeting does not offer "+
+				"CLIENT_SSL -- the negotiation is mid-handshake on this protocol and a server that "+
+				"offered it and could not complete it is a tell -- so a listener requiring TLS would "+
+				"refuse every client before the fabrication answered", p)
+		}
+	default:
+		v.errf("%s.mode: must be answer or decoy", p)
+	}
+	v.modbusCIDRs(p+".clients", d.Clients)
+	if d.Mode != "decoy" && m.DenyResponse == "drop" {
+		v.warnf("%s: deny_response drop does not apply to the clients this section covers -- their "+
+			"refused statements are answered by the fabricated server rather than ignored", p)
+	}
+	if d.Profile != "" && !slices.Contains(MySQLDecoyProfiles, d.Profile) {
+		v.errf("%s.profile: %q is not a profile; the built-in ones are %s",
+			p, d.Profile, strings.Join(MySQLDecoyProfiles, ", "))
+	}
+	if len(d.Version) > 64 {
+		v.errf("%s.version: %d characters, and a server version string is a few", p, len(d.Version))
+	}
+	if d.Version == "" {
+		v.warnf("%s.version: empty, so the profile's version is reported. A decoy should say what the "+
+			"estate's own servers say: a version nobody on the site runs is the tell that ends the "+
+			"pretence, and only you know what that is", p)
+	}
+	for i, db := range d.Databases {
+		if db == "" || len(db) > 64 {
+			v.errf("%s.databases[%d]: must be 1 to 64 characters, which is what MySQL allows", p, i)
+		}
+	}
+	for i, t := range d.Tables {
+		schema, name, ok := strings.Cut(t, ".")
+		if !ok || schema == "" || name == "" {
+			v.errf("%s.tables[%d]: %q must be written database.table, because SHOW TABLES answers "+
+				"per database and a bare name belongs to none", p, i, t)
+			continue
+		}
+		if len(d.Databases) > 0 && !slices.Contains(d.Databases, schema) {
+			v.warnf("%s.tables[%d]: %q names a database that is not in databases, so SHOW DATABASES "+
+				"will not list it and SHOW TABLES will never be asked for it", p, i, t)
+		}
+	}
+	for i, t := range d.Tripwire {
+		if strings.TrimSpace(t) == "" || strings.ContainsAny(t, " \t\r\n") {
+			v.errf("%s.tripwire[%d]: %q is not an object name; one name per entry, and a qualified "+
+				"one is written schema.name", p, i, t)
+		}
+	}
+	if d.RequireAuth {
+		v.warnf("%s.require_auth: the fabrication will refuse every login, so nothing past the "+
+			"greeting is ever collected. On this protocol the reconnaissance is the message, and it "+
+			"happens after the login", p)
+	}
+	if n := d.MaxClients; n < 0 || n > 1<<20 {
+		v.errf("%s.max_clients: must be between 0 and 1048576", p)
+	}
+	if period := d.Period.D(); period != 0 && (period < time.Second || period > time.Hour) {
+		v.errf("%s.period: must be between 1s and 1h", p)
+	}
+}
+
 func (v *validator) mysqlListener(p string, m *MySQLListener, hasTLS bool) {
-	if m.Upstream == "" {
+	if m.Upstream == "" && !mysqlDecoyOnly(m) {
 		v.errf("%s.upstream: required", p)
 	}
 	v.modbusCIDRs(p+".allow_clients", m.AllowClients)
 	v.modbusCIDRs(p+".deny_clients", m.DenyClients)
+	v.mysqlDeception(p+".deception", m)
 
 	requireTLS := m.RequireTLS == nil || *m.RequireTLS
 	if requireTLS && !hasTLS {

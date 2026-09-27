@@ -26396,6 +26396,185 @@ T}	T{
 A bound
 T}
 .TE
+.SS "server.listeners[].mysql.deception"
+.PP
+A MySQL that is not there.
+.PP
+On this protocol the reconnaissance is the attack\(aqs first half and it is entirely made of legitimate statements. A scanner finds the port, reads the greeting for a version, and then asks the questions that decide what is possible:
+.PP
+.RS 4
+.nf
+.ft CR
+SHOW DATABASES                  what is here
+SELECT @@datadir                where does it keep its files
+SELECT @@secure_file_priv       may a statement write one
+SHOW GRANTS                     does this account have FILE
+SELECT * FROM mysql.user        the password hashes
+.ft
+.fi
+.RE
+.PP
+The answers decide which of four things the next statement is. \fBINTO OUTFILE\fR writes a web shell into a document root. \fBLOAD_FILE\fR reads a key off the server. \fBLOAD DATA LOCAL INFILE\fR asks the \fIclient\fR for a file, which is the one that works through a firewall. \fBCREATE FUNCTION ... SONAME\fR installs a shared object.
+.PP
+A refusal ends that at the greeting. Answering it says which of the four they were reaching for \[u2014] and until you see what follows it, the reconnaissance is indistinguishable from an application\(aqs own queries.
+.PP
+.RS 4
+.nf
+.ft CR
+mysql:
+  # A honeypot: no upstream, because there is nothing behind it. require_tls
+  # must be false \-\- see below.
+  require_tls: false
+  deception:
+    mode: decoy
+    profile: wordpress
+    version: "5.7.44\-0ubuntu0.20.04.1"
+    databases: ["information_schema", "mysql", "wordpress"]
+    tables: ["wordpress.wp_users", "wordpress.wp_options"]
+.ft
+.fi
+.RE
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(1.0i) lbw(1.0i) lbx
+lw(1.0i) lw(1.0i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Turns the section off without removing it
+T}
+T{
+\fBmode\fR
+T}	T{
+\fBanswer\fR,\: \fBdecoy\fR
+T}	T{
+\fBanswer\fR
+T}	T{
+\fBanswer\fR: a statement this listener was going to refuse is answered by the fabrication instead,\: and never reaches the server. \fBdecoy\fR: the whole listener is a fabricated server,\: with no \fBupstream\fR
+T}
+T{
+\fBclients\fR
+T}	T{
+list of CIDR
+T}	T{
+
+T}	T{
+The networks that get the fabrication. \fBRequired in mode \fBanswer\fR.\fR In mode \fBdecoy\fR an empty list means every client
+T}
+T{
+\fBprofile\fR
+T}	T{
+\fBgeneric\-\:mysql\fR,\: \fBmariadb\fR,\: \fBwordpress\fR
+T}	T{
+\fBgeneric\-\:mysql\fR
+T}	T{
+The shape: the version reported,\: the flavour,\: and the databases and tables it claims
+T}
+T{
+\fBversion\fR
+T}	T{
+string
+T}	T{
+the profile\(aqs
+T}	T{
+The server version string in the greeting,\: which is the first thing a scanner records and what a vulnerability database is indexed by
+T}
+T{
+\fBdatabases\fR
+T}	T{
+list
+T}	T{
+the profile\(aqs
+T}	T{
+What \fBSHOW DATABASES\fR answers
+T}
+T{
+\fBtables\fR
+T}	T{
+list
+T}	T{
+the profile\(aqs
+T}	T{
+What \fBSHOW TABLES\fR answers,\: as \fBdatabase.\:table\fR names
+T}
+T{
+\fBrequire_\:auth\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse the login rather than accept it. Off by default: on this protocol the reconnaissance happens \fIafter\fR the login,\: so a decoy that refuses it collects nothing
+T}
+T{
+\fBtripwire\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+Object names \[u2014] a table,\: a function,\: a system variable \[u2014] that raise a \fBmysql_\:tripwire\fR event when a statement mentions one. \fBIn addition to\fR the built\-in set below
+T}
+T{
+\fBseed\fR
+T}	T{
+int
+T}	T{
+from the listener name
+T}	T{
+Makes the fabricated values reproducible across restarts
+T}
+T{
+\fBperiod\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+How long one sample of a gauge lasts
+T}
+T{
+\fBmax_\:clients\fR
+T}	T{
+int
+T}	T{
+\fB1024\fR
+T}	T{
+Bounds the record of who has been answered
+T}
+.TE
+.PP
+\fB\fBrequire_tls: false\fR is required in \fBdecoy\fR mode\fR, and validation refuses the listener without it. The fabricated greeting does not offer \fBCLIENT_SSL\fR: the negotiation is mid\-handshake on this protocol \[u2014] the client answers the greeting with a short packet and the connection \fIthen\fR becomes TLS \[u2014] and a server that offered it and could not complete it fails in a way a scanner notices. An unencrypted server on 3306 is also what the scanning is looking for.
+.PP
+\fBThe tripwires need no configuring.\fR \fBmysql.user\fR, \fBLOAD_FILE\fR, \fBINFILE\fR, \fBOUTFILE\fR, \fBDUMPFILE\fR, \fBSONAME\fR, \fBsecure_file_priv\fR, \fBSLEEP\fR, \fBBENCHMARK\fR, \fBsys_exec\fR and \fBsys_eval\fR are in the set from the start, because nothing legitimate sends any of them to a fabricated database. They are matched per identifier rather than per substring, so a column named \fBsleepy\fR is not \fBSLEEP\fR.
+.PP
+\fBThree things the fabrication will not do.\fR
+.PP
+It never asks the client for a file. \fBLOAD DATA LOCAL INFILE\fR is answered with error 1148, not with the request packet the protocol allows \[u2014] a fabrication that sent that request would be attacking whoever connected to it, and the clients that connect to a honeypot include the estate\(aqs own scanners.
+.PP
+It does not sleep. \fBSELECT SLEEP(60)\fR answers \fB0\fR immediately. Honouring it would make the fabrication a way to hold this listener\(aqs resources, a statement at a time, for as long as the visitor liked.
+.PP
+It does not invent rows. A \fBSELECT\fR the recognisers do not know returns an empty result set: the fabrication is a \fIsurface\fR, not a database, and inventing rows for an arbitrary projection would mean inventing a schema to match.
+.PP
+\fBThe answers agree with each other\fR, which is what a fingerprinting tool checks. \fB@@secure_file_priv\fR is NULL, so the file\-writing statements get the refusal a server with it set gives (1290) and \fBLOAD_FILE\fR answers NULL rather than an error. \fBSHOW GRANTS\fR reports an account without \fBFILE\fR, so a read of \fBmysql.user\fR answers 1142 rather than an empty set \[u2014] an empty set would say the table is there and has no rows, which \fBmysql.user\fR never is. The MariaDB profile does not offer \fBcaching_sha2_password\fR, which MariaDB has never shipped.
+.PP
+\fBA password is never recorded.\fR The login packet\(aqs user name is an identity and is kept, along with the plugin and the client\(aqs own program name; the authentication response is not. Every statement \fIis\fR recorded, clipped and reduced to one line.
+.PP
+Counters: \fBmysql_deceived\fR and \fBmysql_tripwire\fR. Security events: \fBmysql_deceived\fR and \fBmysql_tripwire\fR, with the statement, the database user and the reason the statement was not going to reach the server. \fBxproxyctl decoys\fR lists what each fabrication has seen.
 .SS "How a statement is classified"
 .PP
 A deny list of strings is a list of the spellings somebody thought of: \fBDROP\fR does not stop \fBDR/**/OP\fR, and a statement that merely \fImentions\fR the word in a string literal is innocent. So the classifier reads the leading keyword of every statement after stripping comments and quoting properly \-\- PostgreSQL\(aqs block comments nest, and dollar\-quoted strings have no escaping at all \-\- and anything it cannot name becomes \fBunknown\fR, which is refused. The failure mode of a spelling nobody thought of is a refusal rather than a pass.

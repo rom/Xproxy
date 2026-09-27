@@ -207,6 +207,11 @@ type Stats struct {
 	// manager reads.
 	SNMPDeceived atomic.Uint64
 	SNMPTripwire atomic.Uint64
+	// MySQLDeceived counts the statements answered by a server that is not
+	// there, and MySQLTripwire the ones reaching for the escalation chain:
+	// mysql.user, LOAD_FILE, INTO OUTFILE, LOAD DATA LOCAL, CREATE FUNCTION.
+	MySQLDeceived atomic.Uint64
+	MySQLTripwire atomic.Uint64
 	// RedisDeceived counts the commands answered by a server that is not
 	// there, and RedisTripwire the ones nothing legitimate sends: the
 	// remote-code-execution chain, which on this protocol is where the
@@ -754,6 +759,8 @@ type Snapshot struct {
 	S7Tripwire            uint64 `json:"s7_tripwire"`
 	SNMPDeceived          uint64 `json:"snmp_deceived"`
 	SNMPTripwire          uint64 `json:"snmp_tripwire"`
+	MySQLDeceived         uint64 `json:"mysql_deceived"`
+	MySQLTripwire         uint64 `json:"mysql_tripwire"`
 	RedisDeceived         uint64 `json:"redis_deceived"`
 	RedisTripwire         uint64 `json:"redis_tripwire"`
 	IEC104Commands        uint64 `json:"iec104_commands"`
@@ -1197,6 +1204,8 @@ func (s *Stats) snapshot() Snapshot {
 		S7Tripwire:             s.S7Tripwire.Load(),
 		SNMPDeceived:           s.SNMPDeceived.Load(),
 		SNMPTripwire:           s.SNMPTripwire.Load(),
+		MySQLDeceived:          s.MySQLDeceived.Load(),
+		MySQLTripwire:          s.MySQLTripwire.Load(),
 		RedisDeceived:          s.RedisDeceived.Load(),
 		RedisTripwire:          s.RedisTripwire.Load(),
 		IEC104Commands:         s.IEC104Commands.Load(),
