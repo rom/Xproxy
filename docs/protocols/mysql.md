@@ -154,7 +154,7 @@ fingerprinting tool checks: `@@secure_file_priv` NULL and the file statements
 refused 1290, `SHOW GRANTS` without `FILE` and `mysql.user` refused 1142, and no
 `caching_sha2_password` on a MariaDB version. Three things the fabrication will
 not do: ask the client for a file, sleep, or invent rows. See
-[docs/DECEPTION.md](../DECEPTION.md#a-database-that-is-not-there).
+[docs/DECEPTION.md](../DECEPTION.md#a-mysql-that-is-not-there).
 
 ## What it does not do
 

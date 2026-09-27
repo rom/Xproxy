@@ -30,6 +30,7 @@ type server struct {
 	name   string
 	pc     *config.PostgresListener
 	policy *policy
+	decoy  *decoy
 	ln     net.Listener
 	tlsCfg *tls.Config
 
@@ -56,6 +57,9 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener, tlsCfg *tl
 		policy: p, ln: ln, tlsCfg: tlsCfg, done: make(chan struct{}),
 		upTLSMode: cfg.Postgres.UpstreamTLSMode,
 		gate:      sesslimit.New(cfg.Postgres.MaxSessions, cfg.Postgres.MaxSessionsPerClient)}
+	if t.decoy, err = newDecoy(cfg.Postgres.Deception, cfg.Name); err != nil {
+		return nil, fmt.Errorf("listener %s: %w", cfg.Name, err)
+	}
 	if t.upTLSMode == "" {
 		// A relay that terminated TLS from the client and then spoke plaintext
 		// to the server would have moved the exposure rather than removed it.
@@ -415,6 +419,15 @@ func (t *server) upgradeUpstream(c net.Conn, address string) (net.Conn, error) {
 
 // relay runs the two directions once a connection is admitted.
 func (t *server) relay(se *session) {
+	// A listener that is nothing but a fabricated server answers here, and
+	// nothing is dialled: there is no server behind it to reach, which is also
+	// why this is the one mode that needs no upstream. The encryption
+	// negotiation and the startup packet have already been read, so the
+	// fabrication picks up where a real server does.
+	if d := t.decoy; d != nil && d.whole && d.admits(se.ip) {
+		t.serveDecoy(se)
+		return
+	}
 	up, err := t.dial(se)
 	if err != nil {
 		t.deny(se.ip, "upstream_unavailable", err.Error())
@@ -642,6 +655,13 @@ func (t *server) decideOne(se *session, st wire.Statement, text string) (ok, fat
 	se.denied++
 	t.refused(se, d, string(st.Kind))
 	if t.enforcing() || d.Hard {
+		// The fabrication answers instead, for the clients it covers, and only
+		// here: this is the path where the statement has already been kept from
+		// the server. On this protocol the reconnaissance is all SELECTs and
+		// SHOWs, so a refusal of one is a refusal the visitor learns from.
+		if se.deceive(text, d.Reason) {
+			return false, false
+		}
 		if err := se.refuse(d, string(st.Kind)); err != nil {
 			return false, true
 		}

@@ -7793,6 +7793,78 @@
       },
       "additionalProperties": false
     },
+    "PostgresDeception": {
+      "description": "PostgresDeception answers as a PostgreSQL server that is not there. The reconnaissance here is the same shape as MySQL's and the escalations are worse, because this server can run a shell command by design. A scanner reads the version out of the startup exchange and then asks which databases there are, what `data_directory` is, and whether this role is a superuser -- and the answer to the last one decides whether the next statement is `COPY ... FROM PROGRAM 'sh -c …'`, which is documented remote code execution, or `pg_read_file('/etc/passwd')`, or `CREATE FUNCTION ... LANGUAGE c`. A refusal ends that at the startup message. Answering it says which one they were reaching for.",
+      "type": "object",
+      "properties": {
+        "clients": {
+          "description": "Clients are the networks that get the fabrication. Required in mode answer. In mode decoy an empty list means every client, which is what a honeypot wants.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "databases": {
+          "description": "Databases replaces the profile's list, which is what a client's \\l answers and the first thing asked after the version.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "enabled": {
+          "description": "Enabled turns the section off without removing it; it defaults to true wherever the section is present.",
+          "type": "boolean"
+        },
+        "max_clients": {
+          "description": "MaxClients bounds the record of who has been answered. Default 1024.",
+          "type": "integer"
+        },
+        "mode": {
+          "description": "Mode is answer (the default: a statement this listener was going to refuse is answered by the fabrication instead, and never reaches the server) or decoy (the whole listener is a fabricated server: no upstream, and nothing behind it).",
+          "type": "string"
+        },
+        "period": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "profile": {
+          "description": "Profile is the fabricated server's shape: generic-postgres (the default), django or rails. It decides the version reported and the databases, schemas and tables it claims to hold.",
+          "type": "string"
+        },
+        "require_auth": {
+          "description": "RequireAuth makes the fabrication refuse the login rather than accept it. Default false: the reconnaissance happens after the login, so a decoy that refuses it collects nothing. Where it is set the attempt is still recorded -- the role, the database and the password field's length, never the password.",
+          "type": "boolean"
+        },
+        "seed": {
+          "description": "Seed makes the fabricated values reproducible. Zero derives one from the listener name, which is stable across restarts.",
+          "type": "integer"
+        },
+        "superuser": {
+          "description": "Superuser says whether the fabricated role is one. Default false, and it is the most consequential field here: a superuser can COPY FROM PROGRAM, which is a shell command. Saying no is both safer to impersonate and the more common truth on an estate's application accounts -- and a visitor who asks and is told no, and tries anyway, has told you more than one who was told yes.",
+          "type": "boolean"
+        },
+        "tables": {
+          "description": "Tables replaces the profile's list, as `schema.table` names. It is what a catalogue query answers, and the part of the fabrication a visitor reads most closely.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tripwire": {
+          "description": "Tripwire are object names -- a catalogue table, a function -- that raise a postgres_tripwire security event when a statement mentions one. They are in addition to a built-in set, which is the escalation chain: pg_shadow, pg_authid, pg_read_file, pg_read_binary_file, pg_ls_dir, lo_import, lo_export, pg_sleep, dblink, and COPY's PROGRAM and file forms. Nothing legitimate sends any of them to a fabricated database.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "version": {
+          "description": "Version is the server_version it announces, which is the first thing a scanner records and what a vulnerability database is indexed by. Empty takes the profile's. **A decoy should say what the estate's own servers say.** A version nobody on the site runs is the tell that ends the pretence, and only you know what that is.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "PostgresListener": {
       "description": "PostgresListener is the settings of a kind: postgres listener: a relay in front of a PostgreSQL server that reads the frontend/backend protocol. A database proxy must not pretend to be a SQL firewall. Knowing which tables a statement touches means parsing SQL properly -- every alias, subquery, CTE, view, function body and search_path interaction -- and a relay that got that 95% right would have a policy with a hole in exactly the place somebody is looking. Restricting a role's tables is the database's own job, with GRANT. What a relay can do is everything that happens before the database has an opinion, and two things it does better than the database: refuse the encryption downgrade that libpq's default sslmode accepts silently, and refuse the authentication methods that put a reusable credential on the wire. Plus one thing the database cannot do at all: decide by the *shape* of a statement, as an allow list of kinds where anything unclassifiable is refused.",
       "type": "object",
@@ -7860,6 +7932,14 @@
         "allow_weak_auth": {
           "description": "AllowWeakAuth permits a method whose credential an observer can reuse: `password` is the password in cleartext, and `md5` is worse than it looks -- the stored verifier is md5(password+username), so the hash *is* a password-equivalent and anybody who reads pg_authid can authenticate without cracking anything. PostgreSQL has shipped SCRAM since 10. Default false.",
           "type": "boolean"
+        },
+        "deception": {
+          "description": "Rules narrow or widen the listener for traffic that matches them. Deception answers as a server that is not there: a refused statement answered by a fabricated database, or a whole listener that is one. See PostgresDeception.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/PostgresDeception"
+            }
+          ]
         },
         "default_action": {
           "description": "DefaultAction is allow or deny when no rule matched. Default deny.",
@@ -7936,7 +8016,6 @@
           "type": "boolean"
         },
         "rules": {
-          "description": "Rules narrow or widen the listener for traffic that matches them.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/PostgresRule"
