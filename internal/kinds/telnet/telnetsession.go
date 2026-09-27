@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
@@ -172,42 +173,78 @@ func (se *session) prompt(question string, echo bool) (string, string) {
 	_ = se.client.SetReadDeadline(deadline)
 	defer func() { _ = se.client.SetReadDeadline(time.Time{}) }()
 
-	p := wire.NewParser(t.t.MaxSubnegotiation)
-	br := bufio.NewReaderSize(se.client, 1024)
+	if se.asked == nil {
+		se.asked = newAsked(se.client, t.t.MaxSubnegotiation)
+	}
+	r := se.asked
 	var line []byte
-	buf := make([]byte, 256)
+	finish := func() (string, string) {
+		se.say("\r\n")
+		if !echo {
+			_, _ = se.client.Write(wire.Negotiation(wire.WONT, wire.OptEcho))
+		}
+		return strings.TrimSpace(string(line)), ""
+	}
+	malformed := func(why string) (string, string) {
+		t.engine.Counters().TelnetRefused.Add(1)
+		t.deny(se.ip, "telnet_prompt", why)
+		return "", "prompt_malformed"
+	}
 	for {
-		n, err := br.Read(buf)
+		// What arrived and was not consumed by the last question is this
+		// question's first input.
+		for len(r.pending) > 0 {
+			c := r.pending[0]
+			r.pending = r.pending[1:]
+			switch c {
+			case '\r':
+				if len(line) > 0 {
+					// The terminator is CR LF on the wire, so the LF that
+					// comes with it belongs to this line and not to the
+					// next question.
+					if len(r.pending) > 0 && r.pending[0] == '\n' {
+						r.pending = r.pending[1:]
+					}
+					return finish()
+				}
+			case '\n':
+				return finish()
+			case 0x7f, 0x08: // backspace
+				if len(line) > 0 {
+					line = line[:len(line)-1]
+					if echo {
+						se.say("\b \b")
+					}
+				}
+			default:
+				if len(line) >= maxPromptLine {
+					return malformed(fmt.Sprintf("telnet: answer longer than %d bytes", maxPromptLine))
+				}
+				if c >= 0x20 {
+					line = append(line, c)
+					if echo {
+						se.say(string(rune(c)))
+					}
+				}
+			}
+		}
+		// A read that came with an error still had its data fed and drained
+		// above, so the error is acted on only once there is nothing left to
+		// read from: a client that wrote its last line and hung up has
+		// written a line.
+		if r.err != nil {
+			return "", "prompt_closed"
+		}
+		n, err := r.br.Read(r.buf)
 		if n > 0 {
-			done := false
-			ferr := p.Feed(buf[:n], func(e wire.Event) error {
+			ferr := r.p.Feed(r.buf[:n], func(e wire.Event) error {
 				switch e.Kind {
 				case wire.Data:
-					for _, c := range e.Data {
-						switch c {
-						case '\r', '\n':
-							if len(line) > 0 || c == '\n' {
-								done = true
-							}
-						case 0x7f, 0x08: // backspace
-							if len(line) > 0 {
-								line = line[:len(line)-1]
-								if echo {
-									se.say("\b \b")
-								}
-							}
-						default:
-							if len(line) >= maxPromptLine {
-								return fmt.Errorf("telnet: answer longer than %d bytes", maxPromptLine)
-							}
-							if c >= 0x20 {
-								line = append(line, c)
-								if echo {
-									se.say(string(rune(c)))
-								}
-							}
-						}
-					}
+					// Bounded without a bound of its own: pending is
+					// drained before the next read, so it never holds
+					// more than one read's worth, and what a line may
+					// grow to is maxPromptLine's business.
+					r.pending = append(r.pending, e.Data...)
 				case wire.Negotiate:
 					// The proxy is the only thing here so far, and it
 					// agrees to nothing while it is asking.
@@ -218,21 +255,34 @@ func (se *session) prompt(question string, echo bool) (string, string) {
 				return nil
 			})
 			if ferr != nil {
-				t.engine.Counters().TelnetRefused.Add(1)
-				t.deny(se.ip, "telnet_prompt", ferr.Error())
-				return "", "prompt_malformed"
-			}
-			if done {
-				se.say("\r\n")
-				if !echo {
-					_, _ = se.client.Write(wire.Negotiation(wire.WONT, wire.OptEcho))
-				}
-				return strings.TrimSpace(string(line)), ""
+				return malformed(ferr.Error())
 			}
 		}
-		if err != nil {
-			return "", "prompt_closed"
-		}
+		r.err = err
+	}
+}
+
+// asked reads the answers to the proxy's own questions. One per session, not one
+// per question: a payload is pasted or piped in a single write, and a reader that
+// threw away everything after the first terminator would collect the first line of
+// it and lose every line after -- which is the part worth having on a fabricated
+// device, and is a mangled name and code on a real one.
+type asked struct {
+	p  *wire.Parser
+	br *bufio.Reader
+	// buf is where a read lands; pending is the data the parser has decoded
+	// and no question has consumed yet.
+	buf     []byte
+	pending []byte
+	// err is what the last read said, acted on once pending is empty.
+	err error
+}
+
+func newAsked(c net.Conn, maxSubnegotiation int) *asked {
+	return &asked{
+		p:   wire.NewParser(maxSubnegotiation),
+		br:  bufio.NewReaderSize(c, 1024),
+		buf: make([]byte, 256),
 	}
 }
 

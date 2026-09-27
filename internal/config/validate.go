@@ -2584,7 +2584,10 @@ var denyReasons = map[string]bool{
 	// with that and nothing else -- an ordinary fabricated exchange is not a
 	// finding, and banning on it would end the collection.
 	"telnet_tripwire": true,
-	"telnet_denied":   true, "vnc_denied": true, "rdp_denied": true, "sftp_icap": true, "udp_denied": true,
+	// ssh_tripwire is the same on the bastion: a command reaching for a payload,
+	// or a channel asking the fabrication to forward a connection somewhere.
+	"ssh_tripwire":  true,
+	"telnet_denied": true, "vnc_denied": true, "rdp_denied": true, "sftp_icap": true, "udp_denied": true,
 	// tcp_denied is the generic TCP relay's refusal by the imported lists or the
 	// authorisation policy. It is separate from tcp_no_route, which is a client
 	// asking for a name this listener has no route for: a scanner's SNI sweep and
@@ -3842,8 +3845,85 @@ func validTopicFilter(f string) error {
 }
 
 // sshListener validates an SSH bastion listener.
+// sshDecoyOnly says this listener is nothing but a fabricated bastion: there is no
+// machine behind it, its own login accepts everybody by design, and there is
+// nothing to authenticate to.
+func sshDecoyOnly(h *SSHListener) bool {
+	d := h.Deception
+	return d != nil && (d.Enabled == nil || *d.Enabled) && d.Mode == "decoy"
+}
+
+// SSHDecoyProfiles are the machines a fabrication can impersonate.
+var SSHDecoyProfiles = []string{"busybox", "linux"}
+
+// sshDeception checks the fabricated bastion.
+func (v *validator) sshDeception(p string, h *SSHListener) {
+	d := h.Deception
+	if d == nil || (d.Enabled != nil && !*d.Enabled) {
+		return
+	}
+	switch d.Mode {
+	case "", "answer":
+		if len(d.Clients) == 0 {
+			v.errf("%s.clients: required in mode answer; this listener fronts real machines, and a "+
+				"section that would fabricate a shell for any client whose credential fails is not a "+
+				"decision to arrive at by default", p)
+		}
+	case "decoy":
+		if h.Upstream != "" {
+			v.errf("%s.mode: decoy is the whole listener, so it has no upstream: use mode answer to "+
+				"fabricate the refusals of a bastion that fronts real machines", p)
+		}
+		if h.RequireGrant {
+			v.errf("%s.mode: decoy has nobody real to check a grant for; remove require_grant", p)
+		}
+		if h.MFA != nil {
+			v.errf("%s.mode: decoy accepts every credential by design, so an mfa section would refuse "+
+				"the visitors the trap exists to collect", p)
+		}
+		if len(d.Clients) == 0 {
+			v.warnf("%s: no clients, so every client that connects reaches the fabricated bastion. "+
+				"That is what a honeypot is for, and port 22 is the most scanned port there is", p)
+		}
+	default:
+		v.errf("%s.mode: must be answer or decoy", p)
+	}
+	v.modbusCIDRs(p+".clients", d.Clients)
+	if d.Profile != "" && !slices.Contains(SSHDecoyProfiles, d.Profile) {
+		v.errf("%s.profile: %q is not a profile; the built-in ones are %s",
+			p, d.Profile, strings.Join(SSHDecoyProfiles, ", "))
+	}
+	if d.Hostname == "" {
+		v.warnf("%s.hostname: empty, so the profile's own name is used. Name it after something this "+
+			"estate really has: a visitor who finds app01 on a site whose servers are named another "+
+			"way has found the fabrication", p)
+	}
+	if n := d.Attempts; n < 0 || n > 16 {
+		v.errf("%s.attempts: must be between 0 and 16", p)
+	}
+	if n := d.Attempts; n > 1 && h.MaxAuthTries > 0 && n > h.MaxAuthTries {
+		// The protocol stops the client first: a trap waiting for a fifth
+		// credential on a listener that allows three would never accept one.
+		v.errf("%s.attempts: %d, but max_auth_tries is %d, so the client is refused before the "+
+			"fabrication accepts anything", p, n, h.MaxAuthTries)
+	}
+	for i, c := range d.Tripwire {
+		if strings.TrimSpace(c) == "" || strings.ContainsAny(c, " \t\r\n") {
+			v.errf("%s.tripwire[%d]: %q is not a command name; one name per entry", p, i, c)
+		}
+	}
+	if n := d.MaxClients; n < 0 || n > 1<<20 {
+		v.errf("%s.max_clients: must be between 0 and 1048576", p)
+	}
+	if period := d.Period.D(); period != 0 && (period < time.Second || period > time.Hour) {
+		v.errf("%s.period: must be between 1s and 1h", p)
+	}
+}
+
 func (v *validator) sshListener(p string, h *SSHListener) {
-	if h.Upstream == "" {
+	v.sshDeception(p+".deception", h)
+	decoy := sshDecoyOnly(h)
+	if h.Upstream == "" && !decoy {
 		v.errf("%s.upstream: required", p)
 	}
 	if len(h.HostKeys) == 0 {
@@ -3856,7 +3936,7 @@ func (v *validator) sshListener(p string, h *SSHListener) {
 	// certificates has no authorized_keys to write, which is the point
 	// of moving. The check below repeats this because it is the one an
 	// operator reading the file finds first.
-	if h.AuthorizedKeys == "" && h.UsersFile == "" && h.TrustedUserCAKeys == "" {
+	if h.AuthorizedKeys == "" && h.UsersFile == "" && h.TrustedUserCAKeys == "" && !decoy {
 		v.errf("%s: authorized_keys, users_file or trusted_user_ca_keys is required; a bastion that authenticates nobody forwards everybody", p)
 	}
 	if h.AuthorizedKeys != "" {
@@ -3870,7 +3950,9 @@ func (v *validator) sshListener(p string, h *SSHListener) {
 	}
 	v.sshHardwareKeys(p, h)
 	if h.UpstreamKeyFile == "" {
-		v.errf("%s.upstream_key_file: required (the credential the proxy authenticates to the target with)", p)
+		if !decoy {
+			v.errf("%s.upstream_key_file: required (the credential the proxy authenticates to the target with)", p)
+		}
 	} else {
 		v.file(p+".upstream_key_file", h.UpstreamKeyFile)
 	}
@@ -3888,7 +3970,9 @@ func (v *validator) sshListener(p string, h *SSHListener) {
 				"between the bastion and the target", p)
 		}
 	default:
-		v.errf("%s.upstream_known_hosts: required unless upstream_insecure_host_key is set", p)
+		if !decoy {
+			v.errf("%s.upstream_known_hosts: required unless upstream_insecure_host_key is set", p)
+		}
 	}
 	if !strings.HasPrefix(h.ServerVersion, "SSH-2.0-") {
 		v.errf("%s.server_version: must begin with SSH-2.0-", p)
@@ -3972,11 +4056,6 @@ func (v *validator) sshListener(p string, h *SSHListener) {
 		v.file(p+".trusted_user_ca_keys", h.TrustedUserCAKeys)
 	}
 	v.sshCertPolicy(p, h)
-	if h.AuthorizedKeys == "" && h.UsersFile == "" && h.TrustedUserCAKeys == "" {
-		// Stated again here because trusted_user_ca_keys is the third
-		// way to authenticate and the earlier check knows only two.
-		v.errf("%s: authorized_keys, users_file or trusted_user_ca_keys is required", p)
-	}
 	for i, e := range h.AllowEnv {
 		if !envPatternOK(e) {
 			v.errf("%s.allow_env[%d]: %q is not a variable name or a name ending in *", p, i, e)

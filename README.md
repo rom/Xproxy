@@ -215,7 +215,7 @@ protocol so that a policy can be written in that protocol's own terms:
 | `udp` | `xproxy` | Any datagram protocol | Who may send, how large, how often, how long a session lives |
 | `forward` | `xproxy` | CONNECT, SOCKS5, MASQUE, TLS interception | Destinations, credentials, and the plaintext inside a tunnel when asked |
 | `dns` | `xproxy` | DNS over UDP, TCP, TLS, HTTPS, QUIC | Names, answers, response policy zones, tunnelling; and, with `deception`, answering a refused name as a fabricated resolver so the rest of what was leaving is collected rather than sent somewhere else |
-| `ssh` | `xgate` | SSH and SFTP | Channels, commands, forwards, paths, file operations; recording, MFA |
+| `ssh` | `xgate` | SSH and SFTP | Channels, commands, forwards, paths, file operations; recording, MFA; and, with `deception`, a bastion that is not there, so the account names an estate looks like it has from outside, and the passwords tried against them, are collected rather than deflected |
 | `telnet` | `xgate` | Telnet (RFC 854 NVT) | Options in both directions; recording, MFA; and, with `deception`, a login and a shell that are not there, so the dictionary being walked and the payload it was for are collected rather than deflected |
 | `vnc` | `xgate` | RFB 3.3–3.8, VeNCrypt, vendor security types | Security type, whose credential opens the desktop, view-only, the picture's bounds; recording, MFA |
 | `rdp` | `xgate` | RDP over TLS, NLA, or the protocol's own encryption | Channels, devices, the connection sequence; recording, MFA |
@@ -1311,7 +1311,16 @@ describes it, validation refuses what cannot work, and
   handle under a key the process made at startup and never writes down. The one
   refusal it will not replace is an outage, because an operator working an
   incident must be told the equipment is unreachable rather than handed a device
-  that is not there
+  that is not there. An `ssh` listener does the same one port down, against a
+  different list: what scans port 22 is not device defaults but the account names
+  an estate uses -- `git`, `jenkins`, `postgres`, `deploy` -- so the list itself is
+  the finding. A key is recorded by fingerprint and then *refused*, so the client
+  falls back to a password as it would against a server that trusts no keys; on a
+  real bastion the section adds no authentication method the listener did not
+  already offer, because a key-only bastion that started asking for passwords would
+  have had its front door changed by a logging feature; and the protocol's partial
+  success is not a refusal, so a right first factor is still asked for its second
+  rather than handed a shell
 - **A device inventory built from traffic, not from scanning.** An
   operational estate's oldest problem is that nobody knows what is on the
   network: the drawings are from commissioning, the spreadsheet was

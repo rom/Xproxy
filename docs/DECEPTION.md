@@ -43,6 +43,7 @@ exist.
 - [A PostgreSQL that is not there](#a-postgresql-that-is-not-there)
 - [A resolver that is not there](#a-resolver-that-is-not-there)
 - [A login that is not there](#a-login-that-is-not-there)
+- [A bastion that is not there](#a-bastion-that-is-not-there)
 - [Refusal at the TLS handshake](#refusal-at-the-tls-handshake)
 - [What it produces](#what-it-produces)
 - [Building it out](#building-it-out)
@@ -92,6 +93,7 @@ Two consequences worth stating plainly:
 | Fabricated cache | `redis.deception` | The whole exploit chain, answered -- and its directory, file name and payload in your log | The same, plus a value read back that was never stored | None, as above |
 | Fabricated database | `mysql.deception`, `postgres.deception` | The reconnaissance, answered consistently -- and which escalation it was for: a web shell, a key off the server, a file off the *client*, or, on PostgreSQL, a shell command the manual documents | The same, plus an empty result set where a real query needed rows | None, as above |
 | Fabricated resolver | `dns.deception` | The refusal it was reading, and the rest of what was leaving: a tunnel told NXDOMAIN moves channel, one that is answered keeps sending | A fabricated answer aimed at a real host, if the pool names one; an amplifier, if the bound were not there | None: it answers only where a refusal would be |
+| Fabricated bastion | `ssh.deception` | The account names its list holds, the passwords behind them, and the session it opens on the strength of one -- with nothing forwarded and nothing run | The same, plus a key-only bastion that started asking for passwords -- which is why the section adds no method the listener did not offer | None: it answers only where a refusal would be |
 | Fabricated login | `telnet.deception` | The dictionary it is walking, and then the payload: the address it fetches from, the architecture it built for | A real operator handed a fabricated device during an outage -- which is why it never replaces one | None: it answers only where a refusal would be |
 | Handshake refusal | `handshake` | A key exchange it does not get to spend | A client refused with no log line to explain it | Only what the ban list holds |
 
@@ -1102,6 +1104,68 @@ nothing, and a thing an operator could later mistake for real. `/tmp` is empty a
 so is the shell history, for the reason the Modbus section gives about not
 inventing a consequence it cannot maintain -- a fabricated history is a fabricated
 person who used this machine.
+
+## A bastion that is not there
+
+The same fabrication, one port down, against a different list.
+
+Port 22 is scanned as continuously as port 23, but what scans it is not a
+dictionary of device defaults. It is a list of **account names an estate actually
+uses** -- `git`, `jenkins`, `postgres`, `deploy`, `ansible`, `ubuntu`, `oracle` --
+tried with a few passwords each, and a key offered first in case one happens to be
+trusted. The list is the intelligence: it says what this estate looks like from
+outside, and an account name in it that you recognise is a finding on its own.
+
+```yaml
+# A honeypot beside the real bastion: a build host that is not there.
+- name: build-spare
+  address: "0.0.0.0:2222"
+  kind: ssh
+  ssh:
+    # A host key of its own. Never a real bastion's: a client that pinned
+    # the real one would be told this is it.
+    host_keys: [/etc/xproxy/decoy_host_ed25519]
+    deception:
+      mode: decoy
+      profile: linux
+      hostname: build-03    # something this estate really has
+      attempts: 2
+```
+
+**The key is refused, and that is the point.** A public key is recorded by
+fingerprint and then refused, so the client falls back to a password exactly as it
+would against a server that trusts no keys. A visitor let in on a key would have
+proved only that it holds one, and would then be inside without having said a
+password -- and the password is what a trap on port 22 is for. The fingerprint is
+still worth having: a key being tried against an estate is worth knowing about, and
+the key itself is public.
+
+**On a real bastion it adds no way in.** `mode: answer` wraps the authentication
+methods the listener already offers and installs none. A key-only bastion that
+started advertising password authentication because somebody added a deception
+section would have had its front door changed by a logging feature -- so a key-only
+bastion collects fingerprints here, and collecting passwords on purpose is a
+`mode: decoy` listener of its own.
+
+**A partial success is not a refusal.** RFC 4252 partial success is the protocol
+saying *that credential was right and another factor comes next*, and this is the
+one place where the one rule needed stating twice: a fabrication that read it as a
+refusal would hand out a shell instead of asking for the second factor, which is
+the second factor removed -- by the feature that exists to watch people fail it. So
+the factor after it is asked for as usual, and the wrapping is carried into that
+round, where a refusal *is* one the section replaces.
+
+**Nothing is forwarded.** `direct-tcpip` is a client asking to use this proxy as a
+relay; `tcpip-forward` is the same request from the other direction. Both are
+refused and both are tripwires, because an open relay would put this estate's
+address on somebody else's work -- the same reasoning as the fabricated resolver's
+amplification bound. `x11` too, and a `subsystem` request, which is sftp: an upload
+rather than a fetch, and there is no fabricated file system to put a payload in.
+
+Everything else is the telnet section's: the credential reduced to a name, a length
+and a handle; the login that never turns on which credential it was; the commands
+answered but never run; and the empty `/tmp`, empty history and hash-free
+`/etc/shadow`.
 
 ## Refusal at the TLS handshake
 
