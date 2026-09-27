@@ -418,8 +418,8 @@ of them is a flaw in front of all of them.
   replay rule and the lockout are already shared, so what is left is the
   per-kind prompt rather than the factor.
 
-- One authorisation policy above the protocols: delivered for every kind
-  but `http`. The
+- One authorisation policy above the protocols: delivered, for every
+  listener kind. The
   `authorization` section compiles to a rule set every listener kind can
   ask at its admission point -- who (`users`, `principals`, `groups`),
   where from (`networks`), where to (`listeners`, `kinds`, `targets`),
@@ -566,18 +566,49 @@ of them is a flaw in front of all of them.
     command or method after it off the server rather than keeping the
     session off entirely. The acceptance is never forwarded, so the client
     is never told it has a login it may not use.
-  - **`http` is the last one, and its absence has a price worth naming.**
-    The question is genuinely a design one: a gateway's unit of work is a
-    request, a request is decided by its route, and the per-request answer
-    is already the `authz` filter, so what a session-level question would
-    mean there is unsettled. But the fail-closed rule does not care why a
-    kind is outside, so today **a configuration carrying the
-    `authorization` section together with an `http` listener is refused at
-    load**. For an estate whose edge and bastion share one file that is a
-    real cliff, not a theoretical one, and the answer is either to give
-    the gateway a question the section can ask or to make the exemption
-    explicit and say why. Either way it is the next commit on this
-    feature rather than another kind.
+  - **The HTTP gateway asks it too, which closes the section.** The
+    question was genuinely a design one and the answer turned out to be
+    that the gateway was missing a layer rather than that the section did
+    not fit it. Its route decides what may be done with a request; the
+    `authz` filter decides what a verified identity may do with one; and
+    neither can say "this network reaches the public pool and not the
+    internal one, and not at three in the morning" -- a route cannot,
+    because a route is one of the things being decided about, and the
+    filter cannot, because it needs an identity the client has not
+    offered.
+
+    So the section is asked once per request, after the route is matched
+    (so a rule's `targets` can name its pool) and before the challenge
+    gate, the filter chain and the upstream. A refusal is a 403, because
+    on this kind there is a response to write -- which is also the reason
+    the question belongs there rather than at the accept. The subject
+    carries no user, deliberately: the gateway's identities are per route
+    and what one may do with them is the filter's decision, so putting a
+    user here would be two answers to one question. A rule naming people
+    therefore matches nobody on this kind, exactly as on the relays that
+    have none, and a policy written only about people refuses every
+    request here, fail-closed.
+
+    Two things were left as they were for reasons rather than symmetry.
+    The gateway does not share internal/admit, because its list handling
+    has per-route exemptions and a `challenge` action that serves a real
+    page, and the shared point flattens both -- it serves kinds with no
+    request to challenge into. And the policy is not route-exemptable,
+    unlike those lists: a list is somebody else's import and a route may
+    opt out of one, while a route that could opt out of the estate's own
+    policy would not be a policy.
+
+    With this the fail-closed load check can no longer be provoked by any
+    configuration the reference describes, so the test that proved it
+    inverted: it now asserts that no kind is outside. The check itself
+    stays, because a kind added tomorrow starts outside and must be
+    refused rather than silently uncovered.
+
+    Cost: a policy walk per request rather than per connection, because a
+    connection carries requests for many routes and the pool is not known
+    until one is matched. The cheap case is the common one -- the ask
+    returns before doing anything when no section is configured -- and a
+    test holds that.
 
 ## After 1.4 (candidates, unranked)
 

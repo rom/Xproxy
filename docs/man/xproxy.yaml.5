@@ -351,9 +351,9 @@ T}
 T{
 \fBhttp\fR
 T}	T{
-the route\(aqs positive security model (methods,\: media types,\: query parameters,\: shape bounds);\: a blocking WAF profile runs as a detecting one,\: and \fBxproxyctl waf \-\:top\fR says which rule would have blocked what
+the route\(aqs positive security model (methods,\: media types,\: query parameters,\: shape bounds);\: the \fBauthorization\fR section\(aqs own decision;\: a blocking WAF profile runs as a detecting one,\: and \fBxproxyctl waf \-\:top\fR says which rule would have blocked what
 T}	T{
-bans,\: rate limits,\: virtual patches,\: authentication and authorisation filters,\: the normalisation guard,\: the request and body bounds
+bans,\: rate limits,\: virtual patches,\: authentication and authorisation \fIfilters\fR,\: the normalisation guard,\: the request and body bounds
 T}
 T{
 \fBpostgres\fR,\: \fBmysql\fR,\: \fBtds\fR
@@ -28821,9 +28821,7 @@ T}
 .TE
 .SS "Which listeners it covers"
 .PP
-A kind that did not consult this policy would be a hole in a policy an operator believes covers everything, so a configuration that has an \fBauthorization\fR section \fBand\fR a listener of a kind that does not consult it is refused at load, naming the listener and the kind. Today that is \fBevery kind but one\fR: every gate kind, the forward proxy, every relay kind, and both generic layer 4 relays.
-.PP
-The one outside it is \fBhttp\fR, and it is outside because of an open question rather than an omission. The gateway asks the imported lists already; what it has no place for is a \fIsession\-level\fR question, because a gateway\(aqs unit of work is a request, a request is decided by its route, and the per\-request answer is already the \fBauthz\fR filter. Until that is settled there is a consequence worth stating plainly rather than discovering: \fBa configuration that carries this section and an \fBhttp\fR listener is refused at load.\fR That is the fail\-closed rule working as designed \-\- better a refused load than a silent hole \-\- and it means an estate running the gateway keeps the section in the file its gate and relay daemons read. ROADMAP.md records both halves.
+A kind that did not consult this policy would be a hole in a policy an operator believes covers everything, so a configuration that has an \fBauthorization\fR section \fBand\fR a listener of a kind that does not consult it is refused at load, naming the listener and the kind. Today \fBevery kind consults it\fR \-\- every gate kind, the forward proxy, every relay kind, both generic layer 4 relays and the HTTP gateway \-\- so that refusal can no longer be provoked by any configuration this reference describes. The check stays because a kind added tomorrow starts outside the policy and must be refused rather than silently uncovered.
 .PP
 Most kinds ask about \fBconnect\fR. Three do not: \fBsyslog\fR asks about \fBwrite\fR, because a sender does not open a session with a collector but delivers records; and \fBredis\fR and \fBamqp\fR ask twice, \fBconnect\fR for the connection and \fBsession\fR for the authenticated session, which is what lets one rule decide the door and another decide the person (see below). None fills \fBgroups\fR: these protocols give the gateway no group membership it could verify, so a rule about a team is written with \fBprincipals\fR on \fBssh\fR and with \fBusers\fR elsewhere.
 .PP
@@ -28835,14 +28833,21 @@ The "name" column says whether the identity has been proven by the time the poli
 .PP
 .TS
 allbox;
-lbw(0.9i) lbw(1.6i) lbx
-lw(0.9i) lw(1.6i) lx.
+lbw(0.9i) lbw(1.8i) lbx
+lw(0.9i) lw(1.8i) lx.
 T{
 Kind
 T}	T{
 When it asks,\: and what it has
 T}	T{
 Name
+T}
+T{
+\fBhttp\fR
+T}	T{
+On each request,\: after the route is matched \-\- so a rule\(aqs \fBtargets\fR can name the route\(aqs upstream pool \-\- and before the challenge gate,\: the filter chain and the upstream. It is the question neither of the gateway\(aqs own layers can answer: a route cannot,\: because a route is one of the things being decided about,\: and the \fBauthz\fR filter cannot,\: because it needs a verified identity and this is about clients that have offered none. A refusal is \fB403\fR,\: so a client library reports it. Unlike the imported lists this is \fBnot\fR route\-exemptable: a list is somebody else\(aqs import and a route may opt out of it,\: while a route that could opt out of the estate\(aqs own policy would not be a policy
+T}	T{
+none: the gateway\(aqs identities are per route and belong to the \fBauthz\fR filter
 T}
 T{
 \fBssh\fR
@@ -29035,7 +29040,9 @@ none: a query names nobody
 T}
 .TE
 .PP
-On every kind whose client has no identity \-\- the two generic layer 4 relays and the ten in the block below them \-\- the same admission point also asks the \fBimported address lists\fR about the client, which were once consulted only on the \fBhttp\fR and \fBforward\fR listeners, so a \fBcidr\fR feed did nothing at all on a \fBtcp\fR, \fBmodbus\fR or \fBsyslog\fR listener. Both questions are asked in one place for all of them, so the order cannot drift from kind to kind.
+The HTTP gateway is the one kind that does not share that admission point, and deliberately. Its list handling is not a simple block: it has per\-route exemptions and a \fBchallenge\fR action that serves a real challenge page, both of which the shared point flattens because the kinds it serves have no request to challenge into. Routing the gateway through it would trade a working challenge for a uniform call site, so the gateway asks the lists its own way and the policy beside them.
+.PP
+On every other kind whose client has no identity \-\- the two generic layer 4 relays and the ten in the block below them \-\- the same admission point also asks the \fBimported address lists\fR about the client, which were once consulted only on the \fBhttp\fR and \fBforward\fR listeners, so a \fBcidr\fR feed did nothing at all on a \fBtcp\fR, \fBmodbus\fR or \fBsyslog\fR listener. Both questions are asked in one place for all of them, so the order cannot drift from kind to kind.
 .PP
 The lists are asked before the policy: a list is an import about an address and says nothing about this estate\(aqs intentions, so a refusal naming the feed sends an operator to the feed rather than to a rule they would not find, and a client the estate has no rule about is refused as "not in the policy" rather than as "on somebody\(aqs list", which is the truer of the two. A list asking for a \fBchallenge\fR is recorded like a log list on these kinds, because there is no request to serve a challenge into.
 .PP

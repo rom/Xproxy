@@ -11,6 +11,12 @@
 // It is one table rather than fourteen near-identical files because the interesting
 // failure is a kind drifting out of line with its siblings, and a table is where
 // that shows.
+//
+// The HTTP gateway asks the same section and is not here, because it does not fit
+// the shape: driving it needs a request rather than a socket, and its refusal is a
+// 403 rather than a drop. internal/kinds/http tests it, including the two things
+// only that kind has -- a rule naming a route's pool, and a refusal that a client
+// library can report.
 package authorization
 
 import (

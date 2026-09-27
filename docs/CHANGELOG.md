@@ -838,15 +838,59 @@ Open findings of the earlier rounds:
   there the `connect` rule is the whole policy -- the same position every
   identity-less kind is in.
 
-- **The HTTP gateway is the last kind outside, and its absence has a price that is
-  now written down rather than discovered.** The question is genuinely a design one:
-  a gateway's unit of work is a request, a request is decided by its route, and the
-  per-request answer is already the `authz` filter. But the fail-closed load check
-  does not care *why* a kind is outside, so today a configuration carrying the
-  `authorization` section together with an `http` listener is refused at load. For
-  an estate whose edge and bastion share one file that is a real cliff rather than a
-  theoretical one. CONFIG.md, ROADMAP.md and the fail-closed test all say so now,
-  and settling it is the next commit on this feature rather than another kind.
+- **And the HTTP gateway, which closes the section: every listener kind asks it
+  now.** This was the one kind left, and it was left because the question looked
+  like it did not fit -- a gateway's unit of work is a request, and a request is
+  already decided by its route and by the `authz` filter in that route's chain.
+  What the gateway was actually missing is the layer above both of them, and it is
+  a real one: *may this client be served by this listener at all, towards this
+  pool, at this hour.* A route cannot answer that, because a route is one of the
+  things being decided about. The filter cannot, because it needs a verified
+  identity and this is about clients that have offered none. "Nothing from the
+  vendor network reaches the internal pool outside working hours" was a sentence
+  the gateway had no place to be told.
+
+  Asked once per request, after the route is matched -- so a rule's `targets` can
+  name the route's upstream pool -- and before the challenge gate, the filter chain
+  and the upstream, so a refused client's request never reaches a WAF, a body
+  buffer or an origin. A refusal is a **403** rather than a dropped connection,
+  because on this kind there is a response to write, which is also why the question
+  belongs there rather than at the accept.
+
+  The subject carries no user, deliberately. The gateway does establish identities
+  -- that is what its authenticating filters are for -- but per route, and what one
+  may then do is the `authz` filter's decision; filling a user here would put the
+  same question in two places with two answers. So a rule naming `users`,
+  `principals` or `groups` matches nobody on this kind, exactly as on the relays
+  that have no identity at all, and a policy written only about people refuses every
+  request here, fail-closed. A test asserts that rather than leaving it to be
+  discovered in production.
+
+  Two asymmetries were kept on purpose. The gateway does not share
+  `internal/admit`: its list handling has per-route exemptions and a `challenge`
+  action that serves a real challenge page, and the shared point flattens both,
+  because the kinds it serves have no request to challenge into. And the policy is
+  **not** route-exemptable, unlike those lists -- a list is somebody else's import
+  and a route may reasonably opt out of one, while a route that could opt out of the
+  estate's own policy would not be a policy.
+
+  With this the fail-closed load check can no longer be provoked by any
+  configuration the reference describes, so the test that proved it has inverted: it
+  now asserts that no kind is outside the policy, and `notYetAuthorising` in
+  `internal/listener` is empty, which is the state it was built to reach. The check
+  itself stays, because a kind added tomorrow starts outside and must be refused
+  rather than silently uncovered.
+
+  Cost: a policy walk per request rather than per connection, since a connection
+  carries requests for many routes and the pool is not known until one is matched.
+  The cheap case is the common one -- the ask returns before looking at anything
+  when no section is configured -- and a test holds that too.
+
+  One of the three mutations run against this survived at first, and it was worth
+  the run: the shadow test used the section's `shadow: true` and so said nothing
+  about a listener's own `policy: {mode: shadow}` -- which is exactly the switch
+  four relays were found ignoring in this same release. That case now has its own
+  test, and the mutation fails.
 
 - **Two ban reasons nobody could ban on, and one refusal nobody could count.**
   Wiring `dns` turned up that the reason it hands the ban list for a name on a

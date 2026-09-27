@@ -418,10 +418,10 @@ refuses to load, naming the listener, rather than quietly leaving a hole
 in a policy an operator believes covers everything. Every kind is on one
 side or the other and a test in `internal/listener` fails on a kind in
 neither, which is what forces the decision when a kind is added. Every
-kind but `http` is on the consulting side today, and the reason that one
-is not is recorded in `internal/listener/roster_test.go` beside the list
-itself, along with what it costs: a configuration carrying the section and
-an `http` listener is refused at load.
+kind is on the consulting side today, which is the state the second table
+was built to reach: the list of kinds that do not consult it is empty, and
+the way to use it again is to put a new kind in it with a comment saying
+why -- not to leave a kind in neither, which is the case the test catches.
 
 The admission point the kinds share is `internal/admit`: the imported
 address lists about the client, then the policy. It exists because those

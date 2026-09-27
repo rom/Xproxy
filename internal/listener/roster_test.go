@@ -6,26 +6,15 @@ import (
 )
 
 // notYetAuthorising is every kind that does not consult the estate's
-// authorisation policy yet.
+// authorisation policy.
 //
-// It is here, spelled out, so that adding a kind to the roster and forgetting
-// the policy is a failing test rather than a hole. A kind is moved from this
-// list to authorises when it asks internal/authorization at its admission point -- and
-// a kind in neither list fails below, which is the decision this test exists to
-// force somebody to make.
-//
-// One kind is left, and it is the interesting one rather than the leftover.
-var notYetAuthorising = map[string]bool{
-	// The HTTP gateway asks the imported lists already. What it does not have is
-	// a session-level question, because a gateway's unit of work is a request
-	// and a request is decided by its route -- and the per-request answer is
-	// already the `authz` filter. That is a design question rather than an
-	// omission, and until it is settled a configuration carrying the
-	// `authorization` section alongside an http listener is refused at load,
-	// which is the fail-closed rule doing its job and also a real cliff for the
-	// commonest deployment. ROADMAP.md records both halves.
-	"http": true,
-}
+// It is empty, and that is the point it was built to reach. It existed so that
+// adding a kind to the roster and forgetting the policy was a failing test rather
+// than a hole: a kind in neither this list nor authorises fails below, which forced
+// somebody to decide. Every kind has now been decided, and the way to use this list
+// again is to put a new kind in it with a comment saying why -- not to leave the
+// kind in neither, which is the case this test exists to catch.
+var notYetAuthorising = map[string]bool{}
 
 // Every kind is on exactly one side of the authorisation line, and nothing
 // claims to consult a policy that is not a kind at all.
@@ -74,5 +63,13 @@ func TestAuthorisingKindsIsTheSortedList(t *testing.T) {
 	// the map fails here rather than at a listener that stops being covered.
 	if !Authorises("ssh") {
 		t.Error("ssh does not consult the authorisation policy")
+	}
+	// Every kind is in it now, which is the state the fail-closed load check was
+	// built to make reachable: a configuration carrying an authorization section
+	// is no longer refused for naming a kind the section does not cover, because
+	// there is no such kind.
+	if len(got) != len(Kinds()) {
+		t.Errorf("AuthorisingKinds() has %d of %d kinds; the ones missing are the "+
+			"hole in a policy an operator believes covers everything", len(got), len(Kinds()))
 	}
 }

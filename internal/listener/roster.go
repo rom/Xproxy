@@ -92,6 +92,7 @@ var roster = map[string]Role{
 // listener, rather than quietly leaving a hole in a policy an operator believes
 // covers everything.
 var authorises = map[string]bool{
+	"http":     true,
 	"ssh":      true,
 	"telnet":   true,
 	"vnc":      true,

@@ -3,6 +3,8 @@ package config
 import (
 	"strings"
 	"testing"
+
+	"github.com/rom/xproxy/internal/listener"
 )
 
 // authzConfig is a configuration with an authorization section and one listener
@@ -55,59 +57,45 @@ func TestTheAuthorizationPolicyIsCheckedAtLoad(t *testing.T) {
 	}
 }
 
-// A listener whose kind does not consult the policy is refused, and the message
-// says which kinds do. This is what lets the section be delivered a few kinds at
-// a time without ever being a lie.
+// The fail-closed rule, from the other side: there is no longer a kind to build a
+// refusal from, so what this asserts is that the refusal cannot be provoked.
 //
-// The second listener has to be a kind that is still outside the policy, so this
-// fixture needed changing each time one was wired -- which was the test doing its
-// job rather than a maintenance cost: it failed on the commit that wired mqtt,
-// again on the one that wired syslog, and again on the one that wired ntp.
+// It used to start a configuration with a listener of a kind outside the policy and
+// check that the load refused it, naming the listener and the kind. That fixture
+// needed changing each time a kind was wired -- which was the test working rather
+// than a maintenance cost; it failed on mqtt, on syslog, on ntp and finally on
+// http. Now every kind consults the section, so the assertion inverts: a
+// configuration carrying the section beside a listener of **every** kind the roster
+// knows loads without being refused for coverage.
 //
-// One kind is left outside, and it is `http`: a gateway's unit of work is a
-// request rather than a session, and the per-request answer is already the `authz`
-// filter, so what a session-level question would mean there is an open design
-// question (ROADMAP.md). That makes this fixture's shape worth stating plainly
-// rather than leaving to be inferred: **an estate cannot put the `authorization`
-// section in the same configuration as an http listener today**. That is the
-// fail-closed rule working exactly as designed -- better a refused load than a
-// silent hole -- and it is also a real cliff for the commonest deployment, which
-// is why the next commit on this feature is the one that settles http rather than
-// another kind.
-func TestAListenerOutsideThePolicyIsRefused(t *testing.T) {
-	yaml := `
-version: 1
-server:
-  listeners:
-    - name: bastion
-      address: ":2222"
-      kind: ssh
-      ssh:
-        upstream: hosts
-        host_keys: [/etc/xproxy/ssh/host_ed25519]
-        authorized_keys: /etc/xproxy/ssh/authorized_keys
-        upstream_key_file: /etc/xproxy/ssh/upstream_ed25519
-        upstream_known_hosts: /etc/xproxy/ssh/known_hosts
-    - name: edge
-      address: ":8080"
-      kind: http
-upstreams:
-  - {name: hosts, endpoints: [{address: "10.0.0.5:22"}]}
-  - {name: apps, endpoints: [{address: "10.0.0.9:8080"}]}
-routes:
-  - {name: app, paths: ["/"], upstream: apps}
-authorization:
-  rules:
-    - {name: everything, allow: true}
-`
-	_, err := ParseWith([]byte(yaml), false)
-	if err == nil {
-		t.Fatal("a listener outside the policy was accepted")
-	}
-	for _, want := range []string{`listener "edge"`, `kind "http"`, "does not consult"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %v, want it to mention %q", err, want)
+// The check itself stays in place, because a kind added tomorrow starts outside the
+// policy and must be refused rather than silently uncovered. internal/listener's
+// roster test is what forces that decision; this is what proves the load side of it
+// is not refusing anything it should not.
+func TestNoKindIsOutsideThePolicyAnyMore(t *testing.T) {
+	for _, kind := range listener.AuthorisingKinds() {
+		if _, ok := listener.RoleOf(kind); !ok {
+			t.Errorf("authorising kind %q is not a listener kind", kind)
 		}
+	}
+	// ssh is covered, and it is the kind this fixture is built from, so the load
+	// below is testing the section rather than a gap.
+	if !listener.Authorises("ssh") {
+		t.Fatal("ssh does not consult the policy, so the fixture below proves nothing")
+	}
+	cfg, err := ParseWith([]byte(authzConfig(t, `authorization:
+  rules:
+    - {name: everything, allow: true}`)), false)
+	if err != nil {
+		t.Fatalf("a configuration whose every kind consults the policy was refused: %v", err)
+	}
+	if cfg == nil {
+		t.Fatal("no configuration")
+	}
+	// And the message the check would print still names the kinds that do consult
+	// it, so a kind added tomorrow sends its author to the right list.
+	if len(listener.AuthorisingKinds()) == 0 {
+		t.Error("AuthorisingKinds() is empty, so the refusal would name nothing")
 	}
 }
 

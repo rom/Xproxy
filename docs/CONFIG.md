@@ -106,7 +106,7 @@ did not authenticate — a trial instead of a door.
 | `telnet`, `vnc`, `rdp`, `ftp` | the client list; telnet's option list; ftp's verb list | bans, connection limits, MFA, malformed input, the protocol's own version and encryption negotiation |
 | `smtp` | the verb list | the protocol-state refusals, the encryption and authentication requirements, the size bound, malformed commands |
 | `forward` | the destination lists: ports, deny, allow | `private` (which protects the estate *from* the client — shadowing it would turn a trial into a server-side request forgery), a destination that does not resolve, credentials, tunnel bounds |
-| `http` | the route's positive security model (methods, media types, query parameters, shape bounds); a blocking WAF profile runs as a detecting one, and `xproxyctl waf -top` says which rule would have blocked what | bans, rate limits, virtual patches, authentication and authorisation filters, the normalisation guard, the request and body bounds |
+| `http` | the route's positive security model (methods, media types, query parameters, shape bounds); the `authorization` section's own decision; a blocking WAF profile runs as a detecting one, and `xproxyctl waf -top` says which rule would have blocked what | bans, rate limits, virtual patches, authentication and authorisation *filters*, the normalisation guard, the request and body bounds |
 | `postgres`, `mysql`, `tds` | every statement or command rule, `read_only`, the database and schema lists; `monitor_only` | the login packet's own bounds, malformed messages, a statement the relay could not read, `copy from program` and its siblings, rate limits, the client list, bans |
 | `redis` | every command rule, `read_only`, the key and database lists; `monitor_only` | `require_tls` and `require_auth` (admitting somebody who did not authenticate is not a trial), the commands that are a way out of the data path -- `config set`, `flushall`, `keys`, `eval` -- malformed messages, the message and element bounds, bans |
 | `amqp` | every rule: the exchange, queue and routing-key policies, the mechanism and vhost lists; `monitor_only` | `require_tls`, a mechanism of `ANONYMOUS`, malformed frames, the frame and method bounds, the broker's own refusal, bans |
@@ -11459,20 +11459,11 @@ page under `docs/protocols/` says which of its operations map to which.
 A kind that did not consult this policy would be a hole in a policy an operator
 believes covers everything, so a configuration that has an `authorization`
 section **and** a listener of a kind that does not consult it is refused at
-load, naming the listener and the kind. Today that is **every kind but one**:
-every gate kind, the forward proxy, every relay kind, and both generic layer 4
-relays.
-
-The one outside it is `http`, and it is outside because of an open question rather
-than an omission. The gateway asks the imported lists already; what it has no
-place for is a *session-level* question, because a gateway's unit of work is a
-request, a request is decided by its route, and the per-request answer is already
-the `authz` filter. Until that is settled there is a consequence worth stating
-plainly rather than discovering: **a configuration that carries this section and
-an `http` listener is refused at load.** That is the fail-closed rule working as
-designed -- better a refused load than a silent hole -- and it means an estate
-running the gateway keeps the section in the file its gate and relay daemons read.
-ROADMAP.md records both halves.
+load, naming the listener and the kind. Today **every kind consults it** -- every
+gate kind, the forward proxy, every relay kind, both generic layer 4 relays and the
+HTTP gateway -- so that refusal can no longer be provoked by any configuration this
+reference describes. The check stays because a kind added tomorrow starts outside
+the policy and must be refused rather than silently uncovered.
 
 Most kinds ask about `connect`. Three do not: `syslog` asks about `write`, because
 a sender does not open a session with a collector but delivers records; and `redis`
@@ -11504,6 +11495,7 @@ worth (see above).
 
 | Kind | When it asks, and what it has | Name |
 |------|------------------------------|------|
+| `http` | On each request, after the route is matched -- so a rule's `targets` can name the route's upstream pool -- and before the challenge gate, the filter chain and the upstream. It is the question neither of the gateway's own layers can answer: a route cannot, because a route is one of the things being decided about, and the `authz` filter cannot, because it needs a verified identity and this is about clients that have offered none. A refusal is `403`, so a client library reports it. Unlike the imported lists this is **not** route-exemptable: a list is somebody else's import and a route may opt out of it, while a route that could opt out of the estate's own policy would not be a policy | none: the gateway's identities are per route and belong to the `authz` filter |
 | `ssh` | After authentication and before the target is dialled, so a refused session never reaches a machine. `user` is the login, `principal` the `principals` entry the key or certificate matched. SFTP inside the session is covered by the same decision | proven (key or certificate) |
 | `telnet` | After the second factor and before the equipment is dialled. Telnet carries no identity of its own, so `user` is whatever the factor prompt established -- which is why a telnet listener under a policy about people wants `mfa`, exactly as `require_grant` does | proven (second factor) |
 | `vnc` | After the client has identified itself and before the desktop is dialled. `user` is the plain credential's user or the name the factor prompt asked for, so the listener needs a security type that carries one (`mslogon2`, or VeNCrypt with a named credential) | proven (credential or factor) |
@@ -11532,8 +11524,15 @@ worth (see above).
 | `ntp` | On each request datagram, after this listener's own client list. A client is an address and even that is a datagram's claim, which is why the `ntp` policy's own detection exists; a rule here is `networks`, `listeners` and `schedule`. Which versions, modes and extension fields are carried, and what makes an answer implausible, stay with that policy | none: a request names nobody |
 | `dns` | On each query, after this listener's own `allow_clients`. Which names a client may resolve stays with the `dns` policy, the RPZ zones and the domain lists. A refusal on an unverified datagram is counted but attributed to nobody, for the same reason a blocked name is: a record written against an address anybody could have put in a datagram is a record anybody could have written against a third party | none: a query names nobody |
 
-On every kind whose client has no identity -- the two generic layer 4 relays and
-the ten in the block below them -- the same admission point also asks the
+The HTTP gateway is the one kind that does not share that admission point, and
+deliberately. Its list handling is not a simple block: it has per-route exemptions
+and a `challenge` action that serves a real challenge page, both of which the shared
+point flattens because the kinds it serves have no request to challenge into.
+Routing the gateway through it would trade a working challenge for a uniform call
+site, so the gateway asks the lists its own way and the policy beside them.
+
+On every other kind whose client has no identity -- the two generic layer 4 relays
+and the ten in the block below them -- the same admission point also asks the
 **imported address lists** about the client, which were once consulted only on the
 `http` and `forward` listeners, so a `cidr` feed did nothing at all on a `tcp`,
 `modbus` or `syslog` listener. Both questions are asked in one place for all of

@@ -1105,10 +1105,13 @@ describes it, validation refuses what cannot work, and
   keep. Redis and AMQP ask **twice** — once for the connection and once
   when the server's own answer proves the name — which makes them the only
   relays where an allow rule keyed on a user is an authenticated grant
-  rather than a filter on a claim. The one kind outside is the HTTP
-  gateway, whose unit of work is a request rather than a session and whose
-  per-request answer is already the `authz` filter; a configuration naming
-  it alongside this section is refused at load rather than left as a hole
+  rather than a filter on a claim. The HTTP gateway asks it too, once
+  per request and after the route is matched, which is the layer neither
+  its routes nor its `authz` filter could supply: a route is one of the
+  things being decided about, and the filter needs an identity the client
+  has not offered. A refusal there is a 403 rather than a dropped
+  connection. A kind added tomorrow starts outside the policy and a
+  configuration naming it is refused at load, rather than left as a hole
   in a policy somebody believes is complete
 
 ### The estate: clusters, fleets and Kubernetes
