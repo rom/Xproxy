@@ -110,8 +110,12 @@ var (
 	ErrCiphertext = errors.New("snmp: the encrypted scoped PDU is not a whole number of blocks")
 )
 
-// newHash is the hash function behind an authentication protocol.
-func (a AuthAlgo) newHash() func() hash.Hash {
+// NewHash is the hash function behind an authentication protocol, or nil for
+// a name that is not one. It is exported because a caller that has to compute
+// this protocol's keyed digest -- a test, or a tool that checks a capture --
+// needs the same hash this file uses, and picking it from the name again
+// somewhere else is how the two come to disagree.
+func (a AuthAlgo) NewHash() func() hash.Hash {
 	switch a {
 	case AuthMD5:
 		return md5.New
@@ -150,7 +154,7 @@ func (a AuthAlgo) DigestLen() int {
 
 // KeyLen is the length of a localised key, which is the hash's own output.
 func (a AuthAlgo) KeyLen() int {
-	h := a.newHash()
+	h := a.NewHash()
 	if h == nil {
 		return 0
 	}
@@ -184,7 +188,7 @@ func (p PrivAlgo) KeyLen() int {
 // The second localises the result to one engine, so that a key learned from
 // one device is not a key for another.
 func PasswordToKey(a AuthAlgo, password string, engineID []byte) []byte {
-	newHash := a.newHash()
+	newHash := a.NewHash()
 	if newHash == nil || password == "" {
 		return nil
 	}
@@ -220,7 +224,7 @@ func Verify(m *Message, key []byte, a AuthAlgo) error {
 	if m == nil || m.V3 == nil {
 		return ErrAuth
 	}
-	h := a.newHash()
+	h := a.NewHash()
 	if h == nil {
 		return ErrAuth
 	}

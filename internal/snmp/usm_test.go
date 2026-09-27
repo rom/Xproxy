@@ -351,7 +351,7 @@ func signedV3(t *testing.T, algo AuthAlgo, key []byte, user string, ciphertext [
 	// of the field does not change, so the second is the first with the
 	// field filled in.
 	zeroed := build(digest)
-	mac := hmac.New(algo.newHash(), key)
+	mac := hmac.New(algo.NewHash(), key)
 	mac.Write(zeroed)
 	sum := mac.Sum(nil)[:algo.DigestLen()]
 	return build(sum)

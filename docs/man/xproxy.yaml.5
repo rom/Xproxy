@@ -5912,7 +5912,11 @@ Five things are deliberate in the data path.
 .PP
 \fBThe version can be rewritten downwards.\fR \fBupgrade_version\fR is the secure upgrade: a manager speaks v3 with authentication to this relay, or TLS on the stream side, and the relay speaks v2c to a switch whose firmware has neither, with an \fBupstream_community\fR the manager never needs to know. A response is rebuilt in the version its request arrived in, so the manager sees the version it spoke.
 .PP
-Two rewrites this relay will not do, both because it holds no USM keys and will not forge an authentication that did not happen. It cannot \fIproduce\fR v3, which is refused at load. And it cannot downgrade a v3 \fBrequest\fR: the answer would come back as v2c and handing that to a v3 manager means authenticating it with a key that is not here, so such a request is refused rather than half\-translated. A v3 \fBnotification\fR downgrades cleanly, because nothing comes back \-\- a modern device sending v3 traps to a collector that understands only v2c is exactly what \fBtraps: true\fR with \fBupgrade_version: v2c\fR is for.
+Two rewrites this relay will not do, both because it reads USM messages and never writes one, and will not forge an authentication that did not happen. It cannot \fIproduce\fR v3, which is refused at load. And it cannot downgrade a v3 \fBrequest\fR: the answer would come back as v2c and handing that to a v3 manager means signing it, which this relay does not do, so such a request is refused rather than half\-translated. A v3 \fBnotification\fR downgrades cleanly, because nothing comes back \-\- a modern device sending v3 traps to a collector that understands only v2c is exactly what \fBtraps: true\fR with \fBupgrade_version: v2c\fR is for.
+.PP
+\fBVersion 3 is read, with the user\(aqs keys.\fR Without \fBusm_users\fR a v3 message is a header and an opaque payload: the user, the engine and the security level are checked and nothing else can be, so every rule written about an operation or an object subtree applied to v1 and v2c and silently did not apply to v3 \-\- which is the version an operator is told to insist on. With the user\(aqs pass phrases in \fBusm_users\fR the digest is verified and, at \fBauthPriv\fR, the payload is decrypted, and then the ordinary rules decide about a v3 message exactly as they decide about a v2c one: \fBread_only\fR refuses an encrypted SetRequest, a rule\(aqs \fBoids\fR cover an encrypted GetRequest, \fBcontexts\fR matches the context name inside the payload.
+.PP
+Nothing is re\-encrypted and nothing is re\-signed. The octets forwarded to the agent are the octets that arrived, so a message this relay misread cannot be a message the agent receives differently, and the keys are here for reading only. See \fBusm_users\fR below for the two refusals that exist because of them \-\- a stripped authentication flag and a replayed clock \-\- and for the bound on key derivation.
 .PP
 \fBThe values are not interpreted.\fR A binding\(aqs type and extent are read; what a \fBCounter64\fR \fImeans\fR is not. A policy about values would need a MIB per estate, and a relay that mis\-decoded one would corrupt a reading nobody could trace.
 .PP
@@ -6038,6 +6042,33 @@ T}	T{
 any
 T}	T{
 The v3 USM user names
+T}
+T{
+\fBusm_\:users\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+The v3 users whose traffic this listener can \fIread\fR: name,\: protocols and pass phrases. See below
+T}
+T{
+\fBreplay_\:window\fR
+T}	T{
+duration
+T}	T{
+\fB150s\fR
+T}	T{
+How far behind an authenticated message\(aqs notion of the agent\(aqs clock may be before it is refused as a replay,\: which is RFC 3414 \[u00A7]2.2.3\(aqs own check. \fB0\fR disables it
+T}
+T{
+\fBmax_\:usm_\:engines\fR
+T}	T{
+int
+T}	T{
+\fB8\fR
+T}	T{
+Distinct authoritative engines one user\(aqs keys are derived for. A bound on work,\: not on policy: see below
 T}
 T{
 \fBmin_\:security_\:level\fR
@@ -6247,6 +6278,124 @@ T}	T{
 Send a PROXY protocol v2 header to the agent on the stream path
 T}
 .TE
+.SS "server.listeners[].snmp.usm_users"
+.PP
+The version 3 users whose traffic this listener can read.
+.PP
+.RS 4
+.nf
+.ft CR
+snmp:
+  upstream: agents
+  versions: [v3]
+  min_security_level: authPriv
+  read_only: true
+  usm_users:
+    \- name: nms\-poller
+      auth: sha256
+      auth_secret: "file:/etc/xproxy/snmp/poller.auth"
+      privacy: aes128
+      privacy_secret: "file:/etc/xproxy/snmp/poller.priv"
+    \- name: nms\-writer
+      # The engine identifier a `snmpget \-v3` prints, pinned: the key is then
+      # derived once at load and a message naming another engine is refused.
+      engine_id: "80:00:1f:88:80:8f:3e:4c:5d"
+      auth: sha512
+      auth_secret: "vault:secret/xproxy/snmp/writer#auth"
+      privacy: aes256
+      privacy_secret: "vault:secret/xproxy/snmp/writer#priv"
+.ft
+.fi
+.RE
+.PP
+The pass phrases are the same ones the manager is configured with \-\- what \fBsnmpwalk\fR\(aqs \fB\-A\fR and \fB\-X\fR take \-\- because RFC 3414 \[u00A7]2.6 derives the key from the pass phrase and the agent\(aqs engine identifier, and both ends have to derive the same one. This relay derives it too, which is how it verifies a digest nobody else could have produced. They are resolved at load, in the usual \fBfile:\fR/\fBenv:\fR/\fBvault:\fR form, so a missing secret is a configuration that does not start rather than a listener that refuses every message at three in the morning; a rotated pass phrase needs a reload.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.8i) lbw(0.9i) lbx
+lw(0.9i) lw(0.8i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+The USM user name,\: as it appears in the message
+T}
+T{
+\fBengine_\:id\fR
+T}	T{
+hex
+T}	T{
+any
+T}	T{
+The authoritative engine this user\(aqs messages must name,\: as hexadecimal with optional \fB0x\fR,\: colons or dashes. Empty accepts whatever engine the message names
+T}
+T{
+\fBauth\fR
+T}	T{
+\fBmd5\fR,\: \fBsha1\fR,\: \fBsha224\fR,\: \fBsha256\fR,\: \fBsha384\fR,\: \fBsha512\fR
+T}	T{
+required
+T}	T{
+The authentication protocol. \fBmd5\fR and \fBsha1\fR are RFC 3414\(aqs originals and are weak;\: RFC 7860\(aqs \fBsha256\fR is the same configuration with a different word
+T}
+T{
+\fBauth_\:secret\fR
+T}	T{
+secret ref
+T}	T{
+required
+T}	T{
+The authentication pass phrase
+T}
+T{
+\fBprivacy\fR
+T}	T{
+\fBdes\fR,\: \fBaes128\fR,\: \fBaes192\fR,\: \fBaes256\fR
+T}	T{
+
+T}	T{
+The privacy protocol. Empty means this user is not expected to encrypt
+T}
+T{
+\fBprivacy_\:secret\fR
+T}	T{
+secret ref
+T}	T{
+required with \fBprivacy\fR
+T}	T{
+The privacy pass phrase
+T}
+.TE
+.PP
+USM has one key derivation and the cipher truncates it, so a hash narrower than the cipher\(aqs key cannot key it: \fBmd5\fR with \fBaes256\fR is sixteen octets where thirty\-two are needed, and it is refused at load rather than padded.
+.PP
+Five things a configured user changes about how a v3 message is decided.
+.PP
+\fBThe rules apply.\fR An operation and an object subtree can be read out of the payload, so \fBread_only\fR, a rule\(aqs \fBpdus\fR, \fBaccess\fR, \fBoids\fR, \fBdeny_oids\fR, \fBwrite_oids\fR and \fBcontexts\fR all decide about v3 traffic. Without keys they could not, and a v3 message was allowed with the reason \fBsnmp_encrypted\fR \-\- honest, and not a policy.
+.PP
+\fBA stripped authentication flag is a refusal\fR (\fBsnmp_usm_downgrade\fR). Clearing the flags in \fBmsgFlags\fR is the cheapest forgery on this protocol, because it asks the relay to stop checking rather than to produce a digest. A user this listener holds keys for, arriving at \fBnoAuthNoPriv\fR, is refused. A user it holds no keys for is not this section\(aqs business: \fBusers\fR is where an operator says who may send at all.
+.PP
+\fBAn unreadable encrypted message is a refusal\fR, not a pass. A user with \fBauth\fR and no \fBprivacy\fR, sending at \fBauthPriv\fR, is refused (\fBsnmp_usm_no_privacy_key\fR) rather than forwarded unread \-\- otherwise privacy would be the way round every rule on the listener. Validation refuses the configuration outright when \fBmin_security_level: authPriv\fR is set and a user has no privacy key, because then \fIevery\fR message from that user would be refused.
+.PP
+\fBA replayed clock is a refusal\fR (\fBsnmp_replay\fR). This is RFC 3414 \[u00A7]2.2.3 from the outside: the highest boot count and clock seen from each engine are remembered, and a message that goes backwards \-\- a lower boot count, or the same boot count with a clock more than \fBreplay_window\fR behind where the elapsed wall clock says it should be \-\- is refused. A higher boot count is the agent restarting and the mark follows it, so a power cut does not lock out an estate. What this catches is a captured datagram sent again later; it is not a duplicate\-suppression cache, and a datagram replayed within the window is indistinguishable from the original to anything but the agent itself.
+.PP
+\fBKey derivation is bounded\fR (\fBsnmp_usm_engines\fR). Deriving a key is a megabyte of hashing by design, so that guessing a pass phrase costs a megabyte per guess \-\- and the engine identifier that decides \fIwhich\fR key is needed arrives in the message. Keys are derived once per engine and cached; \fBmax_usm_engines\fR bounds how many engines one user\(aqs keys are derived for, and past the bound a message naming a new engine is refused rather than paid for. Pinning \fBengine_id\fR avoids the question: the one key is derived at load.
+.PP
+All five are shadowable (\fBpolicy: {mode: shadow}\fR on the listener), which is what an operator trials this section with \-\- a wrong pass phrase would otherwise stop every poll on the estate the moment it is added. What shadow mode cannot do is make the message readable, so a shadowed listener forwards the message exactly as it arrived and decides about its header alone.
+.PP
+Counters: \fBsnmp_verified\fR and \fBsnmp_decrypted\fR say how much v3 traffic the rules actually apply to; \fBsnmp_auth_failed\fR and \fBsnmp_replayed\fR are the two ways a v3 message fails that nothing else on this listener can see.
 .SS "server.listeners[].snmp.deception"
 .PP
 \fBA refusal is information, and here it is information about a credential.\fR A community string that is wrong is answered with noAccess or noSuchName; one that is right is answered with data. So a run through a password list finds the string, and the run before it finds which addresses have an agent on them at all \[u2014] because an agent answers something and an address with nothing on it answers nothing.
@@ -6519,11 +6668,11 @@ T}
 .PP
 \fB\fBread_only\fR is checked before any rule and cannot be overridden by one.\fR A read\-only listener that a single rule could write through is not a read\-only listener.
 .PP
-\fBAn encrypted v3 payload is decided about, not inspected.\fR When the security level is \fBauthPriv\fR the scoped PDU is ciphertext: the header parses, the user and the level are checked, and there is no operation and no object identifier to decide about. The decision says \fBsnmp_encrypted\fR rather than refusing traffic the listener was configured to carry or pretending it was inspected.
+\fBAn encrypted v3 payload is decided about, not inspected \-\- unless the listener holds the user\(aqs keys.\fR When the security level is \fBauthPriv\fR and there is no \fBusm_users\fR entry for the user, the scoped PDU is ciphertext: the header parses, the user and the level are checked, and there is no operation and no object identifier to decide about. The decision says \fBsnmp_encrypted\fR rather than refusing traffic the listener was configured to carry or pretending it was inspected. With the user\(aqs pass phrases configured the payload is decrypted and the ordinary rules decide about what was inside it \-\- see \fBusm_users\fR.
 .PP
 \fBA community string is never written to a log.\fR It is a credential, and an access log or security event that printed every guessed one would be a list of the estate\(aqs passwords with a timestamp beside each. The v3 user name \fIis\fR logged, because it is an identity rather than a secret.
 .PP
-Counters: \fBsnmp_messages\fR, \fBsnmp_sessions\fR, \fBsnmp_sessions_open\fR, \fBsnmp_reads\fR, \fBsnmp_writes\fR, \fBsnmp_traps\fR, \fBsnmp_denied\fR, \fBsnmp_would_deny\fR, \fBsnmp_malformed\fR, \fBsnmp_rejected\fR, \fBsnmp_rate_limited\fR, \fBsnmp_amplified\fR, \fBsnmp_truncated\fR, \fBsnmp_upgraded\fR, \fBsnmp_timed_out\fR, \fBsnmp_upstream_failed\fR, \fBsnmp_unsolicited\fR, \fBsnmp_pending\fR. Refusals are \fBsnmp_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBtls_handshake\fR, \fBupstream_tls\fR, \fBmalformed\fR, \fBmalformed_response\fR, \fBmessage_too_large\fR, \fBframing\fR, \fBmax_connections\fR, \fBrate_limited\fR, \fBversion\fR, \fBcommunity\fR, \fBuser\fR, \fBsecurity_level\fR, \fBread_only\fR, \fBdirection\fR, \fBvar_binds\fR, \fBrule\fR, \fBdefault_deny\fR, \fBmax_repetitions\fR, \fBresponse_too_large\fR, \fBresponse_ratio\fR, \fBresponse_too_late\fR, \fBunsolicited_response\fR, \fBencrypted_response\fR, \fBwrong_direction\fR, \fBtoo_many_pending\fR, \fBupgrade_failed\fR.
+Counters: \fBsnmp_messages\fR, \fBsnmp_sessions\fR, \fBsnmp_sessions_open\fR, \fBsnmp_reads\fR, \fBsnmp_writes\fR, \fBsnmp_traps\fR, \fBsnmp_denied\fR, \fBsnmp_would_deny\fR, \fBsnmp_malformed\fR, \fBsnmp_rejected\fR, \fBsnmp_rate_limited\fR, \fBsnmp_amplified\fR, \fBsnmp_truncated\fR, \fBsnmp_upgraded\fR, \fBsnmp_timed_out\fR, \fBsnmp_upstream_failed\fR, \fBsnmp_unsolicited\fR, \fBsnmp_pending\fR, \fBsnmp_verified\fR, \fBsnmp_decrypted\fR, \fBsnmp_auth_failed\fR, \fBsnmp_replayed\fR. Refusals are \fBsnmp_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBtls_handshake\fR, \fBupstream_tls\fR, \fBmalformed\fR, \fBmalformed_response\fR, \fBmessage_too_large\fR, \fBframing\fR, \fBmax_connections\fR, \fBrate_limited\fR, \fBversion\fR, \fBcommunity\fR, \fBuser\fR, \fBsecurity_level\fR, \fBread_only\fR, \fBdirection\fR, \fBvar_binds\fR, \fBrule\fR, \fBdefault_deny\fR, \fBmax_repetitions\fR, \fBresponse_too_large\fR, \fBresponse_ratio\fR, \fBresponse_too_late\fR, \fBunsolicited_response\fR, \fBencrypted_response\fR, \fBwrong_direction\fR, \fBtoo_many_pending\fR, \fBupgrade_failed\fR, \fBusm_downgrade\fR, \fBusm_engine\fR, \fBusm_engines\fR, \fBauth_failed\fR, \fBreplay\fR, \fBusm_no_privacy_key\fR, \fBunreadable\fR.
 .SS "server.listeners[].dhcp (kind: dhcp)"
 .PP
 DHCP is the one protocol where \fBanswering\fR is the attack. A client broadcasts "who will configure me", and it believes whatever answers first: its address, its \fBdefault route\fR, its \fBresolvers\fR, its \fBproxy\fR (option 252) and, on a machine that boots from the network, the \fBfile it boots\fR (options 66 and 67). Nothing in the exchange authenticates anybody \-\- a transaction identifier and a hardware address, both visible to everyone on the segment \-\- and the client has no address yet, so it cannot even be told apart by one.

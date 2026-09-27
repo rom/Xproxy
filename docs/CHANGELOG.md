@@ -6,6 +6,74 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (snmp: version 3, read rather than taken on trust)
+
+- **The rules now apply to v3 traffic.** `usm_users` gives a listener the pass
+  phrases of the version 3 users whose messages it should be able to read. With
+  them the keyed digest is verified and, at `authPriv`, the scoped PDU is
+  decrypted -- and then `read_only`, a rule's `pdus`, `access`, `oids`,
+  `deny_oids`, `write_oids` and `contexts` all decide about a v3 message exactly
+  as they decide about a v2c one.
+
+  The gap this closes was the wrong way round. Without the keys a v3 message was
+  a header and an opaque payload: the user, the engine and the security level
+  were checked and nothing else could be, so every rule an operator wrote about
+  an operation or an object subtree applied to v1 and v2c and silently did not
+  apply to the version an operator is told to insist on. A `read_only` listener
+  relayed an encrypted `SetRequest`, with the honest but useless decision
+  `snmp_encrypted`.
+
+  Nothing is re-encrypted and nothing is re-signed: the octets forwarded to the
+  agent are the octets that arrived. The keys are here for reading.
+
+- **An `authPriv` exchange now works end to end on the datagram path.** An
+  encrypted answer has no readable request identifier, and that identifier is
+  the only thing in the protocol that pairs an answer with its question, so such
+  an answer could not be matched to the manager that asked and was dropped
+  (`encrypted_response`). With the user's keys it is decrypted, paired and
+  forwarded.
+
+- **Two refusals that only a listener holding keys can make.** A user with keys
+  arriving at `noAuthNoPriv` is refused (`snmp_usm_downgrade`): clearing the
+  flags in `msgFlags` asks the relay to stop checking rather than to produce a
+  digest, and it is the cheapest forgery on this protocol. And a message whose
+  clock has gone backwards -- a lower boot count, or the same boot count with a
+  clock more than `replay_window` behind where the elapsed wall clock says it
+  should be -- is refused (`snmp_replay`), which is RFC 3414 §2.2.3's own time
+  window and the one thing a digest alone does not give. A higher boot count is
+  an agent restarting and the mark follows it, so a power cut does not lock out
+  an estate.
+
+- **Key derivation is bounded.** RFC 3414 §2.6 hashes a megabyte of repeated
+  pass phrase on purpose, so that guessing a pass phrase costs a megabyte per
+  guess -- and the engine identifier that decides *which* key is needed arrives
+  in the message. Keys are derived once per engine and cached, and
+  `max_usm_engines` (default 8) bounds how many engines one user's keys are
+  derived for; past the bound a message naming a new engine is refused
+  (`snmp_usm_engines`) rather than paid for. Pinning a user's `engine_id`
+  derives the one key at load instead.
+
+- All of these are shadowable with `policy: {mode: shadow}` on the listener,
+  which is what an operator trials the section with: a wrong pass phrase would
+  otherwise stop every poll on the estate the moment it is added. Shadow mode
+  cannot make a message readable, so a shadowed listener forwards it exactly as
+  it arrived and decides about its header alone.
+
+- New counters `snmp_verified`, `snmp_decrypted`, `snmp_auth_failed` and
+  `snmp_replayed`; new refusal reasons `usm_downgrade`, `usm_engine`,
+  `usm_engines`, `auth_failed`, `replay`, `usm_no_privacy_key` and
+  `unreadable`. Validation refuses a hash too narrow for the cipher beside it
+  (USM has one key derivation and the cipher truncates it, so `md5` cannot key
+  `aes256`), an `authPriv` floor with a user that has no privacy key, and the
+  usual shapes; it warns about `md5`, `sha1` and `des`, about one pass phrase
+  keying both the digest and the cipher, and about a listener that accepts v3
+  and holds no keys.
+
+- The reader itself is `internal/snmp/usm.go`: RFC 3414's derivation and two
+  digests, RFC 7860's four more, RFC 3414's DES-CBC and RFC 3826's AES-CFB in
+  three widths. The derivation is tested against RFC 3414 Appendix A.3's own
+  vectors rather than against ourselves.
+
 ### Fixed (iec104: a refusal took the association down with it)
 
 - **Refusing one frame desynchronised the sequence numbering in both

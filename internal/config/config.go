@@ -751,6 +751,38 @@ type SNMPListener struct {
 	// upgrade_version v1 or v2c when the arriving message is v3, because
 	// there is no community string in a v3 message to carry over.
 	UpstreamCommunity string `yaml:"upstream_community"`
+	// USMUsers are the version 3 users whose traffic this listener can
+	// read. Without them a v3 message is a header and an opaque payload:
+	// the user, the engine and the security level are visible and nothing
+	// else is, so no rule about an operation or an object can apply to it.
+	// With the user's pass phrases the digest is verified and, at authPriv,
+	// the payload is decrypted -- and then the ordinary rules decide about
+	// a v3 message exactly as they do about a v2c one.
+	//
+	// Nothing is re-encrypted or re-signed: the octets forwarded to the
+	// agent are the octets that arrived. The keys are here so that this
+	// relay can *read*, which is the only thing it needs them for.
+	USMUsers []SNMPUser `yaml:"usm_users"`
+	// ReplayWindow is how far behind an authenticated message's notion of
+	// the agent's clock may be before it is refused as a replay, which is
+	// RFC 3414 s2.2.3's own check. Default 150s, which is the value the
+	// standard names. Zero disables it.
+	//
+	// It applies only to messages this listener can verify -- an
+	// unverifiable message has no trustworthy clock in it -- and only to
+	// authenticated ones, because discovery is unauthenticated and carries
+	// a clock of zero by design.
+	ReplayWindow Duration `yaml:"replay_window"`
+	// MaxUSMEngines bounds the distinct authoritative engines one user's
+	// keys are derived for. Default 8.
+	//
+	// It is a bound on work rather than on policy. Deriving a key is a
+	// megabyte of hashing by design (RFC 3414 s2.6, so that a dictionary
+	// attack costs a megabyte per candidate), and the engine identifier
+	// that decides which key is needed comes out of the message. Without a
+	// bound, a sender that varied that field would be buying milliseconds
+	// of this relay's processor per datagram.
+	MaxUSMEngines int `yaml:"max_usm_engines"`
 	// Deception answers as an agent that is not there: a refused request
 	// answered by a fabricated device, or a whole listener that is one.
 	// See SNMPDeception.
@@ -2934,6 +2966,42 @@ type SNMPDeception struct {
 	Period Duration `yaml:"period"`
 	// MaxClients bounds the record of who has been answered. Default 1024.
 	MaxClients int `yaml:"max_clients"`
+}
+
+// SNMPUser is one version 3 USM user whose traffic this listener can read.
+//
+// The pass phrases are the same ones a manager is configured with -- what
+// net-snmp's -A and -X take -- because the key is derived from the pass
+// phrase and the agent's engine identifier, and both ends have to derive the
+// same one. The relay derives it too, which is how it verifies a digest
+// nobody else could have produced.
+type SNMPUser struct {
+	// Name is the USM user name, as it appears in the message.
+	Name string `yaml:"name"`
+	// EngineID pins the authoritative engine this user's messages must
+	// name, as hexadecimal (with optional 0x, colons or dashes). Empty
+	// accepts whatever engine the message names and derives a key for it,
+	// up to max_usm_engines.
+	//
+	// Pinning it is the stronger setting where an operator knows the
+	// identifier: a key is then derived once, at load, and a message
+	// naming a different engine is refused rather than costing a
+	// derivation.
+	EngineID string `yaml:"engine_id"`
+	// Auth is the authentication protocol: md5, sha1, sha224, sha256,
+	// sha384 or sha512. Required.
+	Auth string `yaml:"auth"`
+	// AuthSecret is the authentication pass phrase, in the usual
+	// file:/env:/vault: form. Required.
+	AuthSecret string `yaml:"auth_secret"`
+	// Privacy is the privacy protocol: des, aes128, aes192 or aes256.
+	// Empty means this user is not expected to encrypt, and an authPriv
+	// message from it is refused rather than forwarded unread -- a
+	// listener that holds keys in order to read the traffic should not
+	// have one user able to opt out of being read.
+	Privacy string `yaml:"privacy"`
+	// PrivacySecret is the privacy pass phrase. Required with privacy.
+	PrivacySecret string `yaml:"privacy_secret"`
 }
 
 // SNMPRule decides one message.

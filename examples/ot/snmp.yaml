@@ -21,6 +21,10 @@
 #   - that a GETBULK cannot be used as an amplifier (max_repetitions,
 #     max_response_bytes, max_response_ratio)
 #   - that an answer nobody asked for never reaches a manager
+#   - and, with usm_users, what is inside a v3 message at all: without the
+#     user's pass phrases an authPriv payload is ciphertext, so every rule
+#     about an operation or an object subtree would apply to v2c and not to
+#     the version an operator is told to insist on
 #
 # Validate with: xproxyctl -config examples/ot/snmp.yaml validate
 version: 1
@@ -144,6 +148,33 @@ server:
         min_security_level: authPriv       # a write, so the payload is sealed too
         read_only: false
         max_repetitions: 25
+
+        # The user's pass phrases, so this relay can *read* what it is
+        # deciding about.
+        #
+        # This is the difference between a policy and the appearance of one.
+        # An authPriv message's payload is ciphertext: without these, the
+        # rules below could not see the operation or the object identifier,
+        # and every one of them would apply to v2c and not to the version
+        # this listener insists on. With them the digest is verified, the
+        # payload is decrypted, and write_oids means something.
+        #
+        # They are the same pass phrases the workstation is configured with
+        # — what snmpset's -A and -X take — because both ends derive the same
+        # key from the pass phrase and the agent's engine identifier.
+        # Nothing here is re-signed or re-encrypted: the octets that arrive
+        # are the octets the switch receives.
+        usm_users:
+          - name: netops
+            auth: sha256
+            auth_secret: "file:/etc/xproxy/snmp/netops.auth"
+            privacy: aes128
+            privacy_secret: "file:/etc/xproxy/snmp/netops.priv"
+
+        # RFC 3414's own replay window: a captured datagram sent again later
+        # has a clock that has gone backwards, and 150s is the value the
+        # standard names.
+        replay_window: 150s
         default_action: deny
         rules:
           - name: descriptions
@@ -161,8 +192,8 @@ server:
     # A modern device sends v3 notifications; the collector understands v2c
     # and never will. A notification has no answer, so downgrading it is a
     # complete translation rather than half of one — unlike a v3 *request*,
-    # whose answer would have to be authenticated with a key this relay
-    # does not hold, and which is therefore refused rather than
+    # whose answer would have to be signed, which this relay never does,
+    # and which is therefore refused rather than
     # half-translated.
     # ---------------------------------------------------------------
     - name: traps

@@ -159,6 +159,20 @@ func (t *server) fromManager(agent net.PacketConn, raw []byte, from net.Addr) {
 		t.deny(ip, "snmp_malformed", err.Error())
 		return
 	}
+	// Version 3, with the user's keys: verified, decrypted where it can be,
+	// and thereafter decided about like any other message. Before the
+	// fabrication, because a forged digest is not a request to answer -- and
+	// before count, because a decrypted payload is a read or a write and an
+	// opaque one is neither.
+	if v := t.inspect(m); !v.Allow {
+		t.refused(ip, m, v)
+		if t.enforcing() {
+			if !t.deceive(m, from, v.Reason) {
+				t.answerRefusal(m, from)
+			}
+			return
+		}
+	}
 	t.count(m)
 	// A listener that is nothing but a fabricated agent answers here, and
 	// nothing is forwarded: there is no agent behind it to reach. The
@@ -311,10 +325,22 @@ func (t *server) fromAgent(raw []byte, from net.Addr) {
 		t.deny(ip, "snmp_malformed_response", err.Error())
 		return
 	}
+	// Version 3, with the user's keys, before the pairing below: an answer
+	// this relay can decrypt is an answer it can pair, and an answer whose
+	// digest does not check out is the response-spoofing attack the pairing
+	// exists to catch, arriving with a forged credential.
+	if v := t.inspect(m); !v.Allow {
+		t.refused(ip, m, v)
+		if t.enforcing() {
+			return
+		}
+	}
 	if m.PDU == nil {
-		// An encrypted v3 answer. There is no request identifier to match
-		// it by, so there is nothing to forward it to: a relay cannot pair
-		// an answer it cannot read.
+		// An encrypted v3 answer this listener holds no key for. There is no
+		// request identifier to match it by, so there is nothing to forward
+		// it to: a relay cannot pair an answer it cannot read. Configuring
+		// the user's keys -- usm_users -- is what makes such an exchange work
+		// end to end.
 		s.Counters().SNMPUnsolicited.Add(1)
 		s.Counters().Refuse("snmp", "encrypted_response")
 		return
@@ -524,6 +550,26 @@ func (t *server) pumpOne(src, dst net.Conn, ip netip.Addr, fromManager bool, pen
 			s.Counters().Refuse("snmp", "malformed")
 			t.deny(ip, "snmp_malformed", perr.Error())
 			return "snmp_malformed"
+		}
+		if v := t.inspect(m); !v.Allow {
+			t.refused(ip, m, v)
+			if t.enforcing() {
+				if fromManager && t.m.DenyResponse == "close" {
+					return v.Reason
+				}
+				if fromManager && (t.m.DenyResponse == "" || t.m.DenyResponse == "error") {
+					if answer := refusalFor(m); answer != nil {
+						_, _ = src.Write(answer)
+					}
+				}
+				if !fromManager {
+					// A forged or replayed answer from the upstream side ends
+					// the session: on a stream there is one peer, and a peer
+					// that sent one is not a peer to carry on reading from.
+					return v.Reason
+				}
+				continue
+			}
 		}
 		t.count(m)
 		out := raw

@@ -264,6 +264,17 @@ type Stats struct {
 	SNMPTimedOut     atomic.Uint64
 	SNMPUpstreamFail atomic.Uint64
 	SNMPUnsolicited  atomic.Uint64
+	// The version 3 security model, where this listener holds the user's
+	// keys. SNMPVerified counts the messages whose digest checked out and
+	// SNMPDecrypted the ones whose payload was then read, so the two
+	// together say how much v3 traffic the rules actually apply to.
+	// SNMPAuthFailed and SNMPReplayed are the two ways a v3 message fails
+	// that nothing else on this listener can see: a digest that was not
+	// produced by the key holder, and one that was -- earlier.
+	SNMPVerified   atomic.Uint64
+	SNMPDecrypted  atomic.Uint64
+	SNMPAuthFailed atomic.Uint64
+	SNMPReplayed   atomic.Uint64
 	// The LDAP relay.
 	//
 	// Binds are counted apart from requests and failures apart from binds,
@@ -771,6 +782,10 @@ type Snapshot struct {
 	SNMPTimedOut          uint64 `json:"snmp_timed_out"`
 	SNMPUpstreamFail      uint64 `json:"snmp_upstream_failed"`
 	SNMPUnsolicited       uint64 `json:"snmp_unsolicited"`
+	SNMPVerified          uint64 `json:"snmp_verified"`
+	SNMPDecrypted         uint64 `json:"snmp_decrypted"`
+	SNMPAuthFailed        uint64 `json:"snmp_auth_failed"`
+	SNMPReplayed          uint64 `json:"snmp_replayed"`
 	SNMPPending           int64  `json:"snmp_pending"`
 	LDAPSessions          uint64 `json:"ldap_sessions"`
 	LDAPSessionsOpen      int64  `json:"ldap_sessions_open"`
@@ -1208,6 +1223,10 @@ func (s *Stats) snapshot() Snapshot {
 		SNMPTimedOut:           s.SNMPTimedOut.Load(),
 		SNMPUpstreamFail:       s.SNMPUpstreamFail.Load(),
 		SNMPUnsolicited:        s.SNMPUnsolicited.Load(),
+		SNMPVerified:           s.SNMPVerified.Load(),
+		SNMPDecrypted:          s.SNMPDecrypted.Load(),
+		SNMPAuthFailed:         s.SNMPAuthFailed.Load(),
+		SNMPReplayed:           s.SNMPReplayed.Load(),
 		SNMPPending:            s.SNMPPending.Load(),
 		LDAPSessions:           s.LDAPSessions.Load(),
 		LDAPSessionsOpen:       s.LDAPSessionsOpen.Load(),

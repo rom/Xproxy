@@ -79,6 +79,7 @@ type server struct {
 
 	policy  *Policy
 	decoy   *decoy
+	usm     *usm
 	limiter *limits.KeyedLimiter
 	// upgrade is the version requests are forwarded in, or -1 to forward
 	// the version that arrived.
@@ -111,6 +112,9 @@ func newServer(host proxy.Host, cfg config.Listener, pc net.PacketConn, ln net.L
 		return nil, err
 	}
 	if t.decoy, err = newDecoy(m.Deception, cfg.Name); err != nil {
+		return nil, fmt.Errorf("snmp %s: %w", cfg.Name, err)
+	}
+	if t.usm, err = compileUSM(m, host.Secrets()); err != nil {
 		return nil, fmt.Errorf("snmp %s: %w", cfg.Name, err)
 	}
 	if m.UpgradeVersion != "" {

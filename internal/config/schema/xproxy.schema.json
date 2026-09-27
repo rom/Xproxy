@@ -10289,6 +10289,10 @@
           "description": "MaxResponseRatio refuses a response more than this many times the size of the request that asked for it. Default 50. It is the bound that is about *reflection* rather than about size: a large response to a large request is a walk, and a large response to a tiny request is an amplifier.",
           "type": "integer"
         },
+        "max_usm_engines": {
+          "description": "MaxUSMEngines bounds the distinct authoritative engines one user's keys are derived for. Default 8. It is a bound on work rather than on policy. Deriving a key is a megabyte of hashing by design (RFC 3414 s2.6, so that a dictionary attack costs a megabyte per candidate), and the engine identifier that decides which key is needed comes out of the message. Without a bound, a sender that varied that field would be buying milliseconds of this relay's processor per datagram.",
+          "type": "integer"
+        },
         "max_var_binds": {
           "description": "MaxVarBinds bounds the variable bindings one message may carry. Default 128.",
           "type": "integer"
@@ -10315,6 +10319,11 @@
         "read_only": {
           "description": "ReadOnly refuses every SetRequest, for every client, before any rule is read, and no rule can override it. SNMP has exactly one writing operation, so this is a one-line policy that covers the whole of \"nobody reconfigures anything through this relay\" -- and a read-only listener that one rule could write through is not a read-only listener.",
           "type": "boolean"
+        },
+        "replay_window": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
         },
         "request_timeout": {
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
@@ -10369,6 +10378,13 @@
           "type": "array",
           "items": {
             "type": "string"
+          }
+        },
+        "usm_users": {
+          "description": "USMUsers are the version 3 users whose traffic this listener can read. Without them a v3 message is a header and an opaque payload: the user, the engine and the security level are visible and nothing else is, so no rule about an operation or an object can apply to it. With the user's pass phrases the digest is verified and, at authPriv, the payload is decrypted -- and then the ordinary rules decide about a v3 message exactly as they do about a v2c one. Nothing is re-encrypted or re-signed: the octets forwarded to the agent are the octets that arrived. The keys are here so that this relay can *read*, which is the only thing it needs them for.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SNMPUser"
           }
         },
         "versions": {
@@ -10478,6 +10494,37 @@
           "items": {
             "type": "string"
           }
+        }
+      },
+      "additionalProperties": false
+    },
+    "SNMPUser": {
+      "description": "SNMPUser is one version 3 USM user whose traffic this listener can read. The pass phrases are the same ones a manager is configured with -- what net-snmp's -A and -X take -- because the key is derived from the pass phrase and the agent's engine identifier, and both ends have to derive the same one. The relay derives it too, which is how it verifies a digest nobody else could have produced.",
+      "type": "object",
+      "properties": {
+        "auth": {
+          "description": "Auth is the authentication protocol: md5, sha1, sha224, sha256, sha384 or sha512. Required.",
+          "type": "string"
+        },
+        "auth_secret": {
+          "description": "AuthSecret is the authentication pass phrase, in the usual file:/env:/vault: form. Required.",
+          "type": "string"
+        },
+        "engine_id": {
+          "description": "EngineID pins the authoritative engine this user's messages must name, as hexadecimal (with optional 0x, colons or dashes). Empty accepts whatever engine the message names and derives a key for it, up to max_usm_engines. Pinning it is the stronger setting where an operator knows the identifier: a key is then derived once, at load, and a message naming a different engine is refused rather than costing a derivation.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Name is the USM user name, as it appears in the message.",
+          "type": "string"
+        },
+        "privacy": {
+          "description": "Privacy is the privacy protocol: des, aes128, aes192 or aes256. Empty means this user is not expected to encrypt, and an authPriv message from it is refused rather than forwarded unread -- a listener that holds keys in order to read the traffic should not have one user able to opt out of being read.",
+          "type": "string"
+        },
+        "privacy_secret": {
+          "description": "PrivacySecret is the privacy pass phrase. Required with privacy.",
+          "type": "string"
         }
       },
       "additionalProperties": false

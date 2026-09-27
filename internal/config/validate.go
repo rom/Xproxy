@@ -9249,6 +9249,150 @@ func (v *validator) snmpDeception(p string, m *SNMPListener) {
 	}
 }
 
+// SNMPAuthAlgos and SNMPPrivAlgos are the version 3 protocol names
+// usm_users accepts, which are the wire package's own lists so that a name
+// validation accepts is a name the reader can use.
+var (
+	SNMPAuthAlgos = snmpAlgoNames()
+	SNMPPrivAlgos = snmpPrivNames()
+)
+
+func snmpAlgoNames() []string {
+	out := make([]string, 0, len(snmpwire.AuthAlgos))
+	for _, a := range snmpwire.AuthAlgos {
+		out = append(out, string(a))
+	}
+	return out
+}
+
+func snmpPrivNames() []string {
+	out := make([]string, 0, len(snmpwire.PrivAlgos))
+	for _, p := range snmpwire.PrivAlgos {
+		out = append(out, string(p))
+	}
+	return out
+}
+
+// snmpUSMUsers checks the version 3 users whose keys this listener holds.
+//
+// Everything here is about a configuration that would load and then refuse the
+// traffic it was written to read: a protocol name that is not one, a pass
+// phrase that resolves to nothing, an engine identifier that is not
+// hexadecimal, or a hash too narrow to key the cipher named beside it.
+func (v *validator) snmpUSMUsers(p string, m *SNMPListener) {
+	seen := map[string]bool{}
+	for i := range m.USMUsers {
+		u := &m.USMUsers[i]
+		q := fmt.Sprintf("%s[%d]", p, i)
+		switch {
+		case u.Name == "":
+			v.errf("%s.name: required", q)
+		case len(u.Name) > 255:
+			v.errf("%s.name: longer than 255 octets", q)
+		case seen[u.Name]:
+			v.errf("%s.name: %q appears twice; one user has one set of keys", q, u.Name)
+		default:
+			seen[u.Name] = true
+		}
+		auth, ok := snmpwire.AuthAlgoOf(u.Auth)
+		if !ok {
+			v.errf("%s.auth: %q is not an authentication protocol; the ones USM defines are %s",
+				q, u.Auth, strings.Join(SNMPAuthAlgos, ", "))
+		} else if auth == snmpwire.AuthMD5 || auth == snmpwire.AuthSHA1 {
+			v.warnf("%s.auth: %s is RFC 3414's original and is weak by any current measure. It is here "+
+				"because it is what the installed base speaks; where the equipment can do better, "+
+				"RFC 7860's sha256 is the same configuration with a different word", q, auth)
+		}
+		if u.AuthSecret == "" {
+			v.errf("%s.auth_secret: required", q)
+		} else {
+			v.secretRef(q+".auth_secret", u.AuthSecret)
+		}
+		if u.Privacy == "" {
+			if u.PrivacySecret != "" {
+				v.errf("%s.privacy: required with privacy_secret", q)
+			}
+			// A user with no privacy key cannot be read at authPriv, and this
+			// relay refuses what it cannot read rather than forwarding it
+			// around the rules. Whether that matters depends on the listener's
+			// own floor.
+			if m.MinSecurityLevel != "" {
+				if lvl, ok := snmpwire.LevelOf(m.MinSecurityLevel); ok && lvl == snmpwire.AuthPriv {
+					v.errf("%s.privacy: required, because min_security_level authPriv means every message "+
+						"from %q arrives encrypted and without a privacy key none of them can be read -- "+
+						"so all of them would be refused", q, u.Name)
+				}
+			}
+			continue
+		}
+		priv, ok := snmpwire.PrivAlgoOf(u.Privacy)
+		if !ok {
+			v.errf("%s.privacy: %q is not a privacy protocol; the ones USM defines are %s",
+				q, u.Privacy, strings.Join(SNMPPrivAlgos, ", "))
+		} else {
+			if priv == snmpwire.PrivDES {
+				v.warnf("%s.privacy: des is a fifty-six bit cipher, which is RFC 3414's own and is "+
+					"breakable. RFC 3826's aes128 is the same configuration with a different word", q)
+			}
+			// One derivation, truncated by the cipher: a sixteen-octet MD5 key
+			// cannot key AES-256.
+			if have, need := auth.KeyLen(), priv.KeyLen(); ok && have > 0 && have < need {
+				v.errf("%s.privacy: %s needs %d key octets and %s derives %d; USM has one key derivation "+
+					"and the cipher truncates it, so pair a wider authentication protocol with this one",
+					q, priv, need, auth, have)
+			}
+		}
+		if u.PrivacySecret == "" {
+			v.errf("%s.privacy_secret: required with privacy", q)
+		} else {
+			v.secretRef(q+".privacy_secret", u.PrivacySecret)
+			if u.PrivacySecret == u.AuthSecret {
+				v.warnf("%s.privacy_secret: the same reference as auth_secret, so one pass phrase keys both "+
+					"the digest and the cipher. USM allows it and every tool does it; it means one guess "+
+					"gets both", q)
+			}
+		}
+	}
+	for i, u := range m.USMUsers {
+		if u.EngineID == "" {
+			continue
+		}
+		if _, err := parseSNMPEngineID(u.EngineID); err != nil {
+			v.errf("%s[%d].engine_id: %v", p, i, err)
+		}
+	}
+	// Named in usm_users but not in users: the keys are held and the allow
+	// list does not let the user through, which is a configuration that reads
+	// as working and refuses everything.
+	if len(m.Users) > 0 {
+		for _, u := range m.USMUsers {
+			if u.Name != "" && !slices.Contains(m.Users, u.Name) {
+				v.warnf("%s: %q has keys here and is not in users, so every message from it is refused by "+
+					"the allow list before the keys are reached", p, u.Name)
+			}
+		}
+	}
+	if len(m.USMUsers) > 0 && len(m.Versions) > 0 && !slices.Contains(m.Versions, "v3") {
+		v.warnf("%s: this listener does not accept v3, so these keys are never used", p)
+	}
+}
+
+// parseSNMPEngineID reads a configured engine identifier, which is the same
+// hexadecimal the tools print. It is duplicated from the listener kind rather
+// than imported because internal/config must not depend on a kind.
+func parseSNMPEngineID(s string) ([]byte, error) {
+	t := strings.TrimPrefix(strings.TrimPrefix(s, "0x"), "0X")
+	t = strings.NewReplacer(":", "", "-", "", " ", "").Replace(t)
+	b, err := hex.DecodeString(t)
+	if err != nil {
+		return nil, fmt.Errorf("%q is not hexadecimal: %w", s, err)
+	}
+	if len(b) == 0 || len(b) > 32 {
+		return nil, fmt.Errorf("an engine identifier is 1 to 32 octets and this is %d", len(b))
+	}
+	return b, nil
+}
+
 func (v *validator) snmpListener(p string, m *SNMPListener, hasTLS bool) {
 	switch m.Mode {
 	case "", "reverse", "forward":
@@ -9341,6 +9485,26 @@ func (v *validator) snmpListener(p string, m *SNMPListener, hasTLS bool) {
 			v.warnf("%s.min_security_level: noAuthNoPriv refuses nothing; it is version 2c with more fields", p)
 		}
 	}
+	v.snmpUSMUsers(p+".usm_users", m)
+	if w := m.ReplayWindow.D(); w != 0 && (w < time.Second || w > time.Hour) {
+		v.errf("%s.replay_window: must be between 1s and 1h", p)
+	}
+	if len(m.USMUsers) == 0 && m.ReplayWindow != 0 {
+		v.warnf("%s.replay_window: a replay is recognised by the clock inside an authenticated message, so "+
+			"this does nothing without usm_users to verify one with", p)
+	}
+	if n := m.MaxUSMEngines; n < 0 || n > 1024 {
+		v.errf("%s.max_usm_engines: must be between 0 and 1024", p)
+	}
+	if takesV3 && len(m.USMUsers) == 0 {
+		// The gap this is about: every rule an operator wrote about
+		// operations and object identifiers applies to v1 and v2c and does
+		// not apply to v3, because a v3 payload cannot be read without the
+		// user's keys.
+		v.warnf("%s.usm_users: empty, so a v3 message is a header and an opaque payload here: the user, the "+
+			"engine and the security level are checked and no rule about an operation or an object can be. "+
+			"The keys are needed for reading only -- nothing is re-signed or re-encrypted", p)
+	}
 	if m.UpgradeVersion != "" {
 		up, ok := snmpwire.VersionOf(m.UpgradeVersion)
 		if !ok {
@@ -9361,7 +9525,7 @@ func (v *validator) snmpListener(p string, m *SNMPListener, hasTLS bool) {
 			// this relay does not hold. The relay refuses such a request
 			// rather than half-translating it, and saying so here is the
 			// difference between a design decision and a surprise.
-			v.warnf("%s.upgrade_version: a v3 *request* cannot be downgraded -- its answer would have to be authenticated, and this relay holds no USM keys -- so v3 requests on this listener are refused. The downgrade that works end to end is a v3 notification to a legacy collector: traps: true", p)
+			v.warnf("%s.upgrade_version: a v3 *request* cannot be downgraded -- its answer would have to be authenticated, and this relay reads USM messages but never writes one -- so v3 requests on this listener are refused. The downgrade that works end to end is a v3 notification to a legacy collector: traps: true", p)
 		}
 	}
 	if m.UpstreamCommunity != "" && len(m.UpstreamCommunity) > 255 {
