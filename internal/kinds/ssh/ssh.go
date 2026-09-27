@@ -129,7 +129,7 @@ func newServer(engine proxy.Host, cfg config.Listener, ln net.Listener) (*server
 		RemoteForward:   &h.RemoteForward,
 		SFTP:            h.SFTP,
 		CommandRules:    h.CommandRules,
-	}, nil)
+	}, nil, engine.Secrets())
 	if err != nil {
 		return nil, err
 	}
@@ -154,7 +154,7 @@ func newServer(engine proxy.Host, cfg config.Listener, ln net.Listener) (*server
 		pr.hardware = e.RequireHardwareKey
 		if e.Policy != nil {
 			pr.deny = e.Policy.Deny
-			p, err := compileSSHPolicy(e.Policy, base)
+			p, err := compileSSHPolicy(e.Policy, base, engine.Secrets())
 			if err != nil {
 				return nil, fmt.Errorf("ssh principal %q: %w", e.Name, err)
 			}

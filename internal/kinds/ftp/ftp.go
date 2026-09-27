@@ -88,7 +88,7 @@ func newServer(engine proxy.Host, cfg config.Listener, ln net.Listener, tc *tls.
 	for _, c := range f.Commands {
 		t.verbs[strings.ToUpper(strings.TrimSpace(c))] = true
 	}
-	t.recorder = sessionrec.New(f.Recording)
+	t.recorder = sessionrec.New(f.Recording, sessionrec.WithSecrets(engine.Secrets()))
 	if f.MFA != nil {
 		store, err := mfa.Load(f.MFA.File)
 		if err != nil {

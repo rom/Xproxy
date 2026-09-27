@@ -7,7 +7,8 @@ xproxy-replay - read and show a recorded session
 ## SYNOPSIS
 
 `xproxy-replay` [`-summary`] [`-html` *FILE*] [`-png` *DIR*] [`-at` *DURATION*]
-[`-every` *N*] [`-max-frames` *N*] [`-speed` *N*] [`-input`] [`-plain`] *FILE*
+[`-every` *N*] [`-max-frames` *N*] [`-speed` *N*] [`-input`] [`-plain`]
+[`-verify`] [`-key` *REF*] [`-force`] *FILE*
 
 ## DESCRIPTION
 
@@ -30,6 +31,14 @@ plays them. For RDP (`*.rdp.cast`) it reads the framing, the channels and
 the marks, and says plainly that the graphics are not decoded rather than
 drawing something nobody sent.
 
+Where a recording has an integrity manifest beside it — `xgate`(8) and
+`xrelay`(8) write `<recording>.chain` when `recording.integrity` asks for
+one — it is checked before anything is replayed, and a recording that does
+not match its manifest is not shown. A reviewer about to describe what
+they saw in a recording should not have to remember to ask whether the
+file is the one the proxy wrote. A recording with no manifest replays as
+before.
+
 It opens no sockets, runs nothing, and writes only where it is told.
 
 ## OPTIONS
@@ -45,6 +54,9 @@ It opens no sockets, runs nothing, and writes only where it is told.
 | `-speed` *N* | Multiply the recorded timing when replaying a session of text. |
 | `-input` | Include what the client sent, where the recording holds it (`recording.input`). |
 | `-plain` | Drop every escape sequence rather than keeping the ones that draw. |
+| `-verify` | Check the recording against its manifest, print what was found, and stop. The answer says whether the records carried MACs and whether they verified. |
+| `-key` *REF* | The integrity key, as an absolute path or `env:NAME`. A vault reference is refused with what to do instead: this program reads no vault. |
+| `-force` | Replay a recording whose manifest does not verify. It is no longer the file the proxy wrote, and stderr says so. |
 | `-version` | Print the version and exit. |
 
 ## ENCODINGS
@@ -86,6 +98,22 @@ The screen as it was twelve seconds in:
 
 ```
 xproxy-replay -at 12s -png /tmp/frames session-20260101-120000-alice.rfb.cast
+```
+
+## INTEGRITY
+
+Without a key the chain's links and the segment digests are checked,
+which catches accidental corruption, a shortened file, and a partial edit
+by anybody who did not rebuild every record after the one they changed.
+With the key every record also carries an HMAC-SHA256, and then the
+records cannot be forged by somebody who has filesystem access and not
+the key. It is a MAC and not a signature: whoever can read the key can
+forge a record too, so verify somewhere the recording host is not.
+
+Check a recording and its keyed manifest:
+
+```
+xproxy-replay -verify -key env:XPROXY_CHAIN_KEY session-...cast
 ```
 
 ## SEE ALSO

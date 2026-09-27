@@ -7,7 +7,7 @@
 xproxy\-replay \- read and show a recorded session
 .SH "SYNOPSIS"
 .PP
-\fBxproxy\-replay\fR [\fB\-summary\fR] [\fB\-html\fR \fIFILE\fR] [\fB\-png\fR \fIDIR\fR] [\fB\-at\fR \fIDURATION\fR] [\fB\-every\fR \fIN\fR] [\fB\-max\-frames\fR \fIN\fR] [\fB\-speed\fR \fIN\fR] [\fB\-input\fR] [\fB\-plain\fR] \fIFILE\fR
+\fBxproxy\-replay\fR [\fB\-summary\fR] [\fB\-html\fR \fIFILE\fR] [\fB\-png\fR \fIDIR\fR] [\fB\-at\fR \fIDURATION\fR] [\fB\-every\fR \fIN\fR] [\fB\-max\-frames\fR \fIN\fR] [\fB\-speed\fR \fIN\fR] [\fB\-input\fR] [\fB\-plain\fR] [\fB\-verify\fR] [\fB\-key\fR \fIREF\fR] [\fB\-force\fR] \fIFILE\fR
 .SH "DESCRIPTION"
 .PP
 \fBxproxy\-replay\fR reads a session recording written by \fBxgate\fR(8) \[u2014] the SSH, telnet, VNC and RDP gateways \[u2014] or by \fBxrelay\fR(8)\(aqs FTP relay, and shows it.
@@ -15,6 +15,8 @@ xproxy\-replay \- read and show a recorded session
 A recording of a session made of text is replayed to the terminal, with the escape sequences that reach outside the replay filtered out: a recording carries whatever the far end sent, and handing that straight to a reviewer\(aqs terminal is the one way reading a recording can hurt.
 .PP
 A recording of a graphical session is a protocol stream rather than a video, which is the deliberate trade the gateways make: decoding at capture time would mean implementing every encoding a desktop might choose and silently losing the rest. This program is the decoder written against the file afterwards. For RFB (\fB*.rfb.cast\fR) it rebuilds the framebuffer and can write PNG frames or one self\-contained page that plays them. For RDP (\fB*.rdp.cast\fR) it reads the framing, the channels and the marks, and says plainly that the graphics are not decoded rather than drawing something nobody sent.
+.PP
+Where a recording has an integrity manifest beside it \[u2014] \fBxgate\fR(8) and \fBxrelay\fR(8) write \fB<recording>.chain\fR when \fBrecording.integrity\fR asks for one \[u2014] it is checked before anything is replayed, and a recording that does not match its manifest is not shown. A reviewer about to describe what they saw in a recording should not have to remember to ask whether the file is the one the proxy wrote. A recording with no manifest replays as before.
 .PP
 It opens no sockets, runs nothing, and writes only where it is told.
 .SH "OPTIONS"
@@ -74,6 +76,21 @@ T}	T{
 Drop every escape sequence rather than keeping the ones that draw.
 T}
 T{
+\fB\-\:verify\fR
+T}	T{
+Check the recording against its manifest,\: print what was found,\: and stop. The answer says whether the records carried MACs and whether they verified.
+T}
+T{
+\fB\-\:key\fR \fIREF\fR
+T}	T{
+The integrity key,\: as an absolute path or \fBenv:\:NAME\fR. A vault reference is refused with what to do instead: this program reads no vault.
+T}
+T{
+\fB\-\:force\fR
+T}	T{
+Replay a recording whose manifest does not verify. It is no longer the file the proxy wrote,\: and stderr says so.
+T}
+T{
 \fB\-\:version\fR
 T}	T{
 Print the version and exit.
@@ -125,6 +142,19 @@ The screen as it was twelve seconds in:
 .nf
 .ft CR
 xproxy\-replay \-at 12s \-png /tmp/frames session\-20260101\-120000\-alice.rfb.cast
+.ft
+.fi
+.RE
+.SH "INTEGRITY"
+.PP
+Without a key the chain\(aqs links and the segment digests are checked, which catches accidental corruption, a shortened file, and a partial edit by anybody who did not rebuild every record after the one they changed. With the key every record also carries an HMAC\-SHA256, and then the records cannot be forged by somebody who has filesystem access and not the key. It is a MAC and not a signature: whoever can read the key can forge a record too, so verify somewhere the recording host is not.
+.PP
+Check a recording and its keyed manifest:
+.PP
+.RS 4
+.nf
+.ft CR
+xproxy\-replay \-verify \-key env:XPROXY_CHAIN_KEY session\-...cast
 .ft
 .fi
 .RE

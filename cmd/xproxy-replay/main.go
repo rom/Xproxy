@@ -14,12 +14,21 @@
 //	xproxy-replay -html out.html s.rfb.cast       # a page that plays it
 //	xproxy-replay -png frames/ s.rfb.cast         # one PNG per update
 //	xproxy-replay -at 12s -png . s.rfb.cast       # the screen at 12 seconds
+//	xproxy-replay -verify -key env:K s.cast       # check it against its manifest
+//
+// Where a recording has an integrity manifest beside it -- the gateway
+// writes one when the recording section asks for it -- it is checked
+// before anything is replayed, and a recording that does not match its
+// manifest is not shown. A reviewer who is about to describe what they
+// saw in a recording should not have to remember to ask whether the file
+// is the one the proxy wrote.
 //
 // It opens no sockets, runs nothing and writes only where it is told.
 package main
 
 import (
 	"bufio"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -27,7 +36,9 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/asciicast"
+	"github.com/rom/xproxy/internal/keysource"
 	"github.com/rom/xproxy/internal/replay"
+	"github.com/rom/xproxy/internal/sessionrec"
 	"github.com/rom/xproxy/internal/termsafe"
 	"github.com/rom/xproxy/internal/textsafe"
 	"github.com/rom/xproxy/internal/version"
@@ -46,6 +57,9 @@ func run(args []string, out, errOut io.Writer) int {
 	maxFrames := fs.Int("max-frames", replay.MaxFrames, "stop after this many frames")
 	speed := fs.Float64("speed", 1, "multiply the recorded timing when replaying a terminal")
 	input := fs.Bool("input", false, "include what the client sent, where the recording holds it")
+	verify := fs.Bool("verify", false, "check the recording against its integrity manifest and print what was found, without replaying it")
+	key := fs.String("key", "", "the integrity key, as a path, env:NAME or vault reference, for a manifest that carries MACs")
+	force := fs.Bool("force", false, "replay a recording whose manifest does not verify (it is no longer the file the proxy wrote)")
 	plain := fs.Bool("plain", false, "drop every escape sequence rather than keeping the ones that draw")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	if err := fs.Parse(args); err != nil {
@@ -58,6 +72,9 @@ func run(args []string, out, errOut io.Writer) int {
 	if fs.NArg() != 1 {
 		_, _ = fmt.Fprintln(errOut, "usage: xproxy-replay [-summary] [-html FILE] [-png DIR] [-at D] [-input] FILE")
 		return 2
+	}
+	if code, stop := integrity(fs.Arg(0), *key, *verify, *force, out, errOut); stop {
+		return code
 	}
 	rec, err := replay.Open(fs.Arg(0))
 	if err != nil {
@@ -80,6 +97,77 @@ func run(args []string, out, errOut io.Writer) int {
 		_, _ = fmt.Fprintf(errOut, "%s holds a %s stream: use -html, -png or -summary\n", rec.Path, rec.Kind)
 		return describe(rec, out, errOut)
 	}
+}
+
+// integrity checks a recording against the manifest beside it, and says
+// whether the caller should stop.
+//
+// A missing manifest is not a failure: most recordings have none, and
+// this is a viewer rather than an auditor. A manifest that does not
+// verify stops the replay, because the one thing a reviewer must not do
+// is describe what a recording showed without knowing it is the
+// recording the proxy wrote. -force plays it anyway, and says so.
+func integrity(path, keyRef string, verify, force bool, out, errOut io.Writer) (int, bool) {
+	key, err := integrityKey(keyRef)
+	if err != nil {
+		_, _ = fmt.Fprintln(errOut, "error:", err)
+		return 1, true
+	}
+	v, err := sessionrec.Verify(path, key)
+	switch {
+	case errors.Is(err, sessionrec.ErrNoChain):
+		if verify {
+			_, _ = fmt.Fprintf(out, "%s has no integrity manifest beside it, so there is nothing to check it against\n", path)
+			return 1, true
+		}
+		return 0, false
+	case err != nil:
+		_, _ = fmt.Fprintln(errOut, "integrity:", err)
+		_, _ = fmt.Fprintf(errOut, "%s is not the recording its manifest describes\n", path)
+		if verify {
+			return 1, true
+		}
+		if !force {
+			_, _ = fmt.Fprintln(errOut, "refusing to replay it; pass -force to see it anyway")
+			return 1, true
+		}
+		_, _ = fmt.Fprintln(errOut, "replaying it anyway because -force was given")
+		return 0, false
+	}
+	line := fmt.Sprintf("integrity: %d manifest records cover all %d bytes", v.Records, v.Covered)
+	switch {
+	case v.Authentic:
+		line += ", and the records verify under the key given"
+	default:
+		line += "; the manifest carries no MACs, so it shows the file was not corrupted or shortened and not that nobody rewrote both"
+	}
+	if v.Truncated {
+		line += ". The proxy recorded that this session reached max_file_bytes and went on unrecorded"
+	}
+	if verify {
+		_, _ = fmt.Fprintln(out, line)
+		return 0, true
+	}
+	_, _ = fmt.Fprintln(errOut, line)
+	return 0, false
+}
+
+// integrityKey resolves the -key reference. It is the same reference
+// syntax the configuration uses, minus a vault: this program is offline
+// and holds no vault configuration, so a vault reference says so rather
+// than failing as a path that is not there.
+func integrityKey(ref string) ([]byte, error) {
+	if ref == "" {
+		return nil, nil
+	}
+	r, err := keysource.Parse(ref)
+	if err != nil {
+		return nil, err
+	}
+	if r.Scheme == keysource.SchemeVault {
+		return nil, fmt.Errorf("-key %s: this program reads no vault; fetch the key and pass it as a file or in the environment", ref)
+	}
+	return keysource.New(nil, 0, nil).Bytes(ref)
 }
 
 // terminal replays a session of text through the escape-sequence filter,

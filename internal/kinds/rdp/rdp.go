@@ -132,7 +132,7 @@ func newServer(engine proxy.Host, cfg config.Listener, ln net.Listener, tc *tls.
 			return nil, fmt.Errorf("rdp legacy key: %w", err)
 		}
 	}
-	t.recorder = sessionrec.New(c.Recording)
+	t.recorder = sessionrec.New(c.Recording, sessionrec.WithSecrets(engine.Secrets()))
 	if c.MFA != nil {
 		store, err := mfa.Load(c.MFA.File)
 		if err != nil {

@@ -9,6 +9,7 @@ import (
 	cssh "golang.org/x/crypto/ssh"
 
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/keysource"
 	"github.com/rom/xproxy/internal/sessionrec"
 )
 
@@ -53,7 +54,7 @@ type sshPrincipal struct {
 // compileSSHPolicy builds a policy. base is what an unset field falls
 // back to, or nil for the listener's own policy, where unset means
 // empty.
-func compileSSHPolicy(c *config.SSHPolicy, base *sshPolicy) (*sshPolicy, error) {
+func compileSSHPolicy(c *config.SSHPolicy, base *sshPolicy, secrets *keysource.Resolver) (*sshPolicy, error) {
 	p := &sshPolicy{
 		channels:   map[string]bool{},
 		requests:   map[string]bool{},
@@ -149,7 +150,7 @@ func compileSSHPolicy(c *config.SSHPolicy, base *sshPolicy) (*sshPolicy, error) 
 
 	switch {
 	case c.Recording != nil:
-		p.recorder = newSSHRecorder(c.Recording)
+		p.recorder = newSSHRecorder(c.Recording, secrets)
 	case base != nil:
 		p.recorder = base.recorder
 	}

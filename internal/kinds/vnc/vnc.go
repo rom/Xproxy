@@ -130,7 +130,7 @@ func newServer(engine proxy.Host, cfg config.Listener, ln net.Listener, tc *tls.
 			return nil, fmt.Errorf("vnc rsa_key_file: %w", err)
 		}
 	}
-	t.recorder = sessionrec.New(c.Recording)
+	t.recorder = sessionrec.New(c.Recording, sessionrec.WithSecrets(engine.Secrets()))
 	t.px = newPixelPolicy(c)
 	if c.MFA != nil {
 		store, err := mfa.Load(c.MFA.File)

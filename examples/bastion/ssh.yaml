@@ -210,6 +210,23 @@ server:
           max_file_bytes: 33554432
           max_files: 2000
 
+          # A hash-chained manifest beside each recording, keyed from
+          # custody. Without this a recording is a file an administrator
+          # can edit afterwards, and an incident report that rests on one
+          # is a story. With a key the records cannot be rewritten by
+          # somebody who has this host and not the key -- so keep the key
+          # off this host, and verify somewhere this host is not:
+          #
+          #   xproxy-replay -verify -key env:XPROXY_CHAIN_KEY FILE
+          #
+          # It is a MAC, not a signature: whoever can read the key can
+          # forge a record too. With a secrets.vault section the key is
+          # better written as vault:secret/xproxy/recording#chain, which
+          # never reaches this host's disk at all.
+          integrity:
+            key: env:XPROXY_CHAIN_KEY
+            segment_bytes: 1048576
+
         # The credential onwards, and the check that the target is the
         # target: the bastion is the one place that can notice a machine
         # in the middle.

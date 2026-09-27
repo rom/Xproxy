@@ -171,7 +171,7 @@ func (se *session) closeRecording() {
 	t.engine.Counters().VNCRecorded.Add(1)
 	t.engine.Logs().Access.Info("vnc_recording", "listener", t.cfg.Name, "client_ip", se.ip.String(),
 		"user", textsafe.Clip64(se.user), "target", se.target,
-		"file", res.File, "bytes", res.Bytes, "truncated", res.Truncated)
+		"file", res.File, "chain", res.Chain, "bytes", res.Bytes, "truncated", res.Truncated)
 	if res.Truncated {
 		attrs := []any{"listener", t.cfg.Name, "file", res.File}
 		if res.Err != nil {

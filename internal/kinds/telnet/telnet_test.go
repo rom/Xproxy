@@ -15,6 +15,7 @@ import (
 	"github.com/rom/xproxy/internal/mfa"
 	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/proxytest"
+	"github.com/rom/xproxy/internal/sessionrec"
 	"github.com/rom/xproxy/internal/sessions"
 	wire "github.com/rom/xproxy/internal/telnet"
 )
@@ -402,5 +403,43 @@ func TestALiveSessionIsListedAndCanBeClosed(t *testing.T) {
 	}
 	if st := s.Sessions().Status(); st.Killed != 1 || st.Opened != 1 || st.Closed != 1 {
 		t.Errorf("status %+v", st)
+	}
+}
+
+// The manifest is written beside the recording by the running gateway,
+// under a key resolved from the daemon's own secret custody. The unit
+// tests cover the chain; this covers the wiring, which is the half that
+// silently does nothing if the resolver never arrives.
+func TestRecordingIsChainedUnderTheConfiguredKey(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XPROXY_TEST_CHAIN_KEY", "a key from custody")
+	s, addr, _ := gateway(t, "        recording: {directory: "+dir+
+		", integrity: {key: \"env:XPROXY_TEST_CHAIN_KEY\"}}")
+	c := dial(t, addr)
+	c.readUntil("target ready")
+	c.write([]byte("uptime\r\n"))
+	c.readUntil("uptime")
+	_ = c.c.Close()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for s.Stats().TelnetRecorded == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("no recording was finished")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	files, _ := filepath.Glob(filepath.Join(dir, "*.cast"))
+	if len(files) != 1 {
+		t.Fatalf("%d recordings, want 1", len(files))
+	}
+	v, err := sessionrec.Verify(files[0], []byte("a key from custody"))
+	if err != nil {
+		t.Fatalf("the gateway's own recording does not verify: %v", err)
+	}
+	if !v.Authentic {
+		t.Error("the manifest carries no MACs, so the key never reached the recorder")
+	}
+	if _, err := sessionrec.Verify(files[0], []byte("another key")); err == nil {
+		t.Error("the manifest verified under a key it was not written with")
 	}
 }

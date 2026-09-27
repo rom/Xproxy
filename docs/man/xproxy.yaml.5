@@ -10172,8 +10172,8 @@ The format is line oriented, so a recording cut short by a crash or by \fBmax_fi
 .PP
 .TS
 allbox;
-lbw(1.0i) lbw(0.6i) lbw(0.9i) lbx
-lw(1.0i) lw(0.6i) lw(0.9i) lx.
+lbw(1.0i) lbw(0.8i) lbw(0.9i) lbx
+lw(1.0i) lw(0.8i) lw(0.9i) lx.
 T{
 Key
 T}	T{
@@ -10246,6 +10246,15 @@ T}	T{
 T}	T{
 Record \fBexec\fR sessions too,\: not only the ones with a terminal
 T}
+T{
+\fBintegrity\fR
+T}	T{
+section
+T}	T{
+
+T}	T{
+A hash\-chained manifest beside each recording,\: so a file edited afterwards can be told from one that was not;\: see below
+T}
 .TE
 .PP
 The header carries the terminal size from \fBpty\-req\fR, the login and the target, and for an \fBexec\fR the command. A \fBwindow\-change\fR becomes a resize event, so a session that was widened replays at both widths rather than wrapping everything after it in the wrong place. Both of the target\(aqs streams are recorded: a terminal does not keep stdout and stderr apart either, and a recording without stderr would be missing exactly the errors.
@@ -10255,6 +10264,70 @@ An \fBsftp\fR channel is not recorded. It is not a terminal, and its own \fBsftp
 \fBThese files hold everything the session showed.\fR On an administrative session that is a list of everything worth having \[u2014] keys printed, configuration read, tokens echoed. They are written \fB0600\fR by the proxy user, with \fBO_EXCL\fR and proxy\-chosen names, in a directory the operator names; the directory deserves the care the credentials in it will deserve. \fBinput: true\fR goes further still, and is the difference between watching over a shoulder and running a keylogger: it is off by default, it warns when set, and whether it is lawful where you are is not a question this configuration can answer.
 .PP
 A recording that cannot be opened does not stop the session: it is an error in the log and an \fBssh_recording_failed\fR event, because a bastion that refuses work when a disk fills is its own outage. One that stops part way is logged as short, with the reason.
+.SS "server.listeners[].ssh.recording.integrity"
+.PP
+The access ledger is hash\-chained and, until this section existed, the recordings were not \[u2014] which is the wrong way round for what the two are used for. The ledger says a session was approved. The recording is the only account of what happened \fIinside\fR it, and after an incident it is the artefact somebody is asked to stand behind. A file that can be edited afterwards, with nothing that would show it had been, is not evidence.
+.PP
+So each recording gets a manifest beside it, \fB<recording>.chain\fR: one JSON record per line, each carrying the previous record\(aqs hash and the SHA\-256 of a run of the recording\(aqs bytes, in the same shape the access ledger uses. It is a sidecar rather than something inside the \fB.cast\fR because a terminal player reads the recording directly: hashes interleaved into it would either break every player or have to live in marker events, where they would show up in the replay as content.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.7i) lbw(0.8i) lbx
+lw(0.9i) lw(0.7i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Present so a principal can turn a listener\(aqs manifest off;\: there is no reason to write it as \fBtrue\fR
+T}
+T{
+\fBkey\fR
+T}	T{
+secret
+T}	T{
+
+T}	T{
+A secret reference (a path,\: \fBenv:\:NAME\fR,\: \fBvault:\:path#field\fR) whose material keys the chain. Without it the chain is unkeyed,\: and anybody who can write the recording can recompute it
+T}
+T{
+\fBsegment_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB1048576\fR
+T}	T{
+How much of a recording one record covers,\: which is how precisely an edit is located;\: 4096..1073741824
+T}
+.TE
+.PP
+\fBWhat the chain is worth, exactly.\fR The manifest and the recording are written by the same process into the same directory, so nothing here stops somebody who can write both from recomputing the whole chain. Without a key it detects accidental corruption, a shortened file, and any partial edit by somebody who does not rebuild every record after the one they changed \[u2014] which is the difference between a disk fault you can describe and one you can only suspect. \fBWith a key it is a MAC over every record\fR, and the key is a secret reference, so it can live in a vault or on an HSM rather than on the recording host: the records then cannot be forged by somebody who has filesystem access and not the key, which is the case that actually comes up \[u2014] an intruder on the box, or an administrator editing their own session. It is a MAC and not a signature: anybody who can \fIread\fR the key can forge a record too, so the key belongs somewhere the recording host cannot read at will, and a reviewer verifies somewhere the recording host is not.
+.PP
+Where a key is configured and cannot be resolved, \fBno recording is written\fR: the session takes the same path as a directory that cannot be written \[u2014] a warning in the error log and a \fB*_recording_failed\fR security event \[u2014] and it carries on unrecorded, because a bastion that refuses work when a vault is unreachable is its own outage. What it will not do is write a recording with a manifest anybody could forge, which is the answer that would look like evidence and not be any. So an unreachable key is an outage of the \fIrecording\fR, and it is loud: the event is the one to alert on. The resolver caches and a failed refresh keeps the previous value (see \fBsecrets\fR), so a vault that goes down after the proxy started does not take the manifests with it.
+.PP
+A manifest is checked before anything is replayed:
+.PP
+.RS 4
+.nf
+.ft CR
+xproxy\-replay \-verify \-key env:XPROXY_CHAIN_KEY session\-...cast
+xproxy\-replay session\-...cast          # verified first, refused if it does not match
+.ft
+.fi
+.RE
+.PP
+\fBxproxy\-replay\fR refuses a recording that does not match its manifest unless \fB\-force\fR is given, and says which it is doing. A recording with no manifest replays as it always did. The manifest is removed with the recording it describes when \fBmax_files\fR prunes it.
 .SS "server.listeners[].ssh.mfa"
 .PP
 A second factor after the key or the password. The client is told authentication partially succeeded (RFC 4252 partial success) and is then asked, over keyboard\-interactive, for a one\-time code (RFC 6238 TOTP over the HMAC\-OTP of RFC 4226). Nothing about the session exists until the code verifies: a key alone opens no channel.

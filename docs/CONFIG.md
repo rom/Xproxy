@@ -4500,6 +4500,7 @@ reads as a command line. `asciinema play` and `cat` do not. See
 | `max_file_bytes` | int | `33554432` | Bounds one recording, counted in session bytes; 4096..4294967296. Past it the session carries on and the file says it stopped |
 | `max_files` | int | `1000` | Recordings this listener keeps, removing the oldest it wrote. It bounds what the proxy leaves behind; anything that must be kept belongs somewhere the proxy does not prune |
 | `commands` | bool | `true` | Record `exec` sessions too, not only the ones with a terminal |
+| `integrity` | section | | A hash-chained manifest beside each recording, so a file edited afterwards can be told from one that was not; see below |
 
 The header carries the terminal size from `pty-req`, the login and the
 target, and for an `exec` the command. A `window-change` becomes a
@@ -4526,6 +4527,70 @@ A recording that cannot be opened does not stop the session: it is an
 error in the log and an `ssh_recording_failed` event, because a bastion
 that refuses work when a disk fills is its own outage. One that stops
 part way is logged as short, with the reason.
+
+#### server.listeners[].ssh.recording.integrity
+
+The access ledger is hash-chained and, until this section existed, the
+recordings were not — which is the wrong way round for what the two are
+used for. The ledger says a session was approved. The recording is the
+only account of what happened *inside* it, and after an incident it is
+the artefact somebody is asked to stand behind. A file that can be
+edited afterwards, with nothing that would show it had been, is not
+evidence.
+
+So each recording gets a manifest beside it, `<recording>.chain`: one
+JSON record per line, each carrying the previous record's hash and the
+SHA-256 of a run of the recording's bytes, in the same shape the access
+ledger uses. It is a sidecar rather than something inside the `.cast`
+because a terminal player reads the recording directly: hashes
+interleaved into it would either break every player or have to live in
+marker events, where they would show up in the replay as content.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Present so a principal can turn a listener's manifest off; there is no reason to write it as `true` |
+| `key` | secret | | A secret reference (a path, `env:NAME`, `vault:path#field`) whose material keys the chain. Without it the chain is unkeyed, and anybody who can write the recording can recompute it |
+| `segment_bytes` | int | `1048576` | How much of a recording one record covers, which is how precisely an edit is located; 4096..1073741824 |
+
+**What the chain is worth, exactly.** The manifest and the recording are
+written by the same process into the same directory, so nothing here
+stops somebody who can write both from recomputing the whole chain.
+Without a key it detects accidental corruption, a shortened file, and
+any partial edit by somebody who does not rebuild every record after the
+one they changed — which is the difference between a disk fault you can
+describe and one you can only suspect. **With a key it is a MAC over
+every record**, and the key is a secret reference, so it can live in a
+vault or on an HSM rather than on the recording host: the records then
+cannot be forged by somebody who has filesystem access and not the key,
+which is the case that actually comes up — an intruder on the box, or an
+administrator editing their own session. It is a MAC and not a
+signature: anybody who can *read* the key can forge a record too, so the
+key belongs somewhere the recording host cannot read at will, and a
+reviewer verifies somewhere the recording host is not.
+
+Where a key is configured and cannot be resolved, **no recording is
+written**: the session takes the same path as a directory that cannot be
+written — a warning in the error log and a `*_recording_failed` security
+event — and it carries on unrecorded, because a bastion that refuses work
+when a vault is unreachable is its own outage. What it will not do is
+write a recording with a manifest anybody could forge, which is the
+answer that would look like evidence and not be any. So an unreachable
+key is an outage of the *recording*, and it is loud: the event is the one
+to alert on. The resolver caches and a failed refresh keeps the previous
+value (see [`secrets`](#secrets)), so a vault that goes down after the
+proxy started does not take the manifests with it.
+
+A manifest is checked before anything is replayed:
+
+```
+xproxy-replay -verify -key env:XPROXY_CHAIN_KEY session-...cast
+xproxy-replay session-...cast          # verified first, refused if it does not match
+```
+
+`xproxy-replay` refuses a recording that does not match its manifest
+unless `-force` is given, and says which it is doing. A recording with
+no manifest replays as it always did. The manifest is removed with the
+recording it describes when `max_files` prunes it.
 
 #### server.listeners[].ssh.mfa
 

@@ -6,6 +6,67 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (evidence: session recordings can be shown not to have been edited)
+
+- **A hash-chained manifest beside every recording**, under
+  `recording.integrity`. The access ledger was hash-chained and the recordings
+  were not, which is the wrong way round for what the two are used for: the
+  ledger says a session was *approved*, and the recording is the only account of
+  what happened inside it. After an incident the recording is the artefact
+  somebody is asked to stand behind, and a file that can be edited afterwards
+  with nothing to show it had been is not evidence -- which for a NIS2 incident
+  report is the difference between a record and a story.
+
+  `<recording>.chain` holds one JSON record per line in the same shape
+  `internal/access` uses: each carries the previous record's hash, and its own
+  hash covers that link and the record with the hash emptied. A record describes
+  a *segment* of the recording -- an offset, a length and the SHA-256 of exactly
+  those bytes -- so an edit is localised to a segment rather than only known to
+  have happened, and a recording cut short by a crash still has a verifiable
+  prefix. `segment_bytes` decides how precisely (default 1 MiB).
+
+  It is a sidecar rather than something inside the `.cast` because a terminal
+  player reads the recording directly: hashes interleaved into it would either
+  break every player or have to live in marker events, where they would appear
+  in the replay as content.
+
+  **What it is worth, stated plainly.** Both files are written by the same
+  process into the same directory, so nothing here stops somebody who can write
+  both from recomputing the chain. Unkeyed, it detects corruption, a shortened
+  file, and any partial edit by somebody who does not rebuild every record after
+  the one they changed. With `key` -- a secret reference, so the material can
+  live in a vault or on an HSM rather than on the recording host -- every record
+  also carries an HMAC-SHA256, and then the records cannot be forged by somebody
+  who has filesystem access and not the key, which is the case that comes up: an
+  intruder on the box, or an administrator editing their own session. It is a MAC
+  and not a signature, so whoever can *read* the key can forge a record too; the
+  key belongs somewhere the recording host cannot read at will, and verification
+  belongs somewhere the recording host is not.
+
+  A key that cannot be resolved writes no recording at all: the session takes
+  the existing path for a recording that cannot be opened -- a warning and a
+  `*_recording_failed` event, and the session carries on unrecorded, since a
+  bastion that refuses work when a vault is unreachable is its own outage. What
+  it will not do is write a recording with a manifest anybody could forge, which
+  would look like evidence without being any. The resolver caches and keeps the
+  previous value across a failed refresh, so a vault that goes down after the
+  proxy started does not take the manifests with it.
+
+  The chain sits between the buffer and the file rather than in front of the
+  buffer, so what it digests is what reached the disk and not what the proxy
+  meant to put there -- a destination that took half the bytes leaves a manifest
+  for the half that landed.
+
+- **`xproxy-replay` verifies before it plays anything back.** A recording that
+  does not match its manifest is refused, with the mismatch named; `-force`
+  shows it and says on stderr that it is showing a file that no longer matches.
+  `-verify` answers the question on its own, and says what the manifest is worth
+  -- whether it carried MACs and whether they verified under `-key` (a path or
+  `env:NAME`; a vault reference is refused with what to do instead, since the
+  program reads no vault). A recording with no manifest replays as before: most
+  have none, and this is a viewer. The manifest is pruned with the recording it
+  describes, and both appear in the `ssh_recording` line and its siblings.
+
 ### Security (1.4, the RDP channel policy could be walked around)
 
 - **A dynamic channel could reopen a static channel the policy had just
