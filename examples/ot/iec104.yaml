@@ -140,6 +140,52 @@ server:
             action: deny
             class: [file]
 
+        # And what those setpoints may be set *to*. The rule above says
+        # which workstation may write which points; these say what the
+        # process will accept, which is the bound no rule about type
+        # identifications can express: a scaled setpoint carries anything
+        # from -32768 to 32767, and the RTU writes whatever arrives.
+        #
+        # The first bound that covers a point decides, so the narrow ones
+        # come first.
+        setpoints:
+          # The boiler pressure reference, in bar, scaled: it lives
+          # between 0 and 40 and moves by at most 5 at a time. A jump is
+          # refused even from a client the rule allows, because a
+          # workstation that may nudge a setpoint is not a workstation
+          # that may slam it to the end of its range.
+          - name: pressure
+            points: ["5000-5009"]
+            types: [C_SE_NB_1]
+            min: 0
+            max: 40
+            max_delta: 5
+            # Nothing may be moved blind: until the relay has seen this
+            # point's value, a command that needs a step check is held.
+            # One interrogation is usually all it takes.
+            on_unknown: refuse
+
+          # A voltage reference as a short float, in kilovolts.
+          - name: voltage
+            points: ["5010-5019"]
+            types: [C_SE_NC_1]
+            min: 130.0
+            max: 145.0
+            max_delta: 2.0
+
+          # The normalised points, and the reason they are separate: a
+          # C_SE_NA_1 value is a *fraction of full scale*, from -1 to
+          # nearly +1, and the full scale is configured in the device
+          # where this relay cannot see it. So this bound is written in
+          # fractions -- 0 to 0.9 of whatever the RTU's span is -- and
+          # writing 0 to 40 here would be a bound nothing could exceed.
+          - name: normalised-references
+            points: ["5020-5099"]
+            types: [C_SE_NA_1]
+            min: 0
+            max: 0.9
+            max_delta: 0.05
+
         log_commands: true
         alert_on_deny: true
 

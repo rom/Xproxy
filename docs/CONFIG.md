@@ -93,7 +93,7 @@ did not authenticate — a trial instead of a door.
 | Kind | Evaluated and recorded | Still refused |
 |------|------------------------|---------------|
 | `modbus` | every rule: function, unit, address range, value bounds, rate and window | malformed frames, the unit table, the queue bound, rate limits, bans |
-| `iec104` | every rule: type, class, cause, station, originator, point range and the select half; `monitor_only`; the common-address list; `require_select` | malformed frames, the frame bound, rate limits (frame and command), a station commanding its own control centre, bans |
+| `iec104` | every rule: type, class, cause, station, originator, point range and the select half; `monitor_only`; the common-address list; `require_select`; the `setpoints` value bounds | malformed frames, the frame bound, rate limits (frame and command), a station commanding its own control centre, bans |
 | `ldap` | every rule: the bound identity, the bind method, the operation, the access class, the subtree, the scope and the attributes; `methods`, `sasl_mechanisms`, `min_version`; `read_only`; `base_dns`; the attribute lists; the filter and entry bounds | a simple bind carrying a password on an unprotected connection, malformed messages, the message bound, message identifier zero, rate limits (request and bind), the client list, an answer no request matched, bans |
 | `snmp` | every rule: version, community or user, security level, operation, access class, object subtree and context; `versions`, `communities`, `users`, `min_security_level`; `read_only`; the message direction | malformed messages, the message and response bounds, the GETBULK repetition bound, the response ratio, an answer nobody asked for, rate limits, the client list, bans |
 | `dhcp` | every rule: the client network, the hardware address, the message type and the vendor class; `message_types`; the option lists and the address lists on a reply | a reply from an address that is not in `allow_servers`, malformed messages and malformed option values, an option hidden in a header field or split across instances, the hop bound, the lease bounds, the pending bound, rate limits, a message type arriving from the wrong side, bans |
@@ -1963,6 +1963,7 @@ bounds which stations may be addressed through it.
 | `rules` | list | | Per-frame rules, first match wins; see below |
 | `default_action` | `deny`, `allow` | `deny` | What a frame no rule matched gets |
 | `deny_response` | `negative`, `drop`, `close` | `negative` | `negative` returns the same ASDU with the negative-confirm bit and cause `actcon`, which is what a station does and what a control centre's alarm list understands |
+| `setpoints` | list | | Value bounds on setpoint commands: what a point may be *set to*, and how far it may move in one step; see below |
 | `require_select` | bool | `false` | Make the two-step form mandatory for every command type that has one |
 | `select_timeout` | duration | `30s` | How long a selection stays valid (1s to 10m) |
 | `max_selections` | int | `4096` | Outstanding selections this relay remembers |
@@ -1999,6 +2000,69 @@ bounds which stations may be addressed through it.
 | `select` | `select`, `execute` | Which half of a two-step command this rule is about. `select` on one client and `execute` on another is a four-eyes control: one operator arms and another fires |
 | `schedule` | object | `{days, from, to, timezone}`; a window whose `to` is before its `from` spans midnight and belongs to the day it started on |
 
+#### server.listeners[].iec104.setpoints[]
+
+A rule says a control centre may send `C_SE_NB_1` to point 4711. That is a
+statement about who may act and on what. It says nothing about *what may
+happen*, and on this protocol what may happen is bounded only by the
+encoding: a scaled setpoint carries anything from -32768 to 32767, and a
+short float most of the real line. A turbine governor, a tap changer or a
+reactive-power setpoint driven to the end of its encoding is a fault no RTU
+will refuse and no rule about type identifications can express.
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `name` | string | Required and unique; names the bound in the refusal, the security event and the shadow ledger |
+| `points` | list | Required. Information object address ranges (0 to 16777215) this bound covers, as `"4711"`, `"100-199"` or `"0x1000-0x1fff"`. Required on purpose: a value bound over every point on a substation is one somebody wrote without looking |
+| `types` | list | Setpoint type identifications this bound covers (`C_SE_NA_1`, `C_SE_NB_1`, `C_SE_NC_1` and their timed forms `C_SE_TA_1`, `C_SE_TB_1`, `C_SE_TC_1`). Empty covers every setpoint type, which is usually right. A type that carries no setpoint value is refused at load, because a bound on it would cover nothing |
+| `common_addresses` | list | The stations this bound covers. Empty covers every station this listener carries |
+| `min`, `max` | float | Both required, inclusive. A bound with one end open is a bound in one direction, and a setpoint driven to the other end is the failure this exists to stop |
+| `max_delta` | float | How far one command may move the value from the last one this relay saw for that point: a setpoint that may be nudged and not jumped. `0` disables it |
+| `on_unknown` | `allow`, `refuse` | `allow`. What happens when `max_delta` needs a previous value and this relay has none -- after a restart, or before the point has been commanded through this relay |
+
+The first bound that covers a point decides, so a narrow bound written above
+a wider one is how an exception is made. A setpoint no bound covers is not
+decided here at all: which points may be commanded is what `rules` and
+`default_action` are for.
+
+**The range always holds; the delta holds as far as the relay can see.** The
+range needs nothing, so it is checked first and applies to every setpoint
+command including a *selection* -- the station is never asked to hold a value
+it may not be given, and refusing the selection does not consume it. The
+delta needs to know where the point is now, and what that means here is **the
+last value this relay saw**: a setpoint it forwarded, or a station's positive
+confirmation of one. A value changed by another control centre, by a local
+panel or by the process itself was never on this path, so the relay does not
+know it -- which is why `on_unknown` exists, why `iec104_setpoint_unknown` is
+counted, and why the range is the half that always decides. A *negative*
+confirmation makes the relay forget the point: the command did not take
+effect, so a delta measured from it would be measured from a value the
+equipment refused.
+
+**A normalised setpoint is a fraction, not an engineering value.**
+`C_SE_NA_1` carries a *normalised* value: the standard defines it as a signed
+16-bit number over 2^15, so it runs from -1 to very nearly +1, and the full
+scale it is a fraction *of* is configured in the device where this relay
+cannot see it. So a bound on a normalised point is a bound on the fraction --
+`min: 0`, `max: 0.8` -- and writing `min: 0`, `max: 40` for one is a bound
+nothing can exceed. The load warns when a bound named only for normalised
+types is written outside -1 to +1; it cannot warn when the bound also covers
+a scaled type, because there the same numbers are right.
+
+**A value that cannot be shown to be inside a bound is outside it.** A short
+float can carry NaN and the infinities, and every comparison with NaN is
+false -- so a bound that only asked "below `min` or above `max`" would pass a
+NaN straight through to a governor. A non-finite setpoint is refused as out
+of range.
+
+**A station's own report is never refused by a value bound.** Only a command
+-- cause `act` or `deact` -- is decided about. An RTU that answers a setpoint
+with the value it actually applied, clamped by its own configuration and
+outside the bound the relay holds, reaches the control centre: refusing the
+answer would leave the centre waiting for ever for a command this relay
+already let through, and hide the one number that says what the equipment
+did.
+
 **What is checked before the rules, and cannot be shadowed.** A frame the
 relay could not read is refused whether or not the listener is enforcing:
 forwarding what it cannot decide about would hand the substation octets it
@@ -2034,14 +2098,16 @@ Counters: `iec104_sessions`, `iec104_sessions_open`, `iec104_frames`,
 `iec104_commands`, `iec104_system_commands`, `iec104_denied`,
 `iec104_would_deny`, `iec104_malformed`, `iec104_rejected`,
 `iec104_rate_limited`, `iec104_selects`, `iec104_executes`,
-`iec104_unselected`, `iec104_selects_held`, `iec104_sequence_gaps`,
+`iec104_unselected`, `iec104_selects_held`, `iec104_setpoints`,
+`iec104_setpoint_points`, `iec104_setpoint_unknown`, `iec104_sequence_gaps`,
 `iec104_window_full`, `iec104_upstream_failed`. Refusals are
 `iec104_denied` for the ban triggers, and the fine-grained reason is in the
 refusal counters: `client_not_allowed`, `tls_handshake`, `malformed`,
 `frame_too_long`, `max_connections`, `rate_limited`,
 `command_rate_limited`, `monitor_only`, `common_address`, `rule`,
 `default_deny`, `control`, `station_command`, `sequence`, `window`,
-`ack_ahead`, `unselected`, `select_unavailable`.
+`ack_ahead`, `unselected`, `select_unavailable`, `setpoint_range`,
+`setpoint_delta`, `setpoint_unknown`.
 
 ### server.listeners[].ldap (kind: ldap)
 

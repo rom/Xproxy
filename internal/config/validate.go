@@ -9188,6 +9188,85 @@ func (v *validator) snmpListener(p string, m *SNMPListener, hasTLS bool) {
 	}
 }
 
+// iec104Setpoints checks the value bounds on setpoint commands.
+//
+// Every error here is a bound that would not do what its author meant, which on
+// this protocol is worse than no bound: an operator who has written one stops
+// looking at the point.
+func (v *validator) iec104Setpoints(p string, in []IEC104Setpoint) {
+	seen := map[string]bool{}
+	for i, sp := range in {
+		q := fmt.Sprintf("%s[%d]", p, i)
+		switch {
+		case sp.Name == "":
+			v.errf("%s.name: required; a bound nobody can name is one nobody can find in a log", q)
+		case seen[sp.Name]:
+			v.errf("%s.name: duplicate %q", q, sp.Name)
+		default:
+			seen[sp.Name] = true
+		}
+		if len(sp.Points) == 0 {
+			v.errf("%s.points: required; a value bound over every point on a substation is one somebody wrote without looking", q)
+		}
+		v.modbusRanges(q+".points", sp.Points, 1<<24-1)
+		v.modbusRanges(q+".common_addresses", sp.CommonAddresses, 65535)
+		// Only the setpoint types, and only by name: a bound naming a single
+		// command has no value to bound and would silently cover nothing.
+		for j, ty := range sp.Types {
+			t, ok := iec104.TypeOf(ty)
+			if !ok {
+				v.errf("%s.types[%d]: %q is not a type identification", q, j, ty)
+				continue
+			}
+			if kind, _ := iec104.SetpointEncoding(t); kind == iec104.NotASetpoint {
+				v.errf("%s.types[%d]: %s carries no setpoint value, so a value bound on it covers nothing (the setpoint types are C_SE_NA_1, C_SE_NB_1, C_SE_NC_1 and their timed forms)", q, j, ty)
+			}
+		}
+		switch {
+		case sp.Min == nil || sp.Max == nil:
+			v.errf("%s: min and max are both required; a bound with one end open is a bound in one direction, and a setpoint driven to the other end is what this exists to stop", q)
+		case *sp.Min > *sp.Max:
+			v.errf("%s: min %v is above max %v", q, *sp.Min, *sp.Max)
+		}
+		if sp.MaxDelta < 0 {
+			v.errf("%s.max_delta: must not be negative", q)
+		}
+		switch sp.OnUnknown {
+		case "", "allow", "refuse":
+		default:
+			v.errf("%s.on_unknown: must be allow or refuse", q)
+		}
+		if sp.MaxDelta == 0 && sp.OnUnknown != "" {
+			v.warnf("%s.on_unknown: set without max_delta, which is the only check that needs a previous value, so it decides nothing", q)
+		}
+		// The normalised trap: a fraction of full scale, not an engineering
+		// value. A bound outside -1..+1 on a listener whose setpoints are
+		// normalised is a bound nothing can exceed.
+		if normalisedOnly(sp.Types) && sp.Min != nil && sp.Max != nil &&
+			(*sp.Max > 1 || *sp.Min < -1) {
+			v.warnf("%s: min %v / max %v on C_SE_NA_1, whose value is a *fraction of full scale* from -1 to nearly +1 rather than an engineering value -- the full scale lives in the device, where this relay cannot see it, so a bound outside that range can never be exceeded", q, *sp.Min, *sp.Max)
+		}
+	}
+}
+
+// normalisedOnly says whether every type named is a normalised setpoint, which
+// is when the fraction-of-full-scale warning above is worth making.
+func normalisedOnly(types []string) bool {
+	if len(types) == 0 {
+		return false
+	}
+	for _, ty := range types {
+		t, ok := iec104.TypeOf(ty)
+		if !ok {
+			return false
+		}
+		if kind, _ := iec104.SetpointEncoding(t); kind != iec104.Normalised {
+			return false
+		}
+	}
+	return true
+}
+
 func (v *validator) iec104Listener(p string, m *IEC104Listener, hasTLS bool) {
 	switch m.Mode {
 	case "", "reverse", "forward":
@@ -9234,6 +9313,7 @@ func (v *validator) iec104Listener(p string, m *IEC104Listener, hasTLS bool) {
 			v.errf("%s.allow_controls[%d]: %q is not a control function (STARTDT_act, STARTDT_con, STOPDT_act, STOPDT_con, TESTFR_act, TESTFR_con)", p, i, c)
 		}
 	}
+	v.iec104Setpoints(p+".setpoints", m.Setpoints)
 	if m.MonitorOnly && m.RequireSelect {
 		v.warnf("%s.require_select: monitor_only already refuses every command, so there is nothing left to select", p)
 	}

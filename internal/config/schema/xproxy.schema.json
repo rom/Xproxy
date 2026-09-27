@@ -4179,6 +4179,13 @@
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
         },
+        "setpoints": {
+          "description": "Setpoints bound the *value* a setpoint command may carry, per information object address. Without them a setpoint is bounded only by which point it names and when it may be sent, so a control centre that may move a setpoint at all may move it to anything the encoding can hold -- which on a scaled value is -32768 to 32767 and on a short float is most of the real line.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/IEC104Setpoint"
+          }
+        },
         "tls_mode": {
           "description": "TLSMode is implicit (IEC 62351-3: TLS from the first octet) or none. Default implicit when the listener has a tls section. The standard's own port for it is 2404 either way, which is why the mode is a setting rather than inferred from the port.",
           "type": "string"
@@ -4206,7 +4213,6 @@
       "additionalProperties": false
     },
     "IEC104Rule": {
-      "description": "IEC104Rule decides one frame.",
       "type": "object",
       "properties": {
         "action": {
@@ -4277,6 +4283,53 @@
         },
         "types": {
           "description": "Types are type identifications by the standard's name (C_SC_NA_1) or by number.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "IEC104Setpoint": {
+      "description": "IEC104Rule decides one frame. IEC104Setpoint bounds the value a setpoint command may carry. It is the bound a rule about type identifications cannot express. A rule says a control centre may send C_SE_NB_1 to point 4711; this says the value it carries has to be between 0 and 40, and may not move by more than 5 at a time. On a turbine or a tap changer that difference is the difference between a policy about who may act and a policy about what may happen. **What the number means depends on the encoding**, and this relay cannot always tell. A scaled value (C_SE_NB_1) is an integer in the point's own unit, which is what an engineer means by a setpoint. A short float (C_SE_NC_1) likewise. But a normalised value (C_SE_NA_1) is a *fraction of full scale*, from -1 to very nearly +1, and the full scale is configured in the device where this relay cannot see it -- so a bound on a normalised point is a bound on the fraction, and writing min: 0 / max: 40 for one is a mistake the load will not catch. The reference says so beside this, and the protocol page says it again.",
+      "type": "object",
+      "properties": {
+        "common_addresses": {
+          "description": "CommonAddresses narrows it to particular stations. Empty covers every station this listener carries.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max": {
+          "type": "number"
+        },
+        "max_delta": {
+          "description": "MaxDelta bounds how far one command may move the value from the last one this relay saw for that point: a setpoint that may be nudged and not jumped. 0 disables it. \"The last one this relay saw\" is exactly that, and it is the honest limit of the check. A value changed by another control centre, by a local panel, or by the process itself is not seen here -- so OnUnknown says what to do about a command to a point whose value this relay does not know.",
+          "type": "number"
+        },
+        "min": {
+          "description": "Min and Max bound the value, inclusive. Both required: a bound with one end open is a bound in one direction, and a setpoint driven to the other end is the failure this exists to stop.",
+          "type": "number"
+        },
+        "name": {
+          "description": "Name is what a refusal and the status view call this bound. Required and unique: a decision nobody can name is one nobody can find.",
+          "type": "string"
+        },
+        "on_unknown": {
+          "description": "OnUnknown is what happens when MaxDelta needs a previous value and this relay has none: after a restart, or before the station has reported the point. allow (the default) carries the command with Min and Max still in force and writes down that the delta could not be checked; refuse holds it. It is a real choice rather than a default to accept. allow means the first command after a restart is bounded by the range but not by the step; refuse means a control centre cannot move the point until the station has reported it, which is usually one interrogation away and occasionally an outage in the middle of one.",
+          "type": "string"
+        },
+        "points": {
+          "description": "Points is the information object addresses this bound covers, as \"4711\", \"100-199\" or \"0x1000-0x1fff\". Required -- a bound over every point on a substation is a bound somebody wrote without looking.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "types": {
+          "description": "Types narrows the bound to particular setpoint types, by their standard names (C_SE_NA_1 and so on). Empty covers every setpoint type, which is usually right: a point is normally commanded with one encoding, and a bound that covered only the encoding the author happened to think of would be silent about the others.",
           "type": "array",
           "items": {
             "type": "string"

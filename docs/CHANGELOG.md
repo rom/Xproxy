@@ -6,6 +6,91 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (1.4, what a setpoint may be set to)
+
+- **A value policy for IEC 104 setpoint commands.** A rule on this kind could
+  say a control centre may send `C_SE_NB_1` to point 4711. Nothing could say
+  what 4711 may be set *to* -- and on this protocol nothing else does either: a
+  scaled setpoint carries any integer from -32768 to 32767, a short float most
+  of the real line, and the RTU writes whatever arrives. A governor setpoint, a
+  tap-changer position or a reactive-power reference driven to the end of its
+  encoding is a fault that looks, frame by frame, exactly like ordinary
+  operation. `setpoints` on an `iec104` listener now bounds the value (`min`,
+  `max`) and the step (`max_delta`), per information object address, per station
+  and per encoding.
+
+  The value is read at the wire level for all three of the standard's
+  encodings -- normalised (a signed 16-bit fraction over 2^15), scaled (a signed
+  integer) and IEEE 754 short float -- and presented to the policy as one
+  `float64`, because a bound is a statement about the process and an operator
+  should not have to write it three times for one substation.
+
+  Two halves, different in kind, and the difference is the honest part. `min`
+  and `max` need nothing, so they are checked first and hold for every setpoint
+  command including a *selection*: the station is never asked to hold a value it
+  may not be given, and a refused selection is not consumed. `max_delta` needs
+  to know where the point is now, and what that means here is **the last value
+  this relay saw** -- a setpoint it forwarded, or a station's positive
+  confirmation of one. Another control centre, a local panel or the process
+  itself changes a point without passing through here, so `on_unknown` says what
+  happens when there is no previous value (`allow` keeps the range in force,
+  `refuse` holds the command) and `iec104_setpoint_unknown` counts how often
+  that happened. A station's *negative* confirmation makes the relay forget the
+  point: the command did not take effect, so a delta measured from it would be
+  measured from a value the equipment refused.
+
+  Three things were decided rather than defaulted. A **normalised** value is a
+  fraction of a full scale configured in the device, which no relay can read off
+  the wire -- so a bound on one is a bound on the fraction, the load *warns* when
+  a bound named only for normalised types is written outside -1 to +1, and the
+  reference and the protocol page both say so where a bound is written. This is
+  why earlier versions of this listener had no value policy at all; a warning at
+  load is better than the same mistake found at a breaker. A **non-finite**
+  short float is refused as out of range, because every comparison with NaN is
+  false and a bound that only asked "below `min` or above `max`" would pass a
+  NaN straight through to a governor. And a **station's own report** is never
+  refused by a value bound: an RTU answering with the value it actually applied,
+  clamped by its own configuration and outside the bound, reaches the control
+  centre -- refusing the answer would leave the centre waiting for ever for a
+  command this relay already let through.
+
+  Refusals are `setpoint_range`, `setpoint_delta` and `setpoint_unknown`, each
+  with the value, the point and the bound's name in the security event and the
+  shadow ledger. Both shadow switches carry the traffic and record what would
+  have been refused. Counters: `iec104_setpoints`, `iec104_setpoint_points`,
+  `iec104_setpoint_unknown`. Fourteen mutations of the new guards were tried and
+  all fourteen were caught by the tests.
+
+### Fixed (1.4, two bounds that could be walked past)
+
+- **The IEC 104 select bit was read from the wrong octet on every setpoint
+  command.** The select/execute bit lives in a command's *qualifier* octet, and
+  the parser read octet 0 of the information element for every command type. For
+  a single, double or regulating-step command that is the qualifier and the read
+  was right. For a **setpoint** the value comes first -- two octets of it, or
+  four for a short float -- so the parser was reading the low byte of the value
+  the operator asked for. A setpoint whose low byte happened to have bit 8 set
+  was read as a *selection*; one without it as an *execute*. So `require_select`
+  on a listener carrying setpoints could be walked straight past by choosing a
+  value, and a four-eyes rule written as `select` on one client and `execute` on
+  another matched on the value rather than on the half of the two-step form.
+
+  The offset is now a property of the type identification -- 0 for the command
+  types, 2 after a normalised or scaled value, 4 after a short float -- and a
+  table test holds it against `SelectSupported` and the setpoint encodings over
+  all 256 type codes, so a type added later cannot be given a select bit and no
+  offset.
+
+- **A negative SNMP `max-repetitions` bypassed the amplification bound.** The
+  GETBULK field is a signed integer on the wire, and the relay compared it
+  against the configured bound with a `<=`: any negative value passed both the
+  bound and the rule that matches on it. RFC 3416 defines the range as 0 to
+  2147483647, so a negative count is malformed -- but the relay's job is to
+  refuse it, not to trust the agent to. The parser still reports the field
+  faithfully (a parser that clamped would hide from the relay the thing the
+  relay must decide) and both the bound and the matching rule now treat a
+  negative count as exceeding any limit.
+
 ### Fixed (1.4, what a release actually contains)
 
 - **The Linux release tarball shipped four binaries for as long as there had been

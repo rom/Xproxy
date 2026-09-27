@@ -302,3 +302,44 @@ func upper(s string) string {
 	}
 	return string(b)
 }
+
+// SetpointKind is how a setpoint command encodes the value it carries. The
+// three are not interchangeable: the same two octets mean a fraction of full
+// scale in one and an engineering integer in another, so a bound written
+// against the wrong one is a bound about nothing.
+type SetpointKind int
+
+const (
+	// NotASetpoint is every type that carries no setpoint value: the
+	// single, double and regulating step commands, the bitstring command,
+	// and everything in the monitoring direction.
+	NotASetpoint SetpointKind = iota
+	// Normalised is NVA: a 16-bit signed fraction of full scale, where
+	// 0x7fff is very nearly +1 and 0x8000 is -1. The engineering value
+	// depends on a range configured in the device, which this relay does
+	// not know -- so a bound on it is a bound on the fraction.
+	Normalised
+	// Scaled is SVA: a 16-bit signed integer in whatever unit the point is
+	// in. This is the one an engineer usually means by "setpoint".
+	Scaled
+	// ShortFloat is R32-IEEE-754, four octets, little endian like
+	// everything else here.
+	ShortFloat
+)
+
+// SetpointEncoding says how a type carries its value, and where in the
+// information element that value starts. The offset is always zero -- the value
+// comes first and the qualifier after it, which is the layout that made the
+// select bit easy to read from the wrong octet -- but it is returned rather
+// than assumed so that a type with a different shape cannot be added silently.
+func SetpointEncoding(t Type) (kind SetpointKind, at int) {
+	switch t {
+	case CSeNA1, CSeTA1:
+		return Normalised, 0
+	case CSeNB1, CSeTB1:
+		return Scaled, 0
+	case CSeNC1, CSeTC1:
+		return ShortFloat, 0
+	}
+	return NotASetpoint, 0
+}

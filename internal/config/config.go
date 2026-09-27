@@ -562,6 +562,13 @@ type IEC104Listener struct {
 	// and what a control centre's alarm list understands), drop (no
 	// answer, which the centre reads as a timeout) or close.
 	DenyResponse string `yaml:"deny_response"`
+	// Setpoints bound the *value* a setpoint command may carry, per
+	// information object address. Without them a setpoint is bounded only
+	// by which point it names and when it may be sent, so a control
+	// centre that may move a setpoint at all may move it to anything the
+	// encoding can hold -- which on a scaled value is -32768 to 32767 and
+	// on a short float is most of the real line.
+	Setpoints []IEC104Setpoint `yaml:"setpoints"`
 	// RequireSelect makes the two-step form mandatory for every command
 	// type that has one: a command must be selected, by the same client
 	// on the same connection, before it is executed. The standard
@@ -2691,6 +2698,68 @@ type SNMPRule struct {
 }
 
 // IEC104Rule decides one frame.
+// IEC104Setpoint bounds the value a setpoint command may carry.
+//
+// It is the bound a rule about type identifications cannot express. A rule says
+// a control centre may send C_SE_NB_1 to point 4711; this says the value it
+// carries has to be between 0 and 40, and may not move by more than 5 at a
+// time. On a turbine or a tap changer that difference is the difference between
+// a policy about who may act and a policy about what may happen.
+//
+// **What the number means depends on the encoding**, and this relay cannot always
+// tell. A scaled value (C_SE_NB_1) is an integer in the point's own unit, which
+// is what an engineer means by a setpoint. A short float (C_SE_NC_1) likewise.
+// But a normalised value (C_SE_NA_1) is a *fraction of full scale*, from -1 to
+// very nearly +1, and the full scale is configured in the device where this relay
+// cannot see it -- so a bound on a normalised point is a bound on the fraction,
+// and writing min: 0 / max: 40 for one is a mistake the load will not catch. The
+// reference says so beside this, and the protocol page says it again.
+type IEC104Setpoint struct {
+	// Name is what a refusal and the status view call this bound. Required
+	// and unique: a decision nobody can name is one nobody can find.
+	Name string `yaml:"name"`
+	// Points is the information object addresses this bound covers, as
+	// "4711", "100-199" or "0x1000-0x1fff". Required -- a bound over every
+	// point on a substation is a bound somebody wrote without looking.
+	Points []string `yaml:"points"`
+	// Types narrows the bound to particular setpoint types, by their
+	// standard names (C_SE_NA_1 and so on). Empty covers every setpoint
+	// type, which is usually right: a point is normally commanded with one
+	// encoding, and a bound that covered only the encoding the author
+	// happened to think of would be silent about the others.
+	Types []string `yaml:"types"`
+	// CommonAddresses narrows it to particular stations. Empty covers
+	// every station this listener carries.
+	CommonAddresses []string `yaml:"common_addresses"`
+	// Min and Max bound the value, inclusive. Both required: a bound with
+	// one end open is a bound in one direction, and a setpoint driven to
+	// the other end is the failure this exists to stop.
+	Min *float64 `yaml:"min"`
+	Max *float64 `yaml:"max"`
+	// MaxDelta bounds how far one command may move the value from the last
+	// one this relay saw for that point: a setpoint that may be nudged and
+	// not jumped. 0 disables it.
+	//
+	// "The last one this relay saw" is exactly that, and it is the honest
+	// limit of the check. A value changed by another control centre, by a
+	// local panel, or by the process itself is not seen here -- so
+	// OnUnknown says what to do about a command to a point whose value
+	// this relay does not know.
+	MaxDelta float64 `yaml:"max_delta"`
+	// OnUnknown is what happens when MaxDelta needs a previous value and
+	// this relay has none: after a restart, or before the station has
+	// reported the point. allow (the default) carries the command with Min
+	// and Max still in force and writes down that the delta could not be
+	// checked; refuse holds it.
+	//
+	// It is a real choice rather than a default to accept. allow means the
+	// first command after a restart is bounded by the range but not by the
+	// step; refuse means a control centre cannot move the point until the
+	// station has reported it, which is usually one interrogation away and
+	// occasionally an outage in the middle of one.
+	OnUnknown string `yaml:"on_unknown"`
+}
+
 type IEC104Rule struct {
 	// Name identifies the rule in the logs and the counters. Required.
 	Name string `yaml:"name"`

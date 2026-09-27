@@ -137,6 +137,11 @@ type Policy struct {
 	allow, deny  []netip.Prefix
 	controls     map[wire.Control]bool
 	now          func() time.Time
+	// setpoints bound the value a setpoint command may carry, and state is
+	// the last value this relay saw at each point, which is what the delta
+	// half of a bound is measured against.
+	setpoints []*setpointRule
+	state     *setpointState
 }
 
 // request is what the policy decides about: a parsed frame and who sent it.
@@ -176,6 +181,10 @@ func compile(l *config.IEC104Listener, now func() time.Time) (*Policy, error) {
 			p.controls[confirmationOf(c)] = true
 		}
 	}
+	if p.setpoints, err = compileSetpoints(l.Setpoints); err != nil {
+		return nil, err
+	}
+	p.state = newSetpointState(0)
 	for i := range l.Rules {
 		r, err := compileRule(&l.Rules[i])
 		if err != nil {
