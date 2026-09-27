@@ -39,6 +39,7 @@ exist.
 - [A controller that is not there](#a-controller-that-is-not-there)
 - [An agent that is not there](#an-agent-that-is-not-there)
 - [A cache that is not there](#a-cache-that-is-not-there)
+- [A database that is not there](#a-database-that-is-not-there)
 - [Refusal at the TLS handshake](#refusal-at-the-tls-handshake)
 - [What it produces](#what-it-produces)
 - [Building it out](#building-it-out)
@@ -86,6 +87,7 @@ Two consequences worth stating plainly:
 | Deceptive answer | `routes[].deceive` | Certainty — it cannot tell a find from a miss | **A real client silently loses data** | Must be none |
 | Fabricated device | `modbus.deception`, `iec104.deception`, `s7.deception`, `snmp.deception` | A plant it must map, all of it wrong; the tripwire that fires while it does | A frame on its way to a real device answered by the fabrication -- which is what the one rule exists to prevent | None: it answers only where a refusal would be |
 | Fabricated cache | `redis.deception` | The whole exploit chain, answered -- and its directory, file name and payload in your log | The same, plus a value read back that was never stored | None, as above |
+| Fabricated database | `mysql.deception` | The reconnaissance, answered consistently -- and which of four escalations it was for | The same, plus an empty result set where a real query needed rows | None, as above |
 | Handshake refusal | `handshake` | A key exchange it does not get to spend | A client refused with no log line to explain it | Only what the ban list holds |
 
 ## How the signals chain
@@ -761,6 +763,89 @@ community strings: a log holding every credential sprayed at the estate is a lis
 of the estate's own credentials as often as not. Everything else *is* recorded,
 one line and clipped, because on this protocol the arguments are the message —
 the directory, the file name, the replication target, the cron entry.
+
+## A database that is not there
+
+The cache above is attacked by a script. A database is attacked by somebody
+reading the answers — and on MySQL the reading is done with statements that are,
+one at a time, completely ordinary.
+
+A scanner finds 3306, reads the greeting for a version, and then asks:
+
+```
+SHOW DATABASES                  what is here
+SELECT @@datadir                where does it keep its files
+SELECT @@secure_file_priv       may a statement write one
+SHOW GRANTS                     does this account have FILE
+SELECT * FROM mysql.user        the password hashes
+```
+
+Nothing in that list is an exploit. Every one of them is a statement a monitoring
+dashboard might send. What they are *for* is deciding which of four things the next
+statement will be:
+
+```
+SELECT '<?php …' INTO OUTFILE '/var/www/html/s.php'   a web shell
+SELECT LOAD_FILE('/home/app/.ssh/id_ed25519')         a key off the server
+LOAD DATA LOCAL INFILE '/etc/passwd' INTO TABLE t     a file off the *client*
+CREATE FUNCTION sys_exec RETURNS int SONAME 'udf.so'  a shared object
+```
+
+A refusal at the greeting ends the conversation before any of that, and tells you
+that somebody connected. Answering it tells you which of the four they had in mind.
+
+`mysql.deception` answers instead:
+
+```yaml
+# A honeypot: a database on the application network with nothing behind it.
+- name: db-spare
+  address: "10.70.0.41:3306"
+  kind: mysql
+  mysql:
+    require_tls: false     # the fabricated greeting does not offer CLIENT_SSL
+    deception:
+      mode: decoy
+      profile: wordpress
+      version: "5.7.44-0ubuntu0.20.04.1"   # …what the estate's own servers say…
+      tables: ["wordpress.wp_users", "wordpress.wp_options"]
+```
+
+**The rule is the same one**: a statement that was going to reach the server is
+never answered by the fabrication. On a real listener (`mode: answer`) it sits
+exactly where a refusal would be written.
+
+**The answers have to agree with each other**, which is the part that takes care
+on this protocol. `@@secure_file_priv` is NULL, so the file-writing statements get
+error 1290 — the refusal a server with it set gives — and `LOAD_FILE` answers NULL
+rather than an error, because that is what such a server does. `SHOW GRANTS`
+reports an account without `FILE`, so a read of `mysql.user` answers 1142 rather
+than an empty set: an empty set would say the table is there and has no rows,
+which `mysql.user` never is. The MariaDB profile does not offer
+`caching_sha2_password`, which MariaDB has never shipped. Each of those is a
+consistency a fingerprinting tool checks, and each one wrong is the tell that ends
+the pretence.
+
+**Three things it will not do**, and all three are about the fabrication not
+becoming a weapon or a resource.
+
+It never asks the client for a file. `LOAD DATA LOCAL INFILE` is answered with an
+error, not with the request packet the protocol allows — a fabrication that sent
+that request would be attacking whoever connected to it, and the clients that
+connect to a honeypot include the estate's own scanners.
+
+It does not sleep. `SELECT SLEEP(60)` answers zero immediately, because honouring
+it would make the decoy a way to hold this listener's resources, a statement at a
+time, for as long as the visitor liked.
+
+It does not invent rows. A `SELECT` the recognisers do not know returns an empty
+result set, because the fabrication is a surface rather than a database and
+inventing rows for an arbitrary projection would mean inventing a schema to match
+— the same line the Modbus section draws about not inventing a consequence it
+cannot maintain.
+
+**And the password is never recorded.** The login's user name, plugin and program
+name are kept, because they are identities; the authentication response is not,
+for the reason the SNMP section gives about community strings.
 
 ## Refusal at the TLS handshake
 

@@ -1226,6 +1226,11 @@ type MySQLListener struct {
 	// dashboard when both connect as the same user.
 	AllowPrograms []string `yaml:"allow_programs"`
 
+	// Deception answers as a server that is not there: a refused statement
+	// answered by a fabricated database, or a whole listener that is one. See
+	// MySQLDeception.
+	Deception *MySQLDeception `yaml:"deception"`
+
 	// Rules narrow or widen the listener for traffic that matches them.
 	Rules []MySQLRule `yaml:"rules"`
 	// DefaultAction is allow or deny when no rule matched. Default deny.
@@ -1239,6 +1244,79 @@ type MySQLListener struct {
 	// LOAD DATA LOCAL the capability forbids, and the capability stripping
 	// itself -- which is not a refusal at all, so there is nothing to shadow.
 	MonitorOnly bool `yaml:"monitor_only"`
+}
+
+// MySQLDeception answers as a MySQL server that is not there.
+//
+// On this protocol the reconnaissance is the attack's first half and it is
+// entirely made of legitimate statements. A scanner finds the port, reads the
+// greeting for a version, and then asks the questions that decide what is
+// possible: which databases are there, what is `@@datadir`, is
+// `@@secure_file_priv` empty, does this account have FILE. The answers decide
+// whether the next statement writes a web shell with `INTO OUTFILE`, reads
+// `/etc/passwd` with `LOAD_FILE`, asks the *client* for a file with
+// `LOAD DATA LOCAL INFILE`, or installs a shared object with
+// `CREATE FUNCTION ... SONAME`.
+//
+// A refusal ends that at the greeting. Answering it says which of those four
+// they were reaching for.
+type MySQLDeception struct {
+	// Enabled turns the section off without removing it; it defaults to true
+	// wherever the section is present.
+	Enabled *bool `yaml:"enabled"`
+	// Mode is answer (the default: a statement this listener was going to
+	// refuse is answered by the fabrication instead, and never reaches the
+	// server) or decoy (the whole listener is a fabricated server: no
+	// upstream, and nothing behind it).
+	Mode string `yaml:"mode"`
+	// Clients are the networks that get the fabrication. Required in mode
+	// answer. In mode decoy an empty list means every client, which is what a
+	// honeypot wants.
+	Clients []string `yaml:"clients"`
+	// Profile is the fabricated server's shape: generic-mysql (the default),
+	// mariadb or wordpress. It decides the version reported, the flavour, and
+	// the databases and tables it claims to hold.
+	Profile string `yaml:"profile"`
+	// Version is the server version string in the greeting, which is the first
+	// thing a scanner records and what a vulnerability database is indexed by.
+	// Empty takes the profile's.
+	//
+	// **A decoy should say what the estate's own servers say.** A version
+	// nobody on the site runs is the tell that ends the pretence, and only you
+	// know what that is.
+	Version string `yaml:"version"`
+	// Databases replaces the profile's schema list, which is what SHOW
+	// DATABASES answers and the first thing asked after the version.
+	Databases []string `yaml:"databases"`
+	// Tables replaces the profile's table list, as `database.table` names. It
+	// is what SHOW TABLES answers, and it is the part of the fabrication a
+	// visitor reads most closely.
+	Tables []string `yaml:"tables"`
+	// RequireAuth makes the fabrication refuse the login rather than accept it.
+	//
+	// Default false: accepting is what lets the reconnaissance happen at all,
+	// and an account that works is what the scanning is looking for. Where it
+	// is set, the attempt is still recorded -- the user name and the password
+	// field's length, never the password.
+	RequireAuth bool `yaml:"require_auth"`
+	// Tripwire are object names -- a table, a function, a system variable --
+	// that raise a mysql_tripwire security event when a statement mentions one.
+	//
+	// They are in addition to a built-in set, which is the escalation chain and
+	// nothing else: mysql.user, LOAD_FILE, INTO OUTFILE, INTO DUMPFILE,
+	// LOAD DATA LOCAL, CREATE FUNCTION with SONAME, secure_file_priv, SLEEP and
+	// BENCHMARK. Nothing legitimate sends any of those to a fabricated
+	// database, so they do not need to be configured to be worth waking
+	// somebody for.
+	Tripwire []string `yaml:"tripwire"`
+	// Seed makes the fabricated values reproducible. Zero derives one from the
+	// listener name, which is stable across restarts.
+	Seed uint64 `yaml:"seed"`
+	// Period is how long one sample of a counter or a gauge lasts. Default 30s;
+	// 1s to 1h.
+	Period Duration `yaml:"period"`
+	// MaxClients bounds the record of who has been answered. Default 1024.
+	MaxClients int `yaml:"max_clients"`
 }
 
 // MySQLRule is one rule of a mysql listener's policy.

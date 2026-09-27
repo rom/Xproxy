@@ -229,7 +229,7 @@ protocol so that a policy can be written in that protocol's own terms:
 | `ldap` | `xrelay` | LDAP v3, LDAPS, StartTLS | Bind methods, the bound identity, operations, naming contexts and subtrees, scopes, attributes in both directions, filter and entry bounds |
 | `dhcp` | `xrelay` | DHCPv4 with RFC 2132 options, RFC 3046 relay agent information, RFC 3442 routes | The server a reply came from, the options and addresses a reply may carry, the boot file, the lease bounds, the hardware-address rate |
 | `postgres` | `xrelay` | PostgreSQL protocol v3, both query protocols, the cleartext TLS negotiation | Whether the connection may be unencrypted at all, which role and database may be claimed, which authentication methods may cross, which *shapes* of statement are allowed, replication, the fast-path call, cancel requests |
-| `mysql` | `xrelay` | MySQL and MariaDB protocol, handshake v10, the capability flags, the command set | The capability bits a client may even see offered, which of the protocol's commands may cross, whether the connection may be unencrypted, which user and database may be claimed (re-checked on COM_CHANGE_USER), which authentication plugins, which statement shapes, LOAD DATA in either form |
+| `mysql` | `xrelay` | MySQL and MariaDB protocol, handshake v10, the capability flags, the command set | The capability bits a client may even see offered, which of the protocol's commands may cross, whether the connection may be unencrypted, which user and database may be claimed (re-checked on COM_CHANGE_USER), which authentication plugins, which statement shapes, LOAD DATA in either form; and, with `deception`, answering a refused statement as a fabricated database so the reconnaissance is collected rather than deflected |
 | `tds` | `xrelay` | TDS 7.x for SQL Server: the PRELOGIN negotiation, LOGIN7, SQLBATCH and RPC, and the TLS handshake carried inside TDS packets | Whether the connection may be unencrypted at all -- and the relay answers the negotiation itself rather than forwarding the server's octet -- whether a password may cross in the clear, which login, database and application name may be claimed, whether a login carrying no user name is admitted, which message types, which stored procedures, and which statement shapes, applied to a batch and to the SQL inside an sp_executesql alike |
 | `redis` | `xrelay` | RESP2 and RESP3, multibulk and inline, with a table of where each command's keys are | Whether the connection may be unencrypted, whether a command may arrive before the connection has authenticated -- with the answer taken from the server's reply -- which ACL user may be named, which commands and subcommands may cross, which keys by prefix, which numbered databases, and whether anything may write; and, with `deception`, answering a refused command as a fabricated cache so the exploit chain is collected rather than deflected |
 | `amqp` | `xrelay` | AMQP 0-9-1 and AMQP 1.0: the frame layer of each, the 0-9-1 method catalogue with its arguments and field tables, the 1.0 performatives over its type system, and the SASL exchange of both | Which of the two versions may be spoken; which SASL mechanisms and which identities; which virtual host; whether the broker's own *topology* may be changed at all, which is off by default; which exchanges, queues, routing keys and link addresses a connection may name -- including the dead-letter exchange of a queue, the alternate exchange of an exchange and the reply-to inside a message, which a policy written against the obvious fields would miss; whether every message must say who published it; and the frame, channel, link and message bounds |
@@ -1260,7 +1260,19 @@ describes it, validation refuses what cannot work, and
   two things the fabrication will not pretend, `EVAL` and `MODULE LOAD`, answer
   the error the real server answers when it cannot, since a `+OK` to either
   would be a claim that code was running and nothing said afterwards would be
-  consistent with it
+  consistent with it. A `mysql` listener does it for a database, where the
+  reconnaissance is the attack's first half and is made entirely of legitimate
+  statements — the version, `SHOW DATABASES`, `@@datadir`,
+  `@@secure_file_priv`, `SHOW GRANTS`, `mysql.user` — whose answers decide
+  which of four escalations the next statement is: a web shell through `INTO
+  OUTFILE`, a key through `LOAD_FILE`, a file off the *client* through `LOAD
+  DATA LOCAL INFILE`, or a shared object through `CREATE FUNCTION ... SONAME`.
+  The part that takes care there is that the answers agree with each other,
+  because that is what a fingerprinting tool checks: `@@secure_file_priv` NULL
+  and the file statements refused the way such a server refuses them,
+  `SHOW GRANTS` without `FILE` and `mysql.user` refused rather than empty, and
+  no `caching_sha2_password` on a MariaDB version. It never asks the client for
+  a file, never sleeps, and never invents rows
 - **A device inventory built from traffic, not from scanning.** An
   operational estate's oldest problem is that nobody knows what is on the
   network: the drawings are from commissioning, the spreadsheet was

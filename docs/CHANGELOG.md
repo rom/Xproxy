@@ -6,6 +6,67 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (mysql: a database that is not there)
+
+- **`mysql.deception` answers as a fabricated MySQL**, either where a refusal
+  would otherwise be written on a real listener (`mode: answer`) or as a whole
+  listener with nothing behind it (`mode: decoy`). The rule is the one every other
+  fabrication here follows: a statement on its way to a real database is never
+  answered from here.
+
+  The reconnaissance on this protocol is the attack's first half and it is made
+  entirely of legitimate statements -- the version, `SHOW DATABASES`,
+  `SELECT @@datadir`, `SELECT @@secure_file_priv`, `SHOW GRANTS`,
+  `SELECT * FROM mysql.user`. Their answers decide which of four things the next
+  statement is: `INTO OUTFILE` writes a web shell, `LOAD_FILE` reads a key off the
+  server, `LOAD DATA LOCAL INFILE` asks the *client* for a file, and
+  `CREATE FUNCTION ... SONAME` installs a shared object. A refusal at the greeting
+  ends the conversation; answering it says which of the four they had in mind, and
+  until then the reconnaissance is indistinguishable from a dashboard's own
+  queries.
+
+- **The answers agree with each other**, which is what a fingerprinting tool
+  checks and the part that takes care on this protocol. `@@secure_file_priv` is
+  NULL, so the file-writing statements get error 1290 -- the refusal a server with
+  it set gives -- and `LOAD_FILE` answers NULL rather than an error, because that
+  is what such a server does. `SHOW GRANTS` reports an account without `FILE`, so a
+  read of `mysql.user` answers 1142 rather than an empty set: an empty set would
+  say the table is there and has no rows, which `mysql.user` never is. The MariaDB
+  profile does not offer `caching_sha2_password`, which MariaDB has never shipped.
+
+- **Three things the fabrication will not do.** It never asks the client for a
+  file: `LOAD DATA LOCAL INFILE` is answered with an error rather than with the
+  request packet the protocol allows, because sending that would be attacking
+  whoever connected -- and the clients that connect to a honeypot include the
+  estate's own scanners. It does not sleep: `SELECT SLEEP(60)` answers zero
+  immediately, because honouring it would make the decoy a way to hold this
+  listener's resources a statement at a time. And it does not invent rows: a
+  `SELECT` the recognisers do not know returns an empty result set, because the
+  fabrication is a surface rather than a database.
+
+- **The tripwires need no configuring**: `mysql.user`, `LOAD_FILE`, `INFILE`,
+  `OUTFILE`, `DUMPFILE`, `SONAME`, `secure_file_priv`, `SLEEP`, `BENCHMARK`,
+  `sys_exec` and `sys_eval` raise `mysql_tripwire` from the start, matched per
+  identifier rather than per substring so that a column named `sleepy` is not
+  `SLEEP`. `tripwire` adds object names to that rather than replacing it.
+
+- Three profiles (`generic-mysql`, `mariadb`, `wordpress`), a configurable
+  version, database list and table list, and `require_auth` for a decoy that
+  refuses the login instead. `require_tls: false` is required in `decoy` mode and
+  validation refuses the listener without it: the fabricated greeting does not
+  offer `CLIENT_SSL`, because the negotiation is mid-handshake on this protocol
+  and a server that offered it and could not complete it fails in a way a scanner
+  notices.
+
+- **A password is never recorded.** The login's user name, plugin and program name
+  are kept, because they are identities; the authentication response is not, for
+  the reason the SNMP relay does not log a community string.
+
+- New counters `mysql_deceived` and `mysql_tripwire`, and the fabrication appears
+  in `xproxyctl decoys` like the others. `internal/mysqlwire` gained the
+  server-side packet builders -- the greeting, OK, EOF, column definitions and
+  rows -- which a relay that only ever refused had never needed.
+
 ### Added (redis: a cache that is not there)
 
 - **`redis.deception` answers as a fabricated Redis**, either where a refusal

@@ -217,6 +217,63 @@ server:
         monitor_only: true
         default_action: deny
 
+    # ---------------------------------------------------------------
+    # A database that is not there.
+    #
+    # No upstream, because there is nothing behind it. It exists to be
+    # found, and what it collects is the one thing a refusal cannot give
+    # you: which escalation the visitor had in mind.
+    #
+    # The reconnaissance on this protocol is the attack's first half and it
+    # is made entirely of legitimate statements:
+    #
+    #   SHOW DATABASES                what is here
+    #   SELECT @@datadir              where does it keep its files
+    #   SELECT @@secure_file_priv     may a statement write one
+    #   SHOW GRANTS                   does this account have FILE
+    #   SELECT * FROM mysql.user      the password hashes
+    #
+    # Their answers decide which of four things comes next: a web shell
+    # through INTO OUTFILE, a key through LOAD_FILE, a file off the *client*
+    # through LOAD DATA LOCAL INFILE, or a shared object through
+    # CREATE FUNCTION ... SONAME. A refusal at the greeting ends the
+    # conversation before any of that.
+    # ---------------------------------------------------------------
+    - name: db-spare
+      address: "10.0.0.43:3306"
+      kind: mysql
+      mysql:
+        # require_tls must be false, and validation insists on it: the
+        # fabricated greeting does not offer CLIENT_SSL. The negotiation is
+        # mid-handshake on this protocol, and a server that offered it and
+        # could not complete it fails in a way a scanner notices. An
+        # unencrypted server on 3306 is also what the scanning wants.
+        require_tls: false
+
+        deception:
+          mode: decoy
+
+          # What the estate's own servers say. A version nobody on the site
+          # runs is the tell that ends the pretence.
+          version: "8.0.36-0ubuntu0.22.04.1"
+          profile: generic-mysql
+
+          # A catalogue a visitor will read closely, because it is the part
+          # that looks like it matters. The names come from this estate, not
+          # from the profile.
+          databases: ["information_schema", "mysql", "performance_schema", "sys", "billing"]
+          tables:
+            - "billing.customers"
+            - "billing.invoices"
+            - "billing.invoice_lines"
+            - "billing.card_tokens"
+
+          # The escalation chain is already a tripwire and needs no listing:
+          # mysql.user, LOAD_FILE, INFILE, OUTFILE, DUMPFILE, SONAME,
+          # secure_file_priv, SLEEP, BENCHMARK. This is the table that is
+          # interesting here and nowhere else.
+          tripwire: ["card_tokens"]
+
 upstreams:
   - name: my
     endpoints:

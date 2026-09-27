@@ -10671,6 +10671,105 @@ anything:
 | `function_call` | The fast-path interface bypasses the parser |
 | `statement_too_long` | A bound |
 
+### server.listeners[].mysql.deception
+
+A MySQL that is not there.
+
+On this protocol the reconnaissance is the attack's first half and it is entirely
+made of legitimate statements. A scanner finds the port, reads the greeting for a
+version, and then asks the questions that decide what is possible:
+
+```
+SHOW DATABASES                  what is here
+SELECT @@datadir                where does it keep its files
+SELECT @@secure_file_priv       may a statement write one
+SHOW GRANTS                     does this account have FILE
+SELECT * FROM mysql.user        the password hashes
+```
+
+The answers decide which of four things the next statement is. `INTO OUTFILE`
+writes a web shell into a document root. `LOAD_FILE` reads a key off the server.
+`LOAD DATA LOCAL INFILE` asks the *client* for a file, which is the one that works
+through a firewall. `CREATE FUNCTION ... SONAME` installs a shared object.
+
+A refusal ends that at the greeting. Answering it says which of the four they were
+reaching for — and until you see what follows it, the reconnaissance is
+indistinguishable from an application's own queries.
+
+```yaml
+mysql:
+  # A honeypot: no upstream, because there is nothing behind it. require_tls
+  # must be false -- see below.
+  require_tls: false
+  deception:
+    mode: decoy
+    profile: wordpress
+    version: "5.7.44-0ubuntu0.20.04.1"
+    databases: ["information_schema", "mysql", "wordpress"]
+    tables: ["wordpress.wp_users", "wordpress.wp_options"]
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Turns the section off without removing it |
+| `mode` | `answer`, `decoy` | `answer` | `answer`: a statement this listener was going to refuse is answered by the fabrication instead, and never reaches the server. `decoy`: the whole listener is a fabricated server, with no `upstream` |
+| `clients` | list of CIDR | | The networks that get the fabrication. **Required in mode `answer`.** In mode `decoy` an empty list means every client |
+| `profile` | `generic-mysql`, `mariadb`, `wordpress` | `generic-mysql` | The shape: the version reported, the flavour, and the databases and tables it claims |
+| `version` | string | the profile's | The server version string in the greeting, which is the first thing a scanner records and what a vulnerability database is indexed by |
+| `databases` | list | the profile's | What `SHOW DATABASES` answers |
+| `tables` | list | the profile's | What `SHOW TABLES` answers, as `database.table` names |
+| `require_auth` | bool | `false` | Refuse the login rather than accept it. Off by default: on this protocol the reconnaissance happens *after* the login, so a decoy that refuses it collects nothing |
+| `tripwire` | list | | Object names — a table, a function, a system variable — that raise a `mysql_tripwire` event when a statement mentions one. **In addition to** the built-in set below |
+| `seed` | int | from the listener name | Makes the fabricated values reproducible across restarts |
+| `period` | duration | `30s` | How long one sample of a gauge lasts |
+| `max_clients` | int | `1024` | Bounds the record of who has been answered |
+
+**`require_tls: false` is required in `decoy` mode**, and validation refuses the
+listener without it. The fabricated greeting does not offer `CLIENT_SSL`: the
+negotiation is mid-handshake on this protocol — the client answers the greeting
+with a short packet and the connection *then* becomes TLS — and a server that
+offered it and could not complete it fails in a way a scanner notices. An
+unencrypted server on 3306 is also what the scanning is looking for.
+
+**The tripwires need no configuring.** `mysql.user`, `LOAD_FILE`, `INFILE`,
+`OUTFILE`, `DUMPFILE`, `SONAME`, `secure_file_priv`, `SLEEP`, `BENCHMARK`,
+`sys_exec` and `sys_eval` are in the set from the start, because nothing
+legitimate sends any of them to a fabricated database. They are matched per
+identifier rather than per substring, so a column named `sleepy` is not `SLEEP`.
+
+**Three things the fabrication will not do.**
+
+It never asks the client for a file. `LOAD DATA LOCAL INFILE` is answered with
+error 1148, not with the request packet the protocol allows — a fabrication that
+sent that request would be attacking whoever connected to it, and the clients
+that connect to a honeypot include the estate's own scanners.
+
+It does not sleep. `SELECT SLEEP(60)` answers `0` immediately. Honouring it would
+make the fabrication a way to hold this listener's resources, a statement at a
+time, for as long as the visitor liked.
+
+It does not invent rows. A `SELECT` the recognisers do not know returns an empty
+result set: the fabrication is a *surface*, not a database, and inventing rows for
+an arbitrary projection would mean inventing a schema to match.
+
+**The answers agree with each other**, which is what a fingerprinting tool checks.
+`@@secure_file_priv` is NULL, so the file-writing statements get the refusal a
+server with it set gives (1290) and `LOAD_FILE` answers NULL rather than an
+error. `SHOW GRANTS` reports an account without `FILE`, so a read of `mysql.user`
+answers 1142 rather than an empty set — an empty set would say the table is there
+and has no rows, which `mysql.user` never is. The MariaDB profile does not offer
+`caching_sha2_password`, which MariaDB has never shipped.
+
+**A password is never recorded.** The login packet's user name is an identity and
+is kept, along with the plugin and the client's own program name; the
+authentication response is not. Every statement *is* recorded, clipped and reduced
+to one line.
+
+Counters: `mysql_deceived` and `mysql_tripwire`. Security events:
+`mysql_deceived` and `mysql_tripwire`, with the statement, the database user and
+the reason the statement was not going to reach the server. `xproxyctl decoys`
+lists what each fabrication has seen.
+
 ### How a statement is classified
 
 A deny list of strings is a list of the spellings somebody thought of:

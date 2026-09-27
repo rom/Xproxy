@@ -6616,6 +6616,74 @@
       },
       "additionalProperties": false
     },
+    "MySQLDeception": {
+      "description": "MySQLDeception answers as a MySQL server that is not there. On this protocol the reconnaissance is the attack's first half and it is entirely made of legitimate statements. A scanner finds the port, reads the greeting for a version, and then asks the questions that decide what is possible: which databases are there, what is `@@datadir`, is `@@secure_file_priv` empty, does this account have FILE. The answers decide whether the next statement writes a web shell with `INTO OUTFILE`, reads `/etc/passwd` with `LOAD_FILE`, asks the *client* for a file with `LOAD DATA LOCAL INFILE`, or installs a shared object with `CREATE FUNCTION ... SONAME`. A refusal ends that at the greeting. Answering it says which of those four they were reaching for.",
+      "type": "object",
+      "properties": {
+        "clients": {
+          "description": "Clients are the networks that get the fabrication. Required in mode answer. In mode decoy an empty list means every client, which is what a honeypot wants.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "databases": {
+          "description": "Databases replaces the profile's schema list, which is what SHOW DATABASES answers and the first thing asked after the version.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "enabled": {
+          "description": "Enabled turns the section off without removing it; it defaults to true wherever the section is present.",
+          "type": "boolean"
+        },
+        "max_clients": {
+          "description": "MaxClients bounds the record of who has been answered. Default 1024.",
+          "type": "integer"
+        },
+        "mode": {
+          "description": "Mode is answer (the default: a statement this listener was going to refuse is answered by the fabrication instead, and never reaches the server) or decoy (the whole listener is a fabricated server: no upstream, and nothing behind it).",
+          "type": "string"
+        },
+        "period": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "profile": {
+          "description": "Profile is the fabricated server's shape: generic-mysql (the default), mariadb or wordpress. It decides the version reported, the flavour, and the databases and tables it claims to hold.",
+          "type": "string"
+        },
+        "require_auth": {
+          "description": "RequireAuth makes the fabrication refuse the login rather than accept it. Default false: accepting is what lets the reconnaissance happen at all, and an account that works is what the scanning is looking for. Where it is set, the attempt is still recorded -- the user name and the password field's length, never the password.",
+          "type": "boolean"
+        },
+        "seed": {
+          "description": "Seed makes the fabricated values reproducible. Zero derives one from the listener name, which is stable across restarts.",
+          "type": "integer"
+        },
+        "tables": {
+          "description": "Tables replaces the profile's table list, as `database.table` names. It is what SHOW TABLES answers, and it is the part of the fabrication a visitor reads most closely.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tripwire": {
+          "description": "Tripwire are object names -- a table, a function, a system variable -- that raise a mysql_tripwire security event when a statement mentions one. They are in addition to a built-in set, which is the escalation chain and nothing else: mysql.user, LOAD_FILE, INTO OUTFILE, INTO DUMPFILE, LOAD DATA LOCAL, CREATE FUNCTION with SONAME, secure_file_priv, SLEEP and BENCHMARK. Nothing legitimate sends any of those to a fabricated database, so they do not need to be configured to be worth waking somebody for.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "version": {
+          "description": "Version is the server version string in the greeting, which is the first thing a scanner records and what a vulnerability database is indexed by. Empty takes the profile's. **A decoy should say what the estate's own servers say.** A version nobody on the site runs is the tell that ends the pretence, and only you know what that is.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "MySQLListener": {
       "description": "TFTPListener is a kind: tftp listener: a TFTP relay in front of the servers that move firmware, configurations and boot images around an estate. There is nothing to authenticate with in this protocol, so the whole of the policy is the address it came from, the direction of the transfer, the path it asked for and the size of what comes back. MySQLListener is the settings of a kind: mysql listener: a relay in front of a MySQL or MariaDB server. PostgreSQL's dangerous operations are statements, so a statement policy reaches them all. MySQL's are **commands** -- one octet each, with no SQL involved -- and that is why this section has an `allow_commands` list where the postgres one does not. COM_SHUTDOWN is one octet and stops the server; the three replication commands are a copy of every change to every database; COM_CREATE_DB and COM_DROP_DB predate the DDL statements and bypass any statement policy entirely. The other MySQL-specific move is `deny_capabilities`, which *strips* bits from the server's greeting rather than refusing the connection. A client that never sees CLIENT_LOCAL_FILES offered cannot negotiate it, so the server can never ask that client for a file -- and the application still works. Refusing instead would mean everything on the segment breaks until somebody reconfigures a driver, which is how a security control gets turned off.",
       "type": "object",
@@ -6678,6 +6746,14 @@
         "allow_weak_auth": {
           "description": "AllowWeakAuth permits mysql_clear_password (the password itself) and mysql_old_password (the pre-4.1 scramble, removed from the server in 5.7). Default false. mysql_native_password is deliberately not in that set: its challenge-response discloses no reusable secret, and treating it as weak would make this setting one operators turn off wholesale.",
           "type": "boolean"
+        },
+        "deception": {
+          "description": "Deception answers as a server that is not there: a refused statement answered by a fabricated database, or a whole listener that is one. See MySQLDeception.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/MySQLDeception"
+            }
+          ]
         },
         "default_action": {
           "description": "DefaultAction is allow or deny when no rule matched. Default deny.",
