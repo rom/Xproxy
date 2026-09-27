@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/rom/xproxy/internal/recenc"
 )
 
 // hostileCast is a recording of a session that is attacking whoever
@@ -180,5 +182,139 @@ func TestSessionRefusesWhatItCannotRead(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "unreadable") {
 		t.Errorf("the listing did not say the file is unreadable:\n%s", out.String())
+	}
+}
+
+// sealedCast writes an encrypted recording of the body given, the way the
+// gateways do, and returns the directory, the file and the key file.
+func sealedCast(t *testing.T, body string) (dir, path, keyFile string) {
+	t.Helper()
+	dir = t.TempDir()
+	path = filepath.Join(dir, "session.cast"+recenc.Ext)
+	keyFile = filepath.Join(dir, "rec.key")
+	if err := os.WriteFile(keyFile, []byte("a content key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Create(path) //nolint:gosec // a temporary directory this test made
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := recenc.NewWriter(f, []byte("a content key"), recenc.MinChunk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte(body)); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return dir, path, keyFile
+}
+
+// A terminal recording encrypted at rest: unreadable without the key,
+// and read through the same filter with it.
+func TestSessionReadsAnEncryptedRecording(t *testing.T) {
+	const body = `{"version":2,"width":80,"height":24,"timestamp":1758000000,"title":"lab-console"}
+[0.0,"o","$ whoami\r\n"]
+[0.1,"o","operator\r\n"]
+`
+	dir, path, keyFile := sealedCast(t, body)
+
+	// Without the key: a refusal that names the flag, and nothing shown.
+	var out, errOut bytes.Buffer
+	if code := run([]string{"session", "show", path}, &out, &errOut); code != 1 {
+		t.Fatalf("no key: exit %d, want 1", code)
+	}
+	if strings.Contains(out.String(), "operator") {
+		t.Error("the session was shown without the key")
+	}
+	if !strings.Contains(errOut.String(), "-key") {
+		t.Errorf("the refusal does not name the flag:\n%s", errOut.String())
+	}
+
+	// With it, the ordinary view.
+	out.Reset()
+	errOut.Reset()
+	if code := run([]string{"session", "show", "-key", keyFile, path}, &out, &errOut); code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "whoami") {
+		t.Errorf("the session did not come out: %q", out.String())
+	}
+
+	// And play, which is the same reader with the timing.
+	out.Reset()
+	errOut.Reset()
+	if code := run([]string{"session", "play", "-speed", "100", "-key", keyFile, path}, &out, &errOut); code != 0 {
+		t.Fatalf("play: exit %d: %s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "operator") {
+		t.Errorf("play did not replay it: %q", out.String())
+	}
+
+	// The listing shows both kinds and says which is which.
+	out.Reset()
+	errOut.Reset()
+	if code := run([]string{"session", "list", dir}, &out, &errOut); code != 0 {
+		t.Fatalf("list: exit %d: %s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "encrypted: pass -key") {
+		t.Errorf("the listing does not say the file is encrypted:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "unreadable") {
+		t.Errorf("the listing calls an encrypted recording unreadable:\n%s", out.String())
+	}
+	out.Reset()
+	if code := run([]string{"session", "list", "-key", keyFile, dir}, &out, &errOut); code != 0 {
+		t.Fatalf("list with the key: exit %d: %s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "lab-console") || !strings.Contains(out.String(), "80x24") {
+		t.Errorf("the listing did not look inside with the key:\n%s", out.String())
+	}
+
+	// The JSON form says so in a field, for whatever reads it.
+	out.Reset()
+	if code := run([]string{"-json", "session", "list", dir}, &out, &errOut); code != 0 {
+		t.Fatalf("exit: %s", errOut.String())
+	}
+	var list []recording
+	if err := json.Unmarshal(out.Bytes(), &list); err != nil {
+		t.Fatalf("%v: %s", err, out.String())
+	}
+	if len(list) != 1 || !list[0].Encrypted {
+		t.Errorf("JSON listing %+v", list)
+	}
+}
+
+// The wrong key, and a vault reference this command cannot resolve, are
+// both answered rather than shown as an empty session.
+func TestSessionAnswersAKeyItCannotUse(t *testing.T) {
+	_, path, _ := sealedCast(t, `{"version":2,"width":80,"height":24}`+"\n"+`[0.0,"o","secret\r\n"]`+"\n")
+	dir := filepath.Dir(path)
+	wrong := filepath.Join(dir, "wrong.key")
+	if err := os.WriteFile(wrong, []byte("not the key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ name, ref, want string }{
+		{"the wrong key", wrong, ""},
+		{"a vault reference", "vault:secret/rec#key", "reads no vault"},
+		{"a file that is not there", filepath.Join(dir, "absent"), "keysource"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out, errOut bytes.Buffer
+			if code := run([]string{"session", "show", "-key", tc.ref, path}, &out, &errOut); code != 1 {
+				t.Fatalf("exit %d, want 1", code)
+			}
+			if strings.Contains(out.String(), "secret") {
+				t.Error("the session came out anyway")
+			}
+			if tc.want != "" && !strings.Contains(errOut.String(), tc.want) {
+				t.Errorf("the error does not say %q:\n%s", tc.want, errOut.String())
+			}
+		})
 	}
 }

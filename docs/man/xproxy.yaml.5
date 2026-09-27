@@ -10328,6 +10328,75 @@ xproxy\-replay session\-...cast          # verified first, refused if it does no
 .RE
 .PP
 \fBxproxy\-replay\fR refuses a recording that does not match its manifest unless \fB\-force\fR is given, and says which it is doing. A recording with no manifest replays as it always did. The manifest is removed with the recording it describes when \fBmax_files\fR prunes it.
+.SS "server.listeners[].ssh.recording.encryption"
+.PP
+These files hold everything the session showed. On an administrative session that is the most valuable file on the machine: keys printed, configuration read, tokens echoed, a password typed into a prompt that did not echo it. \fB0600\fR in a directory the operator names protects them from another user on the same host and from nothing else \[u2014] not from a backup that leaves the building, not from a stolen disk, and not from somebody who reaches the file system with the proxy user\(aqs rights.
+.PP
+With this section the bytes on the disk are ciphertext and the file is named \fB....cast.enc\fR, so a directory listing says which recordings are which and nothing hands one to a terminal player by mistake.
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.7i) lbw(0.9i) lbx
+lw(0.8i) lw(0.7i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Present so a principal can turn a listener\(aqs encryption off;\: there is no reason to write it as \fBtrue\fR
+T}
+T{
+\fBkey\fR
+T}	T{
+secret
+T}	T{
+required
+T}	T{
+A secret reference (a path,\: \fBenv:\:NAME\fR,\: \fBvault:\:path#field\fR). The file key is derived from it per recording,\: with a random salt in the file
+T}
+T{
+\fBchunk_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB65536\fR
+T}	T{
+How much of the recording one sealed frame covers;\: 4096..1048576. It decides the overhead (sixteen octets a frame) and the memory each open recording holds \[u2014] one chunk while it fills,\: and one while a reader opens it \[u2014] so a gate with many sessions at once has a reason to leave it at the default
+T}
+.TE
+.PP
+\fBThe format\fR, because a format nobody can read is not a record: a 32\-octet header (\fBXPROXYREC1\fR, the suite, a random 16\-octet salt and the frame size), then one AES\-256\-GCM frame per chunk, then an empty frame that says the file ends there. The file key is HKDF\-SHA256 of the configured key with that salt, so two recordings under one configured key never share a key stream. Each frame\(aqs nonce is its own position and its additional data is the header, which is what makes a frame impossible to move within the file, impossible to move between files, and impossible to read after the header has been edited. Only the key can produce the empty final frame, so a recording that was cut short has no end and a reader says so instead of reporting a clean one.
+.PP
+\fBWhat it is and is not.\fR It is a symmetric key: whoever can read the key can read every recording it covers, so this is protection against the disk and the backup rather than against a person with the key. There is no per\-reviewer access and no forward secrecy. And \fBrotating the key does not re\-encrypt what is already written\fR: each recording keeps the key it was written under, so the old key has to be kept for as long as the recordings it wrote are kept. Configuring the section says as much at load, because the thing that actually goes wrong here is not the cryptography but a key nobody kept \[u2014] and then the recordings are as good as deleted, which nobody discovers until an incident.
+.PP
+Where the key cannot be resolved, \fBno recording is written\fR \[u2014] the same path as a directory that cannot be written, with a warning and a \fB*_recording_failed\fR event. Falling back to a plain file would put on the disk exactly what this section exists to keep off it.
+.PP
+Reading one back needs the key, and every tool that reads recordings takes the same reference syntax:
+.PP
+.RS 4
+.nf
+.ft CR
+xproxy\-replay \-key env:XPROXY_REC_KEY session\-....cast.enc
+xproxyctl session show \-key /etc/xproxy/rec.key FILE
+xproxyctl session list \-key env:XPROXY_REC_KEY /var/log/xproxy/sessions
+.ft
+.fi
+.RE
+.PP
+\fBxproxyctl session list\fR lists both kinds and, without the key, says which files are encrypted rather than calling them unreadable.
+.PP
+\fBWith \fBintegrity\fR as well\fR, the manifest covers the ciphertext. That is the useful way round: \fBxproxy\-replay \-verify\fR then establishes that the file is the one the proxy wrote \fBwithout the content key at all\fR, so an auditor can be given the manifest key and not the session.
 .SS "server.listeners[].ssh.mfa"
 .PP
 A second factor after the key or the password. The client is told authentication partially succeeded (RFC 4252 partial success) and is then asked, over keyboard\-interactive, for a one\-time code (RFC 6238 TOTP over the HMAC\-OTP of RFC 4226). Nothing about the session exists until the code verifies: a key alone opens no channel.

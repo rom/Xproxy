@@ -4592,6 +4592,71 @@ unless `-force` is given, and says which it is doing. A recording with
 no manifest replays as it always did. The manifest is removed with the
 recording it describes when `max_files` prunes it.
 
+#### server.listeners[].ssh.recording.encryption
+
+These files hold everything the session showed. On an administrative
+session that is the most valuable file on the machine: keys printed,
+configuration read, tokens echoed, a password typed into a prompt that
+did not echo it. `0600` in a directory the operator names protects them
+from another user on the same host and from nothing else — not from a
+backup that leaves the building, not from a stolen disk, and not from
+somebody who reaches the file system with the proxy user's rights.
+
+With this section the bytes on the disk are ciphertext and the file is
+named `....cast.enc`, so a directory listing says which recordings are
+which and nothing hands one to a terminal player by mistake.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Present so a principal can turn a listener's encryption off; there is no reason to write it as `true` |
+| `key` | secret | required | A secret reference (a path, `env:NAME`, `vault:path#field`). The file key is derived from it per recording, with a random salt in the file |
+| `chunk_bytes` | int | `65536` | How much of the recording one sealed frame covers; 4096..1048576. It decides the overhead (sixteen octets a frame) and the memory each open recording holds — one chunk while it fills, and one while a reader opens it — so a gate with many sessions at once has a reason to leave it at the default |
+
+**The format**, because a format nobody can read is not a record: a
+32-octet header (`XPROXYREC1`, the suite, a random 16-octet salt and the
+frame size), then one AES-256-GCM frame per chunk, then an empty frame
+that says the file ends there. The file key is HKDF-SHA256 of the
+configured key with that salt, so two recordings under one configured key
+never share a key stream. Each frame's nonce is its own position and its
+additional data is the header, which is what makes a frame impossible to
+move within the file, impossible to move between files, and impossible to
+read after the header has been edited. Only the key can produce the empty
+final frame, so a recording that was cut short has no end and a reader
+says so instead of reporting a clean one.
+
+**What it is and is not.** It is a symmetric key: whoever can read the
+key can read every recording it covers, so this is protection against the
+disk and the backup rather than against a person with the key. There is no
+per-reviewer access and no forward secrecy. And **rotating the key does
+not re-encrypt what is already written**: each recording keeps the key it
+was written under, so the old key has to be kept for as long as the
+recordings it wrote are kept. Configuring the section says as much at
+load, because the thing that actually goes wrong here is not the
+cryptography but a key nobody kept — and then the recordings are as good
+as deleted, which nobody discovers until an incident.
+
+Where the key cannot be resolved, **no recording is written** — the same
+path as a directory that cannot be written, with a warning and a
+`*_recording_failed` event. Falling back to a plain file would put on the
+disk exactly what this section exists to keep off it.
+
+Reading one back needs the key, and every tool that reads recordings takes
+the same reference syntax:
+
+```sh
+xproxy-replay -key env:XPROXY_REC_KEY session-....cast.enc
+xproxyctl session show -key /etc/xproxy/rec.key FILE
+xproxyctl session list -key env:XPROXY_REC_KEY /var/log/xproxy/sessions
+```
+
+`xproxyctl session list` lists both kinds and, without the key, says which
+files are encrypted rather than calling them unreadable.
+
+**With `integrity` as well**, the manifest covers the ciphertext. That is
+the useful way round: `xproxy-replay -verify` then establishes that the
+file is the one the proxy wrote **without the content key at all**, so an
+auditor can be given the manifest key and not the session.
+
 #### server.listeners[].ssh.mfa
 
 A second factor after the key or the password. The client is told

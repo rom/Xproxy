@@ -1339,6 +1339,15 @@ func sessionRecordingDefaults(r *SessionRecording) {
 	if r.MaxFileBytes == 0 {
 		r.MaxFileBytes = 32 << 20
 	}
+	if e := r.Encryption; e != nil {
+		if e.Enabled == nil {
+			t := true
+			e.Enabled = &t
+		}
+		if e.ChunkBytes == 0 {
+			e.ChunkBytes = 64 << 10
+		}
+	}
 	if i := r.Integrity; i != nil {
 		if i.Enabled == nil {
 			t := true

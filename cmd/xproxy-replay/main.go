@@ -14,7 +14,8 @@
 //	xproxy-replay -html out.html s.rfb.cast       # a page that plays it
 //	xproxy-replay -png frames/ s.rfb.cast         # one PNG per update
 //	xproxy-replay -at 12s -png . s.rfb.cast       # the screen at 12 seconds
-//	xproxy-replay -verify -key env:K s.cast       # check it against its manifest
+//	xproxy-replay -key env:K s.cast.enc           # one encrypted at rest
+//	xproxy-replay -verify -chain-key env:M s.cast # check it against its manifest
 //
 // Where a recording has an integrity manifest beside it -- the gateway
 // writes one when the recording section asks for it -- it is checked
@@ -58,7 +59,8 @@ func run(args []string, out, errOut io.Writer) int {
 	speed := fs.Float64("speed", 1, "multiply the recorded timing when replaying a terminal")
 	input := fs.Bool("input", false, "include what the client sent, where the recording holds it")
 	verify := fs.Bool("verify", false, "check the recording against its integrity manifest and print what was found, without replaying it")
-	key := fs.String("key", "", "the integrity key, as a path, env:NAME or vault reference, for a manifest that carries MACs")
+	key := fs.String("key", "", "the key an encrypted recording (*.cast.enc) was written under, as a path or env:NAME")
+	chainKey := fs.String("chain-key", "", "the integrity key, as a path or env:NAME, for a manifest that carries MACs")
 	force := fs.Bool("force", false, "replay a recording whose manifest does not verify (it is no longer the file the proxy wrote)")
 	plain := fs.Bool("plain", false, "drop every escape sequence rather than keeping the ones that draw")
 	showVersion := fs.Bool("version", false, "print version and exit")
@@ -73,12 +75,20 @@ func run(args []string, out, errOut io.Writer) int {
 		_, _ = fmt.Fprintln(errOut, "usage: xproxy-replay [-summary] [-html FILE] [-png DIR] [-at D] [-input] FILE")
 		return 2
 	}
-	if code, stop := integrity(fs.Arg(0), *key, *verify, *force, out, errOut); stop {
+	if code, stop := integrity(fs.Arg(0), *chainKey, *verify, *force, out, errOut); stop {
 		return code
 	}
-	rec, err := replay.Open(fs.Arg(0))
+	content, err := secretKey("-key", *key)
 	if err != nil {
 		_, _ = fmt.Fprintln(errOut, "error:", err)
+		return 1
+	}
+	rec, err := replay.OpenKeyed(fs.Arg(0), content)
+	if err != nil {
+		_, _ = fmt.Fprintln(errOut, "error:", err)
+		if errors.Is(err, replay.ErrEncrypted) {
+			_, _ = fmt.Fprintln(errOut, "pass -key with the reference the recording section named")
+		}
 		return 1
 	}
 	defer func() { _ = rec.Close() }()
@@ -108,7 +118,7 @@ func run(args []string, out, errOut io.Writer) int {
 // is describe what a recording showed without knowing it is the
 // recording the proxy wrote. -force plays it anyway, and says so.
 func integrity(path, keyRef string, verify, force bool, out, errOut io.Writer) (int, bool) {
-	key, err := integrityKey(keyRef)
+	key, err := secretKey("-chain-key", keyRef)
 	if err != nil {
 		_, _ = fmt.Fprintln(errOut, "error:", err)
 		return 1, true
@@ -134,6 +144,10 @@ func integrity(path, keyRef string, verify, force bool, out, errOut io.Writer) (
 		_, _ = fmt.Fprintln(errOut, "replaying it anyway because -force was given")
 		return 0, false
 	}
+	// On an encrypted recording the manifest covers the ciphertext, which
+	// is the useful layer: this answer needs no -key, so an auditor can
+	// establish that the file is the one the proxy wrote without being
+	// able to read the session in it.
 	line := fmt.Sprintf("integrity: %d manifest records cover all %d bytes", v.Records, v.Covered)
 	switch {
 	case v.Authentic:
@@ -152,11 +166,11 @@ func integrity(path, keyRef string, verify, force bool, out, errOut io.Writer) (
 	return 0, false
 }
 
-// integrityKey resolves the -key reference. It is the same reference
-// syntax the configuration uses, minus a vault: this program is offline
-// and holds no vault configuration, so a vault reference says so rather
-// than failing as a path that is not there.
-func integrityKey(ref string) ([]byte, error) {
+// secretKey resolves one key reference. It is the same reference syntax
+// the configuration uses, minus a vault: this program is offline and
+// holds no vault configuration, so a vault reference says so rather than
+// failing as a path that is not there.
+func secretKey(flag, ref string) ([]byte, error) {
 	if ref == "" {
 		return nil, nil
 	}
@@ -165,7 +179,8 @@ func integrityKey(ref string) ([]byte, error) {
 		return nil, err
 	}
 	if r.Scheme == keysource.SchemeVault {
-		return nil, fmt.Errorf("-key %s: this program reads no vault; fetch the key and pass it as a file or in the environment", ref)
+		return nil, fmt.Errorf("%s %s: this program reads no vault; fetch the key and pass it as a file or in the environment",
+			flag, ref)
 	}
 	return keysource.New(nil, 0, nil).Bytes(ref)
 }

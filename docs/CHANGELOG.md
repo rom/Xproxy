@@ -67,6 +67,60 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   have none, and this is a viewer. The manifest is pruned with the recording it
   describes, and both appear in the `ssh_recording` line and its siblings.
 
+- **Encryption at rest, under a key from custody.** `recording.encryption`
+  writes the recording as ciphertext and names the file `....cast.enc`.
+  Until now these files were `0600` in a directory an operator names, which
+  is protection against another user on the same host and against nothing
+  else: not a backup that leaves the building, not a stolen disk, and not
+  somebody who reaches the file system with the proxy user's rights. On an
+  administrative session the recording is the most valuable file on the
+  machine -- keys printed, configuration read, tokens echoed, a password
+  typed into a prompt that did not echo it.
+
+  The format is in `internal/recenc`: a 32-octet header (magic, suite, a
+  random 16-octet salt, the frame size), one AES-256-GCM frame per chunk,
+  and an empty frame that ends the file. The file key is HKDF-SHA256 of the
+  configured key with that salt, so two recordings under one configured key
+  never share a key stream. Each frame's nonce is its own position and its
+  additional data is the header: a frame cannot be moved within the file,
+  cannot be moved between files, and the header cannot be edited. Only the
+  key can produce the empty final frame, so a file that was cut short has
+  no end and a reader says so rather than reporting a clean one.
+
+  An earlier draft also bound the frame counter into the additional data and
+  carried a "last frame" octet beside it. Mutation testing showed both were
+  dead -- the nonce already binds the position, and the writer seals an
+  empty frame only at the end -- so both are gone, and the package comment
+  says why: a mechanism nobody can write a failing test for is a mechanism
+  that will be believed and not checked.
+
+  Stated plainly in the reference, because the failure here is not the
+  cryptography: it is a symmetric key, so whoever can read it can read every
+  recording it covers, there is no per-reviewer access and no forward
+  secrecy, and **rotating the key does not re-encrypt what is already
+  written** -- each recording keeps the key it was written under, so the old
+  key has to be kept for as long as the recordings it wrote are kept.
+  Configuring the section warns about exactly that. A key that cannot be
+  resolved writes no recording rather than falling back to a plain file.
+
+  With `integrity` as well, the manifest covers the ciphertext, which is the
+  useful way round: `xproxy-replay -verify` then establishes that the file is
+  the one the proxy wrote **without the content key**, so an auditor can be
+  given the manifest key and not the session.
+
+- **Every tool that reads a recording takes the key.** `xproxy-replay -key`,
+  `xproxyctl session show -key`, `session play -key`, and `session list
+  -key`, all with the configuration's own reference syntax (a path or
+  `env:NAME`; a vault reference says what to do instead, since these
+  programs hold no vault configuration). Without a key they say the file is
+  encrypted and name the flag rather than failing as though the file made no
+  sense, and `session list` lists both kinds and marks the ones it cannot
+  look inside. What the file is comes from the magic at the start of it and
+  not from its name, so a recording renamed while being archived still reads
+  as what it is. `xproxy-replay`'s manifest key is now `-chain-key`, leaving
+  `-key` for the recording's own contents, which is the one a reviewer needs
+  every time.
+
 ### Security (1.4, the RDP channel policy could be walked around)
 
 - **A dynamic channel could reopen a static channel the policy had just

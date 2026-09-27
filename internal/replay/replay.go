@@ -21,6 +21,7 @@
 package replay
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -30,6 +31,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/asciicast"
+	"github.com/rom/xproxy/internal/recenc"
 )
 
 // Kind is what a recording holds, taken from the header the proxy wrote
@@ -71,18 +73,55 @@ type Recording struct {
 // tool is whatever somebody has on disk.
 const MaxEvents = 5_000_000
 
-// Open reads the header and decides what the file holds.
-func Open(path string) (*Recording, error) {
+// ErrEncrypted says the file is an encrypted recording and no key was
+// given. It is a different answer from "this file makes no sense": the
+// caller has the right file and is missing the key.
+var ErrEncrypted = errors.New("the recording is encrypted: give the key it was written under")
+
+// Open reads the header and decides what the file holds. An encrypted
+// recording returns ErrEncrypted rather than a parse error.
+func Open(path string) (*Recording, error) { return OpenKeyed(path, nil) }
+
+// OpenKeyed opens a recording that may be encrypted at rest. A nil key
+// reads a plain recording as before; a key is used only where the file is
+// one, so a caller may pass one it does not need.
+func OpenKeyed(path string, key []byte) (*Recording, error) {
 	f, err := os.Open(path) //nolint:gosec // the recording an operator asked to read is the argument
 	if err != nil {
 		return nil, err
 	}
-	rd, err := asciicast.NewReader(f)
+	src, err := Plaintext(f, key)
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	rd, err := asciicast.NewReader(src)
 	if err != nil {
 		_ = f.Close()
 		return nil, err
 	}
 	return &Recording{Header: rd.Header, Kind: kindOf(rd.Header), Path: path, rd: rd, f: f}, nil
+}
+
+// Plaintext returns the recording's own bytes, decrypting where the file
+// is an encrypted one. It is exported because xproxyctl reads recordings
+// through internal/asciicast directly and needs the same decision made
+// the same way.
+//
+// The decision is the magic at the start of the file and not the name:
+// a file renamed by whoever archived it is still what it is.
+func Plaintext(r io.Reader, key []byte) (io.Reader, error) {
+	br := bufio.NewReader(r)
+	head, err := br.Peek(len(recenc.Magic))
+	switch {
+	case err != nil && !errors.Is(err, io.EOF):
+		return nil, err
+	case !recenc.Looks(head):
+		return br, nil
+	case len(key) == 0:
+		return nil, ErrEncrypted
+	}
+	return recenc.NewReader(br, key)
 }
 
 // Close releases the file.

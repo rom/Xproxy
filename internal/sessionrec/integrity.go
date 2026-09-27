@@ -113,12 +113,20 @@ func chainHashOf(r ChainRecord) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// chainLabel separates this use of a configured key from every other
+// one. An operator may reasonably point integrity and encryption at the
+// same reference, and a key that is an HMAC key here and the input to a
+// key derivation there should not be the same string of bytes doing two
+// jobs unlabelled.
+const chainLabel = "xproxy session recording manifest v1\x00"
+
 // chainMAC is the keyed half.
 func chainMAC(key []byte, hashHex string) string {
 	if len(key) == 0 {
 		return ""
 	}
 	m := hmac.New(sha256.New, key)
+	_, _ = m.Write([]byte(chainLabel))
 	_, _ = m.Write([]byte(hashHex))
 	return hex.EncodeToString(m.Sum(nil))
 }

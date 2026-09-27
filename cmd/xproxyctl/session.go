@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,6 +12,9 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/asciicast"
+	"github.com/rom/xproxy/internal/keysource"
+	"github.com/rom/xproxy/internal/recenc"
+	"github.com/rom/xproxy/internal/replay"
 	"github.com/rom/xproxy/internal/termsafe"
 	"github.com/rom/xproxy/internal/textsafe"
 )
@@ -29,7 +33,8 @@ import (
 // is not a record.
 
 // sessionUsage is one line, so the error path and the help agree.
-const sessionUsage = "usage: xproxyctl session list DIR | show [-safe] [-input] FILE | play [-speed N] [-plain] FILE"
+const sessionUsage = "usage: xproxyctl session list [-key REF] DIR | show [-safe] [-input] [-key REF] FILE | " +
+	"play [-speed N] [-plain] [-key REF] FILE"
 
 func sessionCmd(args []string, raw, out, errOut io.Writer, asJSON bool) int {
 	if len(args) == 0 {
@@ -57,18 +62,59 @@ type recording struct {
 	Width   int       `json:"width,omitempty"`
 	Height  int       `json:"height,omitempty"`
 	Error   string    `json:"error,omitempty"`
+	// Encrypted says the file on the disk is ciphertext, whether or not
+	// this listing had the key to look inside it.
+	Encrypted bool `json:"encrypted,omitempty"`
+}
+
+// recordingKey resolves a -key reference the same way xproxy-replay does:
+// a path or env:NAME, and a vault reference says what to do instead, since
+// this command holds no vault configuration.
+func recordingKey(ref string) ([]byte, error) {
+	if ref == "" {
+		return nil, nil
+	}
+	r, err := keysource.Parse(ref)
+	if err != nil {
+		return nil, err
+	}
+	if r.Scheme == keysource.SchemeVault {
+		return nil, fmt.Errorf("-key %s: this command reads no vault; fetch the key and pass it as a file or in the environment", ref)
+	}
+	return keysource.New(nil, 0, nil).Bytes(ref)
 }
 
 func sessionList(args []string, out, errOut io.Writer, asJSON bool) int {
-	if len(args) != 1 {
+	fs := flag.NewFlagSet("session list", flag.ContinueOnError)
+	fs.SetOutput(errOut)
+	keyRef := fs.String("key", "", "the key encrypted recordings were written under, as a path or env:NAME")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 1 {
 		_, _ = fmt.Fprintln(errOut, sessionUsage)
 		return 2
 	}
-	names, err := filepath.Glob(filepath.Join(args[0], "*.cast"))
+	dir := fs.Arg(0)
+	key, err := recordingKey(*keyRef)
 	if err != nil {
 		_, _ = fmt.Fprintln(errOut, "error:", err)
 		return 1
 	}
+	// Both kinds live in one directory: a listener that had encryption
+	// turned on keeps the recordings it wrote before, and a listing that
+	// showed only one kind would be a listing somebody trusted.
+	names, err := filepath.Glob(filepath.Join(dir, "*.cast"))
+	if err != nil {
+		_, _ = fmt.Fprintln(errOut, "error:", err)
+		return 1
+	}
+	enc, err := filepath.Glob(filepath.Join(dir, "*.cast"+recenc.Ext))
+	if err != nil {
+		_, _ = fmt.Fprintln(errOut, "error:", err)
+		return 1
+	}
+	names = append(names, enc...)
 	sort.Strings(names)
 	list := make([]recording, 0, len(names))
 	for _, name := range names {
@@ -83,7 +129,25 @@ func sessionList(args []string, out, errOut io.Writer, asJSON bool) int {
 				return
 			}
 			defer func() { _ = f.Close() }()
-			rd, err := asciicast.NewReader(f)
+			// What the file is comes from its first octets rather than its
+			// name, so a recording somebody renamed while archiving it is
+			// still read as what it is.
+			br := bufio.NewReader(f)
+			if head, err := br.Peek(len(recenc.Magic)); err == nil {
+				r.Encrypted = recenc.Looks(head)
+			}
+			src, err := replay.Plaintext(br, key)
+			if errors.Is(err, replay.ErrEncrypted) {
+				// Not an error in the file: a file this listing cannot read
+				// without a key. Saying which it is keeps "encrypted" from
+				// looking like "corrupt".
+				return
+			}
+			if err != nil {
+				r.Error = err.Error()
+				return
+			}
+			rd, err := asciicast.NewReader(src)
 			if err != nil {
 				r.Error = err.Error()
 				return
@@ -113,6 +177,10 @@ func sessionList(args []string, out, errOut io.Writer, asJSON bool) int {
 			_, _ = fmt.Fprintf(out, "%s\t%d bytes\tunreadable: %s\n", r.File, r.Bytes, r.Error)
 			continue
 		}
+		if r.Encrypted && r.Title == "" && r.Width == 0 {
+			_, _ = fmt.Fprintf(out, "%s\t%d bytes\tencrypted: pass -key to read it\n", r.File, r.Bytes)
+			continue
+		}
 		when := "unknown"
 		if !r.Started.IsZero() {
 			when = r.Started.Format(time.RFC3339)
@@ -128,6 +196,7 @@ func sessionShow(args []string, raw, errOut io.Writer) int {
 	fs.SetOutput(errOut)
 	safe := fs.Bool("safe", false, "keep the colours and cursor movement; encode the sequences that reach outside the window")
 	input := fs.Bool("input", false, "include what was typed, where the recording holds it")
+	keyRef := fs.String("key", "", "the key an encrypted recording was written under, as a path or env:NAME")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -139,7 +208,7 @@ func sessionShow(args []string, raw, errOut io.Writer) int {
 	if *safe {
 		mode = termsafe.Safe
 	}
-	return replay(fs.Arg(0), raw, errOut, mode, *input, 0)
+	return show(fs.Arg(0), *keyRef, raw, errOut, mode, *input, 0)
 }
 
 // sessionPlay replays with the timing the session had.
@@ -148,6 +217,7 @@ func sessionPlay(args []string, raw, errOut io.Writer) int {
 	fs.SetOutput(errOut)
 	speed := fs.Float64("speed", 1, "multiply the recorded timing")
 	plain := fs.Bool("plain", false, "drop every escape sequence rather than keeping the ones that draw")
+	keyRef := fs.String("key", "", "the key an encrypted recording was written under, as a path or env:NAME")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -163,19 +233,32 @@ func sessionPlay(args []string, raw, errOut io.Writer) int {
 	if *plain {
 		mode = termsafe.Plain
 	}
-	return replay(fs.Arg(0), raw, errOut, mode, false, *speed)
+	return show(fs.Arg(0), *keyRef, raw, errOut, mode, false, *speed)
 }
 
-// replay reads a recording and writes it through the filter. speed of
-// zero is no waiting, which is what show does.
-func replay(name string, raw, errOut io.Writer, mode termsafe.Mode, withInput bool, speed float64) int {
+// show reads a recording and writes it through the filter. speed of zero
+// is no waiting, which is what the show command does.
+func show(name, keyRef string, raw, errOut io.Writer, mode termsafe.Mode, withInput bool, speed float64) int {
+	key, err := recordingKey(keyRef)
+	if err != nil {
+		_, _ = fmt.Fprintln(errOut, "error:", err)
+		return 1
+	}
 	f, err := os.Open(name) //nolint:gosec // the recording an operator asked to read is the argument
 	if err != nil {
 		_, _ = fmt.Fprintln(errOut, "error:", err)
 		return 1
 	}
 	defer func() { _ = f.Close() }()
-	rd, err := asciicast.NewReader(f)
+	src, err := replay.Plaintext(f, key)
+	if err != nil {
+		_, _ = fmt.Fprintln(errOut, "error:", err)
+		if errors.Is(err, replay.ErrEncrypted) {
+			_, _ = fmt.Fprintln(errOut, "pass -key with the reference the recording section named")
+		}
+		return 1
+	}
+	rd, err := asciicast.NewReader(src)
 	if err != nil {
 		_, _ = fmt.Fprintln(errOut, "error:", err)
 		return 1

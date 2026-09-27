@@ -4565,6 +4565,42 @@ type SessionRecording struct {
 	// that a file edited after the session can be told from one that was
 	// not.
 	Integrity *RecordingIntegrity `yaml:"integrity"`
+	// Encryption writes the recording as ciphertext, under a key from
+	// custody, so a file taken off the host is unreadable.
+	Encryption *RecordingEncryption `yaml:"encryption"`
+}
+
+// RecordingEncryption encrypts each recording at rest.
+//
+// A recording holds everything the session showed, which on an
+// administrative session is the most valuable file on the machine: keys
+// printed, configuration read, tokens echoed. The proxy writes them 0600
+// into a directory an operator names, which protects them from another
+// user on the same host and from nothing else -- not from a backup that
+// leaves the building, not from a stolen disk, and not from somebody who
+// reaches the file system with the proxy user's rights.
+//
+// With this the bytes on the disk are ciphertext (AES-256-GCM in framed
+// chunks, the file key derived per recording from the configured key) and
+// the name ends in .enc. It is a symmetric key, so whoever can read the
+// key can read every recording it covers, and **a key that is lost is
+// every recording lost**: rotating it does not re-encrypt what is already
+// written, so the old key has to be kept for as long as the recordings it
+// wrote are kept.
+type RecordingEncryption struct {
+	// Enabled turns encryption off where a section above turned it on;
+	// it defaults to true wherever this section is present.
+	Enabled *bool `yaml:"enabled"`
+	// Key is a secret reference (a path, env:NAME, vault:path#field)
+	// whose material the file key is derived from. Required: there is no
+	// encryption without one.
+	Key string `yaml:"key"`
+	// ChunkBytes is how much of the recording one sealed frame covers.
+	// Default 65536. It decides the overhead (sixteen octets a frame) and
+	// the memory each open recording holds -- one chunk while it fills,
+	// and one while a reader opens it -- so a gate with many sessions at
+	// once has a reason to leave it where it is.
+	ChunkBytes int `yaml:"chunk_bytes"`
 }
 
 // RecordingIntegrity writes a hash-chained manifest beside each

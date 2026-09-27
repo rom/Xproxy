@@ -227,6 +227,25 @@ server:
             key: env:XPROXY_CHAIN_KEY
             segment_bytes: 1048576
 
+          # And the bytes on the disk are ciphertext. 0600 in a directory
+          # protects these files from another user on this host and from
+          # nothing else: not a backup that leaves the building, not a
+          # stolen disk, not somebody who reaches the file system as the
+          # proxy user. The recording of an administrative session is the
+          # most valuable file on this machine.
+          #
+          # Read one with:
+          #
+          #   xproxy-replay -key env:XPROXY_REC_KEY FILE.cast.enc
+          #   xproxyctl session show -key env:XPROXY_REC_KEY FILE.cast.enc
+          #
+          # A key that is lost is every recording it wrote lost, and
+          # rotating it does not re-encrypt what is already written. Keep
+          # every key for as long as its recordings are kept.
+          encryption:
+            key: env:XPROXY_REC_KEY
+            chunk_bytes: 65536
+
         # The credential onwards, and the check that the target is the
         # target: the bastion is the one place that can notice a machine
         # in the middle.

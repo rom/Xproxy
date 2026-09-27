@@ -4157,6 +4157,25 @@ in the output. RDP's graphics are not decoded at all, by the same
 argument; its framing, channels and marks are, so `-summary` still says
 what the session did.
 
+**A recording encrypted at rest needs its key.** Where the recording
+section has an `encryption` key, the file on the disk is ciphertext and
+its name ends `.cast.enc`. Every tool that reads recordings takes the same
+reference:
+
+```sh
+xproxy-replay -key env:XPROXY_REC_KEY s.cast.enc
+xproxyctl session show -key /etc/xproxy/rec.key FILE
+xproxyctl session list -key env:XPROXY_REC_KEY /var/log/xproxy/sessions
+```
+
+Without the key they say the file is encrypted and name the flag, rather
+than failing as though the file made no sense; `session list` lists both
+kinds and marks the ones it cannot look inside. What this protects is the
+disk and the backup: it is a symmetric key, so whoever can read the key
+can read every recording it covers, and **a key that is lost is every
+recording lost** -- rotating it does not re-encrypt what is already
+written. See [CONFIG.md](CONFIG.md#serverlistenerssshrecordingencryption).
+
 **A manifest is checked before anything is replayed.** Where the
 recording section asked for integrity, the gateway writes
 `<recording>.chain` beside the file, and this program verifies it before
@@ -4164,20 +4183,21 @@ it shows anything -- a reviewer about to describe a session should not
 have to remember to ask whether the file is the one the proxy wrote:
 
 ```sh
-xproxy-replay -verify -key env:XPROXY_CHAIN_KEY s.cast  # the answer on its own
+xproxy-replay -verify -chain-key env:XPROXY_CHAIN_KEY s.cast  # the answer on its own
 xproxy-replay s.cast                                    # verified, then played
 xproxy-replay -force s.cast                             # played anyway, and it says so
 ```
 
 A recording that does not match its manifest is refused; `-force` shows
 it and says on stderr that it is showing a file that no longer matches.
-A recording with no manifest replays as before. Without `-key` the
+A recording with no manifest replays as before. Without `-chain-key` the
 chain's links and digests are checked, which catches corruption, a
 shortened file and a partial edit; with the key the records are also
 MACs, which is what somebody who has the box but not the key cannot
-forge. Verify somewhere the recording host is not -- the key is
-`env:`, a file or a vault reference, and a MAC protects nobody from
-whoever can read it. See
+forge. Verify somewhere the recording host is not -- and a MAC protects
+nobody from whoever can read the key. On an encrypted recording the
+manifest covers the ciphertext, so `-verify` needs no `-key` at all: an
+auditor can be given the manifest key and not the session. See
 [CONFIG.md](CONFIG.md#serverlistenerssshrecordingintegrity).
 
 **The event data is base64** where the stream is binary, and the header

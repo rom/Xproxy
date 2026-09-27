@@ -21,6 +21,7 @@ import (
 	"github.com/rom/xproxy/internal/netutil"
 	pgwire "github.com/rom/xproxy/internal/pgwire"
 	"github.com/rom/xproxy/internal/rdp"
+	"github.com/rom/xproxy/internal/recenc"
 	respwire "github.com/rom/xproxy/internal/respwire"
 	"github.com/rom/xproxy/internal/rfb"
 	s7wire "github.com/rom/xproxy/internal/s7"
@@ -4117,6 +4118,7 @@ func (v *validator) sessionRecording(p string, r *SessionRecording, reqs map[str
 		v.warnf("%s.input: the input stream carries what the screen never showed, including every password typed into a sudo or su prompt", p)
 	}
 	v.recordingIntegrity(p+".integrity", r.Integrity)
+	v.recordingEncryption(p+".encryption", r.Encryption)
 	// reqs is the ssh request policy, and nil for a kind whose sessions
 	// are not made of ssh channel requests: an ftp control channel is
 	// always recordable, so there is nothing here that could make the
@@ -11375,6 +11377,28 @@ func (v *validator) recordingIntegrity(p string, i *RecordingIntegrity) {
 	if i.SegmentBytes < 4096 || i.SegmentBytes > 1<<30 {
 		v.errf("%s.segment_bytes: must be 4096..1073741824", p)
 	}
+}
+
+// recordingEncryption checks the encryption section: a key, because
+// there is no encryption without one, and a frame size that is worth
+// having.
+func (v *validator) recordingEncryption(p string, e *RecordingEncryption) {
+	if e == nil || (e.Enabled != nil && !*e.Enabled) {
+		return
+	}
+	if e.Key == "" {
+		v.errf("%s.key: required; there is no encryption without a key", p)
+	} else {
+		v.secretRef(p+".key", e.Key)
+	}
+	if e.ChunkBytes < recenc.MinChunk || e.ChunkBytes > recenc.MaxChunk {
+		v.errf("%s.chunk_bytes: must be %d..%d", p, recenc.MinChunk, recenc.MaxChunk)
+	}
+	// The thing that goes wrong with encryption at rest is not the
+	// cryptography. It is a key nobody kept: the recordings are then as
+	// good as deleted, and nobody finds out until an incident.
+	v.warnf("%s: a recording encrypted at rest cannot be read without its key, and rotating the key does not "+
+		"re-encrypt what is already written -- keep every key for as long as the recordings it wrote are kept", p)
 }
 
 // secretRef checks one secret reference: that it parses, that a vault reference

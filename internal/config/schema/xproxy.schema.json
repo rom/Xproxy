@@ -8010,6 +8010,25 @@
       },
       "additionalProperties": false
     },
+    "RecordingEncryption": {
+      "description": "RecordingEncryption encrypts each recording at rest. A recording holds everything the session showed, which on an administrative session is the most valuable file on the machine: keys printed, configuration read, tokens echoed. The proxy writes them 0600 into a directory an operator names, which protects them from another user on the same host and from nothing else -- not from a backup that leaves the building, not from a stolen disk, and not from somebody who reaches the file system with the proxy user's rights. With this the bytes on the disk are ciphertext (AES-256-GCM in framed chunks, the file key derived per recording from the configured key) and the name ends in .enc. It is a symmetric key, so whoever can read the key can read every recording it covers, and **a key that is lost is every recording lost**: rotating it does not re-encrypt what is already written, so the old key has to be kept for as long as the recordings it wrote are kept.",
+      "type": "object",
+      "properties": {
+        "chunk_bytes": {
+          "description": "ChunkBytes is how much of the recording one sealed frame covers. Default 65536. It decides the overhead (sixteen octets a frame) and the memory each open recording holds -- one chunk while it fills, and one while a reader opens it -- so a gate with many sessions at once has a reason to leave it where it is.",
+          "type": "integer"
+        },
+        "enabled": {
+          "description": "Enabled turns encryption off where a section above turned it on; it defaults to true wherever this section is present.",
+          "type": "boolean"
+        },
+        "key": {
+          "description": "Key is a secret reference (a path, env:NAME, vault:path#field) whose material the file key is derived from. Required: there is no encryption without one.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "RecordingIntegrity": {
       "description": "RecordingIntegrity writes a hash-chained manifest beside each recording. The access ledger is hash-chained and the recordings were not, which is the wrong way round for what the two are used for: the ledger says a session was approved, and the recording is the only account of what happened inside it. After an incident the recording is the artefact somebody is asked to stand behind, and a file that can be edited afterwards with nothing to show it had been is not evidence. The manifest is \u003crecording\u003e.chain, one JSON record per line, each carrying the previous record's hash and the digest of a run of the recording's bytes. Without a key that detects corruption, a shortened file and any partial edit by somebody who does not rewrite every record after it. With a key -- and the key is a secret reference, so it can live in a vault or an HSM rather than on the recording host -- the records cannot be rewritten by somebody who holds filesystem access and not the key, which is the case that matters: an intruder on the box, or an administrator editing their own session. It is a MAC and not a signature, so anybody who can read the key can forge a record too.",
       "type": "object",
@@ -10747,6 +10766,14 @@
         "enabled": {
           "description": "Enabled is how a principal turns off a listener's recording; it defaults to true wherever the section is present.",
           "type": "boolean"
+        },
+        "encryption": {
+          "description": "Encryption writes the recording as ciphertext, under a key from custody, so a file taken off the host is unreadable.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/RecordingEncryption"
+            }
+          ]
         },
         "file_prefix": {
           "description": "FilePrefix begins each file name. Default \"session\".",
