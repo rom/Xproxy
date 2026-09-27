@@ -22,13 +22,12 @@ import (
 
 // refused records a decision the policy refused.
 func (t *server) refused(se *session, d Decision, what string) {
-	c := t.host.Counters()
-	c.Refuse("mysql", d.Reason)
 	if !t.enforcing() && !d.Hard {
-		c.WouldRefuse("mysql", d.Reason)
-		t.host.Shadow().Record("mysql", t.name, d.Reason, d.Rule, what)
+		t.wouldRefuse(d, what)
 		return
 	}
+	c := t.host.Counters()
+	c.Refuse("mysql", d.Reason)
 	s := se.sess()
 	attrs := []any{"listener", t.name, "client_ip", se.ip.String(), "proto", "mysql",
 		"reason", d.Reason, "secure", s.Secure}
@@ -54,6 +53,21 @@ func (t *server) refused(se *session, d Decision, what string) {
 	if bl := t.host.Bans(); bl != nil && se.ip.IsValid() {
 		bl.Observe(se.ip, "mysql_denied")
 	}
+}
+
+// wouldRefuse records a decision that is not being enforced, for a caller that
+// has already decided it is not enforcing it: the listener's monitor mode above,
+// or the estate's authorisation policy, which has a shadow switch of its own and
+// must leave the same record on a listener that enforces.
+//
+// Counted only as a would-be refusal. The two tables are kept apart so that a
+// status view cannot add them up, and a listener in shadow mode that reported
+// refusals it had in fact forwarded would be the one way to defeat that: an
+// operator reading the refusal count of a listener being trialled would see
+// enforcement that is not happening.
+func (t *server) wouldRefuse(d Decision, what string) {
+	t.host.Counters().WouldRefuse("mysql", d.Reason)
+	t.host.Shadow().Record("mysql", t.name, d.Reason, d.Rule, what)
 }
 
 // deny records a refusal that is not about something the policy read.

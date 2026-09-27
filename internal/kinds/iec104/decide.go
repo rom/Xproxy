@@ -287,6 +287,12 @@ func (t *server) refuse(se *session, frame *wire.Frame, d Decision) {
 // deny records a refusal that is not about an ASDU: a client that may not
 // connect, a malformed frame, a bound.
 func (t *server) deny(ip netip.Addr, what, detail string) {
+	// Counted before the alert switch, because a listener with alerts off is one
+	// that does not want the records and still wants the numbers. Every decision
+	// about an ASDU is counted by reason; these were not, so an operator reading
+	// this kind's refusals saw the protocol decisions and none of the ones made
+	// before a controlling station had said anything at all.
+	t.host.Counters().Refuse("iec104", what)
 	if !t.alerts() {
 		return
 	}

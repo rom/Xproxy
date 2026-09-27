@@ -51,6 +51,7 @@ on the first line of the file to enable it.
 | `capture` | object | none | pcapng capture of the exchanges the proxy handled; see `capture` |
 | `scim` | object | none | A SCIM 2.0 provisioning endpoint for the second factor and the API keys; see `scim` |
 | `policy` | object | `{mode: enforce}` | Whether the listeners enforce their policies or only evaluate them and write down what they would have refused; see `policy` |
+| `authorization` | object | none | Which identity may reach which listener, target and operation, above each kind's own policy; see `authorization` |
 | `secrets` | object | none | Where the secrets this file names come from: a path, the environment, or a vault; see `secrets` |
 | `fips` | object | none | Whether this daemon insists on the FIPS 140-3 module, and what it says about the algorithms configured; see `fips` |
 
@@ -105,8 +106,14 @@ did not authenticate — a trial instead of a door.
 | `telnet`, `vnc`, `rdp`, `ftp` | the client list; telnet's option list; ftp's verb list | bans, connection limits, MFA, malformed input, the protocol's own version and encryption negotiation |
 | `smtp` | the verb list | the protocol-state refusals, the encryption and authentication requirements, the size bound, malformed commands |
 | `forward` | the destination lists: ports, deny, allow | `private` (which protects the estate *from* the client — shadowing it would turn a trial into a server-side request forgery), a destination that does not resolve, credentials, tunnel bounds |
-| `http` | the route's positive security model (methods, media types, query parameters, shape bounds); a blocking WAF profile runs as a detecting one, and `xproxyctl waf -top` says which rule would have blocked what | bans, rate limits, virtual patches, authentication and authorisation filters, the normalisation guard, the request and body bounds |
-| `tcp`, `udp`, `ntske` | nothing: their refusals are either "no destination exists for this" or a bound, and neither is a policy a shadow run could answer | all of them |
+| `http` | the route's positive security model (methods, media types, query parameters, shape bounds); the `authorization` section's own decision; a blocking WAF profile runs as a detecting one, and `xproxyctl waf -top` says which rule would have blocked what | bans, rate limits, virtual patches, authentication and authorisation *filters*, the normalisation guard, the request and body bounds |
+| `postgres`, `mysql`, `tds` | every statement or command rule, `read_only`, the database and schema lists; `monitor_only` | the login packet's own bounds, malformed messages, a statement the relay could not read, `copy from program` and its siblings, rate limits, the client list, bans |
+| `redis` | every command rule, `read_only`, the key and database lists; `monitor_only` | `require_tls` and `require_auth` (admitting somebody who did not authenticate is not a trial), the commands that are a way out of the data path -- `config set`, `flushall`, `keys`, `eval` -- malformed messages, the message and element bounds, bans |
+| `amqp` | every rule: the exchange, queue and routing-key policies, the mechanism and vhost lists; `monitor_only` | `require_tls`, a mechanism of `ANONYMOUS`, malformed frames, the frame and method bounds, the broker's own refusal, bans |
+| `s7` | every rule: the function, the data block and the address range; `read_only`; `monitor_only` | malformed frames, the frame bound, a rack and slot with no route, the connection bound, bans |
+| `bacnet` | every rule: the service, the object type and instance, the property and the command priority; the link-layer function list | malformed BVLC and APDU, the message bound, foreign-device registration, rate limits, the client list, bans |
+| `tcp`, `udp`, `ntske` | the `authorization` section and the imported address lists, which is what those kinds have that a shadow run can answer | everything else: their own refusals are either "no destination exists for this" or a bound, and neither is a policy |
+| every kind that asks the `authorization` section | the section's own decision, under either switch -- this one or `authorization: {shadow: true}` -- with the rule that decided in the ledger entry | nothing extra: a policy refusal is exactly what a shadow run is for |
 
 ## server
 
@@ -6185,7 +6192,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `amqp_denied`, `s7_denied`, `ntp_denied`, `ntske_denied`, `yara` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `tcp_denied`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `amqp_denied`, `s7_denied`, `ntp_denied`, `ntske_denied`, `dns_denied`, `dns_threat_intel`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |
@@ -11324,6 +11331,275 @@ on), so bans apply as they always did.
 A listener in `policy: {mode: shadow}` records what it would have refused
 and carries on, which is how an estate turns this on without locking its
 operators out on the first evening.
+
+## authorization
+
+Which identity may reach which listener, target and operation. One section,
+above the protocol policies rather than inside them.
+
+Every kind here already decides things about a session: an `ssh` listener has
+principals with channel and command lists, a `postgres` relay has a statement
+policy, a `modbus` relay has function codes and register ranges. Those stay
+where they are, because nothing else can say what a write to holding register
+40001 means. What this adds is the question above them -- may Alice reach the
+production database at all, from where she is, at this hour -- asked once
+instead of in every kind's own spelling.
+
+It decides nothing on its own authority. Every value a rule matches on is filled
+in by the listener that asks, from the protocol's own login rather than from
+anything a rule here could be talked into believing.
+
+**How much a name is worth differs by kind, and it changes what a rule means.**
+On the kinds that authenticate the client themselves — `ssh` with a key or a
+certificate, `telnet` with a second factor, `vnc` with a credential it checks,
+`ftp` once the target's own login has succeeded — the name has been proven before
+the policy is asked, and a rule about it means what it says.
+
+On `postgres`, `mysql`, `tds` and `rdp` the far side does the authenticating, and
+the policy is asked *before* the login or the credential is forwarded — which is
+the point, because it is what keeps a refused session off the server entirely.
+There the name is the one the client's login asserts and is proven afterwards, so
+the policy narrows what the far side would have allowed and never widens it:
+
+- a **deny** rule is exact — refusing a claimed name refuses at least everyone
+  who could have proved it;
+- an **allow** rule is a filter on a claim, and the server's own authentication
+  is still what proves it. It is not an authenticated grant, and an estate that
+  needs one on these kinds should put the narrow rules in `targets` and
+  `networks`, which nobody can assert.
+
+The per-kind table below says which kind is which. The kinds that have no name at
+all at their decision point are not wired to the policy, for the same reason.
+
+This is not the `authz` filter kind under `filters`. That one decides what a
+verified identity may do with **one HTTP request** — its method, its path, its
+scopes and claims — and runs inside a route's filter chain. This one decides
+whether a **session** happens at all, at a listener's admission point, in words
+every protocol can be asked in. The two share a vocabulary on purpose (deny by
+default, first match wins, the negative selectors as their own keys) and nothing
+else; an HTTP deployment can reasonably want both.
+
+```yaml
+authorization:
+  rules:
+    # Contractors: the jump hosts, office hours, never production.
+    - name: contractors
+      allow: true
+      groups: ["cn=contractors,ou=groups,dc=example,dc=com"]
+      kinds: [ssh]
+      targets: [jump-hosts]
+      actions: [connect, session]
+      schedule: {days: [mon, tue, wed, thu, fri], from: "08:00", to: "18:00"}
+
+    # Staff: anywhere the estate runs, from the office networks.
+    - name: staff
+      allow: true
+      groups: ["cn=staff,ou=groups,dc=example,dc=com"]
+      networks: ["10.0.0.0/8", "192.168.0.0/16"]
+
+    # The batch account, which is not a person and has no business
+    # anywhere but its own pool.
+    - name: batch
+      allow: true
+      users: [batch]
+      targets: [batch-hosts]
+      actions: [exec]
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `default` | `deny` or `allow` | `deny` | What happens when no rule matches. Deny, because a policy that lets through whatever nobody wrote a rule for is a policy whose gaps are invisible. `allow` loads and is warned about |
+| `rules` | list | required | Tried in order; the first one that matches decides. At least one is required: a section with no rules and a deny default refuses the estate |
+| `shadow` | bool | `false` | Evaluate the policy and write down what it would have refused, without refusing it. Section-wide rather than per rule, because half a policy in force is not a policy. Warned about, every load |
+
+### A rule
+
+Every selector a rule names has to hold. A rule that names none matches
+everything, which is how a catch-all is written -- and why a catch-all `allow`
+makes every rule after it unreachable, which the load says out loud.
+
+The negative forms are separate keys rather than a `!` prefix on a value,
+because a user name, a group name or a target may begin with any character, and
+a policy language in which a name cannot be written literally has a hole in it.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | string | required | What the security event and the status view call this rule. A decision nobody can name is a decision nobody can find in a log. Letters, digits, `-`, `_` and `.`; unique in the section |
+| `allow` | bool | `false` | What the rule does when it matches. Default deny: a rule somebody forgot to finish refuses rather than permits |
+| `users` | list | `[]` | The name the listener authenticated |
+| `principals` | list | `[]` | The policy identity the listener resolved for that name -- on an `ssh` listener, the `principals` entry the key matched |
+| `groups` | list | `[]` | Groups something the listener trusts said the identity is in: a directory bind, a certificate's principals, a token's claim. Compared without case, because a directory returns a distinguished name in whatever case it likes |
+| `not_users`, `not_principals`, `not_groups` | list | `[]` | Everybody but these. A rule matches only when the identity is in none of them; an identity with no name at all is not "everybody but alice", so an empty user does not match `not_users` |
+| `networks` | list of CIDR or address | `[]` | The client address the listener decided on, which behind a chain in `trusted_proxies` is the forwarded one. A bare address means that address |
+| `not_networks` | list of CIDR or address | `[]` | Everywhere but these |
+| `listeners` | list | `[]` | Listener names, as `server.listeners[].name` spells them. Validated: a rule naming a listener this file does not have is a rule that never matches |
+| `kinds` | list | `[]` | Listener kinds -- `ssh` and the rest -- for a rule about every listener of a kind |
+| `targets` | list of patterns | `[]` | What was asked for, in the form the protocol uses. A glob in which `*` does not cross a `:` or a `/`, so `10.0.0.5:*` is one host's ports and `/srv/*` is one directory's entries. `**` is refused: a pattern that widens past the host or the directory it names is a pattern whose author meant something narrower |
+| `not_targets` | list of patterns | `[]` | Everything but these. The opposite of `targets`, so a per-pool exception is written by naming the pool here and letting the rule below decide |
+| `actions` | list | `[]` | The operations this rule is about: `connect`, `session`, `exec`, `forward`, `read`, `write`, `admin`. Empty means every operation |
+| `schedule` | object | none | Limit the rule to certain hours, in the same spelling `modbus` uses: `days`, `from`, `to`, `timezone`. A rule outside its window does not match, so the next rule -- or the default -- decides |
+
+### The actions
+
+The vocabulary is the policy's own rather than each protocol's, so a rule
+written for `write` means the same thing on SFTP as on Modbus. Each protocol
+page under `docs/protocols/` says which of its operations map to which.
+
+| Action | What it is |
+|--------|-----------|
+| `connect` | A session being opened at all. Every kind asks this one, and a policy that names nothing else is a policy about who may reach what |
+| `session` | An interactive session inside a connection: a shell, a desktop, a terminal |
+| `exec` | One command run without an interactive session |
+| `forward` | A tunnel through the session, in either direction |
+| `read`, `write` | A payload moving: a file read or written, a register read or written, a row selected or changed |
+| `admin` | An operation that changes the far side's own configuration rather than its data |
+
+### Which listeners it covers
+
+A kind that did not consult this policy would be a hole in a policy an operator
+believes covers everything, so a configuration that has an `authorization`
+section **and** a listener of a kind that does not consult it is refused at
+load, naming the listener and the kind. Today **every kind consults it** -- every
+gate kind, the forward proxy, every relay kind, both generic layer 4 relays and the
+HTTP gateway -- so that refusal can no longer be provoked by any configuration this
+reference describes. The check stays because a kind added tomorrow starts outside
+the policy and must be refused rather than silently uncovered.
+
+Most kinds ask about `connect`. Three do not: `syslog` asks about `write`, because
+a sender does not open a session with a collector but delivers records; and `redis`
+and `amqp` ask twice, `connect` for the connection and `session` for the
+authenticated session, which is what lets one rule decide the door and another
+decide the person (see below). None fills `groups`: these protocols give the
+gateway no group membership it could verify, so a rule about a team is written with
+`principals` on `ssh` and with `users` elsewhere.
+
+What `target` means differs in the one place it has to. On the gate kinds and the
+database relays it is the **upstream pool name**, not an endpoint address, so that
+one rule reads the same on all of them; the per-server question belongs to the JIT
+access grant (see `access`), which does check the endpoint. On a `forward`
+listener there is no pool -- the destination *is* what the client asked for -- so
+`target` is `host:port`, which is what a rule about egress has to be able to name.
+On a `dns` listener there is neither: a dns listener has a list of resolvers
+rather than a pool, so the subject carries no target and a rule's `targets` names
+nothing there. A rule that wants to say where a query may point is talking about a
+domain, which is the `dns` policy's business.
+
+On the database relays the section decides whether the account may reach the
+server at all; what it may then do *inside* the server -- which database, which
+statement shapes -- stays with that kind's own policy, which is the thing that
+can say what a statement means.
+
+The "name" column says whether the identity has been proven by the time the
+policy is asked, which is what decides how much an `allow` rule keyed on it is
+worth (see above).
+
+| Kind | When it asks, and what it has | Name |
+|------|------------------------------|------|
+| `http` | On each request, after the route is matched -- so a rule's `targets` can name the route's upstream pool -- and before the challenge gate, the filter chain and the upstream. It is the question neither of the gateway's own layers can answer: a route cannot, because a route is one of the things being decided about, and the `authz` filter cannot, because it needs a verified identity and this is about clients that have offered none. A refusal is `403`, so a client library reports it. Unlike the imported lists this is **not** route-exemptable: a list is somebody else's import and a route may opt out of it, while a route that could opt out of the estate's own policy would not be a policy | none: the gateway's identities are per route and belong to the `authz` filter |
+| `ssh` | After authentication and before the target is dialled, so a refused session never reaches a machine. `user` is the login, `principal` the `principals` entry the key or certificate matched. SFTP inside the session is covered by the same decision | proven (key or certificate) |
+| `telnet` | After the second factor and before the equipment is dialled. Telnet carries no identity of its own, so `user` is whatever the factor prompt established -- which is why a telnet listener under a policy about people wants `mfa`, exactly as `require_grant` does | proven (second factor) |
+| `vnc` | After the client has identified itself and before the desktop is dialled. `user` is the plain credential's user or the name the factor prompt asked for, so the listener needs a security type that carries one (`mslogon2`, or VeNCrypt with a named credential) | proven (credential or factor) |
+| `rdp` | At the client info packet, which is the only place a person appears in RDP and arrives **after** the desktop has been dialled. So a refusal here means the desktop saw a TCP connection from the gateway and never the person's name or password | asserted; the desktop proves it after |
+| `ftp` | At the login, for the same reason: FTP's greeting comes from the server, so the target is dialled before anybody has said who they are. A refusal is a 530 on the login, and no command of the person's is forwarded | proven (the target's own login succeeded) |
+| `forward` | On every request, tunnel and association -- CONNECT, a plain proxied request, SOCKS5 and MASQUE alike -- after the destination policy and before the destination is dialled. `target` is the destination `host:port`, so a rule reads `targets: ["*.vendor.example:443"]`, and `*` does not cross the colon, which keeps one host's ports from being one pattern's worth of the whole internet. `user` is the proxy credential's name, empty on a listener with no `auth` -- which means a rule about users matches nobody there, and such a listener wants rules about networks and destinations instead | proven (proxy credential), or absent with no `auth` |
+| `postgres` | At the startup packet, the first and only place a role appears -- the relay never sees the password -- and before the server is dialled. `user` is the role; `target` is the pool | asserted; the server proves it after |
+| `mysql` | At the login packet, before it is forwarded. `user` is the account; `target` is the pool | asserted; the server proves it after |
+| `tds` | At the Login7 packet, before it is forwarded. `user` is the account, empty for an integrated-authentication login, which the `tds` policy's own `integrated` setting is the place to decide about | asserted; the server proves it after |
+| `mqtt` | At the CONNECT packet, before it is forwarded. `user` is the CONNECT username; the client identifier is **not** an identity and does not reach a rule, because any client may choose one -- a pattern over it belongs in this listener's `client_id_pattern` | asserted; the broker proves it after |
+| `tcp` | After the route is known -- so a rule can name the pool -- and before any endpoint is dialled. There is no identity on a generic relay, so `user` is always empty and a rule here is written with `networks`, `targets` and `schedule` | none: a generic relay has no identity to decide about |
+| `udp` | Once for a client that has no session, and before the endpoint is dialled -- once per client rather than once per datagram, because a policy walk per datagram would make a flood cheaper to send than to refuse. `user` is always empty, as on `tcp` | none: a generic relay has no identity to decide about |
+| `ldap` | At a **bind**, before it is forwarded -- and for nothing else, because a bind is the only request that names an identity. `user` is the bind DN. An anonymous session names nobody, so no rule about people reaches it, and what a bound session may read or write stays with the `ldap` policy: `allow_anonymous` and that listener's `rules` are where those belong | asserted; the directory proves it after |
+| `modbus` | On the connection, after this listener's own `allow_clients` and before the device is dialled. Which unit identifiers and which registers that master may touch stays with the `modbus` policy, which is the thing that can say what a write to holding register 40001 means | none: a master is an address and a unit identifier |
+| `iec104` | On the connection, before the station is dialled. Which type identifications and which information objects, and the select-before-execute rule, stay with the `iec104` policy | none: a controlling station is an address and a common address |
+| `s7` | On the connection, before the PLC is dialled -- which matters more here than elsewhere, because an S7-300 has sixteen connection resources altogether and a client that may not reach it should not take one | none: a client is an address and a rack and slot |
+| `snmp` | On each datagram from a manager, and on each stream connection, after this listener's own `allow_clients`. A community is a shared word travelling in clear and a USM user is the agent's own account, so neither is a name the estate can put in a rule; which operations and which subtrees are the `snmp` policy's business | none: neither a community nor a USM user is an identity |
+| `tftp` | On each request datagram, before a transfer is started. Which paths may be read, and whether writing is allowed at all, stay with the `tftp` policy | none: TFTP has no authentication of any kind |
+| `dhcp` | On each message from the segment, before anything reaches a server. A client with no lease sends from `0.0.0.0`, so `networks` decides nothing about exactly the clients an operator most wants to think about: a rule here is written with `listeners`, `targets` and `schedule`, and the hardware address and message type belong to the `dhcp` policy | none, and the address is often `0.0.0.0` |
+| `bacnet` | On each datagram, before anything reaches the building. Which services and which objects stay with the `bacnet` policy, which is the thing that can say what a write to analog-output 3 means | none: a client is an address, a network number and a MAC address |
+| `ntske` | On the connection, before a handshake slot is taken -- the handshake being the expensive thing this port has to protect. NTS-KE authenticates the *server* to the client, so nothing in it names a person; a client certificate in front of it is checked in the handshake, which is after this | none: the protocol authenticates the server, not the client |
+| `syslog` | Once per connection on a stream and once per datagram on UDP, after this listener's own `allow_senders`. The action is `write`. The host name inside a message is a field the sender wrote and no part of the protocol checks it, which is why this relay rewrites it from the address the message came from | none: the host field in a message is the sender's own claim |
+| `smtp` | On the connection, after this listener's own allow list and before a greeting is exchanged with anybody. A refusal is `554 5.7.1 access denied`. There is no name here and there deliberately never will be: the SASL exchange carries the password and this relay does not parse it, so it learns only that the server said 235. What the envelope says is the `smtp` policy's business, `MAIL FROM` being an address rather than an identity | none, deliberately: the credential exchange is not parsed |
+| `redis` | **Twice.** On the connection for `connect`, before the server is dialled, where there is no name. Then again for `session` when the server's own answer to an AUTH or HELLO says the credential was accepted -- so the name is *proven*, and an allow rule keyed on it here is an authenticated grant. The refusal lands later than on the database relays: the server has seen the credential, because that is what proved the name, and what the refusal keeps off it is every command after it | proven (the server accepted it), at `session` |
+| `amqp` | **Twice**, the same shape. `connect` on the connection; `session` when the broker tunes on 0-9-1 -- a broker that refuses a credential closes instead of tuning -- or returns a SASL outcome of zero on 1.0. The acceptance is never forwarded to a refused client, so it is never told it has a connection it may not use. The vhost is in the subject by then | proven (the broker accepted it), at `session` |
+| `ntp` | On each request datagram, after this listener's own client list. A client is an address and even that is a datagram's claim, which is why the `ntp` policy's own detection exists; a rule here is `networks`, `listeners` and `schedule`. Which versions, modes and extension fields are carried, and what makes an answer implausible, stay with that policy | none: a request names nobody |
+| `dns` | On each query, after this listener's own `allow_clients`. Which names a client may resolve stays with the `dns` policy, the RPZ zones and the domain lists. A refusal on an unverified datagram is counted but attributed to nobody, for the same reason a blocked name is: a record written against an address anybody could have put in a datagram is a record anybody could have written against a third party | none: a query names nobody |
+
+The HTTP gateway is the one kind that does not share that admission point, and
+deliberately. Its list handling is not a simple block: it has per-route exemptions
+and a `challenge` action that serves a real challenge page, both of which the shared
+point flattens because the kinds it serves have no request to challenge into.
+Routing the gateway through it would trade a working challenge for a uniform call
+site, so the gateway asks the lists its own way and the policy beside them.
+
+On every other kind whose client has no identity -- the two generic layer 4 relays
+and the ten in the block below them -- the same admission point also asks the
+**imported address lists** about the client, which were once consulted only on the
+`http` and `forward` listeners, so a `cidr` feed did nothing at all on a `tcp`,
+`modbus` or `syslog` listener. Both questions are asked in one place for all of
+them, so the order cannot drift from kind to kind.
+
+The lists are asked before the policy: a list is an import about an address and
+says nothing about this estate's intentions, so a refusal naming the feed sends an
+operator to the feed rather than to a rule they would not find, and a client the
+estate has no rule about is refused as "not in the policy" rather than as "on
+somebody's list", which is the truer of the two. A list asking for a `challenge`
+is recorded like a log list on these kinds, because there is no request to serve a
+challenge into.
+
+**Two kinds ask twice, and that is what `actions` is for.** On `redis` and `amqp`
+the client's name is not available when the connection opens and *is* available
+once the server or broker has accepted a credential -- which is later than the
+database relays can manage, and better, because by then the name is proven rather
+than claimed. Two asks need two actions, or the second would be answered by
+whatever rule let the connection in and the proven name would decide nothing:
+
+```yaml
+authorization:
+  rules:
+    # The person, at the authenticated session.
+    - {name: staff, allow: true, users: [bob], actions: [session]}
+    # The door, at the connection, where nobody has a name yet.
+    - {name: floor, allow: true, networks: ["10.0.0.0/8"], actions: [connect]}
+```
+
+A `redis` or `amqp` listener whose clients never authenticate never reaches the
+second question, so on one of those the `connect` rule is the whole policy -- which
+is the same position every identity-less kind is in.
+
+On the datagram kinds the question is asked per datagram, because a datagram relay
+has no session to hang the answer on. A refusal goes through the kind's own deny
+path, so a client that keeps sending earns a ban exactly as one refused by the
+kind's own address lists does -- which is what keeps the record from being written
+at packet rate. The exceptions are `udp`, which has a session and decides once per
+client, and `dns`, which aggregates a record from an unproven source rather than
+attributing it.
+
+A refusal here is the reason `authorization` on the listener's usual deny event
+(`ssh_authorization` and so on), so the counters, the security log and the ban
+list see it as they see any other refusal. Either shadow switch -- a listener in
+`policy: {mode: shadow}`, or the whole policy with `shadow: true` -- records what
+it would have refused, with the rule that decided, and carries on.
+
+### Reading it back
+
+`xproxyctl status` prints the policy and then each rule with its hit count, and
+says where the rule never matched -- which is either a rule about traffic that
+does not happen or a rule something above it shadows.
+
+```
+authorization default=deny  allowed=1412 denied=7 default-decided=0
+authorization   contractors              allow hits=64
+authorization   staff                    allow hits=1348
+authorization   batch                    allow hits=0  (never matched)
+```
+
+| Metric | What it says |
+|--------|--------------|
+| `xproxy_authz_decisions_total{outcome}` | Decisions, allow and deny |
+| `xproxy_authz_default_total` | Decisions no rule matched, so the default decided. **This is the gap measure**: rising means the rules cover less of the estate than whoever wrote them believes, and with a deny default it is an estate about to find that out one refusal at a time |
+| `xproxy_authz_rule_hits_total{rule,action}` | What each rule has decided, so an audit can see which rules do the work |
+| `xproxy_authz_shadow`, `xproxy_authz_default_allows` | 1 when the policy enforces nothing, and 1 when an unmatched subject is allowed. Both belong on a dashboard beside the counts, because the counts mean the opposite thing without them |
+
 
 ## secrets
 

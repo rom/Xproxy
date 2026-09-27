@@ -96,6 +96,38 @@ time, because a record nobody can order is a record that cannot be correlated.
 **The framing, explicitly.** `framing` decides which RFC 6587 framing the relay
 accepts rather than sniffing, which is what closes the injection.
 
+### The imported lists, and the estate's authorisation policy
+
+Syslog does name a host, inside the message, and that name is worth nothing: it is
+a field the sender wrote and no part of the protocol checks it, which is why this
+relay rewrites it from the address the message actually came from. So two questions
+are asked about the sender itself, after this listener's own `allow_senders`:
+
+- **the imported address lists** (`threat_intel`), about the client's address. A
+  list whose action is `block` refuses; one that asks for a `challenge` is
+  recorded like a log list, because there is no request here to serve a challenge
+  into and turning it into a block would be a policy the operator did not write.
+- **the `authorization` section**, on the client address, the listener, the kind,
+  the upstream pool and the hour. The action is `write` rather than `connect`: a
+  sender does not open a session with a collector, it delivers records. A rule
+  naming `users` matches nobody on this kind, so a rule here is written with
+  `networks`, `targets` and `schedule`.
+
+Asked once per connection on a stream and once per datagram on UDP -- not for
+every line a connection sends, because a sender that has been admitted should not
+be re-asked for each record. Which facilities and severities may reach the
+collector stays with this listener's own policy above.
+
+The lists are asked first: a list is an import about an address and says nothing
+about this estate's intentions, so a refusal naming the feed sends an operator to
+the feed rather than to a rule they would not find.
+
+A refusal is the reason `threat_intel` or `authorization` on this listener's usual
+deny event, so the counters, the security log and the ban list see it as they see
+any other refusal. Either shadow switch -- `policy: {mode: shadow}` on the
+listener, or `shadow: true` on the section -- records what it would have refused
+and carries the traffic.
+
 ## What it does not do
 
 - **It does not authenticate UDP senders.** It cannot. An estate that needs the
@@ -128,6 +160,7 @@ accepts rather than sniffing, which is what closes the injection.
 
 ## See also
 
+- The estate-wide policy above it: [docs/CONFIG.md `authorization`](../CONFIG.md#authorization)
 - The settings: [docs/CONFIG.md `server.listeners[].syslog`](../CONFIG.md#serverlistenerssyslog-kind-syslog)
 - A worked configuration: [`examples/logs/syslog.yaml`](../../examples/logs/syslog.yaml)
 - Where this proxy's own logs go: [docs/CONFIG.md `## logging`](../CONFIG.md#logging)

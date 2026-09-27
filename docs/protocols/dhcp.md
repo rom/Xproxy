@@ -92,6 +92,40 @@ answer to this client.
 **The rate, per hardware address**, which is what a client cycling through
 MAC addresses to exhaust a pool looks like.
 
+### The imported lists, and the estate's authorisation policy
+
+DHCP names nobody, and it is worth being plain about how little the address is
+worth here: a client with no lease yet sends from `0.0.0.0`, which is what DHCP is
+for. So the two questions asked about the client are asked, after this listener's
+own `allow_clients` and before anything reaches a server, but one of them has
+little to work with:
+
+- **the imported address lists** (`threat_intel`), about the client's address. A
+  list whose action is `block` refuses; one that asks for a `challenge` is
+  recorded like a log list, because there is no request here to serve a challenge
+  into and turning it into a block would be a policy the operator did not write.
+- **the `authorization` section**, on the client address, the listener, the kind,
+  the upstream pool and the hour. A rule naming `networks` decides nothing about
+  exactly the clients an operator most wants to think about, and the imported
+  lists have nothing to match against `0.0.0.0` either. What does decide here is
+  `listeners`, `targets`, `actions` and `schedule`: "this segment is not relayed
+  outside working hours" is a real rule, and it is the shape a rule on this kind
+  should take.
+
+What a client may ask for once it is through stays with this listener's own policy
+above, which decides on the hardware address and the message type -- the fields
+that actually name a device.
+
+The lists are asked first: a list is an import about an address and says nothing
+about this estate's intentions, so a refusal naming the feed sends an operator to
+the feed rather than to a rule they would not find.
+
+A refusal is the reason `threat_intel` or `authorization` on this listener's usual
+deny event, so the counters, the security log and the ban list see it as they see
+any other refusal. Either shadow switch -- `policy: {mode: shadow}` on the
+listener, or `shadow: true` on the section -- records what it would have refused
+and carries the traffic.
+
 ## What it does not do
 
 - **It is not a DHCP server.** There is no lease database here. It relays to a
@@ -123,6 +157,7 @@ MAC addresses to exhaust a pool looks like.
 
 ## See also
 
+- The estate-wide policy above it: [docs/CONFIG.md `authorization`](../CONFIG.md#authorization)
 - The settings: [docs/CONFIG.md `server.listeners[].dhcp`](../CONFIG.md#serverlistenersdhcp-kind-dhcp)
 - A worked configuration: [`examples/addressing/dhcp.yaml`](../../examples/addressing/dhcp.yaml)
 - The other protocol in a provisioning path: [tftp](tftp.md)

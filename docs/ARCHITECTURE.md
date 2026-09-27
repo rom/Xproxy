@@ -199,6 +199,10 @@ internal/fipsmode   whether the FIPS 140-3 module is active, and which of
                     of the runtime by handshaking, never read off a list
 internal/access     the just-in-time access ledger: grants, approvals and
                     the hash-chained trail the gate kinds admit against
+internal/authorization  the estate's authorisation policy: one compiled set
+                    of rules every listener kind asks at its admission
+                    point, above each kind's own protocol policy. Not
+                    internal/filters/authz, which decides one HTTP request
 internal/upstream   endpoints, balancers, health checks, affinity, ejection
 internal/logging    four slog streams, file rotation
 internal/mgmt       management API server and client
@@ -402,6 +406,33 @@ is the part that carries the code, the dependencies and the risk.
 
 Configuration validation reads the roster, so `kind: ssh` is a valid
 value in every daemon's file. Building a listener reads the registry.
+
+Beside the roster is a second table, for the same reason: the kinds that
+consult the estate's authorisation policy (`internal/authorization`). A
+daemon has to be able to say "that kind does not consult the policy"
+about a kind it does not serve, because it validates configurations that
+name one. It is a list of what does consult it rather than of what does
+not, so a kind added tomorrow is outside the policy until somebody says
+otherwise — and a configuration carrying an `authorization` section then
+refuses to load, naming the listener, rather than quietly leaving a hole
+in a policy an operator believes covers everything. Every kind is on one
+side or the other and a test in `internal/listener` fails on a kind in
+neither, which is what forces the decision when a kind is added. Every
+kind is on the consulting side today, which is the state the second table
+was built to reach: the list of kinds that do not consult it is empty, and
+the way to use it again is to put a new kind in it with a comment saying
+why -- not to leave a kind in neither, which is the case the test catches.
+
+The admission point the kinds share is `internal/admit`: the imported
+address lists about the client, then the policy. It exists because those
+two questions have one right order and repeating that order in nineteen
+kinds is how it drifts. Where a kind has no identity to offer — a Modbus
+master, a syslog sender, a DNS client — that package is the whole of the
+decision; where a kind has one, the kind asks the policy directly with
+the name it proved. Two kinds do both: `redis` and `amqp` ask this package
+on the connection, where there is no name, and the policy again when the
+server's own answer proves one, which is why the action vocabulary has
+`connect` and `session` as separate words.
 
 ### The refusal
 

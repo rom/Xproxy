@@ -27,15 +27,20 @@ import (
 // a counter.
 func (s *server) refused(ip netip.Addr, m *wire.Message, d Decision, side string) {
 	c := s.host.Counters()
-	c.Refuse("dhcp", d.Reason)
 	if !s.enforcing() && !d.Hard {
 		c.DHCPWouldDeny.Add(1)
+		// Counted only as a would-be refusal. The two tables are kept apart so
+		// that a status view cannot add them up, and a listener in shadow mode
+		// that reported refusals it had in fact forwarded would be the one way
+		// to defeat that: an operator reading the refusal count of a listener
+		// being trialled would see enforcement that is not happening.
 		c.WouldRefuse("dhcp", d.Reason)
 		s.host.Shadow().Record("dhcp", s.cfg.Name, d.Reason, d.Rule,
 			side+" "+m.Type.String()+" "+wire.HardwareAddr(m.CHAddr))
 		s.logMessage(ip, m, d, side, "would_deny")
 		return
 	}
+	c.Refuse("dhcp", d.Reason)
 	c.DHCPDenied.Add(1)
 	s.logMessage(ip, m, d, side, "deny")
 	if !s.alerts() {

@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/acceptgroup"
+	"github.com/rom/xproxy/internal/admit"
+	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/proxy"
@@ -293,6 +295,12 @@ func (t *server) serveUDP() {
 			t.refuse(ap.Addr(), "too_large", "")
 			continue
 		}
+		// Asked here rather than in take, so a stream's messages are not
+		// re-asked once its connection has been admitted. On UDP there is no
+		// connection, so this is once per datagram.
+		if t.admitSender(ap.Addr()) != "" {
+			continue
+		}
 		// One datagram is one message (RFC 5426 section 3.1), so there
 		// is no framing to read and nothing to resync.
 		t.take(append([]byte(nil), buf[:n]...), ap.Addr())
@@ -305,6 +313,12 @@ func (t *server) handleStream(c net.Conn) {
 	ip := netutil.AddrOf(c.RemoteAddr().String())
 	if !t.senderAllowed(ip) {
 		t.refuse(ip, "sender_refused", "")
+		return
+	}
+	// The imported lists and the estate's authorisation policy, after this
+	// listener's own allow_senders -- that is local policy about local senders,
+	// and a feed must not overrule an allow rule an operator wrote.
+	if t.admitSender(ip) != "" {
 		return
 	}
 	if t.l.TLSMode == "implicit" {
@@ -339,6 +353,44 @@ func (t *server) handleStream(c net.Conn) {
 		}
 		t.take(raw, ip)
 	}
+}
+
+// admitSender is the two questions this relay asks about a sender that has no
+// identity: do the imported lists know this address, and does the estate's
+// authorisation policy allow it here.
+//
+// Syslog names a host inside the message, and that name is worth nothing: it is a
+// field the sender wrote and no part of the protocol checks it, which is why this
+// relay rewrites it from the address it actually came from. So the policy decides
+// on the address, the listener, the pool and the hour, and a rule naming users
+// matches nobody on this kind. Which facilities and severities a sender may put
+// into the collector is the `syslog` policy's own business.
+//
+// It is asked once per connection on a stream and once per datagram on UDP -- not
+// in take, which both paths share, because a connection that has been admitted
+// should not be re-asked for every line it sends.
+func (t *server) admitSender(ip netip.Addr) string {
+	h := t.host
+	return admit.Client(admit.Deps{
+		Lists:   h.ThreatIntel(),
+		Policy:  h.Authorization(),
+		Logs:    h.Logs(),
+		Matched: func() { h.Counters().ThreatIntelMatched.Add(1) },
+		Blocked: func() { h.Counters().ThreatIntelBlocked.Add(1) },
+	}, authorization.Subject{
+		Listener: t.cfg.Name,
+		Kind:     "syslog",
+		Client:   ip,
+		Target:   t.l.Upstream,
+		Action:   authorization.ActionWrite,
+	}, admit.Gate{
+		Shadowing: t.cfg.Shadowing,
+		Record: func(reason, rule, detail string) {
+			h.Counters().WouldRefuse("syslog", reason)
+			h.Shadow().Record("syslog", t.cfg.Name, reason, rule, detail)
+		},
+		Deny: func(reason, _, detail string) { t.refuse(ip, reason, detail) },
+	})
 }
 
 func (t *server) senderAllowed(ip netip.Addr) bool {

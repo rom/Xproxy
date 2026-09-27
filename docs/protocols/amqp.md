@@ -106,6 +106,59 @@ size of a message — the last taken from the 0-9-1 content header before the
 body arrives, and from the sum of a 1.0 message's transfers, because bounding
 each transfer frame would bound nothing.
 
+### The imported lists, and the estate's authorisation policy
+
+Two questions are asked here, at two different moments, and the second is the
+interesting one on this kind.
+
+**On the connection**, after this kind's own client list and before the broker is
+dialled, there is no name: the mechanism and the user arrive in the SASL exchange,
+which has not happened.
+
+- **the imported address lists** (`threat_intel`), about the client's address. A
+  list whose action is `block` refuses; one that asks for a `challenge` is
+  recorded like a log list, because there is no request here to serve a challenge
+  into and turning it into a block would be a policy the operator did not write.
+- **the `authorization` section**, with the `connect` action. A rule naming
+  `users` matches nobody at this point, so this is where `networks` belongs.
+
+**And again when the broker accepts a credential**, with the `session` action. On
+0-9-1 the broker's answer is `connection.tune`, because a broker that refuses a
+credential closes the connection instead of tuning; on 1.0 it is a SASL outcome of
+zero. Either way the relay reads the broker's decision rather than the client's
+attempt, which *proves the name*, so:
+
+- an **allow** rule keyed on `users` here is an authenticated grant rather than a
+  filter on a claim -- which is not true of the database relays, where the policy
+  is asked before the server has spoken. The vhost is in the subject by this point
+  too, since the client has named one.
+- the refusal lands later. The broker has seen the credential, because that is what
+  proved the name, so what the refusal keeps off the broker is every method after
+  it: the frame carrying the acceptance is never forwarded and the connection ends.
+
+Two asks need two actions, or the second would be answered by whatever rule let
+the connection in:
+
+```yaml
+authorization:
+  rules:
+    - {name: staff, allow: true, users: [orders], actions: [session]}
+    - {name: floor, allow: true, networks: ["10.0.0.0/8"], actions: [connect]}
+```
+
+A mechanism of `ANONYMOUS` is refused by this listener's own policy before any of
+this, because it is a login with no identity. Which exchanges, queues and routing
+keys a session may use stays with that policy too.
+The lists are asked first: a list is an import about an address and says nothing
+about this estate's intentions, so a refusal naming the feed sends an operator to
+the feed rather than to a rule they would not find.
+
+A refusal is the reason `threat_intel` or `authorization` on this listener's usual
+deny event, so the counters, the security log and the ban list see it as they see
+any other refusal. Either shadow switch -- `policy: {mode: shadow}` on the
+listener, or `shadow: true` on the section -- records what it would have refused
+and carries the traffic.
+
 ## What it does not do
 
 - **A refusal ends the connection**, unlike every other relay kind here. AMQP
@@ -144,6 +197,7 @@ each transfer frame would bound nothing.
 
 ## See also
 
+- The estate-wide policy above it: [docs/CONFIG.md `authorization`](../CONFIG.md#authorization)
 - The settings: [docs/CONFIG.md `## amqp`](../CONFIG.md#amqp)
 - A worked configuration: [`examples/messaging/amqp.yaml`](../../examples/messaging/amqp.yaml)
 - Operating it: [docs/TROUBLESHOOTING.md `## AMQP`](../TROUBLESHOOTING.md#amqp)

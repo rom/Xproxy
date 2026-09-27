@@ -35,6 +35,8 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/acceptgroup"
+	"github.com/rom/xproxy/internal/admit"
+	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/netutil"
 	wire "github.com/rom/xproxy/internal/ntp"
@@ -175,6 +177,41 @@ func (s *server) untrack(c net.Conn) {
 	s.mu.Unlock()
 }
 
+// admitClient is the two questions this gateway asks about a client that has no
+// identity yet: do the imported lists know this address, and does the estate's
+// authorisation policy allow it here.
+//
+// NTS-KE authenticates the *server* to the client, not the other way about: the
+// client gets cookies out of the handshake and nothing in it names a person. An
+// estate can put a client certificate in front of it, and when it does the name is
+// the certificate's -- but that is checked in the handshake below, and this
+// question is asked before the handshake, because the handshake is the expensive
+// thing this port has to protect. So the policy decides on the address, the
+// listener, the pool and the hour.
+func (s *server) admitClient(ip netip.Addr) string {
+	h := s.host
+	return admit.Client(admit.Deps{
+		Lists:   h.ThreatIntel(),
+		Policy:  h.Authorization(),
+		Logs:    h.Logs(),
+		Matched: func() { h.Counters().ThreatIntelMatched.Add(1) },
+		Blocked: func() { h.Counters().ThreatIntelBlocked.Add(1) },
+	}, authorization.Subject{
+		Listener: s.cfg.Name,
+		Kind:     "ntske",
+		Client:   ip,
+		Target:   s.k.Upstream,
+		Action:   authorization.ActionConnect,
+	}, admit.Gate{
+		Shadowing: s.cfg.Shadowing,
+		Record: func(reason, rule, detail string) {
+			h.Counters().WouldRefuse("ntske", reason)
+			h.Shadow().Record("ntske", s.cfg.Name, reason, rule, detail)
+		},
+		Deny: func(reason, _, detail string) { s.deny_(ip, reason, detail) },
+	})
+}
+
 // handle peeks one connection and relays it.
 func (s *server) handle(client net.Conn) {
 	c := s.host.Counters()
@@ -189,6 +226,14 @@ func (s *server) handle(client net.Conn) {
 	if !s.clientAllowed(ip) {
 		s.deny_(ip, "client_not_allowed", "")
 		s.log(ip, start, "", nil, "client_not_allowed", 0, 0)
+		return
+	}
+	// The imported lists and the estate's authorisation policy, after this
+	// listener's own address lists -- those are local policy about local
+	// clients, and a feed must not overrule an allow rule an operator wrote --
+	// and before a handshake slot is taken.
+	if reason := s.admitClient(ip); reason != "" {
+		s.log(ip, start, "", nil, reason, 0, 0)
 		return
 	}
 	// The handshake slot. A client that cannot get one is refused

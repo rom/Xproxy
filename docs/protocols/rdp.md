@@ -103,6 +103,39 @@ idle and total timeouts — the handshake timeout mattering more here than
 elsewhere, because RDP's sequence is long and a client that stalls in the middle
 of it is holding resources on both sides.
 
+### The estate's own authorisation policy
+
+Above this listener's own policy sits the `authorization` section, which is not
+about RDP: it is the one place that says which identity may reach which listener
+and target, in the same words for every protocol.
+
+Where it is asked is a fact about the protocol rather than a choice. RDP carries
+the person in one packet, once, and that packet arrives **after** the desktop has
+been dialled -- so this gateway cannot refuse before the target is reached, and
+neither can the access grant. What it does instead is refuse before the
+credential goes any further: the desktop has seen a TCP connection from the
+gateway and never the person's name or password, and nobody logged in.
+
+The `target` is the upstream **pool** name rather than the machine this session
+happened to reach, so that a rule reads the same here as on an `ssh` listener;
+the per-machine question belongs to the access grant, which does check the
+machine. `principal` and `groups` are empty.
+
+**What the name is worth here.** The policy is asked before the credential travels, which is the
+point: it is what keeps a refused session off the desktop entirely. But it means the account
+is the one the client's login *asserts*, and the desktop proves it afterwards. So the
+policy narrows what the desktop would have allowed and never widens it: a deny rule is
+exact, because refusing a claimed name refuses at least everyone who could have
+proved it, while an allow rule keyed on the name is a filter on a claim that
+still has to be proven. It is not an authenticated grant. A rule that has to
+hold whatever a client asserts belongs in `targets` and `networks`, which nobody
+can choose for themselves.
+
+A refusal is the reason `authorization` (the event `rdp_authorization`, the
+counter `xproxy_refusals_total{kind="rdp",reason="authorization"}`). Either
+shadow switch -- `policy: {mode: shadow}` on the listener, or `shadow: true` on
+the section -- records what it would have refused and admits.
+
 ## What it does not do
 
 - **It does not decode the graphics.** The output PDUs are relayed. Bitmap
@@ -141,6 +174,7 @@ of it is holding resources on both sides.
 ## See also
 
 - The settings: [docs/CONFIG.md `server.listeners[].rdp`](../CONFIG.md#serverlistenersrdp-kind-rdp)
+- The estate-wide policy above it: [docs/CONFIG.md `authorization`](../CONFIG.md#authorization)
 - A worked configuration: [`examples/bastion/rdp.yaml`](../../examples/bastion/rdp.yaml)
 - The other interactive protocols: [ssh](ssh.md), [telnet](telnet.md),
   [vnc](vnc.md)

@@ -1,0 +1,184 @@
+# The estate's own answer to "who may reach what", above the protocol
+# policies rather than inside them.
+#
+# Every listener kind here already decides things about a session: this
+# bastion's own ssh section says which channels open, which commands run
+# and where a forward may go. A postgres relay has a statement policy, a
+# modbus relay has function codes. Those belong where they are, because
+# nothing else can say what a write to holding register 40001 means.
+#
+# What they cannot answer is the question above them. "May Alice reach
+# production at all, from where she is, at this hour" is one question
+# about one person, and answering it inside nineteen protocol policies
+# means nineteen files to read before anybody can say what Alice may do
+# -- and nineteen places for the answer to differ. This section is that
+# question, asked once, in the same words whichever protocol asks it.
+#
+# Validate: xgate -config examples/bastion/authorization.yaml -validate
+version: 1
+
+authorization:
+  # Deny is the default and is worth leaving alone: a policy that lets
+  # through whatever nobody wrote a rule for is a policy whose gaps are
+  # invisible. The number to watch is xproxy_authz_default_total -- the
+  # decisions this default made -- which says how much of the estate the
+  # rules below actually describe.
+  default: deny
+
+  # Rules are tried in order and the first that matches decides, so the
+  # narrow exclusions go above the broad grants. A rule that names no
+  # selector matches everything, which is why a catch-all allow anywhere
+  # but the bottom makes everything under it unreachable -- something the
+  # load says out loud rather than leaving to be discovered.
+  rules:
+    # Nobody reaches the payment hosts from a contractor laptop, whatever
+    # any rule below says. Written as a deny at the top rather than as an
+    # exception inside each grant: an exclusion that has to be repeated
+    # is an exclusion that will eventually be forgotten in one of them.
+    - name: no-contractors-in-payments
+      groups: ["cn=contractors,ou=groups,dc=example,dc=com"]
+      targets: [payment-hosts]
+
+    # The break-glass account is for an incident, and an incident is not
+    # a shift: it may be used at any hour, from the operations network
+    # only, and every session it opens still needs a grant somebody
+    # approved (the access section below).
+    - name: break-glass
+      allow: true
+      users: [breakglass]
+      networks: ["10.10.0.0/24"]
+
+    # Operations staff: the estate, from the office and VPN ranges, in
+    # working hours. The window is the rule's, not the listener's, so the
+    # same bastion can carry a rule with no window beside it.
+    - name: operations
+      allow: true
+      groups: ["cn=operations,ou=groups,dc=example,dc=com"]
+      networks: ["10.0.0.0/8", "192.168.0.0/16"]
+      actions: [connect, session, exec]
+      schedule:
+        days: [mon, tue, wed, thu, fri]
+        from: "07:00"
+        to: "19:00"
+        timezone: Europe/Stockholm
+
+    # Database administrators, who need the database hosts and a forward
+    # to reach them with their own tools -- and nothing on the payment
+    # side, which the first rule already settled.
+    - name: dba
+      allow: true
+      principals: [dba]
+      targets: [db-hosts]
+      actions: [connect, session, forward]
+
+    # The batch account is not a person: one pool, exec only, no shell
+    # and no hours, because a machine does not keep them. Note what is
+    # missing -- no networks, because the scheduler moves.
+    - name: batch
+      allow: true
+      users: [batch]
+      targets: [batch-hosts]
+      actions: [exec]
+
+    # And the same policy over a different protocol, which is the whole
+    # point of the section: one rule, written once, for the console
+    # gateway in front of the switches. `kinds` is what makes it about
+    # every telnet listener rather than one by name.
+    - name: network-team
+      allow: true
+      groups: ["cn=network,ou=groups,dc=example,dc=com"]
+      kinds: [telnet]
+      schedule:
+        days: [mon, tue, wed, thu, fri]
+        from: "07:00"
+        to: "19:00"
+        timezone: Europe/Stockholm
+
+# Just-in-time access underneath it. The two are different questions and
+# both are asked: the policy above says whether this identity may ever be
+# on this pool, the grant says whether they may be on it right now. A
+# policy with no grants is standing access; grants with no policy is
+# "anybody may ask for anything".
+access:
+  ledger: /var/lib/xgate/access.log
+  approvals: 1
+  max_duration: 4h
+
+server:
+  listeners:
+    # One bastion in front of everything. The authorisation rules above
+    # name its pools by name, which on an ssh listener is what a target
+    # is: the machine is chosen by balancer after the policy has decided,
+    # and the per-machine question is the grant's.
+    - name: bastion
+      address: "0.0.0.0:22"
+      kind: ssh
+      connection_rate: {per_second: 20, burst: 40}
+      connection_rate_per_source: {per_second: 2, burst: 5}
+      ssh:
+        upstream: db-hosts
+
+        host_keys: [/etc/xgate/ssh/host_ed25519]
+        authorized_keys: /etc/xgate/ssh/authorized_keys
+        upstream_key_file: /etc/xgate/ssh/upstream_ed25519
+        upstream_known_hosts: /etc/xgate/ssh/known_hosts
+        upstream_user: operator
+
+        require_grant: true
+
+        # The principals entry is what a rule's `principals` names. It is
+        # the estate's name for a set of people, which is why an ssh
+        # listener needs no group concept in the policy: SSH gives the
+        # gate nothing about group membership it could verify, and this
+        # entry is already the answer.
+        principals:
+          - name: dba
+            fingerprints:
+              - "SHA256:0000000000000000000000000000000000000000000"
+            policy:
+              allow_channels: [session, direct-tcpip]
+              allow_requests: [pty-req, shell, exec]
+              # The policy above says a forward may be opened; these say
+              # where to. The authorization rule says whether this person
+              # may be here at all, which is the question above both.
+              forward: ["10.0.4.11:5432", "10.0.4.12:5432"]
+
+        mfa:
+          file: /etc/xgate/mfa
+          max_failures: 5
+
+        recording:
+          directory: /var/lib/xgate/recordings
+
+    # The console gateway the network-team rule above is about. Telnet
+    # carries no identity of its own, so the factor prompt is what gives
+    # the policy a name to decide about -- the same reason require_grant
+    # needs it on this kind. Without it, a rule naming users or groups
+    # matches nobody here and the default refuses everybody, which is
+    # fail-closed but not what the author meant.
+    - name: consoles
+      address: "0.0.0.0:23"
+      kind: telnet
+      telnet:
+        upstream: console-servers
+        mfa: {file: /etc/xgate/mfa}
+        recording:
+          directory: /var/lib/xgate/recordings
+
+logging:
+  directory: /var/log/xgate
+
+upstreams:
+  - name: db-hosts
+    endpoints:
+      - {address: "10.0.4.11:22"}
+      - {address: "10.0.4.12:22"}
+  - name: payment-hosts
+    endpoints:
+      - {address: "10.0.9.11:22"}
+  - name: batch-hosts
+    endpoints:
+      - {address: "10.0.5.11:22"}
+  - name: console-servers
+    endpoints:
+      - {address: "10.0.7.11:23"}

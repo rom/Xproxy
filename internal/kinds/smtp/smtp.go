@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rom/xproxy/internal/admit"
+	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/proxy"
@@ -223,6 +225,16 @@ func (t *server) handle(client net.Conn) {
 		t.log(se, start, "client_not_allowed")
 		return
 	}
+	// The imported lists and the estate's authorisation policy, after this
+	// listener's own allow list -- that is local policy about local clients, and
+	// a feed must not overrule an allow rule an operator wrote -- and before a
+	// greeting is exchanged with anybody.
+	if reason := t.admitClient(ip); reason != "" {
+		s.Counters().SMTPRejected.Add(1)
+		_, _ = client.Write([]byte("554 5.7.1 access denied\r\n"))
+		t.log(se, start, reason)
+		return
+	}
 	if t.m.TLSMode == "implicit" {
 		tc := tls.Server(client, t.tlsCfg)
 		_ = tc.SetDeadline(time.Now().Add(t.m.ReadTimeout.D()))
@@ -260,6 +272,46 @@ func (t *server) handle(client net.Conn) {
 // allowed applies allow_clients. An empty list allows everything, which
 // is what an inbound mail listener wants and what a submission listener
 // should not have.
+// admitClient is the two questions this relay asks about a client before it
+// carries anything for it: do the imported lists know this address, and does the
+// estate's authorisation policy allow it here.
+//
+// It asks about the address and nothing else, and that is the whole of what this
+// kind can offer. SMTP does have an identity -- the SASL exchange has one -- and
+// this relay deliberately does not parse it, because those lines carry the
+// password. So it never learns who authenticated, only that the server said 235,
+// and a name it invented would be worse than no name. A rule about users matches
+// nobody on this kind; a rule here is written with `networks`, `targets` and
+// `schedule`, which on a mail relay is a real policy: which networks may submit,
+// to which pool, in which hours.
+//
+// What the envelope says is this listener's own business. `MAIL FROM` is an
+// address rather than an identity, and the verb list and the recipient rules above
+// are where a decision about it belongs.
+func (t *server) admitClient(ip netip.Addr) string {
+	e := t.engine
+	return admit.Client(admit.Deps{
+		Lists:   e.ThreatIntel(),
+		Policy:  e.Authorization(),
+		Logs:    e.Logs(),
+		Matched: func() { e.Counters().ThreatIntelMatched.Add(1) },
+		Blocked: func() { e.Counters().ThreatIntelBlocked.Add(1) },
+	}, authorization.Subject{
+		Listener: t.cfg.Name,
+		Kind:     "smtp",
+		Client:   ip,
+		Target:   t.m.Upstream,
+		Action:   authorization.ActionConnect,
+	}, admit.Gate{
+		Shadowing: t.cfg.Shadowing,
+		Record: func(reason, rule, detail string) {
+			e.Counters().WouldRefuse("smtp", reason)
+			e.Shadow().Record("smtp", t.cfg.Name, reason, rule, detail)
+		},
+		Deny: func(reason, _, detail string) { t.deny(ip, reason, detail) },
+	})
+}
+
 func (t *server) allowed(ip netip.Addr) bool {
 	if len(t.allow) == 0 {
 		return true

@@ -16,11 +16,13 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/assets"
+	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/config"
 	wire "github.com/rom/xproxy/internal/mqtt"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/safe"
+	"github.com/rom/xproxy/internal/textsafe"
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/upstream"
 )
@@ -297,14 +299,54 @@ func (t *server) shadowed(ip netip.Addr, what, detail string) bool {
 	if !t.cfg.Shadowing() {
 		return false
 	}
+	t.recordWouldDeny(ip, what, "", detail)
+	return true
+}
+
+// recordWouldDeny writes a refusal that is not being enforced, for a caller that
+// has already decided it is not enforcing it: the listener's own shadow mode
+// above, or the estate's authorisation policy, which has a shadow switch of its
+// own and must leave the same record on a listener that enforces. rule names the
+// rule that decided, where the policy that decided names its rules.
+func (t *server) recordWouldDeny(ip netip.Addr, what, rule, detail string) {
 	t.host.Counters().WouldRefuse("mqtt", what)
-	t.host.Shadow().Record("mqtt", t.cfg.Name, what, "", detail)
+	t.host.Shadow().Record("mqtt", t.cfg.Name, what, rule, detail)
 	attrs := []any{"listener", t.cfg.Name, "client_ip", ip.String(), "proto", "mqtt"}
 	if detail != "" {
 		attrs = append(attrs, "detail", detail)
 	}
 	t.host.Logs().SecurityEvent(context.Background(), "would_deny", "mqtt_"+what, attrs...)
-	return true
+}
+
+// admitByPolicy is the estate's authorisation policy, asked from the CONNECT
+// packet and before it is forwarded, so a client no rule covers never reaches
+// the broker.
+//
+// The user is the CONNECT username, which is what the client asserts and the
+// broker proves afterwards -- MQTT has no exchange in which this relay could
+// verify it. So the policy narrows what the broker would have allowed and never
+// widens it: a deny rule is exact, an allow rule is a filter on a claim the
+// broker still has to check. The client identifier is not an identity and does
+// not reach a rule; it is the `mqtt` policy's own business, which is where a
+// pattern over it belongs.
+//
+// The target is the upstream pool's name -- the broker is chosen by balancer
+// after this point. What may be published or subscribed to inside the session is
+// the `mqtt` policy's, because a topic filter is a thing only it can read.
+func (se *session) admitByPolicy() string {
+	t := se.t
+	return t.host.Authorization().Ask(authorization.Subject{
+		Listener: t.cfg.Name,
+		Kind:     "mqtt",
+		Client:   se.ip,
+		User:     se.username,
+		Target:   t.m.Upstream,
+		Action:   authorization.ActionConnect,
+	}, textsafe.Clip64(se.username), authorization.Gate{
+		Shadowing: t.cfg.Shadowing,
+		Record:    func(reason, rule, detail string) { t.recordWouldDeny(se.ip, reason, rule, detail) },
+		Deny:      func(reason, _, detail string) { t.deny(se.ip, reason, detail) },
+	})
 }
 
 // observe tells the estate's inventory what this session was.
@@ -374,6 +416,13 @@ func (se *session) run(time.Time) string {
 	}
 	se.version, se.clientID, se.username = c.Version, c.ClientID, c.Username
 	t.observe(se)
+	// The estate's own policy first, because it is the broader question:
+	// whether this identity may reach this broker at all, rather than which
+	// topics it may then touch.
+	if reason := se.admitByPolicy(); reason != "" {
+		se.refuseConnect(mqttNotAuthorized(c.Version))
+		return reason
+	}
 	if reason, code := se.checkConnect(c); reason != "" && !t.shadowed(se.ip, reason, c.ClientID) {
 		se.refuseConnect(code)
 		t.deny(se.ip, reason, "")

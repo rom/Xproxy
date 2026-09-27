@@ -108,6 +108,49 @@ and the early hints.
 decoys, honeytokens that trip on use, and deliberately misleading answers on real
 routes — which is documented in [docs/DECEPTION.md](../DECEPTION.md).
 
+### The estate's authorisation policy
+
+The gateway has two layers that decide about a request already: the route, which
+says what may be done with it, and the `authz` filter in that route's chain, which
+says what a verified identity may do. The `authorization` section is the question
+above both -- *may this client be served by this listener at all, towards this
+pool, at this hour* -- and it is a question neither of them can answer. A route
+cannot, because a route is one of the things being decided about. The filter
+cannot, because it needs an identity, and this is about clients that have offered
+none.
+
+"Nothing from the vendor network reaches the internal pool outside working hours"
+is the shape of rule this makes writable, and before it there was no place in the
+gateway to be told that.
+
+**Where it is asked.** After the route is matched -- so a rule's `targets` can name
+the route's upstream pool -- and before the challenge gate, the filter chain and the
+upstream. So a refused client's request never reaches a WAF, a body buffer or an
+origin. A refusal is `403`, because on this kind there is a response to write, which
+is also why the question belongs here rather than at the accept.
+
+**What it does not decide.** The subject carries no user. The gateway's identities
+are established per route by its authenticating filters, and what one may then do is
+the `authz` filter's decision; filling a user here would be two answers to one
+question. So a rule naming `users`, `principals` or `groups` matches nobody on this
+kind, exactly as on the relays that have no identity at all -- and a policy written
+only about people therefore refuses every request here, fail-closed. A rule on this
+kind is written with `networks`, `targets`, `listeners` and `schedule`.
+
+**Not route-exemptable**, unlike the imported lists beside it. A list is somebody
+else's import and a route may reasonably opt out of one; a route that could opt out
+of the estate's own policy would not be a policy.
+
+**Cost.** Per request rather than per connection, because a connection carries
+requests for many routes and the pool is not known until one is matched. The cheap
+case is the common one: the question returns before it looks at anything when no
+`authorization` section is configured, which is every estate that has not written
+one.
+
+Either shadow switch -- `policy: {mode: shadow}` on the listener, or `shadow: true`
+on the section -- records what it would have refused, with the rule that decided,
+and serves the request.
+
 ## What it does not do
 
 - **It does not pass through what it cannot parse.** An ambiguous message is
@@ -158,6 +201,7 @@ refused and why, is [docs/RFC.md](../RFC.md).
 
 ## See also
 
+- The estate-wide policy above it: [docs/CONFIG.md `authorization`](../CONFIG.md#authorization)
 - The settings: [docs/CONFIG.md `## http`](../CONFIG.md#http), which is a map of
   where each stage of the pipeline is written up — and then most of the rest of
   that document

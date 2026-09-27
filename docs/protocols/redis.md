@@ -95,6 +95,61 @@ commands, and a listener that does not need it should not have it.
 **The bounds**: message size, bulk string size, elements in an array, commands
 per session, sessions overall and per client, and the idle and total duration.
 
+### The imported lists, and the estate's authorisation policy
+
+Two questions are asked here, at two different moments, and the second is the
+interesting one on this kind.
+
+**On the connection**, after this kind's own client list and before the server is
+dialled, there is no name: Redis begins with the client's first command, so what is
+known is the address, the listener, the pool and the hour.
+
+- **the imported address lists** (`threat_intel`), about the client's address. A
+  list whose action is `block` refuses; one that asks for a `challenge` is
+  recorded like a log list, because there is no request here to serve a challenge
+  into and turning it into a block would be a policy the operator did not write.
+- **the `authorization` section**, with the `connect` action. A rule naming
+  `users` matches nobody at this point, so this is where `networks` belongs.
+
+**And again when the server accepts a credential**, with the `session` action. The
+relay already reads the server's answer to an AUTH or HELLO, because "has this
+connection authenticated" cannot be answered from the client's side -- a relay that
+took the attempt for the answer would treat a wrong password as a login, which is
+what `require_auth` exists to prevent. That same answer *proves the name*, so:
+
+- an **allow** rule keyed on `users` here is an authenticated grant, not a filter
+  on a claim. That is not true of the `postgres`, `mysql` and `tds` relays, where
+  the policy is asked before the server has spoken, and it is worth knowing which
+  kind you are writing a rule on.
+- the refusal lands later. The server has seen the credential, because that is
+  what proved the name, so a refusal here does not keep the session off the server
+  the way `postgres`'s does. What it keeps off is every command after it: the
+  acceptance is never forwarded and the connection ends, so the client is never
+  told it has a login it may not use.
+
+Two asks need two actions, or the second would be answered by whatever rule let
+the connection in:
+
+```yaml
+authorization:
+  rules:
+    - {name: staff, allow: true, users: [bob], actions: [session]}
+    - {name: floor, allow: true, networks: ["10.0.0.0/8"], actions: [connect]}
+```
+
+A listener whose clients never authenticate never reaches the second question, so
+there the `connect` rule is the whole policy. Which commands and which keys a
+session may touch stays with this listener's own policy above.
+The lists are asked first: a list is an import about an address and says nothing
+about this estate's intentions, so a refusal naming the feed sends an operator to
+the feed rather than to a rule they would not find.
+
+A refusal is the reason `threat_intel` or `authorization` on this listener's usual
+deny event, so the counters, the security log and the ban list see it as they see
+any other refusal. Either shadow switch -- `policy: {mode: shadow}` on the
+listener, or `shadow: true` on the section -- records what it would have refused
+and carries the traffic.
+
 ## What it does not do
 
 - **It does not read Lua.** `EVAL` is allowed or refused as a command; the
@@ -126,6 +181,7 @@ project's documentation is what this listener is written against.
 
 ## See also
 
+- The estate-wide policy above it: [docs/CONFIG.md `authorization`](../CONFIG.md#authorization)
 - The settings: [docs/CONFIG.md `## redis`](../CONFIG.md#redis)
 - A worked configuration: [`examples/databases/redis.yaml`](../../examples/databases/redis.yaml)
 - The other database protocols: [postgres](postgres.md), [mysql](mysql.md),

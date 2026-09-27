@@ -45,6 +45,8 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/acceptgroup"
+	"github.com/rom/xproxy/internal/admit"
+	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/limits"
 	wire "github.com/rom/xproxy/internal/ntp"
@@ -322,6 +324,48 @@ func (s *server) serve() {
 	}
 }
 
+// admitClient is the two questions this relay asks about a client that has no
+// identity: do the imported lists know this address, and does the estate's
+// authorisation policy allow it here.
+//
+// NTP names nobody. A client is an address, and even that is a datagram's claim
+// about itself -- which is why this relay's own detection policy exists, and why
+// the ban list is careful about what it attributes to an unverified source. So the
+// policy decides on the address, the listener, the pool and the hour, and a rule
+// naming users matches nobody on this kind. Which versions, modes and extension
+// fields are carried, and what makes an answer implausible, stay with the `ntp`
+// policy, which is the thing that can say what a stratum means.
+//
+// Asked once per datagram, like this listener's own client list, because a time
+// server keeps no client state. A refusal goes through drop, so it is counted and
+// a client that keeps sending earns a ban the same way one refused by the address
+// list does.
+func (s *server) admitClient(client netip.AddrPort) string {
+	h := s.host
+	ip := client.Addr().Unmap()
+	return admit.Client(admit.Deps{
+		Lists:   h.ThreatIntel(),
+		Policy:  h.Authorization(),
+		Logs:    h.Logs(),
+		Matched: func() { h.Counters().ThreatIntelMatched.Add(1) },
+		Blocked: func() { h.Counters().ThreatIntelBlocked.Add(1) },
+	}, authorization.Subject{
+		Listener: s.cfg.Name,
+		Kind:     "ntp",
+		Client:   ip,
+		Target:   s.n.Upstream,
+		Action:   authorization.ActionConnect,
+	}, admit.Gate{
+		Shadowing: func() bool { return !s.enforcing() },
+		Record: func(reason, rule, detail string) {
+			h.Counters().NTPWouldDeny.Add(1)
+			h.Counters().WouldRefuse("ntp", reason)
+			h.Shadow().Record("ntp", s.cfg.Name, reason, rule, detail)
+		},
+		Deny: func(reason, _, detail string) { s.drop(client, reason, detail) },
+	})
+}
+
 // fromClient is the whole request path for one datagram.
 func (s *server) fromClient(client netip.AddrPort, raw []byte) {
 	defer safe.Guard("ntp request")
@@ -344,6 +388,12 @@ func (s *server) fromClient(client netip.AddrPort, raw []byte) {
 		c.WouldRefuse("ntp", "client_not_allowed")
 		s.denyLog(client, "client_not_allowed", "recorded, not enforced")
 		s.host.Shadow().Record("ntp", s.cfg.Name, "client_not_allowed", "", client.Addr().String())
+	}
+	// The imported lists and the estate's authorisation policy, after this
+	// listener's own client list -- that is local policy about local clients, and
+	// a feed must not overrule an allow rule an operator wrote.
+	if s.admitClient(client) != "" {
+		return
 	}
 	if !s.admitRate(client, raw) {
 		return

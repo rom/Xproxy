@@ -52,15 +52,28 @@ make release            # dist/: Linux binaries tarball, macOS tarballs (arm64, 
 make release SIGN_KEY=~/.ssh/release_ed25519   # also SHA256SUMS.sig (ssh-keygen -Y sign)
 ```
 
-`make release` builds with `CGO_ENABLED=0 -trimpath`, produces
-`xproxy-<version>-darwin-arm64.tar.gz` and `-darwin-amd64.tar.gz` (the
-three binaries with `deploy/macos`, the example configuration and the
-documentation, installed with `deploy/macos/install.sh`),
-`xproxy-<version>-linux-amd64.tar.gz` (the three binaries, the deploy
-tree, the documentation, the licence), the vendored source tarball from
-`make dist`, the RPMs when `rpmbuild` is installed (on Fedora with the
-build dependencies from SETUP.md), the software bill of materials from
-`go version -m`, and `SHA256SUMS` over everything. With `SIGN_KEY` the
+`make release` builds with `CGO_ENABLED=0 -trimpath` and produces:
+
+- `xproxy-<version>-linux-amd64.tar.gz`: every binary the tree builds --
+  the three daemons `xproxy`, `xgate` and `xrelay`, the control tools
+  `xproxyctl`, `xproxy-admin`, `xproxy-fleet` and `xproxy-replay`, and
+  `xsigner` -- with the deploy tree, the documentation and the licence.
+  The list is `LINUX_BINARIES` in the Makefile and a test in
+  `test/deploy` holds it against the build rules: it shipped four for as
+  long as there had been three daemons, so a download carried
+  `deploy/config/xgate.yaml` without carrying `xgate`.
+- `xproxy-<version>-darwin-arm64.tar.gz` and `-darwin-amd64.tar.gz`:
+  `xproxy`, `xproxyctl`, `xproxy-admin`, `xproxy-fleet` and
+  `xproxy-replay` with `deploy/macos`, the example configuration and the
+  documentation, installed with `deploy/macos/install.sh`. Deliberately
+  fewer than Linux: macOS ships the edge proxy, the control tools and the
+  web GUI, and there is no launchd job for `xgate` or `xrelay`, so
+  neither is built for it. The list is `DARWIN_BINARIES`, and the same
+  test holds it against what the installer installs.
+- the vendored source tarball from `make dist`, the RPMs when `rpmbuild`
+  is installed (on Fedora with the build dependencies from SETUP.md), the
+  software bill of materials from `go version -m`, and `SHA256SUMS` over
+  everything. With `SIGN_KEY` the
 checksum file is signed with an SSH key (`ssh-keygen -Y sign`,
 namespace `xproxy-release`); a GPG signature can be added by hand with
 `gpg --detach-sign --armor SHA256SUMS`.

@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/acceptgroup"
+	"github.com/rom/xproxy/internal/admit"
 	"github.com/rom/xproxy/internal/assets"
+	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/netutil"
@@ -186,6 +188,38 @@ func (se *session) writeUp(b []byte) error {
 // than an optimisation: a CPU has very few connection resources -- an S7-300
 // has sixteen altogether -- and a client that may not reach it should not take
 // one of them.
+// admitClient is the two questions this relay asks about a client that has no
+// identity: do the imported lists know this address, and does the estate's
+// authorisation policy allow it here.
+//
+// S7comm names nobody -- a client is an address and a rack and slot -- so the
+// policy decides on the address, the listener, the pool and the hour. Which
+// functions and which data blocks that client may touch is the `s7` policy's own
+// business, because it is the thing that can say what a write to DB1 means.
+func (t *server) admitClient(ip netip.Addr) string {
+	h := t.host
+	return admit.Client(admit.Deps{
+		Lists:   h.ThreatIntel(),
+		Policy:  h.Authorization(),
+		Logs:    h.Logs(),
+		Matched: func() { h.Counters().ThreatIntelMatched.Add(1) },
+		Blocked: func() { h.Counters().ThreatIntelBlocked.Add(1) },
+	}, authorization.Subject{
+		Listener: t.name,
+		Kind:     "s7",
+		Client:   ip,
+		Target:   t.sc.Upstream,
+		Action:   authorization.ActionConnect,
+	}, admit.Gate{
+		Shadowing: func() bool { return !t.enforcing() },
+		Record: func(reason, rule, detail string) {
+			h.Counters().WouldRefuse("s7", reason)
+			h.Shadow().Record("s7", t.name, reason, rule, detail)
+		},
+		Deny: func(reason, _, detail string) { t.deny(ip, reason, detail) },
+	})
+}
+
 func (t *server) handle(c net.Conn) {
 	defer func() { _ = c.Close() }()
 	ip := netutil.AddrOf(c.RemoteAddr().String())
@@ -193,6 +227,12 @@ func (t *server) handle(c net.Conn) {
 
 	if d := t.policy.Connect(se.sess()); !d.Allow {
 		t.refused(se, d, "connect")
+		return
+	}
+	// The imported lists and the estate's authorisation policy, after this
+	// listener's own address lists -- those are local policy about local
+	// clients -- and before the PLC is dialled.
+	if t.admitClient(ip) != "" {
 		return
 	}
 	if !t.admit(se) {

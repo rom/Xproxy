@@ -102,6 +102,20 @@ type Hooks struct {
 	// towards a ban lets anybody have a third party banned by spoofing
 	// them, and logging one per datagram is a log flood at packet rate.
 	Event func(client netip.Addr, reason string, verified bool, attrs ...any)
+	// Admit asks the estate's two questions about a client that has no
+	// identity -- the imported lists and the authorisation policy -- and
+	// reports the reason to refuse, or "" to answer the query. It is nil on a
+	// listener whose host offers neither.
+	//
+	// It is a hook rather than something this package does itself for the same
+	// reason Banned is: what a list is and what the estate wrote are the
+	// proxy's business, and this package resolves names.
+	//
+	// verified says whether the client address completed a round trip, and is
+	// passed through for the same reason Event takes it: a refusal on an
+	// unverified datagram must not be logged against, or banned on, an address
+	// anybody could have written in.
+	Admit func(client netip.Addr, verified bool) string
 	// Banned reports clients whose datagrams are dropped.
 	Banned func(client netip.Addr) bool
 	// Refuse records one refused or dropped query by its reason. The
@@ -694,6 +708,17 @@ func (s *Server) handle(query []byte, client netip.Addr, tcp bool, proto string)
 		s.Refused.Add(1)
 		s.refuse("client_not_allowed")
 		return s.finish(a, q, "refused", Reply(query, qEnd, h, RcodeRefused))
+	}
+	// The imported lists and the estate's authorisation policy, after
+	// allow_clients -- that is this listener's own policy about its own
+	// clients, and a feed must not overrule an allow rule an operator wrote.
+	// The hook answers "" in shadow mode, having written the decision down.
+	if s.hooks.Admit != nil {
+		if reason := s.hooks.Admit(client, a.verified); reason != "" {
+			s.Refused.Add(1)
+			s.refuse(reason)
+			return s.finish(a, q, "refused", Reply(query, qEnd, h, RcodeRefused))
+		}
 	}
 	if h.Opcode() != 0 {
 		s.refuse("opcode")

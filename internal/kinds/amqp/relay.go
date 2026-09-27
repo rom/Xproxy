@@ -7,12 +7,15 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"sync"
 	"time"
 
 	"github.com/rom/xproxy/internal/acceptgroup"
+	"github.com/rom/xproxy/internal/admit"
 	wire "github.com/rom/xproxy/internal/amqpwire"
 	"github.com/rom/xproxy/internal/assets"
+	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/netutil"
@@ -77,6 +80,86 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener, tlsCfg *tl
 	return t, nil
 }
 
+// admitClient is the two questions this relay asks about a client before it
+// carries anything for it: do the imported lists know this address, and does the
+// estate's authorisation policy allow it here.
+//
+// Asked on the connection, where there is no name yet: the mechanism and the user
+// arrive in the SASL exchange, which has not happened. So this decides on the
+// address, the listener, the pool and the hour, and a rule naming users matches
+// nobody at this point. The name gets its own question in admitUser below.
+func (t *server) admitClient(ip netip.Addr) string {
+	h := t.host
+	return admit.Client(admit.Deps{
+		Lists:   h.ThreatIntel(),
+		Policy:  h.Authorization(),
+		Logs:    h.Logs(),
+		Matched: func() { h.Counters().ThreatIntelMatched.Add(1) },
+		Blocked: func() { h.Counters().ThreatIntelBlocked.Add(1) },
+	}, authorization.Subject{
+		Listener: t.name,
+		Kind:     "amqp",
+		Client:   ip,
+		Target:   t.ac.Upstream,
+		Action:   authorization.ActionConnect,
+	}, admit.Gate{
+		Shadowing: func() bool { return !t.enforcing() },
+		Record: func(reason, rule, detail string) {
+			h.Counters().WouldRefuse("amqp", reason)
+			h.Shadow().Record("amqp", t.name, reason, rule, detail)
+		},
+		Deny: func(reason, _, detail string) { t.deny(ip, reason, detail) },
+	})
+}
+
+// admitUser is the estate's policy asked again, about the name the broker has just
+// accepted -- and like the redis kind's, this is a *proven* name rather than an
+// asserted one.
+//
+// On 0-9-1 the broker's answer to a credential is connection.tune, because a
+// broker that refuses one closes the connection instead of tuning. On 1.0 it is a
+// SASL outcome of zero. Either way the relay reads the broker's decision rather
+// than the client's attempt, which is what makes the name worth putting in a rule:
+// an allow rule keyed on `users` here is an authenticated grant, which is not true
+// of the database relays, where the policy is asked before the server has spoken.
+//
+// The cost is the same as redis's. The broker has already seen the credential by
+// the time this is asked, so a refusal does not keep the session off the broker --
+// it keeps every method of the client's off it, because the acceptance is never
+// forwarded and the connection ends. The vhost is in the subject too, since by
+// this point the client has named one.
+//
+// The action is `session` rather than `connect`, and that distinction is the whole
+// of what makes the two questions writable apart. The connection itself is
+// `connect`, asked before any name exists, so a rule about people cannot match it
+// and an estate covers it with `networks`. The authenticated session is `session`,
+// and that is where a rule naming users belongs:
+//
+//   - {name: door,  allow: true, networks: ["10.0.0.0/8"], actions: [connect]}
+//   - {name: staff, allow: true, users: [bob],             actions: [session]}
+//
+// Without two actions the second ask would be answered by whatever rule let the
+// connection in, and the proven name would decide nothing.
+func (t *server) admitUser(se *session) string {
+	h := t.host
+	s := se.sess()
+	return h.Authorization().Ask(authorization.Subject{
+		Listener: t.name,
+		Kind:     "amqp",
+		Client:   se.ip,
+		User:     s.User,
+		Target:   t.ac.Upstream,
+		Action:   authorization.ActionSession,
+	}, s.User, authorization.Gate{
+		Shadowing: func() bool { return !t.enforcing() },
+		Record: func(reason, rule, detail string) {
+			h.Counters().WouldRefuse("amqp", reason)
+			h.Shadow().Record("amqp", t.name, reason, rule, detail)
+		},
+		Deny: func(reason, _, detail string) { t.deny(se.ip, reason, detail) },
+	})
+}
+
 func (t *server) enforcing() bool { return !t.ac.MonitorOnly && !t.cfg.Shadowing() }
 
 func (t *server) serve() {
@@ -133,6 +216,13 @@ func (t *server) handle(c net.Conn) {
 	}
 	if d := t.policy.Connect(se.sess()); !d.Allow {
 		t.refused(se, d, "connect")
+		return
+	}
+	// The imported lists and the estate's authorisation policy, after this
+	// kind's own client list -- that is local policy about local clients, and a
+	// feed must not overrule an allow rule an operator wrote -- and before the
+	// broker is dialled.
+	if t.admitClient(ip) != "" {
 		return
 	}
 	if !t.admit(se) {
@@ -645,7 +735,12 @@ func (t *server) fromBroker(se *session) {
 		if err != nil {
 			return
 		}
-		t.readBroker(se, f)
+		if t.readBroker(se, f) {
+			// The estate's policy refused the name the broker accepted. The
+			// frame that carries the acceptance is not forwarded and the
+			// connection ends, so the client never sees a login it may not use.
+			return
+		}
 		if err := se.writeClient(f.Raw); err != nil {
 			return
 		}
@@ -653,21 +748,24 @@ func (t *server) fromBroker(se *session) {
 }
 
 // readBroker reads what the broker said, without deciding anything the
-// client asked for.
-func (t *server) readBroker(se *session, f *wire.Frame) {
+// client asked for -- with the one exception below: when the broker's answer
+// proves a name, the estate's policy is asked about it.
+//
+// It reports whether that policy refused, in which case the caller must not
+// forward the frame.
+func (t *server) readBroker(se *session, f *wire.Frame) (refused bool) {
 	if f.Heartbeat() {
-		return
+		return false
 	}
 	if se.version == wire.V10 {
-		t.readBroker10(se, f)
-		return
+		return t.readBroker10(se, f)
 	}
 	if f.Type != wire.FrameMethod {
-		return
+		return false
 	}
 	m, err := wire.ParseMethod(f.Payload)
 	if err != nil {
-		return
+		return false
 	}
 	switch m.Name() {
 	case "connection.start":
@@ -685,6 +783,11 @@ func (t *server) readBroker(se *session, f *wire.Frame) {
 		// the broker decides, and the relay reads its decision.
 		se.authOK()
 		t.authenticated(se)
+		// And now the name is proven, so the estate's policy is asked about
+		// it. A refusal here keeps every method of this client's off the
+		// broker; it cannot keep the credential off it, because the
+		// credential is what proved the name.
+		return t.admitUser(se) != ""
 	case "connection.close", "channel.close":
 		if code, text, _, _, ok := m.CloseReason(); ok {
 			t.brokerRefused(se, code, text)
@@ -696,12 +799,13 @@ func (t *server) readBroker(se *session, f *wire.Frame) {
 			}
 		}
 	}
+	return false
 }
 
-func (t *server) readBroker10(se *session, f *wire.Frame) {
+func (t *server) readBroker10(se *session, f *wire.Frame) (refused bool) {
 	p, err := wire.ParsePerformative(f.Payload)
 	if err != nil {
-		return
+		return false
 	}
 	switch p.Code {
 	case wire.PerfSASLMechanisms:
@@ -711,14 +815,15 @@ func (t *server) readBroker10(se *session, f *wire.Frame) {
 	case wire.PerfSASLOutcome:
 		code, ok := p.SASLOutcome()
 		if !ok {
-			return
+			return false
 		}
 		if code == 0 {
 			se.authOK()
 			t.authenticated(se)
-			// Both peers now start again with a fresh protocol header,
-			// which each reader recognises for itself.
-			return
+			// The name is proven, so the estate's policy decides. Both peers
+			// otherwise start again with a fresh protocol header, which each
+			// reader recognises for itself.
+			return t.admitUser(se) != ""
 		}
 		t.authFailed(se)
 	case wire.PerfClose, wire.PerfEnd, wire.PerfDetach:
@@ -726,6 +831,7 @@ func (t *server) readBroker10(se *session, f *wire.Frame) {
 			t.brokerError(se, cond, desc)
 		}
 	}
+	return false
 }
 
 // observe records what this connection said about the machine at the other

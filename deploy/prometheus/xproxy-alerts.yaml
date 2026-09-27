@@ -191,6 +191,27 @@ groups:
         annotations:
           summary: "Access grants on {{ $labels.instance }} are being used with no approvals recorded"
           description: "Sessions opened against grants in the last day and not one approval was recorded in the same day, which means approvals: 0 or self_approval: true -- just-in-time and time-boxed, but not four eyes. Intended on a single-operator estate; on any other it is the setting an attacker who reaches one account most wants."
+      - alert: XproxyAuthorizationGapsWidening
+        expr: sum by (instance) (rate(xproxy_authz_default_total[30m])) > 0
+        for: 30m
+        labels: {severity: warn}
+        annotations:
+          summary: "Sessions on {{ $labels.instance }} are being decided by the authorization default, not by a rule"
+          description: "The authorisation policy is deciding by its default because no rule matched, which means the rules describe less of the estate than whoever wrote them believes. With the default deny -- which it should be -- these are people being turned away one at a time; with it allow, they are people getting through that nobody wrote a rule for. Read xproxyctl status: it prints every rule with its hit count."
+      - alert: XproxyAuthorizationShadowed
+        expr: max by (instance) (xproxy_authz_shadow) == 1
+        for: 24h
+        labels: {severity: warn}
+        annotations:
+          summary: "The authorization policy on {{ $labels.instance }} has enforced nothing for a day"
+          description: "authorization.shadow is set, so the policy is evaluated and what it would have refused is written down, but every session goes through. That is the right way to read a new policy against real traffic for a week; left on, it is a policy an estate believes in and does not have."
+      - alert: XproxyAuthorizationDefaultAllows
+        expr: max by (instance) (xproxy_authz_default_allows) == 1
+        for: 1h
+        labels: {severity: warn}
+        annotations:
+          summary: "The authorization policy on {{ $labels.instance }} allows what no rule matched"
+          description: "authorization.default is allow, so every identity, target and hour nobody wrote a rule about is permitted. A policy whose gaps are invisible is a policy that will be found to have one by somebody else first."
   - name: xproxy.custody
     rules:
       - alert: XproxySecretStale

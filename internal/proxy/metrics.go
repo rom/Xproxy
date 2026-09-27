@@ -138,6 +138,29 @@ func (s *Server) Collect(e metrics.Collector) {
 				L{"reason": reason}, float64(n))
 		}
 	}
+	// The authorisation policy. The number worth alerting on is no_rule: a
+	// rising count of decisions the default made is a policy whose rules cover
+	// less of the estate than whoever wrote them believes -- and with a deny
+	// default, an estate about to find that out one refusal at a time. The
+	// per-rule counter is what says which rules are doing the work, and which
+	// have never fired because a rule above them matched first.
+	if a := sn.Authz; a != nil {
+		e.Counter("xproxy_authz_decisions_total", "Authorisation decisions, by outcome.",
+			L{"outcome": "allow"}, float64(a.Allowed))
+		e.Counter("xproxy_authz_decisions_total", "Authorisation decisions, by outcome.",
+			L{"outcome": "deny"}, float64(a.Denied))
+		e.Counter("xproxy_authz_default_total", "Authorisation decisions no rule matched, so the section default decided.", nil, float64(a.NoRule))
+		e.Gauge("xproxy_authz_shadow", "1 while the authorisation policy evaluates without enforcing.", nil, b2f(a.Shadow))
+		e.Gauge("xproxy_authz_default_allows", "1 when an unmatched subject is allowed.", nil, b2f(a.DefaultAllows))
+		for _, r := range a.Rules {
+			action := "deny"
+			if r.Allow {
+				action = "allow"
+			}
+			e.Counter("xproxy_authz_rule_hits_total", "Decisions each authorisation rule made.",
+				L{"rule": r.Name, "action": action}, float64(r.Hits))
+		}
+	}
 	// Key custody. The two worth alerting on are a stale secret -- a
 	// reference whose refresh keeps failing, so rotation has stopped without
 	// the proxy stopping -- and an algorithm the active FIPS module refuses,

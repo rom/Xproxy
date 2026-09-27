@@ -145,11 +145,17 @@ DIST     = dist
 RELNAME  = xproxy-$(BASE_VERSION)-linux-amd64
 # macOS binaries, cross compiled (cgo is never needed). See docs/SETUP_MACOS.md.
 DARWIN_ARCHS ?= arm64 amd64
+# DARWIN_BINARIES is deliberately smaller than LINUX_BINARIES: macOS ships the
+# edge proxy, the control tools and the web GUI, and has no launchd job for xgate
+# or xrelay, so those two are not built or shipped for it. deploy/macos/install.sh
+# installs exactly this list, and test/deploy holds the two together.
+DARWIN_BINARIES = xproxy xproxyctl xproxy-admin xproxy-fleet xproxy-replay
+
 build-darwin: export CGO_ENABLED = 0
 build-darwin:
 	@for a in $(DARWIN_ARCHS); do \
 	  mkdir -p $(BIN)/darwin-$$a; \
-	  for c in xproxy xproxyctl xproxy-admin xproxy-fleet xproxy-replay; do \
+	  for c in $(DARWIN_BINARIES); do \
 	    GOOS=darwin GOARCH=$$a $(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BIN)/darwin-$$a/$$c ./cmd/$$c || exit 1; \
 	  done; \
 	done
@@ -179,9 +185,18 @@ vet-all: vet
 	GOOS=darwin GOARCH=arm64 $(GO) vet -tags $(CORAZATAGS) ./...
 	GOOS=darwin GOARCH=amd64 $(GO) vet -tags $(CORAZATAGS) ./...
 
+# LINUX_BINARIES is everything `build` produces, and the release tarball ships all
+# of it. It shipped four for as long as there had been three daemons: an operator
+# who downloaded it got deploy/config/xgate.yaml and xrelay.yaml telling them how
+# to configure two daemons the tarball did not contain, so an SSH bastion or any
+# relay listener could not be run from a release at all. test/deploy holds this
+# list against the build rules above.
+LINUX_BINARIES = xproxy xgate xrelay xproxyctl xproxy-admin xproxy-fleet xproxy-replay xsigner
+
 release: build dist
 	rm -rf $(DIST) && mkdir -p $(DIST)/$(RELNAME)
-	cp $(BIN)/xproxy $(BIN)/xproxyctl $(BIN)/xproxy-admin $(BIN)/xproxy-fleet LICENSE README.md VERSION $(DIST)/$(RELNAME)/
+	for b in $(LINUX_BINARIES); do cp $(BIN)/$$b $(DIST)/$(RELNAME)/ || exit 1; done
+	cp LICENSE README.md VERSION $(DIST)/$(RELNAME)/
 	cp -r deploy docs $(DIST)/$(RELNAME)/
 	tar -C $(DIST) -czf $(DIST)/$(RELNAME).tar.gz $(RELNAME) && rm -rf $(DIST)/$(RELNAME)
 	$(MAKE) dist-darwin

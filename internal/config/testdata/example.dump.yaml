@@ -1037,3 +1037,4 @@ acme:
 access: null
 secrets: null
 fips: null
+authorization: null

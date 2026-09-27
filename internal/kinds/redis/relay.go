@@ -7,12 +7,15 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"strconv"
 	"sync"
 	"time"
 
 	"github.com/rom/xproxy/internal/acceptgroup"
+	"github.com/rom/xproxy/internal/admit"
 	"github.com/rom/xproxy/internal/assets"
+	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/proxy"
@@ -72,7 +75,13 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener, tlsCfg *tl
 	return t, nil
 }
 
-func (t *server) enforcing() bool { return !t.rc.MonitorOnly }
+// enforcing says whether a policy decision here is applied or only written down.
+//
+// Two switches, and either is enough: this kind's own monitor_only, and the
+// listener's policy: {mode: shadow}, which is the estate-wide spelling every
+// other kind honours. This kind honoured only the first, so an operator who
+// trialled a redis policy the documented way got enforcement.
+func (t *server) enforcing() bool { return !t.rc.MonitorOnly && !t.cfg.Shadowing() }
 
 func (t *server) serve() {
 	for {
@@ -109,6 +118,97 @@ func (t *server) shutdown(ctx context.Context) {
 	t.sessions.Wait(ctx)
 }
 
+// admitClient is the two questions this relay asks about a client before it
+// carries anything for it: do the imported lists know this address, and does the
+// estate's authorisation policy allow it here.
+//
+// Asked on the connection, where there is no name yet. Redis begins with the
+// client's first command, so at this point the relay knows the address, the
+// listener, the pool and the hour and nothing else -- and a rule naming users
+// matches nobody here. The name arrives later and gets its own question, in
+// admitUser below, which is the interesting one on this kind.
+func (t *server) admitClient(ip netip.Addr) string {
+	h := t.host
+	return admit.Client(admit.Deps{
+		Lists:   h.ThreatIntel(),
+		Policy:  h.Authorization(),
+		Logs:    h.Logs(),
+		Matched: func() { h.Counters().ThreatIntelMatched.Add(1) },
+		Blocked: func() { h.Counters().ThreatIntelBlocked.Add(1) },
+	}, authorization.Subject{
+		Listener: t.name,
+		Kind:     "redis",
+		Client:   ip,
+		Target:   t.rc.Upstream,
+		Action:   authorization.ActionConnect,
+	}, t.admitGate(ip))
+}
+
+// admitUser is the estate's policy asked again, about the name -- and this is the
+// one place on any relay here where the name has been *proven* before the policy
+// sees it.
+//
+// Everywhere else a relay asks, the client's login is an assertion: postgres,
+// mysql and tds are asked at the startup or login packet, before the server has
+// said whether the password was right, so an allow rule there is a filter on a
+// claim. Here the question is asked when the server's own answer to an AUTH or
+// HELLO says the credential was accepted. So an allow rule keyed on `users` on
+// this kind is an authenticated grant, which is worth saying out loud because it
+// is not true of its siblings.
+//
+// The cost of that is where the refusal lands. The server has already seen the
+// credential by the time this is asked -- it had to, or there would be nothing to
+// prove the name -- so a refusal here does not keep the session off the server the
+// way postgres's does. What it keeps off is every command of the client's: the
+// acceptance is never forwarded and the connection ends. That is the same trade
+// rdp and ftp make, and for the same reason: it is a fact about the protocol
+// rather than a choice.
+//
+// The action is `session` rather than `connect`, and that distinction is the whole
+// of what makes the two questions writable apart. The connection itself is
+// `connect`, asked before any name exists, so a rule about people cannot match it
+// and an estate covers it with `networks`. The authenticated session is `session`,
+// and that is where a rule naming users belongs:
+//
+//   - {name: door,  allow: true, networks: ["10.0.0.0/8"], actions: [connect]}
+//   - {name: staff, allow: true, users: [bob],             actions: [session]}
+//
+// Without two actions the second ask would be answered by whatever rule let the
+// connection in, and the proven name would decide nothing.
+func (t *server) admitUser(se *session) string {
+	h := t.host
+	s := se.sess()
+	return t.host.Authorization().Ask(authorization.Subject{
+		Listener: t.name,
+		Kind:     "redis",
+		Client:   se.ip,
+		User:     s.User,
+		Target:   t.rc.Upstream,
+		Action:   authorization.ActionSession,
+	}, s.User, authorization.Gate{
+		Shadowing: func() bool { return !t.enforcing() },
+		Record: func(reason, rule, detail string) {
+			h.Counters().WouldRefuse("redis", reason)
+			h.Shadow().Record("redis", t.name, reason, rule, detail)
+		},
+		Deny: func(reason, _, detail string) { t.deny(se.ip, reason, detail) },
+	})
+}
+
+// admitGate is what this kind lends internal/admit so a refusal made there is counted,
+// logged and banned on exactly as one this file made itself.
+func (t *server) admitGate(ip netip.Addr) admit.Gate {
+	h := t.host
+	return admit.Gate{
+		Shadowing: func() bool { return !t.enforcing() },
+		Record: func(reason, rule, detail string) {
+			h.Counters().WouldRefuse("redis", reason)
+			h.Shadow().Record("redis", t.name, reason, rule, detail)
+		},
+		Deny: func(reason, _, detail string) { t.deny(ip, reason, detail) },
+	}
+}
+
 // handle runs one connection.
 //
 // There is no handshake to read. Redis begins with the client's first command, and
@@ -136,6 +236,13 @@ func (t *server) handle(c net.Conn) {
 	if d := t.policy.Connect(se.sess()); !d.Allow {
 		t.refused(se, d, "connect")
 		_ = se.refuse(d)
+		return
+	}
+	// The imported lists and the estate's authorisation policy, after this
+	// kind's own client list -- that is local policy about local clients, and a
+	// feed must not overrule an allow rule an operator wrote -- and before the
+	// server is dialled.
+	if t.admitClient(se.ip) != "" {
 		return
 	}
 	if !t.admit(se) {
@@ -294,7 +401,14 @@ func (t *server) fromServer(se *session) {
 	for {
 		n, err := se.up.Read(buf)
 		if n > 0 {
-			t.readAuthOutcome(se, buf[:n])
+			if t.readAuthOutcome(se, buf[:n]) {
+				// The estate's policy refused the name the server accepted. The
+				// acceptance is not forwarded and the connection ends, so the
+				// client never sees a login it may not use -- and nothing that
+				// arrived in the same read is carried either, which is the safe
+				// direction when a buffer may hold pipelined replies behind it.
+				return
+			}
 			if werr := se.writeClient(buf[:n]); werr != nil {
 				return
 			}
@@ -319,21 +433,29 @@ func (t *server) fromServer(se *session) {
 // could put the marker at the start of neither. That would leave `pending` set and
 // the connection unauthenticated, so the next command is refused -- the safe
 // direction, and the client's own retry resolves it.
-func (t *server) readAuthOutcome(se *session, b []byte) {
+//
+// It reports whether the estate's policy refused the name the server has just
+// accepted, in which case the caller must not forward the acceptance.
+func (t *server) readAuthOutcome(se *session, b []byte) (refused bool) {
 	if len(b) == 0 {
-		return
+		return false
 	}
 	u := se.pending.Load()
 	if u == nil {
-		return
+		return false
 	}
 	if b[0] == wire.TypeError {
 		user := *u
 		se.authFailed()
 		t.authFailure(se, user)
-		return
+		return false
 	}
 	se.authOK()
+	// The name is proven now, so the estate's policy is asked about it. This is
+	// after the server accepted the credential, which is the only order the
+	// protocol allows: a name nobody has checked is the thing the policy on the
+	// database relays has to make do with, and here it does not have to.
+	return t.admitUser(se) != ""
 }
 
 // fromClient reads the client's commands and applies the policy.

@@ -106,6 +106,38 @@ client's disk and the server form reads the server's.
 **The bounds**: statements, statement size, packet size, sessions overall and
 per client, and the session's idle and total duration.
 
+### The estate's own authorisation policy
+
+Above this relay's own policy sits the `authorization` section, which is not
+about MySQL: it is the one place that says which identity may reach what, in the
+same words for every protocol. This relay asks it at the login packet, which is the first place an
+account appears, and before that packet is forwarded, so an account no rule
+covers never reaches the server.
+
+The `target` is the upstream **pool** name -- the server is chosen by balancer
+after this point -- and the `user` is the account the packet named. Neither a
+principal nor groups reaches a rule here: MySQL gives the relay a name and nothing
+it could verify about who holds it, so a rule about a team is a rule listing
+accounts, and what may be reached *inside* the server is the `mysql` policy's own business,
+which is the thing that can say what a database or a statement means.
+
+**What the name is worth here.** The policy is asked before the login packet is forwarded, which is the
+point: it is what keeps a refused session off the server entirely. But it means the account
+is the one the client's login *asserts*, and the server proves it afterwards. So the
+policy narrows what the server would have allowed and never widens it: a deny rule is
+exact, because refusing a claimed name refuses at least everyone who could have
+proved it, while an allow rule keyed on the name is a filter on a claim that
+still has to be proven. It is not an authenticated grant. A rule that has to
+hold whatever a client asserts belongs in `targets` and `networks`, which nobody
+can choose for themselves.
+
+A refusal is the reason `authorization` -- the event `mysql_authorization`, the
+counter `xproxy_refusals_total{kind="mysql",reason="authorization"}` -- so it reads
+like every other refusal this relay makes. Either shadow switch, this listener's
+`monitor_only` or the section's own `shadow: true`, records what it would have
+refused with the rule that decided and lets the session through; a refusal that
+is not enforced is counted only as a would-be refusal, never as one made.
+
 ## What it does not do
 
 - **It is not a SQL firewall**, for the same reasons as the postgres kind: a
@@ -134,6 +166,7 @@ project, and the documentation is what this listener is written against.
 ## See also
 
 - The settings: [docs/CONFIG.md `## mysql`](../CONFIG.md#mysql)
+- The estate-wide policy above it: [docs/CONFIG.md `authorization`](../CONFIG.md#authorization)
 - A worked configuration: [`examples/databases/mysql.yaml`](../../examples/databases/mysql.yaml)
 - The other database protocols: [postgres](postgres.md), [tds](tds.md),
   [redis](redis.md)

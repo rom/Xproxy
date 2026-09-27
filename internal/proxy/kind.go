@@ -13,6 +13,7 @@ import (
 	"github.com/rom/xproxy/internal/access"
 	"github.com/rom/xproxy/internal/acme"
 	"github.com/rom/xproxy/internal/assets"
+	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/ban"
 	"github.com/rom/xproxy/internal/capture"
 	"github.com/rom/xproxy/internal/cluster"
@@ -107,6 +108,12 @@ type Host interface {
 	// the fail-closed answer for a daemon asked to check grants with
 	// nothing to check them against.
 	Access() *access.Ledger
+	// Authorization is the estate's authorisation policy, or nil when the
+	// configuration has no authorization section. Nil allows everything, and
+	// that is not a fail-open: validation refuses a section that does not
+	// cover every configured listener, so a kind either has a policy over it
+	// or the estate has not written one at all.
+	Authorization() *authorization.Policy
 	// Secrets resolves a configured reference (a path, env: or vault:) to
 	// secret material. Never nil: without a secrets section it answers
 	// paths and the environment and refuses a vault reference, so a kind

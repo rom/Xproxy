@@ -89,6 +89,35 @@ tunnel and belongs behind its own decision.
 **The bounds**: `max_tunnels`, `max_response_bytes`, and the connect and idle
 timeouts.
 
+### The estate's own authorisation policy
+
+Above this listener's own destination policy sits the `authorization` section,
+which is not about proxying: it is the one place that says which identity may
+reach what, in the same words for every protocol. This listener asks it on every
+request, tunnel and association -- CONNECT, a plain proxied request, SOCKS5 and
+MASQUE alike -- after the destination policy above and before the destination is
+dialled.
+
+The `target` here is the destination itself, `host:port`, not an upstream pool:
+a forward proxy has no pool, and the destination is exactly what a rule about
+egress needs to name. So a rule reads `targets: ["*.vendor.example:443"]`, and
+`*` does not cross the colon, which is what keeps one host's ports from being
+one pattern's worth of the whole internet.
+
+The `user` is the proxy credential's name, and it is empty on a listener with no
+`auth`. That is a fact the operator chose rather than a hole: a rule naming users
+then matches nobody here and the default decides, so a listener with no
+credentials wants rules about `networks` and `targets` instead of about people.
+
+The order matters and is deliberate. The destination policy runs first, so this
+answers only about destinations nothing else objected to, and a refusal here is
+about the person rather than the place -- which is what the rule an operator
+reads says. The refusal is the reason `authorization`, answered with 403 and
+counted as `xproxy_refusals_total{kind="forward",reason="authorization"}`, so it
+reads like every other refusal this listener makes. Either shadow switch --
+`policy: {mode: shadow}` on the listener, or `shadow: true` on the section --
+records what it would have refused and lets the request through.
+
 ## What it does not do
 
 - **It does not see inside a tunnel unless `intercept` says so.** Without
@@ -130,6 +159,7 @@ timeouts.
 ## See also
 
 - The settings: [docs/CONFIG.md `server.listeners[].forward`](../CONFIG.md#serverlistenersforward-kind-forward)
+- The estate-wide policy above it: [docs/CONFIG.md `authorization`](../CONFIG.md#authorization)
 - A worked configuration: [`examples/forward/socks.yaml`](../../examples/forward/socks.yaml), [`intercept.yaml`](../../examples/forward/intercept.yaml) and [`masque.yaml`](../../examples/forward/masque.yaml)
 - Routing TLS without terminating it: [tcp](tcp.md)
 - The inward-facing HTTP pipeline: [http](http.md)

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/access"
+	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/config"
 	wire "github.com/rom/xproxy/internal/ftp"
 	"github.com/rom/xproxy/internal/mfa"
@@ -291,12 +292,35 @@ func (t *server) shadowed(ip netip.Addr, what, detail string) bool {
 	if !t.cfg.Shadowing() {
 		return false
 	}
+	t.recordWouldDeny(ip, what, "", detail)
+	return true
+}
+
+// recordWouldDeny writes a refusal that is not being enforced, for a caller
+// that has already decided it is not enforcing it: the listener's own shadow
+// mode above, or the estate's authorisation policy, which has a shadow switch
+// of its own and must leave the same record on a listener that enforces. rule
+// names the rule that decided, where the policy that decided names its rules.
+func (t *server) recordWouldDeny(ip netip.Addr, what, rule, detail string) {
 	t.engine.Counters().WouldRefuse("ftp", what)
-	t.engine.Shadow().Record("ftp", t.cfg.Name, what, "", detail)
+	t.engine.Shadow().Record("ftp", t.cfg.Name, what, rule, detail)
 	t.engine.Logs().SecurityEvent(context.Background(), "would_deny", "ftp_"+what,
 		"listener", t.cfg.Name, "client_ip", ip.String(), "what", what,
 		"detail", textsafe.Clip256(detail))
-	return true
+}
+
+// authzGate lends the estate's authorisation policy this listener's own refusal
+// machinery, so a refusal it makes is counted, logged and banned on exactly as
+// one this listener made itself.
+func (t *server) authzGate(ip netip.Addr) authorization.Gate {
+	return authorization.Gate{
+		Shadowing: t.cfg.Shadowing,
+		Record:    func(reason, rule, detail string) { t.recordWouldDeny(ip, reason, rule, detail) },
+		Deny: func(reason, _, detail string) {
+			t.engine.Counters().FTPRefused.Add(1)
+			t.deny(ip, reason, detail)
+		},
+	}
 }
 
 // session is one control connection and the control connection to
@@ -318,13 +342,14 @@ type session struct {
 	user   string
 	authed bool
 	// grant is the access grant this session was admitted under, and
-	// grantChecked that the check has been made. On this protocol the login
-	// arrives on a control connection that is already open, so the grant is
-	// checked when the login completes rather than before the target is
-	// dialled; see grantGate. stopAtExpiry stops the timer that closes the
-	// session when the window ends.
+	// admitted that both admission checks -- the estate's authorisation
+	// policy and the grant -- have been made. On this protocol the login
+	// arrives on a control connection that is already open, so they are made
+	// when the login completes rather than before the target is dialled; see
+	// admissionGate. stopAtExpiry stops the timer that closes the session when
+	// the window ends.
 	grant        *access.Grant
-	grantChecked bool
+	admitted     bool
 	stopAtExpiry func()
 	// prot is the data channel protection the client asked for: C for
 	// clear, P for private.
@@ -788,7 +813,7 @@ func (se *session) relay(c wire.Command) (bool, string) {
 			se.pending = ""
 			out = se.verifyFactor(code)
 		}
-		if reason, line := se.grantGate(); reason != "" {
+		if reason, line := se.admissionGate(); reason != "" {
 			_ = se.toClient(line)
 			return true, reason
 		}
@@ -800,7 +825,7 @@ func (se *session) relay(c wire.Command) (bool, string) {
 	// The login is complete by here when there is no factor to wait for, so
 	// this is where a session with no grant is refused: the control
 	// connection is open and the target has seen nothing but a greeting.
-	if reason, line := se.grantGate(); reason != "" {
+	if reason, line := se.admissionGate(); reason != "" {
 		_ = se.toClient(line)
 		return true, reason
 	}
@@ -822,12 +847,47 @@ func (se *session) relay(c wire.Command) (bool, string) {
 // refuse before the target is reached. What it can do is refuse before any
 // command of the person's is forwarded, which is what it does: the target has
 // seen a connection and a login, and nothing else.
-func (se *session) grantGate() (reason string, line []byte) {
-	t := se.t
-	if t.grants == nil || se.grantChecked || !se.authed || se.mfa == mfaWanted {
+func (se *session) admissionGate() (reason string, line []byte) {
+	if !se.authed || se.mfa == mfaWanted || se.admitted {
 		return "", nil
 	}
-	se.grantChecked = true
+	se.admitted = true
+	// The estate's own policy first, because it is the broader question:
+	// whether this person may be on this server at all, rather than whether
+	// somebody approved a window for them today.
+	if reason := se.admitByPolicy(); reason != "" {
+		return reason, wire.Line(530, "not authorised")
+	}
+	return se.grantGate()
+}
+
+// admitByPolicy is the estate's authorisation policy, asked where the grant is
+// asked and subject to the same protocol fact described above: the login is the
+// first point at which there is anybody to decide about.
+//
+// The target is the upstream pool's name rather than the machine already
+// reached, so that a rule reads the same on an ftp listener as on the others;
+// the per-machine question is the access grant's, which does check the machine
+// this session actually got.
+func (se *session) admitByPolicy() string {
+	t := se.t
+	return t.engine.Authorization().Ask(authorization.Subject{
+		Listener: t.cfg.Name,
+		Kind:     "ftp",
+		Client:   se.ip,
+		User:     se.user,
+		Target:   t.f.Upstream,
+		Action:   authorization.ActionConnect,
+	}, textsafe.Clip64(se.user), t.authzGate(se.ip))
+}
+
+// grantGate is the just-in-time access decision, reached from admissionGate
+// once the policy above has allowed the session.
+func (se *session) grantGate() (reason string, line []byte) {
+	t := se.t
+	if t.grants == nil {
+		return "", nil
+	}
 	// The target is already dialled, so the only machine this session can be
 	// about is the one it reached.
 	adm := t.grants.Check(se.user, t.f.Upstream, []string{se.target})

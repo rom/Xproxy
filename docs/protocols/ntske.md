@@ -77,6 +77,36 @@ Bounding connections would not bound the work; bounding the handshakes does.
 `max_connections`, `handshake_timeout`, `idle_timeout` and `max_bytes` bound the
 rest.
 
+### The imported lists, and the estate's authorisation policy
+
+NTS-KE authenticates the *server* to the client, not the other way about: the
+client gets cookies out of the handshake and nothing in it names a person. An
+estate can put a client certificate in front of it, and then the name is the
+certificate's -- but that is checked in the handshake, and these two questions are
+asked before it, because the handshake is the expensive thing this port has to
+protect:
+
+- **the imported address lists** (`threat_intel`), about the client's address. A
+  list whose action is `block` refuses; one that asks for a `challenge` is
+  recorded like a log list, because there is no request here to serve a challenge
+  into and turning it into a block would be a policy the operator did not write.
+- **the `authorization` section**, on the client address, the listener, the kind,
+  the upstream pool and the hour. A rule naming `users` matches nobody on this
+  kind, so a rule here is written with `networks`, `targets` and `schedule`.
+
+Asked after this listener's own `allow_clients` and before a handshake slot is
+taken, so a client that may not be here never costs one.
+
+The lists are asked first: a list is an import about an address and says nothing
+about this estate's intentions, so a refusal naming the feed sends an operator to
+the feed rather than to a rule they would not find.
+
+A refusal is the reason `threat_intel` or `authorization` on this listener's usual
+deny event, so the counters, the security log and the ban list see it as they see
+any other refusal. Either shadow switch -- `policy: {mode: shadow}` on the
+listener, or `shadow: true` on the section -- records what it would have refused
+and carries the traffic.
+
 ## What it does not do
 
 - **It does not terminate TLS.** By design, as above. There is no `tls` section
@@ -104,6 +134,7 @@ rest.
 
 ## See also
 
+- The estate-wide policy above it: [docs/CONFIG.md `authorization`](../CONFIG.md#authorization)
 - The settings: [docs/CONFIG.md `server.listeners[].ntske`](../CONFIG.md#serverlistenersntske-kind-ntske)
 - A worked configuration: [`examples/ot/ntp.yaml`](../../examples/ot/ntp.yaml)
 - The time exchange itself: [ntp](ntp.md)

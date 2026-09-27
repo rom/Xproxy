@@ -91,6 +91,34 @@ A refused request is answered with a Modbus **exception** — the protocol's own
 reports it and the poll loop carries on. Dropping the connection because one
 request was refused would turn a refusal into an outage.
 
+### The imported lists, and the estate's authorisation policy
+
+Modbus names nobody: a master is an address and a unit identifier, and the
+protocol has no authentication at all. So two questions are asked about the client
+itself, after this listener's own `allow_clients` and before the device is dialled:
+
+- **the imported address lists** (`threat_intel`), about the client's address. A
+  list whose action is `block` refuses; one that asks for a `challenge` is
+  recorded like a log list, because there is no request here to serve a challenge
+  into and turning it into a block would be a policy the operator did not write.
+- **the `authorization` section**, on the client address, the listener, the kind,
+  the upstream pool and the hour. A rule naming `users` matches nobody on this
+  kind, so a rule here is written with `networks`, `targets` and `schedule`.
+
+Which unit identifiers and which registers that master may then touch stays with
+this listener's own policy above, because that is the thing that can say what a
+write to holding register 40001 means.
+
+The lists are asked first: a list is an import about an address and says nothing
+about this estate's intentions, so a refusal naming the feed sends an operator to
+the feed rather than to a rule they would not find.
+
+A refusal is the reason `threat_intel` or `authorization` on this listener's usual
+deny event, so the counters, the security log and the ban list see it as they see
+any other refusal. Either shadow switch -- `policy: {mode: shadow}` on the
+listener, or `shadow: true` on the section -- records what it would have refused
+and carries the traffic.
+
 ## What it does not do
 
 - **It does not rewrite values.** A setpoint outside the bounds is refused, not
@@ -121,6 +149,7 @@ request was refused would turn a refusal into an outage.
 
 ## See also
 
+- The estate-wide policy above it: [docs/CONFIG.md `authorization`](../CONFIG.md#authorization)
 - The settings: [docs/CONFIG.md `server.listeners[].modbus`](../CONFIG.md#serverlistenersmodbus-kind-modbus)
 - A worked configuration: [`examples/ot/modbus.yaml`](../../examples/ot/modbus.yaml)
 - The other protocols on a plant: [s7](s7.md), [iec104](iec104.md),

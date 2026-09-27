@@ -38,6 +38,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rom/xproxy/internal/admit"
+	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/limits"
 	wire "github.com/rom/xproxy/internal/modbus"
@@ -267,7 +269,12 @@ type session struct {
 
 	requests, denied, exceptions atomic.Uint64
 	closed                       atomic.Bool
-	wg                           sync.WaitGroup
+	// wg counts the device workers and writerWG the one writer goroutine.
+	// They are separate because the workers are the senders on writes and
+	// the writer is its receiver: the shutdown order is workers first, then
+	// the channel, then the writer, and one group cannot express that.
+	wg       sync.WaitGroup
+	writerWG sync.WaitGroup
 
 	// watch accumulates what this session did, for the estate's device
 	// inventory. It is reported twice -- on the first frame and at the end --
@@ -329,6 +336,15 @@ func (t *server) handle(client net.Conn) {
 		t.host.Counters().ModbusRejected.Add(1)
 		t.deny(ip, "client_not_allowed", "")
 		t.log(se, start, "client_not_allowed")
+		return
+	}
+	// The imported lists and the estate's authorisation policy, after this
+	// listener's own address lists -- those are local policy about local
+	// clients, and a feed must not overrule an allow rule an operator wrote --
+	// and before the device is dialled.
+	if reason := t.admitClient(ip); reason != "" {
+		t.host.Counters().ModbusRejected.Add(1)
+		t.log(se, start, reason)
 		return
 	}
 	// Listed from here: a Modbus session is a device's connection that
@@ -411,9 +427,9 @@ func (se *session) readRole(st tls.ConnectionState) string {
 // run reads frames from the master until the connection ends.
 func (se *session) run() string {
 	t := se.t
-	se.wg.Add(1)
+	se.writerWG.Add(1)
 	go func() {
-		defer se.wg.Done()
+		defer se.writerWG.Done()
 		defer safe.Guard("modbus writer")
 		for b := range se.writes {
 			if _, err := se.client.Write(b); err != nil {
@@ -856,12 +872,58 @@ func exceptionFor(d Decision) byte {
 	return wire.ExIllegalAddress
 }
 
+// admitClient is the two questions this relay asks about a client that has no
+// identity: do the imported lists know this address, and does the estate's
+// authorisation policy allow it here.
+//
+// Modbus names nobody -- a master is an address and a unit identifier -- so the
+// policy decides on the address, the listener, the pool and the hour. Which unit
+// identifiers and which registers that master may touch is the `modbus` policy's
+// own business, because it is the thing that can say what a write to holding
+// register 40001 means.
+func (t *server) admitClient(ip netip.Addr) string {
+	h := t.host
+	return admit.Client(admit.Deps{
+		Lists:   h.ThreatIntel(),
+		Policy:  h.Authorization(),
+		Logs:    h.Logs(),
+		Matched: func() { h.Counters().ThreatIntelMatched.Add(1) },
+		Blocked: func() { h.Counters().ThreatIntelBlocked.Add(1) },
+	}, authorization.Subject{
+		Listener: t.cfg.Name,
+		Kind:     "modbus",
+		Client:   ip,
+		Target:   t.m.Upstream,
+		Action:   authorization.ActionConnect,
+	}, admit.Gate{
+		Shadowing: func() bool { return !t.enforcing() },
+		Record: func(reason, rule, detail string) {
+			h.Counters().WouldRefuse("modbus", reason)
+			h.Shadow().Record("modbus", t.cfg.Name, reason, rule, detail)
+		},
+		Deny: func(reason, _, detail string) { t.deny(ip, reason, detail) },
+	})
+}
+
+// stop ends the session's goroutines in the one order that is safe.
+//
+// The device workers are the senders on se.writes and the writer goroutine is
+// its receiver, so the channel cannot be closed while a worker might still be
+// in send: closing a channel a sender is using panics, and although the panic
+// is contained it leaves a session that has stopped answering the master --
+// which on a plant floor is a device that has gone quiet for no stated reason.
+//
+// So: tell the workers to finish, wait until they have, and only then close the
+// channel, which lets the writer drain what is already queued and return. The
+// last answers a device gave are written rather than dropped, which is the
+// other half of the same correctness.
 func (se *session) stop() {
-	close(se.writes)
 	for _, w := range se.workers {
 		w.once.Do(func() { close(w.done) })
 	}
 	se.wg.Wait()
+	close(se.writes)
+	se.writerWG.Wait()
 }
 
 // limitedReader bounds what one frame may read, so a length field that

@@ -150,7 +150,17 @@ Delivered so far:
 Remaining:
 
 - External security review and release signing (checksums and a signed
-  tag) at the 1.0 cut
+  tag) at the 1.0 cut. The tooling is in place and exercised: `make
+  release` produces the tarballs, the SBOM and `SHA256SUMS`, and with
+  `SIGN_KEY` the detached signature; what is outstanding is the human
+  act of signing at the cut and a reviewer who is not the author.
+
+  Building one for this check found that the Linux tarball had shipped
+  four of the eight binaries since the daemons were split, so a download
+  carried the configuration for `xgate` and `xrelay` without carrying
+  either. Fixed, with tests in `test/deploy` holding the tarball lists
+  against the build rules -- the release artifact is the one thing the
+  suite had no reason to look at.
 - Fedora VM runner with SELinux enforcing for AVC checks and
   `systemd-analyze security` (the container job cannot load policy)
 - The 8 core reference throughput number with a remote load generator,
@@ -387,13 +397,17 @@ of them is a flaw in front of all of them.
   A hash list with no `upload_guard` filter anywhere draws advice at
   load, because a list nobody asks is worse than no list.
 
-  Not yet: an address list is consulted for the client at the HTTP and
-  forward listeners, and nowhere else. The gate and relay kinds check
-  the ban list at accept but not the imported lists, so a `cidr` feed
-  does nothing on an SSH, RDP, SMTP or Modbus listener. The ban list
-  covers the case an operator is most likely to want there, and the
-  sweep belongs with the unified authorisation work rather than in front
-  of it.
+  Where an address list is consulted: the HTTP gateway and the forward
+  proxy ask about the client, and the two generic layer 4 relays now do
+  too, through internal/admit -- the same admission point the
+  authorisation policy uses, because they are two questions asked at one
+  moment and building that moment twice would have been the mistake.
+
+  Not yet: the remaining relay kinds (dns, syslog, modbus, iec104, snmp,
+  tftp, dhcp, bacnet, s7, ntp, ntske) check the ban list at accept but
+  not the imported lists, so a `cidr` feed still does nothing on a
+  Modbus or syslog listener. They take the same admission point, and it
+  now exists.
 
 - FIDO2 keys and a second factor that is not typed: delivered.
   `require_hardware_key` accepts only a key held in a security token
@@ -413,6 +427,198 @@ of them is a flaw in front of all of them.
   -- which some of them have and FTP does not. The enrolment file, the
   replay rule and the lockout are already shared, so what is left is the
   per-kind prompt rather than the factor.
+
+- One authorisation policy above the protocols: delivered, for every
+  listener kind. The
+  `authorization` section compiles to a rule set every listener kind can
+  ask at its admission point -- who (`users`, `principals`, `groups`),
+  where from (`networks`), where to (`listeners`, `kinds`, `targets`),
+  what (`connect`, `session`, `exec`, `forward`, `read`, `write`,
+  `admin`) and when (`schedule`) -- with a negative form for every
+  selector, deny by default and the first matching rule deciding.
+  Refusals read as the reason `authorization` on each kind's usual deny
+  event, and the whole policy can be trialled with `shadow: true`.
+
+  It is fail-closed while it is being wired rather than aspirational: a
+  configuration carrying the section **and** a listener of a kind that
+  does not consult it is refused at load, naming the listener and the
+  kind. So the coverage cannot silently be less than an operator reading
+  the file believes.
+
+  All five gate kinds ask it: `ssh` (SFTP inside it covered by the same
+  decision), `telnet`, `vnc`, `rdp` and `ftp`. Each asks at the point
+  where it has an identity and the protocol allows -- before the target
+  is dialled on `ssh`, `telnet` and `vnc`; on `rdp` and `ftp` the person
+  appears only after the target is reached, so the refusal is before the
+  credential or any command of theirs travels, and the pages under
+  `docs/protocols/` say so per kind. All five take the upstream pool as
+  the target, so one rule reads the same on all of them.
+
+  The forward proxy asks it too, on every request, tunnel and
+  association, with the destination `host:port` as the target rather
+  than a pool -- a forward proxy has no pool, and the destination is
+  what a rule about egress needs to name.
+
+  The three database relays whose login packet names an account ask it
+  too -- `postgres` at the startup packet, `mysql` and `tds` at their
+  login packets -- each before that packet is forwarded, with the pool as
+  the target. What may be reached inside the server stays with each
+  kind's own policy, which is the thing that can say what a statement
+  means.
+
+  Not yet, and for a reason worth recording rather than a queue:
+
+  - `redis` and `amqp` confirm an identity only after the relay has
+    forwarded the credential and the server has accepted it, so their
+    connect-time hook has no user at all. That was recorded here as a
+    design question rather than a wiring one, and it has since been
+    answered: both now ask twice, and the entry below says how.
+
+  Worth stating once, because it is the property an operator has to
+  understand: on the kinds where the far side does the authenticating --
+  `postgres`, `mysql`, `tds`, `rdp` -- the policy is asked before the
+  login or the credential is forwarded, which is what keeps a refused
+  session off the server, and which also means the name it decides about
+  is asserted rather than proven. The policy can only narrow what the far
+  side would have allowed: a deny rule is exact, an allow rule is a
+  filter on a claim the server still has to verify. CONFIG.md and each
+  protocol page say so per kind rather than leaving the stronger reading
+  to be assumed.
+  - `smtp` has no name at all to decide about. The relay forwards the
+    SASL exchange without parsing it -- deliberately, because those
+    lines carry the password -- so it never learns who authenticated,
+    only that the server said 235. What it does have is the envelope,
+    and `MAIL FROM` is an address rather than an identity, which is the
+    `smtp` policy's own business.
+  - `mqtt` is wired, at the CONNECT packet and before it is forwarded, so
+    a client no rule covers never reaches the broker. The client
+    identifier deliberately does not reach a rule: any client may choose
+    one, and a pattern over it belongs in the listener's own
+    `client_id_pattern`.
+  - `ldap` is wired, and where matters: at a bind and nothing else,
+    before the bind is forwarded. A bind is the only request that names
+    an identity, and refusing one before it travels matters more here
+    than almost anywhere, because a bind that reaches a directory is a
+    password guess against it. What that leaves out is documented rather
+    than glossed: an anonymous session names nobody, so no rule about
+    people reaches it, and what a bound session may read or write stays
+    with the `ldap` policy -- `allow_anonymous` and that listener's own
+    rules are where those two decisions belong.
+  - The two generic layer 4 relays, `tcp` and `udp`, are wired -- and
+    with them the `cidr`-lists-per-kind gap recorded above, because both
+    questions are asked at the same admission point and building that
+    point twice would have been the mistake. internal/admit is that
+    point: the lists about the client's address, then the policy on the
+    address, the listener, the pool and the hour. There is no identity on
+    a generic relay, so a rule naming users matches nobody there, which
+    the reference says per kind.
+
+    On `udp` the decision is made once for a client that has no session
+    rather than once per datagram: the session table is keyed by client,
+    so that is a decision per client, and a policy walk for every
+    datagram of a flood would make the flood cheaper to send than to
+    refuse.
+
+  - The identity-less kinds are wired, all of them through that same
+    admission point: `modbus`, `iec104`, `s7`, `snmp`, `tftp`, `dhcp`,
+    `bacnet`, `ntske`, `syslog` and `dns`. On the stream kinds the
+    question is asked on the connection, before the device, station, PLC
+    or handshake slot is taken; on the datagram kinds it is asked per
+    datagram, because a datagram relay has no session to hang the answer
+    on, and the refusal goes through each kind's own deny path so a
+    client that keeps sending earns a ban rather than a record per
+    packet. `dns` is asked after its own `allow_clients` and aggregates
+    a record from an unproven source rather than attributing it, which is
+    the treatment its blocked-name events already had.
+
+    Two of them are worth stating plainly rather than listing. On `dhcp`
+    the client address is `0.0.0.0` for exactly the clients an operator
+    most wants to think about, so `networks` decides little there and a
+    rule is written with `listeners`, `targets` and `schedule`. On `dns`
+    there is no upstream pool at all -- a list of resolvers instead -- so
+    the subject carries no target and `targets` names nothing; a rule
+    about where a query may point is a rule about a domain, which is the
+    `dns` policy's business.
+
+    Wiring `dns` also turned up two ban reasons this proxy emitted that
+    no ban trigger could name -- `dns_threat_intel` and the new
+    `dns_denied` -- and one refusal path in `iec104` that was counted by
+    no reason at all. Both are fixed.
+  - `smtp`, `redis`, `amqp` and `ntp` are wired too, which leaves `http`
+    alone outside. `smtp` and `ntp` join the identity-less half: `smtp`
+    still has no name to offer, because the SASL lines carry the password
+    and are deliberately not parsed, and `ntp` has only an address, so on
+    both a rule is `networks`, `targets` and `schedule`.
+
+    `redis` and `amqp` are the interesting pair, and the answer turned out
+    better than the entry above them predicted. They do not need a
+    *replacement* admission point at the server's acceptance -- they need
+    a **second** one, because the connection and the authenticated session
+    are two different subjects. So both ask twice: `connect` on the
+    connection, where nobody has a name and a rule is about networks, and
+    `session` when the server's or broker's own answer says the credential
+    was accepted. That second ask is the only place on any relay here
+    where the policy sees a **proven** name rather than an asserted one --
+    the database relays are asked before the server has spoken, so an
+    allow rule there is a filter on a claim, and on these two it is an
+    authenticated grant.
+
+    Two asks needed two actions, which is what `actions` is for. Without
+    them the second ask would be answered by whatever rule let the
+    connection in and the proven name would decide nothing; the first
+    attempt at this was written with one action and a test caught it
+    immediately, refusing every client because no rule about a person can
+    match a subject with no person in it.
+
+    What it costs is where the refusal lands, and that is a fact about the
+    protocols rather than a choice: the server has already seen the
+    credential by the time it can prove a name, so the refusal keeps every
+    command or method after it off the server rather than keeping the
+    session off entirely. The acceptance is never forwarded, so the client
+    is never told it has a login it may not use.
+  - **The HTTP gateway asks it too, which closes the section.** The
+    question was genuinely a design one and the answer turned out to be
+    that the gateway was missing a layer rather than that the section did
+    not fit it. Its route decides what may be done with a request; the
+    `authz` filter decides what a verified identity may do with one; and
+    neither can say "this network reaches the public pool and not the
+    internal one, and not at three in the morning" -- a route cannot,
+    because a route is one of the things being decided about, and the
+    filter cannot, because it needs an identity the client has not
+    offered.
+
+    So the section is asked once per request, after the route is matched
+    (so a rule's `targets` can name its pool) and before the challenge
+    gate, the filter chain and the upstream. A refusal is a 403, because
+    on this kind there is a response to write -- which is also the reason
+    the question belongs there rather than at the accept. The subject
+    carries no user, deliberately: the gateway's identities are per route
+    and what one may do with them is the filter's decision, so putting a
+    user here would be two answers to one question. A rule naming people
+    therefore matches nobody on this kind, exactly as on the relays that
+    have none, and a policy written only about people refuses every
+    request here, fail-closed.
+
+    Two things were left as they were for reasons rather than symmetry.
+    The gateway does not share internal/admit, because its list handling
+    has per-route exemptions and a `challenge` action that serves a real
+    page, and the shared point flattens both -- it serves kinds with no
+    request to challenge into. And the policy is not route-exemptable,
+    unlike those lists: a list is somebody else's import and a route may
+    opt out of one, while a route that could opt out of the estate's own
+    policy would not be a policy.
+
+    With this the fail-closed load check can no longer be provoked by any
+    configuration the reference describes, so the test that proved it
+    inverted: it now asserts that no kind is outside. The check itself
+    stays, because a kind added tomorrow starts outside and must be
+    refused rather than silently uncovered.
+
+    Cost: a policy walk per request rather than per connection, because a
+    connection carries requests for many routes and the pool is not known
+    until one is matched. The cheap case is the common one -- the ask
+    returns before doing anything when no section is configured -- and a
+    test holds that.
 
 ## After 1.4 (candidates, unranked)
 

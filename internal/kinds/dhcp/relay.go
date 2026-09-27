@@ -7,6 +7,8 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/rom/xproxy/internal/admit"
+	"github.com/rom/xproxy/internal/authorization"
 	wire "github.com/rom/xproxy/internal/dhcp"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/safe"
@@ -104,6 +106,46 @@ func (s *server) serverSocket() (net.PacketConn, error) {
 	return lc.ListenPacket(context.Background(), "udp4", ":0")
 }
 
+// admitClient is the two questions this relay asks about a client that has no
+// identity: do the imported lists know this address, and does the estate's
+// authorisation policy allow it here.
+//
+// It is worth being plain about how little the address is worth on this one. A
+// client that has no lease yet sends from 0.0.0.0 -- that is what DHCP is for --
+// so a rule naming networks decides nothing about exactly the clients an operator
+// most wants to think about, and the imported lists have nothing to match. What
+// does decide here is the listener, the pool, the action and the hour: "this
+// segment is not relayed outside working hours" is a real rule, and it is the
+// shape a rule on this kind should take. What a client may ask for once it is
+// through is the `dhcp` policy's own business, which decides on the hardware
+// address and the message type -- the fields that actually name a device.
+//
+// It is asked once per message from the segment, like this relay's own address
+// lists, because DHCP has no session to hang the answer on.
+func (s *server) admitClient(ip netip.Addr) string {
+	h := s.host
+	return admit.Client(admit.Deps{
+		Lists:   h.ThreatIntel(),
+		Policy:  h.Authorization(),
+		Logs:    h.Logs(),
+		Matched: func() { h.Counters().ThreatIntelMatched.Add(1) },
+		Blocked: func() { h.Counters().ThreatIntelBlocked.Add(1) },
+	}, authorization.Subject{
+		Listener: s.cfg.Name,
+		Kind:     "dhcp",
+		Client:   ip,
+		Target:   s.m.Upstream,
+		Action:   authorization.ActionConnect,
+	}, admit.Gate{
+		Shadowing: func() bool { return !s.enforcing() },
+		Record: func(reason, rule, detail string) {
+			h.Counters().WouldRefuse("dhcp", reason)
+			h.Shadow().Record("dhcp", s.cfg.Name, reason, rule, detail)
+		},
+		Deny: func(reason, _, detail string) { s.deny(ip, reason, detail) },
+	})
+}
+
 // fromClient decides about one message from the segment and, when it is
 // allowed, relays it to a server.
 func (s *server) fromClient(up net.PacketConn, raw []byte, from net.Addr) {
@@ -114,6 +156,15 @@ func (s *server) fromClient(up net.PacketConn, raw []byte, from net.Addr) {
 		c.DHCPRejected.Add(1)
 		c.Refuse("dhcp", "client_not_allowed")
 		s.deny(ip, "client_not_allowed", "")
+		return
+	}
+	// The imported lists and the estate's authorisation policy, after this
+	// listener's own address lists -- those are local policy about local
+	// clients, and a feed must not overrule an allow rule an operator wrote --
+	// and before anything reaches a server.
+	if reason := s.admitClient(ip); reason != "" {
+		c.DHCPRejected.Add(1)
+		c.Refuse("dhcp", reason)
 		return
 	}
 	m, err := wire.Parse(raw)

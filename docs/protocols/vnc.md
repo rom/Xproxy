@@ -100,6 +100,26 @@ the handshake, idle and total timeouts.
 listens on localhost — which is how a well-configured VNC server is usually set
 up.
 
+### The estate's own authorisation policy
+
+Above this listener's own policy sits the `authorization` section, which is not
+about RFB: it is the one place that says which identity may reach which listener
+and target, in the same words for every protocol. This listener asks it after the
+client has identified itself and before the desktop is dialled, so a refused
+session never reaches a machine.
+
+The `user` it decides about is the plain credential's user or the name the factor
+prompt asked for -- so a listener under a policy about people needs a security
+type that carries a name (`mslogon2`, or VeNCrypt with a named credential),
+exactly as `require_grant` does. The `target` is the upstream **pool** name; the
+per-machine question belongs to the access grant. `principal` and `groups` are
+empty: RFB gives the gateway neither.
+
+A refusal is the reason `authorization` (the event `vnc_authorization`, the
+counter `xproxy_refusals_total{kind="vnc",reason="authorization"}`). Either
+shadow switch -- `policy: {mode: shadow}` on the listener, or `shadow: true` on
+the section -- records what it would have refused and admits.
+
 ## What it does not do
 
 - **It does not re-encode the framebuffer.** Rectangles are bounded and
@@ -128,6 +148,7 @@ up.
 ## See also
 
 - The settings: [docs/CONFIG.md `server.listeners[].vnc`](../CONFIG.md#serverlistenersvnc-kind-vnc)
+- The estate-wide policy above it: [docs/CONFIG.md `authorization`](../CONFIG.md#authorization)
 - A worked configuration: [`examples/bastion/vnc.yaml`](../../examples/bastion/vnc.yaml)
 - The other interactive protocols: [ssh](ssh.md), [telnet](telnet.md),
   [rdp](rdp.md)

@@ -33,12 +33,17 @@ import (
 // refused records a decision the policy refused.
 func (t *server) refused(se *session, d Decision, what string) {
 	c := t.host.Counters()
-	c.Refuse("s7", d.Reason)
 	if !t.enforcing() && !d.Hard {
+		// Counted only as a would-be refusal. The two tables are kept apart so
+		// that a status view cannot add them up, and a listener in shadow mode
+		// that reported refusals it had in fact forwarded would be the one way
+		// to defeat that: an operator reading the refusal count of a listener
+		// being trialled would see enforcement that is not happening.
 		c.WouldRefuse("s7", d.Reason)
 		t.host.Shadow().Record("s7", t.name, d.Reason, d.Rule, what)
 		return
 	}
+	c.Refuse("s7", d.Reason)
 	if !t.alerts() {
 		return
 	}

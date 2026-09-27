@@ -127,6 +127,37 @@ a replay is eventually rendered in somebody's terminal.
 `max_sessions_per_principal`, `rekey_bytes`, and the handshake, idle and total
 timeouts.
 
+### The estate's own authorisation policy
+
+Above all of that sits the `authorization` section, which is not about SSH: it
+is the one place that says which identity may reach which listener and target,
+in the same words for every protocol. This listener asks it once, at the same
+point as the access grant — after authentication, so the subject is the identity
+the gate established rather than a name a client offered, and before the target
+is dialled, so a session the policy refuses never reaches a machine.
+
+What it asks with:
+
+| Field | On an ssh listener |
+|-------|--------------------|
+| `action` | `connect`. The channel, command and forwarding decisions stay in this listener's own policy above, which is where they can be made in SSH's terms |
+| `user` | The login the client authenticated as |
+| `principal` | The `principals` entry the key or certificate matched, empty when none did |
+| `groups` | Empty. SSH gives the gate no group membership it could verify — what it has is the key, the certificate and the entry the key matched — so a rule about a team is written with `principals`, which is already the name for a set of people |
+| `target` | The **upstream pool** name, not an endpoint address. A bastion chooses the machine by balancer after this point, so an address here would be whichever one the balancer happened to pick; the per-machine question is the access grant's, and it already asks it against the pool's addresses |
+| `client` | The address the session came from, forwarded where a chain in `trusted_proxies` said so |
+
+A refusal is the reason `authorization` — the event `ssh_authorization`, the
+counter `xproxy_refusals_total{kind="ssh",reason="authorization"}` — so it reads
+like every other refusal this listener makes, and the ban list sees it. Either
+shadow switch (`policy: {mode: shadow}` on the listener, or `shadow: true` on
+the section) records what it would have refused -- with the rule that decided --
+and admits the session.
+
+An SFTP session inside this listener is covered by the same decision: it is a
+subsystem of a session the policy already allowed, and what may be read or
+written inside it is the `sftp` policy's business.
+
 ## What it does not do
 
 - **It does not sit inside the shell.** Once a shell is running, what the person
@@ -165,6 +196,7 @@ timeouts.
 ## See also
 
 - The settings: [docs/CONFIG.md `server.listeners[].ssh`](../CONFIG.md#serverlistenersssh-kind-ssh)
+- The estate-wide policy above it: [docs/CONFIG.md `authorization`](../CONFIG.md#authorization)
 - A worked configuration: [`examples/bastion/ssh.yaml`](../../examples/bastion/ssh.yaml)
 - The other interactive protocols: [telnet](telnet.md), [vnc](vnc.md),
   [rdp](rdp.md)

@@ -80,6 +80,62 @@ var roster = map[string]Role{
 	"ntske":    RoleRelay,
 }
 
+// authorises is every kind that consults the estate's authorisation policy
+// (the `authorization` section, internal/authorization).
+//
+// It is here, beside the roster, for the reason the roster is static: a daemon
+// has to be able to say "that kind does not consult the policy" about a kind it
+// does not itself serve, because it validates configurations that name one. And
+// it is a list of what *does* consult it rather than of what does not, so a kind
+// added tomorrow is outside the policy until somebody says otherwise -- which a
+// configuration with an authorization section then refuses to load, naming the
+// listener, rather than quietly leaving a hole in a policy an operator believes
+// covers everything.
+var authorises = map[string]bool{
+	"http":     true,
+	"ssh":      true,
+	"telnet":   true,
+	"vnc":      true,
+	"rdp":      true,
+	"ftp":      true,
+	"forward":  true,
+	"postgres": true,
+	"mysql":    true,
+	"tds":      true,
+	"mqtt":     true,
+	"ldap":     true,
+	"tcp":      true,
+	"udp":      true,
+	"modbus":   true,
+	"iec104":   true,
+	"s7":       true,
+	"snmp":     true,
+	"tftp":     true,
+	"dhcp":     true,
+	"bacnet":   true,
+	"ntske":    true,
+	"syslog":   true,
+	"dns":      true,
+	"smtp":     true,
+	"redis":    true,
+	"amqp":     true,
+	"ntp":      true,
+}
+
+// Authorises reports whether a kind consults the estate's authorisation policy.
+func Authorises(kind string) bool { return authorises[kind] }
+
+// AuthorisingKinds are the kinds that consult it, sorted, for a message that
+// has to say which ones do.
+func AuthorisingKinds() []string {
+	out := make([]string, 0, len(authorises))
+	for k := range authorises {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // RoleOf returns the daemon that serves a kind, and whether the kind is
 // one this project implements at all.
 func RoleOf(kind string) (Role, bool) {

@@ -308,7 +308,7 @@ func (f *forwardServer) socksConnect(c net.Conn, p *forwardPolicy, ip netip.Addr
 	h := f.host
 	ctx, cancel := context.WithTimeout(context.Background(), p.cfg.ConnectTimeout.D())
 	defer cancel()
-	ips, reason := f.check(ctx, p, ip, host, port, "")
+	ips, reason := f.check(ctx, p, ip, user, host, port, "")
 	if reason != "" {
 		_ = socksReply(c, socksDenyCode(reason), netip.AddrPort{})
 		h.Counters().ForwardDenied.Add(1)
@@ -668,7 +668,7 @@ func (a *socksAssoc) toDestination(msg []byte, _ netip.AddrPort) (int64, bool) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), a.p.cfg.ConnectTimeout.D())
 	defer cancel()
-	ips, reason := a.f.check(ctx, a.p, a.client, host, port, "")
+	ips, reason := a.f.check(ctx, a.p, a.client, a.user, host, port, "")
 	if reason != "" {
 		a.f.host.Counters().ForwardDenied.Add(1)
 		a.f.host.Counters().ForwardUDPDropped.Add(1)

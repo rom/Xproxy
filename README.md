@@ -1084,6 +1084,35 @@ describes it, validation refuses what cannot work, and
   "who"; `authz` answers "what may they do", deciding on the subject,
   groups, scopes and claims those filters verified — default deny, first
   match wins, and nothing a client sent can reach a rule
+- **And one policy above the protocols**: the `authorization` section
+  says which identity may reach which listener, target and operation for
+  every listener kind, in one place and in one vocabulary — `connect`,
+  `session`, `exec`, `forward`, `read`, `write`, `admin` — rather than in
+  nineteen protocol policies that can disagree. Each kind keeps its own
+  policy for what only it can express (which Modbus register, which SQL
+  shape, which SSH channel); this answers the question above them all.
+  **Every listener kind but one asks it.** All five gate kinds — SSH and
+  SFTP, Telnet, VNC, RDP and FTP — the forward proxy, where the target is
+  the destination rather than a pool and a rule is an egress policy about
+  people; every relay kind; and both generic layer 4 relays. On the many
+  kinds whose clients have no identity at all — Modbus, S7comm, BACnet,
+  SNMP, TFTP, DHCP, syslog, DNS, NTP and the generic relays — a rule is
+  about networks, pools, listeners and hours, which on a plant network is
+  the policy that was missing. That same admission point is where the
+  imported address lists are now asked about the client, which before this
+  happened only on the HTTP and forward listeners: a `cidr` feed did
+  nothing at all in front of a PLC, which is exactly where one earns its
+  keep. Redis and AMQP ask **twice** — once for the connection and once
+  when the server's own answer proves the name — which makes them the only
+  relays where an allow rule keyed on a user is an authenticated grant
+  rather than a filter on a claim. The HTTP gateway asks it too, once
+  per request and after the route is matched, which is the layer neither
+  its routes nor its `authz` filter could supply: a route is one of the
+  things being decided about, and the filter needs an identity the client
+  has not offered. A refusal there is a 403 rather than a dropped
+  connection. A kind added tomorrow starts outside the policy and a
+  configuration naming it is refused at load, rather than left as a hole
+  in a policy somebody believes is complete
 
 ### The estate: clusters, fleets and Kubernetes
 

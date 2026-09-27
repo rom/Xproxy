@@ -164,6 +164,11 @@ func run(args []string, out, errOut io.Writer) int {
 		}
 		printStats(out, st.Stats)
 		_, _ = fmt.Fprintln(out, "custody", custodySummary(st.Stats.Custody))
+		if az := st.Stats.Authz; az != nil {
+			for _, line := range authzSummary(az) {
+				_, _ = fmt.Fprintln(out, "authorization", line)
+			}
+		}
 		for _, tl := range st.Stats.ThreatLists {
 			_, _ = fmt.Fprintln(out, "threat_list", threatListSummary(tl))
 		}
@@ -1856,6 +1861,42 @@ func custodySummary(cu proxy.CustodySummary) string {
 		s += fmt.Sprintf("  fips-refused=%s", strings.Join(cu.FIPSRefused, ","))
 	}
 	return s
+}
+
+// authzSummary is the authorisation policy as status prints it: a line for the
+// policy and one for each rule.
+//
+// The default and the shadow switch come first because every number below them
+// means something else depending on both: hits on a deny rule in shadow mode are
+// sessions that went through. "default" counts the decisions no rule matched,
+// which is the measure of how much of the estate the rules actually describe --
+// an operator reading a policy they believe is complete should be able to see
+// that number and know.
+func authzSummary(a *proxy.AuthzSummary) []string {
+	def := "deny"
+	if a.DefaultAllows {
+		def = "allow"
+	}
+	head := fmt.Sprintf("default=%-5s allowed=%d denied=%d default-decided=%d", def, a.Allowed, a.Denied, a.NoRule)
+	if a.Shadow {
+		head += "  shadow=yes (nothing is enforced)"
+	}
+	out := []string{head}
+	for _, r := range a.Rules {
+		action := "deny"
+		if r.Allow {
+			action = "allow"
+		}
+		line := fmt.Sprintf("  %-24s %-5s hits=%d", r.Name, action, r.Hits)
+		if r.Hits == 0 {
+			// A rule that has decided nothing is either about traffic that does
+			// not happen or shadowed by a rule above it, and both are worth
+			// seeing without counting zeroes.
+			line += "  (never matched)"
+		}
+		out = append(out, line)
+	}
+	return out
 }
 
 // threatListSummary is the one line form used by status: what the list holds,

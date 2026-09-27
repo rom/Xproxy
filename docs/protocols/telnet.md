@@ -78,6 +78,27 @@ let a recorded session rewrite what the person reviewing it sees.
 because a telnet session on a console server is the kind of thing that stays
 open for weeks.
 
+### The estate's own authorisation policy
+
+Above this listener's own policy sits the `authorization` section, which is not
+about Telnet: it is the one place that says which identity may reach which
+listener and target, in the same words for every protocol. This listener asks it
+after the second factor and before the equipment is dialled, so a refused
+session never reaches the kit.
+
+Telnet carries no identity of its own, which matters here exactly as it does for
+`require_grant`: the `user` the policy decides about is whatever the factor
+prompt established, and a listener with no `mfa` has no name for a rule about
+people to match. The `target` is the upstream **pool** name; the per-machine
+question belongs to the access grant. `principal` and `groups` are empty --
+Telnet gives the gateway nothing of either kind it could verify.
+
+A refusal is the reason `authorization` (the event `telnet_authorization`, the
+counter `xproxy_refusals_total{kind="telnet",reason="authorization"}`), so it
+reads like every other refusal this listener makes and the ban list sees it.
+Either shadow switch -- `policy: {mode: shadow}` on the listener, or `shadow:
+true` on the section -- records what it would have refused and admits.
+
 ## What it does not do
 
 - **It does not add encryption to the protocol.** A telnet session through this
@@ -113,6 +134,7 @@ open for weeks.
 ## See also
 
 - The settings: [docs/CONFIG.md `server.listeners[].telnet`](../CONFIG.md#serverlistenerstelnet-kind-telnet)
+- The estate-wide policy above it: [docs/CONFIG.md `authorization`](../CONFIG.md#authorization)
 - A worked configuration: [`examples/bastion/telnet.yaml`](../../examples/bastion/telnet.yaml)
 - The protocol to use instead where the equipment allows: [ssh](ssh.md)
 - The other interactive protocols: [vnc](vnc.md), [rdp](rdp.md)

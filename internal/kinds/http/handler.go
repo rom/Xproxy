@@ -64,8 +64,12 @@ type reqState struct {
 	identity   *filter.Identity   // verified identities from the filter chain
 	cancel     context.CancelFunc // cancels the request (idle timeout)
 	automation []string           // automation markers from the challenge cookie
-	span       *tracing.Span      // server span, nil without tracing
-	upSpan     *tracing.Span      // client span of the upstream exchange
+	// ln is the listener this request arrived on, for the decisions that are
+	// about a listener rather than a route: the estate's authorisation policy
+	// names listeners and honours each one's own shadow switch.
+	ln         *config.Listener
+	span       *tracing.Span // server span, nil without tracing
+	upSpan     *tracing.Span // client span of the upstream exchange
 	propagate  bool
 	cache      string // hit, miss or bypass on a cached route
 	hadCookie  bool   // the client sent a cookie before request filters mutated the headers
@@ -118,6 +122,7 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	st := &reqState{id: newRequestID(), start: time.Now(), hadCookie: r.Header.Get("Cookie") != ""}
 	rw.st = st
 	st.h3srv = h.h3
+	st.ln = h.ln
 	st.clientIP = netutil.ClientIP(r, rt.trusted)
 	if tr := s.tracer.Load(); tr != nil {
 		st.span = tr.StartServer(r, r.Method)
@@ -441,6 +446,14 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// it. After routing, so a route can be exempt, and before the
 	// challenge gate, so a list that asks for a challenge gets one.
 	if s.threatIntel(rw, r, st, !cr.intel) {
+		return
+	}
+
+	// The estate's authorisation policy: may this client be served by this
+	// listener at all, towards this pool, at this hour. Above the route rather
+	// than inside it, and not route-exemptable for that reason -- see
+	// authorization.go.
+	if s.authorization(rw, r, st, cr) {
 		return
 	}
 
