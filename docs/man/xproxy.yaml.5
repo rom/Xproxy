@@ -27808,7 +27808,7 @@ list
 T}	T{
 
 T}	T{
-The allow list by class: \fBread\fR,\: \fBwrite\fR,\: \fBadmin\fR,\: \fBunknown\fR
+The allow list by class: \fBread\fR,\: \fBwrite\fR,\: \fBadmin\fR,\: \fBunknown\fR,\: \fBopaque\fR
 T}
 T{
 \fBdeny_\:classes\fR
@@ -27833,6 +27833,8 @@ T}
 \fBThis is a smaller policy than the classic one, and honestly so.\fR Classic S7comm says on the wire which memory area a request names, which data block and which bytes, so \fBareas\fR, \fBdbs\fR and \fBaddresses\fR can be written about the plant. S7comm\-plus does not. On the controllers that speak it the session is integrity\-protected and the object and variable addressing is encrypted under a key the two ends derive, so a relay in the middle sees the outer framing and nothing under it. What is left is the \fBfunction code\fR, and that is what this section decides about. A \fBdbs\fR line does not apply to S7comm\-plus, and a section here that claimed to bound data blocks would be claiming to read something no relay can see.
 .PP
 \fBThe function names are read from the wire, not from a specification.\fR Siemens publishes none, for either protocol. These names are the ones public reverse engineering agrees on, which is a weaker footing than an RFC \-\- and the design accounts for it in one specific way. A function code this relay cannot name is the \fBunknown\fR class, and \fBdefault_action\fR decides it, which is \fBdeny\fR unless an operator says otherwise. So a table that is incomplete or wrong costs a refusal rather than passing an operation through unexamined. \fBunknown\fR is a class an operator can name in a list precisely so that the decision about it is visible rather than inherited.
+.PP
+\fB\fBopaque\fR is the class for a PDU this relay cannot inspect at all.\fR Firmware 1.5 and above moved a variable\-length integrity block to the \fIfront\fR of the data part, so on those PDUs the opcode is not at a fixed offset and the function code cannot be located. This relay says so rather than reading a function out of a digest: such a PDU is the \fBopaque\fR class, and an operator names it to allow it. It is separate from \fBunknown\fR because the two ask a different question \-\- \fBunknown\fR is "allow an operation I cannot name", \fBopaque\fR is "allow a PDU I cannot inspect" \-\- and an S7\-1500 on current firmware sends the second constantly, so an estate that needs those controllers working answers it knowingly. Naming \fBopaque\fR is close to \fBpassthrough\fR for the traffic it covers, and the reference says that plainly rather than hiding it inside a class list.
 .PP
 \fBThe classification is a judgement.\fR \fBread\fR is the browsing and reading an HMI or historian does; \fBwrite\fR changes a value; \fBadmin\fR creates or deletes an object, calls a method or runs one of the sequences a download sits inside. On this protocol family a download and a run\-stop are both \fBinvoke\fR calls, which is why \fBinvoke\fR is \fBadmin\fR. An engineer who disagrees can name the function itself in \fBfunctions\fR, which is checked before the classes.
 .PP

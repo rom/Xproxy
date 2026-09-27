@@ -78,6 +78,12 @@ const (
 	PlusRequest      uint8 = 0x31
 	PlusResponse     uint8 = 0x32
 	PlusNotification uint8 = 0x33
+	// PlusResponse2 is a second response opcode, which the HMI of TIA Portal
+	// V13 uses for cyclic data. It is a response like 0x32 and carries a
+	// function code in the same place, and a relay that knew only the other
+	// three would have had a hole exactly one octet wide: a client that set
+	// this opcode carried a function code past a policy that never read one.
+	PlusResponse2 uint8 = 0x02
 )
 
 func plusOpcodeName(o uint8) string {
@@ -86,11 +92,25 @@ func plusOpcodeName(o uint8) string {
 		return "request"
 	case PlusResponse:
 		return "response"
+	case PlusResponse2:
+		return "response2"
 	case PlusNotification:
 		return "notification"
 	}
 	return fmt.Sprintf("opcode_%#x", o)
 }
+
+// plusCarriesFunction says whether an opcode is followed by two reserved
+// octets and a function code.
+//
+// Every opcode but the notification is: a notification is the controller
+// reporting against a subscription and its data part has a different shape.
+// This is deliberately "everything except" rather than a list of the three
+// that do, because that is how the protocol behaves -- an opcode this package
+// has never seen still has a function code where the others keep theirs, and
+// a relay that read one only for the opcodes it recognised would let an
+// unrecognised opcode carry an operation past the policy.
+func plusCarriesFunction(o uint8) bool { return o != PlusNotification }
 
 // The function codes of a request or a response.
 //
@@ -175,6 +195,15 @@ const (
 	// this is" is a different fact from "the relay knows it is a read", and
 	// an operator should be able to write a rule about it.
 	PlusUnknown PlusClass = "unknown"
+	// PlusOpaque is a PDU whose function code this relay cannot *locate*,
+	// rather than one it cannot name: a firmware-1.5 data PDU, where an
+	// integrity block of variable length sits in front of the opcode. It is
+	// separate from unknown because the two ask an operator a different
+	// question -- unknown is "allow an operation I cannot name", opaque is
+	// "allow a PDU I cannot inspect at all" -- and an S7-1500 on current
+	// firmware sends the second constantly, so an estate that wants those
+	// controllers working has to answer it knowingly.
+	PlusOpaque PlusClass = "opaque"
 )
 
 var plusClasses = map[uint16]PlusClass{
@@ -202,7 +231,7 @@ func PlusClassOf(f uint16) PlusClass {
 // PlusClassOf a name, for a rule.
 func PlusClassNamed(s string) (PlusClass, bool) {
 	switch PlusClass(s) {
-	case PlusRead, PlusWrite, PlusAdmin, PlusUnknown:
+	case PlusRead, PlusWrite, PlusAdmin, PlusUnknown, PlusOpaque:
 		return PlusClass(s), true
 	}
 	return "", false
@@ -252,21 +281,40 @@ func ParsePlus(b []byte) (*PlusPDU, error) {
 	if b[0] != PlusProtocolID {
 		return nil, fmt.Errorf("not an S7comm-plus PDU: the protocol identifier is %#x", b[0])
 	}
+	p := &PlusPDU{Type: b[1]}
+	if p.Type == PlusKeepalive {
+		// A keepalive has no length field at all: it is four octets, and the
+		// two after the PDU type are a sequence number and a reserved octet
+		// rather than a length. Reading them as a length made a keepalive
+		// whose sequence number happened to be large look like a PDU that
+		// overran its frame -- which a relay refuses, so a link that was
+		// merely idle was dropped.
+		return p, nil
+	}
 	n := int(binary.BigEndian.Uint16(b[2:4]))
 	if PlusHeaderLen+n > len(b) {
 		return nil, fmt.Errorf("an S7comm-plus data length of %d runs past the %d octets that arrived", n, len(b)-PlusHeaderLen)
 	}
-	p := &PlusPDU{Type: b[1], DataLen: n}
+	p.DataLen = n
+	if p.Type == PlusDataFW15 {
+		// Firmware 1.5 and above moved the integrity block from the end of
+		// the data part to the front of it, and that block begins with a
+		// variable-length integer -- so the opcode is not at a fixed offset
+		// here and this package does not guess where it is. The PDU is
+		// reported with no opcode and no function, which makes it the
+		// Opaque class, and the listener decides it explicitly. Reading a
+		// function code out of a digest would be worse than admitting the
+		// offset is unknown.
+		return p, nil
+	}
 	data := b[PlusHeaderLen : PlusHeaderLen+n]
 	if len(data) == 0 {
 		return p, nil
 	}
 	p.Opcode, p.HasOpcode = data[0], true
-	// The function code follows the opcode and two octets the protocol
-	// holds at zero. Only a request and a response carry one: a
-	// notification is the controller reporting a subscription it was already
-	// asked for, and its data part has a different shape.
-	if p.Opcode != PlusRequest && p.Opcode != PlusResponse {
+	// The function code follows the opcode and two octets the protocol holds
+	// at zero.
+	if !plusCarriesFunction(p.Opcode) {
 		return p, nil
 	}
 	if len(data) < 5 {
@@ -309,7 +357,13 @@ func (p *PlusPDU) FunctionName() (string, bool) {
 // Class is what this PDU does. A PDU with no function code is Unknown: a
 // keepalive changes nothing, but so does a policy that guessed.
 func (p *PlusPDU) Class() PlusClass {
-	if p == nil || !p.HasFunction {
+	if p == nil {
+		return PlusUnknown
+	}
+	if p.Type == PlusDataFW15 {
+		return PlusOpaque
+	}
+	if !p.HasFunction {
 		return PlusUnknown
 	}
 	return PlusClassOf(p.Function)
@@ -326,5 +380,8 @@ func (p *PlusPDU) Class() PlusClass {
 // through. Only what can be positively identified as an answer is treated as
 // one.
 func (p *PlusPDU) IsAnswer() bool {
-	return p != nil && p.HasOpcode && (p.Opcode == PlusResponse || p.Opcode == PlusNotification)
+	if p == nil || !p.HasOpcode {
+		return false
+	}
+	return p.Opcode == PlusResponse || p.Opcode == PlusResponse2 || p.Opcode == PlusNotification
 }

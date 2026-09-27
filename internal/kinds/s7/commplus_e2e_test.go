@@ -226,8 +226,14 @@ func TestTheS7CommPlusPDUsWithNoFunctionAreCarried(t *testing.T) {
 	cl := dial(t, addr)
 	cl.connect(wire.ResourceOP, 0, 2)
 
-	cl.write(plusRaw(wire.PlusKeepalive, nil))
-	cl.write(plusRaw(wire.PlusConnect, []byte{0x00}))
+	// A keepalive as one really arrives: four octets, where the two after the
+	// PDU type are a *sequence number* and not a length. A relay that read
+	// them as a length refused an idle link's keepalive as an overrun.
+	cl.write(tpkt([]byte{0x02, 0xf0, 0x80, wire.PlusProtocolID, wire.PlusKeepalive, 0x40, 0x00}))
+	// And the session setup, which is a create_object request inside a
+	// connect PDU rather than a PDU with nothing in it.
+	cl.write(plusRaw(wire.PlusConnect,
+		[]byte{wire.PlusRequest, 0x00, 0x00, 0x04, 0xCA}))
 	// They have to *arrive*, not merely fail to end the session. A refused
 	// S7comm-plus request is dropped rather than fatal, so a test that only
 	// checked that the connection survived could not tell a carried keepalive
@@ -237,14 +243,52 @@ func TestTheS7CommPlusPDUsWithNoFunctionAreCarried(t *testing.T) {
 	if _, err := cl.r.Next(); err != nil {
 		t.Fatalf("the session did not survive a keepalive and a connect: %v", err)
 	}
-	if n := p.count("plus "); n != 2 {
-		t.Errorf("the controller saw %d of the two PDUs with no function: %v", n, p.saws())
+	// The keepalive carries no function; the connect carries create_object,
+	// which is admin -- and this listener allows only reads, so the connect is
+	// refused while the keepalive goes. Both have to be *decided*, which is
+	// what the counters below say, and the keepalive has to arrive.
+	if n := p.count("plus "); n != 1 {
+		t.Errorf("the controller saw %d keepalives, want 1: %v", n, p.saws())
 	}
 	if !p.got("plus explore") {
 		t.Errorf("the controller saw %v", p.saws())
 	}
-	if n := s.Stats().Refusals["s7"]["s7comm_plus_not_allowed"]; n != 0 {
-		t.Errorf("a keepalive or a connect was refused as an operation (%d refusals)", n)
+	if n := s.Stats().Refusals["s7"]["s7comm_plus_not_allowed"]; n != 1 {
+		t.Errorf("%d refusals, want the one for the connect's create_object", n)
+	}
+}
+
+// A firmware-1.5 data PDU is the one an S7-1500 on current firmware sends
+// constantly, and this relay cannot find the function code inside it: an
+// integrity block of variable length sits in front of the opcode. It is the
+// opaque class, so an estate that needs those controllers working says so, and
+// one that has not said so is not carrying PDUs nobody looked at.
+func TestAFirmware15DataPDUIsRefusedUnlessTheOpaqueClassIsNamed(t *testing.T) {
+	p := startPLC(t, &fakePLC{})
+	s, addr := relayFor(t, base+
+		"        s7comm_plus:\n"+
+		"          mode: policy\n"+
+		"          classes: [read, write, admin, unknown]\n", p.addr())
+	cl := dial(t, addr)
+	cl.connect(wire.ResourceOP, 0, 2)
+
+	// Every class but opaque is allowed, so only opaque is left to refuse it.
+	fw15 := plusRaw(wire.PlusDataFW15, []byte{wire.PlusRequest, 0x00, 0x00, 0x05, 0x6B, 0x20})
+	cl.write(fw15)
+	waitFor(t, func() bool { return s.Stats().Refusals["s7"]["s7comm_plus_not_allowed"] >= 1 })
+
+	// And an estate that names it gets those controllers working.
+	p2 := startPLC(t, &fakePLC{})
+	_, addr2 := relayFor(t, base+
+		"        s7comm_plus:\n"+
+		"          mode: policy\n"+
+		"          classes: [read, opaque]\n", p2.addr())
+	cl2 := dial(t, addr2)
+	cl2.connect(wire.ResourceOP, 0, 2)
+	cl2.write(fw15)
+	cl2.write(plusFrame(wire.PlusRequest, wire.PlusGetMultiVariables))
+	if _, err := cl2.r.Next(); err != nil {
+		t.Fatalf("naming the opaque class did not carry the firmware 1.5 PDU: %v", err)
 	}
 }
 

@@ -6,6 +6,53 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Fixed (1.4, three S7comm-plus defects the dissector's own source found)
+
+The S7comm-plus support shipped with its function table taken from two agreeing
+secondary sources, because the references that would have confirmed it were
+unreachable. With the primary source to hand -- the s7comm-plus Wireshark
+dissector -- the table and the PDU types were confirmed exactly, and three
+things were wrong. Two were defects and one was a limit that had been claimed
+away rather than stated.
+
+- **A client could carry a function code past the policy with one octet.** The
+  function code was read only for the request and response opcodes this package
+  first knew about (0x31, 0x32). The protocol reads it for *every* opcode but
+  the notification -- including 0x02, a second response opcode the TIA Portal
+  V13 HMI uses for cyclic data. So a client that set opcode 0x02 reached a
+  policy that had never read a function code, and `mode: policy` with
+  `classes: [read]` would have carried an `invoke`. The function is now read for
+  every opcode but the notification, which is what the protocol does, and that
+  is deliberately "everything except" rather than a list of the ones this
+  package recognises: an opcode nobody here has seen still keeps its function
+  where the others keep theirs. Opcode 0x02 is also an answer, so a client
+  sending one is refused as one.
+
+- **A keepalive with a large sequence number dropped the link.** A keepalive is
+  four octets and has no length field: the two after the PDU type are a
+  sequence number and a reserved octet. Reading them as a data length made any
+  keepalive whose sequence number exceeded the frame look like a PDU that
+  overran it -- which is refused, and the refusal is fatal. So an S7-1500 link
+  that was merely idle was dropped, on a counter that said the frame was
+  malformed. The earlier test passed only because it wrote a zero where a real
+  keepalive carries its sequence number.
+
+- **Firmware 1.5 PDUs were being read at the wrong offsets, and are now
+  declared unreadable instead.** From firmware 1.5 the integrity block moved
+  from the end of the data part to the front, and it begins with a
+  variable-length integer -- so the opcode is not at a fixed offset and the
+  function code cannot be located without implementing the digest framing. The
+  parser had been reading an opcode and a function out of the integrity block.
+  It now reports no opcode and no function for those PDUs, and they are a class
+  of their own, `opaque`: refused by default, and nameable so an estate that
+  needs current S7-1500 controllers working says so knowingly. Stating the
+  limit is better than a policy decided on a misread digest.
+
+  A fourth thing changed as a consequence rather than as a defect: the policy's
+  "a PDU with no function carries on" shortcut covered `opaque`, because an
+  opaque PDU also has no function -- for the opposite reason. The shortcut now
+  covers only the PDUs that genuinely carry nothing to decide.
+
 ### Added (1.4, the protocol the newest Siemens controllers actually speak)
 
 - **S7comm-plus, and a relay that stopped breaking S7-1200 and S7-1500

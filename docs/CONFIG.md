@@ -10984,7 +10984,7 @@ looked like a network fault.
 | `mode` | `refuse`, `policy`, `passthrough` | `refuse` | `refuse`: no S7comm-plus reaches the controller, which is what an `s7` listener written before this section existed meant -- but the refusal is now named (`s7comm_plus_refused`), counted, and leaves the session up. `policy`: decide each PDU by the lists below. `passthrough`: forward every one |
 | `functions` | list | | The allow list, by name -- `explore`, `get_link`, `get_multi_variables`, `get_var_sub_streamed`, `set_variable`, `set_multi_variables`, `create_object`, `delete_object`, `invoke`, `begin_sequence`, `end_sequence` -- or by number (`"0x054c"`) |
 | `deny_functions` | list | | The deny list, which no allow overrides |
-| `classes` | list | | The allow list by class: `read`, `write`, `admin`, `unknown` |
+| `classes` | list | | The allow list by class: `read`, `write`, `admin`, `unknown`, `opaque` |
 | `deny_classes` | list | | The deny list by class |
 | `default_action` | `deny`, `allow` | `deny` | What a PDU no list names gets |
 
@@ -11008,6 +11008,18 @@ operator says otherwise. So a table that is incomplete or wrong costs a refusal
 rather than passing an operation through unexamined. `unknown` is a class an
 operator can name in a list precisely so that the decision about it is visible
 rather than inherited.
+
+**`opaque` is the class for a PDU this relay cannot inspect at all.** Firmware
+1.5 and above moved a variable-length integrity block to the *front* of the data
+part, so on those PDUs the opcode is not at a fixed offset and the function code
+cannot be located. This relay says so rather than reading a function out of a
+digest: such a PDU is the `opaque` class, and an operator names it to allow it.
+It is separate from `unknown` because the two ask a different question --
+`unknown` is "allow an operation I cannot name", `opaque` is "allow a PDU I
+cannot inspect" -- and an S7-1500 on current firmware sends the second
+constantly, so an estate that needs those controllers working answers it
+knowingly. Naming `opaque` is close to `passthrough` for the traffic it covers,
+and the reference says that plainly rather than hiding it inside a class list.
 
 **The classification is a judgement.** `read` is the browsing and reading an
 HMI or historian does; `write` changes a value; `admin` creates or deletes an

@@ -170,14 +170,21 @@ func (p *commPlus) Plus(pdu *wire.PlusPDU) Decision {
 	if p.mode == plusPassthrough {
 		return allowed()
 	}
-	if !pdu.HasFunction {
-		// A keepalive or a connect PDU carries no function. It changes
-		// nothing on the controller and the session cannot start without
-		// it, so it goes on the strength of the mode alone.
-		return allowed()
-	}
 	name, _ := pdu.FunctionName()
 	class := pdu.Class()
+	if !pdu.HasFunction && class != wire.PlusOpaque {
+		// A keepalive carries no function: it changes nothing on the
+		// controller and a link needs it, so it goes on the strength of the
+		// mode alone.
+		//
+		// The opaque class is deliberately *not* covered by that. A
+		// firmware-1.5 data PDU also has no function code here, but for the
+		// opposite reason -- there is one and this relay cannot locate it --
+		// so carrying it because the field came back empty would be carrying
+		// every operation on a current S7-1500 unexamined. It goes to the
+		// lists below, where an operator has to name it.
+		return allowed()
+	}
 	detail := plusDetail(pdu)
 	if p.denyFn[pdu.Function] || p.denyCl[class] {
 		return Decision{Reason: "s7comm_plus_denied", Detail: detail}
