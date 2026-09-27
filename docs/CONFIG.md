@@ -10997,6 +10997,85 @@ distinction that makes monitor mode useful: it is most likely an application nob
 has listed yet, and finding those is what the mode is for. An operator who names
 one of the hard set in `allow_commands` has said so, and is not overruled.
 
+### server.listeners[].redis.deception
+
+A Redis that is not there.
+
+This is the protocol where a fabricated server is worth the most, because the
+attack on it is a script rather than a person and the script is always the same
+one. An exposed instance with no password is found by a scanner, and what arrives
+next is:
+
+```
+INFO                            what is this, and what version
+CONFIG GET dir                  where does it write
+CONFIG GET dbfilename           what does it write
+CONFIG SET dir /var/spool/cron  point that somewhere that executes
+CONFIG SET dbfilename root
+SET x "\n* * * * * curl ...\n"  the payload, as a value
+SAVE                            write the file
+```
+
+A refusal stops that at the first step, and tells its author to try the next
+address. Answering it collects the whole chain -- the directory, the file name and
+the payload -- in the security log, which is the difference between knowing that
+somebody scanned the estate and knowing what they intended to run on it.
+
+```yaml
+redis:
+  # A honeypot: no upstream, because there is nothing behind it.
+  deception:
+    mode: decoy
+    version: "7.0.15"
+    profile: session-store
+    key_count: 256
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Turns the section off without removing it |
+| `mode` | `answer`, `decoy` | `answer` | `answer`: a command this listener was going to refuse is answered by the fabrication instead, and never reaches the server. `decoy`: the whole listener is a fabricated server, with no `upstream` |
+| `clients` | list of CIDR | | The networks that get the fabrication. **Required in mode `answer`.** In mode `decoy` an empty list means every client |
+| `profile` | `generic-cache`, `session-store`, `queue` | `generic-cache` | The shape: the version reported, how the keys are named, and how large a dataset it claims |
+| `version` | string | the profile's | The `redis_version` `INFO` reports, which is the first thing a scanner records and what a vulnerability database is indexed by |
+| `keys` | list | | Key names the fabrication holds, in addition to the generated ones. What `KEYS` and `SCAN` list and what `GET` answers for |
+| `key_count` | int | the profile's | How many keys are generated from the profile's pattern, 0 to 4096 |
+| `require_auth` | bool | `false` | Demand `AUTH` and then accept any password. Off by default: an unprotected instance is what the scanning is looking for, and a decoy that asks for a password is one most scripts move on from |
+| `tripwire` | list | | Command names, or `"NAME SUB"` pairs, that raise a `redis_tripwire` event. **In addition to** the built-in set below |
+| `seed` | int | from the listener name | Makes the fabricated values reproducible across restarts |
+| `period` | duration | `30s` | How long one sample of a gauge lasts |
+| `max_clients` | int | `1024` | Bounds the record of who has been answered |
+
+**The tripwires need no configuring.** `CONFIG SET`, `MODULE`, `SLAVEOF`,
+`REPLICAOF`, `DEBUG`, `EVAL`, `EVALSHA`, `FUNCTION`, `SCRIPT`, `MIGRATE`,
+`SHUTDOWN`, `SAVE`, `BGSAVE`, `BGREWRITEAOF`, `FLUSHALL`, `FLUSHDB` and `ACL` are
+in the set from the start, because nothing legitimate sends any of them to a
+fabricated cache. `tripwire` adds to that rather than replacing it.
+
+**Two things the fabrication will not pretend.** `EVAL` and `MODULE LOAD` answer
+the error the real server answers when it cannot, because a `+OK` to either would
+be a claim that code was running and nothing said afterwards would be consistent
+with it. `SCRIPT LOAD` answers a digest and keeps nothing, and `EVALSHA` of it
+then says `NOSCRIPT` -- which is exactly what a server that had evicted the
+script would say, so the pair stays consistent.
+
+**Nothing is stored.** A value is a function of the key name and the period, so a
+visitor who wrote a payload and read it back gets what they wrote for the length
+of one reply and the fabrication remembers nothing. `FLUSHALL` answers `+OK` and
+deletes nothing, because there was nothing.
+
+**A password is never recorded.** `AUTH`'s arguments are replaced in the event by
+the user name and the password's *length*, for the reason the SNMP relay does not
+log a community string: a log holding every credential sprayed at the estate is a
+list of the estate's own credentials as often as not. Every other command's
+arguments *are* recorded, clipped and reduced to one line, because on this
+protocol they are the message.
+
+Counters: `redis_deceived` and `redis_tripwire`. Security events: `redis_deceived`
+and `redis_tripwire`, with the command, the arguments and the reason the command
+was not going to reach the server. `xproxyctl decoys` lists what each fabrication
+has seen.
+
 ## bacnet
 
 `kind: bacnet` is a relay in front of a building. The controllers behind it hold

@@ -8317,6 +8317,71 @@
       },
       "additionalProperties": false
     },
+    "RedisDeception": {
+      "description": "RedisDeception answers as a Redis server that is not there. This protocol is the one where a fabricated server is worth the most, because the attack on it is a script rather than a person. An exposed Redis with no password is found by a scanner, and what arrives next is a fixed sequence: INFO to see what it is, CONFIG GET dir and dbfilename to find where it writes, CONFIG SET to point that somewhere executable, SET to put a cron line or an SSH key in a value, and SAVE to write the file. A refusal stops the script at the first step and tells its author to look elsewhere. Answering it collects the whole payload.",
+      "type": "object",
+      "properties": {
+        "clients": {
+          "description": "Clients are the networks that get the fabrication. Required in mode answer. In mode decoy an empty list means every client, which is what a honeypot wants.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "enabled": {
+          "description": "Enabled turns the section off without removing it; it defaults to true wherever the section is present.",
+          "type": "boolean"
+        },
+        "key_count": {
+          "description": "KeyCount is how many keys the fabrication generates from the profile's naming pattern, 0 to 4096. Zero takes the profile's.",
+          "type": "integer"
+        },
+        "keys": {
+          "description": "Keys are the key names the fabrication holds, in addition to the ones the profile generates. They are what KEYS and SCAN list and what GET answers for, so they are the part of the fabrication a visitor reads most closely.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_clients": {
+          "description": "MaxClients bounds the record of who has been answered. Default 1024.",
+          "type": "integer"
+        },
+        "mode": {
+          "description": "Mode is answer (the default: a command this listener was going to refuse is answered by the fabrication instead, and never reaches the server) or decoy (the whole listener is a fabricated server: no upstream, and nothing behind it).",
+          "type": "string"
+        },
+        "period": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "profile": {
+          "description": "Profile is the fabricated server's shape: generic-cache (the default), session-store or queue. It decides the version it reports, the key names it holds and the size of the dataset it claims.",
+          "type": "string"
+        },
+        "require_auth": {
+          "description": "RequireAuth makes the fabrication demand AUTH before anything else, and then accept any password. Default false, which is what a honeypot usually wants: an unprotected Redis is what the scanning is looking for, and a decoy that asks for a password is a decoy most scripts move on from. Where it is set, the attempt is recorded -- the user name and the password's length, never the password, because a log holding every credential sprayed at the estate is a list of the estate's own credentials as often as not.",
+          "type": "boolean"
+        },
+        "seed": {
+          "description": "Seed makes the fabricated values reproducible. Zero derives one from the listener name, which is stable across restarts.",
+          "type": "integer"
+        },
+        "tripwire": {
+          "description": "Tripwire are command names, or \"NAME SUB\" pairs, that raise a redis_tripwire security event when they arrive. They are in addition to a built-in set, which is the remote-code-execution chain and its neighbours: CONFIG SET, MODULE, SLAVEOF, REPLICAOF, DEBUG, EVAL, EVALSHA, FUNCTION, SCRIPT, MIGRATE, SHUTDOWN, SAVE, BGSAVE, BGREWRITEAOF, FLUSHALL, FLUSHDB and ACL. Nothing legitimate sends those to a fabricated server, so they do not need to be configured to be worth waking somebody for.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "version": {
+          "description": "Version is the redis_version INFO reports, which is the first thing a scanner records and the thing a vulnerability database is indexed by. Empty takes the profile's. **A decoy should say what the estate's own servers say.** A version nobody on the site runs is the tell that ends the pretence, and only you know what that is.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "RedisListener": {
       "description": "RedisListener is the settings of a kind: redis listener: a relay in front of a Redis or Valkey server. This is the protocol with the least structure and the most dangerous default posture in the project. A command is an array of opaque byte strings; there is no schema, no statement grammar, and nothing to classify by shape the way a SQL statement can be. What there is instead is a command name, and on this protocol the distance between \"administrative\" and \"remote code execution\" is one command: CONFIG SET dir /var/spool/cron + CONFIG SET dbfilename root + SAVE writes a file of the attacker's choosing wherever the server can write. Pointed at a cron directory or an authorized_keys it is a shell, and it has been used that way for a decade against instances exposed with no password because the default configuration had none. So this kind's policy is an allow list of commands defaulting to what an application does to a cache, a set that is refused even in monitor mode, and a key prefix policy -- which is the closest this protocol has to the database-and-table boundary the SQL kinds leave to GRANT, and which only works because the wire package knows where each command's keys are and says so when it does not.",
       "type": "object",
@@ -8366,6 +8431,14 @@
           "items": {
             "type": "string"
           }
+        },
+        "deception": {
+          "description": "Deception answers as a server that is not there: a refused command answered by a fabricated cache, or a whole listener that is one. See RedisDeception.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/RedisDeception"
+            }
+          ]
         },
         "default_action": {
           "description": "DefaultAction is allow or deny when no rule matched. Default deny.",

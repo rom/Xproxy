@@ -1405,6 +1405,11 @@ type RedisListener struct {
 	// cover twice.
 	AllowInline bool `yaml:"allow_inline"`
 
+	// Deception answers as a server that is not there: a refused command
+	// answered by a fabricated cache, or a whole listener that is one. See
+	// RedisDeception.
+	Deception *RedisDeception `yaml:"deception"`
+
 	// Rules narrow or widen the listener for traffic that matches them.
 	Rules []RedisRule `yaml:"rules"`
 	// DefaultAction is allow or deny when no rule matched. Default deny.
@@ -1418,6 +1423,79 @@ type RedisListener struct {
 	// which on this protocol includes KEYS, because it is O(n) on the single
 	// thread that serves every client and one of them stops the estate.
 	MonitorOnly bool `yaml:"monitor_only"`
+}
+
+// RedisDeception answers as a Redis server that is not there.
+//
+// This protocol is the one where a fabricated server is worth the most, because
+// the attack on it is a script rather than a person. An exposed Redis with no
+// password is found by a scanner, and what arrives next is a fixed sequence:
+// INFO to see what it is, CONFIG GET dir and dbfilename to find where it writes,
+// CONFIG SET to point that somewhere executable, SET to put a cron line or an
+// SSH key in a value, and SAVE to write the file. A refusal stops the script at
+// the first step and tells its author to look elsewhere. Answering it collects
+// the whole payload.
+type RedisDeception struct {
+	// Enabled turns the section off without removing it; it defaults to true
+	// wherever the section is present.
+	Enabled *bool `yaml:"enabled"`
+	// Mode is answer (the default: a command this listener was going to refuse
+	// is answered by the fabrication instead, and never reaches the server) or
+	// decoy (the whole listener is a fabricated server: no upstream, and nothing
+	// behind it).
+	Mode string `yaml:"mode"`
+	// Clients are the networks that get the fabrication. Required in mode
+	// answer. In mode decoy an empty list means every client, which is what a
+	// honeypot wants.
+	Clients []string `yaml:"clients"`
+	// Profile is the fabricated server's shape: generic-cache (the default),
+	// session-store or queue. It decides the version it reports, the key names
+	// it holds and the size of the dataset it claims.
+	Profile string `yaml:"profile"`
+	// Version is the redis_version INFO reports, which is the first thing a
+	// scanner records and the thing a vulnerability database is indexed by.
+	// Empty takes the profile's.
+	//
+	// **A decoy should say what the estate's own servers say.** A version
+	// nobody on the site runs is the tell that ends the pretence, and only you
+	// know what that is.
+	Version string `yaml:"version"`
+	// Keys are the key names the fabrication holds, in addition to the ones the
+	// profile generates. They are what KEYS and SCAN list and what GET answers
+	// for, so they are the part of the fabrication a visitor reads most
+	// closely.
+	Keys []string `yaml:"keys"`
+	// KeyCount is how many keys the fabrication generates from the profile's
+	// naming pattern, 0 to 4096. Zero takes the profile's.
+	KeyCount int `yaml:"key_count"`
+	// RequireAuth makes the fabrication demand AUTH before anything else, and
+	// then accept any password.
+	//
+	// Default false, which is what a honeypot usually wants: an unprotected
+	// Redis is what the scanning is looking for, and a decoy that asks for a
+	// password is a decoy most scripts move on from. Where it is set, the
+	// attempt is recorded -- the user name and the password's length, never the
+	// password, because a log holding every credential sprayed at the estate is
+	// a list of the estate's own credentials as often as not.
+	RequireAuth bool `yaml:"require_auth"`
+	// Tripwire are command names, or "NAME SUB" pairs, that raise a
+	// redis_tripwire security event when they arrive.
+	//
+	// They are in addition to a built-in set, which is the remote-code-execution
+	// chain and its neighbours: CONFIG SET, MODULE, SLAVEOF, REPLICAOF, DEBUG,
+	// EVAL, EVALSHA, FUNCTION, SCRIPT, MIGRATE, SHUTDOWN, SAVE, BGSAVE,
+	// BGREWRITEAOF, FLUSHALL, FLUSHDB and ACL. Nothing legitimate sends those to
+	// a fabricated server, so they do not need to be configured to be worth
+	// waking somebody for.
+	Tripwire []string `yaml:"tripwire"`
+	// Seed makes the fabricated values reproducible. Zero derives one from the
+	// listener name, which is stable across restarts.
+	Seed uint64 `yaml:"seed"`
+	// Period is how long one sample of a counter or a gauge lasts. Default 30s;
+	// 1s to 1h.
+	Period Duration `yaml:"period"`
+	// MaxClients bounds the record of who has been answered. Default 1024.
+	MaxClients int `yaml:"max_clients"`
 }
 
 // RedisRule is one rule of a redis listener's policy.

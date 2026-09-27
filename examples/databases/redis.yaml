@@ -308,6 +308,65 @@ server:
         monitor_only: true
         default_action: deny
 
+    # ---------------------------------------------------------------
+    # A cache that is not there.
+    #
+    # This listener has no upstream, because there is nothing behind it.
+    # It exists to be found, and what it collects is the one thing a
+    # refusal cannot give you: what the visitor meant to do.
+    #
+    # The attacker on Redis is a script, and it is always the same script.
+    # An exposed instance with no password is found by a scanner, and then:
+    #
+    #   INFO                            what is this, and what version
+    #   CONFIG GET dir                  where does it write
+    #   CONFIG GET dbfilename           what does it write
+    #   CONFIG SET dir /var/spool/cron  point that somewhere that executes
+    #   CONFIG SET dbfilename root
+    #   SET x "<cron line>"             the payload, as an ordinary value
+    #   SAVE                            write the file
+    #
+    # That is remote code execution built out of commands the protocol
+    # considers ordinary. There is no exploit in it and nothing to patch.
+    # A refusal stops it at the first step and sends its author to the next
+    # address; answering it puts the directory, the file name and the cron
+    # line in the security log.
+    # ---------------------------------------------------------------
+    - name: cache-spare
+      address: "10.0.0.43:6379"
+      kind: redis
+      redis:
+        # No upstream, and no TLS: an unprotected instance reachable in
+        # clear is exactly what the scanning is looking for, and a decoy
+        # that is harder to reach than the real thing is a decoy nobody
+        # visits.
+        require_tls: false
+        require_auth: false
+
+        deception:
+          mode: decoy
+
+          # What the estate's own caches say. A version nobody on the site
+          # runs is the tell that ends the pretence, and only you know
+          # what that is.
+          version: "7.0.15"
+          profile: session-store
+          key_count: 256
+
+          # A handful of names a visitor will read closely, because they
+          # are the ones that look like they matter.
+          keys:
+            - "session:0f3a9c21e4b8"
+            - "app:feature_flags"
+            - "queue:invoices:pending"
+
+          # The remote-code-execution chain is already a tripwire and does
+          # not need listing: CONFIG SET, MODULE, REPLICAOF, EVAL, SAVE,
+          # FLUSHALL and their neighbours. These are the two that are
+          # *reconnaissance* rather than exploitation, added because on a
+          # decoy there is no legitimate reason for either.
+          tripwire: ["keys", "config get"]
+
 upstreams:
   - name: rd
     endpoints:

@@ -8533,12 +8533,113 @@ func (v *validator) amqpPatterns(p string, in []string) {
 	}
 }
 
+// redisDecoyOnly says this listener is nothing but a fabricated server, which is
+// the one shape that needs no upstream: there is nothing behind it to reach.
+func redisDecoyOnly(m *RedisListener) bool {
+	d := m.Deception
+	return d != nil && (d.Enabled == nil || *d.Enabled) && d.Mode == "decoy"
+}
+
+// RedisDecoyProfiles are the fabricated server shapes the listener has built in.
+var RedisDecoyProfiles = []string{"generic-cache", "queue", "session-store"}
+
+// redisDeception checks the fabricated server.
+func (v *validator) redisDeception(p string, m *RedisListener) {
+	d := m.Deception
+	if d == nil || (d.Enabled != nil && !*d.Enabled) {
+		return
+	}
+	switch d.Mode {
+	case "", "answer":
+		if len(d.Clients) == 0 {
+			v.errf("%s.clients: required in mode answer; this listener reaches a real server, and a "+
+				"section that would fabricate an answer for any client that connects is not a decision "+
+				"to arrive at by default", p)
+		}
+	case "decoy":
+		if m.Upstream != "" {
+			v.errf("%s.mode: decoy is the whole listener, so it has no upstream: use mode answer to "+
+				"fabricate refusals on a listener that fronts a real server", p)
+		}
+		if len(d.Clients) == 0 {
+			v.warnf("%s: no clients, so every client that connects is answered by the fabricated "+
+				"server. That is what a honeypot is for; on this protocol it is also the thing the "+
+				"scanning is looking for, so expect it to be found", p)
+		}
+	default:
+		v.errf("%s.mode: must be answer or decoy", p)
+	}
+	v.modbusCIDRs(p+".clients", d.Clients)
+	if d.Mode != "decoy" && m.DenyResponse == "drop" {
+		v.warnf("%s: deny_response drop does not apply to the clients this section covers -- their "+
+			"refused commands are answered by the fabricated server rather than ignored", p)
+	}
+	if d.Profile != "" && !slices.Contains(RedisDecoyProfiles, d.Profile) {
+		v.errf("%s.profile: %q is not a profile; the built-in ones are %s",
+			p, d.Profile, strings.Join(RedisDecoyProfiles, ", "))
+	}
+	if len(d.Version) > 64 {
+		v.errf("%s.version: %d characters, and a redis_version is a few", p, len(d.Version))
+	}
+	if d.Version == "" {
+		v.warnf("%s.version: empty, so the profile's version is reported. A decoy should say what the "+
+			"estate's own servers say: a version nobody on the site runs is the tell that ends the "+
+			"pretence, and only you know what that is", p)
+	}
+	if n := d.KeyCount; n < 0 || n > 4096 {
+		v.errf("%s.key_count: must be between 0 and 4096", p)
+	}
+	for i, k := range d.Keys {
+		switch {
+		case k == "":
+			v.errf("%s.keys[%d]: empty", p, i)
+		case len(k) > 512:
+			v.errf("%s.keys[%d]: longer than 512 octets", p, i)
+		}
+	}
+	for i, c := range d.Tripwire {
+		if redisCommandName(c) == "" {
+			v.errf("%s.tripwire[%d]: %q is not a command name, or a name and a subcommand", p, i, c)
+		}
+	}
+	if d.RequireAuth {
+		v.warnf("%s.require_auth: the fabrication will ask for a password and then accept any of "+
+			"them, because refusing would make it a credential oracle. It also makes the decoy less "+
+			"interesting to the scripts this protocol attracts, which look for an instance with no "+
+			"password at all", p)
+	}
+	if n := d.MaxClients; n < 0 || n > 1<<20 {
+		v.errf("%s.max_clients: must be between 0 and 1048576", p)
+	}
+	if period := d.Period.D(); period != 0 && (period < time.Second || period > time.Hour) {
+		v.errf("%s.period: must be between 1s and 1h", p)
+	}
+}
+
+// redisCommandName reads a configured command name, or a name and a subcommand,
+// and returns it normalised or "" when it is not one.
+func redisCommandName(s string) string {
+	fields := strings.Fields(strings.ToUpper(s))
+	if len(fields) == 0 || len(fields) > 2 {
+		return ""
+	}
+	for _, f := range fields {
+		for i := 0; i < len(f); i++ {
+			if !redisNameChar(f[i]) {
+				return ""
+			}
+		}
+	}
+	return strings.Join(fields, " ")
+}
+
 func (v *validator) redisListener(p string, m *RedisListener, hasTLS bool) {
-	if m.Upstream == "" {
+	if m.Upstream == "" && !redisDecoyOnly(m) {
 		v.errf("%s.upstream: required", p)
 	}
 	v.modbusCIDRs(p+".allow_clients", m.AllowClients)
 	v.modbusCIDRs(p+".deny_clients", m.DenyClients)
+	v.redisDeception(p+".deception", m)
 
 	requireTLS := m.RequireTLS == nil || *m.RequireTLS
 	if requireTLS && !hasTLS {
@@ -12147,4 +12248,14 @@ func (v *validator) fips(c *Config) {
 		v.warnf("%s.required: this build does not have the FIPS 140-3 module active, so a daemon reading this "+
 			"configuration would refuse to start. Build with GOFIPS140=v1.0.0 and run with GODEBUG=fips140=on", p)
 	}
+}
+
+// redisNameChar is the alphabet a Redis command name is made of: the upper-case
+// letters, the digits, and the two separators a few names use.
+func redisNameChar(c byte) bool {
+	switch {
+	case c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-', c == '_':
+		return true
+	}
+	return false
 }

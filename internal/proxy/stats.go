@@ -205,8 +205,14 @@ type Stats struct {
 	// SNMPDeceived counts the requests answered by an agent that is not
 	// there, and SNMPTripwire the ones naming an object no legitimate
 	// manager reads.
-	SNMPDeceived      atomic.Uint64
-	SNMPTripwire      atomic.Uint64
+	SNMPDeceived atomic.Uint64
+	SNMPTripwire atomic.Uint64
+	// RedisDeceived counts the commands answered by a server that is not
+	// there, and RedisTripwire the ones nothing legitimate sends: the
+	// remote-code-execution chain, which on this protocol is where the
+	// fabrication earns its place.
+	RedisDeceived     atomic.Uint64
+	RedisTripwire     atomic.Uint64
 	IEC104Commands    atomic.Uint64
 	IEC104SystemCmds  atomic.Uint64
 	IEC104Denied      atomic.Uint64
@@ -748,6 +754,8 @@ type Snapshot struct {
 	S7Tripwire            uint64 `json:"s7_tripwire"`
 	SNMPDeceived          uint64 `json:"snmp_deceived"`
 	SNMPTripwire          uint64 `json:"snmp_tripwire"`
+	RedisDeceived         uint64 `json:"redis_deceived"`
+	RedisTripwire         uint64 `json:"redis_tripwire"`
 	IEC104Commands        uint64 `json:"iec104_commands"`
 	IEC104SystemCmds      uint64 `json:"iec104_system_commands"`
 	IEC104Denied          uint64 `json:"iec104_denied"`
@@ -1189,6 +1197,8 @@ func (s *Stats) snapshot() Snapshot {
 		S7Tripwire:             s.S7Tripwire.Load(),
 		SNMPDeceived:           s.SNMPDeceived.Load(),
 		SNMPTripwire:           s.SNMPTripwire.Load(),
+		RedisDeceived:          s.RedisDeceived.Load(),
+		RedisTripwire:          s.RedisTripwire.Load(),
 		IEC104Commands:         s.IEC104Commands.Load(),
 		IEC104SystemCmds:       s.IEC104SystemCmds.Load(),
 		IEC104Denied:           s.IEC104Denied.Load(),

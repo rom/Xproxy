@@ -33,6 +33,7 @@ type server struct {
 	name   string
 	rc     *config.RedisListener
 	policy *policy
+	decoy  *decoy
 	ln     net.Listener
 	tlsCfg *tls.Config
 
@@ -56,6 +57,9 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener, tlsCfg *tl
 	t := &server{host: host, cfg: cfg, name: cfg.Name, rc: cfg.Redis, policy: p,
 		ln: ln, tlsCfg: tlsCfg, upTLSMode: cfg.Redis.UpstreamTLSMode,
 		gate: sesslimit.New(cfg.Redis.MaxSessions, cfg.Redis.MaxSessionsPerClient)}
+	if t.decoy, err = newDecoy(cfg.Redis.Deception, cfg.Name); err != nil {
+		return nil, fmt.Errorf("listener %s: %w", cfg.Name, err)
+	}
 	if t.upTLSMode == "" {
 		// Unlike the three database kinds, the honest default here is off. Redis
 		// has no in-protocol upgrade to negotiate, so the relay cannot discover
@@ -249,6 +253,16 @@ func (t *server) handle(c net.Conn) {
 		return
 	}
 	defer t.release(se)
+
+	// A listener that is nothing but a fabricated server answers here, and
+	// nothing is dialled: there is no server behind it to reach, which is also
+	// why this is the one mode that needs no upstream.
+	if d := t.decoy; d != nil && d.whole && d.admits(se.ip) {
+		se.cliReader = wire.NewReader(se.client, t.policy.MaxMessage(),
+			t.policy.MaxBulk(), t.policy.MaxElements())
+		t.serveDecoy(se)
+		return
+	}
 
 	up, err := t.dial(se)
 	if err != nil {
@@ -506,6 +520,12 @@ func (t *server) decide(se *session, c *wire.Command) (ok, fatal bool) {
 		se.denied++
 		t.refused(se, d, c.String())
 		if t.enforcing() || d.Hard {
+			// The fabrication answers instead, for the clients it covers, and
+			// only here: this is the path where the command has already been
+			// kept from the server.
+			if answered, done := se.deceive(c, d.Reason); answered {
+				return false, done
+			}
 			if err := se.refuse(d); err != nil {
 				return false, true
 			}

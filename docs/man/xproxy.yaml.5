@@ -27335,6 +27335,174 @@ T}
 .TE
 .PP
 A command merely \fIoff\fR the allow list is a \fBsoft\fR refusal, which is the distinction that makes monitor mode useful: it is most likely an application nobody has listed yet, and finding those is what the mode is for. An operator who names one of the hard set in \fBallow_commands\fR has said so, and is not overruled.
+.SS "server.listeners[].redis.deception"
+.PP
+A Redis that is not there.
+.PP
+This is the protocol where a fabricated server is worth the most, because the attack on it is a script rather than a person and the script is always the same one. An exposed instance with no password is found by a scanner, and what arrives next is:
+.PP
+.RS 4
+.nf
+.ft CR
+INFO                            what is this, and what version
+CONFIG GET dir                  where does it write
+CONFIG GET dbfilename           what does it write
+CONFIG SET dir /var/spool/cron  point that somewhere that executes
+CONFIG SET dbfilename root
+SET x "\en* * * * * curl ...\en"  the payload, as a value
+SAVE                            write the file
+.ft
+.fi
+.RE
+.PP
+A refusal stops that at the first step, and tells its author to try the next address. Answering it collects the whole chain \-\- the directory, the file name and the payload \-\- in the security log, which is the difference between knowing that somebody scanned the estate and knowing what they intended to run on it.
+.PP
+.RS 4
+.nf
+.ft CR
+redis:
+  # A honeypot: no upstream, because there is nothing behind it.
+  deception:
+    mode: decoy
+    version: "7.0.15"
+    profile: session\-store
+    key_count: 256
+.ft
+.fi
+.RE
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.9i) lbw(1.0i) lbx
+lw(0.9i) lw(0.9i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Turns the section off without removing it
+T}
+T{
+\fBmode\fR
+T}	T{
+\fBanswer\fR,\: \fBdecoy\fR
+T}	T{
+\fBanswer\fR
+T}	T{
+\fBanswer\fR: a command this listener was going to refuse is answered by the fabrication instead,\: and never reaches the server. \fBdecoy\fR: the whole listener is a fabricated server,\: with no \fBupstream\fR
+T}
+T{
+\fBclients\fR
+T}	T{
+list of CIDR
+T}	T{
+
+T}	T{
+The networks that get the fabrication. \fBRequired in mode \fBanswer\fR.\fR In mode \fBdecoy\fR an empty list means every client
+T}
+T{
+\fBprofile\fR
+T}	T{
+\fBgeneric\-\:cache\fR,\: \fBsession\-\:store\fR,\: \fBqueue\fR
+T}	T{
+\fBgeneric\-\:cache\fR
+T}	T{
+The shape: the version reported,\: how the keys are named,\: and how large a dataset it claims
+T}
+T{
+\fBversion\fR
+T}	T{
+string
+T}	T{
+the profile\(aqs
+T}	T{
+The \fBredis_\:version\fR \fBINFO\fR reports,\: which is the first thing a scanner records and what a vulnerability database is indexed by
+T}
+T{
+\fBkeys\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+Key names the fabrication holds,\: in addition to the generated ones. What \fBKEYS\fR and \fBSCAN\fR list and what \fBGET\fR answers for
+T}
+T{
+\fBkey_\:count\fR
+T}	T{
+int
+T}	T{
+the profile\(aqs
+T}	T{
+How many keys are generated from the profile\(aqs pattern,\: 0 to 4096
+T}
+T{
+\fBrequire_\:auth\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Demand \fBAUTH\fR and then accept any password. Off by default: an unprotected instance is what the scanning is looking for,\: and a decoy that asks for a password is one most scripts move on from
+T}
+T{
+\fBtripwire\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+Command names,\: or \fB"NAME SUB"\fR pairs,\: that raise a \fBredis_\:tripwire\fR event. \fBIn addition to\fR the built\-in set below
+T}
+T{
+\fBseed\fR
+T}	T{
+int
+T}	T{
+from the listener name
+T}	T{
+Makes the fabricated values reproducible across restarts
+T}
+T{
+\fBperiod\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+How long one sample of a gauge lasts
+T}
+T{
+\fBmax_\:clients\fR
+T}	T{
+int
+T}	T{
+\fB1024\fR
+T}	T{
+Bounds the record of who has been answered
+T}
+.TE
+.PP
+\fBThe tripwires need no configuring.\fR \fBCONFIG SET\fR, \fBMODULE\fR, \fBSLAVEOF\fR, \fBREPLICAOF\fR, \fBDEBUG\fR, \fBEVAL\fR, \fBEVALSHA\fR, \fBFUNCTION\fR, \fBSCRIPT\fR, \fBMIGRATE\fR, \fBSHUTDOWN\fR, \fBSAVE\fR, \fBBGSAVE\fR, \fBBGREWRITEAOF\fR, \fBFLUSHALL\fR, \fBFLUSHDB\fR and \fBACL\fR are in the set from the start, because nothing legitimate sends any of them to a fabricated cache. \fBtripwire\fR adds to that rather than replacing it.
+.PP
+\fBTwo things the fabrication will not pretend.\fR \fBEVAL\fR and \fBMODULE LOAD\fR answer the error the real server answers when it cannot, because a \fB+OK\fR to either would be a claim that code was running and nothing said afterwards would be consistent with it. \fBSCRIPT LOAD\fR answers a digest and keeps nothing, and \fBEVALSHA\fR of it then says \fBNOSCRIPT\fR \-\- which is exactly what a server that had evicted the script would say, so the pair stays consistent.
+.PP
+\fBNothing is stored.\fR A value is a function of the key name and the period, so a visitor who wrote a payload and read it back gets what they wrote for the length of one reply and the fabrication remembers nothing. \fBFLUSHALL\fR answers \fB+OK\fR and deletes nothing, because there was nothing.
+.PP
+\fBA password is never recorded.\fR \fBAUTH\fR\(aqs arguments are replaced in the event by the user name and the password\(aqs \fIlength\fR, for the reason the SNMP relay does not log a community string: a log holding every credential sprayed at the estate is a list of the estate\(aqs own credentials as often as not. Every other command\(aqs arguments \fIare\fR recorded, clipped and reduced to one line, because on this protocol they are the message.
+.PP
+Counters: \fBredis_deceived\fR and \fBredis_tripwire\fR. Security events: \fBredis_deceived\fR and \fBredis_tripwire\fR, with the command, the arguments and the reason the command was not going to reach the server. \fBxproxyctl decoys\fR lists what each fabrication has seen.
 .SH "bacnet"
 .PP
 \fBkind: bacnet\fR is a relay in front of a building. The controllers behind it hold the setpoints for air handling, chillers, boilers, lighting, lifts, access control, smoke control and the pressurisation in an operating theatre, and a great many of them have been in a ceiling void since before the estate had a security team.

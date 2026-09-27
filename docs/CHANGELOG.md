@@ -6,6 +6,62 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (redis: a cache that is not there)
+
+- **`redis.deception` answers as a fabricated Redis**, either where a refusal
+  would otherwise be written on a real listener (`mode: answer`) or as a whole
+  listener with nothing behind it (`mode: decoy`). The rule is the one every other
+  fabrication in this project follows: a command on its way to a real server is
+  never answered from here.
+
+  This is the protocol where that earns the most, because the attacker on it is a
+  script rather than a person, and it is always the same script. An exposed
+  instance with no password is found by a scanner, and what follows is `INFO`,
+  `CONFIG GET dir`, `CONFIG GET dbfilename`, `CONFIG SET` both of them somewhere
+  that executes, a `SET` carrying a cron line, and `SAVE` -- remote code execution
+  built entirely out of commands the protocol considers ordinary, with no exploit
+  in it and nothing to patch. A refusal stops that at the first step and sends its
+  author to the next address. Answering it collects the directory, the file name
+  and the payload.
+
+- **The tripwires need no configuring.** On a PLC only the operator knows which
+  registers nobody legitimate reads. Here the answer is universal, so `CONFIG SET`,
+  `MODULE`, `SLAVEOF`, `REPLICAOF`, `DEBUG`, `EVAL`, `EVALSHA`, `FUNCTION`,
+  `SCRIPT`, `MIGRATE`, `SHUTDOWN`, `SAVE`, `BGSAVE`, `BGREWRITEAOF`, `FLUSHALL`,
+  `FLUSHDB` and `ACL` raise `redis_tripwire` from the start and `tripwire` adds to
+  that list rather than replacing it.
+
+- **Two things the fabrication will not pretend.** `EVAL` and `MODULE LOAD` answer
+  the error the real server answers when it cannot, because a `+OK` to either
+  would be a claim that code was running and nothing said afterwards would be
+  consistent with it. `SCRIPT LOAD` answers a digest and keeps nothing, and
+  `EVALSHA` of it then says `NOSCRIPT` -- which is what a server that had evicted
+  the script would say, so the pair stays consistent.
+
+- **A password is never recorded.** `AUTH`'s arguments become the user name and the
+  password's *length* in the event, for the reason the SNMP relay does not log a
+  community string. Every other command's arguments are recorded, clipped and
+  reduced to one line, because on this protocol they are the message.
+
+- Three profiles (`generic-cache`, `session-store`, `queue`), a configurable
+  `version` and keyspace, and `require_auth` for a decoy that asks for a password
+  and then accepts any of them. New counters `redis_deceived` and
+  `redis_tripwire`, and the fabrication appears in `xproxyctl decoys` like the
+  others. `internal/respwire` gained the reply builders a server needs, which it
+  had never needed as a reader.
+
+### Fixed (redis: a key with a slash in it was hidden from the glob)
+
+- The fabrication's `KEYS` and `SCAN` matched with `path.Match`, which is the
+  obvious matcher for a glob and the wrong one here: it will not let a wildcard
+  cross a slash, and a Redis key is an opaque string in which a slash means
+  nothing. A configured key named `cache:img/logo.png` was not listed by the
+  `cache:*` that was supposed to list it. The matcher is now Redis's own --
+  `*`, `?`, `[...]` with `^` and ranges, and `\` to escape -- with no separator
+  semantics, and a run of stars collapsed to one, because each star costs a scan
+  of what is left of the key and thirty of them in a client-supplied pattern
+  would be exponential in the length of every key compared against it.
+
 ### Added (snmp: version 3, read rather than taken on trust)
 
 - **The rules now apply to v3 traffic.** `usm_users` gives a listener the pass
