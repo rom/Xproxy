@@ -16,9 +16,16 @@ RUN=$PREFIX/var/run/xproxy
 STATE=$PREFIX/var/lib/xproxy
 HERE=$(cd "$(dirname "$0")" && pwd)
 
+# BINARIES is what the darwin tarball carries, which is the Makefile's
+# DARWIN_BINARIES. It listed three for as long as the tarball had carried five, so
+# xproxy-fleet and xproxy-replay were shipped to every Mac and installed on none.
+# macOS has no launchd job for xgate or xrelay, so neither is built or shipped for
+# it; test/deploy holds this list and the Makefile's together.
+BINARIES="xproxy xproxyctl xproxy-admin xproxy-fleet xproxy-replay"
+
 [ "$(id -u)" -eq 0 ] || { echo "run as root (sudo)"; exit 1; }
 [ "$(uname -s)" = Darwin ] || { echo "this installer is for macOS"; exit 1; }
-for b in xproxy xproxyctl xproxy-admin; do
+for b in $BINARIES; do
   [ -x "$BIN/$b" ] || { echo "missing $BIN/$b (run make build-darwin)"; exit 1; }
 done
 
@@ -58,7 +65,7 @@ dseditgroup -o edit -a _xproxy-admin -t user _xproxy 2>/dev/null || true
 
 # Binaries, manual pages, configuration schema and shell completion.
 install -d -m 0755 "$PREFIX/bin"
-for b in xproxy xproxyctl xproxy-admin; do install -m 0755 "$BIN/$b" "$PREFIX/bin/$b"; done
+for b in $BINARIES; do install -m 0755 "$BIN/$b" "$PREFIX/bin/$b"; done
 if [ -d "$HERE/../../docs/man" ]; then
   install -d -m 0755 "$PREFIX/share/man/man8" "$PREFIX/share/man/man5" "$PREFIX/share/xproxy"
   install -m 0644 "$HERE/../../docs/man/xproxy.8" "$HERE/../../docs/man/xproxyctl.8" "$PREFIX/share/man/man8/"

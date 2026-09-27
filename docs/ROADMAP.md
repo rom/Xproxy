@@ -150,7 +150,17 @@ Delivered so far:
 Remaining:
 
 - External security review and release signing (checksums and a signed
-  tag) at the 1.0 cut
+  tag) at the 1.0 cut. The tooling is in place and exercised: `make
+  release` produces the tarballs, the SBOM and `SHA256SUMS`, and with
+  `SIGN_KEY` the detached signature; what is outstanding is the human
+  act of signing at the cut and a reviewer who is not the author.
+
+  Building one for this check found that the Linux tarball had shipped
+  four of the eight binaries since the daemons were split, so a download
+  carried the configuration for `xgate` and `xrelay` without carrying
+  either. Fixed, with tests in `test/deploy` holding the tarball lists
+  against the build rules -- the release artifact is the one thing the
+  suite had no reason to look at.
 - Fedora VM runner with SELinux enforcing for AVC checks and
   `systemd-analyze security` (the container job cannot load policy)
 - The 8 core reference throughput number with a remote load generator,

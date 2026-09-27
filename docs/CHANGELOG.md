@@ -6,6 +6,37 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Fixed (1.4, what a release actually contains)
+
+- **The Linux release tarball shipped four binaries for as long as there had been
+  three daemons.** `make build` produces eight; the tarball copied `xproxy`,
+  `xproxyctl`, `xproxy-admin` and `xproxy-fleet`, and left out `xgate`, `xrelay`,
+  `xproxy-replay` and `xsigner`. So a download carried `deploy/config/xgate.yaml`
+  and `deploy/config/xrelay.yaml` -- telling an operator how to configure two
+  daemons whose binaries were not in it -- and an SSH bastion, or any relay
+  listener, could not be run from a release at all. The RPM was corrected when the
+  daemons were split out; the tarball was not, and nothing looked at it again.
+
+  Verified by unpacking one before and after rather than by reading the rule. The
+  tarball now ships everything the tree builds, and the list is a Makefile variable
+  rather than a line in a copy command.
+
+- **The macOS tarball carried two binaries its installer ignored.** It shipped five
+  (the Makefile's `build-darwin` list) while `deploy/macos/install.sh` installed
+  three, so `xproxy-fleet` and `xproxy-replay` reached every Mac and were installed
+  on none. The installer now installs what the tarball carries. macOS still ships
+  fewer than Linux, and that is deliberate rather than an omission: there is no
+  launchd job for `xgate` or `xrelay`, so neither is built for it, and a test says
+  so in the place where somebody would otherwise add one quietly.
+
+- **Three tests in `test/deploy`**, in the same shape as the RPM ones beside them
+  and for the same reason -- a packaging rule is written once and then drifts. One
+  holds the Linux list against the build rules, one holds the macOS installer
+  against the macOS tarball (and fails if that tarball starts carrying a daemon with
+  no launchd job), and one fails on a stale binary count in RELEASING.md, which said
+  "the three binaries" of both tarballs after the split had made them eight and
+  five. All three were mutation-tested.
+
 ### Security (1.4)
 
 A **seventh round**, sweeping the sixth's two finding classes across
