@@ -107,7 +107,7 @@ func (i *instance) Apply(lc config.Listener) error {
 	if lc.DNS == nil {
 		return nil
 	}
-	p, err := dnsPolicy(lc.DNS)
+	p, err := dnsPolicy(lc.Name, lc.DNS)
 	if err != nil {
 		return err
 	}
@@ -118,6 +118,30 @@ func (i *instance) Apply(lc config.Listener) error {
 
 // Close implements proxy.Closer.
 func (i *instance) Close() { i.srv.Close() }
+
+// DecoyStatus implements proxy.Decoy: what this listener's fabricated resolver
+// has seen, for the status view.
+func (i *instance) DecoyStatus() (proxy.DecoyStatus, bool) {
+	d := i.srv.Decoy()
+	if d == nil {
+		return proxy.DecoyStatus{}, false
+	}
+	pol := d.Policy()
+	st := proxy.DecoyStatus{
+		Listener: i.srv.Name, Kind: "dns", Mode: "answer", Profile: d.Profile(),
+		Served: pol.Served(), Tripped: pol.Tripped(), Anyone: pol.Anyone(),
+	}
+	if d.Whole() {
+		st.Mode = "decoy"
+	}
+	for _, c := range pol.Clients(32) {
+		st.Visitors = append(st.Visitors, proxy.DecoyVisitor{
+			ClientIP: c.Addr.String(), FirstSeen: c.FirstSeen, LastSeen: c.LastSeen,
+			Frames: c.Frames, Tripped: c.Tripped,
+		})
+	}
+	return st, true
+}
 
 // DNSServer implements proxy.DNSInstance, which is how the status and
 // purge views reach a resolver without the engine importing this

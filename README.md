@@ -214,9 +214,9 @@ protocol so that a policy can be written in that protocol's own terms:
 | `tcp` | `xproxy` | TLS and QUIC passthrough | The server name, without terminating; YARA over the bytes |
 | `udp` | `xproxy` | Any datagram protocol | Who may send, how large, how often, how long a session lives |
 | `forward` | `xproxy` | CONNECT, SOCKS5, MASQUE, TLS interception | Destinations, credentials, and the plaintext inside a tunnel when asked |
-| `dns` | `xproxy` | DNS over UDP, TCP, TLS, HTTPS, QUIC | Names, answers, response policy zones, tunnelling |
+| `dns` | `xproxy` | DNS over UDP, TCP, TLS, HTTPS, QUIC | Names, answers, response policy zones, tunnelling; and, with `deception`, answering a refused name as a fabricated resolver so the rest of what was leaving is collected rather than sent somewhere else |
 | `ssh` | `xgate` | SSH and SFTP | Channels, commands, forwards, paths, file operations; recording, MFA |
-| `telnet` | `xgate` | Telnet (RFC 854 NVT) | Options in both directions; recording, MFA |
+| `telnet` | `xgate` | Telnet (RFC 854 NVT) | Options in both directions; recording, MFA; and, with `deception`, a login and a shell that are not there, so the dictionary being walked and the payload it was for are collected rather than deflected |
 | `vnc` | `xgate` | RFB 3.3–3.8, VeNCrypt, vendor security types | Security type, whose credential opens the desktop, view-only, the picture's bounds; recording, MFA |
 | `rdp` | `xgate` | RDP over TLS, NLA, or the protocol's own encryption | Channels, devices, the connection sequence; recording, MFA |
 | `smtp` | `xrelay` | SMTP and submission | Commands, where a message ends, TLS and authentication, bounds |
@@ -1285,7 +1285,33 @@ describes it, validation refuses what cannot work, and
   to the catalogue's `usesuper`, and every `COPY` and file function is refused
   the way that fact requires. Unlike the MySQL decoy this one can sit behind
   TLS, because on this protocol the encryption is negotiated before the startup
-  packet and the relay answers that itself
+  packet and the relay answers that itself. And a `dns` listener does it for the
+  resolver, where a refusal costs the other end not a request but the whole
+  conversation: the query is all they ever send. A name on a threat feed answered
+  NXDOMAIN tells an implant that something here is deciding and it has a list of
+  other names to try; a tunnel told NXDOMAIN moves to the channel nobody is
+  watching. Answered, both keep talking, and every query after the first is the
+  next domain in the rotation or the next chunk of the payload. Two things there
+  are about not becoming a weapon, because a resolver is an amplifier and a
+  fabricated address is somewhere a visitor then goes: an answer to a client whose
+  address nothing has verified is bounded against the query that asked for it and
+  truncated past that bound, so a real client comes back over TCP and a spoofed
+  source cannot; and the default pool is the documentation range, which nothing
+  routes, with a warning at load when an operator points it inside the estate. It
+  answers a different address per name, which is the difference between it and a
+  sinkhole -- a sinkhole answers one address for everything, so two lookups find
+  it. And a `telnet` listener does it for a *login*, which is the one place in
+  this set where the credential is the intelligence: what arrives on port 23 is
+  not a person but a dictionary, and answering it collects the list, then the
+  busybox probe, the liveness check, and the `wget` that names the payload, the
+  address serving it and the architecture it was built for. Nothing is run and
+  nothing is fetched -- a fabrication that fetched the payload would be doing the
+  download from this estate's address -- and no password is kept in any form a
+  guess can be tested against: the user name, the credential's length, and a
+  handle under a key the process made at startup and never writes down. The one
+  refusal it will not replace is an outage, because an operator working an
+  incident must be told the equipment is unreachable rather than handed a device
+  that is not there
 - **A device inventory built from traffic, not from scanning.** An
   operational estate's oldest problem is that nobody knows what is on the
   network: the drawings are from commissioning, the spreadsheet was

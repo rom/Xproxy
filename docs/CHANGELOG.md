@@ -6,6 +6,132 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (telnet: a login that is not there)
+
+- **`telnet.deception` answers as a fabricated device**, either where a refusal
+  would otherwise be written on a listener that fronts real equipment
+  (`mode: answer`) or as a whole listener with nothing behind it (`mode: decoy`).
+
+  This is the protocol where the arithmetic changes most, because what arrives on
+  port 23 is not a person but a dictionary: the Mirai family and everything written
+  after it walk the credentials that shipped on recorders, cameras and routers, a
+  handful at a time from a great many addresses. Refusing collects the address the
+  firewall log already had. Answering collects the *list*, and then the four
+  exchanges that follow a login -- the busybox probe, the `echo` liveness check, the
+  `cat /proc/cpuinfo` that picks the payload, and the `wget` that names the payload,
+  the address serving it and the architecture it was built for. That last line is an
+  artefact nothing else in this proxy produces.
+
+- **No password is recorded, in any form a guess can be tested against** -- and this
+  is the section where that rule is hardest, because here the credential is the
+  intelligence. What is kept per attempt is the user name, the credential's length,
+  and a `credential_id` computed under a key the process makes at startup from the
+  system random source and never writes down: enough to answer "how many distinct
+  passwords did this client try, and have we seen this one before", and nothing at
+  all to whoever reads the log afterwards. A process with no random source produces
+  no handle rather than one under a constant key. The recording, where one is
+  configured, holds the shell transcript and not the login, even with `input: true`.
+
+- **The login never turns on the credential.** Every credential is accepted once
+  `attempts` have been taken, and which one it was makes no difference to what
+  follows: a trap that accepted the right password and refused the wrong one would be
+  a credential oracle, which is the one thing a password list needs. `attempts: 2`
+  or `3` is what a real device's login looks like and collects more of the list.
+
+- **Nothing is run and nothing is fetched.** `wget`, `curl`, `tftp` and `ftpget`
+  answer the connection timeout a device behind a firewall answers, after the address
+  has been written down. A fabrication that fetched the payload would be doing the
+  download on the attacker's behalf, from this estate's address and with its
+  reputation, which turns a sensor into a participant.
+
+- **It never replaces an outage.** In mode answer the fabrication sits where a
+  policy refusal would be -- a failed or locked second factor, the `authorization`
+  policy, a missing access grant -- and not where `allow_clients` or a ban refuses,
+  and not where the equipment is simply unreachable: an operator working an incident
+  must be told that rather than handed a device that is not there.
+
+- **A decoy listener will not compile with `mfa` or `require_grant`**, because its
+  own login prompt is the trap and accepts everybody: a factor in front of it would
+  refuse the visitors it exists to collect, and a grant would be checked against a
+  name nobody real typed. It also stops warning about the missing `tls` section --
+  an unencrypted telnet port is what the scanning is looking for.
+
+- **It invents no credentials and no work**: `/etc/shadow` lists the accounts with
+  `*` where a hash would be, `/tmp` is empty, and so is the shell history, because a
+  fabricated one would be inventing a person who used this machine.
+
+- The tripwires need no configuring: the escalation in the order it happens, fetch
+  (`wget`, `curl`, `tftp`, `nc`), make it run (`chmod`, `chattr`, `dd`), keep it
+  running (`nohup`, `setsid`, `insmod`), clear what would have stopped it
+  (`crontab`, `iptables`, `systemctl`), and the file names a credential lives in.
+  `passwd` is deliberately absent, because `/etc/passwd` is the commonest
+  reconnaissance on any machine and a tripwire matching it would make every session
+  look like an escalation.
+
+- New package `internal/fakeshell`, which is the login and the shell both this kind
+  and the SSH bastion use; two profiles (`busybox`, `linux`); new counters
+  `telnet_deceived` and `telnet_tripwire`; and an entry in `xproxyctl decoys` like
+  the others. A session is bounded in commands as well as by the idle and session
+  timeouts, so a script in a loop cannot hold a worker on a listener whose whole
+  purpose is to be found.
+
+### Added (dns: a resolver that is not there)
+
+- **`dns.deception` answers as a fabricated resolver**, either where a refusal
+  would otherwise be written on a real listener (`mode: answer`) or as a whole
+  listener with nothing behind it (`mode: decoy`). In mode answer it sits in the
+  four places that say the name does not exist -- the block list, an imported name
+  list, a policy zone whose action is nxdomain, and the cooldown on a domain a
+  client was caught tunnelling under -- and nowhere else; an RPZ rule that named
+  local data, nodata or tcp_only is an answer somebody wrote and is not overruled.
+
+  On every other protocol a refusal costs the other end a request. Here it costs
+  them the conversation, because the query is all they ever send: a name on a feed
+  answered NXDOMAIN tells an implant that something on this network is deciding,
+  and a tunnel told NXDOMAIN moves to the channel nobody is watching. A fabricated
+  answer keeps both of them talking, and every query after the first is the next
+  domain in the rotation or the next chunk of what was leaving.
+
+- **A different address for every name**, which is the difference between this and
+  the `sinkhole_ipv4` this listener has always had: a sinkhole answers one address
+  for everything, so a visitor who looks up two blocked names and gets one address
+  has found it in one extra query. A fabricated answer is drawn from the pool by
+  the name, stable for the life of the configuration.
+
+- **A resolver is an amplifier, and this fabrication is not one.** A datagram
+  proves nothing about its source, so an answer to a client whose address nothing
+  has verified is bounded against the query that asked for it -- twice its size,
+  which no honest answer here reaches -- and truncated past that bound: a real
+  client comes back over TCP and a spoofed source cannot. A datagram whose source a
+  DNS cookie proved, and any query over a stream transport, gets the full answer.
+  Validation says out loud that a decoy listener wants `cookies: require`, because
+  without it the address in the record is the one the packet claimed.
+
+- **A fabricated address is somewhere a visitor then goes**, so the default pool is
+  the documentation range of RFC 5737 and RFC 3849, which nothing routes and nobody
+  hosts in. `loopback` and `unroutable` are the other two profiles, `addresses`
+  names your own pool, and validation warns when that pool is inside the estate --
+  pointing it at a honeypot of this proxy's own collects the next step too, and is
+  the one configuration that has to be deliberate.
+
+- **It answers A, AAAA, TXT and PTR and invents nothing else.** Everything else is
+  NODATA: inventing an MX would mean inventing a mail host, and an NS or SOA would
+  be a claim of authority a forwarding resolver is not making. The TXT answer is
+  the one a tunnel is waiting for and carries no command -- the fabrication does not
+  know the other end's protocol and will not guess -- but it is the shape a tunnel
+  accepts, and one that accepts an answer sends the next chunk.
+
+- **The tripwires need no configuring, and here they are mostly types**: a zone
+  transfer, a signature set, ANY, the NULL record that exists to carry arbitrary
+  octets, a query in a class that is not IN, a name over a hundred octets, and the
+  fingerprint names (`version.bind`, `hostname.bind`, `id.server`,
+  `authors.bind`). Those are never answered either, for the reason the S7
+  fabrication does not answer the system status list.
+
+- New counters `dns_deceived` and `dns_tripwire`, on the resolver's own status view
+  as well, and an entry in `xproxyctl decoys` like the others. A decoy listener
+  needs no `upstreams`, which is the one shape of dns listener that does not.
+
 ### Added (postgres: a database that is not there)
 
 - **`postgres.deception` answers as a fabricated PostgreSQL**, either where a

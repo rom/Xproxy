@@ -106,6 +106,82 @@ server:
         max_connections: 200
         allow_clients: ["10.10.0.0/16"]
 
+    # ---------------------------------------------------------------
+    # A login that is not there.
+    #
+    # A honeypot on the same network as the equipment, with nothing
+    # behind it. Nothing on this estate is configured to use it, so a
+    # client that arrives either found it by scanning or is running
+    # something it should not be.
+    #
+    # What arrives on port 23 is not a person: it is a dictionary. The
+    # Mirai family and everything written after it walk the credentials
+    # that shipped on recorders, cameras and routers. Refusing collects
+    # the address the firewall log already had; answering collects the
+    # list, and then the four exchanges that follow a login:
+    #
+    #   /bin/busybox MIRAI       is it busybox, and which one
+    #   echo -e '\x6b...'        is anything actually reading this
+    #   cat /proc/cpuinfo        which payload do I need
+    #   wget http://.../x.arm7   and here is where it lives
+    #
+    # That last line is the one nothing else here produces.
+    # ---------------------------------------------------------------
+    - name: legacy-spare
+      address: "10.10.0.23:23"
+      kind: telnet
+      telnet:
+        # No upstream: there is no equipment. No mfa and no
+        # require_grant either -- the fabrication's own login prompt is
+        # the trap and accepts everybody, so a factor in front of it
+        # would refuse the visitors it exists to collect. Validation
+        # refuses both rather than ignoring them.
+        #
+        # And no tls: an unencrypted telnet port is what the scanning is
+        # looking for, so this is the one telnet listener that should not
+        # have one.
+        deception:
+          mode: decoy
+
+          # What is actually on port 23. `linux` is the other profile,
+          # for a listener impersonating a small server.
+          profile: busybox
+
+          # Name it after something this estate really has. A visitor
+          # who finds a recorder called "dvr" on a site whose recorders
+          # are called something else has found the fabrication.
+          hostname: cam-07
+
+          # Two credentials taken before the login is accepted, which is
+          # what a real device's login looks like and collects more of
+          # the dictionary. Which credential it was makes no difference
+          # to the outcome: a login that accepted the right password and
+          # refused the wrong one would be a credential oracle.
+          attempts: 2
+
+          # The escalation is already a tripwire and needs no listing:
+          # wget, curl, tftp, chmod, nohup, insmod, crontab, iptables,
+          # busybox, and the file names a credential lives in. This is
+          # the command that is interesting on this estate and nowhere
+          # else.
+          tripwire: [payroll-export]
+
+          # The transcript is worth keeping: it is the commands, and the
+          # login is not in it -- the credential was already reduced to a
+          # length and a handle before the file was opened.
+          #
+          # input: true records what was typed, which on a fabrication is
+          # the point and carries no real password.
+        recording:
+          directory: /var/log/xproxy/sessions
+          input: true
+          max_file_bytes: 8388608
+          max_files: 2000
+        idle_timeout: 5m
+        session_timeout: 30m
+        max_connections: 200
+
+
 upstreams:
   - name: equipment
     endpoints:
@@ -119,6 +195,13 @@ bans:
     # allow_clients are all telnet_denied. The threshold is low: this
     # is a port with a handful of legitimate users on a network that
     # should not be carrying strangers.
+    # A tripwire on a fabrication nothing is configured to use is about
+    # as clear a signal as this estate produces, so it acts on the first.
+    - name: telnet-decoy
+      reasons: [telnet_tripwire]
+      threshold: 1
+      window: 1h
+      duration: 24h
     - name: telnet-abuse
       reasons: [telnet_denied]
       threshold: 5

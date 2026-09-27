@@ -27,7 +27,7 @@ func TestDNSPolicyCompilation(t *testing.T) {
 			AllowClients: []string{"127.0.0.0/8"},
 		}
 	}
-	p, err := dnsPolicy(base())
+	p, err := dnsPolicy("dns", base())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,7 @@ func TestDNSPolicyCompilation(t *testing.T) {
 	// rather than producing a short or wrong address on the wire.
 	c := base()
 	c.SinkholeIPv4, c.SinkholeIPv6 = "not-an-address", ""
-	p, err = dnsPolicy(c)
+	p, err = dnsPolicy("dns", c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,18 +53,18 @@ func TestDNSPolicyCompilation(t *testing.T) {
 	// A block file is read, and its comments and blank lines skipped.
 	c = base()
 	c.BlockFile = blockFile
-	if _, err := dnsPolicy(c); err != nil {
+	if _, err := dnsPolicy("dns", c); err != nil {
 		t.Fatalf("a block file was refused: %v", err)
 	}
 	c.BlockFile = filepath.Join(dir, "absent.txt")
-	if _, err := dnsPolicy(c); err == nil {
+	if _, err := dnsPolicy("dns", c); err == nil {
 		t.Error("a missing block file was accepted")
 	}
 
 	// A rate limit is built when one is configured.
 	c = base()
 	c.RateLimit = &config.DNSRateLimit{QPS: 10, Burst: 20}
-	p, err = dnsPolicy(c)
+	p, err = dnsPolicy("dns", c)
 	if err != nil || p.RateLimit == nil {
 		t.Errorf("the rate limit was not built: %v", err)
 	}
@@ -73,22 +73,22 @@ func TestDNSPolicyCompilation(t *testing.T) {
 	// configuration errors rather than a policy that fails open.
 	c = base()
 	c.Block = []string{strings.Repeat("*", 4) + "["}
-	if _, err := dnsPolicy(c); err == nil {
+	if _, err := dnsPolicy("dns", c); err == nil {
 		t.Log("the block pattern was accepted; it is not a regular expression")
 	}
 	c = base()
 	c.Upstreams = []string{"tls://[::1"}
-	if _, err := dnsPolicy(c); err == nil {
+	if _, err := dnsPolicy("dns", c); err == nil {
 		t.Error("an unparseable upstream was accepted")
 	}
 	c = base()
 	c.DNSSEC = &config.DNSSEC{Enabled: boolPtr(true), TrustAnchors: []string{"not a trust anchor"}}
-	if _, err := dnsPolicy(c); err == nil {
+	if _, err := dnsPolicy("dns", c); err == nil {
 		t.Error("an unparseable trust anchor was accepted")
 	}
 	c = base()
 	c.DNSSEC = &config.DNSSEC{Enabled: boolPtr(true), TrustAnchorsFile: filepath.Join(dir, "absent-anchors")}
-	if _, err := dnsPolicy(c); err == nil {
+	if _, err := dnsPolicy("dns", c); err == nil {
 		t.Error("a missing trust anchor file was accepted")
 	}
 }

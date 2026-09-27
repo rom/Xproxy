@@ -47,6 +47,9 @@ type server struct {
 	options  map[byte]bool
 	recorder *sessionrec.Policy
 	mfaGuard *mfa.Guard
+	// decoy is the fabricated device, nil without a deception section
+	// (decoy.go).
+	decoy *decoy
 	// grants is the just-in-time access guard, nil unless this listener
 	// sets require_grant.
 	grants *access.Guard
@@ -96,6 +99,11 @@ func newServer(engine proxy.Host, cfg config.Listener, ln net.Listener, tc *tls.
 		})
 	}
 	t.grants = access.NewGuard(engine.Access(), cfg.Name, c.RequireGrant, engine.Logs().Error)
+	d, err := newDecoy(c.Deception, cfg.Name)
+	if err != nil {
+		return nil, fmt.Errorf("telnet deception: %w", err)
+	}
+	t.decoy = d
 	return t, nil
 }
 
@@ -364,10 +372,25 @@ func (t *server) handle(client net.Conn) {
 			return
 		}
 	}
+	// A listener that is nothing but a fabricated device answers here, and no
+	// equipment is dialled: there is none behind it, which is also why this is
+	// the one mode that needs no upstream. It is before the factor because the
+	// fabrication has a login prompt of its own and that prompt is the trap --
+	// which is why a decoy listener will not compile with an mfa section.
+	if d := t.decoy; d != nil && d.whole && d.admits(se.ip) {
+		t.log(se, start, t.serveDecoy(se, "connect"))
+		return
+	}
 	// The factor is asked for before the target is dialled, so a client
 	// that cannot answer it never reaches the equipment at all.
 	if t.mfaGuard != nil {
 		if reason := se.askFactor(); reason != "" {
+			// The fabrication answers instead, for the clients it covers: a
+			// failed factor is a session that was never going to reach the
+			// equipment, and what it does next is worth more than the refusal.
+			if se.deceive(start, reason) {
+				return
+			}
 			t.log(se, start, reason)
 			return
 		}
@@ -380,12 +403,18 @@ func (t *server) handle(client net.Conn) {
 	// than whether somebody approved a window for them today.
 	if reason := se.admitByPolicy(); reason != "" {
 		s.Counters().TelnetRejected.Add(1)
+		if se.deceive(start, reason) {
+			return
+		}
 		_, _ = se.client.Write(wire.EscapeData([]byte("not authorised\r\n")))
 		t.log(se, start, reason)
 		return
 	}
 	if reason := se.admitByGrant(); reason != "" {
 		s.Counters().TelnetRejected.Add(1)
+		if se.deceive(start, reason) {
+			return
+		}
 		_, _ = se.client.Write(wire.EscapeData([]byte("no access grant is in force\r\n")))
 		t.log(se, start, reason)
 		return

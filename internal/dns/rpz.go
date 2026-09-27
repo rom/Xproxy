@@ -700,7 +700,7 @@ func (s *Server) shadowedRPZ(hit RPZHit, q Question) bool {
 // applyRPZ answers a query a policy zone decided, and reports whether it
 // did: a passthru is a decision to answer normally, so the caller carries
 // on with the query it was already handling.
-func (s *Server) applyRPZ(a *asked, client netip.Addr, proto string, query []byte, qEnd int, h Header,
+func (s *Server) applyRPZ(a *asked, p *Policy, client netip.Addr, proto string, query []byte, qEnd int, h Header,
 	q Question, hit RPZHit, tcp bool) ([]byte, bool) {
 	if hit.Action == RPZPassthru || s.shadowedRPZ(hit, q) {
 		// An exception, counted so an operator can see the feed being
@@ -727,6 +727,21 @@ func (s *Server) applyRPZ(a *asked, client netip.Addr, proto string, query []byt
 	}
 	s.Blocked.Add(1)
 	s.refuse("rpz")
+	// The fabrication answers the actions that refuse, and not the ones that
+	// answer: local data is what the zone itself says to send, tcp_only is a
+	// transport decision, and passthru and drop have already returned. A rule
+	// that named an answer is an answer an operator wrote, and this does not
+	// overrule it.
+	// The fabrication answers where the rule refuses, and not where it answers:
+	// local data is what the zone itself says to send, nodata says the name
+	// exists with no records of this type, tcp_only is a transport decision, and
+	// passthru and drop have already returned. A rule that named an answer is an
+	// answer an operator or a feed wrote, and this does not overrule it.
+	if hit.Action == RPZNXDomain || hit.Action == "" {
+		if resp, ok := s.deceive(a, p, query, qEnd, h, q, "rpz"); ok {
+			return s.finish(a, q, "rpz:deceive", resp), true
+		}
+	}
 	switch hit.Action {
 	case RPZTCPOnly:
 		if !tcp {

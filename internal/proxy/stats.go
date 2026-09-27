@@ -207,6 +207,13 @@ type Stats struct {
 	// manager reads.
 	SNMPDeceived atomic.Uint64
 	SNMPTripwire atomic.Uint64
+	// TelnetDeceived counts the exchanges answered by a device that is not
+	// there -- a login attempt and every command after it -- and
+	// TelnetTripwire the commands reaching for the escalation: fetching a
+	// payload, making it executable, running it, and clearing what would
+	// have stopped it.
+	TelnetDeceived atomic.Uint64
+	TelnetTripwire atomic.Uint64
 	// PostgresDeceived counts the statements answered by a server that is not
 	// there, and PostgresTripwire the ones reaching for the escalation chain:
 	// pg_shadow, pg_read_file, COPY FROM PROGRAM, lo_import.
@@ -664,74 +671,80 @@ type Snapshot struct {
 	DNSTunnels          uint64            `json:"dns_tunnels"`
 	DNSTunnelBlocked    uint64            `json:"dns_tunnel_blocked"`
 	DNSTunnelTracked    int               `json:"dns_tunnel_tracked"`
-	MirrorDropped       uint64            `json:"mirror_dropped"`
-	MirrorSkipped       uint64            `json:"mirror_skipped"`
-	MirrorFailed        uint64            `json:"mirror_failed"`
-	MirrorDiffMatch     uint64            `json:"mirror_diff_match"`
-	MirrorDiffStatus    uint64            `json:"mirror_diff_status"`
-	MirrorDiffHeader    uint64            `json:"mirror_diff_header"`
-	MirrorDiffBody      uint64            `json:"mirror_diff_body"`
-	HoneypotMarked      int               `json:"honeypot_marked"`
-	TCPConnections      uint64            `json:"tcp_connections"`
-	TCPRejected         uint64            `json:"tcp_rejected"`
-	TCPErrors           uint64            `json:"tcp_errors"`
-	TCPBounded          uint64            `json:"tcp_bounded"`
-	TCPBytesIn          uint64            `json:"tcp_bytes_in"`
-	TCPBytesOut         uint64            `json:"tcp_bytes_out"`
-	QUICFlows           uint64            `json:"quic_flows"`
-	QUICRejected        uint64            `json:"quic_rejected"`
-	QUICFlowsOpen       int               `json:"quic_flows_open"`
-	UDPSessions         uint64            `json:"udp_sessions"`
-	UDPSessionsOpen     int64             `json:"udp_sessions_open"`
-	UDPDatagramsIn      uint64            `json:"udp_datagrams_in"`
-	UDPDatagramsOut     uint64            `json:"udp_datagrams_out"`
-	UDPBytesIn          uint64            `json:"udp_bytes_in"`
-	UDPBytesOut         uint64            `json:"udp_bytes_out"`
-	UDPDropped          uint64            `json:"udp_dropped"`
-	UDPRejected         uint64            `json:"udp_rejected"`
-	UDPErrors           uint64            `json:"udp_errors"`
-	ForwardRequests     uint64            `json:"forward_requests"`
-	ForwardTunnels      uint64            `json:"forward_tunnels"`
-	ForwardTunnelsOpen  int64             `json:"forward_tunnels_open"`
-	ForwardDenied       uint64            `json:"forward_denied"`
-	ForwardAuthFailed   uint64            `json:"forward_auth_failed"`
-	ForwardRejected     uint64            `json:"forward_rejected"`
-	ForwardErrors       uint64            `json:"forward_errors"`
-	ForwardSOCKS        uint64            `json:"forward_socks"`
-	MasqueUDP           uint64            `json:"masque_udp"`
-	MasqueIP            uint64            `json:"masque_ip"`
-	MasqueOpen          int64             `json:"masque_open"`
-	MasqueDropped       uint64            `json:"masque_dropped"`
-	SMTPSessions        uint64            `json:"smtp_sessions"`
-	SMTPSessionsOpen    int64             `json:"smtp_sessions_open"`
-	SMTPMessages        uint64            `json:"smtp_messages"`
-	SMTPRefused         uint64            `json:"smtp_refused"`
-	SMTPRejected        uint64            `json:"smtp_rejected"`
-	SMTPTLSUpgrades     uint64            `json:"smtp_tls_upgrades"`
-	SMTPProtocolErrors  uint64            `json:"smtp_protocol_errors"`
-	SMTPBytesIn         uint64            `json:"smtp_bytes_in"`
-	MQTTSessions        uint64            `json:"mqtt_sessions"`
-	MQTTSessionsOpen    int64             `json:"mqtt_sessions_open"`
-	MQTTPublished       uint64            `json:"mqtt_published"`
-	MQTTSubscribed      uint64            `json:"mqtt_subscribed"`
-	MQTTRefused         uint64            `json:"mqtt_refused"`
-	MQTTRejected        uint64            `json:"mqtt_rejected"`
-	MQTTProtocolErrors  uint64            `json:"mqtt_protocol_errors"`
-	SSHSessions         uint64            `json:"ssh_sessions"`
-	SSHSessionsOpen     int64             `json:"ssh_sessions_open"`
-	SSHChannels         uint64            `json:"ssh_channels"`
-	SSHRefused          uint64            `json:"ssh_refused"`
-	FTPSessions         uint64            `json:"ftp_sessions"`
-	FTPSessionsOpen     int64             `json:"ftp_sessions_open"`
-	FTPRefused          uint64            `json:"ftp_refused"`
-	FTPRejected         uint64            `json:"ftp_rejected"`
-	FTPAuthFailed       uint64            `json:"ftp_auth_failed"`
-	FTPTransfers        uint64            `json:"ftp_transfers"`
-	FTPScanned          uint64            `json:"ftp_scanned"`
-	FTPScanBlocked      uint64            `json:"ftp_scan_blocked"`
-	FTPRecorded         uint64            `json:"ftp_recorded"`
-	FTPMFAOK            uint64            `json:"ftp_mfa_ok"`
-	FTPMFAFailed        uint64            `json:"ftp_mfa_failed"`
+	// DNSDeceived counts the queries answered by a resolver that is not
+	// there, and DNSTripwire the ones reaching for a zone transfer, a
+	// signature set, a fingerprint name or a name long enough to be the
+	// payload.
+	DNSDeceived        uint64 `json:"dns_deceived"`
+	DNSTripwire        uint64 `json:"dns_tripwire"`
+	MirrorDropped      uint64 `json:"mirror_dropped"`
+	MirrorSkipped      uint64 `json:"mirror_skipped"`
+	MirrorFailed       uint64 `json:"mirror_failed"`
+	MirrorDiffMatch    uint64 `json:"mirror_diff_match"`
+	MirrorDiffStatus   uint64 `json:"mirror_diff_status"`
+	MirrorDiffHeader   uint64 `json:"mirror_diff_header"`
+	MirrorDiffBody     uint64 `json:"mirror_diff_body"`
+	HoneypotMarked     int    `json:"honeypot_marked"`
+	TCPConnections     uint64 `json:"tcp_connections"`
+	TCPRejected        uint64 `json:"tcp_rejected"`
+	TCPErrors          uint64 `json:"tcp_errors"`
+	TCPBounded         uint64 `json:"tcp_bounded"`
+	TCPBytesIn         uint64 `json:"tcp_bytes_in"`
+	TCPBytesOut        uint64 `json:"tcp_bytes_out"`
+	QUICFlows          uint64 `json:"quic_flows"`
+	QUICRejected       uint64 `json:"quic_rejected"`
+	QUICFlowsOpen      int    `json:"quic_flows_open"`
+	UDPSessions        uint64 `json:"udp_sessions"`
+	UDPSessionsOpen    int64  `json:"udp_sessions_open"`
+	UDPDatagramsIn     uint64 `json:"udp_datagrams_in"`
+	UDPDatagramsOut    uint64 `json:"udp_datagrams_out"`
+	UDPBytesIn         uint64 `json:"udp_bytes_in"`
+	UDPBytesOut        uint64 `json:"udp_bytes_out"`
+	UDPDropped         uint64 `json:"udp_dropped"`
+	UDPRejected        uint64 `json:"udp_rejected"`
+	UDPErrors          uint64 `json:"udp_errors"`
+	ForwardRequests    uint64 `json:"forward_requests"`
+	ForwardTunnels     uint64 `json:"forward_tunnels"`
+	ForwardTunnelsOpen int64  `json:"forward_tunnels_open"`
+	ForwardDenied      uint64 `json:"forward_denied"`
+	ForwardAuthFailed  uint64 `json:"forward_auth_failed"`
+	ForwardRejected    uint64 `json:"forward_rejected"`
+	ForwardErrors      uint64 `json:"forward_errors"`
+	ForwardSOCKS       uint64 `json:"forward_socks"`
+	MasqueUDP          uint64 `json:"masque_udp"`
+	MasqueIP           uint64 `json:"masque_ip"`
+	MasqueOpen         int64  `json:"masque_open"`
+	MasqueDropped      uint64 `json:"masque_dropped"`
+	SMTPSessions       uint64 `json:"smtp_sessions"`
+	SMTPSessionsOpen   int64  `json:"smtp_sessions_open"`
+	SMTPMessages       uint64 `json:"smtp_messages"`
+	SMTPRefused        uint64 `json:"smtp_refused"`
+	SMTPRejected       uint64 `json:"smtp_rejected"`
+	SMTPTLSUpgrades    uint64 `json:"smtp_tls_upgrades"`
+	SMTPProtocolErrors uint64 `json:"smtp_protocol_errors"`
+	SMTPBytesIn        uint64 `json:"smtp_bytes_in"`
+	MQTTSessions       uint64 `json:"mqtt_sessions"`
+	MQTTSessionsOpen   int64  `json:"mqtt_sessions_open"`
+	MQTTPublished      uint64 `json:"mqtt_published"`
+	MQTTSubscribed     uint64 `json:"mqtt_subscribed"`
+	MQTTRefused        uint64 `json:"mqtt_refused"`
+	MQTTRejected       uint64 `json:"mqtt_rejected"`
+	MQTTProtocolErrors uint64 `json:"mqtt_protocol_errors"`
+	SSHSessions        uint64 `json:"ssh_sessions"`
+	SSHSessionsOpen    int64  `json:"ssh_sessions_open"`
+	SSHChannels        uint64 `json:"ssh_channels"`
+	SSHRefused         uint64 `json:"ssh_refused"`
+	FTPSessions        uint64 `json:"ftp_sessions"`
+	FTPSessionsOpen    int64  `json:"ftp_sessions_open"`
+	FTPRefused         uint64 `json:"ftp_refused"`
+	FTPRejected        uint64 `json:"ftp_rejected"`
+	FTPAuthFailed      uint64 `json:"ftp_auth_failed"`
+	FTPTransfers       uint64 `json:"ftp_transfers"`
+	FTPScanned         uint64 `json:"ftp_scanned"`
+	FTPScanBlocked     uint64 `json:"ftp_scan_blocked"`
+	FTPRecorded        uint64 `json:"ftp_recorded"`
+	FTPMFAOK           uint64 `json:"ftp_mfa_ok"`
+	FTPMFAFailed       uint64 `json:"ftp_mfa_failed"`
 	// The Modbus relay: sessions, the frames it decided about, and what
 	// it decided. ModbusWouldDeny counts the frames a policy would have
 	// refused while learning mode was observing rather than enforcing,
@@ -764,6 +777,8 @@ type Snapshot struct {
 	S7Tripwire            uint64 `json:"s7_tripwire"`
 	SNMPDeceived          uint64 `json:"snmp_deceived"`
 	SNMPTripwire          uint64 `json:"snmp_tripwire"`
+	TelnetDeceived        uint64 `json:"telnet_deceived"`
+	TelnetTripwire        uint64 `json:"telnet_tripwire"`
 	PostgresDeceived      uint64 `json:"postgres_deceived"`
 	PostgresTripwire      uint64 `json:"postgres_tripwire"`
 	MySQLDeceived         uint64 `json:"mysql_deceived"`
@@ -1211,6 +1226,8 @@ func (s *Stats) snapshot() Snapshot {
 		S7Tripwire:             s.S7Tripwire.Load(),
 		SNMPDeceived:           s.SNMPDeceived.Load(),
 		SNMPTripwire:           s.SNMPTripwire.Load(),
+		TelnetDeceived:         s.TelnetDeceived.Load(),
+		TelnetTripwire:         s.TelnetTripwire.Load(),
 		PostgresDeceived:       s.PostgresDeceived.Load(),
 		PostgresTripwire:       s.PostgresTripwire.Load(),
 		MySQLDeceived:          s.MySQLDeceived.Load(),

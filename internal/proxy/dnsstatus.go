@@ -41,6 +41,8 @@ func (s *Server) dnsTotals(snap *Snapshot) {
 		snap.DNSDropped += st.Dropped
 		snap.DNSServFail += st.ServFail
 		snap.DNSCacheEntries += st.CacheEntries
+		snap.DNSDeceived += st.Deceived
+		snap.DNSTripwire += st.Tripwire
 		if t := st.Tunnel; t != nil {
 			snap.DNSTunnels += t.Detections
 			snap.DNSTunnelBlocked += t.Blocked

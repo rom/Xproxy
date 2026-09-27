@@ -99,6 +99,37 @@ reads like every other refusal this listener makes and the ban list sees it.
 Either shadow switch -- `policy: {mode: shadow}` on the listener, or `shadow:
 true` on the section -- records what it would have refused and admits.
 
+**A login that is not there.** `deception` answers as a fabricated device: on a
+listener that fronts real equipment, where a refusal would otherwise be written; or
+as a whole listener with nothing behind it.
+
+This is the protocol where that earns the most, because what arrives on port 23 is
+not a person but a dictionary. The Mirai family and everything written after it walk
+a list of the credentials that shipped on recorders, cameras and routers, tried a
+handful at a time from a great many addresses. Refusing collects the address, which
+the firewall log had already. Answering collects the *list*, and then the four
+exchanges that follow a login: the busybox probe, the `echo` liveness check, the
+`cat /proc/cpuinfo` that decides which payload, and the `wget` that names the
+payload, the address serving it and the architecture it was built for.
+
+Nothing is run and nothing is fetched: `wget` and its family answer the connection
+timeout a device behind a firewall answers, after the address has been recorded. A
+fabrication that fetched the payload would be doing the download on the attacker's
+behalf, from this estate's address.
+
+No password is kept, in any form a guess can be tested against -- the user name, the
+credential's length, and a handle under a key the process made at startup and never
+writes down. The recording, where one is configured, holds the shell transcript and
+not the login. And the login never turns on the credential: every one is accepted
+after the configured number of attempts, because a trap that accepted the right
+password and refused the wrong one would be a credential oracle.
+
+In mode `answer` it replaces the refusals after the proxy has spoken -- a failed
+factor, the authorisation policy, a missing grant -- and never `allow_clients`, a
+ban, or an **outage**: an operator working an incident must be told the equipment is
+unreachable rather than handed a device that is not there. See
+[docs/DECEPTION.md](../DECEPTION.md#a-login-that-is-not-there).
+
 ## What it does not do
 
 - **It does not add encryption to the protocol.** A telnet session through this
@@ -114,6 +145,12 @@ true` on the section -- records what it would have refused and admits.
   filter.
 - **It does not translate.** No line-ending rewriting, no character set
   conversion. The stream is the device's.
+- **A fabrication is not a shell.** It answers a command table -- the
+  reconnaissance a visitor runs and the escalation they try -- and everything else
+  with the "not found" a real minimal shell gives. There is no interpreter behind
+  it, no file system, and nothing kept between sessions: a visitor who writes a
+  file and looks for it again finds an empty directory, because there was never
+  anything to write to.
 
 ## Standards
 
