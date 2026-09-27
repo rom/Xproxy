@@ -251,6 +251,72 @@ server:
         monitor_only: true
         default_action: deny
 
+    # ---------------------------------------------------------------
+    # A database that is not there.
+    #
+    # A honeypot on the application network: no upstream, because there is
+    # nothing behind it. Every statement is answered by a fabrication, and
+    # what a visitor asks it tells you which escalation they had in mind.
+    #
+    # The reconnaissance here is short and it turns on one question:
+    #
+    #   SELECT version()                          what is this
+    #   SELECT current_setting('data_directory')  where are its files
+    #   SELECT usesuper FROM pg_user WHERE ...    is this role a superuser
+    #   SELECT datname FROM pg_database           what is here
+    #
+    # The third answer decides what the rest is for: COPY t FROM PROGRAM,
+    # which runs a shell command as the server's own user and is in the
+    # manual; COPY t TO '/var/www/html/s.php'; pg_read_file('/etc/passwd');
+    # CREATE FUNCTION ... LANGUAGE c. A role that is not a superuser can do
+    # none of it, so the boolean below is the consequential line.
+    # ---------------------------------------------------------------
+    - name: pg-spare
+      address: "10.0.0.44:5432"
+      kind: postgres
+      postgres:
+        # Unlike the MySQL decoy this one can be behind TLS: the encryption
+        # is negotiated before the startup packet here and the relay answers
+        # the SSLRequest itself, so a `tls` section above would serve a
+        # client insisting on sslmode=require. Without one, require_tls (on
+        # by default) would refuse every client before the fabrication said
+        # a word -- and an unencrypted server on 5432 is what the scanning
+        # wants anyway.
+        require_tls: false
+
+        deception:
+          mode: decoy
+
+          # What the estate's own servers say. A version nobody on the site
+          # runs is the tell that ends the pretence.
+          version: "15.6 (Debian 15.6-0+deb12u1)"
+          profile: generic-postgres
+
+          # The field to think about. False is the default: it is safer to
+          # impersonate, it is the more common truth on an application
+          # account, and a visitor who is told no and tries COPY FROM
+          # PROGRAM anyway has told you more than one who was told yes.
+          # Either way the fabrication runs nothing and never says it did.
+          superuser: false
+
+          # A catalogue a visitor will read closely, because it is the part
+          # that looks like it matters. The names come from this estate, not
+          # from the profile.
+          databases: ["postgres", "template0", "template1", "billing"]
+          tables:
+            - "public.customers"
+            - "public.invoices"
+            - "public.invoice_lines"
+            - "public.card_tokens"
+
+          # The escalation chain is already a tripwire and needs no listing:
+          # pg_shadow, pg_authid, pg_read_file, pg_ls_dir, lo_import,
+          # pg_sleep, dblink, the file roles, and any COPY naming a path on
+          # the server. This is the table that is interesting here and
+          # nowhere else.
+          tripwire: ["card_tokens"]
+
+
 upstreams:
   - name: pg
     endpoints:

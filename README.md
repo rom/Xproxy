@@ -228,7 +228,7 @@ protocol so that a policy can be written in that protocol's own terms:
 | `snmp` | `xrelay` | SNMP v1, v2c and v3 (USM), UDP and TCP, RFC 6353 TLS | Versions, community strings and USM users, security levels, operations, object subtrees, the amplification bounds; with the user's pass phrases, v3 digests verified and payloads decrypted so the rules apply to v3 too |
 | `ldap` | `xrelay` | LDAP v3, LDAPS, StartTLS | Bind methods, the bound identity, operations, naming contexts and subtrees, scopes, attributes in both directions, filter and entry bounds |
 | `dhcp` | `xrelay` | DHCPv4 with RFC 2132 options, RFC 3046 relay agent information, RFC 3442 routes | The server a reply came from, the options and addresses a reply may carry, the boot file, the lease bounds, the hardware-address rate |
-| `postgres` | `xrelay` | PostgreSQL protocol v3, both query protocols, the cleartext TLS negotiation | Whether the connection may be unencrypted at all, which role and database may be claimed, which authentication methods may cross, which *shapes* of statement are allowed, replication, the fast-path call, cancel requests |
+| `postgres` | `xrelay` | PostgreSQL protocol v3, both query protocols, the cleartext TLS negotiation | Whether the connection may be unencrypted at all, which role and database may be claimed, which authentication methods may cross, which *shapes* of statement are allowed, replication, the fast-path call, cancel requests; and, with `deception`, answering a refused statement as a fabricated database so the reconnaissance behind a documented shell command is collected rather than deflected |
 | `mysql` | `xrelay` | MySQL and MariaDB protocol, handshake v10, the capability flags, the command set | The capability bits a client may even see offered, which of the protocol's commands may cross, whether the connection may be unencrypted, which user and database may be claimed (re-checked on COM_CHANGE_USER), which authentication plugins, which statement shapes, LOAD DATA in either form; and, with `deception`, answering a refused statement as a fabricated database so the reconnaissance is collected rather than deflected |
 | `tds` | `xrelay` | TDS 7.x for SQL Server: the PRELOGIN negotiation, LOGIN7, SQLBATCH and RPC, and the TLS handshake carried inside TDS packets | Whether the connection may be unencrypted at all -- and the relay answers the negotiation itself rather than forwarding the server's octet -- whether a password may cross in the clear, which login, database and application name may be claimed, whether a login carrying no user name is admitted, which message types, which stored procedures, and which statement shapes, applied to a batch and to the SQL inside an sp_executesql alike |
 | `redis` | `xrelay` | RESP2 and RESP3, multibulk and inline, with a table of where each command's keys are | Whether the connection may be unencrypted, whether a command may arrive before the connection has authenticated -- with the answer taken from the server's reply -- which ACL user may be named, which commands and subcommands may cross, which keys by prefix, which numbered databases, and whether anything may write; and, with `deception`, answering a refused command as a fabricated cache so the exploit chain is collected rather than deflected |
@@ -1272,7 +1272,20 @@ describes it, validation refuses what cannot work, and
   and the file statements refused the way such a server refuses them,
   `SHOW GRANTS` without `FILE` and `mysql.user` refused rather than empty, and
   no `caching_sha2_password` on a MariaDB version. It never asks the client for
-  a file, never sleeps, and never invents rows
+  a file, never sleeps, and never invents rows. And a `postgres` listener does
+  it for the database whose escalation is *documented*: `COPY t FROM PROGRAM`
+  runs a shell command as the server's operating-system user by design, so the
+  reconnaissance there is short and turns on one question -- is this role a
+  superuser -- which is why `superuser` is the consequential field of the section
+  and defaults to false. Saying no is safer to impersonate and the more common
+  truth on an application account, and a visitor told no who tries it anyway has
+  said more than one told yes. Either way the fabrication runs nothing and never
+  says it did. The consistency that has to hold is the same fact answered in two
+  forms: a real server says `on` or `off` to `SHOW is_superuser` and `t` or `f`
+  to the catalogue's `usesuper`, and every `COPY` and file function is refused
+  the way that fact requires. Unlike the MySQL decoy this one can sit behind
+  TLS, because on this protocol the encryption is negotiated before the startup
+  packet and the relay answers that itself
 - **A device inventory built from traffic, not from scanning.** An
   operational estate's oldest problem is that nobody knows what is on the
   network: the drawings are from commissioning, the spreadsheet was

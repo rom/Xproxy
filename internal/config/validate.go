@@ -9016,12 +9016,109 @@ func (v *validator) tdsProcedures(p string, in []string) {
 }
 
 // postgresListener validates a kind: postgres section.
+// postgresDecoyOnly says this listener is nothing but a fabricated server, which
+// is the one shape that needs no upstream: there is nothing behind it to reach.
+func postgresDecoyOnly(m *PostgresListener) bool {
+	d := m.Deception
+	return d != nil && (d.Enabled == nil || *d.Enabled) && d.Mode == "decoy"
+}
+
+// PostgresDecoyProfiles are the fabricated server shapes the listener has built
+// in.
+var PostgresDecoyProfiles = []string{"django", "generic-postgres", "rails"}
+
+// postgresDeception checks the fabricated server.
+func (v *validator) postgresDeception(p string, m *PostgresListener) {
+	d := m.Deception
+	if d == nil || (d.Enabled != nil && !*d.Enabled) {
+		return
+	}
+	switch d.Mode {
+	case "", "answer":
+		if len(d.Clients) == 0 {
+			v.errf("%s.clients: required in mode answer; this listener reaches a real server, and a "+
+				"section that would fabricate an answer for any client that connects is not a decision "+
+				"to arrive at by default", p)
+		}
+	case "decoy":
+		if m.Upstream != "" {
+			v.errf("%s.mode: decoy is the whole listener, so it has no upstream: use mode answer to "+
+				"fabricate refusals on a listener that fronts a real server", p)
+		}
+		if len(d.Clients) == 0 {
+			v.warnf("%s: no clients, so every client that connects is answered by the fabricated "+
+				"server. That is what a honeypot is for, and on port 5432 it will be found", p)
+		}
+	default:
+		v.errf("%s.mode: must be answer or decoy", p)
+	}
+	v.modbusCIDRs(p+".clients", d.Clients)
+	if d.Profile != "" && !slices.Contains(PostgresDecoyProfiles, d.Profile) {
+		v.errf("%s.profile: %q is not a profile; the built-in ones are %s",
+			p, d.Profile, strings.Join(PostgresDecoyProfiles, ", "))
+	}
+	if len(d.Version) > 128 {
+		v.errf("%s.version: %d characters, and a server_version is a few", p, len(d.Version))
+	}
+	if d.Version == "" {
+		v.warnf("%s.version: empty, so the profile's version is reported. A decoy should say what the "+
+			"estate's own servers say: a version nobody on the site runs is the tell that ends the "+
+			"pretence, and only you know what that is", p)
+	}
+	for i, db := range d.Databases {
+		if db == "" || len(db) > 63 {
+			v.errf("%s.databases[%d]: must be 1 to 63 characters, which is what PostgreSQL allows", p, i)
+		}
+	}
+	for i, t := range d.Tables {
+		schema, name, ok := strings.Cut(t, ".")
+		if !ok || schema == "" || name == "" {
+			v.errf("%s.tables[%d]: %q must be written schema.table, because a catalogue query answers "+
+				"per schema and a bare name belongs to none", p, i, t)
+		}
+	}
+	for i, t := range d.Tripwire {
+		if strings.TrimSpace(t) == "" || strings.ContainsAny(t, " \t\r\n") {
+			v.errf("%s.tripwire[%d]: %q is not an object name; one name per entry", p, i, t)
+		}
+	}
+	if d.Superuser {
+		// The most consequential field of the section: a superuser can COPY FROM
+		// PROGRAM, which is a shell command, so a decoy that says yes is
+		// impersonating the account every scanner is hoping to find.
+		v.warnf("%s.superuser: the fabrication will report a superuser role, which is the account a "+
+			"scanner is hoping for: COPY FROM PROGRAM is a shell command and the visitor will try it. "+
+			"The fabrication still runs nothing -- it answers the error a failed program gives -- but "+
+			"saying no is both safer to impersonate and the more common truth on an application "+
+			"account", p)
+	}
+	switch {
+	case d.RequireAuth && d.Mode != "decoy":
+		// There is no login for the fabrication to refuse in mode answer: the
+		// real server accepts or refuses it, and this section only ever answers a
+		// statement the policy has already stopped.
+		v.warnf("%s.require_auth: does nothing in mode answer, where the login is the real server's "+
+			"to accept or refuse; it applies to a decoy listener", p)
+	case d.RequireAuth:
+		v.warnf("%s.require_auth: the fabrication will refuse every login, so nothing past the "+
+			"startup packet is ever collected. On this protocol the reconnaissance is the message, and "+
+			"it happens after the login", p)
+	}
+	if n := d.MaxClients; n < 0 || n > 1<<20 {
+		v.errf("%s.max_clients: must be between 0 and 1048576", p)
+	}
+	if period := d.Period.D(); period != 0 && (period < time.Second || period > time.Hour) {
+		v.errf("%s.period: must be between 1s and 1h", p)
+	}
+}
+
 func (v *validator) postgresListener(p string, m *PostgresListener, hasTLS bool) {
-	if m.Upstream == "" {
+	if m.Upstream == "" && !postgresDecoyOnly(m) {
 		v.errf("%s.upstream: required", p)
 	}
 	v.modbusCIDRs(p+".allow_clients", m.AllowClients)
 	v.modbusCIDRs(p+".deny_clients", m.DenyClients)
+	v.postgresDeception(p+".deception", m)
 
 	// require_tls defaults on, and a listener that requires it without a
 	// certificate cannot serve anybody. Saying so here is better than every

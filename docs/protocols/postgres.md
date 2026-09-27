@@ -134,6 +134,38 @@ like every other refusal this relay makes. Either shadow switch, this listener's
 refused with the rule that decided and lets the session through; a refusal that
 is not enforced is counted only as a would-be refusal, never as one made.
 
+**A server that is not there.** `deception` answers as a fabricated PostgreSQL: on
+a real listener, where a refusal would otherwise be written; or as a whole listener
+with nothing behind it.
+
+What makes this protocol worth answering rather than refusing is that its
+escalation is documented. `COPY t FROM PROGRAM 'sh -c ...'` runs a shell command as
+the server's operating-system user, by design, with no exploit in it and nothing to
+patch -- and whether it works depends entirely on one fact the visitor has to ask
+for: is this role a superuser. So the reconnaissance is short and its shape is
+always the same: the version, `current_setting('data_directory')`, `usesuper`,
+`pg_database`. A refusal ends it at the startup message. Answering it says whether
+they were reaching for the shell, the web shell, the file or the password hashes.
+
+`superuser` is the consequential field and defaults to false, which is both safer
+to impersonate and the more common truth on an application account. Either way the
+fabrication runs nothing and never says it did: `COPY FROM PROGRAM` answers the
+permission error a plain role gets, or the error a superuser's failed program gets.
+
+The tripwires need no configuring here, unlike on the plant protocols where only
+the operator knows which registers nobody reads: `pg_shadow`, `pg_authid`, the file
+functions, `lo_import`, `pg_sleep`, `dblink` and the file roles raise
+`postgres_tripwire` from the start, and a `COPY` naming a server-side path is
+caught by its shape, because the path is a string literal and the statement names
+no privileged identifier at all.
+
+Two things it will not pretend: it does not sleep, and it does not invent rows for
+a projection it does not recognise. And the answers agree with each other, which is
+what a fingerprinting tool checks -- the `is_superuser` parameter in the startup
+sequence and the answer to `SELECT usesuper` are the same fact, and every `COPY`
+and file function is refused the way that fact requires. See
+[docs/DECEPTION.md](../DECEPTION.md#a-postgresql-that-is-not-there).
+
 ## What it does not do
 
 - **It is not a SQL firewall.** A shape policy says what kind of statement may
@@ -149,6 +181,21 @@ is not enforced is counted only as a would-be refusal, never as one made.
   identities may be tried.
 - **It does not read the extended protocol's parameter values as SQL.** They are
   parameters; that is the point of the extended protocol.
+- **A fabrication does not speak the extended protocol.** A decoy answers a
+  `Parse` with SQLSTATE 0A000 and every driver falls back to a simple query, which
+  is what the fabrication wants: a simple query carries the statement text, and the
+  statement text is the intelligence. Answering the extended protocol would mean
+  keeping a prepared statement and a portal and answering the `Execute` after it.
+- **A fabrication answers one reply per message, not one per statement.** A real
+  server given `SELECT 1; SELECT 2` in one simple query sends a completion for
+  each; a decoy classifies the message and answers the first statement's shape.
+  Splitting the text to answer each one would mean a second lexer beside the
+  classifier's, and two lexers disagreeing about where a statement ends is the
+  failure this kind refuses everywhere else.
+- **It does not store what a fabrication is given.** A decoy's answers are a
+  function of the statement, the configured shape and the clock, so a visitor who
+  writes a row and reads it back gets the empty set: nothing is kept, because there
+  was nothing.
 
 ## Standards
 

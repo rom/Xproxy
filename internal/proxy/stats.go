@@ -207,6 +207,11 @@ type Stats struct {
 	// manager reads.
 	SNMPDeceived atomic.Uint64
 	SNMPTripwire atomic.Uint64
+	// PostgresDeceived counts the statements answered by a server that is not
+	// there, and PostgresTripwire the ones reaching for the escalation chain:
+	// pg_shadow, pg_read_file, COPY FROM PROGRAM, lo_import.
+	PostgresDeceived atomic.Uint64
+	PostgresTripwire atomic.Uint64
 	// MySQLDeceived counts the statements answered by a server that is not
 	// there, and MySQLTripwire the ones reaching for the escalation chain:
 	// mysql.user, LOAD_FILE, INTO OUTFILE, LOAD DATA LOCAL, CREATE FUNCTION.
@@ -759,6 +764,8 @@ type Snapshot struct {
 	S7Tripwire            uint64 `json:"s7_tripwire"`
 	SNMPDeceived          uint64 `json:"snmp_deceived"`
 	SNMPTripwire          uint64 `json:"snmp_tripwire"`
+	PostgresDeceived      uint64 `json:"postgres_deceived"`
+	PostgresTripwire      uint64 `json:"postgres_tripwire"`
 	MySQLDeceived         uint64 `json:"mysql_deceived"`
 	MySQLTripwire         uint64 `json:"mysql_tripwire"`
 	RedisDeceived         uint64 `json:"redis_deceived"`
@@ -1204,6 +1211,8 @@ func (s *Stats) snapshot() Snapshot {
 		S7Tripwire:             s.S7Tripwire.Load(),
 		SNMPDeceived:           s.SNMPDeceived.Load(),
 		SNMPTripwire:           s.SNMPTripwire.Load(),
+		PostgresDeceived:       s.PostgresDeceived.Load(),
+		PostgresTripwire:       s.PostgresTripwire.Load(),
 		MySQLDeceived:          s.MySQLDeceived.Load(),
 		MySQLTripwire:          s.MySQLTripwire.Load(),
 		RedisDeceived:          s.RedisDeceived.Load(),

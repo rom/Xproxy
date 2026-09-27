@@ -6,6 +6,82 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (postgres: a database that is not there)
+
+- **`postgres.deception` answers as a fabricated PostgreSQL**, either where a
+  refusal would otherwise be written on a real listener (`mode: answer`) or as a
+  whole listener with nothing behind it (`mode: decoy`). The rule is the one every
+  other fabrication here follows: a statement on its way to a real database is
+  never answered from here.
+
+  The reconnaissance on this protocol is short and the escalations at the end of it
+  are the worst in this set, because this server can run a shell command by design.
+  A scanner asks `SELECT version()`, then `current_setting('data_directory')`, then
+  whether this role is a superuser, then what databases there are -- and the third
+  answer decides whether the next statement is
+  `COPY t FROM PROGRAM 'sh -c ...'`, which is documented remote code execution with
+  no exploit in it at all, or `COPY t TO '/var/www/html/s.php'`, or
+  `pg_read_file('/etc/passwd')`, or `CREATE FUNCTION ... LANGUAGE c`. A refusal
+  ends that at the startup message. Answering it says which one they were reaching
+  for.
+
+- **`superuser` is the consequential field**, and it defaults to false. A decoy
+  that says yes is impersonating the account every scanner is hoping to find; one
+  that says no is both safer to impersonate and the more common truth on an
+  estate's application accounts, and a visitor who is told no and tries it anyway
+  has said more than one who was told yes. Either way the fabrication runs nothing
+  and never claims to: `COPY FROM PROGRAM` answers the permission error a plain
+  role gets or the "child process exited with exit code 127" a superuser's failed
+  program gets, and never a success.
+
+- **The answers agree with each other**, which is what a fingerprinting tool
+  checks. The `is_superuser` parameter in the startup sequence and the answer to
+  `SELECT usesuper` are the same fact, and every `COPY` and file function is
+  refused the way that fact requires. Each of the thirteen parameters the startup
+  announces can be asked about again with `SHOW` and gives the same value, in the
+  form that question takes: a real server answers `on` or `off` to
+  `SHOW is_superuser` and `t` or `f` to the catalogue's `usesuper`. The catalogue
+  tables that hold authentication material answer SQLSTATE 42501 rather than an
+  empty set, because an empty set would say the table is there and has no rows,
+  which `pg_shadow` never is.
+
+- **It does not sleep and it does not invent rows.** `pg_sleep(60)` is answered
+  rather than honoured, because honouring it would make this listener's resources
+  something a visitor can hold a statement at a time. A `SELECT` the recognisers do
+  not know returns an empty result set: the fabrication is a surface rather than a
+  database, and inventing rows for an arbitrary projection would mean inventing a
+  schema to match.
+
+- **The tripwires need no configuring**: `pg_shadow`, `pg_authid`, the file
+  functions, `lo_import`, `lo_export`, `pg_sleep`, `dblink`, `pg_largeobject` and
+  the file roles raise `postgres_tripwire` from the start, matched per identifier
+  rather than per substring so that a table named `programs` is not
+  `COPY FROM PROGRAM`. A `COPY` naming a server-side path is recognised by its
+  shape instead, because the path is a string literal and the statement names no
+  privileged identifier at all.
+
+- **This decoy can be behind TLS**, unlike the MySQL one: the encryption is
+  negotiated before the startup packet and the relay answers the `SSLRequest`
+  itself, so a `decoy` listener with a `tls` section serves a client that insists
+  on `sslmode=require`.
+
+- **The extended query protocol is declined rather than half-answered.** A `Parse`
+  gets SQLSTATE 0A000 and a `ReadyForQuery`, and every driver falls back to a
+  simple query -- which is what the fabrication wants, because a simple query is
+  the statement text.
+
+- **No password is recorded.** The startup packet carries no credential on this
+  protocol, so there is nothing to leave out; where `require_auth` is set the
+  fabrication asks for one (so the refusal looks like a checked one) and records
+  its length rather than its content.
+
+- Three profiles (`generic-postgres`, `django`, `rails`), a configurable version,
+  database list and table list, new counters `postgres_deceived` and
+  `postgres_tripwire`, and an entry in `xproxyctl decoys` like the others.
+  `internal/pgwire` gained the server-side message builders -- the authentication
+  exchange, the parameters, row descriptions, rows and the `CommandComplete` tag --
+  which a relay that only ever refused had never needed.
+
 ### Added (mysql: a database that is not there)
 
 - **`mysql.deception` answers as a fabricated MySQL**, either where a refusal

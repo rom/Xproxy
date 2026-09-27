@@ -2596,6 +2596,11 @@ type PostgresListener struct {
 	HandshakeTimeout Duration `yaml:"handshake_timeout"`
 
 	// Rules narrow or widen the listener for traffic that matches them.
+	// Deception answers as a server that is not there: a refused statement
+	// answered by a fabricated database, or a whole listener that is one. See
+	// PostgresDeception.
+	Deception *PostgresDeception `yaml:"deception"`
+
 	Rules []PostgresRule `yaml:"rules"`
 	// DefaultAction is allow or deny when no rule matched. Default deny.
 	DefaultAction string `yaml:"default_action"`
@@ -2608,6 +2613,83 @@ type PostgresListener struct {
 	// replication connection and COPY ... FROM PROGRAM. Forwarding any of
 	// those and writing it down is not a trial of anything.
 	MonitorOnly bool `yaml:"monitor_only"`
+}
+
+// PostgresDeception answers as a PostgreSQL server that is not there.
+//
+// The reconnaissance here is the same shape as MySQL's and the escalations are
+// worse, because this server can run a shell command by design. A scanner reads
+// the version out of the startup exchange and then asks which databases there
+// are, what `data_directory` is, and whether this role is a superuser -- and the
+// answer to the last one decides whether the next statement is
+// `COPY ... FROM PROGRAM 'sh -c …'`, which is documented remote code execution,
+// or `pg_read_file('/etc/passwd')`, or `CREATE FUNCTION ... LANGUAGE c`.
+//
+// A refusal ends that at the startup message. Answering it says which one they
+// were reaching for.
+type PostgresDeception struct {
+	// Enabled turns the section off without removing it; it defaults to true
+	// wherever the section is present.
+	Enabled *bool `yaml:"enabled"`
+	// Mode is answer (the default: a statement this listener was going to
+	// refuse is answered by the fabrication instead, and never reaches the
+	// server) or decoy (the whole listener is a fabricated server: no
+	// upstream, and nothing behind it).
+	Mode string `yaml:"mode"`
+	// Clients are the networks that get the fabrication. Required in mode
+	// answer. In mode decoy an empty list means every client, which is what a
+	// honeypot wants.
+	Clients []string `yaml:"clients"`
+	// Profile is the fabricated server's shape: generic-postgres (the default),
+	// django or rails. It decides the version reported and the databases,
+	// schemas and tables it claims to hold.
+	Profile string `yaml:"profile"`
+	// Version is the server_version it announces, which is the first thing a
+	// scanner records and what a vulnerability database is indexed by. Empty
+	// takes the profile's.
+	//
+	// **A decoy should say what the estate's own servers say.** A version
+	// nobody on the site runs is the tell that ends the pretence, and only you
+	// know what that is.
+	Version string `yaml:"version"`
+	// Databases replaces the profile's list, which is what a client's \l
+	// answers and the first thing asked after the version.
+	Databases []string `yaml:"databases"`
+	// Tables replaces the profile's list, as `schema.table` names. It is what a
+	// catalogue query answers, and the part of the fabrication a visitor reads
+	// most closely.
+	Tables []string `yaml:"tables"`
+	// Superuser says whether the fabricated role is one.
+	//
+	// Default false, and it is the most consequential field here: a superuser
+	// can COPY FROM PROGRAM, which is a shell command. Saying no is both safer
+	// to impersonate and the more common truth on an estate's application
+	// accounts -- and a visitor who asks and is told no, and tries anyway, has
+	// told you more than one who was told yes.
+	Superuser bool `yaml:"superuser"`
+	// RequireAuth makes the fabrication refuse the login rather than accept it.
+	//
+	// Default false: the reconnaissance happens after the login, so a decoy
+	// that refuses it collects nothing. Where it is set the attempt is still
+	// recorded -- the role, the database and the password field's length, never
+	// the password.
+	RequireAuth bool `yaml:"require_auth"`
+	// Tripwire are object names -- a catalogue table, a function -- that raise
+	// a postgres_tripwire security event when a statement mentions one.
+	//
+	// They are in addition to a built-in set, which is the escalation chain:
+	// pg_shadow, pg_authid, pg_read_file, pg_read_binary_file, pg_ls_dir,
+	// lo_import, lo_export, pg_sleep, dblink, and COPY's PROGRAM and file
+	// forms. Nothing legitimate sends any of them to a fabricated database.
+	Tripwire []string `yaml:"tripwire"`
+	// Seed makes the fabricated values reproducible. Zero derives one from the
+	// listener name, which is stable across restarts.
+	Seed uint64 `yaml:"seed"`
+	// Period is how long one sample of a counter or a gauge lasts. Default 30s;
+	// 1s to 1h.
+	Period Duration `yaml:"period"`
+	// MaxClients bounds the record of who has been answered. Default 1024.
+	MaxClients int `yaml:"max_clients"`
 }
 
 // PostgresRule is one rule of a postgres listener's policy.
