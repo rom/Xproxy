@@ -257,6 +257,35 @@ and rotate it with `xproxyctl rotate-secret` on every node within one
 epoch (a node with another file falls back to full handshakes and shows
 under `mismatched_peers`).
 
+## 5b2. Session recordings are the most valuable files on a gate host
+
+A recording holds everything a session showed. On an administrative
+session that is a list of everything worth having — keys printed,
+configuration read, tokens echoed, a password typed into a prompt that
+never echoed it. `0600` under a directory owned by the proxy user protects
+them from another user on the same host; it does nothing about a backup
+that leaves the building, a stolen disk, or an intruder who has the proxy
+user's rights. So on a gate host that records:
+
+- Give `recording.encryption.key` a reference whose material is **not on
+  this host** — `vault:` where there is a vault, otherwise a file this host
+  reads at start and an operator keeps elsewhere. The bytes on the disk are
+  then ciphertext and a copy of the directory is worth nothing on its own.
+- Give `recording.integrity.key` a *different* reference, and keep it
+  somewhere a reviewer can reach and this host cannot write. The manifest
+  then says a recording is the one the proxy wrote, and it covers the
+  ciphertext, so an auditor can be given the manifest key and not the
+  session.
+- **Keep every key for as long as its recordings are kept.** Rotating
+  either key does not touch what is already written: a recording keeps the
+  key it was written under, and a key nobody kept is a directory of files
+  nobody can read — which looks like retention right up to the incident.
+- Copy recordings off the host on a schedule, to storage the proxy user
+  cannot write to. `max_files` prunes what the proxy left behind, and a
+  recording that matters belongs somewhere the proxy does not prune.
+- Leave `input` off unless there is a decision behind it. It records the
+  keystrokes, including the ones that never reached a screen.
+
 ## 5c. Origins accept traffic only from the proxy
 
 A WAF in front of an application that is also reachable directly

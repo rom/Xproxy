@@ -13,6 +13,7 @@ import (
 
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/keysource"
+	"github.com/rom/xproxy/internal/recenc"
 	"github.com/rom/xproxy/internal/sessionrec"
 )
 
@@ -236,7 +237,7 @@ func TestVerifyAnswersWhatTheManifestIsWorth(t *testing.T) {
 		{"unkeyed", "", func(rec, _ string) []string { return []string{"-verify", rec} },
 			"carries no MACs"},
 		{"keyed, with the key", "the key", func(rec, keyFile string) []string {
-			return []string{"-verify", "-key", keyFile, rec}
+			return []string{"-verify", "-chain-key", keyFile, rec}
 		}, "verify under the key given"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -341,12 +342,122 @@ func TestTheKeyReferenceIsAnsweredBeforeAnythingIsShown(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var out, errOut bytes.Buffer
-			if code := run([]string{"-verify", "-key", tc.ref, rec}, &out, &errOut); code != 1 {
+			if code := run([]string{"-verify", "-chain-key", tc.ref, rec}, &out, &errOut); code != 1 {
 				t.Fatalf("exit %d, want 1", code)
 			}
 			if !strings.Contains(errOut.String(), tc.want) {
 				t.Errorf("the error does not say %q:\n%s", tc.want, errOut.String())
 			}
 		})
+	}
+}
+
+// encryptedFile writes a recording sealed at rest, the way the gateway
+// does, and returns the file and the key reference to read it with.
+func encryptedFile(t *testing.T, dir, key string, chain bool) (string, string) {
+	t.Helper()
+	keyFile := filepath.Join(dir, "rec.key")
+	if err := os.WriteFile(keyFile, []byte(key), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := &config.SessionRecording{
+		Directory: dir, FilePrefix: "session", MaxFileBytes: 1 << 20, MaxFiles: 10,
+		Encryption: &config.RecordingEncryption{Key: keyFile, ChunkBytes: recenc.MinChunk},
+	}
+	if chain {
+		c.Integrity = &config.RecordingIntegrity{SegmentBytes: sessionrec.DefaultSegmentBytes}
+	}
+	p := sessionrec.New(c, sessionrec.WithSecrets(keysource.New(nil, 0, nil)))
+	rec, err := p.Open(sessionrec.Header{Width: 80, Height: 24, Title: "alice@db"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.Out([]byte("psql -c 'select 1'\r\n"))
+	res := rec.Close()
+	if res.Err != nil {
+		t.Fatal(res.Err)
+	}
+	return res.File, keyFile
+}
+
+// A recording encrypted at rest replays with the key, and says what to do
+// without it rather than failing as a file that makes no sense.
+func TestAnEncryptedRecordingNeedsItsKey(t *testing.T) {
+	dir := t.TempDir()
+	rec, keyFile := encryptedFile(t, dir, "a content key", false)
+	if !strings.HasSuffix(rec, ".cast"+recenc.Ext) {
+		t.Fatalf("the gateway wrote %q", filepath.Base(rec))
+	}
+
+	var out, errOut bytes.Buffer
+	if code := run([]string{"-speed", "0", rec}, &out, &errOut); code != 1 {
+		t.Fatalf("no key: exit %d, want 1", code)
+	}
+	if out.Len() != 0 {
+		t.Errorf("it replayed something without the key: %q", out.String())
+	}
+	for _, want := range []string{"encrypted", "-key"} {
+		if !strings.Contains(errOut.String(), want) {
+			t.Errorf("the refusal does not say %q:\n%s", want, errOut.String())
+		}
+	}
+
+	out.Reset()
+	errOut.Reset()
+	if code := run([]string{"-speed", "0", "-key", keyFile, rec}, &out, &errOut); code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "select 1") {
+		t.Errorf("the session did not replay: %q", out.String())
+	}
+
+	// And the wrong key is a refusal, not a partial replay.
+	wrong := filepath.Join(dir, "wrong.key")
+	if err := os.WriteFile(wrong, []byte("not the key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	errOut.Reset()
+	if code := run([]string{"-speed", "0", "-key", wrong, rec}, &out, &errOut); code != 1 {
+		t.Errorf("the wrong key: exit %d, want 1", code)
+	}
+	if strings.Contains(out.String(), "select 1") {
+		t.Error("the session replayed under the wrong key")
+	}
+}
+
+// The manifest of an encrypted recording covers the ciphertext, so it
+// verifies with no content key at all: an auditor can establish that the
+// file is the one the proxy wrote without being able to read the session.
+func TestTheManifestOfAnEncryptedRecordingVerifiesWithoutTheContentKey(t *testing.T) {
+	dir := t.TempDir()
+	rec, _ := encryptedFile(t, dir, "a content key", true)
+	var out, errOut bytes.Buffer
+	if code := run([]string{"-verify", rec}, &out, &errOut); code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "cover all") {
+		t.Errorf("the answer does not say what was covered: %q", out.String())
+	}
+	if strings.Contains(out.String(), "select 1") {
+		t.Error("verifying printed the session")
+	}
+	// And an edit to the ciphertext is caught by the manifest, before
+	// anything asks for the content key.
+	body, err := os.ReadFile(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body[len(body)/2] ^= 1
+	if err := os.WriteFile(rec, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	errOut.Reset()
+	if code := run([]string{"-verify", rec}, &out, &errOut); code != 1 {
+		t.Errorf("an edited ciphertext: exit %d, want 1", code)
+	}
+	if !strings.Contains(errOut.String(), "not the recording its manifest describes") {
+		t.Errorf("the answer does not name the mismatch:\n%s", errOut.String())
 	}
 }

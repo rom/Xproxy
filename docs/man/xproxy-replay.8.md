@@ -8,7 +8,7 @@ xproxy-replay - read and show a recorded session
 
 `xproxy-replay` [`-summary`] [`-html` *FILE*] [`-png` *DIR*] [`-at` *DURATION*]
 [`-every` *N*] [`-max-frames` *N*] [`-speed` *N*] [`-input`] [`-plain`]
-[`-verify`] [`-key` *REF*] [`-force`] *FILE*
+[`-verify`] [`-chain-key` *REF*] [`-key` *REF*] [`-force`] *FILE*
 
 ## DESCRIPTION
 
@@ -39,6 +39,11 @@ they saw in a recording should not have to remember to ask whether the
 file is the one the proxy wrote. A recording with no manifest replays as
 before.
 
+Where the recording section encrypted the file at rest, the name ends
+`.cast.enc` and the bytes on the disk are ciphertext: `-key` is the
+reference it was written under, and without it the program says the file
+is encrypted rather than failing as though it made no sense.
+
 It opens no sockets, runs nothing, and writes only where it is told.
 
 ## OPTIONS
@@ -55,7 +60,8 @@ It opens no sockets, runs nothing, and writes only where it is told.
 | `-input` | Include what the client sent, where the recording holds it (`recording.input`). |
 | `-plain` | Drop every escape sequence rather than keeping the ones that draw. |
 | `-verify` | Check the recording against its manifest, print what was found, and stop. The answer says whether the records carried MACs and whether they verified. |
-| `-key` *REF* | The integrity key, as an absolute path or `env:NAME`. A vault reference is refused with what to do instead: this program reads no vault. |
+| `-key` *REF* | The key an encrypted recording (`*.cast.enc`) was written under, as an absolute path or `env:NAME`. |
+| `-chain-key` *REF* | The integrity key, for a manifest that carries MACs. A vault reference is refused with what to do instead: this program reads no vault. |
 | `-force` | Replay a recording whose manifest does not verify. It is no longer the file the proxy wrote, and stderr says so. |
 | `-version` | Print the version and exit. |
 
@@ -113,8 +119,26 @@ forge a record too, so verify somewhere the recording host is not.
 Check a recording and its keyed manifest:
 
 ```
-xproxy-replay -verify -key env:XPROXY_CHAIN_KEY session-...cast
+xproxy-replay -verify -chain-key env:XPROXY_CHAIN_KEY session-...cast
 ```
+
+On a recording encrypted at rest the manifest covers the ciphertext, so
+this answer needs no `-key` at all: an auditor can be given the manifest
+key and establish that the file is the one the proxy wrote without being
+able to read the session in it.
+
+## ENCRYPTION AT REST
+
+An encrypted recording is a 32-octet header, one AES-256-GCM frame per
+chunk and an empty frame that ends it. The file key is derived per
+recording from the configured key and a random salt in the header, so two
+recordings under one key never share a key stream; each frame's nonce is
+its position and its additional data is the header, so a frame cannot be
+moved within the file or between files and the header cannot be edited.
+Only the key can produce the end frame, so a file cut short has no end and
+this program says so rather than replaying a session as though it were
+whole. It is a symmetric key: whoever can read it can read every recording
+it covers.
 
 ## SEE ALSO
 

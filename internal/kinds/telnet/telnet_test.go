@@ -15,6 +15,7 @@ import (
 	"github.com/rom/xproxy/internal/mfa"
 	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/proxytest"
+	"github.com/rom/xproxy/internal/recenc"
 	"github.com/rom/xproxy/internal/sessionrec"
 	"github.com/rom/xproxy/internal/sessions"
 	wire "github.com/rom/xproxy/internal/telnet"
@@ -441,5 +442,66 @@ func TestRecordingIsChainedUnderTheConfiguredKey(t *testing.T) {
 	}
 	if _, err := sessionrec.Verify(files[0], []byte("another key")); err == nil {
 		t.Error("the manifest verified under a key it was not written with")
+	}
+}
+
+// The gateway writes ciphertext when the section says so, and it is the
+// running daemon's own key custody that the key comes from.
+func TestRecordingIsEncryptedAtRest(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XPROXY_TEST_REC_KEY", "a content key from custody")
+	s, addr, _ := gateway(t, "        recording: {directory: "+dir+
+		", encryption: {key: \"env:XPROXY_TEST_REC_KEY\"}}")
+	c := dial(t, addr)
+	c.readUntil("target ready")
+	c.write([]byte("cat /etc/shadow\r\n"))
+	c.readUntil("cat /etc/shadow")
+	_ = c.c.Close()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for s.Stats().TelnetRecorded == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("no recording was finished")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if plain, _ := filepath.Glob(filepath.Join(dir, "*.cast")); len(plain) != 0 {
+		t.Errorf("a plain recording was written as well: %v", plain)
+	}
+	files, _ := filepath.Glob(filepath.Join(dir, "*.cast"+recenc.Ext))
+	if len(files) != 1 {
+		t.Fatalf("%d encrypted recordings, want 1", len(files))
+	}
+	raw, err := os.ReadFile(files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !recenc.Looks(raw) {
+		t.Fatal("the file is not an encrypted recording")
+	}
+	if strings.Contains(string(raw), "/etc/shadow") {
+		t.Error("the session is in the file in the clear")
+	}
+	r, err := recenc.NewReader(bytes.NewReader(raw), []byte("a content key from custody"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("the gateway's own recording does not open: %v", err)
+	}
+	for _, want := range []string{"target ready", "/etc/shadow", "XPROXY_PROTOCOL"} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("the plaintext does not carry %q", want)
+		}
+	}
+	// And under another key it does not open. The header always does --
+	// deriving a key cannot fail -- so what is asserted is the read.
+	wrong, err := recenc.NewReader(bytes.NewReader(raw), []byte("another key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := io.ReadAll(wrong); err == nil || len(got) > 0 {
+		t.Errorf("another key read %d octets, %v", len(got), err)
 	}
 }

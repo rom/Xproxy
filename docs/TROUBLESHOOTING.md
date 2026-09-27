@@ -4011,6 +4011,29 @@ written, so the gap is visible rather than silent. Check that the
 directory exists — the proxy does not create it — and that the proxy
 user can write to it.
 
+**A recording will not open: it is encrypted.** The file ends `.cast.enc`
+and the bytes are ciphertext. Pass `-key` with the reference
+`recording.encryption.key` named — the same syntax the configuration uses,
+a path or `env:NAME` — to `xproxy-replay`, `xproxyctl session show`,
+`session play` or `session list`. `session list` without a key still lists
+them and marks them, so a directory of encrypted recordings is not an empty
+listing.
+
+**A recording is encrypted and the key does not open it.** Each recording
+keeps the key it was written under: rotating `recording.encryption.key`
+does not re-encrypt what is already on disk, so a directory spanning a
+rotation needs both keys, matched by date. If no key opens a recording,
+that recording is gone — there is no recovery, and this is the reason the
+configuration warns at load about keeping every key for as long as its
+recordings are kept.
+
+**An encrypted recording stops early: "no end marker".** The file was cut
+short — the proxy was killed, the disk filled, or the file was copied while
+it was still being written. What came before the cut is verified and is
+handed over; the error is what says the rest is not accounted for. It is a
+different answer from a frame that would not open, which is the wrong key
+or an edit and yields nothing at all.
+
 **`xproxy-replay` refuses a recording: it does not match its manifest.**
 The file is not the one the proxy wrote, and the error names what does
 not add up — a segment whose bytes do not match their digest (something
@@ -4022,14 +4045,14 @@ rather than a tooling problem. `-force` shows it anyway and says on stderr
 that it is showing a file that no longer matches; do not quote from a
 `-force` replay without saying so.
 
-**The manifest verifies but `-verify` says it carries no MACs.** No `key`
-was configured, so anybody who can write the recording can also recompute
+**The manifest verifies but `-verify` says it carries no MACs.** No
+`integrity.key` was configured, so anybody who can write the recording can also recompute
 the chain. It still catches corruption and truncation. For evidence,
 configure `recording.integrity.key` from custody and keep the key where
 the recording host cannot read it.
 
 **`-verify` says a key was given and the manifest carries no MAC**, or
-asks for a key. The two do not match: this recording was written under a
+asks for a `-chain-key`. The two do not match: this recording was written under a
 different integrity setting from the one being checked. A recording keeps
 the chain it was written with, so a listener whose key was added or
 removed has recordings of both kinds in one directory.

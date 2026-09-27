@@ -29,6 +29,7 @@ import (
 	"github.com/rom/xproxy/internal/asciicast"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/keysource"
+	"github.com/rom/xproxy/internal/recenc"
 	"github.com/rom/xproxy/internal/textsafe"
 )
 
@@ -81,6 +82,30 @@ func (p *Policy) integrity() *config.RecordingIntegrity {
 		return nil
 	}
 	return i
+}
+
+// encryption is the at-rest section, or nil where the file is plain.
+func (p *Policy) encryption() *config.RecordingEncryption {
+	e := p.cfg.Encryption
+	if e == nil || (e.Enabled != nil && !*e.Enabled) {
+		return nil
+	}
+	return e
+}
+
+// encKey resolves the key the file is sealed under. An error fails the
+// open, which means the session is recorded not at all rather than
+// recorded in the clear: a section that asked for ciphertext on the disk
+// must not fall back to plaintext on the disk.
+func (p *Policy) encKey(e *config.RecordingEncryption) ([]byte, error) {
+	if p.secrets == nil {
+		return nil, fmt.Errorf("recording encryption key %s: no secret resolver", e.Key)
+	}
+	key, err := p.secrets.Bytes(e.Key)
+	if err != nil {
+		return nil, fmt.Errorf("recording encryption key: %w", err)
+	}
+	return key, nil
 }
 
 // chainKey resolves the manifest's key.
@@ -159,6 +184,7 @@ type Recording struct {
 	bw        *bufio.Writer
 	w         *asciicast.Writer
 	chain     *chain
+	sealed    *recenc.Writer
 	written   int64
 	charged   int64
 	truncated bool
@@ -174,6 +200,18 @@ func (p *Policy) Open(h Header) (*Recording, error) {
 	ext := h.Ext
 	if ext == "" {
 		ext = ".cast"
+	}
+	// An encrypted recording is named for what it is. A tool that reads
+	// the directory then knows before it opens anything, and nobody hands
+	// a ciphertext to a terminal player.
+	enc := p.encryption()
+	var encKey []byte
+	if enc != nil {
+		var err error
+		if encKey, err = p.encKey(enc); err != nil {
+			return nil, err
+		}
+		ext += recenc.Ext
 	}
 	// The name carries the time to the millisecond and the person, which
 	// is not unique: two sessions for one user inside the same
@@ -201,10 +239,12 @@ func (p *Policy) Open(h Header) (*Recording, error) {
 			return nil, err
 		}
 	}
-	// The chain sits between the buffer and the file, not between the
-	// writer and the buffer: what it digests has to be what reached the
-	// disk, so that a verifier compares the manifest against the same
-	// bytes a reviewer reads.
+	// The chain sits closest to the file, so what it digests is what
+	// reached the disk: on an encrypted recording that is the ciphertext,
+	// which is the right layer -- a manifest over the bytes an auditor can
+	// see lets them verify the file without being able to read the
+	// session. The encryptor goes above it, so the plaintext never reaches
+	// either the digest or the disk.
 	var dst io.Writer = f
 	var ch *chain
 	if i := p.integrity(); i != nil {
@@ -221,6 +261,17 @@ func (p *Policy) Open(h Header) (*Recording, error) {
 		}
 		dst = chainWriter{w: f, c: ch}
 	}
+	var sealed *recenc.Writer
+	if enc != nil {
+		var err error
+		if sealed, err = recenc.NewWriter(dst, encKey, enc.ChunkBytes); err != nil {
+			_ = ch.abandon(name)
+			_ = f.Close()
+			_ = os.Remove(name)
+			return nil, err
+		}
+		dst = sealed
+	}
 	bw := bufio.NewWriterSize(dst, 32<<10)
 	w, err := asciicast.NewWriter(bw, asciicast.Header{
 		Width: h.Width, Height: h.Height,
@@ -234,7 +285,7 @@ func (p *Policy) Open(h Header) (*Recording, error) {
 		_ = os.Remove(name)
 		return nil, err
 	}
-	rec := &Recording{p: p, name: name, f: f, bw: bw, w: w, chain: ch}
+	rec := &Recording{p: p, name: name, f: f, bw: bw, w: w, chain: ch, sealed: sealed}
 	p.mu.Lock()
 	p.files = append(p.files, name)
 	p.pruneLocked()
@@ -398,9 +449,16 @@ func (rec *Recording) Close() Result {
 	}
 	_ = rec.w.Flush()
 	_ = rec.bw.Flush()
-	// The chain closes before the file, because it digests what the flush
-	// just pushed through it and its last record says how long the
-	// recording is.
+	// The order is the order of the stack. The encryptor seals what is
+	// left and writes its end marker, without which the file reads as
+	// truncated; then the chain, which has now seen every octet, writes
+	// its last records; then the file closes.
+	if rec.sealed != nil {
+		if err := rec.sealed.Close(); err != nil && rec.err == nil {
+			rec.err = err
+			rec.truncated = true
+		}
+	}
 	var chainName string
 	if rec.chain != nil {
 		chainName = rec.name + ChainExt

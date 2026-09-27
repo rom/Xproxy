@@ -1200,7 +1200,14 @@ describes it, validation refuses what cannot work, and
   the protocol stream, and `xproxy-replay` decodes it: RFB into frames or
   one self-contained page, RDP into the timeline of what the session did,
   and in both cases a plain statement of what it could not decode rather
-  than a picture nobody sent
+  than a picture nobody sent. A recording can also be **hash-chained into a
+  manifest beside it** and **encrypted at rest** under a key from custody:
+  the chain, keyed, makes a recording unforgeable by somebody who has the
+  host and not the key, and `xproxy-replay` verifies it before it plays
+  anything back, because a file that can be edited afterwards with nothing
+  to show it had been is not evidence. The manifest covers the ciphertext,
+  so an auditor can be given the manifest key and establish that the file is
+  the one the proxy wrote without being able to read the session in it
 - **A device inventory built from traffic, not from scanning.** An
   operational estate's oldest problem is that nobody knows what is on the
   network: the drawings are from commissioning, the spreadsheet was

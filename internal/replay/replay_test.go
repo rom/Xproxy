@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image/color"
 	"os"
@@ -14,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/rom/xproxy/internal/recenc"
 )
 
 // A recording is written by the proxy and read here, so the tests build
@@ -639,5 +642,67 @@ func TestThePaletteAndRunLengthTiles(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A recording encrypted at rest is the same recording behind a key. What
+// decides is the magic at the start of the file rather than its name, so a
+// file renamed while it was archived still reads as what it is; and a
+// caller with no key is told that, rather than being handed a parse error
+// about a file it has correctly identified.
+func TestAnEncryptedRecordingOpensWithItsKey(t *testing.T) {
+	dir := t.TempDir()
+	plain := write(t, dir, "s.cast", map[string]string{"SHELL": "/bin/sh"}, 80, 24,
+		[2]any{0.0, []byte("hello")})
+	body, err := os.ReadFile(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Deliberately not named .enc: the decision is the content.
+	sealed := filepath.Join(dir, "archived-copy")
+	f, err := os.Create(sealed) //nolint:gosec // a temporary directory this test made
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := recenc.NewWriter(f, []byte("a content key"), recenc.MinChunk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Open(sealed); !errors.Is(err, ErrEncrypted) {
+		t.Errorf("no key: %v, want ErrEncrypted", err)
+	}
+	if _, err := OpenKeyed(sealed, []byte("not the key")); errors.Is(err, ErrEncrypted) || err == nil {
+		t.Errorf("the wrong key: %v, want a failure that is not ErrEncrypted", err)
+	}
+	rec, err := OpenKeyed(sealed, []byte("a content key"))
+	if err != nil {
+		t.Fatalf("with the key: %v", err)
+	}
+	defer func() { _ = rec.Close() }()
+	if rec.Kind != KindTerminal || rec.Header.Width != 80 {
+		t.Errorf("kind %q, %dx%d", rec.Kind, rec.Header.Width, rec.Header.Height)
+	}
+	ev, err := rec.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(ev.Data) != "hello" {
+		t.Errorf("the first event is %q", ev.Data)
+	}
+
+	// A key passed for a recording that is not encrypted is simply not
+	// used, so one command line reads a directory holding both kinds.
+	if _, err := OpenKeyed(plain, []byte("a content key")); err != nil {
+		t.Errorf("a plain recording with a key given: %v", err)
 	}
 }
