@@ -419,7 +419,7 @@ of them is a flaw in front of all of them.
   per-kind prompt rather than the factor.
 
 - One authorisation policy above the protocols: delivered for every kind
-  but five. The
+  but `http`. The
   `authorization` section compiles to a rule set every listener kind can
   ask at its admission point -- who (`users`, `principals`, `groups`),
   where from (`networks`), where to (`listeners`, `kinds`, `targets`),
@@ -459,12 +459,10 @@ of them is a flaw in front of all of them.
   Not yet, and for a reason worth recording rather than a queue:
 
   - `redis` and `amqp` confirm an identity only after the relay has
-    forwarded the credential and the server has accepted it. Their
-    connect-time hook has no user at all, so wiring the policy there
-    would give a section about people a listener where no rule about
-    people can match. What they need is a decision at the point the
-    server's acceptance comes back -- a second admission point neither
-    kind has yet -- and that is a design question, not a wiring one.
+    forwarded the credential and the server has accepted it, so their
+    connect-time hook has no user at all. That was recorded here as a
+    design question rather than a wiring one, and it has since been
+    answered: both now ask twice, and the entry below says how.
 
   Worth stating once, because it is the property an operator has to
   understand: on the kinds where the far side does the authenticating --
@@ -536,14 +534,50 @@ of them is a flaw in front of all of them.
     no ban trigger could name -- `dns_threat_intel` and the new
     `dns_denied` -- and one refusal path in `iec104` that was counted by
     no reason at all. Both are fixed.
-  - Five kinds are left outside, each for a reason rather than a queue
-    position: `http`, `smtp`, `redis`, `amqp` and `ntp`, as the four
-    entries above and this one say. `ntp` answers datagrams with no
-    client state; `ntske`, which is where a client is admitted before it
-    gets cookies, does ask.
-  - The HTTP gateway's session-level question is last and is genuinely a
-    design question: an HTTP listener has no session, and the
-    per-request answer is already the `authz` filter.
+  - `smtp`, `redis`, `amqp` and `ntp` are wired too, which leaves `http`
+    alone outside. `smtp` and `ntp` join the identity-less half: `smtp`
+    still has no name to offer, because the SASL lines carry the password
+    and are deliberately not parsed, and `ntp` has only an address, so on
+    both a rule is `networks`, `targets` and `schedule`.
+
+    `redis` and `amqp` are the interesting pair, and the answer turned out
+    better than the entry above them predicted. They do not need a
+    *replacement* admission point at the server's acceptance -- they need
+    a **second** one, because the connection and the authenticated session
+    are two different subjects. So both ask twice: `connect` on the
+    connection, where nobody has a name and a rule is about networks, and
+    `session` when the server's or broker's own answer says the credential
+    was accepted. That second ask is the only place on any relay here
+    where the policy sees a **proven** name rather than an asserted one --
+    the database relays are asked before the server has spoken, so an
+    allow rule there is a filter on a claim, and on these two it is an
+    authenticated grant.
+
+    Two asks needed two actions, which is what `actions` is for. Without
+    them the second ask would be answered by whatever rule let the
+    connection in and the proven name would decide nothing; the first
+    attempt at this was written with one action and a test caught it
+    immediately, refusing every client because no rule about a person can
+    match a subject with no person in it.
+
+    What it costs is where the refusal lands, and that is a fact about the
+    protocols rather than a choice: the server has already seen the
+    credential by the time it can prove a name, so the refusal keeps every
+    command or method after it off the server rather than keeping the
+    session off entirely. The acceptance is never forwarded, so the client
+    is never told it has a login it may not use.
+  - **`http` is the last one, and its absence has a price worth naming.**
+    The question is genuinely a design one: a gateway's unit of work is a
+    request, a request is decided by its route, and the per-request answer
+    is already the `authz` filter, so what a session-level question would
+    mean there is unsettled. But the fail-closed rule does not care why a
+    kind is outside, so today **a configuration carrying the
+    `authorization` section together with an `http` listener is refused at
+    load**. For an estate whose edge and bastion share one file that is a
+    real cliff, not a theoretical one, and the answer is either to give
+    the gateway a question the section can ask or to make the exemption
+    explicit and say why. Either way it is the next commit on this
+    feature rather than another kind.
 
 ## After 1.4 (candidates, unranked)
 

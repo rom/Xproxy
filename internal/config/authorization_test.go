@@ -60,15 +60,20 @@ func TestTheAuthorizationPolicyIsCheckedAtLoad(t *testing.T) {
 // a time without ever being a lie.
 //
 // The second listener has to be a kind that is still outside the policy, so this
-// fixture needs changing each time one is wired -- which is the test doing its
+// fixture needed changing each time one was wired -- which was the test doing its
 // job rather than a maintenance cost: it failed on the commit that wired mqtt,
-// and again on the one that wired syslog, which is exactly the notice an author
-// of the next kind should get.
+// again on the one that wired syslog, and again on the one that wired ntp.
 //
-// Five kinds are left outside: http, smtp, redis, amqp and ntp, each for a reason
-// written down in internal/listener/roster_test.go. When the last one is wired
-// there is no kind left to build this fixture from, and this test becomes the
-// opposite assertion -- that AuthorisingKinds() is every kind there is.
+// One kind is left outside, and it is `http`: a gateway's unit of work is a
+// request rather than a session, and the per-request answer is already the `authz`
+// filter, so what a session-level question would mean there is an open design
+// question (ROADMAP.md). That makes this fixture's shape worth stating plainly
+// rather than leaving to be inferred: **an estate cannot put the `authorization`
+// section in the same configuration as an http listener today**. That is the
+// fail-closed rule working exactly as designed -- better a refused load than a
+// silent hole -- and it is also a real cliff for the commonest deployment, which
+// is why the next commit on this feature is the one that settles http rather than
+// another kind.
 func TestAListenerOutsideThePolicyIsRefused(t *testing.T) {
 	yaml := `
 version: 1
@@ -83,13 +88,14 @@ server:
         authorized_keys: /etc/xproxy/ssh/authorized_keys
         upstream_key_file: /etc/xproxy/ssh/upstream_ed25519
         upstream_known_hosts: /etc/xproxy/ssh/known_hosts
-    - name: relay
-      address: ":123"
-      kind: ntp
-      ntp: {upstream: clocks}
+    - name: edge
+      address: ":8080"
+      kind: http
 upstreams:
   - {name: hosts, endpoints: [{address: "10.0.0.5:22"}]}
-  - {name: clocks, endpoints: [{address: "10.0.0.9:123"}]}
+  - {name: apps, endpoints: [{address: "10.0.0.9:8080"}]}
+routes:
+  - {name: app, paths: ["/"], upstream: apps}
 authorization:
   rules:
     - {name: everything, allow: true}
@@ -98,7 +104,7 @@ authorization:
 	if err == nil {
 		t.Fatal("a listener outside the policy was accepted")
 	}
-	for _, want := range []string{`listener "relay"`, `kind "ntp"`, "does not consult"} {
+	for _, want := range []string{`listener "edge"`, `kind "http"`, "does not consult"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %v, want it to mention %q", err, want)
 		}

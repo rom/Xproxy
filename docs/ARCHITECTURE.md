@@ -418,9 +418,10 @@ refuses to load, naming the listener, rather than quietly leaving a hole
 in a policy an operator believes covers everything. Every kind is on one
 side or the other and a test in `internal/listener` fails on a kind in
 neither, which is what forces the decision when a kind is added. Every
-kind but five is on the consulting side today; the five that are not are
-`http`, `smtp`, `redis`, `amqp` and `ntp`, each for a reason recorded in
-`internal/listener/roster_test.go` beside the list itself.
+kind but `http` is on the consulting side today, and the reason that one
+is not is recorded in `internal/listener/roster_test.go` beside the list
+itself, along with what it costs: a configuration carrying the section and
+an `http` listener is refused at load.
 
 The admission point the kinds share is `internal/admit`: the imported
 address lists about the client, then the policy. It exists because those
@@ -428,7 +429,10 @@ two questions have one right order and repeating that order in nineteen
 kinds is how it drifts. Where a kind has no identity to offer — a Modbus
 master, a syslog sender, a DNS client — that package is the whole of the
 decision; where a kind has one, the kind asks the policy directly with
-the name it proved.
+the name it proved. Two kinds do both: `redis` and `amqp` ask this package
+on the connection, where there is no name, and the policy again when the
+server's own answer proves one, which is why the action vocabulary has
+`connect` and `session` as separate words.
 
 ### The refusal
 

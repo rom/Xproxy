@@ -11459,27 +11459,28 @@ page under `docs/protocols/` says which of its operations map to which.
 A kind that did not consult this policy would be a hole in a policy an operator
 believes covers everything, so a configuration that has an `authorization`
 section **and** a listener of a kind that does not consult it is refused at
-load, naming the listener and the kind. The kinds are wired one at a time, and
-today the list is every kind but five: the gate kinds, the forward proxy, the
-database relays, MQTT, LDAP, the two generic layer 4 relays, and the eleven kinds
-whose clients have no identity at all -- `modbus`, `iec104`, `s7`, `snmp`, `tftp`,
-`dhcp`, `bacnet`, `ntske`, `syslog` and `dns`.
+load, naming the listener and the kind. Today that is **every kind but one**:
+every gate kind, the forward proxy, every relay kind, and both generic layer 4
+relays.
 
-The five outside it are outside for reasons rather than by omission. `http` asks
-the imported lists already, but a gateway's unit of work is a request and a
-request is decided by its route, so what a session-level question would mean there
-is still a design question. `smtp` has no name to offer, because the SASL exchange
-is deliberately not parsed and a policy cannot be given a name this proxy
-invented. `redis` and `amqp` both authenticate at the server rather than at the
-relay, so their admission point is the server's acceptance and not the connection.
-`ntp` answers datagrams with no client state at all; `ntske`, which is where a
-client is admitted before it gets cookies, does consult the policy.
+The one outside it is `http`, and it is outside because of an open question rather
+than an omission. The gateway asks the imported lists already; what it has no
+place for is a *session-level* question, because a gateway's unit of work is a
+request, a request is decided by its route, and the per-request answer is already
+the `authz` filter. Until that is settled there is a consequence worth stating
+plainly rather than discovering: **a configuration that carries this section and
+an `http` listener is refused at load.** That is the fail-closed rule working as
+designed -- better a refused load than a silent hole -- and it means an estate
+running the gateway keeps the section in the file its gate and relay daemons read.
+ROADMAP.md records both halves.
 
-All of them ask about `connect`, except `syslog`, which asks about `write`: a
-sender does not open a session with a collector, it delivers records. None fills
-`groups`: these protocols give the gateway no group membership it could verify, so
-a rule about a team is written with `principals` on `ssh` and with `users`
-elsewhere.
+Most kinds ask about `connect`. Three do not: `syslog` asks about `write`, because
+a sender does not open a session with a collector but delivers records; and `redis`
+and `amqp` ask twice, `connect` for the connection and `session` for the
+authenticated session, which is what lets one rule decide the door and another
+decide the person (see below). None fills `groups`: these protocols give the
+gateway no group membership it could verify, so a rule about a team is written with
+`principals` on `ssh` and with `users` elsewhere.
 
 What `target` means differs in the one place it has to. On the gate kinds and the
 database relays it is the **upstream pool name**, not an endpoint address, so that
@@ -11525,6 +11526,10 @@ worth (see above).
 | `bacnet` | On each datagram, before anything reaches the building. Which services and which objects stay with the `bacnet` policy, which is the thing that can say what a write to analog-output 3 means | none: a client is an address, a network number and a MAC address |
 | `ntske` | On the connection, before a handshake slot is taken -- the handshake being the expensive thing this port has to protect. NTS-KE authenticates the *server* to the client, so nothing in it names a person; a client certificate in front of it is checked in the handshake, which is after this | none: the protocol authenticates the server, not the client |
 | `syslog` | Once per connection on a stream and once per datagram on UDP, after this listener's own `allow_senders`. The action is `write`. The host name inside a message is a field the sender wrote and no part of the protocol checks it, which is why this relay rewrites it from the address the message came from | none: the host field in a message is the sender's own claim |
+| `smtp` | On the connection, after this listener's own allow list and before a greeting is exchanged with anybody. A refusal is `554 5.7.1 access denied`. There is no name here and there deliberately never will be: the SASL exchange carries the password and this relay does not parse it, so it learns only that the server said 235. What the envelope says is the `smtp` policy's business, `MAIL FROM` being an address rather than an identity | none, deliberately: the credential exchange is not parsed |
+| `redis` | **Twice.** On the connection for `connect`, before the server is dialled, where there is no name. Then again for `session` when the server's own answer to an AUTH or HELLO says the credential was accepted -- so the name is *proven*, and an allow rule keyed on it here is an authenticated grant. The refusal lands later than on the database relays: the server has seen the credential, because that is what proved the name, and what the refusal keeps off it is every command after it | proven (the server accepted it), at `session` |
+| `amqp` | **Twice**, the same shape. `connect` on the connection; `session` when the broker tunes on 0-9-1 -- a broker that refuses a credential closes instead of tuning -- or returns a SASL outcome of zero on 1.0. The acceptance is never forwarded to a refused client, so it is never told it has a connection it may not use. The vhost is in the subject by then | proven (the broker accepted it), at `session` |
+| `ntp` | On each request datagram, after this listener's own client list. A client is an address and even that is a datagram's claim, which is why the `ntp` policy's own detection exists; a rule here is `networks`, `listeners` and `schedule`. Which versions, modes and extension fields are carried, and what makes an answer implausible, stay with that policy | none: a request names nobody |
 | `dns` | On each query, after this listener's own `allow_clients`. Which names a client may resolve stays with the `dns` policy, the RPZ zones and the domain lists. A refusal on an unverified datagram is counted but attributed to nobody, for the same reason a blocked name is: a record written against an address anybody could have put in a datagram is a record anybody could have written against a third party | none: a query names nobody |
 
 On every kind whose client has no identity -- the two generic layer 4 relays and
@@ -11541,6 +11546,26 @@ estate has no rule about is refused as "not in the policy" rather than as "on
 somebody's list", which is the truer of the two. A list asking for a `challenge`
 is recorded like a log list on these kinds, because there is no request to serve a
 challenge into.
+
+**Two kinds ask twice, and that is what `actions` is for.** On `redis` and `amqp`
+the client's name is not available when the connection opens and *is* available
+once the server or broker has accepted a credential -- which is later than the
+database relays can manage, and better, because by then the name is proven rather
+than claimed. Two asks need two actions, or the second would be answered by
+whatever rule let the connection in and the proven name would decide nothing:
+
+```yaml
+authorization:
+  rules:
+    # The person, at the authenticated session.
+    - {name: staff, allow: true, users: [bob], actions: [session]}
+    # The door, at the connection, where nobody has a name yet.
+    - {name: floor, allow: true, networks: ["10.0.0.0/8"], actions: [connect]}
+```
+
+A `redis` or `amqp` listener whose clients never authenticate never reaches the
+second question, so on one of those the `connect` rule is the whole policy -- which
+is the same position every identity-less kind is in.
 
 On the datagram kinds the question is asked per datagram, because a datagram relay
 has no session to hang the answer on. A refusal goes through the kind's own deny

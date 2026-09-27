@@ -90,6 +90,39 @@ from the proxy and every reputation and rate control behind it is blinded.
 **`banner` and `hostname`**, because the greeting is the first thing a sender
 sees and an estate usually wants its own name in it rather than the software's.
 
+### The imported lists, and the estate's authorisation policy
+
+This relay has an identity it deliberately does not learn. The SASL exchange
+carries the password, so it is forwarded without being parsed, and what this relay
+knows at the end of it is that the server said 235 -- not who authenticated. A name
+it invented from those lines would be worse than no name. So the two questions
+asked here are asked about the address, after this listener's own allow list and
+before a greeting is exchanged with anybody:
+
+- **the imported address lists** (`threat_intel`), about the client's address. A
+  list whose action is `block` refuses; one that asks for a `challenge` is
+  recorded like a log list, because there is no request here to serve a challenge
+  into and turning it into a block would be a policy the operator did not write.
+- **the `authorization` section**, on the client address, the listener, the kind,
+  the upstream pool and the hour. A rule naming `users` matches nobody on this
+  kind, so a rule here is written with `networks`, `targets` and `schedule` --
+  which on a mail relay is a real policy: which networks may submit, to which
+  pool, in which hours.
+
+A refusal is `554 5.7.1 access denied`, which is what a client library reports
+rather than a dropped connection. What the envelope says stays with this
+listener's own policy above: `MAIL FROM` is an address rather than an identity,
+and the verb and recipient rules are where a decision about it belongs.
+The lists are asked first: a list is an import about an address and says nothing
+about this estate's intentions, so a refusal naming the feed sends an operator to
+the feed rather than to a rule they would not find.
+
+A refusal is the reason `threat_intel` or `authorization` on this listener's usual
+deny event, so the counters, the security log and the ban list see it as they see
+any other refusal. Either shadow switch -- `policy: {mode: shadow}` on the
+listener, or `shadow: true` on the section -- records what it would have refused
+and carries the traffic.
+
 ## What it does not do
 
 - **It is not a mail server.** No queue, no spool, no retry, no delivery, no
@@ -121,5 +154,6 @@ sees and an estate usually wants its own name in it rather than the software's.
 
 ## See also
 
+- The estate-wide policy above it: [docs/CONFIG.md `authorization`](../CONFIG.md#authorization)
 - The settings: [docs/CONFIG.md `server.listeners[].smtp`](../CONFIG.md#serverlistenerssmtp-kind-smtp)
 - A worked configuration: [`examples/mail/submission.yaml`](../../examples/mail/submission.yaml)

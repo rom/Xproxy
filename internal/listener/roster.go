@@ -115,6 +115,10 @@ var authorises = map[string]bool{
 	"ntske":    true,
 	"syslog":   true,
 	"dns":      true,
+	"smtp":     true,
+	"redis":    true,
+	"amqp":     true,
+	"ntp":      true,
 }
 
 // Authorises reports whether a kind consults the estate's authorisation policy.

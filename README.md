@@ -1091,23 +1091,24 @@ describes it, validation refuses what cannot work, and
   nineteen protocol policies that can disagree. Each kind keeps its own
   policy for what only it can express (which Modbus register, which SQL
   shape, which SSH channel); this answers the question above them all.
-  Every kind but five asks it. All five gate kinds — SSH and SFTP,
-  Telnet, VNC, RDP and FTP — as does the forward proxy, where the target
-  is the destination rather than a pool and a rule is an egress policy
-  about people; the three database relays whose login packet names an
-  account; the MQTT and LDAP relays — the last at a bind, which is the
-  only request LDAP has that names anybody; and the twelve kinds whose
-  clients have no identity at all — the two generic layer 4 relays plus
-  Modbus, IEC 104, S7comm, SNMP, TFTP, DHCP, BACnet, NTS-KE, syslog and
-  DNS — where a rule is about networks, pools, listeners and hours.
-  That same admission point is where the imported address lists are now
-  asked about the client, which before this happened only on the HTTP and
-  forward listeners: a `cidr` feed did nothing at all on a plant network,
-  which is exactly where one is worth having. The five kinds outside the
-  policy are outside for stated reasons — an HTTP request is decided by
-  its route, SMTP's SASL exchange is deliberately not parsed, Redis and
-  AMQP authenticate at the server, and NTP keeps no client state — and a
-  configuration naming one is refused at load rather than left as a hole
+  **Every listener kind but one asks it.** All five gate kinds — SSH and
+  SFTP, Telnet, VNC, RDP and FTP — the forward proxy, where the target is
+  the destination rather than a pool and a rule is an egress policy about
+  people; every relay kind; and both generic layer 4 relays. On the many
+  kinds whose clients have no identity at all — Modbus, S7comm, BACnet,
+  SNMP, TFTP, DHCP, syslog, DNS, NTP and the generic relays — a rule is
+  about networks, pools, listeners and hours, which on a plant network is
+  the policy that was missing. That same admission point is where the
+  imported address lists are now asked about the client, which before this
+  happened only on the HTTP and forward listeners: a `cidr` feed did
+  nothing at all in front of a PLC, which is exactly where one earns its
+  keep. Redis and AMQP ask **twice** — once for the connection and once
+  when the server's own answer proves the name — which makes them the only
+  relays where an allow rule keyed on a user is an authenticated grant
+  rather than a filter on a claim. The one kind outside is the HTTP
+  gateway, whose unit of work is a request rather than a session and whose
+  per-request answer is already the `authz` filter; a configuration naming
+  it alongside this section is refused at load rather than left as a hole
   in a policy somebody believes is complete
 
 ### The estate: clusters, fleets and Kubernetes

@@ -789,6 +789,65 @@ Open findings of the earlier rounds:
   point is its acceptance), and `ntp` (no client state at all; `ntske`, which is
   where a client is admitted before it gets cookies, does ask).
 
+- **And the last four relays, which leaves only the HTTP gateway outside.**
+  `smtp` and `ntp` join the identity-less half: `smtp` still has no name to offer,
+  because the SASL lines carry the password and this relay deliberately does not
+  parse them, and `ntp` has only an address, so on both a rule is `networks`,
+  `targets` and `schedule`. `smtp`'s refusal is `554 5.7.1 access denied`, which a
+  client library reports, rather than a dropped connection.
+
+  **`redis` and `amqp` ask twice, and the second ask is the only place on any relay
+  here where the policy sees a name that has been proven.** The earlier note said
+  these two needed a *replacement* admission point at the server's acceptance. That
+  was half right: what they need is a **second** one, because a connection and an
+  authenticated session are two different subjects. So `connect` is asked on the
+  connection, where nobody has a name and a rule is about networks; and `session` is
+  asked when the server's answer to an AUTH or HELLO, or the broker's
+  `connection.tune` or SASL outcome of zero, says the credential was accepted.
+
+  The relay already read those answers -- "has this connection authenticated"
+  cannot be answered from the client's side, which is what `require_auth` exists to
+  prevent -- and the same answer proves the name. So an allow rule keyed on `users`
+  on these two kinds is an **authenticated grant**, which is not true of
+  `postgres`, `mysql` and `tds`, where the policy is asked before the server has
+  spoken and an allow rule is a filter on a claim. The reference and both protocol
+  pages say which kind is which, because the stronger reading is the one an
+  operator will otherwise assume everywhere.
+
+  The cost is where the refusal lands, and it is a fact about the protocols rather
+  than a choice: the server has seen the credential by the time it can prove a
+  name, so the refusal keeps every command or method *after* it off the server
+  rather than keeping the session off entirely. The acceptance is never forwarded,
+  so the client is never told it has a login it may not use.
+
+  Two asks needed two actions, which is what `actions` is for -- and the first
+  attempt got it wrong in a way a test caught immediately. With one action the
+  second ask was answered by whatever rule let the connection in, so a policy
+  written as `users: [bob]` refused every client, including bob: at the connection
+  there is no person, and no rule about a person can match a subject that has none.
+  With `connect` for the door and `session` for the person, one rule decides each:
+
+  ```yaml
+  authorization:
+    rules:
+      - {name: staff, allow: true, users: [bob], actions: [session]}
+      - {name: floor, allow: true, networks: ["10.0.0.0/8"], actions: [connect]}
+  ```
+
+  A listener whose clients never authenticate never reaches the second question, so
+  there the `connect` rule is the whole policy -- the same position every
+  identity-less kind is in.
+
+- **The HTTP gateway is the last kind outside, and its absence has a price that is
+  now written down rather than discovered.** The question is genuinely a design one:
+  a gateway's unit of work is a request, a request is decided by its route, and the
+  per-request answer is already the `authz` filter. But the fail-closed load check
+  does not care *why* a kind is outside, so today a configuration carrying the
+  `authorization` section together with an `http` listener is refused at load. For
+  an estate whose edge and bastion share one file that is a real cliff rather than a
+  theoretical one. CONFIG.md, ROADMAP.md and the fail-closed test all say so now,
+  and settling it is the next commit on this feature rather than another kind.
+
 - **Two ban reasons nobody could ban on, and one refusal nobody could count.**
   Wiring `dns` turned up that the reason it hands the ban list for a name on a
   domain list, `dns_threat_intel`, was not in the table a ban trigger is validated

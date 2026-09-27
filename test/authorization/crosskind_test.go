@@ -4,11 +4,11 @@
 // The per-kind tests next to each kind say what that kind's admission point does
 // with the name it has: an SSH key, a bind DN, a telnet factor. This one says the
 // thing none of them can say alone, and the thing the feature is actually for --
-// that one policy sits above the protocols. Eleven kinds with no identity at all
-// are driven here from one table, and each has to refuse the same client for the
+// that one policy sits above the protocols. Fourteen kinds with no identity at the connection are
+// driven here from one table, and each has to refuse the same client for the
 // same reason and count it under its own name.
 //
-// It is one table rather than eleven near-identical files because the interesting
+// It is one table rather than fourteen near-identical files because the interesting
 // failure is a kind drifting out of line with its siblings, and a table is where
 // that shows.
 package authorization
@@ -22,13 +22,17 @@ import (
 	"testing"
 	"time"
 
+	_ "github.com/rom/xproxy/internal/kinds/amqp"
 	_ "github.com/rom/xproxy/internal/kinds/bacnet"
 	_ "github.com/rom/xproxy/internal/kinds/dhcp"
 	_ "github.com/rom/xproxy/internal/kinds/dns"
 	_ "github.com/rom/xproxy/internal/kinds/iec104"
 	_ "github.com/rom/xproxy/internal/kinds/modbus"
+	_ "github.com/rom/xproxy/internal/kinds/ntp"
 	_ "github.com/rom/xproxy/internal/kinds/ntske"
+	_ "github.com/rom/xproxy/internal/kinds/redis"
 	_ "github.com/rom/xproxy/internal/kinds/s7"
+	_ "github.com/rom/xproxy/internal/kinds/smtp"
 	_ "github.com/rom/xproxy/internal/kinds/snmp"
 	_ "github.com/rom/xproxy/internal/kinds/syslog"
 	_ "github.com/rom/xproxy/internal/kinds/tftp"
@@ -71,6 +75,22 @@ var kinds = []struct {
 	},
 	{kind: "syslog", block: "syslog: {upstream: far}", datagram: true, first: []byte("<13>hello")},
 	{kind: "dns", block: `dns: {upstreams: ["127.0.0.1:1"]}`, datagram: true, first: dnsQuery()},
+	// The last three relays. On these the connection is the identity-less half of
+	// the question: redis and amqp ask again once the server has proved a name,
+	// which is what test/authorization's proven-name test below is about, and smtp
+	// never gets a name at all.
+	{kind: "smtp", block: "smtp: {upstream: far}"},
+	{kind: "redis", block: "redis: {upstream: far, require_tls: false, require_auth: false}"},
+	{kind: "amqp", block: "amqp: {upstream: far, require_tls: false}"},
+	{kind: "ntp", block: "ntp: {upstream: far}", datagram: true, first: ntpRequest()},
+}
+
+// ntpRequest is a version 4 client request: mode 3 in the first octet and the rest
+// zero, which is what an unsynchronised client's first packet looks like.
+func ntpRequest() []byte {
+	p := make([]byte, 48)
+	p[0] = 0x23 // leap 0, version 4, mode 3
+	return p
 }
 
 // dnsQuery is one standard query for example.com A IN. dns is the only kind here

@@ -13,22 +13,18 @@ import (
 // list to authorises when it asks internal/authorization at its admission point -- and
 // a kind in neither list fails below, which is the decision this test exists to
 // force somebody to make.
+//
+// One kind is left, and it is the interesting one rather than the leftover.
 var notYetAuthorising = map[string]bool{
-	// The HTTP gateway asks the imported lists already; what it does not have is
-	// a session-level question to ask the policy, because a gateway's unit of
-	// work is a request and a request is decided by its route. That is a design
-	// question rather than an omission, and it is written down in ROADMAP.md.
+	// The HTTP gateway asks the imported lists already. What it does not have is
+	// a session-level question, because a gateway's unit of work is a request
+	// and a request is decided by its route -- and the per-request answer is
+	// already the `authz` filter. That is a design question rather than an
+	// omission, and until it is settled a configuration carrying the
+	// `authorization` section alongside an http listener is refused at load,
+	// which is the fail-closed rule doing its job and also a real cliff for the
+	// commonest deployment. ROADMAP.md records both halves.
 	"http": true,
-	// smtp has no name to offer: the SASL exchange is deliberately not parsed, so
-	// there is nothing this proxy could put in a rule that it did not invent.
-	"smtp": true,
-	// redis and amqp both authenticate at the server rather than here, so their
-	// admission point is the server's acceptance and not the connection.
-	"redis": true,
-	"amqp":  true,
-	// ntp answers datagrams with no client state at all; ntske, which is where a
-	// client is admitted before it gets cookies, does consult the policy.
-	"ntp": true,
 }
 
 // Every kind is on exactly one side of the authorisation line, and nothing

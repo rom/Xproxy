@@ -92,6 +92,38 @@ to back off from. An error would just be retried.
 watches a running estate to find out what its clients actually ask for before a
 policy is written.
 
+### The imported lists, and the estate's authorisation policy
+
+NTP names nobody. A client is an address, and even that is a datagram's claim about
+itself -- which is why this listener's own detection policy exists at all, and why
+the ban list is careful about what it attributes to an unverified source. So two
+questions are asked about the address, after this listener's own client list:
+
+- **the imported address lists** (`threat_intel`), about the client's address. A
+  list whose action is `block` refuses; one that asks for a `challenge` is
+  recorded like a log list, because there is no request here to serve a challenge
+  into and turning it into a block would be a policy the operator did not write.
+- **the `authorization` section**, on the client address, the listener, the kind,
+  the upstream pool and the hour. A rule naming `users` matches nobody on this
+  kind, so a rule here is written with `networks`, `listeners` and `schedule`.
+
+Asked once per request datagram, because a time server keeps no client state. A
+refusal is a drop and goes through this listener's usual one, so a client that
+keeps sending earns a ban the same way one refused by the client list does.
+
+Which versions, modes and extension fields are carried, and what makes an answer
+from a source implausible, stay with this listener's own policy above -- that is
+the thing that can say what a stratum or a root dispersion means.
+The lists are asked first: a list is an import about an address and says nothing
+about this estate's intentions, so a refusal naming the feed sends an operator to
+the feed rather than to a rule they would not find.
+
+A refusal is the reason `threat_intel` or `authorization` on this listener's usual
+deny event, so the counters, the security log and the ban list see it as they see
+any other refusal. Either shadow switch -- `policy: {mode: shadow}` on the
+listener, or `shadow: true` on the section -- records what it would have refused
+and carries the traffic.
+
 ## What it does not do
 
 - **It is not a time source.** It does not hold a clock, serve time from one, or
@@ -122,6 +154,7 @@ policy is written.
 
 ## See also
 
+- The estate-wide policy above it: [docs/CONFIG.md `authorization`](../CONFIG.md#authorization)
 - The settings: [docs/CONFIG.md `server.listeners[].ntp`](../CONFIG.md#serverlistenersntp-kind-ntp)
 - A worked configuration: [`examples/ot/ntp.yaml`](../../examples/ot/ntp.yaml)
 - The key establishment: [ntske](ntske.md)
