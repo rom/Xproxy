@@ -241,9 +241,11 @@ type session struct {
 
 	// upstreamName is the pool this session is relayed to, for the log.
 	upstreamName string
-	// down and upSeq follow the two directions' sequence numbers: down is
-	// what the controlling station sends, upSeq what the station sends.
-	down, upSeq seqState
+	// clientEnd and stationEnd are the relay's own ends of the
+	// association: what it has read from each peer, what it has written to
+	// each peer, and the numbering of both. See apci.go for why a relay
+	// that refuses frames cannot forward the numbering it was given.
+	clientEnd, stationEnd endpoint
 
 	closed   atomic.Bool
 	commands atomic.Uint64
@@ -348,6 +350,9 @@ func (t *server) handle(client net.Conn) {
 		_ = tc.SetDeadline(time.Time{})
 		se.client, se.secure = tc, true
 	}
+	// The relay's own end of the association with this client, which is
+	// whatever the octets finally travel over.
+	se.clientEnd.attach(se.client, t.writeWait())
 	if err := se.dial(); err != nil {
 		s.Counters().IEC104UpstreamFail.Add(1)
 		s.Logs().Error.Warn("iec104 station dial failed", "listener", t.cfg.Name,
@@ -432,6 +437,7 @@ func (se *session) dial() error {
 	if se.ep != nil {
 		se.live.Annotate("", se.ep.Address, "")
 	}
+	se.stationEnd.attach(se.up, t.writeWait())
 	return nil
 }
 
@@ -439,6 +445,16 @@ func (se *session) dial() error {
 func (se *session) run() string {
 	var wg sync.WaitGroup
 	reasons := make(chan string, 2)
+	// The relay owes each peer an acknowledgement of what it has read, and
+	// the frame path only pays at w. This pays the quiet case, where one
+	// command arrived and nothing is travelling the other way to carry the
+	// receive sequence number back.
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		defer safe.Guard("iec104 acknowledgements")
+		se.acknowledge(stop)
+	}()
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
@@ -477,9 +493,18 @@ func (se *session) run() string {
 // allowed to the other. fromClient says which side.
 func (se *session) pump(fromClient bool) string {
 	t := se.t
-	src, dst := se.client, se.up
+	// from is the end these frames arrive at, to the end they are written
+	// to. Both are the relay's own: the numbering that goes out is the
+	// relay's, not the numbering that came in (apci.go).
+	src := se.client
+	from, to := &se.clientEnd, &se.stationEnd
 	if !fromClient {
-		src, dst = se.up, se.client
+		src = se.up
+		from, to = &se.stationEnd, &se.clientEnd
+	}
+	w := t.m.W
+	if w == 0 {
+		w = 8 // the standard's own default
 	}
 	// max_frame_bytes is a *policy* bound below the protocol's own, which
 	// is already small: the length field is one octet, so no APDU can
@@ -528,13 +553,50 @@ func (se *session) pump(fromClient bool) string {
 			case "close":
 				return reason
 			}
+			// A refused frame was still read, and the end that sent it is
+			// still owed the acknowledgement: an end whose window fills
+			// with frames nobody acknowledged stops sending, so a relay
+			// that refused k commands would have refused the link.
+			se.payAck(from, w)
 			continue
 		}
-		// Forward the octets that arrived rather than re-encoding them:
-		// re-encoding is how a relay and a station come to disagree about
-		// what was said.
-		if _, err := dst.Write(frame.Raw); err != nil {
-			return "closed"
+		// Forward the application layer as it arrived rather than
+		// re-encoding it -- re-encoding is how a relay and a station come
+		// to disagree about what was said -- and number it as this end's
+		// own, because the stream this relay writes is not the stream it
+		// read.
+		switch frame.Format {
+		case wire.FormatS:
+			// An acknowledgement of frames *this relay* wrote, which it
+			// has already recorded. There is nothing to pass on: the other
+			// peer is acknowledged by this relay, on its own count.
+		case wire.FormatU:
+			if err := to.writeU(frame.Raw); err != nil {
+				return "closed"
+			}
+		default:
+			if err := to.writeI(frame.Raw); err != nil {
+				return "closed"
+			}
+		}
+		se.payAck(from, w)
+	}
+}
+
+// writeWait bounds one write to either end.
+func (t *server) writeWait() time.Duration {
+	if d := t.m.IdleTimeout.D(); d > 0 {
+		return d
+	}
+	return 120 * time.Second
+}
+
+// payAck acknowledges what has arrived from one end once w frames are
+// outstanding, which is where the standard says an end acknowledges.
+func (se *session) payAck(from *endpoint, w int) {
+	if from.ackDue(w) {
+		if err := from.writeS(); err != nil {
+			se.closed.Store(true)
 		}
 	}
 }

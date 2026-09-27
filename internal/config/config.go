@@ -592,11 +592,17 @@ type IEC104Listener struct {
 	// anything.
 	AllowControls []string `yaml:"allow_controls"`
 	// K and W are the protocol's window parameters: k is how many
-	// I frames may be unacknowledged before a station stops sending, w
+	// I frames an end may have unacknowledged before it stops sending, w
 	// is after how many received frames it acknowledges. Defaults 12 and
-	// 8, the standard's own. This relay checks them rather than
-	// implementing them, because it forwards the sequence numbers the
-	// stations chose.
+	// 8, the standard's own.
+	//
+	// The relay uses them as an end, not only as a checker. It cannot
+	// forward the sequence numbers the two ends chose, because it refuses
+	// frames and answers some itself, and a stream with a hole in its
+	// numbering is one a conforming implementation drops the association
+	// over -- so it numbers what it writes, acknowledges what it reads at
+	// w, and refuses an end that has k frames outstanding that it has not
+	// yet acknowledged.
 	K int `yaml:"k"`
 	W int `yaml:"w"`
 	// CheckSequence refuses an I frame whose send sequence number is not

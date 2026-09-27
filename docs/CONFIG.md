@@ -2046,8 +2046,8 @@ bounds which stations may be addressed through it.
 | `select_timeout` | duration | `30s` | How long a selection stays valid (1s to 10m) |
 | `max_selections` | int | `4096` | Outstanding selections this relay remembers |
 | `allow_controls` | list | all | The U-format control functions a client may send: `STARTDT_act`, `STARTDT_con`, `STOPDT_act`, `STOPDT_con`, `TESTFR_act`, `TESTFR_con`. Naming an activation names its confirmation |
-| `k` | int | `12` | The sending window: how many I frames may be unacknowledged |
-| `w` | int | `8` | After how many received frames a station acknowledges. Must not exceed `k` |
+| `k` | int | `12` | The sending window: how many I frames an end may have unacknowledged. An end that exceeds it is refused |
+| `w` | int | `8` | After how many received frames this relay acknowledges. Must not exceed `k` |
 | `check_sequence` | bool | `true` | Refuse an I frame whose send sequence number is not the next one |
 | `max_unacknowledged` | bool | `true` | Refuse a station with more than `k` frames outstanding, and one acknowledging frames nobody sent |
 | `max_connections` | int | `32` | Live sessions |
@@ -2171,6 +2171,27 @@ could trace. What is read is the ASDU header, the object addresses and a
 command's qualifier -- which is what a policy is written about. On a
 *sequence* ASDU only the first information object address is on the wire, so
 that is the one an `addresses` rule checks.
+
+**The relay is an end of the association, and has to be.** This protocol
+numbers every I frame in each direction, contiguously, and a conforming
+implementation closes the connection on a gap rather than trying to recover
+-- the reference implementation does it on both sides. A relay that forwarded
+the two ends' own sequence numbers would therefore be transparent only for as
+long as it forwarded everything: the moment it refuses one frame the stream
+it writes is short a number, and the end reading it drops the association,
+taking the substation's telemetry away with the refused command. The same
+arithmetic runs the other way, because the refused frame consumed one of the
+sender's numbers and never reached the station.
+
+So the relay numbers what it writes, acknowledges what it reads at `w` (and
+on a timer, for a link too quiet to carry one), and terminates the
+supervisory frames -- an acknowledgement is about the stream this relay
+wrote, not about the stream the other end wrote. The application layer is
+still forwarded untouched: the ASDU that arrives is the ASDU that leaves,
+because re-encoding it is how a relay and a station come to disagree about
+what was said. What `check_sequence` and `max_unacknowledged` decide is
+whether a *peer's* numbering is checked: a gap, a replay, or an end that has
+`k` frames outstanding that this relay has not acknowledged.
 
 Counters: `iec104_sessions`, `iec104_sessions_open`, `iec104_frames`,
 `iec104_commands`, `iec104_system_commands`, `iec104_denied`,

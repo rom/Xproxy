@@ -6,6 +6,63 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Fixed (iec104: a refusal took the association down with it)
+
+- **Refusing one frame desynchronised the sequence numbering in both
+  directions, and a conforming control centre or station then dropped the
+  association.** This is the headline behaviour of the kind -- carry the
+  telemetry, refuse the command -- and against equipment that checks the
+  numbering it did not work.
+
+  IEC 60870-5-104 numbers every I-format frame per direction, contiguously,
+  and the reference implementation closes the connection on a gap rather than
+  trying to recover: `cs104_connection.c`, "check the receive sequence number
+  N(R) -- connection will be closed on an unexpected value", and
+  `cs104_slave.c` the same. The relay forwarded the two ends' own numbers and
+  answered a refusal with a copy of the frame it refused, so:
+
+  - the refused frame consumed one of the centre's numbers and never reached
+    the station, leaving every later forwarded frame one ahead of what the
+    station expected;
+  - the injected negative confirmation consumed one of the numbers the centre
+    was counting, leaving every later station frame one behind;
+  - and the negative confirmation itself carried the centre's own send
+    sequence number, which is not a number any station would send.
+
+  The probe, on a listener allowing one range of breakers -- one allowed
+  command, one refused, then another allowed:
+
+  ```
+  the confirmation after a refusal: N(S) = 1, the centre was counting on 2
+  telemetry after a refusal:        N(S) = 2, the centre was counting on 3
+  the station's frame 2:            N(S) = 2, the station was counting on 1
+  ```
+
+  A second defect in the same bookkeeping: the acknowledgement that releases
+  the sending window was only read off supervisory frames, and the standard
+  lets an end piggyback N(R) on every I frame it sends -- which is what an end
+  with data to send does. So the window never reopened on an ordinary
+  exchange, and the thirteenth command of a session was refused with
+  `iec104_window` while the station had confirmed all twelve before it. The
+  S-frame path also credited the acknowledgement to the sending direction's
+  state rather than the acknowledged one.
+
+  **The relay is now an end of the association at the APCI layer.** It numbers
+  the frames it writes from its own count per direction, acknowledges what it
+  reads at `w` and on a timer (the standard's t1 is 15 seconds and an end that
+  is not acknowledged inside it closes), and terminates the supervisory frames
+  -- an acknowledgement is about the stream this relay wrote, so passing one
+  on would tell the station something the centre never said. The application
+  layer is untouched: the ASDU that arrives is the ASDU that leaves, and only
+  the six control octets are the relay's own. What `check_sequence` and
+  `max_unacknowledged` decide is unchanged -- whether a *peer's* numbering is
+  checked -- and a gap is still refused and counted rather than patched over.
+
+  The numbering check now lives in the shared test harness, so every test in
+  the package makes it: the control centre in those tests closes the
+  association on a frame whose N(S) is not the one it was counting on, exactly
+  as a real one does. It was the absence of that check that let this ship.
+
 ### Fixed (iec104: an address policy was checked against numbers nobody sent)
 
 - **Seven information element sizes were wrong, five of them measurements.**

@@ -212,13 +212,28 @@ func (c *centre) ask(asdu []byte) {
 	c.send = (c.send + 1) % wire.MaxSeq
 }
 
-// expect reads one frame.
+// expect reads one frame, and checks its numbering the way a control
+// centre does.
+//
+// The check belongs here rather than in the tests that care about it,
+// because the numbering is the one property of this protocol that every
+// frame has: a conforming implementation closes the association when an
+// I frame's send sequence number is not the one it was counting on
+// (mz-automation/lib60870, cs104_connection.c), so a frame that fails this
+// is a frame that would have ended the session in a control room.
 func (c *centre) expect(what string) *wire.Frame {
 	c.t.Helper()
 	_ = c.conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	f, err := c.rd.ReadFrame()
 	if err != nil {
 		c.t.Fatalf("%s: %v", what, err)
+	}
+	if f.Format == wire.FormatI {
+		if f.Send != c.recv {
+			c.t.Fatalf("%s: N(S) = %d, this centre was counting on %d: a "+
+				"conforming centre closes the association here", what, f.Send, c.recv)
+		}
+		c.recv = (c.recv + 1) % wire.MaxSeq
 	}
 	return f
 }
@@ -605,8 +620,14 @@ func TestASequenceGapIsFoundAndIsOneRefusal(t *testing.T) {
 }
 
 // The supervisory frames: an S frame carries a receive sequence number and
-// nothing else, and it is still worth checking, because a station
+// nothing else, and it is still worth checking, because an end
 // acknowledging frames nobody sent is how a flood gets past the window.
+//
+// An acknowledgement is not forwarded, because it is about the stream this
+// relay wrote and not about the stream the station wrote. The relay
+// acknowledges the station itself, on its own count, which is what the
+// station is waiting for: an end that is not acknowledged inside t1 closes
+// the association.
 func TestSupervisoryFramesAreCheckedToo(t *testing.T) {
 	st := startStation(t, &station{})
 	s, addr := iec104Server(t, `        upstream: substation
@@ -620,14 +641,15 @@ func TestSupervisoryFramesAreCheckedToo(t *testing.T) {
 	c.expect("the first measurement")
 	st.send <- measurement(1, 100, 2)
 	c.expect("the second measurement")
-	// An honest acknowledgement reaches the station.
+	// An honest acknowledgement is accepted, and the station is
+	// acknowledged by the relay rather than by the centre's frame.
 	c.write(sframe(2))
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) && st.sawSupervisory() == 0 {
 		time.Sleep(5 * time.Millisecond)
 	}
-	if got := st.sawSupervisory(); got != 1 {
-		t.Fatalf("the station saw %d supervisory frames", got)
+	if got := st.sawSupervisory(); got == 0 {
+		t.Fatal("the relay never acknowledged the two frames the station sent")
 	}
 	// One acknowledging a frame that was never sent does not.
 	c.write(sframe(9))

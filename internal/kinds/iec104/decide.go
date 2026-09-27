@@ -31,8 +31,12 @@ func (se *session) decide(frame *wire.Frame, fromClient bool) (string, bool) {
 		// trying to open the sending window.
 		return se.decideAck(frame, fromClient)
 	}
-	// An I frame. The numbering first.
+	// An I frame. The numbering first, and the acknowledgement it carries
+	// with it: on this protocol every I frame is also an acknowledgement.
 	if reason, ok := se.decideSequence(frame, fromClient); !ok {
+		return reason, false
+	}
+	if reason, ok := se.decideAck(frame, fromClient); !ok {
 		return reason, false
 	}
 	a := frame.ASDU
@@ -225,17 +229,23 @@ func (se *session) decideControl(frame *wire.Frame, fromClient bool) (string, bo
 	return d.Reason, false
 }
 
-// decideAck checks the receive sequence number of an S frame.
+// decideAck checks the receive sequence number a frame carried.
+//
+// It is called for supervisory frames, which carry nothing else, and for
+// every I frame, because the standard lets an end piggyback its
+// acknowledgement on any frame it sends and an end with data to send does
+// exactly that. A relay that only read the supervisory ones would see the
+// window fill up and refuse an ordinary afternoon's thirteenth command.
 func (se *session) decideAck(frame *wire.Frame, fromClient bool) (string, bool) {
 	t := se.t
 	if t.m.MaxUnacknowledged != nil && !*t.m.MaxUnacknowledged {
 		return "", true
 	}
-	mine, theirs := &se.down, &se.upSeq
+	end := &se.clientEnd
 	if !fromClient {
-		mine, theirs = &se.upSeq, &se.down
+		end = &se.stationEnd
 	}
-	if reason := mine.acknowledge(frame.Recv, theirs.sent); reason != "" {
+	if reason := end.acknowledged(frame.Recv); reason != "" {
 		t.host.Counters().IEC104SeqGaps.Add(1)
 		t.host.Counters().Refuse("iec104", "ack_ahead")
 		t.deny(se.ip, "iec104_ack_ahead", "")
@@ -249,19 +259,15 @@ func (se *session) decideAck(frame *wire.Frame, fromClient bool) (string, bool) 
 // decideSequence applies the numbering checks to an I frame.
 func (se *session) decideSequence(frame *wire.Frame, fromClient bool) (string, bool) {
 	t := se.t
-	if t.m.CheckSequence != nil && !*t.m.CheckSequence {
-		// Still observed, because the window check and the acknowledgement
-		// check both depend on the counts.
-		state := &se.down
-		if !fromClient {
-			state = &se.upSeq
-		}
-		state.observe(frame.Send, 0)
-		return "", true
-	}
-	state := &se.down
+	end := &se.clientEnd
 	if !fromClient {
-		state = &se.upSeq
+		end = &se.stationEnd
+	}
+	if t.m.CheckSequence != nil && !*t.m.CheckSequence {
+		// Still recorded, because the relay's own numbering and its
+		// acknowledgements are counted from what arrived.
+		end.arrived(frame.Send, 0)
+		return "", true
 	}
 	k := t.m.K
 	if k == 0 {
@@ -270,7 +276,7 @@ func (se *session) decideSequence(frame *wire.Frame, fromClient bool) (string, b
 	if t.m.MaxUnacknowledged != nil && !*t.m.MaxUnacknowledged {
 		k = 0
 	}
-	switch reason := state.observe(frame.Send, k); reason {
+	switch reason := end.arrived(frame.Send, k); reason {
 	case "":
 		return "", true
 	case "iec104_window":
@@ -542,9 +548,9 @@ func (se *session) answerNegative(frame *wire.Frame, fromClient bool) {
 	if a == nil || !a.Cause.Commanding() {
 		return
 	}
-	dst := se.client
+	to := &se.clientEnd
 	if !fromClient {
-		dst = se.up
+		to = &se.stationEnd
 	}
 	out := make([]byte, len(frame.Raw))
 	copy(out, frame.Raw)
@@ -560,10 +566,11 @@ func (se *session) answerNegative(frame *wire.Frame, fromClient bool) {
 		confirm = byte(wire.CauseDeactCon)
 	}
 	out[i] = confirm | 0x40 | (out[i] & 0x80)
-	// The sequence numbers are the other end's to choose, and this relay
-	// is not an end: it answers with the numbers of the frame it refused,
-	// which is what a station's own negative confirmation carries.
-	if _, err := dst.Write(out); err != nil {
+	// The sequence numbers are this relay's own, and have to be: a frame
+	// it writes is a frame the end reading it counts, and an end that was
+	// handed the numbers of the frame it just sent closes the association
+	// (apci.go).
+	if err := to.writeI(out); err != nil {
 		se.closed.Store(true)
 	}
 }
