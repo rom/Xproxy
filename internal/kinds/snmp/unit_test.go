@@ -253,6 +253,27 @@ func TestTheRepetitionCountIsLoweredOrTheRequestIsRefused(t *testing.T) {
 	if got := parse(out); got.PDU.MaxRepetitions != 25 {
 		t.Errorf("lowered to %d", got.PDU.MaxRepetitions)
 	}
+	// A *negative* count, which is past the bound rather than under it.
+	//
+	// RFC 3416 gives max-repetitions the range 0..2147483647, so this is
+	// malformed -- and malformed in the direction that matters: compared as the
+	// signed value it is, it sits under any bound and was forwarded unlowered;
+	// read by an agent that puts it in an unsigned or a narrower counter it is an
+	// enormous repetition count, which is the amplification this bound exists to
+	// remove. The devices behind this relay are the ones that cannot be patched,
+	// so their conformance is not the thing to rely on.
+	//
+	// A fuzz target on the wire package found it: -839632 against a bound of 25.
+	in = parse(v2c("public", bulk(9, -839632, 1, 3, 6, 1, 2, 1)))
+	out, lowered, refuse = s.lowerRepetitions(in, Decision{Allow: true})
+	if !lowered || refuse {
+		t.Fatalf("a walk with a negative count: lowered %v refuse %v -- it was "+
+			"forwarded with the bound unenforced", lowered, refuse)
+	}
+	if got := parse(out).PDU.MaxRepetitions; got != 25 {
+		t.Errorf("the negative count was rewritten to %d, not the bound", got)
+	}
+
 	// An authenticated v3 walk: refused, because the digest covers the
 	// whole message and this relay has no key to compute a new one with.
 	in = parse(v3(0x05, "monitor", "", bulk(3, 10000, 1, 3, 6, 1, 2, 1)))

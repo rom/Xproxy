@@ -197,8 +197,15 @@ var fileTransferNames = map[string]Kind{
 // the escapes a shell honours inside them, and a backslash outside
 // quotes escapes the next character. What is refused is anything that
 // makes the line more than one command or makes a word depend on
-// something the gateway cannot see: an operator, a substitution, a
-// control character, an unbalanced quote.
+// something the gateway cannot see: an operator, a substitution, an
+// unbalanced quote, and every control character but tab.
+//
+// Tab is the one exception, because it is not really one of them: outside
+// quotes it separates words as a space does, and inside them it is an
+// ordinary byte a path on the far side may legitimately contain.
+// Everything else below 0x20, and 0x7f, is refused wherever it appears --
+// a newline inside a quoted word is a word no log line can hold and a
+// careless reader may take for two.
 func Split(line string) ([]Word, error) {
 	if len(line) > MaxLine {
 		return nil, &Error{Reason: ReasonTooLong, Detail: fmt.Sprintf("%d bytes", len(line))}

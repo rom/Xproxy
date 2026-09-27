@@ -397,17 +397,19 @@ of them is a flaw in front of all of them.
   A hash list with no `upload_guard` filter anywhere draws advice at
   load, because a list nobody asks is worse than no list.
 
-  Where an address list is consulted: the HTTP gateway and the forward
-  proxy ask about the client, and the two generic layer 4 relays now do
-  too, through internal/admit -- the same admission point the
-  authorisation policy uses, because they are two questions asked at one
-  moment and building that moment twice would have been the mistake.
+  Where an address list is consulted: everywhere. The HTTP gateway and
+  the forward proxy ask about the client, and every other kind does too
+  through internal/admit -- the same admission point the authorisation
+  policy uses, because they are two questions asked at one moment and
+  building that moment twice would have been the mistake. So a `cidr`
+  feed now works in front of a Modbus device or a syslog collector,
+  which is where an imported list of known-bad addresses earns its keep.
 
-  Not yet: the remaining relay kinds (dns, syslog, modbus, iec104, snmp,
-  tftp, dhcp, bacnet, s7, ntp, ntske) check the ban list at accept but
-  not the imported lists, so a `cidr` feed still does nothing on a
-  Modbus or syslog listener. They take the same admission point, and it
-  now exists.
+  The gateway is the one kind that does not share that point, and
+  deliberately: its list handling has per-route exemptions and a
+  `challenge` action that serves a real page, both of which the shared
+  point flattens because the kinds it serves have no request to
+  challenge into.
 
 - FIDO2 keys and a second factor that is not typed: delivered.
   `require_hardware_key` accepts only a key held in a security token
