@@ -260,7 +260,7 @@ T}
 T{
 \fBiec104\fR
 T}	T{
-every rule: type,\: class,\: cause,\: station,\: originator,\: point range and the select half;\: \fBmonitor_\:only\fR;\: the common\-address list;\: \fBrequire_\:select\fR
+every rule: type,\: class,\: cause,\: station,\: originator,\: point range and the select half;\: \fBmonitor_\:only\fR;\: the common\-address list;\: \fBrequire_\:select\fR;\: the \fBsetpoints\fR value bounds
 T}	T{
 malformed frames,\: the frame bound,\: rate limits (frame and command),\: a station commanding its own control centre,\: bans
 T}
@@ -4622,6 +4622,15 @@ T}	T{
 \fBnegative\fR returns the same ASDU with the negative\-confirm bit and cause \fBactcon\fR,\: which is what a station does and what a control centre\(aqs alarm list understands
 T}
 T{
+\fBsetpoints\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+Value bounds on setpoint commands: what a point may be \fIset to\fR,\: and how far it may move in one step;\: see below
+T}
+T{
 \fBrequire_\:select\fR
 T}	T{
 bool
@@ -4882,6 +4891,81 @@ T}	T{
 \fB{days,\: from,\: to,\: timezone}\fR;\: a window whose \fBto\fR is before its \fBfrom\fR spans midnight and belongs to the day it started on
 T}
 .TE
+.SS "server.listeners[].iec104.setpoints[]"
+.PP
+A rule says a control centre may send \fBC_SE_NB_1\fR to point 4711. That is a statement about who may act and on what. It says nothing about \fIwhat may happen\fR, and on this protocol what may happen is bounded only by the encoding: a scaled setpoint carries anything from \-32768 to 32767, and a short float most of the real line. A turbine governor, a tap changer or a reactive\-power setpoint driven to the end of its encoding is a fault no RTU will refuse and no rule about type identifications can express.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.7i) lbx
+lw(1.0i) lw(0.7i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+string
+T}	T{
+Required and unique;\: names the bound in the refusal,\: the security event and the shadow ledger
+T}
+T{
+\fBpoints\fR
+T}	T{
+list
+T}	T{
+Required. Information object address ranges (0 to 16777215) this bound covers,\: as \fB"4711"\fR,\: \fB"100\-\:199"\fR or \fB"0x1000\-\:0x1fff"\fR. Required on purpose: a value bound over every point on a substation is one somebody wrote without looking
+T}
+T{
+\fBtypes\fR
+T}	T{
+list
+T}	T{
+Setpoint type identifications this bound covers (\fBC_\:SE_\:NA_\:1\fR,\: \fBC_\:SE_\:NB_\:1\fR,\: \fBC_\:SE_\:NC_\:1\fR and their timed forms \fBC_\:SE_\:TA_\:1\fR,\: \fBC_\:SE_\:TB_\:1\fR,\: \fBC_\:SE_\:TC_\:1\fR). Empty covers every setpoint type,\: which is usually right. A type that carries no setpoint value is refused at load,\: because a bound on it would cover nothing
+T}
+T{
+\fBcommon_\:addresses\fR
+T}	T{
+list
+T}	T{
+The stations this bound covers. Empty covers every station this listener carries
+T}
+T{
+\fBmin\fR,\: \fBmax\fR
+T}	T{
+float
+T}	T{
+Both required,\: inclusive. A bound with one end open is a bound in one direction,\: and a setpoint driven to the other end is the failure this exists to stop
+T}
+T{
+\fBmax_\:delta\fR
+T}	T{
+float
+T}	T{
+How far one command may move the value from the last one this relay saw for that point: a setpoint that may be nudged and not jumped. \fB0\fR disables it
+T}
+T{
+\fBon_\:unknown\fR
+T}	T{
+\fBallow\fR,\: \fBrefuse\fR
+T}	T{
+\fBallow\fR. What happens when \fBmax_\:delta\fR needs a previous value and this relay has none \-\- after a restart,\: or before the point has been commanded through this relay
+T}
+.TE
+.PP
+The first bound that covers a point decides, so a narrow bound written above a wider one is how an exception is made. A setpoint no bound covers is not decided here at all: which points may be commanded is what \fBrules\fR and \fBdefault_action\fR are for.
+.PP
+\fBThe range always holds; the delta holds as far as the relay can see.\fR The range needs nothing, so it is checked first and applies to every setpoint command including a \fIselection\fR \-\- the station is never asked to hold a value it may not be given, and refusing the selection does not consume it. The delta needs to know where the point is now, and what that means here is \fBthe last value this relay saw\fR: a setpoint it forwarded, or a station\(aqs positive confirmation of one. A value changed by another control centre, by a local panel or by the process itself was never on this path, so the relay does not know it \-\- which is why \fBon_unknown\fR exists, why \fBiec104_setpoint_unknown\fR is counted, and why the range is the half that always decides. A \fInegative\fR confirmation makes the relay forget the point: the command did not take effect, so a delta measured from it would be measured from a value the equipment refused.
+.PP
+\fBA normalised setpoint is a fraction, not an engineering value.\fR \fBC_SE_NA_1\fR carries a \fInormalised\fR value: the standard defines it as a signed 16\-bit number over 2^15, so it runs from \-1 to very nearly +1, and the full scale it is a fraction \fIof\fR is configured in the device where this relay cannot see it. So a bound on a normalised point is a bound on the fraction \-\- \fBmin: 0\fR, \fBmax: 0.8\fR \-\- and writing \fBmin: 0\fR, \fBmax: 40\fR for one is a bound nothing can exceed. The load warns when a bound named only for normalised types is written outside \-1 to +1; it cannot warn when the bound also covers a scaled type, because there the same numbers are right.
+.PP
+\fBA value that cannot be shown to be inside a bound is outside it.\fR A short float can carry NaN and the infinities, and every comparison with NaN is false \-\- so a bound that only asked "below \fBmin\fR or above \fBmax\fR" would pass a NaN straight through to a governor. A non\-finite setpoint is refused as out of range.
+.PP
+\fBA station\(aqs own report is never refused by a value bound.\fR Only a command \-\- cause \fBact\fR or \fBdeact\fR \-\- is decided about. An RTU that answers a setpoint with the value it actually applied, clamped by its own configuration and outside the bound the relay holds, reaches the control centre: refusing the answer would leave the centre waiting for ever for a command this relay already let through, and hide the one number that says what the equipment did.
 .PP
 \fBWhat is checked before the rules, and cannot be shadowed.\fR A frame the relay could not read is refused whether or not the listener is enforcing: forwarding what it cannot decide about would hand the substation octets it will read somehow. So are the rate limits, and so is a \fIstation\fR sending an activation to its own control centre \-\- not a shape the standard has, and what a compromised substation gateway pivoting upstream looks like.
 .PP
@@ -4891,7 +4975,7 @@ T}
 .PP
 \fBThe metric payloads are never decoded.\fR A measurement\(aqs scaled value, quality descriptor and timestamp are forwarded untouched. Decoding every one of the hundred\-odd type identifications would be a second implementation of the standard, and a relay that got one wrong would corrupt a reading nobody could trace. What is read is the ASDU header, the object addresses and a command\(aqs qualifier \-\- which is what a policy is written about. On a \fIsequence\fR ASDU only the first information object address is on the wire, so that is the one an \fBaddresses\fR rule checks.
 .PP
-Counters: \fBiec104_sessions\fR, \fBiec104_sessions_open\fR, \fBiec104_frames\fR, \fBiec104_commands\fR, \fBiec104_system_commands\fR, \fBiec104_denied\fR, \fBiec104_would_deny\fR, \fBiec104_malformed\fR, \fBiec104_rejected\fR, \fBiec104_rate_limited\fR, \fBiec104_selects\fR, \fBiec104_executes\fR, \fBiec104_unselected\fR, \fBiec104_selects_held\fR, \fBiec104_sequence_gaps\fR, \fBiec104_window_full\fR, \fBiec104_upstream_failed\fR. Refusals are \fBiec104_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBtls_handshake\fR, \fBmalformed\fR, \fBframe_too_long\fR, \fBmax_connections\fR, \fBrate_limited\fR, \fBcommand_rate_limited\fR, \fBmonitor_only\fR, \fBcommon_address\fR, \fBrule\fR, \fBdefault_deny\fR, \fBcontrol\fR, \fBstation_command\fR, \fBsequence\fR, \fBwindow\fR, \fBack_ahead\fR, \fBunselected\fR, \fBselect_unavailable\fR.
+Counters: \fBiec104_sessions\fR, \fBiec104_sessions_open\fR, \fBiec104_frames\fR, \fBiec104_commands\fR, \fBiec104_system_commands\fR, \fBiec104_denied\fR, \fBiec104_would_deny\fR, \fBiec104_malformed\fR, \fBiec104_rejected\fR, \fBiec104_rate_limited\fR, \fBiec104_selects\fR, \fBiec104_executes\fR, \fBiec104_unselected\fR, \fBiec104_selects_held\fR, \fBiec104_setpoints\fR, \fBiec104_setpoint_points\fR, \fBiec104_setpoint_unknown\fR, \fBiec104_sequence_gaps\fR, \fBiec104_window_full\fR, \fBiec104_upstream_failed\fR. Refusals are \fBiec104_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBtls_handshake\fR, \fBmalformed\fR, \fBframe_too_long\fR, \fBmax_connections\fR, \fBrate_limited\fR, \fBcommand_rate_limited\fR, \fBmonitor_only\fR, \fBcommon_address\fR, \fBrule\fR, \fBdefault_deny\fR, \fBcontrol\fR, \fBstation_command\fR, \fBsequence\fR, \fBwindow\fR, \fBack_ahead\fR, \fBunselected\fR, \fBselect_unavailable\fR, \fBsetpoint_range\fR, \fBsetpoint_delta\fR, \fBsetpoint_unknown\fR.
 .SS "server.listeners[].ldap (kind: ldap)"
 .PP
 A directory is the one service in an estate that knows who everybody is, and LDAP is how everything asks. That makes it two things at once: the authentication path for every application that has not moved to OIDC, and the most complete map of an organisation that exists anywhere on its network \-\- every person, every group, every service account, every machine, with the memberships that say who is an administrator.

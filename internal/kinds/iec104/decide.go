@@ -81,14 +81,104 @@ func (se *session) decide(frame *wire.Frame, fromClient bool) (string, bool) {
 	if !d.Allow {
 		return se.policyRefused(frame, d)
 	}
+	// Then the value a setpoint carries, which is the bound a rule about
+	// type identifications cannot express: a rule says who may move this
+	// point, and this says how far. It comes before the selection is
+	// touched, so a refused value does not consume one.
+	if reason, ok := se.decideSetpoint(frame); !ok {
+		return reason, false
+	}
 	// And select-before-operate last, because it is about a command the
 	// policy has already allowed: the question is not whether this client
 	// may operate this point, but whether it said so twice.
 	if reason, ok := se.decideSelect(frame); !ok {
 		return reason, false
 	}
+	// The frame is going on, so what it says about the process is what the
+	// relay knows about the process.
+	t.observeSetpoint(a, fromClient)
 	se.logFrame(frame, d, fromClient)
 	return "", true
+}
+
+// decideSetpoint applies the value bounds to a setpoint command.
+//
+// Only a command from a controlling station is decided about. A station's
+// own confirmation carries the same type and the same value, and refusing
+// that would leave a control centre waiting for the answer to a command
+// this relay already let through.
+func (se *session) decideSetpoint(frame *wire.Frame) (string, bool) {
+	t := se.t
+	a := frame.ASDU
+	if a == nil {
+		return "", true
+	}
+	val, isSetpoint := a.Setpoint()
+	if !isSetpoint {
+		return "", true
+	}
+	t.host.Counters().IEC104Setpoints.Add(1)
+	if !a.Cause.Commanding() {
+		return "", true
+	}
+	d := t.policy.Setpoint(a)
+	held, unknowns, _ := t.policy.state.Status()
+	t.host.Counters().IEC104SetpointPoints.Store(int64(held))
+	t.host.Counters().IEC104SetpointUnknown.Store(int64(unknowns)) //nolint:gosec // a count
+	if d.Allow {
+		return "", true
+	}
+	detail := setpointDetail(a, d.Rule, val)
+	t.host.Counters().Refuse("iec104", trimReason(d.Reason))
+	if t.alerts() {
+		attrs := append(asduAttrs(a), "listener", t.cfg.Name, "client_ip", se.ip.String(),
+			"proto", "iec104", "reason", d.Reason, "value", val, "bound", d.Rule)
+		t.host.Logs().SecurityEvent(context.Background(), "deny", d.Reason, attrs...)
+		if bl := t.host.Bans(); bl != nil && se.ip.IsValid() {
+			bl.Observe(se.ip, "iec104_denied")
+		}
+	}
+	if !t.enforcing() {
+		t.host.Counters().IEC104WouldDeny.Add(1)
+		t.host.Counters().WouldRefuse("iec104", d.Reason)
+		if sh := t.host.Shadow(); sh != nil {
+			sh.Record("iec104", t.cfg.Name, d.Reason, d.Rule, detail)
+		}
+		return "", true
+	}
+	t.host.Counters().IEC104Denied.Add(1)
+	se.denied.Add(1)
+	return d.Reason, false
+}
+
+// observeSetpoint records what a forwarded setpoint says the process now
+// holds, which is what a delta bound is measured against. Which frames teach
+// the relay what, and why, is setpointLearned.
+func (t *server) observeSetpoint(a *wire.ASDU, fromClient bool) {
+	// A listener with no bounds remembers nothing: there is no delta to
+	// measure, so a table of values would be memory spent on a question
+	// nobody asked.
+	if a == nil || t.policy == nil || t.policy.state == nil || len(t.policy.setpoints) == 0 {
+		return
+	}
+	switch setpointLearned(a, fromClient) {
+	case learnValue:
+		val, _ := a.Setpoint()
+		t.policy.state.Observe(a, val)
+	case learnForget:
+		t.policy.state.Forget(a)
+	}
+}
+
+// trimReason is the refusal-counter name for a reason: the counters are
+// already per protocol, so they carry "setpoint_range" where the security
+// log carries "iec104_setpoint_range".
+func trimReason(reason string) string {
+	const p = "iec104_"
+	if hasPrefix(reason, p) {
+		return reason[len(p):]
+	}
+	return reason
 }
 
 // policyRefused records a policy refusal and answers whether to enforce

@@ -39,6 +39,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 )
 
 // Start is the first octet of every APDU.
@@ -371,8 +372,65 @@ func selectBit(t Type, elem []byte) bool {
 	return elem[at]&0x80 != 0
 }
 
+// signed16 reads the two octets of a normalised or scaled setpoint value as
+// what the standard says they are: one signed 16-bit integer, little endian.
+//
+// The conversion is the decoding rather than a narrowing that could lose
+// something: all 65536 bit patterns are valid values, and the ones above
+// 0x7fff are the negative half of the range.
+func signed16(b []byte) int16 {
+	return int16(binary.LittleEndian.Uint16(b)) //nolint:gosec // the standard's own signed encoding
+}
+
 // addr3 reads a three-octet information object address, little endian as
 // everything in this protocol is.
 func addr3(b []byte) uint32 {
 	return uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16
+}
+
+// Setpoint reads the value a setpoint command carries, as a float64 whatever
+// the encoding on the wire was, and says whether there was one to read.
+//
+// One number for three encodings is deliberate: a policy about a setpoint is a
+// statement about the process ("the pressure setpoint is between 0 and 40"), and
+// an operator should not have to write it three times because the substation
+// sends a scaled integer on one point and a short float on another. What the
+// number *means* still differs -- a normalised value is a fraction of a full
+// scale configured in the device, which this relay cannot see -- and the
+// reference says so where a bound is configured.
+//
+// It reads from the same element the qualifier came from, so it is available
+// wherever Select is.
+func (a *ASDU) Setpoint() (float64, bool) {
+	if a == nil {
+		return 0, false
+	}
+	kind, at := SetpointEncoding(a.Type)
+	if kind == NotASetpoint {
+		return 0, false
+	}
+	e := a.Qualifier
+	switch kind {
+	case Normalised:
+		if len(e) < at+2 {
+			return 0, false
+		}
+		// The fraction, as the standard defines it: the signed 16-bit value
+		// over 2^15, so 0x8000 is exactly -1 and 0x7fff is one step short
+		// of +1. Reading the two octets as signed is the decoding, not a
+		// lossy narrowing: every one of the 65536 values means something,
+		// and the half above 0x7fff means a negative setpoint.
+		return float64(signed16(e[at:])) / 32768, true
+	case Scaled:
+		if len(e) < at+2 {
+			return 0, false
+		}
+		return float64(signed16(e[at:])), true
+	case ShortFloat:
+		if len(e) < at+4 {
+			return 0, false
+		}
+		return float64(math.Float32frombits(binary.LittleEndian.Uint32(e[at:]))), true
+	}
+	return 0, false
 }

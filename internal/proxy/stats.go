@@ -197,13 +197,21 @@ type Stats struct {
 	// two-step command; IEC104Unselected counts the executes refused for
 	// arriving without one, which is the number that says whether
 	// require_select is doing anything.
-	IEC104Selects      atomic.Uint64
-	IEC104Executes     atomic.Uint64
-	IEC104Unselected   atomic.Uint64
-	IEC104SelectsHeld  atomic.Int64
-	IEC104SeqGaps      atomic.Uint64
-	IEC104WindowFull   atomic.Uint64
-	IEC104UpstreamFail atomic.Uint64
+	IEC104Selects     atomic.Uint64
+	IEC104Executes    atomic.Uint64
+	IEC104Unselected  atomic.Uint64
+	IEC104SelectsHeld atomic.Int64
+	// The setpoint value bounds. IEC104Setpoints counts the setpoint
+	// commands seen at all; IEC104SetpointPoints is how many points the
+	// relay currently remembers a value for, and IEC104SetpointUnknown how
+	// many delta checks ran without one -- which is the number that says
+	// whether a delta bound is deciding anything.
+	IEC104Setpoints       atomic.Uint64
+	IEC104SetpointPoints  atomic.Int64
+	IEC104SetpointUnknown atomic.Int64
+	IEC104SeqGaps         atomic.Uint64
+	IEC104WindowFull      atomic.Uint64
+	IEC104UpstreamFail    atomic.Uint64
 
 	// The SNMP relay.
 	//
@@ -676,116 +684,119 @@ type Snapshot struct {
 	// it decided. ModbusWouldDeny counts the frames a policy would have
 	// refused while learning mode was observing rather than enforcing,
 	// which is the number that says whether a policy is ready.
-	ModbusSessions       uint64 `json:"modbus_sessions"`
-	ModbusSessionsOpen   int64  `json:"modbus_sessions_open"`
-	ModbusRequests       uint64 `json:"modbus_requests"`
-	ModbusResponses      uint64 `json:"modbus_responses"`
-	ModbusDenied         uint64 `json:"modbus_denied"`
-	ModbusWouldDeny      uint64 `json:"modbus_would_deny"`
-	ModbusExceptions     uint64 `json:"modbus_exceptions"`
-	ModbusMalformed      uint64 `json:"modbus_malformed"`
-	ModbusRefused        uint64 `json:"modbus_refused"`
-	ModbusValueUnknown   uint64 `json:"modbus_value_unknown"`
-	ModbusValuePoints    int64  `json:"modbus_value_points"`
-	ModbusRejected       uint64 `json:"modbus_rejected"`
-	ModbusRateLimited    uint64 `json:"modbus_rate_limited"`
-	ModbusQueueFull      uint64 `json:"modbus_queue_full"`
-	ModbusUpstreamFailed uint64 `json:"modbus_upstream_failed"`
-	ModbusTraced         uint64 `json:"modbus_traced"`
-	ModbusLearned        uint64 `json:"modbus_learned"`
-	IEC104Sessions       uint64 `json:"iec104_sessions"`
-	IEC104SessionsOpen   int64  `json:"iec104_sessions_open"`
-	IEC104Frames         uint64 `json:"iec104_frames"`
-	IEC104Commands       uint64 `json:"iec104_commands"`
-	IEC104SystemCmds     uint64 `json:"iec104_system_commands"`
-	IEC104Denied         uint64 `json:"iec104_denied"`
-	IEC104WouldDeny      uint64 `json:"iec104_would_deny"`
-	IEC104Malformed      uint64 `json:"iec104_malformed"`
-	IEC104Rejected       uint64 `json:"iec104_rejected"`
-	IEC104RateLimited    uint64 `json:"iec104_rate_limited"`
-	IEC104Selects        uint64 `json:"iec104_selects"`
-	IEC104Executes       uint64 `json:"iec104_executes"`
-	IEC104Unselected     uint64 `json:"iec104_unselected"`
-	IEC104SelectsHeld    int64  `json:"iec104_selects_held"`
-	IEC104SeqGaps        uint64 `json:"iec104_sequence_gaps"`
-	IEC104WindowFull     uint64 `json:"iec104_window_full"`
-	IEC104UpstreamFail   uint64 `json:"iec104_upstream_failed"`
-	SNMPMessages         uint64 `json:"snmp_messages"`
-	SNMPSessions         uint64 `json:"snmp_sessions"`
-	SNMPSessionsOpen     int64  `json:"snmp_sessions_open"`
-	SNMPReads            uint64 `json:"snmp_reads"`
-	SNMPWrites           uint64 `json:"snmp_writes"`
-	SNMPTraps            uint64 `json:"snmp_traps"`
-	SNMPDenied           uint64 `json:"snmp_denied"`
-	SNMPWouldDeny        uint64 `json:"snmp_would_deny"`
-	SNMPMalformed        uint64 `json:"snmp_malformed"`
-	SNMPRejected         uint64 `json:"snmp_rejected"`
-	SNMPRateLimited      uint64 `json:"snmp_rate_limited"`
-	SNMPAmplified        uint64 `json:"snmp_amplified"`
-	SNMPTruncated        uint64 `json:"snmp_truncated"`
-	SNMPUpgraded         uint64 `json:"snmp_upgraded"`
-	SNMPTimedOut         uint64 `json:"snmp_timed_out"`
-	SNMPUpstreamFail     uint64 `json:"snmp_upstream_failed"`
-	SNMPUnsolicited      uint64 `json:"snmp_unsolicited"`
-	SNMPPending          int64  `json:"snmp_pending"`
-	LDAPSessions         uint64 `json:"ldap_sessions"`
-	LDAPSessionsOpen     int64  `json:"ldap_sessions_open"`
-	LDAPRequests         uint64 `json:"ldap_requests"`
-	LDAPBinds            uint64 `json:"ldap_binds"`
-	LDAPBindFailures     uint64 `json:"ldap_bind_failures"`
-	LDAPSearches         uint64 `json:"ldap_searches"`
-	LDAPWrites           uint64 `json:"ldap_writes"`
-	LDAPEntries          uint64 `json:"ldap_entries"`
-	LDAPStripped         uint64 `json:"ldap_stripped"`
-	LDAPTruncated        uint64 `json:"ldap_truncated"`
-	LDAPStartTLS         uint64 `json:"ldap_starttls"`
-	LDAPDenied           uint64 `json:"ldap_denied"`
-	LDAPWouldDeny        uint64 `json:"ldap_would_deny"`
-	LDAPMalformed        uint64 `json:"ldap_malformed"`
-	LDAPRejected         uint64 `json:"ldap_rejected"`
-	LDAPRateLimited      uint64 `json:"ldap_rate_limited"`
-	LDAPUpstreamFail     uint64 `json:"ldap_upstream_failed"`
-	LDAPOutstanding      int64  `json:"ldap_outstanding"`
-	TFTPRequests         uint64 `json:"tftp_requests"`
-	TFTPTransfers        uint64 `json:"tftp_transfers"`
-	TFTPTransfersOpen    int64  `json:"tftp_transfers_open"`
-	TFTPReads            uint64 `json:"tftp_reads"`
-	TFTPWrites           uint64 `json:"tftp_writes"`
-	TFTPBytesIn          uint64 `json:"tftp_bytes_in"`
-	TFTPBytesOut         uint64 `json:"tftp_bytes_out"`
-	TFTPDenied           uint64 `json:"tftp_denied"`
-	TFTPWouldDeny        uint64 `json:"tftp_would_deny"`
-	TFTPPathRefused      uint64 `json:"tftp_path_refused"`
-	TFTPLowered          uint64 `json:"tftp_lowered"`
-	TFTPOversize         uint64 `json:"tftp_oversize"`
-	TFTPMalformed        uint64 `json:"tftp_malformed"`
-	TFTPRejected         uint64 `json:"tftp_rejected"`
-	TFTPRateLimited      uint64 `json:"tftp_rate_limited"`
-	TFTPTimedOut         uint64 `json:"tftp_timed_out"`
-	TFTPUpstreamFail     uint64 `json:"tftp_upstream_failed"`
-	TFTPUnsolicited      uint64 `json:"tftp_unsolicited"`
-	DHCPMessages         uint64 `json:"dhcp_messages"`
-	DHCPDiscovers        uint64 `json:"dhcp_discovers"`
-	DHCPRequests         uint64 `json:"dhcp_requests"`
-	DHCPReplies          uint64 `json:"dhcp_replies"`
-	DHCPLeases           uint64 `json:"dhcp_leases"`
-	DHCPReleases         uint64 `json:"dhcp_releases"`
-	DHCPDenied           uint64 `json:"dhcp_denied"`
-	DHCPWouldDeny        uint64 `json:"dhcp_would_deny"`
-	DHCPRogue            uint64 `json:"dhcp_rogue"`
-	DHCPStripped         uint64 `json:"dhcp_stripped"`
-	DHCPMalformed        uint64 `json:"dhcp_malformed"`
-	DHCPRejected         uint64 `json:"dhcp_rejected"`
-	DHCPRateLimited      uint64 `json:"dhcp_rate_limited"`
-	DHCPTimedOut         uint64 `json:"dhcp_timed_out"`
-	DHCPUpstreamFail     uint64 `json:"dhcp_upstream_failed"`
-	DHCPUnsolicited      uint64 `json:"dhcp_unsolicited"`
-	DHCPPending          int64  `json:"dhcp_pending"`
-	DHCPClients          int64  `json:"dhcp_clients"`
-	AssetObservations    uint64 `json:"asset_observations"`
-	AssetFindings        uint64 `json:"asset_findings"`
-	AssetUnexpected      uint64 `json:"asset_unexpected_role"`
-	AssetSaveFailures    uint64 `json:"asset_save_failures"`
+	ModbusSessions        uint64 `json:"modbus_sessions"`
+	ModbusSessionsOpen    int64  `json:"modbus_sessions_open"`
+	ModbusRequests        uint64 `json:"modbus_requests"`
+	ModbusResponses       uint64 `json:"modbus_responses"`
+	ModbusDenied          uint64 `json:"modbus_denied"`
+	ModbusWouldDeny       uint64 `json:"modbus_would_deny"`
+	ModbusExceptions      uint64 `json:"modbus_exceptions"`
+	ModbusMalformed       uint64 `json:"modbus_malformed"`
+	ModbusRefused         uint64 `json:"modbus_refused"`
+	ModbusValueUnknown    uint64 `json:"modbus_value_unknown"`
+	ModbusValuePoints     int64  `json:"modbus_value_points"`
+	ModbusRejected        uint64 `json:"modbus_rejected"`
+	ModbusRateLimited     uint64 `json:"modbus_rate_limited"`
+	ModbusQueueFull       uint64 `json:"modbus_queue_full"`
+	ModbusUpstreamFailed  uint64 `json:"modbus_upstream_failed"`
+	ModbusTraced          uint64 `json:"modbus_traced"`
+	ModbusLearned         uint64 `json:"modbus_learned"`
+	IEC104Sessions        uint64 `json:"iec104_sessions"`
+	IEC104SessionsOpen    int64  `json:"iec104_sessions_open"`
+	IEC104Frames          uint64 `json:"iec104_frames"`
+	IEC104Commands        uint64 `json:"iec104_commands"`
+	IEC104SystemCmds      uint64 `json:"iec104_system_commands"`
+	IEC104Denied          uint64 `json:"iec104_denied"`
+	IEC104WouldDeny       uint64 `json:"iec104_would_deny"`
+	IEC104Malformed       uint64 `json:"iec104_malformed"`
+	IEC104Rejected        uint64 `json:"iec104_rejected"`
+	IEC104RateLimited     uint64 `json:"iec104_rate_limited"`
+	IEC104Selects         uint64 `json:"iec104_selects"`
+	IEC104Executes        uint64 `json:"iec104_executes"`
+	IEC104Unselected      uint64 `json:"iec104_unselected"`
+	IEC104SelectsHeld     int64  `json:"iec104_selects_held"`
+	IEC104Setpoints       uint64 `json:"iec104_setpoints"`
+	IEC104SetpointPoints  int64  `json:"iec104_setpoint_points"`
+	IEC104SetpointUnknown int64  `json:"iec104_setpoint_unknown"`
+	IEC104SeqGaps         uint64 `json:"iec104_sequence_gaps"`
+	IEC104WindowFull      uint64 `json:"iec104_window_full"`
+	IEC104UpstreamFail    uint64 `json:"iec104_upstream_failed"`
+	SNMPMessages          uint64 `json:"snmp_messages"`
+	SNMPSessions          uint64 `json:"snmp_sessions"`
+	SNMPSessionsOpen      int64  `json:"snmp_sessions_open"`
+	SNMPReads             uint64 `json:"snmp_reads"`
+	SNMPWrites            uint64 `json:"snmp_writes"`
+	SNMPTraps             uint64 `json:"snmp_traps"`
+	SNMPDenied            uint64 `json:"snmp_denied"`
+	SNMPWouldDeny         uint64 `json:"snmp_would_deny"`
+	SNMPMalformed         uint64 `json:"snmp_malformed"`
+	SNMPRejected          uint64 `json:"snmp_rejected"`
+	SNMPRateLimited       uint64 `json:"snmp_rate_limited"`
+	SNMPAmplified         uint64 `json:"snmp_amplified"`
+	SNMPTruncated         uint64 `json:"snmp_truncated"`
+	SNMPUpgraded          uint64 `json:"snmp_upgraded"`
+	SNMPTimedOut          uint64 `json:"snmp_timed_out"`
+	SNMPUpstreamFail      uint64 `json:"snmp_upstream_failed"`
+	SNMPUnsolicited       uint64 `json:"snmp_unsolicited"`
+	SNMPPending           int64  `json:"snmp_pending"`
+	LDAPSessions          uint64 `json:"ldap_sessions"`
+	LDAPSessionsOpen      int64  `json:"ldap_sessions_open"`
+	LDAPRequests          uint64 `json:"ldap_requests"`
+	LDAPBinds             uint64 `json:"ldap_binds"`
+	LDAPBindFailures      uint64 `json:"ldap_bind_failures"`
+	LDAPSearches          uint64 `json:"ldap_searches"`
+	LDAPWrites            uint64 `json:"ldap_writes"`
+	LDAPEntries           uint64 `json:"ldap_entries"`
+	LDAPStripped          uint64 `json:"ldap_stripped"`
+	LDAPTruncated         uint64 `json:"ldap_truncated"`
+	LDAPStartTLS          uint64 `json:"ldap_starttls"`
+	LDAPDenied            uint64 `json:"ldap_denied"`
+	LDAPWouldDeny         uint64 `json:"ldap_would_deny"`
+	LDAPMalformed         uint64 `json:"ldap_malformed"`
+	LDAPRejected          uint64 `json:"ldap_rejected"`
+	LDAPRateLimited       uint64 `json:"ldap_rate_limited"`
+	LDAPUpstreamFail      uint64 `json:"ldap_upstream_failed"`
+	LDAPOutstanding       int64  `json:"ldap_outstanding"`
+	TFTPRequests          uint64 `json:"tftp_requests"`
+	TFTPTransfers         uint64 `json:"tftp_transfers"`
+	TFTPTransfersOpen     int64  `json:"tftp_transfers_open"`
+	TFTPReads             uint64 `json:"tftp_reads"`
+	TFTPWrites            uint64 `json:"tftp_writes"`
+	TFTPBytesIn           uint64 `json:"tftp_bytes_in"`
+	TFTPBytesOut          uint64 `json:"tftp_bytes_out"`
+	TFTPDenied            uint64 `json:"tftp_denied"`
+	TFTPWouldDeny         uint64 `json:"tftp_would_deny"`
+	TFTPPathRefused       uint64 `json:"tftp_path_refused"`
+	TFTPLowered           uint64 `json:"tftp_lowered"`
+	TFTPOversize          uint64 `json:"tftp_oversize"`
+	TFTPMalformed         uint64 `json:"tftp_malformed"`
+	TFTPRejected          uint64 `json:"tftp_rejected"`
+	TFTPRateLimited       uint64 `json:"tftp_rate_limited"`
+	TFTPTimedOut          uint64 `json:"tftp_timed_out"`
+	TFTPUpstreamFail      uint64 `json:"tftp_upstream_failed"`
+	TFTPUnsolicited       uint64 `json:"tftp_unsolicited"`
+	DHCPMessages          uint64 `json:"dhcp_messages"`
+	DHCPDiscovers         uint64 `json:"dhcp_discovers"`
+	DHCPRequests          uint64 `json:"dhcp_requests"`
+	DHCPReplies           uint64 `json:"dhcp_replies"`
+	DHCPLeases            uint64 `json:"dhcp_leases"`
+	DHCPReleases          uint64 `json:"dhcp_releases"`
+	DHCPDenied            uint64 `json:"dhcp_denied"`
+	DHCPWouldDeny         uint64 `json:"dhcp_would_deny"`
+	DHCPRogue             uint64 `json:"dhcp_rogue"`
+	DHCPStripped          uint64 `json:"dhcp_stripped"`
+	DHCPMalformed         uint64 `json:"dhcp_malformed"`
+	DHCPRejected          uint64 `json:"dhcp_rejected"`
+	DHCPRateLimited       uint64 `json:"dhcp_rate_limited"`
+	DHCPTimedOut          uint64 `json:"dhcp_timed_out"`
+	DHCPUpstreamFail      uint64 `json:"dhcp_upstream_failed"`
+	DHCPUnsolicited       uint64 `json:"dhcp_unsolicited"`
+	DHCPPending           int64  `json:"dhcp_pending"`
+	DHCPClients           int64  `json:"dhcp_clients"`
+	AssetObservations     uint64 `json:"asset_observations"`
+	AssetFindings         uint64 `json:"asset_findings"`
+	AssetUnexpected       uint64 `json:"asset_unexpected_role"`
+	AssetSaveFailures     uint64 `json:"asset_save_failures"`
 	// Access is the just-in-time access ledger's summary, absent when the
 	// configuration has no access section. It is here rather than only on
 	// the management view because a grant queue nobody drains and sessions
@@ -1132,6 +1143,9 @@ func (s *Stats) snapshot() Snapshot {
 		IEC104Executes:         s.IEC104Executes.Load(),
 		IEC104Unselected:       s.IEC104Unselected.Load(),
 		IEC104SelectsHeld:      s.IEC104SelectsHeld.Load(),
+		IEC104Setpoints:        s.IEC104Setpoints.Load(),
+		IEC104SetpointPoints:   s.IEC104SetpointPoints.Load(),
+		IEC104SetpointUnknown:  s.IEC104SetpointUnknown.Load(),
 		IEC104SeqGaps:          s.IEC104SeqGaps.Load(),
 		IEC104WindowFull:       s.IEC104WindowFull.Load(),
 		IEC104UpstreamFail:     s.IEC104UpstreamFail.Load(),
