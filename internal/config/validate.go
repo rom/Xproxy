@@ -2579,7 +2579,12 @@ var denyReasons = map[string]bool{
 	// answered has said that it resolved a name a feed named, and banning it ends
 	// the deception that was about to tell you more.
 	"dns_deceived": true, "dns_tripwire": true,
-	"telnet_denied": true, "vnc_denied": true, "rdp_denied": true, "sftp_icap": true, "udp_denied": true,
+	// telnet_tripwire is the fabricated login's escalation: a client that typed
+	// wget into a machine that is not there. The fabrication feeds the ban ladder
+	// with that and nothing else -- an ordinary fabricated exchange is not a
+	// finding, and banning on it would end the collection.
+	"telnet_tripwire": true,
+	"telnet_denied":   true, "vnc_denied": true, "rdp_denied": true, "sftp_icap": true, "udp_denied": true,
 	// tcp_denied is the generic TCP relay's refusal by the imported lists or the
 	// authorisation policy. It is separate from tcp_no_route, which is a client
 	// asking for a name this listener has no route for: a scanner's SNI sweep and
@@ -7216,6 +7221,78 @@ func (v *validator) sshCertPolicy(p string, h *SSHListener) {
 }
 
 // telnetListener checks a telnet gateway.
+// telnetDecoyOnly says this listener is nothing but a fabricated device, which is
+// the one shape that needs no upstream: there is no equipment behind it.
+func telnetDecoyOnly(c *TelnetListener) bool {
+	d := c.Deception
+	return d != nil && (d.Enabled == nil || *d.Enabled) && d.Mode == "decoy"
+}
+
+// TelnetDecoyProfiles are the machines a fabrication can impersonate.
+var TelnetDecoyProfiles = []string{"busybox", "linux"}
+
+// telnetDeception checks the fabricated device.
+func (v *validator) telnetDeception(p string, c *TelnetListener) {
+	d := c.Deception
+	if d == nil || (d.Enabled != nil && !*d.Enabled) {
+		return
+	}
+	switch d.Mode {
+	case "", "answer":
+		if len(d.Clients) == 0 {
+			v.errf("%s.clients: required in mode answer; this listener fronts real equipment, and a "+
+				"section that would fabricate a device for any client that fails the factor is not a "+
+				"decision to arrive at by default", p)
+		}
+	case "decoy":
+		if c.Upstream != "" {
+			v.errf("%s.mode: decoy is the whole listener, so it has no upstream: use mode answer to "+
+				"fabricate the refusals of a listener that fronts real equipment", p)
+		}
+		// A decoy's own login prompt *is* the trap, and it accepts everybody by
+		// design. A second factor in front of it would refuse the visitors the
+		// trap exists to collect, and a grant would be checked against a name
+		// nobody real typed.
+		if c.MFA != nil {
+			v.errf("%s.mode: decoy has its own login prompt and accepts every credential, so an mfa "+
+				"section would refuse the visitors the trap exists to collect", p)
+		}
+		if c.RequireGrant {
+			v.errf("%s.mode: decoy has nobody real to check a grant for; remove require_grant", p)
+		}
+		if len(d.Clients) == 0 {
+			v.warnf("%s: no clients, so every client that connects reaches the fabricated device. "+
+				"That is what a honeypot is for, and on port 23 it will be found within the hour", p)
+		}
+	default:
+		v.errf("%s.mode: must be answer or decoy", p)
+	}
+	v.modbusCIDRs(p+".clients", d.Clients)
+	if d.Profile != "" && !slices.Contains(TelnetDecoyProfiles, d.Profile) {
+		v.errf("%s.profile: %q is not a profile; the built-in ones are %s",
+			p, d.Profile, strings.Join(TelnetDecoyProfiles, ", "))
+	}
+	if d.Hostname == "" {
+		v.warnf("%s.hostname: empty, so the profile's own name is used. Name it after something this "+
+			"estate really has: a visitor who finds a recorder called dvr on a site whose recorders are "+
+			"called something else has found the fabrication", p)
+	}
+	if n := d.Attempts; n < 0 || n > 16 {
+		v.errf("%s.attempts: must be between 0 and 16", p)
+	}
+	for i, c := range d.Tripwire {
+		if strings.TrimSpace(c) == "" || strings.ContainsAny(c, " \t\r\n") {
+			v.errf("%s.tripwire[%d]: %q is not a command name; one name per entry", p, i, c)
+		}
+	}
+	if n := d.MaxClients; n < 0 || n > 1<<20 {
+		v.errf("%s.max_clients: must be between 0 and 1048576", p)
+	}
+	if period := d.Period.D(); period != 0 && (period < time.Second || period > time.Hour) {
+		v.errf("%s.period: must be between 1s and 1h", p)
+	}
+}
+
 func (v *validator) telnetListener(p string, c *TelnetListener, hasTLS bool) {
 	// Telnet carries no identity of its own for a proxy to read: the login
 	// the target asks for is between the client and the target, and this
@@ -7227,10 +7304,11 @@ func (v *validator) telnetListener(p string, c *TelnetListener, hasTLS bool) {
 		v.errf("%s.require_grant: needs an mfa section on this kind: telnet has no identity of its own, and the login the "+
 			"factor prompt asks for is the name a grant is matched against", p)
 	}
-	if c.Upstream == "" {
+	v.telnetDeception(p+".deception", c)
+	if c.Upstream == "" && !telnetDecoyOnly(c) {
 		v.errf("%s.upstream: required", p)
 	}
-	if !hasTLS {
+	if !hasTLS && !telnetDecoyOnly(c) {
 		v.warnf("%s: telnet carries the session, every password typed into the target's own login, and the second factor if one is asked for, in clear; add a tls section (telnets) or keep this listener off any network a stranger can reach", p)
 	}
 	seen := map[string]bool{}

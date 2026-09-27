@@ -4648,6 +4648,77 @@ type TelnetListener struct {
 	ProxyProtocol bool `yaml:"proxy_protocol"`
 	// AllowClients restricts clients to these CIDRs.
 	AllowClients []string `yaml:"allow_clients"`
+	// Deception answers as a device that is not there: a login this
+	// listener was going to refuse answered by a fabricated shell, or a
+	// whole listener that is one. See TelnetDeception.
+	Deception *TelnetDeception `yaml:"deception"`
+}
+
+// TelnetDeception answers as a device that is not there.
+//
+// Telnet on a public address is found in minutes, and what finds it is a
+// dictionary: the Mirai family and everything after it walk a list of the
+// credentials that shipped on recorders, cameras and routers. A refusal collects
+// the address. Answering collects the *list* -- and then, because the login is
+// accepted, the commands the thing had in mind: the busybox check, the echo
+// liveness test, and the `wget` that names the payload.
+//
+// Nothing is ever run and nothing is ever fetched. And no password is recorded in
+// any form a guess can be tested against: what is kept is the user name, the
+// credential's length, and a handle computed under a key the process made at
+// startup and never writes down.
+type TelnetDeception struct {
+	// Enabled turns the section off without removing it; it defaults to
+	// true wherever the section is present.
+	Enabled *bool `yaml:"enabled"`
+	// Mode is answer (the default: a session this listener was going to
+	// refuse gets the fabrication instead of the refusal, and never
+	// reaches the equipment) or decoy (the whole listener is a fabricated
+	// device, with no upstream).
+	//
+	// In mode answer it replaces the refusals that happen after the proxy
+	// has spoken: a failed or locked second factor, the estate's
+	// authorisation policy, and a missing access grant. It does not
+	// replace allow_clients or a ban -- an address that may not connect
+	// gets nothing, which is what the list means -- and it never replaces
+	// an outage: a target that cannot be reached is an outage, and a real
+	// operator must not be given a fabricated device during one.
+	Mode string `yaml:"mode"`
+	// Clients are the networks that get the fabrication. Required in mode
+	// answer. In mode decoy an empty list means every client, which is
+	// what a honeypot wants.
+	Clients []string `yaml:"clients"`
+	// Profile is the machine being impersonated: busybox (the default, a
+	// recorder or camera -- what is actually on port 23) or linux.
+	Profile string `yaml:"profile"`
+	// Hostname replaces the profile's, and is what a visitor reads in the
+	// login prompt and the shell prompt. Name it after something this
+	// estate really has.
+	Hostname string `yaml:"hostname"`
+	// Attempts is how many credentials are taken before the login is
+	// accepted. Default 1.
+	//
+	// More than one collects more of the dictionary, and two or three is
+	// what a real device's login looks like. What it must never depend on
+	// is *which* credential was offered: a trap that accepted the right
+	// password and refused the wrong one would be a credential oracle,
+	// which is the one thing a password list needs.
+	Attempts int `yaml:"attempts"`
+	// Tripwire are command names that raise a telnet_tripwire security
+	// event in addition to the built-in set: the escalation, in the order
+	// it happens -- fetch a payload (wget, curl, tftp), make it
+	// executable, run it, keep it running, and clear what would have
+	// stopped it.
+	Tripwire []string `yaml:"tripwire"`
+	// Seed makes the fabricated numbers reproducible. Zero derives one
+	// from the listener name.
+	Seed uint64 `yaml:"seed"`
+	// Period is how long one sample of a fabricated number lasts, which
+	// here is the load average and the number of users logged in.
+	// Default 30s; 1s to 1h.
+	Period Duration `yaml:"period"`
+	// MaxClients bounds the record of who has been answered. Default 1024.
+	MaxClients int `yaml:"max_clients"`
 }
 
 // DefaultTelnetOptions are what an interactive session needs: the

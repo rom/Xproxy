@@ -12514,6 +12514,60 @@
       },
       "additionalProperties": false
     },
+    "TelnetDeception": {
+      "description": "TelnetDeception answers as a device that is not there. Telnet on a public address is found in minutes, and what finds it is a dictionary: the Mirai family and everything after it walk a list of the credentials that shipped on recorders, cameras and routers. A refusal collects the address. Answering collects the *list* -- and then, because the login is accepted, the commands the thing had in mind: the busybox check, the echo liveness test, and the `wget` that names the payload. Nothing is ever run and nothing is ever fetched. And no password is recorded in any form a guess can be tested against: what is kept is the user name, the credential's length, and a handle computed under a key the process made at startup and never writes down.",
+      "type": "object",
+      "properties": {
+        "attempts": {
+          "description": "Attempts is how many credentials are taken before the login is accepted. Default 1. More than one collects more of the dictionary, and two or three is what a real device's login looks like. What it must never depend on is *which* credential was offered: a trap that accepted the right password and refused the wrong one would be a credential oracle, which is the one thing a password list needs.",
+          "type": "integer"
+        },
+        "clients": {
+          "description": "Clients are the networks that get the fabrication. Required in mode answer. In mode decoy an empty list means every client, which is what a honeypot wants.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "enabled": {
+          "description": "Enabled turns the section off without removing it; it defaults to true wherever the section is present.",
+          "type": "boolean"
+        },
+        "hostname": {
+          "description": "Hostname replaces the profile's, and is what a visitor reads in the login prompt and the shell prompt. Name it after something this estate really has.",
+          "type": "string"
+        },
+        "max_clients": {
+          "description": "MaxClients bounds the record of who has been answered. Default 1024.",
+          "type": "integer"
+        },
+        "mode": {
+          "description": "Mode is answer (the default: a session this listener was going to refuse gets the fabrication instead of the refusal, and never reaches the equipment) or decoy (the whole listener is a fabricated device, with no upstream). In mode answer it replaces the refusals that happen after the proxy has spoken: a failed or locked second factor, the estate's authorisation policy, and a missing access grant. It does not replace allow_clients or a ban -- an address that may not connect gets nothing, which is what the list means -- and it never replaces an outage: a target that cannot be reached is an outage, and a real operator must not be given a fabricated device during one.",
+          "type": "string"
+        },
+        "period": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "profile": {
+          "description": "Profile is the machine being impersonated: busybox (the default, a recorder or camera -- what is actually on port 23) or linux.",
+          "type": "string"
+        },
+        "seed": {
+          "description": "Seed makes the fabricated numbers reproducible. Zero derives one from the listener name.",
+          "type": "integer"
+        },
+        "tripwire": {
+          "description": "Tripwire are command names that raise a telnet_tripwire security event in addition to the built-in set: the escalation, in the order it happens -- fetch a payload (wget, curl, tftp), make it executable, run it, keep it running, and clear what would have stopped it.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "TelnetListener": {
       "description": "TelnetListener is a telnet gateway: the proxy is a telnet server to the client and a telnet client to the target, reading the NVT protocol of RFC 854 in both directions. The reason it is not a tcp listener: telnet's options are commands escaped into the byte stream, so a proxy that does not parse them cannot tell a window size from the characters a person typed. Every control this listener has needs that parse -- a session recording that holds what was seen rather than what was negotiated, an option policy, and a second factor asked for before the target is dialled at all. Telnet carries everything in clear. Wrapping the listener in TLS (the tls section, as telnets does on 992) is the only thing that changes that, and validation says so when it is left off.",
       "type": "object",
@@ -12535,6 +12589,14 @@
         "banner": {
           "description": "Banner replaces what the proxy says before the target is dialled. A banner naming the equipment is a banner that saves an attacker a question.",
           "type": "string"
+        },
+        "deception": {
+          "description": "Deception answers as a device that is not there: a login this listener was going to refuse answered by a fabricated shell, or a whole listener that is one. See TelnetDeception.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/TelnetDeception"
+            }
+          ]
         },
         "deny_options": {
           "description": "DenyOptions removes from AllowOptions, for changing one thing without restating the list.",

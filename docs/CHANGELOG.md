@@ -6,6 +6,75 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (telnet: a login that is not there)
+
+- **`telnet.deception` answers as a fabricated device**, either where a refusal
+  would otherwise be written on a listener that fronts real equipment
+  (`mode: answer`) or as a whole listener with nothing behind it (`mode: decoy`).
+
+  This is the protocol where the arithmetic changes most, because what arrives on
+  port 23 is not a person but a dictionary: the Mirai family and everything written
+  after it walk the credentials that shipped on recorders, cameras and routers, a
+  handful at a time from a great many addresses. Refusing collects the address the
+  firewall log already had. Answering collects the *list*, and then the four
+  exchanges that follow a login -- the busybox probe, the `echo` liveness check, the
+  `cat /proc/cpuinfo` that picks the payload, and the `wget` that names the payload,
+  the address serving it and the architecture it was built for. That last line is an
+  artefact nothing else in this proxy produces.
+
+- **No password is recorded, in any form a guess can be tested against** -- and this
+  is the section where that rule is hardest, because here the credential is the
+  intelligence. What is kept per attempt is the user name, the credential's length,
+  and a `credential_id` computed under a key the process makes at startup from the
+  system random source and never writes down: enough to answer "how many distinct
+  passwords did this client try, and have we seen this one before", and nothing at
+  all to whoever reads the log afterwards. A process with no random source produces
+  no handle rather than one under a constant key. The recording, where one is
+  configured, holds the shell transcript and not the login, even with `input: true`.
+
+- **The login never turns on the credential.** Every credential is accepted once
+  `attempts` have been taken, and which one it was makes no difference to what
+  follows: a trap that accepted the right password and refused the wrong one would be
+  a credential oracle, which is the one thing a password list needs. `attempts: 2`
+  or `3` is what a real device's login looks like and collects more of the list.
+
+- **Nothing is run and nothing is fetched.** `wget`, `curl`, `tftp` and `ftpget`
+  answer the connection timeout a device behind a firewall answers, after the address
+  has been written down. A fabrication that fetched the payload would be doing the
+  download on the attacker's behalf, from this estate's address and with its
+  reputation, which turns a sensor into a participant.
+
+- **It never replaces an outage.** In mode answer the fabrication sits where a
+  policy refusal would be -- a failed or locked second factor, the `authorization`
+  policy, a missing access grant -- and not where `allow_clients` or a ban refuses,
+  and not where the equipment is simply unreachable: an operator working an incident
+  must be told that rather than handed a device that is not there.
+
+- **A decoy listener will not compile with `mfa` or `require_grant`**, because its
+  own login prompt is the trap and accepts everybody: a factor in front of it would
+  refuse the visitors it exists to collect, and a grant would be checked against a
+  name nobody real typed. It also stops warning about the missing `tls` section --
+  an unencrypted telnet port is what the scanning is looking for.
+
+- **It invents no credentials and no work**: `/etc/shadow` lists the accounts with
+  `*` where a hash would be, `/tmp` is empty, and so is the shell history, because a
+  fabricated one would be inventing a person who used this machine.
+
+- The tripwires need no configuring: the escalation in the order it happens, fetch
+  (`wget`, `curl`, `tftp`, `nc`), make it run (`chmod`, `chattr`, `dd`), keep it
+  running (`nohup`, `setsid`, `insmod`), clear what would have stopped it
+  (`crontab`, `iptables`, `systemctl`), and the file names a credential lives in.
+  `passwd` is deliberately absent, because `/etc/passwd` is the commonest
+  reconnaissance on any machine and a tripwire matching it would make every session
+  look like an escalation.
+
+- New package `internal/fakeshell`, which is the login and the shell both this kind
+  and the SSH bastion use; two profiles (`busybox`, `linux`); new counters
+  `telnet_deceived` and `telnet_tripwire`; and an entry in `xproxyctl decoys` like
+  the others. A session is bounded in commands as well as by the idle and session
+  timeouts, so a script in a loop cannot hold a worker on a listener whose whole
+  purpose is to be found.
+
 ### Added (dns: a resolver that is not there)
 
 - **`dns.deception` answers as a fabricated resolver**, either where a refusal

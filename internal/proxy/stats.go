@@ -207,6 +207,13 @@ type Stats struct {
 	// manager reads.
 	SNMPDeceived atomic.Uint64
 	SNMPTripwire atomic.Uint64
+	// TelnetDeceived counts the exchanges answered by a device that is not
+	// there -- a login attempt and every command after it -- and
+	// TelnetTripwire the commands reaching for the escalation: fetching a
+	// payload, making it executable, running it, and clearing what would
+	// have stopped it.
+	TelnetDeceived atomic.Uint64
+	TelnetTripwire atomic.Uint64
 	// PostgresDeceived counts the statements answered by a server that is not
 	// there, and PostgresTripwire the ones reaching for the escalation chain:
 	// pg_shadow, pg_read_file, COPY FROM PROGRAM, lo_import.
@@ -770,6 +777,8 @@ type Snapshot struct {
 	S7Tripwire            uint64 `json:"s7_tripwire"`
 	SNMPDeceived          uint64 `json:"snmp_deceived"`
 	SNMPTripwire          uint64 `json:"snmp_tripwire"`
+	TelnetDeceived        uint64 `json:"telnet_deceived"`
+	TelnetTripwire        uint64 `json:"telnet_tripwire"`
 	PostgresDeceived      uint64 `json:"postgres_deceived"`
 	PostgresTripwire      uint64 `json:"postgres_tripwire"`
 	MySQLDeceived         uint64 `json:"mysql_deceived"`
@@ -1217,6 +1226,8 @@ func (s *Stats) snapshot() Snapshot {
 		S7Tripwire:             s.S7Tripwire.Load(),
 		SNMPDeceived:           s.SNMPDeceived.Load(),
 		SNMPTripwire:           s.SNMPTripwire.Load(),
+		TelnetDeceived:         s.TelnetDeceived.Load(),
+		TelnetTripwire:         s.TelnetTripwire.Load(),
 		PostgresDeceived:       s.PostgresDeceived.Load(),
 		PostgresTripwire:       s.PostgresTripwire.Load(),
 		MySQLDeceived:          s.MySQLDeceived.Load(),
