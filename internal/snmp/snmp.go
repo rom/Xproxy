@@ -292,9 +292,24 @@ type V3Header struct {
 	// built on.
 	EngineBoots, EngineTime int64
 	// ScopedPDUEncrypted says the scoped PDU is a privacy blob rather than
-	// a readable PDU, which is the case a relay cannot inspect and must
-	// say so about rather than guess.
+	// a readable PDU. Without the user's privacy key that is the case a
+	// relay cannot inspect and must say so about rather than guess; with
+	// it, Ciphertext below is what Decrypt reads.
 	ScopedPDUEncrypted bool
+	// AuthParams is the message digest as it arrived, and AuthParamsAt its
+	// offset in the whole message.
+	//
+	// The offset is what makes the digest verifiable: the computation is
+	// over the whole message with this field zeroed, so a verifier has to
+	// know where it is rather than which fields it covers. Zero means
+	// there was none.
+	AuthParams   []byte
+	AuthParamsAt int
+	// PrivParams is the privacy salt, which is half the initialisation
+	// vector; the engine's boots and time are the other half.
+	PrivParams []byte
+	// Ciphertext is the encrypted scoped PDU, when there is one.
+	Ciphertext []byte
 	// ContextEngineID and ContextName come from the scoped PDU, when it is
 	// readable.
 	ContextEngineID []byte
@@ -464,17 +479,26 @@ func parseV3(r *reader, m *Message) error {
 	}
 	const usm = 3
 	if h.SecurityModel == usm {
-		if err := parseUSM(se.body, h); err != nil {
+		// Where these octets sit in the whole message. A reader consumes
+		// from the front of a slice of the message itself, so what it still
+		// holds ends where the message ends: the element just stepped past
+		// finishes there, and begins that less its own body. This is how the
+		// digest field's offset is arrived at without any pointer
+		// arithmetic, and without a caller having to say where it started.
+		at := len(m.Raw) - len(r.b) - len(se.body)
+		if err := parseUSM(se.body, h, at); err != nil {
 			return err
 		}
 	}
 	// The scoped PDU: plain when there is no privacy, an OCTET STRING of
 	// ciphertext when there is.
 	if h.Level.Encrypted() {
-		if _, err := r.expect(TagOctetStr); err != nil {
+		ce, err := r.expect(TagOctetStr)
+		if err != nil {
 			return err
 		}
 		h.ScopedPDUEncrypted = true
+		h.Ciphertext = ce.body
 		return nil
 	}
 	sd, err := r.expect(TagSequence)
@@ -507,12 +531,14 @@ func parseV3(r *reader, m *Message) error {
 }
 
 // parseUSM reads the user security model's parameters.
-func parseUSM(b []byte, h *V3Header) error {
+func parseUSM(b []byte, h *V3Header, at int) error {
 	outer := &reader{b: b}
 	sd, err := outer.expect(TagSequence)
 	if err != nil {
 		return err
 	}
+	// Where the sequence's contents begin, in the whole message.
+	inner := at + (len(b) - len(outer.b)) - len(sd.body)
 	r, err := outer.sub(sd)
 	if err != nil {
 		return err
@@ -540,16 +566,24 @@ func parseUSM(b []byte, h *V3Header) error {
 		return ErrCommunity
 	}
 	h.User = string(ue.body)
-	// The authentication and privacy parameters follow. They are read for
-	// their extent only: verifying the HMAC would need the user's key,
-	// which a relay is not given, and pretending to check it would be
-	// worse than saying it cannot.
-	if _, err := r.expect(TagOctetStr); err != nil {
+	// The authentication and privacy parameters. The digest is kept with
+	// its offset in the whole message, because verifying it means hashing
+	// the message with this field zeroed -- see usm.go. Without a key
+	// configured for the user they are read for their extent only, which is
+	// what this did before there was anywhere for a key to come from.
+	ae, err := r.expect(TagOctetStr)
+	if err != nil {
 		return err
 	}
-	if _, err := r.expect(TagOctetStr); err != nil {
+	h.AuthParams = ae.body
+	if len(ae.body) > 0 {
+		h.AuthParamsAt = inner + (len(sd.body) - len(r.b)) - len(ae.body)
+	}
+	pe, err := r.expect(TagOctetStr)
+	if err != nil {
 		return err
 	}
+	h.PrivParams = pe.body
 	return nil
 }
 
