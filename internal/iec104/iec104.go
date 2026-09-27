@@ -338,7 +338,7 @@ func ParseASDU(b []byte) (*ASDU, error) {
 		a.Addresses = []uint32{addr3(body)}
 		if elem := body[3 : 3+size]; commandType(a.Type) {
 			a.Qualifier = elem
-			a.Select = elem[0]&0x80 != 0
+			a.Select = selectBit(a.Type, elem)
 		}
 		return a, nil
 	}
@@ -351,10 +351,24 @@ func ParseASDU(b []byte) (*ASDU, error) {
 		a.Addresses = append(a.Addresses, addr3(at))
 		if i == 0 && commandType(a.Type) {
 			a.Qualifier = at[3 : 3+size]
-			a.Select = at[3]&0x80 != 0
+			a.Select = selectBit(a.Type, a.Qualifier)
 		}
 	}
 	return a, nil
+}
+
+// selectBit reads the select/execute bit out of a command's information
+// element, from wherever that type keeps its qualifier octet.
+//
+// A type with no qualifier reads as an execute rather than a selection, which is
+// the safe direction: an execute is what needs a prior selection, so a type that
+// cannot be selected is held to the rule rather than excused from it.
+func selectBit(t Type, elem []byte) bool {
+	at, ok := qualifierOffset(t)
+	if !ok || at >= len(elem) {
+		return false
+	}
+	return elem[at]&0x80 != 0
 }
 
 // addr3 reads a three-octet information object address, little endian as

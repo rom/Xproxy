@@ -198,6 +198,35 @@ func (t Type) SelectSupported() bool {
 // carries a command qualifier worth keeping.
 func commandType(t Type) bool { return t.Command() }
 
+// qualifierOffset is where the select/execute bit lives inside a command's
+// information element, and whether it lives there at all.
+//
+// It is not always the first octet, and reading it as though it were is a
+// select-before-execute bypass. A single, double or regulating step command is
+// one qualifier octet, so there S/E really is bit 8 of the element's first byte.
+// A setpoint is its *value* first and the qualifier of setpoint command after
+// it: two octets of normalised or scaled value, or four of short float, and then
+// the QOS. Reading bit 8 of the value's low byte instead means half of all
+// setpoint values are read as selections -- and a selection is forwarded, so the
+// station executes a command the relay recorded as a mere selection. The other
+// half makes a genuine selection look like an execute, which is refused.
+//
+// A 32-bit bitstring command has no qualifier octet at all and so no two-step
+// form, which is why SelectSupported leaves it out.
+func qualifierOffset(t Type) (int, bool) {
+	switch t {
+	case CScNA1, CDcNA1, CRcNA1, CScTA1, CDcTA1, CRcTA1:
+		return 0, true
+	case CSeNA1, CSeNB1, CSeTA1, CSeTB1:
+		// Two octets of value, then the QOS.
+		return 2, true
+	case CSeNC1, CSeTC1:
+		// Four octets of IEEE 754 short float, then the QOS.
+		return 4, true
+	}
+	return 0, false
+}
+
 // objectSize is the size of one information object's *element*, after its
 // three-octet address, for the types this reads. A type that is not here
 // is forwarded with its addresses unread rather than guessed at.
