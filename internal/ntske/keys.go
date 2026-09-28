@@ -228,13 +228,24 @@ func (k *CookieKeys) Restore(current CookieKey, old []CookieKey) error {
 // Encoded with explicit lengths rather than at fixed offsets, because the AEAD
 // number decides the key length and a format that assumed one length would have
 // to change to add an algorithm.
+//
+// Padded so that the whole cookie is a multiple of four octets. A cookie
+// travels back to this relay inside an NTP extension field, and an extension
+// field's length is padded to a multiple of four with nothing to say how much
+// of it is padding -- so a cookie of 106 octets would come back as 108 and not
+// open. This is the kind of detail that would have worked in every test written
+// against this package and failed against every real client.
 func cookieBody(aead uint16, keys *Keys) []byte {
-	out := make([]byte, 0, 6+len(keys.C2S)+len(keys.S2C))
+	out := make([]byte, 0, 8+len(keys.C2S)+len(keys.S2C))
 	out = binary.BigEndian.AppendUint16(out, aead)
 	out = binary.BigEndian.AppendUint16(out, uint16(len(keys.C2S))) //nolint:gosec // a key length
 	out = append(out, keys.C2S...)
 	out = binary.BigEndian.AppendUint16(out, uint16(len(keys.S2C))) //nolint:gosec // a key length
-	return append(out, keys.S2C...)
+	out = append(out, keys.S2C...)
+	for (cookieKeyIDLen+cookieNonceLen+siv.TagSize+len(out))%4 != 0 {
+		out = append(out, 0)
+	}
+	return out
 }
 
 func parseCookieBody(b []byte) (uint16, *Keys, error) {

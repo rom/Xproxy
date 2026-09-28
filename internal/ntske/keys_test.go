@@ -237,6 +237,13 @@ func TestACookieRoundTrips(t *testing.T) {
 	if len(cookie) > MaxCookie {
 		t.Errorf("a cookie of %d octets is past the bound this will open", len(cookie))
 	}
+	// A cookie comes back inside an NTP extension field, whose length is padded
+	// to a multiple of four with nothing to say how much is padding. A cookie
+	// that was not a multiple of four would come back longer than it left and
+	// would not open.
+	if len(cookie)%4 != 0 {
+		t.Errorf("a cookie of %d octets does not fit an extension field without padding", len(cookie))
+	}
 }
 
 // Two cookies for the same association must differ, or a cookie would identify
@@ -420,9 +427,13 @@ func TestAShortCookieBodyIsRefused(t *testing.T) {
 	if _, _, err := parseCookieBody(full); err != nil {
 		t.Fatalf("a whole body did not parse: %v", err)
 	}
-	for i := 0; i < len(full); i++ {
+	// Everything short of the algorithm, the two lengths and the two keys. What
+	// follows those is padding to a multiple of four, which the parser ignores
+	// because an extension field's padding is indistinguishable from it.
+	need := 6 + len(testKeys().C2S) + len(testKeys().S2C)
+	for i := 0; i < need; i++ {
 		if _, _, err := parseCookieBody(full[:i]); !errors.Is(err, ErrCookie) {
-			t.Fatalf("%d octets of %d parsed: %v", i, len(full), err)
+			t.Fatalf("%d octets of %d parsed: %v", i, need, err)
 		}
 	}
 }
