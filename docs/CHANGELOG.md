@@ -6,6 +6,81 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (mms: IEC 61850, where the names carry the semantics)
+
+- **`kind: mms` is an IEC 61850 relay agent on TCP 102** that reads six layers to
+  get at the seventh: TPKT, COTP, ISO 8327 session, ISO 8823 presentation, ACSE
+  and the MMS service layer. Three of them exist only to be traversed.
+
+- **What makes this listener different from every other relay kind here is that
+  the protocol's own names carry the semantics.** In front of Modbus the relay has
+  to be told which register is a setpoint. Here IEC 61850-8-1 maps the data model
+  onto MMS object names as `LD/LN$FC$DO$DA`, and the functional constraint is what
+  a rule is written about: `XCBR1$CO$Pos$Oper` operates a circuit breaker,
+  `PTOC1$SG$StrVal$setMag$f` changes a protection relay's trip characteristic, and
+  `LLN0$BR$brcbST$RptEna` decides whether the control centre hears about either.
+  So a useful policy can be written for an estate whose SCL files nobody has read.
+  Within a control object the attribute distinguishes a select (`SBO`, `SBOw`)
+  from an operate (`Oper`), so a rule can let a client reserve a breaker without
+  being able to move it.
+
+- **It sees the password, and says so rather than pretending to check it.** IEC
+  61850-8-1's ACSE authentication value is a cleartext GraphicString, and on most
+  of the installed base it is the only authentication an IED has. So
+  `refuse_plaintext_passwords` defaults **off** here — the opposite of the same
+  knob on the `opcua` listener, and for the opposite reason: refusing it removes
+  the only check the device has. What the listener does by default is count every
+  association carrying one (`mms_plaintext_passwords`) and raise a finding, which
+  is what an estate needs to know how far from IEC 62351-4 it is. The password's
+  *length* is recorded and its value never is — not in a log, not in a learning
+  report, not in the parsed association this relay holds — and there is a fuzz
+  invariant asserting that, because a relay holding a substation's ACSE passwords
+  is worth attacking for them.
+
+- **`require_select_before_operate` is the one check in this protocol a relay can
+  make that the device may not.** IEC 61850 leaves select-before-operate to each
+  object's `ctlModel`, `ctlModel` lives in `$CF$`, and `$CF$` is writable — so a
+  client with configuration access can turn the interlock off and then operate
+  directly. This listener tracks the selection itself and records it on the IED's
+  **positive answer** rather than on the client's asking, so a client that asked to
+  select an object the IED refused holds no selection and its operate is refused.
+
+- **The presentation context list is read at association time** rather than
+  assuming context 3 is MMS. A data value on a context the two ends never defined
+  is reported as not-MMS (`mms_opaque_contexts`) and refused, instead of being
+  forwarded as though a service rule had decided about it.
+
+- New counters: `mms_associations`, `mms_sessions`, `mms_selections`,
+  `mms_plaintext_passwords`, `mms_opaque_contexts`, `mms_server_errors`,
+  `mms_server_refusals`. `mms_denied` is the ban trigger.
+
+- **`mms.learn`** records what crosses the listener and writes the object rules.
+  The report leads with three findings — how many associations carried a cleartext
+  password, how many requests operated the plant and whether any of them selected
+  first, and how many touched a protection setting — because a reader who adopts
+  the proposal without seeing them has adopted a policy for traffic they did not
+  understand.
+
+- One defect the wire package's own tests caught: the high-tag-number BER form was
+  refused as unnecessary, and MMS numbers its file and domain services up to 77
+  where the low form stops at 30 — so every file and download service was
+  unreadable. It is supported and bounded now, and a tag padded into the long form
+  that did not need it is refused, because that is two encodings of one tag and a
+  rule matching on the tag would see only one of them.
+
+- Three the listener's tests caught: `allow_domain_services` did not admit the
+  domain service class, so turning it on left the services it names refused by the
+  default list; a refusal about a service that changes the substation was not hard,
+  so `monitor_only` forwarded a Write it had documented it would refuse; and a file
+  service's path was read from whatever element came next, so the octets of the
+  position INTEGER became a path no rule was written about.
+
+- And the validator's warnings were tightened until none of them fires on
+  `examples/ot/mms.yaml`, which is correct as written. A warning that cries wolf
+  teaches people to ignore the others: the interlock warning now reads the rules
+  and the default action, and the one about domain services accepts a rule that
+  already has the time window it asks for.
+
 ### Added (opcua: the protocol that brought its own security)
 
 - **`kind: opcua` is an OPC UA relay agent (IEC 62541) on TCP 4840** that reads the

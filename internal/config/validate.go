@@ -14260,11 +14260,18 @@ func (v *validator) mmsWarnings(p string, m *MMSListener, address string) {
 		}
 	}
 	// Operating without the interlock, where the configuration could remove it.
-	if mmsAllowsOperate(m) && !m.RequireSelectBeforeOperate {
+	//
+	// Not warned on a listener that is only learning: it decides nothing, and the
+	// warning about that is the one worth reading.
+	learning := m.Learn != nil && m.Learn.Enabled && !m.Learn.Enforce
+	if !learning && mmsAllowsOperate(m) && !m.RequireSelectBeforeOperate {
 		v.warnf("%s allows a control operate and require_select_before_operate is off, so an Oper is carried whether or not the client selected first. IEC 61850 leaves that to the IED's ctlModel, and ctlModel lives in $CF$ where a client with configuration access can change it -- requiring the select here puts the interlock somewhere the configuration cannot reach",
 			p)
 	}
-	if m.AllowDomainServices && !m.ReadOnly {
+	// The domain services, unless every rule that admits them already has a window
+	// on it -- which is what the warning is asking for, so firing it then would be
+	// firing it at somebody who did the thing.
+	if m.AllowDomainServices && !m.ReadOnly && !mmsDomainScheduled(m) {
 		v.warnf("%s.allow_domain_services is on, so a client may download into an IED and replace what is inside it. That is the operation this listener most exists to refuse: put it behind a rule naming the engineering station and a schedule",
 			p)
 	}
@@ -14284,6 +14291,11 @@ func mmsWriteConstraints(m *MMSListener) []string {
 }
 
 // mmsAllowsOperate says the configuration carries a control operate.
+//
+// It has to read the rules and the default action as well as the lists, because a
+// listener whose default is deny and whose rules never admit a write to a control
+// constraint does not carry one -- and warning about the interlock there would be
+// warning about something that cannot happen.
 func mmsAllowsOperate(m *MMSListener) bool {
 	if m.ReadOnly {
 		return false
@@ -14296,6 +14308,9 @@ func mmsAllowsOperate(m *MMSListener) bool {
 			return false
 		}
 	}
+	if m.DefaultAction != "allow" && !mmsRuleWritesControl(m) {
+		return false
+	}
 	if len(m.WriteConstraints) == 0 {
 		// The default includes CO.
 		return true
@@ -14306,6 +14321,121 @@ func mmsAllowsOperate(m *MMSListener) bool {
 		}
 	}
 	return false
+}
+
+// mmsRuleWritesControl says some allowing rule admits a write to a control
+// constraint.
+func mmsRuleWritesControl(m *MMSListener) bool {
+	for _, r := range m.Rules {
+		if r.Action == "deny" || r.Action == "observe" {
+			continue
+		}
+		if r.AllowOperate != nil && !*r.AllowOperate {
+			continue
+		}
+		if mmsHasConstraint(r.DenyConstraints, mmswire.FCControl) {
+			continue
+		}
+		if !mmsRuleCarriesWrite(r) {
+			// The rule narrowed to services that cannot address a control object.
+			// A control operate is a Write; a rule admitting only the file or
+			// domain services carries none, whatever its constraint list says.
+			continue
+		}
+		// A rule with no write-constraint list of its own inherits the listener's,
+		// which is where the caller's own check then applies.
+		list := r.WriteConstraints
+		if len(list) == 0 {
+			list = m.WriteConstraints
+		}
+		if len(list) == 0 || mmsHasConstraint(list, mmswire.FCControl) {
+			return true
+		}
+	}
+	return false
+}
+
+// mmsRuleCarriesWrite says a rule's own service narrowing lets through a service
+// that can address a control object.
+//
+// That is the Write class and nothing else: a control operate is `XCBR1$CO$Pos$Oper`
+// arriving as an MMS Write, so a rule admitting only the file or domain services
+// cannot carry one however wide its constraint list is.
+func mmsRuleCarriesWrite(r MMSRule) bool {
+	if len(r.Services) > 0 {
+		for _, n := range r.Services {
+			if s, ok := mmswire.ServiceOf(n); ok && s.Class() == mmswire.ClassWrite {
+				return true
+			}
+		}
+		return false
+	}
+	if len(r.ServiceClasses) > 0 {
+		for _, c := range r.ServiceClasses {
+			if c == "write" {
+				return true
+			}
+		}
+		return false
+	}
+	// No narrowing: the rule inherits the listener's lists.
+	return true
+}
+
+func mmsHasConstraint(list []string, want mmswire.FC) bool {
+	for _, c := range list {
+		if c == string(want) {
+			return true
+		}
+	}
+	return false
+}
+
+// mmsDomainScheduled says every rule that admits the domain services has a time
+// window on it, which is what the warning about them asks for.
+func mmsDomainScheduled(m *MMSListener) bool {
+	found := false
+	for _, r := range m.Rules {
+		if r.Action == "deny" || r.Action == "observe" {
+			continue
+		}
+		if !mmsRuleAdmitsDomain(r, m) {
+			continue
+		}
+		found = true
+		if r.Schedule == nil {
+			return false
+		}
+	}
+	return found
+}
+
+// mmsRuleAdmitsDomain says a rule's own service narrowing lets a domain service
+// through.
+func mmsRuleAdmitsDomain(r MMSRule, m *MMSListener) bool {
+	for _, c := range r.DenyServiceClasses {
+		if c == "domain" {
+			return false
+		}
+	}
+	for _, c := range r.ServiceClasses {
+		if c == "domain" {
+			return true
+		}
+	}
+	for _, n := range r.Services {
+		if s, ok := mmswire.ServiceOf(n); ok && s.Class() == mmswire.ClassDomain {
+			return true
+		}
+	}
+	if len(r.ServiceClasses) > 0 || len(r.Services) > 0 {
+		// The rule narrowed to something else.
+		return false
+	}
+	// A rule that names no services at all inherits the listener's lists, which
+	// allow_domain_services has already opened.
+	_ = m
+	return true
 }
 
 // sortedStrings is a sorted copy, so that a validation message reads the same way

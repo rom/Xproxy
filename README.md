@@ -114,6 +114,7 @@ estate — and binds only the kinds of its own role:
 | `xgate` | people | `ssh`, `telnet`, `vnc`, `rdp` |
 | `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `snmp`, `ldap`, `tftp`, `dhcp`, `postgres`, `mysql`, `tds`, `redis`, `bacnet`, `amqp`, `s7`, `ntp`, `ntske`, `dhcp6`, `coap`, `opcua` |
 | Devices | CoAP (RFC 7252) over UDP, with block-wise transfer (RFC 7959), Observe (RFC 7641), resource discovery (RFC 6690), the RFC 8132 methods and the option classes that tell a proxy what to do with an option it cannot name; read as a relay: the method, the path, the content format, the declared transfer size, and the size of an answer relative to the question | `coap` |
+| Substations | IEC 61850 MMS over the ISO stack on TCP 102 — TPKT, COTP, session, presentation, ACSE, MMS — with the ACSE identity and the data model's own object names: the logical device, the logical node and the **functional constraint** that says whether a Write moves a breaker, changes a protection setting or silences a report | `mms` |
 | Plants | OPC UA (IEC 62541) over `opc.tcp`, with the chunked UA TCP transport, the secure channel and its policies and modes, the session and its identity tokens, and the service layer where the mode leaves a body readable: Read, Write, Call, Browse and the subscription set, by node identifier, attribute and method | `opcua` |
 
 A kind a binary did not link is never bound and never falls through to
@@ -225,6 +226,7 @@ protocol so that a policy can be written in that protocol's own terms:
 | `smtp` | `xrelay` | SMTP and submission | Commands, where a message ends, TLS and authentication, bounds |
 | `mqtt` | `xrelay` | MQTT 3.1.1 and 5.0 | Topics and filters, client identifiers, retained messages, wills |
 | `coap` | `xrelay` | CoAP (RFC 7252) over UDP, block-wise transfer, Observe, resource discovery | The methods, the **paths** -- which are the device's object model, so the policy is positive and the default is deny -- the queries, the content formats in both directions, `Proxy-Uri` and `Proxy-Scheme` refused by default, an option the relay cannot name answered the way the standard says, a path whose segments would not mean what the joined path looks like, the payload, one block, the whole declared transfer, the outstanding Observe registrations, and the size of an answer as a **multiple of the question** |
+| `mms` | `xrelay` | IEC 61850 MMS on TCP 102: TPKT, COTP, ISO session and presentation, ACSE and the MMS service layer, with a learning mode that proposes the object rules | The client networks; the ACSE **AP-title** and AE-qualifier, which is the only identity this protocol has and is not a credential; whether the ACSE authentication value is a **cleartext password** (counted and reported by default, refused on request); the service and its class; the logical device; the object; and the **functional constraint** — `$CO$` operates a breaker, `$SG$` and `$SE$` change a protection relay's trip characteristic, `$BR$` and `$RP$` decide whether the control centre hears about either; then whether an operate was **selected** first, which is the one check here a relay can make that the device may not |
 | `opcua` | `xrelay` | OPC UA (IEC 62541) over `opc.tcp`, chunked UA TCP, the secure channel, sessions and identity tokens, with a learning mode that proposes the node rules | The security policies -- with the two IEC 62541 withdrew refused unless named twice -- the message security mode, the endpoint, the client application's URI checked against its own certificate, the identity token kind, the user, and a password that crossed unprotected; then, where the mode left a body readable, the service, the node identifiers, the **attribute** (a write to `value` moves an actuator; a write to `access_level` changes who may), the method on its object, the operations in one request, and the publishing interval a subscription asked for |
 | `ftp` | `xrelay` | FTP and FTPS | Commands, paths, extensions, and the data connection itself |
 | `syslog` | `xrelay` | RFC 5424 and RFC 3164 over UDP, TCP, TLS | Facility, severity, sender, the text; re-emitted in one dialect |
@@ -368,6 +370,33 @@ protocol so that a policy can be written in that protocol's own terms:
   class covers; and it proposes none of the bounds, because a report that
   suggested the fastest publishing interval it happened to see would widen the
   one setting this listener exists to hold
+
+- `kind: mms`: an **IEC 61850 relay in front of a substation's IEDs**, on TCP
+  102 and six layers deep — TPKT, COTP, ISO session, ISO presentation, ACSE and
+  MMS. What makes it different from every other relay kind here is that the
+  protocol's own **names** carry the semantics. In front of Modbus the relay has
+  to be told which register is a setpoint; here `XCBR1$CO$Pos$Oper` says it
+  operates a circuit breaker, `PTOC1$SG$StrVal$setMag$f` says it changes a
+  protection relay's trip characteristic, and `LLN0$BR$brcbST$RptEna` says it
+  decides whether the control centre hears about either. So a useful policy can
+  be written for an estate whose SCL files nobody has read — which is most of
+  them. Within a control object the attribute distinguishes a **select** from an
+  **operate**, so a client may reserve a breaker without being able to move it.
+  Two things this listener does that the devices may not. It **sees the
+  password**: IEC 61850-8-1's ACSE authentication value is a cleartext
+  GraphicString and on most of the installed base it is the only authentication
+  an IED has, so `refuse_plaintext_passwords` defaults *off* — the opposite of
+  the same knob on `opcua`, and for the opposite reason — and what the listener
+  does by default is count every association carrying one and raise a finding,
+  because that is the honest thing a relay can do about a credential it must not
+  hold. And it can **require select before operate**: IEC 61850 leaves that to
+  each object's `ctlModel`, `ctlModel` lives in the writable `$CF$`, so a client
+  with configuration access can turn the interlock off — a listener that tracks
+  the selection itself, and records it on the IED's *positive answer* rather than
+  the client's asking, has put it somewhere the configuration cannot reach. It
+  takes **no `tls:` section**: TCP 102 has none, IEC 62351-4 adds TLS beneath the
+  session layer, and terminating that would terminate the only end-to-end
+  protection this protocol has
 
 - `kind: ftp`: an FTP proxy that is actually in the middle. FTP puts
   every transfer on a second connection whose address one side

@@ -5935,6 +5935,14 @@
             }
           ]
         },
+        "mms": {
+          "description": "MMS configures a kind: mms listener.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/MMSListener"
+            }
+          ]
+        },
         "modbus": {
           "description": "Modbus configures a kind: modbus listener.",
           "allOf": [
@@ -6424,6 +6432,437 @@
         "url": {
           "description": "URL is the instance, for example https://misp.example.",
           "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "MMSLearn": {
+      "description": "MMSLearn configures a learning run on an mms listener.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enabled turns the recording on.",
+          "type": "boolean"
+        },
+        "enforce": {
+          "description": "Enforce keeps the policy in force while learning. Default false, which is the only honest way to find out what a policy would have broken.",
+          "type": "boolean"
+        },
+        "file": {
+          "description": "File is where the report is written, as YAML. Required when enabled.",
+          "type": "string"
+        },
+        "interval": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_subjects": {
+          "description": "MaxSubjects bounds the table: one subject per calling identity, service class and logical device. Default 8192.",
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "MMSListener": {
+      "description": "MMSListener configures a kind: mms listener: an IEC 61850 MMS relay in front of substation IEDs on TCP 102. What makes this listener different from every other relay kind here is that the protocol's own object names carry the semantics. In front of Modbus the relay has to be told which register is a setpoint; here the name says so. A Write to `XCBR1$CO$Pos$Oper` operates a circuit breaker, a Write to `PTOC1$SG$StrVal$setMag$f` changes a protection relay's trip characteristic, and a Write to `LLN0$BR$brcbST$RptEna` stops the control centre hearing about either. The functional constraint -- the segment between the dollar signs -- is what a rule is written about, and it means that a useful policy can be written for an estate whose SCL files nobody has read.",
+      "type": "object",
+      "properties": {
+        "ae_qualifiers": {
+          "description": "AEQualifiers are the calling AE-qualifiers an association may present, as numbers or \"1-16\" ranges. Empty allows any.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "alert_on_deny": {
+          "description": "AlertOnDeny raises a security event for every refusal. Default true.",
+          "type": "boolean"
+        },
+        "alert_on_plaintext_password": {
+          "description": "AlertOnPlaintextPassword raises a security event for every association carrying one. Default true, because it is the finding an estate most often does not know it has.",
+          "type": "boolean"
+        },
+        "allow_clients": {
+          "description": "AllowClients and DenyClients are the networks a client may connect from. Deny is evaluated first.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_domain_services": {
+          "description": "AllowDomainServices carries the download, upload and delete services that replace what is inside an IED. Default false, and separate from the service list so that the decision is stated where a reviewer reads it rather than hidden among eighty names.",
+          "type": "boolean"
+        },
+        "allow_operate": {
+          "description": "AllowOperate carries a Write to a control attribute that operates: `$CO$...$Oper`. Default true where the constraint is allowed at all, so that turning CO on does not silently turn operating on.",
+          "type": "boolean"
+        },
+        "ap_titles": {
+          "description": "APTitles are the calling AP-titles an association may present, as object identifiers in dotted form, glob patterns allowed: `1.1.999.*`. Empty allows any. The AP-title is not a credential -- nothing proves it -- but it is what an SCL file configured and what the IEDs themselves check, so it is the field an estate's own drawings are written in. Treat it as an address.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "default_action": {
+          "description": "DefaultAction is deny (the default) or allow.",
+          "type": "string"
+        },
+        "deny_ap_titles": {
+          "description": "DenyAPTitles is the deny list, which no rule can override.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_clients": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_constraints": {
+          "description": "DenyConstraints is the deny list, which no rule can override.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_domains": {
+          "description": "DenyDomains is the deny list.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_files": {
+          "description": "DenyFiles is the deny list.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_objects": {
+          "description": "DenyObjects is the deny list.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_response": {
+          "description": "DenyResponse is how a refused request is answered: error (the default: a confirmed-error PDU, which is what an IED sends and what a client's library understands), reject (a reject PDU), drop or close.",
+          "type": "string"
+        },
+        "deny_service_classes": {
+          "description": "DenyServiceClasses is its deny list.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_services": {
+          "description": "DenyServices is the deny list, which no rule can override.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "domains": {
+          "description": "Domains are the logical devices a request may address, as glob patterns: `AA1J1Q01A1LD0`, `*LD0`. Empty allows any.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "files": {
+          "description": "Files are the file paths a file service may name, as glob patterns against the joined path: `COMTRADE/*`. Empty allows any.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "functional_constraints": {
+          "description": "FunctionalConstraints are the constraints a request may address: ST, MX, CO, SP, CF, SG, SE, BR, RP, LG, GO and the rest. Empty allows any.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "handshake_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "idle_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "learn": {
+          "description": "Learn records what crosses this listener and writes a proposed rule set. See MMSLearn.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/MMSLearn"
+            }
+          ]
+        },
+        "log_requests": {
+          "description": "LogRequests logs a line per request, which on a substation polling every second is a great many lines. A Write, a control operation, a domain service and an association are logged regardless, because those are what a change record is about.",
+          "type": "boolean"
+        },
+        "max_frame": {
+          "description": "MaxFrame bounds one TPKT frame, 0 for 64 KiB.",
+          "type": "integer"
+        },
+        "max_names": {
+          "description": "MaxNames bounds the object names one request may address, 0 for no bound. A Read naming ten thousand objects is one request and ten thousand reads of an IED that answers them one at a time.",
+          "type": "integer"
+        },
+        "max_pending_requests": {
+          "description": "MaxPendingRequests bounds the requests one association may have outstanding, 0 for the relay's own 64.",
+          "type": "integer"
+        },
+        "max_requests": {
+          "description": "MaxRequests bounds the confirmed requests one association may send, 0 for no bound. A substation association is long-lived and polls continuously, so this is off by default.",
+          "type": "integer"
+        },
+        "max_sessions": {
+          "description": "MaxSessions and MaxSessionsPerClient bound concurrent associations.",
+          "type": "integer"
+        },
+        "max_sessions_per_client": {
+          "type": "integer"
+        },
+        "max_write_names": {
+          "description": "MaxWriteNames bounds the same for a Write, 0 to inherit MaxNames.",
+          "type": "integer"
+        },
+        "monitor_only": {
+          "description": "MonitorOnly evaluates and enforces nothing, except the hard decisions: the client list, a message the relay could not read, the bounds, and every service that changes anything -- because a Write forwarded so it could be written down is a moved breaker.",
+          "type": "boolean"
+        },
+        "objects": {
+          "description": "Objects are the object names a request may address, as glob patterns against `domain/item`: `AA1J1Q01A1LD0/MMXU1$MX$*`. Empty allows any.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "rate_burst": {
+          "type": "integer"
+        },
+        "rate_limit": {
+          "description": "RateLimit and RateBurst bound confirmed requests a second per client address, 0 for no bound.",
+          "type": "integer"
+        },
+        "read_only": {
+          "description": "ReadOnly refuses every service that changes anything, for every client, before any rule is read: Write, the domain services, the file writes, the program-invocation controls, the dataset definitions and the report enrollments. No rule can override it. It is the shorthand for a historian, a neighbouring utility's data link or an engineering network that has no business commanding. Note that it refuses more than a Write: deleting a domain is not a Write and changes a great deal more.",
+          "type": "boolean"
+        },
+        "refuse_plaintext_passwords": {
+          "description": "RefusePlaintextPasswords refuses an association whose ACSE authentication value is a cleartext password. Default false. It defaults off, unlike the same knob on the opcua listener, and the reason is which way the trade falls: IEC 61850-8-1 specifies the charstring form and IEC 62351-4 is what replaces it, so on most of the installed base the password *is* the authentication. Refusing it removes the only check the IED has. What this listener can honestly do is say it happened -- an alert and a counter on every association that carries one -- and let an estate that has moved to 62351-4 refuse the ones that have not.",
+          "type": "boolean"
+        },
+        "require_ap_title": {
+          "description": "RequireAPTitle refuses an association that presents no calling AP-title. Default false: a good part of the installed base sends none, and a listener that refused those would be a listener nobody switches on. Turn it on where the estate is known to send them.",
+          "type": "boolean"
+        },
+        "require_select_before_operate": {
+          "description": "RequireSelectBeforeOperate refuses an operate on an object this association has not selected. Default false. It is the one check in this protocol a relay can make that the device may not: IEC 61850's ctlModel decides whether select-before-operate is required, ctlModel lives in `$CF$` and is therefore writable, and an IED configured for direct-operate accepts an Oper from anybody the policy lets through. A listener that requires the select has put the interlock back where the configuration can no longer remove it.",
+          "type": "boolean"
+        },
+        "rules": {
+          "description": "Rules decide each request, in order, first match wins. A request that matches no rule takes DefaultAction.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MMSRule"
+          }
+        },
+        "select_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "service_classes": {
+          "description": "ServiceClasses is the coarse form of the same list, by what a service does: browse, read, write, report, dataset, control, domain, file, session. It is the list to write first, because a substation's services are eighty and its classes nine.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "services": {
+          "description": "Services are the MMS services a client may call, by name: read, write, get_name_list, file_open, initiate_download_sequence and the rest. Empty allows what a control centre and an HMI do, which excludes every domain service, every file write and every program-invocation control.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "session_duration": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "upstream": {
+          "description": "Upstream is the IED pool this listener relays to. Required. There is no per-name routing, for the same reason IEC 104 has none: an MMS association is long-lived and its first exchange -- the transport connection, the association request, the initiate -- names no logical device at all. A route chosen from the domain could not be chosen until the first confirmed request, by which time the association is up.",
+          "type": "string"
+        },
+        "write_constraints": {
+          "description": "WriteConstraints narrows which constraints a Write may address. Empty means the listener's own default: ST, MX, SP and CO, which is what an HMI and a control centre write -- and not SG, SE or CF, because those change what the device will do in a fault rather than what it is doing now.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "write_objects": {
+          "description": "WriteObjects narrows what a Write may address, where reading a wider set is wanted. Empty means Objects decides both.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "MMSRule": {
+      "description": "MMSRule is one rule of an mms listener's policy.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "Action is allow, deny or observe. Observe logs and counts and then keeps looking, which is how a rule is tried on live traffic before it decides anything.",
+          "type": "string"
+        },
+        "ae_qualifiers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_operate": {
+          "description": "AllowOperate is the rule's own answer about operating.",
+          "type": "boolean"
+        },
+        "ap_titles": {
+          "description": "APTitles and AEQualifiers select by who is calling.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "clients": {
+          "description": "Clients are the networks the association came from.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "comment": {
+          "description": "Comment is carried into the logs when the rule decides, for the change record a substation keeps.",
+          "type": "string"
+        },
+        "deny_constraints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_domains": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_objects": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_service_classes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_services": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "domains": {
+          "description": "Domains, Objects, WriteObjects and their deny lists are the rule's own name narrowing.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "files": {
+          "description": "Files and DenyFiles are the rule's own file narrowing.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "functional_constraints": {
+          "description": "FunctionalConstraints, WriteConstraints and DenyConstraints are the rule's own constraint narrowing.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_names": {
+          "description": "MaxNames is the rule's own bound on the names one request may address.",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Name names the rule in the logs and the counters. Required.",
+          "type": "string"
+        },
+        "objects": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "schedule": {
+          "description": "Schedule limits the rule to a time window, which is how \"the integrator may download during the outage window\" is written.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/ModbusSchedule"
+            }
+          ]
+        },
+        "service_classes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "services": {
+          "description": "Services, ServiceClasses and their deny lists narrow the listener's own for this rule's traffic.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "write_constraints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "write_objects": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false

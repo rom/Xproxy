@@ -44,6 +44,7 @@ server:
           amqp: null
           s7: null
           opcua: null
+          mms: null
           policy: null
         - name: public
           address: :443
@@ -111,6 +112,7 @@ server:
           amqp: null
           s7: null
           opcua: null
+          mms: null
           policy: null
     limits:
         max_header_bytes: 65536

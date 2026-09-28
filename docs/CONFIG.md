@@ -4055,6 +4055,156 @@ in the refusal counters: `client_not_allowed`, `client_denied`, `no_hello`,
 `unexpected_message`, `unexpected_service`, `unreadable_message`,
 `unreadable_service`, `too_many_requests`, `rate_limited`.
 
+### server.listeners[].mms (kind: mms)
+
+IEC 61850 MMS on TCP 102: the protocol a substation's IEDs speak, and the
+deepest stack in this project — TPKT, COTP, ISO session, ISO presentation, ACSE
+and MMS, six layers before anything worth a policy appears.
+
+**What makes this listener different from every other relay kind here is that
+the protocol's own names carry the semantics.** In front of Modbus the relay has
+to be told which register is a setpoint; here the object name says so. IEC
+61850-8-1 maps the data model onto MMS object names as
+`LD/LN$FC$DO$DA`, and the segment between the dollar signs — the **functional
+constraint** — is what a rule is written about:
+
+| FC | What it is | Why it matters |
+|----|-----------|----------------|
+| `ST`, `MX` | Status and measurands | What a control centre reads every second |
+| `CO` | Control | `XCBR1$CO$Pos$Oper` operates a circuit breaker |
+| `SP` | Setpoint | |
+| `CF` | Configuration | Holds `ctlModel`, which decides whether a control needs selecting first |
+| `SG`, `SE` | Setting groups | A protection relay's trip characteristics. The most consequential write in a substation and the least likely to be noticed, because nothing moves until the fault it was meant to clear |
+| `BR`, `RP` | Report control blocks | Disabling one does not change the plant; it stops the control centre hearing about it |
+| `LG` | Logs | |
+| `GO`, `GS` | GOOSE control | |
+| `MS`, `US` | Sampled-value control | |
+| `BL` | Blocking | |
+| `DC`, `EX`, `SR`, `OR` | Descriptions, extended definitions, service tracking | |
+
+Within `CO` the attribute distinguishes a **select** from an **operate**: `SBO`
+and `SBOw` select, `Oper` operates, `Cancel` cancels. A rule that allows the
+select and not the operate has let a client reserve a breaker without being able
+to move it, which is a real and useful thing to configure.
+
+**This listener takes no `tls` section.** MMS on TCP 102 has none: IEC 62351-4
+adds TLS beneath the session layer, and a listener that terminated it would be
+terminating the only end-to-end protection this protocol has. A deployment that
+wants TLS in front of the relay puts a `tcp` listener with a `tls` section there.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | string | required | The IED pool. There is no per-name routing: an MMS association is long-lived and its first exchange names no logical device at all, so a route chosen from the domain could not be chosen until the association was already up |
+| `allow_clients`, `deny_clients` | list of CIDR | `[]` | The networks a client may connect from; deny is evaluated first |
+| `ap_titles`, `deny_ap_titles` | list | `[]` | The calling AP-titles an association may present, as object identifiers in dotted form with `*` and `?` allowed: `1.1.999.*`. Nothing proves an AP-title — treat it as an address, which is what it is — but it is what an SCL file configured and what the IEDs themselves check |
+| `ae_qualifiers` | list | `[]` | The calling AE-qualifiers, as numbers or `"1-16"` ranges. In a substation this usually separates a control-centre client from an engineering one inside one application |
+| `require_ap_title` | bool | `false` | Refuse an association that presents none. Off by default because a good part of the installed base sends none |
+| `refuse_plaintext_passwords` | bool | `false` | Refuse an association whose ACSE authentication value is a cleartext password. **It defaults off, unlike the same knob on the `opcua` listener**, and the reason is which way the trade falls: IEC 61850-8-1 specifies the charstring form and IEC 62351-4 is what replaces it, so on most of the installed base that password *is* the authentication. Refusing it removes the only check the IED has |
+| `alert_on_plaintext_password` | bool | `true` | Raise a security event for every association carrying one. This is what an honest relay can do about it: say it happened |
+| `services`, `deny_services` | list | `[]` | The MMS services a client may call, by name. Empty allows what a control centre and an HMI do — which excludes every domain service, every file write and every program-invocation control |
+| `service_classes`, `deny_service_classes` | list | `[]` | The coarse form: `browse`, `read`, `write`, `report`, `dataset`, `control`, `domain`, `file`, `session`. The list to write first, because a substation's services are eighty and its classes nine |
+| `domains`, `deny_domains` | list | `[]` | The logical devices a request may address, as globs: `AA1J1Q01A1LD0`, `*LD0` |
+| `objects`, `deny_objects` | list | `[]` | The object names, as globs against `domain/item`: `AA1J1Q01A1LD0/MMXU1$MX$*` |
+| `write_objects` | list | inherited | Narrows what a Write may address where reading a wider set is wanted |
+| `functional_constraints` | list | `[]` | The constraints a request may address. Empty allows any |
+| `write_constraints` | list | `[ST, MX, SP, SV, BL, CO]` | Which constraints a Write may address. The default is what an HMI and a control centre write — and **not** `SG`, `SE` or `CF`, because those change what the device will do in a fault rather than what it is doing now |
+| `deny_constraints` | list | `[]` | The deny list, which no rule can override |
+| `allow_operate` | bool | `true` | Carry a Write to `$CO$...$Oper`. Separate from the constraint so that turning `CO` on does not silently turn operating on |
+| `require_select_before_operate` | bool | `false` | Refuse an operate on an object this association has not selected. **The one check in this protocol a relay can make that the device may not**: IEC 61850 leaves it to each object's `ctlModel`, `ctlModel` lives in `$CF$` and is therefore writable, so a client with configuration access can turn the interlock off and operate directly. A listener that tracks the selection has put it somewhere the configuration cannot reach — and it records the selection on the IED's *positive answer*, so a client that asked to select an object the IED refused holds none |
+| `select_timeout` | duration | `30s` | How long a selection stays good, which is IEC 61850-7-2's own `sboTimeout` default |
+| `read_only` | bool | `false` | Refuse every service that changes anything, before any rule is read: Write, the domain services, the file writes, the program-invocation controls, the dataset definitions and the report enrollments. No rule overrides it. Note it refuses more than a Write: deleting a domain is not a Write and changes a great deal more |
+| `allow_domain_services` | bool | `false` | Carry the download, upload and delete services that replace what is inside an IED. Separate from the service list so the decision is stated where a reviewer reads it; turning it on also admits the `domain` service class |
+| `files`, `deny_files` | list | `[]` | The file paths a file service may name, as globs against the joined path: `COMTRADE/*` |
+| `max_names` | int | `0` (off) | The object names one request may address. A Read naming ten thousand objects is one request and ten thousand reads of an IED that answers them one at a time |
+| `max_write_names` | int | inherited | The same for a Write |
+| `max_frame` | int | 64 KiB | One TPKT frame |
+| `max_requests` | int | `0` (off) | The confirmed requests one association may send. A substation association is long-lived and polls continuously, so this is off by default |
+| `max_pending_requests` | int | `64` | The requests one association may have outstanding |
+| `rate_limit`, `rate_burst` | int | `0` (off) | Confirmed requests a second per client address |
+| `max_sessions`, `max_sessions_per_client` | int | `0` (off) | Concurrent associations |
+| `idle_timeout`, `session_duration` | duration | `0` (off) | Bound one association |
+| `handshake_timeout` | duration | `30s` | Covers the transport connection, the association request and the initiate, which is where a peer that opened a socket and said nothing sits |
+| `default_action` | enum | `deny` | `deny` or `allow` |
+| `deny_response` | enum | `error` | `error` (a confirmed-error PDU, which is what an IED sends and what a client's library turns into a message an operator reads), `reject` (a reject PDU), `drop` or `close` |
+| `log_requests` | bool | `false` | A line per request, which on a substation polling every second is a great many lines. A Write, a control operation, a domain service and an association are logged regardless, because those are what a change record is about |
+| `alert_on_deny` | bool | `true` | A security event for every refusal |
+| `monitor_only` | bool | `false` | Evaluate and enforce nothing, except the hard decisions: the client list, a message the relay could not read, the bounds, and every service that changes anything — because a Write forwarded so it could be written down is a moved breaker |
+| `learn` | object | off | Record what crosses this listener and write a proposed rule set; see below |
+
+#### server.listeners[].mms.rules[]
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | string | required | Names the rule in the logs and the counters |
+| `action` | enum | `allow` | `allow`, `deny` or `observe`. `observe` logs and counts and then keeps looking, which is how a rule is tried on live traffic before it decides anything |
+| `clients` | list of CIDR | `[]` | The networks the association came from |
+| `ap_titles`, `ae_qualifiers` | list | `[]` | Select by who is calling |
+| `services`, `deny_services`, `service_classes`, `deny_service_classes` | list | `[]` | Narrow the listener's own lists for this rule's traffic |
+| `domains`, `deny_domains`, `objects`, `deny_objects`, `write_objects` | list | inherited | The rule's own name narrowing. A rule that names objects or domains selects only requests that touch one of them |
+| `functional_constraints`, `write_constraints`, `deny_constraints` | list | inherited | The rule's own constraint narrowing |
+| `allow_operate` | bool | inherited | The rule's own answer about operating |
+| `files`, `deny_files` | list | inherited | The rule's own file narrowing |
+| `max_names` | int | inherited | The rule's own bound |
+| `schedule` | object | none | Limit the rule to a time window, which is how "the integrator may download during the outage window" is written |
+| `comment` | string | none | Carried into the logs when the rule decides, for the change record a substation keeps |
+
+#### server.listeners[].mms.learn
+
+**`learn`** records what crosses this listener and writes a proposed rule set.
+
+Nobody writes a correct object list from an SCL file. The file says which data
+objects exist; the traffic says which of them the control centre actually polls,
+which report control blocks the HMI enables, which file an engineering laptop
+fetched last Tuesday and which logical device nobody remembers commissioning.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Turn the recording on |
+| `file` | path | required when enabled | Where the report is written, as YAML. Replaced atomically, owner readable only |
+| `interval` | duration | `5m` | How often it is rewritten; 10s..24h. It is also written at shutdown |
+| `max_subjects` | int | `8192` | Observations held: one per calling identity, class of service and logical device |
+| `enforce` | bool | `false` | Keep the policy in force while learning. Off — the default — means this listener records and decides nothing, which is the only honest way to find out what a policy would have broken, and it warns so that it is not left on by accident |
+
+**The report leads with three findings**, because a reader who adopts the
+proposal without seeing them has adopted a policy for traffic they did not
+understand: how many associations carried a cleartext password, how many
+requests operated the plant (and whether any of them selected first), and how
+many touched a protection setting. The rows come after.
+
+**What a run will not propose**: any of the bounds, and no relaxation of
+`refuse_plaintext_passwords`. A report that proposed `max_names` from the largest
+request it happened to see would widen the one setting a learning run must not
+touch. And the association is in none of the proposed rules: a rule naming an
+AP-title cannot match the transport connection or the associate request that
+establishes one.
+
+Counters: `mms_associations`, `mms_sessions`, `mms_selections`, and — the one to
+read first on a new deployment — `mms_plaintext_passwords`, the associations
+whose ACSE authentication value was a password in the clear. A high count is not
+a fault in this relay; it is the estate's own state. `mms_opaque_contexts` counts
+the data values that arrived on a presentation context the association never
+defined, which are the messages no service rule decided about.
+`mms_server_errors` is the IED refusing what this relay allowed — the number
+that says the two policies disagree — and `mms_server_refusals` the IED refusing
+the association itself.
+
+Refusals are `mms_denied` for the ban triggers, and the fine-grained reason is in
+the refusal counters: `client_not_allowed`, `client_denied`,
+`unreadable_transport`, `unexpected_transport`, `unreadable_session`,
+`unreadable_presentation`, `unknown_context`, `no_associate_request`,
+`unreadable_associate`, `unexpected_associate`, `no_ap_title`,
+`ap_title_denied`, `ap_title_not_allowed`, `no_ae_qualifier`,
+`ae_qualifier_not_allowed`, `plaintext_password`, `unreadable_service`,
+`unexpected_pdu`, `no_service`, `service_unknown`, `service_denied`,
+`service_not_allowed`, `service_class_denied`, `service_class_not_allowed`,
+`read_only`, `domain_services_not_allowed`, `rule_denied`, `no_rule`,
+`domain_denied`, `domain_not_allowed`, `object_denied`, `object_not_allowed`,
+`write_object_not_allowed`, `constraint_denied`, `constraint_unknown`,
+`constraint_not_allowed`, `write_constraint_not_allowed`, `operate_not_allowed`,
+`not_selected`, `selection_expired`, `file_denied`, `file_not_allowed`,
+`file_unreadable`, `too_many_names`, `too_many_requests`, `rate_limited`,
+`unreadable_frame`, `upstream_unavailable`.
+
 ### server.listeners[].tftp (kind: tftp)
 
 TFTP is the protocol under provisioning. A switch pulls its firmware over it, a

@@ -9532,6 +9532,641 @@ T}
 Counters: \fBopcua_channels\fR, \fBopcua_sessions\fR, \fBopcua_server_errors\fR, \fBopcua_server_faults\fR and \[u2014] the one to read first on a new deployment \[u2014] \fBopcua_opaque_bodies\fR, the messages whose body the channel encrypted, which are the messages the service rules did not decide about. A listener with rules about nodes and a high opaque count is enforcing less than its configuration reads as. \fBopcua_server_faults\fR is the number that says the two policies disagree: the server refusing something this relay allowed, which usually means a user the server does not grant what the listener does.
 .PP
 Refusals are \fBopcua_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBclient_denied\fR, \fBno_hello\fR, \fBunreadable_hello\fR, \fBhello_unacceptable\fR, \fBbuffer_too_large\fR, \fBendpoint_not_allowed\fR, \fBreverse_hello\fR, \fBsecurity_policy_unknown\fR, \fBsecurity_policy_denied\fR, \fBsecurity_policy_deprecated\fR, \fBsecurity_policy_not_allowed\fR, \fBsecurity_mode_unknown\fR, \fBsecurity_mode_not_allowed\fR, \fBbody_not_readable\fR, \fBnonce_without_policy\fR, \fBtoken_lifetime\fR, \fBno_client_certificate\fR, \fBapplication_not_allowed\fR, \fBapplication_type\fR, \fBcertificate_uri_mismatch\fR, \fBtoken_kind_unknown\fR, \fBtoken_kind_not_allowed\fR, \fBplaintext_password\fR, \fBuser_denied\fR, \fBuser_not_allowed\fR, \fBempty_user\fR, \fBservice_unknown\fR, \fBservice_denied\fR, \fBservice_not_allowed\fR, \fBread_only\fR, \fBrule_denied\fR, \fBno_rule\fR, \fBnode_denied\fR, \fBnode_not_allowed\fR, \fBnamespace_not_allowed\fR, \fBattribute_unknown\fR, \fBattribute_not_allowed\fR, \fBpermission_write\fR, \fBmethod_denied\fR, \fBmethod_not_allowed\fR, \fBtoo_many_operations\fR, \fBtoo_many_subscriptions\fR, \fBpublishing_interval\fR, \fBtoo_many_monitored_items\fR, \fBsampling_interval\fR, \fBunexpected_message\fR, \fBunexpected_service\fR, \fBunreadable_message\fR, \fBunreadable_service\fR, \fBtoo_many_requests\fR, \fBrate_limited\fR.
+.SS "server.listeners[].mms (kind: mms)"
+.PP
+IEC 61850 MMS on TCP 102: the protocol a substation\(aqs IEDs speak, and the deepest stack in this project \[u2014] TPKT, COTP, ISO session, ISO presentation, ACSE and MMS, six layers before anything worth a policy appears.
+.PP
+\fBWhat makes this listener different from every other relay kind here is that the protocol\(aqs own names carry the semantics.\fR In front of Modbus the relay has to be told which register is a setpoint; here the object name says so. IEC 61850\-8\-1 maps the data model onto MMS object names as \fBLD/LN$FC$DO$DA\fR, and the segment between the dollar signs \[u2014] the \fBfunctional constraint\fR \[u2014] is what a rule is written about:
+.PP
+.TS
+allbox;
+lbw(0.6i) lbw(1.4i) lbx
+lw(0.6i) lw(1.4i) lx.
+T{
+FC
+T}	T{
+What it is
+T}	T{
+Why it matters
+T}
+T{
+\fBST\fR,\: \fBMX\fR
+T}	T{
+Status and measurands
+T}	T{
+What a control centre reads every second
+T}
+T{
+\fBCO\fR
+T}	T{
+Control
+T}	T{
+\fBXCBR1$CO$Pos$Oper\fR operates a circuit breaker
+T}
+T{
+\fBSP\fR
+T}	T{
+Setpoint
+T}	T{
+
+T}
+T{
+\fBCF\fR
+T}	T{
+Configuration
+T}	T{
+Holds \fBctlModel\fR,\: which decides whether a control needs selecting first
+T}
+T{
+\fBSG\fR,\: \fBSE\fR
+T}	T{
+Setting groups
+T}	T{
+A protection relay\(aqs trip characteristics. The most consequential write in a substation and the least likely to be noticed,\: because nothing moves until the fault it was meant to clear
+T}
+T{
+\fBBR\fR,\: \fBRP\fR
+T}	T{
+Report control blocks
+T}	T{
+Disabling one does not change the plant;\: it stops the control centre hearing about it
+T}
+T{
+\fBLG\fR
+T}	T{
+Logs
+T}	T{
+
+T}
+T{
+\fBGO\fR,\: \fBGS\fR
+T}	T{
+GOOSE control
+T}	T{
+
+T}
+T{
+\fBMS\fR,\: \fBUS\fR
+T}	T{
+Sampled\-value control
+T}	T{
+
+T}
+T{
+\fBBL\fR
+T}	T{
+Blocking
+T}	T{
+
+T}
+T{
+\fBDC\fR,\: \fBEX\fR,\: \fBSR\fR,\: \fBOR\fR
+T}	T{
+Descriptions,\: extended definitions,\: service tracking
+T}	T{
+
+T}
+.TE
+.PP
+Within \fBCO\fR the attribute distinguishes a \fBselect\fR from an \fBoperate\fR: \fBSBO\fR and \fBSBOw\fR select, \fBOper\fR operates, \fBCancel\fR cancels. A rule that allows the select and not the operate has let a client reserve a breaker without being able to move it, which is a real and useful thing to configure.
+.PP
+\fBThis listener takes no \fBtls\fR section.\fR MMS on TCP 102 has none: IEC 62351\-4 adds TLS beneath the session layer, and a listener that terminated it would be terminating the only end\-to\-end protection this protocol has. A deployment that wants TLS in front of the relay puts a \fBtcp\fR listener with a \fBtls\fR section there.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.9i) lbw(1.0i) lbx
+lw(1.2i) lw(0.9i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBupstream\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+The IED pool. There is no per\-name routing: an MMS association is long\-lived and its first exchange names no logical device at all,\: so a route chosen from the domain could not be chosen until the association was already up
+T}
+T{
+\fBallow_\:clients\fR,\: \fBdeny_\:clients\fR
+T}	T{
+list of CIDR
+T}	T{
+\fB[]\fR
+T}	T{
+The networks a client may connect from;\: deny is evaluated first
+T}
+T{
+\fBap_\:titles\fR,\: \fBdeny_\:ap_\:titles\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The calling AP\-titles an association may present,\: as object identifiers in dotted form with \fB*\fR and \fB?\fR allowed: \fB1.\:1.\:999.\:*\fR. Nothing proves an AP\-title \[u2014] treat it as an address,\: which is what it is \[u2014] but it is what an SCL file configured and what the IEDs themselves check
+T}
+T{
+\fBae_\:qualifiers\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The calling AE\-qualifiers,\: as numbers or \fB"1\-\:16"\fR ranges. In a substation this usually separates a control\-centre client from an engineering one inside one application
+T}
+T{
+\fBrequire_\:ap_\:title\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse an association that presents none. Off by default because a good part of the installed base sends none
+T}
+T{
+\fBrefuse_\:plaintext_\:passwords\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse an association whose ACSE authentication value is a cleartext password. \fBIt defaults off,\: unlike the same knob on the \fBopcua\fR listener\fR,\: and the reason is which way the trade falls: IEC 61850\-8\-1 specifies the charstring form and IEC 62351\-4 is what replaces it,\: so on most of the installed base that password \fIis\fR the authentication. Refusing it removes the only check the IED has
+T}
+T{
+\fBalert_\:on_\:plaintext_\:password\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Raise a security event for every association carrying one. This is what an honest relay can do about it: say it happened
+T}
+T{
+\fBservices\fR,\: \fBdeny_\:services\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The MMS services a client may call,\: by name. Empty allows what a control centre and an HMI do \[u2014] which excludes every domain service,\: every file write and every program\-invocation control
+T}
+T{
+\fBservice_\:classes\fR,\: \fBdeny_\:service_\:classes\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The coarse form: \fBbrowse\fR,\: \fBread\fR,\: \fBwrite\fR,\: \fBreport\fR,\: \fBdataset\fR,\: \fBcontrol\fR,\: \fBdomain\fR,\: \fBfile\fR,\: \fBsession\fR. The list to write first,\: because a substation\(aqs services are eighty and its classes nine
+T}
+T{
+\fBdomains\fR,\: \fBdeny_\:domains\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The logical devices a request may address,\: as globs: \fBAA1J1Q01A1LD0\fR,\: \fB*LD0\fR
+T}
+T{
+\fBobjects\fR,\: \fBdeny_\:objects\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The object names,\: as globs against \fBdomain/\:item\fR: \fBAA1J1Q01A1LD0/\:MMXU1$MX$*\fR
+T}
+T{
+\fBwrite_\:objects\fR
+T}	T{
+list
+T}	T{
+inherited
+T}	T{
+Narrows what a Write may address where reading a wider set is wanted
+T}
+T{
+\fBfunctional_\:constraints\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The constraints a request may address. Empty allows any
+T}
+T{
+\fBwrite_\:constraints\fR
+T}	T{
+list
+T}	T{
+\fB[ST,\: MX,\: SP,\: SV,\: BL,\: CO]\fR
+T}	T{
+Which constraints a Write may address. The default is what an HMI and a control centre write \[u2014] and \fBnot\fR \fBSG\fR,\: \fBSE\fR or \fBCF\fR,\: because those change what the device will do in a fault rather than what it is doing now
+T}
+T{
+\fBdeny_\:constraints\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The deny list,\: which no rule can override
+T}
+T{
+\fBallow_\:operate\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Carry a Write to \fB$CO$.\:.\:.\:$Oper\fR. Separate from the constraint so that turning \fBCO\fR on does not silently turn operating on
+T}
+T{
+\fBrequire_\:select_\:before_\:operate\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse an operate on an object this association has not selected. \fBThe one check in this protocol a relay can make that the device may not\fR: IEC 61850 leaves it to each object\(aqs \fBctlModel\fR,\: \fBctlModel\fR lives in \fB$CF$\fR and is therefore writable,\: so a client with configuration access can turn the interlock off and operate directly. A listener that tracks the selection has put it somewhere the configuration cannot reach \[u2014] and it records the selection on the IED\(aqs \fIpositive answer\fR,\: so a client that asked to select an object the IED refused holds none
+T}
+T{
+\fBselect_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+How long a selection stays good,\: which is IEC 61850\-7\-2\(aqs own \fBsboTimeout\fR default
+T}
+T{
+\fBread_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse every service that changes anything,\: before any rule is read: Write,\: the domain services,\: the file writes,\: the program\-invocation controls,\: the dataset definitions and the report enrollments. No rule overrides it. Note it refuses more than a Write: deleting a domain is not a Write and changes a great deal more
+T}
+T{
+\fBallow_\:domain_\:services\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Carry the download,\: upload and delete services that replace what is inside an IED. Separate from the service list so the decision is stated where a reviewer reads it;\: turning it on also admits the \fBdomain\fR service class
+T}
+T{
+\fBfiles\fR,\: \fBdeny_\:files\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The file paths a file service may name,\: as globs against the joined path: \fBCOMTRADE/\:*\fR
+T}
+T{
+\fBmax_\:names\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (off)
+T}	T{
+The object names one request may address. A Read naming ten thousand objects is one request and ten thousand reads of an IED that answers them one at a time
+T}
+T{
+\fBmax_\:write_\:names\fR
+T}	T{
+int
+T}	T{
+inherited
+T}	T{
+The same for a Write
+T}
+T{
+\fBmax_\:frame\fR
+T}	T{
+int
+T}	T{
+64 KiB
+T}	T{
+One TPKT frame
+T}
+T{
+\fBmax_\:requests\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (off)
+T}	T{
+The confirmed requests one association may send. A substation association is long\-lived and polls continuously,\: so this is off by default
+T}
+T{
+\fBmax_\:pending_\:requests\fR
+T}	T{
+int
+T}	T{
+\fB64\fR
+T}	T{
+The requests one association may have outstanding
+T}
+T{
+\fBrate_\:limit\fR,\: \fBrate_\:burst\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (off)
+T}	T{
+Confirmed requests a second per client address
+T}
+T{
+\fBmax_\:sessions\fR,\: \fBmax_\:sessions_\:per_\:client\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (off)
+T}	T{
+Concurrent associations
+T}
+T{
+\fBidle_\:timeout\fR,\: \fBsession_\:duration\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR (off)
+T}	T{
+Bound one association
+T}
+T{
+\fBhandshake_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+Covers the transport connection,\: the association request and the initiate,\: which is where a peer that opened a socket and said nothing sits
+T}
+T{
+\fBdefault_\:action\fR
+T}	T{
+enum
+T}	T{
+\fBdeny\fR
+T}	T{
+\fBdeny\fR or \fBallow\fR
+T}
+T{
+\fBdeny_\:response\fR
+T}	T{
+enum
+T}	T{
+\fBerror\fR
+T}	T{
+\fBerror\fR (a confirmed\-error PDU,\: which is what an IED sends and what a client\(aqs library turns into a message an operator reads),\: \fBreject\fR (a reject PDU),\: \fBdrop\fR or \fBclose\fR
+T}
+T{
+\fBlog_\:requests\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+A line per request,\: which on a substation polling every second is a great many lines. A Write,\: a control operation,\: a domain service and an association are logged regardless,\: because those are what a change record is about
+T}
+T{
+\fBalert_\:on_\:deny\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A security event for every refusal
+T}
+T{
+\fBmonitor_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Evaluate and enforce nothing,\: except the hard decisions: the client list,\: a message the relay could not read,\: the bounds,\: and every service that changes anything \[u2014] because a Write forwarded so it could be written down is a moved breaker
+T}
+T{
+\fBlearn\fR
+T}	T{
+object
+T}	T{
+off
+T}	T{
+Record what crosses this listener and write a proposed rule set;\: see below
+T}
+.TE
+.SS "server.listeners[].mms.rules[]"
+.PP
+.TS
+allbox;
+lbw(1.3i) lbw(0.7i) lbw(1.0i) lbx
+lw(1.3i) lw(0.7i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+Names the rule in the logs and the counters
+T}
+T{
+\fBaction\fR
+T}	T{
+enum
+T}	T{
+\fBallow\fR
+T}	T{
+\fBallow\fR,\: \fBdeny\fR or \fBobserve\fR. \fBobserve\fR logs and counts and then keeps looking,\: which is how a rule is tried on live traffic before it decides anything
+T}
+T{
+\fBclients\fR
+T}	T{
+list of CIDR
+T}	T{
+\fB[]\fR
+T}	T{
+The networks the association came from
+T}
+T{
+\fBap_\:titles\fR,\: \fBae_\:qualifiers\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Select by who is calling
+T}
+T{
+\fBservices\fR,\: \fBdeny_\:services\fR,\: \fBservice_\:classes\fR,\: \fBdeny_\:service_\:classes\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Narrow the listener\(aqs own lists for this rule\(aqs traffic
+T}
+T{
+\fBdomains\fR,\: \fBdeny_\:domains\fR,\: \fBobjects\fR,\: \fBdeny_\:objects\fR,\: \fBwrite_\:objects\fR
+T}	T{
+list
+T}	T{
+inherited
+T}	T{
+The rule\(aqs own name narrowing. A rule that names objects or domains selects only requests that touch one of them
+T}
+T{
+\fBfunctional_\:constraints\fR,\: \fBwrite_\:constraints\fR,\: \fBdeny_\:constraints\fR
+T}	T{
+list
+T}	T{
+inherited
+T}	T{
+The rule\(aqs own constraint narrowing
+T}
+T{
+\fBallow_\:operate\fR
+T}	T{
+bool
+T}	T{
+inherited
+T}	T{
+The rule\(aqs own answer about operating
+T}
+T{
+\fBfiles\fR,\: \fBdeny_\:files\fR
+T}	T{
+list
+T}	T{
+inherited
+T}	T{
+The rule\(aqs own file narrowing
+T}
+T{
+\fBmax_\:names\fR
+T}	T{
+int
+T}	T{
+inherited
+T}	T{
+The rule\(aqs own bound
+T}
+T{
+\fBschedule\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Limit the rule to a time window,\: which is how "the integrator may download during the outage window" is written
+T}
+T{
+\fBcomment\fR
+T}	T{
+string
+T}	T{
+none
+T}	T{
+Carried into the logs when the rule decides,\: for the change record a substation keeps
+T}
+.TE
+.SS "server.listeners[].mms.learn"
+.PP
+\fB\fBlearn\fR\fR records what crosses this listener and writes a proposed rule set.
+.PP
+Nobody writes a correct object list from an SCL file. The file says which data objects exist; the traffic says which of them the control centre actually polls, which report control blocks the HMI enables, which file an engineering laptop fetched last Tuesday and which logical device nobody remembers commissioning.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.9i) lbw(0.9i) lbx
+lw(0.9i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Turn the recording on
+T}
+T{
+\fBfile\fR
+T}	T{
+path
+T}	T{
+required when enabled
+T}	T{
+Where the report is written,\: as YAML. Replaced atomically,\: owner readable only
+T}
+T{
+\fBinterval\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+How often it is rewritten;\: 10s..24h. It is also written at shutdown
+T}
+T{
+\fBmax_\:subjects\fR
+T}	T{
+int
+T}	T{
+\fB8192\fR
+T}	T{
+Observations held: one per calling identity,\: class of service and logical device
+T}
+T{
+\fBenforce\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Keep the policy in force while learning. Off \[u2014] the default \[u2014] means this listener records and decides nothing,\: which is the only honest way to find out what a policy would have broken,\: and it warns so that it is not left on by accident
+T}
+.TE
+.PP
+\fBThe report leads with three findings\fR, because a reader who adopts the proposal without seeing them has adopted a policy for traffic they did not understand: how many associations carried a cleartext password, how many requests operated the plant (and whether any of them selected first), and how many touched a protection setting. The rows come after.
+.PP
+\fBWhat a run will not propose\fR: any of the bounds, and no relaxation of \fBrefuse_plaintext_passwords\fR. A report that proposed \fBmax_names\fR from the largest request it happened to see would widen the one setting a learning run must not touch. And the association is in none of the proposed rules: a rule naming an AP\-title cannot match the transport connection or the associate request that establishes one.
+.PP
+Counters: \fBmms_associations\fR, \fBmms_sessions\fR, \fBmms_selections\fR, and \[u2014] the one to read first on a new deployment \[u2014] \fBmms_plaintext_passwords\fR, the associations whose ACSE authentication value was a password in the clear. A high count is not a fault in this relay; it is the estate\(aqs own state. \fBmms_opaque_contexts\fR counts the data values that arrived on a presentation context the association never defined, which are the messages no service rule decided about. \fBmms_server_errors\fR is the IED refusing what this relay allowed \[u2014] the number that says the two policies disagree \[u2014] and \fBmms_server_refusals\fR the IED refusing the association itself.
+.PP
+Refusals are \fBmms_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBclient_denied\fR, \fBunreadable_transport\fR, \fBunexpected_transport\fR, \fBunreadable_session\fR, \fBunreadable_presentation\fR, \fBunknown_context\fR, \fBno_associate_request\fR, \fBunreadable_associate\fR, \fBunexpected_associate\fR, \fBno_ap_title\fR, \fBap_title_denied\fR, \fBap_title_not_allowed\fR, \fBno_ae_qualifier\fR, \fBae_qualifier_not_allowed\fR, \fBplaintext_password\fR, \fBunreadable_service\fR, \fBunexpected_pdu\fR, \fBno_service\fR, \fBservice_unknown\fR, \fBservice_denied\fR, \fBservice_not_allowed\fR, \fBservice_class_denied\fR, \fBservice_class_not_allowed\fR, \fBread_only\fR, \fBdomain_services_not_allowed\fR, \fBrule_denied\fR, \fBno_rule\fR, \fBdomain_denied\fR, \fBdomain_not_allowed\fR, \fBobject_denied\fR, \fBobject_not_allowed\fR, \fBwrite_object_not_allowed\fR, \fBconstraint_denied\fR, \fBconstraint_unknown\fR, \fBconstraint_not_allowed\fR, \fBwrite_constraint_not_allowed\fR, \fBoperate_not_allowed\fR, \fBnot_selected\fR, \fBselection_expired\fR, \fBfile_denied\fR, \fBfile_not_allowed\fR, \fBfile_unreadable\fR, \fBtoo_many_names\fR, \fBtoo_many_requests\fR, \fBrate_limited\fR, \fBunreadable_frame\fR, \fBupstream_unavailable\fR.
 .SS "server.listeners[].tftp (kind: tftp)"
 .PP
 TFTP is the protocol under provisioning. A switch pulls its firmware over it, a machine with no operating system yet pulls a boot image, a telephone pulls its configuration, and an engineer pushes a running configuration off a router with it. It has \fBno authentication of any kind\fR: no user, no password, no token, no transport security, and no extension that adds one. A request is a filename and a mode, and a server that receives one answers it.
@@ -18869,7 +19504,7 @@ list
 T}	T{
 \fB[]\fR (all)
 T}	T{
-Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBflow\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBtcp_\:denied\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBdhcp6_\:denied\fR,\: \fBcoap_\:denied\fR,\: \fBopcua_\:denied\fR,\: \fBpostgres_\:denied\fR,\: \fBmysql_\:denied\fR,\: \fBtds_\:denied\fR,\: \fBredis_\:denied\fR,\: \fBbacnet_\:denied\fR,\: \fBamqp_\:denied\fR,\: \fBs7_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fBdns_\:denied\fR,\: \fBdns_\:threat_\:intel\fR,\: \fBdns_\:deceived\fR,\: \fBdns_\:tripwire\fR,\: \fBtelnet_\:tripwire\fR,\: \fBssh_\:tripwire\fR,\: \fBmodbus_\:tripwire\fR,\: \fBiec104_\:tripwire\fR,\: \fBs7_\:tripwire\fR,\: \fBredis_\:tripwire\fR,\: \fBmysql_\:tripwire\fR,\: \fBpostgres_\:tripwire\fR,\: \fByara\fR
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBflow\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBtcp_\:denied\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBdhcp6_\:denied\fR,\: \fBcoap_\:denied\fR,\: \fBopcua_\:denied\fR,\: \fBmms_\:denied\fR,\: \fBpostgres_\:denied\fR,\: \fBmysql_\:denied\fR,\: \fBtds_\:denied\fR,\: \fBredis_\:denied\fR,\: \fBbacnet_\:denied\fR,\: \fBamqp_\:denied\fR,\: \fBs7_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fBdns_\:denied\fR,\: \fBdns_\:threat_\:intel\fR,\: \fBdns_\:deceived\fR,\: \fBdns_\:tripwire\fR,\: \fBtelnet_\:tripwire\fR,\: \fBssh_\:tripwire\fR,\: \fBmodbus_\:tripwire\fR,\: \fBiec104_\:tripwire\fR,\: \fBs7_\:tripwire\fR,\: \fBredis_\:tripwire\fR,\: \fBmysql_\:tripwire\fR,\: \fBpostgres_\:tripwire\fR,\: \fByara\fR
 T}
 T{
 \fBthreshold\fR

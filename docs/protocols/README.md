@@ -89,6 +89,7 @@ authentication worth the name.
 | IEC 60870-5-104, IEC 62351-3 TLS | [iec104](iec104.md) | 2404 |
 | BACnet/IP (ASHRAE 135 Annex J) | [bacnet](bacnet.md) | 47808 |
 | Siemens S7comm | [s7](s7.md) | 102 |
+| IEC 61850 MMS | [mms](mms.md) | 102 |
 
 ## Reading these pages
 
