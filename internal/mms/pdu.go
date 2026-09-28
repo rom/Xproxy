@@ -9,6 +9,12 @@ import "fmt"
 // PDU and the bodies of the services a substation uses; a service whose body is not
 // read is still named, because naming it is what lets a listener refuse it.
 
+// MaxInvokeID bounds an invoke identifier. ISO 9506 types it Unsigned32, so a larger
+// one is not a request any device sends -- and refusing it rather than keeping the low
+// bits matters, because the low bits of an identifier name a *different* request and
+// this relay matches answers to requests by it.
+const MaxInvokeID = 0xFFFFFFFF
+
 // MaxNames bounds the object names in one request. A Read of a whole logical device
 // through a named variable list is one name; a Read that lists them is as many as
 // the client chose to send, which is why there is a bound and why the listener has
@@ -100,7 +106,7 @@ func (m *Message) readConfirmedRequest(r *BER) error {
 			return err
 		}
 		if e.Is(ClassUniversal, TagInteger) && !m.HasInvokeID {
-			v, err := Uint(e)
+			v, err := invokeID(e)
 			if err != nil {
 				return err
 			}
@@ -137,7 +143,7 @@ func (m *Message) readInvokeOnly(r *BER) error {
 			return err
 		}
 		if e.Is(ClassUniversal, TagInteger) {
-			v, err := Uint(e)
+			v, err := invokeID(e)
 			if err != nil {
 				return err
 			}
@@ -156,7 +162,7 @@ func (m *Message) readError(r *BER) error {
 		}
 		switch {
 		case e.Is(ClassUniversal, TagInteger) && !m.HasInvokeID:
-			v, err := Uint(e)
+			v, err := invokeID(e)
 			if err != nil {
 				return err
 			}
@@ -467,6 +473,11 @@ func (m *Message) readDomain(r *BER) error {
 // readFile reads a file service's name, which is a sequence of path components. They
 // are joined with slashes because that is the form a policy pattern is written in
 // and the form an operator reads.
+//
+// Only string-typed elements are taken as components. A file service's body also
+// carries integers -- a position, a length -- and a reader that took whatever element
+// came next would turn the octets of an INTEGER into a path, which is a path no rule
+// was written about and one the caller would then decide about as though it were real.
 func (m *Message) readFile(r *BER) error {
 	for !r.Empty() {
 		e, err := r.Next()
@@ -474,7 +485,7 @@ func (m *Message) readFile(r *BER) error {
 			return err
 		}
 		if !e.Cons {
-			if s := identifier(e); s != "" && m.FileName == "" {
+			if s := stringComponent(e); s != "" && m.FileName == "" {
 				m.FileName = s
 			}
 			continue
@@ -493,7 +504,7 @@ func (m *Message) readFile(r *BER) error {
 			if err != nil {
 				return err
 			}
-			s := identifier(p)
+			s := stringComponent(p)
 			if s == "" {
 				continue
 			}
@@ -573,6 +584,30 @@ func identifier(e Element) string {
 		return ""
 	}
 	return string(e.Data)
+}
+
+// invokeID reads an invoke identifier, bounded to the Unsigned32 the standard types
+// it as.
+func invokeID(e Element) (uint64, error) {
+	v, err := Uint(e)
+	if err != nil {
+		return 0, err
+	}
+	if v > MaxInvokeID {
+		return 0, fmt.Errorf("%w: invoke identifier %d, past the Unsigned32 the standard defines",
+			ErrSize, v)
+	}
+	return v, nil
+}
+
+// stringComponent is an identifier, but only where the element is one of the string
+// types. See the note on readFile.
+func stringComponent(e Element) string {
+	switch e.Tag {
+	case TagVisibleStr, TagGeneralStr, TagUTF8, TagOctetStr:
+		return identifier(e)
+	}
+	return ""
 }
 
 // countChildren counts the elements inside a constructed element without keeping

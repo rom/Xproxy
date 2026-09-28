@@ -16,6 +16,7 @@ import (
 	"github.com/rom/xproxy/internal/keysource"
 	ldapwire "github.com/rom/xproxy/internal/ldap"
 	"github.com/rom/xproxy/internal/listener"
+	mmswire "github.com/rom/xproxy/internal/mms"
 	"github.com/rom/xproxy/internal/modbus"
 	mqttwire "github.com/rom/xproxy/internal/mqtt"
 	mysqlwire "github.com/rom/xproxy/internal/mysqlwire"
@@ -956,6 +957,20 @@ func (v *validator) server(s *Server) {
 				v.errf("%s.opcua: required for kind opcua", p)
 			} else {
 				v.opcuaListener(p+".opcua", ln.OPCUA, ln.Address)
+			}
+		case "mms":
+			// No tls section: MMS on TCP 102 has none. IEC 62351-4 adds TLS
+			// under the session layer, and a listener that terminated it would
+			// be terminating the only end-to-end protection this protocol has
+			// -- so a listener that wants it is a tcp listener with a tls
+			// section in front of one of these, not this one.
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C || ln.TLS != nil {
+				v.errf("%s: an mms listener takes only address and mms: MMS on TCP 102 has no transport TLS", p)
+			}
+			if ln.MMS == nil {
+				v.errf("%s.mms: required for kind mms", p)
+			} else {
+				v.mmsListener(p+".mms", ln.MMS, ln.Address)
 			}
 		case "amqp":
 			if ln.AMQP == nil {
@@ -2666,7 +2681,7 @@ var denyReasons = map[string]bool{
 	// trigger until they were written here.
 	"dns_denied": true, "dns_threat_intel": true,
 	"modbus_denied": true, "iec104_denied": true, "ntp_denied": true, "ntske_denied": true,
-	"snmp_denied": true, "ldap_denied": true, "tftp_denied": true, "dhcp_denied": true, "dhcp6_denied": true, "coap_denied": true, "opcua_denied": true, "postgres_denied": true, "mysql_denied": true, "tds_denied": true, "redis_denied": true,
+	"snmp_denied": true, "ldap_denied": true, "tftp_denied": true, "dhcp_denied": true, "dhcp6_denied": true, "coap_denied": true, "opcua_denied": true, "mms_denied": true, "postgres_denied": true, "mysql_denied": true, "tds_denied": true, "redis_denied": true,
 	"bacnet_denied": true, "amqp_denied": true, "s7_denied": true,
 }
 
@@ -13948,4 +13963,356 @@ func redisNameChar(c byte) bool {
 		return true
 	}
 	return false
+}
+
+// mmsListener checks an mms listener's section.
+func (v *validator) mmsListener(p string, m *MMSListener, address string) {
+	if m.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	v.modbusCIDRs(p+".allow_clients", m.AllowClients)
+	v.modbusCIDRs(p+".deny_clients", m.DenyClients)
+	v.mmsIdentity(p, m)
+	v.mmsServices(p, m)
+	v.mmsNames(p, m)
+	v.mmsBounds(p, m)
+	v.mmsLearn(p, m)
+	v.mmsRules(p, m)
+	v.mmsWarnings(p, m, address)
+}
+
+// mmsIdentity checks the AP-titles and the qualifiers.
+func (v *validator) mmsIdentity(p string, m *MMSListener) {
+	for _, f := range []struct {
+		name string
+		list []string
+	}{
+		{"ap_titles", m.APTitles},
+		{"deny_ap_titles", m.DenyAPTitles},
+	} {
+		for i, t := range f.list {
+			if err := mmsCheckAPTitle(t); err != nil {
+				v.errf("%s.%s[%d]: %v", p, f.name, i, err)
+			}
+		}
+	}
+	if _, err := numrange.Parse("ae_qualifier", m.AEQualifiers, 65535); err != nil {
+		v.errf("%s.ae_qualifiers: %v", p, err)
+	}
+}
+
+// mmsCheckAPTitle checks an AP-title pattern: dotted arcs, with `*` and `?`
+// allowed so that an estate's own numbering can be named by prefix.
+//
+// It is checked rather than taken as an opaque string because an AP-title that is
+// not an object identifier is a rule that can never match, and a rule that can
+// never match in an allow list is a listener that refuses everything.
+func mmsCheckAPTitle(t string) error {
+	if t == "" {
+		return errors.New("empty")
+	}
+	if len(t) > 128 {
+		return fmt.Errorf("%d characters, which is longer than any object identifier", len(t))
+	}
+	for _, arc := range strings.Split(t, ".") {
+		if arc == "" {
+			return fmt.Errorf("%q has an empty arc", t)
+		}
+		for _, c := range arc {
+			if (c < '0' || c > '9') && c != '*' && c != '?' {
+				return fmt.Errorf("%q is not an object identifier or a pattern over one", t)
+			}
+		}
+	}
+	return nil
+}
+
+// mmsServices checks the service and class lists.
+func (v *validator) mmsServices(p string, m *MMSListener) {
+	v.mmsServiceList(p+".services", m.Services)
+	v.mmsServiceList(p+".deny_services", m.DenyServices)
+	v.mmsClassList(p+".service_classes", m.ServiceClasses)
+	v.mmsClassList(p+".deny_service_classes", m.DenyServiceClasses)
+}
+
+func (v *validator) mmsServiceList(p string, names []string) {
+	for i, n := range names {
+		if _, ok := mmswire.ServiceOf(n); !ok {
+			v.errf("%s[%d]: %q is not an MMS service; the names are in docs/CONFIG.md", p, i, n)
+		}
+	}
+}
+
+// mmsClasses is what a service_classes list may name.
+var mmsClasses = map[string]bool{
+	"browse": true, "read": true, "write": true, "report": true,
+	"dataset": true, "control": true, "domain": true, "file": true,
+	"session": true,
+}
+
+func (v *validator) mmsClassList(p string, names []string) {
+	for i, n := range names {
+		if !mmsClasses[n] {
+			v.errf("%s[%d]: %q is not a service class; they are browse, read, write, report, dataset, control, domain, file and session",
+				p, i, n)
+		}
+	}
+}
+
+// mmsNames checks the domain, object, constraint and file patterns.
+func (v *validator) mmsNames(p string, m *MMSListener) {
+	for _, f := range []struct {
+		name string
+		list []string
+	}{
+		{"domains", m.Domains}, {"deny_domains", m.DenyDomains},
+		{"objects", m.Objects}, {"deny_objects", m.DenyObjects},
+		{"write_objects", m.WriteObjects},
+		{"files", m.Files}, {"deny_files", m.DenyFiles},
+	} {
+		v.mmsPatterns(p+"."+f.name, f.list)
+	}
+	v.mmsConstraints(p+".functional_constraints", m.FunctionalConstraints)
+	v.mmsConstraints(p+".write_constraints", m.WriteConstraints)
+	v.mmsConstraints(p+".deny_constraints", m.DenyConstraints)
+}
+
+// mmsPatterns checks a glob list: non-empty, bounded, and not a bare `*`, which
+// is the pattern somebody writes meaning "for now" and then leaves.
+func (v *validator) mmsPatterns(p string, list []string) {
+	for i, g := range list {
+		switch {
+		case g == "":
+			v.errf("%s[%d]: empty", p, i)
+		case len(g) > 512:
+			v.errf("%s[%d]: %d characters, which is longer than any IEC 61850 name", p, i, len(g))
+		case g == "*":
+			v.warnf("%s[%d] is `*`, which allows everything and reads as though it did not: leave the list empty instead, which says the same thing where a reviewer will see it",
+				p, i)
+		}
+	}
+}
+
+// mmsConstraints checks a functional-constraint list.
+func (v *validator) mmsConstraints(p string, list []string) {
+	for i, c := range list {
+		if !mmswire.FC(c).Known() {
+			v.errf("%s[%d]: %q is not an IEC 61850 functional constraint; they are %s",
+				p, i, c, strings.Join(sortedStrings(mmswire.FCs()), ", "))
+		}
+	}
+}
+
+// mmsBounds checks the numeric bounds.
+func (v *validator) mmsBounds(p string, m *MMSListener) {
+	for _, f := range []struct {
+		name string
+		v    int
+		lo   int
+		hi   int
+	}{
+		{"max_names", m.MaxNames, 1, 65536},
+		{"max_write_names", m.MaxWriteNames, 1, 65536},
+		{"max_frame", m.MaxFrame, 1024, 16 << 20},
+		{"max_requests", m.MaxRequests, 1, 1 << 30},
+		{"max_pending_requests", m.MaxPendingRequests, 1, 4096},
+		{"rate_limit", m.RateLimit, 1, 1 << 20},
+		{"rate_burst", m.RateBurst, 1, 1 << 20},
+		{"max_sessions", m.MaxSessions, 1, 1 << 20},
+		{"max_sessions_per_client", m.MaxSessionsPerClient, 1, 1 << 20},
+	} {
+		if f.v != 0 && (f.v < f.lo || f.v > f.hi) {
+			v.errf("%s.%s: must be between %d and %d", p, f.name, f.lo, f.hi)
+		}
+	}
+	if m.RateBurst != 0 && m.RateLimit == 0 {
+		v.errf("%s.rate_burst: set without rate_limit, so nothing is limited", p)
+	}
+	for _, f := range []struct {
+		name string
+		d    Duration
+	}{
+		{"idle_timeout", m.IdleTimeout},
+		{"session_duration", m.SessionDuration},
+		{"handshake_timeout", m.HandshakeTimeout},
+		{"select_timeout", m.SelectTimeout},
+	} {
+		if f.d < 0 {
+			v.errf("%s.%s: must not be negative", p, f.name)
+		}
+	}
+	if m.DefaultAction != "" && m.DefaultAction != "allow" && m.DefaultAction != "deny" {
+		v.errf("%s.default_action: %q is not allow or deny", p, m.DefaultAction)
+	}
+	switch m.DenyResponse {
+	case "", "error", "reject", "drop", "close":
+	default:
+		v.errf("%s.deny_response: %q is not error, reject, drop or close", p, m.DenyResponse)
+	}
+}
+
+// mmsLearn checks the learning section.
+func (v *validator) mmsLearn(p string, m *MMSListener) {
+	l := m.Learn
+	if l == nil || !l.Enabled {
+		return
+	}
+	switch {
+	case l.File == "":
+		v.errf("%s.learn.file: required when learning is enabled", p)
+	case !strings.HasPrefix(l.File, "/"):
+		v.errf("%s.learn.file: must be an absolute path", p)
+	}
+	if l.Interval != 0 && (l.Interval.D() < 10*time.Second || l.Interval.D() > 24*time.Hour) {
+		v.errf("%s.learn.interval: must be between 10s and 24h", p)
+	}
+	if l.MaxSubjects != 0 && (l.MaxSubjects < 16 || l.MaxSubjects > 1_000_000) {
+		v.errf("%s.learn.max_subjects: must be between 16 and 1000000", p)
+	}
+	if !l.Enforce {
+		v.warnf("%s.learn is enabled without enforce, so this listener records and decides nothing: turn enforce on, or take the learning section out, once the rules are written",
+			p)
+	}
+}
+
+// mmsRules checks the rules.
+func (v *validator) mmsRules(p string, m *MMSListener) {
+	seen := map[string]bool{}
+	for i, r := range m.Rules {
+		q := fmt.Sprintf("%s.rules[%d]", p, i)
+		switch {
+		case r.Name == "":
+			v.errf("%s.name: required", q)
+		case seen[r.Name]:
+			v.errf("%s.name: %q is used twice; a rule's name is what a log line and a counter carry", q, r.Name)
+		default:
+			seen[r.Name] = true
+		}
+		switch r.Action {
+		case "", "allow", "deny", "observe":
+		default:
+			v.errf("%s.action: %q is not allow, deny or observe", q, r.Action)
+		}
+		v.modbusCIDRs(q+".clients", r.Clients)
+		for j, t := range r.APTitles {
+			if err := mmsCheckAPTitle(t); err != nil {
+				v.errf("%s.ap_titles[%d]: %v", q, j, err)
+			}
+		}
+		if _, err := numrange.Parse("ae_qualifier", r.AEQualifiers, 65535); err != nil {
+			v.errf("%s.ae_qualifiers: %v", q, err)
+		}
+		v.mmsServiceList(q+".services", r.Services)
+		v.mmsServiceList(q+".deny_services", r.DenyServices)
+		v.mmsClassList(q+".service_classes", r.ServiceClasses)
+		v.mmsClassList(q+".deny_service_classes", r.DenyServiceClasses)
+		for _, f := range []struct {
+			name string
+			list []string
+		}{
+			{"domains", r.Domains}, {"deny_domains", r.DenyDomains},
+			{"objects", r.Objects}, {"deny_objects", r.DenyObjects},
+			{"write_objects", r.WriteObjects},
+			{"files", r.Files}, {"deny_files", r.DenyFiles},
+		} {
+			v.mmsPatterns(q+"."+f.name, f.list)
+		}
+		v.mmsConstraints(q+".functional_constraints", r.FunctionalConstraints)
+		v.mmsConstraints(q+".write_constraints", r.WriteConstraints)
+		v.mmsConstraints(q+".deny_constraints", r.DenyConstraints)
+		if r.MaxNames != 0 && (r.MaxNames < 1 || r.MaxNames > 65536) {
+			v.errf("%s.max_names: must be between 1 and 65536", q)
+		}
+		if r.Schedule != nil {
+			v.modbusSchedule(q+".schedule", r.Schedule)
+		}
+	}
+}
+
+// mmsWarnings are the things worth saying about a configuration that is valid.
+func (v *validator) mmsWarnings(p string, m *MMSListener, address string) {
+	if len(m.AllowClients) == 0 {
+		v.warnf("%s.allow_clients is empty, so any address that reaches this listener reaches the substation: name the control centre's and the engineering network's prefixes",
+			p)
+	}
+	if _, port, err := net.SplitHostPort(address); err == nil &&
+		port != "102" && port != "0" {
+		v.warnf("%s: port %s, where an IEC 61850 client sends to 102 by convention; a client configured from an SCL file will not find it here",
+			p, port)
+	}
+	// The one about the protocol's own authentication, which is the finding an
+	// estate most often does not know it has.
+	if m.RefusePlaintextPasswords {
+		v.warnf("%s.refuse_plaintext_passwords is on, so every association whose ACSE authentication value is a password will be refused. On most of the installed base that password is the only authentication the IED has, and IEC 62351-4 is what replaces it: turn this on once the clients have moved, not before",
+			p)
+	}
+	// Writing to the constraints that decide what the device does in a fault.
+	if writes := mmsWriteConstraints(m); len(writes) > 0 {
+		var protecting []string
+		for _, c := range writes {
+			if mmswire.FC(c).Protects() {
+				protecting = append(protecting, c)
+			}
+		}
+		if len(protecting) > 0 {
+			v.warnf("%s.write_constraints names %s, so a client may change what the device does in a fault rather than what it is doing now -- a setting group is a protection relay's trip characteristic and nothing moves until the fault it was meant to clear. Put those behind a rule with a schedule if they are needed at all",
+				p, strings.Join(sortedStrings(protecting), ", "))
+		}
+	}
+	// Operating without the interlock, where the configuration could remove it.
+	if mmsAllowsOperate(m) && !m.RequireSelectBeforeOperate {
+		v.warnf("%s allows a control operate and require_select_before_operate is off, so an Oper is carried whether or not the client selected first. IEC 61850 leaves that to the IED's ctlModel, and ctlModel lives in $CF$ where a client with configuration access can change it -- requiring the select here puts the interlock somewhere the configuration cannot reach",
+			p)
+	}
+	if m.AllowDomainServices && !m.ReadOnly {
+		v.warnf("%s.allow_domain_services is on, so a client may download into an IED and replace what is inside it. That is the operation this listener most exists to refuse: put it behind a rule naming the engineering station and a schedule",
+			p)
+	}
+	if len(m.Domains) == 0 && len(m.Objects) == 0 && !m.ReadOnly {
+		v.warnf("%s names neither domains nor objects, so every logical device behind this listener is reachable by every client it admits. A learning run writes the lists: see the learn section",
+			p)
+	}
+}
+
+// mmsWriteConstraints is the effective write-constraint list: the listener's own,
+// or the default an HMI needs.
+func mmsWriteConstraints(m *MMSListener) []string {
+	if len(m.WriteConstraints) > 0 {
+		return m.WriteConstraints
+	}
+	return nil
+}
+
+// mmsAllowsOperate says the configuration carries a control operate.
+func mmsAllowsOperate(m *MMSListener) bool {
+	if m.ReadOnly {
+		return false
+	}
+	if m.AllowOperate != nil && !*m.AllowOperate {
+		return false
+	}
+	for _, c := range m.DenyConstraints {
+		if c == string(mmswire.FCControl) {
+			return false
+		}
+	}
+	if len(m.WriteConstraints) == 0 {
+		// The default includes CO.
+		return true
+	}
+	for _, c := range m.WriteConstraints {
+		if c == string(mmswire.FCControl) {
+			return true
+		}
+	}
+	return false
+}
+
+// sortedStrings is a sorted copy, so that a validation message reads the same way
+// twice.
+func sortedStrings(in []string) []string {
+	out := make([]string, len(in))
+	copy(out, in)
+	sort.Strings(out)
+	return out
 }

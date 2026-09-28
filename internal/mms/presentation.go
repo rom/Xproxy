@@ -157,12 +157,17 @@ func (p PDV) IsMMS() bool {
 func (p PDV) IsACSE() bool { return p.Syntax.Equal(OIDACSE) }
 
 // ParseCP reads a connect (or accept) presentation PDU and returns the context
-// definition list and the user data inside it.
+// definition list and the data values inside it.
 //
-// The mode selector and the selectors themselves are skipped: they are agreement
+// The values come back parsed rather than as octets because the list and the values
+// are in the same PDU and the values are read *against* the list: a caller handed
+// both separately would have to put them together again, and the one that forgot
+// would be reading an ACSE APDU without knowing it was one.
+//
+// The mode selector and the presentation selectors are skipped: they are agreement
 // between the two stacks. The list is not, because every data PDU after this one
 // depends on it.
-func ParseCP(b []byte) (Contexts, []byte, error) {
+func ParseCP(b []byte) (Contexts, []PDV, error) {
 	top, err := NewBER(b).Next()
 	if err != nil {
 		return nil, nil, err
@@ -196,7 +201,7 @@ func ParseCP(b []byte) (Contexts, []byte, error) {
 		ErrOpaque)
 }
 
-func normalMode(r *BER) (Contexts, []byte, error) {
+func normalMode(r *BER) (Contexts, []PDV, error) {
 	ctx := Contexts{}
 	var user []byte
 	for !r.Empty() {
@@ -210,10 +215,20 @@ func normalMode(r *BER) (Contexts, []byte, error) {
 				return nil, nil, err
 			}
 		case e.Class == ClassApplication && e.Tag == tagUserData && e.Cons:
+			// Kept as octets and parsed below, because the values are read
+			// against the context list and the list may follow them in the
+			// encoding.
 			user = e.Data
 		}
 	}
-	return ctx, user, nil
+	if len(user) == 0 {
+		return ctx, nil, nil
+	}
+	vals, err := parsePDVSeq(user, ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	return ctx, vals, nil
 }
 
 // readContextList reads the (identifier, abstract syntax) pairs.
@@ -288,10 +303,15 @@ func ParsePDVs(b []byte, ctx Contexts) ([]PDV, error) {
 		return nil, fmt.Errorf("%w: a presentation data PDU is [APPLICATION 1], this is class %#02x tag %d",
 			ErrEncoding, top.Class, top.Tag)
 	}
-	seq, err := NewBER(b).Sub(top)
-	if err != nil {
-		return nil, err
-	}
+	return parsePDVSeq(top.Data, ctx)
+}
+
+// parsePDVSeq reads the contents of a fully-encoded-data: a sequence of data values.
+// It is separate from ParsePDVs because a connect PDU's user data arrives already
+// unwrapped, and a reader that unwrapped it twice would be looking for the tag inside
+// the first value.
+func parsePDVSeq(b []byte, ctx Contexts) ([]PDV, error) {
+	seq := NewBER(b)
 	var out []PDV
 	for !seq.Empty() {
 		item, err := seq.Next()

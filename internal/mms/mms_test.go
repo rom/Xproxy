@@ -224,7 +224,7 @@ func TestTheContextListSaysWhichIdentifierIsMMS(t *testing.T) {
 			seq(integer(1), oid(2, 2, 1, 0, 1), seq(oid(2, 1, 1))),
 			seq(integer(3), oid(1, 0, 9506, 2, 1), seq(oid(2, 1, 1)))),
 		app(1, seq(integer(1), ctx(0, []byte{0x60, 0x00})))))
-	ctxs, user, err := ParseCP(cp)
+	ctxs, vals, err := ParseCP(cp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,8 +234,11 @@ func TestTheContextListSaysWhichIdentifierIsMMS(t *testing.T) {
 	if got := ctxs[3]; !got.Equal(OIDMMSAbstract) {
 		t.Errorf("context 3 is %s, want the MMS syntax", got)
 	}
-	if len(user) == 0 {
-		t.Error("the connect carried no user data")
+	// And the value inside it comes back read against that list, which is the point
+	// of returning both together: the caller does not have to know that the
+	// association request is on the ACSE context to find it.
+	if len(vals) != 1 || !vals[0].IsACSE() {
+		t.Errorf("the connect's user data is %v", vals)
 	}
 }
 

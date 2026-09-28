@@ -40,6 +40,7 @@ var sections = map[string]string{
 	"dhcp6":    "dhcp6: {upstream: u, link_address: 2001:db8::1}",
 	"coap":     "coap: {upstream: u}",
 	"opcua":    "opcua: {upstream: u}",
+	"mms":      "mms: {upstream: u}",
 	"bacnet":   "bacnet: {upstream: u}",
 	"amqp":     "amqp: {upstream: u, require_tls: false}",
 	"s7":       "s7: {upstream: u}",

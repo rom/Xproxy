@@ -476,6 +476,25 @@ type Stats struct {
 	OPCUAOpaque       atomic.Uint64
 	OPCUAServerErrors atomic.Uint64
 	OPCUAServerFaults atomic.Uint64
+	// The IEC 61850 MMS relay.
+	//
+	// MMSPlaintextPasswords is the one to read first on a new deployment: the
+	// associations whose ACSE authentication value was a password in the clear,
+	// which on most of the installed base is the only authentication the IED has.
+	// A high count is not a fault in this relay; it is the estate's own state,
+	// and IEC 62351-4 is what changes it.
+	//
+	// MMSOpaque counts the data values that arrived on a presentation context the
+	// association never defined, which are the messages no service rule decided
+	// about. MMSServerErrors is the IED refusing what this relay allowed, and
+	// MMSServerRefusals the IED refusing the association itself.
+	MMSAssociations       atomic.Uint64
+	MMSSessions           atomic.Uint64
+	MMSPlaintextPasswords atomic.Uint64
+	MMSOpaque             atomic.Uint64
+	MMSServerErrors       atomic.Uint64
+	MMSServerRefusals     atomic.Uint64
+	MMSSelections         atomic.Uint64
 	// The device inventory.
 	//
 	// AssetFindings is the one to alert on: an identity change, or a device
@@ -1054,6 +1073,13 @@ type Snapshot struct {
 	OPCUAOpaque           uint64 `json:"opcua_opaque_bodies"`
 	OPCUAServerErrors     uint64 `json:"opcua_server_errors"`
 	OPCUAServerFaults     uint64 `json:"opcua_server_faults"`
+	MMSAssociations       uint64 `json:"mms_associations"`
+	MMSSessions           uint64 `json:"mms_sessions"`
+	MMSPlaintextPasswords uint64 `json:"mms_plaintext_passwords"`
+	MMSOpaque             uint64 `json:"mms_opaque_contexts"`
+	MMSServerErrors       uint64 `json:"mms_server_errors"`
+	MMSServerRefusals     uint64 `json:"mms_server_refusals"`
+	MMSSelections         uint64 `json:"mms_selections"`
 	AssetObservations     uint64 `json:"asset_observations"`
 	AssetFindings         uint64 `json:"asset_findings"`
 	AssetUnexpected       uint64 `json:"asset_unexpected_role"`
@@ -1570,6 +1596,13 @@ func (s *Stats) snapshot() Snapshot {
 		OPCUAOpaque:             s.OPCUAOpaque.Load(),
 		OPCUAServerErrors:       s.OPCUAServerErrors.Load(),
 		OPCUAServerFaults:       s.OPCUAServerFaults.Load(),
+		MMSAssociations:         s.MMSAssociations.Load(),
+		MMSSessions:             s.MMSSessions.Load(),
+		MMSPlaintextPasswords:   s.MMSPlaintextPasswords.Load(),
+		MMSOpaque:               s.MMSOpaque.Load(),
+		MMSServerErrors:         s.MMSServerErrors.Load(),
+		MMSServerRefusals:       s.MMSServerRefusals.Load(),
+		MMSSelections:           s.MMSSelections.Load(),
 		DHCPClients:             s.DHCPClients.Load(),
 		AssetObservations:       s.AssetObservations.Load(),
 		AssetFindings:           s.AssetFindings.Load(),

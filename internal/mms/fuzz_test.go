@@ -92,7 +92,7 @@ func FuzzParseCP(f *testing.F) {
 		app(1, seq(integer(3), ctx(0, []byte{0xA0, 0x00}))))))
 	f.Add(set())
 	f.Fuzz(func(t *testing.T, b []byte) {
-		ctxs, user, err := ParseCP(b)
+		ctxs, vals, err := ParseCP(b)
 		if err != nil {
 			return
 		}
@@ -104,8 +104,13 @@ func FuzzParseCP(f *testing.F) {
 				t.Fatalf("an identifier of %d arcs came back", len(o))
 			}
 		}
-		if len(user) > len(b) {
-			t.Fatalf("%d octets of user data came out of %d", len(user), len(b))
+		if len(vals) > MaxPDVs {
+			t.Fatalf("%d values came back, past the bound of %d", len(vals), MaxPDVs)
+		}
+		for _, v := range vals {
+			if len(v.Data) > len(b) {
+				t.Fatalf("%d octets of value came out of %d", len(v.Data), len(b))
+			}
 		}
 	})
 }
