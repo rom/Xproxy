@@ -26,13 +26,14 @@ import (
 
 // server is one kind: s7 listener.
 type server struct {
-	host   proxy.Host
-	cfg    config.Listener
-	name   string
-	sc     *config.S7Listener
-	policy *policy
-	decoy  *decoy
-	ln     net.Listener
+	host    proxy.Host
+	cfg     config.Listener
+	name    string
+	sc      *config.S7Listener
+	policy  *policy
+	decoy   *decoy
+	learner *learner
+	ln      net.Listener
 
 	// limiter bounds requests per second per client address.
 	limiter *limits.KeyedLimiter
@@ -56,6 +57,12 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener) (*server, 
 	if t.decoy, err = newDecoy(cfg.S7.Deception, cfg.Name); err != nil {
 		return nil, fmt.Errorf("listener %s: %w", cfg.Name, err)
 	}
+	if l := cfg.S7.Learn; l != nil && l.Enabled {
+		t.learner = newLearner(&learnConfig{
+			enabled: true, listener: cfg.Name, file: l.File,
+			interval: l.Interval.D(), maxSubjects: l.MaxSubjects,
+		})
+	}
 	if n := cfg.S7.RateLimit; n > 0 {
 		burst := cfg.S7.RateBurst
 		if burst <= 0 {
@@ -66,7 +73,22 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener) (*server, 
 	return t, nil
 }
 
-func (t *server) enforcing() bool { return !t.sc.MonitorOnly && !t.cfg.Shadowing() }
+// enforcing says whether the policy decides or only records.
+//
+// A learning run is observe-only unless it says otherwise, which is what stops
+// one being left on by accident: the point of learning is to find out what the
+// traffic is, and a run that refused half of it has changed the thing it was
+// measuring.
+func (t *server) enforcing() bool {
+	if t.sc.MonitorOnly || t.cfg.Shadowing() {
+		return false
+	}
+	l := t.sc.Learn
+	if l == nil || !l.Enabled {
+		return true
+	}
+	return l.Enforce
+}
 
 func (t *server) maxFrame() int {
 	if n := t.sc.MaxFrameBytes; n > 0 {
@@ -76,6 +98,12 @@ func (t *server) maxFrame() int {
 }
 
 func (t *server) serve() {
+	if t.learner != nil {
+		t.learner.Start(func(err error) {
+			t.host.Logs().Error.Warn("s7 learning report could not be written",
+				"listener", t.name, "error", err.Error())
+		})
+	}
 	for {
 		c, err := t.ln.Accept()
 		if err != nil {
@@ -108,6 +136,10 @@ func (t *server) shutdown(ctx context.Context) {
 	}
 	_ = t.ln.Close()
 	t.sessions.Wait(ctx)
+	if err := t.learner.Stop(); err != nil {
+		t.host.Logs().Error.Warn("s7 learning report could not be written at shutdown",
+			"listener", t.name, "error", err.Error())
+	}
 }
 
 // session is one connection and the state the policy needs it to have.
@@ -130,6 +162,12 @@ type session struct {
 	pduLength  int
 	requests   int
 	denied     int
+	// learnSubjects are the subjects the last request belonged to, so that an
+	// access fault coming back can be attributed to them. A response says
+	// which function failed and never which block, so the request is the only
+	// place the block was known. Guarded by mu because the two directions are
+	// separate goroutines.
+	learnSubjects []learnKey
 }
 
 func (se *session) sess() *Session {
@@ -447,6 +485,10 @@ func (t *server) decide(se *session, c *wire.COTP) (forward, fatal bool) {
 	}
 	s := se.sess()
 	d := t.policy.Request(s, pdu)
+	// Learning records the request and what the policy made of it, whether or
+	// not the refusal is enforced: a run wants to know that the policy and the
+	// traffic disagree, and which way.
+	t.observeLearn(se, pdu, d.Allow, time.Now())
 	if !d.Allow {
 		return t.refusal(se, pdu, d)
 	}

@@ -1762,6 +1762,10 @@ type S7Listener struct {
 	// request answered by a fabricated CPU, or a whole listener that is
 	// one. See S7Deception.
 	Deception *S7Deception `yaml:"deception"`
+	// Learn records what crosses this listener and writes a proposed policy,
+	// because the drawings say which blocks a controller has and the traffic
+	// says which of them anything actually reads. See S7Learn.
+	Learn *S7Learn `yaml:"learn"`
 
 	// Rules decide each request, in order, first match wins. A request
 	// that matches no rule takes DefaultAction.
@@ -1957,6 +1961,32 @@ type S7CommPlus struct {
 	// is the one setting in this section that can let an operation through
 	// that this relay did not recognise.
 	DefaultAction string `yaml:"default_action"`
+}
+
+// S7Learn records what crosses the listener and writes a proposed policy.
+//
+// The drawings say which blocks a controller has. They do not say which of them
+// the integrator's HMI reads every second, which block the historian polls, or
+// that a commissioning laptop has been reading DB1 since the plant was built. A
+// policy written from the drawings refuses half of it on the first shift, which
+// is how a security control gets turned off and stays off.
+type S7Learn struct {
+	// Enabled turns the recording on.
+	Enabled bool `yaml:"enabled"`
+	// File is where the report is written, as YAML. Required when enabled.
+	File string `yaml:"file"`
+	// Interval is how often it is rewritten. Default 5m; it is also written
+	// when the listener shuts down.
+	Interval Duration `yaml:"interval"`
+	// MaxSubjects bounds the observations held: one per client, function, area
+	// and data block seen. Default 8192; past it the newest is dropped and the
+	// drops are counted, because a learning run that quietly stopped learning
+	// is worse than one that says so.
+	MaxSubjects int `yaml:"max_subjects"`
+	// Enforce keeps the policy in force while learning. Default false: a
+	// learning run is normally observe-only, and saying so here is what stops
+	// one being left on by accident.
+	Enforce bool `yaml:"enforce"`
 }
 
 // S7Rule is one rule of an s7 listener's policy.

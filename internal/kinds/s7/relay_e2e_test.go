@@ -32,6 +32,14 @@ type fakePLC struct {
 	// fault, when set, makes the CPU answer every job with an access fault,
 	// which is what a password-protected controller does.
 	fault bool
+	// faultOn, when set, makes the CPU answer an access fault to that one
+	// function and answer the rest normally -- which is what a controller with
+	// a write password does.
+	faultOn uint8
+	// faultAs, when set, is the function code the CPU puts in the fault it
+	// answers, whatever was asked. A controller that answers about something
+	// nobody asked for is the case a learning run must not believe.
+	faultAs uint8
 
 	mu  sync.Mutex
 	saw []string
@@ -156,8 +164,12 @@ func (p *fakePLC) session(c net.Conn) {
 			_, _ = c.Write(setupAck(pdu.PDURef, offer))
 			continue
 		}
-		if p.fault {
-			_, _ = c.Write(ackData(pdu.PDURef, 0x87, 0x00, []byte{pdu.Function, 0x00}, nil))
+		if p.fault || (p.faultOn != 0 && pdu.Function == p.faultOn) {
+			fn := pdu.Function
+			if p.faultAs != 0 {
+				fn = p.faultAs
+			}
+			_, _ = c.Write(ackData(pdu.PDURef, 0x87, 0x00, []byte{fn, 0x00}, nil))
 			continue
 		}
 		_, _ = c.Write(ackData(pdu.PDURef, 0, 0, []byte{pdu.Function, 0x01},

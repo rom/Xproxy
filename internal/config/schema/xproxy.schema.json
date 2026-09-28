@@ -9827,6 +9827,34 @@
       },
       "additionalProperties": false
     },
+    "S7Learn": {
+      "description": "S7Learn records what crosses the listener and writes a proposed policy. The drawings say which blocks a controller has. They do not say which of them the integrator's HMI reads every second, which block the historian polls, or that a commissioning laptop has been reading DB1 since the plant was built. A policy written from the drawings refuses half of it on the first shift, which is how a security control gets turned off and stays off.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enabled turns the recording on.",
+          "type": "boolean"
+        },
+        "enforce": {
+          "description": "Enforce keeps the policy in force while learning. Default false: a learning run is normally observe-only, and saying so here is what stops one being left on by accident.",
+          "type": "boolean"
+        },
+        "file": {
+          "description": "File is where the report is written, as YAML. Required when enabled.",
+          "type": "string"
+        },
+        "interval": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_subjects": {
+          "description": "MaxSubjects bounds the observations held: one per client, function, area and data block seen. Default 8192; past it the newest is dropped and the drops are counted, because a learning run that quietly stopped learning is worse than one that says so.",
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
     "S7Listener": {
       "description": "S7Listener is the settings of a kind: s7 listener: a relay in front of a Siemens PLC. The protocol is three layers on TCP 102 -- TPKT, COTP and S7comm -- and what matters about it is what it does not have. There is **no authentication worth the name**: the optional password protects a handful of functions on some CPU families and nothing on others, an S7-300 with no password accepts a stop from anybody who can open a socket, and the protocol has no transport security at all, which is why this listener takes no TLS section. An engineering station on the same segment can read and write every byte of memory in every controller on it. So a relay's job here is to know what an operation *is*, and this protocol spreads that across two layers: a function code for reading and writing memory, and a user-data group and subfunction for everything else -- the diagnostic buffer, the block list, the clock, the password, the debugger. `internal/s7` maps both onto one vocabulary of nineteen words, and the policy is written in those words. Four things shape the settings. **The default is what an HMI does.** `operations` defaults to reading memory, reading the system status lists, listing blocks, subscribing to cyclic data, reading the clock and the diagnostic machinery -- and nothing that changes anything. Writing, downloading a program, uploading one, stopping the CPU, setting the clock, the password functions and the programmer commands are each off until named. **The address is the rack and the slot**, and it arrives in the connection request rather than in any request that follows: the called TSAP's two octets hold a connection resource and the rack and slot of the CPU. A listener that named nothing else could still say which controller a client may reach -- and `resources` says *how*, because `pg` is the programming device connection an engineering station opens and `op` is an operator panel. **An upload is a read, and it is the one that takes the plant with it.** Reading a block out of a PLC is how control logic leaves the site, so it is off by default even though nothing about it changes the machine. **The areas and the data blocks are the boundary inside the CPU.** `areas` and `dbs` say which memory a client may reach at all, and `addresses` and `write_addresses` bound it by byte -- which is how an operator thinks about a data block, so the relay divides the protocol's bit address by eight rather than making anybody else do it.",
       "type": "object",
@@ -9915,6 +9943,14 @@
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "learn": {
+          "description": "Learn records what crosses this listener and writes a proposed policy, because the drawings say which blocks a controller has and the traffic says which of them anything actually reads. See S7Learn.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/S7Learn"
+            }
+          ]
         },
         "log_requests": {
           "description": "LogRequests writes an access line per request, which on a plant polling every second is a great many lines.",

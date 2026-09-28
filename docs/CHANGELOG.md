@@ -6,6 +6,39 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (s7: learning mode)
+
+- **`s7.learn` records what crosses the listener and writes a proposed policy.**
+  On this protocol there is nowhere else to find out what the traffic is: the CPU
+  keeps no access log, and nobody can enumerate the blocks a program touches by
+  reading the program. The drawings say which blocks a controller has; the traffic
+  says which of them the HMI reads every second and that the commissioning laptop
+  has been reading DB1 since 2014. A run is observe-only unless `enforce` says
+  otherwise.
+
+- A subject is one client, one operation, one area and one data block — the grain
+  an S7 rule is written at. Byte ranges merge as they grow, so two adjacent reads
+  are one span, and **what was written is kept apart from what was read**, because
+  that is the rule read most carefully and `write_addresses` is the key it becomes.
+
+- **An access fault from the controller is attributed to the request it answers.**
+  A response carries the function and the return codes and never the area or the
+  block, so the request is where the subject was known; a fault is charged only to
+  subjects of the operation it answers, so a password-protected CPU refusing
+  writes does not cost the HMI its read. A subject the controller refuses every
+  time is left out of the proposal: permitting it would permit something that
+  cannot happen.
+
+- **The proposal is written in the vocabulary `operations` uses**, so it loads. An
+  operation this relay cannot name is recorded as `operation: unknown` with the
+  raw function code beside it and no rule proposed for it, and an item addressed
+  in a syntax this relay does not decode is recorded without an area or a block
+  rather than under a fabricated `area: 0`.
+
+- No process value is recorded, and neither is S7comm-plus: its policy is about
+  opcodes rather than areas and blocks, and one report cannot propose rules in
+  both vocabularies.
+
 ### Added (iec104: learning mode, and a shared core for every kind's)
 
 - **`iec104.learn` records what crosses the listener and writes a proposed

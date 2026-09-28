@@ -8540,6 +8540,23 @@ func (v *validator) s7Listener(p string, m *S7Listener) {
 		v.errf("%s.upstream: required", p)
 	}
 	v.s7Deception(p+".deception", m)
+	if l := m.Learn; l != nil && l.Enabled {
+		if l.File == "" {
+			v.errf("%s.learn.file: required when learning is enabled", p)
+		} else if !strings.HasPrefix(l.File, "/") {
+			v.errf("%s.learn.file: must be an absolute path", p)
+		}
+		if l.Interval != 0 && (l.Interval.D() < 10*time.Second || l.Interval.D() > 24*time.Hour) {
+			v.errf("%s.learn.interval: must be between 10s and 24h", p)
+		}
+		if l.MaxSubjects != 0 && (l.MaxSubjects < 16 || l.MaxSubjects > 1_000_000) {
+			v.errf("%s.learn.max_subjects: must be between 16 and 1000000", p)
+		}
+		if !l.Enforce {
+			v.warnf("%s.learn is enabled without enforce, so this listener records and decides nothing: "+
+				"turn enforce on, or take the learning section out, once the rules are written", p)
+		}
+	}
 	v.modbusCIDRs(p+".allow_clients", m.AllowClients)
 	v.modbusCIDRs(p+".deny_clients", m.DenyClients)
 	if len(m.AllowClients) == 0 {

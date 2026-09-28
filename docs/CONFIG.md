@@ -12349,6 +12349,7 @@ Two details of how the ranges are applied:
 | `log_requests` | bool | `false` | An access line per request, which on a plant polling every second is a great many lines |
 | `alert_on_deny` | bool | `true` | A security event per refusal |
 | `deception` | object | | Answer as a controller that is not there: a refused request answered by a fabricated CPU, or a whole listener that is one; see below |
+| `learn` | object | | Record what crosses this listener and write a proposed policy; see below |
 | `monitor_only` | bool | `false` | Evaluate and enforce nothing, except the hard decisions below |
 
 ### Deception
@@ -12470,6 +12471,59 @@ not an S7 PDU. There is nothing left to be sure of after either.
 An operation merely *off* the allow list -- a read of a data block nobody has
 listed, an upload -- is a **soft** refusal, which is what makes monitor mode
 useful on a plant nobody has an inventory of.
+
+### Learning what the traffic is
+
+**`learn`** records what crosses this listener and writes a proposed policy.
+
+The drawings say which blocks a controller has. They do not say which of them
+the integrator's HMI reads every second, which data block the historian polls,
+or that the commissioning laptop has been reading DB1 since 2014. On this
+protocol there is nowhere else to find out: the CPU keeps no access log, and
+nobody can enumerate the blocks a program touches by reading the program. A
+policy written from the drawings refuses half of it on the first shift, which is
+how a security control gets turned off and stays off. Run this for a week and the
+file is the answer.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Turn the recording on |
+| `file` | path | required when enabled | Where the report is written, as YAML. Replaced atomically, owner readable only |
+| `interval` | duration | `5m` | How often it is rewritten; 10s..24h. It is also written at shutdown |
+| `max_subjects` | int | `8192` | Observations held: one per client, operation, area and data block. Past the bound the newest is dropped and the drops are counted, in the report's own header |
+| `enforce` | bool | `false` | Keep the policy in force while learning. Off -- the default -- means this listener records and decides nothing, which is the only honest way to find out what a policy would have broken, and it warns so that it is not left on by accident |
+
+**A subject is one client, one operation, one area and one data block**, because
+that is the grain an S7 rule is written at: `dbs: ["1", "10-19"]` is the line an
+engineer argues about. Within a subject the byte ranges are merged as they grow,
+so two adjacent reads are one span rather than two lines -- a report with a line
+per request is a report nobody reads. **What was written is kept apart from what
+was read**, as `written`, because that is the rule read most carefully and
+`write_addresses` is the key it becomes.
+
+**Three things in the report are worth reading before the proposal.**
+`denied_by_policy` counts the requests the current policy refused, or would have
+refused on a listener learning without `enforce` -- a subject with those is one
+the policy and the traffic disagree about. `access_faults` counts the times the
+**controller itself** answered an access fault, which on this protocol almost
+always means a password-protected CPU: the equipment already refuses it, so it
+belongs out of the policy rather than in it, and a subject the controller refuses
+every time is left out of the proposal. A fault is charged to the operation it
+answers and to nothing else, so a CPU that refuses writes and answers reads does
+not cost the HMI its read. And `operation: unknown` is a request this relay could
+not name -- the raw function code is listed beside it, and no rule is proposed,
+because `operations` is a closed vocabulary and a proposal naming something
+outside it would not load.
+
+**No value is recorded.** A write's payload is a pressure, a temperature or a
+recipe parameter, the byte ranges are, and a learning report is a file that gets
+pasted into a ticket. **S7comm-plus is not recorded either**: its policy is about
+opcodes and function codes rather than areas and blocks, and one report cannot
+propose rules in both vocabularies.
+
+The proposal is one rule per client and operation rather than one per subject.
+Every range in it is what was actually touched, widened to nothing -- an engineer
+then widens it on purpose, having seen what the traffic is.
 
 ### What the PLC itself refuses
 

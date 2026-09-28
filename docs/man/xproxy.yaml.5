@@ -30174,6 +30174,15 @@ T}	T{
 Answer as a controller that is not there: a refused request answered by a fabricated CPU,\: or a whole listener that is one;\: see below
 T}
 T{
+\fBlearn\fR
+T}	T{
+object
+T}	T{
+
+T}	T{
+Record what crosses this listener and write a proposed policy;\: see below
+T}
+T{
 \fBmonitor_\:only\fR
 T}	T{
 bool
@@ -30541,6 +30550,79 @@ T}
 .TE
 .PP
 An operation merely \fIoff\fR the allow list \-\- a read of a data block nobody has listed, an upload \-\- is a \fBsoft\fR refusal, which is what makes monitor mode useful on a plant nobody has an inventory of.
+.SS "Learning what the traffic is"
+.PP
+\fB\fBlearn\fR\fR records what crosses this listener and writes a proposed policy.
+.PP
+The drawings say which blocks a controller has. They do not say which of them the integrator\(aqs HMI reads every second, which data block the historian polls, or that the commissioning laptop has been reading DB1 since 2014. On this protocol there is nowhere else to find out: the CPU keeps no access log, and nobody can enumerate the blocks a program touches by reading the program. A policy written from the drawings refuses half of it on the first shift, which is how a security control gets turned off and stays off. Run this for a week and the file is the answer.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.9i) lbw(0.9i) lbx
+lw(0.9i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Turn the recording on
+T}
+T{
+\fBfile\fR
+T}	T{
+path
+T}	T{
+required when enabled
+T}	T{
+Where the report is written,\: as YAML. Replaced atomically,\: owner readable only
+T}
+T{
+\fBinterval\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+How often it is rewritten;\: 10s..24h. It is also written at shutdown
+T}
+T{
+\fBmax_\:subjects\fR
+T}	T{
+int
+T}	T{
+\fB8192\fR
+T}	T{
+Observations held: one per client,\: operation,\: area and data block. Past the bound the newest is dropped and the drops are counted,\: in the report\(aqs own header
+T}
+T{
+\fBenforce\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Keep the policy in force while learning. Off \-\- the default \-\- means this listener records and decides nothing,\: which is the only honest way to find out what a policy would have broken,\: and it warns so that it is not left on by accident
+T}
+.TE
+.PP
+\fBA subject is one client, one operation, one area and one data block\fR, because that is the grain an S7 rule is written at: \fBdbs: ["1", "10\-19"]\fR is the line an engineer argues about. Within a subject the byte ranges are merged as they grow, so two adjacent reads are one span rather than two lines \-\- a report with a line per request is a report nobody reads. \fBWhat was written is kept apart from what was read\fR, as \fBwritten\fR, because that is the rule read most carefully and \fBwrite_addresses\fR is the key it becomes.
+.PP
+\fBThree things in the report are worth reading before the proposal.\fR \fBdenied_by_policy\fR counts the requests the current policy refused, or would have refused on a listener learning without \fBenforce\fR \-\- a subject with those is one the policy and the traffic disagree about. \fBaccess_faults\fR counts the times the \fBcontroller itself\fR answered an access fault, which on this protocol almost always means a password\-protected CPU: the equipment already refuses it, so it belongs out of the policy rather than in it, and a subject the controller refuses every time is left out of the proposal. A fault is charged to the operation it answers and to nothing else, so a CPU that refuses writes and answers reads does not cost the HMI its read. And \fBoperation: unknown\fR is a request this relay could not name \-\- the raw function code is listed beside it, and no rule is proposed, because \fBoperations\fR is a closed vocabulary and a proposal naming something outside it would not load.
+.PP
+\fBNo value is recorded.\fR A write\(aqs payload is a pressure, a temperature or a recipe parameter, the byte ranges are, and a learning report is a file that gets pasted into a ticket. \fBS7comm\-plus is not recorded either\fR: its policy is about opcodes and function codes rather than areas and blocks, and one report cannot propose rules in both vocabularies.
+.PP
+The proposal is one rule per client and operation rather than one per subject. Every range in it is what was actually touched, widened to nothing \-\- an engineer then widens it on purpose, having seen what the traffic is.
 .SS "What the PLC itself refuses"
 .PP
 One record here is not a refusal by this relay and is the one that matters most after an incident: an \fBaccess fault from the controller\fR, logged as \fBs7_plc_refused\fR. That is the CPU refusing something this listener allowed, which on this protocol almost always means the controller is password\-protected and the client has not supplied a password. It is the case where the two policies disagree, and an operator needs to know which one to change.

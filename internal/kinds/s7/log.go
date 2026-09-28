@@ -93,6 +93,11 @@ func (t *server) alerts() bool { return t.sc.AlertOnDeny == nil || *t.sc.AlertOn
 
 // plcRefused records the controller's own refusal.
 func (t *server) plcRefused(se *session, pdu *wire.PDU) {
+	// A learning run wants this most of all: it is the controller refusing
+	// something the policy allowed, which on this protocol usually means a
+	// password-protected CPU. A rule permitting it would permit a thing that
+	// cannot happen.
+	t.observeFault(se, pdu)
 	s := se.sess()
 	kind, name := "alert", "s7_plc_refused"
 	attrs := []any{"listener", t.name, "client_ip", se.ip.String(), "proto", "s7",
