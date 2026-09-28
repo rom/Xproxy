@@ -6,6 +6,34 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Fixed (learning reports: a data race between rendering and observing)
+
+- **The modbus and NTP learning reports are rendered outside the learner's lock,
+  from a snapshot that copied each observation by value** — and an observation
+  holds slices and maps. The copy shared their backing storage, so the next frame
+  was writing what the renderer was reading.
+
+- For modbus the shared storage is the address range sets, and `addRange` merges
+  *in place* (`rs[i].Lo = lo`, and `mergeRanges` writes through `rs[:0]`): a report
+  could name a range half way through being merged.
+
+- For NTP it is worse. The shared storage includes the map of NTS key identifiers,
+  which the report ranges over, and a map written while it is being ranged over is
+  not a race the runtime tolerates — it is a fatal "concurrent map iteration and
+  map write" that ends the process. For a relay in front of a plant's clocks that
+  is an outage caused by writing a report.
+
+- Both snapshots now clone. Both have a test that renders a report while traffic
+  arrives, and both fail under `-race` without the clone. The four learners on the
+  shared `internal/learn` core were already safe: that is what its `Clone` is for.
+
+- **The NTP learner also recorded a stratum per subject and rendered it nowhere.**
+  That looked like a gap beside the `allow_strata` policy key, and filling it would
+  have been wrong: `allow_strata` is the list of strata an *answer* may carry, and
+  this learner sees the client's requests, whose stratum field is the client's own
+  — usually 0, which is the kiss-o'-death value a server sends. The field is gone,
+  and the struct says why, so that the next reader does not helpfully propose it.
+
 ### Fixed (sandbox: the seccomp filter stopped a hardened process creating threads)
 
 - **`clone3` was refused with `EPERM`, and it has to be `ENOSYS`.** glibc's

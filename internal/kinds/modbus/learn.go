@@ -331,6 +331,20 @@ func (l *Learner) Write() error {
 	return nil
 }
 
+// clone is a copy that shares nothing with the original.
+//
+// A plain value copy would not be. The range sets are slices, and addRange
+// merges in place -- rs[i].Lo = lo, and mergeRanges writes through rs[:0] -- so
+// a copy that shared their backing arrays would be read by the renderer, outside
+// the lock, while the next request rewrote it. A data race, and a report that
+// could name a range half way through being merged.
+func (o *observation) clone() observation {
+	c := *o
+	c.addresses = append([]numrange.Range(nil), o.addresses...)
+	c.writeAddresses = append([]numrange.Range(nil), o.writeAddresses...)
+	return c
+}
+
 // Report renders what was learned as YAML: a description of the traffic,
 // and under it a rule set that permits exactly what was seen.
 //
@@ -360,7 +374,7 @@ func (l *Learner) Report() string {
 	})
 	snapshot := make([]observation, 0, len(keys))
 	for _, k := range keys {
-		snapshot = append(snapshot, *l.seen[k])
+		snapshot = append(snapshot, l.seen[k].clone())
 	}
 	dropped, observed := l.Dropped.Load(), l.Observed.Load()
 	baseKeys, basePts, baseDropped := l.base.snapshot()

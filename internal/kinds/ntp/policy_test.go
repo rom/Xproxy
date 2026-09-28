@@ -717,3 +717,39 @@ func TestTheLeapSecondPolicy(t *testing.T) {
 		t.Errorf("an ordinary answer with no clock given: %+v", d)
 	}
 }
+
+// Rendering a report while packets are still arriving.
+//
+// The report is rendered outside the learner's lock, from a snapshot taken under
+// it. A snapshot that copied the observations by value would share their maps of
+// key identifiers and strata, and a map written while it is being ranged over is
+// not a race the runtime tolerates: it is a fatal "concurrent map iteration and
+// map write" that takes the process down. For a relay in front of a plant's clocks
+// that would be an outage caused by writing a report.
+func TestAnNTPReportRenderedWhilePacketsArrive(t *testing.T) {
+	l := NewLearner("time", "", time.Minute, 512)
+	now := time.Date(2026, 3, 2, 8, 0, 0, 0, time.UTC)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 2000; i++ {
+			p := clientPacket()
+			// Authenticated, with a different key identifier each time: the map
+			// of key identifiers is the one the report ranges over, so it has to
+			// be the one that keeps being written.
+			p.HasMAC = true
+			p.KeyID = uint32(i)      //nolint:gosec // a test key identifier
+			p.MAC = make([]byte, 16) //nolint:gosec // a MAC of a legal length; its value is not checked here
+			l.Observe(req(t, "10.0.0.9", p), Decision{Allow: true}, now.Add(time.Duration(i)*time.Second))
+		}
+	}()
+	for i := 0; i < 200; i++ {
+		if r := l.Report(); r == "" {
+			t.Fatal("the report came back empty")
+		}
+	}
+	<-done
+	if r := l.Report(); !strings.Contains(r, "key_ids: [") {
+		t.Errorf("the report does not carry the key identifiers it ranged over:\n%s", r)
+	}
+}

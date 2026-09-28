@@ -748,3 +748,35 @@ func TestAResponseDrivesNothing(t *testing.T) {
 		t.Errorf("a read response set %d baselines: %+v", len(b.points), b.points)
 	}
 }
+
+// Rendering a report while traffic is still arriving.
+//
+// The report is rendered outside the learner's lock, from a snapshot taken under
+// it. A snapshot that copied the observations by value would share the backing
+// arrays of their range sets -- and addRange merges in place, so the next request
+// rewrites the array the renderer is walking. Under -race this is the test that
+// says so; without it, it is a report that can name a range half way through
+// being merged.
+func TestAReportRenderedWhileTrafficArrives(t *testing.T) {
+	l := NewLearner("plant", "", time.Minute, 512)
+	// Ranges that keep merging rather than settling: each write extends the span
+	// by one register, which is the case addRange mutates in place for.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 2000; i++ {
+			w := []byte{6, byte(i >> 8), byte(i), 0x00, 0x01}
+			l.Observe(req(t, "10.0.0.8", "engineer", 3, w), true, learnDay)
+		}
+	}()
+	for i := 0; i < 200; i++ {
+		if r := l.Report(); r == "" {
+			t.Fatal("the report came back empty")
+		}
+	}
+	<-done
+	// And the finished report still describes the traffic.
+	if r := l.Report(); !strings.Contains(r, "write_single_register") {
+		t.Errorf("the report does not name what was written:\n%s", r)
+	}
+}
