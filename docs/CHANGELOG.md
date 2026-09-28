@@ -6,6 +6,78 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (dhcp6: the other half of a dual-stack estate's provisioning path)
+
+- **`kind: dhcp6` is a DHCPv6 relay agent (RFC 8415) on UDP 547 that reads what
+  it relays**, in both directions. It is a listener of its own rather than a flag
+  on `kind: dhcp` because DHCPv6 is a separate protocol: a different packet
+  format, a relay mechanism that nests whole messages rather than filling in a
+  field, a client identified by a DUID rather than by a hardware address, and its
+  own options — including prefix delegation, which has no DHCPv4 equivalent at
+  all. An estate running both runs both listeners, and writing both down is the
+  point.
+
+- **It is also the half most estates have left unwatched.** A network that
+  polices DHCPv4 carefully and has never looked at UDP 547 is a network where the
+  IPv6 path is the way in, and there is *more* in an answer here: a boot file URL
+  (RFC 5970), a captive portal a client will open (RFC 8910), an SZTP bootstrap
+  server a switch will fetch a configuration from and apply to itself (RFC 8572),
+  the S46 containers and AFTR name that put a host's *IPv4* traffic through a
+  border relay of the sender's choosing, and the Server Unicast option, which
+  tells a client to address the server directly and so switches off every policy
+  this listener has. Each is stripped by default while the address itself goes
+  through.
+
+- **The resolvers and the search list are deliberately not on that deny list**,
+  which is the same choice the DHCPv4 list makes about option 6. They have a
+  positive list of their own — `allow_resolvers` and `allow_domains` — and that is
+  the better check, because it names what the estate's resolvers *are* and so
+  catches a compromised real server as well as a rogue one. Putting an option with
+  a positive list on the deny list as well breaks twice over: the positive list
+  becomes dead configuration, and handing out resolvers is the whole purpose of
+  stateless DHCPv6 on a network that addresses itself by router advertisement — so
+  the default would be one an estate has to switch off to get its network working.
+
+- **Prefix delegation is bounded at both ends, and a prefix outside the estate's
+  is refused rather than stripped.** A reply delegating `::/0` has handed a host
+  the whole of IPv6 to route; a client asking for a /48 where the estate delegates
+  /56s is asking a real server to give a segment away. There is no useful half of
+  a delegation to keep, so `prefix_delegation` refuses rather than editing. A
+  client's own `::/0` *hint* is still carried, because RFC 8415 §21.22 lets a
+  client send one to mean "any".
+
+- **A valid lifetime of zero is never bounded up.** Zero is how a server
+  withdraws an address (RFC 8415 §18.2.10), and applying `min_lease_time` to it
+  would turn a withdrawal into a lease — leaving a device holding an address the
+  estate has given to somebody else. The preferred lifetime comes down with the
+  valid one, because the reverse makes the option invalid.
+
+- **The starvation bound is keyed on the DUID, not the source address.** Pool
+  exhaustion on this protocol is one host sending thousands of SOLICITs with a
+  made-up identifier in each, and a limit keyed on the source would see one sender
+  doing nothing unusual. `max_clients` is the other half: the rate limit slows one
+  identifier down, and that bound stops a flood of new ones filling the table
+  doing the limiting.
+
+- **The relay chain is bounded and read all the way down.** A DHCPv6 relay
+  encapsulates rather than annotates, so a chain is a message inside a message; a
+  reader that stops at the outer layer sees nothing a client said.
+  `max_relay_hops` bounds the nesting, and the relay's own options are added on
+  the way out and stripped from anything a *client* sent, because a client
+  asserting which circuit it is on is asserting exactly what the option exists to
+  say on its behalf.
+
+- **`log_leases` is on by default**, and produces a line for every address and
+  prefix handed out: which identifier got which lease, for how long, from which
+  server, and what else that reply told it — the last being what a DHCPv6 server's
+  own log does not have, because the server is the thing being checked. The MAC
+  address inside a link-layer DUID goes to the asset inventory, which is what ties
+  a DHCPv6 sighting to the device an estate already knows from DHCPv4.
+
+- See [`docs/protocols/dhcp6.md`](protocols/dhcp6.md),
+  [`server.listeners[].dhcp6`](CONFIG.md#serverlistenersdhcp6-kind-dhcp6) and
+  [`examples/addressing/dhcp6.yaml`](../examples/addressing/dhcp6.yaml).
+
 ### Added (nts: terminating Network Time Security in front of a server that cannot speak it)
 
 - **`ntske.terminate` makes the key establishment listener the key establishment

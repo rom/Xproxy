@@ -112,7 +112,7 @@ estate — and binds only the kinds of its own role:
 |--------|-------|----------------|
 | `xproxy` | the open internet | `http`, `forward`, `tcp`, `udp`, `dns` |
 | `xgate` | people | `ssh`, `telnet`, `vnc`, `rdp` |
-| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `snmp`, `ldap`, `tftp`, `dhcp`, `postgres`, `mysql`, `tds`, `redis`, `bacnet`, `amqp`, `s7`, `ntp`, `ntske` |
+| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `snmp`, `ldap`, `tftp`, `dhcp`, `postgres`, `mysql`, `tds`, `redis`, `bacnet`, `amqp`, `s7`, `ntp`, `ntske`, `dhcp6` |
 
 A kind a binary did not link is never bound and never falls through to
 the HTTP data plane: it is an error naming the daemon that serves it.
@@ -190,6 +190,7 @@ its own for what is deliberately *not* implemented and why.
 | Management | SNMP v1 (RFC 1157), v2c (RFC 1901–1908) and v3 with USM (RFC 3410–3418, RFC 3826, RFC 7860) read and verified, over UDP and over TCP (RFC 3430), with RFC 6353 TLS on the stream side | `snmp` |
 | Directory | LDAP v3 (RFC 4511–4515, 4517, 4519) with LDAPS and the StartTLS of RFC 4513, as a relay: the bind methods, the search filter's shape, distinguished names compared per relative name, the attribute lists in both directions | `ldap`, filters |
 | Addressing | DHCP (RFC 2131) with its options (RFC 2132), relay agent information (RFC 3046), long options (RFC 3396) and classless static routes (RFC 3442), as a relay agent that reads what it relays: the server a reply came from, and the configuration the reply carries | `dhcp` |
+| Addressing | DHCPv6 (RFC 8415) as a relay agent that reads what it relays, with the nested relay chain, the DUID identity, the identity associations and prefix delegation, and the options that configure something other than an address: the boot file URL (RFC 5970), the captive portal (RFC 8910), the SZTP bootstrap server (RFC 8572), the S46 transition containers (RFC 7598) and the AFTR name (RFC 6334) | `dhcp6` |
 | Provisioning | TFTP (RFC 1350) with the option extension (RFC 2347), block size (RFC 2348), timeout and transfer size (RFC 2349) and windowed transfer (RFC 7440), as a relay: the filename read as a path, the direction of the transfer, and the bounds on what comes back | `tftp` |
 | Databases | PostgreSQL frontend/backend protocol version 3, with the SSL and GSSAPI encryption requests, the cancel request, the simple and extended query protocols, and the authentication methods of pg_hba.conf; the MySQL and MariaDB client/server protocol with handshake v10, the capability negotiation, the command set and the authentication plugins; TDS 7.x (MS-TDS) with the PRELOGIN option table, the LOGIN7 identity, the SQLBATCH and RPC message types, and the TLS handshake carried inside TDS packets; the Redis serialization protocol (RESP2 and RESP3) in both the multibulk and inline forms, with the command table's key positions | `postgres`, `mysql`, `tds`, `redis` |
 | Remote access | SSH (RFC 4251–4254) with OpenSSH user and host certificates; telnet's NVT (RFC 854); RFB 3.3 to 3.8 (RFC 6143) with VeNCrypt; RDP (MS-RDPBCGR) over TLS, CredSSP over NTLMv2 towards the desktop, or the protocol's own encryption | `ssh`, `telnet`, `vnc`, `rdp` |
@@ -228,6 +229,7 @@ protocol so that a policy can be written in that protocol's own terms:
 | `snmp` | `xrelay` | SNMP v1, v2c and v3 (USM), UDP and TCP, RFC 6353 TLS | Versions, community strings and USM users, security levels, operations, object subtrees, the amplification bounds; with the user's pass phrases, v3 digests verified and payloads decrypted so the rules apply to v3 too; and USM **terminated and re-originated**, so a v1 poller reaches a v3-only agent |
 | `ldap` | `xrelay` | LDAP v3, LDAPS, StartTLS | Bind methods, the bound identity, operations, naming contexts and subtrees, scopes, attributes in both directions, filter and entry bounds |
 | `dhcp` | `xrelay` | DHCPv4 with RFC 2132 options, RFC 3046 relay agent information, RFC 3442 routes | The server a reply came from, the options and addresses a reply may carry, the boot file, the lease bounds, the hardware-address rate |
+| `dhcp6` | `xrelay` | DHCPv6 (RFC 8415) with the nested relay chain, the DUID, the identity associations, prefix delegation | The server a reply came from, the options a reply may carry and the resolvers, domains and boot URLs they may name, what may be delegated and what a client may ask for, the lease bounds -- with a withdrawal never turned into a lease -- the relay chain's depth, and the starvation bound keyed on the **DUID** |
 | `postgres` | `xrelay` | PostgreSQL protocol v3, both query protocols, the cleartext TLS negotiation | Whether the connection may be unencrypted at all, which role and database may be claimed, which authentication methods may cross, which *shapes* of statement are allowed, replication, the fast-path call, cancel requests; and, with `deception`, answering a refused statement as a fabricated database so the reconnaissance behind a documented shell command is collected rather than deflected |
 | `mysql` | `xrelay` | MySQL and MariaDB protocol, handshake v10, the capability flags, the command set | The capability bits a client may even see offered, which of the protocol's commands may cross, whether the connection may be unencrypted, which user and database may be claimed (re-checked on COM_CHANGE_USER), which authentication plugins, which statement shapes, LOAD DATA in either form; and, with `deception`, answering a refused statement as a fabricated database so the reconnaissance is collected rather than deflected |
 | `tds` | `xrelay` | TDS 7.x for SQL Server: the PRELOGIN negotiation, LOGIN7, SQLBATCH and RPC, and the TLS handshake carried inside TDS packets | Whether the connection may be unencrypted at all -- and the relay answers the negotiation itself rather than forwarding the server's octet -- whether a password may cross in the clear, which login, database and application name may be claimed, whether a login carrying no user name is admitted, which message types, which stored procedures, and which statement shapes, applied to a batch and to the SQL inside an sp_executesql alike |
@@ -482,8 +484,37 @@ protocol so that a policy can be written in that protocol's own terms:
   requires and the relay adds its own. And the **starvation bound is keyed on the
   hardware address**, because pool exhaustion is one host sending thousands of
   discovers with a made-up address in each and a limit keyed on the source
-  address would see one sender doing nothing unusual. DHCPv6 is a different
-  protocol and is not pretended to be this one
+  address would see one sender doing nothing unusual
+
+- `kind: dhcp6`: the same argument on the **other half of a dual-stack estate**,
+  and it is a listener of its own rather than a flag on `dhcp` because DHCPv6 is
+  a different protocol: a different packet format, a relay mechanism that
+  **nests whole messages** rather than filling in a field, a client identified by
+  a **DUID** rather than by a hardware address, and options DHCPv4 has no
+  equivalent of. It is also the half an estate is most likely to have left
+  unwatched, and there is *more* in an answer here. A reply can carry a **boot
+  file URL** (RFC 5970), a **captive portal** a client will open (RFC 8910), an
+  **SZTP bootstrap server** a switch will fetch a configuration from and apply to
+  itself (RFC 8572), the **S46 containers** and **AFTR name** that put a host's
+  *IPv4* traffic through a border relay of the sender's choosing — a takeover of a
+  protocol the message is not even about — and the **Server Unicast option**,
+  which tells a client to stop using the relay and thereby switches off every
+  policy this listener has. Each is stripped by default while the address goes
+  through. The **resolvers and the search list are deliberately not on that
+  list**: they have a positive list of their own, which is the better check
+  because it names what the estate's resolvers *are*, and handing them out is the
+  whole purpose of stateless DHCPv6 on a network that addresses itself by router
+  advertisement. **Prefix delegation** is the part with no DHCPv4 equivalent and
+  the part where a wrong answer is largest — a reply delegating `::/0` has handed
+  a host the whole of IPv6 to route — so both ends are bounded and a prefix
+  outside the estate's is **refused rather than stripped**, because there is no
+  useful half of a delegation to keep; a client's own `::/0` *hint* is still
+  allowed, because RFC 8415 §21.22 lets it mean "any". A **valid lifetime of zero
+  is never bounded up**: zero is how a server withdraws an address, and applying
+  a floor to it would turn a withdrawal into a lease. And the **starvation bound
+  is keyed on the DUID**, not the source address, because a DHCPv6 client sends
+  from a link-local address it chose for itself and an address-keyed limit would
+  see one sender doing nothing unusual
 
 - `kind: postgres`: a **PostgreSQL relay**, which is deliberately **not a SQL
   firewall**. Knowing which tables a statement touches means parsing SQL
