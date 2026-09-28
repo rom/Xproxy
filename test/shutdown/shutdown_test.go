@@ -54,6 +54,7 @@ import (
 	_ "github.com/rom/xproxy/internal/kinds/mysql"
 	_ "github.com/rom/xproxy/internal/kinds/ntp"
 	_ "github.com/rom/xproxy/internal/kinds/ntske"
+	_ "github.com/rom/xproxy/internal/kinds/opcua"
 	_ "github.com/rom/xproxy/internal/kinds/postgres"
 	_ "github.com/rom/xproxy/internal/kinds/rdp"
 	_ "github.com/rom/xproxy/internal/kinds/redis"
@@ -116,6 +117,7 @@ var cases = map[string]kindCase{
 	"dhcp":   {section: "dhcp: {upstream: u, relay_address: 10.0.0.1}", datagram: true},
 	"dhcp6":  {section: "dhcp6: {upstream: u, link_address: 2001:db8::1}", datagram: true},
 	"coap":   {section: "coap: {upstream: u}", datagram: true},
+	"opcua":  {section: "opcua: {upstream: u}"},
 }
 
 // excluded are the kinds this test does not start, each with the reason.

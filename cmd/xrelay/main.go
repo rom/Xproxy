@@ -34,6 +34,7 @@ import (
 	_ "github.com/rom/xproxy/internal/kinds/mysql"    // listener kind: mysql
 	_ "github.com/rom/xproxy/internal/kinds/ntp"      // listener kind: ntp
 	_ "github.com/rom/xproxy/internal/kinds/ntske"    // listener kind: ntske
+	_ "github.com/rom/xproxy/internal/kinds/opcua"    // listener kind: opcua
 	_ "github.com/rom/xproxy/internal/kinds/postgres" // listener kind: postgres
 	_ "github.com/rom/xproxy/internal/kinds/redis"    // listener kind: redis
 	_ "github.com/rom/xproxy/internal/kinds/s7"       // listener kind: s7

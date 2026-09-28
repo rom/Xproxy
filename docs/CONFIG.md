@@ -3831,6 +3831,168 @@ is in the refusal counters: `client_not_allowed`, `device_not_allowed`,
 `insecure_not_allowed`, `too_many_observers`, `too_many_pending`,
 `rate_limited`, `unsolicited`, `rule`, `default_deny`.
 
+### server.listeners[].opcua (kind: opcua)
+
+OPC UA is the protocol the last fifteen years of industrial automation
+standardised on. A modern PLC, a historian, a SCADA client, an MES and a cloud
+gateway all speak it, and unlike the protocols it replaced it was designed with
+security *in* it rather than beside it: certificates on both ends, a signed and
+encrypted channel, a session with a user identity.
+
+That changes what a relay in front of it is for. In front of Modbus or S7comm
+the relay **is** the access control, because the protocol has none. Here the
+server already checks certificates and users, and the relay is the place where
+an estate's rules — which security policies are acceptable, whose application,
+which users, which nodes — are written once and enforced for every server behind
+it, including the ones whose own configuration nobody has reviewed since
+commissioning.
+
+The listener takes **no `tls` section**, and that looks like an omission until
+you see why. The `opc.tcp` transport has no TLS: the security is inside the
+protocol, negotiated per connection in the secure channel from certificates the
+two ends hold. A certificate here would promise something the transport cannot
+do, and terminating the channel would make this relay a man in the middle of the
+one industrial protocol designed to notice — holding the plant's private key to
+do it.
+
+Four things shape this section.
+
+**Most of what is worth enforcing is in the handshake, and all of it is in the
+clear.** Before any service call there is a Hello naming an endpoint and
+proposing four buffer sizes, an OpenSecureChannel naming a security policy and
+carrying both certificates, and a CreateSession/ActivateSession pair naming an
+application and a user. Those fields are readable by construction — they are how
+the two ends agree on what to encrypt — so `security_policies`,
+`security_modes`, `application_uris`, `token_kinds` and `users` work on every
+channel whatever it then does to its bodies. They are also the cheapest lines
+here: a listener admitting one policy in one mode from two named applications
+with no anonymous token has excluded most of what goes wrong without naming a
+single node.
+
+**Whether the service rules apply at all is a property of the channel.**
+`MessageSecurityMode` has three values and they mean three different things to a
+reader. With `none` everything is plaintext. With **`sign`** the body is signed
+and *not* encrypted, so this relay reads every node identifier and method
+argument — and never modifies one, because the signature is over exactly the
+octets the client sent. With `sign_and_encrypt` the body is ciphertext and the
+relay sees the channel, the sizes and the timing. So `nodes`, `services`,
+`attributes` and `methods` decide traffic on a none or sign channel and are
+silent on a sign_and_encrypt one. That is a genuine trade-off rather than a gap:
+confidentiality on the wire and service-level enforcement in the middle are
+alternatives, and `require_readable_bodies` is how a listener says which it
+wants. Validation warns when service rules sit alongside a mode that makes them
+inert, and `opcua_opaque_bodies` counts the messages it happened to.
+
+**A refusal is answered the way a server refuses.** A service-level refusal is a
+**ServiceFault**: a response whose TypeId is the fault's, carrying a bad status
+code against the request handle the client sent. The client's own library reports
+the error and the poll loop carries on, which is what a plant needs — dropping a
+session because one Read was refused turns a refusal into an outage. A refusal
+decided from the *channel* is an **ERR** and a close instead, and not by
+preference: a fault answering an OpenSecureChannel would have to be secured with
+the keys that OpenSecureChannel exists to establish, so the client's record layer
+would discard it and the operator would read a timeout.
+
+**A write and a call are not the same risk, and neither is a write and a write.**
+`services` is the coarse allow list; `attributes` and `write_attributes` separate
+reading a process value from changing who may write it. A write to attribute 13
+moves an actuator; a write to attribute 17 changes the permissions on it. Both
+arrive as an ordinary Write, and a policy naming only the node would have allowed
+either.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | string | required | The server pool |
+| `allow_clients`, `deny_clients` | list of CIDR | `[]` | The networks a client may connect from; deny is evaluated first |
+| `endpoints` | list of pattern | `[]` (any) | The endpoint URLs a client may name in its Hello and CreateSession. Behind a relay a client's endpoint URL names the relay, so the server's own endpoint list has to carry that address |
+| `allow_reverse_hello` | bool | `false` | Carry a ReverseHello: a server dialling outward to reach a client behind a firewall. It inverts the direction everything else assumes, so the peer that dialled would be trusted as a server |
+| `security_policies` | list | the three not withdrawn | The policy URIs a channel may be opened with, by short name: `None`, `Basic128Rsa15`, `Basic256`, `Basic256Sha256`, `Aes128_Sha256_RsaOaep`, `Aes256_Sha256_RsaPss` |
+| `deny_security_policies` | list | `[]` | The deny list, which no rule overrides |
+| `allow_deprecated_policies` | bool | `false` | Carry `Basic128Rsa15` and `Basic256`: SHA-1 based, withdrawn in IEC 62541 1.04, and usually still on because one old client needs them. Naming one in `security_policies` without this is an error, so switching on SHA-1 is written down twice |
+| `security_modes` | list | `[sign, sign_and_encrypt]` | The modes a channel may ask for: `none`, `sign`, `sign_and_encrypt`. A channel with no protection at all is refused until named |
+| `require_readable_bodies` | bool | `false` | Refuse `sign_and_encrypt`, so the service rules below apply to every message. It trades confidentiality on this hop for enforcement in the middle: `sign` still authenticates every message and still detects modification |
+| `max_token_lifetime` | duration | `0` (off) | Bound the security token lifetime a client may ask for. A client asking for a very long one is asking not to rotate its keys; the standard's own default is an hour |
+| `application_uris` | list of pattern | `[]` (any) | The client application URIs a CreateSession may name |
+| `require_certificate_uri` | bool | `true` | Refuse a CreateSession whose application URI is not a subjectAltName of the certificate it presented. The cheapest identity check the protocol has |
+| `require_client_certificate` | bool | `true` | Refuse a CreateSession that presents none: a session with no certificate has no application identity, whatever user it then activates as |
+| `token_kinds` | list | all but `anonymous` | The identity token kinds an ActivateSession may present: `anonymous`, `username`, `x509`, `issued` |
+| `users`, `deny_users` | list of pattern | `[]` (any) | The user names a username token may name. A server usually has four or five accounts and they do not change |
+| `refuse_plaintext_passwords` | bool | `true` | Refuse a username token whose password carries no encryption algorithm. Under mode `none` that password is on the wire as the operator typed it; under `sign` it is readable by anything on the path, this relay included — which is why the default does not depend on the mode |
+| `read_only` | bool | `false` | Refuse every service that changes the plant or the address space, before any rule is read, and no rule overrides it. Subscriptions are *not* on that list: they change state the server holds rather than anything the plant does, and a read-only listener no HMI can subscribe through is a listener no HMI can use |
+| `services` | list | what an HMI does | The services allowed, by name. The default is the discovery and session services, `read`, `browse`, `history_read` and the subscription and monitored-item services — and nothing that changes a value, a node or the plant |
+| `deny_services` | list | `[]` | The deny list, which no rule overrides |
+| `namespaces` | list | `[]` (any) | The namespace indices a node may name, as numbers or `2-4` ranges. Indices and not URIs: a URI appears only in an ExpandedNodeId, and the node a Read, a Write, a Browse or a Call names is a plain NodeId. An index means something only against the server's own table, so this is a list to review after a firmware update |
+| `nodes` | list of pattern | `[]` (any) | The node identifiers a request may name, as globs over the canonical form: `ns=3;i=1001`, `ns=4;s=Motor/*`, `ns=3;i=*` |
+| `write_nodes` | list of pattern | inherited | Applies to writing services when set, so one listener can allow a wide read and a narrow write |
+| `deny_nodes` | list of pattern | `[]` | The deny list, which no rule overrides |
+| `methods`, `deny_methods` | list of pattern | `[]` (any) | The method node identifiers a Call may invoke. A Call names two nodes — the object and the method — and both are checked, because allowing Reset on one pump is not allowing it on every pump of that model |
+| `attributes` | list | `[]` (any) | The attributes a Read or a monitored item may name |
+| `write_attributes` | list | `[value]` | The attributes a Write may change. The default is the line between moving an actuator and changing who may move it: `write_mask`, `access_level`, `user_access_level`, `executable`, `user_executable` and `historizing` all govern permissions |
+| `max_operations` | int | `0` (off) | The operations one request may carry: the nodes in a Read, the values in a Write, the methods in a Call, the items in a CreateMonitoredItems. A Read naming ten thousand nodes is one request and ten thousand operations |
+| `max_write_operations` | int | inherited | Applies to writing services when set |
+| `max_monitored_items` | int | `0` (off) | The monitored items one subscription may hold |
+| `min_publishing_interval` | duration | `0` (off) | The fastest publishing interval a CreateSubscription may ask for. **The bound that matters most here**, because the amplification is arithmetic rather than accidental: a one-millisecond interval over a thousand monitored items is a server asked to send a thousand values a millisecond, from one session, in valid protocol |
+| `min_sampling_interval` | duration | `0` (off) | The fastest sampling interval a monitored item may ask for. A sampling interval faster than the device can answer is a device polled as fast as it will go |
+| `max_subscriptions` | int | `0` (off) | The subscriptions one session may hold |
+| `max_message_size` | int | 8 MiB | One assembled message |
+| `max_chunk_size` | int | 1 MiB | One chunk, which is also the buffer size the two ends may negotiate. Worth setting: the negotiation is a minimum of the two proposals, so a relay passing both through has let the ends agree on a chunk larger than its own buffer |
+| `max_chunks` | int | `64` | The chunks in one message |
+| `max_requests` | int | `0` (off) | The requests one connection may send. A plant session is long-lived, so this is off by default |
+| `rate_limit`, `rate_burst` | int | `0` (off) | Requests a second per client address |
+| `max_sessions`, `max_sessions_per_client` | int | `0` (off) | Concurrent connections |
+| `idle_timeout`, `session_duration` | duration | `0` (off) | Bound a connection |
+| `handshake_timeout` | duration | `30s` | Covers the Hello, which is where a peer that opened a socket and said nothing sits |
+| `default_action` | enum | `deny` | `deny` or `allow` |
+| `deny_response` | enum | `fault` | `fault` (a ServiceFault, which is what a server sends), `error` (an ERR and a close, so the reason is on the wire), `close` or `drop` |
+| `log_requests` | bool | `false` | An access line per message, which on a plant polling every second is a great many lines. A Write, a Call and an activation are logged regardless, because those are what a change record is about |
+| `alert_on_deny` | bool | `true` | A security event for every refusal |
+| `monitor_only` | bool | `false` | Evaluate and enforce nothing, except the hard decisions: the client list, a message the relay could not read, the bounds, and every service that changes anything — because a Write forwarded so it could be written down is a moved actuator |
+
+#### server.listeners[].opcua.rules[]
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | string | required | Names the rule in the logs and the counters |
+| `action` | enum | `allow` | `allow`, `deny` or `observe`. `observe` logs and counts and then keeps looking, which is how a rule is tried on live traffic before it decides anything |
+| `clients` | list of CIDR | `[]` | The networks the connection came from |
+| `application_uris`, `users`, `token_kinds` | list | `[]` | Select by who the traffic is from. A rule naming a user matches only a session that activated as one, which is every session after ActivateSession and none before it |
+| `security_policies`, `security_modes` | list | `[]` | Select by what secures the channel, which is how "this client may write, but only over an encrypted channel" is written |
+| `services`, `deny_services` | list | `[]` | Narrow the listener's own lists for this rule's traffic. A rule that names services selects only those, so a rule about writes does not decide about reads |
+| `namespaces`, `nodes`, `write_nodes`, `deny_nodes` | list | inherited | The rule's own node narrowing |
+| `methods`, `deny_methods` | list | inherited | The rule's own method narrowing |
+| `attributes`, `write_attributes` | list | inherited | The rule's own attribute narrowing |
+| `max_operations` | int | inherited | The rule's own operation bound |
+| `schedule` | object | none | Limit the rule to a time window, which is how "the integrator may call methods during the shutdown window" is written |
+| `comment` | string | none | Carried into the logs when the rule decides, for the change record a plant keeps |
+
+Counters: `opcua_channels`, `opcua_sessions`, `opcua_server_errors`,
+`opcua_server_faults` and — the one to read first on a new deployment —
+`opcua_opaque_bodies`, the messages whose body the channel encrypted, which are
+the messages the service rules did not decide about. A listener with rules about
+nodes and a high opaque count is enforcing less than its configuration reads as.
+`opcua_server_faults` is the number that says the two policies disagree: the
+server refusing something this relay allowed, which usually means a user the
+server does not grant what the listener does.
+
+Refusals are `opcua_denied` for the ban triggers, and the fine-grained reason is
+in the refusal counters: `client_not_allowed`, `client_denied`, `no_hello`,
+`unreadable_hello`, `hello_unacceptable`, `buffer_too_large`,
+`endpoint_not_allowed`, `reverse_hello`, `security_policy_unknown`,
+`security_policy_denied`, `security_policy_deprecated`,
+`security_policy_not_allowed`, `security_mode_unknown`,
+`security_mode_not_allowed`, `body_not_readable`, `nonce_without_policy`,
+`token_lifetime`, `no_client_certificate`, `application_not_allowed`,
+`application_type`, `certificate_uri_mismatch`, `token_kind_unknown`,
+`token_kind_not_allowed`, `plaintext_password`, `user_denied`,
+`user_not_allowed`, `empty_user`, `service_unknown`, `service_denied`,
+`service_not_allowed`, `read_only`, `rule_denied`, `no_rule`, `node_denied`,
+`node_not_allowed`, `namespace_not_allowed`, `attribute_unknown`,
+`attribute_not_allowed`, `permission_write`, `method_denied`,
+`method_not_allowed`, `too_many_operations`, `too_many_subscriptions`,
+`publishing_interval`, `too_many_monitored_items`, `sampling_interval`,
+`unexpected_message`, `unexpected_service`, `unreadable_message`,
+`unreadable_service`, `too_many_requests`, `rate_limited`.
+
 ### server.listeners[].tftp (kind: tftp)
 
 TFTP is the protocol under provisioning. A switch pulls its firmware over it, a
@@ -8042,7 +8204,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `flow`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `tcp_denied`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `dhcp6_denied`, `coap_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `amqp_denied`, `s7_denied`, `ntp_denied`, `ntske_denied`, `dns_denied`, `dns_threat_intel`, `dns_deceived`, `dns_tripwire`, `telnet_tripwire`, `ssh_tripwire`, `modbus_tripwire`, `iec104_tripwire`, `s7_tripwire`, `redis_tripwire`, `mysql_tripwire`, `postgres_tripwire`, `yara` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `flow`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `tcp_denied`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `dhcp6_denied`, `coap_denied`, `opcua_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `amqp_denied`, `s7_denied`, `ntp_denied`, `ntske_denied`, `dns_denied`, `dns_threat_intel`, `dns_deceived`, `dns_tripwire`, `telnet_tripwire`, `ssh_tripwire`, `modbus_tripwire`, `iec104_tripwire`, `s7_tripwire`, `redis_tripwire`, `mysql_tripwire`, `postgres_tripwire`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |

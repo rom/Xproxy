@@ -43,6 +43,7 @@ server:
           bacnet: null
           amqp: null
           s7: null
+          opcua: null
           policy: null
         - name: public
           address: :443
@@ -109,6 +110,7 @@ server:
           bacnet: null
           amqp: null
           s7: null
+          opcua: null
           policy: null
     limits:
         max_header_bytes: 65536

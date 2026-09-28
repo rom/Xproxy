@@ -31,11 +31,17 @@ routes:
 	get(t, url+"/", "Host", "nf.test")
 	get(t, url+"/", "Host", "nowhere.test") // routes to web (catch-all) -> 200
 
-	// The response counters are written by logAccess, after the client
-	// already has the body, so wait for them to catch up rather than
-	// reading the exposition the instant the last get returns.
+	// The counters are written after the client already has the body, so wait for
+	// them to catch up rather than reading the exposition the instant the last get
+	// returns.
+	//
+	// The *per-route* counters are the ones to wait on, and that is not obvious:
+	// they are written by a deferred call registered before the access log's, so
+	// LIFO makes them run strictly *after* the response counters. A gate that
+	// waited only on the response counters would then read route counters that had
+	// not been written yet — which is what happened under load.
 	var out string
-	eventually(t, 10*time.Second, "the response counters to catch up with the five requests", func() bool {
+	eventually(t, 10*time.Second, "the counters to catch up with the five requests", func() bool {
 		var buf bytes.Buffer
 		if err := s.WriteMetrics(&buf); err != nil {
 			t.Fatal(err)
@@ -43,7 +49,10 @@ routes:
 		out = buf.String()
 		return strings.Contains(out, `xproxy_responses_total{class="2xx"} 4`) &&
 			strings.Contains(out, `xproxy_responses_total{class="4xx"} 1`) &&
-			strings.Contains(out, `xproxy_request_duration_seconds_count 5`)
+			strings.Contains(out, `xproxy_request_duration_seconds_count 5`) &&
+			strings.Contains(out, `xproxy_route_requests_total{outcome="2xx",route="web"} 4`) &&
+			strings.Contains(out, `xproxy_route_requests_total{outcome="4xx",route="nf"} 1`) &&
+			strings.Contains(out, `xproxy_upstream_endpoint_requests_total{endpoint="`+a.addr()+`",upstream="up"} 4`)
 	})
 	for _, want := range []string{
 		"# TYPE xproxy_requests_total counter\nxproxy_requests_total 5\n",

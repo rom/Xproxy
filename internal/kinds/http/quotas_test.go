@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rom/xproxy/internal/proxy"
 )
@@ -47,11 +48,21 @@ routes:
 	}
 	get(t, url+"/", "Host", "other.test")
 
-	q := s.Quotas(5)
+	// The per-route counters are written by a deferred call inside the handler, so
+	// they can still be in flight when the client's own get has returned. Waiting
+	// for the counts rather than reading them the instant the last request came
+	// back is what stops this being a test that passes on an idle machine.
+	var q proxy.QuotaReport
 	byRoute := map[string]proxy.RouteQuota{}
-	for _, r := range q.Routes {
-		byRoute[r.Route] = r
-	}
+	eventually(t, 10*time.Second, "the route counters to catch up with the eight requests", func() bool {
+		q = s.Quotas(5)
+		byRoute = map[string]proxy.RouteQuota{}
+		for _, r := range q.Routes {
+			byRoute[r.Route] = r
+		}
+		return byRoute["shop-web"].Requests == 3 && byRoute["shop-api"].Requests == 4 &&
+			byRoute["other"].Requests == 1
+	})
 	web := byRoute["shop-web"]
 	if web.Requests != 3 || web.Status2xx != 3 || web.Tenant != "shop" || web.Upstream != "app" || web.BytesOut < uint64(3*len("a:/page")) {
 		t.Fatalf("web %+v", web)

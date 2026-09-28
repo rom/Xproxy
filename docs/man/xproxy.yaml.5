@@ -8881,6 +8881,571 @@ T}
 Counters: \fBcoap_messages\fR, \fBcoap_requests\fR, \fBcoap_responses\fR, \fBcoap_empty\fR, \fBcoap_relayed\fR, \fBcoap_answered\fR, \fBcoap_notifications\fR, \fBcoap_denied\fR, \fBcoap_would_deny\fR, \fBcoap_malformed\fR, \fBcoap_rejected\fR, \fBcoap_oversize\fR, \fBcoap_rate_limited\fR, \fBcoap_upstream_failed\fR, \fBcoap_send_failed\fR, \fBcoap_unsolicited\fR, \fBcoap_refused_observe\fR, \fBcoap_handshakes\fR, \fBcoap_handshakes_failed\fR, \fBcoap_sessions\fR, \fBcoap_datagrams_dropped\fR, and the three worth reading first \[u2014] \fBcoap_rogue_device\fR, an answer refused because it came from an address that is not a device; \fBcoap_amplified\fR, an answer refused for being too large a multiple of the question, which is the number that says this listener is doing something a per\-datagram bound could not; and \fBcoap_refusals_answered\fR, the refusals sent back as a response code rather than dropped, which is what keeps a refused Confirmable request from being retransmitted four more times. \fBcoap_proxy_refused\fR counts the requests that asked a device to fetch something. \fBcoap_pending\fR and \fBcoap_observers\fR are gauges.
 .PP
 Refusals are \fBcoap_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBdevice_not_allowed\fR, \fBmalformed\fR, \fBmalformed_response\fR, \fBmalformed_option\fR, \fBmessage_too_large\fR, \fBunknown_method\fR, \fBsignalling_over_datagram\fR, \fBresponse_from_client_side\fR, \fBrequest_from_server_side\fR, \fBmessage_type_not_allowed\fR, \fBrepeated_option\fR, \fBno_token\fR, \fBsuspicious_path\fR, \fBunknown_critical_option\fR, \fBunknown_unsafe_option\fR, \fBproxying_not_allowed\fR, \fBobserve_not_allowed\fR, \fBdiscovery_not_allowed\fR, \fBmethod_not_allowed\fR, \fBpath_not_allowed\fR, \fBquery_not_allowed\fR, \fBcontent_format_not_allowed\fR, \fBpayload_too_large\fR, \fBblock_too_large\fR, \fBtransfer_too_large\fR, \fBresponse_too_large\fR, \fBamplified\fR, \fBinsecure_not_allowed\fR, \fBtoo_many_observers\fR, \fBtoo_many_pending\fR, \fBrate_limited\fR, \fBunsolicited\fR, \fBrule\fR, \fBdefault_deny\fR.
+.SS "server.listeners[].opcua (kind: opcua)"
+.PP
+OPC UA is the protocol the last fifteen years of industrial automation standardised on. A modern PLC, a historian, a SCADA client, an MES and a cloud gateway all speak it, and unlike the protocols it replaced it was designed with security \fIin\fR it rather than beside it: certificates on both ends, a signed and encrypted channel, a session with a user identity.
+.PP
+That changes what a relay in front of it is for. In front of Modbus or S7comm the relay \fBis\fR the access control, because the protocol has none. Here the server already checks certificates and users, and the relay is the place where an estate\(aqs rules \[u2014] which security policies are acceptable, whose application, which users, which nodes \[u2014] are written once and enforced for every server behind it, including the ones whose own configuration nobody has reviewed since commissioning.
+.PP
+The listener takes \fBno \fBtls\fR section\fR, and that looks like an omission until you see why. The \fBopc.tcp\fR transport has no TLS: the security is inside the protocol, negotiated per connection in the secure channel from certificates the two ends hold. A certificate here would promise something the transport cannot do, and terminating the channel would make this relay a man in the middle of the one industrial protocol designed to notice \[u2014] holding the plant\(aqs private key to do it.
+.PP
+Four things shape this section.
+.PP
+\fBMost of what is worth enforcing is in the handshake, and all of it is in the clear.\fR Before any service call there is a Hello naming an endpoint and proposing four buffer sizes, an OpenSecureChannel naming a security policy and carrying both certificates, and a CreateSession/ActivateSession pair naming an application and a user. Those fields are readable by construction \[u2014] they are how the two ends agree on what to encrypt \[u2014] so \fBsecurity_policies\fR, \fBsecurity_modes\fR, \fBapplication_uris\fR, \fBtoken_kinds\fR and \fBusers\fR work on every channel whatever it then does to its bodies. They are also the cheapest lines here: a listener admitting one policy in one mode from two named applications with no anonymous token has excluded most of what goes wrong without naming a single node.
+.PP
+\fBWhether the service rules apply at all is a property of the channel.\fR \fBMessageSecurityMode\fR has three values and they mean three different things to a reader. With \fBnone\fR everything is plaintext. With \fB\fBsign\fR\fR the body is signed and \fInot\fR encrypted, so this relay reads every node identifier and method argument \[u2014] and never modifies one, because the signature is over exactly the octets the client sent. With \fBsign_and_encrypt\fR the body is ciphertext and the relay sees the channel, the sizes and the timing. So \fBnodes\fR, \fBservices\fR, \fBattributes\fR and \fBmethods\fR decide traffic on a none or sign channel and are silent on a sign_and_encrypt one. That is a genuine trade\-off rather than a gap: confidentiality on the wire and service\-level enforcement in the middle are alternatives, and \fBrequire_readable_bodies\fR is how a listener says which it wants. Validation warns when service rules sit alongside a mode that makes them inert, and \fBopcua_opaque_bodies\fR counts the messages it happened to.
+.PP
+\fBA refusal is answered the way a server refuses.\fR A service\-level refusal is a \fBServiceFault\fR: a response whose TypeId is the fault\(aqs, carrying a bad status code against the request handle the client sent. The client\(aqs own library reports the error and the poll loop carries on, which is what a plant needs \[u2014] dropping a session because one Read was refused turns a refusal into an outage. A refusal decided from the \fIchannel\fR is an \fBERR\fR and a close instead, and not by preference: a fault answering an OpenSecureChannel would have to be secured with the keys that OpenSecureChannel exists to establish, so the client\(aqs record layer would discard it and the operator would read a timeout.
+.PP
+\fBA write and a call are not the same risk, and neither is a write and a write.\fR \fBservices\fR is the coarse allow list; \fBattributes\fR and \fBwrite_attributes\fR separate reading a process value from changing who may write it. A write to attribute 13 moves an actuator; a write to attribute 17 changes the permissions on it. Both arrive as an ordinary Write, and a policy naming only the node would have allowed either.
+.PP
+.TS
+allbox;
+lbw(1.4i) lbw(0.9i) lbw(1.0i) lbx
+lw(1.4i) lw(0.9i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBupstream\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+The server pool
+T}
+T{
+\fBallow_\:clients\fR,\: \fBdeny_\:clients\fR
+T}	T{
+list of CIDR
+T}	T{
+\fB[]\fR
+T}	T{
+The networks a client may connect from;\: deny is evaluated first
+T}
+T{
+\fBendpoints\fR
+T}	T{
+list of pattern
+T}	T{
+\fB[]\fR (any)
+T}	T{
+The endpoint URLs a client may name in its Hello and CreateSession. Behind a relay a client\(aqs endpoint URL names the relay,\: so the server\(aqs own endpoint list has to carry that address
+T}
+T{
+\fBallow_\:reverse_\:hello\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Carry a ReverseHello: a server dialling outward to reach a client behind a firewall. It inverts the direction everything else assumes,\: so the peer that dialled would be trusted as a server
+T}
+T{
+\fBsecurity_\:policies\fR
+T}	T{
+list
+T}	T{
+the three not withdrawn
+T}	T{
+The policy URIs a channel may be opened with,\: by short name: \fBNone\fR,\: \fBBasic128Rsa15\fR,\: \fBBasic256\fR,\: \fBBasic256Sha256\fR,\: \fBAes128_\:Sha256_\:RsaOaep\fR,\: \fBAes256_\:Sha256_\:RsaPss\fR
+T}
+T{
+\fBdeny_\:security_\:policies\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The deny list,\: which no rule overrides
+T}
+T{
+\fBallow_\:deprecated_\:policies\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Carry \fBBasic128Rsa15\fR and \fBBasic256\fR: SHA\-1 based,\: withdrawn in IEC 62541 1.04,\: and usually still on because one old client needs them. Naming one in \fBsecurity_\:policies\fR without this is an error,\: so switching on SHA\-1 is written down twice
+T}
+T{
+\fBsecurity_\:modes\fR
+T}	T{
+list
+T}	T{
+\fB[sign,\: sign_\:and_\:encrypt]\fR
+T}	T{
+The modes a channel may ask for: \fBnone\fR,\: \fBsign\fR,\: \fBsign_\:and_\:encrypt\fR. A channel with no protection at all is refused until named
+T}
+T{
+\fBrequire_\:readable_\:bodies\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse \fBsign_\:and_\:encrypt\fR,\: so the service rules below apply to every message. It trades confidentiality on this hop for enforcement in the middle: \fBsign\fR still authenticates every message and still detects modification
+T}
+T{
+\fBmax_\:token_\:lifetime\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR (off)
+T}	T{
+Bound the security token lifetime a client may ask for. A client asking for a very long one is asking not to rotate its keys;\: the standard\(aqs own default is an hour
+T}
+T{
+\fBapplication_\:uris\fR
+T}	T{
+list of pattern
+T}	T{
+\fB[]\fR (any)
+T}	T{
+The client application URIs a CreateSession may name
+T}
+T{
+\fBrequire_\:certificate_\:uri\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse a CreateSession whose application URI is not a subjectAltName of the certificate it presented. The cheapest identity check the protocol has
+T}
+T{
+\fBrequire_\:client_\:certificate\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse a CreateSession that presents none: a session with no certificate has no application identity,\: whatever user it then activates as
+T}
+T{
+\fBtoken_\:kinds\fR
+T}	T{
+list
+T}	T{
+all but \fBanonymous\fR
+T}	T{
+The identity token kinds an ActivateSession may present: \fBanonymous\fR,\: \fBusername\fR,\: \fBx509\fR,\: \fBissued\fR
+T}
+T{
+\fBusers\fR,\: \fBdeny_\:users\fR
+T}	T{
+list of pattern
+T}	T{
+\fB[]\fR (any)
+T}	T{
+The user names a username token may name. A server usually has four or five accounts and they do not change
+T}
+T{
+\fBrefuse_\:plaintext_\:passwords\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse a username token whose password carries no encryption algorithm. Under mode \fBnone\fR that password is on the wire as the operator typed it;\: under \fBsign\fR it is readable by anything on the path,\: this relay included \[u2014] which is why the default does not depend on the mode
+T}
+T{
+\fBread_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse every service that changes the plant or the address space,\: before any rule is read,\: and no rule overrides it. Subscriptions are \fInot\fR on that list: they change state the server holds rather than anything the plant does,\: and a read\-only listener no HMI can subscribe through is a listener no HMI can use
+T}
+T{
+\fBservices\fR
+T}	T{
+list
+T}	T{
+what an HMI does
+T}	T{
+The services allowed,\: by name. The default is the discovery and session services,\: \fBread\fR,\: \fBbrowse\fR,\: \fBhistory_\:read\fR and the subscription and monitored\-item services \[u2014] and nothing that changes a value,\: a node or the plant
+T}
+T{
+\fBdeny_\:services\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The deny list,\: which no rule overrides
+T}
+T{
+\fBnamespaces\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+The namespace indices a node may name,\: as numbers or \fB2\-\:4\fR ranges. Indices and not URIs: a URI appears only in an ExpandedNodeId,\: and the node a Read,\: a Write,\: a Browse or a Call names is a plain NodeId. An index means something only against the server\(aqs own table,\: so this is a list to review after a firmware update
+T}
+T{
+\fBnodes\fR
+T}	T{
+list of pattern
+T}	T{
+\fB[]\fR (any)
+T}	T{
+The node identifiers a request may name,\: as globs over the canonical form: \fBns=\:3;i=\:1001\fR,\: \fBns=\:4;s=\:Motor/\:*\fR,\: \fBns=\:3;i=\:*\fR
+T}
+T{
+\fBwrite_\:nodes\fR
+T}	T{
+list of pattern
+T}	T{
+inherited
+T}	T{
+Applies to writing services when set,\: so one listener can allow a wide read and a narrow write
+T}
+T{
+\fBdeny_\:nodes\fR
+T}	T{
+list of pattern
+T}	T{
+\fB[]\fR
+T}	T{
+The deny list,\: which no rule overrides
+T}
+T{
+\fBmethods\fR,\: \fBdeny_\:methods\fR
+T}	T{
+list of pattern
+T}	T{
+\fB[]\fR (any)
+T}	T{
+The method node identifiers a Call may invoke. A Call names two nodes \[u2014] the object and the method \[u2014] and both are checked,\: because allowing Reset on one pump is not allowing it on every pump of that model
+T}
+T{
+\fBattributes\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+The attributes a Read or a monitored item may name
+T}
+T{
+\fBwrite_\:attributes\fR
+T}	T{
+list
+T}	T{
+\fB[value]\fR
+T}	T{
+The attributes a Write may change. The default is the line between moving an actuator and changing who may move it: \fBwrite_\:mask\fR,\: \fBaccess_\:level\fR,\: \fBuser_\:access_\:level\fR,\: \fBexecutable\fR,\: \fBuser_\:executable\fR and \fBhistorizing\fR all govern permissions
+T}
+T{
+\fBmax_\:operations\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (off)
+T}	T{
+The operations one request may carry: the nodes in a Read,\: the values in a Write,\: the methods in a Call,\: the items in a CreateMonitoredItems. A Read naming ten thousand nodes is one request and ten thousand operations
+T}
+T{
+\fBmax_\:write_\:operations\fR
+T}	T{
+int
+T}	T{
+inherited
+T}	T{
+Applies to writing services when set
+T}
+T{
+\fBmax_\:monitored_\:items\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (off)
+T}	T{
+The monitored items one subscription may hold
+T}
+T{
+\fBmin_\:publishing_\:interval\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR (off)
+T}	T{
+The fastest publishing interval a CreateSubscription may ask for. \fBThe bound that matters most here\fR,\: because the amplification is arithmetic rather than accidental: a one\-millisecond interval over a thousand monitored items is a server asked to send a thousand values a millisecond,\: from one session,\: in valid protocol
+T}
+T{
+\fBmin_\:sampling_\:interval\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR (off)
+T}	T{
+The fastest sampling interval a monitored item may ask for. A sampling interval faster than the device can answer is a device polled as fast as it will go
+T}
+T{
+\fBmax_\:subscriptions\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (off)
+T}	T{
+The subscriptions one session may hold
+T}
+T{
+\fBmax_\:message_\:size\fR
+T}	T{
+int
+T}	T{
+8 MiB
+T}	T{
+One assembled message
+T}
+T{
+\fBmax_\:chunk_\:size\fR
+T}	T{
+int
+T}	T{
+1 MiB
+T}	T{
+One chunk,\: which is also the buffer size the two ends may negotiate. Worth setting: the negotiation is a minimum of the two proposals,\: so a relay passing both through has let the ends agree on a chunk larger than its own buffer
+T}
+T{
+\fBmax_\:chunks\fR
+T}	T{
+int
+T}	T{
+\fB64\fR
+T}	T{
+The chunks in one message
+T}
+T{
+\fBmax_\:requests\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (off)
+T}	T{
+The requests one connection may send. A plant session is long\-lived,\: so this is off by default
+T}
+T{
+\fBrate_\:limit\fR,\: \fBrate_\:burst\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (off)
+T}	T{
+Requests a second per client address
+T}
+T{
+\fBmax_\:sessions\fR,\: \fBmax_\:sessions_\:per_\:client\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (off)
+T}	T{
+Concurrent connections
+T}
+T{
+\fBidle_\:timeout\fR,\: \fBsession_\:duration\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR (off)
+T}	T{
+Bound a connection
+T}
+T{
+\fBhandshake_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB30s\fR
+T}	T{
+Covers the Hello,\: which is where a peer that opened a socket and said nothing sits
+T}
+T{
+\fBdefault_\:action\fR
+T}	T{
+enum
+T}	T{
+\fBdeny\fR
+T}	T{
+\fBdeny\fR or \fBallow\fR
+T}
+T{
+\fBdeny_\:response\fR
+T}	T{
+enum
+T}	T{
+\fBfault\fR
+T}	T{
+\fBfault\fR (a ServiceFault,\: which is what a server sends),\: \fBerror\fR (an ERR and a close,\: so the reason is on the wire),\: \fBclose\fR or \fBdrop\fR
+T}
+T{
+\fBlog_\:requests\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+An access line per message,\: which on a plant polling every second is a great many lines. A Write,\: a Call and an activation are logged regardless,\: because those are what a change record is about
+T}
+T{
+\fBalert_\:on_\:deny\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A security event for every refusal
+T}
+T{
+\fBmonitor_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Evaluate and enforce nothing,\: except the hard decisions: the client list,\: a message the relay could not read,\: the bounds,\: and every service that changes anything \[u2014] because a Write forwarded so it could be written down is a moved actuator
+T}
+.TE
+.SS "server.listeners[].opcua.rules[]"
+.PP
+.TS
+allbox;
+lbw(1.3i) lbw(0.7i) lbw(1.0i) lbx
+lw(1.3i) lw(0.7i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+Names the rule in the logs and the counters
+T}
+T{
+\fBaction\fR
+T}	T{
+enum
+T}	T{
+\fBallow\fR
+T}	T{
+\fBallow\fR,\: \fBdeny\fR or \fBobserve\fR. \fBobserve\fR logs and counts and then keeps looking,\: which is how a rule is tried on live traffic before it decides anything
+T}
+T{
+\fBclients\fR
+T}	T{
+list of CIDR
+T}	T{
+\fB[]\fR
+T}	T{
+The networks the connection came from
+T}
+T{
+\fBapplication_\:uris\fR,\: \fBusers\fR,\: \fBtoken_\:kinds\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Select by who the traffic is from. A rule naming a user matches only a session that activated as one,\: which is every session after ActivateSession and none before it
+T}
+T{
+\fBsecurity_\:policies\fR,\: \fBsecurity_\:modes\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Select by what secures the channel,\: which is how "this client may write,\: but only over an encrypted channel" is written
+T}
+T{
+\fBservices\fR,\: \fBdeny_\:services\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Narrow the listener\(aqs own lists for this rule\(aqs traffic. A rule that names services selects only those,\: so a rule about writes does not decide about reads
+T}
+T{
+\fBnamespaces\fR,\: \fBnodes\fR,\: \fBwrite_\:nodes\fR,\: \fBdeny_\:nodes\fR
+T}	T{
+list
+T}	T{
+inherited
+T}	T{
+The rule\(aqs own node narrowing
+T}
+T{
+\fBmethods\fR,\: \fBdeny_\:methods\fR
+T}	T{
+list
+T}	T{
+inherited
+T}	T{
+The rule\(aqs own method narrowing
+T}
+T{
+\fBattributes\fR,\: \fBwrite_\:attributes\fR
+T}	T{
+list
+T}	T{
+inherited
+T}	T{
+The rule\(aqs own attribute narrowing
+T}
+T{
+\fBmax_\:operations\fR
+T}	T{
+int
+T}	T{
+inherited
+T}	T{
+The rule\(aqs own operation bound
+T}
+T{
+\fBschedule\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Limit the rule to a time window,\: which is how "the integrator may call methods during the shutdown window" is written
+T}
+T{
+\fBcomment\fR
+T}	T{
+string
+T}	T{
+none
+T}	T{
+Carried into the logs when the rule decides,\: for the change record a plant keeps
+T}
+.TE
+.PP
+Counters: \fBopcua_channels\fR, \fBopcua_sessions\fR, \fBopcua_server_errors\fR, \fBopcua_server_faults\fR and \[u2014] the one to read first on a new deployment \[u2014] \fBopcua_opaque_bodies\fR, the messages whose body the channel encrypted, which are the messages the service rules did not decide about. A listener with rules about nodes and a high opaque count is enforcing less than its configuration reads as. \fBopcua_server_faults\fR is the number that says the two policies disagree: the server refusing something this relay allowed, which usually means a user the server does not grant what the listener does.
+.PP
+Refusals are \fBopcua_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBclient_denied\fR, \fBno_hello\fR, \fBunreadable_hello\fR, \fBhello_unacceptable\fR, \fBbuffer_too_large\fR, \fBendpoint_not_allowed\fR, \fBreverse_hello\fR, \fBsecurity_policy_unknown\fR, \fBsecurity_policy_denied\fR, \fBsecurity_policy_deprecated\fR, \fBsecurity_policy_not_allowed\fR, \fBsecurity_mode_unknown\fR, \fBsecurity_mode_not_allowed\fR, \fBbody_not_readable\fR, \fBnonce_without_policy\fR, \fBtoken_lifetime\fR, \fBno_client_certificate\fR, \fBapplication_not_allowed\fR, \fBapplication_type\fR, \fBcertificate_uri_mismatch\fR, \fBtoken_kind_unknown\fR, \fBtoken_kind_not_allowed\fR, \fBplaintext_password\fR, \fBuser_denied\fR, \fBuser_not_allowed\fR, \fBempty_user\fR, \fBservice_unknown\fR, \fBservice_denied\fR, \fBservice_not_allowed\fR, \fBread_only\fR, \fBrule_denied\fR, \fBno_rule\fR, \fBnode_denied\fR, \fBnode_not_allowed\fR, \fBnamespace_not_allowed\fR, \fBattribute_unknown\fR, \fBattribute_not_allowed\fR, \fBpermission_write\fR, \fBmethod_denied\fR, \fBmethod_not_allowed\fR, \fBtoo_many_operations\fR, \fBtoo_many_subscriptions\fR, \fBpublishing_interval\fR, \fBtoo_many_monitored_items\fR, \fBsampling_interval\fR, \fBunexpected_message\fR, \fBunexpected_service\fR, \fBunreadable_message\fR, \fBunreadable_service\fR, \fBtoo_many_requests\fR, \fBrate_limited\fR.
 .SS "server.listeners[].tftp (kind: tftp)"
 .PP
 TFTP is the protocol under provisioning. A switch pulls its firmware over it, a machine with no operating system yet pulls a boot image, a telephone pulls its configuration, and an engineer pushes a running configuration off a router with it. It has \fBno authentication of any kind\fR: no user, no password, no token, no transport security, and no extension that adds one. A request is a filename and a mode, and a server that receives one answers it.
@@ -18218,7 +18783,7 @@ list
 T}	T{
 \fB[]\fR (all)
 T}	T{
-Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBflow\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBtcp_\:denied\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBdhcp6_\:denied\fR,\: \fBcoap_\:denied\fR,\: \fBpostgres_\:denied\fR,\: \fBmysql_\:denied\fR,\: \fBtds_\:denied\fR,\: \fBredis_\:denied\fR,\: \fBbacnet_\:denied\fR,\: \fBamqp_\:denied\fR,\: \fBs7_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fBdns_\:denied\fR,\: \fBdns_\:threat_\:intel\fR,\: \fBdns_\:deceived\fR,\: \fBdns_\:tripwire\fR,\: \fBtelnet_\:tripwire\fR,\: \fBssh_\:tripwire\fR,\: \fBmodbus_\:tripwire\fR,\: \fBiec104_\:tripwire\fR,\: \fBs7_\:tripwire\fR,\: \fBredis_\:tripwire\fR,\: \fBmysql_\:tripwire\fR,\: \fBpostgres_\:tripwire\fR,\: \fByara\fR
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBflow\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBtcp_\:denied\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBdhcp6_\:denied\fR,\: \fBcoap_\:denied\fR,\: \fBopcua_\:denied\fR,\: \fBpostgres_\:denied\fR,\: \fBmysql_\:denied\fR,\: \fBtds_\:denied\fR,\: \fBredis_\:denied\fR,\: \fBbacnet_\:denied\fR,\: \fBamqp_\:denied\fR,\: \fBs7_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fBdns_\:denied\fR,\: \fBdns_\:threat_\:intel\fR,\: \fBdns_\:deceived\fR,\: \fBdns_\:tripwire\fR,\: \fBtelnet_\:tripwire\fR,\: \fBssh_\:tripwire\fR,\: \fBmodbus_\:tripwire\fR,\: \fBiec104_\:tripwire\fR,\: \fBs7_\:tripwire\fR,\: \fBredis_\:tripwire\fR,\: \fBmysql_\:tripwire\fR,\: \fBpostgres_\:tripwire\fR,\: \fByara\fR
 T}
 T{
 \fBthreshold\fR

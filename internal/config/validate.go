@@ -20,6 +20,8 @@ import (
 	mqttwire "github.com/rom/xproxy/internal/mqtt"
 	mysqlwire "github.com/rom/xproxy/internal/mysqlwire"
 	"github.com/rom/xproxy/internal/netutil"
+	"github.com/rom/xproxy/internal/numrange"
+	opcuawire "github.com/rom/xproxy/internal/opcua"
 	pgwire "github.com/rom/xproxy/internal/pgwire"
 	"github.com/rom/xproxy/internal/rdp"
 	"github.com/rom/xproxy/internal/recenc"
@@ -939,6 +941,21 @@ func (v *validator) server(s *Server) {
 				v.errf("%s.s7: required for kind s7", p)
 			} else {
 				v.s7Listener(p+".s7", ln.S7)
+			}
+		case "opcua":
+			// No tls section: the opc.tcp transport has none. OPC UA's
+			// security is inside the protocol, negotiated per connection in
+			// the secure channel, so a certificate here would promise
+			// something the transport cannot do -- and terminating the
+			// channel would make this relay a man in the middle of the one
+			// industrial protocol designed to notice.
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C || ln.TLS != nil {
+				v.errf("%s: an opcua listener takes only address and opcua: the transport has no TLS, the secure channel is inside the protocol", p)
+			}
+			if ln.OPCUA == nil {
+				v.errf("%s.opcua: required for kind opcua", p)
+			} else {
+				v.opcuaListener(p+".opcua", ln.OPCUA, ln.Address)
 			}
 		case "amqp":
 			if ln.AMQP == nil {
@@ -2649,7 +2666,7 @@ var denyReasons = map[string]bool{
 	// trigger until they were written here.
 	"dns_denied": true, "dns_threat_intel": true,
 	"modbus_denied": true, "iec104_denied": true, "ntp_denied": true, "ntske_denied": true,
-	"snmp_denied": true, "ldap_denied": true, "tftp_denied": true, "dhcp_denied": true, "dhcp6_denied": true, "coap_denied": true, "postgres_denied": true, "mysql_denied": true, "tds_denied": true, "redis_denied": true,
+	"snmp_denied": true, "ldap_denied": true, "tftp_denied": true, "dhcp_denied": true, "dhcp6_denied": true, "coap_denied": true, "opcua_denied": true, "postgres_denied": true, "mysql_denied": true, "tds_denied": true, "redis_denied": true,
 	"bacnet_denied": true, "amqp_denied": true, "s7_denied": true,
 }
 
@@ -7903,6 +7920,386 @@ func (v *validator) ldapDNs(p string, in []string) {
 			v.errf("%s[%d]: %v", p, i, err)
 		}
 	}
+}
+
+// opcuaListener checks the OPC UA relay.
+//
+// Three checks here are worth more than the rest and none of them is a bound. The
+// deprecated security policies have to be named twice before they are carried, so
+// that switching on SHA-1 is a decision somebody wrote down. The service-level lists
+// are warned about when the security modes make them inert, because a rule that
+// never runs is worse than no rule at all. And a namespace list of indices is warned
+// about, because an index only means something against the server's own namespace
+// table and that table's order is not guaranteed across a firmware update.
+func (v *validator) opcuaListener(p string, m *OPCUAListener, address string) {
+	if m.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	v.modbusCIDRs(p+".allow_clients", m.AllowClients)
+	v.modbusCIDRs(p+".deny_clients", m.DenyClients)
+	v.opcuaPolicies(p, m)
+	v.opcuaIdentity(p, m)
+	v.opcuaServices(p, m)
+	v.opcuaNodes(p, m)
+	v.opcuaBounds(p, m)
+	v.opcuaRules(p, m)
+	v.opcuaWarnings(p, m, address)
+}
+
+// opcuaPolicies checks the security policies and modes.
+func (v *validator) opcuaPolicies(p string, m *OPCUAListener) {
+	for i, s := range m.SecurityPolicies {
+		pol, ok := opcuawire.PolicyOf(s)
+		if !ok {
+			v.errf("%s.security_policies[%d]: %q is not an OPC UA security policy", p, i, s)
+			continue
+		}
+		if pol.Deprecated() && !m.AllowDeprecatedPolicies {
+			// Named in the list and not allowed by the knob. Refusing rather than
+			// warning is the point: the list is where somebody added the policy
+			// for one old client, and the knob is where the deprecation gets
+			// read.
+			v.errf("%s.security_policies[%d]: %s was withdrawn in IEC 62541 1.04 (it is SHA-1 based); set allow_deprecated_policies to carry it anyway",
+				p, i, pol.Short())
+		}
+	}
+	for i, s := range m.DenySecurityPolicies {
+		if _, ok := opcuawire.PolicyOf(s); !ok {
+			v.errf("%s.deny_security_policies[%d]: %q is not an OPC UA security policy", p, i, s)
+		}
+	}
+	for i, s := range m.SecurityModes {
+		if _, ok := opcuawire.ModeOf(s); !ok {
+			v.errf("%s.security_modes[%d]: %q is not a message security mode (none, sign, sign_and_encrypt)",
+				p, i, s)
+		}
+	}
+	if d := m.MaxTokenLifetime.D(); d < 0 {
+		v.errf("%s.max_token_lifetime: must not be negative", p)
+	}
+}
+
+// opcuaIdentity checks the token kinds and the user lists.
+func (v *validator) opcuaIdentity(p string, m *OPCUAListener) {
+	for i, s := range m.TokenKinds {
+		if _, ok := opcuawire.TokenOf(s); !ok {
+			v.errf("%s.token_kinds[%d]: %q is not an identity token kind (anonymous, username, x509, issued)",
+				p, i, s)
+		}
+	}
+	v.opcuaPatterns(p+".application_uris", m.ApplicationURIs)
+	v.opcuaPatterns(p+".users", m.Users)
+	v.opcuaPatterns(p+".deny_users", m.DenyUsers)
+}
+
+// opcuaServices checks the service names and the attributes.
+func (v *validator) opcuaServices(p string, m *OPCUAListener) {
+	for i, s := range m.Services {
+		if _, ok := opcuawire.ServiceOf(s); !ok {
+			v.errf("%s.services[%d]: %q is not an OPC UA service", p, i, s)
+		}
+	}
+	for i, s := range m.DenyServices {
+		if _, ok := opcuawire.ServiceOf(s); !ok {
+			v.errf("%s.deny_services[%d]: %q is not an OPC UA service", p, i, s)
+		}
+	}
+	for i, s := range m.Attributes {
+		if _, ok := opcuawire.AttributeOf(s); !ok {
+			v.errf("%s.attributes[%d]: %q is not a node attribute", p, i, s)
+		}
+	}
+	for i, s := range m.WriteAttributes {
+		if _, ok := opcuawire.AttributeOf(s); !ok {
+			v.errf("%s.write_attributes[%d]: %q is not a node attribute", p, i, s)
+		}
+	}
+}
+
+// opcuaNodes checks the namespaces and the node patterns.
+func (v *validator) opcuaNodes(p string, m *OPCUAListener) {
+	v.opcuaNamespaces(p+".namespaces", m.Namespaces)
+	v.opcuaNodePatterns(p+".nodes", m.Nodes)
+	v.opcuaNodePatterns(p+".write_nodes", m.WriteNodes)
+	v.opcuaNodePatterns(p+".deny_nodes", m.DenyNodes)
+	v.opcuaNodePatterns(p+".methods", m.Methods)
+	v.opcuaNodePatterns(p+".deny_methods", m.DenyMethods)
+}
+
+// opcuaNamespaces checks a namespace list, whose entries are indices and ranges.
+//
+// A URI is refused with the reason, because it is the form an operator will reach
+// for and it cannot work: a namespace URI appears only in an ExpandedNodeId, and the
+// node a Read, a Write, a Browse or a Call names is a plain NodeId. A rule written
+// with URIs would match nothing while looking exactly as though it should.
+func (v *validator) opcuaNamespaces(p string, in []string) {
+	for i, s := range in {
+		if s == "" {
+			v.errf("%s[%d]: empty", p, i)
+			continue
+		}
+		if strings.ContainsAny(s, ":/") {
+			v.errf("%s[%d]: %q looks like a namespace URI, and a namespace can only be named by index here: a URI appears only in an ExpandedNodeId, and the node a Read, a Write, a Browse or a Call names is a plain NodeId",
+				p, i, s)
+			continue
+		}
+		if _, err := numrange.Parse("namespace", []string{s}, opcuawire.MaxNamespaces-1); err != nil {
+			v.errf("%s[%d]: %v", p, i, err)
+		}
+	}
+}
+
+// opcuaNodePatterns checks node-identifier patterns.
+//
+// A pattern with no wildcard has to parse as a node identifier, because one that
+// does not would match nothing and look like it should match something:
+// "ns=3,i=1001" with a comma is the mistake this catches, and it is a mistake an
+// operator makes once per configuration file.
+func (v *validator) opcuaNodePatterns(p string, in []string) {
+	for i, s := range in {
+		if s == "" {
+			v.errf("%s[%d]: empty", p, i)
+			continue
+		}
+		if strings.ContainsAny(s, "*?[") {
+			if _, err := path.Match(s, ""); err != nil {
+				v.errf("%s[%d]: %v", p, i, err)
+			}
+			continue
+		}
+		if _, err := opcuawire.ParseNodeId(s); err != nil {
+			v.errf("%s[%d]: %v (a node identifier is written ns=3;i=1001, ns=4;s=Motor/Speed or nsu=urn:plant;i=7)",
+				p, i, err)
+		}
+	}
+}
+
+// opcuaPatterns checks glob patterns over names.
+func (v *validator) opcuaPatterns(p string, in []string) {
+	for i, s := range in {
+		if s == "" {
+			v.errf("%s[%d]: empty", p, i)
+			continue
+		}
+		if _, err := path.Match(s, ""); err != nil {
+			v.errf("%s[%d]: %v", p, i, err)
+		}
+	}
+}
+
+// opcuaBounds checks the numbers.
+func (v *validator) opcuaBounds(p string, m *OPCUAListener) {
+	for _, b := range []struct {
+		name string
+		n    int
+	}{
+		{"max_operations", m.MaxOperations},
+		{"max_write_operations", m.MaxWriteOperations},
+		{"max_monitored_items", m.MaxMonitoredItems},
+		{"max_subscriptions", m.MaxSubscriptions},
+		{"max_requests", m.MaxRequests},
+		{"max_sessions", m.MaxSessions},
+		{"max_sessions_per_client", m.MaxSessionsPerClient},
+		{"rate_limit", m.RateLimit},
+		{"rate_burst", m.RateBurst},
+	} {
+		if b.n < 0 {
+			v.errf("%s.%s: must not be negative", p, b.name)
+		}
+	}
+	if m.RateBurst > 0 && m.RateLimit == 0 {
+		v.errf("%s.rate_burst: set without rate_limit, so nothing is limited", p)
+	}
+	if m.MaxChunkSize != 0 && (m.MaxChunkSize < opcuawire.MinBuffer || m.MaxChunkSize > opcuawire.MaxMessageSize) {
+		v.errf("%s.max_chunk_size: must be between %d and %d; IEC 62541-6 s7.1.2.3 makes %d the smallest buffer a conforming peer may be asked to work with",
+			p, opcuawire.MinBuffer, opcuawire.MaxMessageSize, opcuawire.MinBuffer)
+	}
+	if m.MaxMessageSize != 0 && m.MaxMessageSize < m.MaxChunkSize {
+		v.errf("%s.max_message_size: %d is smaller than max_chunk_size %d, so no message could be assembled",
+			p, m.MaxMessageSize, m.MaxChunkSize)
+	}
+	if m.MaxChunks < 0 {
+		v.errf("%s.max_chunks: must not be negative", p)
+	}
+	if m.MaxMessageSize < 0 {
+		v.errf("%s.max_message_size: must not be negative", p)
+	}
+	switch m.DefaultAction {
+	case "", "deny", "allow":
+	default:
+		v.errf("%s.default_action: must be allow or deny", p)
+	}
+	switch m.DenyResponse {
+	case "", "fault", "error", "close", "drop":
+	default:
+		v.errf("%s.deny_response: must be fault, error, close or drop", p)
+	}
+	for _, d := range []struct {
+		name string
+		d    Duration
+	}{
+		{"idle_timeout", m.IdleTimeout},
+		{"session_duration", m.SessionDuration},
+		{"handshake_timeout", m.HandshakeTimeout},
+		{"min_publishing_interval", m.MinPublishingInterval},
+		{"min_sampling_interval", m.MinSamplingInterval},
+	} {
+		if d.d.D() < 0 {
+			v.errf("%s.%s: must not be negative", p, d.name)
+		}
+	}
+}
+
+// opcuaRules checks the rules.
+func (v *validator) opcuaRules(p string, m *OPCUAListener) {
+	seen := map[string]bool{}
+	for i := range m.Rules {
+		r := &m.Rules[i]
+		q := fmt.Sprintf("%s.rules[%d]", p, i)
+		switch {
+		case r.Name == "":
+			v.errf("%s.name: required", q)
+		case seen[r.Name]:
+			v.errf("%s.name: %q is used twice; a rule's name is how a refusal is attributed", q, r.Name)
+		default:
+			seen[r.Name] = true
+		}
+		switch r.Action {
+		case "", "allow", "deny", "observe":
+		default:
+			v.errf("%s.action: must be allow, deny or observe", q)
+		}
+		v.modbusCIDRs(q+".clients", r.Clients)
+		v.opcuaPatterns(q+".application_uris", r.ApplicationURIs)
+		v.opcuaPatterns(q+".users", r.Users)
+		for j, s := range r.TokenKinds {
+			if _, ok := opcuawire.TokenOf(s); !ok {
+				v.errf("%s.token_kinds[%d]: %q is not an identity token kind", q, j, s)
+			}
+		}
+		for j, s := range r.SecurityPolicies {
+			if _, ok := opcuawire.PolicyOf(s); !ok {
+				v.errf("%s.security_policies[%d]: %q is not an OPC UA security policy", q, j, s)
+			}
+		}
+		for j, s := range r.SecurityModes {
+			if _, ok := opcuawire.ModeOf(s); !ok {
+				v.errf("%s.security_modes[%d]: %q is not a message security mode", q, j, s)
+			}
+		}
+		for j, s := range r.Services {
+			if _, ok := opcuawire.ServiceOf(s); !ok {
+				v.errf("%s.services[%d]: %q is not an OPC UA service", q, j, s)
+			}
+		}
+		for j, s := range r.DenyServices {
+			if _, ok := opcuawire.ServiceOf(s); !ok {
+				v.errf("%s.deny_services[%d]: %q is not an OPC UA service", q, j, s)
+			}
+		}
+		for j, s := range r.Attributes {
+			if _, ok := opcuawire.AttributeOf(s); !ok {
+				v.errf("%s.attributes[%d]: %q is not a node attribute", q, j, s)
+			}
+		}
+		for j, s := range r.WriteAttributes {
+			if _, ok := opcuawire.AttributeOf(s); !ok {
+				v.errf("%s.write_attributes[%d]: %q is not a node attribute", q, j, s)
+			}
+		}
+		v.opcuaNamespaces(q+".namespaces", r.Namespaces)
+		v.opcuaNodePatterns(q+".nodes", r.Nodes)
+		v.opcuaNodePatterns(q+".write_nodes", r.WriteNodes)
+		v.opcuaNodePatterns(q+".deny_nodes", r.DenyNodes)
+		v.opcuaNodePatterns(q+".methods", r.Methods)
+		v.opcuaNodePatterns(q+".deny_methods", r.DenyMethods)
+		if r.MaxOperations < 0 {
+			v.errf("%s.max_operations: must not be negative", q)
+		}
+		if r.Schedule != nil {
+			v.modbusSchedule(q+".schedule", r.Schedule)
+		}
+	}
+}
+
+// opcuaWarnings is what loads and is worth saying out loud.
+func (v *validator) opcuaWarnings(p string, m *OPCUAListener, address string) {
+	if len(m.AllowClients) == 0 {
+		v.warnf("%s.allow_clients: empty, so every client the deny list does not refuse may reach a plant; an OPC UA server usually has four or five clients and they do not move",
+			p)
+	}
+	if m.AllowDeprecatedPolicies {
+		v.warnf("%s.allow_deprecated_policies: Basic128Rsa15 and Basic256 are SHA-1 based and were withdrawn in IEC 62541 1.04; they are usually switched on for one old client, and that client is the exposure",
+			p)
+	}
+	// The mode and the service rules. This is the warning that matters most,
+	// because the configuration reads as though it is enforcing something it is
+	// not: a listener with rules about nodes over a sign_and_encrypt channel is a
+	// listener whose rules never see a body.
+	if v.opcuaHasServiceRules(m) && v.opcuaAllowsOpaque(m) && !m.RequireReadableBodies {
+		v.warnf("%s: there are rules about nodes, attributes or methods and sign_and_encrypt is allowed, so those rules will not apply to any channel that uses it -- the body is ciphertext. Set require_readable_bodies to refuse that mode, or accept that the service rules apply only to none and sign channels",
+			p)
+	}
+	if m.RequireReadableBodies {
+		v.warnf("%s.require_readable_bodies: sign_and_encrypt will be refused, so nothing on this hop is confidential; mode sign still authenticates every message and still detects modification, which is the trade this knob makes",
+			p)
+	}
+	if len(m.Namespaces) > 0 {
+		// An index is meaningful only against the table it came from, and there
+		// is no portable form available here: the wire names a namespace by index
+		// in every request a policy decides about. So the caveat is a review
+		// item rather than a thing to configure around.
+		v.warnf("%s.namespaces: a namespace index only means something against the server's own namespace table, whose order is not guaranteed across a firmware update; this list is one to review after one, because the same indices can then name different nodes",
+			p)
+	}
+	if m.ReadOnly && len(m.WriteNodes) > 0 {
+		v.warnf("%s.write_nodes: set on a read_only listener, where no writing service is carried at all, so the list decides nothing", p)
+	}
+	if m.MinPublishingInterval.D() == 0 {
+		v.warnf("%s.min_publishing_interval: unset, so a client may ask for a publishing interval of zero -- which over a thousand monitored items is a server asked to send a thousand values a millisecond, from one session, in valid protocol",
+			p)
+	}
+	if m.MaxOperations == 0 {
+		v.warnf("%s.max_operations: unset, so one Read may name as many nodes as a message holds; a request naming ten thousand nodes is one request and ten thousand operations",
+			p)
+	}
+	if _, port, err := net.SplitHostPort(address); err == nil &&
+		port != "4840" && port != "0" {
+		v.warnf("%s: port %s, where an OPC UA client sends to 4840 by convention; a client that discovered this endpoint from a discovery server will not find it here",
+			p, port)
+	}
+}
+
+// opcuaHasServiceRules says the listener names anything the service level decides.
+func (v *validator) opcuaHasServiceRules(m *OPCUAListener) bool {
+	if len(m.Nodes) > 0 || len(m.WriteNodes) > 0 || len(m.DenyNodes) > 0 ||
+		len(m.Methods) > 0 || len(m.DenyMethods) > 0 ||
+		len(m.Attributes) > 0 || len(m.WriteAttributes) > 0 || len(m.Namespaces) > 0 {
+		return true
+	}
+	for i := range m.Rules {
+		r := &m.Rules[i]
+		if len(r.Nodes) > 0 || len(r.WriteNodes) > 0 || len(r.DenyNodes) > 0 ||
+			len(r.Methods) > 0 || len(r.DenyMethods) > 0 ||
+			len(r.Attributes) > 0 || len(r.WriteAttributes) > 0 || len(r.Namespaces) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// opcuaAllowsOpaque says a channel that encrypts its bodies would be carried.
+func (v *validator) opcuaAllowsOpaque(m *OPCUAListener) bool {
+	if len(m.SecurityModes) == 0 {
+		// The default allows sign and sign_and_encrypt.
+		return true
+	}
+	for _, s := range m.SecurityModes {
+		if mode, ok := opcuawire.ModeOf(s); ok && !mode.Readable() {
+			return true
+		}
+	}
+	return false
 }
 
 // coapListener checks the CoAP relay.

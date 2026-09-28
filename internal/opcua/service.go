@@ -116,100 +116,109 @@ const (
 type serviceInfo struct {
 	name    string
 	request bool
-	// writes says the service changes something: a value, a node, a method's
-	// effect, or the subscription state a server holds. It is the coarse question
-	// a read-only listener asks, and it is the one that has to be right by
-	// default, because a service this package did not classify must not come out
-	// as harmless.
+	// writes says the service changes the plant, a value, the address space or
+	// the history. It is the coarse question a read-only listener asks, and it is
+	// the one that has to be right by default, because a service this package did
+	// not classify must not come out as harmless.
 	writes bool
 	// control says the service can make the plant act rather than merely change
 	// a stored value: a method call, a historical rewrite, a node added or
 	// removed. It is a narrower class than writes and the one a four-eyes rule is
 	// written about.
 	control bool
+	// state says the service changes state the *server* holds for this session
+	// rather than anything the plant does: a subscription, a monitored item, a
+	// registered node.
+	//
+	// It is separate from writes for a reason a read-only listener depends on. An
+	// HMI gets its values by subscribing, so a listener that refused everything
+	// which changes any server-side state would be a listener no HMI can use —
+	// and "read-only" would then mean "unusable" rather than "cannot change the
+	// plant". The subscription bounds are what police these instead.
+	state bool
 }
 
 var services = map[Service]serviceInfo{
-	SvcFindServers:        {"find_servers", true, false, false},
-	SvcFindServersReply:   {"find_servers_response", false, false, false},
-	SvcGetEndpoints:       {"get_endpoints", true, false, false},
-	SvcGetEndpointsReply:  {"get_endpoints_response", false, false, false},
-	SvcRegisterServer:     {"register_server", true, true, false},
-	SvcRegisterServerAck:  {"register_server_response", false, false, false},
-	SvcOpenChannel:        {"open_secure_channel", true, false, false},
-	SvcOpenChannelReply:   {"open_secure_channel_response", false, false, false},
-	SvcCloseChannel:       {"close_secure_channel", true, false, false},
-	SvcCloseChannelReply:  {"close_secure_channel_response", false, false, false},
-	SvcCreateSession:      {"create_session", true, false, false},
-	SvcCreateSessionReply: {"create_session_response", false, false, false},
-	SvcActivateSession:    {"activate_session", true, false, false},
-	SvcActivateReply:      {"activate_session_response", false, false, false},
-	SvcCloseSession:       {"close_session", true, false, false},
-	SvcCloseSessionReply:  {"close_session_response", false, false, false},
-	SvcCancel:             {"cancel", true, false, false},
-	SvcCancelReply:        {"cancel_response", false, false, false},
+	SvcFindServers:        {"find_servers", true, false, false, false},
+	SvcFindServersReply:   {"find_servers_response", false, false, false, false},
+	SvcGetEndpoints:       {"get_endpoints", true, false, false, false},
+	SvcGetEndpointsReply:  {"get_endpoints_response", false, false, false, false},
+	SvcRegisterServer:     {"register_server", true, true, false, false},
+	SvcRegisterServerAck:  {"register_server_response", false, false, false, false},
+	SvcOpenChannel:        {"open_secure_channel", true, false, false, false},
+	SvcOpenChannelReply:   {"open_secure_channel_response", false, false, false, false},
+	SvcCloseChannel:       {"close_secure_channel", true, false, false, false},
+	SvcCloseChannelReply:  {"close_secure_channel_response", false, false, false, false},
+	SvcCreateSession:      {"create_session", true, false, false, false},
+	SvcCreateSessionReply: {"create_session_response", false, false, false, false},
+	SvcActivateSession:    {"activate_session", true, false, false, false},
+	SvcActivateReply:      {"activate_session_response", false, false, false, false},
+	SvcCloseSession:       {"close_session", true, false, false, false},
+	SvcCloseSessionReply:  {"close_session_response", false, false, false, false},
+	SvcCancel:             {"cancel", true, false, false, false},
+	SvcCancelReply:        {"cancel_response", false, false, false, false},
 
-	SvcAddNodes:            {"add_nodes", true, true, true},
-	SvcAddNodesReply:       {"add_nodes_response", false, false, false},
-	SvcAddReferences:       {"add_references", true, true, true},
-	SvcAddReferencesReply:  {"add_references_response", false, false, false},
-	SvcDeleteNodes:         {"delete_nodes", true, true, true},
-	SvcDeleteNodesReply:    {"delete_nodes_response", false, false, false},
-	SvcDeleteRefs:          {"delete_references", true, true, true},
-	SvcDeleteRefsReply:     {"delete_references_response", false, false, false},
-	SvcBrowse:              {"browse", true, false, false},
-	SvcBrowseReply:         {"browse_response", false, false, false},
-	SvcBrowseNext:          {"browse_next", true, false, false},
-	SvcBrowseNextReply:     {"browse_next_response", false, false, false},
-	SvcTranslatePaths:      {"translate_browse_paths", true, false, false},
-	SvcTranslatePathsReply: {"translate_browse_paths_response", false, false, false},
-	SvcRegisterNodes:       {"register_nodes", true, false, false},
-	SvcRegisterNodesReply:  {"register_nodes_response", false, false, false},
-	SvcUnregisterNodes:     {"unregister_nodes", true, false, false},
-	SvcUnregisterReply:     {"unregister_nodes_response", false, false, false},
+	SvcAddNodes:            {"add_nodes", true, true, true, false},
+	SvcAddNodesReply:       {"add_nodes_response", false, false, false, false},
+	SvcAddReferences:       {"add_references", true, true, true, false},
+	SvcAddReferencesReply:  {"add_references_response", false, false, false, false},
+	SvcDeleteNodes:         {"delete_nodes", true, true, true, false},
+	SvcDeleteNodesReply:    {"delete_nodes_response", false, false, false, false},
+	SvcDeleteRefs:          {"delete_references", true, true, true, false},
+	SvcDeleteRefsReply:     {"delete_references_response", false, false, false, false},
+	SvcBrowse:              {"browse", true, false, false, false},
+	SvcBrowseReply:         {"browse_response", false, false, false, false},
+	SvcBrowseNext:          {"browse_next", true, false, false, false},
+	SvcBrowseNextReply:     {"browse_next_response", false, false, false, false},
+	SvcTranslatePaths:      {"translate_browse_paths", true, false, false, false},
+	SvcTranslatePathsReply: {"translate_browse_paths_response", false, false, false, false},
+	SvcRegisterNodes:       {"register_nodes", true, false, false, false},
+	SvcRegisterNodesReply:  {"register_nodes_response", false, false, false, false},
+	SvcUnregisterNodes:     {"unregister_nodes", true, false, false, false},
+	SvcUnregisterReply:     {"unregister_nodes_response", false, false, false, false},
 
-	SvcQueryFirst:         {"query_first", true, false, false},
-	SvcQueryFirstReply:    {"query_first_response", false, false, false},
-	SvcQueryNext:          {"query_next", true, false, false},
-	SvcQueryNextReply:     {"query_next_response", false, false, false},
-	SvcRead:               {"read", true, false, false},
-	SvcReadReply:          {"read_response", false, false, false},
-	SvcHistoryRead:        {"history_read", true, false, false},
-	SvcHistoryReadReply:   {"history_read_response", false, false, false},
-	SvcWrite:              {"write", true, true, false},
-	SvcWriteReply:         {"write_response", false, false, false},
-	SvcHistoryUpdate:      {"history_update", true, true, true},
-	SvcHistoryUpdateReply: {"history_update_response", false, false, false},
+	SvcQueryFirst:         {"query_first", true, false, false, false},
+	SvcQueryFirstReply:    {"query_first_response", false, false, false, false},
+	SvcQueryNext:          {"query_next", true, false, false, false},
+	SvcQueryNextReply:     {"query_next_response", false, false, false, false},
+	SvcRead:               {"read", true, false, false, false},
+	SvcReadReply:          {"read_response", false, false, false, false},
+	SvcHistoryRead:        {"history_read", true, false, false, false},
+	SvcHistoryReadReply:   {"history_read_response", false, false, false, false},
+	SvcWrite:              {"write", true, true, false, false},
+	SvcWriteReply:         {"write_response", false, false, false, false},
+	SvcHistoryUpdate:      {"history_update", true, true, true, false},
+	SvcHistoryUpdateReply: {"history_update_response", false, false, false, false},
 
-	SvcCall:      {"call", true, true, true},
-	SvcCallReply: {"call_response", false, false, false},
+	SvcCall:      {"call", true, true, true, false},
+	SvcCallReply: {"call_response", false, false, false, false},
 
-	SvcCreateMonitored:       {"create_monitored_items", true, true, false},
-	SvcCreateMonitoredReply:  {"create_monitored_items_response", false, false, false},
-	SvcModifyMonitored:       {"modify_monitored_items", true, true, false},
-	SvcModifyMonitoredReply:  {"modify_monitored_items_response", false, false, false},
-	SvcSetMonitoringMode:     {"set_monitoring_mode", true, true, false},
-	SvcSetMonitoringReply:    {"set_monitoring_mode_response", false, false, false},
-	SvcSetTriggering:         {"set_triggering", true, true, false},
-	SvcSetTriggeringReply:    {"set_triggering_response", false, false, false},
-	SvcDeleteMonitored:       {"delete_monitored_items", true, true, false},
-	SvcDeleteMonitoredReply:  {"delete_monitored_items_response", false, false, false},
-	SvcCreateSubscription:    {"create_subscription", true, true, false},
-	SvcCreateSubReply:        {"create_subscription_response", false, false, false},
-	SvcModifySubscription:    {"modify_subscription", true, true, false},
-	SvcModifySubReply:        {"modify_subscription_response", false, false, false},
-	SvcSetPublishingMode:     {"set_publishing_mode", true, true, false},
-	SvcSetPublishingReply:    {"set_publishing_mode_response", false, false, false},
-	SvcPublish:               {"publish", true, false, false},
-	SvcPublishReply:          {"publish_response", false, false, false},
-	SvcRepublish:             {"republish", true, false, false},
-	SvcRepublishReply:        {"republish_response", false, false, false},
-	SvcTransferSubscriptions: {"transfer_subscriptions", true, true, true},
-	SvcTransferSubsReply:     {"transfer_subscriptions_response", false, false, false},
-	SvcDeleteSubscriptions:   {"delete_subscriptions", true, true, false},
-	SvcDeleteSubsReply:       {"delete_subscriptions_response", false, false, false},
+	SvcCreateMonitored:       {"create_monitored_items", true, false, false, true},
+	SvcCreateMonitoredReply:  {"create_monitored_items_response", false, false, false, false},
+	SvcModifyMonitored:       {"modify_monitored_items", true, false, false, true},
+	SvcModifyMonitoredReply:  {"modify_monitored_items_response", false, false, false, false},
+	SvcSetMonitoringMode:     {"set_monitoring_mode", true, false, false, true},
+	SvcSetMonitoringReply:    {"set_monitoring_mode_response", false, false, false, false},
+	SvcSetTriggering:         {"set_triggering", true, false, false, true},
+	SvcSetTriggeringReply:    {"set_triggering_response", false, false, false, false},
+	SvcDeleteMonitored:       {"delete_monitored_items", true, false, false, true},
+	SvcDeleteMonitoredReply:  {"delete_monitored_items_response", false, false, false, false},
+	SvcCreateSubscription:    {"create_subscription", true, false, false, true},
+	SvcCreateSubReply:        {"create_subscription_response", false, false, false, false},
+	SvcModifySubscription:    {"modify_subscription", true, false, false, true},
+	SvcModifySubReply:        {"modify_subscription_response", false, false, false, false},
+	SvcSetPublishingMode:     {"set_publishing_mode", true, false, false, true},
+	SvcSetPublishingReply:    {"set_publishing_mode_response", false, false, false, false},
+	SvcPublish:               {"publish", true, false, false, false},
+	SvcPublishReply:          {"publish_response", false, false, false, false},
+	SvcRepublish:             {"republish", true, false, false, false},
+	SvcRepublishReply:        {"republish_response", false, false, false, false},
+	SvcTransferSubscriptions: {"transfer_subscriptions", true, true, true, false},
+	SvcTransferSubsReply:     {"transfer_subscriptions_response", false, false, false, false},
+	SvcDeleteSubscriptions:   {"delete_subscriptions", true, false, false, true},
+	SvcDeleteSubsReply:       {"delete_subscriptions_response", false, false, false, false},
 
-	SvcFault: {"service_fault", false, false, false},
+	SvcFault: {"service_fault", false, false, false, false},
 }
 
 // byName is the reverse table, built once, for a configuration file.
@@ -255,6 +264,15 @@ func (s Service) Control() bool {
 	}
 	return i.control
 }
+
+// State says the service changes server-side session state rather than the plant: a
+// subscription, a monitored item, a registered node.
+//
+// An unknown service reports false, which looks like the wrong default until you see
+// what the two are for: Writes() is the question a refusal is made on and must fail
+// safe, while State() is the question a *narrowing* is made on and must not silently
+// grant anything. A service nobody classified is a write, not a subscription.
+func (s Service) State() bool { return services[s].state }
 
 // ServiceOf reads a service back from its name, which is what a configuration file
 // writes. A decimal number is also accepted, for a vendor service or one this

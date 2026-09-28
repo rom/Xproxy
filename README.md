@@ -112,8 +112,9 @@ estate — and binds only the kinds of its own role:
 |--------|-------|----------------|
 | `xproxy` | the open internet | `http`, `forward`, `tcp`, `udp`, `dns` |
 | `xgate` | people | `ssh`, `telnet`, `vnc`, `rdp` |
-| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `snmp`, `ldap`, `tftp`, `dhcp`, `postgres`, `mysql`, `tds`, `redis`, `bacnet`, `amqp`, `s7`, `ntp`, `ntske`, `dhcp6`, `coap` |
+| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `snmp`, `ldap`, `tftp`, `dhcp`, `postgres`, `mysql`, `tds`, `redis`, `bacnet`, `amqp`, `s7`, `ntp`, `ntske`, `dhcp6`, `coap`, `opcua` |
 | Devices | CoAP (RFC 7252) over UDP, with block-wise transfer (RFC 7959), Observe (RFC 7641), resource discovery (RFC 6690), the RFC 8132 methods and the option classes that tell a proxy what to do with an option it cannot name; read as a relay: the method, the path, the content format, the declared transfer size, and the size of an answer relative to the question | `coap` |
+| Plants | OPC UA (IEC 62541) over `opc.tcp`, with the chunked UA TCP transport, the secure channel and its policies and modes, the session and its identity tokens, and the service layer where the mode leaves a body readable: Read, Write, Call, Browse and the subscription set, by node identifier, attribute and method | `opcua` |
 
 A kind a binary did not link is never bound and never falls through to
 the HTTP data plane: it is an error naming the daemon that serves it.
@@ -224,6 +225,7 @@ protocol so that a policy can be written in that protocol's own terms:
 | `smtp` | `xrelay` | SMTP and submission | Commands, where a message ends, TLS and authentication, bounds |
 | `mqtt` | `xrelay` | MQTT 3.1.1 and 5.0 | Topics and filters, client identifiers, retained messages, wills |
 | `coap` | `xrelay` | CoAP (RFC 7252) over UDP, block-wise transfer, Observe, resource discovery | The methods, the **paths** -- which are the device's object model, so the policy is positive and the default is deny -- the queries, the content formats in both directions, `Proxy-Uri` and `Proxy-Scheme` refused by default, an option the relay cannot name answered the way the standard says, a path whose segments would not mean what the joined path looks like, the payload, one block, the whole declared transfer, the outstanding Observe registrations, and the size of an answer as a **multiple of the question** |
+| `opcua` | `xrelay` | OPC UA (IEC 62541) over `opc.tcp`, chunked UA TCP, the secure channel, sessions and identity tokens | The security policies -- with the two IEC 62541 withdrew refused unless named twice -- the message security mode, the endpoint, the client application's URI checked against its own certificate, the identity token kind, the user, and a password that crossed unprotected; then, where the mode left a body readable, the service, the node identifiers, the **attribute** (a write to `value` moves an actuator; a write to `access_level` changes who may), the method on its object, the operations in one request, and the publishing interval a subscription asked for |
 | `ftp` | `xrelay` | FTP and FTPS | Commands, paths, extensions, and the data connection itself |
 | `syslog` | `xrelay` | RFC 5424 and RFC 3164 over UDP, TCP, TLS | Facility, severity, sender, the text; re-emitted in one dialect |
 | `modbus` | `xrelay` | Modbus/TCP, RTU and ASCII, Modbus/TCP Security | Unit identifiers, function codes, register ranges, values, roles, schedules, behavioural detection |
@@ -324,6 +326,38 @@ protocol so that a policy can be written in that protocol's own terms:
   the whole block-wise transfer bounded from the client's own `Size1`
   declaration rather than one datagram at a time. In NoSec — which is what most
   of the field runs — there is no identity at all, and the validator says so
+
+- `kind: opcua`: an **OPC UA relay in front of the one industrial protocol that
+  brought its own security**. Everywhere else in this list the relay *is* the
+  access control, because the protocol has none; here the server already checks
+  certificates and users, and the relay is the place an estate's rules are
+  written once and enforced for every server behind it — including the ones
+  whose own configuration nobody has reviewed since commissioning. Most of what
+  is worth enforcing is in the handshake and **all of it is in the clear by
+  construction**, because the Hello, the security policy, both certificates and
+  the user are how the two ends agree on what to encrypt: a listener admitting
+  one current policy from two named applications with no anonymous token has
+  excluded most of what goes wrong without naming a single node. The two
+  policies IEC 62541 **withdrew** — SHA-1 based, and the two an estate most
+  often still has on for one old client — have to be named in two places before
+  they are carried. **Whether the service rules apply at all is a property of
+  the channel**, and this is the trade-off the reference states rather than
+  hides: with mode `sign` the body is signed and *not* encrypted, so every node
+  identifier and method argument is readable and none of them may be modified;
+  with `sign_and_encrypt` the body is ciphertext and the node rules are silent.
+  `require_readable_bodies` is how a listener chooses, validation warns when
+  rules sit alongside a mode that makes them inert, and a counter says how often
+  it happened. Where the body is readable: the service, the node, the
+  **attribute** — which is the line between moving an actuator and changing who
+  may move it, since a write to `value` is a setpoint and a write to
+  `access_level` is a privilege change and both arrive as an ordinary Write —
+  the method *and* the object it is on, and `min_publishing_interval`, which is
+  the bound that matters most because the amplification here is arithmetic: one
+  millisecond over a thousand monitored items is a server asked to send a
+  thousand values a millisecond, from one legitimate session, in valid protocol.
+  It **never decrypts and never rewrites a body**: a relay that terminated the
+  secure channel would be a man in the middle of the one industrial protocol
+  designed to notice, holding the plant's private key to do it
 
 - `kind: ftp`: an FTP proxy that is actually in the middle. FTP puts
   every transfer on a second connection whose address one side

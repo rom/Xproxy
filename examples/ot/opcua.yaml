@@ -1,0 +1,301 @@
+# OPC UA relay: the one industrial protocol that brought its own security, and
+# what a relay is for once it has.
+#
+# In front of Modbus or S7comm the relay *is* the access control, because the
+# protocol has none. OPC UA already checks certificates and users, so this
+# listener is the place where an estate's rules are written once and enforced
+# for every server behind it -- including the ones whose own configuration
+# nobody has reviewed since they were commissioned.
+#
+# There is no tls: section on these listeners and that is not an omission. The
+# opc.tcp transport has no TLS; the security is inside the protocol, in the
+# secure channel, negotiated per connection from certificates the two ends
+# hold. A certificate here would promise something the transport cannot do.
+#
+# Three things in this file have no counterpart in the other relay examples:
+#
+#   - security_modes and require_readable_bodies, which are a real trade-off
+#     rather than a pair of switches. With mode sign the body is signed and
+#     *not* encrypted, so the node and method rules below apply; with
+#     sign_and_encrypt the body is ciphertext and they are silent. The plant
+#     listener takes the enforcement and the tenant listener takes the
+#     confidentiality, and both say so
+#   - write_attributes, which is the line between moving an actuator and
+#     changing who may move it. A write to `value` is a setpoint; a write to
+#     `access_level` is a privilege change; both arrive as an ordinary Write
+#   - min_publishing_interval, the bound that matters most here. The
+#     amplification is arithmetic: a one-millisecond publishing interval over
+#     a thousand monitored items is a server asked to send a thousand values a
+#     millisecond, from one legitimate session, in valid protocol
+#
+# Validate with: xproxyctl -config examples/ot/opcua.yaml validate
+version: 1
+
+logging:
+  directory: /var/log/xproxy
+  access: {file: access.log}
+  security: {file: security.log}
+  audit: {file: audit.log}
+
+management:
+  socket: /run/xproxy/mgmt.sock
+  socket_mode: "0660"
+
+server:
+  listeners:
+    # ---------------------------------------------------------------
+    # The plant floor: the HMIs and the historian, reading and subscribing.
+    #
+    # This is the listener to copy. Mode sign is required rather than
+    # sign_and_encrypt, deliberately: the segment between this relay and the
+    # controllers is trusted, the clients are not, and sign leaves every
+    # message authenticated while leaving the body readable -- which is what
+    # makes the node and attribute rules below do anything at all.
+    # ---------------------------------------------------------------
+    - name: plant
+      address: "10.30.0.1:4840"
+      kind: opcua
+      opcua:
+        upstream: controllers
+
+        # The engineering segment and the control room. An OPC UA server
+        # usually has four or five clients and they do not move.
+        allow_clients: ["10.30.10.0/24", "10.30.20.0/24"]
+
+        # Behind a relay a client's endpoint URL names the *relay*, because
+        # the client is saying where it believes it connected. This address
+        # therefore has to be in the servers' own endpoint lists.
+        endpoints: ["opc.tcp://plant.example:4840/*"]
+
+        # One current policy, and the mode that leaves a body readable.
+        # Basic128Rsa15 and Basic256 are withdrawn (SHA-1) and are not named,
+        # so allow_deprecated_policies is not needed here.
+        security_policies: [Basic256Sha256, Aes256_Sha256_RsaPss]
+        security_modes: [sign]
+        require_readable_bodies: true
+        # An hour is the standard's own default. A client asking for a day is
+        # asking not to rotate its keys.
+        max_token_lifetime: 1h
+
+        # The applications, by the URI their own certificates carry. The URI
+        # and the certificate are checked against each other, which is the
+        # cheapest identity check the protocol has.
+        application_uris:
+          - "urn:plant.example:scada:*"
+          - "urn:plant.example:historian"
+        require_client_certificate: true
+        require_certificate_uri: true
+
+        # No anonymous sessions, and no password that crossed the wire
+        # unprotected -- under mode sign such a password is readable by
+        # anything on the path, this relay included.
+        token_kinds: [username, x509]
+        users: [operator, engineer, historian]
+        refuse_plaintext_passwords: true
+
+        # Nothing here changes the plant. Subscriptions are not on that list:
+        # an HMI gets its values by subscribing, and a read-only listener no
+        # HMI can subscribe through is a listener no HMI can use.
+        read_only: true
+
+        # The address space this segment may reach. Namespace zero is the
+        # standard model -- the server object, the type tree -- and an HMI
+        # browses it; namespaces three and four are the vendor's own.
+        #
+        # Indices and not URIs, because a Read names its namespace by index
+        # and by nothing else. Review this list after a firmware update: the
+        # server's namespace table can be reordered by one.
+        namespaces: ["0", "3-4"]
+        nodes:
+          - "ns=0;i=*"
+          - "ns=3;i=*"
+          - "ns=4;s=Line1/*"
+          - "ns=4;s=Line2/*"
+        # The safety instrumented system is on the same server and is not this
+        # segment's business. A deny list is not overridden by any rule.
+        deny_nodes: ["ns=4;s=*/Safety/*"]
+
+        # A Read naming ten thousand nodes is one request and ten thousand
+        # operations.
+        max_operations: 256
+
+        # The subscription bounds, which are what police a read-only listener.
+        # An HMI screen refreshes four times a second at most; a historian
+        # logs every second.
+        min_publishing_interval: 250ms
+        min_sampling_interval: 100ms
+        max_monitored_items: 2000
+        max_subscriptions: 16
+
+        # The buffer the two ends may agree on. Worth setting rather than
+        # leaving open: the negotiation is a minimum of the two proposals, so
+        # a relay passing both through unchanged has let the ends agree on a
+        # chunk larger than its own.
+        max_chunk_size: 65536
+        max_message_size: 1048576
+
+        max_sessions: 32
+        max_sessions_per_client: 4
+        idle_timeout: 10m
+        handshake_timeout: 15s
+
+        default_action: allow
+        deny_response: fault
+        alert_on_deny: true
+
+    # ---------------------------------------------------------------
+    # The engineering window: the same servers, writing, for two accounts,
+    # during a change window.
+    #
+    # A separate listener rather than a rule on the one above, because
+    # read_only cannot be overridden by a rule -- which is the point of it.
+    # ---------------------------------------------------------------
+    - name: engineering
+      address: "10.30.0.1:4841"
+      kind: opcua
+      opcua:
+        upstream: controllers
+        allow_clients: ["10.30.10.0/24"]
+        endpoints: ["opc.tcp://plant.example:4841/*"]
+        security_policies: [Aes256_Sha256_RsaPss]
+        security_modes: [sign]
+        require_readable_bodies: true
+        application_uris: ["urn:plant.example:tia:*", "urn:plant.example:uaexpert"]
+        token_kinds: [x509]
+        users: [engineer]
+
+        # Reading and writing, and calling methods. Node management is not
+        # here: adding and deleting nodes changes the address space itself,
+        # which is a commissioning activity rather than a maintenance one.
+        services:
+          - open_secure_channel
+          - close_secure_channel
+          - create_session
+          - activate_session
+          - close_session
+          - get_endpoints
+          - read
+          - browse
+          - browse_next
+          - translate_browse_paths
+          - write
+          - call
+          - create_subscription
+          - create_monitored_items
+          - publish
+
+        namespaces: ["0", "3-4"]
+        nodes: ["ns=0;i=*", "ns=3;i=*", "ns=4;s=Line1/*", "ns=4;s=Line2/*"]
+        deny_nodes: ["ns=4;s=*/Safety/*"]
+
+        # A wide read and a narrow write, which is what write_nodes is for.
+        write_nodes:
+          - "ns=4;s=Line1/Setpoints/*"
+          - "ns=4;s=Line2/Setpoints/*"
+
+        # Setpoints only. Not access_level, not write_mask, not historizing:
+        # those govern who may write, and a Write that changed one would be a
+        # privilege change dressed as a setpoint.
+        write_attributes: [value]
+
+        # The methods this segment may invoke, named individually. A Call
+        # names the object and the method, and both are checked -- so
+        # allowing Reset on one pump is not allowing it on every pump.
+        methods:
+          - "ns=4;s=Line1/Pump1/Reset"
+          - "ns=4;s=Line1/Pump2/Reset"
+          - "ns=4;s=Line2/Conveyor/Reset"
+        deny_methods: ["ns=4;s=*/Safety/*", "ns=0;i=*"]
+
+        max_operations: 64
+        max_write_operations: 16
+        min_publishing_interval: 250ms
+        max_chunk_size: 65536
+
+        rules:
+          # Reading and browsing, whenever.
+          - name: read-anytime
+            action: allow
+            services: [open_secure_channel, close_secure_channel, create_session,
+                       activate_session, close_session, get_endpoints, read, browse,
+                       browse_next, translate_browse_paths, create_subscription,
+                       create_monitored_items, publish]
+
+          # Writing and calling, in the change window, by the engineer.
+          - name: change-window
+            action: allow
+            users: [engineer]
+            services: [write, call]
+            schedule:
+              days: [tue, thu]
+              from: "22:00"
+              to: "02:00"
+              timezone: Europe/Stockholm
+            comment: CR-2026-0143, agreed with production
+
+        default_action: deny
+        deny_response: fault
+        log_requests: true
+
+    # ---------------------------------------------------------------
+    # The cloud gateway: a tenant reading a narrow slice, over an encrypted
+    # channel, where confidentiality on the wire is what matters and
+    # service-level enforcement is given up for it.
+    #
+    # This listener is the other side of the trade, and it says so: with
+    # sign_and_encrypt the bodies are ciphertext, so the node rules below do
+    # not apply to them. What still applies is everything in the handshake --
+    # the policy, the mode, the application, the user -- and the bounds. The
+    # opcua_opaque_bodies counter is how an operator sees it happening.
+    # ---------------------------------------------------------------
+    - name: tenant
+      address: "10.30.0.1:4842"
+      kind: opcua
+      opcua:
+        upstream: aggregator
+        allow_clients: ["10.90.0.0/16"]
+        endpoints: ["opc.tcp://plant.example:4842/*"]
+        security_policies: [Aes256_Sha256_RsaPss]
+        # Encrypted, deliberately: this hop leaves the site.
+        security_modes: [sign_and_encrypt]
+        require_readable_bodies: false
+        application_uris: ["urn:tenant.example:*"]
+        token_kinds: [issued]
+        read_only: true
+
+        # These decide nothing over an encrypted channel and are kept for the
+        # day the mode changes -- and because a reader of this file should see
+        # what the intent was. Validation warns about exactly this, which is
+        # the warning working as designed rather than a problem to silence.
+        namespaces: ["3"]
+        nodes: ["ns=3;i=*"]
+
+        # The bounds still apply, because they are about sizes and rates
+        # rather than contents.
+        max_operations: 64
+        min_publishing_interval: 1s
+        max_monitored_items: 500
+        max_subscriptions: 4
+        max_chunk_size: 65536
+        rate_limit: 20
+        rate_burst: 40
+        max_sessions_per_client: 2
+        idle_timeout: 5m
+
+        default_action: allow
+        deny_response: fault
+
+upstreams:
+  - name: controllers
+    endpoints:
+      - address: "10.30.100.11:4840"
+      - address: "10.30.100.12:4840"
+    health_check:
+      type: tcp
+      interval: 10s
+  - name: aggregator
+    endpoints:
+      - address: "10.30.100.20:4840"
+    health_check:
+      type: tcp
+      interval: 30s

@@ -460,6 +460,22 @@ type Stats struct {
 	CoAPPending          atomic.Int64
 	CoAPObservers        atomic.Int64
 	CoAPSessions         atomic.Int64
+	// The OPC UA listener's own numbers.
+	//
+	// OPCUAOpaque is the one to read first on a new deployment: it counts the
+	// messages whose body the channel encrypted, which are the messages the
+	// service-level rules did not decide about. A listener with rules about nodes
+	// and a high opaque count is a listener enforcing less than its
+	// configuration reads as, and require_readable_bodies is the answer.
+	//
+	// OPCUAServerFaults is the number that says the two policies disagree: the
+	// server refusing something this relay allowed. On this protocol that usually
+	// means a user the server does not grant what the listener does.
+	OPCUAChannels     atomic.Uint64
+	OPCUASessions     atomic.Uint64
+	OPCUAOpaque       atomic.Uint64
+	OPCUAServerErrors atomic.Uint64
+	OPCUAServerFaults atomic.Uint64
 	// The device inventory.
 	//
 	// AssetFindings is the one to alert on: an identity change, or a device
@@ -1033,6 +1049,11 @@ type Snapshot struct {
 	CoAPPending           int64  `json:"coap_pending"`
 	CoAPObservers         int64  `json:"coap_observers"`
 	CoAPSessions          int64  `json:"coap_sessions"`
+	OPCUAChannels         uint64 `json:"opcua_channels"`
+	OPCUASessions         uint64 `json:"opcua_sessions"`
+	OPCUAOpaque           uint64 `json:"opcua_opaque_bodies"`
+	OPCUAServerErrors     uint64 `json:"opcua_server_errors"`
+	OPCUAServerFaults     uint64 `json:"opcua_server_faults"`
 	AssetObservations     uint64 `json:"asset_observations"`
 	AssetFindings         uint64 `json:"asset_findings"`
 	AssetUnexpected       uint64 `json:"asset_unexpected_role"`
@@ -1544,6 +1565,11 @@ func (s *Stats) snapshot() Snapshot {
 		CoAPPending:             s.CoAPPending.Load(),
 		CoAPObservers:           s.CoAPObservers.Load(),
 		CoAPSessions:            s.CoAPSessions.Load(),
+		OPCUAChannels:           s.OPCUAChannels.Load(),
+		OPCUASessions:           s.OPCUASessions.Load(),
+		OPCUAOpaque:             s.OPCUAOpaque.Load(),
+		OPCUAServerErrors:       s.OPCUAServerErrors.Load(),
+		OPCUAServerFaults:       s.OPCUAServerFaults.Load(),
 		DHCPClients:             s.DHCPClients.Load(),
 		AssetObservations:       s.AssetObservations.Load(),
 		AssetFindings:           s.AssetFindings.Load(),

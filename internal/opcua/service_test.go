@@ -170,8 +170,8 @@ func TestTheServicesClassifyByWhatTheyDo(t *testing.T) {
 		{SvcHistoryUpdate, true, true, true},
 		{SvcHistoryRead, true, false, false},
 		{SvcTransferSubscriptions, true, true, true},
-		{SvcCreateSubscription, true, true, false},
-		{SvcCreateMonitored, true, true, false},
+		{SvcCreateSubscription, true, false, false},
+		{SvcCreateMonitored, true, false, false},
 		{SvcPublish, true, false, false},
 		{SvcReadReply, false, false, false},
 		{SvcWriteReply, false, false, false},
@@ -194,6 +194,37 @@ func TestTheServicesClassifyByWhatTheyDo(t *testing.T) {
 		if s.Control() && !s.Writes() {
 			t.Errorf("%s is control and not a write", s)
 		}
+	}
+	// Writes and State are exclusive, and that is the distinction read_only rests
+	// on: a service that changes the plant is a write, and one that changes the
+	// server's own bookkeeping for this session is not. An HMI gets its values by
+	// subscribing, so a read-only listener that refused every state change would
+	// be a listener no HMI can use.
+	for s := range services {
+		if s.Writes() && s.State() {
+			t.Errorf("%s is classified as both a write and a state change", s)
+		}
+	}
+	for _, s := range []Service{
+		SvcCreateSubscription, SvcModifySubscription, SvcSetPublishingMode,
+		SvcDeleteSubscriptions, SvcCreateMonitored, SvcModifyMonitored,
+		SvcSetMonitoringMode, SvcSetTriggering, SvcDeleteMonitored,
+	} {
+		if !s.State() {
+			t.Errorf("%s is not classified as a session-state change", s)
+		}
+	}
+	// And taking over another client's subscription is a write, not bookkeeping:
+	// on a plant, taking over the stream an operator's screen is drawing from is
+	// a change to what that operator sees.
+	if !SvcTransferSubscriptions.Writes() || SvcTransferSubscriptions.State() {
+		t.Error("transfer_subscriptions is classified as session bookkeeping")
+	}
+	// An unknown service is a write and not a state change: Writes() is what a
+	// refusal is made on and must fail safe, State() is what a narrowing is made
+	// on and must not silently grant anything.
+	if got := Service(9999); !got.Writes() || got.State() {
+		t.Errorf("an unknown service: Writes %v State %v", got.Writes(), got.State())
 	}
 	// Every response is classified as neither, because a response is the server's
 	// answer and a rule about it is about its contents, not its effect.

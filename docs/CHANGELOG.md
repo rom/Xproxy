@@ -6,6 +6,129 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (opcua: the protocol that brought its own security)
+
+- **`kind: opcua` is an OPC UA relay agent (IEC 62541) on TCP 4840** that reads the
+  chunked UA TCP transport, the secure channel, the session and — where the
+  channel's own mode leaves a body readable — the service call inside.
+
+- **This listener has a different job from every other relay kind here.** In front
+  of Modbus or S7comm the relay *is* the access control, because the protocol has
+  none. OPC UA already checks certificates and users, so this listener is the place
+  an estate's rules are written once and enforced for every server behind it,
+  including the ones whose own configuration nobody has reviewed since they were
+  commissioned.
+
+- **Most of what is worth enforcing is in the handshake, and all of it is in the
+  clear by construction.** The Hello names an endpoint and proposes four buffer
+  sizes; the OpenSecureChannel names a security policy and carries both
+  certificates; the CreateSession/ActivateSession pair names an application and a
+  user. Those fields have to be readable — they are how the two ends agree on what
+  to encrypt — so `security_policies`, `security_modes`, `application_uris`,
+  `token_kinds` and `users` work on every channel whatever it then does to its
+  bodies. A listener admitting one current policy from two named applications with
+  no anonymous token has excluded most of what goes wrong without naming a single
+  node.
+
+- **The two security policies IEC 62541 withdrew have to be named twice.**
+  `Basic128Rsa15` and `Basic256` are SHA-1 based and were withdrawn in 1.04, and
+  they are the two an estate most often still has switched on because one old
+  client needs them. Naming one in `security_policies` is a validation *error*
+  unless `allow_deprecated_policies` is also set, so switching SHA-1 back on is
+  written down where somebody reviewing the file will read it. `None` is refused
+  separately and for a different reason: deprecated means "broken cryptography
+  still switched on", `None` means "no cryptography, on purpose", and the log line
+  says which.
+
+- **Whether the service-level rules apply at all is a property of the channel, and
+  the reference says so rather than hiding it.** `MessageSecurityMode` has three
+  values and they mean three different things to a reader. With `none` everything
+  is plaintext. With **`sign`** the body is signed and *not* encrypted, so this
+  relay reads every node identifier and method argument — and modifies none of
+  them, because the signature is over exactly the octets the client sent. With
+  `sign_and_encrypt` the body is ciphertext and the relay sees the channel, the
+  sizes and the timing. So `nodes`, `services`, `attributes` and `methods` decide
+  traffic on a none or sign channel and are silent on a sign_and_encrypt one.
+  `require_readable_bodies` is how a listener says which it wants; validation
+  **warns** when service rules sit alongside a mode that makes them inert; and
+  `opcua_opaque_bodies` counts the messages it happened to.
+
+- **The attribute is the line between moving an actuator and changing who may move
+  it.** A write to attribute 13 (`value`) is a setpoint. A write to attribute 17
+  (`access_level`) is a privilege change. Both arrive as an ordinary Write, so
+  `write_attributes` defaults to `value` alone and a refusal of a permission
+  attribute is counted as `permission_write` rather than as a generic attribute
+  refusal — because a log line that did not say so would not tell an operator what
+  had just been attempted.
+
+- **A Call names two nodes and both are checked.** The object it is on and the
+  method itself, because allowing `Reset` on one pump is not allowing it on every
+  pump of that model.
+
+- **`min_publishing_interval` is the bound that matters most on this protocol**,
+  because the amplification is arithmetic rather than accidental. A
+  CreateSubscription asking for a one-millisecond publishing interval over a
+  thousand monitored items is a server asked to send a thousand values a
+  millisecond — from one legitimate session, in entirely valid protocol, with no
+  flood and no spoofing. An interval of zero means "as fast as the server can",
+  which is faster than any bound, so it is refused wherever a bound exists rather
+  than read as unset.
+
+- **`read_only` refuses what changes the plant and not what an HMI needs.** Write,
+  Call, AddNodes, DeleteNodes, AddReferences, DeleteReferences, HistoryUpdate,
+  RegisterServer and TransferSubscriptions, with no rule able to override it —
+  TransferSubscriptions among them because it moves a subscription from one session
+  to another, and on a plant taking over the stream an operator's screen draws from
+  is a change to what that operator sees. The subscription services are *not* on
+  that list: they change state the server holds rather than anything the plant
+  does, and a read-only listener no HMI can subscribe through is a listener no HMI
+  can use.
+
+- **A refusal is expressed the way a server expresses one.** A service-level
+  refusal is a ServiceFault carrying a bad status code against the request handle
+  the client sent, so the client's own library reports the error and the poll loop
+  carries on — dropping a session because one Read was refused turns a refusal into
+  an outage. A channel-level refusal is an ERR and a close instead, and not by
+  preference: a fault answering an OpenSecureChannel would have to be secured with
+  the keys that OpenSecureChannel exists to establish, so the client's record layer
+  would discard it and the operator would read a timeout.
+
+- **Namespaces are named by index, and the reference states the caveat rather than
+  offering a portable form that does not exist.** A namespace URI appears only in
+  an ExpandedNodeId, and the node a Read, a Write, a Browse or a Call names is a
+  plain NodeId — so on the wire a request identifies its namespace by index and by
+  nothing else. Translating would mean reading and keeping the server's own
+  NamespaceArray, which is learning rather than policy. An index means something
+  only against the table it came from, and a firmware update can reorder that
+  table, so a namespace list is one to review after one. The validator refuses a
+  URI in that list with the reason, because it is the form an operator will reach
+  for.
+
+- **The listener takes no `tls` section**, and that is not an omission. The
+  `opc.tcp` transport has no TLS; the security is inside the protocol, negotiated
+  per connection in the secure channel. A certificate here would promise something
+  the transport cannot do, and terminating the channel would make this relay a man
+  in the middle of the one industrial protocol designed to notice — holding the
+  plant's private key to do it. Nothing here decrypts, and nothing rewrites a
+  body.
+
+- **Nothing here logs a value or holds a password.** A Write's payload is a process
+  value: a pressure, a temperature, a recipe parameter. The node, the attribute and
+  the value's *type* go in the log; the value does not, and a method's arguments do
+  not either. A username token's password is kept only as its length and whether an
+  encryption algorithm was named — a relay that held a plant's passwords would be a
+  relay worth attacking for them — and `refuse_plaintext_passwords` defaults on
+  because under mode `sign` such a password is readable by anything on the path,
+  this relay included.
+
+- New counters: `opcua_channels`, `opcua_sessions`, `opcua_opaque_bodies`,
+  `opcua_server_errors`, `opcua_server_faults`. `opcua_denied` is the ban trigger.
+
+- One defect found while writing the wire package's tests: `FileTime` and
+  `ToFileTime` went through a `time.Duration`, and the gap from OPC UA's 1601
+  epoch to now is 1.3e19 nanoseconds where a Duration holds 9.2e18 — so every
+  timestamp saturated silently and came out in the wrong century.
+
 ### Added (coap: a relay whose policy is a path)
 
 - **`kind: coap` is a CoAP relay agent (RFC 7252) on UDP 5683** that reads what it
