@@ -6,6 +6,37 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (iec104: IEC 62351-5 recognised, counted and requirable)
+
+- **The thirteen IEC 60870-5-7 secure-authentication types are named.** Before
+  this, a listener saw type 81 as an unknown type and its policy refused it —
+  which made the standard's own authentication *unusable through this relay*.
+  That is the failure this mostly closes. They are the rule class `security`: its
+  own class, so a rule allowing the authentication exchange does not thereby allow
+  a station reset.
+
+- **`iec104_authentications` counts the replies and aggressive-mode requests
+  seen, whether or not the listener requires them.** An estate decides whether to
+  turn the requirement on by finding out which of its associations already
+  authenticate, and a counter that only moved once the requirement was in force
+  would be no help in making that decision.
+
+- **`authentication: {require: true}` refuses a command on an association that has
+  shown no exchange inside `window`** (5m by default, because the standard's own
+  session keys expire and an authentication that never did would let one exchange
+  at connection time authorise every command for a week). The state is per
+  association: crediting one connection's exchange to another would let a client
+  that can open a socket ride on a legitimate control centre's authentication,
+  which is the whole thing being defended against.
+
+- **This relay does not verify an authentication, and says so.** Verifying means
+  holding the update keys, and a relay holding them would be a second place for an
+  attacker to take them from; one that failed closed on a key it had got wrong
+  would stop a control centre operating a grid. No HMAC is computed, no key is
+  stored, and nothing is asserted about validity — only that the exchange the
+  standard defines took place, which is the most a party in the middle can
+  honestly assert.
+
 ### Added (iec104: the information element, decoded and policed)
 
 - **`ASDU.Elements` decodes the information element.** Until now this relay read

@@ -4118,6 +4118,22 @@
       },
       "additionalProperties": false
     },
+    "IEC104Authentication": {
+      "description": "IEC104Setpoint bounds the value a setpoint command may carry. It is the bound a rule about type identifications cannot express. A rule says a control centre may send C_SE_NB_1 to point 4711; this says the value it carries has to be between 0 and 40, and may not move by more than 5 at a time. On a turbine or a tap changer that difference is the difference between a policy about who may act and a policy about what may happen. **What the number means depends on the encoding**, and this relay cannot always tell. A scaled value (C_SE_NB_1) is an integer in the point's own unit, which is what an engineer means by a setpoint. A short float (C_SE_NC_1) likewise. But a normalised value (C_SE_NA_1) is a *fraction of full scale*, from -1 to very nearly +1, and the full scale is configured in the device where this relay cannot see it -- so a bound on a normalised point is a bound on the fraction, and writing min: 0 / max: 40 for one is a mistake the load will not catch. The reference says so beside this, and the protocol page says it again. IEC104Authentication is an iec104 listener's posture on the secure authentication of IEC 60870-5-7, which is the application layer IEC 62351-5 specifies. **This relay recognises the exchange and carries it; it does not verify it.** Verifying means holding the update keys, and a relay holding them would be a second place for an attacker to take them from; one that failed closed on a key it had got wrong would stop a control centre operating a grid. So no HMAC is computed, no key is stored, and nothing is asserted about whether an authentication was *valid*. What can be asserted is that the exchange took place, which on this protocol is the difference between a controlling station running the standard's authentication and one that has it switched off.",
+      "type": "object",
+      "properties": {
+        "require": {
+          "description": "Require refuses a command on an association where no authentication reply (S_RP_NA_1) or aggressive-mode request (S_AS_NA_1) has been seen inside Window. The refusal is hard: monitor and shadow mode do not carry it, because a command forwarded so that the missing authentication could be written down is a moved actuator. Off by default. An estate whose stations do not implement 60870-5-7 -- which is most of them -- would refuse every command on the first day.",
+          "type": "boolean"
+        },
+        "window": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
     "IEC104Deception": {
       "description": "IEC104Deception answers as a substation that is not there. A refusal is information. This relay answers a refused activation the way the standard says a station does -- the same ASDU back with the negative-confirm bit -- and a common address outside common_addresses the same way, so a control centre's alarm list says something true. Which means a scanner sweeping common addresses learns which stations exist, and one walking type identifications learns which the policy permits. The scan is refused and the survey completes. This answers instead. **On a grid the failure mode is not a confused scanner**: it is a control room acting on a measurement nothing measured, or believing a command landed that did not. So the same rule the modbus section holds to holds here, and it is a test rather than an intention: a frame that was going to reach a station is never answered by the fabrication. Deception replaces a refusal and never an answer, and mode answer will not load without clients.",
       "type": "object",
@@ -4257,6 +4273,14 @@
           "items": {
             "type": "string"
           }
+        },
+        "authentication": {
+          "description": "Authentication is the posture on IEC 60870-5-7 secure authentication, which IEC 62351-5 specifies.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/IEC104Authentication"
+            }
+          ]
         },
         "check_sequence": {
           "description": "CheckSequence refuses an I frame whose send sequence number is not the next one, which is a lost frame, a duplicated station or a replayed command. Default true: this protocol numbers its frames precisely so that the gap can be seen.",
@@ -4479,7 +4503,7 @@
       "additionalProperties": false
     },
     "IEC104Quality": {
-      "description": "IEC104Setpoint bounds the value a setpoint command may carry. It is the bound a rule about type identifications cannot express. A rule says a control centre may send C_SE_NB_1 to point 4711; this says the value it carries has to be between 0 and 40, and may not move by more than 5 at a time. On a turbine or a tap changer that difference is the difference between a policy about who may act and a policy about what may happen. **What the number means depends on the encoding**, and this relay cannot always tell. A scaled value (C_SE_NB_1) is an integer in the point's own unit, which is what an engineer means by a setpoint. A short float (C_SE_NC_1) likewise. But a normalised value (C_SE_NA_1) is a *fraction of full scale*, from -1 to very nearly +1, and the full scale is configured in the device where this relay cannot see it -- so a bound on a normalised point is a bound on the fraction, and writing min: 0 / max: 40 for one is a mistake the load will not catch. The reference says so beside this, and the protocol page says it again. IEC104Quality is an iec104 listener's policy about the quality descriptor a monitored value carries. It is an alerting policy by default and not a refusing one, because refusing telemetry blinds a control room -- which is its own kind of incident, and a worse one than a substituted value reaching a trend. `deny` exists for the estate that has decided otherwise about a particular bit, and it is empty until somebody writes it.",
+      "description": "IEC104Quality is an iec104 listener's policy about the quality descriptor a monitored value carries. It is an alerting policy by default and not a refusing one, because refusing telemetry blinds a control room -- which is its own kind of incident, and a worse one than a substituted value reaching a trend. `deny` exists for the estate that has decided otherwise about a particular bit, and it is empty until somebody writes it.",
       "type": "object",
       "properties": {
         "alert_on": {

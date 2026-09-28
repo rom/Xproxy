@@ -114,6 +114,15 @@ server:
             types: [C_IC_NA_1, C_CI_NA_1, C_RD_NA_1]
             causes: [act, deact]
 
+          # The IEC 60870-5-7 authentication exchange. Its own rule and its
+          # own class: a rule that allowed it as a "system" command would
+          # also allow a station reset. Without this the listener refuses
+          # the authentication as an unknown type, which makes the
+          # standard's own security unusable through the relay.
+          - name: authentication
+            action: allow
+            class: [security]
+
           # The keepalive's own test command.
           - name: test
             action: allow
@@ -162,6 +171,25 @@ server:
           - name: no-files
             action: deny
             class: [file]
+
+        # IEC 62351-5, as far as a relay in the middle can honestly go.
+        # IEC 60870-5-7 adds the authentication this protocol has none of:
+        # the station challenges a critical command and the control centre
+        # answers with an HMAC over it. This relay recognises the exchange
+        # and carries it -- the `auth` rule below is what makes that
+        # possible, and without a rule for the security class the listener
+        # would refuse the authentication and make it unusable -- and it
+        # does NOT verify it. Verifying means holding the update keys, and
+        # a relay holding them would be a second place to take them from.
+        #
+        # So leave `require` off until iec104_authentications says the
+        # associations are actually authenticating. The counter moves
+        # whether or not the requirement is on, which is exactly so that
+        # this decision can be made from evidence.
+        #
+        # authentication:
+        #   require: true
+        #   window: 5m
 
         # What the station may claim to have measured, and what to do
         # about the quality it attaches. Both of these *alert* by default

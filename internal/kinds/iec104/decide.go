@@ -89,6 +89,13 @@ func (se *session) decide(frame *wire.Frame, fromClient bool) (string, bool) {
 	if !d.Allow {
 		return se.policyRefused(frame, d)
 	}
+	// Then the IEC 60870-5-7 authentication, if this listener requires it. It
+	// comes before the element checks because a command nobody authenticated is
+	// not a command whose timestamp is worth arguing about, and before the
+	// selection because a refused command must not consume one.
+	if reason, ok := se.decideAuthentication(frame, fromClient, time.Now()); !ok {
+		return reason, false
+	}
 	// Then what the information element says: the quality a station attached to
 	// a reading, the value it claims, and the timestamp a control centre put on
 	// a command. It comes before the setpoint bound because a command whose

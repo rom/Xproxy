@@ -87,6 +87,7 @@ type server struct {
 	quality  *qualityPolicy
 	stamps   *timestampPolicy
 	measures []*measureRule
+	auth     *authPolicy
 	decoy    *decoy
 	learner  *learner
 	limiter  *limits.KeyedLimiter
@@ -118,6 +119,9 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener, tc *tls.Co
 		return nil, fmt.Errorf("iec104 %s: %w", cfg.Name, err)
 	}
 	if t.measures, err = compileMeasurements(m.Measurements); err != nil {
+		return nil, fmt.Errorf("iec104 %s: %w", cfg.Name, err)
+	}
+	if t.auth, err = compileAuthentication(m.Authentication); err != nil {
 		return nil, fmt.Errorf("iec104 %s: %w", cfg.Name, err)
 	}
 	t.selects = newSelects(m.MaxSelections, m.SelectTimeout.D(), time.Now)
@@ -300,6 +304,13 @@ type session struct {
 	closed   atomic.Bool
 	commands atomic.Uint64
 	denied   atomic.Uint64
+
+	// authed is what this association has shown of the IEC 60870-5-7
+	// authentication exchange. Per association and not per listener: crediting
+	// one connection's exchange to another would let a client that can open a
+	// socket ride on a legitimate control centre's authentication, which is the
+	// whole thing being defended against.
+	authed authState
 
 	// watch accumulates the common addresses this association named, for the
 	// estate's device inventory. Reported once at the start and once at the

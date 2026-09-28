@@ -10606,9 +10606,10 @@ func (v *validator) iec104Listener(p string, m *IEC104Listener, hasTLS bool) {
 		}
 		for j, c := range r.Class {
 			switch c {
-			case "monitoring", "command", "system", "parameter", "file":
+			case "monitoring", "command", "system", "parameter", "file", "security":
 			default:
-				v.errf("%s.class[%d]: %q must be monitoring, command, system, parameter or file", q, j, c)
+				v.errf("%s.class[%d]: %q must be monitoring, command, system, parameter, file or security",
+					q, j, c)
 			}
 		}
 		for j, c := range r.Causes {

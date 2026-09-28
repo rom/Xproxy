@@ -590,6 +590,9 @@ type IEC104Listener struct {
 	// Timestamps is the policy about the time tag a command carries, which
 	// is this protocol's own replay check.
 	Timestamps *IEC104Timestamps `yaml:"timestamps"`
+	// Authentication is the posture on IEC 60870-5-7 secure authentication,
+	// which IEC 62351-5 specifies.
+	Authentication *IEC104Authentication `yaml:"authentication"`
 	// RequireSelect makes the two-step form mandatory for every command
 	// type that has one: a command must be selected, by the same client
 	// on the same connection, before it is executed. The standard
@@ -3482,6 +3485,37 @@ type IEC104DecoyPoints struct {
 // cannot see it -- so a bound on a normalised point is a bound on the fraction,
 // and writing min: 0 / max: 40 for one is a mistake the load will not catch. The
 // reference says so beside this, and the protocol page says it again.
+// IEC104Authentication is an iec104 listener's posture on the secure
+// authentication of IEC 60870-5-7, which is the application layer IEC 62351-5
+// specifies.
+//
+// **This relay recognises the exchange and carries it; it does not verify it.**
+// Verifying means holding the update keys, and a relay holding them would be a
+// second place for an attacker to take them from; one that failed closed on a key
+// it had got wrong would stop a control centre operating a grid. So no HMAC is
+// computed, no key is stored, and nothing is asserted about whether an
+// authentication was *valid*.
+//
+// What can be asserted is that the exchange took place, which on this protocol is
+// the difference between a controlling station running the standard's
+// authentication and one that has it switched off.
+type IEC104Authentication struct {
+	// Require refuses a command on an association where no authentication reply
+	// (S_RP_NA_1) or aggressive-mode request (S_AS_NA_1) has been seen inside
+	// Window. The refusal is hard: monitor and shadow mode do not carry it,
+	// because a command forwarded so that the missing authentication could be
+	// written down is a moved actuator.
+	//
+	// Off by default. An estate whose stations do not implement 60870-5-7 --
+	// which is most of them -- would refuse every command on the first day.
+	Require bool `yaml:"require"`
+	// Window is how long an authentication counts for on an association.
+	// Default 5m. The standard's own session keys expire, and an authentication
+	// that never did would let one exchange at connection time authorise every
+	// command for a week.
+	Window Duration `yaml:"window"`
+}
+
 // IEC104Quality is an iec104 listener's policy about the quality descriptor a
 // monitored value carries.
 //

@@ -242,7 +242,7 @@ func compileRule(c *config.IEC104Rule) (*rule, error) {
 		r.classes = map[string]bool{}
 		for _, cl := range c.Class {
 			switch cl {
-			case "monitoring", "command", "system", "parameter", "file":
+			case "monitoring", "command", "system", "parameter", "file", "security":
 				r.classes[cl] = true
 			default:
 				return nil, fmt.Errorf("%s.class: %q is not a class", where, cl)
@@ -297,6 +297,10 @@ func classOf(t wire.Type) string {
 		return "command"
 	case t.System():
 		return "system"
+	case t.Secure():
+		// Its own class, because a rule that allows the authentication exchange
+		// should not thereby allow a station reset.
+		return "security"
 	case t >= 110 && t <= 113:
 		return "parameter"
 	case t >= 120 && t <= 127:

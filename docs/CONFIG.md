@@ -2232,7 +2232,7 @@ bounds which stations may be addressed through it.
 | `common_addresses` | list | The stations this rule covers |
 | `originators` | list | Originator addresses (0 to 255): which control centre, where a station serves several |
 | `types` | list | Type identifications by the standard's name (`C_SC_NA_1`) or by number. The names are the standard's own because that is what the substation documentation says |
-| `class` | list | `monitoring`, `command`, `system`, `parameter`, `file`: what a type *does*. The durable way to write a policy, because a class outlives a standard revision that adds a type |
+| `class` | list | `monitoring`, `command`, `system`, `parameter`, `file`, `security`: what a type *does*. The durable way to write a policy, because a class outlives a standard revision that adds a type. `security` is the IEC 60870-5-7 authentication exchange, and it is its own class so that a rule allowing it does not thereby allow a station reset |
 | `causes` | list | Causes of transmission by name (`act`, `actcon`, `spont`, `introgroup1`) or number. A rule naming none matches any cause, which is usually wrong for a rule about commands: `act` is the centre commanding and `actcon` is the station answering |
 | `addresses` | list | Information object address ranges (0 to 16777215). A frame naming an address outside all of them does not match |
 | `max_objects` | int | Information objects one ASDU may carry (0 leaves the protocol's own 127) |
@@ -2361,6 +2361,63 @@ problem. The event and the counter are what an operator acts on.
 what the D in its name is for, and this policy has nothing to ask of it. Reading
 absent as good would assert something the wire never said.
 
+#### server.listeners[].iec104.authentication
+
+**`authentication`** is the posture on the secure authentication of
+IEC 60870-5-7, which is the application layer **IEC 62351-5** specifies.
+
+IEC 60870-5-104 has no authentication at all: a controlling station is an
+address, and an address is what an attacker on the same segment chooses.
+IEC 60870-5-7 adds one over the existing ASDU machinery. The controlled station
+challenges a critical command with `S_CH_NA_1`, the controlling station answers
+with `S_RP_NA_1` carrying an HMAC over the challenge and the command, and only
+then is the command acted on. Aggressive mode carries the authentication with the
+command in `S_AS_NA_1` instead of after it.
+
+**This relay recognises the exchange and carries it. It does not verify it.**
+Verifying means holding the update keys, and a relay holding them would be a
+second place for an attacker to take them from; one that failed closed on a key
+it had got wrong would stop a control centre operating a grid. So no HMAC is
+computed here, no key is stored, and **nothing is asserted about whether an
+authentication was valid**.
+
+What is asserted is weaker and still worth having:
+
+- **The exchange is not refused.** Before these types were named, a listener saw
+  type 81 as an unknown type and its policy refused it -- which made the
+  standard's own authentication unusable through this relay. The thirteen types
+  are now named (`S_CH_NA_1`, `S_RP_NA_1`, `S_AS_NA_1`, `S_KR_NA_1`, `S_KS_NA_1`,
+  `S_KC_NA_1`, `S_ER_NA_1`, `S_US_NA_1`, `S_UQ_NA_1`, `S_UR_NA_1`, `S_UK_NA_1`,
+  `S_UA_NA_1`, `S_UC_NA_1`) and they are the rule class `security` -- its own
+  class, so that a rule allowing the authentication exchange does not thereby
+  allow a station reset.
+- **Whether it happened is visible.** `iec104_authentications` counts the replies
+  and aggressive-mode requests seen, **whether or not this listener requires
+  them**: an estate decides whether to turn `require` on by finding out which of
+  its associations already authenticate, and a counter that only moved once the
+  requirement was in force would be no help in making that decision.
+- **It can be required.**
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `require` | bool | `false` | Refuse a command on an association where no `S_RP_NA_1` or `S_AS_NA_1` has been seen inside `window`. Off by default: an estate whose stations do not implement 60870-5-7 -- which is most of them -- would be refused every command on the first day |
+| `window` | duration | `5m` | How long an authentication counts for on an association. The standard's own session keys expire, and an authentication that never did would let one exchange at connection time authorise every command for a week |
+
+**An authentication belongs to the association that performed it.** Crediting one
+connection's exchange to another would let a client that can open a socket ride on
+a legitimate control centre's authentication, which is the whole thing being
+defended against. So the state is per association and dies with it.
+
+**The refusal is hard**, like the timestamp checks and for the same reason: a
+command forwarded so that the missing authentication could be written down is a
+moved actuator.
+
+**What is never held to the requirement**: telemetry, because refusing a
+substation's measurements over a policy about commands would blind the control
+room; a station's own confirmation, because a controlling station does not
+authenticate the answer to its command; and the authentication exchange itself,
+because a reply cannot be required to have been preceded by a reply.
+
 #### server.listeners[].iec104.timestamps
 
 **`timestamps`** is the replay check on a time-tagged command, and it is the one
@@ -2460,7 +2517,8 @@ whether a *peer's* numbering is checked: a gap, a replay, or an end that has
 `k` frames outstanding that this relay has not acknowledged.
 
 Counters: `iec104_sessions`, `iec104_sessions_open`, `iec104_frames`,
-`iec104_commands`, `iec104_system_commands`, `iec104_denied`,
+`iec104_commands`, `iec104_system_commands`, `iec104_authentications`,
+`iec104_denied`,
 `iec104_would_deny`, `iec104_malformed`, `iec104_rejected`,
 `iec104_rate_limited`, `iec104_selects`, `iec104_executes`,
 `iec104_unselected`, `iec104_selects_held`, `iec104_setpoints`,
@@ -2474,7 +2532,7 @@ refusal counters: `client_not_allowed`, `tls_handshake`, `malformed`,
 `ack_ahead`, `unselected`, `select_unavailable`, `setpoint_range`,
 `setpoint_delta`, `setpoint_unknown`, `quality`, `measurement_range`,
 `command_timestamp_missing`, `command_timestamp_invalid`,
-`command_timestamp_old`, `command_timestamp_future`.
+`command_timestamp_old`, `command_timestamp_future`, `unauthenticated`.
 
 #### server.listeners[].iec104.learn
 

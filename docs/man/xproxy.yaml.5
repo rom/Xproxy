@@ -5322,7 +5322,7 @@ T{
 T}	T{
 list
 T}	T{
-\fBmonitoring\fR,\: \fBcommand\fR,\: \fBsystem\fR,\: \fBparameter\fR,\: \fBfile\fR: what a type \fIdoes\fR. The durable way to write a policy,\: because a class outlives a standard revision that adds a type
+\fBmonitoring\fR,\: \fBcommand\fR,\: \fBsystem\fR,\: \fBparameter\fR,\: \fBfile\fR,\: \fBsecurity\fR: what a type \fIdoes\fR. The durable way to write a policy,\: because a class outlives a standard revision that adds a type. \fBsecurity\fR is the IEC 60870\-5\-7 authentication exchange,\: and it is its own class so that a rule allowing it does not thereby allow a station reset
 T}
 T{
 \fBcauses\fR
@@ -5539,6 +5539,69 @@ T}
 \fBAn alert does not reach the ban ladder.\fR A substation reporting a substituted value is not an attacker \-\- it is usually an engineer with a hand\-entered reading \-\- and a ban would take the control room\(aqs telemetry away over a data\-quality problem. The event and the counter are what an operator acts on.
 .PP
 \fBNo quality descriptor is not a good one.\fR \fBM_ME_ND_1\fR carries none, which is what the D in its name is for, and this policy has nothing to ask of it. Reading absent as good would assert something the wire never said.
+.SS "server.listeners[].iec104.authentication"
+.PP
+\fB\fBauthentication\fR\fR is the posture on the secure authentication of IEC 60870\-5\-7, which is the application layer \fBIEC 62351\-5\fR specifies.
+.PP
+IEC 60870\-5\-104 has no authentication at all: a controlling station is an address, and an address is what an attacker on the same segment chooses. IEC 60870\-5\-7 adds one over the existing ASDU machinery. The controlled station challenges a critical command with \fBS_CH_NA_1\fR, the controlling station answers with \fBS_RP_NA_1\fR carrying an HMAC over the challenge and the command, and only then is the command acted on. Aggressive mode carries the authentication with the command in \fBS_AS_NA_1\fR instead of after it.
+.PP
+\fBThis relay recognises the exchange and carries it. It does not verify it.\fR Verifying means holding the update keys, and a relay holding them would be a second place for an attacker to take them from; one that failed closed on a key it had got wrong would stop a control centre operating a grid. So no HMAC is computed here, no key is stored, and \fBnothing is asserted about whether an authentication was valid\fR.
+.PP
+What is asserted is weaker and still worth having:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBThe exchange is not refused.\fR Before these types were named, a listener saw type 81 as an unknown type and its policy refused it \-\- which made the standard\(aqs own authentication unusable through this relay. The thirteen types are now named (\fBS_CH_NA_1\fR, \fBS_RP_NA_1\fR, \fBS_AS_NA_1\fR, \fBS_KR_NA_1\fR, \fBS_KS_NA_1\fR, \fBS_KC_NA_1\fR, \fBS_ER_NA_1\fR, \fBS_US_NA_1\fR, \fBS_UQ_NA_1\fR, \fBS_UR_NA_1\fR, \fBS_UK_NA_1\fR, \fBS_UA_NA_1\fR, \fBS_UC_NA_1\fR) and they are the rule class \fBsecurity\fR \-\- its own class, so that a rule allowing the authentication exchange does not thereby allow a station reset.
+.PP
+.ti -3n
+\(bu
+\fBWhether it happened is visible.\fR \fBiec104_authentications\fR counts the replies and aggressive\-mode requests seen, \fBwhether or not this listener requires them\fR: an estate decides whether to turn \fBrequire\fR on by finding out which of its associations already authenticate, and a counter that only moved once the requirement was in force would be no help in making that decision.
+.PP
+.ti -3n
+\(bu
+\fBIt can be required.\fR
+.RE
+.PP
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.9i) lbw(0.8i) lbx
+lw(0.8i) lw(0.9i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBrequire\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse a command on an association where no \fBS_\:RP_\:NA_\:1\fR or \fBS_\:AS_\:NA_\:1\fR has been seen inside \fBwindow\fR. Off by default: an estate whose stations do not implement 60870\-5\-7 \-\- which is most of them \-\- would be refused every command on the first day
+T}
+T{
+\fBwindow\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+How long an authentication counts for on an association. The standard\(aqs own session keys expire,\: and an authentication that never did would let one exchange at connection time authorise every command for a week
+T}
+.TE
+.PP
+\fBAn authentication belongs to the association that performed it.\fR Crediting one connection\(aqs exchange to another would let a client that can open a socket ride on a legitimate control centre\(aqs authentication, which is the whole thing being defended against. So the state is per association and dies with it.
+.PP
+\fBThe refusal is hard\fR, like the timestamp checks and for the same reason: a command forwarded so that the missing authentication could be written down is a moved actuator.
+.PP
+\fBWhat is never held to the requirement\fR: telemetry, because refusing a substation\(aqs measurements over a policy about commands would blind the control room; a station\(aqs own confirmation, because a controlling station does not authenticate the answer to its command; and the authentication exchange itself, because a reply cannot be required to have been preceded by a reply.
 .SS "server.listeners[].iec104.timestamps"
 .PP
 \fB\fBtimestamps\fR\fR is the replay check on a time\-tagged command, and it is the one this protocol most needs and least performs.
@@ -5618,7 +5681,7 @@ T}
 .PP
 So the relay numbers what it writes, acknowledges what it reads at \fBw\fR (and on a timer, for a link too quiet to carry one), and terminates the supervisory frames \-\- an acknowledgement is about the stream this relay wrote, not about the stream the other end wrote. The application layer is still forwarded untouched: the ASDU that arrives is the ASDU that leaves, because re\-encoding it is how a relay and a station come to disagree about what was said. What \fBcheck_sequence\fR and \fBmax_unacknowledged\fR decide is whether a \fIpeer\(aqs\fR numbering is checked: a gap, a replay, or an end that has \fBk\fR frames outstanding that this relay has not acknowledged.
 .PP
-Counters: \fBiec104_sessions\fR, \fBiec104_sessions_open\fR, \fBiec104_frames\fR, \fBiec104_commands\fR, \fBiec104_system_commands\fR, \fBiec104_denied\fR, \fBiec104_would_deny\fR, \fBiec104_malformed\fR, \fBiec104_rejected\fR, \fBiec104_rate_limited\fR, \fBiec104_selects\fR, \fBiec104_executes\fR, \fBiec104_unselected\fR, \fBiec104_selects_held\fR, \fBiec104_setpoints\fR, \fBiec104_setpoint_points\fR, \fBiec104_setpoint_unknown\fR, \fBiec104_sequence_gaps\fR, \fBiec104_window_full\fR, \fBiec104_upstream_failed\fR. Refusals are \fBiec104_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBtls_handshake\fR, \fBmalformed\fR, \fBframe_too_long\fR, \fBmax_connections\fR, \fBrate_limited\fR, \fBcommand_rate_limited\fR, \fBmonitor_only\fR, \fBcommon_address\fR, \fBrule\fR, \fBdefault_deny\fR, \fBcontrol\fR, \fBstation_command\fR, \fBsequence\fR, \fBwindow\fR, \fBack_ahead\fR, \fBunselected\fR, \fBselect_unavailable\fR, \fBsetpoint_range\fR, \fBsetpoint_delta\fR, \fBsetpoint_unknown\fR, \fBquality\fR, \fBmeasurement_range\fR, \fBcommand_timestamp_missing\fR, \fBcommand_timestamp_invalid\fR, \fBcommand_timestamp_old\fR, \fBcommand_timestamp_future\fR.
+Counters: \fBiec104_sessions\fR, \fBiec104_sessions_open\fR, \fBiec104_frames\fR, \fBiec104_commands\fR, \fBiec104_system_commands\fR, \fBiec104_authentications\fR, \fBiec104_denied\fR, \fBiec104_would_deny\fR, \fBiec104_malformed\fR, \fBiec104_rejected\fR, \fBiec104_rate_limited\fR, \fBiec104_selects\fR, \fBiec104_executes\fR, \fBiec104_unselected\fR, \fBiec104_selects_held\fR, \fBiec104_setpoints\fR, \fBiec104_setpoint_points\fR, \fBiec104_setpoint_unknown\fR, \fBiec104_sequence_gaps\fR, \fBiec104_window_full\fR, \fBiec104_upstream_failed\fR. Refusals are \fBiec104_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBtls_handshake\fR, \fBmalformed\fR, \fBframe_too_long\fR, \fBmax_connections\fR, \fBrate_limited\fR, \fBcommand_rate_limited\fR, \fBmonitor_only\fR, \fBcommon_address\fR, \fBrule\fR, \fBdefault_deny\fR, \fBcontrol\fR, \fBstation_command\fR, \fBsequence\fR, \fBwindow\fR, \fBack_ahead\fR, \fBunselected\fR, \fBselect_unavailable\fR, \fBsetpoint_range\fR, \fBsetpoint_delta\fR, \fBsetpoint_unknown\fR, \fBquality\fR, \fBmeasurement_range\fR, \fBcommand_timestamp_missing\fR, \fBcommand_timestamp_invalid\fR, \fBcommand_timestamp_old\fR, \fBcommand_timestamp_future\fR, \fBunauthenticated\fR.
 .SS "server.listeners[].iec104.learn"
 .PP
 \fB\fBlearn\fR\fR records what crosses this listener and writes a proposed policy.

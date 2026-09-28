@@ -235,15 +235,20 @@ type Stats struct {
 	// there, and RedisTripwire the ones nothing legitimate sends: the
 	// remote-code-execution chain, which on this protocol is where the
 	// fabrication earns its place.
-	RedisDeceived     atomic.Uint64
-	RedisTripwire     atomic.Uint64
-	IEC104Commands    atomic.Uint64
-	IEC104SystemCmds  atomic.Uint64
-	IEC104Denied      atomic.Uint64
-	IEC104WouldDeny   atomic.Uint64
-	IEC104Malformed   atomic.Uint64
-	IEC104Rejected    atomic.Uint64
-	IEC104RateLimited atomic.Uint64
+	RedisDeceived    atomic.Uint64
+	RedisTripwire    atomic.Uint64
+	IEC104Commands   atomic.Uint64
+	IEC104SystemCmds atomic.Uint64
+	// IEC104Authentications counts the IEC 60870-5-7 authentication replies and
+	// aggressive-mode requests seen. It says the standard's own authentication
+	// is being used on this listener and nothing about whether it is valid --
+	// this relay holds no keys and verifies no HMAC.
+	IEC104Authentications atomic.Uint64
+	IEC104Denied          atomic.Uint64
+	IEC104WouldDeny       atomic.Uint64
+	IEC104Malformed       atomic.Uint64
+	IEC104Rejected        atomic.Uint64
+	IEC104RateLimited     atomic.Uint64
 	// IEC104Selects and IEC104Executes count the two halves of a
 	// two-step command; IEC104Unselected counts the executes refused for
 	// arriving without one, which is the number that says whether
@@ -796,6 +801,7 @@ type Snapshot struct {
 	RedisTripwire         uint64 `json:"redis_tripwire"`
 	IEC104Commands        uint64 `json:"iec104_commands"`
 	IEC104SystemCmds      uint64 `json:"iec104_system_commands"`
+	IEC104Authentications uint64 `json:"iec104_authentications"`
 	IEC104Denied          uint64 `json:"iec104_denied"`
 	IEC104WouldDeny       uint64 `json:"iec104_would_deny"`
 	IEC104Malformed       uint64 `json:"iec104_malformed"`
@@ -1247,6 +1253,7 @@ func (s *Stats) snapshot() Snapshot {
 		RedisTripwire:          s.RedisTripwire.Load(),
 		IEC104Commands:         s.IEC104Commands.Load(),
 		IEC104SystemCmds:       s.IEC104SystemCmds.Load(),
+		IEC104Authentications:  s.IEC104Authentications.Load(),
 		IEC104Denied:           s.IEC104Denied.Load(),
 		IEC104WouldDeny:        s.IEC104WouldDeny.Load(),
 		IEC104Malformed:        s.IEC104Malformed.Load(),
