@@ -12166,6 +12166,12 @@ func (v *validator) ntpListener(p string, n *NTPListener) {
 		if s.Mode != "terminate" && s.KeyListener != "" {
 			v.errf("%s.nts.key_listener: set with mode %q, which does not open cookies", p, s.Mode)
 		}
+		if s.Source != nil {
+			if s.Mode != "terminate" {
+				v.errf("%s.nts.source: needs mode terminate: the relay can only hold its own association with the source once the client's authentication ends here", p)
+			}
+			v.ntsSource(p+".nts.source", s.Source)
+		}
 	}
 	if e := n.Extensions; e != nil {
 		if e.Max != 0 && (e.Max < 1 || e.Max > 32) {
@@ -12350,6 +12356,43 @@ func (v *validator) ntpCIDRs(what string, list []string) {
 			v.errf("%s[%d]: %q is not a network in CIDR form", what, i, s)
 		}
 	}
+}
+
+// ntsSource checks the relay's own association with the time source.
+func (v *validator) ntsSource(p string, n *NTPSourceNTS) {
+	if n.KEAddress == "" {
+		v.errf("%s.ke_address: required", p)
+	} else {
+		host := n.KEAddress
+		if h, _, err := net.SplitHostPort(n.KEAddress); err == nil {
+			host = h
+		}
+		if !hostPatternOK(host) {
+			v.errf("%s.ke_address: %q is not a host or host:port", p, n.KEAddress)
+		}
+	}
+	if n.ServerName != "" && !hostPatternOK(n.ServerName) {
+		v.errf("%s.server_name: %q is not a valid host name", p, n.ServerName)
+	}
+	if n.CAFile != "" {
+		v.file(p+".ca_file", n.CAFile)
+	} else {
+		v.warnf("%s.ca_file: empty, so the source's certificate is checked against the system trust store -- on a plant network that admits any public authority, which is not usually what an estate means by \"this is our time server\"", p)
+	}
+	if (n.CertFile == "") != (n.KeyFile == "") {
+		v.errf("%s: cert_file and key_file are both needed, or neither", p)
+	}
+	if n.CertFile != "" {
+		v.file(p+".cert_file", n.CertFile)
+		v.file(p+".key_file", n.KeyFile)
+	}
+	if n.RefreshBelow != 0 && (n.RefreshBelow < 1 || n.RefreshBelow > 8) {
+		v.errf("%s.refresh_below: must be between 1 and 8", p)
+	}
+	if d := n.Timeout; d != 0 && (d.D() < time.Second || d.D() > time.Minute) {
+		v.errf("%s.timeout: must be between 1s and 1m", p)
+	}
+	v.warnf("%s: there is no end-to-end authentication between a client and the time source any more. The client authenticates to this relay and this relay authenticates to the source, so the process is a party to the security rather than a reader of it -- which is the point, and is worth being written down", p)
 }
 
 // ntsKeyListener checks that a named listener is one that issues cookies.

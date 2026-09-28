@@ -3837,8 +3837,45 @@ issued per cookie and placeholder the request carried, at most eight,
 which is what keeps the request as large as the answer: without that
 bound the listener would be an amplifier.
 
+**`nts.source`** is the other side of the same decision. Without it the
+relay asks the time source in plain NTP, which is right when the source
+cannot do better. With it the relay holds an association of its own: its
+own key establishment with the source's key establishment server, its own
+cookies, its own authenticator on every request it sends, and verification
+of every answer. It needs `mode: terminate`, because the client's
+authentication has to end here before the relay can start its own.
+
+**The cost is worth being plain about, and validation says it too: there is
+no end-to-end authentication between a client and the time source any
+more.** The client authenticates to this relay and this relay
+authenticates to the source, so the process is a party to the security
+rather than a reader of it. What it buys is a relay that can compare,
+police and log what the source says while both halves are still
+authenticated — which a pass-through relay cannot do at all.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `ke_address` | host:port | required | The source's key establishment server. A bare host takes port 4460. It is configured rather than discovered: the time servers are the upstream pool, and a key establishment server that named a different one would be moving the estate's time traffic — such a record is logged and not followed |
+| `server_name` | host | the host in `ke_address` | The name to verify in the source's certificate |
+| `ca_file` | path | none | The authorities that may have issued it. Empty warns: the system trust store admits any public authority, which is not usually what an estate means by "this is our time server" |
+| `cert_file`, `key_file` | path | none | A client certificate, for a source that asks for one. NTS-KE says nothing about the client, so this is the only thing that can name this relay to the source. Both or neither |
+| `refresh_below` | int | `2` | Establish keys again when fewer than this many cookies are left (1 to 8). One is spent per exchange and one comes back, so the pool only shrinks when answers are lost — and a relay that ran out would stop asking for the time |
+| `timeout` | duration | `10s` | One key establishment: a TLS handshake and two short messages (1s to 1m) |
+
+A request that arrives before the relay holds keys with the source is
+dropped with the reason `nts_source_not_ready` rather than sent in plain
+NTP: a relay that quietly downgraded its own request would be doing the
+thing this setting exists to prevent, and a time client retries. An answer
+whose authenticator does not verify, or which does not echo the identifier
+the request carried, is `nts_source_unverified` — the identifier matters
+because the keys are the same for the whole association, so without it an
+answer to another of this relay's requests would verify.
+
 Counters: `ntp_nts_verified`, `ntp_nts_unverified`,
-`ntp_nts_cookie_unknown` and `ntp_nts_cookies_issued`. The refusals are
+`ntp_nts_cookie_unknown` and `ntp_nts_cookies_issued` for the client side;
+`ntp_nts_source_established`, `ntp_nts_source_failed`,
+`ntp_nts_source_verified` and `ntp_nts_source_unverified` for the relay's
+own association with the source. The refusals are
 `nts_no_authenticator` (NTS fields with no authenticator, or one this
 relay cannot read), `nts_no_cookie` (an authenticator with nothing to
 look the keys up by), `nts_cookie_unknown` (a cookie this relay did not

@@ -7642,6 +7642,14 @@
         "require": {
           "description": "Require refuses a packet that carries no NTS fields. It is how a listener says \"this estate is NTS only\", and it is the setting that makes the no-downgrade rule visible: an answer that arrives without NTS fields for a request that had them is refused, never passed on as plain NTP.",
           "type": "boolean"
+        },
+        "source": {
+          "description": "Source makes the relay hold its own NTS association with the time source: its own key establishment, its own cookies, its own authenticator on every request it sends, and verification of every answer. It goes with mode: terminate, because the two are the same decision seen from either side. Terminating means the client's authentication ends here; this says what happens on the other side of that. Without it the relay asks the source in plain NTP, which is right when the source cannot do better and a choice an estate should make deliberately when it can.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/NTPSourceNTS"
+            }
+          ]
         }
       },
       "additionalProperties": false
@@ -7738,6 +7746,41 @@
         },
         "unhealthy_after": {
           "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "NTPSourceNTS": {
+      "description": "NTPSourceNTS is the relay's own NTS association with the time source. The cost of this is worth being plain about: there is no end-to-end authentication between the client and the time source any more. The client authenticates to this relay and this relay authenticates to the source, so the process is a party to the security rather than a reader of it. What it buys is a relay that can compare, police and log what the source says while both halves are still authenticated -- which a pass-through relay cannot do at all.",
+      "type": "object",
+      "properties": {
+        "ca_file": {
+          "description": "CAFile pins the authorities that may have issued it. Empty uses the system trust store, which on a plant network is usually not what an operator means.",
+          "type": "string"
+        },
+        "cert_file": {
+          "description": "CertFile and KeyFile are a client certificate, for a source that asks for one. NTS-KE says nothing about the client, so this is the only thing that can name this relay to the source.",
+          "type": "string"
+        },
+        "ke_address": {
+          "description": "KEAddress is the source's key establishment server, host:port. A bare host takes port 4460. Required. It is configured rather than discovered: the time servers are the upstream pool, and a key establishment server that named a different one would be moving the estate's time traffic. This relay reports such a record and does not follow it.",
+          "type": "string"
+        },
+        "key_file": {
+          "type": "string"
+        },
+        "refresh_below": {
+          "description": "RefreshBelow re-establishes keys when fewer than this many cookies are left. Default 2. A cookie is spent per exchange and one comes back, so the pool only shrinks when answers are lost -- and a relay that ran out would stop asking for the time.",
+          "type": "integer"
+        },
+        "server_name": {
+          "description": "ServerName is the name to verify in the source's certificate, when it is not the host in ke_address.",
+          "type": "string"
+        },
+        "timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
         }
       },
       "additionalProperties": false

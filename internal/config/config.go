@@ -4423,7 +4423,70 @@ type NTPNTS struct {
 	// two listeners on two ports, and termination only works when the
 	// one holding the keys is named by the one spending them.
 	KeyListener string `yaml:"key_listener"`
+	// Source makes the relay hold its own NTS association with the time
+	// source: its own key establishment, its own cookies, its own
+	// authenticator on every request it sends, and verification of every
+	// answer.
+	//
+	// It goes with mode: terminate, because the two are the same
+	// decision seen from either side. Terminating means the client's
+	// authentication ends here; this says what happens on the other
+	// side of that. Without it the relay asks the source in plain NTP,
+	// which is right when the source cannot do better and a choice an
+	// estate should make deliberately when it can.
+	Source *NTPSourceNTS `yaml:"source"`
 }
+
+// NTPSourceNTS is the relay's own NTS association with the time source.
+//
+// The cost of this is worth being plain about: there is no end-to-end
+// authentication between the client and the time source any more. The
+// client authenticates to this relay and this relay authenticates to the
+// source, so the process is a party to the security rather than a reader
+// of it. What it buys is a relay that can compare, police and log what
+// the source says while both halves are still authenticated -- which a
+// pass-through relay cannot do at all.
+type NTPSourceNTS struct {
+	// KEAddress is the source's key establishment server, host:port. A
+	// bare host takes port 4460. Required.
+	//
+	// It is configured rather than discovered: the time servers are the
+	// upstream pool, and a key establishment server that named a
+	// different one would be moving the estate's time traffic. This
+	// relay reports such a record and does not follow it.
+	KEAddress string `yaml:"ke_address"`
+	// ServerName is the name to verify in the source's certificate,
+	// when it is not the host in ke_address.
+	ServerName string `yaml:"server_name"`
+	// CAFile pins the authorities that may have issued it. Empty uses
+	// the system trust store, which on a plant network is usually not
+	// what an operator means.
+	CAFile string `yaml:"ca_file"`
+	// CertFile and KeyFile are a client certificate, for a source that
+	// asks for one. NTS-KE says nothing about the client, so this is
+	// the only thing that can name this relay to the source.
+	CertFile string `yaml:"cert_file"`
+	KeyFile  string `yaml:"key_file"`
+	// RefreshBelow re-establishes keys when fewer than this many
+	// cookies are left. Default 2. A cookie is spent per exchange and
+	// one comes back, so the pool only shrinks when answers are lost --
+	// and a relay that ran out would stop asking for the time.
+	RefreshBelow int `yaml:"refresh_below"`
+	// Timeout bounds one key establishment. Default 10s.
+	Timeout Duration `yaml:"timeout"`
+}
+
+// SourceRefreshBelow is when to establish keys again.
+func (n *NTPSourceNTS) SourceRefreshBelow() int {
+	if n == nil || n.RefreshBelow <= 0 {
+		return DefaultNTSRefreshBelow
+	}
+	return n.RefreshBelow
+}
+
+// DefaultNTSRefreshBelow is the cookie count that triggers a fresh key
+// establishment with the source.
+const DefaultNTSRefreshBelow = 2
 
 // NTPExtensions bounds the extension fields a packet may carry.
 type NTPExtensions struct {

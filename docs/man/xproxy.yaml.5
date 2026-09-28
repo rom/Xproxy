@@ -8831,7 +8831,82 @@ What it buys is the awkward case. \fBThe time source does not have to speak NTS 
 .PP
 In this mode \fB"authenticated" means this relay checked\fR. A packet whose authenticator does not verify is refused rather than forwarded with a note, which is the whole difference from pass\-through. The replacement cookies travel inside the authenticator, encrypted, because a cookie in the clear would let anybody on the path recognise the same client at its next exchange \[u2014] the linkability NTS exists to remove. One cookie is issued per cookie and placeholder the request carried, at most eight, which is what keeps the request as large as the answer: without that bound the listener would be an amplifier.
 .PP
-Counters: \fBntp_nts_verified\fR, \fBntp_nts_unverified\fR, \fBntp_nts_cookie_unknown\fR and \fBntp_nts_cookies_issued\fR. The refusals are \fBnts_no_authenticator\fR (NTS fields with no authenticator, or one this relay cannot read), \fBnts_no_cookie\fR (an authenticator with nothing to look the keys up by), \fBnts_cookie_unknown\fR (a cookie this relay did not issue, or issued under a key it no longer holds \[u2014] the \fBkeep_keys\fR window on the key establishment listener is what decides how far back that reaches), \fBnts_unverified\fR (an authenticator that did not verify: the packet was altered or forged), \fBnts_no_session\fR (an interleaved answer, matched by the source\(aqs own previous transmit timestamp rather than by the client\(aqs request, which leaves no verified session to authenticate it with) and \fBnts_no_cookie_keys\fR (termination configured against a key establishment listener that is not there \[u2014] fail\-closed, because a listener asked to verify with nothing to verify against must refuse).
+\fB\fBnts.source\fR\fR is the other side of the same decision. Without it the relay asks the time source in plain NTP, which is right when the source cannot do better. With it the relay holds an association of its own: its own key establishment with the source\(aqs key establishment server, its own cookies, its own authenticator on every request it sends, and verification of every answer. It needs \fBmode: terminate\fR, because the client\(aqs authentication has to end here before the relay can start its own.
+.PP
+\fBThe cost is worth being plain about, and validation says it too: there is no end\-to\-end authentication between a client and the time source any more.\fR The client authenticates to this relay and this relay authenticates to the source, so the process is a party to the security rather than a reader of it. What it buys is a relay that can compare, police and log what the source says while both halves are still authenticated \[u2014] which a pass\-through relay cannot do at all.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(1.0i) lbw(0.9i) lbx
+lw(0.9i) lw(1.0i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBke_\:address\fR
+T}	T{
+host:port
+T}	T{
+required
+T}	T{
+The source\(aqs key establishment server. A bare host takes port 4460. It is configured rather than discovered: the time servers are the upstream pool,\: and a key establishment server that named a different one would be moving the estate\(aqs time traffic \[u2014] such a record is logged and not followed
+T}
+T{
+\fBserver_\:name\fR
+T}	T{
+host
+T}	T{
+the host in \fBke_\:address\fR
+T}	T{
+The name to verify in the source\(aqs certificate
+T}
+T{
+\fBca_\:file\fR
+T}	T{
+path
+T}	T{
+none
+T}	T{
+The authorities that may have issued it. Empty warns: the system trust store admits any public authority,\: which is not usually what an estate means by "this is our time server"
+T}
+T{
+\fBcert_\:file\fR,\: \fBkey_\:file\fR
+T}	T{
+path
+T}	T{
+none
+T}	T{
+A client certificate,\: for a source that asks for one. NTS\-KE says nothing about the client,\: so this is the only thing that can name this relay to the source. Both or neither
+T}
+T{
+\fBrefresh_\:below\fR
+T}	T{
+int
+T}	T{
+\fB2\fR
+T}	T{
+Establish keys again when fewer than this many cookies are left (1 to 8). One is spent per exchange and one comes back,\: so the pool only shrinks when answers are lost \[u2014] and a relay that ran out would stop asking for the time
+T}
+T{
+\fBtimeout\fR
+T}	T{
+duration
+T}	T{
+\fB10s\fR
+T}	T{
+One key establishment: a TLS handshake and two short messages (1s to 1m)
+T}
+.TE
+.PP
+A request that arrives before the relay holds keys with the source is dropped with the reason \fBnts_source_not_ready\fR rather than sent in plain NTP: a relay that quietly downgraded its own request would be doing the thing this setting exists to prevent, and a time client retries. An answer whose authenticator does not verify, or which does not echo the identifier the request carried, is \fBnts_source_unverified\fR \[u2014] the identifier matters because the keys are the same for the whole association, so without it an answer to another of this relay\(aqs requests would verify.
+.PP
+Counters: \fBntp_nts_verified\fR, \fBntp_nts_unverified\fR, \fBntp_nts_cookie_unknown\fR and \fBntp_nts_cookies_issued\fR for the client side; \fBntp_nts_source_established\fR, \fBntp_nts_source_failed\fR, \fBntp_nts_source_verified\fR and \fBntp_nts_source_unverified\fR for the relay\(aqs own association with the source. The refusals are \fBnts_no_authenticator\fR (NTS fields with no authenticator, or one this relay cannot read), \fBnts_no_cookie\fR (an authenticator with nothing to look the keys up by), \fBnts_cookie_unknown\fR (a cookie this relay did not issue, or issued under a key it no longer holds \[u2014] the \fBkeep_keys\fR window on the key establishment listener is what decides how far back that reaches), \fBnts_unverified\fR (an authenticator that did not verify: the packet was altered or forged), \fBnts_no_session\fR (an interleaved answer, matched by the source\(aqs own previous transmit timestamp rather than by the client\(aqs request, which leaves no verified session to authenticate it with) and \fBnts_no_cookie_keys\fR (termination configured against a key establishment listener that is not there \[u2014] fail\-closed, because a listener asked to verify with nothing to verify against must refuse).
 .PP
 \fB\fBextensions\fR\fR bounds what a packet may carry.
 .PP

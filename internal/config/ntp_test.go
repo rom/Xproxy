@@ -156,6 +156,27 @@ func TestNTPRefusals(t *testing.T) {
 		{"a key establishment listener that is not there", `        upstream: clocks
         nts: {mode: terminate, key_listener: absent}
 `, `nts.key_listener: no listener named "absent"`},
+		{"the relay's own association without termination", `        upstream: clocks
+        nts: {source: {ke_address: "time.example:4460"}}
+`, "nts.source: needs mode terminate"},
+		{"an association with nowhere to establish keys", `        upstream: clocks
+        nts: {mode: terminate, key_listener: ke, source: {}}
+`, "nts.source.ke_address: required"},
+		{"an association naming something that is not a host", `        upstream: clocks
+        nts: {mode: terminate, key_listener: ke, source: {ke_address: "not a host:1"}}
+`, "is not a host or host:port"},
+		{"a name that is not a name", `        upstream: clocks
+        nts: {mode: terminate, key_listener: ke, source: {ke_address: "time.example", server_name: "not a name"}}
+`, "server_name: \"not a name\" is not a valid host name"},
+		{"half a client certificate", `        upstream: clocks
+        nts: {mode: terminate, key_listener: ke, source: {ke_address: "time.example", cert_file: /tmp/c.pem}}
+`, "cert_file and key_file are both needed"},
+		{"a refresh point nobody meant", `        upstream: clocks
+        nts: {mode: terminate, key_listener: ke, source: {ke_address: "time.example", refresh_below: 9}}
+`, "refresh_below: must be between 1 and 8"},
+		{"a key establishment timeout nobody meant", `        upstream: clocks
+        nts: {mode: terminate, key_listener: ke, source: {ke_address: "time.example", timeout: 5m}}
+`, "timeout: must be between 1s and 1m"},
 		{"NTS required and turned off at once", `        upstream: clocks
         nts: {mode: off, require: true}
 `, "require with mode off refuses every packet"},
@@ -476,5 +497,74 @@ server:
 				t.Fatalf("no advice about %q: %v", tc.want, cfg.Advice())
 			}
 		})
+	}
+}
+
+// The relay's own association with the time source, and the cost it is required
+// to state. An estate that turns this on has given up end-to-end authentication
+// between its clients and the source, and the configuration is where that is
+// written down rather than somewhere an operator has to be told.
+func TestNTSSourceAssociation(t *testing.T) {
+	doc := func(source string) string {
+		return `
+version: 1
+server:
+  listeners:
+    - name: ke
+      address: "0.0.0.0:4460"
+      kind: ntske
+      tls: {certificates: [{cert_file: /tmp/c.pem, key_file: /tmp/k.pem}]}
+      ntske:
+        terminate: {cookies: 8, state: /var/lib/xproxy/nts.json}
+    - name: time
+      address: "0.0.0.0:123"
+      kind: ntp
+      ntp:
+        upstream: clocks
+        allow_clients: ["10.0.0.0/8"]
+        rate_limit: 20
+        nts:
+          mode: terminate
+          key_listener: ke
+` + source + `
+upstreams:
+  - {name: clocks, endpoints: [{address: "10.0.0.1:123"}]}
+`
+	}
+	cfg, err := ParseWith([]byte(doc(`          source:
+            ke_address: "time.example:4460"
+`)), false)
+	if err != nil {
+		t.Fatalf("the document did not load: %v", err)
+	}
+	n := cfg.Server.Listeners[1].NTP.NTS
+	if n == nil || n.Source == nil || n.Source.KEAddress != "time.example:4460" {
+		t.Fatalf("section: %+v", n)
+	}
+	if got := n.Source.SourceRefreshBelow(); got != DefaultNTSRefreshBelow {
+		t.Errorf("refresh_below defaults to %d, want %d", got, DefaultNTSRefreshBelow)
+	}
+	for _, want := range []string{
+		"there is no end-to-end authentication between a client and the time source any more",
+		"checked against the system trust store",
+	} {
+		if !hasAdvice(cfg, want) {
+			t.Errorf("no advice about %q: %v", want, cfg.Advice())
+		}
+	}
+	// With the authorities pinned, only the cost remains to be said.
+	cfg, err = ParseWith([]byte(doc(`          source:
+            ke_address: "time.example"
+            ca_file: /tmp/ca.pem
+            refresh_below: 4
+`)), false)
+	if err != nil {
+		t.Fatalf("the document did not load: %v", err)
+	}
+	if hasAdvice(cfg, "checked against the system trust store") {
+		t.Error("the trust store advice was given for a configuration that pinned one")
+	}
+	if got := cfg.Server.Listeners[1].NTP.NTS.Source.SourceRefreshBelow(); got != 4 {
+		t.Errorf("refresh_below %d", got)
 	}
 }

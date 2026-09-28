@@ -181,7 +181,7 @@ its own for what is deliberately *not* implemented and why.
 | Messaging | MQTT 3.1.1 (also ISO/IEC 20922) and MQTT 5.0 | `mqtt` |
 | File transfer | FTP and FTPS (`AUTH TLS`) with the data connection mediated at both ends; SFTP version 3 inside the SSH subsystem channel | `ftp`, `ssh` |
 | Logging | Syslog RFC 5424 and RFC 3164 over UDP, TCP (RFC 6587 framing) and TLS, re-emitted in one dialect | `syslog` |
-| Time | NTP v1 to v4 (RFC 5905), SNTP (RFC 4330), extension fields (RFC 7822), AES-CMAC authentication (RFC 8573), NTS (RFC 8915) either passed through whole or **terminated** -- key establishment answered here with AES-SIV cookies (RFC 5297) and every time packet's authenticator verified -- on UDP 123 and TCP 4460 | `ntp`, `ntske` |
+| Time | NTP v1 to v4 (RFC 5905), SNTP (RFC 4330), extension fields (RFC 7822), AES-CMAC authentication (RFC 8573), NTS (RFC 8915) either passed through whole or **terminated and re-originated** -- key establishment answered here with AES-SIV cookies (RFC 5297), every time packet's authenticator verified, and an association of the relay's own toward a source that speaks it -- on UDP 123 and TCP 4460 | `ntp`, `ntske` |
 | Industrial | Modbus/TCP (MBAP), Modbus over Serial Line RTU and ASCII tunnelled over TCP, and Modbus/TCP Security with the role in the client certificate | `modbus` |
 | Telecontrol | IEC 60870-5-104 (APCI/APDU, the I, S and U formats, the type identifications and causes of transmission of IEC 60870-5-101), with IEC 62351-3 TLS | `iec104` |
 | Building automation | BACnet/IP (ASHRAE 135 Annex J): the BVLC functions, the network layer of clause 6 with its routing and security messages, the application layer of clause 20 with the confirmed and unconfirmed services, and the object, property and command priority each request names | `bacnet` |
@@ -807,7 +807,12 @@ protocol so that a policy can be written in that protocol's own terms:
   opens those cookies, verifies every request's authenticator over the
   whole packet, asks the old server in plain NTP, and returns its header
   unaltered with an authenticator signed by the client's own key. There,
-  "authenticated" means this relay checked.
+  "authenticated" means this relay checked. And where the source *does*
+  speak NTS, the relay **re-originates** rather than downgrading: its own
+  key establishment with the source, its own cookies, its own
+  authenticator on every request and verification of every answer — with
+  the cost written down where it is configured, because there is then no
+  end-to-end authentication between a client and the source.
   Rate limits answer with the protocol's own kiss-o'-death rather than a
   drop, every expiry is on the monotonic clock because this is the relay
   for the protocol that moves the wall clock, and learning mode writes

@@ -139,6 +139,13 @@ and carries the traffic.
   key. That is the mode that puts NTS in front of a time server that cannot
   speak it, and the mode in which "authenticated" means this relay checked. The
   key establishment is a separate listener either way — see [ntske](ntske.md).
+- **It does not re-originate NTS toward the source unless asked to.** With
+  `nts.source` it holds an association of its own with the source: its own key
+  establishment, its own cookies, its own authenticator on every request, and
+  verification of every answer. That is the setting for a source that does speak
+  NTS, and the cost of it is stated where it is configured — there is then no
+  end-to-end authentication between a client and the source, because the relay
+  is a party to the security in both directions rather than a reader of it.
 - **It does not compute AES-CMAC on behalf of a peer.** The MAC is read for which
   key id and which algorithm; verification belongs to the endpoints.
 - **It does not correct a forged timestamp.** It can refuse a source that

@@ -64,7 +64,49 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   keys somewhere else, and an authenticator that did not verify is a packet that
   was tampered with.
 
-- A worked configuration in `examples/ot/nts-gateway.yaml`.
+- **`ntp.nts.source` is the other side of the same decision: re-origination.**
+  Without it the relay asks the time source in plain NTP, which is right when
+  the source cannot do better. With it the relay holds an association of its
+  own -- its own key establishment with the source's key establishment server,
+  its own cookies, its own authenticator on every request, and verification of
+  every answer.
+
+- **The cost is stated rather than hidden**, in the configuration reference, the
+  protocol page and a validation warning that fires whenever it is on: there is
+  no end-to-end authentication between a client and the time source any more.
+  The client authenticates to this relay and this relay authenticates to the
+  source, so the process is a party to the security rather than a reader of it.
+  What it buys is a relay that can compare, police and log what the source says
+  while both halves are still authenticated, which a pass-through relay cannot
+  do at all.
+
+- **A request that arrives before the relay holds keys is dropped**, with the
+  reason `nts_source_not_ready`, rather than sent in plain NTP: a relay that
+  quietly downgraded its own request would be doing the thing the setting exists
+  to prevent, and a time client retries. An answer that does not echo the
+  identifier the request carried is refused too -- the keys are the same for the
+  whole association, so without that check an answer to another of this relay's
+  requests would verify.
+
+- **The source's own key establishment cannot move the time traffic.** A
+  response naming another server or port is logged and not followed: where the
+  relay sends time traffic is the upstream pool and `allow_servers`, which is
+  the estate's decision.
+
+- **A plain client behind a re-originating relay gets a plain answer.** The
+  source's NTS fields are the relay's conversation with the source and carry the
+  relay's own replacement cookies, so they are not forwarded to a client that
+  did not ask for them.
+
+- `internal/ntske` gained the client half: a `Client` that does one whole
+  exchange, insisting on TLS 1.3 and the `ntske/1` application protocol whatever
+  the caller's configuration says, and refusing a response that chose terms the
+  relay did not offer, that carries no cookies, or that is not a whole message.
+  It is tested against this package's own server half rather than a recording of
+  one.
+
+- A worked configuration in `examples/ot/nts-gateway.yaml`, with the
+  re-origination it would use once the old server is replaced.
 
 ### Added (snmp: version 3 toward the agent, with an identity of the relay's own)
 

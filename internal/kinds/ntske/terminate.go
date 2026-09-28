@@ -107,12 +107,9 @@ func newTerminator(host proxy.Host, cfg config.Listener, tc *tls.Config) (*termi
 	// is configured where every other listener's is rather than a second time
 	// here.
 	term.tc = tc.Clone()
-	term.tc.NextProtos = []string{wireALPN}
+	term.tc.NextProtos = []string{ke.ALPN}
 	return term, nil
 }
-
-// wireALPN is the application protocol of RFC 8915.
-const wireALPN = "ntske/1"
 
 // CookieKeys implements proxy.NTSKeyHolder, which is how the time listener
 // beside this one opens the cookies this one issues.
@@ -185,7 +182,7 @@ func (t *terminator) exchange(client net.Conn) (name string, protos []string, re
 	if st.NegotiatedProtocol != "" {
 		protos = []string{st.NegotiatedProtocol}
 	}
-	if st.NegotiatedProtocol != wireALPN {
+	if st.NegotiatedProtocol != ke.ALPN {
 		// With RequireALPN the handshake would already have failed; without it
 		// a client can get this far having named nothing, and it is still not
 		// an NTS client.

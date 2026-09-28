@@ -117,6 +117,27 @@ server:
           # that is an outage rather than a warning.
           require: false
 
+          # The other side of the same decision, for the day the old
+          # server is replaced by one that does speak NTS. With this, the
+          # relay holds an association of its own with the source -- its
+          # own key establishment, its own cookies, its own authenticator
+          # on every request, and verification of every answer -- instead
+          # of asking it in plain NTP.
+          #
+          # The cost is written down because it is real: there is then no
+          # end-to-end authentication between a client and the source.
+          # The client authenticates to this relay and the relay
+          # authenticates to the source, so this process is a party to
+          # the security rather than a reader of it. What it buys is a
+          # relay that can compare, police and log what the source says
+          # while both halves are still authenticated -- which a
+          # pass-through relay cannot do at all.
+          #
+          # source:
+          #   ke_address: "time.upstream.example:4460"
+          #   ca_file: /etc/xproxy/nts/upstream-ca.pem
+          #   refresh_below: 2
+
         # A poll is once a minute. An NTS request is a few hundred octets
         # rather than 48, so the bounds below are a little wider than a
         # plain time listener's.
