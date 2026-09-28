@@ -65,6 +65,36 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   DTLS, so a rule can name only the source address, and a listener with no `tls`
   section warns rather than letting a deployment find that out.
 
+- **A `tls` section makes it CoAP over DTLS** (RFC 7252 §9), on the address the
+  listener was given — 5684 by convention. The certificates, `client_auth` and
+  `client_ca_file` are the same configuration every other listener uses,
+  translated into DTLS rather than passed through, so a certificate reload
+  reaches a running DTLS listener exactly as it reaches a TLS one. What has no
+  DTLS equivalent is refused rather than ignored: `min_version: "1.3"` is an
+  error, because §9 is DTLS 1.2 and DTLS 1.3 is not implemented here.
+
+- **A session is an identity**, which is the reason to run DTLS in front of
+  devices at all: `secure_only` on a rule then means something, and "the
+  actuators may only be written by a client that authenticated" becomes a
+  sentence the configuration holds. A refusal inside a session comes back
+  *inside* the session — an answer written to the socket instead would be
+  cleartext to a peer that established a session precisely so that it would not
+  be, and the peer's own stack would discard it, so the failure would look like
+  a timeout rather than a refusal.
+
+- **The per-peer demultiplexing is this listener's own**, because a UDP socket
+  gives one stream of datagrams from everybody where the kernel gives a stream
+  listener one connection per peer. Every part of it is bounded — the peers, the
+  half-open handshakes and the queue per peer — because on UDP a peer that
+  starts a handshake has proved nothing, not even that it can receive. The
+  library's own listener is not used: its Accept performs the handshake before
+  returning, so one slow or hostile peer would stop every other peer
+  establishing.
+
+- `github.com/pion/dtls/v3` enters the tree for this, confined to one file on
+  one kind. See [AMR-050](AMR.md) for the reasoning; a listener with no `tls`
+  section links the library and never calls it.
+
 - `internal/coap` is the wire package: the message layer, the option layer,
   block-wise transfer, Observe, the content format registry and the encoder the
   relay answers with. Fuzzed on the invariant that a message which parses writes

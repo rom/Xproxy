@@ -454,8 +454,12 @@ type Stats struct {
 	CoAPUpstreamFail     atomic.Uint64
 	CoAPSendFailed       atomic.Uint64
 	CoAPUnsolicited      atomic.Uint64
+	CoAPHandshakes       atomic.Uint64
+	CoAPHandshakeFailed  atomic.Uint64
+	CoAPDatagramsDropped atomic.Uint64
 	CoAPPending          atomic.Int64
 	CoAPObservers        atomic.Int64
+	CoAPSessions         atomic.Int64
 	// The device inventory.
 	//
 	// AssetFindings is the one to alert on: an identity change, or a device
@@ -1023,8 +1027,12 @@ type Snapshot struct {
 	CoAPUpstreamFail      uint64 `json:"coap_upstream_failed"`
 	CoAPSendFailed        uint64 `json:"coap_send_failed"`
 	CoAPUnsolicited       uint64 `json:"coap_unsolicited"`
+	CoAPHandshakes        uint64 `json:"coap_handshakes"`
+	CoAPHandshakeFailed   uint64 `json:"coap_handshakes_failed"`
+	CoAPDatagramsDropped  uint64 `json:"coap_datagrams_dropped"`
 	CoAPPending           int64  `json:"coap_pending"`
 	CoAPObservers         int64  `json:"coap_observers"`
+	CoAPSessions          int64  `json:"coap_sessions"`
 	AssetObservations     uint64 `json:"asset_observations"`
 	AssetFindings         uint64 `json:"asset_findings"`
 	AssetUnexpected       uint64 `json:"asset_unexpected_role"`
@@ -1530,8 +1538,12 @@ func (s *Stats) snapshot() Snapshot {
 		CoAPUpstreamFail:        s.CoAPUpstreamFail.Load(),
 		CoAPSendFailed:          s.CoAPSendFailed.Load(),
 		CoAPUnsolicited:         s.CoAPUnsolicited.Load(),
+		CoAPHandshakes:          s.CoAPHandshakes.Load(),
+		CoAPHandshakeFailed:     s.CoAPHandshakeFailed.Load(),
+		CoAPDatagramsDropped:    s.CoAPDatagramsDropped.Load(),
 		CoAPPending:             s.CoAPPending.Load(),
 		CoAPObservers:           s.CoAPObservers.Load(),
+		CoAPSessions:            s.CoAPSessions.Load(),
 		DHCPClients:             s.DHCPClients.Load(),
 		AssetObservations:       s.AssetObservations.Load(),
 		AssetFindings:           s.AssetFindings.Load(),

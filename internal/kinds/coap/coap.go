@@ -40,9 +40,11 @@ package coap
 
 import (
 	"context"
+	"crypto/tls"
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	wire "github.com/rom/xproxy/internal/coap"
@@ -59,6 +61,12 @@ type server struct {
 	policy *Policy
 
 	pc net.PacketConn
+	// tls is the listener's configuration where it has one, which is what makes
+	// this a CoAP-over-DTLS listener rather than a NoSec one.
+	tls *tls.Config
+	// demux is the DTLS side's per-peer splitter, kept so that the sweeper can
+	// read its drop count. Nil on a NoSec listener.
+	demux atomic.Pointer[packetMux]
 	// up is the socket this relay speaks to devices on. One socket for the
 	// listener, because the token and the client are what pair an answer with
 	// its request and a socket per exchange would be a file descriptor per
@@ -79,13 +87,17 @@ type server struct {
 	wg     sync.WaitGroup
 }
 
-func newServer(h proxy.Host, cfg config.Listener, pc net.PacketConn) (*server, error) {
+// mux is the DTLS splitter, or nil.
+func (s *server) mux() *packetMux { return s.demux.Load() }
+
+func newServer(h proxy.Host, cfg config.Listener, pc net.PacketConn, tc *tls.Config) (*server, error) {
 	m := cfg.CoAP
 	p, err := compile(m, time.Now)
 	if err != nil {
 		return nil, err
 	}
-	s := &server{host: h, cfg: cfg, m: m, policy: p, pc: pc, done: make(chan struct{})}
+	s := &server{host: h, cfg: cfg, m: m, policy: p, pc: pc, tls: tc,
+		done: make(chan struct{})}
 	if m.RateLimit > 0 {
 		s.limiter = limits.NewKeyedLimiter(float64(m.RateLimit), burstOf(m), s.maxClients())
 	}
@@ -129,8 +141,11 @@ func (s *server) nextMID() uint16 {
 // exchange is one request outstanding towards a device.
 type exchange struct {
 	// client is who asked, and device is who was asked. Both are kept: the
-	// client is where the answer goes, and the device is half the key.
+	// client names the exchange in the logs, and the device is half the key.
 	client, device netip.AddrPort
+	// reply is how the answer gets back, which is the DTLS session the request
+	// arrived in where there was one.
+	reply replier
 	// token is the client's own. RFC 7252 pairs a response with its request by
 	// the token, because a separate response arrives in a message of its own
 	// with a different message identifier.

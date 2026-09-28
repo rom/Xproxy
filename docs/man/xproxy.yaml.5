@@ -8731,6 +8731,26 @@ T}
 .TE
 .PP
 A listener with no \fBtls\fR section warns: it is CoAP \fBNoSec\fR, where there is no identity of any kind \[u2014] not a weak one, none \[u2014] and a rule can name only the source address. RFC 7252 \[u00A7]9 puts CoAP inside DTLS on 5684, and most of the field does not, which is why this warns rather than refuses. A deployment on a port other than 5683 or 5684 warns too.
+.SS "CoAP over DTLS"
+.PP
+A \fBtls\fR section on a \fBkind: coap\fR listener means \fBDTLS\fR: RFC 7252 \[u00A7]9\(aqs security modes are all DTLS, and the listener then speaks it on the address it was given \[u2014] 5684 by convention. The section is the same one every other listener uses, so the certificates, \fBclient_auth\fR and \fBclient_ca_file\fR are written where an operator already knows to look, and a certificate reload reaches a running DTLS listener exactly as it reaches a TLS one.
+.PP
+Two differences are refused rather than ignored, because a knob that appears to do something and does not is worse than one that is not offered:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fB\fBmin_version: "1.3"\fR is an error.\fR RFC 7252 \[u00A7]9 is DTLS 1.2, and DTLS 1.3 is not implemented here. A listener asking for 1.3 is asking for something this transport cannot do.
+.PP
+.ti -3n
+\(bu
+\fBThere is no ALPN and there are no session tickets.\fR CoAP over DTLS negotiates no protocol name, so nothing here reads one.
+.RE
+.PP
+.PP
+What the listener supplies itself is the part a stream listener gets from the kernel: \fBone session per remote address\fR, demultiplexed from the single UDP socket. Every piece of that is bounded, because every input is a datagram from a peer that has proved nothing \[u2014] \fBmax_clients\fR bounds the peers, and the half\-open handshakes and the queue per peer are bounded separately. A peer that starts a handshake and stops talking has ten seconds before it costs nothing; a session with nothing on it is closed after five minutes.
+.PP
+Where a session exists it is an \fBidentity\fR, which is the whole reason to run DTLS in front of devices: \fBsecure_only\fR on a rule then means something, and "the actuators may only be written by a client that authenticated" is a sentence the configuration can hold. \fBcoap_handshakes\fR, \fBcoap_handshakes_failed\fR and \fBcoap_sessions\fR say whether it is working, and \fBcoap_datagrams_dropped\fR says whether a bound is being reached rather than merely existing.
 .SS "server.listeners[].coap.rules[]"
 .PP
 .TS
@@ -8838,7 +8858,7 @@ Limits the rule to a time window
 T}
 .TE
 .PP
-Counters: \fBcoap_messages\fR, \fBcoap_requests\fR, \fBcoap_responses\fR, \fBcoap_empty\fR, \fBcoap_relayed\fR, \fBcoap_answered\fR, \fBcoap_notifications\fR, \fBcoap_denied\fR, \fBcoap_would_deny\fR, \fBcoap_malformed\fR, \fBcoap_rejected\fR, \fBcoap_oversize\fR, \fBcoap_rate_limited\fR, \fBcoap_upstream_failed\fR, \fBcoap_send_failed\fR, \fBcoap_unsolicited\fR, \fBcoap_refused_observe\fR, and the three worth reading first \[u2014] \fBcoap_rogue_device\fR, an answer refused because it came from an address that is not a device; \fBcoap_amplified\fR, an answer refused for being too large a multiple of the question, which is the number that says this listener is doing something a per\-datagram bound could not; and \fBcoap_refusals_answered\fR, the refusals sent back as a response code rather than dropped, which is what keeps a refused Confirmable request from being retransmitted four more times. \fBcoap_proxy_refused\fR counts the requests that asked a device to fetch something. \fBcoap_pending\fR and \fBcoap_observers\fR are gauges.
+Counters: \fBcoap_messages\fR, \fBcoap_requests\fR, \fBcoap_responses\fR, \fBcoap_empty\fR, \fBcoap_relayed\fR, \fBcoap_answered\fR, \fBcoap_notifications\fR, \fBcoap_denied\fR, \fBcoap_would_deny\fR, \fBcoap_malformed\fR, \fBcoap_rejected\fR, \fBcoap_oversize\fR, \fBcoap_rate_limited\fR, \fBcoap_upstream_failed\fR, \fBcoap_send_failed\fR, \fBcoap_unsolicited\fR, \fBcoap_refused_observe\fR, \fBcoap_handshakes\fR, \fBcoap_handshakes_failed\fR, \fBcoap_sessions\fR, \fBcoap_datagrams_dropped\fR, and the three worth reading first \[u2014] \fBcoap_rogue_device\fR, an answer refused because it came from an address that is not a device; \fBcoap_amplified\fR, an answer refused for being too large a multiple of the question, which is the number that says this listener is doing something a per\-datagram bound could not; and \fBcoap_refusals_answered\fR, the refusals sent back as a response code rather than dropped, which is what keeps a refused Confirmable request from being retransmitted four more times. \fBcoap_proxy_refused\fR counts the requests that asked a device to fetch something. \fBcoap_pending\fR and \fBcoap_observers\fR are gauges.
 .PP
 Refusals are \fBcoap_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBdevice_not_allowed\fR, \fBmalformed\fR, \fBmalformed_response\fR, \fBmalformed_option\fR, \fBmessage_too_large\fR, \fBunknown_method\fR, \fBsignalling_over_datagram\fR, \fBresponse_from_client_side\fR, \fBrequest_from_server_side\fR, \fBmessage_type_not_allowed\fR, \fBrepeated_option\fR, \fBno_token\fR, \fBsuspicious_path\fR, \fBunknown_critical_option\fR, \fBunknown_unsafe_option\fR, \fBproxying_not_allowed\fR, \fBobserve_not_allowed\fR, \fBdiscovery_not_allowed\fR, \fBmethod_not_allowed\fR, \fBpath_not_allowed\fR, \fBquery_not_allowed\fR, \fBcontent_format_not_allowed\fR, \fBpayload_too_large\fR, \fBblock_too_large\fR, \fBtransfer_too_large\fR, \fBresponse_too_large\fR, \fBamplified\fR, \fBinsecure_not_allowed\fR, \fBtoo_many_observers\fR, \fBtoo_many_pending\fR, \fBrate_limited\fR, \fBunsolicited\fR, \fBrule\fR, \fBdefault_deny\fR.
 .SS "server.listeners[].tftp (kind: tftp)"

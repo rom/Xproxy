@@ -80,8 +80,19 @@ identity whatsoever: not a weak one, none. So a policy has the source address,
 the method, the path, the content format and the payload.
 
 Where DTLS *is* deployed, it gives what TLS gives — and the session's identity
-is a pre-shared key or a certificate, which is a real name that a rule can
-require. That is what `secure_only` is for.
+is a certificate, which is a real name that a rule can require. That is what
+`secure_only` is for, and it is the reason to put this listener inside DTLS
+rather than beside it.
+
+A `tls` section on the listener is what turns it on. The certificates and the
+client-certificate policy are the same configuration every other listener
+uses, translated into DTLS rather than passed through, so a reload reaches a
+running DTLS listener as it reaches a TLS one. `min_version: "1.3"` is an
+error: §9 is DTLS 1.2 and DTLS 1.3 is not implemented here, which is better
+said than ignored. What the listener adds is one session per remote address
+demultiplexed from the one UDP socket, with the peers, the half-open
+handshakes and the per-peer queue each bounded — because on UDP a peer that
+starts a handshake has proved nothing, not even that it can receive.
 
 **OSCORE** (RFC 8613) is the other answer: end-to-end object security, so the
 request is authenticated and encrypted between the client and the device and a
@@ -193,6 +204,11 @@ an amplified answer and wrote it down would be an amplifier with logging.
 - **It is not a substitute for DTLS.** In NoSec anything that can reach the
   segment can send a well-formed request from any address, and the only reason
   this relay helps is that it is the one place the request passes through.
+- **It does not do DTLS 1.3, pre-shared keys or raw public keys.** RFC 7252 §9
+  names three security modes and this serves the certificate one. PSK is the
+  mode most constrained devices actually ship with, so its absence is a real
+  gap rather than a tidy exclusion — it is named here so that nobody discovers
+  it from a handshake failure.
 
 ## Standards
 

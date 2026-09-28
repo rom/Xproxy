@@ -3742,6 +3742,40 @@ source address. RFC 7252 §9 puts CoAP inside DTLS on 5684, and most of the
 field does not, which is why this warns rather than refuses. A deployment on
 a port other than 5683 or 5684 warns too.
 
+#### CoAP over DTLS
+
+A `tls` section on a `kind: coap` listener means **DTLS**: RFC 7252 §9's
+security modes are all DTLS, and the listener then speaks it on the address
+it was given — 5684 by convention. The section is the same one every other
+listener uses, so the certificates, `client_auth` and `client_ca_file` are
+written where an operator already knows to look, and a certificate reload
+reaches a running DTLS listener exactly as it reaches a TLS one.
+
+Two differences are refused rather than ignored, because a knob that appears
+to do something and does not is worse than one that is not offered:
+
+- **`min_version: "1.3"` is an error.** RFC 7252 §9 is DTLS 1.2, and DTLS 1.3
+  is not implemented here. A listener asking for 1.3 is asking for something
+  this transport cannot do.
+- **There is no ALPN and there are no session tickets.** CoAP over DTLS
+  negotiates no protocol name, so nothing here reads one.
+
+What the listener supplies itself is the part a stream listener gets from the
+kernel: **one session per remote address**, demultiplexed from the single UDP
+socket. Every piece of that is bounded, because every input is a datagram from
+a peer that has proved nothing — `max_clients` bounds the peers, and the
+half-open handshakes and the queue per peer are bounded separately. A peer
+that starts a handshake and stops talking has ten seconds before it costs
+nothing; a session with nothing on it is closed after five minutes.
+
+Where a session exists it is an **identity**, which is the whole reason to
+run DTLS in front of devices: `secure_only` on a rule then means something,
+and "the actuators may only be written by a client that authenticated" is a
+sentence the configuration can hold. `coap_handshakes`,
+`coap_handshakes_failed` and `coap_sessions` say whether it is working, and
+`coap_datagrams_dropped` says whether a bound is being reached rather than
+merely existing.
+
 #### server.listeners[].coap.rules[]
 
 | Key | Type | Default | Description |
@@ -3761,7 +3795,8 @@ Counters: `coap_messages`, `coap_requests`, `coap_responses`, `coap_empty`,
 `coap_relayed`, `coap_answered`, `coap_notifications`, `coap_denied`,
 `coap_would_deny`, `coap_malformed`, `coap_rejected`, `coap_oversize`,
 `coap_rate_limited`, `coap_upstream_failed`, `coap_send_failed`,
-`coap_unsolicited`, `coap_refused_observe`, and the three worth reading
+`coap_unsolicited`, `coap_refused_observe`, `coap_handshakes`, `coap_handshakes_failed`,
+`coap_sessions`, `coap_datagrams_dropped`, and the three worth reading
 first — `coap_rogue_device`, an answer refused because it came from an address
 that is not a device; `coap_amplified`, an answer refused for being too large
 a multiple of the question, which is the number that says this listener is
