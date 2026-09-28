@@ -8041,7 +8041,7 @@ list of pattern
 T}	T{
 \fB[]\fR (any)
 T}	T{
-Shell patterns the domain search list may match
+Shell patterns the domain search list may match. Brackets are literal here too
 T}
 T{
 \fBallow_\:boot_\:urls\fR
@@ -8050,7 +8050,7 @@ list of pattern
 T}	T{
 \fB[]\fR (any)
 T}	T{
-Shell patterns the boot file URL may match. This is where an estate says which images exist
+Shell patterns the boot file URL may match. This is where an estate says which images exist. Square brackets are \fBliteral\fR,\: not a character class,\: because the one place a bracket appears in a URL is around an IPv6 literal host \[u2014] \fBtftp:\:/\:/\:[2001:\:db8:\::\:20]/\:*\fR is what you write,\: and read as a class it would match nothing at all. \fB*\fR does not cross a \fB/\fR,\: so a pattern cannot be walked out of with \fB.\:.\:/\fR
 T}
 T{
 \fBprefix_\:delegation\fR

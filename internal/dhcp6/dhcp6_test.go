@@ -452,3 +452,124 @@ func FuzzParse(f *testing.F) {
 		}
 	})
 }
+
+// A truncated option value is refused rather than read off the end.
+//
+// Each of these is a length a peer chose, and the value is shorter than the
+// fields the standard says are in it. There is nothing to do with such an option
+// but refuse the message: a parser that read what it could would be inventing
+// the rest, and one that indexed past the value would take the daemon down with
+// a datagram anybody on the segment can send.
+func TestATruncatedOptionValueIsRefused(t *testing.T) {
+	// An IAADDR is sixteen octets of address and two lifetimes: twenty-four.
+	for n := 0; n < 24; n++ {
+		inner := optionBytes(OptionIAAddr, make([]byte, n))
+		v := append(iaHead(1), inner...)
+		m := &Message{Type: Reply, TransactionID: 1}
+		m.Options = append(m.Options, Option{Code: OptionIANA, Value: v})
+		raw, err := Encode(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := Parse(raw)
+		if err != nil {
+			t.Fatalf("an address option of %d octets did not even parse: %v", n, err)
+		}
+		if _, err := got.IAs(); err == nil {
+			t.Errorf("an address option of %d octets was accepted", n)
+		}
+	}
+	// An IAPREFIX is two lifetimes, a length octet and sixteen of prefix:
+	// twenty-five. The one extra octet over an address is the length, and it is
+	// the octet a reader most easily forgets.
+	for n := 0; n < 25; n++ {
+		inner := optionBytes(OptionIAPrefix, make([]byte, n))
+		v := append(iaHead(1), inner...)
+		m := &Message{Type: Reply, TransactionID: 1}
+		m.Options = append(m.Options, Option{Code: OptionIAPD, Value: v})
+		raw, err := Encode(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := Parse(raw)
+		if err != nil {
+			t.Fatalf("a prefix option of %d octets did not even parse: %v", n, err)
+		}
+		if _, err := got.IAs(); err == nil {
+			t.Errorf("a prefix option of %d octets was accepted", n)
+		}
+	}
+}
+
+// A relay message shorter than its own header is refused at every length, and
+// the header is thirty-four octets because it carries two addresses.
+func TestARelayMessageShorterThanItsHeaderIsRefused(t *testing.T) {
+	for n := 1; n < RelayHeaderLen; n++ {
+		raw := make([]byte, n)
+		raw[0] = byte(RelayForward)
+		if _, err := Parse(raw); err == nil {
+			t.Errorf("a relay message of %d octets was accepted", n)
+		}
+	}
+	// And thirty-four exactly is a relay message with no options, which is
+	// malformed for another reason -- there is no Relay-Message inside it -- but
+	// not a truncated header.
+	raw := make([]byte, RelayHeaderLen)
+	raw[0] = byte(RelayForward)
+	if _, err := Parse(raw); err != nil && !errors.Is(err, ErrRelay) {
+		t.Errorf("a bare relay header: %v", err)
+	}
+}
+
+// The message bound, with a message that is otherwise entirely valid: the
+// refusal has to be about the length rather than about anything else, or the
+// test would pass with the bound gone.
+//
+// The oversize one is assembled as octets rather than through Encode, because
+// Encode refuses the bound too -- which is the right thing for a message this
+// daemon sends, and no help at all against one it receives.
+func TestAMessageOverTheBoundIsRefused(t *testing.T) {
+	build := func(n int) []byte {
+		raw := []byte{byte(Reply), 0, 0, 1}
+		raw = append(raw, optionBytes(OptionClientID, []byte{0, 3, 0, 1, 1, 2, 3, 4, 5, 6})...)
+		for i := 0; i < n; i++ {
+			raw = append(raw, optionBytes(OptionVendorOpts, make([]byte, 1000))...)
+		}
+		return raw
+	}
+	// Just under the bound: it parses, and every option is there, so the
+	// refusal below cannot be about the shape of the message.
+	under := build(8)
+	if len(under) > MaxMessage {
+		t.Fatalf("the under-bound message is %d octets", len(under))
+	}
+	m, err := Parse(under)
+	if err != nil {
+		t.Fatalf("a message of %d octets was refused: %v", len(under), err)
+	}
+	if len(m.Options) != 9 {
+		t.Fatalf("the under-bound message parsed to %d options", len(m.Options))
+	}
+	// One more option takes it over, and nothing else about it changed.
+	over := build(9)
+	if len(over) <= MaxMessage {
+		t.Fatalf("the over-bound message is only %d octets", len(over))
+	}
+	if _, err := Parse(over); !errors.Is(err, ErrTooLong) {
+		t.Errorf("a message of %d octets: %v", len(over), err)
+	}
+}
+
+// iaHead is an identity association's own fields: the IAID and the two renewal
+// times.
+func iaHead(iaid uint32) []byte {
+	v := binary.BigEndian.AppendUint32(nil, iaid)
+	v = binary.BigEndian.AppendUint32(v, 1800)
+	return binary.BigEndian.AppendUint32(v, 2880)
+}
+
+func optionBytes(code uint16, value []byte) []byte {
+	out := binary.BigEndian.AppendUint16(nil, code)
+	out = binary.BigEndian.AppendUint16(out, uint16(len(value)))
+	return append(out, value...)
+}

@@ -3560,8 +3560,8 @@ Write `allow_resolvers`; the validator warns while it is empty.
 | `on_denied_option` | enum | `strip` | `strip` removes the option and forwards the rest; `deny` refuses the whole reply, which leaves the client with no address at all |
 | `deny_requested_options` | list | `[]` | Options a client may not *ask* for, in its Option Request Option. The ask is removed rather than the message refused |
 | `allow_resolvers` | list of IPv6 | `[]` (any) | The addresses the DNS server option may name. Empty warns: an estate knows its own resolvers, and a reply naming anything else is wrong whoever sent it — which is the check that catches a compromised real server as well as a rogue one |
-| `allow_domains` | list of pattern | `[]` (any) | Shell patterns the domain search list may match |
-| `allow_boot_urls` | list of pattern | `[]` (any) | Shell patterns the boot file URL may match. This is where an estate says which images exist |
+| `allow_domains` | list of pattern | `[]` (any) | Shell patterns the domain search list may match. Brackets are literal here too |
+| `allow_boot_urls` | list of pattern | `[]` (any) | Shell patterns the boot file URL may match. This is where an estate says which images exist. Square brackets are **literal**, not a character class, because the one place a bracket appears in a URL is around an IPv6 literal host — `tftp://[2001:db8::20]/*` is what you write, and read as a class it would match nothing at all. `*` does not cross a `/`, so a pattern cannot be walked out of with `../` |
 | `prefix_delegation` | section | carried, unbounded | What a reply may delegate and what a client may ask for; see below |
 | `allow_temporary_addresses` | bool | `true` | Carry an IA_TA. Temporary addresses are the privacy mechanism of RFC 8415 §6.5, and refusing them would be refusing clients that are doing the right thing |
 | `allow_reconfigure` | bool | `false` | Carry a RECONFIGURE from a server. It warns: it is a message to a client that answers nothing, RFC 8415 §18.3.11 requires it to be authenticated with a key almost nobody deploys, and a client that accepts one can be made to re-ask a server of the sender's choosing |

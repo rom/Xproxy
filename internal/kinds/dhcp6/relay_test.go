@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -23,6 +24,11 @@ type fakeServer struct {
 
 	mu  sync.Mutex
 	got []*wire.Message
+	// relay is the address the relay speaks to servers from. A rogue server
+	// cannot guess this ephemeral port, but the test can: it is the source of
+	// every RELAY-FORW that arrives here, and aiming at it is what lets the
+	// server list be tested rather than assumed.
+	relay net.Addr
 	// reply builds the answer from the RELAY-FORW it received. Nil answers with
 	// an ordinary REPLY carrying an address, a lifetime and a resolver.
 	reply func(*wire.Message) *wire.Message
@@ -50,9 +56,14 @@ var loopback = sync.OnceValues(func() (string, string) {
 func startServer(t *testing.T, s *fakeServer) *fakeServer {
 	t.Helper()
 	network, host := loopback()
+	return startServerOn(t, s, network, host)
+}
+
+func startServerOn(t *testing.T, s *fakeServer, network, host string) *fakeServer {
+	t.Helper()
 	pc, err := net.ListenPacket(network, host+":0")
 	if err != nil {
-		t.Fatalf("no loopback here: %v", err)
+		t.Fatalf("no loopback at %s: %v", host, err)
 	}
 	s.pc = pc
 	t.Cleanup(func() { _ = pc.Close() })
@@ -75,6 +86,7 @@ func (s *fakeServer) serve() {
 		}
 		s.mu.Lock()
 		s.got = append(s.got, m)
+		s.relay = from
 		silent, build := s.silent, s.reply
 		s.mu.Unlock()
 		if silent {
@@ -101,6 +113,13 @@ func (s *fakeServer) seen() []*wire.Message {
 	out := make([]*wire.Message, len(s.got))
 	copy(out, s.got)
 	return out
+}
+
+// relayAddr is where the relay speaks to servers from, known once it has.
+func (s *fakeServer) relayAddr() net.Addr {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.relay
 }
 
 func (s *fakeServer) await(t *testing.T, n int, what string) []*wire.Message {
@@ -206,6 +225,11 @@ func relayFor(t *testing.T, section, serverAddr string) (*proxy.Server, string) 
 func relayWith(t *testing.T, section, extra, serverAddr string) (*proxy.Server, string) {
 	t.Helper()
 	_, host := loopback()
+	return relayOn(t, host, section, extra, serverAddr)
+}
+
+func relayOn(t *testing.T, host, section, extra, serverAddr string) (*proxy.Server, string) {
+	t.Helper()
 	s := proxytest.Start(t, fmt.Sprintf(dhcp6YAML, host+":0", extra, section, serverAddr))
 	return s, proxytest.Addr(t, s, "segment")
 }
@@ -219,6 +243,11 @@ type client struct {
 func dial(t *testing.T, addr string) *client {
 	t.Helper()
 	network, _ := loopback()
+	return dialOn(t, network, addr)
+}
+
+func dialOn(t *testing.T, network, addr string) *client {
+	t.Helper()
 	ua, err := net.ResolveUDPAddr(network, addr)
 	if err != nil {
 		t.Fatal(err)
@@ -347,45 +376,58 @@ func TestTheRelayWrapsAndUnwraps(t *testing.T) {
 // The whole attack, and the one refusal a shadow-mode listener still enforces: a
 // reply from an address that is not one of the servers.
 func TestAReplyFromSomewhereElseIsDropped(t *testing.T) {
-	up := startServer(t, &fakeServer{})
-	// Another server on the same loopback, not in the pool.
-	rogue := startServer(t, &fakeServer{})
-	s, addr := relayWith(t, base, "      policy: {mode: shadow}\n", up.addr())
+	// Pinned to IPv4 loopback, and this is the one test whose transport matters.
+	// allow_servers is a list of networks, so it decides on the sender's
+	// *address* -- which is right in a deployment, where a rogue at a real
+	// server's address is the real server, and which means the two servers in
+	// this test have to be at different addresses to be told apart. 127.0.0.2 is
+	// a second loopback address; ::1 is the only IPv6 one there is.
+	rogue := &fakeServer{silent: true}
+	if pc, err := net.ListenPacket("udp4", "127.0.0.2:0"); err != nil {
+		t.Skipf("no second loopback address here: %v", err)
+	} else {
+		_ = pc.Close()
+	}
+	up := startServerOn(t, &fakeServer{silent: true}, "udp4", "127.0.0.1")
+	startServerOn(t, rogue, "udp4", "127.0.0.2")
+	// Shadow mode, because this refusal is one a listener being trialled still
+	// enforces: relaying a rogue server's answer and writing it down is not a
+	// trial of anything.
+	s, addr := relayOn(t, "127.0.0.1", base, "      policy: {mode: shadow}\n", up.addr())
 
-	c := dial(t, addr)
+	c := dialOn(t, "udp4", addr)
 	c.send(solicit(0x111111, 1))
-	seen := up.await(t, 1, "the request")
+	fwd := up.await(t, 1, "the request")[0]
 
-	// The rogue answers the same exchange, straight at the relay's server
-	// socket. It does not know the port, so the test sends it from the rogue's
-	// own socket to the relay's -- which is what a rogue server on the segment
-	// can do.
-	_ = seen
-	repl := answer(&wire.Message{Type: wire.RelayForward,
-		LinkAddress: netip.MustParseAddr("2001:db8:1::1"),
-		PeerAddress: netip.MustParseAddr("::1"),
-		Inner:       solicit(0x111111, 1)})
-	raw, err := wire.Encode(repl)
+	// The real server stays silent, so the only answer that could reach the
+	// client is the rogue's -- and it is aimed straight at the socket the relay
+	// is waiting on, which is the strongest thing a rogue server can do.
+	raw, err := wire.Encode(answer(fwd))
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The relay's own reply arrives too, so the client gets one answer; what is
-	// being checked is that the rogue's is refused and counted.
-	if _, err := rogue.pc.WriteTo(raw, up.pc.LocalAddr()); err != nil {
+	target := up.relayAddr()
+	if target == nil {
+		t.Fatal("the relay's server socket is not known")
+	}
+	if _, err := rogue.pc.WriteTo(raw, target); err != nil {
 		t.Fatal(err)
 	}
-	_, _ = c.read(2 * time.Second)
+
+	c.expectSilence("a reply from an address that is not a server")
 	for deadline := time.Now().Add(5 * time.Second); ; {
 		if s.Stats().DHCP6RogueServer > 0 {
 			break
 		}
 		if time.Now().After(deadline) {
-			// The rogue's datagram went to the fake server rather than to the
-			// relay, which is a test that cannot say anything; the refusal is
-			// checked directly below instead.
-			break
+			t.Fatalf("the rogue reply was not counted: refusals %+v",
+				s.Stats().Refusals["dhcp6"])
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+	// Never shadowed, so it is a refusal and not a would-be one.
+	if s.Stats().DHCP6WouldDeny > 0 {
+		t.Error("the rogue reply was only recorded as a would-be refusal")
 	}
 }
 
@@ -796,6 +838,200 @@ func TestADeepChainIsRefused(t *testing.T) {
 	}
 }
 
+// The hop bound at its exact boundary, which is what says max_relay_hops means
+// what the reference says it means.
+//
+// The bound is on the chain this relay would send, so a message already at the
+// bound is refused and one a single layer short goes through and comes out at
+// the bound. Off by one here would either refuse a site that is within its
+// budget or admit one a layer past it, and neither shows up in a test that
+// sends a chain of ten.
+func TestTheHopBoundHoldsAtItsBoundary(t *testing.T) {
+	chain := func(depth int) *wire.Message {
+		m := solicit(uint32(0xbc0000+depth), byte(depth))
+		for i := 0; i < depth; i++ {
+			m = &wire.Message{Type: wire.RelayForward, HopCount: uint8(i), //nolint:gosec // i < 4
+				LinkAddress: netip.MustParseAddr("2001:db8:2::1"),
+				PeerAddress: netip.MustParseAddr("fe80::1"), Inner: m}
+		}
+		return m
+	}
+
+	// One layer short of the bound: relayed, and the chain the server sees is
+	// exactly max_relay_hops deep, because this relay added the last one.
+	up := startServer(t, &fakeServer{})
+	_, addr := relayFor(t, base+"        max_relay_hops: 3\n", up.addr())
+	dial(t, addr).send(chain(2))
+	fwd := up.await(t, 1, "a chain one layer short of the bound")[0]
+	if got := relayDepth(fwd); got != 3 {
+		t.Errorf("the server saw a chain %d deep", got)
+	}
+
+	// At the bound: refused, because relaying it would put it past.
+	up2 := startServer(t, &fakeServer{})
+	s2, addr2 := relayFor(t, base+"        max_relay_hops: 3\n", up2.addr())
+	c2 := dial(t, addr2)
+	c2.send(chain(3))
+	c2.expectSilence("a chain already at the bound")
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		if s2.Stats().Refusals["dhcp6"]["too_many_hops"] > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("refusals: %+v", s2.Stats().Refusals["dhcp6"])
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(up2.seen()) != 0 {
+		t.Fatal("a chain at the bound reached the server")
+	}
+}
+
+// Shadow mode carries what the policy would have refused, and does not carry a
+// hard refusal. That distinction is the whole point of the flag: a bound and a
+// message two parsers would read differently are not opinions an operator can
+// try out, because carrying one is the harm rather than a note about it.
+func TestShadowModeStillRefusesAHardRefusal(t *testing.T) {
+	up := startServer(t, &fakeServer{})
+	s, addr := relayWith(t, base, "      policy: {mode: shadow}\n", up.addr())
+	c := dial(t, addr)
+
+	// A client identifier twice: a message the relay would decide about from
+	// the first value while a server acted on the last.
+	m := solicit(0xbdbdbd, 0xbd)
+	m.Options = append(m.Options, wire.Option{Code: wire.OptionClientID,
+		Value: duidLL(2, 0, 0, 0, 0, 0xbe)})
+	c.send(m)
+	c.expectSilence("a repeated identifier in shadow mode")
+
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		if s.Stats().Refusals["dhcp6"]["repeated_option"] > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("refusals %+v would-deny %d", s.Stats().Refusals["dhcp6"],
+				s.Stats().DHCP6WouldDeny)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(up.seen()) != 0 {
+		t.Fatal("a hard refusal was carried in shadow mode")
+	}
+
+	// And the soft half of the same listener still carries, so the mode is on.
+	ok := solicit(0xbfbfbf, 0xbf)
+	if got := c.ask(ok); got.Type != wire.Reply {
+		t.Fatalf("shadow mode did not carry an ordinary request: %s", got.Type)
+	}
+}
+
+// The pending table is the thing that pairs a reply with the client that asked,
+// so when it is full the request is refused rather than the pairing made
+// unreliable: a reply delivered to whichever client is guessed is worse than a
+// client that retries.
+func TestAFullPendingTableRefusesTheRequest(t *testing.T) {
+	up := startServer(t, &fakeServer{silent: true})
+	s, addr := relayFor(t, base+"        max_pending: 1\n        request_timeout: 30s\n",
+		up.addr())
+
+	first := dial(t, addr)
+	first.send(solicit(0xc00001, 1))
+	up.await(t, 1, "the first request")
+
+	second := dial(t, addr)
+	second.send(solicit(0xc00002, 2))
+	second.expectSilence("a request with the table full")
+
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		if s.Stats().Refusals["dhcp6"]["too_many_pending"] > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("refusals: %+v", s.Stats().Refusals["dhcp6"])
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n := len(up.seen()); n != 1 {
+		t.Errorf("the server saw %d requests", n)
+	}
+}
+
+// The client address list, which on this protocol says less than it looks --
+// a DHCPv6 client sends from a link-local address it chose for itself -- and
+// still decides for the one deployment where every sender is known: a listener
+// fronting downstream relay agents.
+func TestAClientOutsideTheListIsRefused(t *testing.T) {
+	up := startServer(t, &fakeServer{})
+	_, host := loopback()
+	s, addr := relayFor(t, base+"        deny_clients: [\""+denyAll(host)+"\"]\n", up.addr())
+	c := dial(t, addr)
+	c.send(solicit(0xc10001, 1))
+	c.expectSilence("a client on a denied network")
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		if s.Stats().Refusals["dhcp6"]["client_not_allowed"] > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("refusals: %+v", s.Stats().Refusals["dhcp6"])
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(up.seen()) != 0 {
+		t.Fatal("a denied client reached the server")
+	}
+}
+
+// denyAll is the loopback in use, as a network that covers it.
+func denyAll(host string) string {
+	if strings.HasPrefix(host, "[") {
+		return "::1/128"
+	}
+	return "127.0.0.0/8"
+}
+
+// A pool whose only server is drained has nowhere to relay to, which is counted
+// rather than guessed at: a relay that picked a drained endpoint anyway would
+// undo the reason somebody drained it.
+func TestNoServerToRelayToIsCounted(t *testing.T) {
+	up := startServer(t, &fakeServer{})
+	_, host := loopback()
+	s := proxytest.Start(t, fmt.Sprintf(drainedYAML, host+":0", base, up.addr()))
+	addr := proxytest.Addr(t, s, "segment")
+
+	c := dial(t, addr)
+	c.send(solicit(0xc20001, 1))
+	c.expectSilence("a request with every server drained")
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		if s.Stats().DHCP6UpstreamFail > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("nothing was counted as an upstream failure")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(up.seen()) != 0 {
+		t.Fatal("a drained server was relayed to")
+	}
+}
+
+// drainedYAML is the same listener with its one server taken out of rotation.
+// allow_servers is written out because it cannot be derived from a pool with
+// nothing pickable in it.
+const drainedYAML = `
+version: 1
+server:
+  listeners:
+    - name: segment
+      address: %q
+      kind: dhcp6
+      dhcp6:
+%s        allow_servers: ["::1/128", "127.0.0.0/8"]
+logging: {access: {enabled: false}}
+upstreams:
+  - {name: servers, endpoints: [{address: %q, drain: true}]}
+`
+
 // A message from one relay agent is wrapped again by this one, and the hop count
 // says how deep the chain is. That is the shape a relay in front of another
 // relay has.
@@ -951,4 +1187,116 @@ func TestARuleMatchesOnTheIdentifier(t *testing.T) {
 	if got := c.ask(solicit(0x131313, 0x64)); got.Type != wire.Reply {
 		t.Fatalf("a client outside the rule got a %s", got.Type)
 	}
+}
+
+// A server renewing one address and withdrawing another in the same identity
+// association, where the lease bound applies.
+//
+// This is the case where the guard in putLifetimes earns its place. The
+// decision to rewrite is made per reply, so once one address in the association
+// is over the ceiling every lifetime in it is walked -- and the withdrawn one
+// must still come out as a withdrawal. A relay that wrote the ceiling over it
+// would leave the device holding an address the estate has given to somebody
+// else.
+func TestAWithdrawalSurvivesABoundOnItsNeighbour(t *testing.T) {
+	up := startServer(t, &fakeServer{reply: func(fwd *wire.Message) *wire.Message {
+		repl := answer(fwd)
+		in := repl.Inner
+		in.Remove(wire.OptionIANA)
+		// One address well over the ceiling, and one withdrawn, in one option.
+		v := binary.BigEndian.AppendUint32(nil, 1)
+		v = binary.BigEndian.AppendUint32(v, 1800)
+		v = binary.BigEndian.AppendUint32(v, 2880)
+		v = append(v, opt(wire.OptionIAAddr, addrBody("2001:db8:1::10", 40000, 80000))...)
+		v = append(v, opt(wire.OptionIAAddr, addrBody("2001:db8:1::11", 0, 0))...)
+		in.Options = append(in.Options, wire.Option{Code: wire.OptionIANA, Value: v})
+		return repl
+	}})
+	s, addr := relayFor(t, base+"        max_lease_time: 1h\n", up.addr())
+	c := dial(t, addr)
+	got := c.ask(solicit(0x5a5a5a, 0x5a))
+
+	ias, err := got.IAs()
+	if err != nil {
+		t.Fatalf("the reply's associations: %v", err)
+	}
+	if len(ias) != 1 || len(ias[0].Addresses) != 2 {
+		t.Fatalf("the association came back as %+v", ias)
+	}
+	kept, withdrawn := ias[0].Addresses[0], ias[0].Addresses[1]
+	if kept.Valid != 3600 {
+		t.Errorf("the lease over the ceiling came back with %d seconds", kept.Valid)
+	}
+	if kept.Preferred != 3600 {
+		// A preferred lifetime longer than the valid one makes the option
+		// invalid, so it comes down with it.
+		t.Errorf("the preferred lifetime came back as %d", kept.Preferred)
+	}
+	if withdrawn.Valid != 0 || withdrawn.Preferred != 0 {
+		t.Errorf("the withdrawal became a lease of %d seconds (preferred %d)",
+			withdrawn.Valid, withdrawn.Preferred)
+	}
+	if s.Stats().DHCP6LeaseBounded == 0 {
+		t.Error("nothing was counted as bounded")
+	}
+}
+
+// on_client_relay_option: deny refuses the message rather than trimming it,
+// which is what an estate writes when a client claiming to be on a circuit is
+// worth knowing about rather than quietly correcting.
+func TestAClientsRelayOptionCanRefuseTheMessage(t *testing.T) {
+	up := startServer(t, &fakeServer{})
+	s, addr := relayFor(t, base+"        on_client_relay_option: deny\n", up.addr())
+	m := solicit(0x5b5b5b, 0x5b)
+	m.Set(wire.OptionSubscriberID, []byte("somebody-else"))
+	c := dial(t, addr)
+	c.send(m)
+	c.expectSilence("a client claiming a subscriber identifier")
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		if s.Stats().Refusals["dhcp6"]["client_relay_option"] > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("refusals: %+v", s.Stats().Refusals["dhcp6"])
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(up.seen()) != 0 {
+		t.Fatal("the message reached the server")
+	}
+}
+
+// A server's own message arriving on the segment side, which is what a rogue
+// server on the relay's own segment looks like from here. It gets its own
+// reason, because the relay is not the only thing the clients can hear.
+func TestAServersMessageOnTheSegmentIsRefused(t *testing.T) {
+	up := startServer(t, &fakeServer{})
+	s, addr := relayFor(t, base, up.addr())
+	c := dial(t, addr)
+
+	adv := &wire.Message{Type: wire.Advertise, TransactionID: 0x5c5c5c}
+	adv.Set(wire.OptionServerID, duidLL(9, 9, 9, 9, 9, 9))
+	adv.Set(wire.OptionDNSServers, netip.MustParseAddr("2001:db8:66::66").AsSlice())
+	c.send(adv)
+	c.expectSilence("an advertise from the segment")
+
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		if s.Stats().Refusals["dhcp6"]["server_message_from_client_side"] > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("refusals: %+v", s.Stats().Refusals["dhcp6"])
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(up.seen()) != 0 {
+		t.Fatal("a server's message was relayed to a server")
+	}
+}
+
+// addrBody is an IAADDR's value: the address and its two lifetimes.
+func addrBody(addr string, preferred, valid uint32) []byte {
+	out := netip.MustParseAddr(addr).AsSlice()
+	out = binary.BigEndian.AppendUint32(out, preferred)
+	return binary.BigEndian.AppendUint32(out, valid)
 }

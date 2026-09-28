@@ -356,3 +356,159 @@ func codes(cs ...uint16) []byte {
 	}
 	return out
 }
+
+// A delegation that overlaps the estate's prefix without being inside it: a
+// /32 where the estate delegates out of a /40. Containment is the check, not
+// overlap -- a prefix that contains the estate's own is not one of the estate's,
+// it is a superset of it, and a client routing it would be routing the estate.
+func TestADelegationMustBeInsideTheEstatesPrefixAndNotAroundIt(t *testing.T) {
+	p := compiled(t, &config.DHCP6Listener{
+		PrefixDelegation: &config.DHCP6PrefixPolicy{Prefixes: []string{"2001:db8:aa00::/40"}},
+	})
+	if why := p.prefixAllowed(netip.MustParsePrefix("2001:db8:aa01::/48")); why != "" {
+		t.Errorf("a prefix inside the estate's was refused: %s", why)
+	}
+	if p.prefixAllowed(netip.MustParsePrefix("2001:db8::/32")) == "" {
+		t.Error("a prefix containing the estate's own was allowed")
+	}
+	if p.prefixAllowed(netip.MustParsePrefix("2001:db8:aa00::/40")) != "" {
+		t.Error("the estate's own prefix was refused")
+	}
+}
+
+// With delegation switched off, an IA_PD is refused whichever side it came
+// from: a client asking, and a server offering.
+func TestDelegationSwitchedOffRefusesBothSides(t *testing.T) {
+	no := false
+	p := compiled(t, &config.DHCP6Listener{
+		PrefixDelegation: &config.DHCP6PrefixPolicy{Enabled: &no},
+	})
+
+	// From a client.
+	ask := clientReq(t, wire.Solicit)
+	ask.msg.Options = append(ask.msg.Options, iaPD(1, "2001:db8:c000::/56", 1800, 3600))
+	if d := p.Decide(ask); d.Allow {
+		t.Error("a client asked for a delegation where none is carried and was allowed")
+	}
+
+	// From a server, where it is a refusal rather than a strip: there is no
+	// useful half of a delegation to keep.
+	reply := &wire.Message{Type: wire.Reply, TransactionID: 9}
+	reply.Options = append(reply.Options, iaPD(1, "2001:db8:c000::/56", 1800, 3600))
+	d := p.Answer(request{from: netip.MustParseAddr("2001:db8::1"), msg: reply, at: time.Now()}, "")
+	if d.Allow || d.Reason != "bad_identity_association" {
+		t.Errorf("allow %v reason %q detail %q", d.Allow, d.Reason, d.Detail)
+	}
+	if len(d.Strip) != 0 {
+		t.Error("a delegation was stripped rather than refused")
+	}
+}
+
+// The boot URL pattern, on a listener that carries the option at all. The
+// built-in deny list removes it, so an estate that netboots takes it off that
+// list and names the images instead -- and this is the check that then applies.
+func TestABootURLNobodyListedIsRemoved(t *testing.T) {
+	p := compiled(t, &config.DHCP6Listener{
+		// The deny list without the boot options on it.
+		DenyOptions:   []string{"captive_portal", "sztp_redirect", "unicast"},
+		AllowBootURLs: []string{"tftp://[2001:db8::20]/*", "http://boot.example/images/*.efi"},
+	})
+	reply := func(url string) request {
+		m := &wire.Message{Type: wire.Reply, TransactionID: 11}
+		m.Set(wire.OptionBootFileURL, []byte(url))
+		return request{from: netip.MustParseAddr("2001:db8::1"), msg: m, at: time.Now()}
+	}
+	for _, url := range []string{
+		"tftp://[2001:db8::20]/pxelinux.0",
+		"http://boot.example/images/shim.efi",
+	} {
+		if d := p.Answer(reply(url), ""); len(d.Strip) != 0 {
+			t.Errorf("a listed image was removed: %s (%v)", url, d.StripReason)
+		}
+	}
+	for _, url := range []string{
+		"tftp://[2001:db8:66::66]/pxelinux.0",
+		"http://boot.example/images/../../evil.efi",
+		"http://elsewhere.example/images/shim.efi",
+	} {
+		d := p.Answer(reply(url), "")
+		if len(d.Strip) != 1 || d.Strip[0] != wire.OptionBootFileURL {
+			t.Errorf("a boot file nobody listed survived: %s (%v)", url, d.StripReason)
+		}
+	}
+}
+
+// A temporary address association is carried by default and refused when an
+// estate says it does not want one. Temporary addresses are the privacy
+// mechanism of RFC 8415 s6.5, so the default is to carry them: refusing would be
+// refusing clients that are doing the right thing.
+func TestATemporaryAssociationIsCarriedUnlessItIsSwitchedOff(t *testing.T) {
+	ta := func() request {
+		m := &wire.Message{Type: wire.Reply, TransactionID: 12}
+		v := binary.BigEndian.AppendUint32(nil, 7)
+		v = append(v, opt(wire.OptionIAAddr, addrBody("2001:db8::a", 600, 1200))...)
+		m.Options = append(m.Options, wire.Option{Code: wire.OptionIATA, Value: v})
+		return request{from: netip.MustParseAddr("2001:db8::1"), msg: m, at: time.Now()}
+	}
+	if d := compiled(t, &config.DHCP6Listener{}).Answer(ta(), ""); !d.Allow {
+		t.Errorf("a temporary address was refused by default: %s %s", d.Reason, d.Detail)
+	}
+	no := false
+	off := compiled(t, &config.DHCP6Listener{AllowTemporaryAddresses: &no})
+	if d := off.Answer(ta(), ""); d.Allow || d.Reason != "bad_identity_association" {
+		t.Errorf("allow %v reason %q", d.Allow, d.Reason)
+	}
+
+	// And the same on the request side, where a client *asking* for one is a
+	// client asking for the privacy mechanism by name. An IA_TA is four octets
+	// of IAID and then its options: unlike IA_NA and IA_PD it carries no
+	// renewal times, because a temporary address is not renewed.
+	asking := func() request {
+		r := clientReq(t, wire.Solicit)
+		r.msg.Options = append(r.msg.Options, wire.Option{Code: wire.OptionIATA,
+			Value: binary.BigEndian.AppendUint32(nil, 7)})
+		return r
+	}
+	if d := compiled(t, &config.DHCP6Listener{}).Decide(asking()); !d.Allow {
+		t.Errorf("a client asking for a temporary address was refused by default: %s %s",
+			d.Reason, d.Detail)
+	}
+	if d := off.Decide(asking()); d.Allow || d.Reason != "request_not_allowed" {
+		t.Errorf("allow %v reason %q", d.Allow, d.Reason)
+	}
+}
+
+// A pattern with a bracketed IPv6 literal in it, which is what an operator
+// writes for a boot server and what path.Match would read as a character class
+// matching nothing.
+func TestABracketedAddressInAPatternIsLiteral(t *testing.T) {
+	p := compiled(t, &config.DHCP6Listener{
+		DenyOptions:   []string{"captive_portal"},
+		AllowBootURLs: []string{"tftp://[2001:db8::20]/*"},
+	})
+	reply := func(url string) request {
+		m := &wire.Message{Type: wire.Reply, TransactionID: 13}
+		m.Set(wire.OptionBootFileURL, []byte(url))
+		return request{from: netip.MustParseAddr("2001:db8::1"), msg: m, at: time.Now()}
+	}
+	if d := p.Answer(reply("tftp://[2001:db8::20]/pxelinux.0"), ""); len(d.Strip) != 0 {
+		t.Errorf("the estate's own boot server was removed: %v", d.StripReason)
+	}
+	// And the pattern is still a pattern: the host is fixed, the path is not.
+	if d := p.Answer(reply("tftp://[2001:db8:66::66]/pxelinux.0"), ""); len(d.Strip) != 1 {
+		t.Errorf("a boot server nobody listed survived: %v", d.StripReason)
+	}
+	// A character class would have matched any one of those characters as the
+	// whole host, so this is the case that says it is not being read as one.
+	if d := p.Answer(reply("tftp://2/pxelinux.0"), ""); len(d.Strip) != 1 {
+		t.Errorf("the brackets were read as a character class: %v", d.StripReason)
+	}
+
+	// The escape still works for anyone who wants a class on purpose.
+	esc := compiled(t, &config.DHCP6Listener{
+		DenyOptions: []string{"captive_portal"}, AllowBootURLs: []string{`http://boot/v[0-9].efi`},
+	})
+	if d := esc.Answer(reply("http://boot/v[0-9].efi"), ""); len(d.Strip) != 0 {
+		t.Errorf("the literal pattern did not match itself: %v", d.StripReason)
+	}
+}

@@ -44,6 +44,7 @@ import (
 	_ "github.com/rom/xproxy/internal/kinds/amqp"
 	_ "github.com/rom/xproxy/internal/kinds/bacnet"
 	_ "github.com/rom/xproxy/internal/kinds/dhcp"
+	_ "github.com/rom/xproxy/internal/kinds/dhcp6"
 	_ "github.com/rom/xproxy/internal/kinds/ftp"
 	_ "github.com/rom/xproxy/internal/kinds/iec104"
 	_ "github.com/rom/xproxy/internal/kinds/ldap"
@@ -112,6 +113,7 @@ var cases = map[string]kindCase{
 	"ntp":    {section: "ntp: {upstream: u}", datagram: true},
 	"bacnet": {section: "bacnet: {upstream: u}", datagram: true},
 	"dhcp":   {section: "dhcp: {upstream: u, relay_address: 10.0.0.1}", datagram: true},
+	"dhcp6":  {section: "dhcp6: {upstream: u, link_address: 2001:db8::1}", datagram: true},
 }
 
 // excluded are the kinds this test does not start, each with the reason.
