@@ -9913,6 +9913,131 @@ func snmpPrivNames() []string {
 	return out
 }
 
+// snmpUpstreamUSM checks the identity this relay presents to the agent.
+//
+// It is held to the same rules as a user this listener reads, plus the ones that
+// are only about originating: a level needs the keys it uses, and terminating
+// the manager's security is a thing an operator should be told they have done.
+func (v *validator) snmpUpstreamUSM(p string, m *SNMPListener) {
+	u := m.UpstreamUSM
+	if u == nil {
+		if m.UpstreamSecurityLevel != "" {
+			v.errf("%s.upstream_security_level: set without upstream_usm, so there is no identity to originate as", p)
+		}
+		return
+	}
+	q := p + ".upstream_usm"
+	v.snmpUser(q, u, m)
+	level := snmpwire.AuthPriv
+	if u.Privacy == "" {
+		level = snmpwire.AuthNoPriv
+	}
+	if m.UpstreamSecurityLevel != "" {
+		lvl, ok := snmpwire.LevelOf(m.UpstreamSecurityLevel)
+		if !ok {
+			v.errf("%s.upstream_security_level: must be noAuthNoPriv, authNoPriv or authPriv", p)
+		} else {
+			level = lvl
+		}
+	}
+	switch {
+	case level == snmpwire.AuthPriv && u.Privacy == "":
+		v.errf("%s.upstream_security_level: authPriv needs upstream_usm.privacy and a privacy pass phrase", p)
+	case level == snmpwire.NoAuthNoPriv:
+		// Allowed, because an agent that only speaks v3 and trusts the
+		// network is a real deployment. Said out loud, because originating at
+		// noAuthNoPriv with a pass phrase configured is almost always a
+		// mistake in the level rather than a decision about it.
+		v.warnf("%s.upstream_security_level: noAuthNoPriv originates unauthenticated v3, so the pass phrases "+
+			"in upstream_usm are not used and anything that can reach the agent can forge this relay's "+
+			"messages to it", p)
+	case u.Privacy != "" && level == snmpwire.AuthNoPriv:
+		v.warnf("%s.upstream_security_level: authNoPriv with a privacy pass phrase configured, so the requests "+
+			"to the agent are signed and readable on the wire. The reason to configure privacy is to use it", p)
+	}
+	if up, ok := snmpwire.VersionOf(m.UpgradeVersion); m.UpgradeVersion == "" || !ok || up != snmpwire.V3 {
+		v.warnf("%s.upstream_usm: configured without upgrade_version: v3, so nothing originates as it and the "+
+			"pass phrases are unused", p)
+	}
+	// The consequence, once, where an operator reading the file will see it.
+	v.warnf("%s.upstream_usm: this relay now terminates the manager's security and originates its own, so "+
+		"there is no end-to-end authentication between the manager and the agent: the manager authenticates "+
+		"to this relay and this relay authenticates to the agent. That is the point of it and it is also what "+
+		"an estate has to decide it wants", p)
+}
+
+// snmpUser checks one version 3 user, whether it is a user this listener reads
+// or the identity it presents to the agent. One function so that both are held
+// to one set of rules: an upstream identity validated more loosely than a
+// downstream one would be the weaker half of a configuration whose whole point
+// is that the upstream half is stronger.
+func (v *validator) snmpUser(q string, u *SNMPUser, m *SNMPListener) {
+	switch {
+	case u.Name == "":
+		v.errf("%s.name: required", q)
+	case len(u.Name) > 255:
+		v.errf("%s.name: longer than 255 octets", q)
+	}
+	auth, ok := snmpwire.AuthAlgoOf(u.Auth)
+	if !ok {
+		v.errf("%s.auth: %q is not an authentication protocol; the ones USM defines are %s",
+			q, u.Auth, strings.Join(SNMPAuthAlgos, ", "))
+	} else if auth == snmpwire.AuthMD5 || auth == snmpwire.AuthSHA1 {
+		v.warnf("%s.auth: %s is RFC 3414's original and is weak by any current measure. It is here "+
+			"because it is what the installed base speaks; where the equipment can do better, "+
+			"RFC 7860's sha256 is the same configuration with a different word", q, auth)
+	}
+	if u.AuthSecret == "" {
+		v.errf("%s.auth_secret: required", q)
+	} else {
+		v.secretRef(q+".auth_secret", u.AuthSecret)
+	}
+	if u.Privacy == "" {
+		if u.PrivacySecret != "" {
+			v.errf("%s.privacy: required with privacy_secret", q)
+		}
+		// A user with no privacy key cannot be read at authPriv, and this
+		// relay refuses what it cannot read rather than forwarding it
+		// around the rules. Whether that matters depends on the listener's
+		// own floor.
+		if m.MinSecurityLevel != "" {
+			if lvl, ok := snmpwire.LevelOf(m.MinSecurityLevel); ok && lvl == snmpwire.AuthPriv {
+				v.errf("%s.privacy: required, because min_security_level authPriv means every message "+
+					"from %q arrives encrypted and without a privacy key none of them can be read -- "+
+					"so all of them would be refused", q, u.Name)
+			}
+		}
+		return
+	}
+	priv, ok := snmpwire.PrivAlgoOf(u.Privacy)
+	if !ok {
+		v.errf("%s.privacy: %q is not a privacy protocol; the ones USM defines are %s",
+			q, u.Privacy, strings.Join(SNMPPrivAlgos, ", "))
+	} else {
+		if priv == snmpwire.PrivDES {
+			v.warnf("%s.privacy: des is a fifty-six bit cipher, which is RFC 3414's own and is "+
+				"breakable. RFC 3826's aes128 is the same configuration with a different word", q)
+		}
+		// One derivation, truncated by the cipher: a sixteen-octet MD5 key
+		// cannot key AES-256.
+		if have, need := auth.KeyLen(), priv.KeyLen(); ok && have > 0 && have < need {
+			v.errf("%s.privacy: %s needs %d key octets and %s derives %d; USM has one key derivation "+
+				"and the cipher truncates it, so pair a wider authentication protocol with this one",
+				q, priv, need, auth, have)
+		}
+	}
+	if u.PrivacySecret == "" {
+		v.errf("%s.privacy_secret: required with privacy", q)
+	} else {
+		v.secretRef(q+".privacy_secret", u.PrivacySecret)
+		if u.PrivacySecret == u.AuthSecret {
+			v.warnf("%s.privacy_secret: the same reference as auth_secret, so one pass phrase keys both "+
+				"the digest and the cipher. USM allows it and every tool does it; it means one guess "+
+				"gets both", q)
+		}
+	}
+}
+
 // snmpUSMUsers checks the version 3 users whose keys this listener holds.
 //
 // Everything here is about a configuration that would load and then refuse the
@@ -9924,74 +10049,11 @@ func (v *validator) snmpUSMUsers(p string, m *SNMPListener) {
 	for i := range m.USMUsers {
 		u := &m.USMUsers[i]
 		q := fmt.Sprintf("%s[%d]", p, i)
-		switch {
-		case u.Name == "":
-			v.errf("%s.name: required", q)
-		case len(u.Name) > 255:
-			v.errf("%s.name: longer than 255 octets", q)
-		case seen[u.Name]:
+		if u.Name != "" && seen[u.Name] {
 			v.errf("%s.name: %q appears twice; one user has one set of keys", q, u.Name)
-		default:
-			seen[u.Name] = true
 		}
-		auth, ok := snmpwire.AuthAlgoOf(u.Auth)
-		if !ok {
-			v.errf("%s.auth: %q is not an authentication protocol; the ones USM defines are %s",
-				q, u.Auth, strings.Join(SNMPAuthAlgos, ", "))
-		} else if auth == snmpwire.AuthMD5 || auth == snmpwire.AuthSHA1 {
-			v.warnf("%s.auth: %s is RFC 3414's original and is weak by any current measure. It is here "+
-				"because it is what the installed base speaks; where the equipment can do better, "+
-				"RFC 7860's sha256 is the same configuration with a different word", q, auth)
-		}
-		if u.AuthSecret == "" {
-			v.errf("%s.auth_secret: required", q)
-		} else {
-			v.secretRef(q+".auth_secret", u.AuthSecret)
-		}
-		if u.Privacy == "" {
-			if u.PrivacySecret != "" {
-				v.errf("%s.privacy: required with privacy_secret", q)
-			}
-			// A user with no privacy key cannot be read at authPriv, and this
-			// relay refuses what it cannot read rather than forwarding it
-			// around the rules. Whether that matters depends on the listener's
-			// own floor.
-			if m.MinSecurityLevel != "" {
-				if lvl, ok := snmpwire.LevelOf(m.MinSecurityLevel); ok && lvl == snmpwire.AuthPriv {
-					v.errf("%s.privacy: required, because min_security_level authPriv means every message "+
-						"from %q arrives encrypted and without a privacy key none of them can be read -- "+
-						"so all of them would be refused", q, u.Name)
-				}
-			}
-			continue
-		}
-		priv, ok := snmpwire.PrivAlgoOf(u.Privacy)
-		if !ok {
-			v.errf("%s.privacy: %q is not a privacy protocol; the ones USM defines are %s",
-				q, u.Privacy, strings.Join(SNMPPrivAlgos, ", "))
-		} else {
-			if priv == snmpwire.PrivDES {
-				v.warnf("%s.privacy: des is a fifty-six bit cipher, which is RFC 3414's own and is "+
-					"breakable. RFC 3826's aes128 is the same configuration with a different word", q)
-			}
-			// One derivation, truncated by the cipher: a sixteen-octet MD5 key
-			// cannot key AES-256.
-			if have, need := auth.KeyLen(), priv.KeyLen(); ok && have > 0 && have < need {
-				v.errf("%s.privacy: %s needs %d key octets and %s derives %d; USM has one key derivation "+
-					"and the cipher truncates it, so pair a wider authentication protocol with this one",
-					q, priv, need, auth, have)
-			}
-		}
-		if u.PrivacySecret == "" {
-			v.errf("%s.privacy_secret: required with privacy", q)
-		} else {
-			v.secretRef(q+".privacy_secret", u.PrivacySecret)
-			if u.PrivacySecret == u.AuthSecret {
-				v.warnf("%s.privacy_secret: the same reference as auth_secret, so one pass phrase keys both "+
-					"the digest and the cipher. USM allows it and every tool does it; it means one guess "+
-					"gets both", q)
-			}
-		}
+		seen[u.Name] = true
+		v.snmpUser(q, u, m)
 	}
 	for i, u := range m.USMUsers {
 		if u.EngineID == "" {
@@ -10156,8 +10218,12 @@ func (v *validator) snmpListener(p string, m *SNMPListener, hasTLS bool) {
 			// forwarded with an empty credential.
 			v.errf("%s.upstream_community: required with upgrade_version %s, because a v3 message carries no community string to forward", p, m.UpgradeVersion)
 		}
-		if up == snmpwire.V3 {
-			v.errf("%s.upgrade_version: v3 cannot be produced from a v1 or v2c message, because there is no user, engine or key to authenticate it with; put the v3 listener in front and upgrade downwards", p)
+		if up == snmpwire.V3 && m.UpstreamUSM == nil {
+			// Without an identity of its own there is no pass phrase to
+			// authenticate with, and this relay will not forge an
+			// authentication that did not happen.
+			v.errf("%s.upgrade_version: v3 needs upstream_usm, the identity this relay presents to the agent: "+
+				"without a user and a pass phrase of its own there is nothing to authenticate the message with", p)
 		}
 		if up != snmpwire.V3 && takesV3 && !m.Traps {
 			// A v3 request downgraded to v2c gets a v2c answer, and giving
@@ -10171,6 +10237,7 @@ func (v *validator) snmpListener(p string, m *SNMPListener, hasTLS bool) {
 	if m.UpstreamCommunity != "" && len(m.UpstreamCommunity) > 255 {
 		v.errf("%s.upstream_community: longer than 255 octets", p)
 	}
+	v.snmpUpstreamUSM(p, m)
 	if m.Traps && m.ReadOnly {
 		v.warnf("%s.read_only: a trap listener carries no SetRequest, so read_only refuses nothing here", p)
 	}

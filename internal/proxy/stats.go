@@ -310,6 +310,14 @@ type Stats struct {
 	SNMPDecrypted  atomic.Uint64
 	SNMPAuthFailed atomic.Uint64
 	SNMPReplayed   atomic.Uint64
+	// Originating version 3 toward the agent, which is upstream_usm.
+	// SNMPDiscoveries counts the engine discoveries sent -- one per agent
+	// after a start, and more only if they are being lost -- and
+	// SNMPOriginated the requests this relay signed as itself. A
+	// discoveries count that keeps climbing beside a flat originated count
+	// is an agent that is not answering them.
+	SNMPDiscoveries atomic.Uint64
+	SNMPOriginated  atomic.Uint64
 	// The LDAP relay.
 	//
 	// Binds are counted apart from requests and failures apart from binds,
@@ -838,6 +846,8 @@ type Snapshot struct {
 	SNMPDecrypted         uint64 `json:"snmp_decrypted"`
 	SNMPAuthFailed        uint64 `json:"snmp_auth_failed"`
 	SNMPReplayed          uint64 `json:"snmp_replayed"`
+	SNMPDiscoveries       uint64 `json:"snmp_discoveries"`
+	SNMPOriginated        uint64 `json:"snmp_originated"`
 	SNMPPending           int64  `json:"snmp_pending"`
 	LDAPSessions          uint64 `json:"ldap_sessions"`
 	LDAPSessionsOpen      int64  `json:"ldap_sessions_open"`
@@ -1290,6 +1300,8 @@ func (s *Stats) snapshot() Snapshot {
 		SNMPDecrypted:          s.SNMPDecrypted.Load(),
 		SNMPAuthFailed:         s.SNMPAuthFailed.Load(),
 		SNMPReplayed:           s.SNMPReplayed.Load(),
+		SNMPDiscoveries:        s.SNMPDiscoveries.Load(),
+		SNMPOriginated:         s.SNMPOriginated.Load(),
 		SNMPPending:            s.SNMPPending.Load(),
 		LDAPSessions:           s.LDAPSessions.Load(),
 		LDAPSessionsOpen:       s.LDAPSessionsOpen.Load(),

@@ -23,6 +23,11 @@ var errSealed = errors.New("snmp: the scoped payload is encrypted")
 // to give the manager an answer it would accept.
 var errUnanswerable = errors.New("snmp: a v3 request cannot be downgraded, because its answer would have to be authenticated")
 
+// errOriginate says the upgrade is to v3, which is not a re-envelope: the
+// caller originates a message of this relay's own, and may have to discover
+// the agent's engine before it can.
+var errOriginate = errors.New("snmp: the upgrade to v3 is originated rather than re-enveloped")
+
 // count records what the message was. Reads are the poll, writes are the
 // changes, notifications are the alarms -- three numbers an operator can
 // read a network's SNMP traffic off, where one "messages" count says
@@ -307,6 +312,14 @@ func (t *server) applyUpgrade(cur []byte, m *wire.Message) ([]byte, bool, error)
 		// envelope, and there will not be one without the key.
 		return cur, false, errSealed
 	}
+	if t.upgrade == wire.V3 {
+		// Originating, not re-enveloping: the agent gets a message of this
+		// relay's own, signed with this relay's keys against the agent's
+		// engine. applyUpgrade cannot do it alone because it may have to send
+		// a discovery first and wait, so the caller handles that; see
+		// originateUpstream.
+		return cur, false, errOriginate
+	}
 	if m.Version == wire.V3 && !m.PDU.Type.Notification() {
 		return cur, false, errUnanswerable
 	}
@@ -333,8 +346,22 @@ func (t *server) restore(raw []byte, m *wire.Message, e *exchange) ([]byte, bool
 	if e == nil || m.PDU == nil || m.Version == e.version {
 		return raw, false
 	}
-	if m.Version == wire.V3 || e.version == wire.V3 {
+	if e.version == wire.V3 {
+		// The manager spoke v3, so its answer would have to be authenticated
+		// with a key this relay does not hold as that manager. Such a request
+		// is refused on the way in rather than half-translated here.
 		return raw, false
+	}
+	if m.Version == wire.V3 {
+		// The agent answered this relay's *own* v3 session, which the upstream
+		// reader verified and decrypted before the pairing. Putting its PDU in
+		// the v1 or v2c envelope the manager spoke is the other half of
+		// terminating the security: the credential on the way back is the
+		// community string the manager already uses, and there is no integrity
+		// being forged because neither version has any.
+		if t.orig == nil || m.PDU == nil {
+			return raw, false
+		}
 	}
 	out, err := wire.Envelope(e.version, e.community, m.PDU.Raw)
 	if err != nil {

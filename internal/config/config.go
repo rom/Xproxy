@@ -758,13 +758,20 @@ type SNMPListener struct {
 	// manager never needs to know it. A response is rebuilt in the version
 	// its request arrived in, so the manager sees the version it spoke.
 	//
-	// Two things it cannot do, both for the same reason -- this relay holds
-	// no USM keys and will not forge an authentication that did not happen.
-	// It cannot produce v3, which is refused at load. And it cannot
-	// downgrade a v3 *request*, because the answer would have to come back
-	// as v3 and there is no key to authenticate it with; such a request is
-	// refused rather than half-translated. A v3 *notification* downgrades
-	// cleanly, because nothing comes back: that is the modern-device,
+	// Producing v3 needs upstream_usm: an identity of this relay's own.
+	// Without one there is no pass phrase to authenticate with and the
+	// relay will not forge an authentication that did not happen, so
+	// upgrade_version: v3 is refused at load. With one the relay
+	// terminates the manager's security and originates its own, which is
+	// the secure upgrade this protocol needs most -- and which means the
+	// relay is a party to the security rather than a reader of it. See
+	// upstream_usm.
+	//
+	// Downgrading a v3 *request* is a different matter and is still
+	// refused: the answer would come back as v3 from an engine this
+	// relay did not ask as itself, so there would be nothing to
+	// authenticate it with. A v3 *notification* downgrades cleanly,
+	// because nothing comes back: that is the modern-device,
 	// legacy-collector case, and it is what traps: true plus
 	// upgrade_version: v2c is for.
 	UpgradeVersion string `yaml:"upgrade_version"`
@@ -773,6 +780,32 @@ type SNMPListener struct {
 	// upgrade_version v1 or v2c when the arriving message is v3, because
 	// there is no community string in a v3 message to carry over.
 	UpstreamCommunity string `yaml:"upstream_community"`
+	// UpstreamUSM is the version 3 identity this relay presents to the
+	// agent, and it is what `upgrade_version: v3` needs. With it the relay
+	// terminates whatever security the manager used and originates a USM
+	// session of its own: a v1 or v2c poller reaches a v3-only agent, at a
+	// level the poller cannot speak, with a pass phrase the poller never
+	// holds.
+	//
+	// That is the point and it is also the cost, so it is said plainly:
+	// the relay becomes a party to the security rather than a reader of
+	// it. Two sessions exist, this process holds the agent's keys, and
+	// there is no end-to-end authentication between the manager and the
+	// agent any more -- the manager authenticates to the relay (or does
+	// not, on v1 and v2c) and the relay authenticates to the agent. An
+	// estate that wants end-to-end USM wants `upgrade_version` unset and
+	// `usm_users` for reading.
+	//
+	// The engine identifier is discovered from the agent rather than
+	// configured, because it is the agent's to state; engine_id pins it
+	// where an operator knows it, and then a message from an engine that
+	// calls itself something else is not answered.
+	UpstreamUSM *SNMPUser `yaml:"upstream_usm"`
+	// UpstreamSecurityLevel is the level this relay originates at:
+	// noAuthNoPriv, authNoPriv or authPriv. Default authPriv when
+	// upstream_usm has a privacy protocol and authNoPriv when it does not,
+	// because the reason to configure a privacy pass phrase is to use it.
+	UpstreamSecurityLevel string `yaml:"upstream_security_level"`
 	// USMUsers are the version 3 users whose traffic this listener can
 	// read. Without them a v3 message is a header and an opaque payload:
 	// the user, the engine and the security level are visible and nothing
@@ -781,9 +814,11 @@ type SNMPListener struct {
 	// the payload is decrypted -- and then the ordinary rules decide about
 	// a v3 message exactly as they do about a v2c one.
 	//
-	// Nothing is re-encrypted or re-signed: the octets forwarded to the
-	// agent are the octets that arrived. The keys are here so that this
-	// relay can *read*, which is the only thing it needs them for.
+	// Nothing is re-encrypted or re-signed with these keys: the octets
+	// forwarded to the agent are the octets that arrived. They are here so
+	// that this relay can *read*, which is the only thing it needs them
+	// for. Originating a message of this relay's own is upstream_usm,
+	// which is a separate decision with separate consequences.
 	USMUsers []SNMPUser `yaml:"usm_users"`
 	// ReplayWindow is how far behind an authenticated message's notion of
 	// the agent's clock may be before it is refused as a replay, which is

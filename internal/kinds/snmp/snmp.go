@@ -77,9 +77,12 @@ type server struct {
 	tlsCfg *tls.Config
 	upTLS  *tls.Config
 
-	policy  *Policy
-	decoy   *decoy
-	usm     *usm
+	policy *Policy
+	decoy  *decoy
+	usm    *usm
+	// orig is the identity this relay presents to the agent, when
+	// upstream_usm gave it one. Nil means the relay forwards what arrived.
+	orig    *originator
 	limiter *limits.KeyedLimiter
 	// upgrade is the version requests are forwarded in, or -1 to forward
 	// the version that arrived.
@@ -114,6 +117,9 @@ func newServer(host proxy.Host, cfg config.Listener, pc net.PacketConn, ln net.L
 	if t.decoy, err = newDecoy(m.Deception, cfg.Name); err != nil {
 		return nil, fmt.Errorf("snmp %s: %w", cfg.Name, err)
 	}
+	if t.orig, err = compileOriginator(m, host.Secrets()); err != nil {
+		return nil, fmt.Errorf("snmp %s: %w", cfg.Name, err)
+	}
 	if t.usm, err = compileUSM(m, host.Secrets()); err != nil {
 		return nil, fmt.Errorf("snmp %s: %w", cfg.Name, err)
 	}
@@ -122,8 +128,11 @@ func newServer(host proxy.Host, cfg config.Listener, pc net.PacketConn, ln net.L
 		if !ok {
 			return nil, fmt.Errorf("snmp upgrade_version: %q", m.UpgradeVersion)
 		}
-		if v == wire.V3 {
-			return nil, errors.New("snmp upgrade_version: v3 cannot be produced from a v1 or v2c message")
+		if v == wire.V3 && t.orig == nil {
+			// Without an identity of its own there is nothing to sign with,
+			// and this relay does not forge an authentication that did not
+			// happen. upstream_usm is what supplies one.
+			return nil, errors.New("snmp upgrade_version: v3 needs upstream_usm, the identity this relay presents to the agent")
 		}
 		t.upgrade = v
 	}
@@ -310,6 +319,14 @@ type exchange struct {
 	version   wire.Version
 	community string
 	at        time.Time
+	// pdu is the manager's own PDU, kept only where the upstream side is
+	// originated as version 3: the relay may have to discover the agent's
+	// engine before it can ask, and then it asks with this.
+	//
+	// It is the request's octets and not the whole message, so it holds no
+	// credential of the manager's -- and it is released with the slot, so a
+	// manager that stopped waiting leaves nothing behind.
+	pdu []byte
 }
 
 // pending is the table of requests outstanding towards agents.

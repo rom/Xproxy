@@ -2975,15 +2975,44 @@ with an `upstream_community` the manager never needs to know. A response is
 rebuilt in the version its request arrived in, so the manager sees the version
 it spoke.
 
-Two rewrites this relay will not do, both because it reads USM messages and
-never writes one, and will not forge an authentication that did not happen. It
-cannot *produce* v3, which is refused at load. And it cannot downgrade a v3
-**request**: the answer would come back as v2c and handing that to a v3
-manager means signing it, which this relay does not do, so such a request is
-refused rather than half-translated. A v3 **notification** downgrades cleanly,
-because nothing comes back -- a modern device sending v3 traps to a collector
-that understands only v2c is exactly what `traps: true` with
-`upgrade_version: v2c` is for.
+**And upwards, with an identity of its own.** `upgrade_version: v3` plus
+`upstream_usm` is the case this protocol needs most: the agents were replaced
+and the polling system was not, so a v1 or v2c poller reaches a v3-only agent
+with authentication and privacy the poller cannot speak and a pass phrase it
+never holds. The relay **terminates** the manager's security and
+**re-originates** its own -- and that sentence is the whole of the trade:
+
+- The credential that opens the agent lives in one place. A manager's community
+  string that leaks does not open anything, and the agent's pass phrase never
+  leaves this process.
+- The level toward the agent is this relay's choice, not the manager's
+  capability. `upstream_security_level: authPriv` from a manager with no
+  privacy at all.
+- **There is no end-to-end authentication between the manager and the agent any
+  more.** The manager authenticates to this relay (or does not, on v1 and v2c)
+  and this relay authenticates to the agent. This process is a party to the
+  security rather than a reader of it. An estate that wants USM end to end
+  wants `usm_users` and no upgrade, and validation says so out loud when
+  `upstream_usm` is configured.
+
+The agent's engine identifier is **discovered**, not configured: it is the
+agent's to state, and USM authenticates against that engine's clock. The first
+request to a cold agent therefore draws an RFC 3414 §4 discovery first, and the
+manager's own request is asked as soon as the agent's report comes back --
+carrying the manager's request identifier, so the waiting question is the one
+that gets asked. A burst to a cold agent sends **one** discovery.
+`upstream_usm.engine_id` pins the identifier where an operator knows it, and
+then an engine calling itself something else is not believed.
+`snmp_discoveries` and `snmp_originated` count the two halves: discoveries that
+climb beside a flat originated count are an agent not answering them.
+
+One rewrite this relay still will not do: it cannot downgrade a v3 **request**.
+The answer would come back as v2c and handing that to a v3 manager means
+signing it as that manager, with a key this relay does not hold, so such a
+request is refused rather than half-translated. A v3 **notification**
+downgrades cleanly, because nothing comes back -- a modern device sending v3
+traps to a collector that understands only v2c is exactly what `traps: true`
+with `upgrade_version: v2c` is for.
 
 **Version 3 is read, with the user's keys.** Without `usm_users` a v3 message
 is a header and an opaque payload: the user, the engine and the security level
@@ -3035,6 +3064,8 @@ DTLS on 10162 is not implemented, so a listener that is TLS throughout is
 | `read_only` | bool | `false` | Refuse every SetRequest, for every client, before any rule is read. SNMP has exactly one writing operation, so this is a one-line policy covering the whole of "nobody reconfigures anything through this relay". **No rule can override it** |
 | `upgrade_version` | `v1`, `v2c` | | Rewrite the version a message is forwarded in. `v3` is refused at load |
 | `upstream_community` | string | the arriving one | The community string sent to the agent, which is what lets the manager stop knowing it |
+| `upstream_usm` | user | none | The version 3 identity this relay presents to the agent: the same fields as a `usm_users` entry (`name`, `auth`, `auth_secret`, `privacy`, `privacy_secret`, `engine_id`). Required by `upgrade_version: v3`. With it the relay terminates the manager's security and originates its own, so there is no end-to-end authentication between them |
+| `upstream_security_level` | `noAuthNoPriv`, `authNoPriv`, `authPriv` | `authPriv` with a privacy protocol, `authNoPriv` without | The level this relay originates at. `noAuthNoPriv` leaves the pass phrases unused and is warned about; `authNoPriv` with a privacy pass phrase configured is warned about too, because the reason to configure one is to use it |
 | `rules` | list | | Per-message rules, first match wins; see below |
 | `default_action` | `deny`, `allow` | `deny` | What a message no rule matched gets |
 | `deny_response` | `error`, `drop`, `close` | `error` | `error` sends the Response PDU an agent would send -- `noAccess` on v2c and v3, `noSuchName` on v1, which is the only word v1 has for it -- and every manager already knows how to display that. `drop` is a timeout to the manager, and a timeout is what a dead device looks like. `close` ends a stream session |

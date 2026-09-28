@@ -6640,7 +6640,26 @@ Five things are deliberate in the data path.
 .PP
 \fBThe version can be rewritten downwards.\fR \fBupgrade_version\fR is the secure upgrade: a manager speaks v3 with authentication to this relay, or TLS on the stream side, and the relay speaks v2c to a switch whose firmware has neither, with an \fBupstream_community\fR the manager never needs to know. A response is rebuilt in the version its request arrived in, so the manager sees the version it spoke.
 .PP
-Two rewrites this relay will not do, both because it reads USM messages and never writes one, and will not forge an authentication that did not happen. It cannot \fIproduce\fR v3, which is refused at load. And it cannot downgrade a v3 \fBrequest\fR: the answer would come back as v2c and handing that to a v3 manager means signing it, which this relay does not do, so such a request is refused rather than half\-translated. A v3 \fBnotification\fR downgrades cleanly, because nothing comes back \-\- a modern device sending v3 traps to a collector that understands only v2c is exactly what \fBtraps: true\fR with \fBupgrade_version: v2c\fR is for.
+\fBAnd upwards, with an identity of its own.\fR \fBupgrade_version: v3\fR plus \fBupstream_usm\fR is the case this protocol needs most: the agents were replaced and the polling system was not, so a v1 or v2c poller reaches a v3\-only agent with authentication and privacy the poller cannot speak and a pass phrase it never holds. The relay \fBterminates\fR the manager\(aqs security and \fBre\-originates\fR its own \-\- and that sentence is the whole of the trade:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+The credential that opens the agent lives in one place. A manager\(aqs community string that leaks does not open anything, and the agent\(aqs pass phrase never leaves this process.
+.PP
+.ti -3n
+\(bu
+The level toward the agent is this relay\(aqs choice, not the manager\(aqs capability. \fBupstream_security_level: authPriv\fR from a manager with no privacy at all.
+.PP
+.ti -3n
+\(bu
+\fBThere is no end\-to\-end authentication between the manager and the agent any more.\fR The manager authenticates to this relay (or does not, on v1 and v2c) and this relay authenticates to the agent. This process is a party to the security rather than a reader of it. An estate that wants USM end to end wants \fBusm_users\fR and no upgrade, and validation says so out loud when \fBupstream_usm\fR is configured.
+.RE
+.PP
+.PP
+The agent\(aqs engine identifier is \fBdiscovered\fR, not configured: it is the agent\(aqs to state, and USM authenticates against that engine\(aqs clock. The first request to a cold agent therefore draws an RFC 3414 \[u00A7]4 discovery first, and the manager\(aqs own request is asked as soon as the agent\(aqs report comes back \-\- carrying the manager\(aqs request identifier, so the waiting question is the one that gets asked. A burst to a cold agent sends \fBone\fR discovery. \fBupstream_usm.engine_id\fR pins the identifier where an operator knows it, and then an engine calling itself something else is not believed. \fBsnmp_discoveries\fR and \fBsnmp_originated\fR count the two halves: discoveries that climb beside a flat originated count are an agent not answering them.
+.PP
+One rewrite this relay still will not do: it cannot downgrade a v3 \fBrequest\fR. The answer would come back as v2c and handing that to a v3 manager means signing it as that manager, with a key this relay does not hold, so such a request is refused rather than half\-translated. A v3 \fBnotification\fR downgrades cleanly, because nothing comes back \-\- a modern device sending v3 traps to a collector that understands only v2c is exactly what \fBtraps: true\fR with \fBupgrade_version: v2c\fR is for.
 .PP
 \fBVersion 3 is read, with the user\(aqs keys.\fR Without \fBusm_users\fR a v3 message is a header and an opaque payload: the user, the engine and the security level are checked and nothing else can be, so every rule written about an operation or an object subtree applied to v1 and v2c and silently did not apply to v3 \-\- which is the version an operator is told to insist on. With the user\(aqs pass phrases in \fBusm_users\fR the digest is verified and, at \fBauthPriv\fR, the payload is decrypted, and then the ordinary rules decide about a v3 message exactly as they decide about a v2c one: \fBread_only\fR refuses an encrypted SetRequest, a rule\(aqs \fBoids\fR cover an encrypted GetRequest, \fBcontexts\fR matches the context name inside the payload.
 .PP
@@ -6833,6 +6852,24 @@ T}	T{
 the arriving one
 T}	T{
 The community string sent to the agent,\: which is what lets the manager stop knowing it
+T}
+T{
+\fBupstream_\:usm\fR
+T}	T{
+user
+T}	T{
+none
+T}	T{
+The version 3 identity this relay presents to the agent: the same fields as a \fBusm_\:users\fR entry (\fBname\fR,\: \fBauth\fR,\: \fBauth_\:secret\fR,\: \fBprivacy\fR,\: \fBprivacy_\:secret\fR,\: \fBengine_\:id\fR). Required by \fBupgrade_\:version:\: v3\fR. With it the relay terminates the manager\(aqs security and originates its own,\: so there is no end\-to\-end authentication between them
+T}
+T{
+\fBupstream_\:security_\:level\fR
+T}	T{
+\fBnoAuthNoPriv\fR,\: \fBauthNoPriv\fR,\: \fBauthPriv\fR
+T}	T{
+\fBauthPriv\fR with a privacy protocol,\: \fBauthNoPriv\fR without
+T}	T{
+The level this relay originates at. \fBnoAuthNoPriv\fR leaves the pass phrases unused and is warned about;\: \fBauthNoPriv\fR with a privacy pass phrase configured is warned about too,\: because the reason to configure one is to use it
 T}
 T{
 \fBrules\fR

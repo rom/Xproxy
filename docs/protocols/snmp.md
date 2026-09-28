@@ -68,6 +68,26 @@ presented, `users` the USM users, and `min_security_level` refuses a v3 message
 that is authenticated but not encrypted. `upstream_community` lets the string
 the device expects differ from the one the estate uses.
 
+**Version 3 toward the agent, when the manager cannot speak it.**
+`upgrade_version: v3` with `upstream_usm` terminates whatever security the
+manager used and originates a USM session of the relay's own. That is the
+deployment this protocol needs most -- the equipment was replaced, the polling
+system was not -- and it means a v1 or v2c poller reaches a v3-only agent with
+authentication and privacy it cannot speak, using a pass phrase it never holds.
+
+The engine identifier is discovered rather than configured, because USM
+authenticates against the authoritative engine's clock and that engine is the
+agent. A first request to a cold agent draws a discovery, carries the manager's
+own request identifier through it so the waiting question is the one that gets
+asked, and a burst to a cold agent sends one discovery rather than one each.
+
+The cost is not hidden: there is no end-to-end authentication between the
+manager and the agent any more. The manager authenticates to the relay and the
+relay authenticates to the agent, so this process is a party to the security
+rather than a reader of it. Validation says so when `upstream_usm` is
+configured, and an estate that wants USM end to end wants `usm_users` and no
+upgrade.
+
 **Version 3, read rather than taken on trust.** `usm_users` gives the listener
 the pass phrases of the v3 users whose traffic it should be able to read. The
 key derivation is RFC 3414 §2.6 -- a megabyte of repeated pass phrase hashed and
@@ -177,17 +197,16 @@ and carries the traffic.
 
 ## What it does not do
 
-- **It does not produce v3 cryptography.** With `usm_users` it verifies a
-  digest and decrypts a payload, because reading is what a policy needs. It
-  never signs and never encrypts, and it never re-encodes a message it
-  forwards, so there is no way for it to hand the agent octets the manager did
-  not write. The agent still verifies for itself; the relay's check is in
-  addition to that, not instead of it. Without `usm_users` the authentication
-  and privacy parameters are read for their extent only.
-- **It does not rewrite a community string into a v3 credential.** The version
-  upgrade is between the relay and each side separately: the estate's v3 user is
-  authenticated by the relay's upstream configuration, not derived from the
-  device's community.
+- **It does not sign or encrypt with `usm_users`.** Those keys are for reading:
+  the digest is verified and the payload decrypted, and the octets forwarded to
+  the agent are the octets that arrived, so there is no way for the relay to
+  hand the agent something the manager did not write. The agent still verifies
+  for itself; the relay's check is in addition to that, not instead of it.
+  Originating a message of the relay's own is `upstream_usm`, below, and it is a
+  separate decision.
+- **It does not derive one credential from another.** `upstream_usm` is an
+  identity an operator configured, not a community string turned into a USM
+  user. The two sides of the relay hold separate secrets, which is the point.
 - **It does not resolve MIBs.** The policy is written in OIDs, because a MIB
   file is a naming convenience and a relay that depended on having the right one
   loaded would be a relay with a configuration-dependent policy.

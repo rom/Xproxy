@@ -6,6 +6,52 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (snmp: version 3 toward the agent, with an identity of the relay's own)
+
+- **`upgrade_version: v3` works, with `upstream_usm`.** It was refused at load,
+  for a true reason: there was no user, engine or key to authenticate a message
+  with, and the relay will not forge an authentication that did not happen.
+  `upstream_usm` supplies one, and the relay then **terminates** the manager's
+  security and **re-originates** its own toward the agent.
+
+- **The deployment this is for**: the agents were replaced and the polling system
+  was not. A v1 or v2c poller now reaches a v3-only agent with authentication and
+  privacy the poller cannot speak, using a pass phrase it never holds — so the
+  credential that opens the agent lives in one place, and v1 does not have to
+  stay enabled on the equipment for ever.
+
+- **The cost is documented rather than hidden**, in the configuration reference,
+  the protocol page and a validation warning: there is no end-to-end
+  authentication between the manager and the agent any more. The manager
+  authenticates to the relay and the relay authenticates to the agent, so the
+  process is a party to the security rather than a reader of it. An estate that
+  wants USM end to end wants `usm_users` and no upgrade.
+
+- **The agent's engine is discovered, not configured.** USM authenticates against
+  the authoritative engine's clock, and that engine is the agent's. A first
+  request to a cold agent draws an RFC 3414 §4 discovery that carries the
+  manager's own request identifier, so the report pairs with the waiting question
+  and it is that question which then gets asked properly. A burst to a cold agent
+  sends one discovery. `upstream_usm.engine_id` pins the identifier where it is
+  known, and an engine calling itself something else is not believed.
+
+- `internal/snmp` gained the encode half of USM: `BuildV3`, `ScopedPDU` and the
+  DES and AES encryption that mirror the decryption already there. The digest is
+  computed over the finished message with its own field zeroed, which is what RFC
+  3414 §6.3.1 says it covers, and the field's offset is computed during assembly
+  rather than searched for afterwards. The tests round-trip through `Verify`,
+  `Decrypt` and `ParseScoped` — written for other implementations' messages and
+  sharing no code with the builder — and one of them changes every octet of a
+  signed message in turn and requires the digest to notice.
+
+- The end-to-end test's fake agent derives its keys from the pass phrase itself
+  and verifies what arrives, so the assertion is that a party holding only the
+  pass phrase accepts the relay's message, not that the relay can read back its
+  own.
+
+- New counters `snmp_discoveries` and `snmp_originated`: discoveries that climb
+  beside a flat originated count are an agent not answering them.
+
 ### Added (a `flow` filter: the request that is valid in the wrong order)
 
 - **`kind: flow` enforces the order of a business flow**: a step may be reached

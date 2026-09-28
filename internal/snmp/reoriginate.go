@@ -101,6 +101,19 @@ func ScopedPDU(contextEngineID []byte, contextName string, pdu []byte) ([]byte, 
 	return encodeTLV(TagSequence, body), nil
 }
 
+// GetRequestPDU encodes a GetRequest for one object.
+//
+// It is here rather than in the tests because a relay that originates its own
+// messages has one of its own to send: the discovery that asks an agent to name
+// its engine. Everything else it forwards is a PDU somebody else wrote.
+func GetRequestPDU(requestID int64, oid OID) []byte {
+	body := encodeTLV(TagInteger, encodeInt(requestID))
+	body = append(body, encodeTLV(TagInteger, encodeInt(0))...) // error status
+	body = append(body, encodeTLV(TagInteger, encodeInt(0))...) // error index
+	body = append(body, encodeTLV(TagSequence, Varbind(oid, TagNull, NullValue()))...)
+	return encodeTLV(Tag(GetRequest), body)
+}
+
 // BuildV3 originates one version 3 message.
 //
 // The digest is computed last, over the finished message with its own field
