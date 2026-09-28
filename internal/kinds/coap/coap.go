@@ -71,7 +71,14 @@ type server struct {
 	// listener, because the token and the client are what pair an answer with
 	// its request and a socket per exchange would be a file descriptor per
 	// sensor reading.
-	up net.PacketConn
+	//
+	// It is behind an atomic because serve() opens it and shutdown() closes it,
+	// and those are different goroutines with no ordering between them: a
+	// shutdown arriving while the listener is still opening its device socket
+	// read the field while serve() was writing it. A listener told to stop before
+	// it finished starting is not a hypothetical -- it is what a configuration
+	// reload that removes a listener does.
+	up atomic.Pointer[deviceSocket]
 
 	limiter *limits.KeyedLimiter
 	pend    *pending
@@ -85,6 +92,16 @@ type server struct {
 	done   chan struct{}
 	closed sync.Once
 	wg     sync.WaitGroup
+	// started is closed once serve() has registered its goroutines with wg, or
+	// has given up trying.
+	//
+	// It exists because a WaitGroup's Add must not race its Wait, and here they
+	// are on different goroutines with nothing ordering them: Serve() and
+	// Shutdown() are called by the engine, and a listener removed by a
+	// configuration reload the moment after it was added is a Shutdown that
+	// arrives while Serve is still starting. Waiting on this first is what makes
+	// the Wait below well-defined.
+	started chan struct{}
 }
 
 // mux is the DTLS splitter, or nil.
@@ -97,7 +114,7 @@ func newServer(h proxy.Host, cfg config.Listener, pc net.PacketConn, tc *tls.Con
 		return nil, err
 	}
 	s := &server{host: h, cfg: cfg, m: m, policy: p, pc: pc, tls: tc,
-		done: make(chan struct{})}
+		done: make(chan struct{}), started: make(chan struct{})}
 	if m.RateLimit > 0 {
 		s.limiter = limits.NewKeyedLimiter(float64(m.RateLimit), burstOf(m), s.maxClients())
 	}
@@ -294,12 +311,33 @@ func (o *observers) len() int {
 	return len(o.set)
 }
 
+// deviceSocket holds the socket in a concrete type, because an atomic.Pointer
+// needs one and net.PacketConn is an interface.
+type deviceSocket struct{ net.PacketConn }
+
+// device is the socket this relay speaks to devices on, or nil before serve() has
+// opened it.
+func (s *server) device() net.PacketConn {
+	if d := s.up.Load(); d != nil {
+		return d.PacketConn
+	}
+	return nil
+}
+
 // shutdown closes both sockets and waits for the loops.
 func (s *server) shutdown(ctx context.Context) {
 	s.closed.Do(func() { close(s.done) })
 	_ = s.pc.Close()
-	if s.up != nil {
-		_ = s.up.Close()
+	if up := s.device(); up != nil {
+		_ = up.Close()
+	}
+	// The loops are registered by serve(), so there is nothing to wait for until
+	// it has done that. A shutdown that gave up here leaves the goroutines to the
+	// closed sockets, which is what the context bound is for.
+	select {
+	case <-s.started:
+	case <-ctx.Done():
+		return
 	}
 	waited := make(chan struct{})
 	go func() { s.wg.Wait(); close(waited) }()

@@ -1,6 +1,13 @@
 package opcua
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"math/big"
+	"strings"
 	"testing"
 	"time"
 
@@ -331,13 +338,24 @@ func TestANodeTheListenerDoesNotNameIsRefused(t *testing.T) {
 // make them literal would have a rule that silently matched nothing.
 func TestANodeIdentifierWithBracketsMatchesItsPattern(t *testing.T) {
 	up := startServer(t, &fakeServer{})
-	_, addr := relayFor(t, base+
-		"        nodes: [\"ns=4;s=Tank[1]/Level\"]\n", up.addr())
+	// A wildcard beside the brackets, which is where it matters: with an exact
+	// pattern the equality fallback would carry it either way, and with a wildcard
+	// the brackets have to be literal or `[1]` is a character class matching the
+	// single character "1" -- so the rule would cover Tank1/Level and not the node
+	// the operator wrote down.
+	s, addr := relayFor(t, base+
+		"        nodes: [\"ns=4;s=Tank[1]/*\"]\n", up.addr())
 	cl := session(t, addr)
 	cl.service(wire.SvcRead, readBody(op("ns=4;s=Tank[1]/Level", wire.AttrValue)))
 	up.await(t, 2, "the read of the bracketed node")
 	if !up.sawService(wire.SvcRead) {
 		t.Errorf("the server did not see the read: %v", up.seen())
+	}
+	// And the node a character class *would* have matched is not covered.
+	cl.service(wire.SvcRead, readBody(op("ns=4;s=Tank1/Level", wire.AttrValue)))
+	until(t, s, refused("node_not_allowed"), "the refusal")
+	if got := countOf(up, wire.SvcRead); got != 1 {
+		t.Errorf("the server saw %d reads, want 1", got)
 	}
 }
 
@@ -621,7 +639,14 @@ func TestAHardRefusalStandsInMonitorMode(t *testing.T) {
 	cl := dial(t, addr)
 
 	cl.send(build().u32(0).chunk(wire.Message, wire.Final))
-	if ch, err := cl.next(); err == nil && ch.Type != wire.Error {
+	ch, err := cl.next()
+	if err != nil {
+		t.Fatalf("a monitor-mode listener answered nothing: %v", err)
+	}
+	// The ERR is the point: a hard refusal is enforced *and* expressed, because a
+	// client that reads a timeout instead has nothing to correlate against this
+	// relay's log.
+	if ch.Type != wire.Error {
 		t.Fatalf("a monitor-mode listener answered %s", ch.Type)
 	}
 	until(t, s, refused("no_hello"), "the refusal")
@@ -902,4 +927,294 @@ func TestAServerMessageFromTheClientIsRefused(t *testing.T) {
 	}
 	until(t, s, refused("unexpected_message"), "the refusal")
 	_ = up
+}
+
+// The deny lists, which no rule overrides. Each is its own test because each is a
+// separate list and a policy where one of them worked and the others did not would
+// look exactly like a policy where all of them did.
+
+func TestADeniedSecurityPolicyIsRefused(t *testing.T) {
+	up := startServer(t, &fakeServer{})
+	s, addr := relayFor(t, base+
+		"        deny_security_policies: [Basic256Sha256]\n", up.addr())
+	cl := dial(t, addr)
+	cl.handshake("opc.tcp://127.0.0.1:4840")
+	if ch := cl.channel(wire.PolicyBasic256Sha256, wire.ModeSign); ch.Type != wire.Error {
+		t.Fatalf("the relay answered %s", ch.Type)
+	}
+	until(t, s, refused("security_policy_denied"), "the refusal")
+	if up.sawService(wire.SvcOpenChannel) {
+		t.Errorf("the server saw the channel: %v", up.seen())
+	}
+}
+
+func TestADeniedServiceIsRefused(t *testing.T) {
+	up := startServer(t, &fakeServer{})
+	s, addr := relayFor(t, base+"        deny_services: [call]\n", up.addr())
+	cl := session(t, addr)
+	cl.service(wire.SvcCall, callBody(n(4, 100), n(4, 200), 0))
+	until(t, s, refused("service_denied"), "the refusal")
+	if up.sawService(wire.SvcCall) {
+		t.Errorf("the server saw the call: %v", up.seen())
+	}
+}
+
+func TestADeniedUserIsRefused(t *testing.T) {
+	up := startServer(t, &fakeServer{})
+	const rsaOaep = "http://www.w3.org/2001/04/xmlenc#rsa-oaep"
+	s, addr := relayFor(t, base+"        deny_users: [contractor]\n", up.addr())
+	cl := dial(t, addr)
+	cl.handshake("opc.tcp://127.0.0.1:4840")
+	cl.channel(wire.PolicyBasic256Sha256, wire.ModeSign)
+	cl.service(wire.SvcCreateSession, createSessionBody("urn:scada:client", "s", nil))
+	cl.service(wire.SvcActivateSession,
+		activateBody(wire.TokenUserName, "contractor", "p", rsaOaep))
+	until(t, s, refused("user_denied"), "the refusal")
+	if up.sawService(wire.SvcActivateSession) {
+		t.Errorf("the server saw the activation: %v", up.seen())
+	}
+}
+
+func TestADeniedMethodIsRefused(t *testing.T) {
+	up := startServer(t, &fakeServer{})
+	s, addr := relayFor(t, base+
+		"        deny_methods: [\"ns=4;s=Safety/*\"]\n", up.addr())
+	cl := session(t, addr)
+	cl.service(wire.SvcCall, callBody(n(4, 100), "ns=4;s=Safety/Bypass", 0))
+	until(t, s, refused("method_denied"), "the refusal")
+	if up.sawService(wire.SvcCall) {
+		t.Errorf("the server saw the call: %v", up.seen())
+	}
+}
+
+// A username token naming no user is a client authenticating as nobody, which is
+// not the same as an anonymous token: it claims a policy that names users and then
+// names none.
+func TestAUsernameTokenWithNoNameIsRefused(t *testing.T) {
+	up := startServer(t, &fakeServer{})
+	const rsaOaep = "http://www.w3.org/2001/04/xmlenc#rsa-oaep"
+	s, addr := relayFor(t, base, up.addr())
+	cl := dial(t, addr)
+	cl.handshake("opc.tcp://127.0.0.1:4840")
+	cl.channel(wire.PolicyBasic256Sha256, wire.ModeSign)
+	cl.service(wire.SvcCreateSession, createSessionBody("urn:scada:client", "s", nil))
+	cl.service(wire.SvcActivateSession, activateBody(wire.TokenUserName, "", "p", rsaOaep))
+	until(t, s, refused("empty_user"), "the refusal")
+	if up.sawService(wire.SvcActivateSession) {
+		t.Errorf("the server saw the activation: %v", up.seen())
+	}
+}
+
+// A nonce under policy None is a client that believes the channel is protected,
+// which is worth refusing rather than passing: its operator believes it too.
+func TestANonceUnderPolicyNoneIsRefused(t *testing.T) {
+	up := startServer(t, &fakeServer{})
+	s, addr := relayFor(t, "        upstream: servers\n"+
+		"        default_action: allow\n"+
+		"        security_policies: [None, Basic256Sha256]\n"+
+		"        security_modes: [none, sign]\n"+
+		"        require_client_certificate: false\n"+services, up.addr())
+	cl := dial(t, addr)
+	cl.handshake("opc.tcp://127.0.0.1:4840")
+
+	// An OpenSecureChannel naming policy None and carrying a nonce anyway.
+	body := build().u32(0).str(string(wire.PolicyNone)).null().null().u32(1).u32(1)
+	body.bytes(call(wire.SvcOpenChannel, 1, build().
+		u32(0).u32(0).u32(uint32(wire.ModeNone)).
+		bstr(make([]byte, 32)).u32(3600000)))
+	cl.send(body.chunk(wire.OpenSecureChannel, wire.Final))
+	if ch, err := cl.next(); err != nil || ch.Type != wire.Error {
+		t.Fatalf("the relay answered %v %v", ch, err)
+	}
+	until(t, s, refused("nonce_without_policy"), "the refusal")
+	if up.sawService(wire.SvcOpenChannel) {
+		t.Errorf("the server saw the channel: %v", up.seen())
+	}
+}
+
+// The application URI has to be in the certificate that carried it, which is the
+// cheapest identity check the protocol has: a server checks it and so does this.
+func TestAnApplicationURINotInItsCertificateIsRefused(t *testing.T) {
+	up := startServer(t, &fakeServer{})
+	s, addr := relayFor(t, "        upstream: servers\n"+
+		"        default_action: allow\n"+
+		"        security_policies: [Basic256Sha256]\n"+
+		"        require_certificate_uri: true\n"+services, up.addr())
+	cl := session(t, addr)
+
+	// A real certificate carrying no URI at all, presented alongside one.
+	cl.service(wire.SvcCreateSession,
+		createSessionBody("urn:scada:client", "s", certificateWithoutURI(t)))
+	until(t, s, refused("certificate_uri_mismatch"), "the refusal")
+	if up.sawService(wire.SvcCreateSession) {
+		t.Errorf("the server saw the session: %v", up.seen())
+	}
+}
+
+// An attribute nobody defined is refused: an attribute with no name is an operation
+// with no policy.
+func TestAnAttributeNobodyDefinedIsRefused(t *testing.T) {
+	up := startServer(t, &fakeServer{})
+	s, addr := relayFor(t, base, up.addr())
+	cl := session(t, addr)
+	cl.service(wire.SvcRead, readBody(op(n(3, 1), wire.Attribute(99))))
+	until(t, s, refused("attribute_unknown"), "the refusal")
+	if up.sawService(wire.SvcRead) {
+		t.Errorf("the server saw the read: %v", up.seen())
+	}
+}
+
+// max_write_operations narrows the writes without narrowing the reads.
+func TestTheWriteOperationBoundIsSeparateFromTheReadOne(t *testing.T) {
+	up := startServer(t, &fakeServer{})
+	s, addr := relayFor(t, base+
+		"        max_operations: 8\n"+
+		"        max_write_operations: 2\n", up.addr())
+	cl := session(t, addr)
+
+	// Four reads is inside the read bound.
+	reads := make([][2]any, 0, 4)
+	for i := 0; i < 4; i++ {
+		reads = append(reads, op(n(3, uint32(1000+i)), wire.AttrValue))
+	}
+	cl.service(wire.SvcRead, readBody(reads...))
+	up.await(t, 2, "the read")
+	// Four writes is not inside the write bound.
+	writes := make([][3]any, 0, 4)
+	for i := 0; i < 4; i++ {
+		writes = append(writes, wr(n(3, uint32(1000+i)), wire.AttrValue, 1))
+	}
+	cl.service(wire.SvcWrite, writeBody(writes...))
+	until(t, s, refused("too_many_operations"), "the refusal")
+	if up.sawService(wire.SvcWrite) {
+		t.Errorf("the server saw the write: %v", up.seen())
+	}
+	// Two is.
+	cl.service(wire.SvcWrite, writeBody(writes[:2]...))
+	up.await(t, 3, "the write inside its own bound")
+}
+
+// An observe rule logs and counts and then keeps looking, which is how a rule is
+// tried on live traffic before it decides anything.
+func TestAnObserveRuleDoesNotDecide(t *testing.T) {
+	up := startServer(t, &fakeServer{})
+	s, addr := relayFor(t, baseDefault+
+		"        default_action: deny\n"+
+		"        rules:\n"+
+		"          - name: watching-writes\n"+
+		"            action: observe\n"+
+		"            services: [write]\n"+
+		"          - name: handshake\n"+
+		"            action: allow\n"+
+		"            services: [open_secure_channel, read]\n", up.addr())
+	cl := session(t, addr)
+
+	// The observe rule selects the write and does not allow it, so the default
+	// refuses it: an observe rule that decided would be a rule nobody could try
+	// safely.
+	cl.service(wire.SvcWrite, writeBody(wr(n(3, 1), wire.AttrValue, 1)))
+	until(t, s, refused("no_rule"), "the refusal")
+	if up.sawService(wire.SvcWrite) {
+		t.Errorf("the server saw the write: %v", up.seen())
+	}
+}
+
+// A rule outside its window does not decide, which is how a change window is
+// written.
+func TestARuleOutsideItsWindowDoesNotDecide(t *testing.T) {
+	up := startServer(t, &fakeServer{})
+	// A window on a day this test is not running, so the rule never applies. The
+	// days are named rather than the hours because a test pinned to an hour is a
+	// test that fails once a day.
+	day := time.Now().UTC().AddDate(0, 0, 3).Format("Mon")
+	s, addr := relayFor(t, baseDefault+
+		"        default_action: deny\n"+
+		"        rules:\n"+
+		"          - name: change-window\n"+
+		"            action: allow\n"+
+		"            services: [write]\n"+
+		"            schedule:\n"+
+		"              days: ["+strings.ToLower(day)+"]\n"+
+		"              from: \"00:00\"\n"+
+		"              to: \"00:01\"\n"+
+		"              timezone: UTC\n"+
+		"          - name: handshake\n"+
+		"            action: allow\n"+
+		"            services: [open_secure_channel, read]\n", up.addr())
+	cl := session(t, addr)
+	cl.service(wire.SvcWrite, writeBody(wr(n(3, 1), wire.AttrValue, 1)))
+	until(t, s, refused("no_rule"), "the refusal")
+	if up.sawService(wire.SvcWrite) {
+		t.Errorf("the server saw the write: %v", up.seen())
+	}
+}
+
+// An OPN chunk carrying something other than OpenSecureChannel is refused. Nothing
+// else may travel on it, and forwarding one would be forwarding a service on the
+// one message type whose body this relay must read.
+func TestAnOpenChannelChunkCarryingAnotherServiceIsRefused(t *testing.T) {
+	up := startServer(t, &fakeServer{})
+	s, addr := relayFor(t, base, up.addr())
+	cl := dial(t, addr)
+	cl.handshake("opc.tcp://127.0.0.1:4840")
+
+	body := build().u32(0).str(string(wire.PolicyBasic256Sha256)).null().null().
+		u32(1).u32(1)
+	body.bytes(call(wire.SvcWrite, 1, writeBody(wr(n(3, 1), wire.AttrValue, 1))))
+	cl.send(body.chunk(wire.OpenSecureChannel, wire.Final))
+	if ch, err := cl.next(); err != nil || ch.Type != wire.Error {
+		t.Fatalf("the relay answered %v %v", ch, err)
+	}
+	until(t, s, refused("unexpected_service"), "the refusal")
+	if len(up.seen()) != 0 {
+		t.Errorf("the server was reached: %v", up.seen())
+	}
+}
+
+// A message whose service *head* does not parse ends the connection, which is a
+// different path from a service body that does not: this one has no service to name.
+func TestAMessageWhoseServiceHeadDoesNotParseEndsTheConnection(t *testing.T) {
+	up := startServer(t, &fakeServer{})
+	s, addr := relayFor(t, base, up.addr())
+	cl := session(t, addr)
+
+	// A MSG whose body is too short to hold a TypeId, let alone a request header.
+	cl.seq++
+	cl.req++
+	cl.send(msg(cl.chan_, 1, cl.seq, cl.req, []byte{0x01}))
+	ch, err := cl.next()
+	if err != nil {
+		t.Fatalf("no answer: %v", err)
+	}
+	if ch.Type != wire.Error {
+		t.Errorf("the relay answered %s", ch.Type)
+	}
+	if _, err := cl.next(); err == nil {
+		t.Error("the connection was not ended")
+	}
+	until(t, s, refused("unreadable_service"), "the refusal")
+	if up.sawService(wire.SvcRead) {
+		t.Errorf("the server saw a read: %v", up.seen())
+	}
+}
+
+// certificateWithoutURI is a real certificate carrying no uniform resource
+// identifier, which is what the application URI is checked against.
+func certificateWithoutURI(t *testing.T) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "a client with no application uri"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return der
 }

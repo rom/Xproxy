@@ -145,6 +145,11 @@ func (r *reader) variant(depth int) Variant {
 	}
 	v := Variant{Type: BuiltinType(mask & variantType)}
 	if !v.Type.Known() {
+		// Refused here rather than left to value()'s own default, and both are
+		// kept deliberately. This one refuses before an array length is read, so
+		// a reserved type cannot make the reader allocate anything; value()'s
+		// default is the net for a type added to Known() and not to the switch,
+		// which is the mistake a later edition of the standard invites.
 		r.fail("%w: a variant of built-in type %d", ErrEncoding, byte(v.Type))
 		return Variant{}
 	}

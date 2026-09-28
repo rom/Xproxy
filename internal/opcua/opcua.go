@@ -285,6 +285,13 @@ type reader struct {
 	err error
 }
 
+// fail records the first error and keeps it.
+//
+// The guard is the type's whole promise: a caller that ignored one error must not
+// then be handed a *different* error from a later read, because the first one is
+// the one that says where the message stopped making sense. Every read path here
+// happens to return before failing twice, so the guard is defensive — which is
+// exactly why it is tested directly rather than through one.
 func (r *reader) fail(format string, args ...any) {
 	if r.err == nil {
 		r.err = fmt.Errorf(format, args...)

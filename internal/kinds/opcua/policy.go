@@ -761,10 +761,16 @@ func (r *rule) selects(s Session, svc wire.Service, at time.Time) bool {
 	if len(r.appURIs) > 0 && !matchGlob(r.appURIs, s.ApplicationURI) {
 		return false
 	}
+	// The Activated and Secured guards, and which of them are load-bearing.
+	//
+	// For the *user* the guard does work: a rule written `users: ["*"]` matches an
+	// empty name, so without it such a rule would decide about every message sent
+	// before any session existed. For the three enum sets it is belt-and-braces —
+	// an unactivated session's token kind is zero and an unsecured one's policy is
+	// empty and its mode is invalid, none of which any configured set contains.
+	// They are written the same way on purpose: a reader should not have to work
+	// out which of four similar lines is the one that matters.
 	if len(r.users) > 0 {
-		// A rule naming a user matches only a session that activated as one.
-		// Before ActivateSession there is no user, and a rule about users must
-		// not match a session that has not named one.
 		if !s.Activated || !matchGlob(r.users, s.User) {
 			return false
 		}
@@ -978,11 +984,13 @@ func (p *policy) Subscription(s Session, q *wire.SubscriptionRequest) Decision {
 			wire.StatusBadTooManyOperations)
 	}
 	if p.minPublish > 0 {
-		// Zero means "as fast as the server can", which is faster than any bound
-		// this listener would set, so it is refused wherever a bound exists
-		// rather than treated as unset.
+		// Zero means "as fast as the server can", and it needs no case of its
+		// own: zero milliseconds is under every positive bound, so the
+		// comparison below refuses it — which is the right answer rather than a
+		// coincidence, because "as fast as possible" is faster than any interval
+		// a listener would name.
 		d := time.Duration(q.Interval) * time.Millisecond
-		if q.Interval <= 0 || d < p.minPublish {
+		if d < p.minPublish {
 			return refuse("publishing_interval",
 				fmt.Sprintf("%.0fms, under %s", q.Interval, p.minPublish),
 				wire.StatusBadTooManyOperations)
@@ -1001,13 +1009,14 @@ func (p *policy) MonitoredItems(s Session, m *wire.MonitoredItemsRequest) Decisi
 	if p.minSample > 0 {
 		for _, it := range m.Items {
 			// Minus one means the subscription's own publishing interval, which
-			// is already bounded, and zero means as fast as the device will
-			// answer, which is not.
+			// is already bounded. Zero means as fast as the device will answer,
+			// and like a publishing interval of zero it needs no case of its
+			// own: it is under every positive bound.
 			if it.Sampling < 0 {
 				continue
 			}
 			d := time.Duration(it.Sampling) * time.Millisecond
-			if it.Sampling == 0 || d < p.minSample {
+			if d < p.minSample {
 				return refuse("sampling_interval",
 					fmt.Sprintf("%.0fms, under %s", it.Sampling, p.minSample),
 					wire.StatusBadTooManyOperations)

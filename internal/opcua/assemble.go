@@ -147,18 +147,20 @@ func (a *Assembler) Add(c *Chunk, mode MessageSecurityMode) (*Assembled, error) 
 		return nil, nil
 	}
 	delete(a.parts, seq.RequestID)
-	m := &Assembled{
+	// p.body is empty when the channel encrypted the chunks, because nothing was
+	// kept — so there is one guard rather than two, and it is the one on the
+	// append. A second guard here would make the first untestable: a bug that
+	// retained ciphertext would be invisible, which is the opposite of what a
+	// guard on retaining ciphertext is for.
+	return &Assembled{
 		Type:      c.Type,
 		Channel:   channel,
 		Token:     token,
 		RequestID: seq.RequestID,
 		Chunks:    p.chunks,
 		Encrypted: !mode.Readable(),
-	}
-	if mode.Readable() {
-		m.Body = p.body
-	}
-	return m, nil
+		Body:      p.body,
+	}, nil
 }
 
 // Open says how many part-assembled messages are held, which is what a counter

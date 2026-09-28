@@ -15,13 +15,23 @@ import (
 
 // serve runs the two loops: the segment side and the device side.
 func (s *server) serve() {
+	// started is closed however this function leaves, because a shutdown waits on
+	// it before waiting on the loops: a listener whose device socket could not be
+	// opened must not make a shutdown wait out its whole context for goroutines
+	// that were never registered.
+	launched := false
+	defer func() {
+		if !launched {
+			close(s.started)
+		}
+	}()
 	up, err := s.deviceSocket()
 	if err != nil {
 		s.host.Logs().Error.Error("coap could not open its device socket",
 			"listener", s.cfg.Name, "error", err.Error())
 		return
 	}
-	s.up = up
+	s.up.Store(&deviceSocket{up})
 	s.wg.Add(2)
 	go func() { defer s.wg.Done(); s.fromDevices() }()
 	go func() { defer s.wg.Done(); s.sweep() }()
@@ -37,6 +47,9 @@ func (s *server) serve() {
 		}
 		s.fromClients()
 	}()
+	// Every Add is done, so a shutdown may now wait on them.
+	launched = true
+	close(s.started)
 	<-s.done
 }
 
@@ -96,9 +109,16 @@ func (s *server) fromClients() {
 }
 
 func (s *server) fromDevices() {
+	// The socket is read once into a local, because serve() has already stored it
+	// and this loop is the only thing reading it: a load per datagram would be a
+	// load per sensor reading for a value that cannot change.
+	up := s.device()
+	if up == nil {
+		return
+	}
 	buf := make([]byte, wire.MaxMessage+1)
 	for {
-		n, from, err := s.up.ReadFrom(buf)
+		n, from, err := up.ReadFrom(buf)
 		if err != nil {
 			if s.stopping() || errors.Is(err, net.ErrClosed) {
 				return
@@ -229,7 +249,15 @@ func (s *server) fromClient(raw []byte, to replier) {
 		return
 	}
 	s.logMessage(ip, m, d, "client", "allow", secure)
-	if _, err := s.up.WriteTo(raw, addr); err != nil {
+	up := s.device()
+	if up == nil {
+		// The listener has not finished starting, or has stopped. Either way
+		// there is nowhere to send this, and the exchange is forgotten rather
+		// than left in the pending table waiting for an answer nothing asked for.
+		s.forget(e)
+		return
+	}
+	if _, err := up.WriteTo(raw, addr); err != nil {
 		c.CoAPUpstreamFail.Add(1)
 		s.host.Logs().Error.Warn("coap relay to device failed", "listener", s.cfg.Name,
 			"device", addr.String(), "error", err.Error())

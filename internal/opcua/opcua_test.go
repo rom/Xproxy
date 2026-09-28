@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"io"
 	"math"
 	"strings"
 	"testing"
@@ -624,5 +625,101 @@ func TestStatusCodesClassifyBySeverity(t *testing.T) {
 	// two different codes print the same.
 	if got := StatusName(0x8034000A); got != "bad:0x8034000A" {
 		t.Errorf("StatusName %q", got)
+	}
+}
+
+// The first failure sticks, asserted on the cursor directly.
+//
+// It is the type's whole promise and no read path reaches it twice — every one
+// returns before failing again — so testing it through a message would be testing
+// that the paths happen to be written that way rather than that the invariant
+// holds. A later reader that adds a path which can fail twice should find this
+// test, not a message that still parses.
+func TestTheFirstFailureIsTheOneKept(t *testing.T) {
+	r := &reader{b: nil}
+	r.fail("%w: the first", ErrShort)
+	first := r.done()
+	r.fail("%w: the second", ErrEncoding)
+	if !errors.Is(r.done(), first) {
+		t.Errorf("the second failure replaced the first: %v", r.done())
+	}
+	// And it is the *first* one by class, not merely some error: a caller that
+	// acted on ErrEncoding here would be acting on a failure that happened after
+	// the message had already stopped making sense.
+	if errors.Is(r.done(), ErrEncoding) {
+		t.Errorf("the kept error is the second: %v", r.done())
+	}
+}
+
+// The reader's framing, which is where the one mistake in a UA TCP reader lives.
+func TestTheReaderTakesTheSizeAsIncludingTheHeader(t *testing.T) {
+	// Two messages back to back. A reader that took MessageSize as a *body*
+	// length would read eight octets too few from the first and then find the
+	// second message's header where the first's body should end — and the result
+	// mostly still parses, which is why this is asserted rather than assumed.
+	first := build().secured(1, 2, 3, 4).bytes([]byte("aaaa")).chunk(Message, Final)
+	second := build().secured(1, 2, 4, 5).bytes([]byte("bb")).chunk(Message, Final)
+	rd := NewReader(bytes.NewReader(append(append([]byte(nil), first...), second...)), 0)
+
+	got, err := rd.Next()
+	if err != nil {
+		t.Fatalf("the first message: %v", err)
+	}
+	if !bytes.Equal(got.Raw, first) {
+		t.Errorf("the first message read %d octets, want %d", len(got.Raw), len(first))
+	}
+	got, err = rd.Next()
+	if err != nil {
+		t.Fatalf("the second message: %v", err)
+	}
+	if !bytes.Equal(got.Raw, second) {
+		t.Errorf("the second message read %x, want %x", got.Raw, second)
+	}
+	if _, err := rd.Next(); !errors.Is(err, io.EOF) {
+		t.Errorf("the end of the stream reported %v", err)
+	}
+}
+
+func TestTheReaderRefusesAMessagePastItsBound(t *testing.T) {
+	raw := build().secured(1, 2, 3, 4).bytes(bytes.Repeat([]byte{0}, 200)).chunk(Message, Final)
+	rd := NewReader(bytes.NewReader(raw), 64)
+	if _, err := rd.Next(); !errors.Is(err, ErrTooLong) {
+		t.Errorf("err %v, want ErrTooLong", err)
+	}
+	if got := rd.Max(); got != 64 {
+		t.Errorf("Max %d, want 64", got)
+	}
+	// A bound of zero or past the package's own is the package's own, because a
+	// caller that asked for no bound has asked for this one.
+	for _, n := range []int{0, -1, MaxMessageSize + 1} {
+		if got := NewReader(bytes.NewReader(nil), n).Max(); got != MaxMessageSize {
+			t.Errorf("a bound of %d became %d, want %d", n, got, MaxMessageSize)
+		}
+	}
+}
+
+func TestTheReaderTellsATruncatedMessageFromAMalformedOne(t *testing.T) {
+	// A header naming more than arrived: an I/O error, because the octets are
+	// gone and there is nothing to decide about.
+	raw := build().secured(1, 2, 3, 4).bytes(bytes.Repeat([]byte{0}, 100)).chunk(Message, Final)
+	rd := NewReader(bytes.NewReader(raw[:len(raw)-10]), 0)
+	if _, err := rd.Next(); !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Errorf("a truncated message reported %v", err)
+	}
+	// A message that arrived whole and does not parse: the chunk's own error, so a
+	// caller can tell a peer to refuse from a connection that ended.
+	bad := build().u32(0).chunk(MessageType{'X', 'Y', 'Z'}, Final)
+	rd = NewReader(bytes.NewReader(bad), 0)
+	if _, err := rd.Next(); !errors.Is(err, ErrMessageType) {
+		t.Errorf("a malformed message reported %v", err)
+	}
+	// And a header that did not arrive at all.
+	rd = NewReader(bytes.NewReader(raw[:4]), 0)
+	if _, err := rd.Next(); !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Errorf("a partial header reported %v", err)
+	}
+	rd = NewReader(bytes.NewReader(nil), 0)
+	if _, err := rd.Next(); !errors.Is(err, io.EOF) {
+		t.Errorf("an empty stream reported %v", err)
 	}
 }
