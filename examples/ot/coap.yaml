@@ -1,0 +1,247 @@
+# CoAP relay: the one OT-adjacent protocol where a positive policy is a
+# sentence somebody can actually write.
+#
+# CoAP is REST for devices too small to run TLS comfortably -- a method, a
+# path, a content format and a payload, over UDP, on a sensor with sixty
+# kilobytes of flash and a coin cell. That shape is why this listener can do
+# more than bound bytes: the path is the device's object model. Under the
+# LwM2M object registry, /3303/0/5700 is a temperature reading and
+# /3311/0/5850 is whether a light is on, so "read anything under /3303, write
+# only /3311/0/5850" is a policy an estate can write about its own equipment.
+#
+# Which is why default_action is deny here and allow on the DHCP kinds:
+# CoAP is actuation, and a listener that refused a request no rule covers is
+# a listener doing its job.
+#
+# Four things here have no counterpart in the other relay examples:
+#   - allow_paths and the rules' paths, which are the positive model. A "*"
+#     matches one segment because it does not cross a separator; a pattern
+#     ending "/..." matches the subtree
+#   - allow_proxying, off by default. Proxy-Uri and Proxy-Scheme tell the
+#     device to fetch a URI of the client's choosing, which on a constrained
+#     network is an open forward proxy with an amplifier attached
+#   - amplification_factor, which is the check a per-datagram bound cannot
+#     make: a kilobyte answer is unremarkable and is a hundred and fifty
+#     times the four-octet question that asked for it
+#   - max_transfer_bytes, which bounds a whole block-wise transfer rather
+#     than one datagram -- read from the client's own Size1 declaration, so
+#     the intent is refused at the first block
+#
+# Validate with: xproxyctl -config examples/ot/coap.yaml validate
+version: 1
+
+logging:
+  directory: /var/log/xproxy
+  access: {file: access.log}
+  security: {file: security.log}
+  audit: {file: audit.log}
+
+management:
+  socket: /run/xproxy/mgmt.sock
+  socket_mode: "0660"
+
+server:
+  listeners:
+    # ---------------------------------------------------------------
+    # The sensor field, inside DTLS on 5684.
+    #
+    # This is the listener to copy. The clients hold certificates, so
+    # secure_only on the write rule means something, and a rule can say
+    # "the actuators may only be written by a client that authenticated".
+    # ---------------------------------------------------------------
+    - name: field
+      address: "10.40.0.1:5684"
+      kind: coap
+      tls:
+        certificates:
+          - cert_file: /etc/xproxy/certs/coap.pem
+            key_file: /etc/xproxy/private/coap.key
+        client_auth: require
+        client_ca_file: /etc/xproxy/certs/device-ca.pem
+        min_version: "1.2"
+      coap:
+        upstream: sensors
+
+        # The four methods of RFC 7252. fetch is left out on purpose: it puts
+        # its selector in the *payload*, so the path policy below would see
+        # less of a fetch than it sees of a get.
+        methods: [get, post, put]
+
+        # Nothing here speaks anything but SenML and CBOR, so saying so turns
+        # an unexpected representation into a refusal rather than a payload
+        # somebody has to go and read.
+        content_formats:
+          - application/senml+cbor
+          - application/cbor
+          - text/plain
+
+        # The positive model. Reading telemetry is ordinary; writing the one
+        # actuator this field has is a rule of its own, and everything else
+        # falls to default_action.
+        rules:
+          - name: telemetry
+            action: allow
+            methods: [get]
+            paths:
+              - "/3303/..."   # temperature
+              - "/3304/..."   # humidity
+              - "/3323/..."   # pressure
+              - "/.well-known/core"
+
+          - name: lighting
+            action: allow
+            methods: [put]
+            paths: ["/3311/0/5850"]
+            # A client that did not authenticate may not move anything, which
+            # is what the DTLS session is for.
+            secure_only: true
+            # A light's on/off state is one CBOR byte. Anything larger is not
+            # what this rule is about.
+            max_payload_bytes: 16
+
+          # Tried on live traffic before it decides anything: this logs and
+          # counts the firmware pushes and keeps looking, so the default
+          # refuses them until somebody has read the report.
+          - name: firmware-observed
+            action: observe
+            methods: [put]
+            paths: ["/5/0/..."]
+
+        # A sensor reading is a few dozen octets and the discovery document is
+        # a few hundred, so four times the question is generous.
+        amplification_factor: 4
+        max_response_bytes: 1152
+
+        # One block, and the whole transfer. A field device has nothing that
+        # legitimately sends four kilobytes.
+        max_block_bytes: 256
+        max_transfer_bytes: 4096
+        max_payload_bytes: 512
+
+        # A registration has no timeout, so this is how many open-ended flows
+        # the field may have at once.
+        allow_observe: true
+        max_observers: 512
+
+        # Ten a second per address is generous for a sensor reporting every
+        # thirty seconds and stingy for anything else.
+        rate_limit: 10
+        rate_burst: 20
+        max_clients: 2048
+
+        log_messages: true
+
+    # ---------------------------------------------------------------
+    # The legacy field, NoSec on 5683.
+    #
+    # The devices predate the estate's certificate programme and cannot be
+    # given one, so there is no identity at all -- not a weak one, none. The
+    # policy is therefore narrower rather than wider: read-only, one subtree,
+    # no discovery, and the address list is the only thing naming a client.
+    # ---------------------------------------------------------------
+    - name: legacy-field
+      address: "10.40.1.1:5683"
+      kind: coap
+      coap:
+        upstream: sensors
+        allow_clients: ["10.40.1.0/24"]
+
+        methods: [get]
+        allow_paths: ["/3303/..."]
+
+        # These devices have nothing to list, and a request for the discovery
+        # document from a segment that cannot authenticate is reconnaissance.
+        allow_discovery: false
+
+        # Every answer is a temperature. The bound is the reading.
+        max_response_bytes: 128
+        amplification_factor: 4
+        max_payload_bytes: 64
+        max_transfer_bytes: 1024
+
+        # Nothing here observes, so a registration arriving at all is a
+        # question worth refusing.
+        allow_observe: false
+
+        rules:
+          - name: reads
+            action: allow
+            methods: [get]
+            paths: ["/3303/..."]
+
+        rate_limit: 4
+        rate_burst: 8
+        max_clients: 512
+        log_messages: true
+
+    # ---------------------------------------------------------------
+    # The management segment: the LwM2M server's own path to the devices.
+    #
+    # Here writing is the point, so the rules are wider -- and a maintenance
+    # window is what keeps a firmware push from happening in the middle of a
+    # shift.
+    # ---------------------------------------------------------------
+    - name: management
+      address: "10.40.9.1:5684"
+      kind: coap
+      tls:
+        certificates:
+          - cert_file: /etc/xproxy/certs/coap.pem
+            key_file: /etc/xproxy/private/coap.key
+        client_auth: require
+        client_ca_file: /etc/xproxy/certs/ops-ca.pem
+      coap:
+        upstream: sensors
+        allow_clients: ["10.40.9.10/32", "10.40.9.11/32"]
+
+        methods: [get, post, put, delete]
+
+        # A management client's token is how every answer is traced back to the
+        # request that asked, and on this segment that traceability is the
+        # point of the listener.
+        require_token: true
+
+        rules:
+          - name: configure
+            action: allow
+            secure_only: true
+            paths: ["/1/...", "/3/...", "/3303/...", "/3311/..."]
+
+          - name: firmware
+            action: allow
+            methods: [put, post]
+            secure_only: true
+            paths: ["/5/0/..."]
+            # Firmware is the one thing here that is legitimately large.
+            max_payload_bytes: 1024
+            schedule: {days: [sat, sun], from: "01:00", to: "05:00"}
+
+        max_transfer_bytes: 1048576
+        max_block_bytes: 1024
+        amplification_factor: 64
+        max_observers: 64
+
+        rate_limit: 100
+        rate_burst: 200
+        log_messages: true
+
+upstreams:
+  - name: sensors
+    endpoints:
+      # Addresses rather than names: allow_servers defaults to these, and a
+      # name this relay cannot resolve to a list at load would make the check
+      # that decides which answers it carries unconfigurable. The listener
+      # refuses to start rather than guessing.
+      - address: "10.40.128.10:5683"
+      - address: "10.40.128.11:5683"
+
+# A device that keeps sending what this listener refuses is either broken or
+# is not the device it claims to be, and either way somebody should look.
+bans:
+  action: drop
+  triggers:
+    - name: coap-persistent-refusals
+      reasons: [coap_denied]
+      threshold: 30
+      window: 5m
+      duration: 1h

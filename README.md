@@ -112,7 +112,8 @@ estate — and binds only the kinds of its own role:
 |--------|-------|----------------|
 | `xproxy` | the open internet | `http`, `forward`, `tcp`, `udp`, `dns` |
 | `xgate` | people | `ssh`, `telnet`, `vnc`, `rdp` |
-| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `snmp`, `ldap`, `tftp`, `dhcp`, `postgres`, `mysql`, `tds`, `redis`, `bacnet`, `amqp`, `s7`, `ntp`, `ntske`, `dhcp6` |
+| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `snmp`, `ldap`, `tftp`, `dhcp`, `postgres`, `mysql`, `tds`, `redis`, `bacnet`, `amqp`, `s7`, `ntp`, `ntske`, `dhcp6`, `coap` |
+| Devices | CoAP (RFC 7252) over UDP, with block-wise transfer (RFC 7959), Observe (RFC 7641), resource discovery (RFC 6690), the RFC 8132 methods and the option classes that tell a proxy what to do with an option it cannot name; read as a relay: the method, the path, the content format, the declared transfer size, and the size of an answer relative to the question | `coap` |
 
 A kind a binary did not link is never bound and never falls through to
 the HTTP data plane: it is an error naming the daemon that serves it.
@@ -222,6 +223,7 @@ protocol so that a policy can be written in that protocol's own terms:
 | `rdp` | `xgate` | RDP over TLS, NLA, or the protocol's own encryption | Channels, devices, the connection sequence; recording, MFA |
 | `smtp` | `xrelay` | SMTP and submission | Commands, where a message ends, TLS and authentication, bounds |
 | `mqtt` | `xrelay` | MQTT 3.1.1 and 5.0 | Topics and filters, client identifiers, retained messages, wills |
+| `coap` | `xrelay` | CoAP (RFC 7252) over UDP, block-wise transfer, Observe, resource discovery | The methods, the **paths** -- which are the device's object model, so the policy is positive and the default is deny -- the queries, the content formats in both directions, `Proxy-Uri` and `Proxy-Scheme` refused by default, an option the relay cannot name answered the way the standard says, a path whose segments would not mean what the joined path looks like, the payload, one block, the whole declared transfer, the outstanding Observe registrations, and the size of an answer as a **multiple of the question** |
 | `ftp` | `xrelay` | FTP and FTPS | Commands, paths, extensions, and the data connection itself |
 | `syslog` | `xrelay` | RFC 5424 and RFC 3164 over UDP, TCP, TLS | Facility, severity, sender, the text; re-emitted in one dialect |
 | `modbus` | `xrelay` | Modbus/TCP, RTU and ASCII, Modbus/TCP Security | Unit identifiers, function codes, register ranges, values, roles, schedules, behavioural detection |
@@ -293,6 +295,36 @@ protocol so that a policy can be written in that protocol's own terms:
   and a deny list by overlap — which is what stops a device asking for
   `#`. The will goes through the publish policy at CONNECT, the only
   moment there is
+
+- `kind: coap`: a **CoAP relay whose policy is a path**, which makes it the one
+  OT-adjacent kind where a positive model is a sentence somebody can actually
+  write. CoAP is REST for devices too small to run TLS comfortably, and the
+  request carries a method, a **path** and a content format — so it says what is
+  about to happen in fields a relay can read, and under the LwM2M object
+  registry the path *is* the object model: `/3303/0/5700` is a temperature and
+  `/3311/0/5850` is whether a light is on. "Read anything under `/3303`, write
+  only `/3311/0/5850`" is a policy about real equipment, which is why
+  `default_action` is **deny** here and `allow` on the DHCP kinds. **Proxy-Uri
+  and Proxy-Scheme are refused by default**, and both, because they are two
+  spellings of the same request: they tell the device to fetch a URI of the
+  client's choosing, which on a constrained network is an open forward proxy
+  with an amplifier attached. **A refusal is answered rather than dropped** —
+  a Confirmable request retransmits, so silence turns one refused request into
+  five and leaves the device's log showing a timeout where a refusal happened;
+  the standard supplies the codes, including for the case it uniquely hands a
+  relay: an option whose *number's own low bits* say it is Critical (4.02) or
+  UnSafe to forward (5.02), a rule that holds for options nobody has registered
+  yet. **A path whose segments would not mean what the joined path looks like is
+  refused, not normalised**, because a single segment may contain a slash and
+  then a rule about `/3303` is satisfied by a request that reaches `/3311` —
+  and normalising means guessing what the device would have done. And the
+  **amplification bounds are never shadowed**: a four-octet GET can return a
+  kilobyte, `/.well-known/core` exists to list everything on the device, and
+  the number worth bounding is the answer as a *multiple of the question*, with
+  the whole block-wise transfer bounded from the client's own `Size1`
+  declaration rather than one datagram at a time. In NoSec — which is what most
+  of the field runs — there is no identity at all, and the validator says so
+
 - `kind: ftp`: an FTP proxy that is actually in the middle. FTP puts
   every transfer on a second connection whose address one side
   announces to the other, so a proxy that forwards that reply has told
