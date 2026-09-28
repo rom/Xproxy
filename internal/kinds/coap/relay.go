@@ -144,7 +144,7 @@ func (s *server) sweep() {
 			c.CoAPPending.Store(int64(s.pend.len()))
 			c.CoAPObservers.Store(int64(s.obs.len()))
 			if m := s.mux(); m != nil {
-				c.CoAPDatagramsDropped.Store(m.dropped.Load())
+				c.CoAPDatagramsDropped.Store(m.Dropped())
 			}
 		}
 	}

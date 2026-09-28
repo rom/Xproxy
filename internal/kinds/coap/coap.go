@@ -49,6 +49,7 @@ import (
 
 	wire "github.com/rom/xproxy/internal/coap"
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/dtlsx"
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/proxy"
 )
@@ -66,7 +67,7 @@ type server struct {
 	tls *tls.Config
 	// demux is the DTLS side's per-peer splitter, kept so that the sweeper can
 	// read its drop count. Nil on a NoSec listener.
-	demux atomic.Pointer[packetMux]
+	demux atomic.Pointer[dtlsx.Mux]
 	// up is the socket this relay speaks to devices on. One socket for the
 	// listener, because the token and the client are what pair an answer with
 	// its request and a socket per exchange would be a file descriptor per
@@ -105,7 +106,7 @@ type server struct {
 }
 
 // mux is the DTLS splitter, or nil.
-func (s *server) mux() *packetMux { return s.demux.Load() }
+func (s *server) mux() *dtlsx.Mux { return s.demux.Load() }
 
 func newServer(h proxy.Host, cfg config.Listener, pc net.PacketConn, tc *tls.Config) (*server, error) {
 	m := cfg.CoAP
