@@ -16,10 +16,13 @@ import (
 	"github.com/rom/xproxy/internal/keysource"
 	ldapwire "github.com/rom/xproxy/internal/ldap"
 	"github.com/rom/xproxy/internal/listener"
+	mmswire "github.com/rom/xproxy/internal/mms"
 	"github.com/rom/xproxy/internal/modbus"
 	mqttwire "github.com/rom/xproxy/internal/mqtt"
 	mysqlwire "github.com/rom/xproxy/internal/mysqlwire"
 	"github.com/rom/xproxy/internal/netutil"
+	"github.com/rom/xproxy/internal/numrange"
+	opcuawire "github.com/rom/xproxy/internal/opcua"
 	pgwire "github.com/rom/xproxy/internal/pgwire"
 	"github.com/rom/xproxy/internal/rdp"
 	"github.com/rom/xproxy/internal/recenc"
@@ -870,7 +873,7 @@ func (v *validator) server(s *Server) {
 			if ln.SNMP == nil {
 				v.errf("%s.snmp: required for kind snmp", p)
 			} else {
-				v.snmpListener(p+".snmp", ln.SNMP, ln.TLS != nil)
+				v.snmpListener(p+".snmp", ln.SNMP, ln.TLS)
 			}
 		case "ldap":
 			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
@@ -939,6 +942,35 @@ func (v *validator) server(s *Server) {
 				v.errf("%s.s7: required for kind s7", p)
 			} else {
 				v.s7Listener(p+".s7", ln.S7)
+			}
+		case "opcua":
+			// No tls section: the opc.tcp transport has none. OPC UA's
+			// security is inside the protocol, negotiated per connection in
+			// the secure channel, so a certificate here would promise
+			// something the transport cannot do -- and terminating the
+			// channel would make this relay a man in the middle of the one
+			// industrial protocol designed to notice.
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C || ln.TLS != nil {
+				v.errf("%s: an opcua listener takes only address and opcua: the transport has no TLS, the secure channel is inside the protocol", p)
+			}
+			if ln.OPCUA == nil {
+				v.errf("%s.opcua: required for kind opcua", p)
+			} else {
+				v.opcuaListener(p+".opcua", ln.OPCUA, ln.Address)
+			}
+		case "mms":
+			// No tls section: MMS on TCP 102 has none. IEC 62351-4 adds TLS
+			// under the session layer, and a listener that terminated it would
+			// be terminating the only end-to-end protection this protocol has
+			// -- so a listener that wants it is a tcp listener with a tls
+			// section in front of one of these, not this one.
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C || ln.TLS != nil {
+				v.errf("%s: an mms listener takes only address and mms: MMS on TCP 102 has no transport TLS", p)
+			}
+			if ln.MMS == nil {
+				v.errf("%s.mms: required for kind mms", p)
+			} else {
+				v.mmsListener(p+".mms", ln.MMS, ln.Address)
 			}
 		case "amqp":
 			if ln.AMQP == nil {
@@ -2649,7 +2681,7 @@ var denyReasons = map[string]bool{
 	// trigger until they were written here.
 	"dns_denied": true, "dns_threat_intel": true,
 	"modbus_denied": true, "iec104_denied": true, "ntp_denied": true, "ntske_denied": true,
-	"snmp_denied": true, "ldap_denied": true, "tftp_denied": true, "dhcp_denied": true, "dhcp6_denied": true, "coap_denied": true, "postgres_denied": true, "mysql_denied": true, "tds_denied": true, "redis_denied": true,
+	"snmp_denied": true, "ldap_denied": true, "tftp_denied": true, "dhcp_denied": true, "dhcp6_denied": true, "coap_denied": true, "opcua_denied": true, "mms_denied": true, "postgres_denied": true, "mysql_denied": true, "tds_denied": true, "redis_denied": true,
 	"bacnet_denied": true, "amqp_denied": true, "s7_denied": true,
 }
 
@@ -7905,6 +7937,420 @@ func (v *validator) ldapDNs(p string, in []string) {
 	}
 }
 
+// opcuaListener checks the OPC UA relay.
+//
+// Three checks here are worth more than the rest and none of them is a bound. The
+// deprecated security policies have to be named twice before they are carried, so
+// that switching on SHA-1 is a decision somebody wrote down. The service-level lists
+// are warned about when the security modes make them inert, because a rule that
+// never runs is worse than no rule at all. And a namespace list of indices is warned
+// about, because an index only means something against the server's own namespace
+// table and that table's order is not guaranteed across a firmware update.
+func (v *validator) opcuaListener(p string, m *OPCUAListener, address string) {
+	if m.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	v.modbusCIDRs(p+".allow_clients", m.AllowClients)
+	v.modbusCIDRs(p+".deny_clients", m.DenyClients)
+	v.opcuaPolicies(p, m)
+	v.opcuaIdentity(p, m)
+	v.opcuaServices(p, m)
+	v.opcuaNodes(p, m)
+	v.opcuaBounds(p, m)
+	v.opcuaLearn(p, m)
+	v.opcuaRules(p, m)
+	v.opcuaWarnings(p, m, address)
+}
+
+// opcuaLearn checks the learning section.
+//
+// The last warning here is the one worth having: a learning run over a channel whose
+// bodies are encrypted records an identity and no address space at all, and an
+// operator who does not hear that reads a report with few nodes and concludes the
+// plant reads few nodes.
+func (v *validator) opcuaLearn(p string, m *OPCUAListener) {
+	l := m.Learn
+	if l == nil || !l.Enabled {
+		return
+	}
+	switch {
+	case l.File == "":
+		v.errf("%s.learn.file: required when learning is enabled", p)
+	case !strings.HasPrefix(l.File, "/"):
+		v.errf("%s.learn.file: must be an absolute path", p)
+	}
+	if l.Interval != 0 && (l.Interval.D() < 10*time.Second || l.Interval.D() > 24*time.Hour) {
+		v.errf("%s.learn.interval: must be between 10s and 24h", p)
+	}
+	if l.MaxSubjects != 0 && (l.MaxSubjects < 16 || l.MaxSubjects > 1_000_000) {
+		v.errf("%s.learn.max_subjects: must be between 16 and 1000000", p)
+	}
+	if !l.Enforce {
+		v.warnf("%s.learn is enabled without enforce, so this listener records and decides nothing: turn enforce on, or take the learning section out, once the rules are written",
+			p)
+	}
+	if v.opcuaAllowsOpaque(m) && !m.RequireReadableBodies {
+		v.warnf("%s.learn is enabled and sign_and_encrypt is allowed, so any channel that uses it will teach this run nothing about nodes -- the body is ciphertext. A run meant to learn an address space wants security_modes: [sign] or require_readable_bodies: true for its duration; mode sign still authenticates every message and still detects modification",
+			p)
+	}
+}
+
+// opcuaPolicies checks the security policies and modes.
+func (v *validator) opcuaPolicies(p string, m *OPCUAListener) {
+	for i, s := range m.SecurityPolicies {
+		pol, ok := opcuawire.PolicyOf(s)
+		if !ok {
+			v.errf("%s.security_policies[%d]: %q is not an OPC UA security policy", p, i, s)
+			continue
+		}
+		if pol.Deprecated() && !m.AllowDeprecatedPolicies {
+			// Named in the list and not allowed by the knob. Refusing rather than
+			// warning is the point: the list is where somebody added the policy
+			// for one old client, and the knob is where the deprecation gets
+			// read.
+			v.errf("%s.security_policies[%d]: %s was withdrawn in IEC 62541 1.04 (it is SHA-1 based); set allow_deprecated_policies to carry it anyway",
+				p, i, pol.Short())
+		}
+	}
+	for i, s := range m.DenySecurityPolicies {
+		if _, ok := opcuawire.PolicyOf(s); !ok {
+			v.errf("%s.deny_security_policies[%d]: %q is not an OPC UA security policy", p, i, s)
+		}
+	}
+	for i, s := range m.SecurityModes {
+		if _, ok := opcuawire.ModeOf(s); !ok {
+			v.errf("%s.security_modes[%d]: %q is not a message security mode (none, sign, sign_and_encrypt)",
+				p, i, s)
+		}
+	}
+	if d := m.MaxTokenLifetime.D(); d < 0 {
+		v.errf("%s.max_token_lifetime: must not be negative", p)
+	}
+}
+
+// opcuaIdentity checks the token kinds and the user lists.
+func (v *validator) opcuaIdentity(p string, m *OPCUAListener) {
+	for i, s := range m.TokenKinds {
+		if _, ok := opcuawire.TokenOf(s); !ok {
+			v.errf("%s.token_kinds[%d]: %q is not an identity token kind (anonymous, username, x509, issued)",
+				p, i, s)
+		}
+	}
+	v.opcuaPatterns(p+".application_uris", m.ApplicationURIs)
+	v.opcuaPatterns(p+".users", m.Users)
+	v.opcuaPatterns(p+".deny_users", m.DenyUsers)
+}
+
+// opcuaServices checks the service names and the attributes.
+func (v *validator) opcuaServices(p string, m *OPCUAListener) {
+	for i, s := range m.Services {
+		if _, ok := opcuawire.ServiceOf(s); !ok {
+			v.errf("%s.services[%d]: %q is not an OPC UA service", p, i, s)
+		}
+	}
+	for i, s := range m.DenyServices {
+		if _, ok := opcuawire.ServiceOf(s); !ok {
+			v.errf("%s.deny_services[%d]: %q is not an OPC UA service", p, i, s)
+		}
+	}
+	for i, s := range m.Attributes {
+		if _, ok := opcuawire.AttributeOf(s); !ok {
+			v.errf("%s.attributes[%d]: %q is not a node attribute", p, i, s)
+		}
+	}
+	for i, s := range m.WriteAttributes {
+		if _, ok := opcuawire.AttributeOf(s); !ok {
+			v.errf("%s.write_attributes[%d]: %q is not a node attribute", p, i, s)
+		}
+	}
+}
+
+// opcuaNodes checks the namespaces and the node patterns.
+func (v *validator) opcuaNodes(p string, m *OPCUAListener) {
+	v.opcuaNamespaces(p+".namespaces", m.Namespaces)
+	v.opcuaNodePatterns(p+".nodes", m.Nodes)
+	v.opcuaNodePatterns(p+".write_nodes", m.WriteNodes)
+	v.opcuaNodePatterns(p+".deny_nodes", m.DenyNodes)
+	v.opcuaNodePatterns(p+".methods", m.Methods)
+	v.opcuaNodePatterns(p+".deny_methods", m.DenyMethods)
+}
+
+// opcuaNamespaces checks a namespace list, whose entries are indices and ranges.
+//
+// A URI is refused with the reason, because it is the form an operator will reach
+// for and it cannot work: a namespace URI appears only in an ExpandedNodeId, and the
+// node a Read, a Write, a Browse or a Call names is a plain NodeId. A rule written
+// with URIs would match nothing while looking exactly as though it should.
+func (v *validator) opcuaNamespaces(p string, in []string) {
+	for i, s := range in {
+		if s == "" {
+			v.errf("%s[%d]: empty", p, i)
+			continue
+		}
+		if strings.ContainsAny(s, ":/") {
+			v.errf("%s[%d]: %q looks like a namespace URI, and a namespace can only be named by index here: a URI appears only in an ExpandedNodeId, and the node a Read, a Write, a Browse or a Call names is a plain NodeId",
+				p, i, s)
+			continue
+		}
+		if _, err := numrange.Parse("namespace", []string{s}, opcuawire.MaxNamespaces-1); err != nil {
+			v.errf("%s[%d]: %v", p, i, err)
+		}
+	}
+}
+
+// opcuaNodePatterns checks node-identifier patterns.
+//
+// A pattern with no wildcard has to parse as a node identifier, because one that
+// does not would match nothing and look like it should match something:
+// "ns=3,i=1001" with a comma is the mistake this catches, and it is a mistake an
+// operator makes once per configuration file.
+func (v *validator) opcuaNodePatterns(p string, in []string) {
+	for i, s := range in {
+		if s == "" {
+			v.errf("%s[%d]: empty", p, i)
+			continue
+		}
+		if strings.ContainsAny(s, "*?[") {
+			if _, err := path.Match(s, ""); err != nil {
+				v.errf("%s[%d]: %v", p, i, err)
+			}
+			continue
+		}
+		if _, err := opcuawire.ParseNodeId(s); err != nil {
+			v.errf("%s[%d]: %v (a node identifier is written ns=3;i=1001, ns=4;s=Motor/Speed or nsu=urn:plant;i=7)",
+				p, i, err)
+		}
+	}
+}
+
+// opcuaPatterns checks glob patterns over names.
+func (v *validator) opcuaPatterns(p string, in []string) {
+	for i, s := range in {
+		if s == "" {
+			v.errf("%s[%d]: empty", p, i)
+			continue
+		}
+		if _, err := path.Match(s, ""); err != nil {
+			v.errf("%s[%d]: %v", p, i, err)
+		}
+	}
+}
+
+// opcuaBounds checks the numbers.
+func (v *validator) opcuaBounds(p string, m *OPCUAListener) {
+	for _, b := range []struct {
+		name string
+		n    int
+	}{
+		{"max_operations", m.MaxOperations},
+		{"max_write_operations", m.MaxWriteOperations},
+		{"max_monitored_items", m.MaxMonitoredItems},
+		{"max_subscriptions", m.MaxSubscriptions},
+		{"max_requests", m.MaxRequests},
+		{"max_sessions", m.MaxSessions},
+		{"max_sessions_per_client", m.MaxSessionsPerClient},
+		{"rate_limit", m.RateLimit},
+		{"rate_burst", m.RateBurst},
+	} {
+		if b.n < 0 {
+			v.errf("%s.%s: must not be negative", p, b.name)
+		}
+	}
+	if m.RateBurst > 0 && m.RateLimit == 0 {
+		v.errf("%s.rate_burst: set without rate_limit, so nothing is limited", p)
+	}
+	if m.MaxChunkSize != 0 && (m.MaxChunkSize < opcuawire.MinBuffer || m.MaxChunkSize > opcuawire.MaxMessageSize) {
+		v.errf("%s.max_chunk_size: must be between %d and %d; IEC 62541-6 s7.1.2.3 makes %d the smallest buffer a conforming peer may be asked to work with",
+			p, opcuawire.MinBuffer, opcuawire.MaxMessageSize, opcuawire.MinBuffer)
+	}
+	if m.MaxMessageSize != 0 && m.MaxMessageSize < m.MaxChunkSize {
+		v.errf("%s.max_message_size: %d is smaller than max_chunk_size %d, so no message could be assembled",
+			p, m.MaxMessageSize, m.MaxChunkSize)
+	}
+	if m.MaxChunks < 0 {
+		v.errf("%s.max_chunks: must not be negative", p)
+	}
+	if m.MaxMessageSize < 0 {
+		v.errf("%s.max_message_size: must not be negative", p)
+	}
+	switch m.DefaultAction {
+	case "", "deny", "allow":
+	default:
+		v.errf("%s.default_action: must be allow or deny", p)
+	}
+	switch m.DenyResponse {
+	case "", "fault", "error", "close", "drop":
+	default:
+		v.errf("%s.deny_response: must be fault, error, close or drop", p)
+	}
+	for _, d := range []struct {
+		name string
+		d    Duration
+	}{
+		{"idle_timeout", m.IdleTimeout},
+		{"session_duration", m.SessionDuration},
+		{"handshake_timeout", m.HandshakeTimeout},
+		{"min_publishing_interval", m.MinPublishingInterval},
+		{"min_sampling_interval", m.MinSamplingInterval},
+	} {
+		if d.d.D() < 0 {
+			v.errf("%s.%s: must not be negative", p, d.name)
+		}
+	}
+}
+
+// opcuaRules checks the rules.
+func (v *validator) opcuaRules(p string, m *OPCUAListener) {
+	seen := map[string]bool{}
+	for i := range m.Rules {
+		r := &m.Rules[i]
+		q := fmt.Sprintf("%s.rules[%d]", p, i)
+		switch {
+		case r.Name == "":
+			v.errf("%s.name: required", q)
+		case seen[r.Name]:
+			v.errf("%s.name: %q is used twice; a rule's name is how a refusal is attributed", q, r.Name)
+		default:
+			seen[r.Name] = true
+		}
+		switch r.Action {
+		case "", "allow", "deny", "observe":
+		default:
+			v.errf("%s.action: must be allow, deny or observe", q)
+		}
+		v.modbusCIDRs(q+".clients", r.Clients)
+		v.opcuaPatterns(q+".application_uris", r.ApplicationURIs)
+		v.opcuaPatterns(q+".users", r.Users)
+		for j, s := range r.TokenKinds {
+			if _, ok := opcuawire.TokenOf(s); !ok {
+				v.errf("%s.token_kinds[%d]: %q is not an identity token kind", q, j, s)
+			}
+		}
+		for j, s := range r.SecurityPolicies {
+			if _, ok := opcuawire.PolicyOf(s); !ok {
+				v.errf("%s.security_policies[%d]: %q is not an OPC UA security policy", q, j, s)
+			}
+		}
+		for j, s := range r.SecurityModes {
+			if _, ok := opcuawire.ModeOf(s); !ok {
+				v.errf("%s.security_modes[%d]: %q is not a message security mode", q, j, s)
+			}
+		}
+		for j, s := range r.Services {
+			if _, ok := opcuawire.ServiceOf(s); !ok {
+				v.errf("%s.services[%d]: %q is not an OPC UA service", q, j, s)
+			}
+		}
+		for j, s := range r.DenyServices {
+			if _, ok := opcuawire.ServiceOf(s); !ok {
+				v.errf("%s.deny_services[%d]: %q is not an OPC UA service", q, j, s)
+			}
+		}
+		for j, s := range r.Attributes {
+			if _, ok := opcuawire.AttributeOf(s); !ok {
+				v.errf("%s.attributes[%d]: %q is not a node attribute", q, j, s)
+			}
+		}
+		for j, s := range r.WriteAttributes {
+			if _, ok := opcuawire.AttributeOf(s); !ok {
+				v.errf("%s.write_attributes[%d]: %q is not a node attribute", q, j, s)
+			}
+		}
+		v.opcuaNamespaces(q+".namespaces", r.Namespaces)
+		v.opcuaNodePatterns(q+".nodes", r.Nodes)
+		v.opcuaNodePatterns(q+".write_nodes", r.WriteNodes)
+		v.opcuaNodePatterns(q+".deny_nodes", r.DenyNodes)
+		v.opcuaNodePatterns(q+".methods", r.Methods)
+		v.opcuaNodePatterns(q+".deny_methods", r.DenyMethods)
+		if r.MaxOperations < 0 {
+			v.errf("%s.max_operations: must not be negative", q)
+		}
+		if r.Schedule != nil {
+			v.modbusSchedule(q+".schedule", r.Schedule)
+		}
+	}
+}
+
+// opcuaWarnings is what loads and is worth saying out loud.
+func (v *validator) opcuaWarnings(p string, m *OPCUAListener, address string) {
+	if len(m.AllowClients) == 0 {
+		v.warnf("%s.allow_clients: empty, so every client the deny list does not refuse may reach a plant; an OPC UA server usually has four or five clients and they do not move",
+			p)
+	}
+	if m.AllowDeprecatedPolicies {
+		v.warnf("%s.allow_deprecated_policies: Basic128Rsa15 and Basic256 are SHA-1 based and were withdrawn in IEC 62541 1.04; they are usually switched on for one old client, and that client is the exposure",
+			p)
+	}
+	// The mode and the service rules. This is the warning that matters most,
+	// because the configuration reads as though it is enforcing something it is
+	// not: a listener with rules about nodes over a sign_and_encrypt channel is a
+	// listener whose rules never see a body.
+	if v.opcuaHasServiceRules(m) && v.opcuaAllowsOpaque(m) && !m.RequireReadableBodies {
+		v.warnf("%s: there are rules about nodes, attributes or methods and sign_and_encrypt is allowed, so those rules will not apply to any channel that uses it -- the body is ciphertext. Set require_readable_bodies to refuse that mode, or accept that the service rules apply only to none and sign channels",
+			p)
+	}
+	if m.RequireReadableBodies {
+		v.warnf("%s.require_readable_bodies: sign_and_encrypt will be refused, so nothing on this hop is confidential; mode sign still authenticates every message and still detects modification, which is the trade this knob makes",
+			p)
+	}
+	if len(m.Namespaces) > 0 {
+		// An index is meaningful only against the table it came from, and there
+		// is no portable form available here: the wire names a namespace by index
+		// in every request a policy decides about. So the caveat is a review
+		// item rather than a thing to configure around.
+		v.warnf("%s.namespaces: a namespace index only means something against the server's own namespace table, whose order is not guaranteed across a firmware update; this list is one to review after one, because the same indices can then name different nodes",
+			p)
+	}
+	if m.ReadOnly && len(m.WriteNodes) > 0 {
+		v.warnf("%s.write_nodes: set on a read_only listener, where no writing service is carried at all, so the list decides nothing", p)
+	}
+	if m.MinPublishingInterval.D() == 0 {
+		v.warnf("%s.min_publishing_interval: unset, so a client may ask for a publishing interval of zero -- which over a thousand monitored items is a server asked to send a thousand values a millisecond, from one session, in valid protocol",
+			p)
+	}
+	if m.MaxOperations == 0 {
+		v.warnf("%s.max_operations: unset, so one Read may name as many nodes as a message holds; a request naming ten thousand nodes is one request and ten thousand operations",
+			p)
+	}
+	if _, port, err := net.SplitHostPort(address); err == nil &&
+		port != "4840" && port != "0" {
+		v.warnf("%s: port %s, where an OPC UA client sends to 4840 by convention; a client that discovered this endpoint from a discovery server will not find it here",
+			p, port)
+	}
+}
+
+// opcuaHasServiceRules says the listener names anything the service level decides.
+func (v *validator) opcuaHasServiceRules(m *OPCUAListener) bool {
+	if len(m.Nodes) > 0 || len(m.WriteNodes) > 0 || len(m.DenyNodes) > 0 ||
+		len(m.Methods) > 0 || len(m.DenyMethods) > 0 ||
+		len(m.Attributes) > 0 || len(m.WriteAttributes) > 0 || len(m.Namespaces) > 0 {
+		return true
+	}
+	for i := range m.Rules {
+		r := &m.Rules[i]
+		if len(r.Nodes) > 0 || len(r.WriteNodes) > 0 || len(r.DenyNodes) > 0 ||
+			len(r.Methods) > 0 || len(r.DenyMethods) > 0 ||
+			len(r.Attributes) > 0 || len(r.WriteAttributes) > 0 || len(r.Namespaces) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// opcuaAllowsOpaque says a channel that encrypts its bodies would be carried.
+func (v *validator) opcuaAllowsOpaque(m *OPCUAListener) bool {
+	if len(m.SecurityModes) == 0 {
+		// The default allows sign and sign_and_encrypt.
+		return true
+	}
+	for _, s := range m.SecurityModes {
+		if mode, ok := opcuawire.ModeOf(s); ok && !mode.Readable() {
+			return true
+		}
+	}
+	return false
+}
+
 // coapListener checks the CoAP relay.
 func (v *validator) coapListener(p string, m *CoAPListener, address string, dtls bool) {
 	switch m.Mode {
@@ -10564,7 +11010,144 @@ func parseSNMPEngineID(s string) ([]byte, error) {
 	return b, nil
 }
 
-func (v *validator) snmpListener(p string, m *SNMPListener, hasTLS bool) {
+// snmpHasDTLS says whether this listener puts its datagrams inside DTLS.
+func snmpHasDTLS(m *SNMPListener) bool {
+	return m.DTLSMode != "" && m.DTLSMode != "none"
+}
+
+// snmpDTLS checks RFC 6353's transport model on the datagram half: the mode,
+// its bounds, and the table that turns a certificate into a name.
+//
+// The warnings here are the ones worth writing down, because each names a
+// configuration that looks like a control and is not one. A `detect` listener
+// whose rules do not name a transport lets the client choose whether to present
+// a certificate. A `cert_to_name` row matching any certificate on a listener
+// that does not require one is a row matching anybody. And a listener that
+// takes the transport model without mapping any certificate to a name refuses
+// every such message, which is a working listener that nothing can get through.
+func (v *validator) snmpDTLS(p string, m *SNMPListener, tc *TLS, udp bool) {
+	switch m.DTLSMode {
+	case "", "none", "implicit", "detect":
+	default:
+		v.errf("%s.dtls_mode: must be none, implicit or detect", p)
+	}
+	if !snmpHasDTLS(m) {
+		if len(m.CertToName) > 0 {
+			v.warnf("%s.cert_to_name: nothing here speaks a transport that carries a certificate, so no name is ever derived; dtls_mode on the datagram half or tls_mode on the stream half is what makes it apply", p)
+		}
+		v.snmpCertToName(p, m, tc)
+		return
+	}
+	if !udp {
+		v.errf("%s.dtls_mode: needs a datagram socket, and transport: tcp opens none. Use transport: udp (the default), or tls_mode for the stream half", p)
+	}
+	if tc == nil {
+		v.errf("%s.dtls_mode: %s needs the listener's tls section, for the certificate this relay presents", p, m.DTLSMode)
+	} else if tc.MinVersion == "1.3" {
+		v.errf("%s.dtls_mode: the tls section requires TLS 1.3 and this transport is DTLS 1.2, so no handshake would ever complete", p)
+	}
+	if m.DTLSMode == "detect" {
+		v.snmpDetect(p, m)
+	}
+	for _, d := range []struct {
+		key    string
+		val    Duration
+		lo, hi time.Duration
+	}{
+		{"dtls_handshake_timeout", m.DTLSHandshakeTimeout, time.Second, time.Minute},
+		{"dtls_idle_timeout", m.DTLSIdleTimeout, time.Second, time.Hour},
+	} {
+		if d.val != 0 && (d.val.D() < d.lo || d.val.D() > d.hi) {
+			v.errf("%s.%s: must be between %s and %s", p, d.key, d.lo, d.hi)
+		}
+	}
+	if m.MaxDTLSPeers < 0 || m.MaxDTLSPeers > 1<<16 {
+		v.errf("%s.max_dtls_peers: must be between 0 and 65536", p)
+	}
+	v.snmpCertToName(p, m, tc)
+	if len(m.CertToName) == 0 {
+		if m.RequireSecurityName == nil || *m.RequireSecurityName {
+			v.warnf("%s.cert_to_name: empty, so a message under the transport security model maps to no name and is refused (require_security_name). Add a row, or set require_security_name: false for a listener that wants DTLS for confidentiality and decides on the address alone", p)
+		} else {
+			v.warnf("%s.require_security_name: false with no cert_to_name means the certificate identifies nobody here: the session is confidential and the policy decides on the address and the objects alone", p)
+		}
+	}
+}
+
+// snmpDetect is the warning that keeps detect mode honest.
+//
+// In detect mode a client chooses whether to speak DTLS, because both are
+// accepted on the one port. That is the point -- it is what an estate part-way
+// through a migration needs -- and it means the *policy* has to be what requires
+// the certificate. A listener that allows by default, or whose rules never name
+// a transport, has a DTLS mode and no DTLS requirement.
+func (v *validator) snmpDetect(p string, m *SNMPListener) {
+	named := false
+	for i := range m.Rules {
+		if len(m.Rules[i].Transports) > 0 || len(m.Rules[i].SecurityNames) > 0 {
+			named = true
+			break
+		}
+	}
+	if m.DefaultAction == "allow" {
+		v.warnf("%s.dtls_mode: detect accepts plain datagrams on the same port, so with default_action: allow a client reaches the agents by simply not offering a certificate", p)
+	}
+	if !named {
+		v.warnf("%s.dtls_mode: detect accepts plain datagrams on the same port and no rule names transports or security_names, so nothing here requires the DTLS half; a client chooses which to speak", p)
+	}
+}
+
+// snmpCertToName checks RFC 6353 s5.3's mapping table.
+func (v *validator) snmpCertToName(p string, m *SNMPListener, tc *TLS) {
+	anyRow := false
+	for i := range m.CertToName {
+		r := &m.CertToName[i]
+		q := fmt.Sprintf("%s.cert_to_name[%d]", p, i)
+		how := r.Map
+		if how == "" {
+			how = snmpwire.CertMapSANAny
+		}
+		switch {
+		case !snmpwire.CertMapKnown(how):
+			v.errf("%s.map: %q must be one of %s", q, r.Map,
+				strings.Join(snmpwire.CertMaps(), ", "))
+		case !snmpwire.CertMapDerives(how) && r.Name == "":
+			v.errf("%s.name: required with map: %s, which takes the name from here rather than from the certificate", q, how)
+		case snmpwire.CertMapDerives(how) && r.Name != "":
+			// A name beside a mapping that derives one looks like it applies
+			// and does not, which is the kind of configuration an operator
+			// reads as a control and tests as a hole.
+			v.errf("%s.name: map: %s derives the name from the certificate, so name must be empty", q, how)
+		}
+		if how == snmpwire.CertMapCommonName {
+			v.warnf("%s.map: common_name is RFC 6353's last resort and it advises against it: a common name is free text that has meant several things, and two authorities can issue the same one. A subject alternative name is what a certificate issued this decade puts the subject in", q)
+		}
+		algo, _, err := snmpwire.ParseFingerprint(r.Fingerprint)
+		switch {
+		case err != nil:
+			v.errf("%s.fingerprint: %v", q, err)
+		case algo == "":
+			anyRow = true
+		case algo == "sha1":
+			v.warnf("%s.fingerprint: sha1 is in RFC 6353 for the equipment that shipped with it; sha256 is what to write for anything issued since", q)
+		}
+	}
+	if anyRow && !snmpVerifiesClients(tc) {
+		// The row means "any certificate this listener accepted", and a
+		// listener that does not require and verify one accepts every peer
+		// including the ones that offered nothing.
+		v.warnf("%s.cert_to_name: a row matching any fingerprint names whichever certificate the handshake accepted, and this listener's tls section does not require and verify one -- so the name is derived from whatever a peer chose to send. Set tls.client_auth: require with tls.client_ca_file", p)
+	}
+}
+
+// snmpVerifiesClients says whether the listener's TLS section makes a client
+// certificate mandatory and checks it against an authority.
+func snmpVerifiesClients(tc *TLS) bool {
+	return tc != nil && tc.ClientAuth == "require" && tc.ClientCAFile != ""
+}
+
+func (v *validator) snmpListener(p string, m *SNMPListener, tc *TLS) {
+	hasTLS := tc != nil
 	switch m.Mode {
 	case "", "reverse", "forward":
 	default:
@@ -10589,15 +11172,16 @@ func (v *validator) snmpListener(p string, m *SNMPListener, hasTLS bool) {
 		if !hasTLS {
 			v.errf("%s.tls_mode: implicit needs the listener's tls section", p)
 		}
-		if udp {
-			// RFC 6353 puts TLS on TCP 10161 and DTLS on UDP 10162. This
-			// relay speaks the TLS half, so with transport udp the stream
-			// half of this listener is protected and the datagram half is
-			// not. Saying so is better than implying a whole listener is
-			// encrypted when half of it is plaintext.
-			v.warnf("%s.tls_mode: implicit protects the stream half only; the datagram socket transport udp adds stays plaintext (RFC 6353 DTLS on 10162 is not implemented). Set transport: tcp for a listener that is TLS throughout", p)
+		if udp && !snmpHasDTLS(m) {
+			// RFC 6353 puts TLS on TCP 10161 and DTLS on UDP 10161. tls_mode
+			// is the stream half, so with transport udp the datagram half of
+			// this listener is unprotected unless dtls_mode covers it. Saying
+			// so is better than implying a whole listener is encrypted when
+			// half of it is plaintext.
+			v.warnf("%s.tls_mode: implicit protects the stream half only; the datagram socket transport udp adds stays plaintext. Add dtls_mode: implicit for RFC 6353 on the datagram half too, or transport: tcp for a listener that is TLS throughout", p)
 		}
 	}
+	v.snmpDTLS(p, m, tc, udp)
 	switch m.UpstreamTLSMode {
 	case "", "none", "implicit":
 	default:
@@ -10820,6 +11404,27 @@ func (v *validator) snmpListener(p string, m *SNMPListener, hasTLS bool) {
 				v.errf("%s.min_security_level: must be noAuthNoPriv, authNoPriv or authPriv", q)
 			}
 		}
+		for j, name := range r.Transports {
+			switch name {
+			case "udp", "tcp", "tls", "dtls":
+			default:
+				v.errf("%s.transports[%d]: %q must be udp, tcp, tls or dtls", q, j, name)
+			}
+		}
+		for j, name := range r.SecurityNames {
+			if name == "" || len(name) > 255 {
+				v.errf("%s.security_names[%d]: must be 1 to 255 octets", q, j)
+			}
+		}
+		if len(r.SecurityNames) > 0 && len(m.CertToName) == 0 {
+			// A rule naming a name nothing can derive matches nothing, which
+			// on a deny rule is a control that is not there and on an allow
+			// rule is traffic that falls through to the default.
+			v.errf("%s.security_names: nothing derives a security name here; cert_to_name is what maps a certificate to one (RFC 6353 s5.3)", q)
+		}
+		if len(r.SecurityNames) > 0 && len(r.Users) > 0 {
+			v.errf("%s: users names USM users and security_names names transport security model names, and one message is never both, so a rule naming each matches nothing", q)
+		}
 		if r.MaxRepetitions < 0 || r.MaxRepetitions > 1<<20 {
 			v.errf("%s.max_repetitions: must be between 0 and 1048576", q)
 		}
@@ -10827,7 +11432,8 @@ func (v *validator) snmpListener(p string, m *SNMPListener, hasTLS bool) {
 			v.modbusSchedule(q+".schedule", r.Schedule)
 		}
 		if r.Action == "allow" && len(r.Clients) == 0 && len(r.OIDs) == 0 && len(r.PDUs) == 0 &&
-			len(r.Access) == 0 && len(r.Communities) == 0 && len(r.Users) == 0 && len(r.Versions) == 0 {
+			len(r.Access) == 0 && len(r.Communities) == 0 && len(r.Users) == 0 && len(r.Versions) == 0 &&
+			len(r.SecurityNames) == 0 && len(r.Transports) == 0 {
 			v.warnf("%s: an allow rule that names no client, version, credential, operation or object identifier allows everything", q)
 		}
 		if r.Action == "observe" && len(r.WriteOIDs) > 0 {
@@ -13517,4 +14123,486 @@ func redisNameChar(c byte) bool {
 		return true
 	}
 	return false
+}
+
+// mmsListener checks an mms listener's section.
+func (v *validator) mmsListener(p string, m *MMSListener, address string) {
+	if m.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	v.modbusCIDRs(p+".allow_clients", m.AllowClients)
+	v.modbusCIDRs(p+".deny_clients", m.DenyClients)
+	v.mmsIdentity(p, m)
+	v.mmsServices(p, m)
+	v.mmsNames(p, m)
+	v.mmsBounds(p, m)
+	v.mmsLearn(p, m)
+	v.mmsRules(p, m)
+	v.mmsWarnings(p, m, address)
+}
+
+// mmsIdentity checks the AP-titles and the qualifiers.
+func (v *validator) mmsIdentity(p string, m *MMSListener) {
+	for _, f := range []struct {
+		name string
+		list []string
+	}{
+		{"ap_titles", m.APTitles},
+		{"deny_ap_titles", m.DenyAPTitles},
+	} {
+		for i, t := range f.list {
+			if err := mmsCheckAPTitle(t); err != nil {
+				v.errf("%s.%s[%d]: %v", p, f.name, i, err)
+			}
+		}
+	}
+	if _, err := numrange.Parse("ae_qualifier", m.AEQualifiers, 65535); err != nil {
+		v.errf("%s.ae_qualifiers: %v", p, err)
+	}
+}
+
+// mmsCheckAPTitle checks an AP-title pattern: dotted arcs, with `*` and `?`
+// allowed so that an estate's own numbering can be named by prefix.
+//
+// It is checked rather than taken as an opaque string because an AP-title that is
+// not an object identifier is a rule that can never match, and a rule that can
+// never match in an allow list is a listener that refuses everything.
+func mmsCheckAPTitle(t string) error {
+	if t == "" {
+		return errors.New("empty")
+	}
+	if len(t) > 128 {
+		return fmt.Errorf("%d characters, which is longer than any object identifier", len(t))
+	}
+	for _, arc := range strings.Split(t, ".") {
+		if arc == "" {
+			return fmt.Errorf("%q has an empty arc", t)
+		}
+		for _, c := range arc {
+			if (c < '0' || c > '9') && c != '*' && c != '?' {
+				return fmt.Errorf("%q is not an object identifier or a pattern over one", t)
+			}
+		}
+	}
+	return nil
+}
+
+// mmsServices checks the service and class lists.
+func (v *validator) mmsServices(p string, m *MMSListener) {
+	v.mmsServiceList(p+".services", m.Services)
+	v.mmsServiceList(p+".deny_services", m.DenyServices)
+	v.mmsClassList(p+".service_classes", m.ServiceClasses)
+	v.mmsClassList(p+".deny_service_classes", m.DenyServiceClasses)
+}
+
+func (v *validator) mmsServiceList(p string, names []string) {
+	for i, n := range names {
+		if _, ok := mmswire.ServiceOf(n); !ok {
+			v.errf("%s[%d]: %q is not an MMS service; the names are in docs/CONFIG.md", p, i, n)
+		}
+	}
+}
+
+// mmsClasses is what a service_classes list may name.
+var mmsClasses = map[string]bool{
+	"browse": true, "read": true, "write": true, "report": true,
+	"dataset": true, "control": true, "domain": true, "file": true,
+	"session": true,
+}
+
+func (v *validator) mmsClassList(p string, names []string) {
+	for i, n := range names {
+		if !mmsClasses[n] {
+			v.errf("%s[%d]: %q is not a service class; they are browse, read, write, report, dataset, control, domain, file and session",
+				p, i, n)
+		}
+	}
+}
+
+// mmsNames checks the domain, object, constraint and file patterns.
+func (v *validator) mmsNames(p string, m *MMSListener) {
+	for _, f := range []struct {
+		name string
+		list []string
+	}{
+		{"domains", m.Domains}, {"deny_domains", m.DenyDomains},
+		{"objects", m.Objects}, {"deny_objects", m.DenyObjects},
+		{"write_objects", m.WriteObjects},
+		{"files", m.Files}, {"deny_files", m.DenyFiles},
+	} {
+		v.mmsPatterns(p+"."+f.name, f.list)
+	}
+	v.mmsConstraints(p+".functional_constraints", m.FunctionalConstraints)
+	v.mmsConstraints(p+".write_constraints", m.WriteConstraints)
+	v.mmsConstraints(p+".deny_constraints", m.DenyConstraints)
+}
+
+// mmsPatterns checks a glob list: non-empty, bounded, and not a bare `*`, which
+// is the pattern somebody writes meaning "for now" and then leaves.
+func (v *validator) mmsPatterns(p string, list []string) {
+	for i, g := range list {
+		switch {
+		case g == "":
+			v.errf("%s[%d]: empty", p, i)
+		case len(g) > 512:
+			v.errf("%s[%d]: %d characters, which is longer than any IEC 61850 name", p, i, len(g))
+		case g == "*":
+			v.warnf("%s[%d] is `*`, which allows everything and reads as though it did not: leave the list empty instead, which says the same thing where a reviewer will see it",
+				p, i)
+		}
+	}
+}
+
+// mmsConstraints checks a functional-constraint list.
+func (v *validator) mmsConstraints(p string, list []string) {
+	for i, c := range list {
+		if !mmswire.FC(c).Known() {
+			v.errf("%s[%d]: %q is not an IEC 61850 functional constraint; they are %s",
+				p, i, c, strings.Join(sortedStrings(mmswire.FCs()), ", "))
+		}
+	}
+}
+
+// mmsBounds checks the numeric bounds.
+func (v *validator) mmsBounds(p string, m *MMSListener) {
+	for _, f := range []struct {
+		name string
+		v    int
+		lo   int
+		hi   int
+	}{
+		{"max_names", m.MaxNames, 1, 65536},
+		{"max_write_names", m.MaxWriteNames, 1, 65536},
+		{"max_frame", m.MaxFrame, 1024, 16 << 20},
+		{"max_requests", m.MaxRequests, 1, 1 << 30},
+		{"max_pending_requests", m.MaxPendingRequests, 1, 4096},
+		{"rate_limit", m.RateLimit, 1, 1 << 20},
+		{"rate_burst", m.RateBurst, 1, 1 << 20},
+		{"max_sessions", m.MaxSessions, 1, 1 << 20},
+		{"max_sessions_per_client", m.MaxSessionsPerClient, 1, 1 << 20},
+	} {
+		if f.v != 0 && (f.v < f.lo || f.v > f.hi) {
+			v.errf("%s.%s: must be between %d and %d", p, f.name, f.lo, f.hi)
+		}
+	}
+	if m.RateBurst != 0 && m.RateLimit == 0 {
+		v.errf("%s.rate_burst: set without rate_limit, so nothing is limited", p)
+	}
+	for _, f := range []struct {
+		name string
+		d    Duration
+	}{
+		{"idle_timeout", m.IdleTimeout},
+		{"session_duration", m.SessionDuration},
+		{"handshake_timeout", m.HandshakeTimeout},
+		{"select_timeout", m.SelectTimeout},
+	} {
+		if f.d < 0 {
+			v.errf("%s.%s: must not be negative", p, f.name)
+		}
+	}
+	if m.DefaultAction != "" && m.DefaultAction != "allow" && m.DefaultAction != "deny" {
+		v.errf("%s.default_action: %q is not allow or deny", p, m.DefaultAction)
+	}
+	switch m.DenyResponse {
+	case "", "error", "reject", "drop", "close":
+	default:
+		v.errf("%s.deny_response: %q is not error, reject, drop or close", p, m.DenyResponse)
+	}
+}
+
+// mmsLearn checks the learning section.
+func (v *validator) mmsLearn(p string, m *MMSListener) {
+	l := m.Learn
+	if l == nil || !l.Enabled {
+		return
+	}
+	switch {
+	case l.File == "":
+		v.errf("%s.learn.file: required when learning is enabled", p)
+	case !strings.HasPrefix(l.File, "/"):
+		v.errf("%s.learn.file: must be an absolute path", p)
+	}
+	if l.Interval != 0 && (l.Interval.D() < 10*time.Second || l.Interval.D() > 24*time.Hour) {
+		v.errf("%s.learn.interval: must be between 10s and 24h", p)
+	}
+	if l.MaxSubjects != 0 && (l.MaxSubjects < 16 || l.MaxSubjects > 1_000_000) {
+		v.errf("%s.learn.max_subjects: must be between 16 and 1000000", p)
+	}
+	if !l.Enforce {
+		v.warnf("%s.learn is enabled without enforce, so this listener records and decides nothing: turn enforce on, or take the learning section out, once the rules are written",
+			p)
+	}
+}
+
+// mmsRules checks the rules.
+func (v *validator) mmsRules(p string, m *MMSListener) {
+	seen := map[string]bool{}
+	for i, r := range m.Rules {
+		q := fmt.Sprintf("%s.rules[%d]", p, i)
+		switch {
+		case r.Name == "":
+			v.errf("%s.name: required", q)
+		case seen[r.Name]:
+			v.errf("%s.name: %q is used twice; a rule's name is what a log line and a counter carry", q, r.Name)
+		default:
+			seen[r.Name] = true
+		}
+		switch r.Action {
+		case "", "allow", "deny", "observe":
+		default:
+			v.errf("%s.action: %q is not allow, deny or observe", q, r.Action)
+		}
+		v.modbusCIDRs(q+".clients", r.Clients)
+		for j, t := range r.APTitles {
+			if err := mmsCheckAPTitle(t); err != nil {
+				v.errf("%s.ap_titles[%d]: %v", q, j, err)
+			}
+		}
+		if _, err := numrange.Parse("ae_qualifier", r.AEQualifiers, 65535); err != nil {
+			v.errf("%s.ae_qualifiers: %v", q, err)
+		}
+		v.mmsServiceList(q+".services", r.Services)
+		v.mmsServiceList(q+".deny_services", r.DenyServices)
+		v.mmsClassList(q+".service_classes", r.ServiceClasses)
+		v.mmsClassList(q+".deny_service_classes", r.DenyServiceClasses)
+		for _, f := range []struct {
+			name string
+			list []string
+		}{
+			{"domains", r.Domains}, {"deny_domains", r.DenyDomains},
+			{"objects", r.Objects}, {"deny_objects", r.DenyObjects},
+			{"write_objects", r.WriteObjects},
+			{"files", r.Files}, {"deny_files", r.DenyFiles},
+		} {
+			v.mmsPatterns(q+"."+f.name, f.list)
+		}
+		v.mmsConstraints(q+".functional_constraints", r.FunctionalConstraints)
+		v.mmsConstraints(q+".write_constraints", r.WriteConstraints)
+		v.mmsConstraints(q+".deny_constraints", r.DenyConstraints)
+		if r.MaxNames != 0 && (r.MaxNames < 1 || r.MaxNames > 65536) {
+			v.errf("%s.max_names: must be between 1 and 65536", q)
+		}
+		if r.Schedule != nil {
+			v.modbusSchedule(q+".schedule", r.Schedule)
+		}
+	}
+}
+
+// mmsWarnings are the things worth saying about a configuration that is valid.
+func (v *validator) mmsWarnings(p string, m *MMSListener, address string) {
+	if len(m.AllowClients) == 0 {
+		v.warnf("%s.allow_clients is empty, so any address that reaches this listener reaches the substation: name the control centre's and the engineering network's prefixes",
+			p)
+	}
+	if _, port, err := net.SplitHostPort(address); err == nil &&
+		port != "102" && port != "0" {
+		v.warnf("%s: port %s, where an IEC 61850 client sends to 102 by convention; a client configured from an SCL file will not find it here",
+			p, port)
+	}
+	// The one about the protocol's own authentication, which is the finding an
+	// estate most often does not know it has.
+	if m.RefusePlaintextPasswords {
+		v.warnf("%s.refuse_plaintext_passwords is on, so every association whose ACSE authentication value is a password will be refused. On most of the installed base that password is the only authentication the IED has, and IEC 62351-4 is what replaces it: turn this on once the clients have moved, not before",
+			p)
+	}
+	// Writing to the constraints that decide what the device does in a fault.
+	if writes := mmsWriteConstraints(m); len(writes) > 0 {
+		var protecting []string
+		for _, c := range writes {
+			if mmswire.FC(c).Protects() {
+				protecting = append(protecting, c)
+			}
+		}
+		if len(protecting) > 0 {
+			v.warnf("%s.write_constraints names %s, so a client may change what the device does in a fault rather than what it is doing now -- a setting group is a protection relay's trip characteristic and nothing moves until the fault it was meant to clear. Put those behind a rule with a schedule if they are needed at all",
+				p, strings.Join(sortedStrings(protecting), ", "))
+		}
+	}
+	// Operating without the interlock, where the configuration could remove it.
+	//
+	// Not warned on a listener that is only learning: it decides nothing, and the
+	// warning about that is the one worth reading.
+	learning := m.Learn != nil && m.Learn.Enabled && !m.Learn.Enforce
+	if !learning && mmsAllowsOperate(m) && !m.RequireSelectBeforeOperate {
+		v.warnf("%s allows a control operate and require_select_before_operate is off, so an Oper is carried whether or not the client selected first. IEC 61850 leaves that to the IED's ctlModel, and ctlModel lives in $CF$ where a client with configuration access can change it -- requiring the select here puts the interlock somewhere the configuration cannot reach",
+			p)
+	}
+	// The domain services, unless every rule that admits them already has a window
+	// on it -- which is what the warning is asking for, so firing it then would be
+	// firing it at somebody who did the thing.
+	if m.AllowDomainServices && !m.ReadOnly && !mmsDomainScheduled(m) {
+		v.warnf("%s.allow_domain_services is on, so a client may download into an IED and replace what is inside it. That is the operation this listener most exists to refuse: put it behind a rule naming the engineering station and a schedule",
+			p)
+	}
+	if len(m.Domains) == 0 && len(m.Objects) == 0 && !m.ReadOnly {
+		v.warnf("%s names neither domains nor objects, so every logical device behind this listener is reachable by every client it admits. A learning run writes the lists: see the learn section",
+			p)
+	}
+}
+
+// mmsWriteConstraints is the effective write-constraint list: the listener's own,
+// or the default an HMI needs.
+func mmsWriteConstraints(m *MMSListener) []string {
+	if len(m.WriteConstraints) > 0 {
+		return m.WriteConstraints
+	}
+	return nil
+}
+
+// mmsAllowsOperate says the configuration carries a control operate.
+//
+// It has to read the rules and the default action as well as the lists, because a
+// listener whose default is deny and whose rules never admit a write to a control
+// constraint does not carry one -- and warning about the interlock there would be
+// warning about something that cannot happen.
+func mmsAllowsOperate(m *MMSListener) bool {
+	if m.ReadOnly {
+		return false
+	}
+	if m.AllowOperate != nil && !*m.AllowOperate {
+		return false
+	}
+	for _, c := range m.DenyConstraints {
+		if c == string(mmswire.FCControl) {
+			return false
+		}
+	}
+	if m.DefaultAction != "allow" && !mmsRuleWritesControl(m) {
+		return false
+	}
+	if len(m.WriteConstraints) == 0 {
+		// The default includes CO.
+		return true
+	}
+	for _, c := range m.WriteConstraints {
+		if c == string(mmswire.FCControl) {
+			return true
+		}
+	}
+	return false
+}
+
+// mmsRuleWritesControl says some allowing rule admits a write to a control
+// constraint.
+func mmsRuleWritesControl(m *MMSListener) bool {
+	for _, r := range m.Rules {
+		if r.Action == "deny" || r.Action == "observe" {
+			continue
+		}
+		if r.AllowOperate != nil && !*r.AllowOperate {
+			continue
+		}
+		if mmsHasConstraint(r.DenyConstraints, mmswire.FCControl) {
+			continue
+		}
+		if !mmsRuleCarriesWrite(r) {
+			// The rule narrowed to services that cannot address a control object.
+			// A control operate is a Write; a rule admitting only the file or
+			// domain services carries none, whatever its constraint list says.
+			continue
+		}
+		// A rule with no write-constraint list of its own inherits the listener's,
+		// which is where the caller's own check then applies.
+		list := r.WriteConstraints
+		if len(list) == 0 {
+			list = m.WriteConstraints
+		}
+		if len(list) == 0 || mmsHasConstraint(list, mmswire.FCControl) {
+			return true
+		}
+	}
+	return false
+}
+
+// mmsRuleCarriesWrite says a rule's own service narrowing lets through a service
+// that can address a control object.
+//
+// That is the Write class and nothing else: a control operate is `XCBR1$CO$Pos$Oper`
+// arriving as an MMS Write, so a rule admitting only the file or domain services
+// cannot carry one however wide its constraint list is.
+func mmsRuleCarriesWrite(r MMSRule) bool {
+	if len(r.Services) > 0 {
+		for _, n := range r.Services {
+			if s, ok := mmswire.ServiceOf(n); ok && s.Class() == mmswire.ClassWrite {
+				return true
+			}
+		}
+		return false
+	}
+	if len(r.ServiceClasses) > 0 {
+		for _, c := range r.ServiceClasses {
+			if c == "write" {
+				return true
+			}
+		}
+		return false
+	}
+	// No narrowing: the rule inherits the listener's lists.
+	return true
+}
+
+func mmsHasConstraint(list []string, want mmswire.FC) bool {
+	for _, c := range list {
+		if c == string(want) {
+			return true
+		}
+	}
+	return false
+}
+
+// mmsDomainScheduled says every rule that admits the domain services has a time
+// window on it, which is what the warning about them asks for.
+func mmsDomainScheduled(m *MMSListener) bool {
+	found := false
+	for _, r := range m.Rules {
+		if r.Action == "deny" || r.Action == "observe" {
+			continue
+		}
+		if !mmsRuleAdmitsDomain(r, m) {
+			continue
+		}
+		found = true
+		if r.Schedule == nil {
+			return false
+		}
+	}
+	return found
+}
+
+// mmsRuleAdmitsDomain says a rule's own service narrowing lets a domain service
+// through.
+func mmsRuleAdmitsDomain(r MMSRule, m *MMSListener) bool {
+	for _, c := range r.DenyServiceClasses {
+		if c == "domain" {
+			return false
+		}
+	}
+	for _, c := range r.ServiceClasses {
+		if c == "domain" {
+			return true
+		}
+	}
+	for _, n := range r.Services {
+		if s, ok := mmswire.ServiceOf(n); ok && s.Class() == mmswire.ClassDomain {
+			return true
+		}
+	}
+	if len(r.ServiceClasses) > 0 || len(r.Services) > 0 {
+		// The rule narrowed to something else.
+		return false
+	}
+	// A rule that names no services at all inherits the listener's lists, which
+	// allow_domain_services has already opened.
+	_ = m
+	return true
+}
+
+// sortedStrings is a sorted copy, so that a validation message reads the same way
+// twice.
+func sortedStrings(in []string) []string {
+	out := make([]string, len(in))
+	copy(out, in)
+	sort.Strings(out)
+	return out
 }

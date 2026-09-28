@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	wire "github.com/rom/xproxy/internal/modbus"
@@ -83,6 +84,12 @@ type baselinePoint struct {
 // differently and bounded differently: a subject is a client doing a thing, and
 // a point is a place in a device.
 type baselines struct {
+	// mu guards the table. It has its own rather than borrowing the learner's,
+	// which is what it used to do: the learner now renders its report outside its
+	// own lock -- as every kind's does, through internal/learn -- so a table that
+	// depended on somebody else holding a lock was a table read while it was being
+	// written to. A self-contained table with its own bound guards itself.
+	mu      sync.Mutex
 	points  map[baselineKey]*baselinePoint
 	order   []baselineKey
 	dropped uint64
@@ -175,6 +182,8 @@ func carriesValues(fn byte) bool {
 // at finds or makes a point, counts the write against its window, and applies
 // the caller's update.
 func (b *baselines) at(k baselineKey, now time.Time, fn func(*baselinePoint)) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	pt := b.points[k]
 	if pt == nil {
 		if len(b.points) >= maxBaselinePoints {
@@ -209,8 +218,14 @@ func abs(v int) int {
 	return v
 }
 
-// snapshot copies the table for rendering outside the lock the learner holds.
+// snapshot copies the table so that the copy can be rendered outside the lock.
+//
+// The points are copied by value and their windows dropped, so nothing the caller
+// holds aliases the table: a window is appended to on every write, and a renderer
+// reading one through a shared slice would be reading it mid-append.
 func (b *baselines) snapshot() ([]baselineKey, []baselinePoint, uint64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	keys := make([]baselineKey, 0, len(b.points))
 	keys = append(keys, b.order...)
 	sort.Slice(keys, func(i, j int) bool {

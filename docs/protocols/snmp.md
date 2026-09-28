@@ -18,6 +18,7 @@ entirely about security:
 | **v1** (RFC 1157) | A **community string** in the clear | None |
 | **v2c** (RFC 1901–1908) | The same community string | None |
 | **v3** (RFC 3410–3418) | A **USM** user with authentication and privacy keys | Optional: `noAuthNoPriv`, `authNoPriv`, `authPriv` |
+| **v3 + TSM** (RFC 5591, RFC 6353) | The peer's **certificate**, from the (D)TLS session — the message itself carries no credential at all | The session's: `authPriv` by construction |
 
 The operations are few:
 
@@ -47,6 +48,16 @@ For v3: real cryptography — HMAC authentication and DES, AES or AES-256
 privacy, with per-user keys localised to each engine. It works, and the reason
 it is not everywhere is that it needs a user provisioned on every device, which
 is a project rather than a setting.
+
+For v3 with the **transport security model**: nothing in the message, which is
+the point. RFC 5591 takes the security parameters out entirely — no user, no
+engine identifier, no clock, no digest — because RFC 6353's (D)TLS session
+already authenticated and encrypted it. What identifies the sender is the
+certificate its peer presented, which is an identity an estate already knows how
+to issue, revoke and rotate; USM's per-user-per-engine pass phrase is a
+spreadsheet nobody rotates. Two consequences fall out of the missing digest: a
+refusal can be *answered*, and a request can be *rewritten*, both without a key
+for the manager, because there is not one.
 
 The **amplification** is structural, not a bug. A twenty-octet `GetBulkRequest`
 with `max-repetitions` of a few hundred produces a response of many kilobytes,
@@ -133,8 +144,58 @@ and an error would just make it retry. What cannot be lowered is refused:
 disproportionate to its request, which is the amplification measured rather
 than guessed at.
 
-**RFC 6353 TLS** on the stream side, which is SNMP over TLS on its own port
-with real transport security, for the parts of an estate that can use it.
+**RFC 6353**, on both transports. `tls_mode: implicit` is the stream half (TCP
+10161) and `dtls_mode: implicit` the datagram half (UDP 10161), which is the one
+this protocol actually runs on. Inside either, `cert_to_name` is RFC 6353 §5.3's
+`snmpTlstmCertToTSNTable`: rows in order, first match wins, each saying which
+certificate it is about and how to derive a name from it — `specified`,
+`san_rfc822`, `san_dns`, `san_ip`, `san_any`, or `common_name`, which the
+standard provides and advises against. That name is what `security_names` on a
+rule names. It is the *session's* name rather than something a message carried,
+so such a rule covers every message in a session whose certificate mapped —
+including a v2c poller that has been given a certificate, which is the
+half-migrated case worth being able to write a rule about — and covers nothing
+from a session that derived no name. `users` is the other kind of credential,
+the one in the message, and one message is never both.
+
+`dtls_mode: detect` takes records and plain datagrams on the same socket,
+because a DTLS content type (20–25, followed by a version whose major octet is
+`0xFE`) and a BER SEQUENCE (`0x30`) cannot be read as each other. The standard
+gives DTLS a port of its own, so this is not RFC 6353's arrangement; it is for
+the estate whose new managers speak DTLS and whose two hundred field switches
+are not going to be reconfigured to a new port. The cost is that the client
+chooses which to speak, so the *policy* is what requires the certificate —
+`transports` on a rule, and `default_action: deny`. Validation says so when a
+`detect` listener's rules name neither.
+
+Four checks come with the model, before the rules:
+
+- A message whose certificate maps to **no name** is refused
+  (`tsm_no_name`), because a transport model message with no derived name has no
+  credential at all. `require_security_name: false` is the listener saying it
+  wants the session for confidentiality and will decide on the address and the
+  objects alone.
+- A message on a transport that **provides no security at all** is refused
+  (`tsm_transport`): the model's claim is that the transport authenticated and
+  encrypted it, and on a plain datagram nothing did. That one holds whatever
+  `require_security_name` says, because it is about whether the message's own
+  statement is true rather than about whether a name is needed.
+- A message claiming **less than the session gave** is refused (`tsm_level`).
+  RFC 5591 §3.1.1 has the sender copy the flags from the transport's security
+  level and RFC 6353 §3.1.2 says a (D)TLS transport provides `authPriv`, so
+  `authNoPriv` inside DTLS is a sender that did not implement the model or is
+  asking whether this listener reads the flags as policy.
+- **Cleartext at a listener that requires DTLS** is counted and dropped
+  (`cleartext_at_dtls_listener`) rather than answered: there is no session to
+  answer in, and answering tells a scanner something is here.
+
+And the rewrite the model makes possible: a v3 request under it **can** be
+downgraded to v2c, because its answer needs no key either. A manager holding
+nothing but a certificate reaches a switch that will never speak anything but
+v2c, with an `upstream_community` it never learns, and the switch's v2c answer
+comes back rebuilt in the manager's own v3 envelope — the message identifier,
+the context and the level echoed, and nothing signed, because there is nothing
+to sign.
 
 ### An agent that is not there
 
@@ -219,6 +280,17 @@ and carries the traffic.
   listener will require it -- and, with `usm_users`, check it.
 - **It does not aggregate.** A walk is still a walk; this is a relay, not a
   caching poller.
+- **It does not speak DTLS to the agent.** `dtls_mode` is the half facing the
+  management station. Towards the equipment there is plain UDP, plain TCP, or
+  RFC 6353 TLS with `upstream_tls_mode` — which is the whole point of relaying
+  it, because the equipment is what cannot be changed.
+- **It does not turn a certificate into a USM user.** A name derived from a
+  certificate is what the policy here decides on; it is not carried into a
+  message towards the agent. Where the agent needs a v3 identity, that identity
+  is `upstream_usm` and an operator configured it.
+- **It does not accept MD5 fingerprints.** A `cert_to_name` row's fingerprint is
+  an identity, so an algorithm whose collisions are a weekend's work is refused
+  at load. RFC 6353's other four are accepted, and SHA-1 draws a warning.
 
 ## Standards
 
@@ -230,7 +302,9 @@ and carries the traffic.
 | RFC 3826 | The AES cipher in USM |
 | RFC 7860 | HMAC-SHA-2 authentication in USM |
 | RFC 3430 | SNMP over TCP |
-| RFC 6353 | Transport Layer Security Transport Model for SNMP |
+| RFC 6353 | The (D)TLS transport model: the transports, the certificate-to-name table, the ports |
+| RFC 5591 | The transport security model: the SNMPv3 message that carries no security of its own |
+| RFC 6347 | DTLS 1.2, which is what the datagram half runs on |
 | RFC 5343 | Context engine discovery |
 
 ## See also

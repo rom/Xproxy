@@ -6,6 +6,332 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (snmp: RFC 6353, where the credential is a certificate)
+
+- **`dtls_mode` puts RFC 6353's transport model on the transport SNMP actually
+  uses.** `tls_mode` was the stream half (TCP 10161); this is the datagram half
+  (UDP 10161), and inside either sits RFC 5591's transport security model: an
+  SNMPv3 message with the security parameters taken out. No user, no engine
+  identifier, no clock, no digest, because the session authenticated and
+  encrypted it before the message existed.
+
+- **`cert_to_name` is RFC 6353 §5.3's `snmpTlstmCertToTSNTable`**: rows in order,
+  first match wins, each saying which certificate it is about and how a security
+  name is derived from it — `specified`, `san_rfc822`, `san_dns`, `san_ip`,
+  `san_any`, or `common_name`, which the standard provides and advises against.
+  That name is what a rule's new `security_names` names. `fingerprint: any` is an
+  extension to the table for the estate that runs its own authority and would
+  otherwise edit this file on every renewal; md5 fingerprints are refused,
+  because a fingerprint that can be collided is not an identity.
+
+- **Three things follow from the missing digest, and each is something USM cannot
+  do.** The secret per user per engine is gone: a certificate is an identity an
+  estate already issues, revokes and rotates. A refusal is *answered* rather than
+  timing out, because the session authenticates the answer. And a v3 request
+  *can* be downgraded to v2c — the one case where "a v3 request cannot be
+  downgraded" does not apply — so a manager holding nothing but a certificate
+  reaches a switch that will never speak anything else, and the switch's v2c
+  answer comes back rebuilt in the manager's own envelope.
+
+- **`transports` on a rule** names `udp`, `tcp`, `tls` or `dtls`, because on this
+  protocol the transport is half the credential: a community string in a plain
+  datagram is a cleartext password from an address anybody can claim, and the
+  same request inside DTLS came from a peer that proved it holds a private key.
+  Empty covers all four, so every policy written before this field means what it
+  meant.
+
+- **`dtls_mode: detect` takes records and plain datagrams on one port**, because
+  a DTLS content type and a BER SEQUENCE cannot be read as each other. It is not
+  RFC 6353's arrangement — the standard gives DTLS a port of its own — and it is
+  for the estate whose new managers speak DTLS and whose two hundred field
+  switches are not going to be reconfigured. What it costs is stated rather than
+  discovered: the client chooses which of the two it speaks, so the *policy* is
+  what requires the certificate, and validation says so when a `detect`
+  listener's rules name neither `transports` nor `security_names`.
+
+- **Three refusals the model brings.** `tsm_no_name` is a message whose
+  certificate mapped to nothing, refused because a transport model message with
+  no derived name has no credential at all (`require_security_name: false` is the
+  listener saying it wants confidentiality and will decide on the address alone).
+  `tsm_level` is a message claiming less than its session gave: the flags are
+  supposed to be copied from the transport, so `authNoPriv` inside DTLS is a
+  sender that did not implement the model or is probing for a listener that reads
+  the flags as policy. And `tsm_transport` is such a message on a transport that
+  provides no security at all, where the flags claim authPriv and nothing backs
+  the claim; it is refused whatever `require_security_name` says, because that
+  switch is about whether a name is needed and this is about whether the
+  message's own statement about its transport is true.
+
+- Counters: `snmp_dtls_handshakes`, `snmp_dtls_handshake_failed`,
+  `snmp_dtls_sessions`, `snmp_dtls_datagrams_dropped`, `snmp_tsm_messages`,
+  `snmp_tsm_unnamed`. The handshake failures are the pair to watch, because the
+  count separates an estate whose certificates expired — every handshake fails
+  and the sessions count stops climbing — from a scanner sending flights of
+  nonsense at the port, which never touches it.
+
+### Changed
+
+- **The DTLS transport moved out of the CoAP kind into `internal/dtlsx`.**
+  AMR-050 confined `pion/dtls` to one file on the argument that it served one
+  transport on one listener; a second listener needing the same bounded peer
+  table, the same handshake bound and the same configuration translation makes
+  that confinement a copy. The dependency is now in one package's imports and no
+  package outside it names a type from the library. [AMR-051](AMR.md) records the
+  move.
+
+### Fixed
+
+- **A DTLS listener's socket buffer was sized to its message bound, so the
+  largest messages it was configured to carry were truncated by the read.** A
+  record is larger than the plaintext inside it — a header, a nonce and a tag —
+  and a truncated record is not a shorter record: the record layer refuses it. So
+  a listener with `max_message_bytes` set to the size of its largest real message
+  worked for everything except those messages, and said nothing about why. The
+  arithmetic now lives in `dtlsx.RecordOverhead` and the transport derives the
+  buffer from the listener's message bound, which fixes `kind: coap` inside DTLS
+  as well as the new SNMP path. The plaintext is read into a buffer the size of a
+  whole record for the same reason, so a message past the bound is refused *by
+  the bound* and the session survives it.
+
+- The RFC 6353 port constants in `internal/snmp` were mislabelled: 10161 is the
+  command responder and 10162 the notification receiver on *both* transports, so
+  there are four names where there were two and DTLS no longer claims to live on
+  the trap port.
+
+### Added (mms: IEC 61850, where the names carry the semantics)
+
+- **`kind: mms` is an IEC 61850 relay agent on TCP 102** that reads six layers to
+  get at the seventh: TPKT, COTP, ISO 8327 session, ISO 8823 presentation, ACSE
+  and the MMS service layer. Three of them exist only to be traversed.
+
+- **What makes this listener different from every other relay kind here is that
+  the protocol's own names carry the semantics.** In front of Modbus the relay has
+  to be told which register is a setpoint. Here IEC 61850-8-1 maps the data model
+  onto MMS object names as `LD/LN$FC$DO$DA`, and the functional constraint is what
+  a rule is written about: `XCBR1$CO$Pos$Oper` operates a circuit breaker,
+  `PTOC1$SG$StrVal$setMag$f` changes a protection relay's trip characteristic, and
+  `LLN0$BR$brcbST$RptEna` decides whether the control centre hears about either.
+  So a useful policy can be written for an estate whose SCL files nobody has read.
+  Within a control object the attribute distinguishes a select (`SBO`, `SBOw`)
+  from an operate (`Oper`), so a rule can let a client reserve a breaker without
+  being able to move it.
+
+- **It sees the password, and says so rather than pretending to check it.** IEC
+  61850-8-1's ACSE authentication value is a cleartext GraphicString, and on most
+  of the installed base it is the only authentication an IED has. So
+  `refuse_plaintext_passwords` defaults **off** here — the opposite of the same
+  knob on the `opcua` listener, and for the opposite reason: refusing it removes
+  the only check the device has. What the listener does by default is count every
+  association carrying one (`mms_plaintext_passwords`) and raise a finding, which
+  is what an estate needs to know how far from IEC 62351-4 it is. The password's
+  *length* is recorded and its value never is — not in a log, not in a learning
+  report, not in the parsed association this relay holds — and there is a fuzz
+  invariant asserting that, because a relay holding a substation's ACSE passwords
+  is worth attacking for them.
+
+- **`require_select_before_operate` is the one check in this protocol a relay can
+  make that the device may not.** IEC 61850 leaves select-before-operate to each
+  object's `ctlModel`, `ctlModel` lives in `$CF$`, and `$CF$` is writable — so a
+  client with configuration access can turn the interlock off and then operate
+  directly. This listener tracks the selection itself and records it on the IED's
+  **positive answer** rather than on the client's asking, so a client that asked to
+  select an object the IED refused holds no selection and its operate is refused.
+
+- **The presentation context list is read at association time** rather than
+  assuming context 3 is MMS. A data value on a context the two ends never defined
+  is reported as not-MMS (`mms_opaque_contexts`) and refused, instead of being
+  forwarded as though a service rule had decided about it.
+
+- New counters: `mms_associations`, `mms_sessions`, `mms_selections`,
+  `mms_plaintext_passwords`, `mms_opaque_contexts`, `mms_server_errors`,
+  `mms_server_refusals`. `mms_denied` is the ban trigger.
+
+- **`mms.learn`** records what crosses the listener and writes the object rules.
+  The report leads with three findings — how many associations carried a cleartext
+  password, how many requests operated the plant and whether any of them selected
+  first, and how many touched a protection setting — because a reader who adopts
+  the proposal without seeing them has adopted a policy for traffic they did not
+  understand.
+
+- One defect the wire package's own tests caught: the high-tag-number BER form was
+  refused as unnecessary, and MMS numbers its file and domain services up to 77
+  where the low form stops at 30 — so every file and download service was
+  unreadable. It is supported and bounded now, and a tag padded into the long form
+  that did not need it is refused, because that is two encodings of one tag and a
+  rule matching on the tag would see only one of them.
+
+- Three the listener's tests caught: `allow_domain_services` did not admit the
+  domain service class, so turning it on left the services it names refused by the
+  default list; a refusal about a service that changes the substation was not hard,
+  so `monitor_only` forwarded a Write it had documented it would refuse; and a file
+  service's path was read from whatever element came next, so the octets of the
+  position INTEGER became a path no rule was written about.
+
+- And the validator's warnings were tightened until none of them fires on
+  `examples/ot/mms.yaml`, which is correct as written. A warning that cries wolf
+  teaches people to ignore the others: the interlock warning now reads the rules
+  and the default action, and the one about domain services accepts a rule that
+  already has the time window it asks for.
+
+### Added (opcua: the protocol that brought its own security)
+
+- **`kind: opcua` is an OPC UA relay agent (IEC 62541) on TCP 4840** that reads the
+  chunked UA TCP transport, the secure channel, the session and — where the
+  channel's own mode leaves a body readable — the service call inside.
+
+- **This listener has a different job from every other relay kind here.** In front
+  of Modbus or S7comm the relay *is* the access control, because the protocol has
+  none. OPC UA already checks certificates and users, so this listener is the place
+  an estate's rules are written once and enforced for every server behind it,
+  including the ones whose own configuration nobody has reviewed since they were
+  commissioned.
+
+- **Most of what is worth enforcing is in the handshake, and all of it is in the
+  clear by construction.** The Hello names an endpoint and proposes four buffer
+  sizes; the OpenSecureChannel names a security policy and carries both
+  certificates; the CreateSession/ActivateSession pair names an application and a
+  user. Those fields have to be readable — they are how the two ends agree on what
+  to encrypt — so `security_policies`, `security_modes`, `application_uris`,
+  `token_kinds` and `users` work on every channel whatever it then does to its
+  bodies. A listener admitting one current policy from two named applications with
+  no anonymous token has excluded most of what goes wrong without naming a single
+  node.
+
+- **The two security policies IEC 62541 withdrew have to be named twice.**
+  `Basic128Rsa15` and `Basic256` are SHA-1 based and were withdrawn in 1.04, and
+  they are the two an estate most often still has switched on because one old
+  client needs them. Naming one in `security_policies` is a validation *error*
+  unless `allow_deprecated_policies` is also set, so switching SHA-1 back on is
+  written down where somebody reviewing the file will read it. `None` is refused
+  separately and for a different reason: deprecated means "broken cryptography
+  still switched on", `None` means "no cryptography, on purpose", and the log line
+  says which.
+
+- **Whether the service-level rules apply at all is a property of the channel, and
+  the reference says so rather than hiding it.** `MessageSecurityMode` has three
+  values and they mean three different things to a reader. With `none` everything
+  is plaintext. With **`sign`** the body is signed and *not* encrypted, so this
+  relay reads every node identifier and method argument — and modifies none of
+  them, because the signature is over exactly the octets the client sent. With
+  `sign_and_encrypt` the body is ciphertext and the relay sees the channel, the
+  sizes and the timing. So `nodes`, `services`, `attributes` and `methods` decide
+  traffic on a none or sign channel and are silent on a sign_and_encrypt one.
+  `require_readable_bodies` is how a listener says which it wants; validation
+  **warns** when service rules sit alongside a mode that makes them inert; and
+  `opcua_opaque_bodies` counts the messages it happened to.
+
+- **The attribute is the line between moving an actuator and changing who may move
+  it.** A write to attribute 13 (`value`) is a setpoint. A write to attribute 17
+  (`access_level`) is a privilege change. Both arrive as an ordinary Write, so
+  `write_attributes` defaults to `value` alone and a refusal of a permission
+  attribute is counted as `permission_write` rather than as a generic attribute
+  refusal — because a log line that did not say so would not tell an operator what
+  had just been attempted.
+
+- **A Call names two nodes and both are checked.** The object it is on and the
+  method itself, because allowing `Reset` on one pump is not allowing it on every
+  pump of that model.
+
+- **`min_publishing_interval` is the bound that matters most on this protocol**,
+  because the amplification is arithmetic rather than accidental. A
+  CreateSubscription asking for a one-millisecond publishing interval over a
+  thousand monitored items is a server asked to send a thousand values a
+  millisecond — from one legitimate session, in entirely valid protocol, with no
+  flood and no spoofing. An interval of zero means "as fast as the server can",
+  which is faster than any bound, so it is refused wherever a bound exists rather
+  than read as unset.
+
+- **`read_only` refuses what changes the plant and not what an HMI needs.** Write,
+  Call, AddNodes, DeleteNodes, AddReferences, DeleteReferences, HistoryUpdate,
+  RegisterServer and TransferSubscriptions, with no rule able to override it —
+  TransferSubscriptions among them because it moves a subscription from one session
+  to another, and on a plant taking over the stream an operator's screen draws from
+  is a change to what that operator sees. The subscription services are *not* on
+  that list: they change state the server holds rather than anything the plant
+  does, and a read-only listener no HMI can subscribe through is a listener no HMI
+  can use.
+
+- **A refusal is expressed the way a server expresses one.** A service-level
+  refusal is a ServiceFault carrying a bad status code against the request handle
+  the client sent, so the client's own library reports the error and the poll loop
+  carries on — dropping a session because one Read was refused turns a refusal into
+  an outage. A channel-level refusal is an ERR and a close instead, and not by
+  preference: a fault answering an OpenSecureChannel would have to be secured with
+  the keys that OpenSecureChannel exists to establish, so the client's record layer
+  would discard it and the operator would read a timeout.
+
+- **Namespaces are named by index, and the reference states the caveat rather than
+  offering a portable form that does not exist.** A namespace URI appears only in
+  an ExpandedNodeId, and the node a Read, a Write, a Browse or a Call names is a
+  plain NodeId — so on the wire a request identifies its namespace by index and by
+  nothing else. Translating would mean reading and keeping the server's own
+  NamespaceArray, which is learning rather than policy. An index means something
+  only against the table it came from, and a firmware update can reorder that
+  table, so a namespace list is one to review after one. The validator refuses a
+  URI in that list with the reason, because it is the form an operator will reach
+  for.
+
+- **The listener takes no `tls` section**, and that is not an omission. The
+  `opc.tcp` transport has no TLS; the security is inside the protocol, negotiated
+  per connection in the secure channel. A certificate here would promise something
+  the transport cannot do, and terminating the channel would make this relay a man
+  in the middle of the one industrial protocol designed to notice — holding the
+  plant's private key to do it. Nothing here decrypts, and nothing rewrites a
+  body.
+
+- **Nothing here logs a value or holds a password.** A Write's payload is a process
+  value: a pressure, a temperature, a recipe parameter. The node, the attribute and
+  the value's *type* go in the log; the value does not, and a method's arguments do
+  not either. A username token's password is kept only as its length and whether an
+  encryption algorithm was named — a relay that held a plant's passwords would be a
+  relay worth attacking for them — and `refuse_plaintext_passwords` defaults on
+  because under mode `sign` such a password is readable by anything on the path,
+  this relay included.
+
+- New counters: `opcua_channels`, `opcua_sessions`, `opcua_opaque_bodies`,
+  `opcua_server_errors`, `opcua_server_faults`. `opcua_denied` is the ban trigger.
+
+- One defect found while writing the wire package's tests: `FileTime` and
+  `ToFileTime` went through a `time.Duration`, and the gap from OPC UA's 1601
+  epoch to now is 1.3e19 nanoseconds where a Duration holds 9.2e18 — so every
+  timestamp saturated silently and came out in the wrong century.
+
+- **`opcua.learn` records what crosses the listener and writes the node rules
+  for you.** Nobody writes a correct `nodes` list from an address space: it says
+  which nodes exist, not which of them an HMI polls every second or which method
+  a contractor's laptop calls at three in the morning. A subject is one identity,
+  one class of service and one group of nodes — string identifiers grouped by
+  their prefix so `ns=4;s=Line1/Pump1/Speed` and its siblings become one row
+  proposing `ns=4;s=Line1/Pump1/*`, numeric identifiers listed under their
+  namespace because digits have no structure to group by. `enforce` decides
+  whether the policy is in force while the run measures, and is off by default
+  with a warning, because a run that is also deciding cannot tell you what the
+  policy would have broken.
+
+- **The report leads with what it could not read.** A channel in
+  `sign_and_encrypt` leaves the relay nothing, so a run over one records no nodes
+  at all — and a report that did not say so would read as a run over an idle
+  listener. `opaque_messages` is the first finding in the file, with what to
+  change to learn from them.
+
+- **A proposal narrower than the class, in three ways the tests forced.** The
+  services named are the ones that were called, not the ones the subject's class
+  covers, so an identity that read a live value does not get HistoryRead. A
+  server fault is counted against the rows the request itself made rather than by
+  identity and class alone — without which a fault landed on a row with no node
+  in it, the rows the read made still read as traffic the server accepted, and an
+  identity the server refused everything for was proposed a rule for it. And the
+  handshake is in none of the rules, with the reason in the file: a client has
+  sent no identity until it activates, so a rule naming one cannot match the
+  messages that establish it, and somebody who added `open_secure_channel` to
+  these rules would lock every client out.
+
+- **What a run will never propose**: a security policy, a security mode,
+  `allow_deprecated_policies`, or any of the bounds. Seeing a channel in mode
+  `none` is not a reason to allow mode `none`, and a report suggesting the
+  fastest publishing interval it happened to see would widen the one setting this
+  listener exists to hold. They appear as observations under names no rule uses.
+
 ### Added (coap: a relay whose policy is a path)
 
 - **`kind: coap` is a CoAP relay agent (RFC 7252) on UDP 5683** that reads what it
@@ -64,6 +390,36 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 - **In NoSec there is no identity at all.** Most of the field runs CoAP with no
   DTLS, so a rule can name only the source address, and a listener with no `tls`
   section warns rather than letting a deployment find that out.
+
+- **A `tls` section makes it CoAP over DTLS** (RFC 7252 §9), on the address the
+  listener was given — 5684 by convention. The certificates, `client_auth` and
+  `client_ca_file` are the same configuration every other listener uses,
+  translated into DTLS rather than passed through, so a certificate reload
+  reaches a running DTLS listener exactly as it reaches a TLS one. What has no
+  DTLS equivalent is refused rather than ignored: `min_version: "1.3"` is an
+  error, because §9 is DTLS 1.2 and DTLS 1.3 is not implemented here.
+
+- **A session is an identity**, which is the reason to run DTLS in front of
+  devices at all: `secure_only` on a rule then means something, and "the
+  actuators may only be written by a client that authenticated" becomes a
+  sentence the configuration holds. A refusal inside a session comes back
+  *inside* the session — an answer written to the socket instead would be
+  cleartext to a peer that established a session precisely so that it would not
+  be, and the peer's own stack would discard it, so the failure would look like
+  a timeout rather than a refusal.
+
+- **The per-peer demultiplexing is this listener's own**, because a UDP socket
+  gives one stream of datagrams from everybody where the kernel gives a stream
+  listener one connection per peer. Every part of it is bounded — the peers, the
+  half-open handshakes and the queue per peer — because on UDP a peer that
+  starts a handshake has proved nothing, not even that it can receive. The
+  library's own listener is not used: its Accept performs the handshake before
+  returning, so one slow or hostile peer would stop every other peer
+  establishing.
+
+- `github.com/pion/dtls/v3` enters the tree for this, confined to one file on
+  one kind. See [AMR-050](AMR.md) for the reasoning; a listener with no `tls`
+  section links the library and never calls it.
 
 - `internal/coap` is the wire package: the message layer, the option layer,
   block-wise transfer, Observe, the content format registry and the encoder the

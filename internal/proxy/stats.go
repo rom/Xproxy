@@ -454,8 +454,47 @@ type Stats struct {
 	CoAPUpstreamFail     atomic.Uint64
 	CoAPSendFailed       atomic.Uint64
 	CoAPUnsolicited      atomic.Uint64
+	CoAPHandshakes       atomic.Uint64
+	CoAPHandshakeFailed  atomic.Uint64
+	CoAPDatagramsDropped atomic.Uint64
 	CoAPPending          atomic.Int64
 	CoAPObservers        atomic.Int64
+	CoAPSessions         atomic.Int64
+	// The OPC UA listener's own numbers.
+	//
+	// OPCUAOpaque is the one to read first on a new deployment: it counts the
+	// messages whose body the channel encrypted, which are the messages the
+	// service-level rules did not decide about. A listener with rules about nodes
+	// and a high opaque count is a listener enforcing less than its
+	// configuration reads as, and require_readable_bodies is the answer.
+	//
+	// OPCUAServerFaults is the number that says the two policies disagree: the
+	// server refusing something this relay allowed. On this protocol that usually
+	// means a user the server does not grant what the listener does.
+	OPCUAChannels     atomic.Uint64
+	OPCUASessions     atomic.Uint64
+	OPCUAOpaque       atomic.Uint64
+	OPCUAServerErrors atomic.Uint64
+	OPCUAServerFaults atomic.Uint64
+	// The IEC 61850 MMS relay.
+	//
+	// MMSPlaintextPasswords is the one to read first on a new deployment: the
+	// associations whose ACSE authentication value was a password in the clear,
+	// which on most of the installed base is the only authentication the IED has.
+	// A high count is not a fault in this relay; it is the estate's own state,
+	// and IEC 62351-4 is what changes it.
+	//
+	// MMSOpaque counts the data values that arrived on a presentation context the
+	// association never defined, which are the messages no service rule decided
+	// about. MMSServerErrors is the IED refusing what this relay allowed, and
+	// MMSServerRefusals the IED refusing the association itself.
+	MMSAssociations       atomic.Uint64
+	MMSSessions           atomic.Uint64
+	MMSPlaintextPasswords atomic.Uint64
+	MMSOpaque             atomic.Uint64
+	MMSServerErrors       atomic.Uint64
+	MMSServerRefusals     atomic.Uint64
+	MMSSelections         atomic.Uint64
 	// The device inventory.
 	//
 	// AssetFindings is the one to alert on: an identity change, or a device
@@ -473,6 +512,30 @@ type Stats struct {
 	// wants is "is the table filling up", and the bound refusing is counted
 	// under the too_many_pending refusal.
 	SNMPPending atomic.Int64
+
+	// SNMP inside DTLS: RFC 6353's transport model on the transport this
+	// protocol actually uses.
+	//
+	// SNMPDTLSHandshakeFailed is the one to alert on, because on this
+	// transport it has two quite different causes and the count is what
+	// separates them: an estate whose certificates expired fails every
+	// handshake, and a scanner sending flights of nonsense at the port fails
+	// every handshake too -- the first stops the sessions count, the second
+	// does not touch it.
+	//
+	// SNMPTSMMessages counts the messages under the transport security model,
+	// which is the number that says the migration off USM is actually
+	// happening. SNMPTSMUnnamed counts those whose certificate mapped to no
+	// security name, which on a listener with require_security_name is a
+	// refusal and on one without is a message decided on its address alone.
+	// SNMPDTLSDropped counts datagrams thrown away for want of room in the
+	// peer table or a peer's queue.
+	SNMPDTLSHandshakes      atomic.Uint64
+	SNMPDTLSHandshakeFailed atomic.Uint64
+	SNMPDTLSSessions        atomic.Int64
+	SNMPDTLSDropped         atomic.Uint64
+	SNMPTSMMessages         atomic.Uint64
+	SNMPTSMUnnamed          atomic.Uint64
 
 	// The NTP and NTS gateway.
 	//
@@ -928,6 +991,12 @@ type Snapshot struct {
 	SNMPDiscoveries       uint64 `json:"snmp_discoveries"`
 	SNMPOriginated        uint64 `json:"snmp_originated"`
 	SNMPPending           int64  `json:"snmp_pending"`
+	SNMPDTLSHandshakes    uint64 `json:"snmp_dtls_handshakes"`
+	SNMPDTLSHandshakeFail uint64 `json:"snmp_dtls_handshake_failed"`
+	SNMPDTLSSessions      int64  `json:"snmp_dtls_sessions"`
+	SNMPDTLSDropped       uint64 `json:"snmp_dtls_datagrams_dropped"`
+	SNMPTSMMessages       uint64 `json:"snmp_tsm_messages"`
+	SNMPTSMUnnamed        uint64 `json:"snmp_tsm_unnamed"`
 	LDAPSessions          uint64 `json:"ldap_sessions"`
 	LDAPSessionsOpen      int64  `json:"ldap_sessions_open"`
 	LDAPRequests          uint64 `json:"ldap_requests"`
@@ -1023,8 +1092,24 @@ type Snapshot struct {
 	CoAPUpstreamFail      uint64 `json:"coap_upstream_failed"`
 	CoAPSendFailed        uint64 `json:"coap_send_failed"`
 	CoAPUnsolicited       uint64 `json:"coap_unsolicited"`
+	CoAPHandshakes        uint64 `json:"coap_handshakes"`
+	CoAPHandshakeFailed   uint64 `json:"coap_handshakes_failed"`
+	CoAPDatagramsDropped  uint64 `json:"coap_datagrams_dropped"`
 	CoAPPending           int64  `json:"coap_pending"`
 	CoAPObservers         int64  `json:"coap_observers"`
+	CoAPSessions          int64  `json:"coap_sessions"`
+	OPCUAChannels         uint64 `json:"opcua_channels"`
+	OPCUASessions         uint64 `json:"opcua_sessions"`
+	OPCUAOpaque           uint64 `json:"opcua_opaque_bodies"`
+	OPCUAServerErrors     uint64 `json:"opcua_server_errors"`
+	OPCUAServerFaults     uint64 `json:"opcua_server_faults"`
+	MMSAssociations       uint64 `json:"mms_associations"`
+	MMSSessions           uint64 `json:"mms_sessions"`
+	MMSPlaintextPasswords uint64 `json:"mms_plaintext_passwords"`
+	MMSOpaque             uint64 `json:"mms_opaque_contexts"`
+	MMSServerErrors       uint64 `json:"mms_server_errors"`
+	MMSServerRefusals     uint64 `json:"mms_server_refusals"`
+	MMSSelections         uint64 `json:"mms_selections"`
 	AssetObservations     uint64 `json:"asset_observations"`
 	AssetFindings         uint64 `json:"asset_findings"`
 	AssetUnexpected       uint64 `json:"asset_unexpected_role"`
@@ -1436,6 +1521,12 @@ func (s *Stats) snapshot() Snapshot {
 		SNMPDiscoveries:         s.SNMPDiscoveries.Load(),
 		SNMPOriginated:          s.SNMPOriginated.Load(),
 		SNMPPending:             s.SNMPPending.Load(),
+		SNMPDTLSHandshakes:      s.SNMPDTLSHandshakes.Load(),
+		SNMPDTLSHandshakeFail:   s.SNMPDTLSHandshakeFailed.Load(),
+		SNMPDTLSSessions:        s.SNMPDTLSSessions.Load(),
+		SNMPDTLSDropped:         s.SNMPDTLSDropped.Load(),
+		SNMPTSMMessages:         s.SNMPTSMMessages.Load(),
+		SNMPTSMUnnamed:          s.SNMPTSMUnnamed.Load(),
 		LDAPSessions:            s.LDAPSessions.Load(),
 		LDAPSessionsOpen:        s.LDAPSessionsOpen.Load(),
 		LDAPRequests:            s.LDAPRequests.Load(),
@@ -1530,8 +1621,24 @@ func (s *Stats) snapshot() Snapshot {
 		CoAPUpstreamFail:        s.CoAPUpstreamFail.Load(),
 		CoAPSendFailed:          s.CoAPSendFailed.Load(),
 		CoAPUnsolicited:         s.CoAPUnsolicited.Load(),
+		CoAPHandshakes:          s.CoAPHandshakes.Load(),
+		CoAPHandshakeFailed:     s.CoAPHandshakeFailed.Load(),
+		CoAPDatagramsDropped:    s.CoAPDatagramsDropped.Load(),
 		CoAPPending:             s.CoAPPending.Load(),
 		CoAPObservers:           s.CoAPObservers.Load(),
+		CoAPSessions:            s.CoAPSessions.Load(),
+		OPCUAChannels:           s.OPCUAChannels.Load(),
+		OPCUASessions:           s.OPCUASessions.Load(),
+		OPCUAOpaque:             s.OPCUAOpaque.Load(),
+		OPCUAServerErrors:       s.OPCUAServerErrors.Load(),
+		OPCUAServerFaults:       s.OPCUAServerFaults.Load(),
+		MMSAssociations:         s.MMSAssociations.Load(),
+		MMSSessions:             s.MMSSessions.Load(),
+		MMSPlaintextPasswords:   s.MMSPlaintextPasswords.Load(),
+		MMSOpaque:               s.MMSOpaque.Load(),
+		MMSServerErrors:         s.MMSServerErrors.Load(),
+		MMSServerRefusals:       s.MMSServerRefusals.Load(),
+		MMSSelections:           s.MMSSelections.Load(),
 		DHCPClients:             s.DHCPClients.Load(),
 		AssetObservations:       s.AssetObservations.Load(),
 		AssetFindings:           s.AssetFindings.Load(),

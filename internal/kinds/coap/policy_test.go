@@ -268,3 +268,142 @@ func clientReq(t *testing.T, code wire.Code, segs ...string) request {
 	}
 	return request{from: netip.MustParseAddr("192.0.2.10"), msg: m, at: time.Now()}
 }
+
+// A rule's own narrowing, each field on its own.
+//
+// These are the fields that narrow without selecting: a rule's paths and methods
+// choose which rule decides, and then these decide within it. So a rule whose
+// traffic breaks one of them must be refused by that rule and named by it, rather
+// than falling through to a rule that would have allowed it.
+func TestARulesNarrowingAppliesWithinTheRule(t *testing.T) {
+	t.Run("the queries", func(t *testing.T) {
+		p := compiled(t, &config.CoAPListener{
+			AllowQueries: []string{"*"},
+			Rules: []config.CoAPRule{{
+				Name: "telemetry", Action: "allow", Paths: []string{"/3303/..."},
+				Queries: []string{"unit=c", "fresh=*"},
+			}},
+		})
+		ok := clientReq(t, wire.GET, "3303", "0", "5700")
+		ok.msg.Add(wire.OptionURIQuery, []byte("unit=c"))
+		ok.msg.Add(wire.OptionURIQuery, []byte("fresh=1"))
+		if d := p.Decide(ok); !d.Allow {
+			t.Errorf("a listed query was refused: %s %s", d.Reason, d.Detail)
+		}
+		bad := clientReq(t, wire.GET, "3303", "0", "5700")
+		bad.msg.Add(wire.OptionURIQuery, []byte("unit=c"))
+		bad.msg.Add(wire.OptionURIQuery, []byte("debug=1"))
+		d := p.Decide(bad)
+		if d.Allow || d.Reason != "query_not_allowed" || d.Rule != "telemetry" {
+			t.Errorf("allow %v reason %q rule %q detail %q",
+				d.Allow, d.Reason, d.Rule, d.Detail)
+		}
+	})
+
+	t.Run("the content formats", func(t *testing.T) {
+		p := compiled(t, &config.CoAPListener{
+			ContentFormats: []string{"application/cbor", "application/json"},
+			Rules: []config.CoAPRule{{
+				Name: "lighting", Action: "allow", Paths: []string{"/3311/..."},
+				ContentFormats: []string{"application/cbor"},
+			}},
+		})
+		ok := clientReq(t, wire.PUT, "3311", "0", "5850")
+		ok.msg.Set(wire.OptionContentFormat, []byte{60}) // cbor
+		if d := p.Decide(ok); !d.Allow {
+			t.Errorf("the rule's own format was refused: %s %s", d.Reason, d.Detail)
+		}
+		// JSON is on the listener's list and not on the rule's, which is the
+		// case that says the rule narrows rather than inherits.
+		bad := clientReq(t, wire.PUT, "3311", "0", "5850")
+		bad.msg.Set(wire.OptionContentFormat, []byte{50}) // json
+		d := p.Decide(bad)
+		if d.Allow || d.Reason != "content_format_not_allowed" || d.Rule != "lighting" {
+			t.Errorf("allow %v reason %q rule %q", d.Allow, d.Reason, d.Rule)
+		}
+	})
+
+	t.Run("the payload bound", func(t *testing.T) {
+		p := compiled(t, &config.CoAPListener{
+			MaxPayloadBytes: 1024,
+			Rules: []config.CoAPRule{{
+				Name: "lighting", Action: "allow", Paths: []string{"/3311/..."},
+				MaxPayloadBytes: 16,
+			}},
+		})
+		ok := clientReq(t, wire.PUT, "3311", "0", "5850")
+		ok.msg.Payload = []byte("on")
+		if d := p.Decide(ok); !d.Allow {
+			t.Errorf("a small payload was refused: %s %s", d.Reason, d.Detail)
+		}
+		// Well inside the listener's bound and outside the rule's.
+		bad := clientReq(t, wire.PUT, "3311", "0", "5850")
+		bad.msg.Payload = []byte(strings.Repeat("x", 64))
+		d := p.Decide(bad)
+		if d.Allow || d.Reason != "payload_too_large" || d.Rule != "lighting" {
+			t.Errorf("allow %v reason %q rule %q", d.Allow, d.Reason, d.Rule)
+		}
+		if !d.Hard {
+			t.Error("a rule's payload bound was not hard, so shadow mode would carry it")
+		}
+	})
+
+	t.Run("the clients", func(t *testing.T) {
+		p := compiled(t, &config.CoAPListener{
+			Rules: []config.CoAPRule{
+				{Name: "operators", Action: "allow", Clients: []string{"192.0.2.0/24"},
+					Paths: []string{"/3311/..."}},
+				{Name: "everyone-else", Action: "deny", Paths: []string{"/3311/..."}},
+			},
+		})
+		// 192.0.2.10 is what clientReq sends from.
+		if d := p.Decide(clientReq(t, wire.PUT, "3311", "0", "5850")); !d.Allow ||
+			d.Rule != "operators" {
+			t.Errorf("allow %v rule %q", d.Allow, d.Rule)
+		}
+		outside := clientReq(t, wire.PUT, "3311", "0", "5850")
+		outside.from = netip.MustParseAddr("198.51.100.7")
+		d := p.Decide(outside)
+		if d.Allow || d.Rule != "everyone-else" {
+			t.Errorf("allow %v rule %q: the first rule's client list did not select it",
+				d.Allow, d.Rule)
+		}
+	})
+}
+
+// allow_unknown_content_formats, which is on by default because the registry grows
+// faster than any table in this relay -- and which an estate that has written its
+// formats down turns off, so that a number nobody can name is a refusal rather
+// than a payload somebody has to go and read.
+func TestAnUnknownContentFormatCanBeRefused(t *testing.T) {
+	odd := func() request {
+		r := clientReq(t, wire.PUT, "3303", "0", "5700")
+		// A number in no registry this relay carries.
+		r.msg.Set(wire.OptionContentFormat, []byte{0x30, 0x39}) // 12345
+		r.msg.Payload = []byte("x")
+		return r
+	}
+	open := compiled(t, &config.CoAPListener{
+		Rules: []config.CoAPRule{{Name: "all", Action: "allow"}},
+	})
+	if d := open.Decide(odd()); !d.Allow {
+		t.Errorf("an unnamed format was refused by default: %s %s", d.Reason, d.Detail)
+	}
+
+	no := false
+	strict := compiled(t, &config.CoAPListener{
+		AllowUnknownContentFormats: &no,
+		Rules:                      []config.CoAPRule{{Name: "all", Action: "allow"}},
+	})
+	d := strict.Decide(odd())
+	if d.Allow || d.Reason != "content_format_not_allowed" {
+		t.Errorf("allow %v reason %q", d.Allow, d.Reason)
+	}
+	// A format it can name still travels, so what decided was the naming rather
+	// than a list nobody wrote.
+	named := clientReq(t, wire.PUT, "3303", "0", "5700")
+	named.msg.Set(wire.OptionContentFormat, []byte{60})
+	if d := strict.Decide(named); !d.Allow {
+		t.Errorf("a named format was refused: %s %s", d.Reason, d.Detail)
+	}
+}

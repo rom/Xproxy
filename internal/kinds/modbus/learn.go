@@ -1,19 +1,13 @@
 package modbus
 
 import (
-	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
-	"github.com/rom/xproxy/internal/acceptgroup"
+	"github.com/rom/xproxy/internal/learn"
 	wire "github.com/rom/xproxy/internal/modbus"
-
 	"github.com/rom/xproxy/internal/numrange"
 )
 
@@ -69,76 +63,108 @@ type observation struct {
 }
 
 // Learner records traffic and writes the report.
+//
+// The table, the interval, the atomic counters and the atomic file write are
+// internal/learn's, which every kind since IEC 104 uses. What is here is the two
+// things that are Modbus's own: what a subject *is*, and the per-address value
+// baseline -- which is kept beside the subjects rather than inside them because a
+// value's envelope is a property of the point and not of whoever wrote it.
 type Learner struct {
-	path     string
-	interval time.Duration
-	max      int
-	listener string
-
-	mu   sync.Mutex
-	seen map[subjectKey]*observation
+	run *learn.Run[subjectKey, observation]
 	// base is the per-address value baseline, which is what a value policy is
-	// written from. Kept beside the subjects rather than inside them because a
-	// value's envelope is a property of the point and not of whoever wrote it.
+	// written from.
 	base *baselines
-	// order is insertion order, so the bound drops the oldest subject
-	// rather than a random one.
-	order []subjectKey
-
-	// Dropped counts the subjects the bound could not hold, and
-	// Observed the frames recorded. A learning run that quietly stopped
-	// learning is worse than one that says so.
-	Dropped, Observed atomic.Uint64
-	Writes, Failures  atomic.Uint64
-
-	stop chan struct{}
-	once sync.Once
-	// running is the report loop, and what Stop waits for. It is
-	// acceptgroup rather than a bare WaitGroup because Start and Stop are
-	// called from the listener's own lifecycle: a shutdown that arrives
-	// before serve reached Start would Wait at zero and then be Added to.
-	running acceptgroup.Group
 }
 
-// NewLearner prepares a learner. The file is written on the interval and
-// at shutdown.
+// NewLearner prepares a learner. The file is written on the interval and at
+// shutdown.
 func NewLearner(listener, path string, interval time.Duration, max int) *Learner {
-	if interval <= 0 {
-		interval = 5 * time.Minute
-	}
-	if max <= 0 {
-		max = 8192
-	}
-	return &Learner{path: path, interval: interval, max: max, listener: listener,
-		seen: map[subjectKey]*observation{}, base: newBaselines(), stop: make(chan struct{})}
+	l := &Learner{base: newBaselines()}
+	l.run = learn.New(learn.Options[subjectKey, observation]{
+		Kind:     "modbus",
+		Listener: listener,
+		Path:     path,
+		Interval: interval,
+		Max:      max,
+		Less:     lessSubject,
+		Clone:    observation.clone,
+		Render: func(listener string, subjects []learn.Subject[subjectKey, observation],
+			st learn.Stats) string {
+			return l.report(listener, subjects, st)
+		},
+	})
+	return l
 }
 
-// Start runs the periodic write. onError hears about a report that could
-// not be written, because a learning run whose file is not there is a
-// week nobody gets back.
+// lessSubject orders the rows: who, as what, to which device, doing what.
+func lessSubject(a, b subjectKey) bool {
+	if a.client != b.client {
+		return a.client < b.client
+	}
+	if a.role != b.role {
+		return a.role < b.role
+	}
+	if a.unit != b.unit {
+		return a.unit < b.unit
+	}
+	return a.function < b.function
+}
+
+// Dropped, Observed, Writes and Failures are the run's own counters, exposed
+// because the listener's status view and the tests read them.
+func (l *Learner) Dropped() uint64 { return counter(l, func() uint64 { return l.run.Dropped.Load() }) }
+func (l *Learner) Observed() uint64 {
+	return counter(l, func() uint64 { return l.run.Observed.Load() })
+}
+func (l *Learner) Writes() uint64 { return counter(l, func() uint64 { return l.run.Writes.Load() }) }
+func (l *Learner) Failures() uint64 {
+	return counter(l, func() uint64 { return l.run.Failures.Load() })
+}
+
+func counter(l *Learner, load func() uint64) uint64 {
+	if l == nil || l.run == nil {
+		return 0
+	}
+	return load()
+}
+
+// Subjects is how many subjects the table holds.
+func (l *Learner) Subjects() int {
+	if l == nil {
+		return 0
+	}
+	return l.run.Subjects()
+}
+
+// Report renders what was learned as YAML: a description of the traffic, and under
+// it a rule set that permits exactly what was seen.
+//
+// The rules are deliberately one per client, role and unit rather than one per
+// frame: a rule per observation would be a rule set nobody reads. The addresses are
+// the ranges actually used, widened to nothing, and the value bounds are the values
+// actually written -- which an engineer then widens on purpose, having seen what the
+// traffic is.
+func (l *Learner) Report() string {
+	if l == nil {
+		return ""
+	}
+	return l.run.Report()
+}
+
+// Write replaces the file atomically.
+func (l *Learner) Write() error {
+	if l == nil {
+		return nil
+	}
+	return l.run.Write()
+}
+
+// Start runs the periodic write.
 func (l *Learner) Start(onError func(error)) {
 	if l == nil {
 		return
 	}
-	if !l.running.Enter() {
-		// Stopped before it started.
-		return
-	}
-	go func() {
-		defer l.running.Leave()
-		t := time.NewTicker(l.interval)
-		defer t.Stop()
-		for {
-			select {
-			case <-l.stop:
-				return
-			case <-t.C:
-				if err := l.Write(); err != nil && onError != nil {
-					onError(err)
-				}
-			}
-		}
-	}()
+	l.run.Start(onError)
 }
 
 // Stop ends the loop and writes the report one last time.
@@ -146,14 +172,7 @@ func (l *Learner) Stop() error {
 	if l == nil {
 		return nil
 	}
-	var err error
-	l.once.Do(func() {
-		close(l.stop)
-		l.running.Close()
-		l.running.Wait(context.Background())
-		err = l.Write()
-	})
-	return err
+	return l.run.Stop()
 }
 
 // Observe records one request and what was decided about it.
@@ -163,71 +182,53 @@ func (l *Learner) Observe(req request, allowed bool, now time.Time) {
 	}
 	key := subjectKey{client: req.client.String(), role: req.role,
 		unit: req.unit, function: req.pdu.Function}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	o := l.seen[key]
-	if o == nil {
-		if len(l.seen) >= l.max {
-			// The bound is reached. The oldest subject goes, and the
-			// drop is counted: a report that silently held the first
-			// eight thousand clients and none after them would be a
-			// report nobody could trust.
-			oldest := l.order[0]
-			l.order = l.order[1:]
-			delete(l.seen, oldest)
-			l.Dropped.Add(1)
-		}
-		o = &observation{first: now, minValue: 1 << 30, maxValue: -(1 << 30)}
-		l.seen[key] = o
-		l.order = append(l.order, key)
-	}
-	o.last = now
-	o.frames++
-	if !allowed {
-		o.denied++
-	}
-	l.Observed.Add(1)
 	p := req.pdu
-	if p.HasRange {
-		if last, ok := p.Last(); ok {
-			o.addresses = addRange(o.addresses, int(p.Address), int(last))
-		}
-	}
-	if lo, hi, ok := writeSpan(p); ok && hi >= 0 {
-		o.writeAddresses = addRange(o.writeAddresses, lo, hi)
-	}
-	// The per-address baseline. The subject-wide span below is kept as an
-	// observation because it answers "did this master write values at all",
-	// and it is no longer *proposed* as a bound: one span for every register a
-	// master touched permits the narrow ones to be set to the widest one's
-	// limit.
+	// The per-address baseline, outside the subject table because it is keyed on
+	// the point rather than on who wrote it.
 	l.base.observe(req.unit, p, now)
-	// carriesValues for the same reason it is used there: a coil write's
-	// Registers holds 0xFF00, a masked write's holds two masks and a diagnostic's
-	// holds a sub-function argument. Recording any of them here reported a
-	// values_written span the plant never wrote -- 65280..65280 for a coil
-	// somebody switched on.
-	var regs []uint16
-	if carriesValues(p.Function) {
-		regs = p.Registers
-	}
-	for _, v := range regs {
-		val := int(v)
-		o.haveValues = true
-		if val < o.minValue {
-			o.minValue = val
+	l.run.Observe(key, func(o *observation, first bool) {
+		if first {
+			o.first = now
+			o.minValue, o.maxValue = 1<<30, -(1 << 30)
 		}
-		if val > o.maxValue {
-			o.maxValue = val
+		o.last = now
+		o.frames++
+		if !allowed {
+			o.denied++
 		}
-	}
-	for _, on := range p.Coils {
-		if on {
-			o.coilSet = true
-		} else {
-			o.coilClear = true
+		if p.HasRange {
+			if last, ok := p.Last(); ok {
+				o.addresses = addRange(o.addresses, int(p.Address), int(last))
+			}
 		}
-	}
+		if lo, hi, ok := writeSpan(p); ok && hi >= 0 {
+			o.writeAddresses = addRange(o.writeAddresses, lo, hi)
+		}
+		// carriesValues decides what counts as a value: a coil write's Registers
+		// holds 0xFF00, a masked write's holds two masks and a diagnostic's holds
+		// a sub-function argument. Recording any of them here reported a
+		// values_written span the plant never wrote -- 65280..65280 for a coil
+		// somebody switched on.
+		if carriesValues(p.Function) {
+			for _, v := range p.Registers {
+				val := int(v)
+				o.haveValues = true
+				if val < o.minValue {
+					o.minValue = val
+				}
+				if val > o.maxValue {
+					o.maxValue = val
+				}
+			}
+		}
+		for _, on := range p.Coils {
+			if on {
+				o.coilSet = true
+			} else {
+				o.coilClear = true
+			}
+		}
+	})
 }
 
 // ObserveException records that the device refused a request, which is
@@ -240,12 +241,13 @@ func (l *Learner) ObserveException(req request, now time.Time) {
 	}
 	key := subjectKey{client: req.client.String(), role: req.role,
 		unit: req.unit, function: req.pdu.Function}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if o := l.seen[key]; o != nil {
+	// ObserveExisting rather than Observe: an exception belongs to a request this
+	// run already recorded, and creating a subject from the answer alone would
+	// invent one the run never saw asked for.
+	l.run.ObserveExisting(key, func(o *observation) {
 		o.exceptions++
 		o.last = now
-	}
+	})
 }
 
 // addRange merges a range into a set, keeping it bounded. Overlapping and
@@ -295,42 +297,6 @@ func mergeRanges(rs []numrange.Range) []numrange.Range {
 	return out
 }
 
-// Write renders the report and replaces the file atomically.
-func (l *Learner) Write() error {
-	if l == nil || l.path == "" {
-		return nil
-	}
-	body := l.Report()
-	dir := filepath.Dir(l.path)
-	tmp, err := os.CreateTemp(dir, ".modbus-learn-*")
-	if err != nil {
-		l.Failures.Add(1)
-		return fmt.Errorf("modbus learn: %w", err)
-	}
-	name := tmp.Name()
-	defer func() { _ = os.Remove(name) }()
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		l.Failures.Add(1)
-		return fmt.Errorf("modbus learn: %w", err)
-	}
-	if _, err := tmp.WriteString(body); err != nil {
-		_ = tmp.Close()
-		l.Failures.Add(1)
-		return fmt.Errorf("modbus learn: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		l.Failures.Add(1)
-		return fmt.Errorf("modbus learn: %w", err)
-	}
-	if err := os.Rename(name, l.path); err != nil {
-		l.Failures.Add(1)
-		return fmt.Errorf("modbus learn: %w", err)
-	}
-	l.Writes.Add(1)
-	return nil
-}
-
 // clone is a copy that shares nothing with the original.
 //
 // A plain value copy would not be. The range sets are slices, and addRange
@@ -338,55 +304,30 @@ func (l *Learner) Write() error {
 // a copy that shared their backing arrays would be read by the renderer, outside
 // the lock, while the next request rewrote it. A data race, and a report that
 // could name a range half way through being merged.
-func (o *observation) clone() observation {
-	c := *o
+func (o observation) clone() observation {
+	c := o
 	c.addresses = append([]numrange.Range(nil), o.addresses...)
 	c.writeAddresses = append([]numrange.Range(nil), o.writeAddresses...)
 	return c
 }
 
-// Report renders what was learned as YAML: a description of the traffic,
-// and under it a rule set that permits exactly what was seen.
-//
-// The rules are deliberately one per client, role and unit rather than
-// one per frame: a rule per observation would be a rule set nobody reads.
-// The addresses are the numrange.Set actually used, widened to nothing, and the
-// value bounds are the values actually written -- which an engineer then
-// widens on purpose, having seen what the traffic is.
-func (l *Learner) Report() string {
-	l.mu.Lock()
-	keys := make([]subjectKey, 0, len(l.seen))
-	for k := range l.seen {
-		keys = append(keys, k)
+// report is the Render callback: the subjects arrive already snapshotted, cloned
+// and ordered, and the baselines are read here because they are keyed on the point
+// rather than on the subject.
+func (l *Learner) report(listener string, subjects []learn.Subject[subjectKey, observation],
+	st learn.Stats) string {
+	keys := make([]subjectKey, 0, len(subjects))
+	snapshot := make([]observation, 0, len(subjects))
+	for _, s := range subjects {
+		keys = append(keys, s.Key)
+		snapshot = append(snapshot, s.Obs)
 	}
-	sort.Slice(keys, func(i, j int) bool {
-		a, b := keys[i], keys[j]
-		if a.client != b.client {
-			return a.client < b.client
-		}
-		if a.role != b.role {
-			return a.role < b.role
-		}
-		if a.unit != b.unit {
-			return a.unit < b.unit
-		}
-		return a.function < b.function
-	})
-	snapshot := make([]observation, 0, len(keys))
-	for _, k := range keys {
-		snapshot = append(snapshot, l.seen[k].clone())
-	}
-	dropped, observed := l.Dropped.Load(), l.Observed.Load()
 	baseKeys, basePts, baseDropped := l.base.snapshot()
-	l.mu.Unlock()
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "# Modbus traffic observed by listener %q.\n", l.listener)
-	fmt.Fprintf(&b, "# Written %s. %d frames, %d subjects", time.Now().UTC().Format(time.RFC3339), observed, len(keys))
-	if dropped > 0 {
-		fmt.Fprintf(&b, ", %d subjects dropped at the bound (raise learn.max_subjects)", dropped)
-	}
-	b.WriteString(".\n#\n")
+	// "frames" rather than "events": a Modbus subject counts frames, and a shared
+	// header that called one an event would be slightly wrong in order to be shared.
+	b.WriteString(learn.HeaderWith("Modbus", listener, "frames", st, time.Now()))
 	b.WriteString("# Every range below is what was actually used, widened to nothing. Read it,\n")
 	b.WriteString("# decide what the traffic ought to be, and paste the rules under modbus.rules.\n")
 	b.WriteString("# A subject whose exceptions are not zero is a request the device itself\n")
@@ -486,14 +427,4 @@ func sanitise(s string) string {
 		}
 	}
 	return string(out)
-}
-
-// Subjects is how many subjects are held, for the status view.
-func (l *Learner) Subjects() int {
-	if l == nil {
-		return 0
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return len(l.seen)
 }

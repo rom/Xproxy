@@ -327,6 +327,10 @@ type Listener struct {
 	AMQP *AMQPListener `yaml:"amqp"`
 	// S7 configures a kind: s7 listener.
 	S7 *S7Listener `yaml:"s7"`
+	// OPCUA configures a kind: opcua listener.
+	OPCUA *OPCUAListener `yaml:"opcua"`
+	// MMS configures a kind: mms listener.
+	MMS *MMSListener `yaml:"mms"`
 	// Policy is whether this listener enforces its policy or only
 	// evaluates it. It overrides the estate's own policy section.
 	Policy *ListenerPolicy `yaml:"policy"`
@@ -725,6 +729,68 @@ type SNMPListener struct {
 	UpstreamTLSMode string `yaml:"upstream_tls_mode"`
 	// UpstreamTLS verifies the agent when upstream_tls_mode is not none.
 	UpstreamTLS *UpstreamTLS `yaml:"upstream_tls"`
+	// DTLSMode puts RFC 6353's transport model on the transport this
+	// protocol actually uses: none (the default), implicit, or detect.
+	//
+	// implicit is the standard's own arrangement -- UDP 10161, DTLS from the
+	// first octet, every datagram inside a session. A manager authenticates
+	// with a certificate, which is an identity an estate already knows how
+	// to issue, revoke and rotate, rather than a USM pass phrase per user
+	// per engine; and because the session carries the security, the relay
+	// can answer a refusal and rebuild a response without holding a
+	// credential of the manager's. That is the half of the secure upgrade
+	// facing the management station, with plain v2c going on towards a
+	// switch whose firmware has nothing else.
+	//
+	// detect takes both on one port: a datagram beginning with a DTLS
+	// content type is a record, one beginning with a BER SEQUENCE is a plain
+	// SNMP message, and the two cannot be confused because 0x30 is not a
+	// content type and no content type is 0x30. It is not what RFC 6353
+	// describes -- the standard gives DTLS a port of its own -- and it
+	// exists for the estate that is moving: the new managers speak DTLS and
+	// the old pollers do not, and nobody is going to reconfigure two hundred
+	// switches to change a port. What it costs is stated plainly: a client
+	// chooses which of the two it speaks, so the *policy* has to be what
+	// requires the certificate. Write rules naming transports, keep
+	// default_action at deny, and validation will say so if you do not.
+	//
+	// Either mode needs a tls section for the certificate, and a
+	// client_ca_file with client_auth: require_and_verify is what makes the
+	// identity worth naming -- without it a peer presents whatever it likes.
+	DTLSMode string `yaml:"dtls_mode"`
+	// DTLSHandshakeTimeout is how long a peer has to finish a handshake.
+	// Default 10s. It is the bound that matters most on a datagram
+	// listener: a handshake is where a peer that has proved nothing already
+	// costs a socket, a goroutine and a slot in the peer table.
+	DTLSHandshakeTimeout Duration `yaml:"dtls_handshake_timeout"`
+	// DTLSIdleTimeout is how long a session with nothing on it is kept.
+	// Default 5m. A poller on a thirty-second cycle keeps its session,
+	// which matters because the handshake is the expensive part of the
+	// exchange; something that handshook and went quiet does not.
+	DTLSIdleTimeout Duration `yaml:"dtls_idle_timeout"`
+	// MaxDTLSPeers bounds the DTLS sessions this listener holds. Default
+	// 64. Past it a new peer's datagrams are dropped and counted, because
+	// there is no session to refuse them in.
+	MaxDTLSPeers int `yaml:"max_dtls_peers"`
+	// CertToName is RFC 6353 s5.3's snmpTlstmCertToTSNTable: how a peer's
+	// certificate becomes the security name a rule names. Rows are ordered
+	// and the first whose fingerprint matches decides.
+	//
+	// Without it a message under the transport security model has no name,
+	// and what happens then is require_security_name's business. See
+	// SNMPCertName.
+	CertToName []SNMPCertName `yaml:"cert_to_name"`
+	// RequireSecurityName refuses a transport security model message whose
+	// certificate maps to no name. Default true.
+	//
+	// It is true by default because the alternative is a message with no
+	// credential at all: the transport model carries no user, no engine and
+	// no digest, so if the certificate maps to nothing then nothing
+	// identifies the sender and every rule naming a security name is
+	// unmatchable. Turning it off is for a listener whose policy decides on
+	// the address and the objects alone, and which wants DTLS for
+	// confidentiality rather than for identity.
+	RequireSecurityName *bool `yaml:"require_security_name"`
 	// AllowClients and DenyClients are the networks a manager may send
 	// from. Deny is evaluated first. On this protocol the client list is
 	// the most valuable line in the file after read_only, because a
@@ -3623,6 +3689,22 @@ type CoAPListener struct {
 	RateBurst int `yaml:"rate_burst"`
 	// MaxClients bounds the distinct sources tracked at once. Default 8192.
 	MaxClients int `yaml:"max_clients"`
+	// DTLSHandshakeTimeout is how long a peer has to finish a DTLS handshake,
+	// where this listener carries a certificate. Default 10s.
+	//
+	// It is the bound that matters most on a datagram listener, because a
+	// handshake is where a peer that has proved nothing already costs
+	// something: a socket, a goroutine and a slot in the peer table. A peer
+	// that sends one flight and stops would otherwise hold all three for as
+	// long as the process runs.
+	DTLSHandshakeTimeout Duration `yaml:"dtls_handshake_timeout"`
+	// DTLSIdleTimeout is how long a session with nothing on it is kept.
+	// Default 5m.
+	//
+	// It is worth raising where the devices report on a long cycle: a sensor
+	// that speaks once an hour would otherwise handshake every time, which on
+	// a battery-powered device is the expensive part of the exchange.
+	DTLSIdleTimeout Duration `yaml:"dtls_idle_timeout"`
 	// AnswerRefusals sends the response code the standard gives for a
 	// refusal rather than dropping the datagram. Default true, and it
 	// matters more here than elsewhere: a Confirmable request is
@@ -3804,6 +3886,44 @@ type SNMPUser struct {
 	PrivacySecret string `yaml:"privacy_secret"`
 }
 
+// SNMPCertName is one row of RFC 6353 s5.3's certificate-to-security-name
+// table: which certificate it is about, and how the name is derived.
+//
+// The table is what turns a (D)TLS peer's proof that it holds a private key
+// into an identity a rule can name. Rows are tried in order and the first whose
+// fingerprint matches decides -- including deciding that there is no name, when
+// the row matched and the certificate has nothing where the mapping looked.
+type SNMPCertName struct {
+	// Fingerprint is the certificate this row is about: a hexadecimal hash of
+	// its DER, with the algorithm named ("sha256:4f:2a:...") or inferred from
+	// the length. Colons, spaces and hyphens between octets are ignored, so a
+	// fingerprint can be pasted from whatever printed it. RFC 6353 names
+	// sha1, sha256, sha384 and sha512; md5 is refused, because a fingerprint
+	// that can be collided is not an identity.
+	//
+	// "any" matches any certificate the handshake accepted. That is an
+	// extension to the standard's table and it is there because an estate
+	// running its own authority has already decided which authority to trust,
+	// in tls.client_ca_file, and a row per certificate means a configuration
+	// change every time one is reissued. It is safe exactly to the extent
+	// that the listener requires and verifies a client certificate, and
+	// validation warns when it does not.
+	Fingerprint string `yaml:"fingerprint"`
+	// Map is how the name is derived: specified (the name is in this row),
+	// san_rfc822, san_dns, san_ip (a subject alternative name, lowercased
+	// where the standard says to), san_any (the first of those three the
+	// certificate has, in that order) or common_name. Default san_any.
+	//
+	// common_name is RFC 6353's own last resort and it advises against it:
+	// a common name is free text that has meant several things over the
+	// years, and two authorities can issue the same one.
+	Map string `yaml:"map"`
+	// Name is the security name, for map: specified only. With any other
+	// mapping the name comes from the certificate, and a name here would
+	// look like it applied and would not -- so it is refused at load.
+	Name string `yaml:"name"`
+}
+
 // SNMPRule decides one message.
 type SNMPRule struct {
 	// Name identifies the rule in the logs and the counters. Required.
@@ -3820,6 +3940,21 @@ type SNMPRule struct {
 	Communities []string `yaml:"communities"`
 	// Users are the v3 USM user names this rule covers.
 	Users []string `yaml:"users"`
+	// SecurityNames are the transport security model names this rule
+	// covers: the name RFC 6353 s5.3's mapping derived from the peer's
+	// certificate. A rule naming them covers no other message, the way a
+	// rule naming communities covers no v3 message -- a rule written about
+	// one authentication scheme must not apply to another.
+	SecurityNames []string `yaml:"security_names"`
+	// Transports are the transports this rule covers: udp, tcp, tls, dtls.
+	// Empty covers all four.
+	//
+	// It is the field that lets one listener hold two policies at once,
+	// which is what an estate part-way through a migration has: the network
+	// operations centre reaching it inside DTLS with a certificate, the
+	// plant's own pollers still sending plain datagrams, and a different
+	// answer for each.
+	Transports []string `yaml:"transports"`
 	// MinSecurityLevel is the lowest v3 security level this rule covers, so
 	// that "this subtree only with authPriv" is one rule.
 	MinSecurityLevel string `yaml:"min_security_level"`
@@ -11946,4 +12081,663 @@ type BACnetRule struct {
 	// this is for: writes allowed while the engineers are on site and not
 	// at three in the morning.
 	Schedule *ModbusSchedule `yaml:"schedule"`
+}
+
+// OPCUAListener is the settings of a kind: opcua listener: a relay in front of
+// an OPC UA server, on TCP 4840.
+//
+// OPC UA is the protocol the last fifteen years of industrial automation
+// standardised on, and it is the first one in this file that was designed with
+// security in it rather than beside it: certificates on both ends, a signed
+// and encrypted channel, a session with a user identity. That makes a relay's
+// job different here than it is in front of Modbus or S7comm, where the
+// protocol has nothing and the relay supplies everything.
+//
+// Four things shape these settings.
+//
+// **Most of what is worth enforcing is in the handshake, and all of it is in
+// the clear.** Before any service call there is a Hello that names an
+// endpoint, an OpenSecureChannel that names a security policy and carries
+// both certificates, and a CreateSession/ActivateSession pair that names an
+// application and a user. Those fields are readable by construction — they
+// are how the two ends agree on what to encrypt — so `security_policies`,
+// `security_modes`, `application_uris`, `token_kinds` and `users` work on
+// every channel regardless of what it then does to its bodies. They are also
+// the cheapest lines in this section: a listener that admits only
+// Basic256Sha256 in mode sign_and_encrypt, from two named applications, with
+// no anonymous token, has excluded most of what goes wrong without naming a
+// single node.
+//
+// **Whether the service rules apply at all is a property of the channel.**
+// MessageSecurityMode has three values and they mean three different things
+// to a reader. With `none` everything is plaintext. With `sign` the body is
+// signed and *not* encrypted, so this relay reads every node id and method
+// argument — and never modifies one, because the signature is over exactly
+// the octets the client sent. With `sign_and_encrypt` the body is ciphertext
+// and the relay sees the channel, the sizes and the timing and nothing else.
+// So `nodes`, `services`, `attributes` and `methods` decide traffic on a
+// none or sign channel and are silent on a sign_and_encrypt one. That is a
+// genuine trade-off and not a gap: confidentiality on the wire and
+// service-level enforcement in the middle are alternatives, and
+// `require_readable_bodies` is how a listener says which it wants. Validation
+// warns when service rules are configured alongside a mode that makes them
+// inert, because a rule that never runs is worse than no rule.
+//
+// **This relay does not terminate the secure channel.** It holds no private
+// key of the plant's and performs no key agreement: a relay that decrypted
+// here would be a man in the middle of the one industrial protocol that was
+// designed to notice, and the certificates the two ends check would have to
+// be this relay's. Everything below works on what the channel leaves
+// readable.
+//
+// **A write and a call are not the same risk.** `services` is the coarse
+// allow list; `attributes` and `write_attributes` are what separate reading a
+// process value from changing who may write it, and they matter because a
+// write to attribute 13 moves an actuator while a write to attribute 17
+// changes the permissions on it. Both arrive as a Write, and a policy that
+// named only the node would have allowed either.
+type OPCUAListener struct {
+	// Upstream is the server pool. Required.
+	Upstream string `yaml:"upstream"`
+	// AllowClients and DenyClients are the networks a client may connect
+	// from. Deny is evaluated first. An empty allow list allows every client
+	// the deny list does not refuse, which validation advises against on a
+	// listener that reaches a plant.
+	AllowClients []string `yaml:"allow_clients"`
+	DenyClients  []string `yaml:"deny_clients"`
+
+	// Endpoints are the endpoint URLs a client may name in its Hello and its
+	// CreateSession, as glob patterns. Empty allows any.
+	//
+	// Behind a relay a client's endpoint URL names the relay rather than the
+	// server, because the client is saying where it believes it connected. A
+	// server that insists on its own hostname will reject it, which is an
+	// interoperability fact to configure around rather than a fault: name the
+	// relay's own address in the server's endpoint list.
+	Endpoints []string `yaml:"endpoints"`
+	// AllowReverseHello carries a ReverseHello: a server dialling outward to
+	// reach a client behind a firewall. Default false.
+	//
+	// It inverts the direction everything else here assumes. The peer that
+	// dialled is the one that will be trusted as a server, so a listener that
+	// does not mean to support the pattern should refuse the message rather
+	// than pass it and find out.
+	AllowReverseHello bool `yaml:"allow_reverse_hello"`
+
+	// SecurityPolicies are the policy URIs a channel may be opened with,
+	// by short name: None, Basic128Rsa15, Basic256, Basic256Sha256,
+	// Aes128_Sha256_RsaOaep, Aes256_Sha256_RsaPss. Empty allows the three
+	// the standard has not withdrawn.
+	SecurityPolicies []string `yaml:"security_policies"`
+	// DenySecurityPolicies is the deny list, which no rule can override.
+	DenySecurityPolicies []string `yaml:"deny_security_policies"`
+	// AllowDeprecatedPolicies carries Basic128Rsa15 and Basic256: SHA-1
+	// based, withdrawn in IEC 62541 1.04, and usually still switched on
+	// because one old client needs them. Default false.
+	//
+	// It is a separate knob from naming them in SecurityPolicies so that the
+	// deprecation is stated where somebody reviewing the file will read it,
+	// rather than hidden in a list of six similar-looking URIs.
+	AllowDeprecatedPolicies bool `yaml:"allow_deprecated_policies"`
+	// SecurityModes are the message security modes a channel may ask for:
+	// none, sign, sign_and_encrypt. Empty allows sign and sign_and_encrypt,
+	// so a channel with no protection at all is refused until named.
+	SecurityModes []string `yaml:"security_modes"`
+	// RequireReadableBodies refuses a channel in mode sign_and_encrypt, so
+	// that the service-level rules below apply to every message this listener
+	// carries. Default false.
+	//
+	// Turning it on trades confidentiality on this hop for enforcement in the
+	// middle: mode sign still authenticates every message and still detects
+	// modification, and it leaves the body readable. It is the right choice
+	// where the segment between the relay and the server is trusted and the
+	// clients are not, and the wrong one where the wire itself is the threat.
+	RequireReadableBodies bool `yaml:"require_readable_bodies"`
+	// MaxTokenLifetime bounds the security token lifetime a client may ask
+	// for, 0 for no bound. A client asking for a very long one is a client
+	// asking not to rotate its keys; the standard's own default is an hour.
+	MaxTokenLifetime Duration `yaml:"max_token_lifetime"`
+
+	// ApplicationURIs are the client application URIs a CreateSession may
+	// name, as glob patterns. Empty allows any.
+	//
+	// The URI must also appear in the client's own certificate, which is the
+	// cheapest identity check the protocol has: a server checks it and so does
+	// this relay when RequireCertificateURI is on.
+	ApplicationURIs []string `yaml:"application_uris"`
+	// RequireCertificateURI refuses a CreateSession whose application URI is
+	// not a subjectAltName of the certificate it presented. Default true.
+	RequireCertificateURI *bool `yaml:"require_certificate_uri"`
+	// RequireClientCertificate refuses a CreateSession that presents none.
+	// Default true: a session with no certificate is a session with no
+	// application identity, whatever user it then activates as.
+	RequireClientCertificate *bool `yaml:"require_client_certificate"`
+	// TokenKinds are the user identity token kinds an ActivateSession may
+	// present: anonymous, username, x509, issued. Empty allows all but
+	// anonymous.
+	TokenKinds []string `yaml:"token_kinds"`
+	// Users are the user names a username token may name, as glob patterns.
+	// Empty allows any, which on a plant is worth narrowing: the accounts a
+	// server has are usually four or five and they do not change.
+	Users []string `yaml:"users"`
+	// DenyUsers is the deny list, which no rule can override.
+	DenyUsers []string `yaml:"deny_users"`
+	// RefusePlaintextPasswords refuses a username token whose password
+	// carries no encryption algorithm. Default true.
+	//
+	// Under mode none such a password is on the wire as the operator typed
+	// it. Under sign it is readable by anything on the path, this relay
+	// included, which is the reason this defaults on rather than being left to
+	// the mode: a relay that can see a plant's passwords is a relay worth
+	// attacking for them.
+	RefusePlaintextPasswords *bool `yaml:"refuse_plaintext_passwords"`
+
+	// ReadOnly refuses every service that changes anything, for every
+	// client, before any rule is read: Write, Call, AddNodes, DeleteNodes,
+	// AddReferences, DeleteReferences, HistoryUpdate, RegisterServer and
+	// TransferSubscriptions. It cannot be overridden by a rule, because a
+	// read-only listener that one rule could write through is not a read-only
+	// listener.
+	//
+	// TransferSubscriptions is on that list and it is the one worth explaining.
+	// It moves a subscription from one session to another, which is how a client
+	// takes over another client's stream of values — and on a plant, taking over
+	// the stream an operator's screen is drawing from is a change to what that
+	// operator sees.
+	//
+	// Creating and modifying subscriptions is not on that list: it changes
+	// state the server holds rather than anything the plant does, and a
+	// read-only listener that could not subscribe would be a listener no HMI
+	// can use. The subscription bounds below are what police it instead.
+	ReadOnly bool `yaml:"read_only"`
+	// Services is the allow list, by name: read, write, browse, call,
+	// create_subscription and the rest. Empty allows what an HMI does —
+	// the discovery and session services, read, browse, the subscription and
+	// monitored-item services, history_read — and nothing that changes a
+	// value, a node or the plant.
+	Services []string `yaml:"services"`
+	// DenyServices is the deny list, which no rule can override.
+	DenyServices []string `yaml:"deny_services"`
+
+	// Namespaces are the namespace indices a node id may name, as numbers or
+	// "2-4" ranges, or namespace URIs. Empty allows any.
+	//
+	// A URI is the portable form and the one to prefer: an index only means
+	// something against the server's own namespace table, and that table's
+	// order is not guaranteed across a firmware update. A rule written with
+	// indices can silently start naming different nodes.
+	Namespaces []string `yaml:"namespaces"`
+	// Nodes are the node ids a request may name, as glob patterns against the
+	// canonical form: "ns=3;i=1001", "ns=4;s=Motor/*", "ns=3;i=*". Empty allows
+	// any.
+	Nodes []string `yaml:"nodes"`
+	// WriteNodes applies to writing services when set, so one listener can
+	// allow a wide read and a narrow write.
+	WriteNodes []string `yaml:"write_nodes"`
+	// DenyNodes is the deny list, which no rule can override.
+	DenyNodes []string `yaml:"deny_nodes"`
+	// Methods are the method node ids a Call may invoke, as glob patterns.
+	// Empty, with call allowed, allows any method on any allowed node.
+	//
+	// A Call names two nodes: the object it is on and the method itself. Both
+	// are checked — the object against Nodes and the method against Methods —
+	// because allowing Reset on one pump is not allowing it on every pump of
+	// that model.
+	Methods []string `yaml:"methods"`
+	// DenyMethods is the deny list, which no rule can override.
+	DenyMethods []string `yaml:"deny_methods"`
+	// Attributes are the node attributes a Read or a monitored item may name:
+	// value, browse_name, display_name, description, data_type, access_level
+	// and the rest. Empty allows any.
+	Attributes []string `yaml:"attributes"`
+	// WriteAttributes are the attributes a Write may change. Empty allows
+	// `value` alone, which is the line that separates moving an actuator from
+	// changing who may move it: write_mask, access_level, user_access_level,
+	// executable, user_executable and historizing all govern permissions, and
+	// all arrive as an ordinary Write.
+	WriteAttributes []string `yaml:"write_attributes"`
+
+	// MaxOperations bounds the operations one request may carry — the nodes
+	// in a Read, the values in a Write, the methods in a Call, the items in a
+	// CreateMonitoredItems. 0 for no bound beyond the parser's.
+	//
+	// A Read naming ten thousand nodes is one request and ten thousand
+	// operations, which is how a legitimate session becomes a load problem.
+	MaxOperations int `yaml:"max_operations"`
+	// MaxWriteOperations applies to writing services when set.
+	MaxWriteOperations int `yaml:"max_write_operations"`
+	// MaxMonitoredItems bounds the monitored items one subscription may hold,
+	// 0 for no bound.
+	MaxMonitoredItems int `yaml:"max_monitored_items"`
+	// MinPublishingInterval is the fastest publishing interval a
+	// CreateSubscription may ask for, 0 for no bound.
+	//
+	// It is the bound that matters most on this protocol, because the
+	// amplification is arithmetic rather than accidental: a one-millisecond
+	// interval over a thousand monitored items is a server asked to send a
+	// thousand values a millisecond, from one session, in valid protocol.
+	MinPublishingInterval Duration `yaml:"min_publishing_interval"`
+	// MinSamplingInterval is the fastest sampling interval a monitored item
+	// may ask for, 0 for no bound. A sampling interval faster than the device
+	// can answer is a device polled as fast as it will go.
+	MinSamplingInterval Duration `yaml:"min_sampling_interval"`
+	// MaxSubscriptions bounds the subscriptions one session may hold, 0 for
+	// no bound.
+	MaxSubscriptions int `yaml:"max_subscriptions"`
+
+	// MaxMessageSize bounds one assembled message, 0 for the package default.
+	MaxMessageSize int `yaml:"max_message_size"`
+	// MaxChunkSize bounds one chunk, which is also the buffer size this
+	// listener will let the two ends negotiate. 0 for the package default.
+	//
+	// It is worth setting rather than leaving open, because the negotiation
+	// is a minimum of the two proposals and a relay that passed both through
+	// unchanged has let the ends agree on a chunk larger than its own buffer.
+	MaxChunkSize int `yaml:"max_chunk_size"`
+	// MaxChunks bounds the chunks in one message, 0 for the package default.
+	MaxChunks int `yaml:"max_chunks"`
+	// MaxRequests bounds the requests one connection may send, 0 for no
+	// bound. A plant session is long-lived, so this is off by default.
+	MaxRequests int `yaml:"max_requests"`
+	// RateLimit and RateBurst bound requests per second per client address,
+	// 0 for no limit.
+	RateLimit int `yaml:"rate_limit"`
+	RateBurst int `yaml:"rate_burst"`
+	// MaxSessions and MaxSessionsPerClient bound concurrent connections.
+	MaxSessions          int `yaml:"max_sessions"`
+	MaxSessionsPerClient int `yaml:"max_sessions_per_client"`
+	// IdleTimeout, SessionDuration and HandshakeTimeout bound a connection.
+	// HandshakeTimeout covers the Hello and the first OpenSecureChannel,
+	// which is where a peer that has opened a socket and said nothing sits.
+	IdleTimeout      Duration `yaml:"idle_timeout"`
+	SessionDuration  Duration `yaml:"session_duration"`
+	HandshakeTimeout Duration `yaml:"handshake_timeout"`
+
+	// Learn records what crosses this listener and writes a proposed policy,
+	// because the drawings say which nodes a server has and the traffic says
+	// which of them anything actually reads. See OPCUALearn.
+	Learn *OPCUALearn `yaml:"learn"`
+
+	// Rules decide each message, in order, first match wins. A message that
+	// matches no rule takes DefaultAction.
+	Rules []OPCUARule `yaml:"rules"`
+	// DefaultAction is deny (the default) or allow.
+	DefaultAction string `yaml:"default_action"`
+	// DenyResponse is fault (the default: a ServiceFault carrying a bad
+	// status code, which is what a server answers when it refuses, so the
+	// client's own library reports a refusal), error (an ERR message and a
+	// close, which ends the connection with a reason on the wire) or close.
+	//
+	// A fault is the one to prefer for a service-level refusal and it is only
+	// available where the body was readable: a refusal decided from the
+	// channel alone, before any session exists, has no request identifier to
+	// answer and becomes an error instead.
+	DenyResponse string `yaml:"deny_response"`
+	// LogRequests writes an access line per message, which on a plant polling
+	// every second is a great many lines.
+	LogRequests bool `yaml:"log_requests"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
+	// MonitorOnly evaluates and enforces nothing, except the hard decisions:
+	// the client list, a message the relay could not read, the bounds, and
+	// every service that changes anything — because a Write forwarded so that
+	// it could be written down is a moved actuator, and a Call forwarded is a
+	// machine that did something.
+	MonitorOnly bool `yaml:"monitor_only"`
+}
+
+// OPCUARule is one rule of an opcua listener's policy.
+type OPCUARule struct {
+	// Name identifies the rule in the logs and the counters. Required.
+	Name string `yaml:"name"`
+	// Action is allow (the default), deny or observe.
+	Action string `yaml:"action"`
+	// Clients, ApplicationURIs, Users and TokenKinds select the traffic by
+	// who it is from. A rule naming a user matches only a session that
+	// activated as one, which is every session after ActivateSession and no
+	// session before it.
+	Clients         []string `yaml:"clients"`
+	ApplicationURIs []string `yaml:"application_uris"`
+	Users           []string `yaml:"users"`
+	TokenKinds      []string `yaml:"token_kinds"`
+	// SecurityPolicies and SecurityModes select by what secures the channel,
+	// which is how "this client may write, but only over an encrypted
+	// channel" is written.
+	SecurityPolicies []string `yaml:"security_policies"`
+	SecurityModes    []string `yaml:"security_modes"`
+	// The rule's own narrowing. The deny lists always win.
+	Services        []string `yaml:"services"`
+	DenyServices    []string `yaml:"deny_services"`
+	Namespaces      []string `yaml:"namespaces"`
+	Nodes           []string `yaml:"nodes"`
+	WriteNodes      []string `yaml:"write_nodes"`
+	DenyNodes       []string `yaml:"deny_nodes"`
+	Methods         []string `yaml:"methods"`
+	DenyMethods     []string `yaml:"deny_methods"`
+	Attributes      []string `yaml:"attributes"`
+	WriteAttributes []string `yaml:"write_attributes"`
+	MaxOperations   int      `yaml:"max_operations"`
+	// Schedule limits the rule to a time window, which is how "the
+	// integrator may call methods during the shutdown window" is written.
+	Schedule *ModbusSchedule `yaml:"schedule"`
+	// Comment is carried into the logs when the rule decides, for the change
+	// record a plant keeps.
+	Comment string `yaml:"comment"`
+}
+
+// OPCUALearn records what crosses an opcua listener and writes a proposal.
+//
+// The reason learning exists at all is that nobody knows what an estate's OPC UA
+// traffic is. A server's address space has thousands of nodes and its own
+// documentation lists all of them; the traffic uses a few dozen. A policy written
+// from the documentation allows everything, and one written from a guess refuses
+// the half nobody wrote down — which on a plant means an HMI screen that stops
+// updating during a shift, and a security control that gets turned off and stays
+// off.
+//
+// Two things about learning on *this* protocol have no counterpart in the other
+// kinds.
+//
+// **A channel that encrypts its bodies teaches nothing about nodes.** Under
+// `sign_and_encrypt` the relay sees the channel, the session and the sizes and no
+// node identifier at all. So a learning run over such a channel produces a report
+// with an identity and no address space, and the report says so per subject and in
+// its header rather than leaving an operator to conclude the plant reads almost
+// nothing. A run meant to learn nodes wants `security_modes: [sign]` or
+// `require_readable_bodies: true` for its duration.
+//
+// **What the report will not propose is the part that bounds amplification.**
+// `min_publishing_interval`, `min_sampling_interval`, `max_operations` and
+// `max_monitored_items` appear as observations, under names no rule uses, because a
+// report that proposed the fastest interval it happened to see would widen the one
+// setting learning must not touch. Nor will it propose a security policy or mode:
+// seeing a channel in mode `none` is not a reason to allow mode `none`, and no run
+// proposes `allow_deprecated_policies`.
+type OPCUALearn struct {
+	// Enabled turns the recording on.
+	Enabled bool `yaml:"enabled"`
+	// File is where the report is written, as YAML. Required when enabled.
+	File string `yaml:"file"`
+	// Interval is how often it is rewritten. Default 5m; it is also written
+	// when the listener shuts down.
+	Interval Duration `yaml:"interval"`
+	// MaxSubjects bounds the observations held: one per identity, service class
+	// and node group seen. Default 8192; past it the newest is dropped and the
+	// drops are counted, because a learning run that quietly stopped learning is
+	// worse than one that says so.
+	MaxSubjects int `yaml:"max_subjects"`
+	// Enforce keeps the policy in force while learning. Default false: a
+	// learning run is normally observe-only, and saying so here is what stops one
+	// being left on by accident.
+	//
+	// It does not disable the hard decisions. A client the lists refuse, a
+	// message the relay could not read, a bound, and every service that changes
+	// the plant are refused whether or not a learning run is in progress —
+	// because a Write forwarded so that it could be written down is a moved
+	// actuator.
+	Enforce bool `yaml:"enforce"`
+}
+
+// MMSListener configures a kind: mms listener: an IEC 61850 MMS relay in front
+// of substation IEDs on TCP 102.
+//
+// What makes this listener different from every other relay kind here is that
+// the protocol's own object names carry the semantics. In front of Modbus the
+// relay has to be told which register is a setpoint; here the name says so. A
+// Write to `XCBR1$CO$Pos$Oper` operates a circuit breaker, a Write to
+// `PTOC1$SG$StrVal$setMag$f` changes a protection relay's trip characteristic,
+// and a Write to `LLN0$BR$brcbST$RptEna` stops the control centre hearing about
+// either. The functional constraint -- the segment between the dollar signs --
+// is what a rule is written about, and it means that a useful policy can be
+// written for an estate whose SCL files nobody has read.
+type MMSListener struct {
+	// Upstream is the IED pool this listener relays to. Required.
+	//
+	// There is no per-name routing, for the same reason IEC 104 has none: an
+	// MMS association is long-lived and its first exchange -- the transport
+	// connection, the association request, the initiate -- names no logical
+	// device at all. A route chosen from the domain could not be chosen until
+	// the first confirmed request, by which time the association is up.
+	Upstream string `yaml:"upstream"`
+	// AllowClients and DenyClients are the networks a client may connect
+	// from. Deny is evaluated first.
+	AllowClients []string `yaml:"allow_clients"`
+	DenyClients  []string `yaml:"deny_clients"`
+
+	// APTitles are the calling AP-titles an association may present, as
+	// object identifiers in dotted form, glob patterns allowed:
+	// `1.1.999.*`. Empty allows any.
+	//
+	// The AP-title is not a credential -- nothing proves it -- but it is what
+	// an SCL file configured and what the IEDs themselves check, so it is the
+	// field an estate's own drawings are written in. Treat it as an address.
+	APTitles []string `yaml:"ap_titles"`
+	// DenyAPTitles is the deny list, which no rule can override.
+	DenyAPTitles []string `yaml:"deny_ap_titles"`
+	// AEQualifiers are the calling AE-qualifiers an association may present,
+	// as numbers or "1-16" ranges. Empty allows any.
+	AEQualifiers []string `yaml:"ae_qualifiers"`
+	// RequireAPTitle refuses an association that presents no calling
+	// AP-title. Default false: a good part of the installed base sends none,
+	// and a listener that refused those would be a listener nobody switches
+	// on. Turn it on where the estate is known to send them.
+	RequireAPTitle bool `yaml:"require_ap_title"`
+
+	// RefusePlaintextPasswords refuses an association whose ACSE
+	// authentication value is a cleartext password. Default false.
+	//
+	// It defaults off, unlike the same knob on the opcua listener, and the
+	// reason is which way the trade falls: IEC 61850-8-1 specifies the
+	// charstring form and IEC 62351-4 is what replaces it, so on most of the
+	// installed base the password *is* the authentication. Refusing it removes
+	// the only check the IED has. What this listener can honestly do is say it
+	// happened -- an alert and a counter on every association that carries one
+	// -- and let an estate that has moved to 62351-4 refuse the ones that have
+	// not.
+	RefusePlaintextPasswords bool `yaml:"refuse_plaintext_passwords"`
+	// AlertOnPlaintextPassword raises a security event for every association
+	// carrying one. Default true, because it is the finding an estate most
+	// often does not know it has.
+	AlertOnPlaintextPassword *bool `yaml:"alert_on_plaintext_password"`
+
+	// Services are the MMS services a client may call, by name: read, write,
+	// get_name_list, file_open, initiate_download_sequence and the rest.
+	// Empty allows what a control centre and an HMI do, which excludes every
+	// domain service, every file write and every program-invocation control.
+	Services []string `yaml:"services"`
+	// DenyServices is the deny list, which no rule can override.
+	DenyServices []string `yaml:"deny_services"`
+	// ServiceClasses is the coarse form of the same list, by what a service
+	// does: browse, read, write, report, dataset, control, domain, file,
+	// session. It is the list to write first, because a substation's services
+	// are eighty and its classes nine.
+	ServiceClasses []string `yaml:"service_classes"`
+	// DenyServiceClasses is its deny list.
+	DenyServiceClasses []string `yaml:"deny_service_classes"`
+
+	// Domains are the logical devices a request may address, as glob
+	// patterns: `AA1J1Q01A1LD0`, `*LD0`. Empty allows any.
+	Domains []string `yaml:"domains"`
+	// DenyDomains is the deny list.
+	DenyDomains []string `yaml:"deny_domains"`
+	// Objects are the object names a request may address, as glob patterns
+	// against `domain/item`: `AA1J1Q01A1LD0/MMXU1$MX$*`. Empty allows any.
+	Objects []string `yaml:"objects"`
+	// DenyObjects is the deny list.
+	DenyObjects []string `yaml:"deny_objects"`
+	// WriteObjects narrows what a Write may address, where reading a wider
+	// set is wanted. Empty means Objects decides both.
+	WriteObjects []string `yaml:"write_objects"`
+
+	// FunctionalConstraints are the constraints a request may address: ST,
+	// MX, CO, SP, CF, SG, SE, BR, RP, LG, GO and the rest. Empty allows any.
+	FunctionalConstraints []string `yaml:"functional_constraints"`
+	// WriteConstraints narrows which constraints a Write may address. Empty
+	// means the listener's own default: ST, MX, SP and CO, which is what an
+	// HMI and a control centre write -- and not SG, SE or CF, because those
+	// change what the device will do in a fault rather than what it is doing
+	// now.
+	WriteConstraints []string `yaml:"write_constraints"`
+	// DenyConstraints is the deny list, which no rule can override.
+	DenyConstraints []string `yaml:"deny_constraints"`
+
+	// AllowOperate carries a Write to a control attribute that operates:
+	// `$CO$...$Oper`. Default true where the constraint is allowed at all,
+	// so that turning CO on does not silently turn operating on.
+	AllowOperate *bool `yaml:"allow_operate"`
+	// RequireSelectBeforeOperate refuses an operate on an object this
+	// association has not selected. Default false.
+	//
+	// It is the one check in this protocol a relay can make that the device
+	// may not: IEC 61850's ctlModel decides whether select-before-operate is
+	// required, ctlModel lives in `$CF$` and is therefore writable, and an IED
+	// configured for direct-operate accepts an Oper from anybody the policy
+	// lets through. A listener that requires the select has put the
+	// interlock back where the configuration can no longer remove it.
+	RequireSelectBeforeOperate bool `yaml:"require_select_before_operate"`
+	// SelectTimeout bounds how long a selection stays good, 0 for the
+	// standard's own 30s.
+	SelectTimeout Duration `yaml:"select_timeout"`
+
+	// ReadOnly refuses every service that changes anything, for every client,
+	// before any rule is read: Write, the domain services, the file writes,
+	// the program-invocation controls, the dataset definitions and the report
+	// enrollments. No rule can override it.
+	//
+	// It is the shorthand for a historian, a neighbouring utility's data link
+	// or an engineering network that has no business commanding. Note that it
+	// refuses more than a Write: deleting a domain is not a Write and changes
+	// a great deal more.
+	ReadOnly bool `yaml:"read_only"`
+	// AllowDomainServices carries the download, upload and delete services
+	// that replace what is inside an IED. Default false, and separate from
+	// the service list so that the decision is stated where a reviewer reads
+	// it rather than hidden among eighty names.
+	AllowDomainServices bool `yaml:"allow_domain_services"`
+
+	// Files are the file paths a file service may name, as glob patterns
+	// against the joined path: `COMTRADE/*`. Empty allows any.
+	Files []string `yaml:"files"`
+	// DenyFiles is the deny list.
+	DenyFiles []string `yaml:"deny_files"`
+
+	// MaxNames bounds the object names one request may address, 0 for no
+	// bound. A Read naming ten thousand objects is one request and ten
+	// thousand reads of an IED that answers them one at a time.
+	MaxNames int `yaml:"max_names"`
+	// MaxWriteNames bounds the same for a Write, 0 to inherit MaxNames.
+	MaxWriteNames int `yaml:"max_write_names"`
+	// MaxFrame bounds one TPKT frame, 0 for 64 KiB.
+	MaxFrame int `yaml:"max_frame"`
+	// MaxRequests bounds the confirmed requests one association may send, 0
+	// for no bound. A substation association is long-lived and polls
+	// continuously, so this is off by default.
+	MaxRequests int `yaml:"max_requests"`
+	// MaxPendingRequests bounds the requests one association may have
+	// outstanding, 0 for the relay's own 64.
+	MaxPendingRequests int `yaml:"max_pending_requests"`
+	// RateLimit and RateBurst bound confirmed requests a second per client
+	// address, 0 for no bound.
+	RateLimit int `yaml:"rate_limit"`
+	RateBurst int `yaml:"rate_burst"`
+	// MaxSessions and MaxSessionsPerClient bound concurrent associations.
+	MaxSessions          int `yaml:"max_sessions"`
+	MaxSessionsPerClient int `yaml:"max_sessions_per_client"`
+	// IdleTimeout and SessionDuration bound one association, 0 for no bound.
+	IdleTimeout     Duration `yaml:"idle_timeout"`
+	SessionDuration Duration `yaml:"session_duration"`
+	// HandshakeTimeout bounds the transport connection, the association
+	// request and the initiate, which is where a peer that opened a socket
+	// and said nothing sits. Default 30s.
+	HandshakeTimeout Duration `yaml:"handshake_timeout"`
+
+	// Rules decide each request, in order, first match wins. A request that
+	// matches no rule takes DefaultAction.
+	Rules []MMSRule `yaml:"rules"`
+	// DefaultAction is deny (the default) or allow.
+	DefaultAction string `yaml:"default_action"`
+	// DenyResponse is how a refused request is answered: error (the default:
+	// a confirmed-error PDU, which is what an IED sends and what a client's
+	// library understands), reject (a reject PDU), drop or close.
+	DenyResponse string `yaml:"deny_response"`
+	// LogRequests logs a line per request, which on a substation polling every
+	// second is a great many lines. A Write, a control operation, a domain
+	// service and an association are logged regardless, because those are
+	// what a change record is about.
+	LogRequests bool `yaml:"log_requests"`
+	// AlertOnDeny raises a security event for every refusal. Default true.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
+	// MonitorOnly evaluates and enforces nothing, except the hard decisions:
+	// the client list, a message the relay could not read, the bounds, and
+	// every service that changes anything -- because a Write forwarded so it
+	// could be written down is a moved breaker.
+	MonitorOnly bool `yaml:"monitor_only"`
+	// Learn records what crosses this listener and writes a proposed rule
+	// set. See MMSLearn.
+	Learn *MMSLearn `yaml:"learn"`
+}
+
+// MMSRule is one rule of an mms listener's policy.
+type MMSRule struct {
+	// Name names the rule in the logs and the counters. Required.
+	Name string `yaml:"name"`
+	// Action is allow, deny or observe. Observe logs and counts and then
+	// keeps looking, which is how a rule is tried on live traffic before it
+	// decides anything.
+	Action string `yaml:"action"`
+	// Comment is carried into the logs when the rule decides, for the change
+	// record a substation keeps.
+	Comment string `yaml:"comment"`
+
+	// Clients are the networks the association came from.
+	Clients []string `yaml:"clients"`
+	// APTitles and AEQualifiers select by who is calling.
+	APTitles     []string `yaml:"ap_titles"`
+	AEQualifiers []string `yaml:"ae_qualifiers"`
+
+	// Services, ServiceClasses and their deny lists narrow the listener's own
+	// for this rule's traffic.
+	Services           []string `yaml:"services"`
+	DenyServices       []string `yaml:"deny_services"`
+	ServiceClasses     []string `yaml:"service_classes"`
+	DenyServiceClasses []string `yaml:"deny_service_classes"`
+	// Domains, Objects, WriteObjects and their deny lists are the rule's own
+	// name narrowing.
+	Domains      []string `yaml:"domains"`
+	DenyDomains  []string `yaml:"deny_domains"`
+	Objects      []string `yaml:"objects"`
+	DenyObjects  []string `yaml:"deny_objects"`
+	WriteObjects []string `yaml:"write_objects"`
+	// FunctionalConstraints, WriteConstraints and DenyConstraints are the
+	// rule's own constraint narrowing.
+	FunctionalConstraints []string `yaml:"functional_constraints"`
+	WriteConstraints      []string `yaml:"write_constraints"`
+	DenyConstraints       []string `yaml:"deny_constraints"`
+	// AllowOperate is the rule's own answer about operating.
+	AllowOperate *bool `yaml:"allow_operate"`
+	// Files and DenyFiles are the rule's own file narrowing.
+	Files     []string `yaml:"files"`
+	DenyFiles []string `yaml:"deny_files"`
+	// MaxNames is the rule's own bound on the names one request may address.
+	MaxNames int `yaml:"max_names"`
+	// Schedule limits the rule to a time window, which is how "the integrator
+	// may download during the outage window" is written.
+	Schedule *ModbusSchedule `yaml:"schedule"`
+}
+
+// MMSLearn configures a learning run on an mms listener.
+type MMSLearn struct {
+	// Enabled turns the recording on.
+	Enabled bool `yaml:"enabled"`
+	// File is where the report is written, as YAML. Required when enabled.
+	File string `yaml:"file"`
+	// Interval is how often it is rewritten, 10s..24h. Default 5m. It is
+	// also written at shutdown.
+	Interval Duration `yaml:"interval"`
+	// MaxSubjects bounds the table: one subject per calling identity, service
+	// class and logical device. Default 8192.
+	MaxSubjects int `yaml:"max_subjects"`
+	// Enforce keeps the policy in force while learning. Default false, which
+	// is the only honest way to find out what a policy would have broken.
+	Enforce bool `yaml:"enforce"`
 }

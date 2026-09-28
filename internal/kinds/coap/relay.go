@@ -15,17 +15,41 @@ import (
 
 // serve runs the two loops: the segment side and the device side.
 func (s *server) serve() {
+	// started is closed however this function leaves, because a shutdown waits on
+	// it before waiting on the loops: a listener whose device socket could not be
+	// opened must not make a shutdown wait out its whole context for goroutines
+	// that were never registered.
+	launched := false
+	defer func() {
+		if !launched {
+			close(s.started)
+		}
+	}()
 	up, err := s.deviceSocket()
 	if err != nil {
 		s.host.Logs().Error.Error("coap could not open its device socket",
 			"listener", s.cfg.Name, "error", err.Error())
 		return
 	}
-	s.up = up
-	s.wg.Add(3)
-	go func() { defer s.wg.Done(); s.fromClients() }()
+	s.up.Store(&deviceSocket{up})
+	s.wg.Add(2)
 	go func() { defer s.wg.Done(); s.fromDevices() }()
 	go func() { defer s.wg.Done(); s.sweep() }()
+	// The segment side is either the socket read straight, or a DTLS session per
+	// peer over the same socket. One listener is one address, so it is one or the
+	// other: RFC 7252 s9 puts the two on different ports for exactly this reason.
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		if s.tls != nil {
+			s.serveDTLS(s.tls)
+			return
+		}
+		s.fromClients()
+	}()
+	// Every Add is done, so a shutdown may now wait on them.
+	launched = true
+	close(s.started)
 	<-s.done
 }
 
@@ -38,6 +62,33 @@ func (s *server) deviceSocket() (net.PacketConn, error) {
 	var lc net.ListenConfig
 	return lc.ListenPacket(context.Background(), "udp", ":0")
 }
+
+// replier is how an answer gets back to the client it is for.
+//
+// In NoSec that is the listener's own socket and the address the request came
+// from. Inside DTLS it is the session the request arrived in, because an answer
+// written to the socket instead would be cleartext sent to a peer that
+// established a session precisely so that it would not be -- and would be
+// discarded by the peer's DTLS stack, so the failure would look like a timeout
+// rather than like a mistake.
+type replier interface {
+	send(b []byte) error
+	// remote is where the answer goes, for the pending table and the logs.
+	remote() net.Addr
+	// secure says the request arrived inside a session, which is the only
+	// identity this protocol offers.
+	secure() bool
+}
+
+// plain writes onto the listener's own socket.
+type plain struct {
+	pc net.PacketConn
+	to net.Addr
+}
+
+func (p plain) send(b []byte) error { _, err := p.pc.WriteTo(b, p.to); return err }
+func (p plain) remote() net.Addr    { return p.to }
+func (p plain) secure() bool        { return false }
 
 func (s *server) fromClients() {
 	// One octet more than the bound, so a message over it is seen to be over it
@@ -53,14 +104,21 @@ func (s *server) fromClients() {
 		}
 		raw := make([]byte, n)
 		copy(raw, buf[:n])
-		s.fromClient(raw, from, false)
+		s.fromClient(raw, plain{pc: s.pc, to: from})
 	}
 }
 
 func (s *server) fromDevices() {
+	// The socket is read once into a local, because serve() has already stored it
+	// and this loop is the only thing reading it: a load per datagram would be a
+	// load per sensor reading for a value that cannot change.
+	up := s.device()
+	if up == nil {
+		return
+	}
 	buf := make([]byte, wire.MaxMessage+1)
 	for {
-		n, from, err := s.up.ReadFrom(buf)
+		n, from, err := up.ReadFrom(buf)
 		if err != nil {
 			if s.stopping() || errors.Is(err, net.ErrClosed) {
 				return
@@ -85,6 +143,9 @@ func (s *server) sweep() {
 			c := s.host.Counters()
 			c.CoAPPending.Store(int64(s.pend.len()))
 			c.CoAPObservers.Store(int64(s.obs.len()))
+			if m := s.mux(); m != nil {
+				c.CoAPDatagramsDropped.Store(m.Dropped())
+			}
 		}
 	}
 }
@@ -100,10 +161,13 @@ func (s *server) stopping() bool {
 
 // fromClient decides about one message from the segment and relays it.
 //
-// secure says the datagram arrived inside a DTLS session. In NoSec it is false for
-// everything, which is the honest answer: there is no identity to report.
-func (s *server) fromClient(raw []byte, from net.Addr, secure bool) {
+// to is how the answer gets back: the listener's socket in NoSec, the DTLS session
+// otherwise. It carries whether the request was secure, which in NoSec is false for
+// everything -- the honest answer, because there is no identity to report.
+func (s *server) fromClient(raw []byte, to replier) {
 	c := s.host.Counters()
+	from := to.remote()
+	secure := to.secure()
 	ip := netutil.AddrOf(from.String())
 	c.CoAPMessages.Add(1)
 	if !s.policy.Client(ip) {
@@ -151,7 +215,7 @@ func (s *server) fromClient(raw []byte, from net.Addr, secure bool) {
 	if !d.Allow {
 		s.refused(ip, m, d, "client")
 		if s.enforcing() || d.Hard {
-			s.answer(m, d, from)
+			s.answer(m, d, to)
 			return
 		}
 	}
@@ -163,7 +227,7 @@ func (s *server) fromClient(raw []byte, from net.Addr, secure bool) {
 		c.CoAPUpstreamFail.Add(1)
 		return
 	}
-	e := &exchange{client: addrPort(from), device: addrPort(addr),
+	e := &exchange{client: addrPort(from), device: addrPort(addr), reply: to,
 		token: string(m.Token), size: len(raw),
 		rule: d.Rule, path: m.Path(), code: m.Code, observing: m.Registering()}
 	if e.observing {
@@ -171,7 +235,7 @@ func (s *server) fromClient(raw []byte, from net.Addr, secure bool) {
 			c.CoAPRefusedObserve.Add(1)
 			c.Refuse("coap", "too_many_observers")
 			s.deny(ip, "too_many_observers", m.Path())
-			s.answer(m, hard("too_many_observers", "", wire.ServiceUnavailable), from)
+			s.answer(m, hard("too_many_observers", "", wire.ServiceUnavailable), to)
 			return
 		}
 	}
@@ -181,11 +245,19 @@ func (s *server) fromClient(raw []byte, from net.Addr, secure bool) {
 	if !s.pend.add(e, time.Now()) {
 		c.Refuse("coap", "too_many_pending")
 		s.deny(ip, "too_many_pending", "")
-		s.answer(m, hard("too_many_pending", "", wire.ServiceUnavailable), from)
+		s.answer(m, hard("too_many_pending", "", wire.ServiceUnavailable), to)
 		return
 	}
 	s.logMessage(ip, m, d, "client", "allow", secure)
-	if _, err := s.up.WriteTo(raw, addr); err != nil {
+	up := s.device()
+	if up == nil {
+		// The listener has not finished starting, or has stopped. Either way
+		// there is nowhere to send this, and the exchange is forgotten rather
+		// than left in the pending table waiting for an answer nothing asked for.
+		s.forget(e)
+		return
+	}
+	if _, err := up.WriteTo(raw, addr); err != nil {
 		c.CoAPUpstreamFail.Add(1)
 		s.host.Logs().Error.Warn("coap relay to device failed", "listener", s.cfg.Name,
 			"device", addr.String(), "error", err.Error())
@@ -237,7 +309,7 @@ func (s *server) fromDevice(raw []byte, from net.Addr) {
 		}
 	}
 	s.observeReply(m, e, ip)
-	if _, err := s.pc.WriteTo(raw, net.UDPAddrFromAddrPort(e.client)); err != nil {
+	if err := e.reply.send(raw); err != nil {
 		c.CoAPSendFailed.Add(1)
 		s.host.Logs().Error.Warn("coap reply to client failed", "listener", s.cfg.Name,
 			"client", e.client.String(), "error", err.Error())
@@ -258,7 +330,7 @@ func (s *server) fromDevice(raw []byte, from net.Addr) {
 // more requests and leaves the device's own logs showing a timeout where a refusal
 // happened. Where the refusal is about a message whose token could not be read,
 // the answer is a bare Reset, which carries nothing and pretends nothing.
-func (s *server) answer(m *wire.Message, d Decision, to net.Addr) {
+func (s *server) answer(m *wire.Message, d Decision, to replier) {
 	if !s.answering() || d.Answer == 0 {
 		return
 	}
@@ -276,7 +348,7 @@ func (s *server) answer(m *wire.Message, d Decision, to net.Addr) {
 	if err != nil {
 		return
 	}
-	if _, err := s.pc.WriteTo(raw, to); err != nil {
+	if err := to.send(raw); err != nil {
 		s.host.Counters().CoAPSendFailed.Add(1)
 		return
 	}

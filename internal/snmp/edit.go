@@ -183,7 +183,15 @@ func WithMaxRepetitions(pdu []byte, n int64) ([]byte, error) {
 // notification, which nobody is waiting on; and a response, which is not a
 // request.
 func Refusal(m *Message) []byte {
-	if m == nil || m.PDU == nil || m.Version == V3 {
+	if m == nil || m.PDU == nil {
+		return nil
+	}
+	if m.Version == V3 && !m.IsTSM() {
+		// A USM refusal would have to be signed with the manager's own key,
+		// which this relay does not hold as that manager. The transport
+		// security model is the exception and not a loophole: its messages
+		// carry no digest at all, so a response is authenticated by the
+		// session it is written into. See refusalTSM.
 		return nil
 	}
 	switch p := m.PDU; {
@@ -209,7 +217,35 @@ func Refusal(m *Message) []byte {
 	body = append(body, encodeTLV(TagInteger, encodeInt(status))...)
 	body = append(body, encodeTLV(TagInteger, encodeInt(index))...)
 	body = append(body, binds...)
-	out, err := Envelope(m.Version, m.Community, encodeTLV(Tag(Response), body))
+	pdu := encodeTLV(Tag(Response), body)
+	if m.IsTSM() {
+		return refusalTSM(m, pdu)
+	}
+	out, err := Envelope(m.Version, m.Community, pdu)
+	if err != nil {
+		return nil
+	}
+	return out
+}
+
+// refusalTSM wraps a refusal for a message under the transport security
+// model.
+//
+// The context is echoed rather than chosen: a manager that named an engine and
+// a context is owed an answer about that engine and that context, and an agent
+// answers with the ones it was asked about. The message identifier is echoed
+// for the reason every response echoes it -- it is what the manager's stack
+// pairs the answer with -- and the level is the one the message arrived at,
+// which is the transport's and not this relay's to raise or lower.
+func refusalTSM(m *Message, pdu []byte) []byte {
+	scoped, err := ScopedPDU(m.V3.ContextEngineID, m.V3.ContextName, pdu)
+	if err != nil {
+		return nil
+	}
+	out, err := BuildTSM(TSMBuild{
+		MessageID: m.V3.MessageID, MaxSize: m.V3.MaxSize, Level: m.V3.Level,
+		Scoped: scoped,
+	})
 	if err != nil {
 		return nil
 	}

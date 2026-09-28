@@ -409,12 +409,14 @@ func (t *server) sendDiscovery(agent net.PacketConn, addr net.Addr, requestID in
 // It is shared by the ordinary forward and by the originating one. The
 // originating path needs it *before* the message is sent, because the first
 // thing sent may be a discovery whose report has to find this request waiting.
-func (t *server) hold(m *wire.Message, ip netip.Addr, from net.Addr, d Decision, asked int) bool {
+func (t *server) hold(m *wire.Message, p *peer, d Decision, asked int) bool {
 	if m.PDU == nil || m.PDU.Type.Notification() {
 		return true
 	}
-	e := &exchange{client: ip, from: from, requestID: m.PDU.RequestID,
-		asked: asked, rule: d.Rule, version: m.Version, community: m.Community}
+	ip := p.ip
+	e := &exchange{client: ip, from: p.from, peer: p, requestID: m.PDU.RequestID,
+		asked: asked, rule: d.Rule, version: m.Version, community: m.Community,
+		tsm: echoOf(m)}
 	if t.orig != nil && t.upgrade == wire.V3 {
 		e.pdu = m.PDU.Raw
 	}

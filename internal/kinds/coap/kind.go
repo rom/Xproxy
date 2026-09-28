@@ -19,6 +19,13 @@ func init() {
 	proxy.Register(proxy.Kind{
 		Name:     "coap",
 		Datagram: true,
+		// A tls section means DTLS: RFC 7252 s9 puts CoAP inside it on 5684,
+		// and a listener without one is NoSec, which is what most of the field
+		// runs. The engine builds the *tls.Config as it does for any other
+		// listener and this kind translates it, so that the certificates and
+		// the client-certificate policy are written where every other
+		// listener's are.
+		TLS: true,
 		New: func(su *proxy.Setup) (proxy.Instance, error) {
 			if su.Config.CoAP == nil {
 				return nil, fmt.Errorf("listener %s: the coap section is required", su.Config.Name)
@@ -27,7 +34,7 @@ func init() {
 			if err != nil {
 				return nil, err
 			}
-			s, err := newServer(su.Host, su.Config, pc)
+			s, err := newServer(su.Host, su.Config, pc, su.TLS)
 			if err != nil {
 				_ = pc.Close()
 				return nil, err

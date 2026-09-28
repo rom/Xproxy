@@ -87,9 +87,13 @@ type Run[K comparable, V any] struct {
 
 	mu   sync.Mutex
 	seen map[K]*V
-	// order is insertion order, so the bound drops the oldest subject rather
-	// than a random one: the first thing a run saw is the thing it has had
-	// longest to tell you about.
+	// order is insertion order, so the report reads in the order the run learned
+	// things and two runs over the same traffic produce the same file.
+	//
+	// It is not an eviction queue. At the bound the *new* subject is dropped and
+	// the table is left alone -- see Observe -- because evicting one would throw
+	// away a row that is still being written to, and would make the report's
+	// contents depend on when it happened to be written.
 	order []K
 
 	// Dropped counts the subjects the bound could not hold, Observed the
@@ -292,10 +296,20 @@ func (r *Run[K, V]) errf(err error) error {
 // watched, when it was written, how much was seen, and whether the bound was
 // reached.
 func Header(kind, listener string, st Stats, now time.Time) string {
+	return HeaderWith(kind, listener, "events", st, now)
+}
+
+// HeaderWith is Header with the caller's own word for what was counted.
+//
+// It exists because the word is part of the report an engineer reads, and the
+// honest one differs by protocol: Modbus counts frames, MMS counts requests, and a
+// header that called a Modbus frame an event would be a shared helper making a
+// report slightly wrong in order to be shared.
+func HeaderWith(kind, listener, noun string, st Stats, now time.Time) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# %s traffic observed by listener %q.\n", kind, listener)
-	fmt.Fprintf(&b, "# Written %s. %d events, %d subjects",
-		now.UTC().Format(time.RFC3339), st.Observed, st.Subjects)
+	fmt.Fprintf(&b, "# Written %s. %d %s, %d subjects",
+		now.UTC().Format(time.RFC3339), st.Observed, noun, st.Subjects)
 	if st.Dropped > 0 {
 		fmt.Fprintf(&b, ", %d subjects dropped at the bound (raise learn.max_subjects)", st.Dropped)
 	}

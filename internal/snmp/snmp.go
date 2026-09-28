@@ -51,12 +51,21 @@ const (
 	// Port is where agents listen, and TrapPort where managers receive.
 	Port     = 161
 	TrapPort = 162
-	// TLSPort is SNMP over TLS on TCP and DTLSPort over DTLS on UDP
-	// (RFC 6353). Almost nothing deployed speaks either, which is the
-	// reason a relay that terminates one and speaks v2c to the device is
-	// worth having.
-	TLSPort  = 10161
-	DTLSPort = 10162
+	// TLSPort and TLSTrapPort are RFC 6353's on TCP, and DTLSPort and
+	// DTLSTrapPort the same two numbers on UDP, which is where the DTLS
+	// variant of the same transport model lives (IANA: snmptls and
+	// snmp-dtls, snmptls-trap and snmp-dtls-trap). The number says which
+	// direction, and the transport says which stack -- a command responder
+	// on 10161 either way, notifications on 10162.
+	//
+	// Almost nothing deployed speaks any of the four, which is the reason a
+	// relay that terminates one and speaks v2c to the device is worth
+	// having: the certificate is at this end and the switch never learns
+	// there was one.
+	TLSPort      = 10161
+	TLSTrapPort  = 10162
+	DTLSPort     = 10161
+	DTLSTrapPort = 10162
 )
 
 // MaxMessage bounds what this package will read at all.
@@ -477,8 +486,8 @@ func parseV3(r *reader, m *Message) error {
 	if err != nil {
 		return err
 	}
-	const usm = 3
-	if h.SecurityModel == usm {
+	switch h.SecurityModel {
+	case SecurityModelUSM:
 		// Where these octets sit in the whole message. A reader consumes
 		// from the front of a slice of the message itself, so what it still
 		// holds ends where the message ends: the element just stepped past
@@ -489,10 +498,24 @@ func parseV3(r *reader, m *Message) error {
 		if err := parseUSM(se.body, h, at); err != nil {
 			return err
 		}
+	case SecurityModelTSM:
+		// RFC 5591 s3.1.1: a zero-length OCTET STRING, because the transport
+		// carries the security and the message carries none. Octets here are
+		// refused rather than skipped -- see ErrTSMParams.
+		if len(se.body) != 0 {
+			return fmt.Errorf("%w: %d octets", ErrTSMParams, len(se.body))
+		}
 	}
 	// The scoped PDU: plain when there is no privacy, an OCTET STRING of
 	// ciphertext when there is.
-	if h.Level.Encrypted() {
+	//
+	// The transport security model is the exception, and it is not a special
+	// case so much as the model working as written: RFC 5591 s3.1.1 sets the
+	// flags from the *transport's* security level, so a TSM message says
+	// authPriv while its scoped PDU is in the clear, because the record layer
+	// underneath already encrypted it. A reader that took the privacy bit
+	// here as "ciphertext follows" would refuse every TSM message ever sent.
+	if h.Level.Encrypted() && h.SecurityModel != SecurityModelTSM {
 		ce, err := r.expect(TagOctetStr)
 		if err != nil {
 			return err

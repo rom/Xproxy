@@ -11,6 +11,7 @@ import (
 
 	"github.com/rom/xproxy/internal/admit"
 	"github.com/rom/xproxy/internal/authorization"
+	"github.com/rom/xproxy/internal/dtlsx"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/safe"
 	"github.com/rom/xproxy/internal/sessions"
@@ -22,6 +23,41 @@ import (
 // answer, no session, and nothing to close. So the relay keeps one socket
 // towards the agents and matches answers to questions by request identifier,
 // which is the only thing in the protocol that pairs them.
+
+// peer is where a datagram came from and how an answer gets back to it.
+//
+// A plain datagram listener needs only the address: the answer goes to whatever
+// the datagram claimed as its source, which is also why an unsolicited response
+// on this protocol is an attack on the manager rather than a curiosity. Inside
+// DTLS the answer goes into the session instead, and the session is also where
+// the sender's identity came from -- so the two facts travel together, because
+// a relay that knew who asked but answered somewhere else, or answered the
+// right session under the wrong name, would be worse than one that knew
+// neither.
+type peer struct {
+	ip   netip.Addr
+	from net.Addr
+	// transport is what a rule names, and what decides whether the message's
+	// own claim of authPriv is a claim or a fact.
+	transport Transport
+	// name is RFC 6353 s5.3's tmSecurityName, derived from the session's
+	// certificate; nameWhy is why there is none, as a stable label for a
+	// counter and a refusal.
+	name, nameWhy string
+	// sess is the DTLS session to answer into, nil on a plain datagram.
+	sess *dtlsx.Session
+}
+
+// write sends one message back to this peer: into its session where it has one,
+// and to its address where it does not.
+func (p *peer) write(t *server, b []byte) error {
+	if p.sess != nil {
+		_, err := p.sess.Write(b)
+		return err
+	}
+	_, err := t.pc.WriteTo(b, p.from)
+	return err
+}
 
 func (t *server) serveDatagrams() {
 	agent, err := t.agentSocket()
@@ -70,7 +106,7 @@ func (t *server) serveDatagrams() {
 		}
 		msg := make([]byte, n)
 		copy(msg, buf[:n])
-		t.fromManager(agent, msg, from)
+		t.fromManager(agent, msg, t.plainPeer(from))
 	}
 }
 
@@ -125,9 +161,9 @@ func (t *server) admitClient(ip netip.Addr) string {
 
 // fromManager decides about one datagram from a manager and, when it is
 // allowed, forwards it to an agent.
-func (t *server) fromManager(agent net.PacketConn, raw []byte, from net.Addr) {
+func (t *server) fromManager(agent net.PacketConn, raw []byte, p *peer) {
 	s := t.host
-	ip := netutil.AddrOf(from.String())
+	ip := p.ip
 	s.Counters().SNMPMessages.Add(1)
 	if !t.policy.Client(ip) {
 		s.Counters().SNMPRejected.Add(1)
@@ -167,9 +203,21 @@ func (t *server) fromManager(agent net.PacketConn, raw []byte, from net.Addr) {
 	if v := t.inspect(m); !v.Allow {
 		t.refused(ip, m, v)
 		if t.enforcing() {
-			if !t.deceive(m, from, v.Reason) {
-				t.answerRefusal(m, from)
+			if !t.deceive(m, p, v.Reason) {
+				t.answerRefusal(m, p)
 			}
+			return
+		}
+	}
+	// The transport model's own two checks, before the rules: a message whose
+	// certificate maps to no name, and one whose flags disagree with the
+	// session it arrived in. Both are about whether there is an identity to
+	// decide about at all, which is a question that comes before what the
+	// identity may do.
+	if v := t.inspectTransport(m, p); !v.Allow {
+		t.refused(ip, m, v)
+		if t.enforcing() {
+			t.answerRefusal(m, p)
 			return
 		}
 	}
@@ -179,7 +227,7 @@ func (t *server) fromManager(agent net.PacketConn, raw []byte, from net.Addr) {
 	// client has already passed this listener's own address lists, the
 	// imported feeds and the rate limit above.
 	if dec := t.decoy; dec != nil && dec.whole && dec.admits(ip) {
-		if t.deceive(m, from, "decoy") {
+		if t.deceive(m, p, "decoy") {
 			return
 		}
 		// A message the fabrication has no answer for -- a version 3
@@ -187,15 +235,15 @@ func (t *server) fromManager(agent net.PacketConn, raw []byte, from net.Addr) {
 		// address with nothing on it does.
 		return
 	}
-	d := t.policy.Decide(request{client: ip, msg: m})
+	d := t.policy.Decide(t.request(ip, m, p))
 	if !d.Allow {
 		t.refused(ip, m, d)
 		if t.enforcing() {
 			// The fabrication answers instead, for the clients it covers,
 			// and only here: this is the path where the request has
 			// already been kept from the agent.
-			if !t.deceive(m, from, d.Reason) {
-				t.answerRefusal(m, from)
+			if !t.deceive(m, p, d.Reason) {
+				t.answerRefusal(m, p)
 			}
 			return
 		}
@@ -216,7 +264,7 @@ func (t *server) fromManager(agent net.PacketConn, raw []byte, from net.Addr) {
 		t.refused(ip, m, bound)
 		// Not shadowable: an amplification bound in shadow mode is a
 		// working amplifier.
-		t.answerRefusal(m, from)
+		t.answerRefusal(m, p)
 		return
 	case lowered:
 		out = trimmed
@@ -229,7 +277,7 @@ func (t *server) fromManager(agent net.PacketConn, raw []byte, from net.Addr) {
 		// The pending slot is taken first, because a discovery's report has to
 		// find this request waiting: it is the manager's question that the
 		// relay will ask properly once it knows the agent's engine.
-		if !t.hold(m, ip, from, d, len(raw)) {
+		if !t.hold(m, p, d, len(raw)) {
 			return
 		}
 		t.originateUpstream(agent, m, ip, d)
@@ -242,7 +290,7 @@ func (t *server) fromManager(agent net.PacketConn, raw []byte, from net.Addr) {
 		out = upgraded
 		s.Counters().SNMPUpgraded.Add(1)
 	}
-	if !t.hold(m, ip, from, d, len(raw)) {
+	if !t.hold(m, p, d, len(raw)) {
 		return
 	}
 	t.logMessage(ip, m, d, "manager")
@@ -426,7 +474,7 @@ func (t *server) fromAgent(agent net.PacketConn, raw []byte, from net.Addr) {
 	if restored {
 		s.Counters().SNMPUpgraded.Add(1)
 	}
-	if _, err := t.pc.WriteTo(out, e.from); err != nil {
+	if err := e.answer(t, out); err != nil {
 		s.Logs().Error.Warn("snmp answer to manager failed", "listener", t.cfg.Name,
 			"client", e.client.String(), "error", err.Error())
 	}
@@ -521,13 +569,13 @@ func (t *server) handleStream(client net.Conn) {
 	if ep != nil {
 		live.Annotate("", ep.Address, "")
 	}
-	reason := t.pumpStream(client, up, ip)
+	reason := t.pumpStream(client, up, t.streamPeer(client, secure))
 	t.logSession(ip, start, secure, reason)
 }
 
 // pumpStream relays a stream session in both directions, deciding about
 // every message.
-func (t *server) pumpStream(client, up net.Conn, ip netip.Addr) string {
+func (t *server) pumpStream(client, up net.Conn, p *peer) string {
 	var wg sync.WaitGroup
 	reasons := make(chan string, 2)
 	stop := func() {
@@ -544,13 +592,13 @@ func (t *server) pumpStream(client, up net.Conn, ip netip.Addr) string {
 	go func() {
 		defer wg.Done()
 		defer safe.Guard("snmp manager reader")
-		reasons <- t.pumpOne(client, up, ip, true, pend)
+		reasons <- t.pumpOne(client, up, p, true, pend)
 		stop()
 	}()
 	go func() {
 		defer wg.Done()
 		defer safe.Guard("snmp agent reader")
-		reasons <- t.pumpOne(up, client, ip, false, pend)
+		reasons <- t.pumpOne(up, client, p, false, pend)
 		stop()
 	}()
 	wg.Wait()
@@ -566,8 +614,9 @@ func (t *server) pumpStream(client, up net.Conn, ip netip.Addr) string {
 
 // pumpOne reads messages from one side and writes what is allowed to the
 // other.
-func (t *server) pumpOne(src, dst net.Conn, ip netip.Addr, fromManager bool, pend *pending) string {
+func (t *server) pumpOne(src, dst net.Conn, p *peer, fromManager bool, pend *pending) string {
 	s := t.host
+	ip := p.ip
 	rd := newStreamReader(src, t.maxMessage())
 	for {
 		_ = src.SetReadDeadline(time.Now().Add(t.idleTimeout()))
@@ -606,6 +655,24 @@ func (t *server) pumpOne(src, dst net.Conn, ip netip.Addr, fromManager bool, pen
 				continue
 			}
 		}
+		if fromManager {
+			// The transport model's own checks, on the stream side too: RFC
+			// 6353 is TLS over TCP as much as DTLS over UDP, and a listener
+			// that checked the identity on one transport and not the other
+			// would be a listener with a door in it.
+			if v := t.inspectTransport(m, p); !v.Allow {
+				t.refused(ip, m, v)
+				if t.enforcing() {
+					if t.m.DenyResponse == "close" {
+						return v.Reason
+					}
+					if answer := refusalFor(m); answer != nil {
+						_, _ = src.Write(answer)
+					}
+					continue
+				}
+			}
+		}
 		t.count(m)
 		out := raw
 		if fromManager {
@@ -614,7 +681,7 @@ func (t *server) pumpOne(src, dst net.Conn, ip netip.Addr, fromManager bool, pen
 				s.Counters().Refuse("snmp", "rate_limited")
 				continue
 			}
-			d := t.policy.Decide(request{client: ip, msg: m})
+			d := t.policy.Decide(t.request(ip, m, p))
 			if !d.Allow {
 				t.refused(ip, m, d)
 				if t.enforcing() {
@@ -654,7 +721,8 @@ func (t *server) pumpOne(src, dst net.Conn, ip netip.Addr, fromManager bool, pen
 			}
 			if !m.PDU.Type.Notification() {
 				e := &exchange{client: ip, requestID: m.PDU.RequestID, asked: len(raw),
-					rule: d.Rule, version: m.Version, community: m.Community}
+					rule: d.Rule, version: m.Version, community: m.Community,
+					tsm: echoOf(m)}
 				if !pend.add(e, time.Now()) {
 					s.Counters().Refuse("snmp", "too_many_pending")
 					t.deny(ip, "snmp_too_many_pending", "")

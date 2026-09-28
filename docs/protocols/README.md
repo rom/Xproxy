@@ -51,6 +51,7 @@ policy written in each protocol's own terms.
 | SMTP and submission | [smtp](smtp.md) | 25, 587, 465 |
 | MQTT 3.1.1 and 5.0 | [mqtt](mqtt.md) | 1883, 8883 |
 | CoAP, and CoAP over DTLS | [coap](coap.md) | 5683, 5684 |
+| OPC UA | [opcua](opcua.md) | 4840 |
 | AMQP 0-9-1 and AMQP 1.0 | [amqp](amqp.md) | 5672, 5671 |
 | FTP and FTPS | [ftp](ftp.md) | 21, 990 |
 | TFTP | [tftp](tftp.md) | 69 |
@@ -88,6 +89,7 @@ authentication worth the name.
 | IEC 60870-5-104, IEC 62351-3 TLS | [iec104](iec104.md) | 2404 |
 | BACnet/IP (ASHRAE 135 Annex J) | [bacnet](bacnet.md) | 47808 |
 | Siemens S7comm | [s7](s7.md) | 102 |
+| IEC 61850 MMS | [mms](mms.md) | 102 |
 
 ## Reading these pages
 

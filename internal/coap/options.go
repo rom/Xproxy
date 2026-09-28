@@ -115,10 +115,14 @@ func Critical(n uint16) bool { return n&1 == 1 }
 // whose meaning is unknown.
 func UnSafe(n uint16) bool { return n&2 == 2 }
 
-// NoCacheKey says a Safe-to-Forward option is not part of a cache key, so a
-// cache may ignore its value. It is only meaningful for an option that is safe to
-// forward (RFC 7252 s5.4.6).
-func NoCacheKey(n uint16) bool { return !UnSafe(n) && n&0x1e == 0x1c }
+// NoCacheKey says an option is not part of a cache key, so a cache may ignore its
+// value: RFC 7252 s5.4.6's (option & 0x1e) == 0x1c.
+//
+// The standard says this is only meaningful for an option that is Safe-to-Forward,
+// and the expression already guarantees it: the mask includes bit one and the
+// pattern has it clear, so an option matching this is never UnSafe. Testing
+// UnSafe as well would be a line no input could reach.
+func NoCacheKey(n uint16) bool { return n&0x1e == 0x1c }
 
 // Repeatable says more than one instance is meaningful. The path and the query
 // are built out of repeated options, so this is not a detail: a relay that

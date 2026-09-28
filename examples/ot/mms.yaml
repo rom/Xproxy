@@ -1,0 +1,193 @@
+# IEC 61850 MMS in front of a substation's IEDs, on TCP 102.
+#
+# Three listeners, which is the shape a substation actually has:
+#
+#   the control centre, which reads status and measurands continuously and
+#   operates a breaker when a dispatcher tells it to;
+#
+#   the engineering station, which needs the things nothing else needs --
+#   setting groups, configuration, file transfer, and occasionally a download
+#   into a protection relay -- and needs them inside an outage window;
+#
+#   a new bay, whose object list nobody trusts yet, recording what crosses it.
+#
+# One thing to read before the rest. This protocol's ACSE authentication value
+# is a cleartext password: IEC 61850-8-1 specifies that form and IEC 62351-4 is
+# what replaces it. `refuse_plaintext_passwords` is left OFF on every listener
+# here, deliberately, because on most of the installed base that password is the
+# only authentication an IED has and refusing it removes the only check there is.
+# What is on is `alert_on_plaintext_password`, which is the default: every
+# association carrying one raises a finding and bumps mms_plaintext_passwords, so
+# an operator can see how far from 62351-4 the estate is. Turn the refusal on
+# when the clients have moved, not before.
+
+version: 1
+
+server:
+  listeners:
+    # ---------------------------------------------------------------
+    # The control centre. It reads continuously and operates rarely, and the
+    # policy says exactly that: every status and measurand in the bay, and the
+    # one control object a dispatcher uses -- behind select-before-operate,
+    # which is the interlock the IED's own ctlModel cannot be trusted to keep.
+    # ---------------------------------------------------------------
+    - name: control-centre
+      address: "10.20.0.1:102"
+      kind: mms
+      mms:
+        upstream: bay-ieds
+        allow_clients: ["10.10.0.0/24"]
+        ap_titles: ["1.1.999.1"]
+        ae_qualifiers: ["12"]
+
+        # What a control centre does. `session` is the association itself,
+        # `browse` how a client finds the data model, `read` the polling and
+        # `report` the report control blocks an HMI enables.
+        service_classes: [session, browse, read, write, report, dataset]
+
+        domains: ["AA1J1Q01A1LD0", "AA1J1Q01A1LD1"]
+        functional_constraints: [ST, MX, CO, BR, RP]
+
+        # Writes: the control objects only. Not SG, not SE, not CF -- those
+        # change what the relay does in a fault rather than what it is doing
+        # now, and nothing moves until the fault they were meant to clear.
+        write_constraints: [CO]
+        write_objects: ["AA1J1Q01A1LD0/XCBR1$CO$*", "AA1J1Q01A1LD0/CSWI1$CO$*"]
+
+        # The interlock. IEC 61850 leaves select-before-operate to each
+        # object's ctlModel, ctlModel lives in $CF$, and $CF$ is writable --
+        # so a client with configuration access can turn it off. Requiring the
+        # select here puts it where the configuration cannot reach, and the
+        # selection is recorded when the *IED* confirms it, not when the client
+        # asks.
+        allow_operate: true
+        require_select_before_operate: true
+        select_timeout: 30s
+
+        max_names: 256
+        rate_limit: 200
+        rate_burst: 400
+        max_sessions_per_client: 4
+        idle_timeout: 30m
+
+        default_action: allow
+        deny_response: error
+        log_requests: false
+
+    # ---------------------------------------------------------------
+    # The engineering station. It has the things nothing else has, and each of
+    # them is behind a rule with a window: a wrong trip characteristic is
+    # invisible until the day it matters, so the record of who changed it and
+    # when is the point.
+    # ---------------------------------------------------------------
+    - name: engineering
+      address: "10.20.0.1:1102"
+      kind: mms
+      mms:
+        upstream: bay-ieds
+        allow_clients: ["10.11.0.0/24"]
+        ap_titles: ["1.1.999.2"]
+        require_ap_title: true
+
+        allow_domain_services: true
+        domains: ["AA1J1Q01A1LD0", "AA1J1Q01A1LD1"]
+        files: ["COMTRADE/*", "CONFIG/*"]
+
+        rules:
+          # Reading everything, any time. An engineer diagnosing a trip needs
+          # the whole model and changes nothing by looking.
+          - name: eng-read
+            action: allow
+            service_classes: [session, browse, read]
+
+          # The disturbance records, any time: that is what they are for.
+          - name: eng-records
+            action: allow
+            service_classes: [file]
+            files: ["COMTRADE/*"]
+
+          # Settings, inside the window. SG and SE are a protection relay's
+          # trip characteristics; CF includes ctlModel, which is how
+          # select-before-operate gets turned off.
+          - name: eng-settings
+            action: allow
+            services: [write]
+            write_constraints: [SG, SE, CF]
+            schedule:
+              days: [tue, thu]
+              from: "22:00"
+              to: "02:00"
+              timezone: Europe/Stockholm
+            comment: CR-2026-0312, agreed with network control
+
+          # A download, inside the same window and named separately, because it
+          # replaces what is inside the device rather than changing a value in
+          # it.
+          - name: eng-download
+            action: allow
+            service_classes: [domain]
+            schedule:
+              days: [tue, thu]
+              from: "22:00"
+              to: "02:00"
+              timezone: Europe/Stockholm
+            comment: CR-2026-0312, firmware and CID only
+
+        # Nothing else. An engineering station that may operate a breaker is an
+        # engineering station that will, by accident, at three in the morning.
+        default_action: deny
+        deny_response: error
+        log_requests: true
+
+    # ---------------------------------------------------------------
+    # The new bay. Its CID file says one thing and the integrator's laptop did
+    # another, and nobody knows which objects the HMI actually polls. So this
+    # listener records instead of deciding, and in a week the report is the
+    # answer: one row per identity, class of service and logical device, and a
+    # `rules:` list that pastes in under one of the sections above.
+    #
+    # enforce is off, so it decides nothing. It warns at load about exactly
+    # that, and the warning is the point rather than something to silence.
+    # ---------------------------------------------------------------
+    - name: bay7-learning
+      address: "10.20.0.1:2102"
+      kind: mms
+      mms:
+        upstream: bay7-ieds
+        allow_clients: ["10.10.0.0/24", "10.11.0.0/24"]
+
+        learn:
+          enabled: true
+          file: /var/lib/xproxy/mms-bay7.yaml
+          interval: 15m
+          # enforce: true is the second phase: keep whatever rules the first
+          # phase produced in force while recording continues, and the report
+          # then says which of them the traffic disagrees with rather than an
+          # operator finding out from a phone call.
+
+        # Not proposed by the run, and not negotiable. A Read naming ten
+        # thousand objects is one request and ten thousand reads of an IED that
+        # answers them one at a time.
+        max_names: 512
+        max_frame: 65536
+        rate_limit: 500
+        rate_burst: 1000
+        idle_timeout: 1h
+
+        default_action: allow
+        log_requests: false
+
+upstreams:
+  - name: bay-ieds
+    endpoints:
+      - address: "10.30.7.11:102"
+      - address: "10.30.7.12:102"
+    health_check:
+      type: tcp
+      interval: 10s
+  - name: bay7-ieds
+    endpoints:
+      - address: "10.30.7.21:102"
+    health_check:
+      type: tcp
+      interval: 30s

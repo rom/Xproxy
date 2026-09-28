@@ -40,13 +40,16 @@ package coap
 
 import (
 	"context"
+	"crypto/tls"
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	wire "github.com/rom/xproxy/internal/coap"
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/dtlsx"
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/proxy"
 )
@@ -59,11 +62,24 @@ type server struct {
 	policy *Policy
 
 	pc net.PacketConn
+	// tls is the listener's configuration where it has one, which is what makes
+	// this a CoAP-over-DTLS listener rather than a NoSec one.
+	tls *tls.Config
+	// demux is the DTLS side's per-peer splitter, kept so that the sweeper can
+	// read its drop count. Nil on a NoSec listener.
+	demux atomic.Pointer[dtlsx.Mux]
 	// up is the socket this relay speaks to devices on. One socket for the
 	// listener, because the token and the client are what pair an answer with
 	// its request and a socket per exchange would be a file descriptor per
 	// sensor reading.
-	up net.PacketConn
+	//
+	// It is behind an atomic because serve() opens it and shutdown() closes it,
+	// and those are different goroutines with no ordering between them: a
+	// shutdown arriving while the listener is still opening its device socket
+	// read the field while serve() was writing it. A listener told to stop before
+	// it finished starting is not a hypothetical -- it is what a configuration
+	// reload that removes a listener does.
+	up atomic.Pointer[deviceSocket]
 
 	limiter *limits.KeyedLimiter
 	pend    *pending
@@ -77,15 +93,29 @@ type server struct {
 	done   chan struct{}
 	closed sync.Once
 	wg     sync.WaitGroup
+	// started is closed once serve() has registered its goroutines with wg, or
+	// has given up trying.
+	//
+	// It exists because a WaitGroup's Add must not race its Wait, and here they
+	// are on different goroutines with nothing ordering them: Serve() and
+	// Shutdown() are called by the engine, and a listener removed by a
+	// configuration reload the moment after it was added is a Shutdown that
+	// arrives while Serve is still starting. Waiting on this first is what makes
+	// the Wait below well-defined.
+	started chan struct{}
 }
 
-func newServer(h proxy.Host, cfg config.Listener, pc net.PacketConn) (*server, error) {
+// mux is the DTLS splitter, or nil.
+func (s *server) mux() *dtlsx.Mux { return s.demux.Load() }
+
+func newServer(h proxy.Host, cfg config.Listener, pc net.PacketConn, tc *tls.Config) (*server, error) {
 	m := cfg.CoAP
 	p, err := compile(m, time.Now)
 	if err != nil {
 		return nil, err
 	}
-	s := &server{host: h, cfg: cfg, m: m, policy: p, pc: pc, done: make(chan struct{})}
+	s := &server{host: h, cfg: cfg, m: m, policy: p, pc: pc, tls: tc,
+		done: make(chan struct{}), started: make(chan struct{})}
 	if m.RateLimit > 0 {
 		s.limiter = limits.NewKeyedLimiter(float64(m.RateLimit), burstOf(m), s.maxClients())
 	}
@@ -129,8 +159,11 @@ func (s *server) nextMID() uint16 {
 // exchange is one request outstanding towards a device.
 type exchange struct {
 	// client is who asked, and device is who was asked. Both are kept: the
-	// client is where the answer goes, and the device is half the key.
+	// client names the exchange in the logs, and the device is half the key.
 	client, device netip.AddrPort
+	// reply is how the answer gets back, which is the DTLS session the request
+	// arrived in where there was one.
+	reply replier
 	// token is the client's own. RFC 7252 pairs a response with its request by
 	// the token, because a separate response arrives in a message of its own
 	// with a different message identifier.
@@ -279,12 +312,33 @@ func (o *observers) len() int {
 	return len(o.set)
 }
 
+// deviceSocket holds the socket in a concrete type, because an atomic.Pointer
+// needs one and net.PacketConn is an interface.
+type deviceSocket struct{ net.PacketConn }
+
+// device is the socket this relay speaks to devices on, or nil before serve() has
+// opened it.
+func (s *server) device() net.PacketConn {
+	if d := s.up.Load(); d != nil {
+		return d.PacketConn
+	}
+	return nil
+}
+
 // shutdown closes both sockets and waits for the loops.
 func (s *server) shutdown(ctx context.Context) {
 	s.closed.Do(func() { close(s.done) })
 	_ = s.pc.Close()
-	if s.up != nil {
-		_ = s.up.Close()
+	if up := s.device(); up != nil {
+		_ = up.Close()
+	}
+	// The loops are registered by serve(), so there is nothing to wait for until
+	// it has done that. A shutdown that gave up here leaves the goroutines to the
+	// closed sockets, which is what the context bound is for.
+	select {
+	case <-s.started:
+	case <-ctx.Done():
+		return
 	}
 	waited := make(chan struct{})
 	go func() { s.wg.Wait(); close(waited) }()

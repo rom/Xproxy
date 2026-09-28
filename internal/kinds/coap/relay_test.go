@@ -290,9 +290,11 @@ func TestAPathNoRuleCoversIsRefusedAndAnswered(t *testing.T) {
 		t.Fatal("the refused request reached the device")
 	}
 	until(t, s, "the refusal", refused("default_deny"))
-	if s.Stats().CoAPRefusalsAnswered == 0 {
-		t.Error("the refusal was not counted as answered")
-	}
+	// Waited for rather than read: the counter is bumped after the answer is
+	// sent, so the client can be holding the refusal before the number moves.
+	until(t, s, "the refusal to be counted as answered", func(st proxy.Snapshot) bool {
+		return st.CoAPRefusalsAnswered > 0
+	})
 }
 
 // answer_refusals: false drops instead, which the validator warns about and which
@@ -973,5 +975,159 @@ func TestByteCountReads(t *testing.T) {
 	}
 	if got := binary.BigEndian.Uint16([]byte{0x01, 0x02}); got != 0x0102 {
 		t.Errorf("the test file's own helper: %d", got)
+	}
+}
+
+// The listener's own switches, on a listener with default_action: allow and no
+// rules -- which is the only configuration where they are the thing deciding.
+//
+// This matters because a rule carries its own copy of several of them, so a test
+// that always went through a rule would be testing the rule and leaving the
+// listener's switch untested. An estate that writes default_action: allow is
+// relying on exactly these.
+func TestTheListenersOwnSwitchesDecideWhenNoRuleDoes(t *testing.T) {
+	open := "        upstream: devices\n        default_action: allow\n"
+
+	t.Run("proxying", func(t *testing.T) {
+		up := startDevice(t, &fakeDevice{})
+		s, addr := relayFor(t, open, up.addr())
+		m := get(0x3000, 50, "3303", "0", "5700")
+		m.Set(wire.OptionProxyURI, []byte("coap://192.0.2.1/admin"))
+		if got := dial(t, addr).ask(m); got.Code != wire.ProxyingNotSupported {
+			t.Fatalf("the client got %s", got.Code)
+		}
+		until(t, s, "the refusal", refused("proxying_not_allowed"))
+		if len(up.seen()) != 0 {
+			t.Fatal("the request reached the device")
+		}
+	})
+
+	t.Run("the path list", func(t *testing.T) {
+		up := startDevice(t, &fakeDevice{})
+		s, addr := relayFor(t, open+"        allow_paths: [\"/3303/...\"]\n", up.addr())
+		c := dial(t, addr)
+		if got := c.ask(get(0x3001, 51, "3303", "0", "5700")); got.Code != wire.Content {
+			t.Fatalf("a listed path was refused: %s", got.Code)
+		}
+		if got := c.ask(get(0x3002, 52, "3311", "0", "5850")); got.Code != wire.Forbidden {
+			t.Fatalf("a path outside the list was allowed: %s", got.Code)
+		}
+		until(t, s, "the refusal", refused("path_not_allowed"))
+	})
+
+	t.Run("observe", func(t *testing.T) {
+		up := startDevice(t, &fakeDevice{})
+		s, addr := relayFor(t, open+"        allow_observe: false\n", up.addr())
+		m := get(0x3003, 53, "3303", "0", "5700")
+		m.Set(wire.OptionObserve, nil)
+		if got := dial(t, addr).ask(m); got.Code != wire.BadOption {
+			t.Fatalf("the client got %s", got.Code)
+		}
+		until(t, s, "the refusal", refused("observe_not_allowed"))
+		if len(up.seen()) != 0 {
+			t.Fatal("the registration reached the device")
+		}
+	})
+
+	t.Run("the message types", func(t *testing.T) {
+		up := startDevice(t, &fakeDevice{})
+		s, addr := relayFor(t, open+"        message_types: [con]\n", up.addr())
+		c := dial(t, addr)
+		non := get(0x3004, 54, "3303", "0", "5700")
+		non.Type = wire.NonConfirmable
+		c.send(non)
+		// Nothing to answer: the type the client used is the thing refused, so
+		// the refusal has no type to answer in.
+		c.expectSilence("a non-confirmable request where only con is allowed")
+		until(t, s, "the refusal", refused("message_type_not_allowed"))
+		if len(up.seen()) != 0 {
+			t.Fatal("the request reached the device")
+		}
+		// And a confirmable one on the same path is carried.
+		if got := c.ask(get(0x3005, 55, "3303", "0", "5700")); got.Code != wire.Content {
+			t.Fatalf("a confirmable request was refused: %s", got.Code)
+		}
+	})
+}
+
+// A response arriving on the *client* side, which is what a device answering
+// directly into the segment looks like from here -- or something aiming answers at
+// the relay. Refused hard, so a listener being trialled does not forward it to a
+// device as though a client had asked something.
+func TestAResponseFromTheClientSideIsRefused(t *testing.T) {
+	up := startDevice(t, &fakeDevice{})
+	s, addr := relayWith(t, base, "      policy: {mode: shadow}\n", up.addr())
+	c := dial(t, addr)
+	m := &wire.Message{Type: wire.NonConfirmable, Code: wire.Content,
+		MessageID: 0x3100, Token: []byte{56}}
+	m.Payload = []byte("99.9")
+	c.send(m)
+	c.expectSilence("a response from the client side")
+	until(t, s, "the refusal", refused("response_from_client_side"))
+	if len(up.seen()) != 0 {
+		t.Fatal("a response was relayed to a device as a request")
+	}
+}
+
+// A suspicious path is refused in shadow mode too. It is not an opinion an
+// operator can try out: carrying a path whose rendering does not mean what it looks
+// like is the harm, because the relay's own decision was about a different path
+// than the device will act on.
+func TestShadowModeStillRefusesAPathThatWouldLie(t *testing.T) {
+	up := startDevice(t, &fakeDevice{})
+	s, addr := relayWith(t, base, "      policy: {mode: shadow}\n", up.addr())
+	c := dial(t, addr)
+	m := &wire.Message{Type: wire.Confirmable, Code: wire.PUT, MessageID: 0x3200,
+		Token: []byte{57}}
+	m.Add(wire.OptionURIPath, []byte("3303/../3311/0/5850"))
+	if got := c.ask(m); got.Code != wire.BadRequest {
+		t.Fatalf("shadow mode carried a path that would lie: %s", got.Code)
+	}
+	until(t, s, "the refusal", refused("suspicious_path"))
+	if len(up.seen()) != 0 {
+		t.Fatal("the request reached the device")
+	}
+}
+
+// An observed registration outlives the request timeout, which is the point of
+// observing: the notifications arrive minutes apart and each one is another answer
+// to the same request. A sweep that dropped registrations would deliver the first
+// notification and silently lose the rest.
+func TestAnObservedRegistrationOutlivesTheRequestTimeout(t *testing.T) {
+	up := startDevice(t, &fakeDevice{reply: func(m *wire.Message) *wire.Message {
+		out := content(m, []byte("21.5"))
+		out.Set(wire.OptionObserve, []byte{1})
+		return out
+	}})
+	_, addr := relayFor(t, base+"        request_timeout: 1s\n", up.addr())
+	c := dial(t, addr)
+
+	m := get(0x3300, 58, "3303", "0", "5700")
+	m.Set(wire.OptionObserve, nil)
+	if got := c.ask(m); got.Code != wire.Content {
+		t.Fatalf("the registration was refused: %s", got.Code)
+	}
+	asked := up.await(t, 1, "the registration")[0]
+
+	// Past the timeout by enough that the sweeper has run over it more than once.
+	time.Sleep(2500 * time.Millisecond)
+
+	note := &wire.Message{Type: wire.NonConfirmable, Code: wire.Content,
+		MessageID: 0x2b, Token: append([]byte(nil), asked.Token...)}
+	note.Set(wire.OptionObserve, []byte{9})
+	note.Payload = []byte("22.1")
+	raw, err := wire.Encode(note)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := up.pc.WriteTo(raw, up.relayAddr()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := c.read(5 * time.Second)
+	if err != nil {
+		t.Fatalf("the notification after the timeout did not arrive: %v", err)
+	}
+	if string(got.Payload) != "22.1" {
+		t.Errorf("the notification carried %q", got.Payload)
 	}
 }

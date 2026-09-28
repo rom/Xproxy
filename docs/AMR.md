@@ -1631,6 +1631,111 @@ configuration anyone wants to debug. Nothing an operator sees changes:
 the configuration, the management API and its JSON, and the metric
 families are the same, and `kind: http` remains the default.
 
+## AMR-050: CoAP over DTLS uses pion/dtls
+
+**Context.** RFC 7252 s9 puts CoAP inside DTLS on UDP 5684, and the three
+security modes it defines (pre-shared key, raw public key, certificate) are
+all DTLS. The Go standard library has TLS and no DTLS, and there is no
+prospect of one: the proposal has been open for years and DTLS 1.3 is not on
+any `crypto/tls` roadmap. So `kind: coap` can serve NoSec only, take a
+dependency, or contain a DTLS implementation.
+
+**Decision.** Take `github.com/pion/dtls/v3`, which is the only maintained
+pure-Go DTLS stack, and confine it to one file in the CoAP kind so that
+nothing else in the tree can grow a dependency on it. The reasoning is
+AMR-002's, about `quic-go`, applied to the same shape of problem: a
+transport the standard library does not have, one credible implementation,
+and a protocol that is not worth serving without it.
+
+**Alternatives.**
+
+*Serve NoSec only, and say so.* Defensible — NoSec is what most of the field
+runs, and the listener's value is the path policy rather than the transport.
+Rejected because it makes the estates that *did* deploy DTLS the ones this
+relay cannot sit in front of, which is exactly backwards: those are the
+estates that have a client identity for `secure_only` to name.
+
+*Write the DTLS.* A record layer, a handshake with cookie exchange and
+retransmission, fragmentation and reassembly, the AEAD and CBC cipher suites,
+and the replay window. That is a protocol stack with its own five-year bug
+tail, and for a security product the honest comparison is not "our code
+versus theirs" but "our code, unreviewed, versus theirs, deployed in every
+WebRTC implementation in the world". Rejected.
+
+*Terminate DTLS in a sidecar.* Adds a second process, a second trust
+boundary and a local cleartext hop, and the client identity the policy wants
+to name would have to cross it in a header nothing signs. Rejected.
+
+**Consequences.** Three modules enter the tree: `pion/dtls/v3`,
+`pion/transport/v5` and `pion/logging`. The blast radius is one package, one
+configuration path per kind that opts in, and nothing else: a `kind: coap`
+listener with no `tls` section links the library and never calls it. The
+confinement was one file in the CoAP kind until a second kind needed the same
+transport; [AMR-051](#amr-051-the-dtls-transport-is-a-package-not-a-file) says
+why it became `internal/dtlsx` and what the claim is now. The `*tls.Config` the engine
+builds is translated into a `*dtls.Config` rather than passed through, so the
+certificates, the client-certificate policy and the minimum version stay
+where every other listener's are and there is one place that says how the
+two differ -- including that DTLS has no ALPN here and no session tickets,
+so a knob that exists for TLS and does nothing for DTLS is refused at
+validation rather than accepted and ignored.
+
+The engine's datagram path needed no change: a `Datagram` kind already
+receives its packet socket and, where it asks for TLS, a `*tls.Config`
+beside it. What the kind supplies is the demultiplexing a stream listener
+gets for free -- one DTLS session per remote address, bounded, with the
+half-open handshakes bounded separately, because a handshake a peer never
+finishes is memory a peer chose to spend.
+
+**Status.** Accepted.
+
+## AMR-051: The DTLS transport is a package, not a file
+
+**Context.** AMR-050 took `pion/dtls/v3` for `kind: coap` and confined it to
+one file, on the argument that the dependency existed for one transport on one
+listener. RFC 6353 puts SNMP inside DTLS on UDP 10161, and an estate moving
+off USM wants exactly that: a transport-level identity that is a certificate
+rather than a shared engine secret. So a second kind needs the same three
+things -- the demultiplexing of one UDP socket into a socket per peer, the
+bounds a handshake from an unproven peer needs, and the translation from the
+engine's `*tls.Config` into the library's options.
+
+**Decision.** Lift them into `internal/dtlsx` and have both kinds use it. The
+package exports `Bounds`, a `Config` built from the listener's TLS
+configuration, a `Mux` that splits a socket by peer, and a `Session` that is
+one established peer. Nothing outside the package names a type from the
+library: `Config.Accept` returns `*dtlsx.Session`, whose methods are the five
+a relay needs (read, write, close, read deadline, remote address) plus
+`PeerCertificates`, which parses the peer's DER into `*x509.Certificate` for a
+transport security model to derive a name from.
+
+**Alternatives.**
+
+*Copy the file into the second kind.* Two record-layer-adjacent
+implementations of the same bounded peer table, drifting. The handshake bug
+AMR-050's file documents -- pion handshakes inside the first `Read`, so
+bounding the constructor bounds nothing -- is exactly the kind of fix that
+would land in one copy and not the other. Rejected.
+
+*Export it from the CoAP kind.* A relay kind importing another relay kind for
+a transport is a dependency edge nobody would predict from the names, and it
+would link CoAP's parser into `xrelay` builds that serve only SNMP. Rejected.
+
+*Re-export the library's types from the new package.* Simpler to write, and it
+gives up the property worth having: with `Session` opaque, a change in the
+library's connection API is a change in one package, and no kind can start
+depending on a method this project never decided to expose. Rejected.
+
+**Consequences.** The dependency is in one package's imports, which is a
+stronger statement than the one file it replaces and is checkable: `grep
+pion/dtls` finds `internal/dtlsx` and nothing else. The two kinds keep their
+own bounds -- CoAP reads its datagram size from `max_message_bytes`, SNMP from
+its own -- because `Bounds` takes them and fills the rest with the transport's
+defaults. The write lock that stops two goroutines interleaving one DTLS
+record moved with the session, so a kind cannot forget it.
+
+**Status.** Accepted.
+
 ## Open items
 
 | Item | Owner | Needed by |

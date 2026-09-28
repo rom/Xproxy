@@ -895,3 +895,51 @@ func TestTheTypesReadBack(t *testing.T) {
 		}
 	}
 }
+
+// An option value larger than the longest the standard defines, refused at parse
+// rather than allocated for.
+//
+// Encode refuses it too, which is right for a message this package writes and no
+// help against one it receives, so the octets are assembled by hand.
+func TestAnOptionValuePastTheBoundIsRefused(t *testing.T) {
+	build := func(length int) []byte {
+		raw := hdr(Confirmable, PUT, 1, 0)
+		// Option 35 (proxy_uri), with a two-octet extended length.
+		raw = append(raw, 0xde, 22, byte((length-269)>>8), byte(length-269))
+		return append(raw, bytes.Repeat([]byte{'x'}, length)...)
+	}
+	// The longest the standard defines parses.
+	ok, err := Parse(build(MaxOptionLen))
+	if err != nil {
+		t.Fatalf("an option of %d octets was refused: %v", MaxOptionLen, err)
+	}
+	if v, present := ok.Get(OptionProxyURI); !present || len(v) != MaxOptionLen {
+		t.Fatalf("the option came back as %d octets (%v)", len(v), present)
+	}
+	// One octet more does not, and neither does anything up to the message bound.
+	for _, n := range []int{MaxOptionLen + 1, 2000, 4000, MaxMessage - 16} {
+		if _, err := Parse(build(n)); !errors.Is(err, ErrTooLong) {
+			t.Errorf("an option of %d octets: %v", n, err)
+		}
+	}
+}
+
+// NoCacheKey's expression, against the standard's own rule rather than against
+// itself: an option the mask matches is never UnSafe, which is why the function
+// tests one thing.
+func TestNoCacheKeyImpliesSafeToForward(t *testing.T) {
+	matched := 0
+	for n := 0; n <= 0xffff; n++ {
+		num := uint16(n) //nolint:gosec // bounded by the loop
+		if !NoCacheKey(num) {
+			continue
+		}
+		matched++
+		if UnSafe(num) {
+			t.Fatalf("option %d is NoCacheKey and UnSafe, which the mask should forbid", num)
+		}
+	}
+	if matched == 0 {
+		t.Error("no option number matched the NoCacheKey pattern")
+	}
+}

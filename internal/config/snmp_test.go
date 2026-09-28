@@ -3,6 +3,8 @@ package config
 import (
 	"strings"
 	"testing"
+
+	"github.com/rom/xproxy/internal/testutil"
 )
 
 // snmpDeceptionConfig is one snmp listener with a deception section.
@@ -379,5 +381,290 @@ func TestSNMPUSMWarnings(t *testing.T) {
 				t.Errorf("no warning %q: %v", tc.wants, cfg.Advice())
 			}
 		})
+	}
+}
+
+// snmpDTLSConfig is one snmp listener with a tls section, which the DTLS mode
+// needs for the certificate this relay presents.
+func snmpDTLSConfig(t *testing.T, clientAuth, section string) string {
+	t.Helper()
+	dir := t.TempDir()
+	cert, key := testutil.WriteCert(t, dir, "relay.example.com")
+	// The relay's own certificate serves as the client authority here: what
+	// is under test is the validation, not a chain.
+	ca := cert
+	return `
+version: 1
+server:
+  listeners:
+    - name: poll
+      address: "127.0.0.1:0"
+      kind: snmp
+      tls:
+        certificates:
+          - {cert_file: "` + cert + `", key_file: "` + key + `"}
+        client_auth: ` + clientAuth + `
+        client_ca_file: "` + ca + `"
+      snmp:
+` + section + `
+upstreams:
+  - name: agents
+    endpoints: [{address: "10.0.0.9:161"}]
+`
+}
+
+// What a DTLS mode cannot be. Each of these is a configuration that would look
+// like RFC 6353 and not be it.
+func TestSNMPDTLSModeIsChecked(t *testing.T) {
+	for _, tc := range []struct{ name, auth, section, wants string }{
+		{
+			name: "a mode that does not exist",
+			auth: "require",
+			section: `        upstream: agents
+        dtls_mode: opportunistic`,
+			wants: "must be none, implicit or detect",
+		},
+		{
+			name: "DTLS with no datagram socket to put it on",
+			auth: "require",
+			section: `        upstream: agents
+        transport: tcp
+        dtls_mode: implicit`,
+			wants: "needs a datagram socket",
+		},
+		{
+			name: "a handshake bound outside the range",
+			auth: "require",
+			section: `        upstream: agents
+        dtls_mode: implicit
+        dtls_handshake_timeout: 5m`,
+			wants: "dtls_handshake_timeout: must be between",
+		},
+		{
+			name: "a peer bound that is not one",
+			auth: "require",
+			section: `        upstream: agents
+        dtls_mode: implicit
+        max_dtls_peers: 99999`,
+			wants: "max_dtls_peers: must be between",
+		},
+		{
+			name: "a mapping type that does not exist",
+			auth: "require",
+			section: `        upstream: agents
+        dtls_mode: implicit
+        cert_to_name: [{fingerprint: any, map: subject}]`,
+			wants: "cert_to_name[0].map:",
+		},
+		{
+			name: "specified with no name to specify",
+			auth: "require",
+			section: `        upstream: agents
+        dtls_mode: implicit
+        cert_to_name: [{fingerprint: any, map: specified}]`,
+			wants: "cert_to_name[0].name: required",
+		},
+		{
+			// A name beside a mapping that derives one looks like it applies
+			// and does not, which is the kind of configuration an operator
+			// reads as a control and an attacker tests as a hole.
+			name: "a derived name with one written beside it",
+			auth: "require",
+			section: `        upstream: agents
+        dtls_mode: implicit
+        cert_to_name: [{fingerprint: any, map: san_dns, name: nms}]`,
+			wants: "derives the name from the certificate",
+		},
+		{
+			name: "a fingerprint that is not one",
+			auth: "require",
+			section: `        upstream: agents
+        dtls_mode: implicit
+        cert_to_name: [{fingerprint: "sha256:zz", map: san_dns}]`,
+			wants: "cert_to_name[0].fingerprint:",
+		},
+		{
+			name: "a rule naming a security name nothing derives",
+			auth: "require",
+			section: `        upstream: agents
+        dtls_mode: implicit
+        rules: [{name: nms, security_names: [ops]}]`,
+			wants: "nothing derives a security name here",
+		},
+		{
+			// One message is never both a USM user and a transport security
+			// model name, so a rule naming each matches nothing -- which on a
+			// deny rule is a control that is not there.
+			name: "a rule naming both kinds of credential",
+			auth: "require",
+			section: `        upstream: agents
+        dtls_mode: implicit
+        cert_to_name: [{fingerprint: any, map: san_dns}]
+        rules: [{name: both, users: [monitor], security_names: [ops]}]`,
+			wants: "matches nothing",
+		},
+		{
+			name: "a transport that does not exist",
+			auth: "require",
+			section: `        upstream: agents
+        dtls_mode: implicit
+        rules: [{name: r, transports: [sctp]}]`,
+			wants: "must be udp, tcp, tls or dtls",
+		},
+		{
+			name: "the whole thing, correct",
+			auth: "require",
+			section: `        upstream: agents
+        dtls_mode: implicit
+        default_action: deny
+        cert_to_name: [{fingerprint: any, map: san_dns}]
+        rules:
+          - {name: nms, transports: [dtls], security_names: [ops.example.com], access: [read], oids: ["1.3.6.1.2.1"]}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseWith([]byte(snmpDTLSConfig(t, tc.auth, tc.section)), false)
+			if tc.wants == "" {
+				if err != nil {
+					t.Fatalf("a correct configuration was refused: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("%s was accepted", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.wants) {
+				t.Errorf("the error does not say %q: %v", tc.wants, err)
+			}
+		})
+	}
+}
+
+// A DTLS mode with no tls section has no certificate to present, so no
+// handshake would ever complete.
+func TestSNMPDTLSNeedsACertificate(t *testing.T) {
+	_, err := ParseWith([]byte(snmpDeceptionConfig(`        upstream: agents
+        dtls_mode: implicit`)), false)
+	if err == nil {
+		t.Fatal("a DTLS listener with no tls section was accepted")
+	}
+	if !strings.Contains(err.Error(), "needs the listener's tls section") {
+		t.Errorf("the error does not say why: %v", err)
+	}
+}
+
+// The warnings, which are the configurations that load and are not what their
+// author meant.
+func TestSNMPDTLSWarnings(t *testing.T) {
+	for _, tc := range []struct{ name, auth, section, wants string }{
+		{
+			// detect accepts plain datagrams on the same port, so a client
+			// reaches the agents by simply not offering a certificate.
+			name: "detect with default_action allow",
+			auth: "require",
+			section: `        upstream: agents
+        dtls_mode: detect
+        default_action: allow
+        cert_to_name: [{fingerprint: any, map: san_dns}]
+        rules: [{name: nms, transports: [dtls]}]`,
+			wants: "by simply not offering a certificate",
+		},
+		{
+			name: "detect where no rule names a transport",
+			auth: "require",
+			section: `        upstream: agents
+        dtls_mode: detect
+        cert_to_name: [{fingerprint: any, map: san_dns}]
+        rules: [{name: mib2, access: [read], oids: ["1.3.6.1.2.1"]}]`,
+			wants: "nothing here requires the DTLS half",
+		},
+		{
+			// The row means "any certificate this listener accepted", and a
+			// listener that does not require one accepts every peer including
+			// the ones that offered nothing.
+			name: "any fingerprint without a client certificate required",
+			auth: "request",
+			section: `        upstream: agents
+        dtls_mode: implicit
+        cert_to_name: [{fingerprint: any, map: san_dns}]`,
+			wants: "does not require and verify one",
+		},
+		{
+			name: "a transport model listener that maps no certificate",
+			auth: "require",
+			section: `        upstream: agents
+        dtls_mode: implicit`,
+			wants: "maps to no name and is refused",
+		},
+		{
+			name: "require_security_name false, said out loud",
+			auth: "require",
+			section: `        upstream: agents
+        dtls_mode: implicit
+        require_security_name: false`,
+			wants: "the certificate identifies nobody here",
+		},
+		{
+			name: "common_name, which RFC 6353 advises against",
+			auth: "require",
+			section: `        upstream: agents
+        dtls_mode: implicit
+        cert_to_name: [{fingerprint: any, map: common_name}]`,
+			wants: "RFC 6353's last resort",
+		},
+		{
+			name: "sha1, which is there for the equipment that shipped with it",
+			auth: "require",
+			section: `        upstream: agents
+        dtls_mode: implicit
+        cert_to_name: [{fingerprint: "sha1:0102030405060708090a0b0c0d0e0f1011121314", map: san_dns}]`,
+			wants: "sha256 is what to write",
+		},
+		{
+			// A table on a listener whose transports carry no certificate
+			// derives nothing, so the rules naming a name match nothing.
+			name: "a mapping table with no transport that carries a certificate",
+			auth: "none",
+			section: `        upstream: agents
+        cert_to_name: [{fingerprint: any, map: san_dns}]`,
+			wants: "no name is ever derived",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := ParseWith([]byte(snmpDTLSConfig(t, tc.auth, tc.section)), false)
+			if err != nil {
+				t.Fatalf("did not load: %v", err)
+			}
+			if !hasAdvice(cfg, tc.wants) {
+				t.Errorf("no warning %q: %v", tc.wants, cfg.Advice())
+			}
+		})
+	}
+}
+
+// And the configuration the example file uses warns about none of it, which is
+// the property that keeps warnings worth reading: one that fires on a correct
+// configuration teaches an operator to ignore the rest.
+func TestSNMPDTLSWarnsNothingAboutACorrectListener(t *testing.T) {
+	cfg, err := ParseWith([]byte(snmpDTLSConfig(t, "require", `        upstream: agents
+        dtls_mode: implicit
+        read_only: true
+        upgrade_version: v2c
+        upstream_community: switch-secret
+        versions: [v3]
+        max_repetitions: 50
+        allow_clients: ["10.0.0.0/8"]
+        cert_to_name: [{fingerprint: any, map: san_dns}]
+        default_action: deny
+        rules:
+          - {name: nms, transports: [dtls], security_names: [ops.example.com], access: [read], oids: ["1.3.6.1.2.1"]}`)), false)
+	if err != nil {
+		t.Fatalf("did not load: %v", err)
+	}
+	for _, a := range cfg.Advice() {
+		if strings.Contains(a, "dtls") || strings.Contains(a, "cert_to_name") ||
+			strings.Contains(a, "security_name") {
+			t.Errorf("a correct listener was warned about: %s", a)
+		}
 	}
 }

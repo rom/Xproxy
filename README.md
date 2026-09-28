@@ -112,8 +112,10 @@ estate — and binds only the kinds of its own role:
 |--------|-------|----------------|
 | `xproxy` | the open internet | `http`, `forward`, `tcp`, `udp`, `dns` |
 | `xgate` | people | `ssh`, `telnet`, `vnc`, `rdp` |
-| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `snmp`, `ldap`, `tftp`, `dhcp`, `postgres`, `mysql`, `tds`, `redis`, `bacnet`, `amqp`, `s7`, `ntp`, `ntske`, `dhcp6`, `coap` |
+| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `snmp`, `ldap`, `tftp`, `dhcp`, `postgres`, `mysql`, `tds`, `redis`, `bacnet`, `amqp`, `s7`, `ntp`, `ntske`, `dhcp6`, `coap`, `opcua` |
 | Devices | CoAP (RFC 7252) over UDP, with block-wise transfer (RFC 7959), Observe (RFC 7641), resource discovery (RFC 6690), the RFC 8132 methods and the option classes that tell a proxy what to do with an option it cannot name; read as a relay: the method, the path, the content format, the declared transfer size, and the size of an answer relative to the question | `coap` |
+| Substations | IEC 61850 MMS over the ISO stack on TCP 102 — TPKT, COTP, session, presentation, ACSE, MMS — with the ACSE identity and the data model's own object names: the logical device, the logical node and the **functional constraint** that says whether a Write moves a breaker, changes a protection setting or silences a report | `mms` |
+| Plants | OPC UA (IEC 62541) over `opc.tcp`, with the chunked UA TCP transport, the secure channel and its policies and modes, the session and its identity tokens, and the service layer where the mode leaves a body readable: Read, Write, Call, Browse and the subscription set, by node identifier, attribute and method | `opcua` |
 
 A kind a binary did not link is never bound and never falls through to
 the HTTP data plane: it is an error naming the daemon that serves it.
@@ -188,7 +190,7 @@ its own for what is deliberately *not* implemented and why.
 | Building automation | BACnet/IP (ASHRAE 135 Annex J): the BVLC functions, the network layer of clause 6 with its routing and security messages, the application layer of clause 20 with the confirmed and unconfirmed services, and the object, property and command priority each request names | `bacnet` |
 | Industrial control | Siemens S7comm on TCP 102: TPKT (RFC 1006), COTP (X.224 class 0, whose connection request addresses a CPU by rack and slot), and the S7 layer -- the function codes for memory, blocks and the control service, and the user-data groups for the diagnostic buffer, the clock, the password and the debugger. **S7comm-plus** (protocol identifier `0x72`), which is what TIA Portal speaks to an S7-1200 or S7-1500, read as far as its function code -- which is as far as anything in the path can read it | `s7` |
 | Messaging | AMQP 0-9-1 (the class and method catalogue RabbitMQ speaks) and AMQP 1.0 (ISO/IEC 19464: the nine performatives, its self-describing type system, and the SASL layer), read on one port because a client picks which of the two it speaks in its first eight octets | `amqp` |
-| Management | SNMP v1 (RFC 1157), v2c (RFC 1901–1908) and v3 with USM (RFC 3410–3418, RFC 3826, RFC 7860) read and verified, over UDP and over TCP (RFC 3430), with RFC 6353 TLS on the stream side | `snmp` |
+| Management | SNMP v1 (RFC 1157), v2c (RFC 1901–1908) and v3 with USM (RFC 3410–3418, RFC 3826, RFC 7860) read and verified, over UDP and over TCP (RFC 3430); RFC 6353 on both transports — TLS on TCP 10161, DTLS on UDP 10161 — with RFC 5591's transport security model and RFC 6353 §5.3 certificate-to-name mapping | `snmp` |
 | Directory | LDAP v3 (RFC 4511–4515, 4517, 4519) with LDAPS and the StartTLS of RFC 4513, as a relay: the bind methods, the search filter's shape, distinguished names compared per relative name, the attribute lists in both directions | `ldap`, filters |
 | Addressing | DHCP (RFC 2131) with its options (RFC 2132), relay agent information (RFC 3046), long options (RFC 3396) and classless static routes (RFC 3442), as a relay agent that reads what it relays: the server a reply came from, and the configuration the reply carries | `dhcp` |
 | Addressing | DHCPv6 (RFC 8415) as a relay agent that reads what it relays, with the nested relay chain, the DUID identity, the identity associations and prefix delegation, and the options that configure something other than an address: the boot file URL (RFC 5970), the captive portal (RFC 8910), the SZTP bootstrap server (RFC 8572), the S46 transition containers (RFC 7598) and the AFTR name (RFC 6334) | `dhcp6` |
@@ -224,11 +226,13 @@ protocol so that a policy can be written in that protocol's own terms:
 | `smtp` | `xrelay` | SMTP and submission | Commands, where a message ends, TLS and authentication, bounds |
 | `mqtt` | `xrelay` | MQTT 3.1.1 and 5.0 | Topics and filters, client identifiers, retained messages, wills |
 | `coap` | `xrelay` | CoAP (RFC 7252) over UDP, block-wise transfer, Observe, resource discovery | The methods, the **paths** -- which are the device's object model, so the policy is positive and the default is deny -- the queries, the content formats in both directions, `Proxy-Uri` and `Proxy-Scheme` refused by default, an option the relay cannot name answered the way the standard says, a path whose segments would not mean what the joined path looks like, the payload, one block, the whole declared transfer, the outstanding Observe registrations, and the size of an answer as a **multiple of the question** |
+| `mms` | `xrelay` | IEC 61850 MMS on TCP 102: TPKT, COTP, ISO session and presentation, ACSE and the MMS service layer, with a learning mode that proposes the object rules | The client networks; the ACSE **AP-title** and AE-qualifier, which is the only identity this protocol has and is not a credential; whether the ACSE authentication value is a **cleartext password** (counted and reported by default, refused on request); the service and its class; the logical device; the object; and the **functional constraint** — `$CO$` operates a breaker, `$SG$` and `$SE$` change a protection relay's trip characteristic, `$BR$` and `$RP$` decide whether the control centre hears about either; then whether an operate was **selected** first, which is the one check here a relay can make that the device may not |
+| `opcua` | `xrelay` | OPC UA (IEC 62541) over `opc.tcp`, chunked UA TCP, the secure channel, sessions and identity tokens, with a learning mode that proposes the node rules | The security policies -- with the two IEC 62541 withdrew refused unless named twice -- the message security mode, the endpoint, the client application's URI checked against its own certificate, the identity token kind, the user, and a password that crossed unprotected; then, where the mode left a body readable, the service, the node identifiers, the **attribute** (a write to `value` moves an actuator; a write to `access_level` changes who may), the method on its object, the operations in one request, and the publishing interval a subscription asked for |
 | `ftp` | `xrelay` | FTP and FTPS | Commands, paths, extensions, and the data connection itself |
 | `syslog` | `xrelay` | RFC 5424 and RFC 3164 over UDP, TCP, TLS | Facility, severity, sender, the text; re-emitted in one dialect |
 | `modbus` | `xrelay` | Modbus/TCP, RTU and ASCII, Modbus/TCP Security | Unit identifiers, function codes, register ranges, values, roles, schedules, behavioural detection |
 | `iec104` | `xrelay` | IEC 60870-5-104, IEC 62351-3 TLS, IEC 60870-5-7 secure authentication recognised | Type identifications, causes of transmission, common and originator addresses, information object ranges, select-before-operate, setpoint value and step bounds, schedules; the information element too -- the quality descriptor a station attached to a reading, the value it reported, and the timestamp on a time-tagged command, which is this protocol's own replay check |
-| `snmp` | `xrelay` | SNMP v1, v2c and v3 (USM), UDP and TCP, RFC 6353 TLS | Versions, community strings and USM users, security levels, operations, object subtrees, the amplification bounds; with the user's pass phrases, v3 digests verified and payloads decrypted so the rules apply to v3 too; and USM **terminated and re-originated**, so a v1 poller reaches a v3-only agent |
+| `snmp` | `xrelay` | SNMP v1, v2c and v3 (USM and TSM), UDP and TCP, RFC 6353 TLS and DTLS | Versions, community strings and USM users, security levels, operations, object subtrees, the amplification bounds; with the user's pass phrases, v3 digests verified and payloads decrypted so the rules apply to v3 too; USM **terminated and re-originated**, so a v1 poller reaches a v3-only agent; and, under RFC 6353, the **certificate** as the identity — mapped to a security name a rule names, with the transport itself a rule field |
 | `ldap` | `xrelay` | LDAP v3, LDAPS, StartTLS | Bind methods, the bound identity, operations, naming contexts and subtrees, scopes, attributes in both directions, filter and entry bounds |
 | `dhcp` | `xrelay` | DHCPv4 with RFC 2132 options, RFC 3046 relay agent information, RFC 3442 routes | The server a reply came from, the options and addresses a reply may carry, the boot file, the lease bounds, the hardware-address rate |
 | `dhcp6` | `xrelay` | DHCPv6 (RFC 8415) with the nested relay chain, the DUID, the identity associations, prefix delegation | The server a reply came from, the options a reply may carry and the resolvers, domains and boot URLs they may name, what may be delegated and what a client may ask for, the lease bounds -- with a withdrawal never turned into a lease -- the relay chain's depth, and the starvation bound keyed on the **DUID** |
@@ -324,6 +328,75 @@ protocol so that a policy can be written in that protocol's own terms:
   the whole block-wise transfer bounded from the client's own `Size1`
   declaration rather than one datagram at a time. In NoSec — which is what most
   of the field runs — there is no identity at all, and the validator says so
+
+- `kind: opcua`: an **OPC UA relay in front of the one industrial protocol that
+  brought its own security**. Everywhere else in this list the relay *is* the
+  access control, because the protocol has none; here the server already checks
+  certificates and users, and the relay is the place an estate's rules are
+  written once and enforced for every server behind it — including the ones
+  whose own configuration nobody has reviewed since commissioning. Most of what
+  is worth enforcing is in the handshake and **all of it is in the clear by
+  construction**, because the Hello, the security policy, both certificates and
+  the user are how the two ends agree on what to encrypt: a listener admitting
+  one current policy from two named applications with no anonymous token has
+  excluded most of what goes wrong without naming a single node. The two
+  policies IEC 62541 **withdrew** — SHA-1 based, and the two an estate most
+  often still has on for one old client — have to be named in two places before
+  they are carried. **Whether the service rules apply at all is a property of
+  the channel**, and this is the trade-off the reference states rather than
+  hides: with mode `sign` the body is signed and *not* encrypted, so every node
+  identifier and method argument is readable and none of them may be modified;
+  with `sign_and_encrypt` the body is ciphertext and the node rules are silent.
+  `require_readable_bodies` is how a listener chooses, validation warns when
+  rules sit alongside a mode that makes them inert, and a counter says how often
+  it happened. Where the body is readable: the service, the node, the
+  **attribute** — which is the line between moving an actuator and changing who
+  may move it, since a write to `value` is a setpoint and a write to
+  `access_level` is a privilege change and both arrive as an ordinary Write —
+  the method *and* the object it is on, and `min_publishing_interval`, which is
+  the bound that matters most because the amplification here is arithmetic: one
+  millisecond over a thousand monitored items is a server asked to send a
+  thousand values a millisecond, from one legitimate session, in valid protocol.
+  It **never decrypts and never rewrites a body**: a relay that terminated the
+  secure channel would be a man in the middle of the one industrial protocol
+  designed to notice, holding the plant's private key to do it. And it will
+  write the node list for you: **learning mode** records what crosses it — one
+  row per identity, class of service and node group, with string identifiers
+  grouped by their prefix and numeric ones listed under their namespace — and
+  writes a `rules:` list that pastes in. It reports the share of messages whose
+  body it could not read before anything else, because a run over an encrypted
+  channel learns nothing about nodes and would otherwise read as an idle
+  listener; it proposes the services that were *called* rather than the ones the
+  class covers; and it proposes none of the bounds, because a report that
+  suggested the fastest publishing interval it happened to see would widen the
+  one setting this listener exists to hold
+
+- `kind: mms`: an **IEC 61850 relay in front of a substation's IEDs**, on TCP
+  102 and six layers deep — TPKT, COTP, ISO session, ISO presentation, ACSE and
+  MMS. What makes it different from every other relay kind here is that the
+  protocol's own **names** carry the semantics. In front of Modbus the relay has
+  to be told which register is a setpoint; here `XCBR1$CO$Pos$Oper` says it
+  operates a circuit breaker, `PTOC1$SG$StrVal$setMag$f` says it changes a
+  protection relay's trip characteristic, and `LLN0$BR$brcbST$RptEna` says it
+  decides whether the control centre hears about either. So a useful policy can
+  be written for an estate whose SCL files nobody has read — which is most of
+  them. Within a control object the attribute distinguishes a **select** from an
+  **operate**, so a client may reserve a breaker without being able to move it.
+  Two things this listener does that the devices may not. It **sees the
+  password**: IEC 61850-8-1's ACSE authentication value is a cleartext
+  GraphicString and on most of the installed base it is the only authentication
+  an IED has, so `refuse_plaintext_passwords` defaults *off* — the opposite of
+  the same knob on `opcua`, and for the opposite reason — and what the listener
+  does by default is count every association carrying one and raise a finding,
+  because that is the honest thing a relay can do about a credential it must not
+  hold. And it can **require select before operate**: IEC 61850 leaves that to
+  each object's `ctlModel`, `ctlModel` lives in the writable `$CF$`, so a client
+  with configuration access can turn the interlock off — a listener that tracks
+  the selection itself, and records it on the IED's *positive answer* rather than
+  the client's asking, has put it somewhere the configuration cannot reach. It
+  takes **no `tls:` section**: TCP 102 has none, IEC 62351-4 adds TLS beneath the
+  session layer, and terminating that would terminate the only end-to-end
+  protection this protocol has
 
 - `kind: ftp`: an FTP proxy that is actually in the middle. FTP puts
   every transfer on a second connection whose address one side
@@ -456,7 +529,24 @@ protocol so that a policy can be written in that protocol's own terms:
   the modern-device, legacy-collector case. An `authPriv` payload is
   decided about and not inspected, and said to be: the header is
   readable, the ciphertext is not, and pretending otherwise would be
-  worse than either refusing or forwarding
+  worse than either refusing or forwarding. And **RFC 6353** is the way
+  out of USM: `tls_mode` on the stream half, `dtls_mode` on the datagram
+  half that this protocol actually runs on, with RFC 5591's transport
+  security model inside either — a v3 message that carries no user, no
+  engine, no clock and no digest, because the session carries all four.
+  What identifies the sender is its **certificate**, which
+  `cert_to_name` turns into the security name a rule names by RFC 6353
+  §5.3's table, so the credential an estate has to manage becomes one it
+  already issues, revokes and rotates. The missing digest is what makes
+  the model worth relaying rather than merely terminating: a refusal can
+  be *answered* — `noAccess` in the manager's own monitoring system where
+  USM gives a timeout — and a v3 request *can* be downgraded to v2c for a
+  switch that will never speak anything else, with the answer rebuilt in
+  the manager's own envelope. `dtls_mode: detect` takes records and plain
+  datagrams on one port for an estate part-way through that move, and says
+  plainly what it costs: the client chooses which to speak, so the policy
+  is what requires the certificate — which is what `transports` on a rule
+  is for
 
 - `kind: ldap`: an **LDAP and LDAPS** relay in front of a directory — the
   one service in an estate that knows who everybody is, answering the

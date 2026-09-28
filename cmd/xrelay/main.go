@@ -29,11 +29,13 @@ import (
 	_ "github.com/rom/xproxy/internal/kinds/ftp"      // listener kind: ftp
 	_ "github.com/rom/xproxy/internal/kinds/iec104"   // listener kind: iec104
 	_ "github.com/rom/xproxy/internal/kinds/ldap"     // listener kind: ldap
+	_ "github.com/rom/xproxy/internal/kinds/mms"      // listener kind: mms
 	_ "github.com/rom/xproxy/internal/kinds/modbus"   // listener kind: modbus
 	_ "github.com/rom/xproxy/internal/kinds/mqtt"     // listener kind: mqtt
 	_ "github.com/rom/xproxy/internal/kinds/mysql"    // listener kind: mysql
 	_ "github.com/rom/xproxy/internal/kinds/ntp"      // listener kind: ntp
 	_ "github.com/rom/xproxy/internal/kinds/ntske"    // listener kind: ntske
+	_ "github.com/rom/xproxy/internal/kinds/opcua"    // listener kind: opcua
 	_ "github.com/rom/xproxy/internal/kinds/postgres" // listener kind: postgres
 	_ "github.com/rom/xproxy/internal/kinds/redis"    // listener kind: redis
 	_ "github.com/rom/xproxy/internal/kinds/s7"       // listener kind: s7

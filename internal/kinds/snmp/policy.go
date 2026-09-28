@@ -84,6 +84,8 @@ type rule struct {
 	versions    map[wire.Version]bool
 	communities map[string]bool
 	users       map[string]bool
+	names       map[string]bool
+	transports  map[Transport]bool
 	minLevel    wire.SecurityLevel
 	hasLevel    bool
 	pdus        map[wire.PDUType]bool
@@ -118,6 +120,15 @@ type Policy struct {
 type request struct {
 	client netip.Addr
 	msg    *wire.Message
+	// transport is what the message arrived on, which a rule may name: on
+	// this protocol the transport is half the credential, because a community
+	// string in a plain datagram and the same request inside DTLS are not the
+	// same statement about who is asking.
+	transport Transport
+	// name is the transport security model's security name, derived from the
+	// peer's certificate by RFC 6353 s5.3's mapping. Empty on every other
+	// transport and on a message that is not under that model.
+	name string
 }
 
 // credential is the identity a message carries, whichever version it is.
@@ -238,7 +249,19 @@ func compileRule(c *config.SNMPRule) (*rule, error) {
 	}
 	r.communities = stringSet(c.Communities)
 	r.users = stringSet(c.Users)
+	r.names = stringSet(c.SecurityNames)
 	r.contexts = stringSet(c.Contexts)
+	if len(c.Transports) > 0 {
+		r.transports = map[Transport]bool{}
+		for _, name := range c.Transports {
+			tr, ok := TransportOf(name)
+			if !ok {
+				return nil, fmt.Errorf("%s.transports: %q is not one of %s", where, name,
+					strings.Join(Transports(), ", "))
+			}
+			r.transports[tr] = true
+		}
+	}
 	if c.MinSecurityLevel != "" {
 		lvl, ok := wire.LevelOf(c.MinSecurityLevel)
 		if !ok {
@@ -422,7 +445,35 @@ func (r *rule) matches(req request, now time.Time) (bool, string) {
 		}
 	}
 	if r.users != nil {
+		// A rule naming USM users cannot cover a message under the transport
+		// security model either, and it does not need a clause of its own to
+		// say so: that model carries no user, so the credential is empty, and
+		// a rule naming an empty user name is refused at load.
 		if m.Version != wire.V3 || !r.users[req.credential()] {
+			return false, ""
+		}
+	}
+	if r.names != nil {
+		// The name is the *session's*, derived from the peer's certificate,
+		// rather than something the message carried. So a rule naming it
+		// covers every message in a session whose certificate mapped -- a v2c
+		// poller that has been given a certificate included, which is the
+		// half-migrated case worth being able to write a rule about.
+		//
+		// A session that derived no name matches nothing here, and needs no
+		// clause of its own to say so: the name is empty, and a rule naming an
+		// empty security name is refused at load.
+		if !r.names[req.name] {
+			return false, ""
+		}
+	}
+	if r.transports != nil {
+		// A rule that names no transport covers all of them, which keeps every
+		// policy written before this field meant what it meant. A request whose
+		// transport was never set matches none of them, for the reason the
+		// names above need no clause either: the set cannot hold the empty
+		// transport, because TransportOf refuses it.
+		if !r.transports[req.transport] {
 			return false, ""
 		}
 	}

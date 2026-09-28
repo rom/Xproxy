@@ -1,17 +1,12 @@
 package ntp
 
 import (
-	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
-	"github.com/rom/xproxy/internal/acceptgroup"
+	"github.com/rom/xproxy/internal/learn"
 	wire "github.com/rom/xproxy/internal/ntp"
 )
 
@@ -60,38 +55,80 @@ type observation struct {
 }
 
 // Learner records what crosses the listener.
+//
+// The table, the interval, the counters and the atomic file write are
+// internal/learn's, which every kind since IEC 104 uses. What is here is the one
+// thing that is NTP's own: what a subject is, and what is worth remembering about it.
 type Learner struct {
-	path     string
-	interval time.Duration
-	max      int
-	listener string
-
-	mu    sync.Mutex
-	seen  map[subjectKey]*observation
-	order []subjectKey
-
-	Dropped, Observed atomic.Uint64
-	Writes, Failures  atomic.Uint64
-
-	stop chan struct{}
-	once sync.Once
-	// running is the report loop, and what Stop waits for. It is
-	// acceptgroup rather than a bare WaitGroup because Start and Stop are
-	// called from the listener's own lifecycle: a shutdown that arrives
-	// before serve reached Start would Wait at zero and then be Added to.
-	running acceptgroup.Group
+	run *learn.Run[subjectKey, observation]
 }
 
 // NewLearner prepares a learner.
 func NewLearner(listener, path string, interval time.Duration, max int) *Learner {
-	if interval <= 0 {
-		interval = 5 * time.Minute
+	return &Learner{run: learn.New(learn.Options[subjectKey, observation]{
+		Kind:     "ntp",
+		Listener: listener,
+		Path:     path,
+		Interval: interval,
+		Max:      max,
+		Less:     lessSubject,
+		Clone:    observation.clone,
+		Render:   renderLearned,
+	})}
+}
+
+// lessSubject orders the rows: who, in which version, in which mode.
+func lessSubject(a, b subjectKey) bool {
+	if a.client != b.client {
+		return a.client < b.client
 	}
-	if max <= 0 {
-		max = 8192
+	if a.version != b.version {
+		return a.version < b.version
 	}
-	return &Learner{path: path, interval: interval, max: max, listener: listener,
-		seen: map[subjectKey]*observation{}, stop: make(chan struct{})}
+	return a.mode < b.mode
+}
+
+// Dropped, Observed, Writes and Failures are the run's own counters, exposed
+// because the status view and the tests read them.
+func (l *Learner) Dropped() uint64 { return ntpCount(l, func() uint64 { return l.run.Dropped.Load() }) }
+func (l *Learner) Observed() uint64 {
+	return ntpCount(l, func() uint64 { return l.run.Observed.Load() })
+}
+func (l *Learner) Writes() uint64 { return ntpCount(l, func() uint64 { return l.run.Writes.Load() }) }
+func (l *Learner) Failures() uint64 {
+	return ntpCount(l, func() uint64 { return l.run.Failures.Load() })
+}
+
+func ntpCount(l *Learner, load func() uint64) uint64 {
+	if l == nil || l.run == nil {
+		return 0
+	}
+	return load()
+}
+
+// Subjects is how many subjects the table holds.
+func (l *Learner) Subjects() int {
+	if l == nil {
+		return 0
+	}
+	return l.run.Subjects()
+}
+
+// Report renders what was learned: a description of the traffic, and under it the
+// three lists a policy is made of.
+func (l *Learner) Report() string {
+	if l == nil {
+		return ""
+	}
+	return l.run.Report()
+}
+
+// Write replaces the file atomically.
+func (l *Learner) Write() error {
+	if l == nil {
+		return nil
+	}
+	return l.run.Write()
 }
 
 // Start runs the periodic write.
@@ -99,25 +136,7 @@ func (l *Learner) Start(onError func(error)) {
 	if l == nil {
 		return
 	}
-	if !l.running.Enter() {
-		// Stopped before it started.
-		return
-	}
-	go func() {
-		defer l.running.Leave()
-		t := time.NewTicker(l.interval)
-		defer t.Stop()
-		for {
-			select {
-			case <-l.stop:
-				return
-			case <-t.C:
-				if err := l.Write(); err != nil && onError != nil {
-					onError(err)
-				}
-			}
-		}
-	}()
+	l.run.Start(onError)
 }
 
 // Stop ends the loop and writes the report one last time.
@@ -125,14 +144,7 @@ func (l *Learner) Stop() error {
 	if l == nil {
 		return nil
 	}
-	var err error
-	l.once.Do(func() {
-		close(l.stop)
-		l.running.Close()
-		l.running.Wait(context.Background())
-		err = l.Write()
-	})
-	return err
+	return l.run.Stop()
 }
 
 // Observe records one request and what was decided about it.
@@ -140,63 +152,34 @@ func (l *Learner) Observe(r request, d Decision, now time.Time) {
 	if l == nil {
 		return
 	}
-	key := subjectKey{client: r.client.Addr().String(), version: r.pkt.Version, mode: r.pkt.Mode.String()}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	o := l.seen[key]
-	if o == nil {
-		if len(l.seen) >= l.max {
-			oldest := l.order[0]
-			l.order = l.order[1:]
-			delete(l.seen, oldest)
-			l.Dropped.Add(1)
+	key := subjectKey{client: r.client.Addr().String(),
+		version: r.pkt.Version, mode: r.pkt.Mode.String()}
+	l.run.Observe(key, func(o *observation, first bool) {
+		if first {
+			o.first = now
+			o.keyIDs = map[uint32]bool{}
 		}
-		o = &observation{first: now, keyIDs: map[uint32]bool{}}
-		l.seen[key] = o
-		l.order = append(l.order, key)
-	}
-	if !o.lastSeen.IsZero() {
-		if gap := int(now.Sub(o.lastSeen).Round(time.Second).Seconds()); gap > 0 && len(o.polls) < maxPolls {
-			o.polls = append(o.polls, gap)
+		if !o.lastSeen.IsZero() {
+			if gap := int(now.Sub(o.lastSeen).Round(time.Second).Seconds()); gap > 0 &&
+				len(o.polls) < maxPolls {
+				o.polls = append(o.polls, gap)
+			}
 		}
-	}
-	o.lastSeen, o.last = now, now
-	o.packets++
-	if !d.Allow {
-		o.denied++
-	}
-	if n := r.pkt.NTS(); n.Present {
-		o.nts = true
-	}
-	if r.pkt.HasMAC {
-		o.authenticated = true
-		o.keyIDs[r.pkt.KeyID] = true
-	}
-	l.Observed.Add(1)
+		o.lastSeen, o.last = now, now
+		o.packets++
+		if !d.Allow {
+			o.denied++
+		}
+		if n := r.pkt.NTS(); n.Present {
+			o.nts = true
+		}
+		if r.pkt.HasMAC {
+			o.authenticated = true
+			o.keyIDs[r.pkt.KeyID] = true
+		}
+	})
 }
 
-// Write renders the report and replaces the file atomically.
-func (l *Learner) Write() error {
-	if l == nil || l.path == "" {
-		return nil
-	}
-	body := l.Report()
-	tmp := filepath.Join(filepath.Dir(l.path), "."+filepath.Base(l.path)+".tmp")
-	if err := os.WriteFile(tmp, []byte(body), 0o600); err != nil {
-		l.Failures.Add(1)
-		return err
-	}
-	if err := os.Rename(tmp, l.path); err != nil {
-		l.Failures.Add(1)
-		_ = os.Remove(tmp)
-		return err
-	}
-	l.Writes.Add(1)
-	return nil
-}
-
-// Report renders what was learned: a description of the traffic, and
-// under it the three lists a policy is made of.
 // clone is a copy that shares nothing with the original.
 //
 // A plain value copy would share the two maps and the poll slice, and the report
@@ -206,8 +189,8 @@ func (l *Learner) Write() error {
 // fatal "concurrent map iteration and map write" that takes the process down,
 // which for a relay in front of a plant's clocks is an outage caused by writing a
 // report.
-func (o *observation) clone() observation {
-	c := *o
+func (o observation) clone() observation {
+	c := o
 	c.keyIDs = make(map[uint32]bool, len(o.keyIDs))
 	for k, v := range o.keyIDs {
 		c.keyIDs[k] = v
@@ -216,36 +199,21 @@ func (o *observation) clone() observation {
 	return c
 }
 
-func (l *Learner) Report() string {
-	l.mu.Lock()
-	keys := make([]subjectKey, 0, len(l.seen))
-	for k := range l.seen {
-		keys = append(keys, k)
+// renderLearned is the Render callback: the subjects arrive already snapshotted,
+// cloned and ordered.
+func renderLearned(listener string, subjects []learn.Subject[subjectKey, observation],
+	st learn.Stats) string {
+	keys := make([]subjectKey, 0, len(subjects))
+	snap := make([]observation, 0, len(subjects))
+	for _, s := range subjects {
+		keys = append(keys, s.Key)
+		snap = append(snap, s.Obs)
 	}
-	sort.Slice(keys, func(i, j int) bool {
-		a, b := keys[i], keys[j]
-		if a.client != b.client {
-			return a.client < b.client
-		}
-		if a.version != b.version {
-			return a.version < b.version
-		}
-		return a.mode < b.mode
-	})
-	snap := make([]observation, 0, len(keys))
-	for _, k := range keys {
-		snap = append(snap, l.seen[k].clone())
-	}
-	dropped, observed := l.Dropped.Load(), l.Observed.Load()
-	l.mu.Unlock()
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "# NTP traffic observed by listener %q.\n", l.listener)
-	fmt.Fprintf(&b, "# Written %s. %d packets, %d subjects", time.Now().UTC().Format(time.RFC3339), observed, len(keys))
-	if dropped > 0 {
-		fmt.Fprintf(&b, ", %d subjects dropped at the bound (raise learn.max_subjects)", dropped)
-	}
-	b.WriteString(".\n#\n")
+	// "packets" rather than "events": an NTP subject counts packets, and a shared
+	// header that called one an event would be slightly wrong in order to be shared.
+	b.WriteString(learn.HeaderWith("NTP", listener, "packets", st, time.Now()))
 	b.WriteString("# A subject is a client, a protocol version and a mode. Read it, decide what\n")
 	b.WriteString("# the estate ought to be asking, and paste the lists at the end under\n")
 	b.WriteString("# the listener's ntp section.\n\n")
@@ -286,16 +254,6 @@ func (l *Learner) Report() string {
 	fmt.Fprintf(&b, "versions: [%s]\n", joinUint8(versions))
 	fmt.Fprintf(&b, "modes: [%s]\n", joinStrings(modes))
 	return b.String()
-}
-
-// Subjects is how many subjects are held, for the status view.
-func (l *Learner) Subjects() int {
-	if l == nil {
-		return 0
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return len(l.seen)
 }
 
 func hostPrefixes(in map[string]bool) []string {

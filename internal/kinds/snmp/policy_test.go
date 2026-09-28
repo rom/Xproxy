@@ -352,3 +352,85 @@ func TestAnOperationIsNamedByWhatItDoes(t *testing.T) {
 		}
 	}
 }
+
+// The transport, which on this protocol is half the credential: a community
+// string in a plain datagram is a cleartext password from an address anybody
+// can claim, and the same request inside DTLS came from a peer that proved it
+// holds a private key.
+//
+// The test is written so that the transport is the *only* difference between
+// the two requests, because that is the thing under test: everything else about
+// the two messages is identical.
+func TestARuleNamingTransportsCoversOnlyThose(t *testing.T) {
+	p := policyFor(t, &config.SNMPListener{
+		DefaultAction: "deny",
+		Rules: []config.SNMPRule{{
+			Name: "secure-only", Action: "allow",
+			Transports: []string{"dtls"},
+			Access:     []string{"read"},
+			OIDs:       []string{"1.3.6.1.2.1"},
+		}},
+	})
+	msg := v2c("public", get(1, 1, 3, 6, 1, 2, 1, 1, 1, 0))
+	if d := p.Decide(request{client: netip.MustParseAddr("10.0.0.1"),
+		msg: parse(msg), transport: TransportDTLS}); !d.Allow {
+		t.Errorf("a message on the transport the rule names was refused: %+v", d)
+	}
+	if d := p.Decide(request{client: netip.MustParseAddr("10.0.0.1"),
+		msg: parse(msg), transport: TransportUDP}); d.Allow {
+		t.Error("the same message on a transport the rule does not name was allowed")
+	}
+	// And a request whose transport was never set matches no rule that names
+	// one. This is the caller that forgot rather than the client that chose,
+	// and a rule about DTLS quietly covering it would be the worst of the
+	// three outcomes.
+	if d := p.Decide(request{client: netip.MustParseAddr("10.0.0.1"), msg: parse(msg)}); d.Allow {
+		t.Error("a request with no transport matched a rule naming one")
+	}
+	// A rule naming no transport covers all of them, which is what keeps every
+	// policy written before the field meant what it meant.
+	q := policyFor(t, &config.SNMPListener{
+		DefaultAction: "deny",
+		Rules: []config.SNMPRule{{Name: "any", Action: "allow",
+			Access: []string{"read"}, OIDs: []string{"1.3.6.1.2.1"}}},
+	})
+	for _, tr := range []Transport{TransportUDP, TransportTCP, TransportTLS, TransportDTLS, ""} {
+		if d := q.Decide(request{client: netip.MustParseAddr("10.0.0.1"),
+			msg: parse(msg), transport: tr}); !d.Allow {
+			t.Errorf("a rule naming no transport refused %q: %+v", tr, d)
+		}
+	}
+}
+
+// The security name is the session's, not the message's, so a rule naming one
+// covers whatever that session carries -- including a v2c poller that has been
+// given a certificate, which is the half-migrated case worth being able to
+// write a rule about.
+func TestARuleNamingASecurityNameCoversTheSessionNotTheVersion(t *testing.T) {
+	p := policyFor(t, &config.SNMPListener{
+		DefaultAction: "deny",
+		Rules: []config.SNMPRule{{
+			Name: "by-certificate", Action: "allow",
+			SecurityNames: []string{"nms1.ops.example.com"},
+			Access:        []string{"read"},
+			OIDs:          []string{"1.3.6.1.2.1"},
+		}},
+	})
+	msg := v2c("public", get(1, 1, 3, 6, 1, 2, 1, 1, 1, 0))
+	if d := p.Decide(request{client: netip.MustParseAddr("10.0.0.1"), msg: parse(msg),
+		transport: TransportDTLS, name: "nms1.ops.example.com"}); !d.Allow {
+		t.Errorf("a v2c message in a session with that name was refused: %+v", d)
+	}
+	// A different name in the same shape of session is a different principal.
+	if d := p.Decide(request{client: netip.MustParseAddr("10.0.0.1"), msg: parse(msg),
+		transport: TransportDTLS, name: "laptop.example.com"}); d.Allow {
+		t.Error("a session with another name matched")
+	}
+	// And a session that derived no name matches nothing here, because then
+	// there is nothing this rule is about. A rule cannot name the empty name:
+	// validation refuses it.
+	if d := p.Decide(request{client: netip.MustParseAddr("10.0.0.1"), msg: parse(msg),
+		transport: TransportDTLS}); d.Allow {
+		t.Error("a session with no derived name matched a rule naming one")
+	}
+}
