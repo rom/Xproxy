@@ -2028,6 +2028,67 @@ Three smaller decisions in it worth knowing:
   A baseline that read them as values proposed `min: 65280, max: 65280` for a
   coil somebody switched on.
 
+**`anomaly`** is behavioural detection, and it is the other half of the answer to
+"a policy is only as good as what somebody wrote down". The rules answer *is this
+permitted*. This answers *is this what this master has been doing*, and answers it
+with nothing written down at all.
+
+Control traffic is repetitive in a way other traffic is not: a master's scan cycle
+is the same few function codes over the same few address ranges, every cycle, for
+years. So "this client has never done this before" is a signal here where on a web
+front end it would be noise. Three things are watched:
+
+| Signal | Reason | What it catches |
+|--------|--------|-----------------|
+| new function code | `anomaly_new_function` | A master that has only ever read, writing |
+| new write address | `anomaly_new_write_address` | A write to a register this master has never driven |
+| burst of writes | `anomaly_write_burst` | Forty registers moved in ten seconds |
+
+The burst is **not** the per-address `rate` of a value rule, and the difference is
+the point. A rate of "this setpoint may move once a minute" does not notice a
+master that wrote forty *different* registers once each, which is the shape of
+somebody walking the address space rather than of a control action. This counts one
+client's writes across every address.
+
+**It alerts.** A detector built on "I have not seen this before" refuses the first
+legitimate thing anybody does after a quiet year: the maintenance write, the
+commissioning of a new point, the operator who finally uses a function the master
+has always been allowed to use. So the default is a security event and a counter,
+and the events **do not reach the ban ladder** -- banning a plant's master over a
+function code it had not used yet takes the process away from the control room,
+which is worse than what is being guarded against.
+
+`action: deny` is there for the plants that want it, and it refuses the *first*
+occurrence and records it, so a retry goes through. That is deliberate: refusing
+every occurrence until somebody intervened would mean a plant that could not be
+driven after any novelty, with nothing here to do the intervening. deny buys a hard
+stop on the first attempt and an operator's attention. **It is not a block**, and
+the rules are what block. In shadow mode or a learning run without `enforce` it
+refuses nothing and the would-be refusals go to the shadow report, like every other
+decision on this listener.
+
+**It settles first.** When the relay starts, everything is new, so for `settle`
+after a client is first seen its traffic is recorded and nothing about novelty is
+reported. The write burst is not suppressed during it: that bound is a number set
+here rather than something learned, and a burst while settling is still a burst.
+
+A master that writes more distinct address ranges than the detector holds has its
+*novelty* detection turned off, and the count is in the status view. The
+alternative -- collapsing the ranges into one span, which is what the learning
+report does -- widens what counts as seen, and would make the detector stop
+detecting while it went on looking like it worked.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Turn the detection on |
+| `settle` | duration | `10m` | How long a client's traffic is recorded before novelty is reported for it; 1m..168h, or `0s` for none. `0s` reports the first thing every master does, which after a restart is every master's whole scan cycle at once, and is warned about |
+| `new_function` | bool | `true` | Report a function code this client has not used |
+| `new_write_address` | bool | `true` | Report a write to an address this client has not written |
+| `write_burst` | int | `20` | Writes one client may make across every address within `burst_period`. 0 disables it |
+| `burst_period` | duration | `10s` | The burst window; 1s..1h |
+| `action` | `alert`, `deny` | `alert` | `deny` refuses the first occurrence, as the device's own exception, and warns |
+| `max_clients` | int | `1024` | Masters remembered; 8..1000000. Past it the drops are counted |
+
 **`trace`** writes one JSON object per frame for as long as it is
 enabled: the engineer's tool for "what is this master actually doing". It
 is a different thing from the audit log, which answers "who was refused

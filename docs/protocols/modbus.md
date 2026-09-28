@@ -105,6 +105,26 @@ carries an AND mask and an OR mask, and code 8 a diagnostic argument; none of
 them is a value at an address, and a baseline that read them as values proposed
 `min: 65280, max: 65280` for a coil somebody switched on.
 
+## Behavioural detection
+
+`anomaly` is the other half of it, and it needs nothing written down. The rules
+answer *is this permitted*; this answers *is this what this master has been
+doing*. Control traffic is repetitive in a way other traffic is not -- a master's
+scan cycle is the same few function codes over the same few address ranges, every
+cycle, for years -- so "this client has never done this before" is a signal here
+where elsewhere it would be noise. A function code the client has not used, a
+write to a register it has never driven, and a burst of writes across every
+address, which is the one thing a per-address `rate` cannot see: forty different
+registers written once each is not a rate violation anywhere and is exactly the
+shape of somebody walking the address space.
+
+It alerts, and the alerts do not reach the ban ladder: the first legitimate
+maintenance write of the year is novel too, and banning the plant's master for it
+would take the process away from the control room. `action: deny` refuses the
+first occurrence and records it, so a retry goes through -- a hard stop and an
+operator's attention, not a block. And it settles before it reports, because when
+the relay starts everything is new.
+
 A refused request is answered with a Modbus **exception** — the protocol's own
 "illegal data address" or "illegal function" — so the master's own library
 reports it and the poll loop carries on. Dropping the connection because one

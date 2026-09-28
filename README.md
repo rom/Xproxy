@@ -223,7 +223,7 @@ protocol so that a policy can be written in that protocol's own terms:
 | `mqtt` | `xrelay` | MQTT 3.1.1 and 5.0 | Topics and filters, client identifiers, retained messages, wills |
 | `ftp` | `xrelay` | FTP and FTPS | Commands, paths, extensions, and the data connection itself |
 | `syslog` | `xrelay` | RFC 5424 and RFC 3164 over UDP, TCP, TLS | Facility, severity, sender, the text; re-emitted in one dialect |
-| `modbus` | `xrelay` | Modbus/TCP, RTU and ASCII, Modbus/TCP Security | Unit identifiers, function codes, register ranges, values, roles, schedules |
+| `modbus` | `xrelay` | Modbus/TCP, RTU and ASCII, Modbus/TCP Security | Unit identifiers, function codes, register ranges, values, roles, schedules, behavioural detection |
 | `iec104` | `xrelay` | IEC 60870-5-104, IEC 62351-3 TLS, IEC 60870-5-7 secure authentication recognised | Type identifications, causes of transmission, common and originator addresses, information object ranges, select-before-operate, setpoint value and step bounds, schedules; the information element too -- the quality descriptor a station attached to a reading, the value it reported, and the timestamp on a time-tagged command, which is this protocol's own replay check |
 | `snmp` | `xrelay` | SNMP v1, v2c and v3 (USM), UDP and TCP, RFC 6353 TLS | Versions, community strings and USM users, security levels, operations, object subtrees, the amplification bounds; with the user's pass phrases, v3 digests verified and payloads decrypted so the rules apply to v3 too |
 | `ldap` | `xrelay` | LDAP v3, LDAPS, StartTLS | Bind methods, the bound identity, operations, naming contexts and subtrees, scopes, attributes in both directions, filter and entry bounds |
@@ -326,7 +326,15 @@ protocol so that a policy can be written in that protocol's own terms:
   **Modbus/TCP Security** for the devices that have it: TLS with mutual
   authentication and the role in the client certificate. And **learning
   mode**, because nobody knows what a plant's Modbus traffic is — run it
-  for a week and the file it writes is the rule set to start from
+  for a week and the file it writes is the rule set to start from, with a
+  **process baseline per register**: the envelope of the values written
+  there, the largest step between writes and the peak write rate, which
+  is what a value policy is actually written from. Plus **behavioural
+  detection** that needs no rules at all — a function code this master
+  has never used, a write to a register it has never driven, a burst of
+  writes across the address space — because control traffic is repetitive
+  in a way other traffic is not, so "this has not happened before" is a
+  real signal here
 
 - `kind: iec104`: an **IEC 60870-5-104** relay for the electricity grid,
   in both directions. IEC 104 is the protocol that operates transmission

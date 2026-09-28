@@ -10892,6 +10892,7 @@ func (v *validator) modbusListener(p string, m *ModbusListener, hasTLS bool) {
 			v.warnf("%s.learn is enabled without enforce, so this listener records and decides nothing: turn enforce on, or take the learning section out, once the rules are written", p)
 		}
 	}
+	v.modbusAnomaly(p+".anomaly", m.Anomaly)
 	if tr := m.Trace; tr != nil {
 		if tr.File == "" {
 			v.errf("%s.trace.file: required", p)
@@ -11099,6 +11100,54 @@ func (v *validator) modbusCIDRs(p string, in []string) {
 // modbusSchedule validates a rule's time window. It is shared with the
 // IEC 104 rules, because "during the day shift" does not change with the
 // protocol.
+// modbusAnomaly validates the behavioural detector.
+func (v *validator) modbusAnomaly(p string, a *ModbusAnomaly) {
+	if a == nil || !a.Enabled {
+		return
+	}
+	if s := a.Settle; s != nil {
+		switch {
+		case s.D() < 0:
+			v.errf("%s.settle: must not be negative", p)
+		case s.D() == 0:
+			v.warnf("%s.settle is 0, so the first thing every master does is reported as novel. "+
+				"After a restart that is every master's whole scan cycle at once", p)
+		case s.D() < time.Minute || s.D() > 7*24*time.Hour:
+			v.errf("%s.settle: must be 0 or between 1m and 168h", p)
+		}
+	}
+	burst := DefaultModbusWriteBurst
+	if a.WriteBurst != nil {
+		burst = *a.WriteBurst
+		switch {
+		case burst < 0:
+			v.errf("%s.write_burst: must not be negative", p)
+		case burst > 1_000_000:
+			v.errf("%s.write_burst: must be at most 1000000", p)
+		}
+	}
+	if a.BurstPeriod != 0 && (a.BurstPeriod.D() < time.Second || a.BurstPeriod.D() > time.Hour) {
+		v.errf("%s.burst_period: must be between 1s and 1h", p)
+	}
+	if a.MaxClients != 0 && (a.MaxClients < 8 || a.MaxClients > 1_000_000) {
+		v.errf("%s.max_clients: must be between 8 and 1000000", p)
+	}
+	switch a.Action {
+	case "", "alert", "deny":
+	default:
+		v.errf("%s.action: must be alert or deny", p)
+	}
+	off := func(b *bool) bool { return b != nil && !*b }
+	if off(a.NewFunction) && off(a.NewWriteAddress) && burst == 0 {
+		v.errf("%s: enabled with nothing to detect: new_function, new_write_address and write_burst are all off", p)
+	}
+	if a.Action == "deny" {
+		v.warnf("%s.action is deny, so a master doing something this relay has not seen it do is refused. "+
+			"The signal is novelty, which the first legitimate maintenance write of the year also is: "+
+			"run it as alert first and read what it would have refused", p)
+	}
+}
+
 func (v *validator) modbusSchedule(p string, s *ModbusSchedule) {
 	if s == nil {
 		// A rule with no window is in force always, which is the common

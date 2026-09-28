@@ -59,9 +59,28 @@ func TestSeccompProgram(t *testing.T) {
 			t.Fatalf("deny list not sorted and unique at %d: %v", i, nrs)
 		}
 	}
-	errno := uint32(unix.SECCOMP_RET_ERRNO) | uint32(unix.EPERM)
 	for _, n := range nrs {
-		if got := runBPF(t, prog, uint32(n), auditArch); got != errno { //nolint:gosec // test data
+		want := uint32(unix.SECCOMP_RET_ERRNO) | uint32(errnoFor(n))   //nolint:gosec // errnos are small
+		if got := runBPF(t, prog, uint32(n), auditArch); got != want { //nolint:gosec // test data
+			t.Errorf("syscall %d: got %#x want %#x", n, got, want)
+		}
+	}
+	// clone3 is ENOSYS and not EPERM, and it has to be. glibc's pthread_create
+	// calls clone3 and falls back to plain clone -- which this filter allows --
+	// only on ENOSYS; refused with EPERM it does not fall back, and a process
+	// linked against glibc cannot create a thread at all. That is not
+	// hypothetical: it aborted the race-enabled test binary of this very package,
+	// which is a cgo binary, with "runtime/cgo: pthread_create failed: Operation
+	// not permitted" -- but only under load, because only then did the runtime
+	// want another thread after the sandbox went on.
+	clone3 := uint32(unix.SECCOMP_RET_ERRNO) | uint32(unix.ENOSYS)
+	if got := runBPF(t, prog, uint32(unix.SYS_CLONE3), auditArch); got != clone3 { //nolint:gosec // test data
+		t.Errorf("clone3: got %#x want ENOSYS (%#x)", got, clone3)
+	}
+	// And every other refusal is still EPERM, so the exception is an exception.
+	eperm := uint32(unix.SECCOMP_RET_ERRNO) | uint32(unix.EPERM)
+	for _, n := range []int{unix.SYS_EXECVE, unix.SYS_PTRACE, unix.SYS_MOUNT, unix.SYS_SETUID} {
+		if got := runBPF(t, prog, uint32(n), auditArch); got != eperm { //nolint:gosec // test data
 			t.Errorf("syscall %d: got %#x want EPERM", n, got)
 		}
 	}

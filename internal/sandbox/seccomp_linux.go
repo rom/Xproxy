@@ -41,6 +41,32 @@ var deniedCommon = []int{
 	unix.SYS_EXECVE, unix.SYS_EXECVEAT, unix.SYS_CLONE3, unix.SYS_PERSONALITY, unix.SYS_MKNODAT,
 }
 
+// deniedErrno overrides the errno a particular call is refused with.
+//
+// clone3 has to be ENOSYS rather than EPERM, and it is not a nicety. glibc's
+// pthread_create calls clone3 first and falls back to plain clone -- which this
+// filter allows -- only on ENOSYS. Refused with EPERM it does not fall back: it
+// fails, and a process linked against glibc cannot create a thread at all. The
+// Go runtime calls clone directly, so a CGO_ENABLED=0 build never noticed; a
+// cgo-linked one aborts with "runtime/cgo: pthread_create failed: Operation not
+// permitted" the moment anything wants an OS thread after the sandbox is on,
+// which is how this was found -- the race-enabled test binary is a cgo binary.
+//
+// Nothing is given away by the change. clone is allowed either way, so refusing
+// clone3 was never what stopped a new process; execve and execveat are, and they
+// stay EPERM.
+var deniedErrno = map[int]uintptr{
+	unix.SYS_CLONE3: uintptr(unix.ENOSYS),
+}
+
+// errnoFor is the errno a refused call returns.
+func errnoFor(nr int) uintptr {
+	if e, ok := deniedErrno[nr]; ok {
+		return e
+	}
+	return uintptr(unix.EPERM)
+}
+
 // deniedArchitecture lists calls that exist on this architecture only
 // (set in the per architecture files); auditArch is the seccomp
 // architecture token, 0 when the filter is not built for this
@@ -79,7 +105,8 @@ func jump(code uint16, k uint32, jt, jf uint8) unix.SockFilter {
 }
 
 // program builds the filter: kill on a foreign architecture (and on the
-// x32 ABI where it exists), EPERM for every denied number, allow the rest.
+// x32 ABI where it exists), an errno for every denied number -- EPERM unless
+// deniedErrno says otherwise -- and allow the rest.
 func program(arch uint32, nrs []int, x32 bool) []unix.SockFilter {
 	p := []unix.SockFilter{
 		stmt(bpfLD, seccompDataArch),
@@ -91,7 +118,7 @@ func program(arch uint32, nrs []int, x32 bool) []unix.SockFilter {
 		p = append(p, jump(bpfJGE, x32Bit, 0, 1), stmt(bpfRET, unix.SECCOMP_RET_KILL_PROCESS))
 	}
 	for _, n := range nrs {
-		p = append(p, jump(bpfJEQ, uint32(n), 0, 1), stmt(bpfRET, unix.SECCOMP_RET_ERRNO|uint32(unix.EPERM))) //nolint:gosec // syscall numbers are small
+		p = append(p, jump(bpfJEQ, uint32(n), 0, 1), stmt(bpfRET, unix.SECCOMP_RET_ERRNO|uint32(errnoFor(n)))) //nolint:gosec // syscall numbers and errnos are small
 	}
 	return append(p, stmt(bpfRET, unix.SECCOMP_RET_ALLOW))
 }

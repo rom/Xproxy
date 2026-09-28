@@ -448,6 +448,11 @@ type ModbusListener struct {
 	// the roles, the units, the function codes, the address ranges and
 	// the value ranges -- and writes it out as a rule set to start from.
 	Learn *ModbusLearn `yaml:"learn"`
+	// Anomaly watches what each master has been doing and reports when it
+	// stops: a function code it has never used, a write to a register it
+	// has never written, a burst of writes. It needs no rules, which is
+	// the point of it.
+	Anomaly *ModbusAnomaly `yaml:"anomaly"`
 	// Trace writes one line per frame for as long as it is enabled: the
 	// engineer's tool for "what is this master actually doing".
 	Trace *ModbusTrace `yaml:"trace"`
@@ -3943,6 +3948,79 @@ type ModbusLearn struct {
 	// a learning run is normally observe-only, and saying so here is
 	// what stops one being left on by accident.
 	Enforce bool `yaml:"enforce"`
+}
+
+// DefaultModbusWriteBurst is the write burst applied when the key is
+// unset: twenty writes in ten seconds across every address. It lives here
+// rather than in the kind because validation has to know whether the burst
+// is on in order to refuse a detector with nothing to detect, and a number
+// kept in two places is a number that drifts.
+const DefaultModbusWriteBurst = 20
+
+// ModbusAnomaly is behavioural detection: what a master has been doing,
+// and when it stops.
+//
+// The rules answer "is this permitted", from what somebody wrote down.
+// This answers "is this what this master has been doing", and answers it
+// without anybody having written anything. Control traffic is repetitive
+// in a way other traffic is not -- a master's scan cycle is the same few
+// function codes over the same few address ranges, every cycle, for
+// years -- so "this client has never done this before" is a signal here
+// where elsewhere it would be noise.
+//
+// It alerts. A detector built on "I have not seen this before" refuses
+// the first legitimate thing anybody does after a quiet year, so the
+// default is an event and a counter, the events do not reach the ban
+// ladder, and `action: deny` is there for the plants that want it.
+type ModbusAnomaly struct {
+	// Enabled turns the detection on.
+	Enabled bool `yaml:"enabled"`
+	// Settle is how long a client's traffic is recorded before anything
+	// about novelty is reported for it. Default 10m, because when the
+	// relay starts everything is new and a master's first minutes are its
+	// startup rather than its work. The write burst is not suppressed
+	// during it: that bound is a number set here rather than something
+	// learned, and a burst while settling is still a burst.
+	//
+	// A pointer so that 0s means no settling at all rather than the
+	// default: on a relay that has been running for months and was
+	// restarted in place there is an argument for reporting from the first
+	// frame, and an operator who writes 0s should get what they wrote.
+	Settle *Duration `yaml:"settle"`
+	// NewFunction reports a function code this client has not used.
+	// Default true.
+	NewFunction *bool `yaml:"new_function"`
+	// NewWriteAddress reports a write to an address this client has not
+	// written. Default true.
+	NewWriteAddress *bool `yaml:"new_write_address"`
+	// WriteBurst and BurstPeriod bound one client's writes across every
+	// address: default 20 in 10s. It is not the per-address rate of a
+	// value rule, and the difference is the point -- a rate of "this
+	// setpoint may move once a minute" does not notice a master that
+	// wrote forty different registers once each, which is the shape of
+	// somebody walking the address space. 0 disables it.
+	//
+	// A pointer for the same reason `settle` is one: 0 means off, and an
+	// unset key means the default. Read as a plain int, `write_burst: 0`
+	// silently kept the default of twenty, so a listener configured with
+	// the burst turned off went on reporting bursts.
+	WriteBurst  *int     `yaml:"write_burst"`
+	BurstPeriod Duration `yaml:"burst_period"`
+	// Action is alert (the default) or deny. deny refuses the request the
+	// detection fired on, which on a signal derived from novelty means
+	// refusing a maintenance write nobody has made before. It is a real
+	// choice and not a default.
+	//
+	// It refuses the *first* occurrence and records it, so a retry goes
+	// through. That is deliberate: refusing every occurrence until
+	// somebody intervened would mean a plant that could not be driven
+	// after any novelty, with nothing here to do the intervening. deny
+	// buys a hard stop on the first attempt and an operator's attention.
+	// It is not a block, and the rules are what block.
+	Action string `yaml:"action"`
+	// MaxClients bounds the masters remembered. Default 1024; past it
+	// the drops are counted rather than silent.
+	MaxClients int `yaml:"max_clients"`
 }
 
 // ModbusDeception answers as a device that is not there.

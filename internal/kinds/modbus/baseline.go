@@ -248,7 +248,8 @@ type run struct {
 // report nobody reads. Adjacent addresses that differ stay separate, which is the
 // whole point of recording per address.
 func runs(keys []baselineKey, pts []baselinePoint) []run {
-	var out []run
+	// At most one entry per point, and fewer wherever a run folds.
+	out := make([]run, 0, len(keys))
 	for i, k := range keys {
 		pt := pts[i]
 		if n := len(out); n > 0 {

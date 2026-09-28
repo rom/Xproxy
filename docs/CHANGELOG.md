@@ -6,6 +6,70 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Fixed (sandbox: the seccomp filter stopped a hardened process creating threads)
+
+- **`clone3` was refused with `EPERM`, and it has to be `ENOSYS`.** glibc's
+  `pthread_create` calls `clone3` first and falls back to plain `clone` — which
+  this filter allows — only on `ENOSYS`. Refused with `EPERM` it does not fall
+  back: it fails, and a process linked against glibc **cannot create a thread at
+  all** once the sandbox is on. The Go runtime calls `clone` directly, so the
+  shipped `CGO_ENABLED=0` binaries never hit it; a cgo-linked build aborts with
+  `runtime/cgo: pthread_create failed: Operation not permitted` the moment
+  anything wants an OS thread after hardening.
+
+- Nothing is given away by the change. `clone` is allowed either way, so refusing
+  `clone3` was never what stopped a new process being made — `execve` and
+  `execveat` are, and they stay `EPERM`.
+
+- **It surfaced as a test that failed only under load.** `TestApplyLinux` runs the
+  sandbox in a helper subprocess, and the race-enabled test binary is a cgo
+  binary: under load the runtime wanted another thread after the sandbox went on,
+  the helper aborted *after* passing every check it made, and the parent reported
+  "helper failed: exit status 2". The helper now starts twenty-four locked OS
+  threads deliberately and the parent asserts it got them, so the property is
+  checked rather than sampled.
+
+### Added (modbus: behavioural detection, which needs no rules)
+
+- **`anomaly` answers a question the rules cannot**: not *is this permitted* but
+  *is this what this master has been doing*, with nothing written down. Control
+  traffic is repetitive in a way other traffic is not — a master's scan cycle is
+  the same few function codes over the same few address ranges, every cycle, for
+  years — so "this client has never done this before" is a signal here where on a
+  web front end it would be noise. It watches a function code the client has not
+  used (`anomaly_new_function`), a write to a register it has never driven
+  (`anomaly_new_write_address`) and a burst of writes across every address
+  (`anomaly_write_burst`).
+
+- **The burst is the one that a value rule's `rate` cannot see.** A rate of "this
+  setpoint may move once a minute" does not notice a master that wrote forty
+  *different* registers once each, which is not a rate violation anywhere and is
+  exactly the shape of somebody walking the address space.
+
+- **It alerts, and the alerts do not reach the ban ladder.** A detector built on
+  novelty fires on the first legitimate maintenance write of the year, and banning
+  a plant's master for it would take the process away from the control room —
+  worse than what is being guarded against. `action: deny` exists for the plants
+  that want it, refuses the *first* occurrence and records it so a retry goes
+  through, and is warned about at validation: it buys a hard stop and an
+  operator's attention, not a block.
+
+- **It settles before it reports.** When the relay starts everything is new, so a
+  client's first `settle` (10m by default) is recorded quietly. The burst is not
+  suppressed during it, because that bound is a number an operator set rather than
+  something learned.
+
+- A master that writes more distinct ranges than the detector holds has its
+  novelty detection turned off and counted, rather than having its ranges
+  collapsed into one span: widening what counts as seen would make the detector
+  stop detecting while it went on looking like it worked.
+
+- `settle` and `write_burst` are read as pointers, so `0s` and `0` mean *off*
+  rather than *default*. The first version read them as plain values, so a
+  listener configured with `write_burst: 0` silently kept the default of twenty
+  and went on reporting bursts — a detector that had been turned off and was not.
+  The test that found it now asserts fifty writes against a bound of zero.
+
 ### Fixed and added (modbus: the learning report proposed a bound looser than the traffic)
 
 - **The value bound a learning report proposed was derived from every register a
