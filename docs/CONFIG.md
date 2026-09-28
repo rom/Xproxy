@@ -3648,6 +3648,143 @@ reason is in the refusal counters: `client_not_allowed`,
 `bad_identity_association`, `too_many_hops`, `too_many_pending`,
 `rate_limited`, `unsolicited`, `rule`, `default_deny`, `unencodable`.
 
+### server.listeners[].coap (kind: coap)
+
+A `kind: coap` listener is a CoAP relay agent (RFC 7252) on UDP **5683**, or
+on **5684** inside DTLS where the listener carries a `tls` section.
+
+CoAP is REST for devices too small to run TLS comfortably, and that is what
+makes it worth reading rather than forwarding as an opaque datagram: a
+request carries a **method**, a **path** and a **content format**, so it says
+what is about to happen in fields a relay can see. A `PUT` to
+`/3311/0/5850` turns a light on and is one option away from a `GET` of the
+same resource.
+
+So this is the one relay kind whose policy mostly faces the *clients* rather
+than upstream, which is the opposite of the DHCP kinds — and why
+`default_action` is `deny` here and `allow` there. The paths are the device's
+object model, so an estate that can name its equipment can name what may be
+done to it, and a rule is how it says so.
+
+The answer side exists for one reason: **the size of an answer relative to the
+question**. A four-octet `GET` over UDP can return a kilobyte, and
+`/.well-known/core` (RFC 6690) is a resource whose purpose is to return a
+list of every other resource — the largest answer on the device for the
+smallest question, at an address the sender chose. Those bounds are **never
+shadowed**: a listener whose policy was being trialled would otherwise be a
+working amplifier with logging.
+
+Four defaults are worth reading before anything else.
+
+- **`allow_proxying` is false.** `Proxy-Uri` and `Proxy-Scheme` tell the
+  device at the far end to fetch a URI of the client's choosing, which on a
+  constrained network is an open forward proxy, an amplification stage and a
+  way to reach what the segment was built to protect. Both options are
+  checked, because they are two spellings of the same request.
+- **A refusal is answered rather than dropped.** A Confirmable request is
+  retransmitted until something answers it, so a dropped refusal becomes four
+  or five more requests and leaves the device's own log showing a timeout
+  where a refusal happened. The standard supplies the codes: 4.03 for a
+  policy refusal, 4.02 for an option this relay cannot name, 5.02 for one it
+  must not forward, 5.05 for proxying it will not do.
+- **An option this relay cannot name is refused as the standard says.** An
+  option number's own low bits carry its class (RFC 7252 §5.4.6): odd is
+  Critical, bit one is UnSafe to forward. §5.7.1 tells a proxy to answer 5.02
+  for an unrecognised UnSafe option rather than pass it on, and §5.4.1 to
+  answer 4.02 for an unrecognised Critical one. The rule holds for options
+  nobody has registered yet, which is the point of encoding it in the number.
+- **A path whose segments would not mean what the joined path looks like is
+  refused, not normalised.** On the wire a `Uri-Path` segment is an arbitrary
+  string of octets, so one segment may contain a slash — and then it renders
+  as two, and a rule about `/sensors/*` is satisfied by a request to
+  `/config`. Normalising would mean guessing what the device would have done
+  with the original, and the guess is the whole bug.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `mode` | enum | `reverse` | `reverse` (clients here, devices upstream) or `forward` (this listener is the controlled egress a downstream client uses) |
+| `upstream` | upstream | required | The device pool |
+| `allow_clients`, `deny_clients` | list of CIDR | `[]` | The networks a message may arrive from. Deny first. In NoSec this is the only thing a rule can name about a client |
+| `allow_servers` | list of CIDR | the pool's endpoints | The addresses an answer may come from. Empty means the endpoints of the upstream pool — never "anybody" — and a response from anywhere else is dropped and counted whatever it says |
+| `message_types` | list | `con`, `non` | The types a client may send. An `ack` and an `rst` carry no request and are decided before this list is consulted: a reset has to travel, because it is how a device says "stop sending me that" |
+| `methods` | list | `get`, `post`, `put`, `delete` | The methods allowed. The default is RFC 7252's four and not RFC 8132's three. `fetch` is the one worth naming: it puts its selector in the **payload**, so a path policy sees less of a `fetch` than of a `get`, and an estate should allow it on purpose rather than inherit it |
+| `allow_paths`, `deny_paths` | list of pattern | `[]` | Shell patterns over the whole request path, deny first. A `*` matches one segment because it does not cross a separator; a pattern ending in `/...` matches the subtree. Empty `allow_paths` means any path, which is why the rules are where an estate says what it permits |
+| `allow_queries` | list of pattern | `[]` (any) | Patterns each `Uri-Query` part must match |
+| `content_formats` | list | `[]` (any) | The media types a payload may declare, in either direction. Names (`application/cbor`) or numbers |
+| `allow_unknown_content_formats` | bool | `true` | Carry a payload declaring a number this relay cannot name. The registry grows; an estate that wants to name its formats writes `content_formats` |
+| `allow_proxying` | bool | `false` | Carry `Proxy-Uri` and `Proxy-Scheme`. It warns, for the reasons above |
+| `allow_observe` | bool | `true` | Carry RFC 7641 registrations, which is how telemetry works on this protocol |
+| `max_observers` | int | `256` | The registrations outstanding at once. A registration has no timeout — it lasts until the client deregisters or the device stops — so without a bound "how many open-ended flows may exist" would be answered by whoever asked for the most |
+| `allow_discovery` | bool | `true` | Carry a request for `/.well-known/core`. A management system uses it; refusing it is how an estate stops the largest answer on a device being available to the smallest question |
+| `refuse_suspicious_paths` | bool | `true` | Refuse a path with a separator inside a segment, a `.` or `..` segment, a NUL, or bytes that are not UTF-8 |
+| `refuse_unknown_options` | bool | `true` | Apply RFC 7252 §5.4 and §5.7.1 to an option this relay cannot name |
+| `refuse_repeated_options` | bool | `true` | Refuse an option carried twice where the standard has no meaning for a second one. The path and the query are exempt, because they are built out of repetition |
+| `require_token` | bool | `false` | Refuse a request with an empty token. RFC 7252 §5.3.1 permits one, and the token is the only thing that pairs a response with its request — so requiring it is how an estate makes every answer traceable to the question |
+| `max_payload_bytes` | int | `1024` | One message's payload |
+| `max_transfer_bytes` | int | `65536` | A whole block-wise transfer (RFC 7959), which is the number that matters: a bound on one datagram bounds nothing when a client can walk a device through sixty-four thousand of them. `Size1` and `Size2` declare the total, so the intent is refused at the first block rather than the last |
+| `max_block_bytes` | int | `1024` | One block. Must be a power of two from 16 to 1024, because the option carries the exponent rather than the size |
+| `max_message_bytes` | int | `1152` | What arrives. RFC 7252 §4.6's figure for a message that fits an IPv6 datagram with headroom |
+| `max_response_bytes` | int | unbounded | A device's answer |
+| `amplification_factor` | int | `0` (off) | A response's size as a multiple of the request's. This is the check a per-datagram bound cannot make: a kilobyte answer is unremarkable on its own and is a hundred and fifty times the four-octet question that asked for it. Leaving both this and `max_response_bytes` unset warns |
+| `rules` | list | `[]` | Per-message rules; see below. With `default_action: deny` and no rules the listener refuses everything, and the validator says so |
+| `default_action` | enum | `deny` | Deny, unlike the DHCP kinds and for the opposite reason: CoAP is actuation |
+| `max_pending` | int | `256` | Requests outstanding towards devices — the table that pairs an answer with the client that asked |
+| `request_timeout` | duration | `10s` | How long a device has to answer before its answer is too late to pair (1s to 1m) |
+| `rate_limit`, `rate_burst` | int | `0` (off) | Messages a second per source address, which is the only key this protocol offers in NoSec |
+| `max_clients` | int | `8192` | The distinct sources tracked at once |
+| `answer_refusals` | bool | `true` | Send the standard's response code rather than dropping the datagram |
+| `log_messages` | bool | `false` | An access line per message and per answer, the second carrying the request's size, the answer's and the factor between them |
+| `alert_on_deny` | bool | `true` | A security event for every refusal |
+
+A listener with no `tls` section warns: it is CoAP **NoSec**, where there is
+no identity of any kind — not a weak one, none — and a rule can name only the
+source address. RFC 7252 §9 puts CoAP inside DTLS on 5684, and most of the
+field does not, which is why this warns rather than refuses. A deployment on
+a port other than 5683 or 5684 warns too.
+
+#### server.listeners[].coap.rules[]
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | string | required | Names the rule in the logs and the counters |
+| `action` | enum | `allow` | `allow`, `deny` or `observe`. `observe` logs and counts and then keeps looking, which is how a rule is tried on live traffic before it decides anything |
+| `clients` | list of CIDR | `[]` | The networks the message arrived from |
+| `methods` | list | `[]` (any) | The methods this rule covers |
+| `paths` | list of pattern | `[]` | Patterns over the request path. They both **select** the rule and are checked by it, so a rule about one subtree does not decide about another |
+| `queries`, `content_formats` | list | inherited | Narrow the listener's own lists for this rule's traffic |
+| `secure_only` | bool | `false` | Refuse this rule's traffic when it arrived in the clear rather than inside DTLS, which is how "the actuators may only be written by a client that authenticated" is written |
+| `allow_proxying`, `allow_observe` | bool | `false`, `true` | Override the listener's switches for this rule's traffic |
+| `max_payload_bytes` | int | inherited | Overrides the listener's payload bound |
+| `schedule` | section | none | Limits the rule to a time window |
+
+Counters: `coap_messages`, `coap_requests`, `coap_responses`, `coap_empty`,
+`coap_relayed`, `coap_answered`, `coap_notifications`, `coap_denied`,
+`coap_would_deny`, `coap_malformed`, `coap_rejected`, `coap_oversize`,
+`coap_rate_limited`, `coap_upstream_failed`, `coap_send_failed`,
+`coap_unsolicited`, `coap_refused_observe`, and the three worth reading
+first — `coap_rogue_device`, an answer refused because it came from an address
+that is not a device; `coap_amplified`, an answer refused for being too large
+a multiple of the question, which is the number that says this listener is
+doing something a per-datagram bound could not; and
+`coap_refusals_answered`, the refusals sent back as a response code rather
+than dropped, which is what keeps a refused Confirmable request from being
+retransmitted four more times. `coap_proxy_refused` counts the requests that
+asked a device to fetch something. `coap_pending` and `coap_observers` are
+gauges.
+
+Refusals are `coap_denied` for the ban triggers, and the fine-grained reason
+is in the refusal counters: `client_not_allowed`, `device_not_allowed`,
+`malformed`, `malformed_response`, `malformed_option`, `message_too_large`,
+`unknown_method`, `signalling_over_datagram`, `response_from_client_side`,
+`request_from_server_side`, `message_type_not_allowed`, `repeated_option`,
+`no_token`, `suspicious_path`, `unknown_critical_option`,
+`unknown_unsafe_option`, `proxying_not_allowed`, `observe_not_allowed`,
+`discovery_not_allowed`, `method_not_allowed`, `path_not_allowed`,
+`query_not_allowed`, `content_format_not_allowed`, `payload_too_large`,
+`block_too_large`, `transfer_too_large`, `response_too_large`, `amplified`,
+`insecure_not_allowed`, `too_many_observers`, `too_many_pending`,
+`rate_limited`, `unsolicited`, `rule`, `default_deny`.
+
 ### server.listeners[].tftp (kind: tftp)
 
 TFTP is the protocol under provisioning. A switch pulls its firmware over it, a
@@ -7859,7 +7996,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `flow`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `tcp_denied`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `dhcp6_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `amqp_denied`, `s7_denied`, `ntp_denied`, `ntske_denied`, `dns_denied`, `dns_threat_intel`, `dns_deceived`, `dns_tripwire`, `telnet_tripwire`, `ssh_tripwire`, `modbus_tripwire`, `iec104_tripwire`, `s7_tripwire`, `redis_tripwire`, `mysql_tripwire`, `postgres_tripwire`, `yara` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `flow`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `tcp_denied`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `dhcp6_denied`, `coap_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `amqp_denied`, `s7_denied`, `ntp_denied`, `ntske_denied`, `dns_denied`, `dns_threat_intel`, `dns_deceived`, `dns_tripwire`, `telnet_tripwire`, `ssh_tripwire`, `modbus_tripwire`, `iec104_tripwire`, `s7_tripwire`, `redis_tripwire`, `mysql_tripwire`, `postgres_tripwire`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |

@@ -319,6 +319,8 @@ type Listener struct {
 	DHCP *DHCPListener `yaml:"dhcp"`
 	// DHCP6 configures a kind: dhcp6 listener.
 	DHCP6 *DHCP6Listener `yaml:"dhcp6"`
+	// CoAP configures a kind: coap listener.
+	CoAP *CoAPListener `yaml:"coap"`
 	// BACnet configures a kind: bacnet listener.
 	BACnet *BACnetListener `yaml:"bacnet"`
 	// AMQP configures a kind: amqp listener.
@@ -3477,6 +3479,193 @@ type DHCP6Rule struct {
 	// InterfaceID overrides the listener's interface identifier, so that a
 	// rule about one segment can tell the server which segment it is.
 	InterfaceID string `yaml:"interface_id"`
+	// Schedule limits the rule to a time window.
+	Schedule *ModbusSchedule `yaml:"schedule"`
+}
+
+// CoAPListener configures a kind: coap listener: a CoAP relay agent
+// (RFC 7252) on UDP 5683, or on 5684 inside DTLS where the listener
+// carries a tls section.
+//
+// The shape is unlike the other relay kinds in one way that is worth
+// saying at the top. A CoAP request carries a method, a path and a
+// content format, which is to say it says what is about to happen in
+// fields a relay can read -- so the request side is where most of this
+// policy lives, and a positive model ("GET anything under /3303, PUT
+// only /3311/0/5850") is a sentence an estate can write about its own
+// devices rather than an aspiration. The answer side exists for one
+// reason: the size of an answer relative to the question, because CoAP
+// over UDP is a reflection amplifier.
+type CoAPListener struct {
+	// Mode is reverse (the default: clients here and devices upstream) or
+	// forward (this listener is the controlled egress a downstream client
+	// uses to reach devices elsewhere).
+	Mode string `yaml:"mode"`
+	// Upstream is the device pool. Required.
+	Upstream string `yaml:"upstream"`
+	// AllowClients and DenyClients are the networks a message may arrive
+	// from. Deny is evaluated first.
+	AllowClients []string `yaml:"allow_clients"`
+	DenyClients  []string `yaml:"deny_clients"`
+	// AllowServers are the addresses a response may come from. Empty means
+	// the endpoints of the upstream pool, which is almost always what an
+	// operator means and never "anybody".
+	AllowServers []string `yaml:"allow_servers"`
+	// MessageTypes is the allow list of message types a client may send.
+	// Empty allows con and non, which are the two a client sends; an
+	// acknowledgement and a reset carry no request and are decided before
+	// this list is consulted.
+	MessageTypes []string `yaml:"message_types"`
+	// Methods is the allow list of methods. Empty allows the four of
+	// RFC 7252 -- get, post, put, delete -- and not the three of RFC 8132.
+	// fetch is the one worth naming: it puts its selector in the payload,
+	// so a path policy sees less of a fetch than of a get, and an estate
+	// should say so on purpose rather than inherit it.
+	Methods []string `yaml:"methods"`
+	// AllowPaths and DenyPaths are shell patterns over the request path,
+	// deny evaluated first. Empty AllowPaths means any path, which is why
+	// the rules below are where an estate says what it permits. A pattern
+	// ending in "/..." matches the subtree; a "*" matches one segment,
+	// because it does not cross a separator.
+	AllowPaths []string `yaml:"allow_paths"`
+	DenyPaths  []string `yaml:"deny_paths"`
+	// AllowQueries are shell patterns each Uri-Query part must match.
+	AllowQueries []string `yaml:"allow_queries"`
+	// ContentFormats are the media types a payload may declare, in either
+	// direction. Empty allows any.
+	ContentFormats []string `yaml:"content_formats"`
+	// AllowUnknownContentFormats carries a payload declaring a number this
+	// relay cannot name. Default true: the registry grows, and an estate
+	// that wants to name its formats writes ContentFormats.
+	AllowUnknownContentFormats *bool `yaml:"allow_unknown_content_formats"`
+	// AllowProxying carries Proxy-Uri and Proxy-Scheme. Default false, and
+	// it is the most consequential default here: those options turn the
+	// device at the far end into a forward proxy, which on a constrained
+	// network is an open relay, an amplification stage and a way to reach
+	// what the network was segmented to protect.
+	AllowProxying bool `yaml:"allow_proxying"`
+	// AllowObserve carries RFC 7641 registrations. Default true, because
+	// observing is how telemetry works on this protocol; MaxObservers
+	// bounds how many are outstanding.
+	AllowObserve *bool `yaml:"allow_observe"`
+	// MaxObservers bounds the registrations tracked at once. Default 256.
+	MaxObservers int `yaml:"max_observers"`
+	// AllowDiscovery carries a request for /.well-known/core (RFC 6690),
+	// the resource whose purpose is to list every other resource. Default
+	// true, because a management system uses it; refusing it is how an
+	// estate stops the largest answer on a device being available to the
+	// smallest question.
+	AllowDiscovery *bool `yaml:"allow_discovery"`
+	// RefuseSuspiciousPaths refuses a request whose path segments would
+	// not mean what the joined path looks like: a segment containing a
+	// separator, a segment that is "." or "..", a NUL, or bytes that are
+	// not UTF-8. Default true. It is a refusal rather than a
+	// normalisation, because normalising means guessing what the device
+	// would have done with the original.
+	RefuseSuspiciousPaths *bool `yaml:"refuse_suspicious_paths"`
+	// RefuseUnknownOptions applies the rule RFC 7252 s5.4 and s5.7.1 give
+	// a proxy for an option it cannot name: 4.02 for a Critical one, 5.02
+	// for an UnSafe one. Default true. Turning it off carries options
+	// whose meaning is unknown, which is carrying a request whose meaning
+	// is unknown.
+	RefuseUnknownOptions *bool `yaml:"refuse_unknown_options"`
+	// RefuseRepeatedOptions refuses a message carrying an option twice
+	// where the standard has no meaning for a second one. Default true.
+	// The path and the query are exempt, because they are built out of
+	// repetition.
+	RefuseRepeatedOptions *bool `yaml:"refuse_repeated_options"`
+	// RequireToken refuses a request with an empty token. RFC 7252 s5.3.1
+	// permits one; requiring it is how an estate makes every answer
+	// traceable to the question, because the token is the only thing that
+	// pairs them.
+	RequireToken bool `yaml:"require_token"`
+	// MaxPayloadBytes bounds one message's payload. Default 1024.
+	MaxPayloadBytes int `yaml:"max_payload_bytes"`
+	// MaxTransferBytes bounds a whole block-wise transfer (RFC 7959),
+	// which is the number that matters: a bound on one datagram bounds
+	// nothing when a client can walk a device through sixty-four thousand
+	// of them. Size1 and Size2 declare the total, so the intent is refused
+	// at the first block. Default 65536.
+	MaxTransferBytes int `yaml:"max_transfer_bytes"`
+	// MaxBlockBytes bounds one block. Default 1024, which is the largest
+	// RFC 7959 defines.
+	MaxBlockBytes int `yaml:"max_block_bytes"`
+	// MaxMessageBytes bounds what arrives. Default 1152, which is
+	// RFC 7252 s4.6's figure for a message that fits an IPv6 datagram
+	// with headroom.
+	MaxMessageBytes int `yaml:"max_message_bytes"`
+	// MaxResponseBytes bounds a device's answer.
+	MaxResponseBytes int `yaml:"max_response_bytes"`
+	// AmplificationFactor bounds a response's size as a multiple of the
+	// request's. Zero is off. It is the check a per-datagram bound cannot
+	// make: a kilobyte answer is unremarkable on its own and is a hundred
+	// and fifty times the four-octet question that asked for it.
+	AmplificationFactor int `yaml:"amplification_factor"`
+	// Rules decide each message, in order, first match wins.
+	Rules []CoAPRule `yaml:"rules"`
+	// DefaultAction is deny (the default) or allow.
+	//
+	// Deny, unlike the DHCP kinds and for the opposite reason: CoAP is
+	// actuation, the paths are the device's object model, and an estate
+	// that can name its devices can name what may be done to them. A
+	// listener with no rules refuses everything, and the validator says so.
+	DefaultAction string `yaml:"default_action"`
+	// MaxPending bounds the requests outstanding towards devices, which is
+	// the table that pairs a response with the client that asked.
+	// Default 256.
+	MaxPending int `yaml:"max_pending"`
+	// RequestTimeout is how long a device has to answer before its answer
+	// is too late to pair. Default 10s.
+	RequestTimeout Duration `yaml:"request_timeout"`
+	// RateLimit and RateBurst bound messages a second per source address,
+	// which is the only key this protocol offers in NoSec mode.
+	RateLimit int `yaml:"rate_limit"`
+	RateBurst int `yaml:"rate_burst"`
+	// MaxClients bounds the distinct sources tracked at once. Default 8192.
+	MaxClients int `yaml:"max_clients"`
+	// AnswerRefusals sends the response code the standard gives for a
+	// refusal rather than dropping the datagram. Default true, and it
+	// matters more here than elsewhere: a Confirmable request is
+	// retransmitted until something answers, so a dropped refusal turns
+	// one refused request into four or five -- and leaves the device's own
+	// logs showing a timeout instead of a refusal.
+	AnswerRefusals *bool `yaml:"answer_refusals"`
+	// LogMessages writes an access line per message.
+	LogMessages bool `yaml:"log_messages"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
+}
+
+// CoAPRule is one per-message rule on a kind: coap listener.
+type CoAPRule struct {
+	// Name identifies the rule in the logs and the counters. Required.
+	Name string `yaml:"name"`
+	// Action is allow, deny or observe. observe logs and counts and then
+	// keeps looking, which is how a rule is tried on live traffic before
+	// it decides anything.
+	Action string `yaml:"action"`
+	// Clients are the networks the message arrived from.
+	Clients []string `yaml:"clients"`
+	// Methods are the methods this rule covers.
+	Methods []string `yaml:"methods"`
+	// Paths are shell patterns over the request path. They both select the
+	// rule and are checked by it, so a rule about one subtree does not
+	// decide about another.
+	Paths []string `yaml:"paths"`
+	// Queries and ContentFormats narrow the listener's own lists for this
+	// rule's traffic.
+	Queries        []string `yaml:"queries"`
+	ContentFormats []string `yaml:"content_formats"`
+	// SecureOnly refuses the rule's traffic when it arrived in the clear
+	// rather than inside DTLS, which is how "the actuators may only be
+	// written by a client that authenticated" is written.
+	SecureOnly bool `yaml:"secure_only"`
+	// AllowProxying and AllowObserve override the listener's own switches
+	// for this rule's traffic.
+	AllowProxying bool  `yaml:"allow_proxying"`
+	AllowObserve  *bool `yaml:"allow_observe"`
+	// MaxPayloadBytes overrides the listener's payload bound.
+	MaxPayloadBytes int `yaml:"max_payload_bytes"`
 	// Schedule limits the rule to a time window.
 	Schedule *ModbusSchedule `yaml:"schedule"`
 }

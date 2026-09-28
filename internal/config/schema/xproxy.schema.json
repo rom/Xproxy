@@ -1938,6 +1938,257 @@
       },
       "additionalProperties": false
     },
+    "CoAPListener": {
+      "description": "CoAPListener configures a kind: coap listener: a CoAP relay agent (RFC 7252) on UDP 5683, or on 5684 inside DTLS where the listener carries a tls section. The shape is unlike the other relay kinds in one way that is worth saying at the top. A CoAP request carries a method, a path and a content format, which is to say it says what is about to happen in fields a relay can read -- so the request side is where most of this policy lives, and a positive model (\"GET anything under /3303, PUT only /3311/0/5850\") is a sentence an estate can write about its own devices rather than an aspiration. The answer side exists for one reason: the size of an answer relative to the question, because CoAP over UDP is a reflection amplifier.",
+      "type": "object",
+      "properties": {
+        "alert_on_deny": {
+          "description": "AlertOnDeny writes a security event for every refusal. Default true.",
+          "type": "boolean"
+        },
+        "allow_clients": {
+          "description": "AllowClients and DenyClients are the networks a message may arrive from. Deny is evaluated first.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_discovery": {
+          "description": "AllowDiscovery carries a request for /.well-known/core (RFC 6690), the resource whose purpose is to list every other resource. Default true, because a management system uses it; refusing it is how an estate stops the largest answer on a device being available to the smallest question.",
+          "type": "boolean"
+        },
+        "allow_observe": {
+          "description": "AllowObserve carries RFC 7641 registrations. Default true, because observing is how telemetry works on this protocol; MaxObservers bounds how many are outstanding.",
+          "type": "boolean"
+        },
+        "allow_paths": {
+          "description": "AllowPaths and DenyPaths are shell patterns over the request path, deny evaluated first. Empty AllowPaths means any path, which is why the rules below are where an estate says what it permits. A pattern ending in \"/...\" matches the subtree; a \"*\" matches one segment, because it does not cross a separator.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_proxying": {
+          "description": "AllowProxying carries Proxy-Uri and Proxy-Scheme. Default false, and it is the most consequential default here: those options turn the device at the far end into a forward proxy, which on a constrained network is an open relay, an amplification stage and a way to reach what the network was segmented to protect.",
+          "type": "boolean"
+        },
+        "allow_queries": {
+          "description": "AllowQueries are shell patterns each Uri-Query part must match.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_servers": {
+          "description": "AllowServers are the addresses a response may come from. Empty means the endpoints of the upstream pool, which is almost always what an operator means and never \"anybody\".",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_unknown_content_formats": {
+          "description": "AllowUnknownContentFormats carries a payload declaring a number this relay cannot name. Default true: the registry grows, and an estate that wants to name its formats writes ContentFormats.",
+          "type": "boolean"
+        },
+        "amplification_factor": {
+          "description": "AmplificationFactor bounds a response's size as a multiple of the request's. Zero is off. It is the check a per-datagram bound cannot make: a kilobyte answer is unremarkable on its own and is a hundred and fifty times the four-octet question that asked for it.",
+          "type": "integer"
+        },
+        "answer_refusals": {
+          "description": "AnswerRefusals sends the response code the standard gives for a refusal rather than dropping the datagram. Default true, and it matters more here than elsewhere: a Confirmable request is retransmitted until something answers, so a dropped refusal turns one refused request into four or five -- and leaves the device's own logs showing a timeout instead of a refusal.",
+          "type": "boolean"
+        },
+        "content_formats": {
+          "description": "ContentFormats are the media types a payload may declare, in either direction. Empty allows any.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "default_action": {
+          "description": "DefaultAction is deny (the default) or allow. Deny, unlike the DHCP kinds and for the opposite reason: CoAP is actuation, the paths are the device's object model, and an estate that can name its devices can name what may be done to them. A listener with no rules refuses everything, and the validator says so.",
+          "type": "string"
+        },
+        "deny_clients": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "log_messages": {
+          "description": "LogMessages writes an access line per message.",
+          "type": "boolean"
+        },
+        "max_block_bytes": {
+          "description": "MaxBlockBytes bounds one block. Default 1024, which is the largest RFC 7959 defines.",
+          "type": "integer"
+        },
+        "max_clients": {
+          "description": "MaxClients bounds the distinct sources tracked at once. Default 8192.",
+          "type": "integer"
+        },
+        "max_message_bytes": {
+          "description": "MaxMessageBytes bounds what arrives. Default 1152, which is RFC 7252 s4.6's figure for a message that fits an IPv6 datagram with headroom.",
+          "type": "integer"
+        },
+        "max_observers": {
+          "description": "MaxObservers bounds the registrations tracked at once. Default 256.",
+          "type": "integer"
+        },
+        "max_payload_bytes": {
+          "description": "MaxPayloadBytes bounds one message's payload. Default 1024.",
+          "type": "integer"
+        },
+        "max_pending": {
+          "description": "MaxPending bounds the requests outstanding towards devices, which is the table that pairs a response with the client that asked. Default 256.",
+          "type": "integer"
+        },
+        "max_response_bytes": {
+          "description": "MaxResponseBytes bounds a device's answer.",
+          "type": "integer"
+        },
+        "max_transfer_bytes": {
+          "description": "MaxTransferBytes bounds a whole block-wise transfer (RFC 7959), which is the number that matters: a bound on one datagram bounds nothing when a client can walk a device through sixty-four thousand of them. Size1 and Size2 declare the total, so the intent is refused at the first block. Default 65536.",
+          "type": "integer"
+        },
+        "message_types": {
+          "description": "MessageTypes is the allow list of message types a client may send. Empty allows con and non, which are the two a client sends; an acknowledgement and a reset carry no request and are decided before this list is consulted.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "methods": {
+          "description": "Methods is the allow list of methods. Empty allows the four of RFC 7252 -- get, post, put, delete -- and not the three of RFC 8132. fetch is the one worth naming: it puts its selector in the payload, so a path policy sees less of a fetch than of a get, and an estate should say so on purpose rather than inherit it.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "mode": {
+          "description": "Mode is reverse (the default: clients here and devices upstream) or forward (this listener is the controlled egress a downstream client uses to reach devices elsewhere).",
+          "type": "string"
+        },
+        "rate_burst": {
+          "type": "integer"
+        },
+        "rate_limit": {
+          "description": "RateLimit and RateBurst bound messages a second per source address, which is the only key this protocol offers in NoSec mode.",
+          "type": "integer"
+        },
+        "refuse_repeated_options": {
+          "description": "RefuseRepeatedOptions refuses a message carrying an option twice where the standard has no meaning for a second one. Default true. The path and the query are exempt, because they are built out of repetition.",
+          "type": "boolean"
+        },
+        "refuse_suspicious_paths": {
+          "description": "RefuseSuspiciousPaths refuses a request whose path segments would not mean what the joined path looks like: a segment containing a separator, a segment that is \".\" or \"..\", a NUL, or bytes that are not UTF-8. Default true. It is a refusal rather than a normalisation, because normalising means guessing what the device would have done with the original.",
+          "type": "boolean"
+        },
+        "refuse_unknown_options": {
+          "description": "RefuseUnknownOptions applies the rule RFC 7252 s5.4 and s5.7.1 give a proxy for an option it cannot name: 4.02 for a Critical one, 5.02 for an UnSafe one. Default true. Turning it off carries options whose meaning is unknown, which is carrying a request whose meaning is unknown.",
+          "type": "boolean"
+        },
+        "request_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "require_token": {
+          "description": "RequireToken refuses a request with an empty token. RFC 7252 s5.3.1 permits one; requiring it is how an estate makes every answer traceable to the question, because the token is the only thing that pairs them.",
+          "type": "boolean"
+        },
+        "rules": {
+          "description": "Rules decide each message, in order, first match wins.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CoAPRule"
+          }
+        },
+        "upstream": {
+          "description": "Upstream is the device pool. Required.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "CoAPRule": {
+      "description": "CoAPRule is one per-message rule on a kind: coap listener.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "Action is allow, deny or observe. observe logs and counts and then keeps looking, which is how a rule is tried on live traffic before it decides anything.",
+          "type": "string"
+        },
+        "allow_observe": {
+          "type": "boolean"
+        },
+        "allow_proxying": {
+          "description": "AllowProxying and AllowObserve override the listener's own switches for this rule's traffic.",
+          "type": "boolean"
+        },
+        "clients": {
+          "description": "Clients are the networks the message arrived from.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "content_formats": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_payload_bytes": {
+          "description": "MaxPayloadBytes overrides the listener's payload bound.",
+          "type": "integer"
+        },
+        "methods": {
+          "description": "Methods are the methods this rule covers.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "description": "Name identifies the rule in the logs and the counters. Required.",
+          "type": "string"
+        },
+        "paths": {
+          "description": "Paths are shell patterns over the request path. They both select the rule and are checked by it, so a rule about one subtree does not decide about another.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "queries": {
+          "description": "Queries and ContentFormats narrow the listener's own lists for this rule's traffic.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "schedule": {
+          "description": "Schedule limits the rule to a time window.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/ModbusSchedule"
+            }
+          ]
+        },
+        "secure_only": {
+          "description": "SecureOnly refuses the rule's traffic when it arrived in the clear rather than inside DTLS, which is how \"the actuators may only be written by a client that authenticated\" is written.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
     "Compression": {
       "description": "Compression is the gzip policy for responses the proxy writes: proxied, cached, static and respond bodies alike. Responses the upstream already encoded, ranges, `no-transform` and unlisted media types pass through.",
       "type": "object",
@@ -5574,6 +5825,14 @@
           "allOf": [
             {
               "$ref": "#/$defs/BACnetListener"
+            }
+          ]
+        },
+        "coap": {
+          "description": "CoAP configures a kind: coap listener.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/CoAPListener"
             }
           ]
         },
