@@ -12284,6 +12284,25 @@
       },
       "additionalProperties": false
     },
+    "SNMPCertName": {
+      "description": "SNMPCertName is one row of RFC 6353 s5.3's certificate-to-security-name table: which certificate it is about, and how the name is derived. The table is what turns a (D)TLS peer's proof that it holds a private key into an identity a rule can name. Rows are tried in order and the first whose fingerprint matches decides -- including deciding that there is no name, when the row matched and the certificate has nothing where the mapping looked.",
+      "type": "object",
+      "properties": {
+        "fingerprint": {
+          "description": "Fingerprint is the certificate this row is about: a hexadecimal hash of its DER, with the algorithm named (\"sha256:4f:2a:...\") or inferred from the length. Colons, spaces and hyphens between octets are ignored, so a fingerprint can be pasted from whatever printed it. RFC 6353 names sha1, sha256, sha384 and sha512; md5 is refused, because a fingerprint that can be collided is not an identity. \"any\" matches any certificate the handshake accepted. That is an extension to the standard's table and it is there because an estate running its own authority has already decided which authority to trust, in tls.client_ca_file, and a row per certificate means a configuration change every time one is reissued. It is safe exactly to the extent that the listener requires and verifies a client certificate, and validation warns when it does not.",
+          "type": "string"
+        },
+        "map": {
+          "description": "Map is how the name is derived: specified (the name is in this row), san_rfc822, san_dns, san_ip (a subject alternative name, lowercased where the standard says to), san_any (the first of those three the certificate has, in that order) or common_name. Default san_any. common_name is RFC 6353's own last resort and it advises against it: a common name is free text that has meant several things over the years, and two authorities can issue the same one.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Name is the security name, for map: specified only. With any other mapping the name comes from the certificate, and a name here would look like it applied and would not -- so it is refused at load.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "SNMPDeception": {
       "description": "SNMPDeception answers as an agent that is not there. A refusal is information here as it is on the plant protocols, and on this one it is the *credential* a refusal is about. A community string that is wrong is answered with noAccess or noSuchName; one that is right is answered with data. So a run through a password list finds the string, and the run before it finds which devices are there at all -- because an agent that exists answers something and an address that has nothing on it answers nothing. And the system group is the other half. Every scanner asks for sysDescr, sysObjectID and sysName first, which is exactly the inventory of an estate an intruder wants; no policy in this section can make that answer less informative, because the estate's own monitoring reads the same objects. This section answers instead, as a device whose counters rise, whose interfaces are up and whose uptime is the uptime of nothing. **The rule is the one the other kinds hold to**: a request that was going to reach the agent is never answered from here. Deception replaces a refusal -- a policy denial, or an object the fabrication does not have -- and never an answer. mode: answer therefore refuses to load without clients. **And one bound of its own.** A fabricated agent is a UDP service that answers a small request with a larger response, which is an amplifier if it answers anybody. So the listener's own max_repetitions, max_var_binds and max_response_bytes apply to what the fabrication answers exactly as they apply to what an agent answers, and a GETBULK is bounded before it is fabricated rather than after.",
       "type": "object",
@@ -12365,6 +12384,13 @@
             "type": "string"
           }
         },
+        "cert_to_name": {
+          "description": "CertToName is RFC 6353 s5.3's snmpTlstmCertToTSNTable: how a peer's certificate becomes the security name a rule names. Rows are ordered and the first whose fingerprint matches decides. Without it a message under the transport security model has no name, and what happens then is require_security_name's business. See SNMPCertName.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SNMPCertName"
+          }
+        },
         "communities": {
           "description": "Communities is the allow list of community strings for v1 and v2c. Empty allows any, which validation warns about: the defaults are known to everyone and scanned for constantly.",
           "type": "array",
@@ -12399,6 +12425,20 @@
           "description": "DenyResponse is how a refused request is answered: error (the default: a Response PDU carrying the noAccess error, which is what an agent sends and what every manager already displays), drop (no answer, which the manager reads as a timeout) or close (end the connection, on a TCP listener only).",
           "type": "string"
         },
+        "dtls_handshake_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "dtls_idle_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "dtls_mode": {
+          "description": "DTLSMode puts RFC 6353's transport model on the transport this protocol actually uses: none (the default), implicit, or detect. implicit is the standard's own arrangement -- UDP 10161, DTLS from the first octet, every datagram inside a session. A manager authenticates with a certificate, which is an identity an estate already knows how to issue, revoke and rotate, rather than a USM pass phrase per user per engine; and because the session carries the security, the relay can answer a refusal and rebuild a response without holding a credential of the manager's. That is the half of the secure upgrade facing the management station, with plain v2c going on towards a switch whose firmware has nothing else. detect takes both on one port: a datagram beginning with a DTLS content type is a record, one beginning with a BER SEQUENCE is a plain SNMP message, and the two cannot be confused because 0x30 is not a content type and no content type is 0x30. It is not what RFC 6353 describes -- the standard gives DTLS a port of its own -- and it exists for the estate that is moving: the new managers speak DTLS and the old pollers do not, and nobody is going to reconfigure two hundred switches to change a port. What it costs is stated plainly: a client chooses which of the two it speaks, so the *policy* has to be what requires the certificate. Write rules naming transports, keep default_action at deny, and validation will say so if you do not. Either mode needs a tls section for the certificate, and a client_ca_file with client_auth: require_and_verify is what makes the identity worth naming -- without it a peer presents whatever it likes.",
+          "type": "string"
+        },
         "idle_timeout": {
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
@@ -12414,6 +12454,10 @@
         },
         "max_connections": {
           "description": "MaxConnections bounds live TCP sessions. Default 32; ignored on a UDP listener.",
+          "type": "integer"
+        },
+        "max_dtls_peers": {
+          "description": "MaxDTLSPeers bounds the DTLS sessions this listener holds. Default 64. Past it a new peer's datagrams are dropped and counted, because there is no session to refuse them in.",
           "type": "integer"
         },
         "max_message_bytes": {
@@ -12476,6 +12520,10 @@
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "require_security_name": {
+          "description": "RequireSecurityName refuses a transport security model message whose certificate maps to no name. Default true. It is true by default because the alternative is a message with no credential at all: the transport model carries no user, no engine and no digest, so if the certificate maps to nothing then nothing identifies the sender and every rule naming a security name is unmatchable. Turning it off is for a listener whose policy decides on the address and the objects alone, and which wants DTLS for confidentiality rather than for identity.",
+          "type": "boolean"
         },
         "rules": {
           "description": "Rules decide each message, in order, first match wins. A message that matches no rule takes DefaultAction.",
@@ -12632,6 +12680,20 @@
               "$ref": "#/$defs/ModbusSchedule"
             }
           ]
+        },
+        "security_names": {
+          "description": "SecurityNames are the transport security model names this rule covers: the name RFC 6353 s5.3's mapping derived from the peer's certificate. A rule naming them covers no other message, the way a rule naming communities covers no v3 message -- a rule written about one authentication scheme must not apply to another.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "transports": {
+          "description": "Transports are the transports this rule covers: udp, tcp, tls, dtls. Empty covers all four. It is the field that lets one listener hold two policies at once, which is what an estate part-way through a migration has: the network operations centre reaching it inside DTLS with a certificate, the plant's own pollers still sending plain datagrams, and a different answer for each.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         },
         "users": {
           "description": "Users are the v3 USM user names this rule covers.",

@@ -59,6 +59,7 @@ import (
 
 	"github.com/rom/xproxy/internal/acceptgroup"
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/dtlsx"
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/safe"
@@ -80,6 +81,15 @@ type server struct {
 	policy *Policy
 	decoy  *decoy
 	usm    *usm
+	// names is RFC 6353's certificate-to-security-name table, nil when the
+	// listener has none: a (D)TLS peer has proved it holds a key and that is
+	// not yet an identity a rule can name. See certname.go.
+	names *certNames
+	// dtls is the translated DTLS configuration, nil unless dtls_mode asks
+	// for one, and demux the per-peer splitter underneath it -- kept so that
+	// the dropped-datagram count can be published.
+	dtls  *dtlsx.Config
+	demux atomic.Pointer[dtlsx.Mux]
 	// orig is the identity this relay presents to the agent, when
 	// upstream_usm gave it one. Nil means the relay forwards what arrived.
 	orig    *originator
@@ -122,6 +132,18 @@ func newServer(host proxy.Host, cfg config.Listener, pc net.PacketConn, ln net.L
 	}
 	if t.usm, err = compileUSM(m, host.Secrets()); err != nil {
 		return nil, fmt.Errorf("snmp %s: %w", cfg.Name, err)
+	}
+	if t.names, err = compileCertNames(m.CertToName); err != nil {
+		return nil, fmt.Errorf("snmp %s: %w", cfg.Name, err)
+	}
+	if m.DTLSMode != "" && m.DTLSMode != "none" {
+		// Built at load rather than at the first handshake, because a
+		// certificate this listener cannot serve is a configuration fault and
+		// a listener that discovered it on the first datagram would have
+		// started, bound the port, and be refusing everything.
+		if t.dtls, err = dtlsx.NewConfig("snmp", tc, t.dtlsBounds()); err != nil {
+			return nil, fmt.Errorf("snmp %s: %w", cfg.Name, err)
+		}
 	}
 	if m.UpgradeVersion != "" {
 		v, ok := wire.VersionOf(m.UpgradeVersion)
@@ -218,6 +240,18 @@ func (t *server) maxRatio() int {
 	return 50
 }
 
+// dtlsConfig is the translated DTLS configuration. It is only reached from the
+// session path, which does not run unless newServer built one.
+func (t *server) dtlsConfig() *dtlsx.Config { return t.dtls }
+
+// requireSecurityName says whether a transport security model message whose
+// certificate maps to no name is refused. Default true: the model carries no
+// user, no engine and no digest, so a message with no derived name has no
+// credential at all.
+func (t *server) requireSecurityName() bool {
+	return t.m.RequireSecurityName == nil || *t.m.RequireSecurityName
+}
+
 // enforcing says whether this listener refuses for policy or only records
 // what it would have refused.
 func (t *server) enforcing() bool { return !t.cfg.Shadowing() }
@@ -243,6 +277,10 @@ func (t *server) serve() {
 			}
 			defer t.running.Leave()
 			defer safe.Guard("snmp datagrams")
+			if t.dtls != nil {
+				t.serveDTLS()
+				return
+			}
 			t.serveDatagrams()
 		}()
 	}
@@ -319,6 +357,18 @@ type exchange struct {
 	version   wire.Version
 	community string
 	at        time.Time
+	// peer is where the answer goes and how: into the DTLS session the
+	// question arrived in, or to the address it came from.
+	//
+	// It is the exchange's rather than looked up again, because on a datagram
+	// protocol the pairing is all there is: an answer written to the right
+	// address in the wrong session, or the right session for the wrong
+	// question, is an answer to somebody else.
+	peer *peer
+	// tsm is the transport security model envelope to rebuild the answer in,
+	// nil unless the manager spoke that model. It is what makes a v2c answer
+	// from a switch into a v3 message the manager's stack accepts.
+	tsm *tsmEcho
 	// pdu is the manager's own PDU, kept only where the upstream side is
 	// originated as version 3: the relay may have to discover the agent's
 	// engine before it can ask, and then it asks with this.
@@ -327,6 +377,42 @@ type exchange struct {
 	// credential of the manager's -- and it is released with the slot, so a
 	// manager that stopped waiting leaves nothing behind.
 	pdu []byte
+}
+
+// answer sends a response back to the client that asked.
+func (e *exchange) answer(t *server, b []byte) error {
+	if e.peer != nil {
+		return e.peer.write(t, b)
+	}
+	_, err := t.pc.WriteTo(b, e.from)
+	return err
+}
+
+// tsmEcho is what a response under the transport security model has to carry
+// back from the request: its message identifier, the context it named, the
+// size it will accept and the level the transport gave.
+//
+// None of it is this relay's to choose. The identifier is what the manager's
+// stack pairs the answer with; the context is what the manager asked about; the
+// level is the session's. Everything else about a TSM message -- which is to
+// say the security -- is the session's too, which is why four fields are
+// enough where a USM response would need keys.
+type tsmEcho struct {
+	messageID int64
+	maxSize   int64
+	level     wire.SecurityLevel
+	engine    []byte
+	context   string
+}
+
+// echoOf is the envelope to answer a message in, or nil for a message that is
+// not under the transport security model.
+func echoOf(m *wire.Message) *tsmEcho {
+	if !m.IsTSM() {
+		return nil
+	}
+	return &tsmEcho{messageID: m.V3.MessageID, maxSize: m.V3.MaxSize,
+		level: m.V3.Level, engine: m.V3.ContextEngineID, context: m.V3.ContextName}
 }
 
 // pending is the table of requests outstanding towards agents.

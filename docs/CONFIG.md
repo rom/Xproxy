@@ -3037,11 +3037,74 @@ what a `Counter64` *means* is not. A policy about values would need a MIB per
 estate, and a relay that mis-decoded one would corrupt a reading nobody could
 trace.
 
+**And there is a security model that carries no credential at all.** RFC 6353
+puts SNMPv3 inside (D)TLS and RFC 5591 defines the security model that goes with
+it: the *transport* authenticated and encrypted the message, so the message
+carries no user, no engine identifier, no clock and no digest. What identifies
+the sender is the certificate its peer presented, and `cert_to_name` is how that
+becomes a name a rule can name.
+
+Three things follow, and each is worth having:
+
+- **The secret per user per engine is gone.** USM's cost is a pass phrase for
+  every user on every device, in a spreadsheet, rotated never. A certificate is
+  an identity an estate already knows how to issue, revoke and rotate, and
+  `tls.client_ca_file` is where it says which authority to believe.
+- **A refusal can be answered.** A USM refusal cannot: signing it would need the
+  manager's own key. A transport security model message has no digest, so the
+  answer is authenticated by the session it is written into -- and a manager
+  inside DTLS sees `noAccess` in its own monitoring system where a manager using
+  USM sees a timeout.
+- **A v3 request can be downgraded.** For the same reason: the answer needs no
+  key, so a manager holding nothing but a certificate reaches a switch that will
+  never speak anything but v2c, with `upgrade_version: v2c` and an
+  `upstream_community` it never learns. This is the one case where the refusal
+  above -- "a v3 request cannot be downgraded" -- does not apply, and it is the
+  reason RFC 6353 is worth relaying rather than merely terminating.
+
 A listener always accepts the streams of RFC 3430 on its port, and
 `transport: udp` (the default) adds the datagram socket every poller and
-every agent actually speaks. RFC 6353 TLS is the stream half, on port 10161;
-DTLS on 10162 is not implemented, so a listener that is TLS throughout is
-`transport: tcp`.
+every agent actually speaks. `tls_mode` is RFC 6353 on the stream half, TCP
+10161; `dtls_mode` is the same transport model on UDP 10161, which is the
+transport this protocol actually uses.
+
+`dtls_mode: detect` takes both on one port. A datagram beginning with a DTLS
+content type is a record and one beginning with `0x30` is a BER SEQUENCE, and
+neither can be read as the other, so the two are distinguishable without a
+guess. It is not what RFC 6353 describes -- the standard gives DTLS a port of
+its own -- and it exists for the estate that is moving: the new managers speak
+DTLS, the old pollers do not, and nobody is going to reconfigure two hundred
+switches to change a port. The cost is stated plainly, and validation says it
+again: a client chooses which of the two it speaks, so the **policy** is what
+has to require the certificate. That is what `transports` on a rule is for:
+
+```yaml
+snmp:
+  upstream: switches
+  transport: udp
+  dtls_mode: detect
+  default_action: deny
+  cert_to_name:
+    - {fingerprint: any, map: san_dns}
+  rules:
+    # The network operations centre, by the name its certificate carries.
+    - name: nms
+      transports: [dtls]
+      security_names: [nms1.ops.example.com]
+      access: [read, write]
+      oids: ["1.3.6.1.2.1"]
+    # The plant's own pollers, still sending plain datagrams, still reading
+    # only what they always read.
+    - name: plant-pollers
+      transports: [udp]
+      clients: ["10.20.0.0/24"]
+      communities: [plant-ro]
+      access: [read]
+      oids: ["1.3.6.1.2.1.2"]
+```
+
+A rule naming no transport covers all four, so every policy written before this
+field means what it meant.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -3052,6 +3115,12 @@ DTLS on 10162 is not implemented, so a listener that is TLS throughout is
 | `tls_mode` | `implicit`, `none` | `implicit` with a `tls` section | RFC 6353: TLS from the first octet on the stream side. This is the half of the secure upgrade that faces the management station |
 | `upstream_tls_mode` | `none`, `implicit` | `none` | Whether this listener speaks RFC 6353 TLS to the agent |
 | `upstream_tls` | object | | Verification of the agent when `upstream_tls_mode` is not `none` |
+| `dtls_mode` | `none`, `implicit`, `detect` | `none` | RFC 6353's transport model on the datagram half, UDP 10161. `implicit` requires DTLS on every datagram; `detect` takes records and plain messages on the one port, distinguished by their first octet, for an estate that is part-way through moving. Needs a `tls` section for the certificate |
+| `dtls_handshake_timeout` | duration | `10s` | How long a peer has to finish a DTLS handshake. The bound that matters most on a datagram listener: a handshake is where a peer that has proved nothing already costs a socket, a goroutine and a slot in the peer table |
+| `dtls_idle_timeout` | duration | `5m` | How long a DTLS session with nothing on it is kept. A poller on a thirty-second cycle keeps its session, which matters because the handshake is the expensive part of the exchange |
+| `max_dtls_peers` | int | `64` | DTLS sessions this listener holds. Past it a new peer's datagrams are dropped and counted in `snmp_dtls_datagrams_dropped`, because there is no session to refuse them in |
+| `cert_to_name` | list | | RFC 6353 §5.3's `snmpTlstmCertToTSNTable`: how a peer's certificate becomes the security name a rule names. See below |
+| `require_security_name` | bool | `true` | Refuse a transport security model message whose certificate maps to no name. The model carries no user, no engine and no digest, so a message with no derived name has no credential at all; `false` is for a listener that wants DTLS for confidentiality and decides on the address and the objects alone |
 | `allow_clients` | list of CIDR | all | Networks a manager may send from. On this protocol this is the most valuable line in the file after `read_only`, because a community string is not a secret in any useful sense |
 | `deny_clients` | list of CIDR | | Evaluated before `allow_clients` |
 | `versions` | list | all | `v1`, `v2c`, `v3`. "v3 only" is the single most useful line an operator can write here |
@@ -3185,6 +3254,72 @@ Counters: `snmp_verified` and `snmp_decrypted` say how much v3 traffic the
 rules actually apply to; `snmp_auth_failed` and `snmp_replayed` are the two
 ways a v3 message fails that nothing else on this listener can see.
 
+#### server.listeners[].snmp.cert_to_name
+
+RFC 6353 §5.3's `snmpTlstmCertToTSNTable`: the table that turns a peer's proof
+that it holds a private key into an identity a rule can name.
+
+Rows are tried in order and the first whose fingerprint matches decides --
+including deciding that there is no name, when the row matched and the
+certificate has nothing where the mapping looked. That is deliberate: the table
+is ordered, and a row that matched the fingerprint has said which row applies.
+
+```yaml
+snmp:
+  upstream: switches
+  dtls_mode: implicit
+  cert_to_name:
+    # One certificate, one name chosen by the estate rather than by whatever
+    # the certificate happens to say.
+    - fingerprint: "sha256:9f:2c:41:ae:07:55:b3:d8:1a:6e:c9:30:74:82:5f:bb:e1:0c:39:a7:46:d2:88:53:fe:91:20:6b:cd:34:77:a8"
+      map: specified
+      name: nms-primary
+    # Everything else our own authority issued, named by its DNS name.
+    - fingerprint: any
+      map: san_dns
+```
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `fingerprint` | string | The certificate this row is about: a hexadecimal hash of its DER, with the algorithm named (`sha256:4f:2a:...`) or inferred from the length. Colons, spaces and hyphens are ignored, so a fingerprint can be pasted from whatever printed it. RFC 6353 names `sha1`, `sha256`, `sha384` and `sha512`; **md5 is refused**, because a fingerprint that can be collided is not an identity. `any` matches any certificate the handshake accepted |
+| `map` | `specified`, `san_rfc822`, `san_dns`, `san_ip`, `san_any`, `common_name` | Default `san_any`. How the name is derived |
+| `name` | string | The security name, for `map: specified` only. With any other mapping the name comes from the certificate, and a name here would look like it applied and would not -- so it is refused at load |
+
+The mappings are the standard's:
+
+- **`specified`** takes the name from the row. The certificate only has to be the
+  right one.
+- **`san_rfc822`**, **`san_dns`**, **`san_ip`** take it from a subject
+  alternative name, which is where a certificate issued this decade puts the
+  thing it is about. The host part of an address and the whole of a DNS name are
+  lowercased, because the standard says so and because a policy that matched on
+  case would break when a certificate was reissued by a different tool. An
+  address is written in RFC 5952 form.
+- **`san_any`** takes whichever of those three the certificate has, in that
+  order.
+- **`common_name`** takes the subject's common name. RFC 6353 provides it for the
+  certificates that predate subject alternative names and advises against it, and
+  so does validation: a common name is free text that has meant several things,
+  and two authorities can issue the same one.
+
+`fingerprint: any` is **not** in the standard's table, which is keyed by
+fingerprint and therefore needs a row per certificate and a configuration change
+every time one is reissued. An estate running its own authority has already
+decided which authority to trust, in `tls.client_ca_file`, where that decision
+belongs. It is safe exactly to the extent that the listener requires and verifies
+a client certificate, and validation warns when `tls.client_auth` is not
+`require` with a `tls.client_ca_file` beside it -- without those, the name is
+derived from whatever a peer chose to send.
+
+Two refusals exist because of this table. `tsm_no_name` is a transport security
+model message whose certificate mapped to nothing, refused when
+`require_security_name` is on. `tsm_level` is a message inside a session
+claiming less than the session gave: RFC 5591 §3.1.1 has the sender copy the
+flags from the transport's security level and RFC 6353 §3.1.2 says a (D)TLS
+transport provides `authPriv`, so a message claiming `authNoPriv` inside DTLS is
+a sender that either did not implement the model or is asking whether this
+listener reads the flags as policy.
+
 #### server.listeners[].snmp.deception
 
 **A refusal is information, and here it is information about a credential.** A
@@ -3273,6 +3408,8 @@ and it is the same choice the Modbus section makes about a refused write.
 | `versions` | list | The protocol versions this rule covers |
 | `communities` | list | The community strings (v1 and v2c) this rule covers. A rule naming communities cannot match a v3 message, and one naming users cannot match a v2c one: letting either cross over would make a rule written about one authentication scheme apply to another |
 | `users` | list | The v3 USM user names this rule covers |
+| `security_names` | list | The transport security model names this rule covers: the name `cert_to_name` derived from the peer's certificate. A rule naming them covers no other message, the way a rule naming communities covers no v3 message; `users` and `security_names` in one rule match nothing, and validation refuses it |
+| `transports` | list | `udp`, `tcp`, `tls`, `dtls`. Empty covers all four. On this protocol the transport is half the credential -- a community string in a plain datagram is a cleartext password from an address anybody can claim, and the same request inside DTLS came from a peer that proved it holds a private key -- so this is the field that lets one listener hold two policies at once |
 | `min_security_level` | string | The lowest v3 level this rule covers, so that "this subtree only with authPriv" is one rule |
 | `pdus` | list | Operations by name: `get`, `get_next`, `get_bulk`, `set`, `trap`, `trap_v1`, `inform`, `response`, `report` |
 | `access` | list | `read`, `write`, `notify`: what the operation *does*. The durable way to write a policy, because it does not change when a later revision adds an operation |
@@ -3314,7 +3451,21 @@ Counters: `snmp_messages`, `snmp_sessions`, `snmp_sessions_open`,
 `snmp_malformed`, `snmp_rejected`, `snmp_rate_limited`, `snmp_amplified`,
 `snmp_truncated`, `snmp_upgraded`, `snmp_timed_out`, `snmp_upstream_failed`,
 `snmp_unsolicited`, `snmp_pending`, `snmp_verified`, `snmp_decrypted`,
-`snmp_auth_failed`, `snmp_replayed`. Refusals are `snmp_denied` for the ban triggers, and the
+`snmp_auth_failed`, `snmp_replayed`, `snmp_dtls_handshakes`,
+`snmp_dtls_handshake_failed`, `snmp_dtls_sessions`,
+`snmp_dtls_datagrams_dropped`, `snmp_tsm_messages`, `snmp_tsm_unnamed`.
+
+`snmp_dtls_handshake_failed` is the one to alert on, because on this transport
+it has two quite different causes and the count is what separates them: an
+estate whose certificates have expired fails every handshake and
+`snmp_dtls_sessions` stops climbing, and a scanner sending flights of nonsense
+at the port fails every handshake and never touches it. `snmp_tsm_messages` is
+the number that says the migration off USM is actually happening, and
+`snmp_tsm_unnamed` counts the messages whose certificate mapped to no name --
+a refusal where `require_security_name` is on, and a message decided on its
+address alone where it is off.
+
+Refusals are `snmp_denied` for the ban triggers, and the
 fine-grained reason is in the refusal counters: `client_not_allowed`,
 `tls_handshake`, `upstream_tls`, `malformed`, `malformed_response`, `message_too_large`,
 `framing`, `max_connections`, `rate_limited`, `version`, `community`, `user`,
@@ -3323,7 +3474,8 @@ fine-grained reason is in the refusal counters: `client_not_allowed`,
 `response_too_late`, `unsolicited_response`, `encrypted_response`,
 `wrong_direction`, `too_many_pending`, `upgrade_failed`, `usm_downgrade`,
 `usm_engine`, `usm_engines`, `auth_failed`, `replay`, `usm_no_privacy_key`,
-`unreadable`.
+`unreadable`, `dtls_handshake_failed`, `cleartext_at_dtls_listener`,
+`tsm_no_name`, `tsm_level`.
 
 ### server.listeners[].dhcp (kind: dhcp)
 

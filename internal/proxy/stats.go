@@ -513,6 +513,30 @@ type Stats struct {
 	// under the too_many_pending refusal.
 	SNMPPending atomic.Int64
 
+	// SNMP inside DTLS: RFC 6353's transport model on the transport this
+	// protocol actually uses.
+	//
+	// SNMPDTLSHandshakeFailed is the one to alert on, because on this
+	// transport it has two quite different causes and the count is what
+	// separates them: an estate whose certificates expired fails every
+	// handshake, and a scanner sending flights of nonsense at the port fails
+	// every handshake too -- the first stops the sessions count, the second
+	// does not touch it.
+	//
+	// SNMPTSMMessages counts the messages under the transport security model,
+	// which is the number that says the migration off USM is actually
+	// happening. SNMPTSMUnnamed counts those whose certificate mapped to no
+	// security name, which on a listener with require_security_name is a
+	// refusal and on one without is a message decided on its address alone.
+	// SNMPDTLSDropped counts datagrams thrown away for want of room in the
+	// peer table or a peer's queue.
+	SNMPDTLSHandshakes      atomic.Uint64
+	SNMPDTLSHandshakeFailed atomic.Uint64
+	SNMPDTLSSessions        atomic.Int64
+	SNMPDTLSDropped         atomic.Uint64
+	SNMPTSMMessages         atomic.Uint64
+	SNMPTSMUnnamed          atomic.Uint64
+
 	// The NTP and NTS gateway.
 	//
 	// The counters are split by what an operator does next. Requests and
@@ -967,6 +991,12 @@ type Snapshot struct {
 	SNMPDiscoveries       uint64 `json:"snmp_discoveries"`
 	SNMPOriginated        uint64 `json:"snmp_originated"`
 	SNMPPending           int64  `json:"snmp_pending"`
+	SNMPDTLSHandshakes    uint64 `json:"snmp_dtls_handshakes"`
+	SNMPDTLSHandshakeFail uint64 `json:"snmp_dtls_handshake_failed"`
+	SNMPDTLSSessions      int64  `json:"snmp_dtls_sessions"`
+	SNMPDTLSDropped       uint64 `json:"snmp_dtls_datagrams_dropped"`
+	SNMPTSMMessages       uint64 `json:"snmp_tsm_messages"`
+	SNMPTSMUnnamed        uint64 `json:"snmp_tsm_unnamed"`
 	LDAPSessions          uint64 `json:"ldap_sessions"`
 	LDAPSessionsOpen      int64  `json:"ldap_sessions_open"`
 	LDAPRequests          uint64 `json:"ldap_requests"`
@@ -1491,6 +1521,12 @@ func (s *Stats) snapshot() Snapshot {
 		SNMPDiscoveries:         s.SNMPDiscoveries.Load(),
 		SNMPOriginated:          s.SNMPOriginated.Load(),
 		SNMPPending:             s.SNMPPending.Load(),
+		SNMPDTLSHandshakes:      s.SNMPDTLSHandshakes.Load(),
+		SNMPDTLSHandshakeFail:   s.SNMPDTLSHandshakeFailed.Load(),
+		SNMPDTLSSessions:        s.SNMPDTLSSessions.Load(),
+		SNMPDTLSDropped:         s.SNMPDTLSDropped.Load(),
+		SNMPTSMMessages:         s.SNMPTSMMessages.Load(),
+		SNMPTSMUnnamed:          s.SNMPTSMUnnamed.Load(),
 		LDAPSessions:            s.LDAPSessions.Load(),
 		LDAPSessionsOpen:        s.LDAPSessionsOpen.Load(),
 		LDAPRequests:            s.LDAPRequests.Load(),

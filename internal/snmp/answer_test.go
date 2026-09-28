@@ -62,13 +62,13 @@ func TestUnsignedValuesAreEncodedTheWayAnAgentDoes(t *testing.T) {
 		{0xffffffff, "00ffffffff"},
 		{0xffffffffffffffff, "00ffffffffffffffff"},
 	} {
-		if got := hex(encodeUint(tc.in)); got != tc.want {
+		if got := hexOf(encodeUint(tc.in)); got != tc.want {
 			t.Errorf("%d encoded as %s, want %s", tc.in, got, tc.want)
 		}
 	}
 }
 
-func hex(b []byte) string {
+func hexOf(b []byte) string {
 	const digits = "0123456789abcdef"
 	var sb strings.Builder
 	for _, c := range b {

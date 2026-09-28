@@ -58,6 +58,10 @@ func (m *Mux) Dropped() uint64 { return m.dropped.Load() }
 
 // Run reads the socket and routes each datagram to its peer. It returns when
 // the socket fails, which a Close on the listener's socket is.
+//
+// A listener that carries something other than DTLS on the same socket does
+// not call this: it reads the socket itself and hands over the datagrams that
+// are records, with Deliver.
 func (m *Mux) Run() {
 	buf := make([]byte, m.b.Datagram)
 	for {
@@ -66,27 +70,39 @@ func (m *Mux) Run() {
 			m.Close()
 			return
 		}
-		p, fresh := m.peerFor(from)
-		if p == nil {
-			// The peer table is full. Dropping is the only thing left: there is
-			// no one to answer, because there is no session to answer in.
-			m.dropped.Add(1)
-			continue
-		}
 		raw := make([]byte, n)
 		copy(raw, buf[:n])
-		p.deliver(raw)
-		if fresh {
-			select {
-			case m.pending <- p:
-			default:
-				// More peers arriving than are being accepted. The new one is
-				// dropped rather than queued without bound, and its datagram
-				// goes with it: a peer whose first datagram was not answered
-				// retransmits, which is what DTLS does anyway.
-				m.dropped.Add(1)
-				m.forget(p)
-			}
+		m.Deliver(raw, from)
+	}
+}
+
+// Deliver routes one datagram to its peer's socket, making the peer if it is
+// new and Accept has room for it.
+//
+// It is exported for the listener that shares its port: SNMP's DTLS mode can
+// take plain datagrams and records on one socket, because a BER SEQUENCE and a
+// DTLS record cannot be confused, and the code that tells them apart has to be
+// the code that reads the socket. What it must not do is take the datagram's
+// octets after handing them over -- the buffer belongs to the session now.
+func (m *Mux) Deliver(raw []byte, from net.Addr) {
+	p, fresh := m.peerFor(from)
+	if p == nil {
+		// The peer table is full. Dropping is the only thing left: there is
+		// no one to answer, because there is no session to answer in.
+		m.dropped.Add(1)
+		return
+	}
+	p.deliver(raw)
+	if fresh {
+		select {
+		case m.pending <- p:
+		default:
+			// More peers arriving than are being accepted. The new one is
+			// dropped rather than queued without bound, and its datagram
+			// goes with it: a peer whose first datagram was not answered
+			// retransmits, which is what DTLS does anyway.
+			m.dropped.Add(1)
+			m.forget(p)
 		}
 	}
 }

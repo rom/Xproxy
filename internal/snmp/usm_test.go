@@ -28,7 +28,7 @@ func TestPasswordToKeyMatchesTheStandardsVectors(t *testing.T) {
 		{AuthSHA1, "6695febc9288e36282235fc7151f128497b38f3f"},
 	} {
 		got := PasswordToKey(tc.algo, "maplesyrup", engine)
-		if hex(got) != tc.want {
+		if hexOf(got) != tc.want {
 			t.Errorf("%s: %x, want %s", tc.algo, got, tc.want)
 		}
 		if len(got) != tc.algo.KeyLen() {

@@ -3,7 +3,6 @@ package snmp
 import (
 	"context"
 	"fmt"
-	"net"
 	"net/netip"
 	"slices"
 	"time"
@@ -440,12 +439,12 @@ func (t *server) recordDeception(ip netip.Addr, m *wire.Message, why string, tri
 // digest computed with a key this relay does not have, so a fabrication for
 // it would be a message no manager accepts -- and an unauthenticated
 // fabrication of an authenticated protocol is a worse tell than a refusal.
-func (t *server) deceive(m *wire.Message, to net.Addr, why string) bool {
+func (t *server) deceive(m *wire.Message, p *peer, why string) bool {
 	d := t.decoy
-	if d == nil || m == nil || m.PDU == nil {
+	if d == nil || m == nil || m.PDU == nil || p == nil {
 		return false
 	}
-	ip := netutil.AddrOf(to.String())
+	ip := p.ip
 	if !d.admits(ip) {
 		return false
 	}
@@ -454,7 +453,7 @@ func (t *server) deceive(m *wire.Message, to net.Addr, why string) bool {
 		return false
 	}
 	t.recordDeception(ip, m, why, d.tripped(m))
-	if _, err := t.pc.WriteTo(answer, to); err != nil {
+	if err := p.write(t, answer); err != nil {
 		t.host.Logs().Error.Warn("snmp decoy answer failed", "listener", t.cfg.Name,
 			"client", ip.String(), "error", err.Error())
 	}

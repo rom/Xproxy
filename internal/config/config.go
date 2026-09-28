@@ -729,6 +729,68 @@ type SNMPListener struct {
 	UpstreamTLSMode string `yaml:"upstream_tls_mode"`
 	// UpstreamTLS verifies the agent when upstream_tls_mode is not none.
 	UpstreamTLS *UpstreamTLS `yaml:"upstream_tls"`
+	// DTLSMode puts RFC 6353's transport model on the transport this
+	// protocol actually uses: none (the default), implicit, or detect.
+	//
+	// implicit is the standard's own arrangement -- UDP 10161, DTLS from the
+	// first octet, every datagram inside a session. A manager authenticates
+	// with a certificate, which is an identity an estate already knows how
+	// to issue, revoke and rotate, rather than a USM pass phrase per user
+	// per engine; and because the session carries the security, the relay
+	// can answer a refusal and rebuild a response without holding a
+	// credential of the manager's. That is the half of the secure upgrade
+	// facing the management station, with plain v2c going on towards a
+	// switch whose firmware has nothing else.
+	//
+	// detect takes both on one port: a datagram beginning with a DTLS
+	// content type is a record, one beginning with a BER SEQUENCE is a plain
+	// SNMP message, and the two cannot be confused because 0x30 is not a
+	// content type and no content type is 0x30. It is not what RFC 6353
+	// describes -- the standard gives DTLS a port of its own -- and it
+	// exists for the estate that is moving: the new managers speak DTLS and
+	// the old pollers do not, and nobody is going to reconfigure two hundred
+	// switches to change a port. What it costs is stated plainly: a client
+	// chooses which of the two it speaks, so the *policy* has to be what
+	// requires the certificate. Write rules naming transports, keep
+	// default_action at deny, and validation will say so if you do not.
+	//
+	// Either mode needs a tls section for the certificate, and a
+	// client_ca_file with client_auth: require_and_verify is what makes the
+	// identity worth naming -- without it a peer presents whatever it likes.
+	DTLSMode string `yaml:"dtls_mode"`
+	// DTLSHandshakeTimeout is how long a peer has to finish a handshake.
+	// Default 10s. It is the bound that matters most on a datagram
+	// listener: a handshake is where a peer that has proved nothing already
+	// costs a socket, a goroutine and a slot in the peer table.
+	DTLSHandshakeTimeout Duration `yaml:"dtls_handshake_timeout"`
+	// DTLSIdleTimeout is how long a session with nothing on it is kept.
+	// Default 5m. A poller on a thirty-second cycle keeps its session,
+	// which matters because the handshake is the expensive part of the
+	// exchange; something that handshook and went quiet does not.
+	DTLSIdleTimeout Duration `yaml:"dtls_idle_timeout"`
+	// MaxDTLSPeers bounds the DTLS sessions this listener holds. Default
+	// 64. Past it a new peer's datagrams are dropped and counted, because
+	// there is no session to refuse them in.
+	MaxDTLSPeers int `yaml:"max_dtls_peers"`
+	// CertToName is RFC 6353 s5.3's snmpTlstmCertToTSNTable: how a peer's
+	// certificate becomes the security name a rule names. Rows are ordered
+	// and the first whose fingerprint matches decides.
+	//
+	// Without it a message under the transport security model has no name,
+	// and what happens then is require_security_name's business. See
+	// SNMPCertName.
+	CertToName []SNMPCertName `yaml:"cert_to_name"`
+	// RequireSecurityName refuses a transport security model message whose
+	// certificate maps to no name. Default true.
+	//
+	// It is true by default because the alternative is a message with no
+	// credential at all: the transport model carries no user, no engine and
+	// no digest, so if the certificate maps to nothing then nothing
+	// identifies the sender and every rule naming a security name is
+	// unmatchable. Turning it off is for a listener whose policy decides on
+	// the address and the objects alone, and which wants DTLS for
+	// confidentiality rather than for identity.
+	RequireSecurityName *bool `yaml:"require_security_name"`
 	// AllowClients and DenyClients are the networks a manager may send
 	// from. Deny is evaluated first. On this protocol the client list is
 	// the most valuable line in the file after read_only, because a
@@ -3824,6 +3886,44 @@ type SNMPUser struct {
 	PrivacySecret string `yaml:"privacy_secret"`
 }
 
+// SNMPCertName is one row of RFC 6353 s5.3's certificate-to-security-name
+// table: which certificate it is about, and how the name is derived.
+//
+// The table is what turns a (D)TLS peer's proof that it holds a private key
+// into an identity a rule can name. Rows are tried in order and the first whose
+// fingerprint matches decides -- including deciding that there is no name, when
+// the row matched and the certificate has nothing where the mapping looked.
+type SNMPCertName struct {
+	// Fingerprint is the certificate this row is about: a hexadecimal hash of
+	// its DER, with the algorithm named ("sha256:4f:2a:...") or inferred from
+	// the length. Colons, spaces and hyphens between octets are ignored, so a
+	// fingerprint can be pasted from whatever printed it. RFC 6353 names
+	// sha1, sha256, sha384 and sha512; md5 is refused, because a fingerprint
+	// that can be collided is not an identity.
+	//
+	// "any" matches any certificate the handshake accepted. That is an
+	// extension to the standard's table and it is there because an estate
+	// running its own authority has already decided which authority to trust,
+	// in tls.client_ca_file, and a row per certificate means a configuration
+	// change every time one is reissued. It is safe exactly to the extent
+	// that the listener requires and verifies a client certificate, and
+	// validation warns when it does not.
+	Fingerprint string `yaml:"fingerprint"`
+	// Map is how the name is derived: specified (the name is in this row),
+	// san_rfc822, san_dns, san_ip (a subject alternative name, lowercased
+	// where the standard says to), san_any (the first of those three the
+	// certificate has, in that order) or common_name. Default san_any.
+	//
+	// common_name is RFC 6353's own last resort and it advises against it:
+	// a common name is free text that has meant several things over the
+	// years, and two authorities can issue the same one.
+	Map string `yaml:"map"`
+	// Name is the security name, for map: specified only. With any other
+	// mapping the name comes from the certificate, and a name here would
+	// look like it applied and would not -- so it is refused at load.
+	Name string `yaml:"name"`
+}
+
 // SNMPRule decides one message.
 type SNMPRule struct {
 	// Name identifies the rule in the logs and the counters. Required.
@@ -3840,6 +3940,21 @@ type SNMPRule struct {
 	Communities []string `yaml:"communities"`
 	// Users are the v3 USM user names this rule covers.
 	Users []string `yaml:"users"`
+	// SecurityNames are the transport security model names this rule
+	// covers: the name RFC 6353 s5.3's mapping derived from the peer's
+	// certificate. A rule naming them covers no other message, the way a
+	// rule naming communities covers no v3 message -- a rule written about
+	// one authentication scheme must not apply to another.
+	SecurityNames []string `yaml:"security_names"`
+	// Transports are the transports this rule covers: udp, tcp, tls, dtls.
+	// Empty covers all four.
+	//
+	// It is the field that lets one listener hold two policies at once,
+	// which is what an estate part-way through a migration has: the network
+	// operations centre reaching it inside DTLS with a certificate, the
+	// plant's own pollers still sending plain datagrams, and a different
+	// answer for each.
+	Transports []string `yaml:"transports"`
 	// MinSecurityLevel is the lowest v3 security level this rule covers, so
 	// that "this subtree only with authPriv" is one rule.
 	MinSecurityLevel string `yaml:"min_security_level"`

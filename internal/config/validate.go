@@ -873,7 +873,7 @@ func (v *validator) server(s *Server) {
 			if ln.SNMP == nil {
 				v.errf("%s.snmp: required for kind snmp", p)
 			} else {
-				v.snmpListener(p+".snmp", ln.SNMP, ln.TLS != nil)
+				v.snmpListener(p+".snmp", ln.SNMP, ln.TLS)
 			}
 		case "ldap":
 			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
@@ -11010,7 +11010,143 @@ func parseSNMPEngineID(s string) ([]byte, error) {
 	return b, nil
 }
 
-func (v *validator) snmpListener(p string, m *SNMPListener, hasTLS bool) {
+// snmpHasDTLS says whether this listener puts its datagrams inside DTLS.
+func snmpHasDTLS(m *SNMPListener) bool {
+	return m.DTLSMode != "" && m.DTLSMode != "none"
+}
+
+// snmpDTLS checks RFC 6353's transport model on the datagram half: the mode,
+// its bounds, and the table that turns a certificate into a name.
+//
+// The warnings here are the ones worth writing down, because each names a
+// configuration that looks like a control and is not one. A `detect` listener
+// whose rules do not name a transport lets the client choose whether to present
+// a certificate. A `cert_to_name` row matching any certificate on a listener
+// that does not require one is a row matching anybody. And a listener that
+// takes the transport model without mapping any certificate to a name refuses
+// every such message, which is a working listener that nothing can get through.
+func (v *validator) snmpDTLS(p string, m *SNMPListener, tc *TLS, udp bool) {
+	switch m.DTLSMode {
+	case "", "none", "implicit", "detect":
+	default:
+		v.errf("%s.dtls_mode: must be none, implicit or detect", p)
+	}
+	if !snmpHasDTLS(m) {
+		if len(m.CertToName) > 0 {
+			v.warnf("%s.cert_to_name: nothing here speaks a transport that carries a certificate, so no name is ever derived; dtls_mode on the datagram half or tls_mode on the stream half is what makes it apply", p)
+		}
+		v.snmpCertToName(p, m, tc)
+		return
+	}
+	if !udp {
+		v.errf("%s.dtls_mode: needs a datagram socket, and transport: tcp opens none. Use transport: udp (the default), or tls_mode for the stream half", p)
+	}
+	if tc == nil {
+		v.errf("%s.dtls_mode: %s needs the listener's tls section, for the certificate this relay presents", p, m.DTLSMode)
+	} else if tc.MinVersion == "1.3" {
+		v.errf("%s.dtls_mode: the tls section requires TLS 1.3 and this transport is DTLS 1.2, so no handshake would ever complete", p)
+	}
+	if m.DTLSMode == "detect" {
+		v.snmpDetect(p, m)
+	}
+	for _, d := range []struct {
+		key    string
+		val    Duration
+		lo, hi time.Duration
+	}{
+		{"dtls_handshake_timeout", m.DTLSHandshakeTimeout, time.Second, time.Minute},
+		{"dtls_idle_timeout", m.DTLSIdleTimeout, time.Second, time.Hour},
+	} {
+		if d.val != 0 && (d.val.D() < d.lo || d.val.D() > d.hi) {
+			v.errf("%s.%s: must be between %s and %s", p, d.key, d.lo, d.hi)
+		}
+	}
+	if m.MaxDTLSPeers < 0 || m.MaxDTLSPeers > 1<<16 {
+		v.errf("%s.max_dtls_peers: must be between 0 and 65536", p)
+	}
+	v.snmpCertToName(p, m, tc)
+	if len(m.CertToName) == 0 {
+		if m.RequireSecurityName == nil || *m.RequireSecurityName {
+			v.warnf("%s.cert_to_name: empty, so a message under the transport security model maps to no name and is refused (require_security_name). Add a row, or set require_security_name: false for a listener that wants DTLS for confidentiality and decides on the address alone", p)
+		} else {
+			v.warnf("%s.require_security_name: false with no cert_to_name means the certificate identifies nobody here: the session is confidential and the policy decides on the address and the objects alone", p)
+		}
+	}
+}
+
+// snmpDetect is the warning that keeps detect mode honest.
+//
+// In detect mode a client chooses whether to speak DTLS, because both are
+// accepted on the one port. That is the point -- it is what an estate part-way
+// through a migration needs -- and it means the *policy* has to be what requires
+// the certificate. A listener that allows by default, or whose rules never name
+// a transport, has a DTLS mode and no DTLS requirement.
+func (v *validator) snmpDetect(p string, m *SNMPListener) {
+	named := false
+	for i := range m.Rules {
+		if len(m.Rules[i].Transports) > 0 || len(m.Rules[i].SecurityNames) > 0 {
+			named = true
+			break
+		}
+	}
+	if m.DefaultAction == "allow" {
+		v.warnf("%s.dtls_mode: detect accepts plain datagrams on the same port, so with default_action: allow a client reaches the agents by simply not offering a certificate", p)
+	}
+	if !named {
+		v.warnf("%s.dtls_mode: detect accepts plain datagrams on the same port and no rule names transports or security_names, so nothing here requires the DTLS half; a client chooses which to speak", p)
+	}
+}
+
+// snmpCertToName checks RFC 6353 s5.3's mapping table.
+func (v *validator) snmpCertToName(p string, m *SNMPListener, tc *TLS) {
+	anyRow := false
+	for i := range m.CertToName {
+		r := &m.CertToName[i]
+		q := fmt.Sprintf("%s.cert_to_name[%d]", p, i)
+		how := r.Map
+		if how == "" {
+			how = snmpwire.CertMapSANAny
+		}
+		switch {
+		case !snmpwire.CertMapKnown(how):
+			v.errf("%s.map: %q must be one of %s", q, r.Map,
+				strings.Join(snmpwire.CertMaps(), ", "))
+		case !snmpwire.CertMapDerives(how) && r.Name == "":
+			v.errf("%s.name: required with map: %s, which takes the name from here rather than from the certificate", q, how)
+		case snmpwire.CertMapDerives(how) && r.Name != "":
+			// A name beside a mapping that derives one looks like it applies
+			// and does not, which is the kind of configuration an operator
+			// reads as a control and tests as a hole.
+			v.errf("%s.name: map: %s derives the name from the certificate, so name must be empty", q, how)
+		}
+		if how == snmpwire.CertMapCommonName {
+			v.warnf("%s.map: common_name is RFC 6353's last resort and it advises against it: a common name is free text that has meant several things, and two authorities can issue the same one. A subject alternative name is what a certificate issued this decade puts the subject in", q)
+		}
+		algo, _, err := snmpwire.ParseFingerprint(r.Fingerprint)
+		if err != nil {
+			v.errf("%s.fingerprint: %v", q, err)
+		} else if algo == "" {
+			anyRow = true
+		} else if algo == "sha1" {
+			v.warnf("%s.fingerprint: sha1 is in RFC 6353 for the equipment that shipped with it; sha256 is what to write for anything issued since", q)
+		}
+	}
+	if anyRow && !snmpVerifiesClients(tc) {
+		// The row means "any certificate this listener accepted", and a
+		// listener that does not require and verify one accepts every peer
+		// including the ones that offered nothing.
+		v.warnf("%s.cert_to_name: a row matching any fingerprint names whichever certificate the handshake accepted, and this listener's tls section does not require and verify one -- so the name is derived from whatever a peer chose to send. Set tls.client_auth: require with tls.client_ca_file", p)
+	}
+}
+
+// snmpVerifiesClients says whether the listener's TLS section makes a client
+// certificate mandatory and checks it against an authority.
+func snmpVerifiesClients(tc *TLS) bool {
+	return tc != nil && tc.ClientAuth == "require" && tc.ClientCAFile != ""
+}
+
+func (v *validator) snmpListener(p string, m *SNMPListener, tc *TLS) {
+	hasTLS := tc != nil
 	switch m.Mode {
 	case "", "reverse", "forward":
 	default:
@@ -11035,15 +11171,16 @@ func (v *validator) snmpListener(p string, m *SNMPListener, hasTLS bool) {
 		if !hasTLS {
 			v.errf("%s.tls_mode: implicit needs the listener's tls section", p)
 		}
-		if udp {
-			// RFC 6353 puts TLS on TCP 10161 and DTLS on UDP 10162. This
-			// relay speaks the TLS half, so with transport udp the stream
-			// half of this listener is protected and the datagram half is
-			// not. Saying so is better than implying a whole listener is
-			// encrypted when half of it is plaintext.
-			v.warnf("%s.tls_mode: implicit protects the stream half only; the datagram socket transport udp adds stays plaintext (RFC 6353 DTLS on 10162 is not implemented). Set transport: tcp for a listener that is TLS throughout", p)
+		if udp && !snmpHasDTLS(m) {
+			// RFC 6353 puts TLS on TCP 10161 and DTLS on UDP 10161. tls_mode
+			// is the stream half, so with transport udp the datagram half of
+			// this listener is unprotected unless dtls_mode covers it. Saying
+			// so is better than implying a whole listener is encrypted when
+			// half of it is plaintext.
+			v.warnf("%s.tls_mode: implicit protects the stream half only; the datagram socket transport udp adds stays plaintext. Add dtls_mode: implicit for RFC 6353 on the datagram half too, or transport: tcp for a listener that is TLS throughout", p)
 		}
 	}
+	v.snmpDTLS(p, m, tc, udp)
 	switch m.UpstreamTLSMode {
 	case "", "none", "implicit":
 	default:
@@ -11266,6 +11403,27 @@ func (v *validator) snmpListener(p string, m *SNMPListener, hasTLS bool) {
 				v.errf("%s.min_security_level: must be noAuthNoPriv, authNoPriv or authPriv", q)
 			}
 		}
+		for j, name := range r.Transports {
+			switch name {
+			case "udp", "tcp", "tls", "dtls":
+			default:
+				v.errf("%s.transports[%d]: %q must be udp, tcp, tls or dtls", q, j, name)
+			}
+		}
+		for j, name := range r.SecurityNames {
+			if name == "" || len(name) > 255 {
+				v.errf("%s.security_names[%d]: must be 1 to 255 octets", q, j)
+			}
+		}
+		if len(r.SecurityNames) > 0 && len(m.CertToName) == 0 {
+			// A rule naming a name nothing can derive matches nothing, which
+			// on a deny rule is a control that is not there and on an allow
+			// rule is traffic that falls through to the default.
+			v.errf("%s.security_names: nothing derives a security name here; cert_to_name is what maps a certificate to one (RFC 6353 s5.3)", q)
+		}
+		if len(r.SecurityNames) > 0 && len(r.Users) > 0 {
+			v.errf("%s: users names USM users and security_names names transport security model names, and one message is never both, so a rule naming each matches nothing", q)
+		}
 		if r.MaxRepetitions < 0 || r.MaxRepetitions > 1<<20 {
 			v.errf("%s.max_repetitions: must be between 0 and 1048576", q)
 		}
@@ -11273,7 +11431,8 @@ func (v *validator) snmpListener(p string, m *SNMPListener, hasTLS bool) {
 			v.modbusSchedule(q+".schedule", r.Schedule)
 		}
 		if r.Action == "allow" && len(r.Clients) == 0 && len(r.OIDs) == 0 && len(r.PDUs) == 0 &&
-			len(r.Access) == 0 && len(r.Communities) == 0 && len(r.Users) == 0 && len(r.Versions) == 0 {
+			len(r.Access) == 0 && len(r.Communities) == 0 && len(r.Users) == 0 && len(r.Versions) == 0 &&
+			len(r.SecurityNames) == 0 && len(r.Transports) == 0 {
 			v.warnf("%s: an allow rule that names no client, version, credential, operation or object identifier allows everything", q)
 		}
 		if r.Action == "observe" && len(r.WriteOIDs) > 0 {

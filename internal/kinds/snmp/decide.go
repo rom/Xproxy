@@ -3,7 +3,6 @@ package snmp
 import (
 	"context"
 	"errors"
-	"net"
 	"net/netip"
 	"time"
 
@@ -231,6 +230,25 @@ func (t *server) logSession(ip netip.Addr, start time.Time, secure bool, reason 
 	t.host.Logs().Access.Info("snmp session", attrs...)
 }
 
+// logDTLSSession records an established session and the name its certificate
+// carried.
+//
+// It is one line per session rather than per message, and it is where an
+// operator finds out that the mapping table is doing what they meant: a session
+// whose name is empty is one whose certificate matched no row, and on a
+// listener that requires a name every message in it is about to be refused for
+// a reason the refusal can only name as a label.
+func (t *server) logDTLSSession(p *peer) {
+	attrs := []any{"listener", t.cfg.Name, "client_ip", p.ip.String(),
+		"transport", p.transport.String()}
+	if p.name != "" {
+		attrs = append(attrs, "security_name", p.name)
+	} else {
+		attrs = append(attrs, "security_name", "", "reason", p.nameWhy)
+	}
+	t.host.Logs().Access.Info("snmp dtls session", attrs...)
+}
+
 // lowerRepetitions bounds a GETBULK's repetition count.
 //
 // The count is *lowered* rather than the request refused: a poller asking
@@ -320,7 +338,16 @@ func (t *server) applyUpgrade(cur []byte, m *wire.Message) ([]byte, bool, error)
 		// originateUpstream.
 		return cur, false, errOriginate
 	}
-	if m.Version == wire.V3 && !m.PDU.Type.Notification() {
+	if m.Version == wire.V3 && !m.PDU.Type.Notification() && !m.IsTSM() {
+		// A USM request cannot be downgraded: the answer would have to come
+		// back to the manager as v3, signed with a key this relay does not
+		// hold as that manager.
+		//
+		// A transport security model request can, and it is the case this
+		// whole transport exists for. Its response needs no key -- the session
+		// authenticates it -- so a manager holding nothing but a certificate
+		// reaches a switch that will never speak anything but v2c, and neither
+		// end learns what the other spoke. See restore.
 		return cur, false, errUnanswerable
 	}
 	community := t.m.UpstreamCommunity
@@ -346,10 +373,29 @@ func (t *server) restore(raw []byte, m *wire.Message, e *exchange) ([]byte, bool
 	if e == nil || m.PDU == nil || m.Version == e.version {
 		return raw, false
 	}
+	if e.tsm != nil {
+		// The manager spoke v3 under the transport security model, so the
+		// answer is owed in that model -- and can be given in it, because it
+		// is the session that authenticates a TSM message and not a key. The
+		// message identifier, the context and the level are the manager's own,
+		// echoed: a response is the request's envelope around the agent's
+		// answer.
+		scoped, err := wire.ScopedPDU(e.tsm.engine, e.tsm.context, m.PDU.Raw)
+		if err != nil {
+			return raw, false
+		}
+		out, err := wire.BuildTSM(wire.TSMBuild{MessageID: e.tsm.messageID,
+			MaxSize: e.tsm.maxSize, Level: e.tsm.level, Scoped: scoped})
+		if err != nil {
+			return raw, false
+		}
+		return out, true
+	}
 	if e.version == wire.V3 {
-		// The manager spoke v3, so its answer would have to be authenticated
-		// with a key this relay does not hold as that manager. Such a request
-		// is refused on the way in rather than half-translated here.
+		// The manager spoke v3 with USM, so its answer would have to be
+		// authenticated with a key this relay does not hold as that manager.
+		// Such a request is refused on the way in rather than half-translated
+		// here.
 		return raw, false
 	}
 	if m.Version == wire.V3 {
@@ -371,15 +417,74 @@ func (t *server) restore(raw []byte, m *wire.Message, e *exchange) ([]byte, bool
 }
 
 // answerRefusal sends the refusal on a datagram listener.
-func (t *server) answerRefusal(m *wire.Message, to net.Addr) {
+func (t *server) answerRefusal(m *wire.Message, p *peer) {
 	if t.m.DenyResponse == "drop" || t.m.DenyResponse == "close" {
 		// close has no meaning on a datagram: there is nothing to close,
 		// and validation says so. Here it reads as drop.
 		return
 	}
+	// A refusal under the transport security model is answerable where a USM
+	// one is not, and wire.Refusal is where that difference lives: the TSM
+	// message carries no digest, so the answer is authenticated by the session
+	// it is written into rather than by a key this relay does not hold. So a
+	// manager inside DTLS sees noAccess where a manager using USM sees a
+	// timeout, which is the difference between a refusal an operator can read
+	// in their monitoring system and one they have to come here for.
 	if answer := wire.Refusal(m); answer != nil {
-		_, _ = t.pc.WriteTo(answer, to)
+		_ = p.write(t, answer)
 	}
+}
+
+// request is what the policy decides about: the message, who sent it, and what
+// the transport said about them.
+func (t *server) request(ip netip.Addr, m *wire.Message, p *peer) request {
+	r := request{client: ip, msg: m}
+	if p != nil {
+		r.transport, r.name = p.transport, p.name
+	}
+	return r
+}
+
+// inspectTransport is the transport security model's own two checks.
+//
+// They are here rather than in the policy because neither is about what a
+// sender may do: they are about whether there is a sender to decide about.
+// RFC 5591's model carries no user, no engine and no digest, so a message
+// whose certificate mapped to no name has no credential at all, and every
+// rule naming a security name is unmatchable against it. And the flags are
+// supposed to be copied from the transport, so a message inside a session
+// claiming less than the session gave is a sender that either did not
+// implement the model or is asking whether this listener reads the flags as
+// policy.
+//
+// Both are decided per message rather than per session, because a listener may
+// carry v2c inside DTLS for confidentiality alone -- in which case there is no
+// transport security model message to have this opinion about.
+func (t *server) inspectTransport(m *wire.Message, p *peer) Decision {
+	if p == nil || !m.IsTSM() {
+		return Decision{Allow: true}
+	}
+	c := t.host.Counters()
+	c.SNMPTSMMessages.Add(1)
+	if !tsmLevelOK(m, p.transport) {
+		return Decision{Reason: "snmp_tsm_level", Detail: m.V3.Level.String()}
+	}
+	if p.name != "" {
+		return Decision{Allow: true}
+	}
+	c.SNMPTSMUnnamed.Add(1)
+	if !t.requireSecurityName() {
+		// Allowed without a name, which is a decision the listener made
+		// explicitly. What it means is that the address and the objects are
+		// the whole of the policy for this message, and the session bought
+		// confidentiality rather than identity.
+		return Decision{Allow: true}
+	}
+	why := p.nameWhy
+	if why == "" {
+		why = "cert_not_mapped"
+	}
+	return Decision{Reason: "snmp_tsm_no_name", Detail: why}
 }
 
 // refusalFor is the refusal to send on a stream listener.
