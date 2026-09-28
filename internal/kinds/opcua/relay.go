@@ -34,6 +34,7 @@ type server struct {
 	policy *policy
 	ln     net.Listener
 
+	learner  *learner
 	limiter  *limits.KeyedLimiter
 	gate     *sesslimit.Gate
 	sessions acceptgroup.Group
@@ -46,6 +47,12 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener) (*server, 
 	}
 	t := &server{host: host, cfg: cfg, name: cfg.Name, oc: cfg.OPCUA, policy: p, ln: ln,
 		gate: sesslimit.New(cfg.OPCUA.MaxSessions, cfg.OPCUA.MaxSessionsPerClient)}
+	if l := cfg.OPCUA.Learn; l != nil && l.Enabled {
+		t.learner = newLearner(&learnConfig{
+			enabled: true, listener: cfg.Name, file: l.File,
+			interval: l.Interval.D(), maxSubjects: l.MaxSubjects,
+		})
+	}
 	if n := cfg.OPCUA.RateLimit; n > 0 {
 		burst := cfg.OPCUA.RateBurst
 		if burst <= 0 {
@@ -57,8 +64,19 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener) (*server, 
 }
 
 // enforcing says whether the policy decides or only records.
+//
+// A learning run is observe-only unless it says otherwise, which is what stops one
+// being left on by accident: the point of learning is to find out what the traffic
+// is, and a run that refused half of it has changed the thing it was measuring.
 func (t *server) enforcing() bool {
-	return !t.oc.MonitorOnly && !t.cfg.Shadowing()
+	if t.oc.MonitorOnly || t.cfg.Shadowing() {
+		return false
+	}
+	l := t.oc.Learn
+	if l == nil || !l.Enabled {
+		return true
+	}
+	return l.Enforce
 }
 
 // The bounds, each falling back to the wire package's own.
@@ -77,6 +95,12 @@ func (t *server) handshakeTimeout() time.Duration {
 }
 
 func (t *server) serve() {
+	if t.learner != nil {
+		t.learner.Start(func(err error) {
+			t.host.Logs().Error.Warn("opcua learning report could not be written",
+				"listener", t.name, "error", err.Error())
+		})
+	}
 	for {
 		c, err := t.ln.Accept()
 		if err != nil {
@@ -109,6 +133,10 @@ func (t *server) shutdown(ctx context.Context) {
 	}
 	_ = t.ln.Close()
 	t.sessions.Wait(ctx)
+	if err := t.learner.Stop(); err != nil {
+		t.host.Logs().Error.Warn("opcua learning report could not be written at shutdown",
+			"listener", t.name, "error", err.Error())
+	}
 }
 
 // conn is one connection and the state the policy needs it to have.
@@ -142,6 +170,13 @@ type conn struct {
 	// is what a fault this relay composes has to echo for the client's library to
 	// match it to the call it made.
 	handles map[uint32]uint32
+	// subjects maps a request identifier to the learning subjects the request was
+	// recorded under, so a fault the server answers it with is counted against
+	// those same rows. A fault names no nodes of its own, so a fault attributed by
+	// identity and service alone would land on a row with no node in it and leave
+	// the rows the request made reading as traffic the server accepted -- which is
+	// how a learning run proposes a rule for something that cannot happen.
+	subjects map[uint32][]learnKey
 }
 
 // MaxPendingRequests bounds the table above. A client with more than this many
@@ -200,6 +235,33 @@ func (c *conn) took(id uint32) (wire.Service, bool) {
 	svc, ok := c.pending[id]
 	delete(c.pending, id)
 	return svc, ok
+}
+
+// recordSubjects remembers which learning subjects a request was recorded under.
+func (c *conn) recordSubjects(id uint32, keys []learnKey) {
+	if len(keys) == 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.subjects == nil {
+		c.subjects = make(map[uint32][]learnKey, 8)
+	}
+	if len(c.subjects) >= MaxPendingRequests {
+		// The same bound as the table above, and the same trade: what is lost is
+		// the ability to say which rows a fault belongs to, not a decision.
+		return
+	}
+	c.subjects[id] = keys
+}
+
+// tookSubjects returns and forgets them.
+func (c *conn) tookSubjects(id uint32) []learnKey {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	keys := c.subjects[id]
+	delete(c.subjects, id)
+	return keys
 }
 
 func (c *conn) writeClient(b []byte) error {
@@ -493,6 +555,11 @@ func (t *server) decide(c *conn, ch *wire.Chunk) (forward, fatal bool) {
 		// and the service-level rules do not apply to it -- which is what
 		// require_readable_bodies is for, and what the reference says.
 		t.host.Counters().OPCUAOpaque.Add(1)
+		// Recorded even so, and marked as opaque. A learning run that recorded
+		// nothing for an encrypted channel would look like a run over an idle
+		// listener, when what actually happened is that the relay could not read
+		// what crossed it -- which is the finding.
+		t.observeRequest(c, s, m.RequestID, 0, nil, true, true, time.Now())
 		return true, false
 	}
 	call, err := wire.ParseCall(m.Body, true)
@@ -517,6 +584,9 @@ func (t *server) decideCall(c *conn, ch *wire.Chunk, m *wire.Assembled, call *wi
 
 	d := t.policy.Request(s, call)
 	if !d.Allow {
+		// Recorded before the refusal is acted on, because a learning run wants to
+		// know that the policy and the traffic disagree and which way.
+		t.observeRequest(c, s, m.RequestID, call.Service, nil, false, false, time.Now())
 		return t.refused(c, m, d, call.Service.String())
 	}
 	// The service's own body, for the services whose contents a policy is written
@@ -647,7 +717,10 @@ func (t *server) decideRead(c *conn, m *wire.Assembled, call *wire.ServiceCall) 
 	for _, n := range q.Nodes {
 		ops = append(ops, Operation{Node: RefOf(n.Node), Attr: n.Attr})
 	}
-	if d := t.policy.Operations(c.sess(), call.Service, ops); !d.Allow {
+	sess := c.sess()
+	d := t.policy.Operations(sess, call.Service, ops)
+	t.observeRequest(c, sess, m.RequestID, call.Service, ops, d.Allow, false, time.Now())
+	if !d.Allow {
 		return t.refused(c, m, d, describeOps(ops))
 	}
 	if t.oc.LogRequests {
@@ -665,7 +738,10 @@ func (t *server) decideWrite(c *conn, m *wire.Assembled, call *wire.ServiceCall)
 	for _, v := range w.Values {
 		ops = append(ops, Operation{Node: RefOf(v.Node), Attr: v.Attr, Write: true})
 	}
-	if d := t.policy.Operations(c.sess(), call.Service, ops); !d.Allow {
+	sess := c.sess()
+	d := t.policy.Operations(sess, call.Service, ops)
+	t.observeRequest(c, sess, m.RequestID, call.Service, ops, d.Allow, false, time.Now())
+	if !d.Allow {
 		return t.refused(c, m, d, describeOps(ops))
 	}
 	t.logWrite(c, call, w)
@@ -682,7 +758,10 @@ func (t *server) decideMethod(c *conn, m *wire.Assembled, call *wire.ServiceCall
 		method := RefOf(mc.Method)
 		ops = append(ops, Operation{Node: RefOf(mc.Object), Write: true, Method: &method})
 	}
-	if d := t.policy.Operations(c.sess(), call.Service, ops); !d.Allow {
+	sess := c.sess()
+	d := t.policy.Operations(sess, call.Service, ops)
+	t.observeRequest(c, sess, m.RequestID, call.Service, ops, d.Allow, false, time.Now())
+	if !d.Allow {
 		return t.refused(c, m, d, describeOps(ops))
 	}
 	t.logMethod(c, call, k)
@@ -698,7 +777,10 @@ func (t *server) decideBrowse(c *conn, m *wire.Assembled, call *wire.ServiceCall
 	for _, n := range b.Nodes {
 		ops = append(ops, Operation{Node: RefOf(n.Node)})
 	}
-	if d := t.policy.Operations(c.sess(), call.Service, ops); !d.Allow {
+	sess := c.sess()
+	d := t.policy.Operations(sess, call.Service, ops)
+	t.observeRequest(c, sess, m.RequestID, call.Service, ops, d.Allow, false, time.Now())
+	if !d.Allow {
 		return t.refused(c, m, d, describeOps(ops))
 	}
 	if t.oc.LogRequests {
@@ -713,7 +795,14 @@ func (t *server) decideSubscription(c *conn, m *wire.Assembled, call *wire.Servi
 	if err != nil {
 		return t.unreadableBody(c, m, call, err)
 	}
-	if d := t.policy.Subscription(c.sess(), q); !d.Allow {
+	sess := c.sess()
+	d := t.policy.Subscription(sess, q)
+	// The interval is recorded whether or not it was allowed, and it is one of the
+	// numbers the report never proposes: a run that suggested the fastest interval
+	// it saw would widen the bound that stops a thousand values a millisecond.
+	t.observeSubscription(sess, q.Interval, time.Now())
+	t.observeRequest(c, sess, m.RequestID, call.Service, nil, d.Allow, false, time.Now())
+	if !d.Allow {
 		return t.refused(c, m, d, fmt.Sprintf("%.0fms", q.Interval))
 	}
 	c.update(func(s *Session) { s.Subscriptions++ })
@@ -728,20 +817,44 @@ func (t *server) decideMonitored(c *conn, m *wire.Assembled, call *wire.ServiceC
 	if err != nil {
 		return t.unreadableBody(c, m, call, err)
 	}
-	if d := t.policy.MonitoredItems(c.sess(), q); !d.Allow {
+	sess := c.sess()
+	t.observeMonitoredItems(sess, len(q.Items), fastestSampling(q), time.Now())
+	if d := t.policy.MonitoredItems(sess, q); !d.Allow {
+		t.observeRequest(c, sess, m.RequestID, call.Service, nil, false, false, time.Now())
 		return t.refused(c, m, d, fmt.Sprintf("%d items", len(q.Items)))
 	}
 	ops := make([]Operation, 0, len(q.Items))
 	for _, it := range q.Items {
 		ops = append(ops, Operation{Node: RefOf(it.Item.Node), Attr: it.Item.Attr})
 	}
-	if d := t.policy.Operations(c.sess(), call.Service, ops); !d.Allow {
+	d := t.policy.Operations(sess, call.Service, ops)
+	t.observeRequest(c, sess, m.RequestID, call.Service, ops, d.Allow, false, time.Now())
+	if !d.Allow {
 		return t.refused(c, m, d, describeOps(ops))
 	}
 	if t.oc.LogRequests {
 		t.logRequest(c, call, []any{"items", len(q.Items), "first", firstNode(ops)})
 	}
 	return true, false
+}
+
+// fastestSampling is the smallest positive sampling interval a request asked for.
+//
+// Positive only: minus one means the subscription's own publishing interval, which is
+// recorded where the subscription is, and zero means as fast as the device will
+// answer -- which is not an interval to record as the fastest one seen, because it
+// is not an interval at all.
+func fastestSampling(q *wire.MonitoredItemsRequest) float64 {
+	best := 0.0
+	for _, it := range q.Items {
+		if it.Sampling <= 0 {
+			continue
+		}
+		if best == 0 || it.Sampling < best {
+			best = it.Sampling
+		}
+	}
+	return best
 }
 
 // unreadableBody is what happens when a service's own body did not parse.
@@ -815,6 +928,10 @@ func (t *server) readServer(c *conn, ch *wire.Chunk) {
 	c.forgetHandle(m.RequestID)
 	if call.Service == wire.SvcFault || wire.Bad(call.Response.ServiceResult) {
 		t.serverRefused(c, call, svc, known)
+		// The learning run wants this most of all: it is the server refusing
+		// something this relay allowed, and a rule proposed for it would permit a
+		// thing that cannot happen.
+		t.observeServerFault(c.sess(), svc, known, c.tookSubjects(m.RequestID))
 	}
 }
 

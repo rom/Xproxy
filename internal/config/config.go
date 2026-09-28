@@ -12236,6 +12236,11 @@ type OPCUAListener struct {
 	SessionDuration  Duration `yaml:"session_duration"`
 	HandshakeTimeout Duration `yaml:"handshake_timeout"`
 
+	// Learn records what crosses this listener and writes a proposed policy,
+	// because the drawings say which nodes a server has and the traffic says
+	// which of them anything actually reads. See OPCUALearn.
+	Learn *OPCUALearn `yaml:"learn"`
+
 	// Rules decide each message, in order, first match wins. A message that
 	// matches no rule takes DefaultAction.
 	Rules []OPCUARule `yaml:"rules"`
@@ -12301,4 +12306,57 @@ type OPCUARule struct {
 	// Comment is carried into the logs when the rule decides, for the change
 	// record a plant keeps.
 	Comment string `yaml:"comment"`
+}
+
+// OPCUALearn records what crosses an opcua listener and writes a proposal.
+//
+// The reason learning exists at all is that nobody knows what an estate's OPC UA
+// traffic is. A server's address space has thousands of nodes and its own
+// documentation lists all of them; the traffic uses a few dozen. A policy written
+// from the documentation allows everything, and one written from a guess refuses
+// the half nobody wrote down — which on a plant means an HMI screen that stops
+// updating during a shift, and a security control that gets turned off and stays
+// off.
+//
+// Two things about learning on *this* protocol have no counterpart in the other
+// kinds.
+//
+// **A channel that encrypts its bodies teaches nothing about nodes.** Under
+// `sign_and_encrypt` the relay sees the channel, the session and the sizes and no
+// node identifier at all. So a learning run over such a channel produces a report
+// with an identity and no address space, and the report says so per subject and in
+// its header rather than leaving an operator to conclude the plant reads almost
+// nothing. A run meant to learn nodes wants `security_modes: [sign]` or
+// `require_readable_bodies: true` for its duration.
+//
+// **What the report will not propose is the part that bounds amplification.**
+// `min_publishing_interval`, `min_sampling_interval`, `max_operations` and
+// `max_monitored_items` appear as observations, under names no rule uses, because a
+// report that proposed the fastest interval it happened to see would widen the one
+// setting learning must not touch. Nor will it propose a security policy or mode:
+// seeing a channel in mode `none` is not a reason to allow mode `none`, and no run
+// proposes `allow_deprecated_policies`.
+type OPCUALearn struct {
+	// Enabled turns the recording on.
+	Enabled bool `yaml:"enabled"`
+	// File is where the report is written, as YAML. Required when enabled.
+	File string `yaml:"file"`
+	// Interval is how often it is rewritten. Default 5m; it is also written
+	// when the listener shuts down.
+	Interval Duration `yaml:"interval"`
+	// MaxSubjects bounds the observations held: one per identity, service class
+	// and node group seen. Default 8192; past it the newest is dropped and the
+	// drops are counted, because a learning run that quietly stopped learning is
+	// worse than one that says so.
+	MaxSubjects int `yaml:"max_subjects"`
+	// Enforce keeps the policy in force while learning. Default false: a
+	// learning run is normally observe-only, and saying so here is what stops one
+	// being left on by accident.
+	//
+	// It does not disable the hard decisions. A client the lists refuse, a
+	// message the relay could not read, a bound, and every service that changes
+	// the plant are refused whether or not a learning run is in progress —
+	// because a Write forwarded so that it could be written down is a moved
+	// actuator.
+	Enforce bool `yaml:"enforce"`
 }

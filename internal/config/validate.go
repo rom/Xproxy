@@ -7942,8 +7942,42 @@ func (v *validator) opcuaListener(p string, m *OPCUAListener, address string) {
 	v.opcuaServices(p, m)
 	v.opcuaNodes(p, m)
 	v.opcuaBounds(p, m)
+	v.opcuaLearn(p, m)
 	v.opcuaRules(p, m)
 	v.opcuaWarnings(p, m, address)
+}
+
+// opcuaLearn checks the learning section.
+//
+// The last warning here is the one worth having: a learning run over a channel whose
+// bodies are encrypted records an identity and no address space at all, and an
+// operator who does not hear that reads a report with few nodes and concludes the
+// plant reads few nodes.
+func (v *validator) opcuaLearn(p string, m *OPCUAListener) {
+	l := m.Learn
+	if l == nil || !l.Enabled {
+		return
+	}
+	switch {
+	case l.File == "":
+		v.errf("%s.learn.file: required when learning is enabled", p)
+	case !strings.HasPrefix(l.File, "/"):
+		v.errf("%s.learn.file: must be an absolute path", p)
+	}
+	if l.Interval != 0 && (l.Interval.D() < 10*time.Second || l.Interval.D() > 24*time.Hour) {
+		v.errf("%s.learn.interval: must be between 10s and 24h", p)
+	}
+	if l.MaxSubjects != 0 && (l.MaxSubjects < 16 || l.MaxSubjects > 1_000_000) {
+		v.errf("%s.learn.max_subjects: must be between 16 and 1000000", p)
+	}
+	if !l.Enforce {
+		v.warnf("%s.learn is enabled without enforce, so this listener records and decides nothing: turn enforce on, or take the learning section out, once the rules are written",
+			p)
+	}
+	if v.opcuaAllowsOpaque(m) && !m.RequireReadableBodies {
+		v.warnf("%s.learn is enabled and sign_and_encrypt is allowed, so any channel that uses it will teach this run nothing about nodes -- the body is ciphertext. A run meant to learn an address space wants security_modes: [sign] or require_readable_bodies: true for its duration; mode sign still authenticates every message and still detects modification",
+			p)
+	}
 }
 
 // opcuaPolicies checks the security policies and modes.
