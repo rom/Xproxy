@@ -263,41 +263,137 @@ server:
           - {name: system, action: allow, oids: ["1.3.6.1.2.1.1"]}
 
     # ---------------------------------------------------------------
-    # RFC 6353: TLS from the first octet on the stream side, for the
-    # management station that can do it. This is the half of the secure
-    # upgrade that faces the manager — plain v2c goes on towards a switch
-    # whose firmware has neither TLS nor v3.
+    # RFC 6353, both halves: TLS on TCP 10161 and DTLS on UDP 10161, with
+    # RFC 5591's transport security model inside either.
     #
-    # transport: tcp, because RFC 6353 puts TLS on TCP 10161; DTLS on
-    # 10162 is not implemented, and a listener that claimed to be
-    # encrypted while half of it was plaintext would be worse than one
-    # that says which half.
+    # This is the listener to read if the estate is trying to get off USM.
+    # A transport security model message carries no user, no engine, no
+    # clock and no digest: the session authenticated and encrypted it, and
+    # what identifies the sender is the certificate its peer presented.
+    # cert_to_name is RFC 6353 §5.3's table, which turns that certificate
+    # into the name the rules name.
+    #
+    # Three things follow, and each is something USM cannot do:
+    #   - the secret per user per engine is gone. A certificate is an
+    #     identity this estate already issues, revokes and rotates, and
+    #     client_ca_file is where it says which authority to believe
+    #   - a refusal is answered rather than timing out, because there is no
+    #     digest to forge: the session authenticates the answer
+    #   - and a v3 request can be downgraded to v2c for the switches,
+    #     because the answer needs no key either. That is upgrade_version
+    #     below, and it is the one case where "a v3 request cannot be
+    #     downgraded" does not apply
+    #
+    # transport: udp is what opens the datagram socket; the stream socket is
+    # always there, so tls_mode and dtls_mode together are the whole of
+    # RFC 6353 on one address. A management station that speaks the stream
+    # half gets it, and one that speaks the datagram half -- which is what
+    # this protocol actually runs on -- gets that.
+    #
+    # The certificate is what everything here rests on, so client_auth is
+    # require with an authority beside it. `fingerprint: any` then means
+    # "any certificate that authority issued", which is what makes this
+    # file survive a renewal; a row naming one fingerprint is the standard's
+    # own arrangement and is what to write for a certificate that must be
+    # pinned.
     # ---------------------------------------------------------------
-    - name: poll-tls
+    - name: poll-6353
       address: "10.50.0.10:10161"
       kind: snmp
       tls:
         certificates:
           - {cert_file: /etc/xproxy/tls/snmp.crt, key_file: /etc/xproxy/tls/snmp.key}
-        min_version: "1.3"
         client_auth: require
         client_ca_file: /etc/xproxy/tls/nms-ca.pem
       snmp:
         upstream: switches
-        transport: tcp
         tls_mode: implicit
+        dtls_mode: implicit
         allow_clients: ["10.50.1.0/24"]
         read_only: true
-        # Arriving as v2c inside TLS with a client certificate, leaving as
-        # v2c with the community string the switches expect.
+        # Arriving as v3 under the transport security model, leaving as v2c
+        # with the community string the switches expect and the managers
+        # never learn.
         upgrade_version: v2c
         upstream_community: wJ8kq2vPzR
+        # The name each certificate carries, from its subject alternative
+        # name. A policy written against a DNS name is one an operator can
+        # read against the estate's own inventory.
+        cert_to_name:
+          - {fingerprint: any, map: san_dns}
+        # The bounds the datagram transport needs. A handshake is where a
+        # peer that has proved nothing already costs a socket, a goroutine
+        # and a slot in the peer table, so it is bounded tightly; the idle
+        # bound is long because for a poller on a thirty-second cycle the
+        # handshake is the expensive part of the exchange.
+        dtls_handshake_timeout: 5s
+        dtls_idle_timeout: 10m
+        max_dtls_peers: 16
         max_repetitions: 50
         max_connections: 8
         idle_timeout: 300s
         default_action: deny
         rules:
-          - {name: mib-2, action: allow, access: [read], oids: ["1.3.6.1.2.1"]}
+          - name: nms
+            action: allow
+            transports: [tls, dtls]
+            security_names: [nms1.ops.example.com, nms2.ops.example.com]
+            access: [read]
+            oids: ["1.3.6.1.2.1"]
+            deny_oids: ["1.3.6.1.2.1.4.22", "1.3.6.1.2.1.6.13"]
+
+    # ---------------------------------------------------------------
+    # The migration, on one port.
+    #
+    # dtls_mode: detect takes records and plain datagrams on the same
+    # socket, because a DTLS content type and a BER SEQUENCE cannot be read
+    # as each other. It is not RFC 6353's arrangement -- the standard gives
+    # DTLS a port of its own -- and it is here for the estate whose new
+    # managers speak DTLS and whose two hundred field switches are not
+    # going to be reconfigured to a new port.
+    #
+    # What it costs is that the client chooses which of the two it speaks,
+    # so the *policy* is what requires the certificate. That is what
+    # transports on a rule is for, and it is why default_action stays deny:
+    # the new manager gets the wide read its certificate earns, the old
+    # pollers keep the narrow one their address and community string always
+    # had, and nothing reaches the switches under a rule it does not match.
+    # ---------------------------------------------------------------
+    - name: poll-migrating
+      address: "10.50.0.12:161"
+      kind: snmp
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/tls/snmp.crt, key_file: /etc/xproxy/tls/snmp.key}
+        client_auth: require
+        client_ca_file: /etc/xproxy/tls/nms-ca.pem
+      snmp:
+        upstream: switches
+        dtls_mode: detect
+        allow_clients: ["10.50.1.0/24", "10.50.3.0/24"]
+        read_only: true
+        cert_to_name:
+          - {fingerprint: any, map: san_dns}
+        max_repetitions: 50
+        default_action: deny
+        rules:
+          # The new manager, by the name its certificate carries.
+          - name: nms-dtls
+            action: allow
+            transports: [dtls]
+            security_names: [nms1.ops.example.com]
+            access: [read]
+            oids: ["1.3.6.1.2.1"]
+          # The field pollers, still sending plain v2c from the plant
+          # network, still reading the interface table and nothing else.
+          - name: field-pollers
+            action: allow
+            transports: [udp]
+            clients: ["10.50.3.0/24"]
+            versions: [v2c]
+            communities: [wJ8kq2vPzR]
+            access: [read]
+            oids: ["1.3.6.1.2.1.2"]
 
     # ---------------------------------------------------------------
     # A shadow-mode trial of a narrower policy, on a copy of the traffic's

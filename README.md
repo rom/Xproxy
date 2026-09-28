@@ -190,7 +190,7 @@ its own for what is deliberately *not* implemented and why.
 | Building automation | BACnet/IP (ASHRAE 135 Annex J): the BVLC functions, the network layer of clause 6 with its routing and security messages, the application layer of clause 20 with the confirmed and unconfirmed services, and the object, property and command priority each request names | `bacnet` |
 | Industrial control | Siemens S7comm on TCP 102: TPKT (RFC 1006), COTP (X.224 class 0, whose connection request addresses a CPU by rack and slot), and the S7 layer -- the function codes for memory, blocks and the control service, and the user-data groups for the diagnostic buffer, the clock, the password and the debugger. **S7comm-plus** (protocol identifier `0x72`), which is what TIA Portal speaks to an S7-1200 or S7-1500, read as far as its function code -- which is as far as anything in the path can read it | `s7` |
 | Messaging | AMQP 0-9-1 (the class and method catalogue RabbitMQ speaks) and AMQP 1.0 (ISO/IEC 19464: the nine performatives, its self-describing type system, and the SASL layer), read on one port because a client picks which of the two it speaks in its first eight octets | `amqp` |
-| Management | SNMP v1 (RFC 1157), v2c (RFC 1901–1908) and v3 with USM (RFC 3410–3418, RFC 3826, RFC 7860) read and verified, over UDP and over TCP (RFC 3430), with RFC 6353 TLS on the stream side | `snmp` |
+| Management | SNMP v1 (RFC 1157), v2c (RFC 1901–1908) and v3 with USM (RFC 3410–3418, RFC 3826, RFC 7860) read and verified, over UDP and over TCP (RFC 3430); RFC 6353 on both transports — TLS on TCP 10161, DTLS on UDP 10161 — with RFC 5591's transport security model and RFC 6353 §5.3 certificate-to-name mapping | `snmp` |
 | Directory | LDAP v3 (RFC 4511–4515, 4517, 4519) with LDAPS and the StartTLS of RFC 4513, as a relay: the bind methods, the search filter's shape, distinguished names compared per relative name, the attribute lists in both directions | `ldap`, filters |
 | Addressing | DHCP (RFC 2131) with its options (RFC 2132), relay agent information (RFC 3046), long options (RFC 3396) and classless static routes (RFC 3442), as a relay agent that reads what it relays: the server a reply came from, and the configuration the reply carries | `dhcp` |
 | Addressing | DHCPv6 (RFC 8415) as a relay agent that reads what it relays, with the nested relay chain, the DUID identity, the identity associations and prefix delegation, and the options that configure something other than an address: the boot file URL (RFC 5970), the captive portal (RFC 8910), the SZTP bootstrap server (RFC 8572), the S46 transition containers (RFC 7598) and the AFTR name (RFC 6334) | `dhcp6` |
@@ -232,7 +232,7 @@ protocol so that a policy can be written in that protocol's own terms:
 | `syslog` | `xrelay` | RFC 5424 and RFC 3164 over UDP, TCP, TLS | Facility, severity, sender, the text; re-emitted in one dialect |
 | `modbus` | `xrelay` | Modbus/TCP, RTU and ASCII, Modbus/TCP Security | Unit identifiers, function codes, register ranges, values, roles, schedules, behavioural detection |
 | `iec104` | `xrelay` | IEC 60870-5-104, IEC 62351-3 TLS, IEC 60870-5-7 secure authentication recognised | Type identifications, causes of transmission, common and originator addresses, information object ranges, select-before-operate, setpoint value and step bounds, schedules; the information element too -- the quality descriptor a station attached to a reading, the value it reported, and the timestamp on a time-tagged command, which is this protocol's own replay check |
-| `snmp` | `xrelay` | SNMP v1, v2c and v3 (USM), UDP and TCP, RFC 6353 TLS | Versions, community strings and USM users, security levels, operations, object subtrees, the amplification bounds; with the user's pass phrases, v3 digests verified and payloads decrypted so the rules apply to v3 too; and USM **terminated and re-originated**, so a v1 poller reaches a v3-only agent |
+| `snmp` | `xrelay` | SNMP v1, v2c and v3 (USM and TSM), UDP and TCP, RFC 6353 TLS and DTLS | Versions, community strings and USM users, security levels, operations, object subtrees, the amplification bounds; with the user's pass phrases, v3 digests verified and payloads decrypted so the rules apply to v3 too; USM **terminated and re-originated**, so a v1 poller reaches a v3-only agent; and, under RFC 6353, the **certificate** as the identity — mapped to a security name a rule names, with the transport itself a rule field |
 | `ldap` | `xrelay` | LDAP v3, LDAPS, StartTLS | Bind methods, the bound identity, operations, naming contexts and subtrees, scopes, attributes in both directions, filter and entry bounds |
 | `dhcp` | `xrelay` | DHCPv4 with RFC 2132 options, RFC 3046 relay agent information, RFC 3442 routes | The server a reply came from, the options and addresses a reply may carry, the boot file, the lease bounds, the hardware-address rate |
 | `dhcp6` | `xrelay` | DHCPv6 (RFC 8415) with the nested relay chain, the DUID, the identity associations, prefix delegation | The server a reply came from, the options a reply may carry and the resolvers, domains and boot URLs they may name, what may be delegated and what a client may ask for, the lease bounds -- with a withdrawal never turned into a lease -- the relay chain's depth, and the starvation bound keyed on the **DUID** |
@@ -529,7 +529,24 @@ protocol so that a policy can be written in that protocol's own terms:
   the modern-device, legacy-collector case. An `authPriv` payload is
   decided about and not inspected, and said to be: the header is
   readable, the ciphertext is not, and pretending otherwise would be
-  worse than either refusing or forwarding
+  worse than either refusing or forwarding. And **RFC 6353** is the way
+  out of USM: `tls_mode` on the stream half, `dtls_mode` on the datagram
+  half that this protocol actually runs on, with RFC 5591's transport
+  security model inside either — a v3 message that carries no user, no
+  engine, no clock and no digest, because the session carries all four.
+  What identifies the sender is its **certificate**, which
+  `cert_to_name` turns into the security name a rule names by RFC 6353
+  §5.3's table, so the credential an estate has to manage becomes one it
+  already issues, revokes and rotates. The missing digest is what makes
+  the model worth relaying rather than merely terminating: a refusal can
+  be *answered* — `noAccess` in the manager's own monitoring system where
+  USM gives a timeout — and a v3 request *can* be downgraded to v2c for a
+  switch that will never speak anything else, with the answer rebuilt in
+  the manager's own envelope. `dtls_mode: detect` takes records and plain
+  datagrams on one port for an estate part-way through that move, and says
+  plainly what it costs: the client chooses which to speak, so the policy
+  is what requires the certificate — which is what `transports` on a rule
+  is for
 
 - `kind: ldap`: an **LDAP and LDAPS** relay in front of a directory — the
   one service in an estate that knows who everybody is, answering the

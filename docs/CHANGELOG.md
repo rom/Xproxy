@@ -6,6 +6,80 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (snmp: RFC 6353, where the credential is a certificate)
+
+- **`dtls_mode` puts RFC 6353's transport model on the transport SNMP actually
+  uses.** `tls_mode` was the stream half (TCP 10161); this is the datagram half
+  (UDP 10161), and inside either sits RFC 5591's transport security model: an
+  SNMPv3 message with the security parameters taken out. No user, no engine
+  identifier, no clock, no digest, because the session authenticated and
+  encrypted it before the message existed.
+
+- **`cert_to_name` is RFC 6353 §5.3's `snmpTlstmCertToTSNTable`**: rows in order,
+  first match wins, each saying which certificate it is about and how a security
+  name is derived from it — `specified`, `san_rfc822`, `san_dns`, `san_ip`,
+  `san_any`, or `common_name`, which the standard provides and advises against.
+  That name is what a rule's new `security_names` names. `fingerprint: any` is an
+  extension to the table for the estate that runs its own authority and would
+  otherwise edit this file on every renewal; md5 fingerprints are refused,
+  because a fingerprint that can be collided is not an identity.
+
+- **Three things follow from the missing digest, and each is something USM cannot
+  do.** The secret per user per engine is gone: a certificate is an identity an
+  estate already issues, revokes and rotates. A refusal is *answered* rather than
+  timing out, because the session authenticates the answer. And a v3 request
+  *can* be downgraded to v2c — the one case where "a v3 request cannot be
+  downgraded" does not apply — so a manager holding nothing but a certificate
+  reaches a switch that will never speak anything else, and the switch's v2c
+  answer comes back rebuilt in the manager's own envelope.
+
+- **`transports` on a rule** names `udp`, `tcp`, `tls` or `dtls`, because on this
+  protocol the transport is half the credential: a community string in a plain
+  datagram is a cleartext password from an address anybody can claim, and the
+  same request inside DTLS came from a peer that proved it holds a private key.
+  Empty covers all four, so every policy written before this field means what it
+  meant.
+
+- **`dtls_mode: detect` takes records and plain datagrams on one port**, because
+  a DTLS content type and a BER SEQUENCE cannot be read as each other. It is not
+  RFC 6353's arrangement — the standard gives DTLS a port of its own — and it is
+  for the estate whose new managers speak DTLS and whose two hundred field
+  switches are not going to be reconfigured. What it costs is stated rather than
+  discovered: the client chooses which of the two it speaks, so the *policy* is
+  what requires the certificate, and validation says so when a `detect`
+  listener's rules name neither `transports` nor `security_names`.
+
+- **Two refusals the model brings.** `tsm_no_name` is a message whose certificate
+  mapped to nothing, refused because a transport model message with no derived
+  name has no credential at all (`require_security_name: false` is the listener
+  saying it wants confidentiality and will decide on the address alone).
+  `tsm_level` is a message claiming less than its session gave: the flags are
+  supposed to be copied from the transport, so `authNoPriv` inside DTLS is a
+  sender that did not implement the model or is probing for a listener that reads
+  the flags as policy.
+
+- Counters: `snmp_dtls_handshakes`, `snmp_dtls_handshake_failed`,
+  `snmp_dtls_sessions`, `snmp_dtls_datagrams_dropped`, `snmp_tsm_messages`,
+  `snmp_tsm_unnamed`. The handshake failures are the pair to watch, because the
+  count separates an estate whose certificates expired — every handshake fails
+  and the sessions count stops climbing — from a scanner sending flights of
+  nonsense at the port, which never touches it.
+
+### Changed
+
+- **The DTLS transport moved out of the CoAP kind into `internal/dtlsx`.**
+  AMR-050 confined `pion/dtls` to one file on the argument that it served one
+  transport on one listener; a second listener needing the same bounded peer
+  table, the same handshake bound and the same configuration translation makes
+  that confinement a copy. The dependency is now in one package's imports and no
+  package outside it names a type from the library. [AMR-051](AMR.md) records the
+  move.
+
+- The RFC 6353 port constants in `internal/snmp` were mislabelled: 10161 is the
+  command responder and 10162 the notification receiver on *both* transports, so
+  there are four names where there were two and DTLS no longer claims to live on
+  the trap port.
+
 ### Added (mms: IEC 61850, where the names carry the semantics)
 
 - **`kind: mms` is an IEC 61850 relay agent on TCP 102** that reads six layers to
