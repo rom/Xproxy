@@ -45,12 +45,18 @@ type observation struct {
 	nts           bool
 	authenticated bool
 	keyIDs        map[uint32]bool
-	strata        map[uint8]bool
 	// polls are the intervals seen between this subject's packets,
 	// rounded to a second: what a device's poll actually is rather than
 	// what its manual says.
 	polls    []int
 	lastSeen time.Time
+	// No stratum. One was recorded here and rendered nowhere, which looked like
+	// a gap next to the `allow_strata` policy key -- and filling that gap would
+	// have been wrong. allow_strata is the list of strata an *answer* may carry,
+	// and this learner sees the client's requests: a request's stratum field is
+	// the client's own, usually 0, which is the kiss-o'-death value a server
+	// sends. Proposing it as a stratum this relay accepts from a server would be
+	// a proposal derived from the wrong half of the conversation.
 }
 
 // Learner records what crosses the listener.
@@ -145,7 +151,7 @@ func (l *Learner) Observe(r request, d Decision, now time.Time) {
 			delete(l.seen, oldest)
 			l.Dropped.Add(1)
 		}
-		o = &observation{first: now, keyIDs: map[uint32]bool{}, strata: map[uint8]bool{}}
+		o = &observation{first: now, keyIDs: map[uint32]bool{}}
 		l.seen[key] = o
 		l.order = append(l.order, key)
 	}
@@ -166,7 +172,6 @@ func (l *Learner) Observe(r request, d Decision, now time.Time) {
 		o.authenticated = true
 		o.keyIDs[r.pkt.KeyID] = true
 	}
-	o.strata[r.pkt.Stratum] = true
 	l.Observed.Add(1)
 }
 
@@ -192,6 +197,25 @@ func (l *Learner) Write() error {
 
 // Report renders what was learned: a description of the traffic, and
 // under it the three lists a policy is made of.
+// clone is a copy that shares nothing with the original.
+//
+// A plain value copy would share the two maps and the poll slice, and the report
+// is rendered outside the lock: the next packet writing a key identifier or
+// appending a poll interval would be writing what the renderer is reading. A map
+// written during a range over it is not a race the runtime tolerates -- it is a
+// fatal "concurrent map iteration and map write" that takes the process down,
+// which for a relay in front of a plant's clocks is an outage caused by writing a
+// report.
+func (o *observation) clone() observation {
+	c := *o
+	c.keyIDs = make(map[uint32]bool, len(o.keyIDs))
+	for k, v := range o.keyIDs {
+		c.keyIDs[k] = v
+	}
+	c.polls = append([]int(nil), o.polls...)
+	return c
+}
+
 func (l *Learner) Report() string {
 	l.mu.Lock()
 	keys := make([]subjectKey, 0, len(l.seen))
@@ -210,7 +234,7 @@ func (l *Learner) Report() string {
 	})
 	snap := make([]observation, 0, len(keys))
 	for _, k := range keys {
-		snap = append(snap, *l.seen[k])
+		snap = append(snap, l.seen[k].clone())
 	}
 	dropped, observed := l.Dropped.Load(), l.Observed.Load()
 	l.mu.Unlock()

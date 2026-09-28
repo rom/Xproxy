@@ -7563,7 +7563,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `tcp_denied`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `amqp_denied`, `s7_denied`, `ntp_denied`, `ntske_denied`, `dns_denied`, `dns_threat_intel`, `dns_deceived`, `dns_tripwire`, `telnet_tripwire`, `ssh_tripwire`, `modbus_tripwire`, `iec104_tripwire`, `s7_tripwire`, `redis_tripwire`, `mysql_tripwire`, `postgres_tripwire`, `yara` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `flow`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `tcp_denied`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `amqp_denied`, `s7_denied`, `ntp_denied`, `ntske_denied`, `dns_denied`, `dns_threat_intel`, `dns_deceived`, `dns_tripwire`, `telnet_tripwire`, `ssh_tripwire`, `modbus_tripwire`, `iec104_tripwire`, `s7_tripwire`, `redis_tripwire`, `mysql_tripwire`, `postgres_tripwire`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |
@@ -9345,7 +9345,7 @@ the binary; [EXTENDING.md](EXTENDING.md) describes how to add one.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Referenced by routes; the default deny reason |
-| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `ldap_auth`, `api_key`, `api_abuse`, `openapi`, `graphql`, `grpc_guard`, `authz`, `upload_guard`, `sensitive_data`, `account_guard`, `body_rewrite`, `bot_score`, `form_guard`, `oidc`, `wasm`, or one added to `internal/filters` |
+| `kind` | name | required | A registered kind: `header_guard`, `basic_auth`, `ldap_auth`, `api_key`, `api_abuse`, `flow`, `openapi`, `graphql`, `grpc_guard`, `authz`, `upload_guard`, `sensitive_data`, `account_guard`, `body_rewrite`, `bot_score`, `form_guard`, `oidc`, `wasm`, or one added to `internal/filters` |
 | `stage` | `before_auth`, `after_auth`, `after_waf`, `after_scan` | `after_auth` | Position relative to the built-in JWT, WAF and ICAP filters |
 | `options` | mapping | | Kind specific; unknown keys are rejected |
 
@@ -10068,6 +10068,107 @@ did, and `xproxy_api_abuse_subjects`, `xproxy_api_abuse_objects` and
 `xproxy_api_abuse_overflowed` say how much it is holding: a `subjects`
 gauge pinned at `max_subjects` with `_dropped_total` climbing is a filter
 watching more callers than it was given room for.
+
+### Kind `flow`
+
+Enforces the **order** of a business flow: a step may be reached only by a
+caller already seen at the steps it depends on.
+
+It is the other half of cross-request detection. `api_abuse` watches the
+*shape* of a sequence and answers questions nobody wrote down. This answers
+one somebody did: the application has a flow, and a request that arrives
+out of it is not a request the application meant to serve.
+
+```
+POST /api/cart/items        200
+POST /api/checkout/address  200
+POST /api/checkout/pay      200
+```
+
+against
+
+```
+POST /api/checkout/pay      200   <- paid for a cart nobody filled
+```
+
+Every one of those requests is valid on its own. A WAF sees nothing, an
+OpenAPI schema sees nothing, a rate limit sees nothing, and a positive
+security policy sees nothing, because each request is individually
+permitted. What is wrong is the order, and the order is only visible across
+requests. This is OWASP API Security Top 10 **API6:2023**, unrestricted
+access to sensitive business flows — and it is the same control the `modbus`
+kind spells `require_before`. A plant will not let a valve be driven without
+the select that precedes it; an application should not let a payment be
+taken without the cart.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `window` | duration | `30m` | How long a step counts as taken; 1s to 24h. It has to be at least as long as a real caller takes over the *whole* flow: shorter refuses the customer who went to make a cup of tea between the address and the payment |
+| `action` | `log`, `challenge`, `block` | `log` | What an out-of-order step gets. `block` answers **409 Conflict**: the request is well formed and the caller is entitled to make it, but not in the state they are in |
+| `max_callers` | int | `65536` | Callers whose progress is held; 16 to 10000000. Past it the least recently seen is dropped, and the drops are counted |
+| `flows[].name` | string | required | Names the flow in the log, the counters and the refusal |
+| `flows[].steps[].name` | string | required | Names the step, and is what `after` refers to |
+| `flows[].steps[].methods` | list | `[]` (any) | Methods this step matches, upper case |
+| `flows[].steps[].paths` | list | required | Path prefixes it matches, on **whole segments**, so `/api/cartridges` is not under `/api/cart`. At least one: a step matching every path would put every request into the flow |
+| `flows[].steps[].after` | list | `[]` | The steps that must have been seen in the window. Empty makes this an entry step, which is always allowed. A step may only name one written *above* it |
+| `flows[].steps[].once` | bool | `false` | Refuse a second visit — the double-submit control. Off by default, because a step reached twice is usually a customer who pressed the button again after a timeout, and the second press is the one that works |
+
+```yaml
+filters:
+  - name: checkout
+    kind: flow
+    options:
+      window: 30m
+      action: log
+      flows:
+        - name: checkout
+          steps:
+            - {name: cart,    methods: [POST], paths: [/api/cart]}
+            - {name: address, methods: [POST], paths: [/api/checkout/address], after: [cart]}
+            - {name: pay,     methods: [POST], paths: [/api/checkout/pay], after: [address]}
+routes:
+  - name: shop
+    hosts: [shop.example.com]
+    upstream: shop
+    # After the identity filters, for the reason below.
+    filters: [oidc-login, checkout]
+```
+
+**The caller is the authenticated identity when the chain established one,
+and the client address otherwise**, which is why this filter belongs *after*
+the identity filters. It is not a detail: keyed on an address, one NAT
+gateway's cart would satisfy another user's payment, so every customer behind
+one corporate egress would share a flow.
+
+**A refused step is still recorded.** A refusal that did not record would be
+refused again on every retry, and a caller who genuinely lost their earlier
+step could never get through at all — the flow would be permanently broken
+for them rather than broken once.
+
+**Traffic that matches no step is not judged**, so the filter does not become
+a second, accidental positive security policy.
+
+Two limits, and both are the operator's to weigh rather than the filter's to
+hide:
+
+- **The state is this process's.** Behind two relays, a caller whose cart
+  step landed on one and whose payment arrives at the other looks exactly
+  like a caller who skipped the cart, and enforcing would refuse a
+  legitimate payment. Run one relay in the path of a flow, or run this as
+  `log` and read the events.
+- **The state starts empty.** Every caller mid-flow when the relay starts,
+  reloads its runtime generation, or is deployed for the first time has no
+  recorded earlier step. `log` is the default for that reason: leave it
+  there until the events are quiet, and only then enforce.
+
+A flagged request adds `flow` to the access log with the flow, the step and
+what was wrong; `block` and `challenge` also write a security event with the
+`flow` reason. Per filter, `xproxy_flow_requests_total`, `_steps_total`,
+`_flagged_total`, `_blocked_total`, `_challenged_total` and `_dropped_total`
+count what it did, and `xproxy_flow_callers` and `xproxy_flow_flows` say how
+much it is holding — a `_dropped_total` that climbs means more callers are in
+flight than `max_callers` holds, and a caller dropped mid-flow arrives at its
+next step looking like one that skipped a step.
 
 ### Kind `api_key`
 

@@ -12,6 +12,7 @@ import (
 	_ "github.com/rom/xproxy/internal/filters/basicauth"    // basic_auth
 	_ "github.com/rom/xproxy/internal/filters/bodyrewrite"  // body_rewrite
 	_ "github.com/rom/xproxy/internal/filters/botscore"     // bot_score
+	_ "github.com/rom/xproxy/internal/filters/flow"         // flow
 	_ "github.com/rom/xproxy/internal/filters/formguard"    // form_guard
 	_ "github.com/rom/xproxy/internal/filters/graphql"      // graphql
 	_ "github.com/rom/xproxy/internal/filters/grpcguard"    // grpc_guard

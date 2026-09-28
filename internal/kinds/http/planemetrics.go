@@ -5,6 +5,7 @@ import (
 
 	"github.com/rom/xproxy/internal/filters/accountguard"
 	"github.com/rom/xproxy/internal/filters/apiabuse"
+	"github.com/rom/xproxy/internal/filters/flow"
 	"github.com/rom/xproxy/internal/filters/sensitive"
 	"github.com/rom/xproxy/internal/metrics"
 )
@@ -47,6 +48,17 @@ func (s *engine) Collect(e metrics.Collector) {
 		e.Gauge("xproxy_api_abuse_subjects", "Caller and endpoint pairs an api_abuse filter holds.", l, float64(ab.Subjects))
 		e.Gauge("xproxy_api_abuse_objects", "Identifiers an api_abuse filter holds across its callers.", l, float64(ab.Objects))
 		e.Gauge("xproxy_api_abuse_overflowed", "Identifiers past what one caller holds, counted but not kept.", l, float64(ab.Overflowed))
+	}
+	for _, fs := range flow.Statuses() {
+		l := L{"filter": fs.Name}
+		e.Counter("xproxy_flow_requests_total", "Requests that matched a step of a business flow.", l, float64(fs.Requests))
+		e.Counter("xproxy_flow_steps_total", "Steps a flow filter let a caller take.", l, float64(fs.Steps))
+		e.Counter("xproxy_flow_flagged_total", "Steps reached out of order or repeated.", l, float64(fs.Flagged))
+		e.Counter("xproxy_flow_blocked_total", "Steps a flow filter refused.", l, float64(fs.Blocked))
+		e.Counter("xproxy_flow_challenged_total", "Steps a flow filter sent to the challenge.", l, float64(fs.Challenged))
+		e.Counter("xproxy_flow_dropped_total", "Callers dropped from a flow filter's table for space; one dropped mid-flow arrives at its next step looking like one that skipped a step.", l, float64(fs.Dropped))
+		e.Gauge("xproxy_flow_callers", "Callers a flow filter holds progress for.", l, float64(fs.Callers))
+		e.Gauge("xproxy_flow_flows", "Flows a filter enforces.", l, float64(fs.Flows))
 	}
 	for _, vp := range rt.patches {
 		e.Counter("xproxy_virtual_patch_hits_total", "Requests matched by a virtual patch.", L{"patch": vp.cfg.ID}, float64(vp.hits.Load()))
