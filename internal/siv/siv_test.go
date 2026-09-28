@@ -2,7 +2,6 @@ package siv
 
 import (
 	"bytes"
-	"crypto/cipher"
 	"encoding/hex"
 	"testing"
 )
@@ -223,8 +222,8 @@ func TestTheKeyLengths(t *testing.T) {
 	if _, err := a.Open(nil, make([]byte, 8), make([]byte, 32), nil); err == nil {
 		t.Error("Open accepted a nonce of the wrong length")
 	}
-	var aead cipher.AEAD = a
-	if aead.NonceSize() != 16 || aead.Overhead() != TagSize {
-		t.Errorf("NonceSize %d Overhead %d", aead.NonceSize(), aead.Overhead())
+	// New returns a cipher.AEAD, so this is the interface's own two questions.
+	if a.NonceSize() != 16 || a.Overhead() != TagSize {
+		t.Errorf("NonceSize %d Overhead %d", a.NonceSize(), a.Overhead())
 	}
 }

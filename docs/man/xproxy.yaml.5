@@ -8783,8 +8783,8 @@ T}
 .PP
 .TS
 allbox;
-lbw(0.8i) lbw(0.6i) lbw(1.2i) lbx
-lw(0.8i) lw(0.6i) lw(1.2i) lx.
+lbw(0.9i) lbw(0.9i) lbw(1.2i) lbx
+lw(0.9i) lw(0.9i) lw(1.2i) lx.
 T{
 Key
 T}	T{
@@ -8801,7 +8801,16 @@ enum
 T}	T{
 \fBpassthrough\fR
 T}	T{
-\fBpassthrough\fR or \fBoff\fR. Pass\-through forwards NTS\-protected packets whole and unaltered,\: which is the only honest thing a relay that does not hold the keys can do with them
+\fBpassthrough\fR,\: \fBterminate\fR or \fBoff\fR. Pass\-through forwards NTS\-protected packets whole and unaltered,\: which is the only honest thing a relay that does not hold the keys can do with them. Terminate verifies them: see below. Off refuses them outright
+T}
+T{
+\fBkey_\:listener\fR
+T}	T{
+listener name
+T}	T{
+required with \fBterminate\fR
+T}	T{
+The \fBkind:\: ntske\fR listener whose cookie keys this listener opens cookies with. Required with \fBmode:\: terminate\fR and refused otherwise: the two halves of NTS are two listeners on two ports,\: and termination only works when the one spending the cookies names the one that issued them. It must be a listener that has a \fBterminate\fR section \[u2014] one that relays key establishment holds no keys
 T}
 T{
 \fBrequire\fR
@@ -8814,7 +8823,15 @@ Refuse a packet with no NTS fields. It is how a listener says "this estate is NT
 T}
 .TE
 .PP
-\fBTermination is deliberately absent rather than approximated.\fR Doing it honestly means deriving the NTS keys from the TLS exporter, holding the same cookie keys the time servers hold, rotating them with an overlap so a cookie issued before a rotation still works after it, and recovering all of that across a restart. An implementation that faked any part would be telling clients their time was authenticated when nobody had checked. And \fBthe visible NTS fields prove nothing to this relay\fR: a unique identifier, a cookie and an authenticator field are all readable by anybody on the path, so "NTS is present" is a routing and preservation fact here, never an authentication one.
+In \fBpass\-through\fR, the visible NTS fields prove nothing to this relay: a unique identifier, a cookie and an authenticator field are all readable by anybody on the path, so "NTS is present" is a routing and preservation fact, never an authentication one.
+.PP
+\fB\fBmode: terminate\fR\fR is the other posture, and it is available because the \fBkind: ntske\fR listener named by \fBkey_listener\fR issued the cookie the packet carries. That cookie holds the client\(aqs two session keys, sealed under a master key only this relay has, so this listener does what a server does: opens the cookie, verifies the authenticator over the whole packet, and answers with an authenticator of its own carrying replacement cookies.
+.PP
+What it buys is the awkward case. \fBThe time source does not have to speak NTS at all\fR \[u2014] it can be the plain NTPv4 server that has been in the plant for fifteen years. The request is re\-originated towards it as a bare header: the extension fields were the client\(aqs conversation with this relay, the cookie names a key the source does not hold, and a placeholder asks for something only the party that issues cookies can give. The answer\(aqs first forty\-eight octets are the source\(aqs own, unaltered \[u2014] every field in them is its statement about its clock, and a relay that adjusted one would be inventing time \[u2014] with the client\(aqs unique identifier and the authenticator appended.
+.PP
+In this mode \fB"authenticated" means this relay checked\fR. A packet whose authenticator does not verify is refused rather than forwarded with a note, which is the whole difference from pass\-through. The replacement cookies travel inside the authenticator, encrypted, because a cookie in the clear would let anybody on the path recognise the same client at its next exchange \[u2014] the linkability NTS exists to remove. One cookie is issued per cookie and placeholder the request carried, at most eight, which is what keeps the request as large as the answer: without that bound the listener would be an amplifier.
+.PP
+Counters: \fBntp_nts_verified\fR, \fBntp_nts_unverified\fR, \fBntp_nts_cookie_unknown\fR and \fBntp_nts_cookies_issued\fR. The refusals are \fBnts_no_authenticator\fR (NTS fields with no authenticator, or one this relay cannot read), \fBnts_no_cookie\fR (an authenticator with nothing to look the keys up by), \fBnts_cookie_unknown\fR (a cookie this relay did not issue, or issued under a key it no longer holds \[u2014] the \fBkeep_keys\fR window on the key establishment listener is what decides how far back that reaches), \fBnts_unverified\fR (an authenticator that did not verify: the packet was altered or forged), \fBnts_no_session\fR (an interleaved answer, matched by the source\(aqs own previous transmit timestamp rather than by the client\(aqs request, which leaves no verified session to authenticate it with) and \fBnts_no_cookie_keys\fR (termination configured against a key establishment listener that is not there \[u2014] fail\-closed, because a listener asked to verify with nothing to verify against must refuse).
 .PP
 \fB\fBextensions\fR\fR bounds what a packet may carry.
 .PP
@@ -9157,12 +9174,14 @@ A \fBkind: ntske\fR listener is NTS key establishment (RFC 8915) on TCP 4460: TL
 .PP
 It is a separate listener from \fBkind: ntp\fR because it is a separate port, a separate transport and a separate security property. A deployment that wants NTS runs both, and having to write both down is the point: an estate with a time listener and no key establishment listener has clients that cannot get cookies, and that is better seen in the configuration than found in the logs.
 .PP
-It \fBrelays\fR rather than terminates, for the reasons under \fBnts\fR above. What it does is the part a relay can do honestly: read the one thing a TLS handshake shows in the clear \[u2014] the server name and the application protocol the client offers \[u2014] refuse a connection that is not an NTS client, bound the handshakes in flight, and hand the rest to the server.
+It has two postures. Without \fBterminate\fR it \fBrelays\fR: it reads the one thing a TLS handshake shows in the clear \[u2014] the server name and the application protocol the client offers \[u2014] refuses a connection that is not an NTS client, bounds the handshakes in flight, and hands the rest to the key establishment server whose keys it is. That is the whole of what a relay holding no keys can honestly do.
+.PP
+With \fBterminate\fR it \fBis\fR the key establishment server. It presents the listener\(aqs certificate, derives the two NTS keys from the TLS exporter, and hands the client cookies of its own \[u2014] cookies the \fBkind: ntp\fR listener beside it opens, which is what lets that listener verify a client\(aqs time requests and put NTS in front of a time server that cannot speak it. See \fBntp.nts.mode: terminate\fR.
 .PP
 .TS
 allbox;
-lbw(1.2i) lbw(0.9i) lbw(0.9i) lbx
-lw(1.2i) lw(0.9i) lw(0.9i) lx.
+lbw(1.2i) lbw(0.9i) lbw(1.0i) lbx
+lw(1.2i) lw(0.9i) lw(1.0i) lx.
 T{
 Key
 T}	T{
@@ -9177,9 +9196,18 @@ T{
 T}	T{
 upstream
 T}	T{
-required
+required without \fBterminate\fR
 T}	T{
-The pool of key establishment servers
+The pool of key establishment servers. Refused together with \fBterminate\fR: a listener that answers key establishment itself has nothing to relay it to
+T}
+T{
+\fBterminate\fR
+T}	T{
+section
+T}	T{
+none
+T}	T{
+Answer key establishment here rather than relaying it. Requires a \fBtls\fR section: the certificate is the only thing an NTS client authenticates
 T}
 T{
 \fBallow_\:clients\fR,\: \fBdeny_\:clients\fR
@@ -9274,8 +9302,82 @@ T}
 .TE
 .PP
 A deployment on a port other than 4460 warns: a client that found this service through a server\(aqs own key establishment record will look for 4460.
+.SS "server.listeners[].ntske.terminate"
 .PP
-Counters: \fBntske_sessions\fR, \fBntske_relayed\fR, \fBntske_refused\fR, \fBntske_rejected\fR, \fBntske_not_nts\fR, \fBntske_handshake_limited\fR, \fBntske_upstream_failed\fR, and \fBntske_handshakes\fR, which is a gauge of the handshakes holding a slot right now: it says how close \fBmax_concurrent_handshakes\fR is to being reached, which the limited counter only answers once clients are already being turned away. Refusals are \fBntske_denied\fR for the ban triggers, with the reasons \fBbanned\fR, \fBclient_not_allowed\fR, \fBmax_connections\fR, \fBhandshake_limit\fR, \fBnot_tls\fR, \fBno_hello\fR, \fBincomplete_hello\fR, \fBhello_too_large\fR, \fBalpn_not_offered\fR and \fBserver_name_not_allowed\fR.
+A client certificate, where an estate wants one, is the listener\(aqs own \fBtls.client_auth: require\fR and \fBtls.client_ca_file\fR, as it is everywhere else: NTS\-KE authenticates the server to the client and says nothing about the client, so a certificate is the only thing this exchange can name who is calling with \[u2014] and it is configured where every other listener\(aqs is rather than a second time here.
+.PP
+Terminating NTS means holding the cookie keys, and holding them means rotating them with an overlap and keeping them across a restart. Both are settings rather than assumptions: a rotation that invalidated the cookies already issued, or a restart that started with fresh keys, would take the estate\(aqs time service down for as long as it took every client to establish keys again \[u2014] a TLS handshake each, all at the same moment.
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.9i) lbw(0.8i) lbx
+lw(0.8i) lw(0.9i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBserver\fR
+T}	T{
+host
+T}	T{
+none
+T}	T{
+Where to spend the cookies. Empty means "where you already are",\: which is the answer when this relay fronts the time service on its own address
+T}
+T{
+\fBport\fR
+T}	T{
+int
+T}	T{
+none
+T}	T{
+The time service port,\: when it is not the one the client would assume
+T}
+T{
+\fBcookies\fR
+T}	T{
+int
+T}	T{
+\fB8\fR
+T}	T{
+How many cookies one exchange hands out (1 to 8). Eight is RFC 8915\(aqs recommendation: a client spends one per time exchange and gets one back,\: so eight is the depth of the buffer that absorbs lost packets. The bound is 8 because it is also the bound on how many a single time exchange may ask for
+T}
+T{
+\fBrotate_\:every\fR
+T}	T{
+duration
+T}	T{
+\fB24h\fR
+T}	T{
+How often a new cookie key becomes the current one (1m to 720h)
+T}
+T{
+\fBkeep_\:keys\fR
+T}	T{
+int
+T}	T{
+\fB2\fR
+T}	T{
+How many retired keys still open cookies already issued. A cookie issued just before a rotation is spent after it,\: and a client switched off over a weekend comes back with cookies from two rotations ago. \fB0\fR is allowed and warns: a rotation then refuses every cookie at once
+T}
+T{
+\fBstate\fR
+T}	T{
+path
+T}	T{
+none
+T}	T{
+Where the cookie keys are kept across a restart,\: written \fB0600\fR. Empty warns: the keys then live only in memory,\: and a restart refuses every cookie in the estate. It is secret material \[u2014] whoever can read it can forge a cookie,\: which is to say forge an authenticated time answer \[u2014] so it belongs somewhere only this daemon can read. A file that is there and cannot be read stops the listener rather than being ignored
+T}
+.TE
+.PP
+Counters: \fBntske_sessions\fR, \fBntske_relayed\fR, \fBntske_refused\fR, \fBntske_rejected\fR, \fBntske_not_nts\fR, \fBntske_handshake_limited\fR, \fBntske_upstream_failed\fR, and \fBntske_handshakes\fR, which is a gauge of the handshakes holding a slot right now: it says how close \fBmax_concurrent_handshakes\fR is to being reached, which the limited counter only answers once clients are already being turned away. The terminating side adds \fBntske_terminated\fR, \fBntske_cookies\fR and \fBntske_no_terms\fR. Refusals are \fBntske_denied\fR for the ban triggers, with the reasons \fBbanned\fR, \fBclient_not_allowed\fR, \fBmax_connections\fR, \fBhandshake_limit\fR, \fBnot_tls\fR, \fBno_hello\fR, \fBincomplete_hello\fR, \fBhello_too_large\fR, \fBalpn_not_offered\fR and \fBserver_name_not_allowed\fR; terminating adds \fBhandshake_failed\fR, \fBno_request\fR, \fBincomplete_request\fR, \fBrequest_too_large\fR, \fBunknown_critical_record\fR, \fBbad_request\fR, \fBno_terms\fR, \fBderivation_failed\fR, \fBcookie_failed\fR and \fBwrite_failed\fR.
 .SS "server.listeners[].vnc (kind: vnc)"
 .PP
 A \fBkind: vnc\fR listener is a VNC gateway: the proxy is an RFB server to the client and an RFB client to the target, terminating the handshake of RFC 6143 on both legs.

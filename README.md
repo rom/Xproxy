@@ -181,7 +181,7 @@ its own for what is deliberately *not* implemented and why.
 | Messaging | MQTT 3.1.1 (also ISO/IEC 20922) and MQTT 5.0 | `mqtt` |
 | File transfer | FTP and FTPS (`AUTH TLS`) with the data connection mediated at both ends; SFTP version 3 inside the SSH subsystem channel | `ftp`, `ssh` |
 | Logging | Syslog RFC 5424 and RFC 3164 over UDP, TCP (RFC 6587 framing) and TLS, re-emitted in one dialect | `syslog` |
-| Time | NTP v1 to v4 (RFC 5905), SNTP (RFC 4330), extension fields (RFC 7822), AES-CMAC authentication (RFC 8573), NTS (RFC 8915) passed through whole, and NTS key establishment relayed on TCP 4460 | `ntp`, `ntske` |
+| Time | NTP v1 to v4 (RFC 5905), SNTP (RFC 4330), extension fields (RFC 7822), AES-CMAC authentication (RFC 8573), NTS (RFC 8915) either passed through whole or **terminated** -- key establishment answered here with AES-SIV cookies (RFC 5297) and every time packet's authenticator verified -- on UDP 123 and TCP 4460 | `ntp`, `ntske` |
 | Industrial | Modbus/TCP (MBAP), Modbus over Serial Line RTU and ASCII tunnelled over TCP, and Modbus/TCP Security with the role in the client certificate | `modbus` |
 | Telecontrol | IEC 60870-5-104 (APCI/APDU, the I, S and U formats, the type identifications and causes of transmission of IEC 60870-5-101), with IEC 62351-3 TLS | `iec104` |
 | Building automation | BACnet/IP (ASHRAE 135 Annex J): the BVLC functions, the network layer of clause 6 with its routing and security messages, the application layer of clause 20 with the confirmed and unconfirmed services, and the object, property and command priority each request names | `bacnet` |
@@ -236,8 +236,8 @@ protocol so that a policy can be written in that protocol's own terms:
 | `s7` | `xrelay` | Siemens S7comm: the TPKT framing, the COTP connection request with the rack and slot it addresses, and the S7 layer -- function codes, user-data groups and subfunctions, and the item specifications of a read or a write | Which controller a client may reach, decided from the connection request *before the PLC is dialled*, and as what -- an operator panel, an engineering station or another PLC; which of nineteen operations it may ask for, where the default is what an HMI does and an upload is off with the writes because a block read is how control logic leaves a site; `read_only` as one line no rule can override; which memory areas, data blocks and byte ranges a request may name, checked against the whole span rather than its first byte; the block types an upload or a download may name; and the item, octet, PDU-length and connection bounds, because a CPU has sixteen connection resources altogether. For **S7comm-plus** on an S7-1200 or S7-1500, where the addressing is encrypted and only the framing is visible: the function code by name or class, with a function this relay cannot name failing closed |
 | `tftp` | `xrelay` | TFTP with RFC 2347–2349 options and RFC 7440 windows | The client list, the direction, the transfer mode, the filename read as a path and refused by class, the directories, and the block, window and transfer bounds |
 | `bacnet` | `xrelay` | BACnet/IP: the BVLC functions, the network layer, the confirmed and unconfirmed services, and where each service keeps its object | Which addresses may speak to the building at all -- the only identity the protocol has -- which services may be sent, which objects and properties they may name, and at which *command priority*, so nobody takes a piece of plant at a life safety slot the management system cannot override; whether a broadcast is carried and how many answers it may bring back; whether foreign-device registration with the estate's broadcast management is carried at all |
-| `ntp` | `xrelay` | NTP v1–v4, SNTP, NTS-protected NTP | Versions, modes, extension fields, authentication, and whether the servers agree |
-| `ntske` | `xrelay` | NTS key establishment (TLS on 4460) | The application protocol, the server name, the handshakes in flight |
+| `ntp` | `xrelay` | NTP v1–v4, SNTP, NTS-protected NTP | Versions, modes, extension fields, authentication, whether the servers agree, and -- terminating NTS -- whether each packet's authenticator verifies under the keys in the cookie this estate issued |
+| `ntske` | `xrelay` | NTS key establishment (TLS on 4460), relayed or terminated | The application protocol, the server name, the handshakes in flight; terminating, the negotiated terms and the cookies it issues |
 
 - `kind: tcp`: layer 4 TLS and QUIC passthrough routed by server name
   without terminating TLS, with PROXY protocol v2 to TCP upstreams and
@@ -799,6 +799,15 @@ protocol so that a policy can be written in that protocol's own terms:
   is refused), NTS is passed through whole with a **downgrade to plain
   NTP refused**, and key establishment is a listener of its own on 4460
   where a connection that does not offer `ntske/1` is not an NTS client.
+  Or **terminated**, which is the answer for the time server that cannot
+  speak NTS and is not going to: the key establishment listener is the
+  key establishment server, deriving each client's keys from the TLS
+  exporter and issuing cookies sealed with AES-SIV under a master key it
+  rotates with an overlap and keeps across a restart; the time listener
+  opens those cookies, verifies every request's authenticator over the
+  whole packet, asks the old server in plain NTP, and returns its header
+  unaltered with an authenticator signed by the client's own key. There,
+  "authenticated" means this relay checked.
   Rate limits answer with the protocol's own kiss-o'-death rather than a
   drop, every expiry is on the monotonic clock because this is the relay
   for the protocol that moves the wall clock, and learning mode writes

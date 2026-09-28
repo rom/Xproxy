@@ -4391,16 +4391,25 @@ type NTPKey struct {
 // "ntske/1", and it is a listener of its own (kind: ntske). This section
 // is about the time side.
 type NTPNTS struct {
-	// Mode is passthrough (the default) or off. Pass-through forwards
-	// NTS-protected packets whole and unaltered, which is the only
-	// honest thing a relay that does not hold the keys can do with them:
-	// the authentication is between the client and the server, and every
-	// visible NTS field is readable by anybody on the path and proves
-	// nothing. Termination is deliberately absent rather than
-	// approximated -- it needs real key derivation from the TLS
-	// exporter, cookie keys shared with the server, and rotation with
-	// overlap, and an implementation that faked any of it would be
-	// telling clients their time was authenticated when it was not.
+	// Mode is passthrough (the default), terminate or off.
+	//
+	// Pass-through forwards NTS-protected packets whole and unaltered,
+	// which is the only honest thing a relay that does not hold the keys
+	// can do with them: the authentication is between the client and the
+	// server, and every visible NTS field is readable by anybody on the
+	// path and proves nothing.
+	//
+	// Terminate verifies them. The relay holds the keys, because the
+	// kind: ntske listener named by key_listener issued the cookie the
+	// packet carries: it opens the cookie, verifies the authenticator
+	// over the whole packet, and only then asks the time source --
+	// which does not have to speak NTS at all. The answer is built
+	// here and authenticated with the client's own server-to-client
+	// key, with replacement cookies sealed inside it. This is the mode
+	// that puts NTS in front of a time server that cannot do it, and
+	// it is the mode in which "authenticated" means this relay checked.
+	//
+	// Off refuses NTS-protected packets outright.
 	Mode string `yaml:"mode"`
 	// Require refuses a packet that carries no NTS fields. It is how a
 	// listener says "this estate is NTS only", and it is the setting
@@ -4408,6 +4417,12 @@ type NTPNTS struct {
 	// without NTS fields for a request that had them is refused, never
 	// passed on as plain NTP.
 	Require bool `yaml:"require"`
+	// KeyListener is the kind: ntske listener whose cookie keys this
+	// listener opens cookies with. It is required with mode:
+	// terminate and means nothing otherwise: the two halves of NTS are
+	// two listeners on two ports, and termination only works when the
+	// one holding the keys is named by the one spending them.
+	KeyListener string `yaml:"key_listener"`
 }
 
 // NTPExtensions bounds the extension fields a packet may carry.
@@ -4677,7 +4692,93 @@ type NTSKEListener struct {
 	// AlertOnDeny writes a security event for every refusal. Default
 	// true.
 	AlertOnDeny *bool `yaml:"alert_on_deny"`
+	// Terminate makes this listener answer key establishment itself
+	// rather than relaying it: it terminates the TLS, derives the NTS
+	// keys from the exporter, and issues cookies of its own that the
+	// kind: ntp listener beside it opens. With it, upstream is not used
+	// and a tls section is required -- the certificate is the whole of
+	// what a client authenticates.
+	Terminate *NTSKETerminate `yaml:"terminate"`
 }
+
+// Terminating says whether this listener answers key establishment
+// itself.
+func (k *NTSKEListener) Terminating() bool { return k != nil && k.Terminate != nil }
+
+// NTSKETerminate is key establishment answered by this relay.
+//
+// Terminating NTS means holding the cookie keys, and holding them means
+// rotating them with an overlap and keeping them across a restart. Both
+// are here rather than assumed: a rotation that invalidated the cookies
+// already issued, or a restart that started with fresh keys, would take
+// the estate's time service down for as long as it took every client to
+// establish keys again -- a TLS handshake each, all at the same moment.
+type NTSKETerminate struct {
+	// Server and Port tell the client where to spend the cookies. Both
+	// are optional: empty means "where you already are", which is the
+	// answer when this relay fronts the time service on its own
+	// address.
+	Server string `yaml:"server"`
+	Port   int    `yaml:"port"`
+	// Cookies is how many cookies one exchange hands out. Default 8,
+	// which is what RFC 8915 recommends: a client spends one per time
+	// exchange and gets one back, so eight is the depth of the buffer
+	// that absorbs lost packets.
+	Cookies int `yaml:"cookies"`
+	// RotateEvery is how often a new cookie key becomes the current
+	// one. Default 24h. Zero and negative are refused rather than read
+	// as "never": a key that is never rotated is a decision, and it is
+	// spelled rotate_every: 0s nowhere -- set keep_keys and a long
+	// interval instead.
+	RotateEvery Duration `yaml:"rotate_every"`
+	// KeepKeys is how many retired keys still open cookies already
+	// issued. Default 2: a cookie issued just before a rotation is
+	// spent after it, and a client switched off over a weekend comes
+	// back with cookies from two rotations ago. Zero is allowed and
+	// means a rotation invalidates every cookie at once, which is a
+	// thing an operator may want and never a thing to default to.
+	KeepKeys *int `yaml:"keep_keys"`
+	// State is where the cookie keys are kept across a restart. It is
+	// secret material -- whoever can read it can forge a cookie, which
+	// is to say forge an authenticated time answer -- so it is written
+	// 0600 and belongs somewhere only this daemon can read. Empty means
+	// the keys live only in memory, and a restart then invalidates
+	// every cookie in the estate.
+	State string `yaml:"state"`
+}
+
+// CookieCount is how many cookies one exchange hands out.
+func (t *NTSKETerminate) CookieCount() int {
+	if t == nil || t.Cookies <= 0 {
+		return DefaultNTSCookies
+	}
+	return t.Cookies
+}
+
+// Rotation is how often the cookie key changes.
+func (t *NTSKETerminate) Rotation() time.Duration {
+	if t == nil || t.RotateEvery.D() <= 0 {
+		return DefaultNTSRotation
+	}
+	return t.RotateEvery.D()
+}
+
+// History is how many retired cookie keys still open a cookie.
+func (t *NTSKETerminate) History() int {
+	if t == nil || t.KeepKeys == nil {
+		return DefaultNTSKeepKeys
+	}
+	return *t.KeepKeys
+}
+
+// The defaults of the terminating side, named because two packages read
+// them: the listener that applies them and the documentation test that
+// checks the reference says what the code does.
+const (
+	DefaultNTSCookies  = 8
+	DefaultNTSRotation = 24 * time.Hour
+	DefaultNTSKeepKeys = 2
+)
 
 // Alerts says whether a refusal writes a security event.
 func (k *NTSKEListener) Alerts() bool {

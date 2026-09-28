@@ -194,8 +194,13 @@ server:
 
     # ---------------------------------------------------------------
     # NTS key establishment: TLS on 4460 with the ALPN ntske/1, relayed
-    # to the servers whose keys they are. It is not terminated here --
-    # doing that honestly needs the cookie keys the time servers hold.
+    # to the servers whose keys they are. It is not terminated here
+    # because it does not need to be: these time servers speak NTS
+    # themselves, so the authentication is between them and the clients
+    # and this relay has no business in the middle of it.
+    #
+    # See nts-gateway.yaml for the case where it does need to be: a time
+    # server that cannot speak NTS, in front of clients that will.
     # ---------------------------------------------------------------
     - name: ke
       address: "10.30.0.10:4460"

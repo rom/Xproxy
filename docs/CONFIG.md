@@ -3799,19 +3799,58 @@ authentication in extension fields; the key establishment is TLS on TCP
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `mode` | enum | `passthrough` | `passthrough` or `off`. Pass-through forwards NTS-protected packets whole and unaltered, which is the only honest thing a relay that does not hold the keys can do with them |
+| `mode` | enum | `passthrough` | `passthrough`, `terminate` or `off`. Pass-through forwards NTS-protected packets whole and unaltered, which is the only honest thing a relay that does not hold the keys can do with them. Terminate verifies them: see below. Off refuses them outright |
+| `key_listener` | listener name | required with `terminate` | The `kind: ntske` listener whose cookie keys this listener opens cookies with. Required with `mode: terminate` and refused otherwise: the two halves of NTS are two listeners on two ports, and termination only works when the one spending the cookies names the one that issued them. It must be a listener that has a `terminate` section — one that relays key establishment holds no keys |
 | `require` | bool | `false` | Refuse a packet with no NTS fields. It is how a listener says "this estate is NTS only", and it is what makes the no-downgrade rule visible: an answer arriving without NTS fields for a request that had them is refused, **never** passed on as plain NTP |
 
-**Termination is deliberately absent rather than approximated.** Doing it
-honestly means deriving the NTS keys from the TLS exporter, holding the
-same cookie keys the time servers hold, rotating them with an overlap so
-a cookie issued before a rotation still works after it, and recovering
-all of that across a restart. An implementation that faked any part would
-be telling clients their time was authenticated when nobody had checked.
-And **the visible NTS fields prove nothing to this relay**: a unique
-identifier, a cookie and an authenticator field are all readable by
+In **pass-through**, the visible NTS fields prove nothing to this relay: a
+unique identifier, a cookie and an authenticator field are all readable by
 anybody on the path, so "NTS is present" is a routing and preservation
-fact here, never an authentication one.
+fact, never an authentication one.
+
+**`mode: terminate`** is the other posture, and it is available because
+the `kind: ntske` listener named by `key_listener` issued the cookie the
+packet carries. That cookie holds the client's two session keys, sealed
+under a master key only this relay has, so this listener does what a
+server does: opens the cookie, verifies the authenticator over the whole
+packet, and answers with an authenticator of its own carrying replacement
+cookies.
+
+What it buys is the awkward case. **The time source does not have to
+speak NTS at all** — it can be the plain NTPv4 server that has been in
+the plant for fifteen years. The request is re-originated towards it as a
+bare header: the extension fields were the client's conversation with
+this relay, the cookie names a key the source does not hold, and a
+placeholder asks for something only the party that issues cookies can
+give. The answer's first forty-eight octets are the source's own,
+unaltered — every field in them is its statement about its clock, and a
+relay that adjusted one would be inventing time — with the client's
+unique identifier and the authenticator appended.
+
+In this mode **"authenticated" means this relay checked**. A packet whose
+authenticator does not verify is refused rather than forwarded with a
+note, which is the whole difference from pass-through. The replacement
+cookies travel inside the authenticator, encrypted, because a cookie in
+the clear would let anybody on the path recognise the same client at its
+next exchange — the linkability NTS exists to remove. One cookie is
+issued per cookie and placeholder the request carried, at most eight,
+which is what keeps the request as large as the answer: without that
+bound the listener would be an amplifier.
+
+Counters: `ntp_nts_verified`, `ntp_nts_unverified`,
+`ntp_nts_cookie_unknown` and `ntp_nts_cookies_issued`. The refusals are
+`nts_no_authenticator` (NTS fields with no authenticator, or one this
+relay cannot read), `nts_no_cookie` (an authenticator with nothing to
+look the keys up by), `nts_cookie_unknown` (a cookie this relay did not
+issue, or issued under a key it no longer holds — the `keep_keys` window
+on the key establishment listener is what decides how far back that
+reaches), `nts_unverified` (an authenticator that did not verify: the
+packet was altered or forged), `nts_no_session` (an interleaved answer,
+matched by the source's own previous transmit timestamp rather than by
+the client's request, which leaves no verified session to authenticate it
+with) and `nts_no_cookie_keys` (termination configured against a key
+establishment listener that is not there — fail-closed, because a
+listener asked to verify with nothing to verify against must refuse).
 
 **`extensions`** bounds what a packet may carry.
 
@@ -4004,15 +4043,24 @@ estate with a time listener and no key establishment listener has clients
 that cannot get cookies, and that is better seen in the configuration
 than found in the logs.
 
-It **relays** rather than terminates, for the reasons under `nts` above.
-What it does is the part a relay can do honestly: read the one thing a
-TLS handshake shows in the clear — the server name and the application
-protocol the client offers — refuse a connection that is not an NTS
-client, bound the handshakes in flight, and hand the rest to the server.
+It has two postures. Without `terminate` it **relays**: it reads the one
+thing a TLS handshake shows in the clear — the server name and the
+application protocol the client offers — refuses a connection that is not
+an NTS client, bounds the handshakes in flight, and hands the rest to the
+key establishment server whose keys it is. That is the whole of what a
+relay holding no keys can honestly do.
+
+With `terminate` it **is** the key establishment server. It presents the
+listener's certificate, derives the two NTS keys from the TLS exporter,
+and hands the client cookies of its own — cookies the `kind: ntp`
+listener beside it opens, which is what lets that listener verify a
+client's time requests and put NTS in front of a time server that cannot
+speak it. See `ntp.nts.mode: terminate`.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `upstream` | upstream | required | The pool of key establishment servers |
+| `upstream` | upstream | required without `terminate` | The pool of key establishment servers. Refused together with `terminate`: a listener that answers key establishment itself has nothing to relay it to |
+| `terminate` | section | none | Answer key establishment here rather than relaying it. Requires a `tls` section: the certificate is the only thing an NTS client authenticates |
 | `allow_clients`, `deny_clients` | list of CIDR | `[]` | The networks a client may connect from. Deny first |
 | `server_names` | list | `[]` (any) | The server names a client may ask for, as exact names or `*.example` patterns |
 | `require_alpn` | bool | `true` | Refuse a connection that does not offer `ntske/1`. Off warns: the application protocol is the only thing the handshake shows that says what a connection is for |
@@ -4028,16 +4076,46 @@ A deployment on a port other than 4460 warns: a client that found this
 service through a server's own key establishment record will look for
 4460.
 
+#### server.listeners[].ntske.terminate
+
+A client certificate, where an estate wants one, is the listener's own
+`tls.client_auth: require` and `tls.client_ca_file`, as it is everywhere
+else: NTS-KE authenticates the server to the client and says nothing about
+the client, so a certificate is the only thing this exchange can name who
+is calling with — and it is configured where every other listener's is
+rather than a second time here.
+
+Terminating NTS means holding the cookie keys, and holding them means
+rotating them with an overlap and keeping them across a restart. Both are
+settings rather than assumptions: a rotation that invalidated the cookies
+already issued, or a restart that started with fresh keys, would take the
+estate's time service down for as long as it took every client to
+establish keys again — a TLS handshake each, all at the same moment.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `server` | host | none | Where to spend the cookies. Empty means "where you already are", which is the answer when this relay fronts the time service on its own address |
+| `port` | int | none | The time service port, when it is not the one the client would assume |
+| `cookies` | int | `8` | How many cookies one exchange hands out (1 to 8). Eight is RFC 8915's recommendation: a client spends one per time exchange and gets one back, so eight is the depth of the buffer that absorbs lost packets. The bound is 8 because it is also the bound on how many a single time exchange may ask for |
+| `rotate_every` | duration | `24h` | How often a new cookie key becomes the current one (1m to 720h) |
+| `keep_keys` | int | `2` | How many retired keys still open cookies already issued. A cookie issued just before a rotation is spent after it, and a client switched off over a weekend comes back with cookies from two rotations ago. `0` is allowed and warns: a rotation then refuses every cookie at once |
+| `state` | path | none | Where the cookie keys are kept across a restart, written `0600`. Empty warns: the keys then live only in memory, and a restart refuses every cookie in the estate. It is secret material — whoever can read it can forge a cookie, which is to say forge an authenticated time answer — so it belongs somewhere only this daemon can read. A file that is there and cannot be read stops the listener rather than being ignored |
+
 Counters: `ntske_sessions`, `ntske_relayed`, `ntske_refused`,
 `ntske_rejected`, `ntske_not_nts`, `ntske_handshake_limited`,
 `ntske_upstream_failed`, and `ntske_handshakes`, which is a gauge of the
 handshakes holding a slot right now: it says how close
 `max_concurrent_handshakes` is to being reached, which the limited
-counter only answers once clients are already being turned away.
+counter only answers once clients are already being turned away. The
+terminating side adds `ntske_terminated`, `ntske_cookies` and
+`ntske_no_terms`.
 Refusals are `ntske_denied` for the ban triggers, with the reasons `banned`, `client_not_allowed`,
 `max_connections`, `handshake_limit`, `not_tls`, `no_hello`,
 `incomplete_hello`, `hello_too_large`, `alpn_not_offered` and
-`server_name_not_allowed`.
+`server_name_not_allowed`; terminating adds `handshake_failed`,
+`no_request`, `incomplete_request`, `request_too_large`,
+`unknown_critical_record`, `bad_request`, `no_terms`,
+`derivation_failed`, `cookie_failed` and `write_failed`.
 
 ### server.listeners[].vnc (kind: vnc)
 

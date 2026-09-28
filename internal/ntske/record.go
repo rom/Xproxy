@@ -89,6 +89,11 @@ var (
 	// request, which is the distinction the error record makes: code 1 rather
 	// than code 0.
 	ErrRequest = errors.New("ntske: bad request")
+	// ErrNoTerms is a server that supports nothing this relay offered. It is
+	// not an error in the exchange: the request was fine and the terms were
+	// not, which is a different thing to report and a different thing to do
+	// about it.
+	ErrNoTerms = errors.New("ntske: the server supports none of the offered terms")
 )
 
 // Record is one record of the key establishment message.
@@ -271,6 +276,19 @@ func (r *Response) AppendTo(dst []byte) []byte {
 	return Record{Critical: true, Type: RecEndOfMessage}.AppendTo(dst)
 }
 
+// NoTermsMessage is what a server sends when it supports nothing the client
+// offered: the two negotiation records with empty bodies, which RFC 8915 s4.1.2
+// and s4.1.5 define as "none of these".
+//
+// Not an error record. The request was well formed and the terms were not
+// available, and a client that read "bad request" would look for a fault in
+// what it sent rather than in what the two of them have in common.
+func NoTermsMessage() []byte {
+	out := Record{Critical: true, Type: RecNextProtocol}.AppendTo(nil)
+	out = Record{Critical: true, Type: RecAEADAlgorithm}.AppendTo(out)
+	return Record{Critical: true, Type: RecEndOfMessage}.AppendTo(out)
+}
+
 // ErrorMessage is the whole message a server sends instead of a response.
 //
 // It is critical, because a client that ignored it would wait for cookies that
@@ -376,6 +394,11 @@ func ParseResponse(b []byte) (*Response, error) {
 			if err != nil {
 				return nil, err
 			}
+			if len(vs) == 0 {
+				// An empty negotiation record is the standard's way of saying
+				// "none of these".
+				return nil, fmt.Errorf("%w: no next protocol", ErrNoTerms)
+			}
 			if len(vs) != 1 {
 				return nil, fmt.Errorf("%w: the server chose %d protocols", ErrRequest, len(vs))
 			}
@@ -384,6 +407,9 @@ func ParseResponse(b []byte) (*Response, error) {
 			vs, err := uint16s(rec.Body)
 			if err != nil {
 				return nil, err
+			}
+			if len(vs) == 0 {
+				return nil, fmt.Errorf("%w: no algorithm", ErrNoTerms)
 			}
 			if len(vs) != 1 {
 				return nil, fmt.Errorf("%w: the server chose %d algorithms", ErrRequest, len(vs))

@@ -6,6 +6,66 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (nts: terminating Network Time Security in front of a server that cannot speak it)
+
+- **`ntske.terminate` makes the key establishment listener the key establishment
+  server**, and **`ntp.nts.mode: terminate`** makes the time listener verify what
+  clients send. Together they are the case NTS is awkward for otherwise: a plain
+  NTPv4 server that cannot speak NTS and is not going to, in front of clients
+  that will. The clients get authenticated time, the source gets a request from
+  one address it already knows, and the verification happens where an operator
+  can see it counted.
+
+- **In this mode "authenticated" means this relay checked.** That is the whole
+  difference from pass-through, where every visible NTS field is readable by
+  anybody on the path and proves nothing: a packet whose authenticator does not
+  verify is refused rather than forwarded with a note.
+
+- **The answer's time is the source's, octet for octet.** The first forty-eight
+  octets are copied, because every field in them is the source's statement about
+  its clock and a relay that adjusted one would be inventing time. What is added
+  is the client's unique identifier and an authenticator sealed with the client's
+  own server-to-client key.
+
+- **The request goes upstream as a bare header.** The extension fields were the
+  client's conversation with this relay: the cookie names a key the source does
+  not hold, the authenticator covers a packet it will not verify, and a
+  placeholder asks for something only the party that issues cookies can give.
+
+- **The cookie keys rotate with an overlap and survive a restart.** A client
+  holds days of cookies, so a rotation that invalidated them at once would take
+  the estate's time service down until every client re-established — a TLS
+  handshake each, all in the same second. `rotate_every` (a day), `keep_keys`
+  (two) and `state` (a file, mode 0600, written at the first start rather than
+  the first rotation) are each there because the alternative is that outage. A
+  state file that is there and cannot be read stops the listener rather than
+  being ignored.
+
+- **New packages.** `internal/siv` is AES-SIV-CMAC (RFC 5297), the AEAD NTS
+  mandates and the standard library does not have, pinned against the RFC's own
+  test vectors. `internal/ntske` is the key establishment record layer (RFC 8915
+  §4), the exporter derivation (§5.1) and the cookie format. `internal/ntp`
+  gained the authenticator of §5.6: verify, seal, and the refusal of anything
+  after the authenticator, because everything before it is authenticated and
+  anything after it is not.
+
+- **One detail worth writing down**, because it would have passed every test and
+  failed against every real client: an NTP extension field's length is padded to
+  a multiple of four with nothing to say how much of it is padding, so a cookie
+  that is not a multiple of four comes back longer than it left and does not
+  open. The cookie format is sized to fit, and there is a test that says why.
+
+- Counters `ntske_terminated`, `ntske_cookies`, `ntske_no_terms`,
+  `ntp_nts_verified`, `ntp_nts_unverified`, `ntp_nts_cookie_unknown` and
+  `ntp_nts_cookies_issued`; refusals `nts_no_authenticator`, `nts_no_cookie`,
+  `nts_cookie_unknown`, `nts_unverified`, `nts_no_session` and
+  `nts_no_cookie_keys`, which are separate because they mean different things to
+  an operator — a cookie this relay never issued is a client that established
+  keys somewhere else, and an authenticator that did not verify is a packet that
+  was tampered with.
+
+- A worked configuration in `examples/ot/nts-gateway.yaml`.
+
 ### Added (snmp: version 3 toward the agent, with an identity of the relay's own)
 
 - **`upgrade_version: v3` works, with `upstream_usm`.** It was refused at load,

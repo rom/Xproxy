@@ -470,7 +470,21 @@ type Stats struct {
 	// now. max_concurrent_handshakes is a bound with nothing else to
 	// read it by -- the limited counter only moves once clients are
 	// being turned away, which is after the answer an operator wanted.
-	NTSKEHandshakes    atomic.Int64
+	NTSKEHandshakes atomic.Int64
+	// The terminating side: key establishments this relay answered
+	// itself, the cookies it issued, and the exchanges it refused
+	// because it could not agree terms with the client.
+	NTSKETerminated atomic.Uint64
+	NTSKECookies    atomic.Uint64
+	NTSKENoTerms    atomic.Uint64
+	// NTS on the time port, once the relay holds the keys: packets whose
+	// authenticator verified, packets whose did not, the cookies this
+	// relay could not open, and the replacement cookies it issued.
+	NTPNTSVerified      atomic.Uint64
+	NTPNTSUnverified    atomic.Uint64
+	NTPNTSCookieUnknown atomic.Uint64
+	NTPNTSCookiesIssued atomic.Uint64
+
 	SyslogReceived     atomic.Uint64
 	SyslogForwarded    atomic.Uint64
 	SyslogDropped      atomic.Uint64
@@ -966,6 +980,13 @@ type Snapshot struct {
 	NTSKEHandshakeLimited  uint64             `json:"ntske_handshake_limited"`
 	NTSKEUpstreamFailed    uint64             `json:"ntske_upstream_failed"`
 	NTSKEHandshakes        int64              `json:"ntske_handshakes"`
+	NTSKETerminated        uint64             `json:"ntske_terminated"`
+	NTSKECookies           uint64             `json:"ntske_cookies"`
+	NTSKENoTerms           uint64             `json:"ntske_no_terms"`
+	NTPNTSVerified         uint64             `json:"ntp_nts_verified"`
+	NTPNTSUnverified       uint64             `json:"ntp_nts_unverified"`
+	NTPNTSCookieUnknown    uint64             `json:"ntp_nts_cookie_unknown"`
+	NTPNTSCookiesIssued    uint64             `json:"ntp_nts_cookies_issued"`
 	SyslogReceived         uint64             `json:"syslog_received"`
 	SyslogForwarded        uint64             `json:"syslog_forwarded"`
 	SyslogDropped          uint64             `json:"syslog_dropped"`
@@ -1402,6 +1423,13 @@ func (s *Stats) snapshot() Snapshot {
 		NTSKEHandshakeLimited:  s.NTSKEHandshakeLimited.Load(),
 		NTSKEUpstreamFailed:    s.NTSKEUpstreamFailed.Load(),
 		NTSKEHandshakes:        s.NTSKEHandshakes.Load(),
+		NTSKETerminated:        s.NTSKETerminated.Load(),
+		NTSKECookies:           s.NTSKECookies.Load(),
+		NTSKENoTerms:           s.NTSKENoTerms.Load(),
+		NTPNTSVerified:         s.NTPNTSVerified.Load(),
+		NTPNTSUnverified:       s.NTPNTSUnverified.Load(),
+		NTPNTSCookieUnknown:    s.NTPNTSCookieUnknown.Load(),
+		NTPNTSCookiesIssued:    s.NTPNTSCookiesIssued.Load(),
 		SyslogReceived:         s.SyslogReceived.Load(),
 		SyslogForwarded:        s.SyslogForwarded.Load(),
 		SyslogDropped:          s.SyslogDropped.Load(),

@@ -7631,8 +7631,12 @@
       "description": "NTPNTS is how Network Time Security is handled. The time exchanges are UDP 123 with authentication in extension fields; the key establishment is TLS on TCP 4460 with the ALPN \"ntske/1\", and it is a listener of its own (kind: ntske). This section is about the time side.",
       "type": "object",
       "properties": {
+        "key_listener": {
+          "description": "KeyListener is the kind: ntske listener whose cookie keys this listener opens cookies with. It is required with mode: terminate and means nothing otherwise: the two halves of NTS are two listeners on two ports, and termination only works when the one holding the keys is named by the one spending them.",
+          "type": "string"
+        },
         "mode": {
-          "description": "Mode is passthrough (the default) or off. Pass-through forwards NTS-protected packets whole and unaltered, which is the only honest thing a relay that does not hold the keys can do with them: the authentication is between the client and the server, and every visible NTS field is readable by anybody on the path and proves nothing. Termination is deliberately absent rather than approximated -- it needs real key derivation from the TLS exporter, cookie keys shared with the server, and rotation with overlap, and an implementation that faked any of it would be telling clients their time was authenticated when it was not.",
+          "description": "Mode is passthrough (the default), terminate or off. Pass-through forwards NTS-protected packets whole and unaltered, which is the only honest thing a relay that does not hold the keys can do with them: the authentication is between the client and the server, and every visible NTS field is readable by anybody on the path and proves nothing. Terminate verifies them. The relay holds the keys, because the kind: ntske listener named by key_listener issued the cookie the packet carries: it opens the cookie, verifies the authenticator over the whole packet, and only then asks the time source -- which does not have to speak NTS at all. The answer is built here and authenticated with the client's own server-to-client key, with replacement cookies sealed inside it. This is the mode that puts NTS in front of a time server that cannot do it, and it is the mode in which \"authenticated\" means this relay checked. Off refuses NTS-protected packets outright.",
           "type": "string"
         },
         "require": {
@@ -7818,8 +7822,47 @@
             "type": "string"
           }
         },
+        "terminate": {
+          "description": "Terminate makes this listener answer key establishment itself rather than relaying it: it terminates the TLS, derives the NTS keys from the exporter, and issues cookies of its own that the kind: ntp listener beside it opens. With it, upstream is not used and a tls section is required -- the certificate is the whole of what a client authenticates.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/NTSKETerminate"
+            }
+          ]
+        },
         "upstream": {
           "description": "Upstream is the pool of key establishment servers. Required.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "NTSKETerminate": {
+      "description": "NTSKETerminate is key establishment answered by this relay. Terminating NTS means holding the cookie keys, and holding them means rotating them with an overlap and keeping them across a restart. Both are here rather than assumed: a rotation that invalidated the cookies already issued, or a restart that started with fresh keys, would take the estate's time service down for as long as it took every client to establish keys again -- a TLS handshake each, all at the same moment.",
+      "type": "object",
+      "properties": {
+        "cookies": {
+          "description": "Cookies is how many cookies one exchange hands out. Default 8, which is what RFC 8915 recommends: a client spends one per time exchange and gets one back, so eight is the depth of the buffer that absorbs lost packets.",
+          "type": "integer"
+        },
+        "keep_keys": {
+          "description": "KeepKeys is how many retired keys still open cookies already issued. Default 2: a cookie issued just before a rotation is spent after it, and a client switched off over a weekend comes back with cookies from two rotations ago. Zero is allowed and means a rotation invalidates every cookie at once, which is a thing an operator may want and never a thing to default to.",
+          "type": "integer"
+        },
+        "port": {
+          "type": "integer"
+        },
+        "rotate_every": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "server": {
+          "description": "Server and Port tell the client where to spend the cookies. Both are optional: empty means \"where you already are\", which is the answer when this relay fronts the time service on its own address.",
+          "type": "string"
+        },
+        "state": {
+          "description": "State is where the cookie keys are kept across a restart. It is secret material -- whoever can read it can forge a cookie, which is to say forge an authenticated time answer -- so it is written 0600 and belongs somewhere only this daemon can read. Empty means the keys live only in memory, and a restart then invalidates every cookie in the estate.",
           "type": "string"
         }
       },

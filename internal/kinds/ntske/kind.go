@@ -19,13 +19,18 @@ import (
 // configuration than to find it in the logs.
 func init() {
 	proxy.Register(proxy.Kind{
-		Name:        "ntske",
+		Name: "ntske",
+		// The terminating side is the key establishment server, so it
+		// needs the listener's certificate. The relaying side never
+		// terminates a handshake and is handed nil, which is what a
+		// listener with no tls section gets anyway.
+		TLS:         true,
 		ProxyHeader: false,
 		New: func(su *proxy.Setup) (proxy.Instance, error) {
 			if su.Config.NTSKE == nil {
 				return nil, fmt.Errorf("listener %s: the ntske section is required", su.Config.Name)
 			}
-			return newServer(su.Host, su.Config, su.Net)
+			return newServer(su.Host, su.Config, su.Net, su.TLS)
 		},
 	})
 }

@@ -566,3 +566,36 @@ func TestAWarningDoesNotRefuseTheExchange(t *testing.T) {
 		t.Fatalf("%d cookies", len(got.Cookies))
 	}
 }
+
+// A server that supports nothing the client offered says so with empty
+// negotiation records, and a client reads that as terms rather than as a fault
+// in what it sent.
+func TestNoTermsIsItsOwnAnswer(t *testing.T) {
+	recs, err := ParseRecords(NoTermsMessage())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != 3 {
+		t.Fatalf("%d records", len(recs))
+	}
+	for i, want := range []uint16{RecNextProtocol, RecAEADAlgorithm, RecEndOfMessage} {
+		if recs[i].Type != want || !recs[i].Critical {
+			t.Errorf("record %d is %d critical=%v", i, recs[i].Type, recs[i].Critical)
+		}
+	}
+	if len(recs[0].Body) != 0 || len(recs[1].Body) != 0 {
+		t.Errorf("the negotiation records are not empty: %d and %d octets", len(recs[0].Body), len(recs[1].Body))
+	}
+	if _, err := ParseResponse(NoTermsMessage()); !errors.Is(err, ErrNoTerms) {
+		t.Fatalf("got %v, want %v", err, ErrNoTerms)
+	}
+	// And an empty algorithm record alone is the same answer.
+	only := request(
+		Record{Critical: true, Type: RecNextProtocol, Body: uint16List(NextProtoNTPv4)},
+		Record{Critical: true, Type: RecAEADAlgorithm},
+		Record{Type: RecNewCookie, Body: []byte("c")},
+	)
+	if _, err := ParseResponse(only); !errors.Is(err, ErrNoTerms) {
+		t.Fatalf("got %v, want %v", err, ErrNoTerms)
+	}
+}

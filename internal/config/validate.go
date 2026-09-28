@@ -494,6 +494,13 @@ func (v *validator) config(c *Config) {
 		if k := c.Server.Listeners[i].NTSKE; k != nil && k.Upstream != "" && !upstreams[k.Upstream] {
 			v.errf("server.listeners[%d].ntske.upstream: unknown upstream %q", i, k.Upstream)
 		}
+		if n := c.Server.Listeners[i].NTP; n != nil && n.NTS != nil && n.NTS.KeyListener != "" {
+			// The two halves of NTS are two listeners, and termination only
+			// works when the one spending the cookies names the one that issued
+			// them. A name that is not a terminating ntske listener would be a
+			// time listener that verified nothing and said it had.
+			v.ntsKeyListener(fmt.Sprintf("server.listeners[%d].ntp.nts", i), c, n.NTS.KeyListener)
+		}
 		if h := c.Server.Listeners[i].SSH; h != nil && h.Upstream != "" && !upstreams[h.Upstream] {
 			v.errf("server.listeners[%d].ssh.upstream: unknown upstream %q", i, h.Upstream)
 		}
@@ -974,7 +981,7 @@ func (v *validator) server(s *Server) {
 			if ln.NTSKE == nil {
 				v.errf("%s.ntske: required for kind ntske", p)
 			} else {
-				v.ntskeListener(p+".ntske", ln.NTSKE, ln.Address)
+				v.ntskeListener(p+".ntske", ln.NTSKE, ln.Address, ln.TLS != nil)
 			}
 		case "syslog":
 			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
@@ -12146,12 +12153,18 @@ func (v *validator) ntpListener(p string, n *NTPListener) {
 	}
 	if s := n.NTS; s != nil {
 		switch s.Mode {
-		case "", "passthrough", "off":
+		case "", "passthrough", "off", "terminate":
 		default:
-			v.errf("%s.nts.mode: must be passthrough or off", p)
+			v.errf("%s.nts.mode: must be passthrough, terminate or off", p)
 		}
 		if s.Require && s.Mode == "off" {
 			v.errf("%s.nts: require with mode off refuses every packet: NTS cannot be required by a listener that is not passing it", p)
+		}
+		if s.Mode == "terminate" && s.KeyListener == "" {
+			v.errf("%s.nts.key_listener: required with mode terminate: the cookies this listener opens were issued by an ntske listener, and it has to be named", p)
+		}
+		if s.Mode != "terminate" && s.KeyListener != "" {
+			v.errf("%s.nts.key_listener: set with mode %q, which does not open cookies", p, s.Mode)
 		}
 	}
 	if e := n.Extensions; e != nil {
@@ -12339,10 +12352,42 @@ func (v *validator) ntpCIDRs(what string, list []string) {
 	}
 }
 
+// ntsKeyListener checks that a named listener is one that issues cookies.
+func (v *validator) ntsKeyListener(p string, c *Config, name string) {
+	for i := range c.Server.Listeners {
+		ln := &c.Server.Listeners[i]
+		if ln.Name != name {
+			continue
+		}
+		switch {
+		case ln.Kind != "ntske":
+			v.errf("%s.key_listener: %q is a %s listener, not an ntske one", p, name, kindOrHTTP(ln.Kind))
+		case !ln.NTSKE.Terminating():
+			v.errf("%s.key_listener: %q relays key establishment rather than terminating it, so it holds no cookie keys", p, name)
+		}
+		return
+	}
+	v.errf("%s.key_listener: no listener named %q", p, name)
+}
+
+// kindOrHTTP names a listener's kind, including the default.
+func kindOrHTTP(kind string) string {
+	if kind == "" {
+		return "http"
+	}
+	return kind
+}
+
 // ntskeListener checks the NTS key establishment relay.
-func (v *validator) ntskeListener(p string, k *NTSKEListener, address string) {
-	if k.Upstream == "" {
-		v.errf("%s.upstream: required", p)
+func (v *validator) ntskeListener(p string, k *NTSKEListener, address string, hasTLS bool) {
+	switch {
+	case k.Terminating():
+		if k.Upstream != "" {
+			v.errf("%s.upstream: set with terminate: this listener answers key establishment itself, so there is nothing to relay it to", p)
+		}
+		v.ntskeTerminate(p+".terminate", k.Terminate, hasTLS)
+	case k.Upstream == "":
+		v.errf("%s.upstream: required, or terminate to answer key establishment here", p)
 	}
 	v.ntpCIDRs(p+".allow_clients", k.AllowClients)
 	v.ntpCIDRs(p+".deny_clients", k.DenyClients)
@@ -12371,6 +12416,42 @@ func (v *validator) ntskeListener(p string, k *NTSKEListener, address string) {
 	}
 	if _, port, err := net.SplitHostPort(address); err == nil && port != "4460" && port != "0" {
 		v.warnf("%s is on port %s rather than 4460: a client that found this service through a server's own key establishment record will look for 4460", p, port)
+	}
+}
+
+// ntskeTerminate checks the terminating side.
+func (v *validator) ntskeTerminate(p string, t *NTSKETerminate, hasTLS bool) {
+	if !hasTLS {
+		// The certificate is the whole of what a client authenticates in NTS:
+		// there is nothing else in the exchange that names the server. A
+		// terminating listener without one could not answer at all.
+		v.errf("%s: needs a tls section on the listener: the certificate is the only thing an NTS client authenticates", p)
+	}
+	if t.Server != "" && !hostPatternOK(t.Server) {
+		v.errf("%s.server: %q is not a valid host name", p, t.Server)
+	}
+	if t.Port != 0 && (t.Port < 1 || t.Port > 65535) {
+		v.errf("%s.port: must be between 1 and 65535", p)
+	}
+	if t.Cookies != 0 && (t.Cookies < 1 || t.Cookies > 8) {
+		// Eight is the bound because it is also the bound on how many cookies
+		// one time exchange may ask for: a listener that issued more would be
+		// answering a request with a response larger than the client asked for.
+		v.errf("%s.cookies: must be between 1 and 8", p)
+	}
+	if d := t.RotateEvery; d != 0 && (d.D() < time.Minute || d.D() > 30*24*time.Hour) {
+		v.errf("%s.rotate_every: must be between 1m and 720h", p)
+	}
+	if n := t.KeepKeys; n != nil && (*n < 0 || *n > 64) {
+		v.errf("%s.keep_keys: must be between 0 and 64", p)
+	}
+	if t.KeepKeys != nil && *t.KeepKeys == 0 {
+		v.warnf("%s.keep_keys: 0, so a rotation refuses every cookie already issued at once and every client has to establish keys again -- a TLS handshake each, all at the same moment", p)
+	}
+	if t.State == "" {
+		v.warnf("%s.state: empty, so the cookie keys live only in memory and a restart refuses every cookie in the estate -- every client then re-establishes at once, which is the load a restart should not create", p)
+	} else if !filepath.IsAbs(t.State) {
+		v.errf("%s.state: must be an absolute path", p)
 	}
 }
 
