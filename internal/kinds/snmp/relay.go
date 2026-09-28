@@ -222,26 +222,28 @@ func (t *server) fromManager(agent net.PacketConn, raw []byte, from net.Addr) {
 		out = trimmed
 		s.Counters().SNMPTruncated.Add(1)
 	}
-	if upgraded, changed, err := t.applyUpgrade(out, m); err != nil {
+	upgraded, changed, err := t.applyUpgrade(out, m)
+	switch {
+	case errors.Is(err, errOriginate):
+		// The upgrade is to v3, which is originated rather than re-enveloped.
+		// The pending slot is taken first, because a discovery's report has to
+		// find this request waiting: it is the manager's question that the
+		// relay will ask properly once it knows the agent's engine.
+		if !t.hold(m, ip, from, d, len(raw)) {
+			return
+		}
+		t.originateUpstream(agent, m, ip, d)
+		return
+	case err != nil:
 		s.Counters().Refuse("snmp", "upgrade_failed")
 		t.deny(ip, "snmp_upgrade_failed", err.Error())
 		return
-	} else if changed {
+	case changed:
 		out = upgraded
 		s.Counters().SNMPUpgraded.Add(1)
 	}
-	if m.PDU != nil && !m.PDU.Type.Notification() {
-		e := &exchange{client: ip, from: from, requestID: m.PDU.RequestID,
-			asked: len(raw), rule: d.Rule, version: m.Version, community: m.Community}
-		if !t.pend.add(e, time.Now()) {
-			// The table is full of requests nobody answered. Refusing here
-			// keeps the answer matching reliable, and that matching is the
-			// check that finds an unsolicited response rather than a
-			// convenience.
-			s.Counters().Refuse("snmp", "too_many_pending")
-			t.deny(ip, "snmp_too_many_pending", "")
-			return
-		}
+	if !t.hold(m, ip, from, d, len(raw)) {
+		return
 	}
 	t.logMessage(ip, m, d, "manager")
 	t.observeManager(ip, m)
@@ -310,12 +312,12 @@ func (t *server) readAgent(agent net.PacketConn) {
 		}
 		raw := make([]byte, n)
 		copy(raw, buf[:n])
-		t.fromAgent(raw, from)
+		t.fromAgent(agent, raw, from)
 	}
 }
 
 // fromAgent decides about one datagram from an agent.
-func (t *server) fromAgent(raw []byte, from net.Addr) {
+func (t *server) fromAgent(agent net.PacketConn, raw []byte, from net.Addr) {
 	s := t.host
 	ip := netutil.AddrOf(from.String())
 	m, err := wire.Parse(raw)
@@ -325,11 +327,25 @@ func (t *server) fromAgent(raw []byte, from net.Addr) {
 		t.deny(ip, "snmp_malformed_response", err.Error())
 		return
 	}
-	// Version 3, with the user's keys, before the pairing below: an answer
-	// this relay can decrypt is an answer it can pair, and an answer whose
-	// digest does not check out is the response-spoofing attack the pairing
-	// exists to catch, arriving with a forged credential.
-	if v := t.inspect(m); !v.Allow {
+	// Version 3, with the keys, before the pairing below: an answer this relay
+	// can decrypt is an answer it can pair, and an answer whose digest does not
+	// check out is the response-spoofing attack the pairing exists to catch,
+	// arriving with a forged credential.
+	//
+	// Which keys depends on who asked. Where this relay originated the request
+	// as itself, the answer belongs to *its* USM session and is read with its
+	// own keys; the manager's keys have nothing to do with it and would not
+	// verify it. Where the request was forwarded, the answer is the manager's
+	// and usm_users is what reads it.
+	if t.orig != nil && m.Version == wire.V3 {
+		if why, detail := t.orig.readAgentV3(m, from.String(), time.Now()); why != "" {
+			s.Counters().Refuse("snmp", why)
+			t.deny(ip, why, detail)
+			if t.enforcing() {
+				return
+			}
+		}
+	} else if v := t.inspect(m); !v.Allow {
 		t.refused(ip, m, v)
 		if t.enforcing() {
 			return
@@ -352,6 +368,25 @@ func (t *server) fromAgent(raw []byte, from net.Addr) {
 		s.Counters().SNMPUnsolicited.Add(1)
 		s.Counters().Refuse("snmp", "wrong_direction")
 		t.deny(ip, "snmp_wrong_direction", m.PDU.Type.String())
+		return
+	}
+	if t.orig != nil && m.PDU.Type == wire.ReportPDU {
+		// The answer to a discovery. The engine has been learned above, so the
+		// manager's question -- still waiting in the table -- is now askable.
+		// The report itself goes no further: the manager asked for data, not
+		// for a statement about engine identifiers.
+		if e, ok := t.pend.take(m.PDU.RequestID, time.Now()); ok && len(e.pdu) > 0 {
+			if t.resendAfterDiscovery(agent, e) {
+				// Put the slot back: the same question is outstanding again,
+				// and the answer that comes next is the one the manager gets.
+				if !t.pend.add(e, time.Now()) {
+					s.Counters().Refuse("snmp", "too_many_pending")
+				}
+			}
+			return
+		}
+		s.Counters().SNMPUnsolicited.Add(1)
+		s.Counters().Refuse("snmp", "unsolicited_response")
 		return
 	}
 	e, ok := t.pend.take(m.PDU.RequestID, time.Now())

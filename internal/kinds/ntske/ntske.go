@@ -26,6 +26,7 @@ package ntske
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"net"
 	"net/netip"
@@ -67,6 +68,9 @@ type server struct {
 
 	allow, deny []netip.Prefix
 	names       []string
+	// term is the terminating side, or nil when this listener relays key
+	// establishment to the servers whose keys it is.
+	term *terminator
 	// handshakes bounds the peeks and dials in flight, because the
 	// expensive part of NTS is the handshake and a flood of them is the
 	// denial of service this port has.
@@ -86,10 +90,17 @@ type server struct {
 	once     sync.Once
 }
 
-func newServer(host proxy.Host, cfg config.Listener, ln net.Listener) (*server, error) {
+func newServer(host proxy.Host, cfg config.Listener, ln net.Listener, tc *tls.Config) (*server, error) {
 	k := cfg.NTSKE
 	s := &server{host: host, cfg: cfg, k: k, ln: ln,
 		cons: map[net.Conn]struct{}{}, done: make(chan struct{})}
+	if k.Terminating() {
+		t, err := newTerminator(host, cfg, tc)
+		if err != nil {
+			return nil, err
+		}
+		s.term = t
+	}
 	for _, list := range []struct {
 		in  []string
 		out *[]netip.Prefix
@@ -121,6 +132,9 @@ func (s *server) maxConnections() int {
 }
 
 func (s *server) serve() {
+	if s.term != nil {
+		go s.term.rotateLoop(s.done)
+	}
 	for {
 		c, err := s.ln.Accept()
 		if err != nil {
@@ -250,6 +264,21 @@ func (s *server) handle(client net.Conn) {
 		c.NTSKEHandshakeLimited.Add(1)
 		s.deny_(ip, "handshake_limit", "")
 		s.log(ip, start, "", nil, "handshake_limit", 0, 0)
+		return
+	}
+	if s.term != nil {
+		// Terminating: this listener is the key establishment server, so there
+		// is no peek and no upstream. The name it checks is the one the client
+		// verified a certificate for rather than one read out of a ClientHello.
+		name, protos, reason := s.term.exchange(client)
+		switch {
+		case reason != "":
+			s.deny_(ip, reason, name)
+		case !s.terminatingNameAllowed(name):
+			s.deny_(ip, "server_name_not_allowed", name)
+			reason = "server_name_not_allowed"
+		}
+		s.log(ip, start, name, protos, reason, 0, 0)
 		return
 	}
 	name, protos, peeked, reason := s.peek(client)

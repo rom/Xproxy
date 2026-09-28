@@ -6,6 +6,226 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (dhcp6: the other half of a dual-stack estate's provisioning path)
+
+- **`kind: dhcp6` is a DHCPv6 relay agent (RFC 8415) on UDP 547 that reads what
+  it relays**, in both directions. It is a listener of its own rather than a flag
+  on `kind: dhcp` because DHCPv6 is a separate protocol: a different packet
+  format, a relay mechanism that nests whole messages rather than filling in a
+  field, a client identified by a DUID rather than by a hardware address, and its
+  own options — including prefix delegation, which has no DHCPv4 equivalent at
+  all. An estate running both runs both listeners, and writing both down is the
+  point.
+
+- **It is also the half most estates have left unwatched.** A network that
+  polices DHCPv4 carefully and has never looked at UDP 547 is a network where the
+  IPv6 path is the way in, and there is *more* in an answer here: a boot file URL
+  (RFC 5970), a captive portal a client will open (RFC 8910), an SZTP bootstrap
+  server a switch will fetch a configuration from and apply to itself (RFC 8572),
+  the S46 containers and AFTR name that put a host's *IPv4* traffic through a
+  border relay of the sender's choosing, and the Server Unicast option, which
+  tells a client to address the server directly and so switches off every policy
+  this listener has. Each is stripped by default while the address itself goes
+  through.
+
+- **The resolvers and the search list are deliberately not on that deny list**,
+  which is the same choice the DHCPv4 list makes about option 6. They have a
+  positive list of their own — `allow_resolvers` and `allow_domains` — and that is
+  the better check, because it names what the estate's resolvers *are* and so
+  catches a compromised real server as well as a rogue one. Putting an option with
+  a positive list on the deny list as well breaks twice over: the positive list
+  becomes dead configuration, and handing out resolvers is the whole purpose of
+  stateless DHCPv6 on a network that addresses itself by router advertisement — so
+  the default would be one an estate has to switch off to get its network working.
+
+- **Prefix delegation is bounded at both ends, and a prefix outside the estate's
+  is refused rather than stripped.** A reply delegating `::/0` has handed a host
+  the whole of IPv6 to route; a client asking for a /48 where the estate delegates
+  /56s is asking a real server to give a segment away. There is no useful half of
+  a delegation to keep, so `prefix_delegation` refuses rather than editing. A
+  client's own `::/0` *hint* is still carried, because RFC 8415 §21.22 lets a
+  client send one to mean "any".
+
+- **A valid lifetime of zero is never bounded up.** Zero is how a server
+  withdraws an address (RFC 8415 §18.2.10), and applying `min_lease_time` to it
+  would turn a withdrawal into a lease — leaving a device holding an address the
+  estate has given to somebody else. The preferred lifetime comes down with the
+  valid one, because the reverse makes the option invalid.
+
+- **The starvation bound is keyed on the DUID, not the source address.** Pool
+  exhaustion on this protocol is one host sending thousands of SOLICITs with a
+  made-up identifier in each, and a limit keyed on the source would see one sender
+  doing nothing unusual. `max_clients` is the other half: the rate limit slows one
+  identifier down, and that bound stops a flood of new ones filling the table
+  doing the limiting.
+
+- **The relay chain is bounded and read all the way down.** A DHCPv6 relay
+  encapsulates rather than annotates, so a chain is a message inside a message; a
+  reader that stops at the outer layer sees nothing a client said.
+  `max_relay_hops` bounds the nesting, and the relay's own options are added on
+  the way out and stripped from anything a *client* sent, because a client
+  asserting which circuit it is on is asserting exactly what the option exists to
+  say on its behalf.
+
+- **`log_leases` is on by default**, and produces a line for every address and
+  prefix handed out: which identifier got which lease, for how long, from which
+  server, and what else that reply told it — the last being what a DHCPv6 server's
+  own log does not have, because the server is the thing being checked. The MAC
+  address inside a link-layer DUID goes to the asset inventory, which is what ties
+  a DHCPv6 sighting to the device an estate already knows from DHCPv4.
+
+- See [`docs/protocols/dhcp6.md`](protocols/dhcp6.md),
+  [`server.listeners[].dhcp6`](CONFIG.md#serverlistenersdhcp6-kind-dhcp6) and
+  [`examples/addressing/dhcp6.yaml`](../examples/addressing/dhcp6.yaml).
+
+### Added (nts: terminating Network Time Security in front of a server that cannot speak it)
+
+- **`ntske.terminate` makes the key establishment listener the key establishment
+  server**, and **`ntp.nts.mode: terminate`** makes the time listener verify what
+  clients send. Together they are the case NTS is awkward for otherwise: a plain
+  NTPv4 server that cannot speak NTS and is not going to, in front of clients
+  that will. The clients get authenticated time, the source gets a request from
+  one address it already knows, and the verification happens where an operator
+  can see it counted.
+
+- **In this mode "authenticated" means this relay checked.** That is the whole
+  difference from pass-through, where every visible NTS field is readable by
+  anybody on the path and proves nothing: a packet whose authenticator does not
+  verify is refused rather than forwarded with a note.
+
+- **The answer's time is the source's, octet for octet.** The first forty-eight
+  octets are copied, because every field in them is the source's statement about
+  its clock and a relay that adjusted one would be inventing time. What is added
+  is the client's unique identifier and an authenticator sealed with the client's
+  own server-to-client key.
+
+- **The request goes upstream as a bare header.** The extension fields were the
+  client's conversation with this relay: the cookie names a key the source does
+  not hold, the authenticator covers a packet it will not verify, and a
+  placeholder asks for something only the party that issues cookies can give.
+
+- **The cookie keys rotate with an overlap and survive a restart.** A client
+  holds days of cookies, so a rotation that invalidated them at once would take
+  the estate's time service down until every client re-established — a TLS
+  handshake each, all in the same second. `rotate_every` (a day), `keep_keys`
+  (two) and `state` (a file, mode 0600, written at the first start rather than
+  the first rotation) are each there because the alternative is that outage. A
+  state file that is there and cannot be read stops the listener rather than
+  being ignored.
+
+- **New packages.** `internal/siv` is AES-SIV-CMAC (RFC 5297), the AEAD NTS
+  mandates and the standard library does not have, pinned against the RFC's own
+  test vectors. `internal/ntske` is the key establishment record layer (RFC 8915
+  §4), the exporter derivation (§5.1) and the cookie format. `internal/ntp`
+  gained the authenticator of §5.6: verify, seal, and the refusal of anything
+  after the authenticator, because everything before it is authenticated and
+  anything after it is not.
+
+- **One detail worth writing down**, because it would have passed every test and
+  failed against every real client: an NTP extension field's length is padded to
+  a multiple of four with nothing to say how much of it is padding, so a cookie
+  that is not a multiple of four comes back longer than it left and does not
+  open. The cookie format is sized to fit, and there is a test that says why.
+
+- Counters `ntske_terminated`, `ntske_cookies`, `ntske_no_terms`,
+  `ntp_nts_verified`, `ntp_nts_unverified`, `ntp_nts_cookie_unknown` and
+  `ntp_nts_cookies_issued`; refusals `nts_no_authenticator`, `nts_no_cookie`,
+  `nts_cookie_unknown`, `nts_unverified`, `nts_no_session` and
+  `nts_no_cookie_keys`, which are separate because they mean different things to
+  an operator — a cookie this relay never issued is a client that established
+  keys somewhere else, and an authenticator that did not verify is a packet that
+  was tampered with.
+
+- **`ntp.nts.source` is the other side of the same decision: re-origination.**
+  Without it the relay asks the time source in plain NTP, which is right when
+  the source cannot do better. With it the relay holds an association of its
+  own -- its own key establishment with the source's key establishment server,
+  its own cookies, its own authenticator on every request, and verification of
+  every answer.
+
+- **The cost is stated rather than hidden**, in the configuration reference, the
+  protocol page and a validation warning that fires whenever it is on: there is
+  no end-to-end authentication between a client and the time source any more.
+  The client authenticates to this relay and this relay authenticates to the
+  source, so the process is a party to the security rather than a reader of it.
+  What it buys is a relay that can compare, police and log what the source says
+  while both halves are still authenticated, which a pass-through relay cannot
+  do at all.
+
+- **A request that arrives before the relay holds keys is dropped**, with the
+  reason `nts_source_not_ready`, rather than sent in plain NTP: a relay that
+  quietly downgraded its own request would be doing the thing the setting exists
+  to prevent, and a time client retries. An answer that does not echo the
+  identifier the request carried is refused too -- the keys are the same for the
+  whole association, so without that check an answer to another of this relay's
+  requests would verify.
+
+- **The source's own key establishment cannot move the time traffic.** A
+  response naming another server or port is logged and not followed: where the
+  relay sends time traffic is the upstream pool and `allow_servers`, which is
+  the estate's decision.
+
+- **A plain client behind a re-originating relay gets a plain answer.** The
+  source's NTS fields are the relay's conversation with the source and carry the
+  relay's own replacement cookies, so they are not forwarded to a client that
+  did not ask for them.
+
+- `internal/ntske` gained the client half: a `Client` that does one whole
+  exchange, insisting on TLS 1.3 and the `ntske/1` application protocol whatever
+  the caller's configuration says, and refusing a response that chose terms the
+  relay did not offer, that carries no cookies, or that is not a whole message.
+  It is tested against this package's own server half rather than a recording of
+  one.
+
+- A worked configuration in `examples/ot/nts-gateway.yaml`, with the
+  re-origination it would use once the old server is replaced.
+
+### Added (snmp: version 3 toward the agent, with an identity of the relay's own)
+
+- **`upgrade_version: v3` works, with `upstream_usm`.** It was refused at load,
+  for a true reason: there was no user, engine or key to authenticate a message
+  with, and the relay will not forge an authentication that did not happen.
+  `upstream_usm` supplies one, and the relay then **terminates** the manager's
+  security and **re-originates** its own toward the agent.
+
+- **The deployment this is for**: the agents were replaced and the polling system
+  was not. A v1 or v2c poller now reaches a v3-only agent with authentication and
+  privacy the poller cannot speak, using a pass phrase it never holds — so the
+  credential that opens the agent lives in one place, and v1 does not have to
+  stay enabled on the equipment for ever.
+
+- **The cost is documented rather than hidden**, in the configuration reference,
+  the protocol page and a validation warning: there is no end-to-end
+  authentication between the manager and the agent any more. The manager
+  authenticates to the relay and the relay authenticates to the agent, so the
+  process is a party to the security rather than a reader of it. An estate that
+  wants USM end to end wants `usm_users` and no upgrade.
+
+- **The agent's engine is discovered, not configured.** USM authenticates against
+  the authoritative engine's clock, and that engine is the agent's. A first
+  request to a cold agent draws an RFC 3414 §4 discovery that carries the
+  manager's own request identifier, so the report pairs with the waiting question
+  and it is that question which then gets asked properly. A burst to a cold agent
+  sends one discovery. `upstream_usm.engine_id` pins the identifier where it is
+  known, and an engine calling itself something else is not believed.
+
+- `internal/snmp` gained the encode half of USM: `BuildV3`, `ScopedPDU` and the
+  DES and AES encryption that mirror the decryption already there. The digest is
+  computed over the finished message with its own field zeroed, which is what RFC
+  3414 §6.3.1 says it covers, and the field's offset is computed during assembly
+  rather than searched for afterwards. The tests round-trip through `Verify`,
+  `Decrypt` and `ParseScoped` — written for other implementations' messages and
+  sharing no code with the builder — and one of them changes every octet of a
+  signed message in turn and requires the digest to notice.
+
+- The end-to-end test's fake agent derives its keys from the pass phrase itself
+  and verifies what arrives, so the assertion is that a party holding only the
+  pass phrase accepts the relay's message, not that the relay can read back its
+  own.
+
+- New counters `snmp_discoveries` and `snmp_originated`: discoveries that climb
+  beside a flat originated count are an agent not answering them.
+
 ### Added (a `flow` filter: the request that is valid in the wrong order)
 
 - **`kind: flow` enforces the order of a business flow**: a step may be reached

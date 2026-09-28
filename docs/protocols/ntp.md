@@ -128,16 +128,32 @@ and carries the traffic.
 
 - **It is not a time source.** It does not hold a clock, serve time from one, or
   correct a client's offset. It relays, and it reports when the sources disagree.
-- **It does not terminate NTS.** The authenticated extension fields are carried
-  whole; the cryptography belongs to the client and the server whose keys they
-  are. The key establishment is a separate listener — see [ntske](ntske.md).
+- **It does not terminate NTS unless asked to.** With `nts.mode: passthrough`,
+  the default, the authenticated extension fields are carried whole and the
+  cryptography belongs to the client and the server whose keys they are — and
+  none of the visible NTS fields proves anything here, because all of them are
+  readable by anybody on the path. With `nts.mode: terminate` it does verify
+  them, because the `kind: ntske` listener named by `key_listener` issued the
+  cookie: it opens the cookie, checks the authenticator over the whole packet,
+  asks the time source in plain NTP, and signs the answer with the client's own
+  key. That is the mode that puts NTS in front of a time server that cannot
+  speak it, and the mode in which "authenticated" means this relay checked. The
+  key establishment is a separate listener either way — see [ntske](ntske.md).
+- **It does not re-originate NTS toward the source unless asked to.** With
+  `nts.source` it holds an association of its own with the source: its own key
+  establishment, its own cookies, its own authenticator on every request, and
+  verification of every answer. That is the setting for a source that does speak
+  NTS, and the cost of it is stated where it is configured — there is then no
+  end-to-end authentication between a client and the source, because the relay
+  is a party to the security in both directions rather than a reader of it.
 - **It does not compute AES-CMAC on behalf of a peer.** The MAC is read for which
   key id and which algorithm; verification belongs to the endpoints.
 - **It does not correct a forged timestamp.** It can refuse a source that
   disagrees with its peers; it cannot tell which of two disagreeing sources is
   right without a source of truth of its own.
 - **It cannot authenticate plain NTP.** On the plain protocol the client list is
-  an address list on UDP. The answer is NTS, and this listener will carry it.
+  an address list on UDP. The answer is NTS, which this listener will carry and,
+  with `nts.mode: terminate`, verify.
 
 ## Standards
 

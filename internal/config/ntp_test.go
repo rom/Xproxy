@@ -145,8 +145,38 @@ func TestNTPRefusals(t *testing.T) {
         auth: {probe_key_id: 9, keys: [{id: 7, key_file: KEYFILE}]}
 `, "probe_key_id: 9 is not one of the keys"},
 		{"an NTS mode that is not one", `        upstream: clocks
+        nts: {mode: inspect}
+`, "nts.mode: must be passthrough, terminate or off"},
+		{"termination with no key establishment listener named", `        upstream: clocks
         nts: {mode: terminate}
-`, "nts.mode: must be passthrough or off"},
+`, "nts.key_listener: required with mode terminate"},
+		{"a key establishment listener named by a mode that opens no cookies", `        upstream: clocks
+        nts: {key_listener: ke}
+`, `nts.key_listener: set with mode ""`},
+		{"a key establishment listener that is not there", `        upstream: clocks
+        nts: {mode: terminate, key_listener: absent}
+`, `nts.key_listener: no listener named "absent"`},
+		{"the relay's own association without termination", `        upstream: clocks
+        nts: {source: {ke_address: "time.example:4460"}}
+`, "nts.source: needs mode terminate"},
+		{"an association with nowhere to establish keys", `        upstream: clocks
+        nts: {mode: terminate, key_listener: ke, source: {}}
+`, "nts.source.ke_address: required"},
+		{"an association naming something that is not a host", `        upstream: clocks
+        nts: {mode: terminate, key_listener: ke, source: {ke_address: "not a host:1"}}
+`, "is not a host or host:port"},
+		{"a name that is not a name", `        upstream: clocks
+        nts: {mode: terminate, key_listener: ke, source: {ke_address: "time.example", server_name: "not a name"}}
+`, "server_name: \"not a name\" is not a valid host name"},
+		{"half a client certificate", `        upstream: clocks
+        nts: {mode: terminate, key_listener: ke, source: {ke_address: "time.example", cert_file: /tmp/c.pem}}
+`, "cert_file and key_file are both needed"},
+		{"a refresh point nobody meant", `        upstream: clocks
+        nts: {mode: terminate, key_listener: ke, source: {ke_address: "time.example", refresh_below: 9}}
+`, "refresh_below: must be between 1 and 8"},
+		{"a key establishment timeout nobody meant", `        upstream: clocks
+        nts: {mode: terminate, key_listener: ke, source: {ke_address: "time.example", timeout: 5m}}
+`, "timeout: must be between 1s and 1m"},
 		{"NTS required and turned off at once", `        upstream: clocks
         nts: {mode: off, require: true}
 `, "require with mode off refuses every packet"},
@@ -376,7 +406,12 @@ upstreams:
 		t.Fatalf("section: %+v", k)
 	}
 	for _, tc := range []struct{ name, section, address, want string }{
-		{"no upstream", "        allow_clients: [\"10.0.0.0/8\"]\n", "0.0.0.0:4460", "upstream: required"},
+		{"no upstream", "        allow_clients: [\"10.0.0.0/8\"]\n", "0.0.0.0:4460", "upstream: required, or terminate"},
+		{"an upstream to relay to and a terminate section at once",
+			"        upstream: ke_servers\n        terminate: {}\n", "0.0.0.0:4460",
+			"upstream: set with terminate"},
+		{"terminating with no certificate", "        terminate: {}\n", "0.0.0.0:4460",
+			"needs a tls section on the listener"},
 		{"a name that is not a host pattern", "        upstream: ke_servers\n        server_names: [\"not a host\"]\n",
 			"0.0.0.0:4460", "is not a valid host pattern"},
 		{"a handshake bound nobody meant", "        upstream: ke_servers\n        max_concurrent_handshakes: 99999\n",
@@ -397,6 +432,55 @@ upstreams:
 			}
 		})
 	}
+	// The terminating side, which needs a certificate on the listener.
+	termDoc := func(section string) string {
+		return `
+version: 1
+server:
+  listeners:
+    - name: ke
+      address: "0.0.0.0:4460"
+      kind: ntske
+      tls: {certificates: [{cert_file: /tmp/c.pem, key_file: /tmp/k.pem}]}
+      ntske:
+        terminate:
+` + section
+	}
+	if _, err := ParseWith([]byte(termDoc("          cookies: 8\n          state: /var/lib/xproxy/nts.json\n")), false); err != nil {
+		t.Fatalf("the terminating section did not load: %v", err)
+	}
+	for _, tc := range []struct{ name, section, want string }{
+		{"more cookies than one exchange may ask for", "          cookies: 9\n", "cookies: must be between 1 and 8"},
+		{"a rotation nobody meant", "          rotate_every: 1s\n", "rotate_every: must be between 1m and 720h"},
+		{"a history nobody meant", "          keep_keys: 65\n", "keep_keys: must be between 0 and 64"},
+		{"a relative state path", "          state: nts.json\n", "state: must be an absolute path"},
+		{"a server that is not a host", "          server: \"not a host\"\n", "server: \"not a host\" is not a valid host name"},
+		{"a port nobody meant", "          port: 70000\n", "port: must be between 1 and 65535"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ParseWith([]byte(termDoc(tc.section)), false); err == nil {
+				t.Fatalf("the document loaded; wanted %q", tc.want)
+			} else if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %v, want %q", err, tc.want)
+			}
+		})
+	}
+	for _, tc := range []struct{ name, section, want string }{
+		{"no state file", "          cookies: 8\n",
+			"the cookie keys live only in memory and a restart refuses every cookie"},
+		{"no key history", "          keep_keys: 0\n          state: /var/lib/xproxy/nts.json\n",
+			"keep_keys: 0, so a rotation refuses every cookie already issued"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := ParseWith([]byte(termDoc(tc.section)), false)
+			if err != nil {
+				t.Fatalf("the document did not load: %v", err)
+			}
+			if !hasAdvice(cfg, tc.want) {
+				t.Fatalf("no advice about %q: %v", tc.want, cfg.Advice())
+			}
+		})
+	}
 	// The advice.
 	for _, tc := range []struct{ name, section, address, want string }{
 		{"the application protocol not required", "        upstream: ke_servers\n        require_alpn: false\n",
@@ -413,5 +497,74 @@ upstreams:
 				t.Fatalf("no advice about %q: %v", tc.want, cfg.Advice())
 			}
 		})
+	}
+}
+
+// The relay's own association with the time source, and the cost it is required
+// to state. An estate that turns this on has given up end-to-end authentication
+// between its clients and the source, and the configuration is where that is
+// written down rather than somewhere an operator has to be told.
+func TestNTSSourceAssociation(t *testing.T) {
+	doc := func(source string) string {
+		return `
+version: 1
+server:
+  listeners:
+    - name: ke
+      address: "0.0.0.0:4460"
+      kind: ntske
+      tls: {certificates: [{cert_file: /tmp/c.pem, key_file: /tmp/k.pem}]}
+      ntske:
+        terminate: {cookies: 8, state: /var/lib/xproxy/nts.json}
+    - name: time
+      address: "0.0.0.0:123"
+      kind: ntp
+      ntp:
+        upstream: clocks
+        allow_clients: ["10.0.0.0/8"]
+        rate_limit: 20
+        nts:
+          mode: terminate
+          key_listener: ke
+` + source + `
+upstreams:
+  - {name: clocks, endpoints: [{address: "10.0.0.1:123"}]}
+`
+	}
+	cfg, err := ParseWith([]byte(doc(`          source:
+            ke_address: "time.example:4460"
+`)), false)
+	if err != nil {
+		t.Fatalf("the document did not load: %v", err)
+	}
+	n := cfg.Server.Listeners[1].NTP.NTS
+	if n == nil || n.Source == nil || n.Source.KEAddress != "time.example:4460" {
+		t.Fatalf("section: %+v", n)
+	}
+	if got := n.Source.SourceRefreshBelow(); got != DefaultNTSRefreshBelow {
+		t.Errorf("refresh_below defaults to %d, want %d", got, DefaultNTSRefreshBelow)
+	}
+	for _, want := range []string{
+		"there is no end-to-end authentication between a client and the time source any more",
+		"checked against the system trust store",
+	} {
+		if !hasAdvice(cfg, want) {
+			t.Errorf("no advice about %q: %v", want, cfg.Advice())
+		}
+	}
+	// With the authorities pinned, only the cost remains to be said.
+	cfg, err = ParseWith([]byte(doc(`          source:
+            ke_address: "time.example"
+            ca_file: /tmp/ca.pem
+            refresh_below: 4
+`)), false)
+	if err != nil {
+		t.Fatalf("the document did not load: %v", err)
+	}
+	if hasAdvice(cfg, "checked against the system trust store") {
+		t.Error("the trust store advice was given for a configuration that pinned one")
+	}
+	if got := cfg.Server.Listeners[1].NTP.NTS.Source.SourceRefreshBelow(); got != 4 {
+		t.Errorf("refresh_below %d", got)
 	}
 }

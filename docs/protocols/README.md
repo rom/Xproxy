@@ -62,6 +62,7 @@ policy written in each protocol's own terms.
 | SNMP v1, v2c and v3 | [snmp](snmp.md) | 161, 162 |
 | LDAP v3 and LDAPS | [ldap](ldap.md) | 389, 636 |
 | DHCPv4 | [dhcp](dhcp.md) | 67, 68 |
+| DHCPv6 | [dhcp6](dhcp6.md) | 547 |
 | NTP v1–v4, SNTP, NTS-protected | [ntp](ntp.md) | 123 |
 | NTS key establishment | [ntske](ntske.md) | 4460 |
 

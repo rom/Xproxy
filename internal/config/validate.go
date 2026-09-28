@@ -6,6 +6,7 @@ import (
 	"github.com/rom/xproxy/internal/assets"
 	bacnetwire "github.com/rom/xproxy/internal/bacnet"
 	dhcpwire "github.com/rom/xproxy/internal/dhcp"
+	"github.com/rom/xproxy/internal/dhcp6"
 	"github.com/rom/xproxy/internal/dns"
 	"github.com/rom/xproxy/internal/expr"
 	"github.com/rom/xproxy/internal/filter"
@@ -494,6 +495,16 @@ func (v *validator) config(c *Config) {
 		if k := c.Server.Listeners[i].NTSKE; k != nil && k.Upstream != "" && !upstreams[k.Upstream] {
 			v.errf("server.listeners[%d].ntske.upstream: unknown upstream %q", i, k.Upstream)
 		}
+		if n := c.Server.Listeners[i].NTP; n != nil && n.NTS != nil && n.NTS.KeyListener != "" {
+			// The two halves of NTS are two listeners, and termination only
+			// works when the one spending the cookies names the one that issued
+			// them. A name that is not a terminating ntske listener would be a
+			// time listener that verified nothing and said it had.
+			v.ntsKeyListener(fmt.Sprintf("server.listeners[%d].ntp.nts", i), c, n.NTS.KeyListener)
+		}
+		if m := c.Server.Listeners[i].DHCP6; m != nil && m.Upstream != "" && !upstreams[m.Upstream] {
+			v.errf("server.listeners[%d].dhcp6.upstream: unknown upstream %q", i, m.Upstream)
+		}
 		if h := c.Server.Listeners[i].SSH; h != nil && h.Upstream != "" && !upstreams[h.Upstream] {
 			v.errf("server.listeners[%d].ssh.upstream: unknown upstream %q", i, h.Upstream)
 		}
@@ -882,6 +893,17 @@ func (v *validator) server(s *Server) {
 			} else {
 				v.dhcpListener(p+".dhcp", ln.DHCP)
 			}
+		case "dhcp6":
+			// No tls section, for the same reason as dhcp: the protocol is
+			// UDP and has no transport security of any kind.
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C || ln.TLS != nil {
+				v.errf("%s: a dhcp6 listener takes only address and dhcp6: the protocol is UDP and has no TLS", p)
+			}
+			if ln.DHCP6 == nil {
+				v.errf("%s.dhcp6: required for kind dhcp6", p)
+			} else {
+				v.dhcp6Listener(p+".dhcp6", ln.DHCP6, ln.Address)
+			}
 		case "bacnet":
 			// No tls section: Annex J is BACnet over UDP and the protocol
 			// has no transport security anywhere, so a listener carrying a
@@ -974,7 +996,7 @@ func (v *validator) server(s *Server) {
 			if ln.NTSKE == nil {
 				v.errf("%s.ntske: required for kind ntske", p)
 			} else {
-				v.ntskeListener(p+".ntske", ln.NTSKE, ln.Address)
+				v.ntskeListener(p+".ntske", ln.NTSKE, ln.Address, ln.TLS != nil)
 			}
 		case "syslog":
 			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
@@ -1000,6 +1022,9 @@ func (v *validator) server(s *Server) {
 		}
 		if ln.NTP != nil && ln.Kind != "ntp" {
 			v.errf("%s.ntp: set on a %s listener (kind: ntp)", p, ln.Kind)
+		}
+		if ln.DHCP6 != nil && ln.Kind != "dhcp6" {
+			v.errf("%s.dhcp6: set on a %s listener (kind: dhcp6)", p, kindOrHTTP(ln.Kind))
 		}
 		if ln.NTSKE != nil && ln.Kind != "ntske" {
 			v.errf("%s.ntske: set on a %s listener (kind: ntske)", p, ln.Kind)
@@ -2612,7 +2637,7 @@ var denyReasons = map[string]bool{
 	// trigger until they were written here.
 	"dns_denied": true, "dns_threat_intel": true,
 	"modbus_denied": true, "iec104_denied": true, "ntp_denied": true, "ntske_denied": true,
-	"snmp_denied": true, "ldap_denied": true, "tftp_denied": true, "dhcp_denied": true, "postgres_denied": true, "mysql_denied": true, "tds_denied": true, "redis_denied": true,
+	"snmp_denied": true, "ldap_denied": true, "tftp_denied": true, "dhcp_denied": true, "dhcp6_denied": true, "postgres_denied": true, "mysql_denied": true, "tds_denied": true, "redis_denied": true,
 	"bacnet_denied": true, "amqp_denied": true, "s7_denied": true,
 }
 
@@ -7868,6 +7893,211 @@ func (v *validator) ldapDNs(p string, in []string) {
 	}
 }
 
+// dhcp6Listener checks the DHCPv6 relay.
+func (v *validator) dhcp6Listener(p string, m *DHCP6Listener, address string) {
+	switch m.Mode {
+	case "", "reverse", "forward":
+	default:
+		v.errf("%s.mode: must be reverse or forward", p)
+	}
+	if m.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	v.modbusCIDRs(p+".allow_clients", m.AllowClients)
+	v.modbusCIDRs(p+".deny_clients", m.DenyClients)
+	v.modbusCIDRs(p+".allow_servers", m.AllowServers)
+	v.dhcp6Addrs(p+".allow_resolvers", m.AllowResolvers)
+	v.dhcp6Types(p+".message_types", m.MessageTypes)
+	v.dhcp6Options(p+".deny_options", m.DenyOptions)
+	v.dhcp6Options(p+".allow_options", m.AllowOptions)
+	v.dhcp6Options(p+".deny_requested_options", m.DenyRequestedOptions)
+	v.dhcpPatterns(p+".allow_domains", m.AllowDomains)
+	v.dhcpPatterns(p+".allow_boot_urls", m.AllowBootURLs)
+	if len(m.DenyOptions) > 0 && len(m.AllowOptions) > 0 {
+		v.errf("%s: deny_options and allow_options are two ways of writing the same policy; set one", p)
+	}
+	if len(m.DenyOptions) > 0 {
+		// The list replaces the built-in one, so an operator who wrote a
+		// shorter one has turned protections off without meaning to.
+		missing := make([]string, 0, 4)
+		named := map[uint16]bool{}
+		for _, s := range m.DenyOptions {
+			if c, ok := dhcp6.OptionOf(s); ok {
+				named[c] = true
+			}
+		}
+		for _, c := range dhcp6.DangerousOptions {
+			if !named[c] {
+				missing = append(missing, dhcp6.OptionName(c))
+			}
+		}
+		if len(missing) > 0 {
+			v.warnf("%s.deny_options replaces the built-in list, and leaves out %s: each of those carries a configuration rather than a value, and a server that sends one is configuring the client",
+				p, strings.Join(missing, ", "))
+		}
+	}
+	switch m.OnDeniedOption {
+	case "", "strip", "deny":
+	default:
+		v.errf("%s.on_denied_option: must be strip or deny", p)
+	}
+	switch m.OnClientRelayOption {
+	case "", "strip", "deny":
+	default:
+		v.errf("%s.on_client_relay_option: must be strip or deny", p)
+	}
+	switch m.DefaultAction {
+	case "", "allow", "deny":
+	default:
+		v.errf("%s.default_action: must be allow or deny", p)
+	}
+	if m.MaxRelayHops != 0 && (m.MaxRelayHops < 1 || m.MaxRelayHops > dhcp6.MaxHopCount) {
+		v.errf("%s.max_relay_hops: must be between 1 and %d", p, dhcp6.MaxHopCount)
+	}
+	if m.MaxMessageBytes != 0 && (m.MaxMessageBytes < 128 || m.MaxMessageBytes > dhcp6.MaxMessage) {
+		v.errf("%s.max_message_bytes: must be between 128 and %d", p, dhcp6.MaxMessage)
+	}
+	if m.MaxPending != 0 && (m.MaxPending < 1 || m.MaxPending > 1<<20) {
+		v.errf("%s.max_pending: must be between 1 and 1048576", p)
+	}
+	if m.MaxClients != 0 && (m.MaxClients < 1 || m.MaxClients > 1<<20) {
+		v.errf("%s.max_clients: must be between 1 and 1048576", p)
+	}
+	if d := m.RequestTimeout; d != 0 && (d.D() < time.Second || d.D() > time.Minute) {
+		v.errf("%s.request_timeout: must be between 1s and 1m", p)
+	}
+	if m.RateLimit < 0 || m.RateBurst < 0 {
+		v.errf("%s.rate_limit and rate_burst cannot be negative", p)
+	}
+	if m.MinLeaseTime != 0 && m.MaxLeaseTime != 0 && m.MinLeaseTime.D() > m.MaxLeaseTime.D() {
+		v.errf("%s: min_lease_time is longer than max_lease_time", p)
+	}
+	if m.RemoteIDEnterprise < 0 || m.RemoteIDEnterprise > 0xffffffff {
+		v.errf("%s.remote_id_enterprise: must be a 32-bit enterprise number", p)
+	}
+	if m.RemoteID != "" && m.RemoteIDEnterprise == 0 {
+		v.warnf("%s.remote_id has no remote_id_enterprise, so it goes out under enterprise number 0: RFC 4649 s3 puts the number first, and a server that indexes on it will not find this relay where it expects", p)
+	}
+	v.dhcp6Prefixes(p+".prefix_delegation", m.PrefixDelegation)
+	if m.Mode != "forward" && m.LinkAddress == "" {
+		v.errf("%s.link_address: required in reverse mode: a relay agent that left it unspecified would be asking the server to guess which segment to allocate from", p)
+	}
+	if m.LinkAddress != "" {
+		a, err := netip.ParseAddr(m.LinkAddress)
+		switch {
+		case err != nil:
+			v.errf("%s.link_address: %q is not an address", p, m.LinkAddress)
+		case !a.Is6() || a.Is4In6():
+			v.errf("%s.link_address: %q is not an IPv6 address", p, m.LinkAddress)
+		case a.IsLinkLocalUnicast():
+			v.errf("%s.link_address: %q is link-local, which tells a server nothing about which segment to allocate from", p, m.LinkAddress)
+		}
+	}
+	if m.AllowReconfigure {
+		v.warnf("%s.allow_reconfigure carries a RECONFIGURE from a server: it is a message to a client that answers nothing, RFC 8415 s18.3.11 requires it to be authenticated with a key almost nobody deploys, and a client that accepts one can be made to re-ask a server of the sender's choosing", p)
+	}
+	if len(m.AllowResolvers) == 0 {
+		v.warnf("%s.allow_resolvers: empty, so any resolver a server names is carried. An estate knows its own resolvers, and a reply naming anything else is wrong whoever sent it -- which is the check that catches a compromised real server as well as a rogue one", p)
+	}
+	if _, port, err := net.SplitHostPort(address); err == nil && port != "547" && port != "0" {
+		v.warnf("%s is on port %s rather than 547: a DHCPv6 client sends to 547 and nothing else will reach this listener", p, port)
+	}
+	names := map[string]bool{}
+	for i := range m.Rules {
+		r := &m.Rules[i]
+		rp := fmt.Sprintf("%s.rules[%d]", p, i)
+		if r.Name == "" {
+			v.errf("%s.name: required", rp)
+		} else if names[r.Name] {
+			v.errf("%s.name: %q is used twice", rp, r.Name)
+		}
+		names[r.Name] = true
+		switch r.Action {
+		case "", "allow", "deny", "observe":
+		default:
+			v.errf("%s.action: must be allow, deny or observe", rp)
+		}
+		v.modbusCIDRs(rp+".clients", r.Clients)
+		v.dhcp6Types(rp+".message_types", r.MessageTypes)
+		v.dhcp6Options(rp+".deny_options", r.DenyOptions)
+		v.dhcp6Addrs(rp+".allow_resolvers", r.AllowResolvers)
+		v.dhcpPatterns(rp+".duids", r.DUIDs)
+		v.dhcpPatterns(rp+".vendor_classes", r.VendorClasses)
+		v.dhcpPatterns(rp+".user_classes", r.UserClasses)
+		v.dhcpPatterns(rp+".allow_domains", r.AllowDomains)
+		v.dhcpPatterns(rp+".allow_boot_urls", r.AllowBootURLs)
+		v.modbusSchedule(rp+".schedule", r.Schedule)
+	}
+}
+
+// dhcp6Prefixes checks the prefix delegation policy.
+func (v *validator) dhcp6Prefixes(p string, pd *DHCP6PrefixPolicy) {
+	if pd == nil {
+		return
+	}
+	for i, s := range pd.Prefixes {
+		pfx, err := netip.ParsePrefix(s)
+		switch {
+		case err != nil:
+			v.errf("%s.prefixes[%d]: %q is not a network", p, i, s)
+		case !pfx.Addr().Is6() || pfx.Addr().Is4In6():
+			v.errf("%s.prefixes[%d]: %q is not an IPv6 network", p, i, s)
+		case pfx.Bits() == 0:
+			v.errf("%s.prefixes[%d]: ::/0 is every prefix there is, which is not a bound", p, i)
+		}
+	}
+	for _, b := range []struct {
+		key string
+		val int
+	}{{"min_length", pd.MinLength}, {"max_length", pd.MaxLength}} {
+		if b.val != 0 && (b.val < 1 || b.val > 128) {
+			v.errf("%s.%s: must be between 1 and 128", p, b.key)
+		}
+	}
+	if pd.MinLength != 0 && pd.MaxLength != 0 && pd.MinLength > pd.MaxLength {
+		v.errf("%s: min_length is longer than max_length", p)
+	}
+	if pd.Delegating() && len(pd.Prefixes) == 0 && pd.MaxLength == 0 {
+		v.warnf("%s: prefix delegation is carried with no prefixes and no length bound, so a reply delegating ::/0 is forwarded -- which hands a host the whole of IPv6 to route", p)
+	}
+}
+
+// dhcp6Types checks a list of DHCPv6 message type names.
+func (v *validator) dhcp6Types(p string, in []string) {
+	for i, s := range in {
+		t, ok := dhcp6.TypeOf(s)
+		if !ok {
+			v.errf("%s[%d]: %q is not a DHCPv6 message type", p, i, s)
+			continue
+		}
+		if t.IsRelay() {
+			v.errf("%s[%d]: %q is a relay agent's own message, not one a client sends", p, i, s)
+		}
+	}
+}
+
+// dhcp6Options checks a list of DHCPv6 option names or numbers.
+func (v *validator) dhcp6Options(p string, in []string) {
+	for i, s := range in {
+		if _, ok := dhcp6.OptionOf(s); !ok {
+			v.errf("%s[%d]: %q is not a DHCPv6 option name or number", p, i, s)
+		}
+	}
+}
+
+// dhcp6Addrs checks a list of IPv6 addresses.
+func (v *validator) dhcp6Addrs(p string, in []string) {
+	for i, s := range in {
+		a, err := netip.ParseAddr(s)
+		switch {
+		case err != nil:
+			v.errf("%s[%d]: %q is not an address", p, i, s)
+		case !a.Is6() || a.Is4In6():
+			v.errf("%s[%d]: %q is not an IPv6 address", p, i, s)
+		}
+	}
+}
+
 func (v *validator) dhcpListener(p string, m *DHCPListener) {
 	switch m.Mode {
 	case "", "reverse", "forward":
@@ -9913,6 +10143,131 @@ func snmpPrivNames() []string {
 	return out
 }
 
+// snmpUpstreamUSM checks the identity this relay presents to the agent.
+//
+// It is held to the same rules as a user this listener reads, plus the ones that
+// are only about originating: a level needs the keys it uses, and terminating
+// the manager's security is a thing an operator should be told they have done.
+func (v *validator) snmpUpstreamUSM(p string, m *SNMPListener) {
+	u := m.UpstreamUSM
+	if u == nil {
+		if m.UpstreamSecurityLevel != "" {
+			v.errf("%s.upstream_security_level: set without upstream_usm, so there is no identity to originate as", p)
+		}
+		return
+	}
+	q := p + ".upstream_usm"
+	v.snmpUser(q, u, m)
+	level := snmpwire.AuthPriv
+	if u.Privacy == "" {
+		level = snmpwire.AuthNoPriv
+	}
+	if m.UpstreamSecurityLevel != "" {
+		lvl, ok := snmpwire.LevelOf(m.UpstreamSecurityLevel)
+		if !ok {
+			v.errf("%s.upstream_security_level: must be noAuthNoPriv, authNoPriv or authPriv", p)
+		} else {
+			level = lvl
+		}
+	}
+	switch {
+	case level == snmpwire.AuthPriv && u.Privacy == "":
+		v.errf("%s.upstream_security_level: authPriv needs upstream_usm.privacy and a privacy pass phrase", p)
+	case level == snmpwire.NoAuthNoPriv:
+		// Allowed, because an agent that only speaks v3 and trusts the
+		// network is a real deployment. Said out loud, because originating at
+		// noAuthNoPriv with a pass phrase configured is almost always a
+		// mistake in the level rather than a decision about it.
+		v.warnf("%s.upstream_security_level: noAuthNoPriv originates unauthenticated v3, so the pass phrases "+
+			"in upstream_usm are not used and anything that can reach the agent can forge this relay's "+
+			"messages to it", p)
+	case u.Privacy != "" && level == snmpwire.AuthNoPriv:
+		v.warnf("%s.upstream_security_level: authNoPriv with a privacy pass phrase configured, so the requests "+
+			"to the agent are signed and readable on the wire. The reason to configure privacy is to use it", p)
+	}
+	if up, ok := snmpwire.VersionOf(m.UpgradeVersion); m.UpgradeVersion == "" || !ok || up != snmpwire.V3 {
+		v.warnf("%s.upstream_usm: configured without upgrade_version: v3, so nothing originates as it and the "+
+			"pass phrases are unused", p)
+	}
+	// The consequence, once, where an operator reading the file will see it.
+	v.warnf("%s.upstream_usm: this relay now terminates the manager's security and originates its own, so "+
+		"there is no end-to-end authentication between the manager and the agent: the manager authenticates "+
+		"to this relay and this relay authenticates to the agent. That is the point of it and it is also what "+
+		"an estate has to decide it wants", p)
+}
+
+// snmpUser checks one version 3 user, whether it is a user this listener reads
+// or the identity it presents to the agent. One function so that both are held
+// to one set of rules: an upstream identity validated more loosely than a
+// downstream one would be the weaker half of a configuration whose whole point
+// is that the upstream half is stronger.
+func (v *validator) snmpUser(q string, u *SNMPUser, m *SNMPListener) {
+	switch {
+	case u.Name == "":
+		v.errf("%s.name: required", q)
+	case len(u.Name) > 255:
+		v.errf("%s.name: longer than 255 octets", q)
+	}
+	auth, ok := snmpwire.AuthAlgoOf(u.Auth)
+	if !ok {
+		v.errf("%s.auth: %q is not an authentication protocol; the ones USM defines are %s",
+			q, u.Auth, strings.Join(SNMPAuthAlgos, ", "))
+	} else if auth == snmpwire.AuthMD5 || auth == snmpwire.AuthSHA1 {
+		v.warnf("%s.auth: %s is RFC 3414's original and is weak by any current measure. It is here "+
+			"because it is what the installed base speaks; where the equipment can do better, "+
+			"RFC 7860's sha256 is the same configuration with a different word", q, auth)
+	}
+	if u.AuthSecret == "" {
+		v.errf("%s.auth_secret: required", q)
+	} else {
+		v.secretRef(q+".auth_secret", u.AuthSecret)
+	}
+	if u.Privacy == "" {
+		if u.PrivacySecret != "" {
+			v.errf("%s.privacy: required with privacy_secret", q)
+		}
+		// A user with no privacy key cannot be read at authPriv, and this
+		// relay refuses what it cannot read rather than forwarding it
+		// around the rules. Whether that matters depends on the listener's
+		// own floor.
+		if m.MinSecurityLevel != "" {
+			if lvl, ok := snmpwire.LevelOf(m.MinSecurityLevel); ok && lvl == snmpwire.AuthPriv {
+				v.errf("%s.privacy: required, because min_security_level authPriv means every message "+
+					"from %q arrives encrypted and without a privacy key none of them can be read -- "+
+					"so all of them would be refused", q, u.Name)
+			}
+		}
+		return
+	}
+	priv, ok := snmpwire.PrivAlgoOf(u.Privacy)
+	if !ok {
+		v.errf("%s.privacy: %q is not a privacy protocol; the ones USM defines are %s",
+			q, u.Privacy, strings.Join(SNMPPrivAlgos, ", "))
+	} else {
+		if priv == snmpwire.PrivDES {
+			v.warnf("%s.privacy: des is a fifty-six bit cipher, which is RFC 3414's own and is "+
+				"breakable. RFC 3826's aes128 is the same configuration with a different word", q)
+		}
+		// One derivation, truncated by the cipher: a sixteen-octet MD5 key
+		// cannot key AES-256.
+		if have, need := auth.KeyLen(), priv.KeyLen(); ok && have > 0 && have < need {
+			v.errf("%s.privacy: %s needs %d key octets and %s derives %d; USM has one key derivation "+
+				"and the cipher truncates it, so pair a wider authentication protocol with this one",
+				q, priv, need, auth, have)
+		}
+	}
+	if u.PrivacySecret == "" {
+		v.errf("%s.privacy_secret: required with privacy", q)
+	} else {
+		v.secretRef(q+".privacy_secret", u.PrivacySecret)
+		if u.PrivacySecret == u.AuthSecret {
+			v.warnf("%s.privacy_secret: the same reference as auth_secret, so one pass phrase keys both "+
+				"the digest and the cipher. USM allows it and every tool does it; it means one guess "+
+				"gets both", q)
+		}
+	}
+}
+
 // snmpUSMUsers checks the version 3 users whose keys this listener holds.
 //
 // Everything here is about a configuration that would load and then refuse the
@@ -9924,74 +10279,11 @@ func (v *validator) snmpUSMUsers(p string, m *SNMPListener) {
 	for i := range m.USMUsers {
 		u := &m.USMUsers[i]
 		q := fmt.Sprintf("%s[%d]", p, i)
-		switch {
-		case u.Name == "":
-			v.errf("%s.name: required", q)
-		case len(u.Name) > 255:
-			v.errf("%s.name: longer than 255 octets", q)
-		case seen[u.Name]:
+		if u.Name != "" && seen[u.Name] {
 			v.errf("%s.name: %q appears twice; one user has one set of keys", q, u.Name)
-		default:
-			seen[u.Name] = true
 		}
-		auth, ok := snmpwire.AuthAlgoOf(u.Auth)
-		if !ok {
-			v.errf("%s.auth: %q is not an authentication protocol; the ones USM defines are %s",
-				q, u.Auth, strings.Join(SNMPAuthAlgos, ", "))
-		} else if auth == snmpwire.AuthMD5 || auth == snmpwire.AuthSHA1 {
-			v.warnf("%s.auth: %s is RFC 3414's original and is weak by any current measure. It is here "+
-				"because it is what the installed base speaks; where the equipment can do better, "+
-				"RFC 7860's sha256 is the same configuration with a different word", q, auth)
-		}
-		if u.AuthSecret == "" {
-			v.errf("%s.auth_secret: required", q)
-		} else {
-			v.secretRef(q+".auth_secret", u.AuthSecret)
-		}
-		if u.Privacy == "" {
-			if u.PrivacySecret != "" {
-				v.errf("%s.privacy: required with privacy_secret", q)
-			}
-			// A user with no privacy key cannot be read at authPriv, and this
-			// relay refuses what it cannot read rather than forwarding it
-			// around the rules. Whether that matters depends on the listener's
-			// own floor.
-			if m.MinSecurityLevel != "" {
-				if lvl, ok := snmpwire.LevelOf(m.MinSecurityLevel); ok && lvl == snmpwire.AuthPriv {
-					v.errf("%s.privacy: required, because min_security_level authPriv means every message "+
-						"from %q arrives encrypted and without a privacy key none of them can be read -- "+
-						"so all of them would be refused", q, u.Name)
-				}
-			}
-			continue
-		}
-		priv, ok := snmpwire.PrivAlgoOf(u.Privacy)
-		if !ok {
-			v.errf("%s.privacy: %q is not a privacy protocol; the ones USM defines are %s",
-				q, u.Privacy, strings.Join(SNMPPrivAlgos, ", "))
-		} else {
-			if priv == snmpwire.PrivDES {
-				v.warnf("%s.privacy: des is a fifty-six bit cipher, which is RFC 3414's own and is "+
-					"breakable. RFC 3826's aes128 is the same configuration with a different word", q)
-			}
-			// One derivation, truncated by the cipher: a sixteen-octet MD5 key
-			// cannot key AES-256.
-			if have, need := auth.KeyLen(), priv.KeyLen(); ok && have > 0 && have < need {
-				v.errf("%s.privacy: %s needs %d key octets and %s derives %d; USM has one key derivation "+
-					"and the cipher truncates it, so pair a wider authentication protocol with this one",
-					q, priv, need, auth, have)
-			}
-		}
-		if u.PrivacySecret == "" {
-			v.errf("%s.privacy_secret: required with privacy", q)
-		} else {
-			v.secretRef(q+".privacy_secret", u.PrivacySecret)
-			if u.PrivacySecret == u.AuthSecret {
-				v.warnf("%s.privacy_secret: the same reference as auth_secret, so one pass phrase keys both "+
-					"the digest and the cipher. USM allows it and every tool does it; it means one guess "+
-					"gets both", q)
-			}
-		}
+		seen[u.Name] = true
+		v.snmpUser(q, u, m)
 	}
 	for i, u := range m.USMUsers {
 		if u.EngineID == "" {
@@ -10156,8 +10448,12 @@ func (v *validator) snmpListener(p string, m *SNMPListener, hasTLS bool) {
 			// forwarded with an empty credential.
 			v.errf("%s.upstream_community: required with upgrade_version %s, because a v3 message carries no community string to forward", p, m.UpgradeVersion)
 		}
-		if up == snmpwire.V3 {
-			v.errf("%s.upgrade_version: v3 cannot be produced from a v1 or v2c message, because there is no user, engine or key to authenticate it with; put the v3 listener in front and upgrade downwards", p)
+		if up == snmpwire.V3 && m.UpstreamUSM == nil {
+			// Without an identity of its own there is no pass phrase to
+			// authenticate with, and this relay will not forge an
+			// authentication that did not happen.
+			v.errf("%s.upgrade_version: v3 needs upstream_usm, the identity this relay presents to the agent: "+
+				"without a user and a pass phrase of its own there is nothing to authenticate the message with", p)
 		}
 		if up != snmpwire.V3 && takesV3 && !m.Traps {
 			// A v3 request downgraded to v2c gets a v2c answer, and giving
@@ -10171,6 +10467,7 @@ func (v *validator) snmpListener(p string, m *SNMPListener, hasTLS bool) {
 	if m.UpstreamCommunity != "" && len(m.UpstreamCommunity) > 255 {
 		v.errf("%s.upstream_community: longer than 255 octets", p)
 	}
+	v.snmpUpstreamUSM(p, m)
 	if m.Traps && m.ReadOnly {
 		v.warnf("%s.read_only: a trap listener carries no SetRequest, so read_only refuses nothing here", p)
 	}
@@ -12079,12 +12376,24 @@ func (v *validator) ntpListener(p string, n *NTPListener) {
 	}
 	if s := n.NTS; s != nil {
 		switch s.Mode {
-		case "", "passthrough", "off":
+		case "", "passthrough", "off", "terminate":
 		default:
-			v.errf("%s.nts.mode: must be passthrough or off", p)
+			v.errf("%s.nts.mode: must be passthrough, terminate or off", p)
 		}
 		if s.Require && s.Mode == "off" {
 			v.errf("%s.nts: require with mode off refuses every packet: NTS cannot be required by a listener that is not passing it", p)
+		}
+		if s.Mode == "terminate" && s.KeyListener == "" {
+			v.errf("%s.nts.key_listener: required with mode terminate: the cookies this listener opens were issued by an ntske listener, and it has to be named", p)
+		}
+		if s.Mode != "terminate" && s.KeyListener != "" {
+			v.errf("%s.nts.key_listener: set with mode %q, which does not open cookies", p, s.Mode)
+		}
+		if s.Source != nil {
+			if s.Mode != "terminate" {
+				v.errf("%s.nts.source: needs mode terminate: the relay can only hold its own association with the source once the client's authentication ends here", p)
+			}
+			v.ntsSource(p+".nts.source", s.Source)
 		}
 	}
 	if e := n.Extensions; e != nil {
@@ -12272,10 +12581,79 @@ func (v *validator) ntpCIDRs(what string, list []string) {
 	}
 }
 
+// ntsSource checks the relay's own association with the time source.
+func (v *validator) ntsSource(p string, n *NTPSourceNTS) {
+	if n.KEAddress == "" {
+		v.errf("%s.ke_address: required", p)
+	} else {
+		host := n.KEAddress
+		if h, _, err := net.SplitHostPort(n.KEAddress); err == nil {
+			host = h
+		}
+		if !hostPatternOK(host) {
+			v.errf("%s.ke_address: %q is not a host or host:port", p, n.KEAddress)
+		}
+	}
+	if n.ServerName != "" && !hostPatternOK(n.ServerName) {
+		v.errf("%s.server_name: %q is not a valid host name", p, n.ServerName)
+	}
+	if n.CAFile != "" {
+		v.file(p+".ca_file", n.CAFile)
+	} else {
+		v.warnf("%s.ca_file: empty, so the source's certificate is checked against the system trust store -- on a plant network that admits any public authority, which is not usually what an estate means by \"this is our time server\"", p)
+	}
+	if (n.CertFile == "") != (n.KeyFile == "") {
+		v.errf("%s: cert_file and key_file are both needed, or neither", p)
+	}
+	if n.CertFile != "" {
+		v.file(p+".cert_file", n.CertFile)
+		v.file(p+".key_file", n.KeyFile)
+	}
+	if n.RefreshBelow != 0 && (n.RefreshBelow < 1 || n.RefreshBelow > 8) {
+		v.errf("%s.refresh_below: must be between 1 and 8", p)
+	}
+	if d := n.Timeout; d != 0 && (d.D() < time.Second || d.D() > time.Minute) {
+		v.errf("%s.timeout: must be between 1s and 1m", p)
+	}
+	v.warnf("%s: there is no end-to-end authentication between a client and the time source any more. The client authenticates to this relay and this relay authenticates to the source, so the process is a party to the security rather than a reader of it -- which is the point, and is worth being written down", p)
+}
+
+// ntsKeyListener checks that a named listener is one that issues cookies.
+func (v *validator) ntsKeyListener(p string, c *Config, name string) {
+	for i := range c.Server.Listeners {
+		ln := &c.Server.Listeners[i]
+		if ln.Name != name {
+			continue
+		}
+		switch {
+		case ln.Kind != "ntske":
+			v.errf("%s.key_listener: %q is a %s listener, not an ntske one", p, name, kindOrHTTP(ln.Kind))
+		case !ln.NTSKE.Terminating():
+			v.errf("%s.key_listener: %q relays key establishment rather than terminating it, so it holds no cookie keys", p, name)
+		}
+		return
+	}
+	v.errf("%s.key_listener: no listener named %q", p, name)
+}
+
+// kindOrHTTP names a listener's kind, including the default.
+func kindOrHTTP(kind string) string {
+	if kind == "" {
+		return "http"
+	}
+	return kind
+}
+
 // ntskeListener checks the NTS key establishment relay.
-func (v *validator) ntskeListener(p string, k *NTSKEListener, address string) {
-	if k.Upstream == "" {
-		v.errf("%s.upstream: required", p)
+func (v *validator) ntskeListener(p string, k *NTSKEListener, address string, hasTLS bool) {
+	switch {
+	case k.Terminating():
+		if k.Upstream != "" {
+			v.errf("%s.upstream: set with terminate: this listener answers key establishment itself, so there is nothing to relay it to", p)
+		}
+		v.ntskeTerminate(p+".terminate", k.Terminate, hasTLS)
+	case k.Upstream == "":
+		v.errf("%s.upstream: required, or terminate to answer key establishment here", p)
 	}
 	v.ntpCIDRs(p+".allow_clients", k.AllowClients)
 	v.ntpCIDRs(p+".deny_clients", k.DenyClients)
@@ -12304,6 +12682,42 @@ func (v *validator) ntskeListener(p string, k *NTSKEListener, address string) {
 	}
 	if _, port, err := net.SplitHostPort(address); err == nil && port != "4460" && port != "0" {
 		v.warnf("%s is on port %s rather than 4460: a client that found this service through a server's own key establishment record will look for 4460", p, port)
+	}
+}
+
+// ntskeTerminate checks the terminating side.
+func (v *validator) ntskeTerminate(p string, t *NTSKETerminate, hasTLS bool) {
+	if !hasTLS {
+		// The certificate is the whole of what a client authenticates in NTS:
+		// there is nothing else in the exchange that names the server. A
+		// terminating listener without one could not answer at all.
+		v.errf("%s: needs a tls section on the listener: the certificate is the only thing an NTS client authenticates", p)
+	}
+	if t.Server != "" && !hostPatternOK(t.Server) {
+		v.errf("%s.server: %q is not a valid host name", p, t.Server)
+	}
+	if t.Port != 0 && (t.Port < 1 || t.Port > 65535) {
+		v.errf("%s.port: must be between 1 and 65535", p)
+	}
+	if t.Cookies != 0 && (t.Cookies < 1 || t.Cookies > 8) {
+		// Eight is the bound because it is also the bound on how many cookies
+		// one time exchange may ask for: a listener that issued more would be
+		// answering a request with a response larger than the client asked for.
+		v.errf("%s.cookies: must be between 1 and 8", p)
+	}
+	if d := t.RotateEvery; d != 0 && (d.D() < time.Minute || d.D() > 30*24*time.Hour) {
+		v.errf("%s.rotate_every: must be between 1m and 720h", p)
+	}
+	if n := t.KeepKeys; n != nil && (*n < 0 || *n > 64) {
+		v.errf("%s.keep_keys: must be between 0 and 64", p)
+	}
+	if t.KeepKeys != nil && *t.KeepKeys == 0 {
+		v.warnf("%s.keep_keys: 0, so a rotation refuses every cookie already issued at once and every client has to establish keys again -- a TLS handshake each, all at the same moment", p)
+	}
+	if t.State == "" {
+		v.warnf("%s.state: empty, so the cookie keys live only in memory and a restart refuses every cookie in the estate -- every client then re-establishes at once, which is the load a restart should not create", p)
+	} else if !filepath.IsAbs(t.State) {
+		v.errf("%s.state: must be an absolute path", p)
 	}
 }
 

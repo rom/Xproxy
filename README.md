@@ -112,7 +112,7 @@ estate — and binds only the kinds of its own role:
 |--------|-------|----------------|
 | `xproxy` | the open internet | `http`, `forward`, `tcp`, `udp`, `dns` |
 | `xgate` | people | `ssh`, `telnet`, `vnc`, `rdp` |
-| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `snmp`, `ldap`, `tftp`, `dhcp`, `postgres`, `mysql`, `tds`, `redis`, `bacnet`, `amqp`, `s7`, `ntp`, `ntske` |
+| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `snmp`, `ldap`, `tftp`, `dhcp`, `postgres`, `mysql`, `tds`, `redis`, `bacnet`, `amqp`, `s7`, `ntp`, `ntske`, `dhcp6` |
 
 A kind a binary did not link is never bound and never falls through to
 the HTTP data plane: it is an error naming the daemon that serves it.
@@ -181,7 +181,7 @@ its own for what is deliberately *not* implemented and why.
 | Messaging | MQTT 3.1.1 (also ISO/IEC 20922) and MQTT 5.0 | `mqtt` |
 | File transfer | FTP and FTPS (`AUTH TLS`) with the data connection mediated at both ends; SFTP version 3 inside the SSH subsystem channel | `ftp`, `ssh` |
 | Logging | Syslog RFC 5424 and RFC 3164 over UDP, TCP (RFC 6587 framing) and TLS, re-emitted in one dialect | `syslog` |
-| Time | NTP v1 to v4 (RFC 5905), SNTP (RFC 4330), extension fields (RFC 7822), AES-CMAC authentication (RFC 8573), NTS (RFC 8915) passed through whole, and NTS key establishment relayed on TCP 4460 | `ntp`, `ntske` |
+| Time | NTP v1 to v4 (RFC 5905), SNTP (RFC 4330), extension fields (RFC 7822), AES-CMAC authentication (RFC 8573), NTS (RFC 8915) either passed through whole or **terminated and re-originated** -- key establishment answered here with AES-SIV cookies (RFC 5297), every time packet's authenticator verified, and an association of the relay's own toward a source that speaks it -- on UDP 123 and TCP 4460 | `ntp`, `ntske` |
 | Industrial | Modbus/TCP (MBAP), Modbus over Serial Line RTU and ASCII tunnelled over TCP, and Modbus/TCP Security with the role in the client certificate | `modbus` |
 | Telecontrol | IEC 60870-5-104 (APCI/APDU, the I, S and U formats, the type identifications and causes of transmission of IEC 60870-5-101), with IEC 62351-3 TLS | `iec104` |
 | Building automation | BACnet/IP (ASHRAE 135 Annex J): the BVLC functions, the network layer of clause 6 with its routing and security messages, the application layer of clause 20 with the confirmed and unconfirmed services, and the object, property and command priority each request names | `bacnet` |
@@ -190,6 +190,7 @@ its own for what is deliberately *not* implemented and why.
 | Management | SNMP v1 (RFC 1157), v2c (RFC 1901–1908) and v3 with USM (RFC 3410–3418, RFC 3826, RFC 7860) read and verified, over UDP and over TCP (RFC 3430), with RFC 6353 TLS on the stream side | `snmp` |
 | Directory | LDAP v3 (RFC 4511–4515, 4517, 4519) with LDAPS and the StartTLS of RFC 4513, as a relay: the bind methods, the search filter's shape, distinguished names compared per relative name, the attribute lists in both directions | `ldap`, filters |
 | Addressing | DHCP (RFC 2131) with its options (RFC 2132), relay agent information (RFC 3046), long options (RFC 3396) and classless static routes (RFC 3442), as a relay agent that reads what it relays: the server a reply came from, and the configuration the reply carries | `dhcp` |
+| Addressing | DHCPv6 (RFC 8415) as a relay agent that reads what it relays, with the nested relay chain, the DUID identity, the identity associations and prefix delegation, and the options that configure something other than an address: the boot file URL (RFC 5970), the captive portal (RFC 8910), the SZTP bootstrap server (RFC 8572), the S46 transition containers (RFC 7598) and the AFTR name (RFC 6334) | `dhcp6` |
 | Provisioning | TFTP (RFC 1350) with the option extension (RFC 2347), block size (RFC 2348), timeout and transfer size (RFC 2349) and windowed transfer (RFC 7440), as a relay: the filename read as a path, the direction of the transfer, and the bounds on what comes back | `tftp` |
 | Databases | PostgreSQL frontend/backend protocol version 3, with the SSL and GSSAPI encryption requests, the cancel request, the simple and extended query protocols, and the authentication methods of pg_hba.conf; the MySQL and MariaDB client/server protocol with handshake v10, the capability negotiation, the command set and the authentication plugins; TDS 7.x (MS-TDS) with the PRELOGIN option table, the LOGIN7 identity, the SQLBATCH and RPC message types, and the TLS handshake carried inside TDS packets; the Redis serialization protocol (RESP2 and RESP3) in both the multibulk and inline forms, with the command table's key positions | `postgres`, `mysql`, `tds`, `redis` |
 | Remote access | SSH (RFC 4251–4254) with OpenSSH user and host certificates; telnet's NVT (RFC 854); RFB 3.3 to 3.8 (RFC 6143) with VeNCrypt; RDP (MS-RDPBCGR) over TLS, CredSSP over NTLMv2 towards the desktop, or the protocol's own encryption | `ssh`, `telnet`, `vnc`, `rdp` |
@@ -225,9 +226,10 @@ protocol so that a policy can be written in that protocol's own terms:
 | `syslog` | `xrelay` | RFC 5424 and RFC 3164 over UDP, TCP, TLS | Facility, severity, sender, the text; re-emitted in one dialect |
 | `modbus` | `xrelay` | Modbus/TCP, RTU and ASCII, Modbus/TCP Security | Unit identifiers, function codes, register ranges, values, roles, schedules, behavioural detection |
 | `iec104` | `xrelay` | IEC 60870-5-104, IEC 62351-3 TLS, IEC 60870-5-7 secure authentication recognised | Type identifications, causes of transmission, common and originator addresses, information object ranges, select-before-operate, setpoint value and step bounds, schedules; the information element too -- the quality descriptor a station attached to a reading, the value it reported, and the timestamp on a time-tagged command, which is this protocol's own replay check |
-| `snmp` | `xrelay` | SNMP v1, v2c and v3 (USM), UDP and TCP, RFC 6353 TLS | Versions, community strings and USM users, security levels, operations, object subtrees, the amplification bounds; with the user's pass phrases, v3 digests verified and payloads decrypted so the rules apply to v3 too |
+| `snmp` | `xrelay` | SNMP v1, v2c and v3 (USM), UDP and TCP, RFC 6353 TLS | Versions, community strings and USM users, security levels, operations, object subtrees, the amplification bounds; with the user's pass phrases, v3 digests verified and payloads decrypted so the rules apply to v3 too; and USM **terminated and re-originated**, so a v1 poller reaches a v3-only agent |
 | `ldap` | `xrelay` | LDAP v3, LDAPS, StartTLS | Bind methods, the bound identity, operations, naming contexts and subtrees, scopes, attributes in both directions, filter and entry bounds |
 | `dhcp` | `xrelay` | DHCPv4 with RFC 2132 options, RFC 3046 relay agent information, RFC 3442 routes | The server a reply came from, the options and addresses a reply may carry, the boot file, the lease bounds, the hardware-address rate |
+| `dhcp6` | `xrelay` | DHCPv6 (RFC 8415) with the nested relay chain, the DUID, the identity associations, prefix delegation | The server a reply came from, the options a reply may carry and the resolvers, domains and boot URLs they may name, what may be delegated and what a client may ask for, the lease bounds -- with a withdrawal never turned into a lease -- the relay chain's depth, and the starvation bound keyed on the **DUID** |
 | `postgres` | `xrelay` | PostgreSQL protocol v3, both query protocols, the cleartext TLS negotiation | Whether the connection may be unencrypted at all, which role and database may be claimed, which authentication methods may cross, which *shapes* of statement are allowed, replication, the fast-path call, cancel requests; and, with `deception`, answering a refused statement as a fabricated database so the reconnaissance behind a documented shell command is collected rather than deflected |
 | `mysql` | `xrelay` | MySQL and MariaDB protocol, handshake v10, the capability flags, the command set | The capability bits a client may even see offered, which of the protocol's commands may cross, whether the connection may be unencrypted, which user and database may be claimed (re-checked on COM_CHANGE_USER), which authentication plugins, which statement shapes, LOAD DATA in either form; and, with `deception`, answering a refused statement as a fabricated database so the reconnaissance is collected rather than deflected |
 | `tds` | `xrelay` | TDS 7.x for SQL Server: the PRELOGIN negotiation, LOGIN7, SQLBATCH and RPC, and the TLS handshake carried inside TDS packets | Whether the connection may be unencrypted at all -- and the relay answers the negotiation itself rather than forwarding the server's octet -- whether a password may cross in the clear, which login, database and application name may be claimed, whether a login carrying no user name is admitted, which message types, which stored procedures, and which statement shapes, applied to a batch and to the SQL inside an sp_executesql alike |
@@ -236,8 +238,8 @@ protocol so that a policy can be written in that protocol's own terms:
 | `s7` | `xrelay` | Siemens S7comm: the TPKT framing, the COTP connection request with the rack and slot it addresses, and the S7 layer -- function codes, user-data groups and subfunctions, and the item specifications of a read or a write | Which controller a client may reach, decided from the connection request *before the PLC is dialled*, and as what -- an operator panel, an engineering station or another PLC; which of nineteen operations it may ask for, where the default is what an HMI does and an upload is off with the writes because a block read is how control logic leaves a site; `read_only` as one line no rule can override; which memory areas, data blocks and byte ranges a request may name, checked against the whole span rather than its first byte; the block types an upload or a download may name; and the item, octet, PDU-length and connection bounds, because a CPU has sixteen connection resources altogether. For **S7comm-plus** on an S7-1200 or S7-1500, where the addressing is encrypted and only the framing is visible: the function code by name or class, with a function this relay cannot name failing closed |
 | `tftp` | `xrelay` | TFTP with RFC 2347–2349 options and RFC 7440 windows | The client list, the direction, the transfer mode, the filename read as a path and refused by class, the directories, and the block, window and transfer bounds |
 | `bacnet` | `xrelay` | BACnet/IP: the BVLC functions, the network layer, the confirmed and unconfirmed services, and where each service keeps its object | Which addresses may speak to the building at all -- the only identity the protocol has -- which services may be sent, which objects and properties they may name, and at which *command priority*, so nobody takes a piece of plant at a life safety slot the management system cannot override; whether a broadcast is carried and how many answers it may bring back; whether foreign-device registration with the estate's broadcast management is carried at all |
-| `ntp` | `xrelay` | NTP v1–v4, SNTP, NTS-protected NTP | Versions, modes, extension fields, authentication, and whether the servers agree |
-| `ntske` | `xrelay` | NTS key establishment (TLS on 4460) | The application protocol, the server name, the handshakes in flight |
+| `ntp` | `xrelay` | NTP v1–v4, SNTP, NTS-protected NTP | Versions, modes, extension fields, authentication, whether the servers agree, and -- terminating NTS -- whether each packet's authenticator verifies under the keys in the cookie this estate issued |
+| `ntske` | `xrelay` | NTS key establishment (TLS on 4460), relayed or terminated | The application protocol, the server name, the handshakes in flight; terminating, the negotiated terms and the cookies it issues |
 
 - `kind: tcp`: layer 4 TLS and QUIC passthrough routed by server name
   without terminating TLS, with PROXY protocol v2 to TCP upstreams and
@@ -482,8 +484,37 @@ protocol so that a policy can be written in that protocol's own terms:
   requires and the relay adds its own. And the **starvation bound is keyed on the
   hardware address**, because pool exhaustion is one host sending thousands of
   discovers with a made-up address in each and a limit keyed on the source
-  address would see one sender doing nothing unusual. DHCPv6 is a different
-  protocol and is not pretended to be this one
+  address would see one sender doing nothing unusual
+
+- `kind: dhcp6`: the same argument on the **other half of a dual-stack estate**,
+  and it is a listener of its own rather than a flag on `dhcp` because DHCPv6 is
+  a different protocol: a different packet format, a relay mechanism that
+  **nests whole messages** rather than filling in a field, a client identified by
+  a **DUID** rather than by a hardware address, and options DHCPv4 has no
+  equivalent of. It is also the half an estate is most likely to have left
+  unwatched, and there is *more* in an answer here. A reply can carry a **boot
+  file URL** (RFC 5970), a **captive portal** a client will open (RFC 8910), an
+  **SZTP bootstrap server** a switch will fetch a configuration from and apply to
+  itself (RFC 8572), the **S46 containers** and **AFTR name** that put a host's
+  *IPv4* traffic through a border relay of the sender's choosing — a takeover of a
+  protocol the message is not even about — and the **Server Unicast option**,
+  which tells a client to stop using the relay and thereby switches off every
+  policy this listener has. Each is stripped by default while the address goes
+  through. The **resolvers and the search list are deliberately not on that
+  list**: they have a positive list of their own, which is the better check
+  because it names what the estate's resolvers *are*, and handing them out is the
+  whole purpose of stateless DHCPv6 on a network that addresses itself by router
+  advertisement. **Prefix delegation** is the part with no DHCPv4 equivalent and
+  the part where a wrong answer is largest — a reply delegating `::/0` has handed
+  a host the whole of IPv6 to route — so both ends are bounded and a prefix
+  outside the estate's is **refused rather than stripped**, because there is no
+  useful half of a delegation to keep; a client's own `::/0` *hint* is still
+  allowed, because RFC 8415 §21.22 lets it mean "any". A **valid lifetime of zero
+  is never bounded up**: zero is how a server withdraws an address, and applying
+  a floor to it would turn a withdrawal into a lease. And the **starvation bound
+  is keyed on the DUID**, not the source address, because a DHCPv6 client sends
+  from a link-local address it chose for itself and an address-keyed limit would
+  see one sender doing nothing unusual
 
 - `kind: postgres`: a **PostgreSQL relay**, which is deliberately **not a SQL
   firewall**. Knowing which tables a statement touches means parsing SQL
@@ -799,6 +830,20 @@ protocol so that a policy can be written in that protocol's own terms:
   is refused), NTS is passed through whole with a **downgrade to plain
   NTP refused**, and key establishment is a listener of its own on 4460
   where a connection that does not offer `ntske/1` is not an NTS client.
+  Or **terminated**, which is the answer for the time server that cannot
+  speak NTS and is not going to: the key establishment listener is the
+  key establishment server, deriving each client's keys from the TLS
+  exporter and issuing cookies sealed with AES-SIV under a master key it
+  rotates with an overlap and keeps across a restart; the time listener
+  opens those cookies, verifies every request's authenticator over the
+  whole packet, asks the old server in plain NTP, and returns its header
+  unaltered with an authenticator signed by the client's own key. There,
+  "authenticated" means this relay checked. And where the source *does*
+  speak NTS, the relay **re-originates** rather than downgrading: its own
+  key establishment with the source, its own cookies, its own
+  authenticator on every request and verification of every answer — with
+  the cost written down where it is configured, because there is then no
+  end-to-end authentication between a client and the source.
   Rate limits answer with the protocol's own kiss-o'-death rather than a
   drop, every expiry is on the monotonic clock because this is the relay
   for the protocol that moves the wall clock, and learning mode writes

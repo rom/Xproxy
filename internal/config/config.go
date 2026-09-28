@@ -317,6 +317,8 @@ type Listener struct {
 	Redis *RedisListener `yaml:"redis"`
 	// DHCP configures a kind: dhcp listener.
 	DHCP *DHCPListener `yaml:"dhcp"`
+	// DHCP6 configures a kind: dhcp6 listener.
+	DHCP6 *DHCP6Listener `yaml:"dhcp6"`
 	// BACnet configures a kind: bacnet listener.
 	BACnet *BACnetListener `yaml:"bacnet"`
 	// AMQP configures a kind: amqp listener.
@@ -758,13 +760,20 @@ type SNMPListener struct {
 	// manager never needs to know it. A response is rebuilt in the version
 	// its request arrived in, so the manager sees the version it spoke.
 	//
-	// Two things it cannot do, both for the same reason -- this relay holds
-	// no USM keys and will not forge an authentication that did not happen.
-	// It cannot produce v3, which is refused at load. And it cannot
-	// downgrade a v3 *request*, because the answer would have to come back
-	// as v3 and there is no key to authenticate it with; such a request is
-	// refused rather than half-translated. A v3 *notification* downgrades
-	// cleanly, because nothing comes back: that is the modern-device,
+	// Producing v3 needs upstream_usm: an identity of this relay's own.
+	// Without one there is no pass phrase to authenticate with and the
+	// relay will not forge an authentication that did not happen, so
+	// upgrade_version: v3 is refused at load. With one the relay
+	// terminates the manager's security and originates its own, which is
+	// the secure upgrade this protocol needs most -- and which means the
+	// relay is a party to the security rather than a reader of it. See
+	// upstream_usm.
+	//
+	// Downgrading a v3 *request* is a different matter and is still
+	// refused: the answer would come back as v3 from an engine this
+	// relay did not ask as itself, so there would be nothing to
+	// authenticate it with. A v3 *notification* downgrades cleanly,
+	// because nothing comes back: that is the modern-device,
 	// legacy-collector case, and it is what traps: true plus
 	// upgrade_version: v2c is for.
 	UpgradeVersion string `yaml:"upgrade_version"`
@@ -773,6 +782,32 @@ type SNMPListener struct {
 	// upgrade_version v1 or v2c when the arriving message is v3, because
 	// there is no community string in a v3 message to carry over.
 	UpstreamCommunity string `yaml:"upstream_community"`
+	// UpstreamUSM is the version 3 identity this relay presents to the
+	// agent, and it is what `upgrade_version: v3` needs. With it the relay
+	// terminates whatever security the manager used and originates a USM
+	// session of its own: a v1 or v2c poller reaches a v3-only agent, at a
+	// level the poller cannot speak, with a pass phrase the poller never
+	// holds.
+	//
+	// That is the point and it is also the cost, so it is said plainly:
+	// the relay becomes a party to the security rather than a reader of
+	// it. Two sessions exist, this process holds the agent's keys, and
+	// there is no end-to-end authentication between the manager and the
+	// agent any more -- the manager authenticates to the relay (or does
+	// not, on v1 and v2c) and the relay authenticates to the agent. An
+	// estate that wants end-to-end USM wants `upgrade_version` unset and
+	// `usm_users` for reading.
+	//
+	// The engine identifier is discovered from the agent rather than
+	// configured, because it is the agent's to state; engine_id pins it
+	// where an operator knows it, and then a message from an engine that
+	// calls itself something else is not answered.
+	UpstreamUSM *SNMPUser `yaml:"upstream_usm"`
+	// UpstreamSecurityLevel is the level this relay originates at:
+	// noAuthNoPriv, authNoPriv or authPriv. Default authPriv when
+	// upstream_usm has a privacy protocol and authNoPriv when it does not,
+	// because the reason to configure a privacy pass phrase is to use it.
+	UpstreamSecurityLevel string `yaml:"upstream_security_level"`
 	// USMUsers are the version 3 users whose traffic this listener can
 	// read. Without them a v3 message is a header and an opaque payload:
 	// the user, the engine and the security level are visible and nothing
@@ -781,9 +816,11 @@ type SNMPListener struct {
 	// the payload is decrypted -- and then the ordinary rules decide about
 	// a v3 message exactly as they do about a v2c one.
 	//
-	// Nothing is re-encrypted or re-signed: the octets forwarded to the
-	// agent are the octets that arrived. The keys are here so that this
-	// relay can *read*, which is the only thing it needs them for.
+	// Nothing is re-encrypted or re-signed with these keys: the octets
+	// forwarded to the agent are the octets that arrived. They are here so
+	// that this relay can *read*, which is the only thing it needs them
+	// for. Originating a message of this relay's own is upstream_usm,
+	// which is a separate decision with separate consequences.
 	USMUsers []SNMPUser `yaml:"usm_users"`
 	// ReplayWindow is how far behind an authenticated message's notion of
 	// the agent's clock may be before it is refused as a replay, which is
@@ -3206,6 +3243,264 @@ type DHCPRule struct {
 	Schedule *ModbusSchedule `yaml:"schedule"`
 }
 
+// DHCP6Listener is a DHCPv6 relay agent (RFC 8415) that reads what it
+// relays.
+//
+// It is a separate kind from dhcp because DHCPv6 is a separate protocol:
+// a different packet format, different message types, a nested relay
+// mechanism rather than a field, a client identified by a DUID rather
+// than a hardware address, and its own options -- including prefix
+// delegation, which has no DHCPv4 equivalent at all. An estate running
+// both runs both listeners, and writing both down is the point.
+//
+// The shape of the policy is the same as the DHCPv4 one because the
+// shape of the threat is the same: answering is the attack, so the
+// interesting half faces upstream. What differs is what an answer can
+// carry.
+type DHCP6Listener struct {
+	// Mode is reverse (the default: clients send here and the relay
+	// forwards to the servers) or forward (this listener is the
+	// controlled egress a downstream relay agent uses).
+	Mode string `yaml:"mode"`
+	// Upstream is the server pool. Required.
+	Upstream string `yaml:"upstream"`
+	// AllowClients and DenyClients are the networks a message may arrive
+	// from. Deny is evaluated first.
+	//
+	// On a segment these are link-local addresses, which every client has
+	// before it has anything else -- so unlike DHCPv4, where a client
+	// sends from 0.0.0.0 and cannot be told apart at all, this list does
+	// say something here. It says less than it looks: a link-local
+	// address is the sender's own choice.
+	AllowClients []string `yaml:"allow_clients"`
+	DenyClients  []string `yaml:"deny_clients"`
+	// AllowServers are the addresses a reply may come from, and it is the
+	// single most valuable line in the file. An ADVERTISE or a REPLY from
+	// anywhere else is dropped and counted, whatever it says.
+	//
+	// Empty means the endpoints of the upstream pool, which is almost
+	// always what an operator means.
+	AllowServers []string `yaml:"allow_servers"`
+	// MessageTypes is the allow list of message types a client may send.
+	// Empty allows the ordinary lease cycle -- solicit, request, renew,
+	// rebind, confirm, release, decline and information_request -- which
+	// leaves out the lease-query family: a relay agent's own diagnostic,
+	// and an inventory of every lease in the estate to anything else.
+	MessageTypes []string `yaml:"message_types"`
+	// DenyOptions are the options a *server* may not send. Empty uses the
+	// built-in list, which is longer than DHCPv4's and says why in the
+	// protocol page: the resolvers and the search list, the boot file URL
+	// and its parameters, the captive portal URL, the bootstrap server,
+	// the DS-Lite and S46 transition options -- which put a host's IPv4
+	// traffic through a border relay of the sender's choosing -- and the
+	// Server Unicast option, which tells a client to stop using the relay
+	// and so turns off every policy this listener has.
+	DenyOptions []string `yaml:"deny_options"`
+	// AllowOptions turns the answer policy inside out: when it is set, an
+	// option outside it is removed. On a network whose clients need three
+	// options it is a shorter and safer thing to write than a deny list.
+	AllowOptions []string `yaml:"allow_options"`
+	// OnDeniedOption is strip (the default) or deny. strip removes the
+	// option and forwards the rest, so a client still gets its address
+	// and no longer gets a resolver it should not have; deny refuses the
+	// whole reply, which leaves the client with no address at all.
+	OnDeniedOption string `yaml:"on_denied_option"`
+	// DenyRequestedOptions are options a client may not *ask* for, in its
+	// Option Request Option. A client asking for the captive portal URL is
+	// a client that will open one if anything offers it; the ask is
+	// removed rather than the message refused.
+	DenyRequestedOptions []string `yaml:"deny_requested_options"`
+	// AllowResolvers are the addresses the DNS server option may name, and
+	// AllowDomains are shell patterns the domain search list may match.
+	// These are the positive form of the same policy as DenyOptions and
+	// the more useful one: an estate knows its own resolvers, so a reply
+	// naming anything else is wrong whoever sent it.
+	AllowResolvers []string `yaml:"allow_resolvers"`
+	AllowDomains   []string `yaml:"allow_domains"`
+	// AllowBootURLs are shell patterns the boot file URL (RFC 5970) may
+	// match, for the machines that boot from the network. This is where an
+	// estate says which images exist.
+	AllowBootURLs []string `yaml:"allow_boot_urls"`
+	// PrefixDelegation bounds what a reply may delegate and what a client
+	// may ask for. It has no DHCPv4 equivalent and it is the setting worth
+	// reading twice: a reply delegating ::/0 has handed a host the whole
+	// of IPv6 to route.
+	PrefixDelegation *DHCP6PrefixPolicy `yaml:"prefix_delegation"`
+	// AllowTemporaryAddresses accepts an IA_TA. Default true: temporary
+	// addresses are the privacy mechanism of RFC 8415 s6.5 and refusing
+	// them would be refusing clients that are doing the right thing.
+	AllowTemporaryAddresses *bool `yaml:"allow_temporary_addresses"`
+	// AllowReconfigure forwards a RECONFIGURE from a server. Default
+	// false: it is a message to a client that answers nothing, RFC 8415
+	// s18.3.11 requires it to be authenticated with a key nobody deploys,
+	// and a client that accepts one can be made to re-ask a server of the
+	// sender's choosing.
+	AllowReconfigure bool `yaml:"allow_reconfigure"`
+	// MinLeaseTime and MaxLeaseTime bound the valid lifetime a server may
+	// hand out, on an address or a delegated prefix. Zero leaves either
+	// end unbounded. A valid lifetime of zero is not bounded: it is how a
+	// server withdraws an address, and rewriting it would be turning a
+	// withdrawal into a lease.
+	MinLeaseTime Duration `yaml:"min_lease_time"`
+	MaxLeaseTime Duration `yaml:"max_lease_time"`
+	// RefuseRepeatedOptions refuses a message carrying an option twice
+	// where the standard has no meaning for a second one. Default true:
+	// two implementations read such a message differently, and a relay
+	// that decided about the first value while the server acted on the
+	// last would be the reason nobody could find the bug. The identity
+	// associations are exempt, because a client legitimately sends several.
+	RefuseRepeatedOptions *bool `yaml:"refuse_repeated_options"`
+	// MaxRelayHops bounds the relay chain. Default 4; RFC 8415 s19.1.1
+	// makes 32 the outer limit. A message arriving already wrapped several
+	// times has been somewhere.
+	MaxRelayHops int `yaml:"max_relay_hops"`
+	// LinkAddress is the address this relay puts in a RELAY-FORW's link
+	// address field, which is what tells the server which segment to
+	// allocate from. Required in reverse mode: a relay that left it
+	// unspecified would be asking the server to guess.
+	LinkAddress string `yaml:"link_address"`
+	// InterfaceID, RemoteID and SubscriberID fill in the relay's own
+	// options (RFC 8415 s21.18, RFC 4649, RFC 4580), which is how a server
+	// learns which circuit and which subscriber a message came from.
+	// Empty leaves each out. RemoteID needs an enterprise number, which is
+	// the first four octets of that option.
+	InterfaceID        string `yaml:"interface_id"`
+	RemoteID           string `yaml:"remote_id"`
+	RemoteIDEnterprise int    `yaml:"remote_id_enterprise"`
+	SubscriberID       string `yaml:"subscriber_id"`
+	// OnClientRelayOption is what to do when a *client* sends one of the
+	// relay's own options: strip (the default) or deny. A client has no
+	// business asserting which circuit it is on, because that assertion is
+	// exactly what the option exists to make on its behalf.
+	OnClientRelayOption string `yaml:"on_client_relay_option"`
+	// Rules decide each message, in order, first match wins. A message
+	// that matches no rule takes DefaultAction.
+	Rules []DHCP6Rule `yaml:"rules"`
+	// DefaultAction is allow (the default) or deny.
+	//
+	// Allow, as in the DHCPv4 kind and for the same reason: DHCP is
+	// infrastructure, a listener that refused every request until somebody
+	// wrote a rule would be a listener that stops an estate booting, and
+	// the protections here are the answer policy and the server list,
+	// which are on by default and do not depend on a rule existing.
+	DefaultAction string `yaml:"default_action"`
+	// MaxPending bounds the requests outstanding towards servers, which is
+	// the table that pairs a reply with the client that asked. Default 256.
+	MaxPending int `yaml:"max_pending"`
+	// RequestTimeout is how long a server has to answer before its answer
+	// is too late to pair. Default 10s.
+	RequestTimeout Duration `yaml:"request_timeout"`
+	// MaxMessageBytes bounds one message. Default 1500. A relay chain
+	// grows a message, so this is the bound on what arrives rather than on
+	// what a client sent.
+	MaxMessageBytes int `yaml:"max_message_bytes"`
+	// RateLimit and RateBurst bound messages a second per *DUID*, which is
+	// the key that matters on this protocol: pool exhaustion is one host
+	// sending thousands of SOLICITs with a made-up identifier in each, and
+	// a limit keyed on the source address would see one sender doing
+	// nothing unusual.
+	RateLimit int `yaml:"rate_limit"`
+	RateBurst int `yaml:"rate_burst"`
+	// MaxClients bounds the distinct identifiers this listener tracks at
+	// once. It is the other half of the starvation bound: the rate limit
+	// slows one identifier down, and this stops a flood of new ones from
+	// filling the table that does the limiting. Default 8192.
+	MaxClients int `yaml:"max_clients"`
+	// LogMessages writes an access line per message.
+	LogMessages bool `yaml:"log_messages"`
+	// LogLeases writes a line for every address and prefix handed out:
+	// which identifier got which lease, for how long, from which server.
+	// Default true, and it is the record an estate is asked for.
+	LogLeases *bool `yaml:"log_leases"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
+}
+
+// DHCP6PrefixPolicy bounds prefix delegation.
+//
+// Prefix delegation is the part of DHCPv6 with no DHCPv4 equivalent, and
+// the part where a wrong answer is largest: a reply delegating ::/0 has
+// handed a host the whole of IPv6 to route, and a request for a /48 where
+// the estate delegates /56s is a client asking for two hundred and
+// fifty-six times what it should have.
+type DHCP6PrefixPolicy struct {
+	// Enabled carries prefix delegation at all. Default true: an estate
+	// that does not use it should say so, because then an IA_PD arriving
+	// from anywhere is a question worth refusing.
+	Enabled *bool `yaml:"enabled"`
+	// Prefixes are the prefixes a delegation may come from. A delegated
+	// prefix outside all of them is refused, and the refusal names it.
+	Prefixes []string `yaml:"prefixes"`
+	// MinLength and MaxLength bound the prefix length, in bits. An estate
+	// that delegates /56s writes 56 in both, and then a /48 is refused
+	// whoever offered it.
+	MinLength int `yaml:"min_length"`
+	MaxLength int `yaml:"max_length"`
+}
+
+// Delegating says whether prefix delegation is carried.
+func (p *DHCP6PrefixPolicy) Delegating() bool {
+	return p == nil || p.Enabled == nil || *p.Enabled
+}
+
+// DHCP6Rule decides one message.
+type DHCP6Rule struct {
+	// Name identifies the rule in the logs and the counters. Required.
+	Name string `yaml:"name"`
+	// Action is allow, deny or observe. observe logs and counts and then
+	// keeps looking, which is how a rule is tried on live traffic before
+	// it decides anything.
+	Action string `yaml:"action"`
+	// Clients are the networks the message arrived from.
+	Clients []string `yaml:"clients"`
+	// DUIDs are shell patterns the client identifier's rendering matches,
+	// which is "ll:0003*" for a vendor's whole fleet and the whole
+	// identifier for one machine. The rendering is the type and the
+	// hexadecimal octets, which is what the logs carry too.
+	DUIDs []string `yaml:"duids"`
+	// MessageTypes are the message types this rule covers.
+	MessageTypes []string `yaml:"message_types"`
+	// VendorClasses and UserClasses match the vendor class and user class
+	// options as shell patterns, which is how a rule about PXE clients is
+	// written.
+	VendorClasses []string `yaml:"vendor_classes"`
+	UserClasses   []string `yaml:"user_classes"`
+	// DenyOptions, AllowResolvers, AllowDomains and AllowBootURLs narrow
+	// the answer policy for this rule's traffic, which is how "the boot
+	// segment may be told a boot URL and nothing else may" is written.
+	DenyOptions    []string `yaml:"deny_options"`
+	AllowResolvers []string `yaml:"allow_resolvers"`
+	AllowDomains   []string `yaml:"allow_domains"`
+	AllowBootURLs  []string `yaml:"allow_boot_urls"`
+	// MaxLeaseTime overrides the listener's lease bound for this rule.
+	MaxLeaseTime Duration `yaml:"max_lease_time"`
+	// InterfaceID overrides the listener's interface identifier, so that a
+	// rule about one segment can tell the server which segment it is.
+	InterfaceID string `yaml:"interface_id"`
+	// Schedule limits the rule to a time window.
+	Schedule *ModbusSchedule `yaml:"schedule"`
+}
+
+// Alerts says whether a refusal writes a security event.
+func (m *DHCP6Listener) Alerts() bool {
+	return m == nil || m.AlertOnDeny == nil || *m.AlertOnDeny
+}
+
+// Leases says whether a lease line is written.
+func (m *DHCP6Listener) Leases() bool {
+	return m == nil || m.LogLeases == nil || *m.LogLeases
+}
+
+// RefusesRepeated says whether a repeated option refuses the message.
+func (m *DHCP6Listener) RefusesRepeated() bool {
+	return m == nil || m.RefuseRepeatedOptions == nil || *m.RefuseRepeatedOptions
+}
+
+// TemporaryAddresses says whether an IA_TA is carried.
+func (m *DHCP6Listener) TemporaryAddresses() bool {
+	return m == nil || m.AllowTemporaryAddresses == nil || *m.AllowTemporaryAddresses
+}
+
 // SNMPDeception answers as an agent that is not there.
 //
 // A refusal is information here as it is on the plant protocols, and on this
@@ -4356,16 +4651,25 @@ type NTPKey struct {
 // "ntske/1", and it is a listener of its own (kind: ntske). This section
 // is about the time side.
 type NTPNTS struct {
-	// Mode is passthrough (the default) or off. Pass-through forwards
-	// NTS-protected packets whole and unaltered, which is the only
-	// honest thing a relay that does not hold the keys can do with them:
-	// the authentication is between the client and the server, and every
-	// visible NTS field is readable by anybody on the path and proves
-	// nothing. Termination is deliberately absent rather than
-	// approximated -- it needs real key derivation from the TLS
-	// exporter, cookie keys shared with the server, and rotation with
-	// overlap, and an implementation that faked any of it would be
-	// telling clients their time was authenticated when it was not.
+	// Mode is passthrough (the default), terminate or off.
+	//
+	// Pass-through forwards NTS-protected packets whole and unaltered,
+	// which is the only honest thing a relay that does not hold the keys
+	// can do with them: the authentication is between the client and the
+	// server, and every visible NTS field is readable by anybody on the
+	// path and proves nothing.
+	//
+	// Terminate verifies them. The relay holds the keys, because the
+	// kind: ntske listener named by key_listener issued the cookie the
+	// packet carries: it opens the cookie, verifies the authenticator
+	// over the whole packet, and only then asks the time source --
+	// which does not have to speak NTS at all. The answer is built
+	// here and authenticated with the client's own server-to-client
+	// key, with replacement cookies sealed inside it. This is the mode
+	// that puts NTS in front of a time server that cannot do it, and
+	// it is the mode in which "authenticated" means this relay checked.
+	//
+	// Off refuses NTS-protected packets outright.
 	Mode string `yaml:"mode"`
 	// Require refuses a packet that carries no NTS fields. It is how a
 	// listener says "this estate is NTS only", and it is the setting
@@ -4373,7 +4677,76 @@ type NTPNTS struct {
 	// without NTS fields for a request that had them is refused, never
 	// passed on as plain NTP.
 	Require bool `yaml:"require"`
+	// KeyListener is the kind: ntske listener whose cookie keys this
+	// listener opens cookies with. It is required with mode:
+	// terminate and means nothing otherwise: the two halves of NTS are
+	// two listeners on two ports, and termination only works when the
+	// one holding the keys is named by the one spending them.
+	KeyListener string `yaml:"key_listener"`
+	// Source makes the relay hold its own NTS association with the time
+	// source: its own key establishment, its own cookies, its own
+	// authenticator on every request it sends, and verification of every
+	// answer.
+	//
+	// It goes with mode: terminate, because the two are the same
+	// decision seen from either side. Terminating means the client's
+	// authentication ends here; this says what happens on the other
+	// side of that. Without it the relay asks the source in plain NTP,
+	// which is right when the source cannot do better and a choice an
+	// estate should make deliberately when it can.
+	Source *NTPSourceNTS `yaml:"source"`
 }
+
+// NTPSourceNTS is the relay's own NTS association with the time source.
+//
+// The cost of this is worth being plain about: there is no end-to-end
+// authentication between the client and the time source any more. The
+// client authenticates to this relay and this relay authenticates to the
+// source, so the process is a party to the security rather than a reader
+// of it. What it buys is a relay that can compare, police and log what
+// the source says while both halves are still authenticated -- which a
+// pass-through relay cannot do at all.
+type NTPSourceNTS struct {
+	// KEAddress is the source's key establishment server, host:port. A
+	// bare host takes port 4460. Required.
+	//
+	// It is configured rather than discovered: the time servers are the
+	// upstream pool, and a key establishment server that named a
+	// different one would be moving the estate's time traffic. This
+	// relay reports such a record and does not follow it.
+	KEAddress string `yaml:"ke_address"`
+	// ServerName is the name to verify in the source's certificate,
+	// when it is not the host in ke_address.
+	ServerName string `yaml:"server_name"`
+	// CAFile pins the authorities that may have issued it. Empty uses
+	// the system trust store, which on a plant network is usually not
+	// what an operator means.
+	CAFile string `yaml:"ca_file"`
+	// CertFile and KeyFile are a client certificate, for a source that
+	// asks for one. NTS-KE says nothing about the client, so this is
+	// the only thing that can name this relay to the source.
+	CertFile string `yaml:"cert_file"`
+	KeyFile  string `yaml:"key_file"`
+	// RefreshBelow re-establishes keys when fewer than this many
+	// cookies are left. Default 2. A cookie is spent per exchange and
+	// one comes back, so the pool only shrinks when answers are lost --
+	// and a relay that ran out would stop asking for the time.
+	RefreshBelow int `yaml:"refresh_below"`
+	// Timeout bounds one key establishment. Default 10s.
+	Timeout Duration `yaml:"timeout"`
+}
+
+// SourceRefreshBelow is when to establish keys again.
+func (n *NTPSourceNTS) SourceRefreshBelow() int {
+	if n == nil || n.RefreshBelow <= 0 {
+		return DefaultNTSRefreshBelow
+	}
+	return n.RefreshBelow
+}
+
+// DefaultNTSRefreshBelow is the cookie count that triggers a fresh key
+// establishment with the source.
+const DefaultNTSRefreshBelow = 2
 
 // NTPExtensions bounds the extension fields a packet may carry.
 type NTPExtensions struct {
@@ -4642,7 +5015,93 @@ type NTSKEListener struct {
 	// AlertOnDeny writes a security event for every refusal. Default
 	// true.
 	AlertOnDeny *bool `yaml:"alert_on_deny"`
+	// Terminate makes this listener answer key establishment itself
+	// rather than relaying it: it terminates the TLS, derives the NTS
+	// keys from the exporter, and issues cookies of its own that the
+	// kind: ntp listener beside it opens. With it, upstream is not used
+	// and a tls section is required -- the certificate is the whole of
+	// what a client authenticates.
+	Terminate *NTSKETerminate `yaml:"terminate"`
 }
+
+// Terminating says whether this listener answers key establishment
+// itself.
+func (k *NTSKEListener) Terminating() bool { return k != nil && k.Terminate != nil }
+
+// NTSKETerminate is key establishment answered by this relay.
+//
+// Terminating NTS means holding the cookie keys, and holding them means
+// rotating them with an overlap and keeping them across a restart. Both
+// are here rather than assumed: a rotation that invalidated the cookies
+// already issued, or a restart that started with fresh keys, would take
+// the estate's time service down for as long as it took every client to
+// establish keys again -- a TLS handshake each, all at the same moment.
+type NTSKETerminate struct {
+	// Server and Port tell the client where to spend the cookies. Both
+	// are optional: empty means "where you already are", which is the
+	// answer when this relay fronts the time service on its own
+	// address.
+	Server string `yaml:"server"`
+	Port   int    `yaml:"port"`
+	// Cookies is how many cookies one exchange hands out. Default 8,
+	// which is what RFC 8915 recommends: a client spends one per time
+	// exchange and gets one back, so eight is the depth of the buffer
+	// that absorbs lost packets.
+	Cookies int `yaml:"cookies"`
+	// RotateEvery is how often a new cookie key becomes the current
+	// one. Default 24h. Zero and negative are refused rather than read
+	// as "never": a key that is never rotated is a decision, and it is
+	// spelled rotate_every: 0s nowhere -- set keep_keys and a long
+	// interval instead.
+	RotateEvery Duration `yaml:"rotate_every"`
+	// KeepKeys is how many retired keys still open cookies already
+	// issued. Default 2: a cookie issued just before a rotation is
+	// spent after it, and a client switched off over a weekend comes
+	// back with cookies from two rotations ago. Zero is allowed and
+	// means a rotation invalidates every cookie at once, which is a
+	// thing an operator may want and never a thing to default to.
+	KeepKeys *int `yaml:"keep_keys"`
+	// State is where the cookie keys are kept across a restart. It is
+	// secret material -- whoever can read it can forge a cookie, which
+	// is to say forge an authenticated time answer -- so it is written
+	// 0600 and belongs somewhere only this daemon can read. Empty means
+	// the keys live only in memory, and a restart then invalidates
+	// every cookie in the estate.
+	State string `yaml:"state"`
+}
+
+// CookieCount is how many cookies one exchange hands out.
+func (t *NTSKETerminate) CookieCount() int {
+	if t == nil || t.Cookies <= 0 {
+		return DefaultNTSCookies
+	}
+	return t.Cookies
+}
+
+// Rotation is how often the cookie key changes.
+func (t *NTSKETerminate) Rotation() time.Duration {
+	if t == nil || t.RotateEvery.D() <= 0 {
+		return DefaultNTSRotation
+	}
+	return t.RotateEvery.D()
+}
+
+// History is how many retired cookie keys still open a cookie.
+func (t *NTSKETerminate) History() int {
+	if t == nil || t.KeepKeys == nil {
+		return DefaultNTSKeepKeys
+	}
+	return *t.KeepKeys
+}
+
+// The defaults of the terminating side, named because two packages read
+// them: the listener that applies them and the documentation test that
+// checks the reference says what the code does.
+const (
+	DefaultNTSCookies  = 8
+	DefaultNTSRotation = 24 * time.Hour
+	DefaultNTSKeepKeys = 2
+)
 
 // Alerts says whether a refusal writes a security event.
 func (k *NTSKEListener) Alerts() bool {

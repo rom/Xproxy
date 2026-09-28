@@ -26,6 +26,7 @@ import (
 	"github.com/rom/xproxy/internal/listener"
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/mfa"
+	"github.com/rom/xproxy/internal/ntske"
 	"github.com/rom/xproxy/internal/sessions"
 	"github.com/rom/xproxy/internal/shadow"
 	"github.com/rom/xproxy/internal/tlsconf"
@@ -87,6 +88,16 @@ type Host interface {
 	// its own TLS configuration: the reason to refuse this client, or
 	// "" to carry on.
 	RefuseHandshake(remote net.Addr, fp tlsconf.Fingerprint) string
+	// NTSCookieKeys returns the cookie keys of a bound ntske listener
+	// that terminates key establishment, or nil.
+	//
+	// The two halves of NTS are two listeners on two ports: the key
+	// establishment issues the cookies and the time service spends
+	// them, and only the party holding these keys can open one. The
+	// lookup is here for the same reason DNSServer is -- the engine
+	// holds the listener set, and the two kinds are not linked together
+	// in every daemon.
+	NTSCookieKeys(listener string) *ntske.CookieKeys
 	// DNSServer returns the resolver of a bound dns listener by name,
 	// or nil. One kind answers DNS over HTTPS on an http route with the
 	// policy and cache of a dns listener, and the engine holds the
@@ -331,6 +342,12 @@ func (s *Server) listenerTLS(lc config.Listener) (*tls.Config, *tlsconf.Reloadab
 	return tc, rl, nil
 }
 
+// NTSKeyHolder is a kind that terminates NTS key establishment and so
+// holds the cookie keys. The time listener beside it opens cookies with
+// the same set, and asks the engine for them by listener name rather
+// than importing the kind.
+type NTSKeyHolder interface{ NTSCookieKeys() *ntske.CookieKeys }
+
 // DNSInstance is a kind that answers DNS. The status and purge views ask
 // for the server rather than knowing which kind it came from, so the
 // engine keeps no import of a kind's package.
@@ -422,6 +439,23 @@ func (s *Server) AttachTickets(tc *tls.Config) { s.tickets.Attach(tc) }
 // RefuseHandshake implements Host.
 func (s *Server) RefuseHandshake(remote net.Addr, fp tlsconf.Fingerprint) string {
 	return s.refuseHandshake(remote, fp)
+}
+
+// NTSCookieKeys implements Host.
+func (s *Server) NTSCookieKeys(listener string) *ntske.CookieKeys {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, bl := range s.listeners {
+		if bl.cfg.Name != listener {
+			continue
+		}
+		h, ok := bl.inst.(NTSKeyHolder)
+		if !ok {
+			return nil
+		}
+		return h.NTSCookieKeys()
+	}
+	return nil
 }
 
 // DNSServer implements Host.

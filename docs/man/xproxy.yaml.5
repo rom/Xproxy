@@ -596,12 +596,12 @@ bool
 T}	T{
 \fBfalse\fR
 T}	T{
-Read a PROXY protocol v1 or v2 header at the start of every connection from a peer in \fBtrusted_\:proxies\fR: the client address it carries becomes the peer for limits,\: bans,\: ACLs,\: logs and forwarding headers,\: and the per address connection count moves to it. A trusted peer that sends no header,\: or a malformed one,\: is dropped without a response (\fBdrop_\:connection\fR with reason \fBproxy_\:protocol\fR,\: counted in \fBrejected_\:connections\fR);\: \fBLOCAL\fR headers keep the balancer\(aqs address;\: connections from other peers are served unchanged,\: so a client cannot choose its own address. Requires \fBtrusted_\:proxies\fR;\: read on \fBkind:\fR \fBhttp\fR,\: \fBforward\fR,\: \fBssh\fR,\: \fBtelnet\fR,\: \fBvnc\fR,\: \fBrdp\fR,\: \fBsmtp\fR,\: \fBmqtt\fR,\: \fBftp\fR,\: \fBsyslog\fR and \fBmodbus\fR,\: and not on \fBtcp\fR (which reads the first bytes itself to route by server name,\: and forwards a header instead),\: \fBdns\fR,\: \fBudp\fR,\: \fBntp\fR or \fBntske\fR \-\- the datagram kinds have no connection to put a header at the start of,\: and the key establishment relay reads the ClientHello.
+Read a PROXY protocol v1 or v2 header at the start of every connection from a peer in \fBtrusted_\:proxies\fR: the client address it carries becomes the peer for limits,\: bans,\: ACLs,\: logs and forwarding headers,\: and the per address connection count moves to it. A trusted peer that sends no header,\: or a malformed one,\: is dropped without a response (\fBdrop_\:connection\fR with reason \fBproxy_\:protocol\fR,\: counted in \fBrejected_\:connections\fR);\: \fBLOCAL\fR headers keep the balancer\(aqs address;\: connections from other peers are served unchanged,\: so a client cannot choose its own address. Requires \fBtrusted_\:proxies\fR;\: read on \fBkind:\fR \fBhttp\fR,\: \fBforward\fR,\: \fBssh\fR,\: \fBtelnet\fR,\: \fBvnc\fR,\: \fBrdp\fR,\: \fBsmtp\fR,\: \fBmqtt\fR,\: \fBftp\fR,\: \fBsyslog\fR and \fBmodbus\fR,\: and not on \fBtcp\fR (which reads the first bytes itself to route by server name,\: and forwards a header instead),\: \fBdns\fR,\: \fBudp\fR,\: \fBntp\fR,\: \fBntske\fR,\: \fBdhcp\fR or \fBdhcp6\fR \-\- the datagram kinds have no connection to put a header at the start of,\: and the key establishment relay reads the ClientHello.
 T}
 T{
 \fBkind\fR
 T}	T{
-\fBhttp\fR,\: \fBtcp\fR,\: \fBudp\fR,\: \fBforward\fR,\: \fBdns\fR,\: \fBsmtp\fR,\: \fBmqtt\fR,\: \fBftp\fR,\: \fBsyslog\fR,\: \fBmodbus\fR,\: \fBntp\fR,\: \fBntske\fR,\: \fBssh\fR,\: \fBtelnet\fR,\: \fBvnc\fR,\: \fBrdp\fR
+\fBhttp\fR,\: \fBtcp\fR,\: \fBudp\fR,\: \fBforward\fR,\: \fBdns\fR,\: \fBsmtp\fR,\: \fBmqtt\fR,\: \fBftp\fR,\: \fBsyslog\fR,\: \fBmodbus\fR,\: \fBntp\fR,\: \fBntske\fR,\: \fBdhcp\fR,\: \fBdhcp6\fR,\: \fBssh\fR,\: \fBtelnet\fR,\: \fBvnc\fR,\: \fBrdp\fR
 T}	T{
 \fBhttp\fR
 T}	T{
@@ -6640,7 +6640,26 @@ Five things are deliberate in the data path.
 .PP
 \fBThe version can be rewritten downwards.\fR \fBupgrade_version\fR is the secure upgrade: a manager speaks v3 with authentication to this relay, or TLS on the stream side, and the relay speaks v2c to a switch whose firmware has neither, with an \fBupstream_community\fR the manager never needs to know. A response is rebuilt in the version its request arrived in, so the manager sees the version it spoke.
 .PP
-Two rewrites this relay will not do, both because it reads USM messages and never writes one, and will not forge an authentication that did not happen. It cannot \fIproduce\fR v3, which is refused at load. And it cannot downgrade a v3 \fBrequest\fR: the answer would come back as v2c and handing that to a v3 manager means signing it, which this relay does not do, so such a request is refused rather than half\-translated. A v3 \fBnotification\fR downgrades cleanly, because nothing comes back \-\- a modern device sending v3 traps to a collector that understands only v2c is exactly what \fBtraps: true\fR with \fBupgrade_version: v2c\fR is for.
+\fBAnd upwards, with an identity of its own.\fR \fBupgrade_version: v3\fR plus \fBupstream_usm\fR is the case this protocol needs most: the agents were replaced and the polling system was not, so a v1 or v2c poller reaches a v3\-only agent with authentication and privacy the poller cannot speak and a pass phrase it never holds. The relay \fBterminates\fR the manager\(aqs security and \fBre\-originates\fR its own \-\- and that sentence is the whole of the trade:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+The credential that opens the agent lives in one place. A manager\(aqs community string that leaks does not open anything, and the agent\(aqs pass phrase never leaves this process.
+.PP
+.ti -3n
+\(bu
+The level toward the agent is this relay\(aqs choice, not the manager\(aqs capability. \fBupstream_security_level: authPriv\fR from a manager with no privacy at all.
+.PP
+.ti -3n
+\(bu
+\fBThere is no end\-to\-end authentication between the manager and the agent any more.\fR The manager authenticates to this relay (or does not, on v1 and v2c) and this relay authenticates to the agent. This process is a party to the security rather than a reader of it. An estate that wants USM end to end wants \fBusm_users\fR and no upgrade, and validation says so out loud when \fBupstream_usm\fR is configured.
+.RE
+.PP
+.PP
+The agent\(aqs engine identifier is \fBdiscovered\fR, not configured: it is the agent\(aqs to state, and USM authenticates against that engine\(aqs clock. The first request to a cold agent therefore draws an RFC 3414 \[u00A7]4 discovery first, and the manager\(aqs own request is asked as soon as the agent\(aqs report comes back \-\- carrying the manager\(aqs request identifier, so the waiting question is the one that gets asked. A burst to a cold agent sends \fBone\fR discovery. \fBupstream_usm.engine_id\fR pins the identifier where an operator knows it, and then an engine calling itself something else is not believed. \fBsnmp_discoveries\fR and \fBsnmp_originated\fR count the two halves: discoveries that climb beside a flat originated count are an agent not answering them.
+.PP
+One rewrite this relay still will not do: it cannot downgrade a v3 \fBrequest\fR. The answer would come back as v2c and handing that to a v3 manager means signing it as that manager, with a key this relay does not hold, so such a request is refused rather than half\-translated. A v3 \fBnotification\fR downgrades cleanly, because nothing comes back \-\- a modern device sending v3 traps to a collector that understands only v2c is exactly what \fBtraps: true\fR with \fBupgrade_version: v2c\fR is for.
 .PP
 \fBVersion 3 is read, with the user\(aqs keys.\fR Without \fBusm_users\fR a v3 message is a header and an opaque payload: the user, the engine and the security level are checked and nothing else can be, so every rule written about an operation or an object subtree applied to v1 and v2c and silently did not apply to v3 \-\- which is the version an operator is told to insist on. With the user\(aqs pass phrases in \fBusm_users\fR the digest is verified and, at \fBauthPriv\fR, the payload is decrypted, and then the ordinary rules decide about a v3 message exactly as they decide about a v2c one: \fBread_only\fR refuses an encrypted SetRequest, a rule\(aqs \fBoids\fR cover an encrypted GetRequest, \fBcontexts\fR matches the context name inside the payload.
 .PP
@@ -6833,6 +6852,24 @@ T}	T{
 the arriving one
 T}	T{
 The community string sent to the agent,\: which is what lets the manager stop knowing it
+T}
+T{
+\fBupstream_\:usm\fR
+T}	T{
+user
+T}	T{
+none
+T}	T{
+The version 3 identity this relay presents to the agent: the same fields as a \fBusm_\:users\fR entry (\fBname\fR,\: \fBauth\fR,\: \fBauth_\:secret\fR,\: \fBprivacy\fR,\: \fBprivacy_\:secret\fR,\: \fBengine_\:id\fR). Required by \fBupgrade_\:version:\: v3\fR. With it the relay terminates the manager\(aqs security and originates its own,\: so there is no end\-to\-end authentication between them
+T}
+T{
+\fBupstream_\:security_\:level\fR
+T}	T{
+\fBnoAuthNoPriv\fR,\: \fBauthNoPriv\fR,\: \fBauthPriv\fR
+T}	T{
+\fBauthPriv\fR with a privacy protocol,\: \fBauthNoPriv\fR without
+T}	T{
+The level this relay originates at. \fBnoAuthNoPriv\fR leaves the pass phrases unused and is warned about;\: \fBauthNoPriv\fR with a privacy pass phrase configured is warned about too,\: because the reason to configure one is to use it
 T}
 T{
 \fBrules\fR
@@ -7859,6 +7896,497 @@ Naming \fBdeny_options\fR replaces it rather than adding to it, and validation w
 \fBDHCPv6 (RFC 8415) is not implemented\fR, and this kind does not pretend otherwise. It is a different packet format with different message types, a different relay mechanism and its own options; reading it as if it were DHCPv4 would be worse than not reading it. A segment that runs both needs its v6 relaying done elsewhere, and \fBdocs/RFC.md\fR says so in the table.
 .PP
 Counters: \fBdhcp_messages\fR, \fBdhcp_discovers\fR, \fBdhcp_requests\fR, \fBdhcp_replies\fR, \fBdhcp_leases\fR, \fBdhcp_releases\fR, \fBdhcp_denied\fR, \fBdhcp_would_deny\fR, \fBdhcp_rogue\fR, \fBdhcp_stripped\fR, \fBdhcp_malformed\fR, \fBdhcp_rejected\fR, \fBdhcp_rate_limited\fR, \fBdhcp_timed_out\fR, \fBdhcp_upstream_failed\fR, \fBdhcp_unsolicited\fR, \fBdhcp_pending\fR, \fBdhcp_clients\fR. \fB\fBdhcp_rogue\fR is the one to alert on\fR: it counts the replies from an address this listener does not admit as a server, which is somebody answering on the segment. \fBdhcp_stripped\fR is the one to read next \-\- a route, a proxy or a boot file removed from a reply. Refusals are \fBdhcp_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBrogue_server\fR, \fBmalformed\fR, \fBmalformed_reply\fR, \fBmalformed_option\fR, \fBmessage_too_large\fR, \fBreply_too_large\fR, \fBreply_from_client_side\fR, \fBwrong_direction\fR, \fBunsolicited_reply\fR, \fBhidden_options\fR, \fBclient_id_mismatch\fR, \fBmessage_type\fR, \fBtoo_many_hops\fR, \fBtoo_many_pending\fR, \fBrate_limited\fR, \fBclient_agent_option\fR, \fBoption_stripped\fR, \fBoption_denied\fR, \fBboot_server_not_allowed\fR, \fBboot_file_not_allowed\fR, \fBrule\fR, \fBdefault_deny\fR, \fBunencodable\fR, \fBunencodable_reply\fR.
+.SS "server.listeners[].dhcp6 (kind: dhcp6)"
+.PP
+A \fBkind: dhcp6\fR listener is a DHCPv6 relay agent (RFC 8415) on UDP 547 that reads what it relays.
+.PP
+It is a separate listener from \fBkind: dhcp\fR because DHCPv6 is a separate protocol: a different packet format, different message types, a nested relay mechanism rather than a field, a client identified by a DUID rather than a hardware address, and its own options \[u2014] including prefix delegation, which has no DHCPv4 equivalent at all. An estate running both runs both listeners, and writing both down is the point.
+.PP
+The shape of the policy is the DHCPv4 one because the shape of the threat is the same: \fBanswering is the attack\fR, so the interesting half faces upstream. What differs is what an answer can carry, and there is more of it.
+.RS 3n
+.PP
+.ti -3n
+\(bu
+The \fBboot file URL\fR (59, RFC 5970) and its parameters (60) are what a machine boots.
+.PP
+.ti -3n
+\(bu
+The \fBcaptive portal URL\fR (103, RFC 8910) is a URL a client will open.
+.PP
+.ti -3n
+\(bu
+The \fBSZTP bootstrap server\fR (136, RFC 8572) is a configuration a switch will fetch and apply to itself.
+.PP
+.ti -3n
+\(bu
+The \fBS46 transition containers\fR (94 to 97, RFC 7598) and the \fBAFTR name\fR (64) put a host\(aqs \fIIPv4\fR traffic through a border relay of the sender\(aqs choosing \[u2014] a takeover of a protocol this message is not even about.
+.PP
+.ti -3n
+\(bu
+The \fBServer Unicast option\fR (12) tells a client to stop talking to the relay and address the server directly, which turns off every policy this listener has.
+.RE
+.PP
+.PP
+Each is in the built\-in \fBdeny_options\fR list, and the default is to strip them and forward the rest: a client that still gets its address and no longer gets told which border relay its IPv4 traffic goes through is a client that works.
+.PP
+The \fBresolvers\fR (option 23) and the \fBdomain search list\fR (24) are the obvious pair and are deliberately \fInot\fR on that list, which is the same choice the DHCPv4 kind makes about option 6. They have a positive list of their own \[u2014] \fBallow_resolvers\fR and \fBallow_domains\fR \[u2014] and that is the better check: it says what this estate\(aqs resolvers \fIare\fR, so it catches a compromised real server as well as a rogue one, which removing the option wholesale does not. Putting an option with a positive list on the deny list as well would break twice over: the positive list becomes dead configuration, because the option is gone before anything reads its contents, and handing out resolvers is the whole purpose of stateless DHCPv6 on a network that addresses itself by router advertisement \[u2014] so a default that strips them is a default an estate has to switch off to get its network working, which is how a control gets switched off entirely. Write \fBallow_resolvers\fR; the validator warns while it is empty.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.9i) lbw(1.0i) lbx
+lw(1.2i) lw(0.9i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBmode\fR
+T}	T{
+enum
+T}	T{
+\fBreverse\fR
+T}	T{
+\fBreverse\fR (clients here,\: servers upstream) or \fBforward\fR (this listener is the controlled egress a downstream relay agent uses)
+T}
+T{
+\fBupstream\fR
+T}	T{
+upstream
+T}	T{
+required
+T}	T{
+The server pool
+T}
+T{
+\fBallow_\:clients\fR,\: \fBdeny_\:clients\fR
+T}	T{
+list of CIDR
+T}	T{
+\fB[]\fR
+T}	T{
+The networks a message may arrive from. Deny first. A DHCPv6 client sends from a link\-local address it chose itself,\: so this says less than it looks
+T}
+T{
+\fBallow_\:servers\fR
+T}	T{
+list of CIDR
+T}	T{
+the pool\(aqs endpoints
+T}	T{
+The addresses a reply may come from,\: and the single most valuable line in the file. A reply from anywhere else is dropped and counted whatever it says. Empty means the endpoints of the upstream pool \[u2014] never "anybody"
+T}
+T{
+\fBmessage_\:types\fR
+T}	T{
+list
+T}	T{
+the lease cycle
+T}	T{
+The types a client may send: \fBsolicit\fR,\: \fBrequest\fR,\: \fBrenew\fR,\: \fBrebind\fR,\: \fBconfirm\fR,\: \fBrelease\fR,\: \fBdecline\fR,\: \fBinformation_\:request\fR. The default leaves out the lease\-query family,\: which is a relay agent\(aqs own diagnostic and an inventory of every lease in the estate to anything else
+T}
+T{
+\fBdeny_\:options\fR
+T}	T{
+list
+T}	T{
+the built\-in list above
+T}	T{
+The options a \fIserver\fR may not send. Setting the list replaces it,\: and leaving one of the built\-ins out warns
+T}
+T{
+\fBallow_\:options\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Turns the answer policy inside out: an option outside the list is removed. On a network whose clients need three options this is shorter and safer than a deny list
+T}
+T{
+\fBon_\:denied_\:option\fR
+T}	T{
+enum
+T}	T{
+\fBstrip\fR
+T}	T{
+\fBstrip\fR removes the option and forwards the rest;\: \fBdeny\fR refuses the whole reply,\: which leaves the client with no address at all
+T}
+T{
+\fBdeny_\:requested_\:options\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Options a client may not \fIask\fR for,\: in its Option Request Option. The ask is removed rather than the message refused
+T}
+T{
+\fBallow_\:resolvers\fR
+T}	T{
+list of IPv6
+T}	T{
+\fB[]\fR (any)
+T}	T{
+The addresses the DNS server option may name. Empty warns: an estate knows its own resolvers,\: and a reply naming anything else is wrong whoever sent it \[u2014] which is the check that catches a compromised real server as well as a rogue one
+T}
+T{
+\fBallow_\:domains\fR
+T}	T{
+list of pattern
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Shell patterns the domain search list may match
+T}
+T{
+\fBallow_\:boot_\:urls\fR
+T}	T{
+list of pattern
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Shell patterns the boot file URL may match. This is where an estate says which images exist
+T}
+T{
+\fBprefix_\:delegation\fR
+T}	T{
+section
+T}	T{
+carried,\: unbounded
+T}	T{
+What a reply may delegate and what a client may ask for;\: see below
+T}
+T{
+\fBallow_\:temporary_\:addresses\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Carry an IA_TA. Temporary addresses are the privacy mechanism of RFC 8415 \[u00A7]6.5,\: and refusing them would be refusing clients that are doing the right thing
+T}
+T{
+\fBallow_\:reconfigure\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Carry a RECONFIGURE from a server. It warns: it is a message to a client that answers nothing,\: RFC 8415 \[u00A7]18.3.11 requires it to be authenticated with a key almost nobody deploys,\: and a client that accepts one can be made to re\-ask a server of the sender\(aqs choosing
+T}
+T{
+\fBmin_\:lease_\:time\fR,\: \fBmax_\:lease_\:time\fR
+T}	T{
+duration
+T}	T{
+unbounded
+T}	T{
+Bound the valid lifetime a server may hand out,\: on an address or a delegated prefix. A valid lifetime of \fBzero is never bounded up\fR: zero is how a server withdraws an address (RFC 8415 \[u00A7]18.2.10),\: and rewriting it would turn a withdrawal into a lease. The preferred lifetime comes down with the valid one,\: because a preferred lifetime longer than the valid one makes the option invalid
+T}
+T{
+\fBrefuse_\:repeated_\:options\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse a message carrying an option twice where the standard has no meaning for a second one. Two implementations read such a message differently,\: and a relay that decided about the first value while the server acted on the last would be the reason nobody could find the bug. The identity associations are exempt,\: because a client legitimately sends several
+T}
+T{
+\fBmax_\:relay_\:hops\fR
+T}	T{
+int
+T}	T{
+\fB4\fR
+T}	T{
+The relay chain\(aqs depth (1 to 32;\: RFC 8415 \[u00A7]19.1.1 makes 32 the outer limit). A message arriving already wrapped several times has been somewhere
+T}
+T{
+\fBlink_\:address\fR
+T}	T{
+IPv6
+T}	T{
+required in reverse mode
+T}	T{
+What this relay puts in a RELAY\-FORW\(aqs link address field,\: which tells the server which segment to allocate from. A link\-local address is refused: it tells the server nothing
+T}
+T{
+\fBinterface_\:id\fR,\: \fBremote_\:id\fR,\: \fBremote_\:id_\:enterprise\fR,\: \fBsubscriber_\:id\fR
+T}	T{
+string /\: int
+T}	T{
+none
+T}	T{
+The relay\(aqs own identifying options (RFC 8415 \[u00A7]21.18,\: RFC 4649,\: RFC 4580). \fBremote_\:id\fR without an enterprise number warns: RFC 4649 puts the number first,\: and a server indexing on it will not find this relay where it expects
+T}
+T{
+\fBon_\:client_\:relay_\:option\fR
+T}	T{
+enum
+T}	T{
+\fBstrip\fR
+T}	T{
+What to do when a \fIclient\fR sends one of the relay\(aqs own options. A client has no business asserting which circuit it is on,\: because that assertion is exactly what the option exists to make on its behalf
+T}
+T{
+\fBrules\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Per\-message rules;\: see below
+T}
+T{
+\fBdefault_\:action\fR
+T}	T{
+enum
+T}	T{
+\fBallow\fR
+T}	T{
+Allow,\: as in the DHCPv4 kind and for the same reason: DHCP is infrastructure,\: a listener that refused every request until somebody wrote a rule would stop an estate booting,\: and the protections here are the answer policy and the server list,\: which are on by default
+T}
+T{
+\fBmax_\:pending\fR
+T}	T{
+int
+T}	T{
+\fB256\fR
+T}	T{
+Requests outstanding towards servers \[u2014] the table that pairs a reply with the client that asked
+T}
+T{
+\fBrequest_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB10s\fR
+T}	T{
+How long a server has to answer before its answer is too late to pair (1s to 1m)
+T}
+T{
+\fBmax_\:message_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB1500\fR
+T}	T{
+One message. A relay chain grows a message,\: so this bounds what arrives rather than what a client sent
+T}
+T{
+\fBrate_\:limit\fR,\: \fBrate_\:burst\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (off)
+T}	T{
+Messages a second per \fBDUID\fR,\: which is the key that matters here: pool exhaustion is one host sending thousands of SOLICITs with a made\-up identifier in each,\: and a limit keyed on the source address would see one sender doing nothing unusual
+T}
+T{
+\fBmax_\:clients\fR
+T}	T{
+int
+T}	T{
+\fB8192\fR
+T}	T{
+The distinct identifiers tracked at once. The other half of the starvation bound: the rate limit slows one identifier down,\: and this stops a flood of new ones filling the table that does the limiting
+T}
+T{
+\fBlog_\:messages\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+An access line per message
+T}
+T{
+\fBlog_\:leases\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A line for every address and prefix handed out: which identifier got which lease,\: for how long,\: from which server
+T}
+T{
+\fBalert_\:on_\:deny\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A security event for every refusal
+T}
+.TE
+.PP
+A deployment on a port other than 547 warns: a DHCPv6 client sends to 547 and nothing else will reach the listener.
+.SS "server.listeners[].dhcp6.prefix_delegation"
+.PP
+Prefix delegation is the part of DHCPv6 with no DHCPv4 equivalent, and the part where a wrong answer is largest. A reply delegating \fB::/0\fR has handed a host the whole of IPv6 to route. A request for a /48 where the estate delegates /56s is a client asking for two hundred and fifty\-six times what it should have \[u2014] and a real server that grants it has given a segment away.
+.PP
+Both ends are checked, and a prefix outside the estate\(aqs is a \fBrefusal rather than a strip\fR: there is no useful half of a delegation to keep, and a client that acted on the rest would be routing a prefix the relay decided against.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.6i) lbw(1.0i) lbx
+lw(0.9i) lw(0.6i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Carry prefix delegation at all. An estate that does not use it should say so,\: because then an IA_PD arriving from anywhere is a question worth refusing
+T}
+T{
+\fBprefixes\fR
+T}	T{
+list of IPv6 CIDR
+T}	T{
+\fB[]\fR
+T}	T{
+The prefixes a delegation may come from. \fB:\::\:/\:0\fR is refused as a value: it is every prefix there is,\: which is not a bound
+T}
+T{
+\fBmin_\:length\fR,\: \fBmax_\:length\fR
+T}	T{
+int
+T}	T{
+unbounded
+T}	T{
+The prefix length in bits (1 to 128). An estate that delegates /\:56s writes 56 in both,\: and then a /\:48 is refused whoever offered it
+T}
+.TE
+.PP
+Carrying delegation with no prefixes and no length bound warns, because that configuration forwards a reply delegating \fB::/0\fR.
+.PP
+An IA_PREFIX hint of \fB::/0\fR \fBfrom a client\fR is not refused: RFC 8415 \[u00A7]21.22 lets a client send one to mean "any", and refusing it would refuse every client that does not already know its prefix.
+.SS "server.listeners[].dhcp6.rules[]"
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(0.9i) lbw(1.0i) lbx
+lw(1.1i) lw(0.9i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+Names the rule in the logs and the counters
+T}
+T{
+\fBaction\fR
+T}	T{
+enum
+T}	T{
+\fBallow\fR
+T}	T{
+\fBallow\fR,\: \fBdeny\fR or \fBobserve\fR. \fBobserve\fR logs and counts and then keeps looking,\: which is how a rule is tried on live traffic before it decides anything
+T}
+T{
+\fBclients\fR
+T}	T{
+list of CIDR
+T}	T{
+\fB[]\fR
+T}	T{
+The networks the message arrived from
+T}
+T{
+\fBduids\fR
+T}	T{
+list of pattern
+T}	T{
+\fB[]\fR
+T}	T{
+Shell patterns the client identifier\(aqs rendering matches: \fBll:\:0003*\fR for a vendor\(aqs fleet,\: the whole identifier for one machine. The rendering is the type and the hexadecimal octets,\: which is what the logs carry too
+T}
+T{
+\fBmessage_\:types\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+The message types this rule covers
+T}
+T{
+\fBvendor_\:classes\fR,\: \fBuser_\:classes\fR
+T}	T{
+list of pattern
+T}	T{
+\fB[]\fR
+T}	T{
+Match the vendor class and user class options as shell patterns,\: which is how a rule about PXE clients is written
+T}
+T{
+\fBdeny_\:options\fR,\: \fBallow_\:resolvers\fR,\: \fBallow_\:domains\fR,\: \fBallow_\:boot_\:urls\fR
+T}	T{
+list
+T}	T{
+inherited
+T}	T{
+Narrow the answer policy for this rule\(aqs traffic,\: which is how "the boot segment may be told a boot URL and nothing else may" is written
+T}
+T{
+\fBmax_\:lease_\:time\fR
+T}	T{
+duration
+T}	T{
+inherited
+T}	T{
+Overrides the listener\(aqs lease bound for this rule
+T}
+T{
+\fBinterface_\:id\fR
+T}	T{
+string
+T}	T{
+inherited
+T}	T{
+Overrides the listener\(aqs interface identifier,\: so a rule about one segment can tell the server which segment it is
+T}
+T{
+\fBschedule\fR
+T}	T{
+section
+T}	T{
+none
+T}	T{
+Limits the rule to a time window
+T}
+.TE
+.PP
+Counters: \fBdhcp6_messages\fR, \fBdhcp6_solicits\fR, \fBdhcp6_requests\fR, \fBdhcp6_replies\fR, \fBdhcp6_relayed\fR, \fBdhcp6_answered\fR, \fBdhcp6_releases\fR, \fBdhcp6_denied\fR, \fBdhcp6_would_deny\fR, \fBdhcp6_malformed\fR, \fBdhcp6_rejected\fR, \fBdhcp6_rate_limited\fR, \fBdhcp6_upstream_failed\fR, \fBdhcp6_send_failed\fR, \fBdhcp6_unsolicited\fR, and the two worth reading first \[u2014] \fBdhcp6_rogue_server\fR, a reply refused because it came from an address that is not a server, and \fBdhcp6_options_stripped\fR, the options removed from replies, which is the number that says the answer policy is doing something a request\-side check could not. \fBdhcp6_lease_bounded\fR counts the replies whose valid lifetime this relay wrote down; \fBdhcp6_pending\fR and \fBdhcp6_clients\fR are gauges.
+.PP
+Refusals are \fBdhcp6_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBserver_not_allowed\fR, \fBmalformed\fR, \fBmalformed_reply\fR, \fBmessage_too_large\fR, \fBunknown_message_type\fR, \fBrelay_message_inside\fR, \fBserver_message_from_client_side\fR, \fBclient_message_from_server_side\fR, \fBrepeated_option\fR, \fBmessage_type_not_allowed\fR, \fBrequest_not_allowed\fR, \fBclient_relay_option\fR, \fBreconfigure_not_allowed\fR, \fBdenied_option\fR, \fBbad_identity_association\fR, \fBtoo_many_hops\fR, \fBtoo_many_pending\fR, \fBrate_limited\fR, \fBunsolicited\fR, \fBrule\fR, \fBdefault_deny\fR, \fBunencodable\fR.
 .SS "server.listeners[].tftp (kind: tftp)"
 .PP
 TFTP is the protocol under provisioning. A switch pulls its firmware over it, a machine with no operating system yet pulls a boot image, a telephone pulls its configuration, and an engineer pushes a running configuration off a router with it. It has \fBno authentication of any kind\fR: no user, no password, no token, no transport security, and no extension that adds one. A request is a filename and a mode, and a server that receives one answers it.
@@ -8746,8 +9274,8 @@ T}
 .PP
 .TS
 allbox;
-lbw(0.8i) lbw(0.6i) lbw(1.2i) lbx
-lw(0.8i) lw(0.6i) lw(1.2i) lx.
+lbw(0.9i) lbw(0.9i) lbw(1.2i) lbx
+lw(0.9i) lw(0.9i) lw(1.2i) lx.
 T{
 Key
 T}	T{
@@ -8764,7 +9292,16 @@ enum
 T}	T{
 \fBpassthrough\fR
 T}	T{
-\fBpassthrough\fR or \fBoff\fR. Pass\-through forwards NTS\-protected packets whole and unaltered,\: which is the only honest thing a relay that does not hold the keys can do with them
+\fBpassthrough\fR,\: \fBterminate\fR or \fBoff\fR. Pass\-through forwards NTS\-protected packets whole and unaltered,\: which is the only honest thing a relay that does not hold the keys can do with them. Terminate verifies them: see below. Off refuses them outright
+T}
+T{
+\fBkey_\:listener\fR
+T}	T{
+listener name
+T}	T{
+required with \fBterminate\fR
+T}	T{
+The \fBkind:\: ntske\fR listener whose cookie keys this listener opens cookies with. Required with \fBmode:\: terminate\fR and refused otherwise: the two halves of NTS are two listeners on two ports,\: and termination only works when the one spending the cookies names the one that issued them. It must be a listener that has a \fBterminate\fR section \[u2014] one that relays key establishment holds no keys
 T}
 T{
 \fBrequire\fR
@@ -8777,7 +9314,90 @@ Refuse a packet with no NTS fields. It is how a listener says "this estate is NT
 T}
 .TE
 .PP
-\fBTermination is deliberately absent rather than approximated.\fR Doing it honestly means deriving the NTS keys from the TLS exporter, holding the same cookie keys the time servers hold, rotating them with an overlap so a cookie issued before a rotation still works after it, and recovering all of that across a restart. An implementation that faked any part would be telling clients their time was authenticated when nobody had checked. And \fBthe visible NTS fields prove nothing to this relay\fR: a unique identifier, a cookie and an authenticator field are all readable by anybody on the path, so "NTS is present" is a routing and preservation fact here, never an authentication one.
+In \fBpass\-through\fR, the visible NTS fields prove nothing to this relay: a unique identifier, a cookie and an authenticator field are all readable by anybody on the path, so "NTS is present" is a routing and preservation fact, never an authentication one.
+.PP
+\fB\fBmode: terminate\fR\fR is the other posture, and it is available because the \fBkind: ntske\fR listener named by \fBkey_listener\fR issued the cookie the packet carries. That cookie holds the client\(aqs two session keys, sealed under a master key only this relay has, so this listener does what a server does: opens the cookie, verifies the authenticator over the whole packet, and answers with an authenticator of its own carrying replacement cookies.
+.PP
+What it buys is the awkward case. \fBThe time source does not have to speak NTS at all\fR \[u2014] it can be the plain NTPv4 server that has been in the plant for fifteen years. The request is re\-originated towards it as a bare header: the extension fields were the client\(aqs conversation with this relay, the cookie names a key the source does not hold, and a placeholder asks for something only the party that issues cookies can give. The answer\(aqs first forty\-eight octets are the source\(aqs own, unaltered \[u2014] every field in them is its statement about its clock, and a relay that adjusted one would be inventing time \[u2014] with the client\(aqs unique identifier and the authenticator appended.
+.PP
+In this mode \fB"authenticated" means this relay checked\fR. A packet whose authenticator does not verify is refused rather than forwarded with a note, which is the whole difference from pass\-through. The replacement cookies travel inside the authenticator, encrypted, because a cookie in the clear would let anybody on the path recognise the same client at its next exchange \[u2014] the linkability NTS exists to remove. One cookie is issued per cookie and placeholder the request carried, at most eight, which is what keeps the request as large as the answer: without that bound the listener would be an amplifier.
+.PP
+\fB\fBnts.source\fR\fR is the other side of the same decision. Without it the relay asks the time source in plain NTP, which is right when the source cannot do better. With it the relay holds an association of its own: its own key establishment with the source\(aqs key establishment server, its own cookies, its own authenticator on every request it sends, and verification of every answer. It needs \fBmode: terminate\fR, because the client\(aqs authentication has to end here before the relay can start its own.
+.PP
+\fBThe cost is worth being plain about, and validation says it too: there is no end\-to\-end authentication between a client and the time source any more.\fR The client authenticates to this relay and this relay authenticates to the source, so the process is a party to the security rather than a reader of it. What it buys is a relay that can compare, police and log what the source says while both halves are still authenticated \[u2014] which a pass\-through relay cannot do at all.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(1.0i) lbw(0.9i) lbx
+lw(0.9i) lw(1.0i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBke_\:address\fR
+T}	T{
+host:port
+T}	T{
+required
+T}	T{
+The source\(aqs key establishment server. A bare host takes port 4460. It is configured rather than discovered: the time servers are the upstream pool,\: and a key establishment server that named a different one would be moving the estate\(aqs time traffic \[u2014] such a record is logged and not followed
+T}
+T{
+\fBserver_\:name\fR
+T}	T{
+host
+T}	T{
+the host in \fBke_\:address\fR
+T}	T{
+The name to verify in the source\(aqs certificate
+T}
+T{
+\fBca_\:file\fR
+T}	T{
+path
+T}	T{
+none
+T}	T{
+The authorities that may have issued it. Empty warns: the system trust store admits any public authority,\: which is not usually what an estate means by "this is our time server"
+T}
+T{
+\fBcert_\:file\fR,\: \fBkey_\:file\fR
+T}	T{
+path
+T}	T{
+none
+T}	T{
+A client certificate,\: for a source that asks for one. NTS\-KE says nothing about the client,\: so this is the only thing that can name this relay to the source. Both or neither
+T}
+T{
+\fBrefresh_\:below\fR
+T}	T{
+int
+T}	T{
+\fB2\fR
+T}	T{
+Establish keys again when fewer than this many cookies are left (1 to 8). One is spent per exchange and one comes back,\: so the pool only shrinks when answers are lost \[u2014] and a relay that ran out would stop asking for the time
+T}
+T{
+\fBtimeout\fR
+T}	T{
+duration
+T}	T{
+\fB10s\fR
+T}	T{
+One key establishment: a TLS handshake and two short messages (1s to 1m)
+T}
+.TE
+.PP
+A request that arrives before the relay holds keys with the source is dropped with the reason \fBnts_source_not_ready\fR rather than sent in plain NTP: a relay that quietly downgraded its own request would be doing the thing this setting exists to prevent, and a time client retries. An answer whose authenticator does not verify, or which does not echo the identifier the request carried, is \fBnts_source_unverified\fR \[u2014] the identifier matters because the keys are the same for the whole association, so without it an answer to another of this relay\(aqs requests would verify.
+.PP
+Counters: \fBntp_nts_verified\fR, \fBntp_nts_unverified\fR, \fBntp_nts_cookie_unknown\fR and \fBntp_nts_cookies_issued\fR for the client side; \fBntp_nts_source_established\fR, \fBntp_nts_source_failed\fR, \fBntp_nts_source_verified\fR and \fBntp_nts_source_unverified\fR for the relay\(aqs own association with the source. The refusals are \fBnts_no_authenticator\fR (NTS fields with no authenticator, or one this relay cannot read), \fBnts_no_cookie\fR (an authenticator with nothing to look the keys up by), \fBnts_cookie_unknown\fR (a cookie this relay did not issue, or issued under a key it no longer holds \[u2014] the \fBkeep_keys\fR window on the key establishment listener is what decides how far back that reaches), \fBnts_unverified\fR (an authenticator that did not verify: the packet was altered or forged), \fBnts_no_session\fR (an interleaved answer, matched by the source\(aqs own previous transmit timestamp rather than by the client\(aqs request, which leaves no verified session to authenticate it with) and \fBnts_no_cookie_keys\fR (termination configured against a key establishment listener that is not there \[u2014] fail\-closed, because a listener asked to verify with nothing to verify against must refuse).
 .PP
 \fB\fBextensions\fR\fR bounds what a packet may carry.
 .PP
@@ -9120,12 +9740,14 @@ A \fBkind: ntske\fR listener is NTS key establishment (RFC 8915) on TCP 4460: TL
 .PP
 It is a separate listener from \fBkind: ntp\fR because it is a separate port, a separate transport and a separate security property. A deployment that wants NTS runs both, and having to write both down is the point: an estate with a time listener and no key establishment listener has clients that cannot get cookies, and that is better seen in the configuration than found in the logs.
 .PP
-It \fBrelays\fR rather than terminates, for the reasons under \fBnts\fR above. What it does is the part a relay can do honestly: read the one thing a TLS handshake shows in the clear \[u2014] the server name and the application protocol the client offers \[u2014] refuse a connection that is not an NTS client, bound the handshakes in flight, and hand the rest to the server.
+It has two postures. Without \fBterminate\fR it \fBrelays\fR: it reads the one thing a TLS handshake shows in the clear \[u2014] the server name and the application protocol the client offers \[u2014] refuses a connection that is not an NTS client, bounds the handshakes in flight, and hands the rest to the key establishment server whose keys it is. That is the whole of what a relay holding no keys can honestly do.
+.PP
+With \fBterminate\fR it \fBis\fR the key establishment server. It presents the listener\(aqs certificate, derives the two NTS keys from the TLS exporter, and hands the client cookies of its own \[u2014] cookies the \fBkind: ntp\fR listener beside it opens, which is what lets that listener verify a client\(aqs time requests and put NTS in front of a time server that cannot speak it. See \fBntp.nts.mode: terminate\fR.
 .PP
 .TS
 allbox;
-lbw(1.2i) lbw(0.9i) lbw(0.9i) lbx
-lw(1.2i) lw(0.9i) lw(0.9i) lx.
+lbw(1.2i) lbw(0.9i) lbw(1.0i) lbx
+lw(1.2i) lw(0.9i) lw(1.0i) lx.
 T{
 Key
 T}	T{
@@ -9140,9 +9762,18 @@ T{
 T}	T{
 upstream
 T}	T{
-required
+required without \fBterminate\fR
 T}	T{
-The pool of key establishment servers
+The pool of key establishment servers. Refused together with \fBterminate\fR: a listener that answers key establishment itself has nothing to relay it to
+T}
+T{
+\fBterminate\fR
+T}	T{
+section
+T}	T{
+none
+T}	T{
+Answer key establishment here rather than relaying it. Requires a \fBtls\fR section: the certificate is the only thing an NTS client authenticates
 T}
 T{
 \fBallow_\:clients\fR,\: \fBdeny_\:clients\fR
@@ -9237,8 +9868,82 @@ T}
 .TE
 .PP
 A deployment on a port other than 4460 warns: a client that found this service through a server\(aqs own key establishment record will look for 4460.
+.SS "server.listeners[].ntske.terminate"
 .PP
-Counters: \fBntske_sessions\fR, \fBntske_relayed\fR, \fBntske_refused\fR, \fBntske_rejected\fR, \fBntske_not_nts\fR, \fBntske_handshake_limited\fR, \fBntske_upstream_failed\fR, and \fBntske_handshakes\fR, which is a gauge of the handshakes holding a slot right now: it says how close \fBmax_concurrent_handshakes\fR is to being reached, which the limited counter only answers once clients are already being turned away. Refusals are \fBntske_denied\fR for the ban triggers, with the reasons \fBbanned\fR, \fBclient_not_allowed\fR, \fBmax_connections\fR, \fBhandshake_limit\fR, \fBnot_tls\fR, \fBno_hello\fR, \fBincomplete_hello\fR, \fBhello_too_large\fR, \fBalpn_not_offered\fR and \fBserver_name_not_allowed\fR.
+A client certificate, where an estate wants one, is the listener\(aqs own \fBtls.client_auth: require\fR and \fBtls.client_ca_file\fR, as it is everywhere else: NTS\-KE authenticates the server to the client and says nothing about the client, so a certificate is the only thing this exchange can name who is calling with \[u2014] and it is configured where every other listener\(aqs is rather than a second time here.
+.PP
+Terminating NTS means holding the cookie keys, and holding them means rotating them with an overlap and keeping them across a restart. Both are settings rather than assumptions: a rotation that invalidated the cookies already issued, or a restart that started with fresh keys, would take the estate\(aqs time service down for as long as it took every client to establish keys again \[u2014] a TLS handshake each, all at the same moment.
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.9i) lbw(0.8i) lbx
+lw(0.8i) lw(0.9i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBserver\fR
+T}	T{
+host
+T}	T{
+none
+T}	T{
+Where to spend the cookies. Empty means "where you already are",\: which is the answer when this relay fronts the time service on its own address
+T}
+T{
+\fBport\fR
+T}	T{
+int
+T}	T{
+none
+T}	T{
+The time service port,\: when it is not the one the client would assume
+T}
+T{
+\fBcookies\fR
+T}	T{
+int
+T}	T{
+\fB8\fR
+T}	T{
+How many cookies one exchange hands out (1 to 8). Eight is RFC 8915\(aqs recommendation: a client spends one per time exchange and gets one back,\: so eight is the depth of the buffer that absorbs lost packets. The bound is 8 because it is also the bound on how many a single time exchange may ask for
+T}
+T{
+\fBrotate_\:every\fR
+T}	T{
+duration
+T}	T{
+\fB24h\fR
+T}	T{
+How often a new cookie key becomes the current one (1m to 720h)
+T}
+T{
+\fBkeep_\:keys\fR
+T}	T{
+int
+T}	T{
+\fB2\fR
+T}	T{
+How many retired keys still open cookies already issued. A cookie issued just before a rotation is spent after it,\: and a client switched off over a weekend comes back with cookies from two rotations ago. \fB0\fR is allowed and warns: a rotation then refuses every cookie at once
+T}
+T{
+\fBstate\fR
+T}	T{
+path
+T}	T{
+none
+T}	T{
+Where the cookie keys are kept across a restart,\: written \fB0600\fR. Empty warns: the keys then live only in memory,\: and a restart refuses every cookie in the estate. It is secret material \[u2014] whoever can read it can forge a cookie,\: which is to say forge an authenticated time answer \[u2014] so it belongs somewhere only this daemon can read. A file that is there and cannot be read stops the listener rather than being ignored
+T}
+.TE
+.PP
+Counters: \fBntske_sessions\fR, \fBntske_relayed\fR, \fBntske_refused\fR, \fBntske_rejected\fR, \fBntske_not_nts\fR, \fBntske_handshake_limited\fR, \fBntske_upstream_failed\fR, and \fBntske_handshakes\fR, which is a gauge of the handshakes holding a slot right now: it says how close \fBmax_concurrent_handshakes\fR is to being reached, which the limited counter only answers once clients are already being turned away. The terminating side adds \fBntske_terminated\fR, \fBntske_cookies\fR and \fBntske_no_terms\fR. Refusals are \fBntske_denied\fR for the ban triggers, with the reasons \fBbanned\fR, \fBclient_not_allowed\fR, \fBmax_connections\fR, \fBhandshake_limit\fR, \fBnot_tls\fR, \fBno_hello\fR, \fBincomplete_hello\fR, \fBhello_too_large\fR, \fBalpn_not_offered\fR and \fBserver_name_not_allowed\fR; terminating adds \fBhandshake_failed\fR, \fBno_request\fR, \fBincomplete_request\fR, \fBrequest_too_large\fR, \fBunknown_critical_record\fR, \fBbad_request\fR, \fBno_terms\fR, \fBderivation_failed\fR, \fBcookie_failed\fR and \fBwrite_failed\fR.
 .SS "server.listeners[].vnc (kind: vnc)"
 .PP
 A \fBkind: vnc\fR listener is a VNC gateway: the proxy is an RFB server to the client and an RFB client to the target, terminating the handshake of RFC 6143 on both legs.
@@ -17019,7 +17724,7 @@ list
 T}	T{
 \fB[]\fR (all)
 T}	T{
-Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBflow\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBtcp_\:denied\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBpostgres_\:denied\fR,\: \fBmysql_\:denied\fR,\: \fBtds_\:denied\fR,\: \fBredis_\:denied\fR,\: \fBbacnet_\:denied\fR,\: \fBamqp_\:denied\fR,\: \fBs7_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fBdns_\:denied\fR,\: \fBdns_\:threat_\:intel\fR,\: \fBdns_\:deceived\fR,\: \fBdns_\:tripwire\fR,\: \fBtelnet_\:tripwire\fR,\: \fBssh_\:tripwire\fR,\: \fBmodbus_\:tripwire\fR,\: \fBiec104_\:tripwire\fR,\: \fBs7_\:tripwire\fR,\: \fBredis_\:tripwire\fR,\: \fBmysql_\:tripwire\fR,\: \fBpostgres_\:tripwire\fR,\: \fByara\fR
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBflow\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBtcp_\:denied\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBdhcp6_\:denied\fR,\: \fBpostgres_\:denied\fR,\: \fBmysql_\:denied\fR,\: \fBtds_\:denied\fR,\: \fBredis_\:denied\fR,\: \fBbacnet_\:denied\fR,\: \fBamqp_\:denied\fR,\: \fBs7_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fBdns_\:denied\fR,\: \fBdns_\:threat_\:intel\fR,\: \fBdns_\:deceived\fR,\: \fBdns_\:tripwire\fR,\: \fBtelnet_\:tripwire\fR,\: \fBssh_\:tripwire\fR,\: \fBmodbus_\:tripwire\fR,\: \fBiec104_\:tripwire\fR,\: \fBs7_\:tripwire\fR,\: \fBredis_\:tripwire\fR,\: \fBmysql_\:tripwire\fR,\: \fBpostgres_\:tripwire\fR,\: \fByara\fR
 T}
 T{
 \fBthreshold\fR

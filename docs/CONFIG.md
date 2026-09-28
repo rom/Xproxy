@@ -149,8 +149,8 @@ off) logs a warning and lists them under `mismatched_peers`.
 | `h3` | object | defaults when `h3` is listed | QUIC tuning; see below |
 | `h2c` | bool | `false` | Accept HTTP/2 without TLS (prior knowledge and Upgrade) on a plaintext listener, for gRPC clients inside a trusted network |
 | `tls` | object | none | TLS termination; see below |
-| `proxy_protocol` | bool | `false` | Read a PROXY protocol v1 or v2 header at the start of every connection from a peer in `trusted_proxies`: the client address it carries becomes the peer for limits, bans, ACLs, logs and forwarding headers, and the per address connection count moves to it. A trusted peer that sends no header, or a malformed one, is dropped without a response (`drop_connection` with reason `proxy_protocol`, counted in `rejected_connections`); `LOCAL` headers keep the balancer's address; connections from other peers are served unchanged, so a client cannot choose its own address. Requires `trusted_proxies`; read on `kind:` `http`, `forward`, `ssh`, `telnet`, `vnc`, `rdp`, `smtp`, `mqtt`, `ftp`, `syslog` and `modbus`, and not on `tcp` (which reads the first bytes itself to route by server name, and forwards a header instead), `dns`, `udp`, `ntp` or `ntske` -- the datagram kinds have no connection to put a header at the start of, and the key establishment relay reads the ClientHello. |
-| `kind` | `http`, `tcp`, `udp`, `forward`, `dns`, `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `ntp`, `ntske`, `ssh`, `telnet`, `vnc`, `rdp` | `http` | `tcp` is a layer 4 stream listener and `udp` its datagram counterpart, `forward` an explicit proxy for clients, `dns` a DNS proxy, `smtp` a protocol-aware SMTP and submission proxy, `mqtt` an MQTT proxy, `ftp` an FTP proxy, `syslog` a syslog relay, `modbus` a Modbus relay, `ntp` an NTP and NTS time gateway with `ntske` its key establishment relay, and `ssh`, `telnet`, `vnc` and `rdp` the access gateways; see below. The kind also decides which daemon serves the listener: `http`, `forward`, `tcp`, `udp` and `dns` are xproxy's, `ssh`, `telnet`, `vnc` and `rdp` are xgate's, and `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `ntp` and `ntske` are xrelay's. A daemon handed a listener of another kind validates it and leaves it alone; it is never served by the wrong data plane |
+| `proxy_protocol` | bool | `false` | Read a PROXY protocol v1 or v2 header at the start of every connection from a peer in `trusted_proxies`: the client address it carries becomes the peer for limits, bans, ACLs, logs and forwarding headers, and the per address connection count moves to it. A trusted peer that sends no header, or a malformed one, is dropped without a response (`drop_connection` with reason `proxy_protocol`, counted in `rejected_connections`); `LOCAL` headers keep the balancer's address; connections from other peers are served unchanged, so a client cannot choose its own address. Requires `trusted_proxies`; read on `kind:` `http`, `forward`, `ssh`, `telnet`, `vnc`, `rdp`, `smtp`, `mqtt`, `ftp`, `syslog` and `modbus`, and not on `tcp` (which reads the first bytes itself to route by server name, and forwards a header instead), `dns`, `udp`, `ntp`, `ntske`, `dhcp` or `dhcp6` -- the datagram kinds have no connection to put a header at the start of, and the key establishment relay reads the ClientHello. |
+| `kind` | `http`, `tcp`, `udp`, `forward`, `dns`, `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `ntp`, `ntske`, `dhcp`, `dhcp6`, `ssh`, `telnet`, `vnc`, `rdp` | `http` | `tcp` is a layer 4 stream listener and `udp` its datagram counterpart, `forward` an explicit proxy for clients, `dns` a DNS proxy, `smtp` a protocol-aware SMTP and submission proxy, `mqtt` an MQTT proxy, `ftp` an FTP proxy, `syslog` a syslog relay, `modbus` a Modbus relay, `ntp` an NTP and NTS time gateway with `ntske` its key establishment relay, and `ssh`, `telnet`, `vnc` and `rdp` the access gateways; see below. The kind also decides which daemon serves the listener: `http`, `forward`, `tcp`, `udp` and `dns` are xproxy's, `ssh`, `telnet`, `vnc` and `rdp` are xgate's, and `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `ntp` and `ntske` are xrelay's. A daemon handed a listener of another kind validates it and leaves it alone; it is never served by the wrong data plane |
 | `redirect_to_https` | bool | `false` | Answer every request with 308 to `https://host/path?query`. Plaintext listeners only. |
 | `connection_rate` | object | none | `{per_second, burst}`: how fast this listener accepts, replacing `server.limits.connection_rate` for it. See below |
 | `connection_rate_per_source` | object | none | `{per_second, burst, ipv4_prefix, ipv6_prefix, max_sources}`: how fast one source network may connect to this listener |
@@ -2975,15 +2975,44 @@ with an `upstream_community` the manager never needs to know. A response is
 rebuilt in the version its request arrived in, so the manager sees the version
 it spoke.
 
-Two rewrites this relay will not do, both because it reads USM messages and
-never writes one, and will not forge an authentication that did not happen. It
-cannot *produce* v3, which is refused at load. And it cannot downgrade a v3
-**request**: the answer would come back as v2c and handing that to a v3
-manager means signing it, which this relay does not do, so such a request is
-refused rather than half-translated. A v3 **notification** downgrades cleanly,
-because nothing comes back -- a modern device sending v3 traps to a collector
-that understands only v2c is exactly what `traps: true` with
-`upgrade_version: v2c` is for.
+**And upwards, with an identity of its own.** `upgrade_version: v3` plus
+`upstream_usm` is the case this protocol needs most: the agents were replaced
+and the polling system was not, so a v1 or v2c poller reaches a v3-only agent
+with authentication and privacy the poller cannot speak and a pass phrase it
+never holds. The relay **terminates** the manager's security and
+**re-originates** its own -- and that sentence is the whole of the trade:
+
+- The credential that opens the agent lives in one place. A manager's community
+  string that leaks does not open anything, and the agent's pass phrase never
+  leaves this process.
+- The level toward the agent is this relay's choice, not the manager's
+  capability. `upstream_security_level: authPriv` from a manager with no
+  privacy at all.
+- **There is no end-to-end authentication between the manager and the agent any
+  more.** The manager authenticates to this relay (or does not, on v1 and v2c)
+  and this relay authenticates to the agent. This process is a party to the
+  security rather than a reader of it. An estate that wants USM end to end
+  wants `usm_users` and no upgrade, and validation says so out loud when
+  `upstream_usm` is configured.
+
+The agent's engine identifier is **discovered**, not configured: it is the
+agent's to state, and USM authenticates against that engine's clock. The first
+request to a cold agent therefore draws an RFC 3414 §4 discovery first, and the
+manager's own request is asked as soon as the agent's report comes back --
+carrying the manager's request identifier, so the waiting question is the one
+that gets asked. A burst to a cold agent sends **one** discovery.
+`upstream_usm.engine_id` pins the identifier where an operator knows it, and
+then an engine calling itself something else is not believed.
+`snmp_discoveries` and `snmp_originated` count the two halves: discoveries that
+climb beside a flat originated count are an agent not answering them.
+
+One rewrite this relay still will not do: it cannot downgrade a v3 **request**.
+The answer would come back as v2c and handing that to a v3 manager means
+signing it as that manager, with a key this relay does not hold, so such a
+request is refused rather than half-translated. A v3 **notification**
+downgrades cleanly, because nothing comes back -- a modern device sending v3
+traps to a collector that understands only v2c is exactly what `traps: true`
+with `upgrade_version: v2c` is for.
 
 **Version 3 is read, with the user's keys.** Without `usm_users` a v3 message
 is a header and an opaque payload: the user, the engine and the security level
@@ -3035,6 +3064,8 @@ DTLS on 10162 is not implemented, so a listener that is TLS throughout is
 | `read_only` | bool | `false` | Refuse every SetRequest, for every client, before any rule is read. SNMP has exactly one writing operation, so this is a one-line policy covering the whole of "nobody reconfigures anything through this relay". **No rule can override it** |
 | `upgrade_version` | `v1`, `v2c` | | Rewrite the version a message is forwarded in. `v3` is refused at load |
 | `upstream_community` | string | the arriving one | The community string sent to the agent, which is what lets the manager stop knowing it |
+| `upstream_usm` | user | none | The version 3 identity this relay presents to the agent: the same fields as a `usm_users` entry (`name`, `auth`, `auth_secret`, `privacy`, `privacy_secret`, `engine_id`). Required by `upgrade_version: v3`. With it the relay terminates the manager's security and originates its own, so there is no end-to-end authentication between them |
+| `upstream_security_level` | `noAuthNoPriv`, `authNoPriv`, `authPriv` | `authPriv` with a privacy protocol, `authNoPriv` without | The level this relay originates at. `noAuthNoPriv` leaves the pass phrases unused and is warned about; `authNoPriv` with a privacy pass phrase configured is warned about too, because the reason to configure one is to use it |
 | `rules` | list | | Per-message rules, first match wins; see below |
 | `default_action` | `deny`, `allow` | `deny` | What a message no rule matched gets |
 | `deny_response` | `error`, `drop`, `close` | `error` | `error` sends the Response PDU an agent would send -- `noAccess` on v2c and v3, `noSuchName` on v1, which is the only word v1 has for it -- and every manager already knows how to display that. `drop` is a timeout to the manager, and a timeout is what a dead device looks like. `close` ends a stream session |
@@ -3467,6 +3498,156 @@ triggers, and the fine-grained reason is in the refusal counters:
 `option_denied`, `boot_server_not_allowed`, `boot_file_not_allowed`, `rule`,
 `default_deny`, `unencodable`, `unencodable_reply`.
 
+### server.listeners[].dhcp6 (kind: dhcp6)
+
+A `kind: dhcp6` listener is a DHCPv6 relay agent (RFC 8415) on UDP 547 that
+reads what it relays.
+
+It is a separate listener from `kind: dhcp` because DHCPv6 is a separate
+protocol: a different packet format, different message types, a nested
+relay mechanism rather than a field, a client identified by a DUID rather
+than a hardware address, and its own options — including prefix
+delegation, which has no DHCPv4 equivalent at all. An estate running both
+runs both listeners, and writing both down is the point.
+
+The shape of the policy is the DHCPv4 one because the shape of the threat
+is the same: **answering is the attack**, so the interesting half faces
+upstream. What differs is what an answer can carry, and there is more of
+it.
+
+- The **boot file URL** (59, RFC 5970) and its parameters (60) are what a
+  machine boots.
+- The **captive portal URL** (103, RFC 8910) is a URL a client will open.
+- The **SZTP bootstrap server** (136, RFC 8572) is a configuration a switch
+  will fetch and apply to itself.
+- The **S46 transition containers** (94 to 97, RFC 7598) and the
+  **AFTR name** (64) put a host's *IPv4* traffic through a border relay of
+  the sender's choosing — a takeover of a protocol this message is not even
+  about.
+- The **Server Unicast option** (12) tells a client to stop talking to the
+  relay and address the server directly, which turns off every policy this
+  listener has.
+
+Each is in the built-in `deny_options` list, and the default is to strip
+them and forward the rest: a client that still gets its address and no
+longer gets told which border relay its IPv4 traffic goes through is a
+client that works.
+
+The **resolvers** (option 23) and the **domain search list** (24) are the
+obvious pair and are deliberately *not* on that list, which is the same
+choice the DHCPv4 kind makes about option 6. They have a positive list of
+their own — `allow_resolvers` and `allow_domains` — and that is the better
+check: it says what this estate's resolvers *are*, so it catches a
+compromised real server as well as a rogue one, which removing the option
+wholesale does not. Putting an option with a positive list on the deny list
+as well would break twice over: the positive list becomes dead
+configuration, because the option is gone before anything reads its
+contents, and handing out resolvers is the whole purpose of stateless
+DHCPv6 on a network that addresses itself by router advertisement — so a
+default that strips them is a default an estate has to switch off to get
+its network working, which is how a control gets switched off entirely.
+Write `allow_resolvers`; the validator warns while it is empty.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `mode` | enum | `reverse` | `reverse` (clients here, servers upstream) or `forward` (this listener is the controlled egress a downstream relay agent uses) |
+| `upstream` | upstream | required | The server pool |
+| `allow_clients`, `deny_clients` | list of CIDR | `[]` | The networks a message may arrive from. Deny first. A DHCPv6 client sends from a link-local address it chose itself, so this says less than it looks |
+| `allow_servers` | list of CIDR | the pool's endpoints | The addresses a reply may come from, and the single most valuable line in the file. A reply from anywhere else is dropped and counted whatever it says. Empty means the endpoints of the upstream pool — never "anybody" |
+| `message_types` | list | the lease cycle | The types a client may send: `solicit`, `request`, `renew`, `rebind`, `confirm`, `release`, `decline`, `information_request`. The default leaves out the lease-query family, which is a relay agent's own diagnostic and an inventory of every lease in the estate to anything else |
+| `deny_options` | list | the built-in list above | The options a *server* may not send. Setting the list replaces it, and leaving one of the built-ins out warns |
+| `allow_options` | list | `[]` | Turns the answer policy inside out: an option outside the list is removed. On a network whose clients need three options this is shorter and safer than a deny list |
+| `on_denied_option` | enum | `strip` | `strip` removes the option and forwards the rest; `deny` refuses the whole reply, which leaves the client with no address at all |
+| `deny_requested_options` | list | `[]` | Options a client may not *ask* for, in its Option Request Option. The ask is removed rather than the message refused |
+| `allow_resolvers` | list of IPv6 | `[]` (any) | The addresses the DNS server option may name. Empty warns: an estate knows its own resolvers, and a reply naming anything else is wrong whoever sent it — which is the check that catches a compromised real server as well as a rogue one |
+| `allow_domains` | list of pattern | `[]` (any) | Shell patterns the domain search list may match |
+| `allow_boot_urls` | list of pattern | `[]` (any) | Shell patterns the boot file URL may match. This is where an estate says which images exist |
+| `prefix_delegation` | section | carried, unbounded | What a reply may delegate and what a client may ask for; see below |
+| `allow_temporary_addresses` | bool | `true` | Carry an IA_TA. Temporary addresses are the privacy mechanism of RFC 8415 §6.5, and refusing them would be refusing clients that are doing the right thing |
+| `allow_reconfigure` | bool | `false` | Carry a RECONFIGURE from a server. It warns: it is a message to a client that answers nothing, RFC 8415 §18.3.11 requires it to be authenticated with a key almost nobody deploys, and a client that accepts one can be made to re-ask a server of the sender's choosing |
+| `min_lease_time`, `max_lease_time` | duration | unbounded | Bound the valid lifetime a server may hand out, on an address or a delegated prefix. A valid lifetime of **zero is never bounded up**: zero is how a server withdraws an address (RFC 8415 §18.2.10), and rewriting it would turn a withdrawal into a lease. The preferred lifetime comes down with the valid one, because a preferred lifetime longer than the valid one makes the option invalid |
+| `refuse_repeated_options` | bool | `true` | Refuse a message carrying an option twice where the standard has no meaning for a second one. Two implementations read such a message differently, and a relay that decided about the first value while the server acted on the last would be the reason nobody could find the bug. The identity associations are exempt, because a client legitimately sends several |
+| `max_relay_hops` | int | `4` | The relay chain's depth (1 to 32; RFC 8415 §19.1.1 makes 32 the outer limit). A message arriving already wrapped several times has been somewhere |
+| `link_address` | IPv6 | required in reverse mode | What this relay puts in a RELAY-FORW's link address field, which tells the server which segment to allocate from. A link-local address is refused: it tells the server nothing |
+| `interface_id`, `remote_id`, `remote_id_enterprise`, `subscriber_id` | string / int | none | The relay's own identifying options (RFC 8415 §21.18, RFC 4649, RFC 4580). `remote_id` without an enterprise number warns: RFC 4649 puts the number first, and a server indexing on it will not find this relay where it expects |
+| `on_client_relay_option` | enum | `strip` | What to do when a *client* sends one of the relay's own options. A client has no business asserting which circuit it is on, because that assertion is exactly what the option exists to make on its behalf |
+| `rules` | list | `[]` | Per-message rules; see below |
+| `default_action` | enum | `allow` | Allow, as in the DHCPv4 kind and for the same reason: DHCP is infrastructure, a listener that refused every request until somebody wrote a rule would stop an estate booting, and the protections here are the answer policy and the server list, which are on by default |
+| `max_pending` | int | `256` | Requests outstanding towards servers — the table that pairs a reply with the client that asked |
+| `request_timeout` | duration | `10s` | How long a server has to answer before its answer is too late to pair (1s to 1m) |
+| `max_message_bytes` | int | `1500` | One message. A relay chain grows a message, so this bounds what arrives rather than what a client sent |
+| `rate_limit`, `rate_burst` | int | `0` (off) | Messages a second per **DUID**, which is the key that matters here: pool exhaustion is one host sending thousands of SOLICITs with a made-up identifier in each, and a limit keyed on the source address would see one sender doing nothing unusual |
+| `max_clients` | int | `8192` | The distinct identifiers tracked at once. The other half of the starvation bound: the rate limit slows one identifier down, and this stops a flood of new ones filling the table that does the limiting |
+| `log_messages` | bool | `false` | An access line per message |
+| `log_leases` | bool | `true` | A line for every address and prefix handed out: which identifier got which lease, for how long, from which server |
+| `alert_on_deny` | bool | `true` | A security event for every refusal |
+
+A deployment on a port other than 547 warns: a DHCPv6 client sends to 547
+and nothing else will reach the listener.
+
+#### server.listeners[].dhcp6.prefix_delegation
+
+Prefix delegation is the part of DHCPv6 with no DHCPv4 equivalent, and the
+part where a wrong answer is largest. A reply delegating `::/0` has handed a
+host the whole of IPv6 to route. A request for a /48 where the estate
+delegates /56s is a client asking for two hundred and fifty-six times what
+it should have — and a real server that grants it has given a segment away.
+
+Both ends are checked, and a prefix outside the estate's is a **refusal
+rather than a strip**: there is no useful half of a delegation to keep, and a
+client that acted on the rest would be routing a prefix the relay decided
+against.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Carry prefix delegation at all. An estate that does not use it should say so, because then an IA_PD arriving from anywhere is a question worth refusing |
+| `prefixes` | list of IPv6 CIDR | `[]` | The prefixes a delegation may come from. `::/0` is refused as a value: it is every prefix there is, which is not a bound |
+| `min_length`, `max_length` | int | unbounded | The prefix length in bits (1 to 128). An estate that delegates /56s writes 56 in both, and then a /48 is refused whoever offered it |
+
+Carrying delegation with no prefixes and no length bound warns, because
+that configuration forwards a reply delegating `::/0`.
+
+An IA_PREFIX hint of `::/0` **from a client** is not refused: RFC 8415
+§21.22 lets a client send one to mean "any", and refusing it would refuse
+every client that does not already know its prefix.
+
+#### server.listeners[].dhcp6.rules[]
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | string | required | Names the rule in the logs and the counters |
+| `action` | enum | `allow` | `allow`, `deny` or `observe`. `observe` logs and counts and then keeps looking, which is how a rule is tried on live traffic before it decides anything |
+| `clients` | list of CIDR | `[]` | The networks the message arrived from |
+| `duids` | list of pattern | `[]` | Shell patterns the client identifier's rendering matches: `ll:0003*` for a vendor's fleet, the whole identifier for one machine. The rendering is the type and the hexadecimal octets, which is what the logs carry too |
+| `message_types` | list | `[]` (any) | The message types this rule covers |
+| `vendor_classes`, `user_classes` | list of pattern | `[]` | Match the vendor class and user class options as shell patterns, which is how a rule about PXE clients is written |
+| `deny_options`, `allow_resolvers`, `allow_domains`, `allow_boot_urls` | list | inherited | Narrow the answer policy for this rule's traffic, which is how "the boot segment may be told a boot URL and nothing else may" is written |
+| `max_lease_time` | duration | inherited | Overrides the listener's lease bound for this rule |
+| `interface_id` | string | inherited | Overrides the listener's interface identifier, so a rule about one segment can tell the server which segment it is |
+| `schedule` | section | none | Limits the rule to a time window |
+
+Counters: `dhcp6_messages`, `dhcp6_solicits`, `dhcp6_requests`,
+`dhcp6_replies`, `dhcp6_relayed`, `dhcp6_answered`, `dhcp6_releases`,
+`dhcp6_denied`, `dhcp6_would_deny`, `dhcp6_malformed`, `dhcp6_rejected`,
+`dhcp6_rate_limited`, `dhcp6_upstream_failed`, `dhcp6_send_failed`,
+`dhcp6_unsolicited`, and the two worth reading first —
+`dhcp6_rogue_server`, a reply refused because it came from an address that
+is not a server, and `dhcp6_options_stripped`, the options removed from
+replies, which is the number that says the answer policy is doing something
+a request-side check could not. `dhcp6_lease_bounded` counts the replies
+whose valid lifetime this relay wrote down; `dhcp6_pending` and
+`dhcp6_clients` are gauges.
+
+Refusals are `dhcp6_denied` for the ban triggers, and the fine-grained
+reason is in the refusal counters: `client_not_allowed`,
+`server_not_allowed`, `malformed`, `malformed_reply`, `message_too_large`,
+`unknown_message_type`, `relay_message_inside`,
+`server_message_from_client_side`, `client_message_from_server_side`,
+`repeated_option`, `message_type_not_allowed`, `request_not_allowed`,
+`client_relay_option`, `reconfigure_not_allowed`, `denied_option`,
+`bad_identity_association`, `too_many_hops`, `too_many_pending`,
+`rate_limited`, `unsolicited`, `rule`, `default_deny`, `unencodable`.
+
 ### server.listeners[].tftp (kind: tftp)
 
 TFTP is the protocol under provisioning. A switch pulls its firmware over it, a
@@ -3768,19 +3949,95 @@ authentication in extension fields; the key establishment is TLS on TCP
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `mode` | enum | `passthrough` | `passthrough` or `off`. Pass-through forwards NTS-protected packets whole and unaltered, which is the only honest thing a relay that does not hold the keys can do with them |
+| `mode` | enum | `passthrough` | `passthrough`, `terminate` or `off`. Pass-through forwards NTS-protected packets whole and unaltered, which is the only honest thing a relay that does not hold the keys can do with them. Terminate verifies them: see below. Off refuses them outright |
+| `key_listener` | listener name | required with `terminate` | The `kind: ntske` listener whose cookie keys this listener opens cookies with. Required with `mode: terminate` and refused otherwise: the two halves of NTS are two listeners on two ports, and termination only works when the one spending the cookies names the one that issued them. It must be a listener that has a `terminate` section — one that relays key establishment holds no keys |
 | `require` | bool | `false` | Refuse a packet with no NTS fields. It is how a listener says "this estate is NTS only", and it is what makes the no-downgrade rule visible: an answer arriving without NTS fields for a request that had them is refused, **never** passed on as plain NTP |
 
-**Termination is deliberately absent rather than approximated.** Doing it
-honestly means deriving the NTS keys from the TLS exporter, holding the
-same cookie keys the time servers hold, rotating them with an overlap so
-a cookie issued before a rotation still works after it, and recovering
-all of that across a restart. An implementation that faked any part would
-be telling clients their time was authenticated when nobody had checked.
-And **the visible NTS fields prove nothing to this relay**: a unique
-identifier, a cookie and an authenticator field are all readable by
+In **pass-through**, the visible NTS fields prove nothing to this relay: a
+unique identifier, a cookie and an authenticator field are all readable by
 anybody on the path, so "NTS is present" is a routing and preservation
-fact here, never an authentication one.
+fact, never an authentication one.
+
+**`mode: terminate`** is the other posture, and it is available because
+the `kind: ntske` listener named by `key_listener` issued the cookie the
+packet carries. That cookie holds the client's two session keys, sealed
+under a master key only this relay has, so this listener does what a
+server does: opens the cookie, verifies the authenticator over the whole
+packet, and answers with an authenticator of its own carrying replacement
+cookies.
+
+What it buys is the awkward case. **The time source does not have to
+speak NTS at all** — it can be the plain NTPv4 server that has been in
+the plant for fifteen years. The request is re-originated towards it as a
+bare header: the extension fields were the client's conversation with
+this relay, the cookie names a key the source does not hold, and a
+placeholder asks for something only the party that issues cookies can
+give. The answer's first forty-eight octets are the source's own,
+unaltered — every field in them is its statement about its clock, and a
+relay that adjusted one would be inventing time — with the client's
+unique identifier and the authenticator appended.
+
+In this mode **"authenticated" means this relay checked**. A packet whose
+authenticator does not verify is refused rather than forwarded with a
+note, which is the whole difference from pass-through. The replacement
+cookies travel inside the authenticator, encrypted, because a cookie in
+the clear would let anybody on the path recognise the same client at its
+next exchange — the linkability NTS exists to remove. One cookie is
+issued per cookie and placeholder the request carried, at most eight,
+which is what keeps the request as large as the answer: without that
+bound the listener would be an amplifier.
+
+**`nts.source`** is the other side of the same decision. Without it the
+relay asks the time source in plain NTP, which is right when the source
+cannot do better. With it the relay holds an association of its own: its
+own key establishment with the source's key establishment server, its own
+cookies, its own authenticator on every request it sends, and verification
+of every answer. It needs `mode: terminate`, because the client's
+authentication has to end here before the relay can start its own.
+
+**The cost is worth being plain about, and validation says it too: there is
+no end-to-end authentication between a client and the time source any
+more.** The client authenticates to this relay and this relay
+authenticates to the source, so the process is a party to the security
+rather than a reader of it. What it buys is a relay that can compare,
+police and log what the source says while both halves are still
+authenticated — which a pass-through relay cannot do at all.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `ke_address` | host:port | required | The source's key establishment server. A bare host takes port 4460. It is configured rather than discovered: the time servers are the upstream pool, and a key establishment server that named a different one would be moving the estate's time traffic — such a record is logged and not followed |
+| `server_name` | host | the host in `ke_address` | The name to verify in the source's certificate |
+| `ca_file` | path | none | The authorities that may have issued it. Empty warns: the system trust store admits any public authority, which is not usually what an estate means by "this is our time server" |
+| `cert_file`, `key_file` | path | none | A client certificate, for a source that asks for one. NTS-KE says nothing about the client, so this is the only thing that can name this relay to the source. Both or neither |
+| `refresh_below` | int | `2` | Establish keys again when fewer than this many cookies are left (1 to 8). One is spent per exchange and one comes back, so the pool only shrinks when answers are lost — and a relay that ran out would stop asking for the time |
+| `timeout` | duration | `10s` | One key establishment: a TLS handshake and two short messages (1s to 1m) |
+
+A request that arrives before the relay holds keys with the source is
+dropped with the reason `nts_source_not_ready` rather than sent in plain
+NTP: a relay that quietly downgraded its own request would be doing the
+thing this setting exists to prevent, and a time client retries. An answer
+whose authenticator does not verify, or which does not echo the identifier
+the request carried, is `nts_source_unverified` — the identifier matters
+because the keys are the same for the whole association, so without it an
+answer to another of this relay's requests would verify.
+
+Counters: `ntp_nts_verified`, `ntp_nts_unverified`,
+`ntp_nts_cookie_unknown` and `ntp_nts_cookies_issued` for the client side;
+`ntp_nts_source_established`, `ntp_nts_source_failed`,
+`ntp_nts_source_verified` and `ntp_nts_source_unverified` for the relay's
+own association with the source. The refusals are
+`nts_no_authenticator` (NTS fields with no authenticator, or one this
+relay cannot read), `nts_no_cookie` (an authenticator with nothing to
+look the keys up by), `nts_cookie_unknown` (a cookie this relay did not
+issue, or issued under a key it no longer holds — the `keep_keys` window
+on the key establishment listener is what decides how far back that
+reaches), `nts_unverified` (an authenticator that did not verify: the
+packet was altered or forged), `nts_no_session` (an interleaved answer,
+matched by the source's own previous transmit timestamp rather than by
+the client's request, which leaves no verified session to authenticate it
+with) and `nts_no_cookie_keys` (termination configured against a key
+establishment listener that is not there — fail-closed, because a
+listener asked to verify with nothing to verify against must refuse).
 
 **`extensions`** bounds what a packet may carry.
 
@@ -3973,15 +4230,24 @@ estate with a time listener and no key establishment listener has clients
 that cannot get cookies, and that is better seen in the configuration
 than found in the logs.
 
-It **relays** rather than terminates, for the reasons under `nts` above.
-What it does is the part a relay can do honestly: read the one thing a
-TLS handshake shows in the clear — the server name and the application
-protocol the client offers — refuse a connection that is not an NTS
-client, bound the handshakes in flight, and hand the rest to the server.
+It has two postures. Without `terminate` it **relays**: it reads the one
+thing a TLS handshake shows in the clear — the server name and the
+application protocol the client offers — refuses a connection that is not
+an NTS client, bounds the handshakes in flight, and hands the rest to the
+key establishment server whose keys it is. That is the whole of what a
+relay holding no keys can honestly do.
+
+With `terminate` it **is** the key establishment server. It presents the
+listener's certificate, derives the two NTS keys from the TLS exporter,
+and hands the client cookies of its own — cookies the `kind: ntp`
+listener beside it opens, which is what lets that listener verify a
+client's time requests and put NTS in front of a time server that cannot
+speak it. See `ntp.nts.mode: terminate`.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `upstream` | upstream | required | The pool of key establishment servers |
+| `upstream` | upstream | required without `terminate` | The pool of key establishment servers. Refused together with `terminate`: a listener that answers key establishment itself has nothing to relay it to |
+| `terminate` | section | none | Answer key establishment here rather than relaying it. Requires a `tls` section: the certificate is the only thing an NTS client authenticates |
 | `allow_clients`, `deny_clients` | list of CIDR | `[]` | The networks a client may connect from. Deny first |
 | `server_names` | list | `[]` (any) | The server names a client may ask for, as exact names or `*.example` patterns |
 | `require_alpn` | bool | `true` | Refuse a connection that does not offer `ntske/1`. Off warns: the application protocol is the only thing the handshake shows that says what a connection is for |
@@ -3997,16 +4263,46 @@ A deployment on a port other than 4460 warns: a client that found this
 service through a server's own key establishment record will look for
 4460.
 
+#### server.listeners[].ntske.terminate
+
+A client certificate, where an estate wants one, is the listener's own
+`tls.client_auth: require` and `tls.client_ca_file`, as it is everywhere
+else: NTS-KE authenticates the server to the client and says nothing about
+the client, so a certificate is the only thing this exchange can name who
+is calling with — and it is configured where every other listener's is
+rather than a second time here.
+
+Terminating NTS means holding the cookie keys, and holding them means
+rotating them with an overlap and keeping them across a restart. Both are
+settings rather than assumptions: a rotation that invalidated the cookies
+already issued, or a restart that started with fresh keys, would take the
+estate's time service down for as long as it took every client to
+establish keys again — a TLS handshake each, all at the same moment.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `server` | host | none | Where to spend the cookies. Empty means "where you already are", which is the answer when this relay fronts the time service on its own address |
+| `port` | int | none | The time service port, when it is not the one the client would assume |
+| `cookies` | int | `8` | How many cookies one exchange hands out (1 to 8). Eight is RFC 8915's recommendation: a client spends one per time exchange and gets one back, so eight is the depth of the buffer that absorbs lost packets. The bound is 8 because it is also the bound on how many a single time exchange may ask for |
+| `rotate_every` | duration | `24h` | How often a new cookie key becomes the current one (1m to 720h) |
+| `keep_keys` | int | `2` | How many retired keys still open cookies already issued. A cookie issued just before a rotation is spent after it, and a client switched off over a weekend comes back with cookies from two rotations ago. `0` is allowed and warns: a rotation then refuses every cookie at once |
+| `state` | path | none | Where the cookie keys are kept across a restart, written `0600`. Empty warns: the keys then live only in memory, and a restart refuses every cookie in the estate. It is secret material — whoever can read it can forge a cookie, which is to say forge an authenticated time answer — so it belongs somewhere only this daemon can read. A file that is there and cannot be read stops the listener rather than being ignored |
+
 Counters: `ntske_sessions`, `ntske_relayed`, `ntske_refused`,
 `ntske_rejected`, `ntske_not_nts`, `ntske_handshake_limited`,
 `ntske_upstream_failed`, and `ntske_handshakes`, which is a gauge of the
 handshakes holding a slot right now: it says how close
 `max_concurrent_handshakes` is to being reached, which the limited
-counter only answers once clients are already being turned away.
+counter only answers once clients are already being turned away. The
+terminating side adds `ntske_terminated`, `ntske_cookies` and
+`ntske_no_terms`.
 Refusals are `ntske_denied` for the ban triggers, with the reasons `banned`, `client_not_allowed`,
 `max_connections`, `handshake_limit`, `not_tls`, `no_hello`,
 `incomplete_hello`, `hello_too_large`, `alpn_not_offered` and
-`server_name_not_allowed`.
+`server_name_not_allowed`; terminating adds `handshake_failed`,
+`no_request`, `incomplete_request`, `request_too_large`,
+`unknown_critical_record`, `bad_request`, `no_terms`,
+`derivation_failed`, `cookie_failed` and `write_failed`.
 
 ### server.listeners[].vnc (kind: vnc)
 
@@ -7563,7 +7859,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `flow`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `tcp_denied`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `amqp_denied`, `s7_denied`, `ntp_denied`, `ntske_denied`, `dns_denied`, `dns_threat_intel`, `dns_deceived`, `dns_tripwire`, `telnet_tripwire`, `ssh_tripwire`, `modbus_tripwire`, `iec104_tripwire`, `s7_tripwire`, `redis_tripwire`, `mysql_tripwire`, `postgres_tripwire`, `yara` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `flow`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `tcp_denied`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `dhcp6_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `amqp_denied`, `s7_denied`, `ntp_denied`, `ntske_denied`, `dns_denied`, `dns_threat_intel`, `dns_deceived`, `dns_tripwire`, `telnet_tripwire`, `ssh_tripwire`, `modbus_tripwire`, `iec104_tripwire`, `s7_tripwire`, `redis_tripwire`, `mysql_tripwire`, `postgres_tripwire`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |

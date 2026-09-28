@@ -1,0 +1,293 @@
+# DHCPv6 relay agent: the other half of a dual-stack estate's provisioning
+# path, and usually the unwatched half.
+#
+# A network that carefully polices DHCPv4 and has never looked at UDP 547 is
+# a network where the IPv6 path is the way in. Everything a device is told
+# over it -- its resolvers, its search domains, its boot image, its captive
+# portal, and the border relay its *IPv4* traffic goes through -- is told by
+# whatever answered, and RFC 8415's own authentication (s20) needs a key
+# distribution nobody deploys.
+#
+# This is a relay agent that reads what it relays, in both directions. It is
+# a separate listener from kind: dhcp because DHCPv6 is a separate protocol:
+# a different packet format, a relay mechanism that nests whole messages
+# rather than filling in a field, a client identified by a DUID rather than a
+# hardware address, and prefix delegation, which has no DHCPv4 equivalent and
+# is where a wrong answer is largest.
+#
+# Three things here have no counterpart in the DHCPv4 example:
+#   - prefix_delegation, which bounds both what a reply may delegate and what
+#     a client may ask for. A reply delegating ::/0 has handed a host the
+#     whole of IPv6 to route
+#   - rate_limit keyed on the DUID rather than on the source address, because
+#     a DHCPv6 client sends from a link-local address it chose itself and
+#     pool exhaustion is one host with a thousand made-up identifiers
+#   - the S46 containers and the AFTR name in the deny list, which are how a
+#     reply on this port takes over a host's IPv4 traffic
+#
+# Validate with: xproxyctl -config examples/addressing/dhcp6.yaml validate
+version: 1
+
+logging:
+  directory: /var/log/xproxy
+  access: {file: access.log}
+  security: {file: security.log}
+  audit: {file: audit.log}
+
+management:
+  socket: /run/xproxy/mgmt.sock
+  socket_mode: "0660"
+
+server:
+  listeners:
+    # ---------------------------------------------------------------
+    # The office segment: desks, telephones, printers.
+    #
+    # Stateless DHCPv6 in practice -- the addresses come from router
+    # advertisements and what DHCPv6 is actually for here is handing out
+    # the resolvers. So the resolvers are carried and checked against the
+    # estate's own list, which is the line that catches a compromised real
+    # server: the source address is on the server list and the answer is
+    # still wrong.
+    # ---------------------------------------------------------------
+    - name: office
+      address: "[2001:db8:20::1]:547"
+      kind: dhcp6
+      dhcp6:
+        upstream: dhcp6-servers
+
+        # What the server is told about which segment this is, and what it
+        # allocates from. A link-local address here would tell it nothing,
+        # and is refused at load.
+        link_address: 2001:db8:20::1
+
+        # The relay's own identifying options. A server's logs key on
+        # these, which is what makes an incident traceable back to a
+        # circuit rather than to a relay.
+        interface_id: office-vlan20
+        remote_id: relay-north
+        remote_id_enterprise: 32473
+
+        # allow_servers is deliberately absent: it becomes the endpoints of
+        # dhcp6-servers below, which is what "the servers I configured"
+        # means. Writing it out would be repeating the pool.
+
+        allow_resolvers: ["2001:db8:20::2", "2001:db8:20::3"]
+        allow_domains: ["office.example", "*.office.example"]
+
+        # Nothing on this segment routes a network, so an IA_PD arriving
+        # here at all is a question worth refusing -- from a client asking
+        # and from a server offering alike.
+        prefix_delegation:
+          enabled: false
+
+        # A week is what the server hands out; a day is what this segment
+        # needs. The valid lifetime is shortened rather than the reply
+        # refused, so nothing stops working. A lifetime of zero is left
+        # alone whatever the floor says: zero is how a server withdraws an
+        # address, and raising it would turn a withdrawal into a lease.
+        max_lease_time: 24h
+        min_lease_time: 10m
+
+        # Ten messages a second per DUID is generous for a desk and stingy
+        # for a pool exhaustion.
+        rate_limit: 10
+        rate_burst: 20
+        max_clients: 4096
+
+        log_leases: true
+
+    # ---------------------------------------------------------------
+    # The build segment: machines that boot from the network.
+    #
+    # This is the listener that needs the boot file URL, and it is a
+    # listener of its own rather than a rule on the office one, because
+    # "the boot options are stripped here" is a line nobody should have to
+    # re-read a rule list to trust.
+    # ---------------------------------------------------------------
+    - name: build
+      address: "[2001:db8:21::1]:547"
+      kind: dhcp6
+      dhcp6:
+        upstream: dhcp6-servers
+        link_address: 2001:db8:21::1
+        interface_id: build-vlan21
+        remote_id: relay-north
+        remote_id_enterprise: 32473
+
+        allow_resolvers: ["2001:db8:20::2", "2001:db8:20::3"]
+
+        prefix_delegation:
+          enabled: false
+
+        rules:
+          # Naming the image list is what *allows* option 59 for the traffic
+          # this rule covers -- the listener's own policy strips it -- and
+          # what then checks it. The pattern is where an estate says which
+          # images exist.
+          - name: pxe
+            action: allow
+            vendor_classes: ["PXEClient*"]
+            deny_options: [captive_portal, sztp_redirect, aftr_name, unicast]
+            allow_boot_urls:
+              - "tftp://[2001:db8:20::20]/pxelinux.0"
+              - "http://boot.build.example/images/*.efi"
+            # Four hours is a build. A machine still on a build lease the
+            # next morning is a machine that did not finish.
+            max_lease_time: 4h
+
+          # Anything else on this segment is an ordinary client and gets
+          # the listener's own lists, where the boot URL is stripped.
+          - name: rest
+            action: allow
+
+        max_lease_time: 12h
+        rate_limit: 20
+        rate_burst: 40
+
+    # ---------------------------------------------------------------
+    # The branch segment: routers that are delegated a prefix.
+    #
+    # This is the part with no DHCPv4 equivalent, and the one worth reading
+    # twice. The estate delegates /56s out of 2001:db8:c000::/34 and
+    # nothing else: a /48 is two hundred and fifty-six times what a branch
+    # should have, and a real server that granted one has given a segment
+    # away.
+    #
+    # A prefix outside these bounds is refused rather than stripped. There
+    # is no useful half of a delegation to keep, and a client acting on the
+    # rest would be routing a prefix this relay decided against.
+    # ---------------------------------------------------------------
+    - name: branches
+      address: "[2001:db8:22::1]:547"
+      kind: dhcp6
+      dhcp6:
+        upstream: dhcp6-servers
+        link_address: 2001:db8:22::1
+        interface_id: branch-vlan22
+        subscriber_id: branch-north
+
+        allow_resolvers: ["2001:db8:20::2", "2001:db8:20::3"]
+
+        prefix_delegation:
+          enabled: true
+          prefixes: ["2001:db8:c000::/34"]
+          min_length: 56
+          max_length: 56
+
+        # A branch router keeps its prefix, so the lease is long. It is
+        # still bounded: an infinite delegation is a prefix nobody can take
+        # back.
+        max_lease_time: 168h
+        min_lease_time: 1h
+
+        # A branch router is a known device, not a crowd.
+        rate_limit: 2
+        rate_burst: 4
+        max_clients: 256
+
+    # ---------------------------------------------------------------
+    # The guest segment: whatever somebody brought with them.
+    #
+    # A positive option list rather than a deny list. On a segment whose
+    # clients need four options, naming the four is shorter and safer than
+    # naming everything they may not have.
+    # ---------------------------------------------------------------
+    - name: guest
+      address: "[2001:db8:29::1]:547"
+      kind: dhcp6
+      dhcp6:
+        upstream: dhcp6-servers
+        link_address: 2001:db8:29::1
+        interface_id: guest-vlan29
+
+        allow_options: [client_id, server_id, ia_na, ia_ta, dns_servers,
+                        preference, solicit_max_rt]
+        allow_resolvers: ["2001:db8:29::2"]
+
+        # An IA_TA is a client using the privacy mechanism of RFC 8415
+        # s6.5, which on a guest segment is a client doing the right thing.
+        allow_temporary_addresses: true
+
+        prefix_delegation:
+          enabled: false
+
+        max_lease_time: 2h
+        min_lease_time: 10m
+
+        # A guest segment is where a starvation attempt actually happens,
+        # so the bound is tighter and the client table smaller.
+        rate_limit: 4
+        rate_burst: 8
+        max_clients: 512
+
+        # A guest device asking to be told a captive portal or a bootstrap
+        # server is a device that will use one if anything offers it. The
+        # ask is trimmed rather than the message refused, so the device
+        # still gets an address.
+        deny_requested_options: [captive_portal, sztp_redirect, boot_file_url,
+                                 aftr_name, s46_mape, s46_lightweight_4over6]
+
+        log_messages: true
+
+    # ---------------------------------------------------------------
+    # A downstream relay agent, at a site that has its own.
+    #
+    # Here the client list is a real control, because every sender is a
+    # known relay rather than a client that chose its own link-local
+    # address: the senders are named, and the message arrives already
+    # wrapped and is wrapped once more.
+    # ---------------------------------------------------------------
+    - name: remote-sites
+      address: "[2001:db8:ff::1]:547"
+      kind: dhcp6
+      dhcp6:
+        upstream: dhcp6-servers
+        link_address: 2001:db8:ff::1
+        allow_clients: ["2001:db8:30::/48", "2001:db8:31::/48"]
+        remote_id: relay-north
+        remote_id_enterprise: 32473
+
+        # Two hops is a site's own agent and then this one. More than that
+        # is a message that has been somewhere.
+        max_relay_hops: 2
+
+        # A relay chain grows a message, so this bounds what arrives here
+        # rather than what a client sent.
+        max_message_bytes: 4096
+
+        allow_resolvers: ["2001:db8:20::2", "2001:db8:20::3"]
+
+        # The remote sites do get prefixes delegated, out of a different
+        # block from the branches and at /60 rather than /56.
+        prefix_delegation:
+          enabled: true
+          prefixes: ["2001:db8:d000::/36"]
+          min_length: 60
+          max_length: 60
+
+        max_lease_time: 168h
+
+upstreams:
+  - name: dhcp6-servers
+    endpoints:
+      # Addresses rather than names, and for the same reason as in the
+      # DHCPv4 example: allow_servers defaults to these, and a name this
+      # relay cannot resolve to a list at load would make the estate's most
+      # valuable check unconfigurable. The listener refuses to start rather
+      # than guessing.
+      - address: "[2001:db8:20::10]:547"
+      - address: "[2001:db8:20::11]:547"
+
+# A rogue server is not something a ban list can reach -- it answers the
+# clients directly, and the address it answers from is the finding rather
+# than the target. What a ban list *can* reach is a relay agent or a host
+# that keeps sending what this listener refuses.
+bans:
+  action: drop
+  triggers:
+    - name: dhcp6-persistent-refusals
+      reasons: [dhcp6_denied]
+      threshold: 20
+      window: 5m
+      duration: 1h

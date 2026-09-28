@@ -1,0 +1,202 @@
+# NTS in front of a time server that has never heard of it.
+#
+# The plant has a GPS-fed NTPv4 server that has been in the rack for
+# fifteen years. It cannot speak Network Time Security and it is not going
+# to: there is no firmware for it, and the clock is the one thing in the
+# building nobody is willing to experiment on.
+#
+# The clients, meanwhile, are new. They will do NTS if something offers it,
+# and without it they believe any 48 octets that reach them — which is the
+# whole problem, because every certificate's validity and every log line's
+# order rests on that clock.
+#
+# So this gateway terminates NTS. Two listeners, because NTS is two
+# protocols on two ports:
+#
+#   ke    — key establishment: TLS on 4460 with the ALPN ntske/1. It
+#           presents the certificate, derives the session keys from the
+#           TLS exporter, and hands out cookies of its own.
+#   plant — the time service on 123. It opens those cookies, verifies each
+#           request's authenticator, asks the old server in plain NTP, and
+#           signs the answer with the client's own key.
+#
+# The client gets authenticated time. The old server gets a request from
+# one address it already knows. And "authenticated" here means this relay
+# checked: a packet whose authenticator does not verify is refused, not
+# forwarded with a note.
+#
+# What this costs you is the cookie keys. They are the secret every
+# cookie's secrecy rests on — whoever can read them can forge an
+# authenticated time answer — so the state file belongs somewhere only
+# xrelay can read. And they rotate: see keep_keys, which is what stops a
+# rotation invalidating the cookies already in flight.
+#
+# Validate: xrelay -config examples/ot/nts-gateway.yaml -validate
+version: 1
+server:
+  listeners:
+    # ---------------------------------------------------------------
+    # Key establishment. This is where all of NTS's cryptography is:
+    # it happens once per client, and again when its cookies run low.
+    # ---------------------------------------------------------------
+    - name: ke
+      address: "10.30.0.10:4460"
+      kind: ntske
+
+      # The certificate is the whole of what an NTS client authenticates.
+      # There is nothing else in the exchange that names this server, so a
+      # terminating listener without one could not answer at all.
+      tls:
+        certificates:
+          - cert_file: /etc/xproxy/nts/time.plant.example.pem
+            key_file: /etc/xproxy/nts/time.plant.example-key.pem
+        min_version: "1.3"
+
+      ntske:
+        allow_clients: ["10.30.0.0/16", "10.31.0.0/16"]
+        server_names: ["time.plant.example"]
+        require_alpn: true
+        max_connections: 512
+        # A TLS handshake is the expensive part of NTS and a flood of them
+        # is this port's denial of service. A client that cannot get a
+        # slot is refused rather than queued: a queue here is a queue of
+        # handshakes.
+        max_concurrent_handshakes: 32
+        handshake_timeout: 10s
+        log_sessions: true
+
+        terminate:
+          # Where to spend the cookies. Said explicitly because the time
+          # service is on another port of this same address, and a client
+          # that assumed 123 on the key establishment host would be
+          # guessing right by accident.
+          server: "time.plant.example"
+          port: 123
+
+          # Eight is RFC 8915's recommendation: a client spends one per
+          # exchange and gets one back, so eight is the depth of the
+          # buffer that absorbs lost packets.
+          cookies: 8
+
+          # A new master key every day, with the two previous ones still
+          # opening cookies. Two is the useful minimum: a cookie issued
+          # just before a rotation is spent after it, and a device
+          # switched off over a weekend comes back with cookies from two
+          # rotations ago. keep_keys: 0 would refuse every cookie in the
+          # estate at each rotation.
+          rotate_every: 24h
+          keep_keys: 2
+
+          # Without this the keys live only in memory, and a restart
+          # refuses every cookie in the estate — every client then
+          # re-establishes at once, which is a thousand TLS handshakes in
+          # the same second. Mode 0600, owned by the service user.
+          state: /var/lib/xproxy/nts-cookies.json
+
+    # ---------------------------------------------------------------
+    # The time service. It holds the same cookie keys, which is what
+    # lets it verify what the clients send.
+    # ---------------------------------------------------------------
+    - name: plant
+      address: "10.30.0.10:123"
+      kind: ntp
+      ntp:
+        upstream: local_clocks
+        allow_clients: ["10.30.0.0/16", "10.31.0.0/16"]
+        versions: [4]
+        modes: [client, server]
+
+        nts:
+          mode: terminate
+          # The listener above. Termination only works when the half
+          # spending the cookies names the half that issued them.
+          key_listener: ke
+          # This estate is NTS only. Left false while the old clients are
+          # migrated: with it true, a device that has not been given a
+          # certificate authority to trust stops getting the time, and
+          # that is an outage rather than a warning.
+          require: false
+
+          # The other side of the same decision, for the day the old
+          # server is replaced by one that does speak NTS. With this, the
+          # relay holds an association of its own with the source -- its
+          # own key establishment, its own cookies, its own authenticator
+          # on every request, and verification of every answer -- instead
+          # of asking it in plain NTP.
+          #
+          # The cost is written down because it is real: there is then no
+          # end-to-end authentication between a client and the source.
+          # The client authenticates to this relay and the relay
+          # authenticates to the source, so this process is a party to
+          # the security rather than a reader of it. What it buys is a
+          # relay that can compare, police and log what the source says
+          # while both halves are still authenticated -- which a
+          # pass-through relay cannot do at all.
+          #
+          # source:
+          #   ke_address: "time.upstream.example:4460"
+          #   ca_file: /etc/xproxy/nts/upstream-ca.pem
+          #   refresh_below: 2
+
+        # A poll is once a minute. An NTS request is a few hundred octets
+        # rather than 48, so the bounds below are a little wider than a
+        # plain time listener's.
+        rate_limit: 20
+        rate_burst: 40
+        prefix_rate_limit: 200
+        prefix_rate_burst: 400
+        max_packet_bytes: 1280
+        max_extensions: 8
+
+        # The old server is the only source here, so there is nothing to
+        # compare it with: what is enforced is that its answers are
+        # internally consistent and that it says it is synchronised.
+        # Three sources is what lets a gateway name the wrong clock; with
+        # one, all it can do is refuse an answer that makes no sense.
+        quality:
+          compare_sources: false
+          probe_interval: 64s
+          max_root_dispersion: 1s
+          max_stratum: 4
+          refuse_unsynchronised: true
+          refuse_bogus_timestamps: true
+          refuse_bogus_refid: true
+          expect_refid: ["GPS"]
+
+        change_detection:
+          enabled: true
+          max_step: 500ms
+          max_stratum_jump: 2
+          action: alert
+
+        log_packets: false
+        alert_on_deny: true
+
+upstreams:
+  # The old server. It is asked in plain NTPv4 and knows nothing about
+  # any of the above.
+  - name: local_clocks
+    endpoints:
+      - {address: "10.30.10.21:123"}
+
+bans:
+  triggers:
+    # An authenticator that does not verify is not a device with a
+    # misconfiguration: a misconfigured device fails to establish keys and
+    # never gets this far. Something sending forged authenticators is
+    # trying cookies it found somewhere.
+    - name: nts-forgery
+      reasons: [ntp_denied]
+      threshold: 5
+      window: 10m
+      duration: 1h
+    # A connection to the key establishment port that is not an NTS
+    # client is a scan.
+    - name: ntske-abuse
+      reasons: [ntske_denied]
+      threshold: 5
+      window: 10m
+      duration: 1h
+
+logging:
+  access: {enabled: true}

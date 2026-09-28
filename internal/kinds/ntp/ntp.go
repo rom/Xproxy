@@ -68,6 +68,13 @@ type server struct {
 	// watch holds what each server looked like last time, so a source
 	// that changed is a change rather than a new normal.
 	watch *watcher
+	// term is NTS termination, or nil when this listener passes NTS
+	// through or refuses it. With it, the relay holds the client's keys
+	// and "authenticated" means this relay checked.
+	term *terminator
+	// origin is the relay's own NTS association with the time source, or
+	// nil when it asks the source in plain NTP.
+	origin *originator
 
 	// clients and prefixes are the two rate limits: one per address, one
 	// per network, because a client behind a NAT and a subnet asking in
@@ -160,6 +167,13 @@ type pending struct {
 	nts    bool
 	auth   bool
 	assoc  *association
+	// term is the verified NTS session, when this listener terminated the
+	// client's NTS. The answer is built and authenticated with its keys, so
+	// it has to live as long as the request does.
+	term *session
+	// source is the relay's own NTS session toward the time source, when it
+	// holds one. The answer is verified against it.
+	source *sourceSession
 }
 
 func newServer(host proxy.Host, cfg config.Listener, pc net.PacketConn) (*server, error) {
@@ -202,6 +216,16 @@ func newServer(host proxy.Host, cfg config.Listener, pc net.PacketConn) (*server
 	}
 	s.monitor = NewMonitor(s)
 	s.watch = newWatcher(s)
+	if nts := n.NTS; nts != nil && nts.Mode == "terminate" {
+		s.term = newTerminator(host, nts.KeyListener)
+		if nts.Source != nil {
+			o, err := compileOriginator(host, cfg.Name, nts.Source, host.Secrets())
+			if err != nil {
+				return nil, err
+			}
+			s.origin = o
+		}
+	}
 	return s, nil
 }
 
@@ -275,6 +299,12 @@ func (s *server) requestTimeout() time.Duration {
 func (s *server) nanos() int64 { return int64(time.Since(s.start)) }
 
 func (s *server) serve() {
+	if s.origin != nil {
+		// Established now rather than on the first request: a request that
+		// waited for a TLS handshake would be a client waiting seconds for the
+		// time.
+		go s.origin.keep(s.done)
+	}
 	if s.learner != nil {
 		s.learner.Start(func(err error) {
 			s.host.Logs().Error.Warn("ntp learning report could not be written",
@@ -449,7 +479,54 @@ func (s *server) fromClient(client netip.AddrPort, raw []byte) {
 		a.authenticated.Store(true)
 	}
 	s.tracer.Request(s.cfg.Name, client, pkt, d)
-	s.forward(a, req, nts.Present, pkt.HasMAC)
+	var se *session
+	out := pkt.Raw
+	// sentNTS and sentAuth are what the request this relay sends carries, not
+	// what the client's carried. The answer policy is written against them: an
+	// answer with no NTS fields is a downgrade only if the request that asked
+	// for it had them.
+	sentNTS, sentAuth := nts.Present, pkt.HasMAC
+	if s.term != nil && nts.Present {
+		var reason string
+		if se, reason = s.term.verify(pkt); reason != "" {
+			// A packet whose authenticator does not verify is refused, not
+			// forwarded with a note. That is the whole difference between
+			// terminating and passing through: here the relay holds the keys,
+			// so "it did not verify" is a fact rather than a guess.
+			if s.enforcing() {
+				s.refuse(client, deny(reason, "the NTS authenticator was not accepted"), raw, pkt)
+				return
+			}
+			c.NTPWouldDeny.Add(1)
+			c.WouldRefuse("ntp", reason)
+			s.audit(client, deny(reason, ""), pkt, "would_deny")
+			s.host.Shadow().Record("ntp", s.cfg.Name, reason, "", client.Addr().String())
+		}
+		if se != nil {
+			// The request is re-originated: the extension fields were the
+			// client's conversation with this relay, and the source is a time
+			// server that does not have to speak NTS at all.
+			out = requestForSource(pkt)
+			sentNTS, sentAuth = false, false
+		}
+	}
+	var us *sourceSession
+	if s.origin != nil {
+		// The relay's own association with the source. The header alone goes
+		// into it: the fields this adds have to be the last thing in the packet,
+		// and a client's own MAC or extension fields are not this relay's to
+		// forward once it is authenticating the request itself.
+		protected, sess, err := s.origin.protect(pkt.Raw)
+		if err != nil {
+			c.NTPDropped.Add(1)
+			s.deny(client, ReasonSourceNotReady, err.Error())
+			s.origin.ensure()
+			return
+		}
+		out, us = protected, sess
+		sentNTS, sentAuth = true, false
+	}
+	s.forward(a, req, out, se, us, sentNTS, sentAuth)
 }
 
 // admitRate applies the two rate limits. A client asking too often is
@@ -666,7 +743,13 @@ func (b *backend) usable() bool {
 
 // forward sends the client's packet to its server, as the bytes that
 // arrived, and remembers the exchange.
-func (s *server) forward(a *association, r request, nts, auth bool) {
+// forward sends one request to the association's server.
+//
+// out is what goes on the wire, which is the packet as it arrived except when
+// this listener terminated NTS and re-originated it. se is the verified NTS
+// session, kept with the outstanding request because the answer has to be
+// authenticated with the same keys.
+func (s *server) forward(a *association, r request, out []byte, se *session, us *sourceSession, nts, auth bool) {
 	c := s.host.Counters()
 	b := a.backend
 	key := pendKey{backend: b.index, origin: r.pkt.Transmit}
@@ -678,10 +761,14 @@ func (s *server) forward(a *association, r request, nts, auth bool) {
 		s.drop(r.client, "outstanding_full", "")
 		return
 	}
+	// nts and auth are what the request this relay sent carried, decided by the
+	// caller: a terminated request goes to the source as plain NTP unless this
+	// relay has an association of its own, and an answer without NTS fields is
+	// a downgrade only when the request that asked for it had them.
 	s.pending[key] = &pending{client: r.client, sent: now, sentAt: wire.TimestampOf(time.Now()),
-		nts: nts, auth: auth, assoc: a}
+		nts: nts, auth: auth, assoc: a, term: se, source: us}
 	s.mu.Unlock()
-	if _, err := b.conn.Write(r.pkt.Raw); err != nil {
+	if _, err := b.conn.Write(out); err != nil {
 		s.mu.Lock()
 		delete(s.pending, key)
 		s.mu.Unlock()
@@ -765,9 +852,28 @@ func (s *server) answer(b *backend, raw []byte) {
 			delay:    time.Duration(now - p.sent),
 			ntsAsked: p.nts, authAsked: p.auth, now: time.Now()}
 	} else {
-		resp = response{server: b.addr, pkt: pkt, ntsAsked: a.nts.Load(),
+		// ntsAsked is about the request this relay sent, not the one the client
+		// sent: when this listener terminates NTS the upstream request is plain
+		// NTP, so an answer without NTS fields is what was asked for. The
+		// answer is still refused below -- there is no verified session to
+		// authenticate it to the client with -- and that is a clearer reason
+		// than "the answer was stripped of NTS", which is not what happened.
+		resp = response{server: b.addr, pkt: pkt, ntsAsked: a.nts.Load() && s.term == nil,
 			authAsked: a.authenticated.Load(), interleaved: true, now: time.Now()}
 		c.NTPInterleaved.Add(1)
+	}
+	if p != nil && p.source != nil {
+		// The source's answer, under the keys this relay established with it. An
+		// answer that does not verify is not an answer: it is refused before the
+		// policy looks at the time in it, because the time in it is not the
+		// source's until this succeeds.
+		if err := s.origin.verify(pkt, p.source); err != nil {
+			c.NTPNTSSourceUnverified.Add(1)
+			c.NTPDenied.Add(1)
+			c.Refuse("ntp", ReasonSourceUnverified)
+			s.audit(a.client, deny(ReasonSourceUnverified, err.Error()), pkt, "deny")
+			return
+		}
 	}
 	s.monitor.Observe(b, resp)
 	// What this server looked like last time, against what it looks like
@@ -799,7 +905,38 @@ func (s *server) answer(b *backend, raw []byte) {
 		s.host.Shadow().Record("ntp", s.cfg.Name, d.Reason, "", d.Detail)
 	}
 	s.tracer.Response(s.cfg.Name, a.client, b.addr, pkt, d)
-	if _, err := s.pc.WriteTo(raw, net.UDPAddrFromAddrPort(a.client)); err != nil {
+	out := raw
+	if s.origin != nil && !a.nts.Load() {
+		// A plain client behind a relay that authenticates its own requests: the
+		// source's NTS fields are the relay's conversation with the source, and
+		// forwarding them would hand a client extension fields it did not ask
+		// for -- including this relay's own replacement cookies.
+		out = raw[:wire.HeaderLen]
+	}
+	if s.term != nil && a.nts.Load() {
+		switch {
+		case p == nil || p.term == nil:
+			// An interleaved answer is matched by the server's own previous
+			// transmit timestamp rather than by the client's request, so there
+			// is no session to authenticate it with. A plain answer to a client
+			// that established keys would be the downgrade this mode exists to
+			// prevent, so it is refused instead.
+			c.NTPDenied.Add(1)
+			c.Refuse("ntp", ReasonNoSession)
+			s.audit(a.client, deny(ReasonNoSession, "no verified session for this answer"), pkt, "deny")
+			return
+		default:
+			b2, err := s.term.answer(p.term, pkt)
+			if err != nil {
+				c.NTPSendFailed.Add(1)
+				s.host.Logs().Error.Warn("ntp could not authenticate the answer to the client",
+					"listener", s.cfg.Name, "client", a.client.String(), "error", err.Error())
+				return
+			}
+			out = b2
+		}
+	}
+	if _, err := s.pc.WriteTo(out, net.UDPAddrFromAddrPort(a.client)); err != nil {
 		c.NTPSendFailed.Add(1)
 		return
 	}

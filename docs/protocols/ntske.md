@@ -51,14 +51,20 @@ knowing about.
 
 ## What this listener decides
 
-This is the narrowest listener in the project, deliberately. It is a **relay,
-not a terminator**: the TLS session belongs to the client and the NTS-KE server
+It has two postures, and which one an estate wants depends on whether the time
+servers behind it speak NTS themselves.
+
+**Relaying** (no `terminate` section) is the narrower one, and it is the right
+answer when they do: the TLS session belongs to the client and the NTS-KE server
 whose certificate and keys it is, and the cookies are derived from that session's
 exporter. A relay that terminated the TLS would be issuing cookies with keys the
 time servers do not have, and nothing would work.
 
-So what it reads is what is readable *before* the handshake completes, from the
-ClientHello:
+**Terminating** (`terminate`) is the answer when they do not — see
+[Terminating](#terminating) below.
+
+What a relaying listener reads is what is readable *before* the handshake
+completes, from the ClientHello:
 
 **The application protocol.** `require_alpn` refuses a connection that does not
 offer `ntske/1`. That is the whole of this listener's first job: port 4460 is a
@@ -107,20 +113,66 @@ any other refusal. Either shadow switch -- `policy: {mode: shadow}` on the
 listener, or `shadow: true` on the section -- records what it would have refused
 and carries the traffic.
 
+## Terminating
+
+With a `terminate` section and a `tls` section, this listener *is* the NTS-KE
+server. It presents the certificate, derives the two NTS keys from its own TLS
+exporter, and issues cookies of its own — cookies the `kind: ntp` listener beside
+it can open, because the two share the key set.
+
+That is what makes the interesting case possible: **the time source does not have
+to speak NTS at all.** It can be the plain NTPv4 server that has been in the plant
+for fifteen years. The clients get authenticated time, the source gets a request
+from one address it already knows, and the verification happens on the relay
+where an operator can see it counted. See `ntp.nts.mode: terminate`.
+
+The cookie is the whole of what this mode rests on, so it is worth being precise
+about. A cookie is a key identifier, a nonce, and the client's two session keys
+sealed with AES-SIV-CMAC-256 under a master key this relay holds. The identifier
+is associated data, so a cookie moved to another identifier does not open — which
+matters, because otherwise moving one would be a way to ask for it to be
+decrypted under a different key. Every failure to open is one error, because a
+caller that could tell them apart would be an oracle for which key identifiers
+exist.
+
+The master key is rotated (`rotate_every`, a day by default) with an overlap
+(`keep_keys`, two by default). Both are deliberate: a client holds days of
+cookies, so a rotation that invalidated them at once would take the estate's time
+service down until every client re-established — a TLS handshake each, all in the
+same second. `state` writes the set to a file, mode 0600, so a restart does not do
+the same thing. That file is the secret every cookie's secrecy rests on: whoever
+can read it can forge a cookie, which is to say forge an authenticated time
+answer.
+
+What a terminating listener refuses, beyond the relaying refusals: a handshake
+that fails (`handshake_failed`, one reason for every TLS fault, because a port
+that reported a different refusal for each would be one an attacker could
+enumerate the configuration through), a client that completes the handshake and
+says nothing (`no_request`, and it gets no answer — there is nothing to report a
+fault in), a request that is incomplete or past its bound, an unknown *critical*
+record (`unknown_critical_record`, answered with RFC 8915's code 0 rather than
+"bad request", because the client sent something well formed this server cannot
+honour), and terms it cannot meet (`no_terms`, answered with the two empty
+negotiation records the standard defines rather than an error record — the request
+was fine and the terms were not).
+
 ## What it does not do
 
-- **It does not terminate TLS.** By design, as above. There is no `tls` section
-  offering certificates for the client to validate, because the certificate the
-  client must validate is the NTS-KE server's.
-- **It does not read the records.** They are inside the TLS session. The relay
-  has no visibility into the cookies, the AEAD negotiation or the server the
-  client is pointed at, and it should not.
-- **It does not issue cookies.** Those come from the server's TLS exporter.
+- **It does not terminate TLS while relaying.** By design, as above: without a
+  `terminate` section there is no certificate for the client to validate here,
+  because the certificate the client must validate is the NTS-KE server's.
+- **It does not read the records while relaying.** They are inside the TLS
+  session. The relay has no visibility into the cookies, the AEAD negotiation or
+  the server the client is pointed at, and it should not.
+- **It does not offer an algorithm it cannot use.** Terminating, it negotiates
+  AEAD_AES_SIV_CMAC_256 and NTPv4 and nothing else: a negotiation that accepted
+  an algorithm this relay could not seal a cookie with would be a negotiation
+  that agreed to nothing.
 - **It does not carry the time exchange.** That is UDP 123 and a separate
   listener — see [ntp](ntp.md).
-- **It does not validate certificates on the client's behalf.** The client
-  validates the server; that is the trust model and inserting a relay's opinion
-  into it would weaken it.
+- **It does not validate certificates on the client's behalf while relaying.**
+  The client validates the server; that is the trust model and inserting a
+  relay's opinion into it would weaken it.
 
 ## Standards
 
@@ -128,6 +180,7 @@ and carries the traffic.
 |----------|----------------|
 | RFC 8915 | Network Time Security for NTPv4: the NTS-KE protocol, the record types, the cookie model, the `ntske/1` ALPN |
 | RFC 8446 | TLS 1.3, and the exporter the keys come from |
+| RFC 5297 | AES-SIV, the AEAD NTS mandates and the one the cookies are sealed with |
 | RFC 7301 | ALPN |
 | RFC 6066 | Server Name Indication |
 | RFC 7384 | The security requirements NTS was designed against |
@@ -136,6 +189,7 @@ and carries the traffic.
 
 - The estate-wide policy above it: [docs/CONFIG.md `authorization`](../CONFIG.md#authorization)
 - The settings: [docs/CONFIG.md `server.listeners[].ntske`](../CONFIG.md#serverlistenersntske-kind-ntske)
-- A worked configuration: [`examples/ot/ntp.yaml`](../../examples/ot/ntp.yaml)
+- A worked configuration: [`examples/ot/ntp.yaml`](../../examples/ot/ntp.yaml), and
+  the terminating one: [`examples/ot/nts-gateway.yaml`](../../examples/ot/nts-gateway.yaml)
 - The time exchange itself: [ntp](ntp.md)
 - TLS passthrough in general: [tcp](tcp.md)
