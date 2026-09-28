@@ -82,6 +82,10 @@ func (se *session) decide(frame *wire.Frame, fromClient bool) (string, bool) {
 	}
 	// Then the policy, which is the part shadow mode is about.
 	d := t.policy.Decide(request{client: se.ip, frame: frame})
+	// Learning records the frame and what the policy made of it, whether or not
+	// the refusal is enforced: a learning run wants to know that the policy and
+	// the traffic disagree, and which way.
+	se.observeLearn(a, fromClient, d.Allow, time.Now())
 	if !d.Allow {
 		return se.policyRefused(frame, d)
 	}

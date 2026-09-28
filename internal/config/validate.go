@@ -10464,6 +10464,23 @@ func (v *validator) iec104Listener(p string, m *IEC104Listener, hasTLS bool) {
 	}
 	v.iec104Setpoints(p+".setpoints", m.Setpoints)
 	v.iec104Deception(p+".deception", m)
+	if l := m.Learn; l != nil && l.Enabled {
+		if l.File == "" {
+			v.errf("%s.learn.file: required when learning is enabled", p)
+		} else if !strings.HasPrefix(l.File, "/") {
+			v.errf("%s.learn.file: must be an absolute path", p)
+		}
+		if l.Interval != 0 && (l.Interval.D() < 10*time.Second || l.Interval.D() > 24*time.Hour) {
+			v.errf("%s.learn.interval: must be between 10s and 24h", p)
+		}
+		if l.MaxSubjects != 0 && (l.MaxSubjects < 16 || l.MaxSubjects > 1_000_000) {
+			v.errf("%s.learn.max_subjects: must be between 16 and 1000000", p)
+		}
+		if !l.Enforce {
+			v.warnf("%s.learn is enabled without enforce, so this listener records and decides nothing: "+
+				"turn enforce on, or take the learning section out, once the rules are written", p)
+		}
+	}
 	if m.MonitorOnly && m.RequireSelect {
 		v.warnf("%s.require_select: monitor_only already refuses every command, so there is nothing left to select", p)
 	}

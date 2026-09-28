@@ -569,6 +569,10 @@ type IEC104Listener struct {
 	// activation confirmed instead of refused, or a whole listener that is
 	// a fabricated station. See IEC104Deception.
 	Deception *IEC104Deception `yaml:"deception"`
+	// Learn records what crosses this listener and writes a proposed policy,
+	// because a policy written from the substation drawings refuses half the
+	// traffic on the first shift. See IEC104Learn.
+	Learn *IEC104Learn `yaml:"learn"`
 	// Setpoints bound the *value* a setpoint command may carry, per
 	// information object address. Without them a setpoint is bounded only
 	// by which point it names and when it may be sent, so a control
@@ -3287,6 +3291,33 @@ type SNMPRule struct {
 	Contexts []string `yaml:"contexts"`
 	// Schedule limits the rule to a time window.
 	Schedule *ModbusSchedule `yaml:"schedule"`
+}
+
+// IEC104Learn records what crosses the listener and writes a proposed policy.
+//
+// A substation's drawings say what the traffic was meant to be. The traffic
+// says what the integrator left behind: a control centre interrogating a
+// station nobody documented, a gateway sending spontaneous data for points the
+// drawings do not list, an engineering laptop that has been connected since
+// commissioning. A policy written from the drawings refuses half of it on the
+// first shift, which is how a security control gets turned off and stays off.
+type IEC104Learn struct {
+	// Enabled turns the recording on.
+	Enabled bool `yaml:"enabled"`
+	// File is where the report is written, as YAML. Required when enabled.
+	File string `yaml:"file"`
+	// Interval is how often it is rewritten. Default 5m; it is also written
+	// when the listener shuts down.
+	Interval Duration `yaml:"interval"`
+	// MaxSubjects bounds the observations held: one per client, direction,
+	// common address and type identification seen. Default 8192; past it the
+	// newest is dropped and the drops are counted, because a learning run that
+	// quietly stopped learning is worse than one that says so.
+	MaxSubjects int `yaml:"max_subjects"`
+	// Enforce keeps the policy in force while learning. Default false: a
+	// learning run is normally observe-only, and saying so here is what stops
+	// one being left on by accident.
+	Enforce bool `yaml:"enforce"`
 }
 
 // IEC104Deception answers as a substation that is not there.

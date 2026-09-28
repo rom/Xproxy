@@ -2131,6 +2131,7 @@ bounds which stations may be addressed through it.
 | `default_action` | `deny`, `allow` | `deny` | What a frame no rule matched gets |
 | `deny_response` | `negative`, `drop`, `close` | `negative` | `negative` returns the same ASDU with the negative-confirm bit and cause `actcon`, which is what a station does and what a control centre's alarm list understands |
 | `deception` | object | | Answer as a substation that is not there: a refused activation confirmed instead of refused, or a whole listener that is a fabricated station; see below |
+| `learn` | object | | Learning mode: record what crosses this listener and write a proposed policy, because a policy written from the substation drawings refuses half the traffic on the first shift; see below |
 | `setpoints` | list | | Value bounds on setpoint commands: what a point may be *set to*, and how far it may move in one step; see below |
 | `require_select` | bool | `false` | Make the two-step form mandatory for every command type that has one |
 | `select_timeout` | duration | `30s` | How long a selection stays valid (1s to 10m) |
@@ -2297,6 +2298,52 @@ refusal counters: `client_not_allowed`, `tls_handshake`, `malformed`,
 `default_deny`, `control`, `station_command`, `sequence`, `window`,
 `ack_ahead`, `unselected`, `select_unavailable`, `setpoint_range`,
 `setpoint_delta`, `setpoint_unknown`.
+
+#### server.listeners[].iec104.learn
+
+**`learn`** records what crosses this listener and writes a proposed policy.
+
+Nobody knows what a substation's traffic actually is. The drawings say which
+points exist and which of them a control centre is supposed to command; the
+traffic says what the integrator left behind — a gateway reporting points the
+drawings do not list, an interrogation of a common address nobody documented, an
+engineering laptop that has been connected since commissioning. A policy written
+from the drawings refuses half of it on the first shift, which is how a security
+control gets turned off and stays off. Run this for a week and the file is the
+answer.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Turn the recording on |
+| `file` | path | required when enabled | Where the report is written, as YAML. Replaced atomically, owner readable only |
+| `interval` | duration | `5m` | How often it is rewritten; 10s..24h. It is also written at shutdown |
+| `max_subjects` | int | `8192` | Observations held: one per client, direction, common address and type identification. Past the bound the newest is dropped and the drops are counted, in the report's own header |
+| `enforce` | bool | `false` | Keep the policy in force while learning. Off — the default — means this listener records and decides nothing, which is the only honest way to find out what a policy would have broken, and it warns so that it is not left on by accident |
+
+**The direction is part of a subject's identity**, because the same type
+identification means different things in each: an activation travelling down is
+a command, and the confirmation travelling back is the station answering. A
+report that folded them together would propose a rule that allows a station to
+command its own control centre.
+
+**What the report is for is being read and argued with**, so two things are
+called out in it. `denied_by_policy` counts the frames the current policy
+refused, or would have refused on a listener learning without `enforce` — a
+subject with those is one the policy and the traffic disagree about, and it is
+the first thing to read. `refused_by_equipment` counts the negative
+confirmations the station sent *for that command*: the equipment itself will not
+do it, so it belongs out of the policy rather than in it, and the proposal
+leaves such a command out. (The confirmations travelling back are still
+proposed, because confirmations do come back and a policy has to allow them.)
+
+**The process values are not in the report.** A setpoint's span is, because that
+is the bound `setpoints` is written from; the measurements travelling up are not,
+because a learning report is a file that gets pasted into a ticket.
+
+The proposal is one rule per client, direction and class rather than one per
+subject, because a rule per subject is a rule set nobody reads. Every range and
+every cause in it is what was actually used, widened to nothing — an engineer
+then widens them on purpose, having seen what the traffic is.
 
 #### server.listeners[].iec104.deception
 

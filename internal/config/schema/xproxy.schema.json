@@ -4208,6 +4208,34 @@
       },
       "additionalProperties": false
     },
+    "IEC104Learn": {
+      "description": "IEC104Learn records what crosses the listener and writes a proposed policy. A substation's drawings say what the traffic was meant to be. The traffic says what the integrator left behind: a control centre interrogating a station nobody documented, a gateway sending spontaneous data for points the drawings do not list, an engineering laptop that has been connected since commissioning. A policy written from the drawings refuses half of it on the first shift, which is how a security control gets turned off and stays off.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enabled turns the recording on.",
+          "type": "boolean"
+        },
+        "enforce": {
+          "description": "Enforce keeps the policy in force while learning. Default false: a learning run is normally observe-only, and saying so here is what stops one being left on by accident.",
+          "type": "boolean"
+        },
+        "file": {
+          "description": "File is where the report is written, as YAML. Required when enabled.",
+          "type": "string"
+        },
+        "interval": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_subjects": {
+          "description": "MaxSubjects bounds the observations held: one per client, direction, common address and type identification seen. Default 8192; past it the newest is dropped and the drops are counted, because a learning run that quietly stopped learning is worse than one that says so.",
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
     "IEC104Listener": {
       "description": "IEC104Listener configures a kind: iec104 listener: an IEC 60870-5-104 relay for electricity transmission and distribution. The protocol is the grid's Modbus, with the same absence of security -- no authentication, no integrity, no session -- and the same reason a relay is the only place a policy can live: the controlled stations are substation gateways and RTUs with twenty-year service lives. What it *has*, and Modbus does not, is a structure that says what a message means. Every I-format frame carries a type identification (what this is), a cause of transmission (why it was sent) and a common address (which station), and the process commands are a small numbered set. So the policy here is written in those terms rather than in register numbers: which stations a control centre may address, which commands it may send them, whether a dangerous command has to be selected before it is executed, and which information object addresses each command may name.",
       "type": "object",
@@ -4283,6 +4311,14 @@
         "k": {
           "description": "K and W are the protocol's window parameters: k is how many I frames an end may have unacknowledged before it stops sending, w is after how many received frames it acknowledges. Defaults 12 and 8, the standard's own. The relay uses them as an end, not only as a checker. It cannot forward the sequence numbers the two ends chose, because it refuses frames and answers some itself, and a stream with a hole in its numbering is one a conforming implementation drops the association over -- so it numbers what it writes, acknowledges what it reads at w, and refuses an end that has k frames outstanding that it has not yet acknowledged.",
           "type": "integer"
+        },
+        "learn": {
+          "description": "Learn records what crosses this listener and writes a proposed policy, because a policy written from the substation drawings refuses half the traffic on the first shift. See IEC104Learn.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/IEC104Learn"
+            }
+          ]
         },
         "log_commands": {
           "description": "LogCommands writes an access line for every command and system command, in both directions, and leaves the telemetry alone. Default true: a record of what was commanded is the thing a grid operator is asked for after an incident.",

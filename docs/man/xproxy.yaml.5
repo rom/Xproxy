@@ -4983,6 +4983,15 @@ T}	T{
 Answer as a substation that is not there: a refused activation confirmed instead of refused,\: or a whole listener that is a fabricated station;\: see below
 T}
 T{
+\fBlearn\fR
+T}	T{
+object
+T}	T{
+
+T}	T{
+Learning mode: record what crosses this listener and write a proposed policy,\: because a policy written from the substation drawings refuses half the traffic on the first shift;\: see below
+T}
+T{
 \fBsetpoints\fR
 T}	T{
 list
@@ -5341,6 +5350,79 @@ The first bound that covers a point decides, so a narrow bound written above a w
 So the relay numbers what it writes, acknowledges what it reads at \fBw\fR (and on a timer, for a link too quiet to carry one), and terminates the supervisory frames \-\- an acknowledgement is about the stream this relay wrote, not about the stream the other end wrote. The application layer is still forwarded untouched: the ASDU that arrives is the ASDU that leaves, because re\-encoding it is how a relay and a station come to disagree about what was said. What \fBcheck_sequence\fR and \fBmax_unacknowledged\fR decide is whether a \fIpeer\(aqs\fR numbering is checked: a gap, a replay, or an end that has \fBk\fR frames outstanding that this relay has not acknowledged.
 .PP
 Counters: \fBiec104_sessions\fR, \fBiec104_sessions_open\fR, \fBiec104_frames\fR, \fBiec104_commands\fR, \fBiec104_system_commands\fR, \fBiec104_denied\fR, \fBiec104_would_deny\fR, \fBiec104_malformed\fR, \fBiec104_rejected\fR, \fBiec104_rate_limited\fR, \fBiec104_selects\fR, \fBiec104_executes\fR, \fBiec104_unselected\fR, \fBiec104_selects_held\fR, \fBiec104_setpoints\fR, \fBiec104_setpoint_points\fR, \fBiec104_setpoint_unknown\fR, \fBiec104_sequence_gaps\fR, \fBiec104_window_full\fR, \fBiec104_upstream_failed\fR. Refusals are \fBiec104_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBtls_handshake\fR, \fBmalformed\fR, \fBframe_too_long\fR, \fBmax_connections\fR, \fBrate_limited\fR, \fBcommand_rate_limited\fR, \fBmonitor_only\fR, \fBcommon_address\fR, \fBrule\fR, \fBdefault_deny\fR, \fBcontrol\fR, \fBstation_command\fR, \fBsequence\fR, \fBwindow\fR, \fBack_ahead\fR, \fBunselected\fR, \fBselect_unavailable\fR, \fBsetpoint_range\fR, \fBsetpoint_delta\fR, \fBsetpoint_unknown\fR.
+.SS "server.listeners[].iec104.learn"
+.PP
+\fB\fBlearn\fR\fR records what crosses this listener and writes a proposed policy.
+.PP
+Nobody knows what a substation\(aqs traffic actually is. The drawings say which points exist and which of them a control centre is supposed to command; the traffic says what the integrator left behind \[u2014] a gateway reporting points the drawings do not list, an interrogation of a common address nobody documented, an engineering laptop that has been connected since commissioning. A policy written from the drawings refuses half of it on the first shift, which is how a security control gets turned off and stays off. Run this for a week and the file is the answer.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.9i) lbw(0.9i) lbx
+lw(0.9i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Turn the recording on
+T}
+T{
+\fBfile\fR
+T}	T{
+path
+T}	T{
+required when enabled
+T}	T{
+Where the report is written,\: as YAML. Replaced atomically,\: owner readable only
+T}
+T{
+\fBinterval\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+How often it is rewritten;\: 10s..24h. It is also written at shutdown
+T}
+T{
+\fBmax_\:subjects\fR
+T}	T{
+int
+T}	T{
+\fB8192\fR
+T}	T{
+Observations held: one per client,\: direction,\: common address and type identification. Past the bound the newest is dropped and the drops are counted,\: in the report\(aqs own header
+T}
+T{
+\fBenforce\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Keep the policy in force while learning. Off \[u2014] the default \[u2014] means this listener records and decides nothing,\: which is the only honest way to find out what a policy would have broken,\: and it warns so that it is not left on by accident
+T}
+.TE
+.PP
+\fBThe direction is part of a subject\(aqs identity\fR, because the same type identification means different things in each: an activation travelling down is a command, and the confirmation travelling back is the station answering. A report that folded them together would propose a rule that allows a station to command its own control centre.
+.PP
+\fBWhat the report is for is being read and argued with\fR, so two things are called out in it. \fBdenied_by_policy\fR counts the frames the current policy refused, or would have refused on a listener learning without \fBenforce\fR \[u2014] a subject with those is one the policy and the traffic disagree about, and it is the first thing to read. \fBrefused_by_equipment\fR counts the negative confirmations the station sent \fIfor that command\fR: the equipment itself will not do it, so it belongs out of the policy rather than in it, and the proposal leaves such a command out. (The confirmations travelling back are still proposed, because confirmations do come back and a policy has to allow them.)
+.PP
+\fBThe process values are not in the report.\fR A setpoint\(aqs span is, because that is the bound \fBsetpoints\fR is written from; the measurements travelling up are not, because a learning report is a file that gets pasted into a ticket.
+.PP
+The proposal is one rule per client, direction and class rather than one per subject, because a rule per subject is a rule set nobody reads. Every range and every cause in it is what was actually used, widened to nothing \[u2014] an engineer then widens them on purpose, having seen what the traffic is.
 .SS "server.listeners[].iec104.deception"
 .PP
 \fBA refusal is information, and on this protocol it is cheap to collect.\fR The common address is two octets, a control centre names it in every ASDU, and a relay that refuses the ones it does not carry has answered the question. A probe of a listener carrying stations 1 and 41:

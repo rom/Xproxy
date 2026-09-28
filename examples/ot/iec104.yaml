@@ -74,6 +74,29 @@ server:
         command_rate_limit: 5
         command_rate_burst: 10
 
+        # How the rules below were arrived at, and how to arrive at them
+        # for the next substation. Nobody knows what a substation's
+        # traffic actually is: the drawings say which points exist and
+        # which of them the control centre is supposed to command, and the
+        # traffic says what the integrator left behind. A policy written
+        # from the drawings refuses half of it on the first shift, which
+        # is how a security control gets turned off and stays off.
+        #
+        # So for the first week the listener records instead of deciding,
+        # and the report is what the rules get written from. Take this out
+        # once they are written -- validation warns about a learning
+        # section with no enforce, because one left on by accident is a
+        # relay that decides nothing.
+        #
+        # learn:
+        #   enabled: true
+        #   file: /var/lib/xproxy/iec104-substation-a.yaml
+        #   interval: 15m
+        #   # enforce: true would keep the rules below in force while
+        #   # recording, which is the second phase: the report then says
+        #   # which rules the traffic disagrees with, per subject, in
+        #   # denied_by_policy.
+
         default_action: deny
         deny_response: negative
         rules:

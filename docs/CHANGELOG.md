@@ -6,6 +6,45 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (iec104: learning mode, and a shared core for every kind's)
+
+- **`iec104.learn` records what crosses the listener and writes a proposed
+  policy**, as `modbus.learn` does. Nobody knows what a substation's traffic
+  actually is: the drawings say which points exist and which a control centre is
+  supposed to command, and the traffic says what the integrator left behind. A
+  policy written from the drawings refuses half of it on the first shift, which is
+  how a security control gets turned off and stays off. A run is observe-only
+  unless `enforce` says otherwise, because a run that refused half the traffic
+  would have changed the thing it was measuring.
+
+- A subject is one client, one **direction**, one common address and one type
+  identification. The direction is part of the identity because the same type
+  means different things each way — an activation going down is a command and the
+  confirmation coming back is the station answering — and a report that folded
+  them together would propose a rule allowing a station to command its own
+  control centre.
+
+- **A negative confirmation is attributed to the command it refuses**, not only
+  to the answer it arrived as. Counted where it arrives it would tell an engineer
+  that confirmations come back, which they do; counted against the command it
+  says *this command is refused by the equipment*, and the proposal leaves such a
+  command out rather than permitting something that cannot happen.
+
+- The report carries `denied_by_policy` (what the current policy refused, or
+  would have) and the causes of transmission actually used, which is the part of
+  an IEC 104 rule most often written too loosely. The measurements travelling up
+  are deliberately absent and a setpoint's span is present, because the span is
+  the bound `setpoints` is written from and a learning report is a file that gets
+  pasted into a ticket.
+
+- **`internal/learn` is the machinery underneath**, extracted rather than copied
+  because four more kinds need it: the bounded insertion-ordered table, the
+  periodic write and the one at shutdown, the atomic replace, and the counters
+  that say a run stopped learning. It takes a `Clone` for the observation, which
+  the modbus original did not have — the report is rendered outside the table's
+  lock, and a shallow copy of an observation with a slice field leaves the
+  renderer reading an array a concurrent append is still writing to.
+
 ### Changed (the relays' tripwires reach the ban ladder)
 
 - **`modbus_tripwire`, `iec104_tripwire`, `s7_tripwire`, `redis_tripwire`,
