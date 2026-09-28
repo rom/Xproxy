@@ -125,6 +125,25 @@ top, the most consequential action at the bottom, and a mark carrying
 the judgement between them. A cluster shares marks and bans, so a
 scanner that touches one node is known to all of them.
 
+The fabricated services feed the same ladder, with one distinction and one
+exception. The distinction: a **tripwire** is nameable in a ban trigger's
+`reasons` — `modbus_tripwire`, `iec104_tripwire`, `s7_tripwire`,
+`redis_tripwire`, `mysql_tripwire`, `postgres_tripwire`, `telnet_tripwire`,
+`ssh_tripwire`, `dns_tripwire` — and an ordinary fabricated exchange is not,
+because a client that was merely answered has said only that it talked to
+something, and banning it ends the collection that was about to tell you more.
+
+The exception is **whose address it is**. A ban acts on a source address, so
+the tripwire reaches the ladder only where this proxy knows who sent the frame
+that tripped it. On a TCP kind the handshake has completed before any
+fabricated exchange, so the address is the client's. On a datagram kind it is
+whatever the sender wrote — which is why the fabricated resolver attributes an
+unverified datagram to nobody, and why `snmp_tripwire` is deliberately *not* on
+that list: the fabricated agent never answers a version 3 message, so every
+exchange it does answer is unauthenticated v1 or v2c, and one forged packet
+would otherwise have somebody else's address banned. It stays in the security
+log, where it costs nobody anything.
+
 ## Honeypot routes and decoys
 
 A honeypot route answers a decoy and proxies nothing:

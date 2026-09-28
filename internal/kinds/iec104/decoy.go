@@ -459,6 +459,14 @@ func (t *server) recordDeception(ip netip.Addr, a *wire.ASDU, why string, trippe
 	if tripped {
 		t.host.Counters().IEC104Tripwire.Add(1)
 		event = "iec104_tripwire"
+		// The tripwire feeds the ban ladder and the ordinary fabricated
+		// exchange does not: a client that reached for a point nothing
+		// legitimate reaches for has said something every other listener
+		// would want to act on, while banning the exchange itself would end
+		// the collection that was about to tell you more.
+		if bl := t.host.Bans(); bl != nil && ip.IsValid() {
+			bl.Observe(ip, "iec104_tripwire")
+		}
 	}
 	attrs := []any{"listener", t.cfg.Name, "client_ip", ip.String(), "reason", why}
 	if a != nil {

@@ -946,6 +946,14 @@ func (t *server) recordDeception(se *session, ds *decoySession, why, detail stri
 	if tripped {
 		t.host.Counters().PostgresTripwire.Add(1)
 		event = "postgres_tripwire"
+		// The tripwire feeds the ban ladder and the ordinary fabricated
+		// exchange does not: a statement reaching for a file, a credential
+		// table or a shell is something every other listener would want to act
+		// on, while banning the exchange itself would end the collection that
+		// was about to tell you more.
+		if bl := t.host.Bans(); bl != nil && se.ip.IsValid() {
+			bl.Observe(se.ip, "postgres_tripwire")
+		}
 	}
 	attrs := []any{
 		"listener", t.name, "client_ip", se.ip.String(), "reason", why,

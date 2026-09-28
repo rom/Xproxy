@@ -451,6 +451,14 @@ func (se *session) deceive(frame *wire.Frame, pdu *wire.PDU, why string) bool {
 	t.host.Counters().ModbusDeceived.Add(1)
 	if tripped {
 		t.host.Counters().ModbusTripwire.Add(1)
+		// The tripwire feeds the ban ladder and the ordinary fabricated
+		// exchange does not: a client that read an address nothing
+		// legitimate reads has said something every other listener would
+		// want to act on, while banning the exchange itself would end the
+		// collection that was about to tell you more.
+		if bl := t.host.Bans(); bl != nil && se.ip.IsValid() {
+			bl.Observe(se.ip, "modbus_tripwire")
+		}
 	}
 	// Loud on the inside. This is the one answer that looks like success,
 	// so the operator has to be able to see it happening -- and a

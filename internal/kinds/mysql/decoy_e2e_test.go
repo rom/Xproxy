@@ -259,3 +259,48 @@ func awaitCounter(t *testing.T, s *proxy.Server, ok func(proxy.Snapshot) bool, w
 	}
 	t.Fatalf("%s: %+v", what, s.Stats().Refusals["mysql"])
 }
+
+// The tripwire feeds the ban ladder, which is the difference between it and an
+// ordinary fabricated exchange: a statement reaching for a file or a credential
+// is something every other listener would want to act on, while banning the
+// exchange itself would end the collection.
+func TestATrippedFabricationReachesTheBanLadder(t *testing.T) {
+	s := proxytest.Start(t, decoyYAML+`
+bans:
+  action: reject
+  triggers: [{name: traps, reasons: [mysql_tripwire], threshold: 1, window: 1m, duration: 1h}]
+`)
+	cl := dial(t, proxytest.Addr(t, s, "db"), "root", "", wire.CapDeprecateEOF)
+	if msg := cl.ready(t); msg != "" {
+		t.Fatalf("the login was refused: %s", msg)
+	}
+	if r := cl.query(t, "select load_file('/etc/shadow')"); r.err != nil {
+		t.Fatalf("the tripwire statement was refused: %d %s", r.err.Code, r.err.Text)
+	}
+	awaitCounter(t, s, func(sn proxy.Snapshot) bool { return sn.BansActive >= 1 },
+		"the tripwire did not reach the ban ladder")
+}
+
+// And an ordinary fabricated statement does not reach it: a client must not be
+// banned for having been answered.
+func TestAnOrdinaryFabricatedStatementDoesNotBan(t *testing.T) {
+	s := proxytest.Start(t, decoyYAML+`
+bans:
+  action: reject
+  triggers: [{name: traps, reasons: [mysql_tripwire], threshold: 1, window: 1m, duration: 1h}]
+`)
+	cl := dial(t, proxytest.Addr(t, s, "db"), "root", "", wire.CapDeprecateEOF)
+	if msg := cl.ready(t); msg != "" {
+		t.Fatalf("the login was refused: %s", msg)
+	}
+	for _, step := range []string{"select @@version", "show databases"} {
+		if r := cl.query(t, step); r.err != nil {
+			t.Fatalf("%s was refused: %d %s", step, r.err.Code, r.err.Text)
+		}
+	}
+	awaitCounter(t, s, func(sn proxy.Snapshot) bool { return sn.MySQLDeceived >= 2 },
+		"the fabrication did not answer")
+	if n := s.Stats().BansActive; n != 0 {
+		t.Errorf("ordinary fabricated statements banned the client: %d", n)
+	}
+}

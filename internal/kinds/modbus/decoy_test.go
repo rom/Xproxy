@@ -9,6 +9,7 @@ import (
 	"github.com/rom/xproxy/internal/kinds/modbus"
 	wire "github.com/rom/xproxy/internal/modbus"
 	"github.com/rom/xproxy/internal/proxy"
+	"github.com/rom/xproxy/internal/proxytest"
 )
 
 // The defect this exists for, stated as a test: a relay that answers
@@ -429,4 +430,74 @@ func TestTheProfileNamesMatchTheValidator(t *testing.T) {
 			t.Errorf("profile %q did not start", n)
 		}
 	}
+}
+
+// The tripwire feeds the ban ladder, which is the difference between it and an
+// ordinary fabricated exchange: a client that read an address nothing legitimate
+// reads has said something every other listener would want to act on, while
+// banning the exchange itself would end the collection.
+func TestATrippedFabricationReachesTheBanLadder(t *testing.T) {
+	s := proxytest.Start(t, `
+version: 1
+server:
+  listeners:
+    - name: plant
+      address: "127.0.0.1:0"
+      kind: modbus
+      modbus:
+        default_action: allow
+        deception:
+          mode: decoy
+          tripwire: ["9000-9099"]
+logging: {access: {enabled: false}}
+bans:
+  action: reject
+  triggers: [{name: traps, reasons: [modbus_tripwire], threshold: 1, window: 1m, duration: 1h}]
+`)
+	addr := proxytest.Addr(t, s, "plant")
+	m := dialMaster(t, addr, wire.FramingTCP)
+	if p, err := m.ask(1, []byte{3, 0x23, 0x28, 0x00, 0x02}); err != nil || p.IsException {
+		t.Fatalf("the tripwire read was not answered: %+v %v", p, err)
+	}
+	awaitModbus(t, s, func(sn proxy.Snapshot) bool { return sn.BansActive >= 1 },
+		"the tripwire did not reach the ban ladder")
+
+	// An ordinary fabricated read does not: a second listener in the same
+	// estate must not ban a client for having been answered.
+	s2 := proxytest.Start(t, `
+version: 1
+server:
+  listeners:
+    - name: plant
+      address: "127.0.0.1:0"
+      kind: modbus
+      modbus:
+        default_action: allow
+        deception: {mode: decoy}
+logging: {access: {enabled: false}}
+bans:
+  action: reject
+  triggers: [{name: traps, reasons: [modbus_tripwire], threshold: 1, window: 1m, duration: 1h}]
+`)
+	m2 := dialMaster(t, proxytest.Addr(t, s2, "plant"), wire.FramingTCP)
+	if _, err := m2.ask(1, readTwo); err != nil {
+		t.Fatal(err)
+	}
+	if n := s2.Stats().BansActive; n != 0 {
+		t.Errorf("an ordinary fabricated exchange banned the client: %d", n)
+	}
+}
+
+// awaitModbus polls a counter condition, because a ban is applied on the
+// relay's own goroutine after the frame has gone out.
+func awaitModbus(t *testing.T, s *proxy.Server, ok func(proxy.Snapshot) bool, what string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if ok(s.Stats()) {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("%s: the counters never said so", what)
 }

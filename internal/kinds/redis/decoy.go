@@ -1074,6 +1074,14 @@ func (t *server) recordDeception(se *session, c *wire.Command, why string, tripp
 	if tripped {
 		t.host.Counters().RedisTripwire.Add(1)
 		event = "redis_tripwire"
+		// The tripwire feeds the ban ladder and the ordinary fabricated
+		// exchange does not: a client that sent a command nothing legitimate
+		// sends to a cache has said something every other listener would want
+		// to act on, while banning the exchange itself would end the
+		// collection that was about to tell you more.
+		if bl := t.host.Bans(); bl != nil && se.ip.IsValid() {
+			bl.Observe(se.ip, "redis_tripwire")
+		}
 	}
 	attrs := []any{
 		"listener", t.name, "client_ip", se.ip.String(), "command", c.String(),

@@ -6,6 +6,26 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Changed (the relays' tripwires reach the ban ladder)
+
+- **`modbus_tripwire`, `iec104_tripwire`, `s7_tripwire`, `redis_tripwire`,
+  `mysql_tripwire` and `postgres_tripwire` are now nameable in a ban trigger's
+  `reasons`**, as `telnet_tripwire` and `ssh_tripwire` already were. They
+  counted and logged but never reached the ban list, which was an accident of
+  the order the kinds were built rather than a decision: a write to a coil on a
+  PLC that is not there is as strong a signal as a `wget` typed into a shell
+  that is not there. The ordinary fabricated exchange still does not feed the
+  ladder, because banning a client for having been answered ends the collection.
+
+- **`snmp_tripwire` deliberately stays out of that list.** A ban acts on a
+  source address, and the fabricated agent never answers a version 3 message —
+  so every exchange it does answer is unauthenticated v1 or v2c over UDP, where
+  the address is whatever the sender wrote. Banning on it would let one forged
+  packet have somebody else's address banned. The rule, now written down in
+  `denyReasons` and in DECEPTION.md, is that a tripwire reaches the ladder only
+  where the proxy knows who sent the frame that tripped it — which is also why
+  the fabricated resolver attributes an unverified datagram to nobody.
+
 ### Added (ssh: a bastion that is not there)
 
 - **`ssh.deception` answers a refused credential with a fabricated bastion**,

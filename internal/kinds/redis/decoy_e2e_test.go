@@ -333,3 +333,42 @@ func awaitCounter(t *testing.T, s *proxy.Server, ok func(proxy.Snapshot) bool, w
 	}
 	t.Fatalf("%s: %+v", what, s.Stats().Refusals["redis"])
 }
+
+// The tripwire feeds the ban ladder, which is the difference between it and an
+// ordinary fabricated exchange: a client that sent a command nothing legitimate
+// sends to a cache has said something every other listener would want to act on,
+// while banning the exchange itself would end the collection.
+func TestATrippedFabricationReachesTheBanLadder(t *testing.T) {
+	s := proxytest.Start(t, decoyYAML+`
+bans:
+  action: reject
+  triggers: [{name: traps, reasons: [redis_tripwire], threshold: 1, window: 1m, duration: 1h}]
+`)
+	cl := dial(t, proxytest.Addr(t, s, "cache"))
+	if reply := cl.ask(t, "CONFIG", "SET", "dir", "/var/spool/cron"); strings.HasPrefix(reply, "-") {
+		t.Fatalf("the tripwire command was refused: %q", firstLine(reply))
+	}
+	awaitCounter(t, s, func(sn proxy.Snapshot) bool { return sn.BansActive >= 1 },
+		"the tripwire did not reach the ban ladder")
+}
+
+// And an ordinary fabricated command does not reach it: a client must not be
+// banned for having been answered. An ordinary cache gets SET all day.
+func TestAnOrdinaryFabricatedCommandDoesNotBan(t *testing.T) {
+	s := proxytest.Start(t, decoyYAML+`
+bans:
+  action: reject
+  triggers: [{name: traps, reasons: [redis_tripwire], threshold: 1, window: 1m, duration: 1h}]
+`)
+	cl := dial(t, proxytest.Addr(t, s, "cache"))
+	for _, step := range [][]string{{"PING"}, {"SET", "session:1", "value"}, {"GET", "session:1"}} {
+		if reply := cl.ask(t, step...); strings.HasPrefix(reply, "-") {
+			t.Fatalf("%v was refused: %q", step, firstLine(reply))
+		}
+	}
+	awaitCounter(t, s, func(sn proxy.Snapshot) bool { return sn.RedisDeceived >= 3 },
+		"the fabrication did not answer")
+	if n := s.Stats().BansActive; n != 0 {
+		t.Errorf("ordinary fabricated commands banned the client: %d", n)
+	}
+}

@@ -2021,7 +2021,7 @@ left is a policy refusing something legitimate by mistake, which is why
 | `units` | list | `["1"]` | The unit identifiers the fabricated device answers for. Everything outside it answers the way a gateway answers a unit nothing is behind, because no gateway has 247 devices on it |
 | `functions` | list | the profile's | The function codes it implements, by name or number. A code outside the list answers an illegal-function exception, which is what the real device would say — a decoy that implements everything is answering for a PLC nobody makes |
 | `bands` | list | the profile's | How the address space behaves; see below |
-| `tripwire` | list | `[]` | Addresses no legitimate master has a reason to touch. Reading one is **answered**, and raised as a `modbus_tripwire` security event: the answer keeps the visitor reading and the event is what an operator acts on |
+| `tripwire` | list | `[]` | Addresses no legitimate master has a reason to touch. Reading one is **answered**, and raised as a `modbus_tripwire` security event: the answer keeps the visitor reading and the event is what an operator acts on. Nameable in a ban trigger's `reasons` as `modbus_tripwire` |
 | `seed` | int | from the listener name | Makes the fabricated values reproducible. The default is stable across restarts, because a decoy whose serial number changes when the proxy is upgraded is a decoy somebody has noticed |
 | `period` | duration | `30s` | How long one sample of a value lasts; 1s to 1h. Slow enough that reading an address twice gives the same answer, fast enough that a trend moves |
 | `max_clients` | int | `1024` | Bounds the record of who has been answered |
@@ -2336,7 +2336,7 @@ to load with an `upstream`.
 | `profile` | `generic-substation`, `generic-rtu` | `generic-substation` | The fabricated station's shape: which points it has and what they report |
 | `common_addresses` | list | `["1"]` | The stations the fabrication answers for, as numbers or `"1-4"` ranges. Everything else is answered the way a station answers an address it is not -- negatively, cause 47 -- because one association carrying twenty substations is not a substation |
 | `points` | list | the profile's | What the station has, in the order a general interrogation reports them; see below |
-| `tripwire` | list | `[]` | Information object addresses no legitimate centre reads. One named in a read or a command is **answered**, and raised as an `iec104_tripwire` security event: the answer keeps the visitor reading and the event is what an operator acts on |
+| `tripwire` | list | `[]` | Information object addresses no legitimate centre reads. One named in a read or a command is **answered**, and raised as an `iec104_tripwire` security event: the answer keeps the visitor reading and the event is what an operator acts on. Nameable in a ban trigger's `reasons` as `iec104_tripwire` |
 | `spontaneous` | bool | `true` | Send unsolicited reports between interrogations while data transfer is started. A station that says nothing until spoken to is a station somebody looks at twice |
 | `seed` | int | from the listener name | Makes the fabricated values reproducible. The default is stable across restarts |
 | `period` | duration | `30s` | How long one sample of a value lasts, and how often a spontaneous report is sent; 1s to 1h |
@@ -7110,7 +7110,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `tcp_denied`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `amqp_denied`, `s7_denied`, `ntp_denied`, `ntske_denied`, `dns_denied`, `dns_threat_intel`, `dns_deceived`, `dns_tripwire`, `telnet_tripwire`, `ssh_tripwire`, `yara` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `tcp_denied`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `amqp_denied`, `s7_denied`, `ntp_denied`, `ntske_denied`, `dns_denied`, `dns_threat_intel`, `dns_deceived`, `dns_tripwire`, `telnet_tripwire`, `ssh_tripwire`, `modbus_tripwire`, `iec104_tripwire`, `s7_tripwire`, `redis_tripwire`, `mysql_tripwire`, `postgres_tripwire`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |
@@ -10911,7 +10911,7 @@ mysql:
 | `databases` | list | the profile's | What `SHOW DATABASES` answers |
 | `tables` | list | the profile's | What `SHOW TABLES` answers, as `database.table` names |
 | `require_auth` | bool | `false` | Refuse the login rather than accept it. Off by default: on this protocol the reconnaissance happens *after* the login, so a decoy that refuses it collects nothing |
-| `tripwire` | list | | Object names — a table, a function, a system variable — that raise a `mysql_tripwire` event when a statement mentions one. **In addition to** the built-in set below |
+| `tripwire` | list | | Object names — a table, a function, a system variable — that raise a `mysql_tripwire` event when a statement mentions one. **In addition to** the built-in set below. Nameable in a ban trigger's `reasons` as `mysql_tripwire` |
 | `seed` | int | from the listener name | Makes the fabricated values reproducible across restarts |
 | `period` | duration | `30s` | How long one sample of a gauge lasts |
 | `max_clients` | int | `1024` | Bounds the record of who has been answered |
@@ -11148,7 +11148,7 @@ postgres:
 | `tables` | list | the profile's | What a catalogue query answers, as `schema.table` names |
 | `superuser` | bool | `false` | Whether the fabricated role is one. **The most consequential field here** — see below |
 | `require_auth` | bool | `false` | Refuse the login rather than accept it. Off by default: the reconnaissance happens *after* the login, so a decoy that refuses it collects nothing but the attempt |
-| `tripwire` | list | | Object names — a catalogue table, a function — that raise a `postgres_tripwire` event when a statement mentions one. **In addition to** the built-in set below |
+| `tripwire` | list | | Object names — a catalogue table, a function — that raise a `postgres_tripwire` event when a statement mentions one. **In addition to** the built-in set below. Nameable in a ban trigger's `reasons` as `postgres_tripwire` |
 | `seed` | int | from the listener name | Makes the fabricated values reproducible across restarts |
 | `period` | duration | `30s` | How long one sample of a gauge lasts |
 | `max_clients` | int | `1024` | Bounds the record of who has been answered |
@@ -11565,7 +11565,7 @@ redis:
 | `keys` | list | | Key names the fabrication holds, in addition to the generated ones. What `KEYS` and `SCAN` list and what `GET` answers for |
 | `key_count` | int | the profile's | How many keys are generated from the profile's pattern, 0 to 4096 |
 | `require_auth` | bool | `false` | Demand `AUTH` and then accept any password. Off by default: an unprotected instance is what the scanning is looking for, and a decoy that asks for a password is one most scripts move on from |
-| `tripwire` | list | | Command names, or `"NAME SUB"` pairs, that raise a `redis_tripwire` event. **In addition to** the built-in set below |
+| `tripwire` | list | | Command names, or `"NAME SUB"` pairs, that raise a `redis_tripwire` event. **In addition to** the built-in set below. Nameable in a ban trigger's `reasons` as `redis_tripwire` |
 | `seed` | int | from the listener name | Makes the fabricated values reproducible across restarts |
 | `period` | duration | `30s` | How long one sample of a gauge lasts |
 | `max_clients` | int | `1024` | Bounds the record of who has been answered |
@@ -12346,7 +12346,7 @@ client a machine had stopped.
 | `pdu_length` | int | the profile's | The length the fabrication negotiates: 240, 480 or 960, the sizes the families use |
 | `blocks` | list | the profile's | The data blocks it has; see below. A read of a block outside them is answered the way a CPU answers one it does not have, and a read past the end of one it does have gets an address error — because a controller with 65535 data blocks of unbounded length is not a controller |
 | `bands` | list | the profile's | How the bytes inside a block behave; see below |
-| `tripwire` | list | `[]` | Data block numbers no legitimate client reads. One named in a read is **answered**, and raised as an `s7_tripwire` security event: the answer keeps the visitor reading and the event is what an operator acts on |
+| `tripwire` | list | `[]` | Data block numbers no legitimate client reads. One named in a read is **answered**, and raised as an `s7_tripwire` security event: the answer keeps the visitor reading and the event is what an operator acts on. Nameable in a ban trigger's `reasons` as `s7_tripwire` |
 | `seed` | int | from the listener name | Makes the fabricated values reproducible, and stable across restarts |
 | `period` | duration | `30s` | How long one sample of a value lasts; 1s to 1h |
 | `max_clients` | int | `1024` | Bounds the record of who has been answered |
