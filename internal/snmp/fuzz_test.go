@@ -36,6 +36,14 @@ func FuzzParse(f *testing.F) {
 		tlv(TagSequence, join(octets(TagOctetStr, "engine"), octets(TagOctetStr, ""),
 			pdu(TagGetRequest, 7, 0, 0, get(1, 3, 6, 1)))...)))
 	f.Add(v3msg(8, 0x00, 3, usm("engine", 1, 2, "", "", ""), tlv(TagSequence)))
+	// The transport security model: no security parameters, and a scoped PDU
+	// in the clear under flags that say authPriv.
+	f.Add(v3msg(20, 0x03, SecurityModelTSM, tlv(TagOctetStr),
+		tlv(TagSequence, join(octets(TagOctetStr, "switch"), octets(TagOctetStr, ""),
+			pdu(TagGetRequest, 21, 0, 0, get(1, 3, 6, 1)))...)))
+	f.Add(v3msg(22, 0x03, SecurityModelTSM, octets(TagOctetStr, "parameters a model with none carries"),
+		tlv(TagSequence, join(octets(TagOctetStr, ""), octets(TagOctetStr, ""),
+			pdu(TagGetRequest, 23, 0, 0, get(1, 3, 6, 1)))...)))
 	f.Add([]byte{})
 	f.Add([]byte{0x30})
 	f.Add([]byte{0x30, 0x80, 0x00, 0x00})             // indefinite length
@@ -174,7 +182,7 @@ func expected(t *testing.T, err error) {
 	for _, known := range []error{
 		ErrTruncated, ErrIndefinite, ErrLongLength, ErrTag, ErrIntegerRange,
 		ErrOID, ErrTrailing, ErrNesting, ErrCount,
-		ErrVersion, ErrSecurityModel, ErrCommunity,
+		ErrVersion, ErrSecurityModel, ErrCommunity, ErrTSMParams,
 	} {
 		if errors.Is(err, known) {
 			return
