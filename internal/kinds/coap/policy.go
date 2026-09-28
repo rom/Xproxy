@@ -304,7 +304,7 @@ func (p *Policy) Decide(req request) Decision {
 	if !p.methods[m.Code] {
 		return deny("method_not_allowed", wire.MethodName(m.Code), wire.MethodNotAllowed)
 	}
-	if why := p.pathAllowed(m, nil); why != "" {
+	if why := p.pathAllowed(m); why != "" {
 		return deny("path_not_allowed", why, wire.Forbidden)
 	}
 	if why := p.queryAllowed(m, nil); why != "" {
@@ -370,23 +370,23 @@ func (p *Policy) bounds(m *wire.Message) (Decision, bool) {
 	return Decision{}, false
 }
 
-// pathAllowed checks the path against the listener's lists and a rule's, deny
-// first. The patterns are shell patterns over the whole rendered path.
-func (p *Policy) pathAllowed(m *wire.Message, r *rule) string {
+// pathAllowed checks the path against the listener's own lists, deny first. The
+// patterns are shell patterns over the whole rendered path.
+//
+// A rule's paths are not applied here. They select the rule (see matches), so by
+// the time a rule is deciding, its paths have already matched -- and applying them
+// twice would be a second check that no input could fail once the first had passed.
+func (p *Policy) pathAllowed(m *wire.Message) string {
 	got := m.Path()
 	for _, pat := range p.denyPaths {
 		if matchPath(pat, got) {
 			return got + " matches " + pat
 		}
 	}
-	allow := p.allowPaths
-	if r != nil && len(r.paths) > 0 {
-		allow = r.paths
-	}
-	if len(allow) == 0 {
+	if len(p.allowPaths) == 0 {
 		return ""
 	}
-	for _, pat := range allow {
+	for _, pat := range p.allowPaths {
 		if matchPath(pat, got) {
 			return ""
 		}
@@ -475,10 +475,11 @@ func (p *Policy) match(req request) Decision {
 				Detail: fmt.Sprintf("%d octets", len(req.msg.Payload)),
 				Answer: wire.RequestEntityTooLarge}
 		}
-		if why := p.pathAllowed(req.msg, r); why != "" {
-			return Decision{Rule: r.name, Reason: "path_not_allowed",
-				Detail: why, Answer: wire.Forbidden}
-		}
+		// The rule's own paths are not re-checked here: matches above required
+		// the path to match one of them for the rule to be selected at all, and
+		// the listener's lists were applied before match was called. The query
+		// and the content format below are different -- they narrow without
+		// selecting, so this is the only place they are applied.
 		if why := p.queryAllowed(req.msg, r); why != "" {
 			return Decision{Rule: r.name, Reason: "query_not_allowed",
 				Detail: why, Answer: wire.BadOption}
