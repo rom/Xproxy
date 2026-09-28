@@ -285,6 +285,68 @@ server:
         default_action: allow
         deny_response: fault
 
+    # ---------------------------------------------------------------
+    # The new cell: a listener that does not know what its traffic is yet.
+    #
+    # Line 4 was commissioned last month and the integrator's node list is a
+    # spreadsheet nobody trusts. Writing `nodes` from it would refuse half the
+    # HMI on the first shift, which is how this listener gets turned off. So
+    # this one records instead of deciding, and in a week the file is the
+    # answer: one row per identity, class of service and node group, and a
+    # `rules:` list that pastes in under the section above.
+    #
+    # Three things about it worth knowing before the week is up:
+    #
+    #   security_modes is [sign] and not sign_and_encrypt, deliberately. Signed
+    #   is unmodifiable but readable; encrypted is opaque, and a learning run
+    #   over an encrypted channel records no nodes at all. The report says so in
+    #   its opaque_messages line rather than looking like an idle listener --
+    #   but a week of that is a week wasted.
+    #
+    #   enforce is off, so this listener decides nothing. That is the honest way
+    #   to find out what a policy would have broken. It warns at load so it is
+    #   not left on by accident, and the warning is the point.
+    #
+    #   The bounds below still apply, because they are the one thing learning
+    #   will never propose: the report records the fastest publishing interval
+    #   it saw as an observation under a name no rule uses, so that pasting the
+    #   proposal cannot widen it.
+    # ---------------------------------------------------------------
+    - name: line4-learning
+      address: "10.30.0.1:4843"
+      kind: opcua
+      opcua:
+        upstream: controllers
+        allow_clients: ["10.40.0.0/16"]
+        security_policies: [Basic256Sha256, Aes128_Sha256_RsaOaep]
+        security_modes: [sign]
+        token_kinds: [username, x509]
+        read_only: true
+
+        learn:
+          enabled: true
+          file: /var/lib/xproxy/opcua-line4.yaml
+          interval: 15m
+          # enforce: true is the second phase: keep whatever rules the first
+          # phase produced in force while recording continues, and the report
+          # then says which of them the traffic disagrees with -- per identity,
+          # in denied_by_policy -- rather than an operator finding out from a
+          # phone call.
+
+        # Not proposed by the run, and not negotiable: a subscription-capable
+        # server asked for a one-millisecond interval over a thousand items is
+        # a thousand values a millisecond, in valid protocol.
+        min_publishing_interval: 500ms
+        min_sampling_interval: 200ms
+        max_monitored_items: 2000
+        max_subscriptions: 8
+        max_operations: 512
+        max_chunk_size: 65536
+        idle_timeout: 30m
+
+        default_action: allow
+        log_requests: false
+
 upstreams:
   - name: controllers
     endpoints:

@@ -269,12 +269,57 @@ refusal in the log.
 UDP multicast or MQTT, with symmetric keys distributed by an SKS — and is not a
 natural extension of a TCP reverse proxy. It is a separate phase.
 
-**Learning and shadow modes** for this kind are a separate piece of work. Shadow
-enforcement works today through the listener's `policy: shadow` setting and
-`monitor_only`, which record what would have been refused and forward it; a
-learning mode that writes a proposed policy from observed traffic — the node
-identifiers a plant actually reads, the methods it actually calls — is still to
-come.
+## Learning mode
+
+Nobody writes a correct `nodes` list from the address space. It says which nodes
+exist, not which of them an HMI polls every second, which method a contractor's
+laptop calls at three in the morning, or which namespace a historian reads that
+nobody remembers commissioning. So the listener will write the list for you:
+`learn.enabled` records what crosses it and `learn.file` gets a proposed rule set
+on an interval and at shutdown. Run it for a week.
+
+A **subject** is one identity — an application URI and a user — one class of
+service, and one group of nodes. Not one node: a `nodes` pattern is the line an
+engineer argues about, and a subject per node would be two thousand rows for one
+HMI. A string identifier groups under its prefix, so `ns=4;s=Line1/Pump1/Speed`
+and `ns=4;s=Line1/Pump1/Pressure` are one row proposing
+`ns=4;s=Line1/Pump1/*`. A numeric identifier has no structure to group by, so
+the namespace is the group and the identifiers are listed inside it — the
+proposal then names them rather than inventing a pattern out of digits.
+
+Three numbers in the report matter more than the rows:
+
+- **`opaque_messages`** is the first thing to read. A channel in
+  `sign_and_encrypt` leaves this relay nothing to read, so a run over one records
+  no nodes at all — which looks exactly like a run over an idle listener. The
+  report says what share it could not read, and what to change: `sign` is signed
+  and unmodifiable but readable, and `require_readable_bodies` makes the
+  requirement explicit.
+- **`server_faults`** is the server refusing what this relay allowed, counted
+  against the rows the request made. An identity whose every request was refused
+  gets no rule proposed, because a rule for it would permit a thing that cannot
+  happen.
+- **`denied_by_policy`** is what the current policy refused, or would have on a
+  run that is not enforcing. It is the number that says the policy and the
+  traffic disagree, and which way.
+
+The proposal names the services that were **called**, not the services the
+subject's class covers: an identity that read a live value does not get
+HistoryRead. And it proposes none of the things learning must not widen — no
+security policy, no security mode, none of the amplification bounds. Those
+appear as observations under names no rule uses, because a report that proposed
+the fastest publishing interval it happened to see would widen the one setting
+this listener exists to hold.
+
+`learn.enforce` decides whether the policy is in force while the run measures.
+Off by default, which is the only honest way to find out what a policy would
+have broken; a live plant that cannot have the run be permissive turns it on.
+
+Shadow enforcement is separate and works on its own: the listener's `policy:
+shadow` setting and `monitor_only` record what would have been refused and
+forward it, with the hard decisions — an unreadable message, the bounds, every
+service that changes something — still enforced, because a Write forwarded so it
+could be written down is a moved actuator.
 
 ## Standards
 

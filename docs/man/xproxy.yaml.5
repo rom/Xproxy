@@ -9317,6 +9317,15 @@ T}	T{
 T}	T{
 Evaluate and enforce nothing,\: except the hard decisions: the client list,\: a message the relay could not read,\: the bounds,\: and every service that changes anything \[u2014] because a Write forwarded so it could be written down is a moved actuator
 T}
+T{
+\fBlearn\fR
+T}	T{
+object
+T}	T{
+off
+T}	T{
+Record what crosses this listener and write a proposed rule set;\: see below
+T}
 .TE
 .SS "server.listeners[].opcua.rules[]"
 .PP
@@ -9442,6 +9451,83 @@ T}	T{
 Carried into the logs when the rule decides,\: for the change record a plant keeps
 T}
 .TE
+.SS "server.listeners[].opcua.learn"
+.PP
+\fB\fBlearn\fR\fR records what crosses this listener and writes a proposed rule set.
+.PP
+Nobody knows what an OPC UA estate\(aqs traffic actually is. The address space says which nodes exist; the traffic says which of them an HMI actually polls, which methods a contractor\(aqs laptop calls, and which namespace a historian reads that nobody remembers commissioning. A \fBnodes\fR list written from the address space refuses half of it on the first shift, which is how a security control gets turned off and stays off. Run this for a week and the file is the answer.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.9i) lbw(0.9i) lbx
+lw(0.9i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Turn the recording on
+T}
+T{
+\fBfile\fR
+T}	T{
+path
+T}	T{
+required when enabled
+T}	T{
+Where the report is written,\: as YAML. Replaced atomically,\: owner readable only
+T}
+T{
+\fBinterval\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+How often it is rewritten;\: 10s..24h. It is also written at shutdown
+T}
+T{
+\fBmax_\:subjects\fR
+T}	T{
+int
+T}	T{
+\fB8192\fR
+T}	T{
+Observations held: one per identity,\: class of service and node group. Past the bound the newest is dropped and the drops are counted,\: in the report\(aqs own header
+T}
+T{
+\fBenforce\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Keep the policy in force while learning. Off \[u2014] the default \[u2014] means this listener records and decides nothing,\: which is the only honest way to find out what a policy would have broken,\: and it warns so that it is not left on by accident
+T}
+.TE
+.PP
+\fBA subject is one identity, one class of service and one group of nodes\fR \[u2014] not one node. A \fBnodes\fR pattern is the line an engineer argues about, and a subject per node would be two thousand rows for one HMI. A string identifier\(aqs group is its prefix, so \fBns=4;s=Line1/Pump1/Speed\fR groups under \fBLine1/Pump1\fR. A numeric identifier has no structure to group by, so its group is the namespace and the identifiers are listed inside it \[u2014] and the proposal then names them rather than inventing a pattern out of digits.
+.PP
+\fBRead \fBopaque_messages\fR before anything else in the report.\fR A channel in \fBsign_and_encrypt\fR leaves the relay nothing to read, so a run over one records no nodes at all \[u2014] and a report that said nothing about that would read as a run over an idle listener. The report says what share of the messages it could not read and what to change to learn from them: \fBsecurity_modes: [sign]\fR, which is signed and unmodifiable but readable, or \fBrequire_readable_bodies: true\fR.
+.PP
+\fB\fBserver_faults\fR is the number that decides whether a rule is proposed.\fR It counts the server refusing something this relay allowed \[u2014] a node it does not have, a user it does not grant \[u2014] and it is counted against the rows the request itself made. An identity whose every request was refused gets no rule, because a rule for it would permit a thing that cannot happen; the report says so in place of the rule.
+.PP
+\fBWhat a run will not propose\fR: a security policy, a security mode, \fBallow_deprecated_policies\fR, or any of the bounds. Seeing a channel in mode \fBnone\fR is not a reason to allow mode \fBnone\fR, and a report that proposed the fastest publishing interval it happened to see would widen the one setting learning must not touch \[u2014] the amplification bound is the whole reason this listener exists on a subscription\-capable server. Those appear as observations, under names no rule uses (\fBsecurity_modes_seen\fR, \fBfastest_publishing_interval_ms\fR), so that pasting the proposal cannot widen them by accident.
+.PP
+\fBThe handshake is in none of the proposed rules\fR, and must not be added to them. A client has sent no identity until it activates, so a rule naming an application URI or a user could not match the messages that establish one. The listener\(aqs own \fBservices\fR list admits the handshake; the rules narrow what an identified client may do once it has one.
+.PP
+\fBNo values are recorded.\fR A Write\(aqs payload is a process value and a method\(aqs arguments are too, and a learning report is a file that gets pasted into a ticket.
 .PP
 Counters: \fBopcua_channels\fR, \fBopcua_sessions\fR, \fBopcua_server_errors\fR, \fBopcua_server_faults\fR and \[u2014] the one to read first on a new deployment \[u2014] \fBopcua_opaque_bodies\fR, the messages whose body the channel encrypted, which are the messages the service rules did not decide about. A listener with rules about nodes and a high opaque count is enforcing less than its configuration reads as. \fBopcua_server_faults\fR is the number that says the two policies disagree: the server refusing something this relay allowed, which usually means a user the server does not grant what the listener does.
 .PP

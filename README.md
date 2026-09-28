@@ -225,7 +225,7 @@ protocol so that a policy can be written in that protocol's own terms:
 | `smtp` | `xrelay` | SMTP and submission | Commands, where a message ends, TLS and authentication, bounds |
 | `mqtt` | `xrelay` | MQTT 3.1.1 and 5.0 | Topics and filters, client identifiers, retained messages, wills |
 | `coap` | `xrelay` | CoAP (RFC 7252) over UDP, block-wise transfer, Observe, resource discovery | The methods, the **paths** -- which are the device's object model, so the policy is positive and the default is deny -- the queries, the content formats in both directions, `Proxy-Uri` and `Proxy-Scheme` refused by default, an option the relay cannot name answered the way the standard says, a path whose segments would not mean what the joined path looks like, the payload, one block, the whole declared transfer, the outstanding Observe registrations, and the size of an answer as a **multiple of the question** |
-| `opcua` | `xrelay` | OPC UA (IEC 62541) over `opc.tcp`, chunked UA TCP, the secure channel, sessions and identity tokens | The security policies -- with the two IEC 62541 withdrew refused unless named twice -- the message security mode, the endpoint, the client application's URI checked against its own certificate, the identity token kind, the user, and a password that crossed unprotected; then, where the mode left a body readable, the service, the node identifiers, the **attribute** (a write to `value` moves an actuator; a write to `access_level` changes who may), the method on its object, the operations in one request, and the publishing interval a subscription asked for |
+| `opcua` | `xrelay` | OPC UA (IEC 62541) over `opc.tcp`, chunked UA TCP, the secure channel, sessions and identity tokens, with a learning mode that proposes the node rules | The security policies -- with the two IEC 62541 withdrew refused unless named twice -- the message security mode, the endpoint, the client application's URI checked against its own certificate, the identity token kind, the user, and a password that crossed unprotected; then, where the mode left a body readable, the service, the node identifiers, the **attribute** (a write to `value` moves an actuator; a write to `access_level` changes who may), the method on its object, the operations in one request, and the publishing interval a subscription asked for |
 | `ftp` | `xrelay` | FTP and FTPS | Commands, paths, extensions, and the data connection itself |
 | `syslog` | `xrelay` | RFC 5424 and RFC 3164 over UDP, TCP, TLS | Facility, severity, sender, the text; re-emitted in one dialect |
 | `modbus` | `xrelay` | Modbus/TCP, RTU and ASCII, Modbus/TCP Security | Unit identifiers, function codes, register ranges, values, roles, schedules, behavioural detection |
@@ -357,7 +357,17 @@ protocol so that a policy can be written in that protocol's own terms:
   thousand values a millisecond, from one legitimate session, in valid protocol.
   It **never decrypts and never rewrites a body**: a relay that terminated the
   secure channel would be a man in the middle of the one industrial protocol
-  designed to notice, holding the plant's private key to do it
+  designed to notice, holding the plant's private key to do it. And it will
+  write the node list for you: **learning mode** records what crosses it — one
+  row per identity, class of service and node group, with string identifiers
+  grouped by their prefix and numeric ones listed under their namespace — and
+  writes a `rules:` list that pastes in. It reports the share of messages whose
+  body it could not read before anything else, because a run over an encrypted
+  channel learns nothing about nodes and would otherwise read as an idle
+  listener; it proposes the services that were *called* rather than the ones the
+  class covers; and it proposes none of the bounds, because a report that
+  suggested the fastest publishing interval it happened to see would widen the
+  one setting this listener exists to hold
 
 - `kind: ftp`: an FTP proxy that is actually in the middle. FTP puts
   every transfer on a second connection whose address one side

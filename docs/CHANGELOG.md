@@ -129,6 +129,42 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   epoch to now is 1.3e19 nanoseconds where a Duration holds 9.2e18 — so every
   timestamp saturated silently and came out in the wrong century.
 
+- **`opcua.learn` records what crosses the listener and writes the node rules
+  for you.** Nobody writes a correct `nodes` list from an address space: it says
+  which nodes exist, not which of them an HMI polls every second or which method
+  a contractor's laptop calls at three in the morning. A subject is one identity,
+  one class of service and one group of nodes — string identifiers grouped by
+  their prefix so `ns=4;s=Line1/Pump1/Speed` and its siblings become one row
+  proposing `ns=4;s=Line1/Pump1/*`, numeric identifiers listed under their
+  namespace because digits have no structure to group by. `enforce` decides
+  whether the policy is in force while the run measures, and is off by default
+  with a warning, because a run that is also deciding cannot tell you what the
+  policy would have broken.
+
+- **The report leads with what it could not read.** A channel in
+  `sign_and_encrypt` leaves the relay nothing, so a run over one records no nodes
+  at all — and a report that did not say so would read as a run over an idle
+  listener. `opaque_messages` is the first finding in the file, with what to
+  change to learn from them.
+
+- **A proposal narrower than the class, in three ways the tests forced.** The
+  services named are the ones that were called, not the ones the subject's class
+  covers, so an identity that read a live value does not get HistoryRead. A
+  server fault is counted against the rows the request itself made rather than by
+  identity and class alone — without which a fault landed on a row with no node
+  in it, the rows the read made still read as traffic the server accepted, and an
+  identity the server refused everything for was proposed a rule for it. And the
+  handshake is in none of the rules, with the reason in the file: a client has
+  sent no identity until it activates, so a rule naming one cannot match the
+  messages that establish it, and somebody who added `open_secure_channel` to
+  these rules would lock every client out.
+
+- **What a run will never propose**: a security policy, a security mode,
+  `allow_deprecated_policies`, or any of the bounds. Seeing a channel in mode
+  `none` is not a reason to allow mode `none`, and a report suggesting the
+  fastest publishing interval it happened to see would widen the one setting this
+  listener exists to hold. They appear as observations under names no rule uses.
+
 ### Added (coap: a relay whose policy is a path)
 
 - **`kind: coap` is a CoAP relay agent (RFC 7252) on UDP 5683** that reads what it

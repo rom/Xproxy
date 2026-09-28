@@ -8564,6 +8564,34 @@
       },
       "additionalProperties": false
     },
+    "OPCUALearn": {
+      "description": "OPCUALearn records what crosses an opcua listener and writes a proposal. The reason learning exists at all is that nobody knows what an estate's OPC UA traffic is. A server's address space has thousands of nodes and its own documentation lists all of them; the traffic uses a few dozen. A policy written from the documentation allows everything, and one written from a guess refuses the half nobody wrote down — which on a plant means an HMI screen that stops updating during a shift, and a security control that gets turned off and stays off. Two things about learning on *this* protocol have no counterpart in the other kinds. **A channel that encrypts its bodies teaches nothing about nodes.** Under `sign_and_encrypt` the relay sees the channel, the session and the sizes and no node identifier at all. So a learning run over such a channel produces a report with an identity and no address space, and the report says so per subject and in its header rather than leaving an operator to conclude the plant reads almost nothing. A run meant to learn nodes wants `security_modes: [sign]` or `require_readable_bodies: true` for its duration. **What the report will not propose is the part that bounds amplification.** `min_publishing_interval`, `min_sampling_interval`, `max_operations` and `max_monitored_items` appear as observations, under names no rule uses, because a report that proposed the fastest interval it happened to see would widen the one setting learning must not touch. Nor will it propose a security policy or mode: seeing a channel in mode `none` is not a reason to allow mode `none`, and no run proposes `allow_deprecated_policies`.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enabled turns the recording on.",
+          "type": "boolean"
+        },
+        "enforce": {
+          "description": "Enforce keeps the policy in force while learning. Default false: a learning run is normally observe-only, and saying so here is what stops one being left on by accident. It does not disable the hard decisions. A client the lists refuse, a message the relay could not read, a bound, and every service that changes the plant are refused whether or not a learning run is in progress — because a Write forwarded so that it could be written down is a moved actuator.",
+          "type": "boolean"
+        },
+        "file": {
+          "description": "File is where the report is written, as YAML. Required when enabled.",
+          "type": "string"
+        },
+        "interval": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_subjects": {
+          "description": "MaxSubjects bounds the observations held: one per identity, service class and node group seen. Default 8192; past it the newest is dropped and the drops are counted, because a learning run that quietly stopped learning is worse than one that says so.",
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
     "OPCUAListener": {
       "description": "OPCUAListener is the settings of a kind: opcua listener: a relay in front of an OPC UA server, on TCP 4840. OPC UA is the protocol the last fifteen years of industrial automation standardised on, and it is the first one in this file that was designed with security in it rather than beside it: certificates on both ends, a signed and encrypted channel, a session with a user identity. That makes a relay's job different here than it is in front of Modbus or S7comm, where the protocol has nothing and the relay supplies everything. Four things shape these settings. **Most of what is worth enforcing is in the handshake, and all of it is in the clear.** Before any service call there is a Hello that names an endpoint, an OpenSecureChannel that names a security policy and carries both certificates, and a CreateSession/ActivateSession pair that names an application and a user. Those fields are readable by construction — they are how the two ends agree on what to encrypt — so `security_policies`, `security_modes`, `application_uris`, `token_kinds` and `users` work on every channel regardless of what it then does to its bodies. They are also the cheapest lines in this section: a listener that admits only Basic256Sha256 in mode sign_and_encrypt, from two named applications, with no anonymous token, has excluded most of what goes wrong without naming a single node. **Whether the service rules apply at all is a property of the channel.** MessageSecurityMode has three values and they mean three different things to a reader. With `none` everything is plaintext. With `sign` the body is signed and *not* encrypted, so this relay reads every node id and method argument — and never modifies one, because the signature is over exactly the octets the client sent. With `sign_and_encrypt` the body is ciphertext and the relay sees the channel, the sizes and the timing and nothing else. So `nodes`, `services`, `attributes` and `methods` decide traffic on a none or sign channel and are silent on a sign_and_encrypt one. That is a genuine trade-off and not a gap: confidentiality on the wire and service-level enforcement in the middle are alternatives, and `require_readable_bodies` is how a listener says which it wants. Validation warns when service rules are configured alongside a mode that makes them inert, because a rule that never runs is worse than no rule. **This relay does not terminate the secure channel.** It holds no private key of the plant's and performs no key agreement: a relay that decrypted here would be a man in the middle of the one industrial protocol that was designed to notice, and the certificates the two ends check would have to be this relay's. Everything below works on what the channel leaves readable. **A write and a call are not the same risk.** `services` is the coarse allow list; `attributes` and `write_attributes` are what separate reading a process value from changing who may write it, and they matter because a write to attribute 13 moves an actuator while a write to attribute 17 changes the permissions on it. Both arrive as a Write, and a policy that named only the node would have allowed either.",
       "type": "object",
@@ -8666,6 +8694,14 @@
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "learn": {
+          "description": "Learn records what crosses this listener and writes a proposed policy, because the drawings say which nodes a server has and the traffic says which of them anything actually reads. See OPCUALearn.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/OPCUALearn"
+            }
+          ]
         },
         "log_requests": {
           "description": "LogRequests writes an access line per message, which on a plant polling every second is a great many lines.",

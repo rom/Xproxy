@@ -3947,6 +3947,7 @@ either.
 | `log_requests` | bool | `false` | An access line per message, which on a plant polling every second is a great many lines. A Write, a Call and an activation are logged regardless, because those are what a change record is about |
 | `alert_on_deny` | bool | `true` | A security event for every refusal |
 | `monitor_only` | bool | `false` | Evaluate and enforce nothing, except the hard decisions: the client list, a message the relay could not read, the bounds, and every service that changes anything — because a Write forwarded so it could be written down is a moved actuator |
+| `learn` | object | off | Record what crosses this listener and write a proposed rule set; see below |
 
 #### server.listeners[].opcua.rules[]
 
@@ -3964,6 +3965,67 @@ either.
 | `max_operations` | int | inherited | The rule's own operation bound |
 | `schedule` | object | none | Limit the rule to a time window, which is how "the integrator may call methods during the shutdown window" is written |
 | `comment` | string | none | Carried into the logs when the rule decides, for the change record a plant keeps |
+
+#### server.listeners[].opcua.learn
+
+**`learn`** records what crosses this listener and writes a proposed rule set.
+
+Nobody knows what an OPC UA estate's traffic actually is. The address space says
+which nodes exist; the traffic says which of them an HMI actually polls, which
+methods a contractor's laptop calls, and which namespace a historian reads that
+nobody remembers commissioning. A `nodes` list written from the address space
+refuses half of it on the first shift, which is how a security control gets
+turned off and stays off. Run this for a week and the file is the answer.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Turn the recording on |
+| `file` | path | required when enabled | Where the report is written, as YAML. Replaced atomically, owner readable only |
+| `interval` | duration | `5m` | How often it is rewritten; 10s..24h. It is also written at shutdown |
+| `max_subjects` | int | `8192` | Observations held: one per identity, class of service and node group. Past the bound the newest is dropped and the drops are counted, in the report's own header |
+| `enforce` | bool | `false` | Keep the policy in force while learning. Off — the default — means this listener records and decides nothing, which is the only honest way to find out what a policy would have broken, and it warns so that it is not left on by accident |
+
+**A subject is one identity, one class of service and one group of nodes** — not
+one node. A `nodes` pattern is the line an engineer argues about, and a subject
+per node would be two thousand rows for one HMI. A string identifier's group is
+its prefix, so `ns=4;s=Line1/Pump1/Speed` groups under `Line1/Pump1`. A numeric
+identifier has no structure to group by, so its group is the namespace and the
+identifiers are listed inside it — and the proposal then names them rather than
+inventing a pattern out of digits.
+
+**Read `opaque_messages` before anything else in the report.** A channel in
+`sign_and_encrypt` leaves the relay nothing to read, so a run over one records no
+nodes at all — and a report that said nothing about that would read as a run over
+an idle listener. The report says what share of the messages it could not read
+and what to change to learn from them: `security_modes: [sign]`, which is signed
+and unmodifiable but readable, or `require_readable_bodies: true`.
+
+**`server_faults` is the number that decides whether a rule is proposed.** It
+counts the server refusing something this relay allowed — a node it does not
+have, a user it does not grant — and it is counted against the rows the request
+itself made. An identity whose every request was refused gets no rule, because a
+rule for it would permit a thing that cannot happen; the report says so in place
+of the rule.
+
+**What a run will not propose**: a security policy, a security mode,
+`allow_deprecated_policies`, or any of the bounds. Seeing a channel in mode
+`none` is not a reason to allow mode `none`, and a report that proposed the
+fastest publishing interval it happened to see would widen the one setting
+learning must not touch — the amplification bound is the whole reason this
+listener exists on a subscription-capable server. Those appear as observations,
+under names no rule uses (`security_modes_seen`,
+`fastest_publishing_interval_ms`), so that pasting the proposal cannot widen
+them by accident.
+
+**The handshake is in none of the proposed rules**, and must not be added to
+them. A client has sent no identity until it activates, so a rule naming an
+application URI or a user could not match the messages that establish one. The
+listener's own `services` list admits the handshake; the rules narrow what an
+identified client may do once it has one.
+
+**No values are recorded.** A Write's payload is a process value and a method's
+arguments are too, and a learning report is a file that gets pasted into a
+ticket.
 
 Counters: `opcua_channels`, `opcua_sessions`, `opcua_server_errors`,
 `opcua_server_faults` and — the one to read first on a new deployment —
