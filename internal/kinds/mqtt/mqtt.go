@@ -51,6 +51,8 @@ type server struct {
 	maxQoS int
 	spark  *sparkplugPolicy
 
+	learner *learner
+
 	open atomic.Int64
 	wg   sync.WaitGroup
 	mu   sync.Mutex
@@ -107,10 +109,30 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener, tc *tls.Co
 		}
 		t.upTLS = uc
 	}
+	if l := m.Learn; l != nil {
+		t.learner = newLearner(&learnConfig{enabled: l.Enabled, listener: cfg.Name,
+			file: l.File, interval: l.Interval.D(), maxSubjects: l.MaxSubjects})
+	}
 	return t, nil
 }
 
+// learningOnly says whether a learning run is suspending policy enforcement.
+//
+// It is the same switch shadow mode uses, and for the same reason: a run that
+// refused half the traffic would have changed the thing it was measuring. What
+// neither suspends is a bound or a packet this proxy could not read.
+func (t *server) learningOnly() bool {
+	l := t.m.Learn
+	return l != nil && l.Enabled && !l.Enforce
+}
+
 func (t *server) serve() {
+	if t.learner != nil {
+		t.learner.Start(func(err error) {
+			t.host.Logs().Error.Warn("mqtt learning report could not be written",
+				"listener", t.cfg.Name, "error", err.Error())
+		})
+	}
 	for {
 		c, err := t.ln.Accept()
 		if err != nil {
@@ -191,6 +213,13 @@ func (t *server) shutdown(ctx context.Context) {
 		}
 		t.mu.Unlock()
 		<-finished
+	}
+	// After the sessions have drained, so the report includes what they did.
+	if t.learner != nil {
+		if err := t.learner.Stop(); err != nil {
+			t.host.Logs().Error.Warn("mqtt learning report could not be written at shutdown",
+				"listener", t.cfg.Name, "error", err.Error())
+		}
 	}
 }
 
@@ -296,7 +325,7 @@ func (t *server) deny(ip netip.Addr, what, detail string) {
 // bytes this proxy could not read, or keeping a session whose shape the
 // protocol does not have.
 func (t *server) shadowed(ip netip.Addr, what, detail string) bool {
-	if !t.cfg.Shadowing() {
+	if !t.cfg.Shadowing() && !t.learningOnly() {
 		return false
 	}
 	t.recordWouldDeny(ip, what, "", detail)
@@ -694,6 +723,10 @@ func (se *session) decidePublish(p wire.Packet) (string, bool) {
 			bad = t.spark.check(se.ip, pub, pub.Payload(p))
 		}
 	}
+	// The learning run sees the topic and the decision, before the refusal: what
+	// a policy would have refused is the most useful line in the report, and a
+	// run that only saw what got through would not have it.
+	se.observePublish(&pub, len(pub.Payload(p)), bad == "", time.Now())
 	if bad == "" {
 		se.published.Add(1)
 		t.host.Counters().MQTTPublished.Add(1)
@@ -759,6 +792,7 @@ func (se *session) decideSubscribe(p wire.Packet) (string, bool) {
 	if refused == "" && len(se.subs)+len(sub.Filters) > t.m.MaxSubscriptions {
 		refused = "(too many subscriptions)"
 	}
+	se.observeSubscribe(sub.Filters, refused, time.Now())
 	if refused == "" {
 		for _, f := range sub.Filters {
 			se.subs[f.Filter] = true

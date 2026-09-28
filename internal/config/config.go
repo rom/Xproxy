@@ -5679,6 +5679,31 @@ type MQTTListener struct {
 	ProxyProtocol bool `yaml:"proxy_protocol"`
 	// AllowClients restricts clients to these CIDRs.
 	AllowClients []string `yaml:"allow_clients"`
+	// Learn records what crosses this listener and writes a proposed policy.
+	Learn *MQTTLearn `yaml:"learn"`
+}
+
+// MQTTLearn is an mqtt listener's learning mode.
+type MQTTLearn struct {
+	// Enabled turns the recording on.
+	Enabled bool `yaml:"enabled"`
+	// File is where the report is written, as YAML. Required when enabled.
+	File string `yaml:"file"`
+	// Interval is how often it is rewritten. Default 5m; it is also written
+	// when the listener shuts down.
+	Interval Duration `yaml:"interval"`
+	// MaxSubjects bounds the observations held: one per client, direction and
+	// topic depth. Default 8192; past it the newest is dropped and the drops
+	// are counted, because a learning run that quietly stopped learning is
+	// worse than one that says so.
+	MaxSubjects int `yaml:"max_subjects"`
+	// Enforce keeps the policy in force while learning. Default false: a
+	// learning run is normally observe-only, and saying so here is what stops
+	// one being left on by accident.
+	//
+	// What it never relaxes is the packet, payload and subscription bounds, nor
+	// a packet this proxy could not read: those are not policy.
+	Enforce bool `yaml:"enforce"`
 }
 
 // MQTTTopicRule is what one set of topics may carry: how large a payload,

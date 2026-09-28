@@ -40,6 +40,38 @@ server:
         max_client_id: 64
         client_id_pattern: "^device-[0-9a-f]{12}$"
 
+        # How the topic lists below were arrived at, and how to arrive at
+        # them for the next fleet. A broker carries topics nobody wrote
+        # down: the naming convention is in a document from 2019, the
+        # gateway that was replaced still publishes under the old prefix,
+        # and the historian subscribes to something wider than anyone
+        # remembers agreeing to. A list written from the convention
+        # refuses what does not follow it, and on a message bus that means
+        # telemetry silently stops arriving -- the device keeps publishing
+        # and nothing changes on the screen until somebody notices a flat
+        # line.
+        #
+        # So for the first week the listener records instead of deciding.
+        # Take this out once the lists are written -- validation warns
+        # about a learning section with no enforce, because one left on by
+        # accident is a proxy that decides nothing.
+        #
+        # What the report will never propose is a `#`. It writes a filter
+        # of the depth it saw, with `+` where the traffic varied, and
+        # lists the levels seen at each position so a `+` can be narrowed
+        # by hand. A `#` the *client* asked for is kept verbatim and
+        # flagged: narrowing that one is a conversation with whoever runs
+        # the client.
+        #
+        # learn:
+        #   enabled: true
+        #   file: /var/lib/xproxy/mqtt-fleet.yaml
+        #   interval: 15m
+        #   # enforce: true would keep the lists below in force while
+        #   # recording, which is the second phase: the report then says
+        #   # which of them the traffic disagrees with, per subject, in
+        #   # denied_by_policy.
+
         # The topic policy. Deny wins, and an empty allow list allows
         # whatever the deny list does not refuse.
         publish_allow:

@@ -5703,6 +5703,34 @@
       },
       "additionalProperties": false
     },
+    "MQTTLearn": {
+      "description": "MQTTLearn is an mqtt listener's learning mode.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enabled turns the recording on.",
+          "type": "boolean"
+        },
+        "enforce": {
+          "description": "Enforce keeps the policy in force while learning. Default false: a learning run is normally observe-only, and saying so here is what stops one being left on by accident. What it never relaxes is the packet, payload and subscription bounds, nor a packet this proxy could not read: those are not policy.",
+          "type": "boolean"
+        },
+        "file": {
+          "description": "File is where the report is written, as YAML. Required when enabled.",
+          "type": "string"
+        },
+        "interval": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "max_subjects": {
+          "description": "MaxSubjects bounds the observations held: one per client, direction and topic depth. Default 8192; past it the newest is dropped and the drops are counted, because a learning run that quietly stopped learning is worse than one that says so.",
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
     "MQTTListener": {
       "description": "MQTTListener is a protocol-aware MQTT proxy for 3.1.1 and 5.0. It reads every control packet, decides on the ones that carry a policy question — who is connecting, what they publish, what they subscribe to — and forwards the rest untouched. The reason it is not a layer 4 listener: an MQTT broker's authorisation is per topic, and a topic is a string inside a packet. Without reading the packets there is no place to say that a device may publish its own telemetry and nothing else, and every device that holds a broker credential holds the whole tree.",
       "type": "object",
@@ -5748,6 +5776,14 @@
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "learn": {
+          "description": "Learn records what crosses this listener and writes a proposed policy.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/MQTTLearn"
+            }
+          ]
         },
         "max_client_id": {
           "description": "MaxClientID bounds the client id. Default 128.",

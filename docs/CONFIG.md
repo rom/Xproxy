@@ -1596,6 +1596,76 @@ accept. Changing the `mqtt` section rebinds the listener on reload.
 | `max_qos` | int | `2` | The highest quality of service a publication or a subscription may ask for. QoS 2 costs a broker four packets and a stored state per message, which is what makes it worth bounding on a fleet that does not need it |
 | `topics` | list | `[]` | Per-topic bounds, below |
 | `sparkplug` | object | | The Sparkplug B policy, below |
+| `learn` | object | | Record what crosses this listener and write proposed topic lists, below |
+
+#### server.listeners[].mqtt.learn
+
+**`learn`** records what crosses this listener and writes proposed topic lists.
+
+A broker in a plant carries topics nobody wrote down. The integrator's naming
+convention is in a document from 2019, the gateway that was replaced still
+publishes under the old prefix, and the historian subscribes to something wider
+than anyone remembers agreeing to. A `publish_allow` list written from the
+convention refuses the traffic that does not follow it, which on a message bus
+means telemetry *silently stops arriving*: the client keeps connecting and keeps
+publishing, and nothing on the screen changes until somebody notices a flat line.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Turn the recording on |
+| `file` | path | required when enabled | Where the report is written, as YAML. Replaced atomically, owner readable only |
+| `interval` | duration | `5m` | How often it is rewritten; 10s..24h. It is also written at shutdown, after the sessions have drained |
+| `max_subjects` | int | `8192` | Observations held: one per identity, direction and topic depth. Past the bound the newest is dropped and the drops are counted, in the report's own header |
+| `enforce` | bool | `false` | Keep the policy in force while learning. Off -- the default -- means this listener records and decides nothing about *policy*, and it warns so that it is not left on by accident. The packet, payload and subscription bounds stay in force either way, as does a packet this proxy could not read |
+
+**No `#` is ever proposed.** This is the whole difficulty of learning on this
+protocol, and the easy answer is the wrong one. `plant/#` covers every level
+under `plant`, including the ones that do not exist yet and the one an attacker
+adds tomorrow, so an allow list built from it allows the thing it was supposed to
+bound. What is proposed instead is a filter of exactly the depth that was
+observed, with `+` -- which matches one level and no more -- at the positions
+where the traffic actually varied:
+
+```
+plant/line3/press1/temperature   seen
+plant/line3/press1/pressure      seen
+plant/line3/press2/temperature   seen
+                                 proposed: plant/line3/+/+
+```
+
+The report lists the levels observed at each position, so a `+` can be narrowed
+by hand where an estate knows the position is closed. A position whose values
+outran the bound the report remembers is still only a `+`.
+
+**The depth is part of a subject's identity** for the same reason: a `+` matches
+one level, so topics of different depths cannot share a filter, and a report that
+folded them together would have had no choice but to widen. Two depths produce
+two filters.
+
+**A filter the *client* wrote is recorded verbatim**, under `depth: filter`,
+because a subscription is already a filter and there is nothing to generalise. If
+a historian subscribed to `plant/#` then `plant/#` is what it needs; the report
+proposes it and flags it, rather than quietly proposing something narrower that
+would break it. Narrowing that one is a conversation with whoever runs the
+client.
+
+**The identity is the CONNECT username**, or the client's address when it
+asserted none -- not the client identifier, because a great many MQTT clients
+generate a fresh one per connection and a subject per identifier would be a
+subject per reboot. The identifiers seen are listed inside the subject instead,
+which is what `client_id_pattern` gets written from.
+
+**`allow_retain: false` is never proposed.** A run that saw no retained message
+has not learned that none is wanted, so the key is left out and the listener's
+own default decides; a run that *did* see one proposes `allow_retain: true`,
+because that traffic exists. Payload sizes and the QoS span are recorded and
+become `max_payload_bytes` and `max_qos` on the proposed topic rule --
+`max_payload_bytes` is the largest payload actually seen and not a round number
+above it, which the report says, because a firmware topic whose largest image so
+far is 3 MiB will refuse a 4 MiB one.
+
+**No payload is recorded.** An MQTT payload is a process value or a command, and
+a learning report is a file that gets pasted into a ticket.
 
 **`topics[]`** is where the payload, QoS and retain bounds belong, because
 all three are properties of the *topic* rather than of the listener: a

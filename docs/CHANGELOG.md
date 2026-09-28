@@ -6,6 +6,48 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (mqtt: learning mode, and never a `#`)
+
+- **`mqtt.learn` records what crosses the listener and writes proposed topic
+  lists.** A broker in a plant carries topics nobody wrote down: the naming
+  convention is in a document from 2019, the gateway that was replaced still
+  publishes under the old prefix, and the historian subscribes to something wider
+  than anyone remembers agreeing to. A `publish_allow` list written from the
+  convention refuses what does not follow it, which on a message bus means
+  telemetry *silently stops arriving* — the client keeps publishing and nothing
+  changes on the screen until somebody notices a flat line.
+
+- **No `#` is proposed, at any depth, for any subject.** This is the whole
+  difficulty of learning on this protocol and the easy answer is the wrong one:
+  `plant/#` covers every level under `plant`, including the ones that do not exist
+  yet, so an allow list built from it allows the thing it was supposed to bound.
+  What is proposed is a filter of exactly the depth observed, with `+` — which
+  matches one level and no more — at the positions where the traffic varied.
+  `plant/line3/press1/temperature`, `.../pressure` and `plant/line3/press2/...`
+  become `plant/line3/+/+`, and the levels seen at each position are listed so a
+  `+` can be narrowed by hand. A position whose values outran the bound the report
+  remembers is still only a `+`.
+
+- **The topic depth is part of a subject's identity**, because a `+` matches one
+  level: topics of different depths cannot share a filter, and a report that
+  folded them together would have had no choice but to widen. Two depths produce
+  two filters.
+
+- **A filter the client wrote is recorded and proposed verbatim**, under
+  `depth: filter`, because a subscription is already a filter. If a historian
+  asked for `plant/#` then that is what it needs; the report flags it rather than
+  proposing something narrower that would break it.
+
+- The identity is the CONNECT username, or the address when there was none — not
+  the client identifier, since many clients generate a fresh one per connection
+  and a subject each would be a subject per reboot. The identifiers seen are
+  listed inside the subject, which is what `client_id_pattern` is written from.
+
+- **`allow_retain: false` is never proposed**: a run that saw no retained message
+  has not learned that none is wanted, so the key is left out and the listener's
+  default decides. Payload sizes and the QoS span become the proposed `topics[]`
+  bounds; no payload is recorded.
+
 ### Added (tftp: learning mode, with the amplification bound left alone)
 
 - **`tftp.learn` records what crosses the listener and writes a proposed

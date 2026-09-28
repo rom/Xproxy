@@ -89,6 +89,42 @@ with protobuf payloads — and `sparkplug` makes the relay read the message type
 out of the topic, so the node command and device command messages that change
 plant are a decision rather than one topic among many.
 
+### Learning what the topics are
+
+`learn` records what crosses this listener and writes proposed topic lists. A
+broker in a plant carries topics nobody wrote down: the naming convention is in a
+document from 2019, the gateway that was replaced still publishes under the old
+prefix, and the historian subscribes to something wider than anyone remembers
+agreeing to. A `publish_allow` list written from the convention refuses what does
+not follow it, which on a message bus means telemetry *silently stops arriving* --
+the client keeps publishing and nothing on the screen changes until somebody
+notices a flat line.
+
+**No `#` is ever proposed.** `plant/#` covers every level under `plant`,
+including the ones that do not exist yet, so an allow list built from it allows
+the thing it was meant to bound. What is proposed is a filter of the depth that
+was seen, with `+` -- one level, no more -- where the traffic varied:
+`plant/line3/press1/temperature`, `.../pressure` and `plant/line3/press2/...`
+become `plant/line3/+/+`, and the report lists the levels seen at each position so
+a `+` can be narrowed by hand. The depth is part of a subject's identity for the
+same reason: two depths cannot share a filter without a `#`, so they get two
+filters.
+
+A filter the *client* wrote is recorded and proposed verbatim, under
+`depth: filter`: a subscription is already a filter, and if the historian asked
+for `plant/#` then that is what it needs. It is flagged rather than narrowed,
+because narrowing it is a conversation with whoever runs that client.
+
+The identity is the CONNECT username, or the address when there was none -- not
+the client identifier, since many clients generate a fresh one per connection and
+a subject each would be a subject per reboot. The identifiers seen are listed
+inside the subject, which is what `client_id_pattern` is written from.
+
+`allow_retain: false` is never proposed: a run that saw no retained message has
+not learned that none is wanted. Payload sizes and the QoS span are recorded and
+become the proposed `topics[]` bounds; no payload is. See
+[docs/CONFIG.md](../CONFIG.md#serverlistenersmqttlearn).
+
 ### The estate's own authorisation policy
 
 Above this relay's own topic policy sits the `authorization` section, which is not
