@@ -183,9 +183,13 @@ type proposal struct {
 	// classes cover.
 	services       map[string]bool
 	unknownService bool
-	nodes          map[string]bool
-	methods        map[string]bool
-	attrs          map[string]bool
+	// beyondHandshake says some class other than the session's was seen. Without
+	// it there is nothing for a rule to permit, because the handshake is not what
+	// these rules speak about.
+	beyondHandshake bool
+	nodes           map[string]bool
+	methods         map[string]bool
+	attrs           map[string]bool
 	// vague is set where a group was truncated, so the pattern proposed for it is
 	// a prefix wildcard rather than a list -- and the report says which.
 	vague bool
@@ -215,8 +219,17 @@ func proposeOPCUA(b *strings.Builder, subjects []learn.Subject[learnKey, learnOb
 		p.requests += o.requests
 		p.faults += o.serverFaults
 		p.classes[k.class] = true
-		for svc := range o.services {
-			p.services[svc] = true
+		if k.class != classSession {
+			p.beyondHandshake = true
+			// The session class is recorded above and proposed never. A rule
+			// naming an identity cannot match OpenSecureChannel or CreateSession,
+			// because the client has sent no identity yet -- and a rule narrowing
+			// CloseSession would refuse a client closing cleanly. The listener's
+			// own `services` list admits the handshake; these rules are about what
+			// an identified client does with it.
+			for svc := range o.services {
+				p.services[svc] = true
+			}
 		}
 		if o.unknownService {
 			p.unknownService = true
@@ -228,15 +241,18 @@ func proposeOPCUA(b *strings.Builder, subjects []learn.Subject[learnKey, learnOb
 		// numeric namespace with a handful of identifiers proposes them; one that
 		// was truncated proposes the namespace.
 		switch {
-		case k.group != "" && (o.nodesFull || len(o.nodes) > 1):
+		case k.group != "" && len(o.nodes) > 1:
 			p.nodes[k.ns+";s="+k.group+"/*"] = true
-		case k.group != "" && len(o.nodes) == 1:
-			for n := range o.nodes {
-				p.nodes[n] = true
-			}
 		case o.nodesFull:
+			// A numeric namespace whose identifiers were truncated. There is no
+			// prefix to wildcard, so the namespace is what the proposal can say —
+			// and it says so, because a list of the first twenty-four of an
+			// unknown number is worse than a wildcard somebody argues with.
 			p.nodes[k.ns+";i=*"] = true
 		default:
+			// One node under a group, or a handful in a numeric namespace: name
+			// them. A group whose nodes were truncated has more than one, so it
+			// took the first case.
 			for n := range o.nodes {
 				p.nodes[n] = true
 			}
@@ -255,6 +271,14 @@ func proposeOPCUA(b *strings.Builder, subjects []learn.Subject[learnKey, learnOb
 			// Messages that arrived before any session existed. There is no
 			// identity to write a rule about, and the handshake services are
 			// allowed by the listener's own defaults.
+			continue
+		}
+		if !p.beyondHandshake {
+			// Only handshake traffic, which the rules do not speak about. The row
+			// above says what was seen; there is nothing here to permit.
+			fmt.Fprintf(b, "  # %s / %s: nothing but the handshake was seen, so there is\n",
+				learn.Sanitise(p.app), learn.Sanitise(p.user))
+			b.WriteString("  # no rule to write: the listener's own service list admits that.\n")
 			continue
 		}
 		if p.requests > 0 && p.faults >= p.requests {
@@ -285,6 +309,11 @@ func writeProposal(b *strings.Builder, p *proposal) {
 	}
 	if svc := sortedSet(p.services); len(svc) > 0 {
 		fmt.Fprintf(b, "    services: [%s]\n", strings.Join(svc, ", "))
+	} else {
+		// Every service this identity called was one with no configuration name,
+		// so the rule names none and the listener's own list still decides. A
+		// `services` key naming nothing would deny everything.
+		b.WriteString("    # no service seen for this identity has a configuration name\n")
 	}
 	if p.unknownService {
 		b.WriteString("    # and at least one service this build does not name, which is left\n")

@@ -2,6 +2,7 @@ package opcua
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -72,6 +73,7 @@ func TestALearningRunProposesWhatWasSeen(t *testing.T) {
 	up.await(t, 4, "the session and the read")
 
 	out := report(t, s, cl, file)
+	t.Log("\n" + out)
 	for _, want := range []string{
 		"application_uri: urn:plant:scada:hmi1",
 		"user: operator",
@@ -167,6 +169,16 @@ func TestAnIdentityTheServerAlwaysRefusedGetsNoRule(t *testing.T) {
 	if !strings.Contains(out, "node_group: Line1/Pump1") ||
 		!strings.Contains(out, "server_faults: 1") {
 		t.Errorf("the fault was not counted against the row the read made:\n%s", out)
+	}
+	// And on the session row too, which has no node in it at all: a refused
+	// ActivateSession is the one a reader of this report most needs to see, since
+	// it is the server saying this identity is not one it grants.
+	rest, ok := cut(out, "services: session")
+	if !ok {
+		t.Fatalf("the report has no row for the session services:\n%s", out)
+	}
+	if !strings.Contains(firstLines(rest, 8), "server_faults:") {
+		t.Errorf("the session row does not carry its fault:\n%s", out)
 	}
 	if !strings.Contains(out, "every request was refused by the server, so no rule") {
 		t.Errorf("the report proposed a rule for an identity the server always refused:\n%s", out)
@@ -325,5 +337,191 @@ func TestAWriteRecordsItsAttributeAndItsMethods(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("the report is missing %q:\n%s", want, out)
 		}
+	}
+}
+
+// A service this build cannot name must not reach the proposal by the name it
+// prints. `service(31337)` in a `services:` list is a configuration that will not
+// load, so somebody who pasted the proposal would find that out at the next
+// restart of a listener in front of a plant.
+func TestAnUnnameableServiceIsNotProposedByItsPrintedName(t *testing.T) {
+	up := startServer(t, &fakeServer{})
+	const rsaOaep = "http://www.w3.org/2001/04/xmlenc#rsa-oaep"
+	s, addr, file := learnRelay(t, base, up)
+
+	cl := dial(t, addr)
+	cl.handshake("opc.tcp://127.0.0.1:4840")
+	cl.channel(wire.PolicyBasic256Sha256, wire.ModeSign)
+	cl.service(wire.SvcCreateSession, createSessionBody("urn:plant:odd", "s", nil))
+	cl.service(wire.SvcActivateSession,
+		activateBody(wire.TokenUserName, "operator", "p", rsaOaep))
+	// Refused, because a service with no name has no policy -- and recorded, because
+	// a learning run wants to know a client is sending one.
+	if _, err := cl.serviceQuiet(wire.Service(31337), nil); err == nil {
+		t.Log("the relay answered rather than closing, which the response policy allows")
+	}
+	until(t, s, refused("service_unknown"), "the refusal")
+
+	out := report(t, s, cl, file)
+	if strings.Contains(out, "service(") {
+		t.Errorf("the report names a service by a name no configuration accepts:\n%s", out)
+	}
+	if !strings.Contains(out, "at least one service this build does not name") {
+		t.Errorf("the report does not say a service was left out:\n%s", out)
+	}
+}
+
+// A fault answers the whole request, so it belongs to every row the request made.
+// A Read across two node groups that the server refuses is two rows the server
+// refused; counting the fault against only the first would leave the second reading
+// as traffic the server accepted, and a rule would be proposed for it.
+func TestAFaultIsCountedAgainstEveryRowTheRequestMade(t *testing.T) {
+	up := startServer(t, &fakeServer{fault: wire.StatusBadNodeIDUnknown})
+	const rsaOaep = "http://www.w3.org/2001/04/xmlenc#rsa-oaep"
+	s, addr, file := learnRelay(t, base, up)
+
+	cl := dial(t, addr)
+	cl.handshake("opc.tcp://127.0.0.1:4840")
+	cl.channel(wire.PolicyBasic256Sha256, wire.ModeSign)
+	cl.service(wire.SvcCreateSession, createSessionBody("urn:plant:ghost", "s", nil))
+	cl.service(wire.SvcActivateSession,
+		activateBody(wire.TokenUserName, "operator", "p", rsaOaep))
+	// One request, two groups, and the server has neither.
+	cl.service(wire.SvcRead, readBody(
+		op("ns=4;s=Cell1/Pump/Speed", wire.AttrValue),
+		op("ns=4;s=Cell2/Pump/Speed", wire.AttrValue)))
+	up.await(t, 4, "the refused read")
+
+	out := report(t, s, cl, file)
+	for _, group := range []string{"Cell1/Pump", "Cell2/Pump"} {
+		rest, ok := cut(out, "node_group: "+group)
+		if !ok {
+			t.Fatalf("the report has no row for %s:\n%s", group, out)
+		}
+		if !strings.Contains(firstLines(rest, 6), "server_faults: 1") {
+			t.Errorf("the row for %s does not carry the fault:\n%s", group, out)
+		}
+	}
+	// And so no rule, because nothing this identity asked for happened.
+	if strings.Contains(out, "- name: ghost-operator") {
+		t.Errorf("a rule was proposed for an identity the server refused:\n%s", out)
+	}
+}
+
+// The in-flight table is bounded, and a bound whose entries are never released is
+// a bound reached once and never left: the sixty-fifth request would then be
+// unattributable for the rest of a session that a plant keeps open for months.
+func TestTheInFlightTableIsReleasedAsAnswersArrive(t *testing.T) {
+	up := startServer(t, &fakeServer{fault: wire.StatusBadUserAccessDenied})
+	const rsaOaep = "http://www.w3.org/2001/04/xmlenc#rsa-oaep"
+	s, addr, file := learnRelay(t, base, up)
+
+	cl := dial(t, addr)
+	cl.handshake("opc.tcp://127.0.0.1:4840")
+	cl.channel(wire.PolicyBasic256Sha256, wire.ModeSign)
+	cl.service(wire.SvcCreateSession, createSessionBody("urn:plant:poller", "s", nil))
+	cl.service(wire.SvcActivateSession,
+		activateBody(wire.TokenUserName, "operator", "p", rsaOaep))
+	// Comfortably past MaxPendingRequests, one at a time: each answer arrives
+	// before the next request goes out, so nothing is ever in flight but one.
+	const reads = MaxPendingRequests + 8
+	for range reads {
+		cl.service(wire.SvcRead, readBody(op("ns=4;s=Line9/Tank/Level", wire.AttrValue)))
+	}
+	up.await(t, 3+reads, "every read")
+
+	out := report(t, s, cl, file)
+	if want := fmt.Sprintf("server_faults: %d", reads); !strings.Contains(out, want) {
+		t.Errorf("the report is missing %q, so answers stopped being attributed:\n%s",
+			want, out)
+	}
+}
+
+// A numeric namespace with more identifiers than are remembered proposes the
+// namespace, not the first two dozen of an unknown number. The first two dozen
+// would read as a complete list and be adopted as one.
+func TestATruncatedNumericNamespaceProposesTheNamespace(t *testing.T) {
+	up := startServer(t, &fakeServer{})
+	const rsaOaep = "http://www.w3.org/2001/04/xmlenc#rsa-oaep"
+	s, addr, file := learnRelay(t, base, up)
+
+	cl := dial(t, addr)
+	cl.handshake("opc.tcp://127.0.0.1:4840")
+	cl.channel(wire.PolicyBasic256Sha256, wire.ModeSign)
+	cl.service(wire.SvcCreateSession, createSessionBody("urn:plant:hist2", "s", nil))
+	cl.service(wire.SvcActivateSession,
+		activateBody(wire.TokenUserName, "historian", "p", rsaOaep))
+	ops := make([][2]any, 0, maxLearnedNodes+6)
+	for i := range maxLearnedNodes + 6 {
+		ops = append(ops, op(n(3, uint32(2000+i)), wire.AttrValue))
+	}
+	cl.service(wire.SvcRead, readBody(ops...))
+	up.await(t, 4, "the read")
+
+	out := report(t, s, cl, file)
+	if !strings.Contains(out, `nodes: ["ns=3;i=*"]`) {
+		t.Errorf("the proposal does not fall back to the namespace:\n%s", out)
+	}
+	if !strings.Contains(out, "a group held more nodes than were recorded") {
+		t.Error("the report does not say the list was truncated")
+	}
+}
+
+// cut splits at the first occurrence of sep and says whether it was there.
+func cut(s, sep string) (string, bool) {
+	_, after, ok := strings.Cut(s, sep)
+	return after, ok
+}
+
+// firstLines is the first n lines of s, which is how a row's own fields are read
+// out of a report without parsing the YAML.
+func firstLines(s string, n int) string {
+	lines := strings.SplitN(s, "\n", n+1)
+	if len(lines) > n {
+		lines = lines[:n]
+	}
+	return strings.Join(lines, "\n")
+}
+
+// The handshake is recorded and never proposed, and the two have to be checked
+// apart: the observed rows are where "this identity's activation was refused" lives,
+// and the proposal is what somebody pastes. A proposal carrying create_session would
+// contradict the paragraph above it in the same file.
+func TestTheHandshakeIsObservedAndNeverProposed(t *testing.T) {
+	up := startServer(t, &fakeServer{})
+	const rsaOaep = "http://www.w3.org/2001/04/xmlenc#rsa-oaep"
+	s, addr, file := learnRelay(t, base, up)
+
+	cl := dial(t, addr)
+	cl.handshake("opc.tcp://127.0.0.1:4840")
+	cl.channel(wire.PolicyBasic256Sha256, wire.ModeSign)
+	cl.service(wire.SvcCreateSession, createSessionBody("urn:plant:hmi2", "s", nil))
+	cl.service(wire.SvcActivateSession,
+		activateBody(wire.TokenUserName, "operator", "p", rsaOaep))
+	cl.service(wire.SvcRead, readBody(op("ns=4;s=Line5/Mixer/Speed", wire.AttrValue)))
+	up.await(t, 4, "the session and the read")
+
+	out := report(t, s, cl, file)
+	// Observed: the session class is a row of its own, so a refused activation has
+	// somewhere to be counted.
+	if !strings.Contains(out, "services: session") {
+		t.Errorf("the handshake was not recorded at all:\n%s", out)
+	}
+	// Proposed: not there.
+	_, rules, ok := strings.Cut(out, "\nrules:\n")
+	if !ok {
+		t.Fatalf("the report proposes nothing:\n%s", out)
+	}
+	for _, never := range []string{
+		"create_session", "activate_session", "open_secure_channel",
+		"close_secure_channel", "close_session", "get_endpoints",
+	} {
+		if strings.Contains(rules, never) {
+			t.Errorf("the proposal names %q, which no rule matching an identity can decide", never)
+		}
+	}
+	// And the rule that is there is about what the client did with the session.
+	if !strings.Contains(rules, "services: [read]") {
+		t.Errorf("the proposal does not name the read:\n%s", rules)
 	}
 }

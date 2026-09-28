@@ -437,26 +437,19 @@ func (t *server) observeMonitoredItems(s Session, items int, samplingMS float64,
 // ObserveExisting rather than Observe: the request is what created the subject, and
 // a response may not invent one — a fault for a request this relay never saw is a
 // fault for a subject that does not exist.
-func (t *server) observeServerFault(s Session, svc wire.Service, known bool,
-	subjects []learnKey) {
-	if t.learner == nil || !known {
+// The subjects are the rows the request itself was recorded under: a Read of three
+// nodes under two prefixes made two rows, and a fault answering it belongs to both,
+// because the identity asked for nothing the server granted. A request that was
+// never recorded — the learner is off, or the in-flight bound dropped it — has
+// none, and the fault is then not counted rather than counted against a row it did
+// not come from.
+func (t *server) observeServerFault(subjects []learnKey) {
+	if t.learner == nil {
 		return
 	}
-	if len(subjects) > 0 {
-		// The rows the request itself was recorded under. A Read of three nodes
-		// under two prefixes made two rows, and a fault answering it belongs to
-		// both: the identity asked for nothing the server granted.
-		for _, k := range subjects {
-			t.learner.ObserveExisting(k, func(o *learnObs) { o.serverFaults++ })
-		}
-		return
+	for _, k := range subjects {
+		t.learner.ObserveExisting(k, func(o *learnObs) { o.serverFaults++ })
 	}
-	// A request whose subjects were not remembered — the bound was reached, or the
-	// request was never recorded. The identity and the class are what is left, and
-	// a row that exists for them is the right one to count against.
-	app, user := identityOf(s)
-	t.learner.ObserveExisting(learnKey{app: app, user: user, class: classOf(svc)},
-		func(o *learnObs) { o.serverFaults++ })
 }
 
 // addBounded adds to a set and says whether there was room.

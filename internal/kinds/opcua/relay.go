@@ -162,21 +162,33 @@ type conn struct {
 	// requests counts what the client has sent, and denied what was refused.
 	requests int
 	denied   int
-	// pending maps a request identifier to the service it carried, so a response
-	// can be attributed. A response names no service of its own beyond its own
-	// TypeId, and a ServiceFault names none at all.
-	pending map[uint32]wire.Service
+	// pending maps a request identifier to what its answer will need: the service
+	// it carried, because a response names no service of its own beyond its own
+	// TypeId and a ServiceFault names none at all, and the learning subjects it
+	// was recorded under, because a fault names no nodes either.
+	pending map[uint32]*inflight
 	// handles maps a request identifier to the client's own request handle, which
 	// is what a fault this relay composes has to echo for the client's library to
 	// match it to the call it made.
 	handles map[uint32]uint32
-	// subjects maps a request identifier to the learning subjects the request was
-	// recorded under, so a fault the server answers it with is counted against
-	// those same rows. A fault names no nodes of its own, so a fault attributed by
-	// identity and service alone would land on a row with no node in it and leave
-	// the rows the request made reading as traffic the server accepted -- which is
-	// how a learning run proposes a rule for something that cannot happen.
-	subjects map[uint32][]learnKey
+}
+
+// inflight is what one request identifier is remembered for until its answer
+// arrives.
+//
+// The subjects are here and not in a table of their own because they are wanted
+// for exactly as long as the service is, and dropped at exactly the same moment: a
+// fault counted against a subject nobody is still waiting for is a fault counted
+// twice. One table also means one bound, and the bound is the point -- a peer that
+// opens request identifiers it never finishes would otherwise fill it.
+type inflight struct {
+	svc wire.Service
+	// subjects are the learning rows the request was recorded under. A fault names
+	// no nodes of its own, so one attributed by identity and service alone would
+	// land on a row with no node in it and leave the rows the request made reading
+	// as traffic the server accepted -- which is how a learning run comes to
+	// propose a rule for something that cannot happen.
+	subjects []learnKey
 }
 
 // MaxPendingRequests bounds the table above. A client with more than this many
@@ -217,7 +229,7 @@ func (c *conn) remember(id uint32, svc wire.Service) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.pending == nil {
-		c.pending = make(map[uint32]wire.Service, 8)
+		c.pending = make(map[uint32]*inflight, 8)
 	}
 	if len(c.pending) >= MaxPendingRequests {
 		// Past the bound the association is dropped rather than the table grown:
@@ -225,43 +237,33 @@ func (c *conn) remember(id uint32, svc wire.Service) {
 		// which costs a log line its detail and costs the decision nothing.
 		return
 	}
-	c.pending[id] = svc
+	c.pending[id] = &inflight{svc: svc}
 }
 
-// took returns and forgets the service a request identifier carried.
-func (c *conn) took(id uint32) (wire.Service, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	svc, ok := c.pending[id]
-	delete(c.pending, id)
-	return svc, ok
-}
-
-// recordSubjects remembers which learning subjects a request was recorded under.
+// recordSubjects adds the learning subjects to a request already remembered. A
+// request the bound dropped gets none, which is the right answer rather than a
+// second bound: its answer cannot be attributed to a service either.
 func (c *conn) recordSubjects(id uint32, keys []learnKey) {
 	if len(keys) == 0 {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.subjects == nil {
-		c.subjects = make(map[uint32][]learnKey, 8)
+	if f := c.pending[id]; f != nil {
+		f.subjects = keys
 	}
-	if len(c.subjects) >= MaxPendingRequests {
-		// The same bound as the table above, and the same trade: what is lost is
-		// the ability to say which rows a fault belongs to, not a decision.
-		return
-	}
-	c.subjects[id] = keys
 }
 
-// tookSubjects returns and forgets them.
-func (c *conn) tookSubjects(id uint32) []learnKey {
+// took returns and forgets what a request identifier was remembered for.
+func (c *conn) took(id uint32) (wire.Service, []learnKey, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	keys := c.subjects[id]
-	delete(c.subjects, id)
-	return keys
+	f, ok := c.pending[id]
+	delete(c.pending, id)
+	if !ok {
+		return 0, nil, false
+	}
+	return f.svc, f.subjects, true
 }
 
 func (c *conn) writeClient(b []byte) error {
@@ -679,10 +681,19 @@ func (t *server) decideCreateSession(c *conn, m *wire.Assembled, call *wire.Serv
 		s.CertURIs = certificateURIs(q.Certificate)
 		s.Created = true
 	})
-	if d := t.policy.CreateSession(c.sess(), q); !d.Allow {
-		return t.refused(c, m, d, q.ApplicationURI)
+	sess := c.sess()
+	d := t.policy.CreateSession(sess, q)
+	if d.Allow {
+		d = t.policy.CertificateURI(sess)
 	}
-	if d := t.policy.CertificateURI(c.sess()); !d.Allow {
+	// Recorded after the application URI is on the session, so the row is the
+	// application's rather than an anonymous one. The session services are worth
+	// recording for their own sake: an identity whose CreateSession or
+	// ActivateSession the *server* refuses produces no other row at all, and a
+	// learning report that could not say "the server does not grant this user" has
+	// missed the finding an estate most often has.
+	t.observeRequest(c, sess, m.RequestID, call.Service, nil, d.Allow, false, time.Now())
+	if !d.Allow {
 		return t.refused(c, m, d, q.ApplicationURI)
 	}
 	if t.oc.LogRequests {
@@ -700,7 +711,10 @@ func (t *server) decideActivate(c *conn, m *wire.Assembled, call *wire.ServiceCa
 	c.update(func(s *Session) {
 		s.User, s.TokenKind, s.Activated = a.User, a.Kind, true
 	})
-	if d := t.policy.ActivateSession(c.sess(), a); !d.Allow {
+	sess := c.sess()
+	d := t.policy.ActivateSession(sess, a)
+	t.observeRequest(c, sess, m.RequestID, call.Service, nil, d.Allow, false, time.Now())
+	if !d.Allow {
 		return t.refused(c, m, d, a.Kind.String())
 	}
 	t.host.Counters().OPCUASessions.Add(1)
@@ -924,14 +938,14 @@ func (t *server) readServer(c *conn, ch *wire.Chunk) {
 	if err != nil {
 		return
 	}
-	svc, known := c.took(m.RequestID)
+	svc, subjects, known := c.took(m.RequestID)
 	c.forgetHandle(m.RequestID)
 	if call.Service == wire.SvcFault || wire.Bad(call.Response.ServiceResult) {
 		t.serverRefused(c, call, svc, known)
 		// The learning run wants this most of all: it is the server refusing
 		// something this relay allowed, and a rule proposed for it would permit a
 		// thing that cannot happen.
-		t.observeServerFault(c.sess(), svc, known, c.tookSubjects(m.RequestID))
+		t.observeServerFault(subjects)
 	}
 }
 
