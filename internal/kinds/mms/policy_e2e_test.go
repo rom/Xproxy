@@ -292,36 +292,8 @@ func TestARuleNarrowsWhatOneIdentityMayDo(t *testing.T) {
 	until(t, s, refused("no_rule"), "the refusal")
 }
 
-// A rule whose schedule is not in force does not select, so the traffic falls through
-// to the default.
-func TestARuleOutsideItsWindowDoesNotSelect(t *testing.T) {
-	ied := startIED(t, &fakeIED{})
-	s, addr := relayFor(t, baseDefault+
-		"        default_action: deny\n"+
-		"        allow_domain_services: true\n"+
-		"        rules:\n"+
-		"          - name: outage-window\n"+
-		"            action: allow\n"+
-		"            services: [initiate_download_sequence]\n"+
-		"            schedule:\n"+
-		"              days: [sun]\n"+
-		"              from: \"02:00\"\n"+
-		"              to: \"02:01\"\n"+
-		"              timezone: UTC\n", ied.addr())
-	cl := session(t, addr)
-
-	// Outside a one-minute window on a Sunday morning, which this test is almost
-	// certainly not inside.
-	answer := cl.service(serviceBody(1, wire.SvcInitiateDownloadSequence, "AA1J1Q01A1LD0"))
-	if !isError(t, answer) {
-		t.Log("the window happened to be in force, which is the schedule working")
-		return
-	}
-	until(t, s, refused("no_rule"), "the refusal")
-	if ied.sawService(wire.SvcInitiateDownloadSequence) {
-		t.Errorf("the IED saw the download outside the window: %v", ied.seen())
-	}
-}
+// The schedule's own test is in select_e2e_test.go, where the window is computed from
+// the clock rather than hoped for.
 
 // The file services, whose paths are how configuration and disturbance records move.
 func TestAFileOutsideTheListIsRefused(t *testing.T) {
@@ -479,20 +451,8 @@ func TestTheDenyResponseIsConfigurable(t *testing.T) {
 	until(t, s, refused("write_constraint_not_allowed"), "the refusal")
 }
 
-// An observe rule logs and counts and keeps looking, which is how a rule is tried on
-// live traffic before it decides anything.
-func TestAnObserveRuleDecidesNothing(t *testing.T) {
-	ied := startIED(t, &fakeIED{})
-	_, addr := relayFor(t, base+
-		"        rules:\n"+
-		"          - name: watch-control\n"+
-		"            action: observe\n"+
-		"            functional_constraints: [CO]\n", ied.addr())
-	cl := session(t, addr)
-
-	cl.service(readBody(1, objectName("AA1J1Q01A1LD0", "XCBR1$CO$Pos$stVal")))
-	ied.await(t, 1, "the observed read")
-}
+// The observe rule's own test is in select_e2e_test.go, where the request is outside
+// the rule's object list so that a rule which decided would change the outcome.
 
 // A name that is not in the IEC 61850 form -- an IED's own well-known variable -- is
 // not forced into a constraint, and a rule about constraints does not decide about it.

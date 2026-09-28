@@ -3,6 +3,7 @@ package mms
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -175,15 +176,26 @@ func TestAConnectionRequestsSelectorsAreRead(t *testing.T) {
 }
 
 // A selector longer than X.224 allows is a length field being used as a length
-// field, and it is refused.
+// field, and it is refused. Both ends of the connection request, because a guard on
+// one of them is a guard on half the traffic.
 func TestASelectorLongerThanTheBoundIsRefused(t *testing.T) {
-	long := make([]byte, MaxSelector+1)
-	params := append([]byte{paramCalled, byte(len(long))}, long...)
-	body := append([]byte{0, 0, 0, 1, 0x00}, params...)
-	frame := append([]byte{byte(len(body) + 1), CR}, body...)
-	_, err := ParseCOTP(frame)
-	if !errors.Is(err, ErrSize) {
-		t.Fatalf("the error is %v, want %v", err, ErrSize)
+	for _, tc := range []struct {
+		name string
+		code uint8
+	}{
+		{"called", paramCalled},
+		{"calling", paramCalling},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			long := make([]byte, MaxSelector+1)
+			params := append([]byte{tc.code, byte(len(long))}, long...)
+			body := append([]byte{0, 0, 0, 1, 0x00}, params...)
+			frame := append([]byte{byte(len(body) + 1), CR}, body...)
+			_, err := ParseCOTP(frame)
+			if !errors.Is(err, ErrSize) {
+				t.Fatalf("the error is %v, want %v", err, ErrSize)
+			}
+		})
 	}
 }
 
@@ -354,9 +366,14 @@ func TestAClearTextPasswordIsSeenAndNotKept(t *testing.T) {
 	if a.AuthLength != len(secret) {
 		t.Errorf("the length is %d, want %d", a.AuthLength, len(secret))
 	}
-	// And nowhere in the parsed association is the secret itself.
-	if strings.Contains(sprintAll(a), secret) {
+	// And nowhere in the parsed association is the secret itself. This reads every
+	// field rather than the ones this test knew about, so that a field added later
+	// that happened to hold the value would fail here.
+	if strings.Contains(fmt.Sprintf("%#v", *a), secret) {
 		t.Error("the password survived into the parsed association")
+	}
+	if strings.Contains(fmt.Sprintf("%#v", *a), "substation") {
+		t.Error("part of the password survived into the parsed association")
 	}
 }
 
@@ -381,6 +398,59 @@ func TestAnAssociateResponseSaysWhetherItAccepted(t *testing.T) {
 				t.Errorf("Accepted is %v, want %v", a.Accepted(), tc.want)
 			}
 		})
+	}
+}
+
+// An invoke identifier past the Unsigned32 the standard types it as is refused
+// rather than truncated. The low bits name a *different* request, and a relay that
+// matches answers to requests by the identifier would attribute an answer to the
+// wrong call -- which on this protocol decides whether a selection is recorded.
+func TestAnInvokeIdentifierPastUnsignedThirtyTwoIsRefused(t *testing.T) {
+	body := ctx(uint32(ConfirmedRequest),
+		univ(TagInteger, []byte{0x01, 0x00, 0x00, 0x00, 0x00}), // 2^32
+		ctx(uint32(SvcRead), ctx(1, ctx(0, seq(ctx(0, vmdName("X")))))))
+	if _, err := ParsePDU(body); !errors.Is(err, ErrSize) {
+		t.Fatalf("the error is %v, want %v", err, ErrSize)
+	}
+	// And the largest one the standard allows is read.
+	body = ctx(uint32(ConfirmedRequest),
+		univ(TagInteger, []byte{0x00, 0xFF, 0xFF, 0xFF, 0xFF}),
+		ctx(uint32(SvcRead), ctx(1, ctx(0, seq(ctx(0, vmdName("X")))))))
+	m, err := ParsePDU(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.InvokeID != MaxInvokeID {
+		t.Errorf("the identifier is %d, want %d", m.InvokeID, MaxInvokeID)
+	}
+}
+
+// A file service's body carries a position as well as a name, and only the string
+// elements are path components. Reading the octets of an INTEGER as a path would
+// produce a path no rule was written about, which the caller then decides about as
+// though it were real.
+func TestAFilePathTakesOnlyItsStringComponents(t *testing.T) {
+	// A file read: a frame identifier (an integer) and a length, and no name at
+	// all. Nothing here is a path.
+	body := ctx(uint32(ConfirmedRequest), integer(1),
+		ctx(uint32(SvcFileRead), integer(4097)))
+	m, err := ParsePDU(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.FileName != "" {
+		t.Errorf("the file name is %q, read out of an integer", m.FileName)
+	}
+	// And a file open whose sequence of components is empty names nothing either,
+	// however many integers follow it.
+	body = ctx(uint32(ConfirmedRequest), integer(2),
+		ctx(uint32(SvcFileOpen), seq(), integer(0)))
+	m, err = ParsePDU(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.FileName != "" {
+		t.Errorf("the file name is %q, read out of an empty sequence", m.FileName)
 	}
 }
 
@@ -680,8 +750,9 @@ func TestAnUnnamedServiceSaysWhichNumberItWas(t *testing.T) {
 	}
 }
 
-// sprintAll renders every field of an association, for the test that asserts a
-// secret is not among them.
+// sprintAll renders the association's own fields, for the fuzz target's invariant.
+// The unit test above uses %#v instead, which covers fields this helper does not know
+// about.
 func sprintAll(a *Associate) string {
 	var b strings.Builder
 	b.WriteString(a.Context.String())
