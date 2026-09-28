@@ -108,7 +108,7 @@ diagnostic, and an inventory of every lease in the estate to anything else.
 |---------|----------------|
 | `allow_resolvers` | Which addresses may be handed out as the resolvers — the check that catches a compromised real server as well as a rogue one. The resolvers are not on the built-in deny list, for the same reason option 6 is not on the DHCPv4 one: this list is the better check, and handing out resolvers is what stateless DHCPv6 exists for |
 | `allow_domains` | Which search domains |
-| `allow_boot_urls` | Which boot file URL, which is what code runs on the next boot |
+| `allow_boot_urls` | Which boot file URL, which is what code runs on the next boot. The patterns take square brackets literally, because a bracket in a URL is an IPv6 literal host and reading `tftp://[2001:db8::20]/*` as a character class would match nothing while looking like a policy |
 | `deny_options`, `allow_options`, `on_denied_option` | Everything else, including the captive portal, the SZTP bootstrap server, the S46 containers and the Server Unicast option. The default is to **strip** and forward, so a client still gets its address and no longer gets what the policy excluded |
 | `min_lease_time`, `max_lease_time` | The valid lifetime, on an address or a delegated prefix |
 | `allow_reconfigure` | Whether a RECONFIGURE reaches a client at all. Off by default |

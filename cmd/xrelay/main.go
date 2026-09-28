@@ -23,6 +23,7 @@ import (
 	"github.com/rom/xproxy/internal/daemon"
 	_ "github.com/rom/xproxy/internal/kinds/amqp"     // listener kind: amqp
 	_ "github.com/rom/xproxy/internal/kinds/bacnet"   // listener kind: bacnet
+	_ "github.com/rom/xproxy/internal/kinds/coap"     // listener kind: coap
 	_ "github.com/rom/xproxy/internal/kinds/dhcp"     // listener kind: dhcp
 	_ "github.com/rom/xproxy/internal/kinds/dhcp6"    // listener kind: dhcp6
 	_ "github.com/rom/xproxy/internal/kinds/ftp"      // listener kind: ftp

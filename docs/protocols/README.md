@@ -50,6 +50,7 @@ policy written in each protocol's own terms.
 |----------|------|------------|
 | SMTP and submission | [smtp](smtp.md) | 25, 587, 465 |
 | MQTT 3.1.1 and 5.0 | [mqtt](mqtt.md) | 1883, 8883 |
+| CoAP, and CoAP over DTLS | [coap](coap.md) | 5683, 5684 |
 | AMQP 0-9-1 and AMQP 1.0 | [amqp](amqp.md) | 5672, 5671 |
 | FTP and FTPS | [ftp](ftp.md) | 21, 990 |
 | TFTP | [tftp](tftp.md) | 69 |

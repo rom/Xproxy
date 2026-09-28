@@ -769,16 +769,57 @@ func contains(ns []netip.Prefix, ip netip.Addr) bool {
 	return false
 }
 
+// matchAny matches a value against shell patterns.
+//
+// Square brackets are literal here rather than opening a character class, which
+// is a deliberate departure from path.Match. Every pattern on this kind is
+// matched against a domain name, a URL or a class string, and the one place a
+// bracket turns up in any of those is around an IPv6 literal host:
+// "tftp://[2001:db8::20]/*" is exactly what an operator writes for a boot
+// server. Read as a character class that pattern matches nothing whatsoever,
+// and it would fail silently -- an estate would write the list, see the
+// validator stop warning, and have allowed no image at all -- on the option
+// with the largest consequence in the protocol, which is the file a machine
+// boots. Nothing matched here has any use for a character class.
+//
+// What is kept from path.Match is that * does not cross a /, which is worth
+// having: it means a pattern cannot be walked out of with ../ .
 func matchAny(pats []string, s string) bool {
 	for _, pat := range pats {
-		if ok, err := path.Match(pat, s); err == nil && ok {
+		if pat == s {
 			return true
 		}
-		if pat == s {
+		if ok, err := path.Match(literalBrackets(pat), s); err == nil && ok {
 			return true
 		}
 	}
 	return false
+}
+
+// literalBrackets escapes the bracket characters so path.Match reads them as
+// themselves. A pattern that escapes something already is left as it wrote it.
+func literalBrackets(pat string) string {
+	if !strings.ContainsAny(pat, "[]") {
+		return pat
+	}
+	var b strings.Builder
+	b.Grow(len(pat) + 8)
+	for i := 0; i < len(pat); i++ {
+		switch c := pat[i]; c {
+		case '\\':
+			b.WriteByte(c)
+			if i+1 < len(pat) {
+				i++
+				b.WriteByte(pat[i])
+			}
+		case '[', ']':
+			b.WriteByte('\\')
+			b.WriteByte(c)
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
 }
 
 // vendorClass is the vendor class option's text, past the four octets of

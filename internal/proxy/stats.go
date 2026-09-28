@@ -424,6 +424,38 @@ type Stats struct {
 	DHCP6Unsolicited     atomic.Uint64
 	DHCP6Pending         atomic.Int64
 	DHCP6Clients         atomic.Int64
+
+	// The CoAP relay's counters. The two worth reading first are
+	// CoAPRogueDevice, an answer refused because it came from an address
+	// that is not a device, and CoAPAmplified, an answer refused for
+	// being too large a multiple of the question -- which is the number
+	// that says this listener is doing something a per-datagram bound
+	// could not. CoAPRefusalsAnswered counts the refusals sent back as a
+	// response code rather than dropped, which is what keeps a refused
+	// Confirmable request from being retransmitted four more times.
+	CoAPMessages         atomic.Uint64
+	CoAPRequests         atomic.Uint64
+	CoAPResponses        atomic.Uint64
+	CoAPEmpty            atomic.Uint64
+	CoAPRelayed          atomic.Uint64
+	CoAPAnswered         atomic.Uint64
+	CoAPNotifications    atomic.Uint64
+	CoAPDenied           atomic.Uint64
+	CoAPWouldDeny        atomic.Uint64
+	CoAPRefusalsAnswered atomic.Uint64
+	CoAPRogueDevice      atomic.Uint64
+	CoAPAmplified        atomic.Uint64
+	CoAPProxyRefused     atomic.Uint64
+	CoAPRefusedObserve   atomic.Uint64
+	CoAPOversize         atomic.Uint64
+	CoAPMalformed        atomic.Uint64
+	CoAPRejected         atomic.Uint64
+	CoAPRateLimited      atomic.Uint64
+	CoAPUpstreamFail     atomic.Uint64
+	CoAPSendFailed       atomic.Uint64
+	CoAPUnsolicited      atomic.Uint64
+	CoAPPending          atomic.Int64
+	CoAPObservers        atomic.Int64
 	// The device inventory.
 	//
 	// AssetFindings is the one to alert on: an identity change, or a device
@@ -970,6 +1002,29 @@ type Snapshot struct {
 	DHCP6Unsolicited      uint64 `json:"dhcp6_unsolicited"`
 	DHCP6Pending          int64  `json:"dhcp6_pending"`
 	DHCP6Clients          int64  `json:"dhcp6_clients"`
+	CoAPMessages          uint64 `json:"coap_messages"`
+	CoAPRequests          uint64 `json:"coap_requests"`
+	CoAPResponses         uint64 `json:"coap_responses"`
+	CoAPEmpty             uint64 `json:"coap_empty"`
+	CoAPRelayed           uint64 `json:"coap_relayed"`
+	CoAPAnswered          uint64 `json:"coap_answered"`
+	CoAPNotifications     uint64 `json:"coap_notifications"`
+	CoAPDenied            uint64 `json:"coap_denied"`
+	CoAPWouldDeny         uint64 `json:"coap_would_deny"`
+	CoAPRefusalsAnswered  uint64 `json:"coap_refusals_answered"`
+	CoAPRogueDevice       uint64 `json:"coap_rogue_device"`
+	CoAPAmplified         uint64 `json:"coap_amplified"`
+	CoAPProxyRefused      uint64 `json:"coap_proxy_refused"`
+	CoAPRefusedObserve    uint64 `json:"coap_refused_observe"`
+	CoAPOversize          uint64 `json:"coap_oversize"`
+	CoAPMalformed         uint64 `json:"coap_malformed"`
+	CoAPRejected          uint64 `json:"coap_rejected"`
+	CoAPRateLimited       uint64 `json:"coap_rate_limited"`
+	CoAPUpstreamFail      uint64 `json:"coap_upstream_failed"`
+	CoAPSendFailed        uint64 `json:"coap_send_failed"`
+	CoAPUnsolicited       uint64 `json:"coap_unsolicited"`
+	CoAPPending           int64  `json:"coap_pending"`
+	CoAPObservers         int64  `json:"coap_observers"`
 	AssetObservations     uint64 `json:"asset_observations"`
 	AssetFindings         uint64 `json:"asset_findings"`
 	AssetUnexpected       uint64 `json:"asset_unexpected_role"`
@@ -1454,6 +1509,29 @@ func (s *Stats) snapshot() Snapshot {
 		DHCP6Unsolicited:        s.DHCP6Unsolicited.Load(),
 		DHCP6Pending:            s.DHCP6Pending.Load(),
 		DHCP6Clients:            s.DHCP6Clients.Load(),
+		CoAPMessages:            s.CoAPMessages.Load(),
+		CoAPRequests:            s.CoAPRequests.Load(),
+		CoAPResponses:           s.CoAPResponses.Load(),
+		CoAPEmpty:               s.CoAPEmpty.Load(),
+		CoAPRelayed:             s.CoAPRelayed.Load(),
+		CoAPAnswered:            s.CoAPAnswered.Load(),
+		CoAPNotifications:       s.CoAPNotifications.Load(),
+		CoAPDenied:              s.CoAPDenied.Load(),
+		CoAPWouldDeny:           s.CoAPWouldDeny.Load(),
+		CoAPRefusalsAnswered:    s.CoAPRefusalsAnswered.Load(),
+		CoAPRogueDevice:         s.CoAPRogueDevice.Load(),
+		CoAPAmplified:           s.CoAPAmplified.Load(),
+		CoAPProxyRefused:        s.CoAPProxyRefused.Load(),
+		CoAPRefusedObserve:      s.CoAPRefusedObserve.Load(),
+		CoAPOversize:            s.CoAPOversize.Load(),
+		CoAPMalformed:           s.CoAPMalformed.Load(),
+		CoAPRejected:            s.CoAPRejected.Load(),
+		CoAPRateLimited:         s.CoAPRateLimited.Load(),
+		CoAPUpstreamFail:        s.CoAPUpstreamFail.Load(),
+		CoAPSendFailed:          s.CoAPSendFailed.Load(),
+		CoAPUnsolicited:         s.CoAPUnsolicited.Load(),
+		CoAPPending:             s.CoAPPending.Load(),
+		CoAPObservers:           s.CoAPObservers.Load(),
 		DHCPClients:             s.DHCPClients.Load(),
 		AssetObservations:       s.AssetObservations.Load(),
 		AssetFindings:           s.AssetFindings.Load(),

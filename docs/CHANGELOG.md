@@ -6,6 +6,75 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (coap: a relay whose policy is a path)
+
+- **`kind: coap` is a CoAP relay agent (RFC 7252) on UDP 5683** that reads what it
+  relays: the method, the path and the content format of every request, and the
+  size and content format of every answer.
+
+- **This is the one OT-adjacent kind where a positive model is a sentence somebody
+  can actually write.** CoAP is REST for devices too small to run TLS comfortably,
+  and the request carries a method, a path and a content format — so it says what is
+  about to happen in fields a relay can read. Under the LwM2M object registry the
+  path *is* the object model: `/3303/0/5700` is a temperature reading and
+  `/3311/0/5850` is whether a light is on. "Read anything under `/3303`, write only
+  `/3311/0/5850`" is a policy about real equipment, which is why `default_action`
+  is **deny** here and `allow` on the DHCP kinds.
+
+- **`Proxy-Uri` and `Proxy-Scheme` are refused by default, and both.** They are two
+  spellings of the same request — fetch this URI for me — so a relay that refused
+  only the first would have refused nothing. What they turn the device at the far
+  end into is an open forward proxy on a network that was segmented for a reason,
+  with an amplification stage attached.
+
+- **A refusal is answered rather than dropped.** A Confirmable request is
+  retransmitted until something answers it, so silence turns one refused request
+  into four or five and leaves the device's own log showing a timeout where a
+  refusal happened. The standard supplies the codes, and `answer_refusals: false`
+  warns.
+
+- **An option this relay cannot name is refused the way the standard says.** An
+  option number's own low bits carry its class (RFC 7252 §5.4.6): odd is Critical,
+  bit one is UnSafe to forward. §5.4.1 answers an unrecognised Critical option with
+  4.02 Bad Option and §5.7.1 an unrecognised UnSafe one with 5.02 Bad Gateway. That
+  is rare in a protocol and a gift to a relay, because "I do not understand this"
+  gets a defined answer instead of a judgement call — and the rule holds for options
+  nobody has registered yet.
+
+- **A path whose segments would not mean what the joined path looks like is refused,
+  not normalised.** On the wire a `Uri-Path` segment is an arbitrary string of
+  octets, so one segment may contain a slash and then render as two — and a rule
+  about `/3303` is satisfied by a request that reaches `/3311`. Normalising would
+  mean guessing what the device would have done with the original.
+
+- **The amplification bounds are never shadowed.** A four-octet `GET` over UDP can
+  return a kilobyte, and `/.well-known/core` (RFC 6690) exists to return a list of
+  every other resource on the device. `amplification_factor` bounds the answer as a
+  *multiple of the question*, which is the check a per-datagram bound cannot make,
+  and `max_transfer_bytes` bounds a whole block-wise transfer read from the client's
+  own `Size1` declaration — so the intent is refused at the first block rather than
+  the sixty-four thousandth. A listener whose policy was being trialled would
+  otherwise be a working amplifier with logging.
+
+- **Observe is carried and bounded.** A registration (RFC 7641) is how telemetry
+  works here and is the only request whose answer has no end, so `max_observers`
+  answers "how many open-ended flows may exist" instead of leaving it to whoever
+  asked for the most.
+
+- **In NoSec there is no identity at all.** Most of the field runs CoAP with no
+  DTLS, so a rule can name only the source address, and a listener with no `tls`
+  section warns rather than letting a deployment find that out.
+
+- `internal/coap` is the wire package: the message layer, the option layer,
+  block-wise transfer, Observe, the content format registry and the encoder the
+  relay answers with. Fuzzed on the invariant that a message which parses writes
+  back to the octets it was read from, which is what says nothing was read past the
+  end of what a peer sent.
+
+- See [`docs/protocols/coap.md`](protocols/coap.md),
+  [`server.listeners[].coap`](CONFIG.md#serverlistenerscoap-kind-coap) and
+  [`examples/ot/coap.yaml`](../examples/ot/coap.yaml).
+
 ### Added (dhcp6: the other half of a dual-stack estate's provisioning path)
 
 - **`kind: dhcp6` is a DHCPv6 relay agent (RFC 8415) on UDP 547 that reads what

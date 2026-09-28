@@ -904,6 +904,18 @@ func (v *validator) server(s *Server) {
 			} else {
 				v.dhcp6Listener(p+".dhcp6", ln.DHCP6, ln.Address)
 			}
+		case "coap":
+			// A tls section is allowed and means DTLS: RFC 7252 s9 puts
+			// CoAP inside DTLS on 5684, and a listener without one is
+			// NoSec, which is what most of the field runs.
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
+				v.errf("%s: a coap listener takes only address, coap and tls", p)
+			}
+			if ln.CoAP == nil {
+				v.errf("%s.coap: required for kind coap", p)
+			} else {
+				v.coapListener(p+".coap", ln.CoAP, ln.Address, ln.TLS != nil)
+			}
 		case "bacnet":
 			// No tls section: Annex J is BACnet over UDP and the protocol
 			// has no transport security anywhere, so a listener carrying a
@@ -2637,7 +2649,7 @@ var denyReasons = map[string]bool{
 	// trigger until they were written here.
 	"dns_denied": true, "dns_threat_intel": true,
 	"modbus_denied": true, "iec104_denied": true, "ntp_denied": true, "ntske_denied": true,
-	"snmp_denied": true, "ldap_denied": true, "tftp_denied": true, "dhcp_denied": true, "dhcp6_denied": true, "postgres_denied": true, "mysql_denied": true, "tds_denied": true, "redis_denied": true,
+	"snmp_denied": true, "ldap_denied": true, "tftp_denied": true, "dhcp_denied": true, "dhcp6_denied": true, "coap_denied": true, "postgres_denied": true, "mysql_denied": true, "tds_denied": true, "redis_denied": true,
 	"bacnet_denied": true, "amqp_denied": true, "s7_denied": true,
 }
 
@@ -7891,6 +7903,233 @@ func (v *validator) ldapDNs(p string, in []string) {
 			v.errf("%s[%d]: %v", p, i, err)
 		}
 	}
+}
+
+// coapListener checks the CoAP relay.
+func (v *validator) coapListener(p string, m *CoAPListener, address string, dtls bool) {
+	switch m.Mode {
+	case "", "reverse", "forward":
+	default:
+		v.errf("%s.mode: must be reverse or forward", p)
+	}
+	if m.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	v.modbusCIDRs(p+".allow_clients", m.AllowClients)
+	v.modbusCIDRs(p+".deny_clients", m.DenyClients)
+	v.modbusCIDRs(p+".allow_servers", m.AllowServers)
+	for i, s := range m.MessageTypes {
+		if _, ok := coapTypeNames[s]; !ok {
+			v.errf("%s.message_types[%d]: %q is not a CoAP message type", p, i, s)
+		}
+	}
+	for i, s := range m.Methods {
+		if !coapMethod(s) {
+			v.errf("%s.methods[%d]: %q is not a CoAP method", p, i, s)
+		}
+	}
+	v.coapPatterns(p+".allow_paths", m.AllowPaths)
+	v.coapPatterns(p+".deny_paths", m.DenyPaths)
+	v.coapFormats(p+".content_formats", m.ContentFormats)
+	switch {
+	case m.MaxPayloadBytes < 0:
+		v.errf("%s.max_payload_bytes: must not be negative", p)
+	case m.MaxPayloadBytes > 65535:
+		v.errf("%s.max_payload_bytes: %d is past a datagram", p, m.MaxPayloadBytes)
+	}
+	if m.MaxBlockBytes != 0 && !coapBlockSize(m.MaxBlockBytes) {
+		v.errf("%s.max_block_bytes: must be a power of two from 16 to 1024 (RFC 7959 s2.2)",
+			p)
+	}
+	if m.MaxTransferBytes < 0 {
+		v.errf("%s.max_transfer_bytes: must not be negative", p)
+	}
+	if m.MaxMessageBytes != 0 && (m.MaxMessageBytes < 16 || m.MaxMessageBytes > 8192) {
+		v.errf("%s.max_message_bytes: must be between 16 and 8192", p)
+	}
+	if m.MaxResponseBytes < 0 {
+		v.errf("%s.max_response_bytes: must not be negative", p)
+	}
+	if m.AmplificationFactor < 0 {
+		v.errf("%s.amplification_factor: must not be negative", p)
+	}
+	switch m.DefaultAction {
+	case "", "deny", "allow":
+	default:
+		v.errf("%s.default_action: must be allow or deny", p)
+	}
+	if d := m.RequestTimeout.D(); d != 0 && (d < time.Second || d > time.Minute) {
+		v.errf("%s.request_timeout: must be between 1s and 1m", p)
+	}
+	v.coapBounds(p, m)
+	v.coapRules(p, m)
+	v.coapWarnings(p, m, address, dtls)
+}
+
+// coapBounds checks the table sizes and the rate.
+func (v *validator) coapBounds(p string, m *CoAPListener) {
+	if m.MaxPending < 0 {
+		v.errf("%s.max_pending: must not be negative", p)
+	}
+	if m.MaxClients < 0 {
+		v.errf("%s.max_clients: must not be negative", p)
+	}
+	if m.MaxObservers < 0 {
+		v.errf("%s.max_observers: must not be negative", p)
+	}
+	if m.RateLimit < 0 || m.RateBurst < 0 {
+		v.errf("%s.rate_limit: must not be negative", p)
+	}
+	if m.RateBurst > 0 && m.RateLimit == 0 {
+		v.errf("%s.rate_burst: set without rate_limit, so nothing is limited", p)
+	}
+}
+
+func (v *validator) coapRules(p string, m *CoAPListener) {
+	seen := map[string]bool{}
+	for i := range m.Rules {
+		r := &m.Rules[i]
+		q := fmt.Sprintf("%s.rules[%d]", p, i)
+		if r.Name == "" {
+			v.errf("%s.name: required", q)
+		}
+		if seen[r.Name] {
+			v.errf("%s.name: %q is used twice, so the logs cannot tell them apart", q, r.Name)
+		}
+		seen[r.Name] = true
+		switch r.Action {
+		case "", "allow", "deny", "observe":
+		default:
+			v.errf("%s.action: must be allow, deny or observe", q)
+		}
+		v.modbusCIDRs(q+".clients", r.Clients)
+		for j, s := range r.Methods {
+			if !coapMethod(s) {
+				v.errf("%s.methods[%d]: %q is not a CoAP method", q, j, s)
+			}
+		}
+		v.coapPatterns(q+".paths", r.Paths)
+		v.coapFormats(q+".content_formats", r.ContentFormats)
+		if r.MaxPayloadBytes < 0 {
+			v.errf("%s.max_payload_bytes: must not be negative", q)
+		}
+		if r.Schedule != nil {
+			v.modbusSchedule(q+".schedule", r.Schedule)
+		}
+	}
+}
+
+// coapWarnings are the configurations that load and are probably not what the
+// operator meant.
+func (v *validator) coapWarnings(p string, m *CoAPListener, address string, dtls bool) {
+	if !dtls {
+		v.warnf("%s: no tls section, so this listener is CoAP NoSec: there is no identity of any kind, and a rule can name only the source address. RFC 7252 s9 puts CoAP inside DTLS on 5684, and most of the field does not -- which is why this warns rather than refuses", p)
+	}
+	if _, port, err := net.SplitHostPort(address); err == nil &&
+		port != "5683" && port != "5684" && port != "0" {
+		v.warnf("%s: port %s, where a CoAP client sends to 5683 in the clear and 5684 inside DTLS", p, port)
+	}
+	if m.DefaultAction != "allow" && len(m.Rules) == 0 {
+		v.warnf("%s: default_action is deny and no rules are written, so this listener refuses every request. The paths are the device's object model, so a rule naming them is how an estate says what may be done", p)
+	}
+	if m.AllowProxying {
+		v.warnf("%s.allow_proxying: true, so a client may send Proxy-Uri or Proxy-Scheme and have the device fetch a URI of the client's choosing. On a constrained network that is an open forward proxy, an amplification stage and a way to reach what the segment was built to protect", p)
+	}
+	if m.AmplificationFactor == 0 && m.MaxResponseBytes == 0 {
+		v.warnf("%s: neither amplification_factor nor max_response_bytes is set, so a four-octet request may return whatever a device will send -- which is what makes CoAP over UDP a reflection amplifier", p)
+	}
+	if coapOn(m.AllowObserve) && m.MaxObservers == 0 {
+		// Not a warning worth making: the default bound applies. Left as a note
+		// so the next reader does not add one.
+		_ = m
+	}
+	if !coapOn(m.RefuseUnknownOptions) {
+		v.warnf("%s.refuse_unknown_options: false, so an option this relay cannot name is forwarded. RFC 7252 s5.7.1 says a proxy must not forward an UnSafe option it does not recognise, because forwarding an option whose meaning is unknown is forwarding a request whose meaning is unknown", p)
+	}
+	if !coapOn(m.RefuseSuspiciousPaths) {
+		v.warnf("%s.refuse_suspicious_paths: false, so a path segment containing a separator is carried -- and then one segment renders as two, which is how a rule about /sensors/* is satisfied by a request to /config", p)
+	}
+	if !coapOn(m.AnswerRefusals) {
+		v.warnf("%s.answer_refusals: false, so a refused request is dropped. A Confirmable request is retransmitted until something answers, so each refusal becomes four or five more requests and the device's own logs show a timeout rather than a refusal", p)
+	}
+	if coapOn(m.AllowDiscovery) && len(m.AllowPaths) == 0 && len(m.Rules) == 0 {
+		v.warnf("%s: /.well-known/core is carried and no path policy is written, so a client may ask any device for a list of every resource it has -- the largest answer on the device for the smallest question (RFC 6690)", p)
+	}
+}
+
+func (v *validator) coapPatterns(p string, pats []string) {
+	for i, s := range pats {
+		if s == "" {
+			v.errf("%s[%d]: empty", p, i)
+			continue
+		}
+		if !strings.HasPrefix(s, "/") {
+			v.errf("%s[%d]: %q must start with a slash: a CoAP path policy is matched against the whole path", p, i, s)
+		}
+		if _, err := path.Match(strings.TrimSuffix(s, "/..."), "/x"); err != nil {
+			v.errf("%s[%d]: %q is not a valid pattern: %v", p, i, s, err)
+		}
+	}
+}
+
+func (v *validator) coapFormats(p string, in []string) {
+	for i, s := range in {
+		if _, ok := coapFormatNames[s]; ok {
+			continue
+		}
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 0 || n > 65535 {
+			v.errf("%s[%d]: %q is not a media type this relay names or a number from 0 to 65535", p, i, s)
+		}
+	}
+}
+
+// The names the CoAP validator accepts, kept here rather than imported so that
+// internal/config depends on no kind.
+var coapTypeNames = map[string]bool{
+	"con": true, "confirmable": true, "non": true, "non_confirmable": true,
+	"ack": true, "acknowledgement": true, "rst": true, "reset": true,
+}
+
+// coapOn reads a switch whose default is on, so that a warning about it being
+// turned off fires only when it was turned off.
+func coapOn(p *bool) bool { return p == nil || *p }
+
+func coapMethod(s string) bool {
+	switch s {
+	case "get", "GET", "post", "POST", "put", "PUT", "delete", "DELETE",
+		"fetch", "FETCH", "patch", "PATCH", "ipatch", "iPATCH", "IPATCH":
+		return true
+	}
+	return false
+}
+
+// coapBlockSize says the value is one of the block sizes RFC 7959 s2.2 defines:
+// a power of two from sixteen to a kilobyte, because the option carries the
+// exponent rather than the size.
+func coapBlockSize(n int) bool {
+	for s := 16; s <= 1024; s *= 2 {
+		if n == s {
+			return true
+		}
+	}
+	return false
+}
+
+var coapFormatNames = map[string]bool{
+	"text/plain": true, "application/link-format": true, "application/xml": true,
+	"application/octet-stream": true, "application/exi": true,
+	"application/json": true, "application/json-patch+json": true,
+	"application/merge-patch+json": true, "application/cbor": true,
+	"application/cwt": true, "application/multipart-core": true,
+	"application/cbor-seq": true, "application/senml+json": true,
+	"application/sensml+json": true, "application/senml+cbor": true,
+	"application/sensml+cbor": true, "application/coap-group+json": true,
+	"application/dots+cbor": true, "application/missing-blocks+cbor-seq": true,
+	"application/vnd.oma.lwm2m+tlv": true, "application/vnd.oma.lwm2m+json": true,
+	"application/cose; cose-type=cose-encrypt0": true,
+	"application/cose; cose-type=cose-mac0":     true,
+	"application/cose; cose-type=cose-sign1":    true,
 }
 
 // dhcp6Listener checks the DHCPv6 relay.
