@@ -163,6 +163,46 @@ server:
             action: deny
             class: [file]
 
+        # What the station may claim to have measured, and what to do
+        # about the quality it attaches. Both of these *alert* by default
+        # rather than refuse, and that is deliberate: a relay that refused
+        # telemetry would blind the control room, which is its own kind of
+        # incident and a worse one than an implausible reading reaching a
+        # trend. An alert here does not reach the ban ladder either -- a
+        # substation with a hand-entered reading is not an attacker.
+        quality:
+          # SB means a person typed the value in rather than an instrument
+          # measuring it, and no HMI in the field shows the bit. IV is the
+          # device saying not to trust itself, which on a substation with a
+          # transducer out for maintenance is ordinary -- so it is named
+          # here on purpose rather than by default.
+          alert_on: [substituted, invalid]
+
+        measurements:
+          # The same points the setpoints below bound, read the other way:
+          # the boiler pressure transmitter is a 0..40 bar instrument, so a
+          # reading of 900 is a broken transmitter or a forged frame.
+          - name: pressure
+            points: ["5000-5009"]
+            min: 0
+            max: 40
+
+        # The protocol's own replay check, and the one nothing in
+        # IEC 60870-5-104 makes anybody perform: a time-tagged command
+        # replayed an hour later carries the hour-old timestamp with it, and
+        # a station that does not compare it against its clock opens the
+        # breaker again.
+        #
+        # These refusals are hard -- shadow mode does not carry them --
+        # because a command forwarded so that its age could be written down
+        # is a moved actuator. The comparison is against this relay's clock,
+        # so turning it on is a decision to have time discipline across the
+        # estate: see the ntp listener kind for the other half of that.
+        timestamps:
+          max_command_age: 20s
+          max_command_future: 5s
+          deny_invalid: true
+
         # And what those setpoints may be set *to*. The rule above says
         # which workstation may write which points; these say what the
         # process will accept, which is the bound no rule about type

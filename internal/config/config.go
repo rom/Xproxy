@@ -580,6 +580,16 @@ type IEC104Listener struct {
 	// encoding can hold -- which on a scaled value is -32768 to 32767 and
 	// on a short float is most of the real line.
 	Setpoints []IEC104Setpoint `yaml:"setpoints"`
+	// Measurements bound the value a *station* may report on a point, which
+	// is the same arithmetic pointed the other way.
+	Measurements []IEC104Measurement `yaml:"measurements"`
+	// Quality is what to do about the quality descriptor a monitored value
+	// carries: which bits are worth an alert, and which -- if any -- refuse
+	// the frame.
+	Quality *IEC104Quality `yaml:"quality"`
+	// Timestamps is the policy about the time tag a command carries, which
+	// is this protocol's own replay check.
+	Timestamps *IEC104Timestamps `yaml:"timestamps"`
 	// RequireSelect makes the two-step form mandatory for every command
 	// type that has one: a command must be selected, by the same client
 	// on the same connection, before it is executed. The standard
@@ -3472,6 +3482,106 @@ type IEC104DecoyPoints struct {
 // cannot see it -- so a bound on a normalised point is a bound on the fraction,
 // and writing min: 0 / max: 40 for one is a mistake the load will not catch. The
 // reference says so beside this, and the protocol page says it again.
+// IEC104Quality is an iec104 listener's policy about the quality descriptor a
+// monitored value carries.
+//
+// It is an alerting policy by default and not a refusing one, because refusing
+// telemetry blinds a control room -- which is its own kind of incident, and a
+// worse one than a substituted value reaching a trend. `deny` exists for the
+// estate that has decided otherwise about a particular bit, and it is empty
+// until somebody writes it.
+type IEC104Quality struct {
+	// AlertOn names the quality bits worth a security event: invalid,
+	// not_topical, substituted, blocked, overflow. Empty alerts on
+	// substituted, which is the bit that means a person typed the value in
+	// rather than an instrument measuring it -- a control centre acting on it
+	// is acting on somebody's opinion of the plant, and no HMI shows it.
+	AlertOn []string `yaml:"alert_on"`
+	// Deny names the bits that refuse the frame carrying them. Empty, and
+	// deliberately: a refusal here is a reading a control room does not get.
+	// It is a soft refusal, so monitor and shadow mode carry it and say so.
+	Deny []string `yaml:"deny"`
+}
+
+// IEC104Timestamps is an iec104 listener's policy about the time tag a command
+// carries.
+//
+// This is the protocol's own replay check, and nothing in IEC 60870-5-104 makes
+// anybody perform it: a time-tagged command replayed an hour later carries the
+// hour-old timestamp with it, and a station that does not compare it against its
+// clock executes the command again. IEC 62351-5 exists in part for this reason.
+//
+// The comparison is against this relay's clock, so a station whose clock is wrong
+// trips it. That is a finding rather than a false positive -- an estate whose
+// substations and control centre disagree about the time cannot investigate
+// anything afterwards either -- and it is why the `ntp` listener kind exists.
+type IEC104Timestamps struct {
+	// RequireOnCommands refuses a time-tagged command type that carries no
+	// readable timestamp: absent, or with fields outside their ranges. A
+	// command type without a time tag at all is not affected -- C_SC_NA_1 has
+	// no timestamp to require.
+	RequireOnCommands bool `yaml:"require_on_commands"`
+	// MaxCommandAge refuses a time-tagged command whose timestamp is older
+	// than this. 0 disables the check, which is the default: a substation
+	// estate with no time discipline would refuse every command on the first
+	// day, and turning this on is a decision to have that discipline.
+	MaxCommandAge Duration `yaml:"max_command_age"`
+	// MaxCommandFuture refuses one whose timestamp is further ahead than this.
+	// A command from the future is the same replay with the clocks the other
+	// way round. 0 disables it.
+	MaxCommandFuture Duration `yaml:"max_command_future"`
+	// DenyInvalid refuses a command whose time tag carries the IV bit: the
+	// controlling station has said its own clock is not to be trusted, which is
+	// a thing to refuse rather than to accept silently on a command that moves
+	// plant.
+	DenyInvalid bool `yaml:"deny_invalid"`
+}
+
+// IEC104Measurement bounds what a station may report on a point.
+//
+// It is the arithmetic of `setpoints` pointed the other way: `setpoints` says how
+// far a control centre may drive a point, and this says what a station may claim
+// to have measured there. A pressure of 900 bar on a 40 bar transmitter is either
+// a broken instrument or a forged frame, and either way it is something an
+// operator should be told about rather than something that sits on a trend.
+//
+// The default action is alert and not deny, for the reason IEC104Quality is:
+// refusing telemetry blinds a control room.
+type IEC104Measurement struct {
+	// Name is what an alert and a refusal call this bound. Required and
+	// unique.
+	Name string `yaml:"name"`
+	// Points is the information object addresses this bound covers, as
+	// "4711", "100-199" or "0x1000-0x1fff". Required.
+	Points []string `yaml:"points"`
+	// Types narrows the bound to particular monitored types by their standard
+	// names (M_ME_NC_1 and so on). Empty covers every monitored type whose
+	// value this relay decodes, which is usually right: a point is normally
+	// reported with one encoding, and a bound covering only the encoding the
+	// author thought of would be silent about the others.
+	Types []string `yaml:"types"`
+	// CommonAddresses narrows it to particular stations. Empty covers every
+	// station this listener carries.
+	CommonAddresses []string `yaml:"common_addresses"`
+	// Min and Max bound the reported value, inclusive. Both required, for the
+	// reason a setpoint bound needs both: a bound with one end open is a bound
+	// in one direction.
+	//
+	// What the number means depends on the encoding, and the two that are not
+	// in engineering units are worth knowing about: a normalised value is a
+	// fraction of a full scale configured in the device, between -1 and just
+	// under +1, and a scaled value is an integer in whatever unit the point was
+	// configured with. A short float is the only one that arrives in
+	// engineering units with no scale factor kept elsewhere.
+	Min *float64 `yaml:"min"`
+	Max *float64 `yaml:"max"`
+	// Action is alert (the default: a security event and a counter, and the
+	// reading goes through) or deny (the frame is refused). deny is a soft
+	// refusal, so monitor and shadow mode carry it and record that they would
+	// not have.
+	Action string `yaml:"action"`
+}
+
 type IEC104Setpoint struct {
 	// Name is what a refusal and the status view call this bound. Required
 	// and unique: a decision nobody can name is one nobody can find.

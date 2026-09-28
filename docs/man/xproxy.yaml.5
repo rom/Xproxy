@@ -5435,6 +5435,176 @@ The first bound that covers a point decides, so a narrow bound written above a w
 \fBA value that cannot be shown to be inside a bound is outside it.\fR A short float can carry NaN and the infinities, and every comparison with NaN is false \-\- so a bound that only asked "below \fBmin\fR or above \fBmax\fR" would pass a NaN straight through to a governor. A non\-finite setpoint is refused as out of range.
 .PP
 \fBA station\(aqs own report is never refused by a value bound.\fR Only a command \-\- cause \fBact\fR or \fBdeact\fR \-\- is decided about. An RTU that answers a setpoint with the value it actually applied, clamped by its own configuration and outside the bound the relay holds, reaches the control centre: refusing the answer would leave the centre waiting for ever for a command this relay already let through, and hide the one number that says what the equipment did.
+.SS "server.listeners[].iec104.measurements[]"
+.PP
+\fB\fBmeasurements\fR\fR bounds the value a \fIstation\fR may report on a point, which is the arithmetic of \fBsetpoints\fR pointed the other way. \fBsetpoints\fR says how far a control centre may drive a point; this says what a station may claim to have measured there. A pressure of 900 bar on a 40 bar transmitter is either a broken instrument or a forged frame, and either way it is something an operator should be told about rather than something that sits on a trend.
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.7i) lbx
+lw(1.0i) lw(0.7i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+string
+T}	T{
+Required and unique;\: what an alert or a refusal calls this bound
+T}
+T{
+\fBpoints\fR
+T}	T{
+list of range
+T}	T{
+Required. \fB"4711"\fR,\: \fB"100\-\:199"\fR,\: \fB"0x1000\-\:0x1fff"\fR
+T}
+T{
+\fBtypes\fR
+T}	T{
+list
+T}	T{
+Monitored type identifications (\fBM_\:ME_\:NC_\:1\fR,\: ...). Empty covers every monitored type whose value this relay decodes,\: which is usually right
+T}
+T{
+\fBcommon_\:addresses\fR
+T}	T{
+list of range
+T}	T{
+Which stations. Empty covers every station this listener carries
+T}
+T{
+\fBmin\fR,\: \fBmax\fR
+T}	T{
+float
+T}	T{
+Required,\: both,\: inclusive. A bound with one end open is a bound in one direction
+T}
+T{
+\fBaction\fR
+T}	T{
+\fBalert\fR,\: \fBdeny\fR
+T}	T{
+\fBalert\fR: a security event and a counter,\: and the reading goes through. \fBdeny\fR refuses the frame,\: and is a \fBsoft\fR refusal,\: so monitor and shadow mode carry it and record that they would not have
+T}
+.TE
+.PP
+\fBThe default is alert and not deny, and that is the whole posture for telemetry.\fR A relay that refused telemetry would blind a control room, which is its own kind of incident and a worse one than an implausible reading reaching a trend. \fBdeny\fR exists for the estate that has decided otherwise about a particular point.
+.PP
+\fBWhat the number means depends on the encoding.\fR A \fIshort float\fR arrives in engineering units with no scale factor kept elsewhere, which is the easy case. A \fIscaled\fR value is an integer in whatever unit the point was configured with. A \fInormalised\fR value is a fraction of a full scale configured in the device, running from \-1 to just under +1 \-\- so a bound of \fBmin: 0\fR, \fBmax: 40\fR on a normalised point is a bound nothing can exceed, exactly as it is for a normalised setpoint.
+.SS "server.listeners[].iec104.quality"
+.PP
+\fB\fBquality\fR\fR is what to do about the quality descriptor a monitored value carries. Every monitored type but \fBM_ME_ND_1\fR carries one, and the five bits are \fBinvalid\fR, \fBnot_topical\fR, \fBsubstituted\fR, \fBblocked\fR and \fBoverflow\fR.
+.PP
+.TS
+allbox;
+lbw(0.7i) lbw(0.6i) lbw(1.4i) lbx
+lw(0.7i) lw(0.6i) lw(1.4i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBalert_\:on\fR
+T}	T{
+list of bit
+T}	T{
+\fB[substituted]\fR
+T}	T{
+Bits worth a security event. The reading still goes through
+T}
+T{
+\fBdeny\fR
+T}	T{
+list of bit
+T}	T{
+\fB[]\fR
+T}	T{
+Bits that refuse the frame carrying them. A \fBsoft\fR refusal. A bit named here is also alerted on,\: whatever \fBalert_\:on\fR says: the refusal is the event
+T}
+.TE
+.PP
+\fB\fBsubstituted\fR is the default because it is the bit nobody sees.\fR SB means a person typed the value in rather than an instrument measuring it. A control centre acting on a substituted value is acting on somebody\(aqs opinion of the plant, and no HMI in the field shows the bit. The others are left to be asked for: \fBinvalid\fR and \fBnot_topical\fR are ordinary on a substation with a device out for maintenance, and a listener that alerted on them by default would teach an operator to ignore the alert.
+.PP
+\fBAn alert does not reach the ban ladder.\fR A substation reporting a substituted value is not an attacker \-\- it is usually an engineer with a hand\-entered reading \-\- and a ban would take the control room\(aqs telemetry away over a data\-quality problem. The event and the counter are what an operator acts on.
+.PP
+\fBNo quality descriptor is not a good one.\fR \fBM_ME_ND_1\fR carries none, which is what the D in its name is for, and this policy has nothing to ask of it. Reading absent as good would assert something the wire never said.
+.SS "server.listeners[].iec104.timestamps"
+.PP
+\fB\fBtimestamps\fR\fR is the replay check on a time\-tagged command, and it is the one this protocol most needs and least performs.
+.PP
+A time\-tagged command carries a CP56Time2a. A command replayed an hour later carries the hour\-old timestamp with it, and \fBnothing in IEC 60870\-5\-104 makes a station compare that against its clock\fR \-\- so a recorded breaker command, sent again, opens the breaker again. IEC 62351\-5 exists in part for this reason.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.9i) lbw(0.8i) lbx
+lw(0.9i) lw(0.9i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBrequire_\:on_\:commands\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse a time\-tagged command type carrying no readable timestamp: absent,\: or with fields outside their ranges. A command type with no time tag at all \-\- \fBC_\:SC_\:NA_\:1\fR \-\- is not affected,\: because there is no timestamp for the policy to be about
+T}
+T{
+\fBmax_\:command_\:age\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR (off)
+T}	T{
+Refuse a time\-tagged command whose timestamp is older than this
+T}
+T{
+\fBmax_\:command_\:future\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR (off)
+T}	T{
+Refuse one whose timestamp is further ahead than this. A command from the future is the same replay with the clocks the other way round
+T}
+T{
+\fBdeny_\:invalid\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse a command whose time tag carries the \fBIV\fR bit: the controlling station has said its own clock is not to be trusted
+T}
+.TE
+.PP
+\fBThese refusals are hard.\fR Monitor and shadow mode do not carry them, for the same reason they do not carry a refused command: a command forwarded so that its age could be written down is a moved actuator, and a report afterwards undoes none of it.
+.PP
+\fBThe comparison is against this relay\(aqs clock, and that is the point.\fR A station whose clock is wrong trips the check. That is a finding rather than a false positive \-\- an estate whose substations and control centre disagree about the time cannot investigate anything afterwards either \-\- and it is why the \fBntp\fR listener kind exists. The default is off because turning it on is a decision to have that time discipline, and a substation estate without it would refuse every command on the first day.
+.PP
+\fBA CP24Time2a cannot be checked and is not.\fR The three\-octet tag carries milliseconds and minutes and no date at all, so its age is whatever the reader assumes. The commands all carry the seven\-octet tag, so this costs nothing; the monitoring direction uses both, and an age check there would have been arithmetic on an assumption.
+.PP
+\fBA station\(aqs own confirmation is never checked.\fR It carries the same type and the same timestamp as the command it answers, and refusing it would leave a control centre waiting for the answer to a command this relay already let through. Only an activation travelling down is decided about.
+.PP
+\fBA timestamp whose sender disclaims it is not compared.\fR A command carrying the \fBIV\fR bit with \fBdeny_invalid\fR off goes through without an age check: an age computed from a timestamp its own sender says is untrustworthy is arithmetic on nothing. \fBdeny_invalid\fR is how an estate says that is not good enough.
 .PP
 \fBWhat is checked before the rules, and cannot be shadowed.\fR A frame the relay could not read is refused whether or not the listener is enforcing: forwarding what it cannot decide about would hand the substation octets it will read somehow. So are the rate limits, and so is a \fIstation\fR sending an activation to its own control centre \-\- not a shape the standard has, and what a compromised substation gateway pivoting upstream looks like.
 .PP
@@ -5448,7 +5618,7 @@ The first bound that covers a point decides, so a narrow bound written above a w
 .PP
 So the relay numbers what it writes, acknowledges what it reads at \fBw\fR (and on a timer, for a link too quiet to carry one), and terminates the supervisory frames \-\- an acknowledgement is about the stream this relay wrote, not about the stream the other end wrote. The application layer is still forwarded untouched: the ASDU that arrives is the ASDU that leaves, because re\-encoding it is how a relay and a station come to disagree about what was said. What \fBcheck_sequence\fR and \fBmax_unacknowledged\fR decide is whether a \fIpeer\(aqs\fR numbering is checked: a gap, a replay, or an end that has \fBk\fR frames outstanding that this relay has not acknowledged.
 .PP
-Counters: \fBiec104_sessions\fR, \fBiec104_sessions_open\fR, \fBiec104_frames\fR, \fBiec104_commands\fR, \fBiec104_system_commands\fR, \fBiec104_denied\fR, \fBiec104_would_deny\fR, \fBiec104_malformed\fR, \fBiec104_rejected\fR, \fBiec104_rate_limited\fR, \fBiec104_selects\fR, \fBiec104_executes\fR, \fBiec104_unselected\fR, \fBiec104_selects_held\fR, \fBiec104_setpoints\fR, \fBiec104_setpoint_points\fR, \fBiec104_setpoint_unknown\fR, \fBiec104_sequence_gaps\fR, \fBiec104_window_full\fR, \fBiec104_upstream_failed\fR. Refusals are \fBiec104_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBtls_handshake\fR, \fBmalformed\fR, \fBframe_too_long\fR, \fBmax_connections\fR, \fBrate_limited\fR, \fBcommand_rate_limited\fR, \fBmonitor_only\fR, \fBcommon_address\fR, \fBrule\fR, \fBdefault_deny\fR, \fBcontrol\fR, \fBstation_command\fR, \fBsequence\fR, \fBwindow\fR, \fBack_ahead\fR, \fBunselected\fR, \fBselect_unavailable\fR, \fBsetpoint_range\fR, \fBsetpoint_delta\fR, \fBsetpoint_unknown\fR.
+Counters: \fBiec104_sessions\fR, \fBiec104_sessions_open\fR, \fBiec104_frames\fR, \fBiec104_commands\fR, \fBiec104_system_commands\fR, \fBiec104_denied\fR, \fBiec104_would_deny\fR, \fBiec104_malformed\fR, \fBiec104_rejected\fR, \fBiec104_rate_limited\fR, \fBiec104_selects\fR, \fBiec104_executes\fR, \fBiec104_unselected\fR, \fBiec104_selects_held\fR, \fBiec104_setpoints\fR, \fBiec104_setpoint_points\fR, \fBiec104_setpoint_unknown\fR, \fBiec104_sequence_gaps\fR, \fBiec104_window_full\fR, \fBiec104_upstream_failed\fR. Refusals are \fBiec104_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBtls_handshake\fR, \fBmalformed\fR, \fBframe_too_long\fR, \fBmax_connections\fR, \fBrate_limited\fR, \fBcommand_rate_limited\fR, \fBmonitor_only\fR, \fBcommon_address\fR, \fBrule\fR, \fBdefault_deny\fR, \fBcontrol\fR, \fBstation_command\fR, \fBsequence\fR, \fBwindow\fR, \fBack_ahead\fR, \fBunselected\fR, \fBselect_unavailable\fR, \fBsetpoint_range\fR, \fBsetpoint_delta\fR, \fBsetpoint_unknown\fR, \fBquality\fR, \fBmeasurement_range\fR, \fBcommand_timestamp_missing\fR, \fBcommand_timestamp_invalid\fR, \fBcommand_timestamp_old\fR, \fBcommand_timestamp_future\fR.
 .SS "server.listeners[].iec104.learn"
 .PP
 \fB\fBlearn\fR\fR records what crosses this listener and writes a proposed policy.

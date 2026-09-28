@@ -184,13 +184,16 @@ type Frame struct {
 // ASDU is the application service data unit of an I frame, parsed as far
 // as policy needs and no further.
 //
-// The information objects themselves are read only for their addresses and
-// the two octets a command carries, because that is what a policy is
-// written about. A measurement's scaled value, its quality descriptor and
-// its timestamp are forwarded untouched: decoding every one of the
-// hundred-odd types would be a second implementation of the standard, and
-// a relay that got one of them wrong would corrupt a reading nobody could
-// trace.
+// The header is read here, and with it the addresses and the two octets a
+// command carries. The information *elements* -- a value, its quality
+// descriptor, its time tag -- are read on demand by Elements, because most
+// frames are telemetry and most listeners have nothing to ask about them.
+//
+// Nothing is ever re-encoded. Every frame is forwarded as the octets that
+// arrived: decoding a hundred-odd types into a second implementation of the
+// standard and writing them back out is how a relay and a station come to
+// disagree about a reading nobody can trace. Elements reads; it does not
+// rewrite.
 type ASDU struct {
 	// Type is the type identification: what this ASDU is.
 	Type Type

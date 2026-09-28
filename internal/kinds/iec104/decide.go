@@ -89,6 +89,15 @@ func (se *session) decide(frame *wire.Frame, fromClient bool) (string, bool) {
 	if !d.Allow {
 		return se.policyRefused(frame, d)
 	}
+	// Then what the information element says: the quality a station attached to
+	// a reading, the value it claims, and the timestamp a control centre put on
+	// a command. It comes before the setpoint bound because a command whose
+	// timestamp is an hour old is not a command whose value is worth arguing
+	// about, and before the selection for the same reason a refused value does
+	// not consume one.
+	if reason, ok := se.decideElements(frame, fromClient); !ok {
+		return reason, false
+	}
 	// Then the value a setpoint carries, which is the bound a rule about
 	// type identifications cannot express: a rule says who may move this
 	// point, and this says how far. It comes before the selection is
@@ -408,6 +417,31 @@ func (t *server) deny(ip netip.Addr, what, detail string) {
 	if bl := t.host.Bans(); bl != nil && ip.IsValid() {
 		bl.Observe(ip, "iec104_denied")
 	}
+}
+
+// alert records something worth telling an operator about that is not a refusal:
+// a quality bit the policy names, a reported value outside its bound on a
+// listener that only watches.
+//
+// It does not reach the ban ladder, and that is the point. A substation reporting
+// a substituted value is not an attacker -- it is usually an engineer with a
+// hand-entered reading -- and a ban would take the control room's telemetry away
+// over a data-quality problem. The event and the counter are what an operator
+// acts on; the ban ladder is for a client doing something it may not do.
+func (t *server) alert(ip netip.Addr, what, detail string) {
+	t.host.Counters().Refuse("iec104", trimReason(what))
+	if !t.alerts() {
+		return
+	}
+	attrs := []any{"listener", t.cfg.Name, "client_ip", ip.String(), "proto", "iec104"}
+	if detail != "" {
+		attrs = append(attrs, "detail", detail)
+	}
+	name := what
+	if !hasPrefix(name, "iec104_") {
+		name = "iec104_" + name
+	}
+	t.host.Logs().SecurityEvent(context.Background(), "alert", name, attrs...)
 }
 
 // shadowed records a refusal that did not happen, so that an operator can

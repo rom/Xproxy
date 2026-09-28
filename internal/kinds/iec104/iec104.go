@@ -82,10 +82,15 @@ type server struct {
 
 	policy  *Policy
 	selects *selects
-	decoy   *decoy
-	learner *learner
-	limiter *limits.KeyedLimiter
-	cmdRate *limits.KeyedLimiter
+	// quality, stamps and measures are the policies about the information
+	// element: what a station reported, and when a control centre said it.
+	quality  *qualityPolicy
+	stamps   *timestampPolicy
+	measures []*measureRule
+	decoy    *decoy
+	learner  *learner
+	limiter  *limits.KeyedLimiter
+	cmdRate  *limits.KeyedLimiter
 
 	open atomic.Int64
 	wg   sync.WaitGroup
@@ -105,6 +110,15 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener, tc *tls.Co
 	var err error
 	if t.policy, err = compile(m, time.Now); err != nil {
 		return nil, err
+	}
+	if t.quality, err = compileQuality(m.Quality); err != nil {
+		return nil, fmt.Errorf("iec104 %s: %w", cfg.Name, err)
+	}
+	if t.stamps, err = compileTimestamps(m.Timestamps); err != nil {
+		return nil, fmt.Errorf("iec104 %s: %w", cfg.Name, err)
+	}
+	if t.measures, err = compileMeasurements(m.Measurements); err != nil {
+		return nil, fmt.Errorf("iec104 %s: %w", cfg.Name, err)
 	}
 	t.selects = newSelects(m.MaxSelections, m.SelectTimeout.D(), time.Now)
 	if t.decoy, err = newDecoy(m.Deception, cfg.Name); err != nil {

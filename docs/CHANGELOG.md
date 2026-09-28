@@ -6,6 +6,49 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (iec104: the information element, decoded and policed)
+
+- **`ASDU.Elements` decodes the information element.** Until now this relay read
+  an ASDU's header and, for a command, its qualifier and setpoint value — enough
+  to decide which points a station may be commanded on and nothing about what it
+  reports of them. Every layout is a table entry rather than a case in a parser,
+  because a table can be checked against IEC 60870-5-101 section 7.3.1 by reading
+  it, and a type absent from the table decodes to nothing rather than to a guess.
+
+- **`quality` is what to do about the quality descriptor.** `substituted` — a
+  person typed the value in rather than an instrument measuring it — is alerted on
+  by default, because it is the bit no HMI in the field shows and a control centre
+  acting on one is acting on somebody's opinion of the plant. `invalid` and
+  `not_topical` are left to be asked for: they are ordinary on a substation with a
+  device out for maintenance, and alerting on them by default would teach an
+  operator to ignore the alert.
+
+- **`timestamps` is the replay check this protocol most needs and least
+  performs.** A time-tagged command replayed an hour later carries the hour-old
+  timestamp with it, and nothing in IEC 60870-5-104 makes a station compare that
+  against its clock — so a recorded breaker command, sent again, opens the breaker
+  again. `max_command_age`, `max_command_future`, `require_on_commands` and
+  `deny_invalid` are that comparison, and those refusals are **hard**: a command
+  forwarded so that its age could be written down is a moved actuator. A station's
+  own confirmation is never checked, because it carries the same timestamp and
+  refusing it would leave a control centre waiting for the answer to a command
+  this relay already let through.
+
+- **`measurements` bounds what a station may report**, which is the arithmetic of
+  `setpoints` pointed the other way. A pressure of 900 bar on a 40 bar transmitter
+  is a broken instrument or a forged frame.
+
+- **Telemetry is alerted on and carried; a command's timestamp is refused.** That
+  asymmetry is the design: a relay that refused telemetry would blind a control
+  room, which is its own kind of incident and a worse one than an implausible
+  reading reaching a trend. So `quality` and `measurements` default to alert, their
+  `deny` is soft, and an alert from either does not reach the ban ladder — a
+  substation with a hand-entered reading is not an attacker, and a ban would take
+  the control room's telemetry away over a data-quality problem.
+
+- Every object of an ASDU is walked, not only the first. A report carrying forty
+  measurements carries forty chances for one of them to be the substituted one.
+
 ### Added (mqtt: learning mode, and never a `#`)
 
 - **`mqtt.learn` records what crosses the listener and writes proposed topic

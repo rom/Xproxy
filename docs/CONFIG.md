@@ -2302,6 +2302,111 @@ answer would leave the centre waiting for ever for a command this relay
 already let through, and hide the one number that says what the equipment
 did.
 
+#### server.listeners[].iec104.measurements[]
+
+**`measurements`** bounds the value a *station* may report on a point, which is
+the arithmetic of `setpoints` pointed the other way. `setpoints` says how far a
+control centre may drive a point; this says what a station may claim to have
+measured there. A pressure of 900 bar on a 40 bar transmitter is either a broken
+instrument or a forged frame, and either way it is something an operator should be
+told about rather than something that sits on a trend.
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `name` | string | Required and unique; what an alert or a refusal calls this bound |
+| `points` | list of range | Required. `"4711"`, `"100-199"`, `"0x1000-0x1fff"` |
+| `types` | list | Monitored type identifications (`M_ME_NC_1`, ...). Empty covers every monitored type whose value this relay decodes, which is usually right |
+| `common_addresses` | list of range | Which stations. Empty covers every station this listener carries |
+| `min`, `max` | float | Required, both, inclusive. A bound with one end open is a bound in one direction |
+| `action` | `alert`, `deny` | `alert`: a security event and a counter, and the reading goes through. `deny` refuses the frame, and is a **soft** refusal, so monitor and shadow mode carry it and record that they would not have |
+
+**The default is alert and not deny, and that is the whole posture for
+telemetry.** A relay that refused telemetry would blind a control room, which is
+its own kind of incident and a worse one than an implausible reading reaching a
+trend. `deny` exists for the estate that has decided otherwise about a particular
+point.
+
+**What the number means depends on the encoding.** A *short float* arrives in
+engineering units with no scale factor kept elsewhere, which is the easy case. A
+*scaled* value is an integer in whatever unit the point was configured with. A
+*normalised* value is a fraction of a full scale configured in the device, running
+from -1 to just under +1 -- so a bound of `min: 0`, `max: 40` on a normalised
+point is a bound nothing can exceed, exactly as it is for a normalised setpoint.
+
+#### server.listeners[].iec104.quality
+
+**`quality`** is what to do about the quality descriptor a monitored value
+carries. Every monitored type but `M_ME_ND_1` carries one, and the five bits are
+`invalid`, `not_topical`, `substituted`, `blocked` and `overflow`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `alert_on` | list of bit | `[substituted]` | Bits worth a security event. The reading still goes through |
+| `deny` | list of bit | `[]` | Bits that refuse the frame carrying them. A **soft** refusal. A bit named here is also alerted on, whatever `alert_on` says: the refusal is the event |
+
+**`substituted` is the default because it is the bit nobody sees.** SB means a
+person typed the value in rather than an instrument measuring it. A control centre
+acting on a substituted value is acting on somebody's opinion of the plant, and no
+HMI in the field shows the bit. The others are left to be asked for: `invalid` and
+`not_topical` are ordinary on a substation with a device out for maintenance, and a
+listener that alerted on them by default would teach an operator to ignore the
+alert.
+
+**An alert does not reach the ban ladder.** A substation reporting a substituted
+value is not an attacker -- it is usually an engineer with a hand-entered reading
+-- and a ban would take the control room's telemetry away over a data-quality
+problem. The event and the counter are what an operator acts on.
+
+**No quality descriptor is not a good one.** `M_ME_ND_1` carries none, which is
+what the D in its name is for, and this policy has nothing to ask of it. Reading
+absent as good would assert something the wire never said.
+
+#### server.listeners[].iec104.timestamps
+
+**`timestamps`** is the replay check on a time-tagged command, and it is the one
+this protocol most needs and least performs.
+
+A time-tagged command carries a CP56Time2a. A command replayed an hour later
+carries the hour-old timestamp with it, and **nothing in IEC 60870-5-104 makes a
+station compare that against its clock** -- so a recorded breaker command, sent
+again, opens the breaker again. IEC 62351-5 exists in part for this reason.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `require_on_commands` | bool | `false` | Refuse a time-tagged command type carrying no readable timestamp: absent, or with fields outside their ranges. A command type with no time tag at all -- `C_SC_NA_1` -- is not affected, because there is no timestamp for the policy to be about |
+| `max_command_age` | duration | `0` (off) | Refuse a time-tagged command whose timestamp is older than this |
+| `max_command_future` | duration | `0` (off) | Refuse one whose timestamp is further ahead than this. A command from the future is the same replay with the clocks the other way round |
+| `deny_invalid` | bool | `false` | Refuse a command whose time tag carries the `IV` bit: the controlling station has said its own clock is not to be trusted |
+
+**These refusals are hard.** Monitor and shadow mode do not carry them, for the
+same reason they do not carry a refused command: a command forwarded so that its
+age could be written down is a moved actuator, and a report afterwards undoes
+none of it.
+
+**The comparison is against this relay's clock, and that is the point.** A
+station whose clock is wrong trips the check. That is a finding rather than a
+false positive -- an estate whose substations and control centre disagree about
+the time cannot investigate anything afterwards either -- and it is why the `ntp`
+listener kind exists. The default is off because turning it on is a decision to
+have that time discipline, and a substation estate without it would refuse every
+command on the first day.
+
+**A CP24Time2a cannot be checked and is not.** The three-octet tag carries
+milliseconds and minutes and no date at all, so its age is whatever the reader
+assumes. The commands all carry the seven-octet tag, so this costs nothing; the
+monitoring direction uses both, and an age check there would have been arithmetic
+on an assumption.
+
+**A station's own confirmation is never checked.** It carries the same type and
+the same timestamp as the command it answers, and refusing it would leave a
+control centre waiting for the answer to a command this relay already let
+through. Only an activation travelling down is decided about.
+
+**A timestamp whose sender disclaims it is not compared.** A command carrying the
+`IV` bit with `deny_invalid` off goes through without an age check: an age
+computed from a timestamp its own sender says is untrustworthy is arithmetic on
+nothing. `deny_invalid` is how an estate says that is not good enough.
+
 **What is checked before the rules, and cannot be shadowed.** A frame the
 relay could not read is refused whether or not the listener is enforcing:
 forwarding what it cannot decide about would hand the substation octets it
@@ -2367,7 +2472,9 @@ refusal counters: `client_not_allowed`, `tls_handshake`, `malformed`,
 `command_rate_limited`, `monitor_only`, `common_address`, `rule`,
 `default_deny`, `control`, `station_command`, `sequence`, `window`,
 `ack_ahead`, `unselected`, `select_unavailable`, `setpoint_range`,
-`setpoint_delta`, `setpoint_unknown`.
+`setpoint_delta`, `setpoint_unknown`, `quality`, `measurement_range`,
+`command_timestamp_missing`, `command_timestamp_invalid`,
+`command_timestamp_old`, `command_timestamp_future`.
 
 #### server.listeners[].iec104.learn
 
