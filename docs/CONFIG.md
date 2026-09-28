@@ -3732,6 +3732,8 @@ Four defaults are worth reading before anything else.
 | `request_timeout` | duration | `10s` | How long a device has to answer before its answer is too late to pair (1s to 1m) |
 | `rate_limit`, `rate_burst` | int | `0` (off) | Messages a second per source address, which is the only key this protocol offers in NoSec |
 | `max_clients` | int | `8192` | The distinct sources tracked at once |
+| `dtls_handshake_timeout` | duration | `10s` | How long a peer has to finish a DTLS handshake. The bound that matters most on a datagram listener: a handshake is where a peer that has proved nothing already costs a socket, a goroutine and a slot in the peer table |
+| `dtls_idle_timeout` | duration | `5m` | How long a session with nothing on it is kept. Worth raising where devices report on a long cycle: for a battery-powered sensor the handshake is the expensive part of the exchange |
 | `answer_refusals` | bool | `true` | Send the standard's response code rather than dropping the datagram |
 | `log_messages` | bool | `false` | An access line per message and per answer, the second carrying the request's size, the answer's and the factor between them |
 | `alert_on_deny` | bool | `true` | A security event for every refusal |
@@ -3765,8 +3767,17 @@ kernel: **one session per remote address**, demultiplexed from the single UDP
 socket. Every piece of that is bounded, because every input is a datagram from
 a peer that has proved nothing — `max_clients` bounds the peers, and the
 half-open handshakes and the queue per peer are bounded separately. A peer
-that starts a handshake and stops talking has ten seconds before it costs
-nothing; a session with nothing on it is closed after five minutes.
+that starts a handshake and stops talking has `dtls_handshake_timeout` — ten
+seconds by default — before it costs nothing; a session with nothing on it is
+closed after `dtls_idle_timeout`, five minutes by default.
+
+Both are worth knowing about rather than leaving at the default, because the
+two ends of the range are both real. A plant network wants the handshake bound
+tight, since the handshake is the one place an unauthenticated peer can make
+the relay spend anything. An estate of battery-powered sensors reporting hourly
+wants the idle bound long, because for those devices the handshake *is* the
+expensive part of the exchange and one an hour is a measurable share of the
+battery.
 
 Where a session exists it is an **identity**, which is the whole reason to
 run DTLS in front of devices: `secure_only` on a rule then means something,

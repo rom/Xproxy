@@ -3623,6 +3623,22 @@ type CoAPListener struct {
 	RateBurst int `yaml:"rate_burst"`
 	// MaxClients bounds the distinct sources tracked at once. Default 8192.
 	MaxClients int `yaml:"max_clients"`
+	// DTLSHandshakeTimeout is how long a peer has to finish a DTLS handshake,
+	// where this listener carries a certificate. Default 10s.
+	//
+	// It is the bound that matters most on a datagram listener, because a
+	// handshake is where a peer that has proved nothing already costs
+	// something: a socket, a goroutine and a slot in the peer table. A peer
+	// that sends one flight and stops would otherwise hold all three for as
+	// long as the process runs.
+	DTLSHandshakeTimeout Duration `yaml:"dtls_handshake_timeout"`
+	// DTLSIdleTimeout is how long a session with nothing on it is kept.
+	// Default 5m.
+	//
+	// It is worth raising where the devices report on a long cycle: a sensor
+	// that speaks once an hour would otherwise handshake every time, which on
+	// a battery-powered device is the expensive part of the exchange.
+	DTLSIdleTimeout Duration `yaml:"dtls_idle_timeout"`
 	// AnswerRefusals sends the response code the standard gives for a
 	// refusal rather than dropping the datagram. Default true, and it
 	// matters more here than elsewhere: a Confirmable request is

@@ -8702,6 +8702,24 @@ T}	T{
 The distinct sources tracked at once
 T}
 T{
+\fBdtls_\:handshake_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB10s\fR
+T}	T{
+How long a peer has to finish a DTLS handshake. The bound that matters most on a datagram listener: a handshake is where a peer that has proved nothing already costs a socket,\: a goroutine and a slot in the peer table
+T}
+T{
+\fBdtls_\:idle_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+How long a session with nothing on it is kept. Worth raising where devices report on a long cycle: for a battery\-powered sensor the handshake is the expensive part of the exchange
+T}
+T{
 \fBanswer_\:refusals\fR
 T}	T{
 bool
@@ -8748,7 +8766,9 @@ Two differences are refused rather than ignored, because a knob that appears to 
 .RE
 .PP
 .PP
-What the listener supplies itself is the part a stream listener gets from the kernel: \fBone session per remote address\fR, demultiplexed from the single UDP socket. Every piece of that is bounded, because every input is a datagram from a peer that has proved nothing \[u2014] \fBmax_clients\fR bounds the peers, and the half\-open handshakes and the queue per peer are bounded separately. A peer that starts a handshake and stops talking has ten seconds before it costs nothing; a session with nothing on it is closed after five minutes.
+What the listener supplies itself is the part a stream listener gets from the kernel: \fBone session per remote address\fR, demultiplexed from the single UDP socket. Every piece of that is bounded, because every input is a datagram from a peer that has proved nothing \[u2014] \fBmax_clients\fR bounds the peers, and the half\-open handshakes and the queue per peer are bounded separately. A peer that starts a handshake and stops talking has \fBdtls_handshake_timeout\fR \[u2014] ten seconds by default \[u2014] before it costs nothing; a session with nothing on it is closed after \fBdtls_idle_timeout\fR, five minutes by default.
+.PP
+Both are worth knowing about rather than leaving at the default, because the two ends of the range are both real. A plant network wants the handshake bound tight, since the handshake is the one place an unauthenticated peer can make the relay spend anything. An estate of battery\-powered sensors reporting hourly wants the idle bound long, because for those devices the handshake \fIis\fR the expensive part of the exchange and one an hour is a measurable share of the battery.
 .PP
 Where a session exists it is an \fBidentity\fR, which is the whole reason to run DTLS in front of devices: \fBsecure_only\fR on a rule then means something, and "the actuators may only be written by a client that authenticated" is a sentence the configuration can hold. \fBcoap_handshakes\fR, \fBcoap_handshakes_failed\fR and \fBcoap_sessions\fR say whether it is working, and \fBcoap_datagrams_dropped\fR says whether a bound is being reached rather than merely existing.
 .SS "server.listeners[].coap.rules[]"

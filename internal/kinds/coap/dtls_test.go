@@ -404,6 +404,44 @@ func TestThePacketMuxSplitsByPeerAndIsBounded(t *testing.T) {
 	if _, _, err := conn.ReadFrom(make([]byte, 64)); !errors.Is(err, net.ErrClosed) {
 		t.Errorf("a read on a closed peer returned %v", err)
 	}
+	// And the slot is genuinely free rather than merely unreadable: a new peer
+	// now gets a connection where the third one was refused. Without this the
+	// listener would work perfectly until it had seen `max` peers and then stop
+	// accepting for as long as it ran -- which is the failure mode that looks
+	// like a network fault and is a bounded table nobody drains.
+	fourth, fourthMsg := speak(t, pc.LocalAddr().String(), "four")
+	defer func() { _ = fourth.Close() }()
+	// accept blocks until a peer arrives, so it is given a bound of its own:
+	// a slot that was not freed means nothing ever arrives, and a test that
+	// waited for that would report a timeout rather than the reason.
+	type accepted struct {
+		conn net.PacketConn
+		err  error
+	}
+	got := make(chan accepted, 1)
+	go func() {
+		c, _, err := mux.accept()
+		got <- accepted{c, err}
+	}()
+	select {
+	case a := <-got:
+		if a.err != nil {
+			t.Fatalf("a peer after a close was not accepted: %v", a.err)
+		}
+		if err := a.conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		buf := make([]byte, 64)
+		n, _, err := a.conn.ReadFrom(buf)
+		if err != nil {
+			t.Fatalf("the new peer could not be read: %v", err)
+		}
+		if string(buf[:n]) != fourthMsg {
+			t.Errorf("the new peer read %q, want %q", buf[:n], fourthMsg)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("closing a peer did not free its slot: a new peer was never accepted")
+	}
 }
 
 // A datagram larger than the caller's buffer is reported rather than truncated
@@ -471,4 +509,105 @@ func selfSigned(t *testing.T) tls.Certificate {
 		t.Fatal(err)
 	}
 	return pair
+}
+
+// The handshake bound: a peer that starts one and stops is given up on.
+//
+// It is the bound that matters most on a datagram listener, because a handshake
+// is where a peer that has proved nothing already costs a socket, a goroutine and
+// a slot in the peer table. Without a deadline on the socket the handshake reads
+// from, one datagram from a spoofable source address holds all three for as long
+// as the process runs — and the library takes no context, so the deadline is the
+// only place to put the bound.
+func TestAHandshakeThatStopsMidFlightIsGivenUpOn(t *testing.T) {
+	up := startDevice(t, &fakeDevice{})
+	s, addr := dtlsRelay(t, base+"        dtls_handshake_timeout: 300ms\n", "", up.addr())
+
+	// One datagram that makes the listener take a peer slot and a goroutine, and
+	// then nothing. A real ClientHello is not needed: what is under test is the
+	// deadline on the socket the handshake reads from, and the library is reading
+	// it either way.
+	pc := mustPacketConn(t)
+	ua, err := net.ResolveUDPAddr("udp4", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A DTLS record header: content type 22 (handshake), version 1.2, epoch and
+	// sequence zero, and a length that will never be filled.
+	hello := []byte{22, 0xFE, 0xFD, 0, 0, 0, 0, 0, 0, 0, 0, 0, 40}
+	if _, err := pc.WriteTo(hello, ua); err != nil {
+		t.Fatal(err)
+	}
+
+	// The handshake is abandoned within the bound, which the counter says. With
+	// no deadline the library waits for the rest of the flight for as long as the
+	// process runs, and this counter never moves.
+	until(t, s, "an abandoned handshake was not given up on", func(st proxy.Snapshot) bool {
+		return st.CoAPHandshakeFailed > 0
+	})
+	// And it was never counted as a session. A peer that sent one flight and
+	// stopped establishing nothing is the point: a relay that counted it would
+	// report sessions that do not exist, which is the number an operator watches
+	// to see whether the listener is being used.
+	if got := s.Stats().CoAPSessions; got != 0 {
+		t.Errorf("%d sessions for a handshake that never completed", got)
+	}
+	if got := s.Stats().CoAPHandshakes; got == 0 {
+		t.Error("the handshake was not counted as started")
+	}
+	// And the listener still works: giving up on one peer is not giving up on
+	// the socket.
+	conn := dtlsDial(t, addr)
+	got := askDTLS(t, conn, get(0x4100, 2, "3303", "0", "5700"))
+	if got.Code != wire.Content {
+		t.Errorf("after the abandoned handshake the answer was %s", got.Code)
+	}
+}
+
+// A session outliving the handshake bound keeps working, which is the other half
+// of putting a deadline on the socket underneath it.
+//
+// The deadline has to be cleared once the handshake is done. pion reads that
+// socket for as long as the session lives, so a handshake deadline left in place
+// ends every session the moment it passes — however long the idle timeout says.
+// On an estate of sensors reporting once a minute that is a handshake per report,
+// and the handshake is the expensive part of the exchange for a battery-powered
+// device.
+func TestASessionOutlivesTheHandshakeBound(t *testing.T) {
+	up := startDevice(t, &fakeDevice{})
+	s, addr := dtlsRelay(t, base+"        dtls_handshake_timeout: 300ms\n", "", up.addr())
+	conn := dtlsDial(t, addr)
+
+	// One exchange to establish the session, then silence for twice the
+	// handshake bound, then another.
+	if got := askDTLS(t, conn, get(0x4200, 3, "3303", "0", "5700")); got.Code != wire.Content {
+		t.Fatalf("the first request answered %s", got.Code)
+	}
+	time.Sleep(700 * time.Millisecond)
+	if got := askDTLS(t, conn, get(0x4201, 4, "3303", "0", "5700")); got.Code != wire.Content {
+		t.Errorf("after the handshake bound passed the session answered %s", got.Code)
+	}
+	until(t, s, "the session", func(st proxy.Snapshot) bool { return st.CoAPSessions > 0 })
+}
+
+// The idle bound: a session with nothing on it is closed.
+//
+// It is the other half of the handshake bound and it is what a deployment tunes
+// rather than tightens. A session costs a goroutine, a buffer and a slot in the
+// peer table for as long as it is held, and a device that reported once and went
+// away holds all three until this fires.
+func TestAnIdleSessionIsClosed(t *testing.T) {
+	up := startDevice(t, &fakeDevice{})
+	s, addr := dtlsRelay(t, base+"        dtls_idle_timeout: 300ms\n", "", up.addr())
+	conn := dtlsDial(t, addr)
+
+	if got := askDTLS(t, conn, get(0x4300, 5, "3303", "0", "5700")); got.Code != wire.Content {
+		t.Fatalf("the request answered %s", got.Code)
+	}
+	until(t, s, "the session", func(st proxy.Snapshot) bool { return st.CoAPSessions > 0 })
+	// And then silence. The session goes without the client saying anything, which
+	// is the point: the bound is on the peer's silence.
+	until(t, s, "an idle session was not closed", func(st proxy.Snapshot) bool {
+		return st.CoAPSessions == 0
+	})
 }

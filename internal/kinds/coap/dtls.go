@@ -1,6 +1,7 @@
 package coap
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/pion/dtls/v3"
 	wire "github.com/rom/xproxy/internal/coap"
+	"github.com/rom/xproxy/internal/proxy"
 )
 
 // CoAP inside DTLS, RFC 7252 s9.
@@ -87,33 +89,65 @@ func (s *server) serveDTLS(tc *tls.Config) {
 }
 
 // dtlsSession handshakes with one peer and then relays what it sends.
+//
+// The handshake is run explicitly rather than left to the first Read, and that is
+// the whole shape of this function. pion's ServerWithOptions does not handshake:
+// it builds a Conn and the handshake happens inside the first Read or Write, under
+// whatever deadline that call carries. So a relay that bounded the constructor
+// bounded nothing — a peer that sends one flight and stops was held for the *idle*
+// timeout instead of the handshake one, and counted as an established session that
+// never existed. Calling HandshakeContext here is what makes the bound real, makes
+// a failure countable, and keeps a peer that has proved nothing from occupying a
+// socket, a goroutine and a slot in the peer table for minutes.
 func (s *server) dtlsSession(pc net.PacketConn, raddr net.Addr, opts []dtls.ServerOption) {
 	c := s.host.Counters()
 	c.CoAPHandshakes.Add(1)
 	defer func() { _ = pc.Close() }()
 
-	// The handshake's bound, applied where it belongs: on the socket the
-	// handshake reads from. The library takes no context, and a deadline on the
-	// PacketConn is what makes a peer that stops talking mid-flight stop costing
-	// anything.
-	if err := pc.SetReadDeadline(time.Now().Add(dtlsHandshakeTimeout)); err != nil {
-		return
-	}
 	conn, err := dtls.ServerWithOptions(pc, raddr, opts...)
 	if err != nil {
-		c.CoAPHandshakeFailed.Add(1)
-		c.Refuse("coap", "handshake_failed")
-		s.deny(netip.MustParseAddr(hostOf(raddr)), "handshake_failed", err.Error())
+		// The options did not build, which is a configuration fault rather than
+		// anything the peer did. It is still a handshake that did not happen.
+		s.handshakeFailed(c, raddr, err)
 		return
 	}
 	defer func() { _ = conn.Close() }()
+
+	// The bound, in both the places it can be applied. The deadline on the socket
+	// is the one that fires: the handshake cannot make progress without reading,
+	// and every read goes through this PacketConn, so an absolute deadline on it
+	// ends any peer that stalls. The context is defence in depth against the
+	// library blocking somewhere that is not a read — a verification callback, a
+	// timer it waits on — which the tests here cannot reach and a dependency
+	// upgrade could introduce. It is deliberately redundant today.
+	ctx, cancel := context.WithTimeout(context.Background(), s.handshakeTimeout())
+	defer cancel()
+	if err := pc.SetReadDeadline(time.Now().Add(s.handshakeTimeout())); err != nil {
+		return
+	}
+	if err := conn.HandshakeContext(ctx); err != nil {
+		s.handshakeFailed(c, raddr, err)
+		return
+	}
+	// And cleared, which matters as much as setting it. The deadline is on the
+	// socket underneath the session, and pion reads that socket for as long as
+	// the session lives: a handshake deadline left in place would end every
+	// session the moment it passed, however long the idle timeout said. On an
+	// estate of sensors reporting once a minute that would mean a handshake per
+	// report — which is the expensive part of the exchange and the thing the idle
+	// timeout exists to avoid.
+	if err := pc.SetReadDeadline(time.Time{}); err != nil {
+		return
+	}
 	c.CoAPSessions.Add(1)
 	defer c.CoAPSessions.Add(-1)
 
 	to := &session{conn: conn, to: raddr}
 	buf := make([]byte, s.maxMessage()+1)
 	for {
-		if err := conn.SetReadDeadline(time.Now().Add(dtlsIdle)); err != nil {
+		// The idle bound is the session's own deadline rather than the socket's,
+		// so it bounds the peer's silence and not the record layer's own reads.
+		if err := conn.SetReadDeadline(time.Now().Add(s.idleTimeout())); err != nil {
 			return
 		}
 		n, err := conn.Read(buf)
@@ -124,6 +158,34 @@ func (s *server) dtlsSession(pc net.PacketConn, raddr net.Addr, opts []dtls.Serv
 		copy(raw, buf[:n])
 		s.fromClient(raw, to)
 	}
+}
+
+// handshakeFailed records a handshake that did not complete.
+func (s *server) handshakeFailed(c *proxy.Stats, raddr net.Addr, err error) {
+	c.CoAPHandshakeFailed.Add(1)
+	c.Refuse("coap", "handshake_failed")
+	s.deny(netip.MustParseAddr(hostOf(raddr)), "handshake_failed", err.Error())
+}
+
+// handshakeTimeout and idleTimeout are the two bounds a deployment may move.
+//
+// They are read from the listener rather than fixed because the two ends of the
+// range are both real: a plant network wants the handshake bound tight, and an
+// estate of battery-powered sensors reporting hourly wants the idle bound long,
+// because for those devices the handshake is the expensive part of the exchange
+// and one every hour is a measurable share of the battery.
+func (s *server) handshakeTimeout() time.Duration {
+	if d := s.m.DTLSHandshakeTimeout.D(); d > 0 {
+		return d
+	}
+	return dtlsHandshakeTimeout
+}
+
+func (s *server) idleTimeout() time.Duration {
+	if d := s.m.DTLSIdleTimeout.D(); d > 0 {
+		return d
+	}
+	return dtlsIdle
 }
 
 // session writes an answer back into the DTLS session it came from.
