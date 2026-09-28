@@ -130,6 +130,10 @@ func (t *server) observeTransfer(x *transfer) {
 // file, how much of it, and how it ended. This is the record an estate is
 // actually asked for.
 func (t *server) logTransfer(x *transfer, reason string) {
+	// The learning run is told first, and told whatever log_transfers says: the
+	// report is not a log, and a listener with its access log off is exactly the
+	// one whose traffic nobody can otherwise account for.
+	t.observeOutcome(x, reason)
 	if !t.logTransfers() {
 		return
 	}

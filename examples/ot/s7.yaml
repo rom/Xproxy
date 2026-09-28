@@ -101,6 +101,32 @@ server:
         idle_timeout: 5m
         handshake_timeout: 10s
 
+        # How the rules below were arrived at, and how to arrive at them
+        # for the next line. On this protocol there is nowhere else to
+        # find out: the CPU keeps no access log, and nobody can enumerate
+        # the blocks a program touches by reading the program. The
+        # drawings say which blocks the controller has; the traffic says
+        # which of them the panels read every second and that the
+        # commissioning laptop has been reading DB1 since 2014.
+        #
+        # So for the first week the listener records instead of deciding,
+        # and the report is what the rules get written from. Take this out
+        # once they are written -- validation warns about a learning
+        # section with no enforce, because one left on by accident is a
+        # relay that decides nothing.
+        #
+        # learn:
+        #   enabled: true
+        #   file: /var/lib/xproxy/s7-line3.yaml
+        #   interval: 15m
+        #   # enforce: true would keep the rules below in force while
+        #   # recording, which is the second phase: the report then says
+        #   # which rules the traffic disagrees with, per subject, in
+        #   # denied_by_policy. Read access_faults in the same pass: that
+        #   # is the controller refusing something this relay allowed,
+        #   # which on an S7 almost always means a password, and it
+        #   # belongs out of the policy rather than in it.
+
         default_action: deny
         rules:
           # The panels: setpoints in the window above.

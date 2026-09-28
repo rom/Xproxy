@@ -82,9 +82,16 @@ type server struct {
 
 	policy  *Policy
 	selects *selects
-	decoy   *decoy
-	limiter *limits.KeyedLimiter
-	cmdRate *limits.KeyedLimiter
+	// quality, stamps and measures are the policies about the information
+	// element: what a station reported, and when a control centre said it.
+	quality  *qualityPolicy
+	stamps   *timestampPolicy
+	measures []*measureRule
+	auth     *authPolicy
+	decoy    *decoy
+	learner  *learner
+	limiter  *limits.KeyedLimiter
+	cmdRate  *limits.KeyedLimiter
 
 	open atomic.Int64
 	wg   sync.WaitGroup
@@ -105,9 +112,27 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener, tc *tls.Co
 	if t.policy, err = compile(m, time.Now); err != nil {
 		return nil, err
 	}
+	if t.quality, err = compileQuality(m.Quality); err != nil {
+		return nil, fmt.Errorf("iec104 %s: %w", cfg.Name, err)
+	}
+	if t.stamps, err = compileTimestamps(m.Timestamps); err != nil {
+		return nil, fmt.Errorf("iec104 %s: %w", cfg.Name, err)
+	}
+	if t.measures, err = compileMeasurements(m.Measurements); err != nil {
+		return nil, fmt.Errorf("iec104 %s: %w", cfg.Name, err)
+	}
+	if t.auth, err = compileAuthentication(m.Authentication); err != nil {
+		return nil, fmt.Errorf("iec104 %s: %w", cfg.Name, err)
+	}
 	t.selects = newSelects(m.MaxSelections, m.SelectTimeout.D(), time.Now)
 	if t.decoy, err = newDecoy(m.Deception, cfg.Name); err != nil {
 		return nil, fmt.Errorf("iec104 %s: %w", cfg.Name, err)
+	}
+	if l := m.Learn; l != nil && l.Enabled {
+		t.learner = newLearner(&learnConfig{
+			enabled: true, listener: cfg.Name, file: l.File,
+			interval: l.Interval.D(), maxSubjects: l.MaxSubjects,
+		})
 	}
 	if m.UpstreamTLSMode == "implicit" {
 		uc, _, err := tlsconf.Client(m.UpstreamTLS)
@@ -138,6 +163,12 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener, tc *tls.Co
 }
 
 func (t *server) serve() {
+	if t.learner != nil {
+		t.learner.Start(func(err error) {
+			t.host.Logs().Error.Warn("iec104 learning report could not be written",
+				"listener", t.cfg.Name, "error", err.Error())
+		})
+	}
 	for {
 		c, err := t.ln.Accept()
 		if err != nil {
@@ -224,11 +255,30 @@ func (t *server) shutdown(ctx context.Context) {
 		t.mu.Unlock()
 		<-finished
 	}
+	if err := t.learner.Stop(); err != nil {
+		t.host.Logs().Error.Warn("iec104 learning report could not be written at shutdown",
+			"listener", t.cfg.Name, "error", err.Error())
+	}
 }
 
 // enforcing says whether this listener refuses for policy or only records
 // what it would have refused.
-func (t *server) enforcing() bool { return !t.cfg.Shadowing() }
+//
+// A learning run is observe-only unless it says otherwise, which is what stops
+// one being left on by accident: the point of learning is to find out what the
+// traffic is, and a run that refuses half of it has changed the thing it was
+// measuring. A listener in shadow mode records without deciding whether or not
+// it is also learning.
+func (t *server) enforcing() bool {
+	if t.cfg.Shadowing() {
+		return false
+	}
+	l := t.m.Learn
+	if l == nil || !l.Enabled {
+		return true
+	}
+	return l.Enforce
+}
 
 // session is one controlling station's connection and the station
 // connection it is relayed to.
@@ -254,6 +304,13 @@ type session struct {
 	closed   atomic.Bool
 	commands atomic.Uint64
 	denied   atomic.Uint64
+
+	// authed is what this association has shown of the IEC 60870-5-7
+	// authentication exchange. Per association and not per listener: crediting
+	// one connection's exchange to another would let a client that can open a
+	// socket ride on a legitimate control centre's authentication, which is the
+	// whole thing being defended against.
+	authed authState
 
 	// watch accumulates the common addresses this association named, for the
 	// estate's device inventory. Reported once at the start and once at the

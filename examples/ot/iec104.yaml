@@ -74,6 +74,29 @@ server:
         command_rate_limit: 5
         command_rate_burst: 10
 
+        # How the rules below were arrived at, and how to arrive at them
+        # for the next substation. Nobody knows what a substation's
+        # traffic actually is: the drawings say which points exist and
+        # which of them the control centre is supposed to command, and the
+        # traffic says what the integrator left behind. A policy written
+        # from the drawings refuses half of it on the first shift, which
+        # is how a security control gets turned off and stays off.
+        #
+        # So for the first week the listener records instead of deciding,
+        # and the report is what the rules get written from. Take this out
+        # once they are written -- validation warns about a learning
+        # section with no enforce, because one left on by accident is a
+        # relay that decides nothing.
+        #
+        # learn:
+        #   enabled: true
+        #   file: /var/lib/xproxy/iec104-substation-a.yaml
+        #   interval: 15m
+        #   # enforce: true would keep the rules below in force while
+        #   # recording, which is the second phase: the report then says
+        #   # which rules the traffic disagrees with, per subject, in
+        #   # denied_by_policy.
+
         default_action: deny
         deny_response: negative
         rules:
@@ -90,6 +113,15 @@ server:
             action: allow
             types: [C_IC_NA_1, C_CI_NA_1, C_RD_NA_1]
             causes: [act, deact]
+
+          # The IEC 60870-5-7 authentication exchange. Its own rule and its
+          # own class: a rule that allowed it as a "system" command would
+          # also allow a station reset. Without this the listener refuses
+          # the authentication as an unknown type, which makes the
+          # standard's own security unusable through the relay.
+          - name: authentication
+            action: allow
+            class: [security]
 
           # The keepalive's own test command.
           - name: test
@@ -139,6 +171,65 @@ server:
           - name: no-files
             action: deny
             class: [file]
+
+        # IEC 62351-5, as far as a relay in the middle can honestly go.
+        # IEC 60870-5-7 adds the authentication this protocol has none of:
+        # the station challenges a critical command and the control centre
+        # answers with an HMAC over it. This relay recognises the exchange
+        # and carries it -- the `auth` rule below is what makes that
+        # possible, and without a rule for the security class the listener
+        # would refuse the authentication and make it unusable -- and it
+        # does NOT verify it. Verifying means holding the update keys, and
+        # a relay holding them would be a second place to take them from.
+        #
+        # So leave `require` off until iec104_authentications says the
+        # associations are actually authenticating. The counter moves
+        # whether or not the requirement is on, which is exactly so that
+        # this decision can be made from evidence.
+        #
+        # authentication:
+        #   require: true
+        #   window: 5m
+
+        # What the station may claim to have measured, and what to do
+        # about the quality it attaches. Both of these *alert* by default
+        # rather than refuse, and that is deliberate: a relay that refused
+        # telemetry would blind the control room, which is its own kind of
+        # incident and a worse one than an implausible reading reaching a
+        # trend. An alert here does not reach the ban ladder either -- a
+        # substation with a hand-entered reading is not an attacker.
+        quality:
+          # SB means a person typed the value in rather than an instrument
+          # measuring it, and no HMI in the field shows the bit. IV is the
+          # device saying not to trust itself, which on a substation with a
+          # transducer out for maintenance is ordinary -- so it is named
+          # here on purpose rather than by default.
+          alert_on: [substituted, invalid]
+
+        measurements:
+          # The same points the setpoints below bound, read the other way:
+          # the boiler pressure transmitter is a 0..40 bar instrument, so a
+          # reading of 900 is a broken transmitter or a forged frame.
+          - name: pressure
+            points: ["5000-5009"]
+            min: 0
+            max: 40
+
+        # The protocol's own replay check, and the one nothing in
+        # IEC 60870-5-104 makes anybody perform: a time-tagged command
+        # replayed an hour later carries the hour-old timestamp with it, and
+        # a station that does not compare it against its clock opens the
+        # breaker again.
+        #
+        # These refusals are hard -- shadow mode does not carry them --
+        # because a command forwarded so that its age could be written down
+        # is a moved actuator. The comparison is against this relay's clock,
+        # so turning it on is a decision to have time discipline across the
+        # estate: see the ntp listener kind for the other half of that.
+        timestamps:
+          max_command_age: 20s
+          max_command_future: 5s
+          deny_invalid: true
 
         # And what those setpoints may be set *to*. The rule above says
         # which workstation may write which points; these say what the

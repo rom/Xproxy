@@ -1596,6 +1596,76 @@ accept. Changing the `mqtt` section rebinds the listener on reload.
 | `max_qos` | int | `2` | The highest quality of service a publication or a subscription may ask for. QoS 2 costs a broker four packets and a stored state per message, which is what makes it worth bounding on a fleet that does not need it |
 | `topics` | list | `[]` | Per-topic bounds, below |
 | `sparkplug` | object | | The Sparkplug B policy, below |
+| `learn` | object | | Record what crosses this listener and write proposed topic lists, below |
+
+#### server.listeners[].mqtt.learn
+
+**`learn`** records what crosses this listener and writes proposed topic lists.
+
+A broker in a plant carries topics nobody wrote down. The integrator's naming
+convention is in a document from 2019, the gateway that was replaced still
+publishes under the old prefix, and the historian subscribes to something wider
+than anyone remembers agreeing to. A `publish_allow` list written from the
+convention refuses the traffic that does not follow it, which on a message bus
+means telemetry *silently stops arriving*: the client keeps connecting and keeps
+publishing, and nothing on the screen changes until somebody notices a flat line.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Turn the recording on |
+| `file` | path | required when enabled | Where the report is written, as YAML. Replaced atomically, owner readable only |
+| `interval` | duration | `5m` | How often it is rewritten; 10s..24h. It is also written at shutdown, after the sessions have drained |
+| `max_subjects` | int | `8192` | Observations held: one per identity, direction and topic depth. Past the bound the newest is dropped and the drops are counted, in the report's own header |
+| `enforce` | bool | `false` | Keep the policy in force while learning. Off -- the default -- means this listener records and decides nothing about *policy*, and it warns so that it is not left on by accident. The packet, payload and subscription bounds stay in force either way, as does a packet this proxy could not read |
+
+**No `#` is ever proposed.** This is the whole difficulty of learning on this
+protocol, and the easy answer is the wrong one. `plant/#` covers every level
+under `plant`, including the ones that do not exist yet and the one an attacker
+adds tomorrow, so an allow list built from it allows the thing it was supposed to
+bound. What is proposed instead is a filter of exactly the depth that was
+observed, with `+` -- which matches one level and no more -- at the positions
+where the traffic actually varied:
+
+```
+plant/line3/press1/temperature   seen
+plant/line3/press1/pressure      seen
+plant/line3/press2/temperature   seen
+                                 proposed: plant/line3/+/+
+```
+
+The report lists the levels observed at each position, so a `+` can be narrowed
+by hand where an estate knows the position is closed. A position whose values
+outran the bound the report remembers is still only a `+`.
+
+**The depth is part of a subject's identity** for the same reason: a `+` matches
+one level, so topics of different depths cannot share a filter, and a report that
+folded them together would have had no choice but to widen. Two depths produce
+two filters.
+
+**A filter the *client* wrote is recorded verbatim**, under `depth: filter`,
+because a subscription is already a filter and there is nothing to generalise. If
+a historian subscribed to `plant/#` then `plant/#` is what it needs; the report
+proposes it and flags it, rather than quietly proposing something narrower that
+would break it. Narrowing that one is a conversation with whoever runs the
+client.
+
+**The identity is the CONNECT username**, or the client's address when it
+asserted none -- not the client identifier, because a great many MQTT clients
+generate a fresh one per connection and a subject per identifier would be a
+subject per reboot. The identifiers seen are listed inside the subject instead,
+which is what `client_id_pattern` gets written from.
+
+**`allow_retain: false` is never proposed.** A run that saw no retained message
+has not learned that none is wanted, so the key is left out and the listener's
+own default decides; a run that *did* see one proposes `allow_retain: true`,
+because that traffic exists. Payload sizes and the QoS span are recorded and
+become `max_payload_bytes` and `max_qos` on the proposed topic rule --
+`max_payload_bytes` is the largest payload actually seen and not a round number
+above it, which the report says, because a firmware topic whose largest image so
+far is 3 MiB will refuse a 4 MiB one.
+
+**No payload is recorded.** An MQTT payload is a process value or a command, and
+a learning report is a file that gets pasted into a ticket.
 
 **`topics[]`** is where the payload, QoS and retain bounds belong, because
 all three are properties of the *topic* rather than of the listener: a
@@ -2131,6 +2201,7 @@ bounds which stations may be addressed through it.
 | `default_action` | `deny`, `allow` | `deny` | What a frame no rule matched gets |
 | `deny_response` | `negative`, `drop`, `close` | `negative` | `negative` returns the same ASDU with the negative-confirm bit and cause `actcon`, which is what a station does and what a control centre's alarm list understands |
 | `deception` | object | | Answer as a substation that is not there: a refused activation confirmed instead of refused, or a whole listener that is a fabricated station; see below |
+| `learn` | object | | Learning mode: record what crosses this listener and write a proposed policy, because a policy written from the substation drawings refuses half the traffic on the first shift; see below |
 | `setpoints` | list | | Value bounds on setpoint commands: what a point may be *set to*, and how far it may move in one step; see below |
 | `require_select` | bool | `false` | Make the two-step form mandatory for every command type that has one |
 | `select_timeout` | duration | `30s` | How long a selection stays valid (1s to 10m) |
@@ -2161,7 +2232,7 @@ bounds which stations may be addressed through it.
 | `common_addresses` | list | The stations this rule covers |
 | `originators` | list | Originator addresses (0 to 255): which control centre, where a station serves several |
 | `types` | list | Type identifications by the standard's name (`C_SC_NA_1`) or by number. The names are the standard's own because that is what the substation documentation says |
-| `class` | list | `monitoring`, `command`, `system`, `parameter`, `file`: what a type *does*. The durable way to write a policy, because a class outlives a standard revision that adds a type |
+| `class` | list | `monitoring`, `command`, `system`, `parameter`, `file`, `security`: what a type *does*. The durable way to write a policy, because a class outlives a standard revision that adds a type. `security` is the IEC 60870-5-7 authentication exchange, and it is its own class so that a rule allowing it does not thereby allow a station reset |
 | `causes` | list | Causes of transmission by name (`act`, `actcon`, `spont`, `introgroup1`) or number. A rule naming none matches any cause, which is usually wrong for a rule about commands: `act` is the centre commanding and `actcon` is the station answering |
 | `addresses` | list | Information object address ranges (0 to 16777215). A frame naming an address outside all of them does not match |
 | `max_objects` | int | Information objects one ASDU may carry (0 leaves the protocol's own 127) |
@@ -2231,6 +2302,168 @@ answer would leave the centre waiting for ever for a command this relay
 already let through, and hide the one number that says what the equipment
 did.
 
+#### server.listeners[].iec104.measurements[]
+
+**`measurements`** bounds the value a *station* may report on a point, which is
+the arithmetic of `setpoints` pointed the other way. `setpoints` says how far a
+control centre may drive a point; this says what a station may claim to have
+measured there. A pressure of 900 bar on a 40 bar transmitter is either a broken
+instrument or a forged frame, and either way it is something an operator should be
+told about rather than something that sits on a trend.
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `name` | string | Required and unique; what an alert or a refusal calls this bound |
+| `points` | list of range | Required. `"4711"`, `"100-199"`, `"0x1000-0x1fff"` |
+| `types` | list | Monitored type identifications (`M_ME_NC_1`, ...). Empty covers every monitored type whose value this relay decodes, which is usually right |
+| `common_addresses` | list of range | Which stations. Empty covers every station this listener carries |
+| `min`, `max` | float | Required, both, inclusive. A bound with one end open is a bound in one direction |
+| `action` | `alert`, `deny` | `alert`: a security event and a counter, and the reading goes through. `deny` refuses the frame, and is a **soft** refusal, so monitor and shadow mode carry it and record that they would not have |
+
+**The default is alert and not deny, and that is the whole posture for
+telemetry.** A relay that refused telemetry would blind a control room, which is
+its own kind of incident and a worse one than an implausible reading reaching a
+trend. `deny` exists for the estate that has decided otherwise about a particular
+point.
+
+**What the number means depends on the encoding.** A *short float* arrives in
+engineering units with no scale factor kept elsewhere, which is the easy case. A
+*scaled* value is an integer in whatever unit the point was configured with. A
+*normalised* value is a fraction of a full scale configured in the device, running
+from -1 to just under +1 -- so a bound of `min: 0`, `max: 40` on a normalised
+point is a bound nothing can exceed, exactly as it is for a normalised setpoint.
+
+#### server.listeners[].iec104.quality
+
+**`quality`** is what to do about the quality descriptor a monitored value
+carries. Every monitored type but `M_ME_ND_1` carries one, and the five bits are
+`invalid`, `not_topical`, `substituted`, `blocked` and `overflow`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `alert_on` | list of bit | `[substituted]` | Bits worth a security event. The reading still goes through |
+| `deny` | list of bit | `[]` | Bits that refuse the frame carrying them. A **soft** refusal. A bit named here is also alerted on, whatever `alert_on` says: the refusal is the event |
+
+**`substituted` is the default because it is the bit nobody sees.** SB means a
+person typed the value in rather than an instrument measuring it. A control centre
+acting on a substituted value is acting on somebody's opinion of the plant, and no
+HMI in the field shows the bit. The others are left to be asked for: `invalid` and
+`not_topical` are ordinary on a substation with a device out for maintenance, and a
+listener that alerted on them by default would teach an operator to ignore the
+alert.
+
+**An alert does not reach the ban ladder.** A substation reporting a substituted
+value is not an attacker -- it is usually an engineer with a hand-entered reading
+-- and a ban would take the control room's telemetry away over a data-quality
+problem. The event and the counter are what an operator acts on.
+
+**No quality descriptor is not a good one.** `M_ME_ND_1` carries none, which is
+what the D in its name is for, and this policy has nothing to ask of it. Reading
+absent as good would assert something the wire never said.
+
+#### server.listeners[].iec104.authentication
+
+**`authentication`** is the posture on the secure authentication of
+IEC 60870-5-7, which is the application layer **IEC 62351-5** specifies.
+
+IEC 60870-5-104 has no authentication at all: a controlling station is an
+address, and an address is what an attacker on the same segment chooses.
+IEC 60870-5-7 adds one over the existing ASDU machinery. The controlled station
+challenges a critical command with `S_CH_NA_1`, the controlling station answers
+with `S_RP_NA_1` carrying an HMAC over the challenge and the command, and only
+then is the command acted on. Aggressive mode carries the authentication with the
+command in `S_AS_NA_1` instead of after it.
+
+**This relay recognises the exchange and carries it. It does not verify it.**
+Verifying means holding the update keys, and a relay holding them would be a
+second place for an attacker to take them from; one that failed closed on a key
+it had got wrong would stop a control centre operating a grid. So no HMAC is
+computed here, no key is stored, and **nothing is asserted about whether an
+authentication was valid**.
+
+What is asserted is weaker and still worth having:
+
+- **The exchange is not refused.** Before these types were named, a listener saw
+  type 81 as an unknown type and its policy refused it -- which made the
+  standard's own authentication unusable through this relay. The thirteen types
+  are now named (`S_CH_NA_1`, `S_RP_NA_1`, `S_AS_NA_1`, `S_KR_NA_1`, `S_KS_NA_1`,
+  `S_KC_NA_1`, `S_ER_NA_1`, `S_US_NA_1`, `S_UQ_NA_1`, `S_UR_NA_1`, `S_UK_NA_1`,
+  `S_UA_NA_1`, `S_UC_NA_1`) and they are the rule class `security` -- its own
+  class, so that a rule allowing the authentication exchange does not thereby
+  allow a station reset.
+- **Whether it happened is visible.** `iec104_authentications` counts the replies
+  and aggressive-mode requests seen, **whether or not this listener requires
+  them**: an estate decides whether to turn `require` on by finding out which of
+  its associations already authenticate, and a counter that only moved once the
+  requirement was in force would be no help in making that decision.
+- **It can be required.**
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `require` | bool | `false` | Refuse a command on an association where no `S_RP_NA_1` or `S_AS_NA_1` has been seen inside `window`. Off by default: an estate whose stations do not implement 60870-5-7 -- which is most of them -- would be refused every command on the first day |
+| `window` | duration | `5m` | How long an authentication counts for on an association. The standard's own session keys expire, and an authentication that never did would let one exchange at connection time authorise every command for a week |
+
+**An authentication belongs to the association that performed it.** Crediting one
+connection's exchange to another would let a client that can open a socket ride on
+a legitimate control centre's authentication, which is the whole thing being
+defended against. So the state is per association and dies with it.
+
+**The refusal is hard**, like the timestamp checks and for the same reason: a
+command forwarded so that the missing authentication could be written down is a
+moved actuator.
+
+**What is never held to the requirement**: telemetry, because refusing a
+substation's measurements over a policy about commands would blind the control
+room; a station's own confirmation, because a controlling station does not
+authenticate the answer to its command; and the authentication exchange itself,
+because a reply cannot be required to have been preceded by a reply.
+
+#### server.listeners[].iec104.timestamps
+
+**`timestamps`** is the replay check on a time-tagged command, and it is the one
+this protocol most needs and least performs.
+
+A time-tagged command carries a CP56Time2a. A command replayed an hour later
+carries the hour-old timestamp with it, and **nothing in IEC 60870-5-104 makes a
+station compare that against its clock** -- so a recorded breaker command, sent
+again, opens the breaker again. IEC 62351-5 exists in part for this reason.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `require_on_commands` | bool | `false` | Refuse a time-tagged command type carrying no readable timestamp: absent, or with fields outside their ranges. A command type with no time tag at all -- `C_SC_NA_1` -- is not affected, because there is no timestamp for the policy to be about |
+| `max_command_age` | duration | `0` (off) | Refuse a time-tagged command whose timestamp is older than this |
+| `max_command_future` | duration | `0` (off) | Refuse one whose timestamp is further ahead than this. A command from the future is the same replay with the clocks the other way round |
+| `deny_invalid` | bool | `false` | Refuse a command whose time tag carries the `IV` bit: the controlling station has said its own clock is not to be trusted |
+
+**These refusals are hard.** Monitor and shadow mode do not carry them, for the
+same reason they do not carry a refused command: a command forwarded so that its
+age could be written down is a moved actuator, and a report afterwards undoes
+none of it.
+
+**The comparison is against this relay's clock, and that is the point.** A
+station whose clock is wrong trips the check. That is a finding rather than a
+false positive -- an estate whose substations and control centre disagree about
+the time cannot investigate anything afterwards either -- and it is why the `ntp`
+listener kind exists. The default is off because turning it on is a decision to
+have that time discipline, and a substation estate without it would refuse every
+command on the first day.
+
+**A CP24Time2a cannot be checked and is not.** The three-octet tag carries
+milliseconds and minutes and no date at all, so its age is whatever the reader
+assumes. The commands all carry the seven-octet tag, so this costs nothing; the
+monitoring direction uses both, and an age check there would have been arithmetic
+on an assumption.
+
+**A station's own confirmation is never checked.** It carries the same type and
+the same timestamp as the command it answers, and refusing it would leave a
+control centre waiting for the answer to a command this relay already let
+through. Only an activation travelling down is decided about.
+
+**A timestamp whose sender disclaims it is not compared.** A command carrying the
+`IV` bit with `deny_invalid` off goes through without an age check: an age
+computed from a timestamp its own sender says is untrustworthy is arithmetic on
+nothing. `deny_invalid` is how an estate says that is not good enough.
+
 **What is checked before the rules, and cannot be shadowed.** A frame the
 relay could not read is refused whether or not the listener is enforcing:
 forwarding what it cannot decide about would hand the substation octets it
@@ -2284,7 +2517,8 @@ whether a *peer's* numbering is checked: a gap, a replay, or an end that has
 `k` frames outstanding that this relay has not acknowledged.
 
 Counters: `iec104_sessions`, `iec104_sessions_open`, `iec104_frames`,
-`iec104_commands`, `iec104_system_commands`, `iec104_denied`,
+`iec104_commands`, `iec104_system_commands`, `iec104_authentications`,
+`iec104_denied`,
 `iec104_would_deny`, `iec104_malformed`, `iec104_rejected`,
 `iec104_rate_limited`, `iec104_selects`, `iec104_executes`,
 `iec104_unselected`, `iec104_selects_held`, `iec104_setpoints`,
@@ -2296,7 +2530,55 @@ refusal counters: `client_not_allowed`, `tls_handshake`, `malformed`,
 `command_rate_limited`, `monitor_only`, `common_address`, `rule`,
 `default_deny`, `control`, `station_command`, `sequence`, `window`,
 `ack_ahead`, `unselected`, `select_unavailable`, `setpoint_range`,
-`setpoint_delta`, `setpoint_unknown`.
+`setpoint_delta`, `setpoint_unknown`, `quality`, `measurement_range`,
+`command_timestamp_missing`, `command_timestamp_invalid`,
+`command_timestamp_old`, `command_timestamp_future`, `unauthenticated`.
+
+#### server.listeners[].iec104.learn
+
+**`learn`** records what crosses this listener and writes a proposed policy.
+
+Nobody knows what a substation's traffic actually is. The drawings say which
+points exist and which of them a control centre is supposed to command; the
+traffic says what the integrator left behind — a gateway reporting points the
+drawings do not list, an interrogation of a common address nobody documented, an
+engineering laptop that has been connected since commissioning. A policy written
+from the drawings refuses half of it on the first shift, which is how a security
+control gets turned off and stays off. Run this for a week and the file is the
+answer.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Turn the recording on |
+| `file` | path | required when enabled | Where the report is written, as YAML. Replaced atomically, owner readable only |
+| `interval` | duration | `5m` | How often it is rewritten; 10s..24h. It is also written at shutdown |
+| `max_subjects` | int | `8192` | Observations held: one per client, direction, common address and type identification. Past the bound the newest is dropped and the drops are counted, in the report's own header |
+| `enforce` | bool | `false` | Keep the policy in force while learning. Off — the default — means this listener records and decides nothing, which is the only honest way to find out what a policy would have broken, and it warns so that it is not left on by accident |
+
+**The direction is part of a subject's identity**, because the same type
+identification means different things in each: an activation travelling down is
+a command, and the confirmation travelling back is the station answering. A
+report that folded them together would propose a rule that allows a station to
+command its own control centre.
+
+**What the report is for is being read and argued with**, so two things are
+called out in it. `denied_by_policy` counts the frames the current policy
+refused, or would have refused on a listener learning without `enforce` — a
+subject with those is one the policy and the traffic disagree about, and it is
+the first thing to read. `refused_by_equipment` counts the negative
+confirmations the station sent *for that command*: the equipment itself will not
+do it, so it belongs out of the policy rather than in it, and the proposal
+leaves such a command out. (The confirmations travelling back are still
+proposed, because confirmations do come back and a policy has to allow them.)
+
+**The process values are not in the report.** A setpoint's span is, because that
+is the bound `setpoints` is written from; the measurements travelling up are not,
+because a learning report is a file that gets pasted into a ticket.
+
+The proposal is one rule per client, direction and class rather than one per
+subject, because a rule per subject is a rule set nobody reads. Every range and
+every cause in it is what was actually used, widened to nothing — an engineer
+then widens them on purpose, having seen what the traffic is.
 
 #### server.listeners[].iec104.deception
 
@@ -3164,6 +3446,65 @@ firmware.
 | `rate_limit`, `rate_burst` | int | `0` | Requests per second per client address |
 | `log_transfers` | bool | `true` | An access line per transfer: who, which direction, which path, how much moved, how it ended. This is the record an estate is asked for when somebody wants to know which switch got which firmware |
 | `alert_on_deny` | bool | `true` | A security event per refusal |
+| `learn` | object | | Record what crosses this listener and write a proposed policy; see below |
+
+#### server.listeners[].tftp.learn
+
+**`learn`** records what crosses this listener and writes a proposed policy.
+
+Nobody knows what an estate's TFTP traffic is, and on this protocol there is
+less to go on than on any other. There is no authentication, no session and no
+account, so nothing is auditable in the ordinary sense: a switch fetches its
+firmware at three in the morning, a phone fetches a configuration every time it
+reboots, and the server's own log -- when it has one -- gives an address and a
+path and says nothing about which of them were meant to happen. A policy written
+from the deployment guide refuses the half nobody documented, and on this
+protocol that means a switch that does not boot.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Turn the recording on |
+| `file` | path | required when enabled | Where the report is written, as YAML. Replaced atomically, owner readable only |
+| `interval` | duration | `5m` | How often it is rewritten; 10s..24h. It is also written at shutdown, after the transfers have drained, so what it says includes how they ended |
+| `max_subjects` | int | `8192` | Observations held: one per client, direction and directory. Past the bound the newest is dropped and the drops are counted, in the report's own header |
+| `enforce` | bool | `false` | Keep the policy in force while learning. Off -- the default -- means this listener records and decides nothing about *policy*, which is the only honest way to find out what a policy would have broken, and it warns so that it is not left on by accident |
+
+**A subject is one client, one direction and one directory**, because
+`directories` is the line an engineer argues about and a subject per file would
+be a report per file. The filenames inside it are listed, bounded, so that a
+`filenames` pattern can be written from what is actually there.
+
+**The amplification bounds are recorded and never proposed.** This is the part
+worth reading twice. `max_block_size`, `max_window_size` and
+`max_transfer_bytes` are what stop a twenty-octet read request yielding a whole
+file to whatever address the datagram claimed to come from, and a request past
+them is *lowered* to them rather than refused -- so a switch asking for a window
+of sixty-four still transfers, and the report still sees the sixty-four. A report
+that turned that into `max_window_size: 64` would have widened, from an
+observation, the one setting a learning run must not touch. So they appear only
+as observations, under the names `block_size_asked`, `window_asked`,
+`declared_size` and `bytes_moved`, which no rule uses. Raising a bound is a
+decision, not a measurement. `enforce: false` does not relax them either: what a
+learning run suspends is the path, direction and mode policy, never a bound.
+
+**Three things in the report are worth reading before the proposal.**
+`denied_by_policy` counts what the current policy refused, or would have.
+`server_errors` counts the transfers the *server* ended with an error packet -- a
+file it does not have -- and a subject with nothing but those is a client asking
+for something that does not exist, so no rule is proposed for it. And
+`path_class` says the name was not an ordinary relative path: those are recorded
+and never proposed, because a class this relay and the server would read
+differently is not something to write a rule about.
+
+**A pattern is proposed only when the names generalise.** The names in a
+directory become `firmware/*.bin` when they share a small set of extensions.
+When they do not -- no extension at all, or more distinct extensions than the
+report remembers -- no `filenames` key is written and the proposal says why,
+because the only pattern that always fits is `*` and a rule permitting every file
+on the server is not what "derived from the traffic" should produce.
+
+**No file contents are recorded.** A TFTP transfer is a configuration file or a
+firmware image, and a learning report is a file that gets pasted into a ticket.
 
 #### server.listeners[].tftp.rules[]
 
@@ -12302,6 +12643,7 @@ Two details of how the ranges are applied:
 | `log_requests` | bool | `false` | An access line per request, which on a plant polling every second is a great many lines |
 | `alert_on_deny` | bool | `true` | A security event per refusal |
 | `deception` | object | | Answer as a controller that is not there: a refused request answered by a fabricated CPU, or a whole listener that is one; see below |
+| `learn` | object | | Record what crosses this listener and write a proposed policy; see below |
 | `monitor_only` | bool | `false` | Evaluate and enforce nothing, except the hard decisions below |
 
 ### Deception
@@ -12423,6 +12765,59 @@ not an S7 PDU. There is nothing left to be sure of after either.
 An operation merely *off* the allow list -- a read of a data block nobody has
 listed, an upload -- is a **soft** refusal, which is what makes monitor mode
 useful on a plant nobody has an inventory of.
+
+### Learning what the traffic is
+
+**`learn`** records what crosses this listener and writes a proposed policy.
+
+The drawings say which blocks a controller has. They do not say which of them
+the integrator's HMI reads every second, which data block the historian polls,
+or that the commissioning laptop has been reading DB1 since 2014. On this
+protocol there is nowhere else to find out: the CPU keeps no access log, and
+nobody can enumerate the blocks a program touches by reading the program. A
+policy written from the drawings refuses half of it on the first shift, which is
+how a security control gets turned off and stays off. Run this for a week and the
+file is the answer.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Turn the recording on |
+| `file` | path | required when enabled | Where the report is written, as YAML. Replaced atomically, owner readable only |
+| `interval` | duration | `5m` | How often it is rewritten; 10s..24h. It is also written at shutdown |
+| `max_subjects` | int | `8192` | Observations held: one per client, operation, area and data block. Past the bound the newest is dropped and the drops are counted, in the report's own header |
+| `enforce` | bool | `false` | Keep the policy in force while learning. Off -- the default -- means this listener records and decides nothing, which is the only honest way to find out what a policy would have broken, and it warns so that it is not left on by accident |
+
+**A subject is one client, one operation, one area and one data block**, because
+that is the grain an S7 rule is written at: `dbs: ["1", "10-19"]` is the line an
+engineer argues about. Within a subject the byte ranges are merged as they grow,
+so two adjacent reads are one span rather than two lines -- a report with a line
+per request is a report nobody reads. **What was written is kept apart from what
+was read**, as `written`, because that is the rule read most carefully and
+`write_addresses` is the key it becomes.
+
+**Three things in the report are worth reading before the proposal.**
+`denied_by_policy` counts the requests the current policy refused, or would have
+refused on a listener learning without `enforce` -- a subject with those is one
+the policy and the traffic disagree about. `access_faults` counts the times the
+**controller itself** answered an access fault, which on this protocol almost
+always means a password-protected CPU: the equipment already refuses it, so it
+belongs out of the policy rather than in it, and a subject the controller refuses
+every time is left out of the proposal. A fault is charged to the operation it
+answers and to nothing else, so a CPU that refuses writes and answers reads does
+not cost the HMI its read. And `operation: unknown` is a request this relay could
+not name -- the raw function code is listed beside it, and no rule is proposed,
+because `operations` is a closed vocabulary and a proposal naming something
+outside it would not load.
+
+**No value is recorded.** A write's payload is a pressure, a temperature or a
+recipe parameter, the byte ranges are, and a learning report is a file that gets
+pasted into a ticket. **S7comm-plus is not recorded either**: its policy is about
+opcodes and function codes rather than areas and blocks, and one report cannot
+propose rules in both vocabularies.
+
+The proposal is one rule per client and operation rather than one per subject.
+Every range in it is what was actually touched, widened to nothing -- an engineer
+then widens it on purpose, having seen what the traffic is.
 
 ### What the PLC itself refuses
 

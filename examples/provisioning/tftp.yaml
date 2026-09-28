@@ -114,6 +114,37 @@ server:
         transfer_timeout: 10m
         idle_timeout: 15s
 
+        # How the rules below were arrived at, and how to arrive at them for
+        # the next site. On this protocol there is less to go on than
+        # anywhere else: no authentication, no session, no account, so a
+        # switch fetches its firmware at three in the morning and nothing
+        # says whether it was meant to. A policy written from the
+        # deployment guide refuses the half nobody documented, and here
+        # that means a switch that does not boot.
+        #
+        # So for the first week the listener records instead of deciding,
+        # and the report is what the rules get written from. Take this out
+        # once they are written -- validation warns about a learning
+        # section with no enforce, because one left on by accident is a
+        # relay that decides nothing.
+        #
+        # What learning never relaxes is the amplification: the block, the
+        # window and the transfer size stay in force whatever enforce says,
+        # and no proposal sets them. The report records the window a switch
+        # asked for as window_asked, under a name no rule uses, because
+        # raising that bound is a decision and not a measurement.
+        #
+        # learn:
+        #   enabled: true
+        #   file: /var/lib/xproxy/tftp-site-b.yaml
+        #   interval: 15m
+        #   # enforce: true would keep the rules below in force while
+        #   # recording, which is the second phase: the report then says
+        #   # which rules the traffic disagrees with, per subject, in
+        #   # denied_by_policy. Read server_errors in the same pass -- that
+        #   # is a device asking for a file nobody uploaded, which belongs
+        #   # in a ticket rather than in the policy.
+
         default_action: deny
         rules:
           # Access points and switches read their own firmware. The window

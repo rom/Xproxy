@@ -569,6 +569,10 @@ type IEC104Listener struct {
 	// activation confirmed instead of refused, or a whole listener that is
 	// a fabricated station. See IEC104Deception.
 	Deception *IEC104Deception `yaml:"deception"`
+	// Learn records what crosses this listener and writes a proposed policy,
+	// because a policy written from the substation drawings refuses half the
+	// traffic on the first shift. See IEC104Learn.
+	Learn *IEC104Learn `yaml:"learn"`
 	// Setpoints bound the *value* a setpoint command may carry, per
 	// information object address. Without them a setpoint is bounded only
 	// by which point it names and when it may be sent, so a control
@@ -576,6 +580,19 @@ type IEC104Listener struct {
 	// encoding can hold -- which on a scaled value is -32768 to 32767 and
 	// on a short float is most of the real line.
 	Setpoints []IEC104Setpoint `yaml:"setpoints"`
+	// Measurements bound the value a *station* may report on a point, which
+	// is the same arithmetic pointed the other way.
+	Measurements []IEC104Measurement `yaml:"measurements"`
+	// Quality is what to do about the quality descriptor a monitored value
+	// carries: which bits are worth an alert, and which -- if any -- refuse
+	// the frame.
+	Quality *IEC104Quality `yaml:"quality"`
+	// Timestamps is the policy about the time tag a command carries, which
+	// is this protocol's own replay check.
+	Timestamps *IEC104Timestamps `yaml:"timestamps"`
+	// Authentication is the posture on IEC 60870-5-7 secure authentication,
+	// which IEC 62351-5 specifies.
+	Authentication *IEC104Authentication `yaml:"authentication"`
 	// RequireSelect makes the two-step form mandatory for every command
 	// type that has one: a command must be selected, by the same client
 	// on the same connection, before it is executed. The standard
@@ -1758,6 +1775,10 @@ type S7Listener struct {
 	// request answered by a fabricated CPU, or a whole listener that is
 	// one. See S7Deception.
 	Deception *S7Deception `yaml:"deception"`
+	// Learn records what crosses this listener and writes a proposed policy,
+	// because the drawings say which blocks a controller has and the traffic
+	// says which of them anything actually reads. See S7Learn.
+	Learn *S7Learn `yaml:"learn"`
 
 	// Rules decide each request, in order, first match wins. A request
 	// that matches no rule takes DefaultAction.
@@ -1953,6 +1974,32 @@ type S7CommPlus struct {
 	// is the one setting in this section that can let an operation through
 	// that this relay did not recognise.
 	DefaultAction string `yaml:"default_action"`
+}
+
+// S7Learn records what crosses the listener and writes a proposed policy.
+//
+// The drawings say which blocks a controller has. They do not say which of them
+// the integrator's HMI reads every second, which block the historian polls, or
+// that a commissioning laptop has been reading DB1 since the plant was built. A
+// policy written from the drawings refuses half of it on the first shift, which
+// is how a security control gets turned off and stays off.
+type S7Learn struct {
+	// Enabled turns the recording on.
+	Enabled bool `yaml:"enabled"`
+	// File is where the report is written, as YAML. Required when enabled.
+	File string `yaml:"file"`
+	// Interval is how often it is rewritten. Default 5m; it is also written
+	// when the listener shuts down.
+	Interval Duration `yaml:"interval"`
+	// MaxSubjects bounds the observations held: one per client, function, area
+	// and data block seen. Default 8192; past it the newest is dropped and the
+	// drops are counted, because a learning run that quietly stopped learning
+	// is worse than one that says so.
+	MaxSubjects int `yaml:"max_subjects"`
+	// Enforce keeps the policy in force while learning. Default false: a
+	// learning run is normally observe-only, and saying so here is what stops
+	// one being left on by accident.
+	Enforce bool `yaml:"enforce"`
 }
 
 // S7Rule is one rule of an s7 listener's policy.
@@ -2828,6 +2875,32 @@ type TFTPListener struct {
 	LogTransfers *bool `yaml:"log_transfers"`
 	// AlertOnDeny writes a security event for every refusal. Default true.
 	AlertOnDeny *bool `yaml:"alert_on_deny"`
+	// Learn records what crosses this listener and writes a proposed policy.
+	Learn *TFTPLearn `yaml:"learn"`
+}
+
+// TFTPLearn is a tftp listener's learning mode.
+type TFTPLearn struct {
+	// Enabled turns the recording on.
+	Enabled bool `yaml:"enabled"`
+	// File is where the report is written, as YAML. Required when enabled.
+	File string `yaml:"file"`
+	// Interval is how often it is rewritten. Default 5m; it is also written
+	// when the listener shuts down.
+	Interval Duration `yaml:"interval"`
+	// MaxSubjects bounds the observations held: one per client, direction and
+	// directory seen. Default 8192; past it the newest is dropped and the drops
+	// are counted, because a learning run that quietly stopped learning is
+	// worse than one that says so.
+	MaxSubjects int `yaml:"max_subjects"`
+	// Enforce keeps the policy in force while learning. Default false: a
+	// learning run is normally observe-only, and saying so here is what stops
+	// one being left on by accident.
+	//
+	// What it never relaxes is the block, window and transfer-size bounds.
+	// Those are what stop this listener being an amplifier, they are not
+	// policy, and no report proposes them.
+	Enforce bool `yaml:"enforce"`
 }
 
 // TFTPRule decides one transfer.
@@ -3289,6 +3362,33 @@ type SNMPRule struct {
 	Schedule *ModbusSchedule `yaml:"schedule"`
 }
 
+// IEC104Learn records what crosses the listener and writes a proposed policy.
+//
+// A substation's drawings say what the traffic was meant to be. The traffic
+// says what the integrator left behind: a control centre interrogating a
+// station nobody documented, a gateway sending spontaneous data for points the
+// drawings do not list, an engineering laptop that has been connected since
+// commissioning. A policy written from the drawings refuses half of it on the
+// first shift, which is how a security control gets turned off and stays off.
+type IEC104Learn struct {
+	// Enabled turns the recording on.
+	Enabled bool `yaml:"enabled"`
+	// File is where the report is written, as YAML. Required when enabled.
+	File string `yaml:"file"`
+	// Interval is how often it is rewritten. Default 5m; it is also written
+	// when the listener shuts down.
+	Interval Duration `yaml:"interval"`
+	// MaxSubjects bounds the observations held: one per client, direction,
+	// common address and type identification seen. Default 8192; past it the
+	// newest is dropped and the drops are counted, because a learning run that
+	// quietly stopped learning is worse than one that says so.
+	MaxSubjects int `yaml:"max_subjects"`
+	// Enforce keeps the policy in force while learning. Default false: a
+	// learning run is normally observe-only, and saying so here is what stops
+	// one being left on by accident.
+	Enforce bool `yaml:"enforce"`
+}
+
 // IEC104Deception answers as a substation that is not there.
 //
 // A refusal is information. This relay answers a refused activation the
@@ -3385,6 +3485,137 @@ type IEC104DecoyPoints struct {
 // cannot see it -- so a bound on a normalised point is a bound on the fraction,
 // and writing min: 0 / max: 40 for one is a mistake the load will not catch. The
 // reference says so beside this, and the protocol page says it again.
+// IEC104Authentication is an iec104 listener's posture on the secure
+// authentication of IEC 60870-5-7, which is the application layer IEC 62351-5
+// specifies.
+//
+// **This relay recognises the exchange and carries it; it does not verify it.**
+// Verifying means holding the update keys, and a relay holding them would be a
+// second place for an attacker to take them from; one that failed closed on a key
+// it had got wrong would stop a control centre operating a grid. So no HMAC is
+// computed, no key is stored, and nothing is asserted about whether an
+// authentication was *valid*.
+//
+// What can be asserted is that the exchange took place, which on this protocol is
+// the difference between a controlling station running the standard's
+// authentication and one that has it switched off.
+type IEC104Authentication struct {
+	// Require refuses a command on an association where no authentication reply
+	// (S_RP_NA_1) or aggressive-mode request (S_AS_NA_1) has been seen inside
+	// Window. The refusal is hard: monitor and shadow mode do not carry it,
+	// because a command forwarded so that the missing authentication could be
+	// written down is a moved actuator.
+	//
+	// Off by default. An estate whose stations do not implement 60870-5-7 --
+	// which is most of them -- would refuse every command on the first day.
+	Require bool `yaml:"require"`
+	// Window is how long an authentication counts for on an association.
+	// Default 5m. The standard's own session keys expire, and an authentication
+	// that never did would let one exchange at connection time authorise every
+	// command for a week.
+	Window Duration `yaml:"window"`
+}
+
+// IEC104Quality is an iec104 listener's policy about the quality descriptor a
+// monitored value carries.
+//
+// It is an alerting policy by default and not a refusing one, because refusing
+// telemetry blinds a control room -- which is its own kind of incident, and a
+// worse one than a substituted value reaching a trend. `deny` exists for the
+// estate that has decided otherwise about a particular bit, and it is empty
+// until somebody writes it.
+type IEC104Quality struct {
+	// AlertOn names the quality bits worth a security event: invalid,
+	// not_topical, substituted, blocked, overflow. Empty alerts on
+	// substituted, which is the bit that means a person typed the value in
+	// rather than an instrument measuring it -- a control centre acting on it
+	// is acting on somebody's opinion of the plant, and no HMI shows it.
+	AlertOn []string `yaml:"alert_on"`
+	// Deny names the bits that refuse the frame carrying them. Empty, and
+	// deliberately: a refusal here is a reading a control room does not get.
+	// It is a soft refusal, so monitor and shadow mode carry it and say so.
+	Deny []string `yaml:"deny"`
+}
+
+// IEC104Timestamps is an iec104 listener's policy about the time tag a command
+// carries.
+//
+// This is the protocol's own replay check, and nothing in IEC 60870-5-104 makes
+// anybody perform it: a time-tagged command replayed an hour later carries the
+// hour-old timestamp with it, and a station that does not compare it against its
+// clock executes the command again. IEC 62351-5 exists in part for this reason.
+//
+// The comparison is against this relay's clock, so a station whose clock is wrong
+// trips it. That is a finding rather than a false positive -- an estate whose
+// substations and control centre disagree about the time cannot investigate
+// anything afterwards either -- and it is why the `ntp` listener kind exists.
+type IEC104Timestamps struct {
+	// RequireOnCommands refuses a time-tagged command type that carries no
+	// readable timestamp: absent, or with fields outside their ranges. A
+	// command type without a time tag at all is not affected -- C_SC_NA_1 has
+	// no timestamp to require.
+	RequireOnCommands bool `yaml:"require_on_commands"`
+	// MaxCommandAge refuses a time-tagged command whose timestamp is older
+	// than this. 0 disables the check, which is the default: a substation
+	// estate with no time discipline would refuse every command on the first
+	// day, and turning this on is a decision to have that discipline.
+	MaxCommandAge Duration `yaml:"max_command_age"`
+	// MaxCommandFuture refuses one whose timestamp is further ahead than this.
+	// A command from the future is the same replay with the clocks the other
+	// way round. 0 disables it.
+	MaxCommandFuture Duration `yaml:"max_command_future"`
+	// DenyInvalid refuses a command whose time tag carries the IV bit: the
+	// controlling station has said its own clock is not to be trusted, which is
+	// a thing to refuse rather than to accept silently on a command that moves
+	// plant.
+	DenyInvalid bool `yaml:"deny_invalid"`
+}
+
+// IEC104Measurement bounds what a station may report on a point.
+//
+// It is the arithmetic of `setpoints` pointed the other way: `setpoints` says how
+// far a control centre may drive a point, and this says what a station may claim
+// to have measured there. A pressure of 900 bar on a 40 bar transmitter is either
+// a broken instrument or a forged frame, and either way it is something an
+// operator should be told about rather than something that sits on a trend.
+//
+// The default action is alert and not deny, for the reason IEC104Quality is:
+// refusing telemetry blinds a control room.
+type IEC104Measurement struct {
+	// Name is what an alert and a refusal call this bound. Required and
+	// unique.
+	Name string `yaml:"name"`
+	// Points is the information object addresses this bound covers, as
+	// "4711", "100-199" or "0x1000-0x1fff". Required.
+	Points []string `yaml:"points"`
+	// Types narrows the bound to particular monitored types by their standard
+	// names (M_ME_NC_1 and so on). Empty covers every monitored type whose
+	// value this relay decodes, which is usually right: a point is normally
+	// reported with one encoding, and a bound covering only the encoding the
+	// author thought of would be silent about the others.
+	Types []string `yaml:"types"`
+	// CommonAddresses narrows it to particular stations. Empty covers every
+	// station this listener carries.
+	CommonAddresses []string `yaml:"common_addresses"`
+	// Min and Max bound the reported value, inclusive. Both required, for the
+	// reason a setpoint bound needs both: a bound with one end open is a bound
+	// in one direction.
+	//
+	// What the number means depends on the encoding, and the two that are not
+	// in engineering units are worth knowing about: a normalised value is a
+	// fraction of a full scale configured in the device, between -1 and just
+	// under +1, and a scaled value is an integer in whatever unit the point was
+	// configured with. A short float is the only one that arrives in
+	// engineering units with no scale factor kept elsewhere.
+	Min *float64 `yaml:"min"`
+	Max *float64 `yaml:"max"`
+	// Action is alert (the default: a security event and a counter, and the
+	// reading goes through) or deny (the frame is refused). deny is a soft
+	// refusal, so monitor and shadow mode carry it and record that they would
+	// not have.
+	Action string `yaml:"action"`
+}
+
 type IEC104Setpoint struct {
 	// Name is what a refusal and the status view call this bound. Required
 	// and unique: a decision nobody can name is one nobody can find.
@@ -5592,6 +5823,31 @@ type MQTTListener struct {
 	ProxyProtocol bool `yaml:"proxy_protocol"`
 	// AllowClients restricts clients to these CIDRs.
 	AllowClients []string `yaml:"allow_clients"`
+	// Learn records what crosses this listener and writes a proposed policy.
+	Learn *MQTTLearn `yaml:"learn"`
+}
+
+// MQTTLearn is an mqtt listener's learning mode.
+type MQTTLearn struct {
+	// Enabled turns the recording on.
+	Enabled bool `yaml:"enabled"`
+	// File is where the report is written, as YAML. Required when enabled.
+	File string `yaml:"file"`
+	// Interval is how often it is rewritten. Default 5m; it is also written
+	// when the listener shuts down.
+	Interval Duration `yaml:"interval"`
+	// MaxSubjects bounds the observations held: one per client, direction and
+	// topic depth. Default 8192; past it the newest is dropped and the drops
+	// are counted, because a learning run that quietly stopped learning is
+	// worse than one that says so.
+	MaxSubjects int `yaml:"max_subjects"`
+	// Enforce keeps the policy in force while learning. Default false: a
+	// learning run is normally observe-only, and saying so here is what stops
+	// one being left on by accident.
+	//
+	// What it never relaxes is the packet, payload and subscription bounds, nor
+	// a packet this proxy could not read: those are not policy.
+	Enforce bool `yaml:"enforce"`
 }
 
 // MQTTTopicRule is what one set of topics may carry: how large a payload,

@@ -149,10 +149,17 @@ func (p *PDU) FunctionName() string {
 	if !p.HasFunction {
 		return "none"
 	}
-	if n, ok := functionNames[p.Function]; ok {
+	return FunctionNameOf(p.Function)
+}
+
+// FunctionNameOf names a function code, or gives its number, for a caller that
+// holds the code rather than the PDU it came from -- a learning report keyed by
+// function, for instance. AreaName and TransportName are the same shape.
+func FunctionNameOf(fn uint8) string {
+	if n, ok := functionNames[fn]; ok {
 		return n
 	}
-	return fmt.Sprintf("%#x", p.Function)
+	return fmt.Sprintf("%#x", fn)
 }
 
 // KnownFunction says whether the function code is one this package names.

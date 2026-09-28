@@ -96,6 +96,41 @@ const (
 	CTsTA1 Type = 107 // test command with CP56Time2a
 )
 
+// The secure-authentication types of IEC 60870-5-7, which is the application
+// layer IEC 62351-5 specifies.
+//
+// They exist because the protocol itself has no authentication at all: a
+// controlling station is an address, and an address is what an attacker on the
+// same network chooses. So 60870-5-7 adds a challenge and a reply over the
+// existing ASDU machinery -- the controlled station challenges a critical
+// command, the controlling station answers with an HMAC over it, and only then
+// is the command acted on -- with an aggressive mode that carries the
+// authentication with the command instead of after it.
+//
+// **This relay recognises them and carries them. It does not verify them.**
+// Verifying means holding the update keys, and a relay holding them would be a
+// second place an attacker could take them from -- and a relay that failed
+// closed on a key it had got wrong would stop a control centre operating a grid.
+// What the names are for is that the exchange can be named in a rule, counted,
+// and required to have happened: a listener that did not know these types would
+// refuse them as unknown, which would make the standard's own authentication
+// unusable through it. That is the failure worth avoiding.
+const (
+	SChNA1 Type = 81 // authentication challenge
+	SRpNA1 Type = 82 // authentication reply
+	SAsNA1 Type = 83 // aggressive mode authentication request
+	SKrNA1 Type = 84 // session key status request
+	SKsNA1 Type = 85 // session key status
+	SKcNA1 Type = 86 // session key change
+	SErNA1 Type = 87 // authentication error
+	SUsNA1 Type = 90 // user status change
+	SUqNA1 Type = 91 // update key change request
+	SUrNA1 Type = 92 // update key change reply
+	SUkNA1 Type = 93 // update key change symmetric
+	SUaNA1 Type = 94 // update key change asymmetric
+	SUcNA1 Type = 95 // update key change confirmation
+)
+
 // Parameters and file transfer.
 const (
 	PMeNA1 Type = 110 // parameter of measured value, normalised
@@ -139,6 +174,10 @@ var typeNames = map[string]Type{
 	"P_ME_NA_1": PMeNA1, "P_ME_NB_1": PMeNB1, "P_ME_NC_1": PMeNC1, "P_AC_NA_1": PAcNA1,
 	"F_FR_NA_1": FFrNA1, "F_SR_NA_1": FSrNA1, "F_SC_NA_1": FScNA1, "F_LS_NA_1": FLsNA1,
 	"F_AF_NA_1": FAfNA1, "F_SG_NA_1": FSgNA1, "F_DR_TA_1": FDrTA1, "F_SC_NB_1": FScNB1,
+	"S_CH_NA_1": SChNA1, "S_RP_NA_1": SRpNA1, "S_AS_NA_1": SAsNA1, "S_KR_NA_1": SKrNA1,
+	"S_KS_NA_1": SKsNA1, "S_KC_NA_1": SKcNA1, "S_ER_NA_1": SErNA1, "S_US_NA_1": SUsNA1,
+	"S_UQ_NA_1": SUqNA1, "S_UR_NA_1": SUrNA1, "S_UK_NA_1": SUkNA1, "S_UA_NA_1": SUaNA1,
+	"S_UC_NA_1": SUcNA1,
 }
 
 // typeByValue is the reverse, built once.
@@ -182,6 +221,27 @@ func (t Type) Monitoring() bool { return t >= 1 && t <= 40 }
 func (t Type) Command() bool {
 	return (t >= CScNA1 && t <= CBoNA1) || (t >= CScTA1 && t <= CBoTA1)
 }
+
+// Secure says whether a type belongs to the secure-authentication exchange of
+// IEC 60870-5-7, the application layer IEC 62351-5 specifies.
+//
+// A listener that did not know these would refuse them as unknown types, which
+// would make the standard's own authentication unusable through this relay. They
+// are their own class rather than system commands, because a rule that allowed
+// the authentication exchange should not thereby allow a station reset.
+func (t Type) Secure() bool {
+	return (t >= SChNA1 && t <= SErNA1) || (t >= SUsNA1 && t <= SUcNA1)
+}
+
+// Authenticates says whether a type is the half of the exchange that proves a
+// controlling station holds the key: a reply to a challenge, or an aggressive
+// mode request carrying its authentication with it.
+//
+// This is what `require_authentication` looks for. It is not a verification --
+// this relay holds no keys and says so -- it is the observation that the exchange
+// the standard defines took place, which is the most a party in the middle can
+// honestly assert.
+func (t Type) Authenticates() bool { return t == SRpNA1 || t == SAsNA1 }
 
 // System says whether a type is a system command, which includes the two
 // that reset a station and move its clock.
@@ -322,29 +382,17 @@ func upper(s string) string {
 	return string(b)
 }
 
-// SetpointKind is how a setpoint command encodes the value it carries. The
-// three are not interchangeable: the same two octets mean a fraction of full
-// scale in one and an engineering integer in another, so a bound written
-// against the wrong one is a bound about nothing.
-type SetpointKind int
+// SetpointKind is how a setpoint command encodes the value it carries, which is
+// the same vocabulary the monitoring direction uses for the same three
+// encodings: an alias rather than a second set of names, because a bound written
+// against a scaled setpoint and a bound written against a scaled measurement are
+// the same arithmetic. See ValueKind in element.go.
+type SetpointKind = ValueKind
 
-const (
-	// NotASetpoint is every type that carries no setpoint value: the
-	// single, double and regulating step commands, the bitstring command,
-	// and everything in the monitoring direction.
-	NotASetpoint SetpointKind = iota
-	// Normalised is NVA: a 16-bit signed fraction of full scale, where
-	// 0x7fff is very nearly +1 and 0x8000 is -1. The engineering value
-	// depends on a range configured in the device, which this relay does
-	// not know -- so a bound on it is a bound on the fraction.
-	Normalised
-	// Scaled is SVA: a 16-bit signed integer in whatever unit the point is
-	// in. This is the one an engineer usually means by "setpoint".
-	Scaled
-	// ShortFloat is R32-IEEE-754, four octets, little endian like
-	// everything else here.
-	ShortFloat
-)
+// NotASetpoint is every type that carries no setpoint value: the single, double
+// and regulating step commands, the bitstring command, and everything in the
+// monitoring direction.
+const NotASetpoint = NoValue
 
 // SetpointEncoding says how a type carries its value, and where in the
 // information element that value starts. The offset is always zero -- the value

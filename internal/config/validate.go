@@ -3653,6 +3653,24 @@ func (v *validator) mqttListener(p string, m *MQTTListener, hasTLS bool) {
 	if m.Upstream == "" {
 		v.errf("%s.upstream: required", p)
 	}
+	if l := m.Learn; l != nil && l.Enabled {
+		if l.File == "" {
+			v.errf("%s.learn.file: required when learning is enabled", p)
+		} else if !strings.HasPrefix(l.File, "/") {
+			v.errf("%s.learn.file: must be an absolute path", p)
+		}
+		if l.Interval != 0 && (l.Interval.D() < 10*time.Second || l.Interval.D() > 24*time.Hour) {
+			v.errf("%s.learn.interval: must be between 10s and 24h", p)
+		}
+		if l.MaxSubjects != 0 && (l.MaxSubjects < 16 || l.MaxSubjects > 1_000_000) {
+			v.errf("%s.learn.max_subjects: must be between 16 and 1000000", p)
+		}
+		if !l.Enforce {
+			v.warnf("%s.learn is enabled without enforce, so this listener records and decides nothing: "+
+				"turn enforce on, or take the learning section out, once the topic lists are written. "+
+				"The packet, payload and subscription bounds stay in force either way", p)
+		}
+	}
 	switch m.TLSMode {
 	case "implicit":
 		if !hasTLS {
@@ -8540,6 +8558,23 @@ func (v *validator) s7Listener(p string, m *S7Listener) {
 		v.errf("%s.upstream: required", p)
 	}
 	v.s7Deception(p+".deception", m)
+	if l := m.Learn; l != nil && l.Enabled {
+		if l.File == "" {
+			v.errf("%s.learn.file: required when learning is enabled", p)
+		} else if !strings.HasPrefix(l.File, "/") {
+			v.errf("%s.learn.file: must be an absolute path", p)
+		}
+		if l.Interval != 0 && (l.Interval.D() < 10*time.Second || l.Interval.D() > 24*time.Hour) {
+			v.errf("%s.learn.interval: must be between 10s and 24h", p)
+		}
+		if l.MaxSubjects != 0 && (l.MaxSubjects < 16 || l.MaxSubjects > 1_000_000) {
+			v.errf("%s.learn.max_subjects: must be between 16 and 1000000", p)
+		}
+		if !l.Enforce {
+			v.warnf("%s.learn is enabled without enforce, so this listener records and decides nothing: "+
+				"turn enforce on, or take the learning section out, once the rules are written", p)
+		}
+	}
 	v.modbusCIDRs(p+".allow_clients", m.AllowClients)
 	v.modbusCIDRs(p+".deny_clients", m.DenyClients)
 	if len(m.AllowClients) == 0 {
@@ -9551,6 +9586,24 @@ func (v *validator) tftpListener(p string, m *TFTPListener) {
 	if m.Upstream == "" {
 		v.errf("%s.upstream: required", p)
 	}
+	if l := m.Learn; l != nil && l.Enabled {
+		if l.File == "" {
+			v.errf("%s.learn.file: required when learning is enabled", p)
+		} else if !strings.HasPrefix(l.File, "/") {
+			v.errf("%s.learn.file: must be an absolute path", p)
+		}
+		if l.Interval != 0 && (l.Interval.D() < 10*time.Second || l.Interval.D() > 24*time.Hour) {
+			v.errf("%s.learn.interval: must be between 10s and 24h", p)
+		}
+		if l.MaxSubjects != 0 && (l.MaxSubjects < 16 || l.MaxSubjects > 1_000_000) {
+			v.errf("%s.learn.max_subjects: must be between 16 and 1000000", p)
+		}
+		if !l.Enforce {
+			v.warnf("%s.learn is enabled without enforce, so this listener records and decides nothing: "+
+				"turn enforce on, or take the learning section out, once the rules are written. "+
+				"The block, window and transfer-size bounds stay in force either way", p)
+		}
+	}
 	v.modbusCIDRs(p+".allow_clients", m.AllowClients)
 	v.modbusCIDRs(p+".deny_clients", m.DenyClients)
 	if len(m.AllowClients) == 0 {
@@ -10464,6 +10517,23 @@ func (v *validator) iec104Listener(p string, m *IEC104Listener, hasTLS bool) {
 	}
 	v.iec104Setpoints(p+".setpoints", m.Setpoints)
 	v.iec104Deception(p+".deception", m)
+	if l := m.Learn; l != nil && l.Enabled {
+		if l.File == "" {
+			v.errf("%s.learn.file: required when learning is enabled", p)
+		} else if !strings.HasPrefix(l.File, "/") {
+			v.errf("%s.learn.file: must be an absolute path", p)
+		}
+		if l.Interval != 0 && (l.Interval.D() < 10*time.Second || l.Interval.D() > 24*time.Hour) {
+			v.errf("%s.learn.interval: must be between 10s and 24h", p)
+		}
+		if l.MaxSubjects != 0 && (l.MaxSubjects < 16 || l.MaxSubjects > 1_000_000) {
+			v.errf("%s.learn.max_subjects: must be between 16 and 1000000", p)
+		}
+		if !l.Enforce {
+			v.warnf("%s.learn is enabled without enforce, so this listener records and decides nothing: "+
+				"turn enforce on, or take the learning section out, once the rules are written", p)
+		}
+	}
 	if m.MonitorOnly && m.RequireSelect {
 		v.warnf("%s.require_select: monitor_only already refuses every command, so there is nothing left to select", p)
 	}
@@ -10536,9 +10606,10 @@ func (v *validator) iec104Listener(p string, m *IEC104Listener, hasTLS bool) {
 		}
 		for j, c := range r.Class {
 			switch c {
-			case "monitoring", "command", "system", "parameter", "file":
+			case "monitoring", "command", "system", "parameter", "file", "security":
 			default:
-				v.errf("%s.class[%d]: %q must be monitoring, command, system, parameter or file", q, j, c)
+				v.errf("%s.class[%d]: %q must be monitoring, command, system, parameter, file or security",
+					q, j, c)
 			}
 		}
 		for j, c := range r.Causes {

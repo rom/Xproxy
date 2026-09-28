@@ -6,6 +6,232 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (iec104: IEC 62351-5 recognised, counted and requirable)
+
+- **The thirteen IEC 60870-5-7 secure-authentication types are named.** Before
+  this, a listener saw type 81 as an unknown type and its policy refused it —
+  which made the standard's own authentication *unusable through this relay*.
+  That is the failure this mostly closes. They are the rule class `security`: its
+  own class, so a rule allowing the authentication exchange does not thereby allow
+  a station reset.
+
+- **`iec104_authentications` counts the replies and aggressive-mode requests
+  seen, whether or not the listener requires them.** An estate decides whether to
+  turn the requirement on by finding out which of its associations already
+  authenticate, and a counter that only moved once the requirement was in force
+  would be no help in making that decision.
+
+- **`authentication: {require: true}` refuses a command on an association that has
+  shown no exchange inside `window`** (5m by default, because the standard's own
+  session keys expire and an authentication that never did would let one exchange
+  at connection time authorise every command for a week). The state is per
+  association: crediting one connection's exchange to another would let a client
+  that can open a socket ride on a legitimate control centre's authentication,
+  which is the whole thing being defended against.
+
+- **This relay does not verify an authentication, and says so.** Verifying means
+  holding the update keys, and a relay holding them would be a second place for an
+  attacker to take them from; one that failed closed on a key it had got wrong
+  would stop a control centre operating a grid. No HMAC is computed, no key is
+  stored, and nothing is asserted about validity — only that the exchange the
+  standard defines took place, which is the most a party in the middle can
+  honestly assert.
+
+### Added (iec104: the information element, decoded and policed)
+
+- **`ASDU.Elements` decodes the information element.** Until now this relay read
+  an ASDU's header and, for a command, its qualifier and setpoint value — enough
+  to decide which points a station may be commanded on and nothing about what it
+  reports of them. Every layout is a table entry rather than a case in a parser,
+  because a table can be checked against IEC 60870-5-101 section 7.3.1 by reading
+  it, and a type absent from the table decodes to nothing rather than to a guess.
+
+- **`quality` is what to do about the quality descriptor.** `substituted` — a
+  person typed the value in rather than an instrument measuring it — is alerted on
+  by default, because it is the bit no HMI in the field shows and a control centre
+  acting on one is acting on somebody's opinion of the plant. `invalid` and
+  `not_topical` are left to be asked for: they are ordinary on a substation with a
+  device out for maintenance, and alerting on them by default would teach an
+  operator to ignore the alert.
+
+- **`timestamps` is the replay check this protocol most needs and least
+  performs.** A time-tagged command replayed an hour later carries the hour-old
+  timestamp with it, and nothing in IEC 60870-5-104 makes a station compare that
+  against its clock — so a recorded breaker command, sent again, opens the breaker
+  again. `max_command_age`, `max_command_future`, `require_on_commands` and
+  `deny_invalid` are that comparison, and those refusals are **hard**: a command
+  forwarded so that its age could be written down is a moved actuator. A station's
+  own confirmation is never checked, because it carries the same timestamp and
+  refusing it would leave a control centre waiting for the answer to a command
+  this relay already let through.
+
+- **`measurements` bounds what a station may report**, which is the arithmetic of
+  `setpoints` pointed the other way. A pressure of 900 bar on a 40 bar transmitter
+  is a broken instrument or a forged frame.
+
+- **Telemetry is alerted on and carried; a command's timestamp is refused.** That
+  asymmetry is the design: a relay that refused telemetry would blind a control
+  room, which is its own kind of incident and a worse one than an implausible
+  reading reaching a trend. So `quality` and `measurements` default to alert, their
+  `deny` is soft, and an alert from either does not reach the ban ladder — a
+  substation with a hand-entered reading is not an attacker, and a ban would take
+  the control room's telemetry away over a data-quality problem.
+
+- Every object of an ASDU is walked, not only the first. A report carrying forty
+  measurements carries forty chances for one of them to be the substituted one.
+
+### Added (mqtt: learning mode, and never a `#`)
+
+- **`mqtt.learn` records what crosses the listener and writes proposed topic
+  lists.** A broker in a plant carries topics nobody wrote down: the naming
+  convention is in a document from 2019, the gateway that was replaced still
+  publishes under the old prefix, and the historian subscribes to something wider
+  than anyone remembers agreeing to. A `publish_allow` list written from the
+  convention refuses what does not follow it, which on a message bus means
+  telemetry *silently stops arriving* — the client keeps publishing and nothing
+  changes on the screen until somebody notices a flat line.
+
+- **No `#` is proposed, at any depth, for any subject.** This is the whole
+  difficulty of learning on this protocol and the easy answer is the wrong one:
+  `plant/#` covers every level under `plant`, including the ones that do not exist
+  yet, so an allow list built from it allows the thing it was supposed to bound.
+  What is proposed is a filter of exactly the depth observed, with `+` — which
+  matches one level and no more — at the positions where the traffic varied.
+  `plant/line3/press1/temperature`, `.../pressure` and `plant/line3/press2/...`
+  become `plant/line3/+/+`, and the levels seen at each position are listed so a
+  `+` can be narrowed by hand. A position whose values outran the bound the report
+  remembers is still only a `+`.
+
+- **The topic depth is part of a subject's identity**, because a `+` matches one
+  level: topics of different depths cannot share a filter, and a report that
+  folded them together would have had no choice but to widen. Two depths produce
+  two filters.
+
+- **A filter the client wrote is recorded and proposed verbatim**, under
+  `depth: filter`, because a subscription is already a filter. If a historian
+  asked for `plant/#` then that is what it needs; the report flags it rather than
+  proposing something narrower that would break it.
+
+- The identity is the CONNECT username, or the address when there was none — not
+  the client identifier, since many clients generate a fresh one per connection
+  and a subject each would be a subject per reboot. The identifiers seen are
+  listed inside the subject, which is what `client_id_pattern` is written from.
+
+- **`allow_retain: false` is never proposed**: a run that saw no retained message
+  has not learned that none is wanted, so the key is left out and the listener's
+  default decides. Payload sizes and the QoS span become the proposed `topics[]`
+  bounds; no payload is recorded.
+
+### Added (tftp: learning mode, with the amplification bound left alone)
+
+- **`tftp.learn` records what crosses the listener and writes a proposed
+  policy.** On this protocol there is less to go on than anywhere else: no
+  authentication, no session and no account, so nothing is auditable in the
+  ordinary sense. A switch fetches its firmware at three in the morning and the
+  server's own log, when it has one, gives an address and a path and says nothing
+  about which of them were meant to happen.
+
+- A subject is one client, one direction and one directory, because
+  `directories` is the line an engineer argues about and a subject per file would
+  be a report per file. The filenames inside it are listed, bounded.
+
+- **The amplification bounds are recorded and never proposed.** A request past
+  `max_window_size` or `max_block_size` is lowered to the bound and still
+  transfers, so the report sees the window of sixty-four a switch asked for — and
+  a report that turned that into `max_window_size: 64` would have widened, from
+  an observation, the one setting that stops a twenty-octet request yielding a
+  file to a forged address. They appear as `window_asked`, `block_size_asked`,
+  `declared_size` and `bytes_moved`, which no rule uses, and `enforce: false`
+  suspends the path, direction and mode policy without touching a bound.
+
+- **A `filenames` pattern is proposed only when the names generalise.** Names
+  sharing a small set of extensions become `firmware/*.bin`; names that share
+  nothing, or more extensions than the report remembers, get no pattern and a
+  note saying why. The only pattern that always fits is `*`, and a rule
+  permitting every file on the server is not what "derived from the traffic"
+  should produce. The *name* bound deliberately does not make a subject
+  ungeneralisable: every name's extension is recorded whether or not the name
+  itself was, so four hundred images all ending `.bin` still propose one pattern
+  that covers the ones the report did not list.
+
+- `server_errors` counts what the *server* refused, and a subject with nothing
+  but those is not proposed: a device asking for a file nobody uploaded is not a
+  rule to write. A filename in a class this relay and the server would read
+  differently is recorded under `path_class` and never proposed, and no file
+  contents are recorded at all.
+
+### Added (s7: learning mode)
+
+- **`s7.learn` records what crosses the listener and writes a proposed policy.**
+  On this protocol there is nowhere else to find out what the traffic is: the CPU
+  keeps no access log, and nobody can enumerate the blocks a program touches by
+  reading the program. The drawings say which blocks a controller has; the traffic
+  says which of them the HMI reads every second and that the commissioning laptop
+  has been reading DB1 since 2014. A run is observe-only unless `enforce` says
+  otherwise.
+
+- A subject is one client, one operation, one area and one data block — the grain
+  an S7 rule is written at. Byte ranges merge as they grow, so two adjacent reads
+  are one span, and **what was written is kept apart from what was read**, because
+  that is the rule read most carefully and `write_addresses` is the key it becomes.
+
+- **An access fault from the controller is attributed to the request it answers.**
+  A response carries the function and the return codes and never the area or the
+  block, so the request is where the subject was known; a fault is charged only to
+  subjects of the operation it answers, so a password-protected CPU refusing
+  writes does not cost the HMI its read. A subject the controller refuses every
+  time is left out of the proposal: permitting it would permit something that
+  cannot happen.
+
+- **The proposal is written in the vocabulary `operations` uses**, so it loads. An
+  operation this relay cannot name is recorded as `operation: unknown` with the
+  raw function code beside it and no rule proposed for it, and an item addressed
+  in a syntax this relay does not decode is recorded without an area or a block
+  rather than under a fabricated `area: 0`.
+
+- No process value is recorded, and neither is S7comm-plus: its policy is about
+  opcodes rather than areas and blocks, and one report cannot propose rules in
+  both vocabularies.
+
+### Added (iec104: learning mode, and a shared core for every kind's)
+
+- **`iec104.learn` records what crosses the listener and writes a proposed
+  policy**, as `modbus.learn` does. Nobody knows what a substation's traffic
+  actually is: the drawings say which points exist and which a control centre is
+  supposed to command, and the traffic says what the integrator left behind. A
+  policy written from the drawings refuses half of it on the first shift, which is
+  how a security control gets turned off and stays off. A run is observe-only
+  unless `enforce` says otherwise, because a run that refused half the traffic
+  would have changed the thing it was measuring.
+
+- A subject is one client, one **direction**, one common address and one type
+  identification. The direction is part of the identity because the same type
+  means different things each way — an activation going down is a command and the
+  confirmation coming back is the station answering — and a report that folded
+  them together would propose a rule allowing a station to command its own
+  control centre.
+
+- **A negative confirmation is attributed to the command it refuses**, not only
+  to the answer it arrived as. Counted where it arrives it would tell an engineer
+  that confirmations come back, which they do; counted against the command it
+  says *this command is refused by the equipment*, and the proposal leaves such a
+  command out rather than permitting something that cannot happen.
+
+- The report carries `denied_by_policy` (what the current policy refused, or
+  would have) and the causes of transmission actually used, which is the part of
+  an IEC 104 rule most often written too loosely. The measurements travelling up
+  are deliberately absent and a setpoint's span is present, because the span is
+  the bound `setpoints` is written from and a learning report is a file that gets
+  pasted into a ticket.
+
+- **`internal/learn` is the machinery underneath**, extracted rather than copied
+  because four more kinds need it: the bounded insertion-ordered table, the
+  periodic write and the one at shutdown, the atomic replace, and the counters
+  that say a run stopped learning. It takes a `Clone` for the observation, which
+  the modbus original did not have — the report is rendered outside the table's
+  lock, and a shallow copy of an observation with a slice field leaves the
+  renderer reading an array a concurrent append is still writing to.
+
 ### Changed (the relays' tripwires reach the ban ladder)
 
 - **`modbus_tripwire`, `iec104_tripwire`, `s7_tripwire`, `redis_tripwire`,
