@@ -3,11 +3,15 @@ package ntske
 import (
 	"bytes"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -522,5 +526,135 @@ func TestTheKeySetIsUsedFromManyGoroutines(t *testing.T) {
 	close(errs)
 	for err := range errs {
 		t.Error(err)
+	}
+}
+
+func TestTheKeySetSurvivesAProcess(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cookies.json")
+	first := newKeys(t, 2)
+	cookie := sealed(t, first)
+	if err := first.Rotate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	// The keys are the secret every cookie's secrecy rests on.
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Errorf("the state file is mode %v", fi.Mode().Perm())
+	}
+	second := newKeys(t, 2)
+	if err := second.Load(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := second.Open(cookie); err != nil {
+		t.Fatalf("a cookie issued before the restart no longer opens: %v", err)
+	}
+	// And the restored set is the same set, not just one that happens to open
+	// this cookie: the current key is the one that was current.
+	c1, o1 := first.Keys()
+	c2, o2 := second.Keys()
+	if c1.ID != c2.ID || !bytes.Equal(c1.Key, c2.Key) || len(o1) != len(o2) {
+		t.Fatalf("the restored set differs: %d/%d current, %d/%d retired", c1.ID, c2.ID, len(o1), len(o2))
+	}
+}
+
+func TestSavingOverAnExistingStateFileReplacesIt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cookies.json")
+	k := newKeys(t, 1)
+	if err := k.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.Rotate(); err != nil {
+		t.Fatal(err)
+	}
+	fresh := sealed(t, k)
+	if err := k.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	other := newKeys(t, 1)
+	if err := other.Load(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := other.Open(fresh); err != nil {
+		t.Fatalf("the second save did not take: %v", err)
+	}
+	// Nothing is left behind: a temporary file in the directory would be a
+	// secret nobody knows is there.
+	ents, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ents) != 1 {
+		t.Fatalf("%d files in the directory", len(ents))
+	}
+}
+
+func TestAStateFileThatCannotBeReadIsAnError(t *testing.T) {
+	dir := t.TempDir()
+	k := newKeys(t, 2)
+	if err := k.Load(filepath.Join(dir, "absent.json")); !errors.Is(err, fs.ErrNotExist) {
+		// A first start has no file, and that is not the same thing as a file
+		// that is there and wrong.
+		t.Fatalf("got %v, want a not-exist error", err)
+	}
+	good := base64.StdEncoding.EncodeToString(make([]byte, 32))
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"not JSON", "{"},
+		{"a version from the future", `{"version":2,"current":{"id":1,"key":"` + good + `"}}`},
+		{"a key that is not base64", `{"version":1,"current":{"id":1,"key":"!!!"}}`},
+		{"a key of the wrong length", `{"version":1,"current":{"id":1,"key":"AAAA"}}`},
+		{"a retired key of the wrong length",
+			`{"version":1,"current":{"id":1,"key":"` + good + `"},"old":[{"id":2,"key":"AAAA"}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(dir, "state.json")
+			if err := os.WriteFile(path, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := k.Load(path); !errors.Is(err, ErrState) {
+				t.Fatalf("got %v, want %v", err, ErrState)
+			}
+		})
+	}
+	// And a refused load left the set alone, because a relay that lost its keys
+	// to a bad file would be doing what the file exists to prevent.
+	if _, _, err := k.Open(sealed(t, k)); err != nil {
+		t.Errorf("the set broke after a refused load: %v", err)
+	}
+}
+
+// A save that fails leaves nothing behind. The temporary file holds the same
+// secret the state file does, so one left in the directory would be a copy of
+// the estate's cookie keys that nobody knows about.
+func TestASaveThatFailsLeavesNoTemporaryFile(t *testing.T) {
+	dir := t.TempDir()
+	// A directory where the file belongs: the write succeeds and the rename
+	// cannot.
+	path := filepath.Join(dir, "cookies.json")
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := newKeys(t, 1).Save(path); err == nil {
+		t.Fatal("saved over a directory")
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ents) != 1 || ents[0].Name() != "cookies.json" {
+		names := make([]string, 0, len(ents))
+		for _, e := range ents {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("the directory holds %v", names)
 	}
 }

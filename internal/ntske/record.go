@@ -66,6 +66,10 @@ const (
 	// message of ten thousand empty records is a message that costs more to
 	// read than to send.
 	MaxRecords = 64
+	// MaxCookies bounds how many cookies this will take from one answer,
+	// because a server that sent ten thousand would be spending this relay's
+	// memory rather than answering it.
+	MaxCookies = 32
 )
 
 // Errors this package returns.
@@ -299,4 +303,122 @@ func Negotiate(q *Request) (nextProto, aead uint16, ok bool) {
 		}
 	}
 	return 0, 0, false
+}
+
+// AppendTo encodes a client's request.
+//
+// The client half exists because this relay is a client too: terminating a
+// client's NTS means holding keys with the time source as well, and getting
+// those means asking for them the same way anybody else does.
+func (q *Request) AppendTo(dst []byte) []byte {
+	dst = Record{Critical: true, Type: RecNextProtocol, Body: uint16List(q.NextProtocols...)}.AppendTo(dst)
+	dst = Record{Critical: true, Type: RecAEADAlgorithm, Body: uint16List(q.AEADs...)}.AppendTo(dst)
+	if q.Server != "" {
+		dst = Record{Type: RecServer, Body: []byte(q.Server)}.AppendTo(dst)
+	}
+	if q.HasPort {
+		dst = Record{Type: RecPort, Body: uint16List(q.Port)}.AppendTo(dst)
+	}
+	return Record{Critical: true, Type: RecEndOfMessage}.AppendTo(dst)
+}
+
+// ClientRequest is what this relay asks a key establishment server for: the one
+// protocol and the one algorithm it can actually use.
+//
+// Offering more than it can do would be dishonest in the direction that
+// matters: the server would pick something, and the relay would have agreed to
+// an algorithm it cannot seal a cookie with.
+func ClientRequest() *Request {
+	return &Request{NextProtocols: []uint16{NextProtoNTPv4}, AEADs: []uint16{AEADAESSIVCMAC256}}
+}
+
+// KEError is a server that answered with an error record rather than terms.
+type KEError struct{ Code uint16 }
+
+func (e *KEError) Error() string {
+	switch e.Code {
+	case ErrUnrecognisedCritical:
+		return "ntske: the server did not recognise a critical record"
+	case ErrBadRequest:
+		return "ntske: the server called the request bad"
+	case ErrInternalServer:
+		return "ntske: the server reported an internal error"
+	}
+	return fmt.Sprintf("ntske: the server answered with error code %d", e.Code)
+}
+
+// ParseResponse reads a server's answer to a request.
+//
+// A response with no cookies is refused even though it is well formed. The
+// cookies are the entire point of the exchange: a relay that accepted an empty
+// answer would hold keys it could never spend, and would discover that one
+// time exchange at a time.
+func ParseResponse(b []byte) (*Response, error) {
+	recs, err := ParseRecords(b)
+	if err != nil {
+		return nil, err
+	}
+	r := &Response{}
+	protos, aeads := 0, 0
+	for _, rec := range recs {
+		switch rec.Type {
+		case RecEndOfMessage:
+		case RecError:
+			if len(rec.Body) != 2 {
+				return nil, fmt.Errorf("%w: an error code is two octets", ErrTruncated)
+			}
+			return nil, &KEError{Code: binary.BigEndian.Uint16(rec.Body)}
+		case RecWarning:
+			// A warning this implementation does not know is not a refusal, and
+			// the standard says to carry on. There are none defined.
+		case RecNextProtocol:
+			vs, err := uint16s(rec.Body)
+			if err != nil {
+				return nil, err
+			}
+			if len(vs) != 1 {
+				return nil, fmt.Errorf("%w: the server chose %d protocols", ErrRequest, len(vs))
+			}
+			r.NextProtocol, protos = vs[0], protos+1
+		case RecAEADAlgorithm:
+			vs, err := uint16s(rec.Body)
+			if err != nil {
+				return nil, err
+			}
+			if len(vs) != 1 {
+				return nil, fmt.Errorf("%w: the server chose %d algorithms", ErrRequest, len(vs))
+			}
+			r.AEAD, aeads = vs[0], aeads+1
+		case RecNewCookie:
+			if len(rec.Body) == 0 || len(rec.Body) > MaxCookie {
+				return nil, fmt.Errorf("%w: a cookie of %d octets", ErrRequest, len(rec.Body))
+			}
+			if len(r.Cookies) >= MaxCookies {
+				return nil, fmt.Errorf("%w: more than %d cookies", ErrRequest, MaxCookies)
+			}
+			r.Cookies = append(r.Cookies, rec.Body)
+		case RecServer:
+			r.Server = string(rec.Body)
+		case RecPort:
+			if len(rec.Body) != 2 {
+				return nil, fmt.Errorf("%w: a port is two octets", ErrTruncated)
+			}
+			r.Port, r.HasPort = binary.BigEndian.Uint16(rec.Body), true
+		default:
+			if rec.Critical {
+				return nil, fmt.Errorf("%w: type %d", ErrCritical, rec.Type)
+			}
+		}
+	}
+	switch {
+	case protos != 1 || aeads != 1:
+		return nil, fmt.Errorf("%w: %d protocol and %d algorithm records", ErrRequest, protos, aeads)
+	case r.NextProtocol != NextProtoNTPv4:
+		return nil, fmt.Errorf("%w: the server chose protocol %d", ErrRequest, r.NextProtocol)
+	case r.AEAD != AEADAESSIVCMAC256:
+		return nil, fmt.Errorf("%w: the server chose algorithm %d", ErrRequest, r.AEAD)
+	case len(r.Cookies) == 0:
+		return nil, fmt.Errorf("%w: no cookies", ErrRequest)
+	}
+	return r, nil
 }

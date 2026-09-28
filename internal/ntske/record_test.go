@@ -398,3 +398,171 @@ func TestAnErrorMessageIsAWholeMessage(t *testing.T) {
 		t.Fatalf("second record %+v", recs[1])
 	}
 }
+
+func TestAClientRequestIsWhatAServerReads(t *testing.T) {
+	q := ClientRequest()
+	q.Server, q.Port, q.HasPort = "time.example", 1230, true
+	got, err := ParseRequest(q.AppendTo(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.NextProtocols) != 1 || got.NextProtocols[0] != NextProtoNTPv4 {
+		t.Errorf("protocols %v", got.NextProtocols)
+	}
+	if len(got.AEADs) != 1 || got.AEADs[0] != AEADAESSIVCMAC256 {
+		t.Errorf("algorithms %v", got.AEADs)
+	}
+	if got.Server != "time.example" || !got.HasPort || got.Port != 1230 {
+		t.Errorf("server %q port %d has %v", got.Server, got.Port, got.HasPort)
+	}
+	// And a request that asks for nothing in particular says nothing about it.
+	plain, err := ParseRequest(ClientRequest().AppendTo(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.Server != "" || plain.HasPort {
+		t.Errorf("a plain request carries server %q port %d", plain.Server, plain.Port)
+	}
+}
+
+// The two halves meet: what a server writes is what a client reads.
+func TestAResponseRoundTripsThroughTheClient(t *testing.T) {
+	in := &Response{
+		NextProtocol: NextProtoNTPv4,
+		AEAD:         AEADAESSIVCMAC256,
+		Cookies:      [][]byte{[]byte("one"), []byte("two"), []byte("three")},
+		Server:       "time.example",
+		Port:         1230,
+		HasPort:      true,
+	}
+	out, err := ParseResponse(in.AppendTo(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.NextProtocol != in.NextProtocol || out.AEAD != in.AEAD {
+		t.Errorf("terms %d/%d", out.NextProtocol, out.AEAD)
+	}
+	if len(out.Cookies) != 3 {
+		t.Fatalf("%d cookies", len(out.Cookies))
+	}
+	for i := range in.Cookies {
+		if !bytes.Equal(out.Cookies[i], in.Cookies[i]) {
+			t.Errorf("cookie %d came back changed", i)
+		}
+	}
+	if out.Server != in.Server || !out.HasPort || out.Port != in.Port {
+		t.Errorf("server %q port %d", out.Server, out.Port)
+	}
+}
+
+func TestAnErrorResponseIsAnError(t *testing.T) {
+	for _, code := range []uint16{ErrUnrecognisedCritical, ErrBadRequest, ErrInternalServer, 99} {
+		_, err := ParseResponse(ErrorMessage(code))
+		var ke *KEError
+		if !errors.As(err, &ke) {
+			t.Fatalf("code %d: got %v", code, err)
+		}
+		if ke.Code != code {
+			t.Errorf("got code %d, want %d", ke.Code, code)
+		}
+		if ke.Error() == "" {
+			t.Error("the error says nothing")
+		}
+	}
+}
+
+func TestAResponseIsRefused(t *testing.T) {
+	cookie := Record{Type: RecNewCookie, Body: []byte("c")}
+	good := []Record{
+		{Critical: true, Type: RecNextProtocol, Body: uint16List(NextProtoNTPv4)},
+		{Critical: true, Type: RecAEADAlgorithm, Body: uint16List(AEADAESSIVCMAC256)},
+		cookie,
+	}
+	with := request
+	many := make([]Record, 0, MaxCookies+3)
+	many = append(many, good[0], good[1])
+	for i := 0; i <= MaxCookies; i++ {
+		many = append(many, cookie)
+	}
+
+	for _, tc := range []struct {
+		name string
+		in   []byte
+		want error
+	}{
+		{"no cookies at all", with(good[0], good[1]), ErrRequest},
+		{"no terms", with(cookie), ErrRequest},
+		{"only a protocol", with(good[0], cookie), ErrRequest},
+		{"only an algorithm", with(good[1], cookie), ErrRequest},
+		{
+			"a protocol this relay cannot speak",
+			with(Record{Critical: true, Type: RecNextProtocol, Body: uint16List(1)}, good[1], cookie),
+			ErrRequest,
+		},
+		{
+			"an algorithm this relay cannot seal with",
+			with(good[0], Record{Critical: true, Type: RecAEADAlgorithm, Body: uint16List(16)}, cookie),
+			ErrRequest,
+		},
+		{
+			"two protocols chosen",
+			with(Record{Critical: true, Type: RecNextProtocol, Body: uint16List(0, 0)}, good[1], cookie),
+			ErrRequest,
+		},
+		{
+			"two algorithms chosen",
+			with(good[0], Record{Critical: true, Type: RecAEADAlgorithm, Body: uint16List(15, 15)}, cookie),
+			ErrRequest,
+		},
+		{"the terms twice", with(good[0], good[1], good[0], cookie), ErrRequest},
+		{"an empty cookie", with(good[0], good[1], Record{Type: RecNewCookie}), ErrRequest},
+		{
+			"a cookie past the bound",
+			with(good[0], good[1], Record{Type: RecNewCookie, Body: make([]byte, MaxCookie+1)}),
+			ErrRequest,
+		},
+		{"more cookies than the bound", with(many...), ErrRequest},
+		{
+			"an unknown critical record",
+			with(good[0], good[1], cookie, Record{Critical: true, Type: 900}),
+			ErrCritical,
+		},
+		{
+			"a port that is not two octets",
+			with(good[0], good[1], cookie, Record{Type: RecPort, Body: []byte{1}}),
+			ErrTruncated,
+		},
+		{
+			"an error code that is not two octets",
+			with(Record{Critical: true, Type: RecError, Body: []byte{1}}),
+			ErrTruncated,
+		},
+		{"not a message", []byte{1}, ErrTruncated},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ParseResponse(tc.in); !errors.Is(err, tc.want) {
+				t.Fatalf("got %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+// A warning record is not a refusal: the standard defines none, and a client
+// that refused an exchange over one would be refusing over a field reserved for
+// something that has not happened yet.
+func TestAWarningDoesNotRefuseTheExchange(t *testing.T) {
+	in := request(
+		Record{Critical: true, Type: RecNextProtocol, Body: uint16List(NextProtoNTPv4)},
+		Record{Critical: true, Type: RecAEADAlgorithm, Body: uint16List(AEADAESSIVCMAC256)},
+		Record{Type: RecWarning, Body: uint16List(1)},
+		Record{Type: RecNewCookie, Body: []byte("c")},
+		Record{Type: 901, Body: []byte("later")},
+	)
+	got, err := ParseResponse(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Cookies) != 1 {
+		t.Fatalf("%d cookies", len(got.Cookies))
+	}
+}
