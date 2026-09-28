@@ -406,7 +406,13 @@ func TestTheDangerousOptionsAreStripped(t *testing.T) {
 		in.Set(wire.OptionUnicast, netip.MustParseAddr("2001:db8:66::66").AsSlice())
 		return repl
 	}})
-	s, addr := relayFor(t, base, up.addr())
+	// Three mechanisms, and which one catches which option is the point. The
+	// boot URL, the captive portal, the S46 container and the Server Unicast
+	// option are on the built-in deny list, because there is no list of
+	// acceptable values for them to be on. The resolver and the search domain
+	// are not on that list and are caught by naming what this estate's own are,
+	// which is the check a compromised real server fails too.
+	s, addr := relayFor(t, base+"        allow_domains: [\"*.plant.example\"]\n", up.addr())
 	c := dial(t, addr)
 	got := c.ask(solicit(0x222222, 2))
 
@@ -432,12 +438,14 @@ func TestTheDangerousOptionsAreStripped(t *testing.T) {
 // one.
 func TestAResolverTheEstateOwnsIsCarried(t *testing.T) {
 	up := startServer(t, &fakeServer{})
-	_, addr := relayFor(t, base+"        allow_options: [dns_servers, ia_na, client_id, server_id]\n",
-		up.addr())
+	_, addr := relayFor(t, base, up.addr())
 	c := dial(t, addr)
 	got := c.ask(solicit(0x333333, 3))
 	v, ok := got.Get(wire.OptionDNSServers)
 	if !ok {
+		// Handing out resolvers is what stateless DHCPv6 exists for on a network
+		// that addresses itself by router advertisement, so a listener that
+		// stripped this one by default would be a listener nobody could deploy.
 		t.Fatal("the resolver the estate owns was stripped")
 	}
 	addrs, err := wire.Addresses(v)

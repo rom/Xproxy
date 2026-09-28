@@ -3515,8 +3515,6 @@ is the same: **answering is the attack**, so the interesting half faces
 upstream. What differs is what an answer can carry, and there is more of
 it.
 
-- The **resolvers** (option 23) and the **domain search list** (24) are the
-  obvious pair.
 - The **boot file URL** (59, RFC 5970) and its parameters (60) are what a
   machine boots.
 - The **captive portal URL** (103, RFC 8910) is a URL a client will open.
@@ -3532,7 +3530,23 @@ it.
 
 Each is in the built-in `deny_options` list, and the default is to strip
 them and forward the rest: a client that still gets its address and no
-longer gets a resolver it should not have is a client that works.
+longer gets told which border relay its IPv4 traffic goes through is a
+client that works.
+
+The **resolvers** (option 23) and the **domain search list** (24) are the
+obvious pair and are deliberately *not* on that list, which is the same
+choice the DHCPv4 kind makes about option 6. They have a positive list of
+their own — `allow_resolvers` and `allow_domains` — and that is the better
+check: it says what this estate's resolvers *are*, so it catches a
+compromised real server as well as a rogue one, which removing the option
+wholesale does not. Putting an option with a positive list on the deny list
+as well would break twice over: the positive list becomes dead
+configuration, because the option is gone before anything reads its
+contents, and handing out resolvers is the whole purpose of stateless
+DHCPv6 on a network that addresses itself by router advertisement — so a
+default that strips them is a default an estate has to switch off to get
+its network working, which is how a control gets switched off entirely.
+Write `allow_resolvers`; the validator warns while it is empty.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|

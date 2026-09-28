@@ -138,17 +138,28 @@ func MayRepeat(code uint16) bool {
 //
 // Each is an option some estate needs and a takeover in the others, which is why
 // the default is to strip them from a reply and forward the rest: a client that
-// still gets its address and no longer gets a resolver it should not have is a
-// client that works.
+// still gets its address and no longer gets told which border relay its IPv4
+// traffic goes through is a client that works.
 //
-// The list is longer than DHCPv4's, and two entries are worth saying out loud.
-// The S46 containers put a host's *IPv4* traffic through a border relay of the
-// sender's choosing -- a takeover of a protocol this message is not about. And
-// the Server Unicast option tells the client to stop using the relay, which
-// turns off every policy the relay has.
+// Two entries are worth saying out loud. The S46 containers put a host's *IPv4*
+// traffic through a border relay of the sender's choosing -- a takeover of a
+// protocol this message is not about. And the Server Unicast option tells the
+// client to stop using the relay, which turns off every policy the relay has.
+//
+// The resolvers (23) and the search list (24) are deliberately *not* here, which
+// is the same choice the DHCPv4 list makes about option 6. They have a positive
+// list of their own -- allow_resolvers and allow_domains -- and that is the
+// check worth having: it names what the estate's resolvers are, so it catches a
+// compromised real server as well as a rogue one, which removing the option
+// wholesale does not. Two things go wrong when an option with a positive list is
+// also on this one. The positive list becomes dead configuration, because the
+// option is gone before anything reads its contents. And handing out resolvers
+// is the whole purpose of stateless DHCPv6 on a network that addresses itself by
+// router advertisement, so a default that strips them is a default that breaks
+// the protocol's commonest legitimate use -- and a control an estate has to
+// switch off to get its network working is a control that gets switched off
+// entirely.
 var DangerousOptions = []uint16{
-	OptionDNSServers,
-	OptionDomainList,
 	OptionBootFileURL,
 	OptionBootFileParam,
 	OptionCaptivePortal,
