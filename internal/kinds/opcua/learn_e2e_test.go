@@ -525,3 +525,103 @@ func TestTheHandshakeIsObservedAndNeverProposed(t *testing.T) {
 		t.Errorf("the proposal does not name the read:\n%s", rules)
 	}
 }
+
+// A client that only connected gets no rule. Writing one for it would be writing
+// an allow rule with nothing narrowed: no `services` key means the listener's own
+// list, so the rule permits more than the traffic ever asked for.
+func TestAnIdentityThatOnlyHandshookGetsNoRule(t *testing.T) {
+	up := startServer(t, &fakeServer{})
+	const rsaOaep = "http://www.w3.org/2001/04/xmlenc#rsa-oaep"
+	s, addr, file := learnRelay(t, base, up)
+
+	cl := dial(t, addr)
+	cl.handshake("opc.tcp://127.0.0.1:4840")
+	cl.channel(wire.PolicyBasic256Sha256, wire.ModeSign)
+	cl.service(wire.SvcCreateSession, createSessionBody("urn:plant:idle", "s", nil))
+	cl.service(wire.SvcActivateSession,
+		activateBody(wire.TokenUserName, "watcher", "p", rsaOaep))
+	up.await(t, 3, "the session")
+
+	out := report(t, s, cl, file)
+	// Recorded, with the activation distinguishable from the CreateSession: the
+	// row for the named user is the activation's.
+	rest, ok := cut(out, "user: watcher")
+	if !ok || !strings.Contains(firstLines(rest, 3), "services: session") {
+		t.Errorf("the activation was not recorded against the user it named:\n%s", out)
+	}
+	if !strings.Contains(out, "token_kinds_seen: [username]") {
+		t.Errorf("the activation's token kind was not recorded:\n%s", out)
+	}
+	// And no rule.
+	if strings.Contains(out, "- name:") {
+		t.Errorf("a rule was proposed for a client that only connected:\n%s", out)
+	}
+	if !strings.Contains(out, "nothing but the handshake was seen") {
+		t.Errorf("the report does not say why there is no rule:\n%s", out)
+	}
+}
+
+// A handshake the policy refuses is a refusal the report has to carry, because the
+// whole point of a run that is not enforcing is to find out what a policy would
+// have broken -- and a CreateSession refused on its application URI breaks
+// everything that client does.
+func TestARefusedHandshakeIsCountedAgainstItsIdentity(t *testing.T) {
+	up := startServer(t, &fakeServer{})
+	s, addr, file := learnRelay(t,
+		head+"        default_action: allow\n"+services+
+			"        application_uris: [\"urn:plant:known\"]\n", up)
+
+	cl := dial(t, addr)
+	cl.handshake("opc.tcp://127.0.0.1:4840")
+	cl.channel(wire.PolicyBasic256Sha256, wire.ModeSign)
+	cl.service(wire.SvcCreateSession, createSessionBody("urn:plant:stranger", "s", nil))
+	until(t, s, wouldRefuse("application_not_allowed"), "the would-be refusal")
+	up.await(t, 2, "the forwarded session")
+
+	out := report(t, s, cl, file)
+	rest, ok := cut(out, "application_uri: urn:plant:stranger")
+	if !ok {
+		t.Fatalf("the report has no row for the refused application:\n%s", out)
+	}
+	if !strings.Contains(firstLines(rest, 6), "denied_by_policy: 1") {
+		t.Errorf("the refused handshake was recorded as allowed:\n%s", out)
+	}
+}
+
+// Two runs over the same traffic have to produce the same file, or a diff between
+// two weeks means nothing. The rows and the rules are therefore ordered by the
+// identity, not by which client happened to connect first.
+func TestTheReportIsOrderedByIdentityAndNotByArrival(t *testing.T) {
+	up := startServer(t, &fakeServer{})
+	const rsaOaep = "http://www.w3.org/2001/04/xmlenc#rsa-oaep"
+	s, addr, file := learnRelay(t, base, up)
+
+	// Deliberately the later name first.
+	for _, who := range []struct{ app, user string }{
+		{"urn:plant:zulu", "zoe"}, {"urn:plant:alpha", "alice"},
+	} {
+		cl := dial(t, addr)
+		cl.handshake("opc.tcp://127.0.0.1:4840")
+		cl.channel(wire.PolicyBasic256Sha256, wire.ModeSign)
+		cl.service(wire.SvcCreateSession, createSessionBody(who.app, "s", nil))
+		cl.service(wire.SvcActivateSession,
+			activateBody(wire.TokenUserName, who.user, "p", rsaOaep))
+		cl.service(wire.SvcRead, readBody(op("ns=4;s=Cell/Thing/Value", wire.AttrValue)))
+		_ = cl.c.Close()
+	}
+	up.await(t, 8, "both clients")
+
+	cl := dial(t, addr)
+	out := report(t, s, cl, file)
+	_, rules, ok := strings.Cut(out, "\nrules:\n")
+	if !ok {
+		t.Fatalf("the report proposes nothing:\n%s", out)
+	}
+	alpha, zulu := strings.Index(rules, "alpha"), strings.Index(rules, "zulu")
+	if alpha < 0 || zulu < 0 {
+		t.Fatalf("both identities should have a rule:\n%s", rules)
+	}
+	if alpha > zulu {
+		t.Errorf("the rules are in arrival order rather than by identity:\n%s", rules)
+	}
+}
