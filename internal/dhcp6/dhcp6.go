@@ -115,6 +115,15 @@ func (t MessageType) FromClient() bool {
 	switch t {
 	case Solicit, Request, Confirm, Renew, Rebind, Release, Decline, InformationRequest:
 		return true
+	case LeaseQuery:
+		// A LEASEQUERY travels towards a server, from what RFC 5007 s4.1 calls a
+		// requestor. It is nobody's ordinary client, but the direction is the
+		// client's direction, and getting that wrong would put a misleading
+		// reason on the refusal: an estate reading
+		// "a server's message on the client side" would go looking for a rogue
+		// server, when what arrived was somebody asking for an inventory of
+		// every lease in the estate.
+		return true
 	}
 	return false
 }

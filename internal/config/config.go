@@ -317,6 +317,8 @@ type Listener struct {
 	Redis *RedisListener `yaml:"redis"`
 	// DHCP configures a kind: dhcp listener.
 	DHCP *DHCPListener `yaml:"dhcp"`
+	// DHCP6 configures a kind: dhcp6 listener.
+	DHCP6 *DHCP6Listener `yaml:"dhcp6"`
 	// BACnet configures a kind: bacnet listener.
 	BACnet *BACnetListener `yaml:"bacnet"`
 	// AMQP configures a kind: amqp listener.
@@ -3239,6 +3241,264 @@ type DHCPRule struct {
 	CircuitID string `yaml:"circuit_id"`
 	// Schedule limits the rule to a time window.
 	Schedule *ModbusSchedule `yaml:"schedule"`
+}
+
+// DHCP6Listener is a DHCPv6 relay agent (RFC 8415) that reads what it
+// relays.
+//
+// It is a separate kind from dhcp because DHCPv6 is a separate protocol:
+// a different packet format, different message types, a nested relay
+// mechanism rather than a field, a client identified by a DUID rather
+// than a hardware address, and its own options -- including prefix
+// delegation, which has no DHCPv4 equivalent at all. An estate running
+// both runs both listeners, and writing both down is the point.
+//
+// The shape of the policy is the same as the DHCPv4 one because the
+// shape of the threat is the same: answering is the attack, so the
+// interesting half faces upstream. What differs is what an answer can
+// carry.
+type DHCP6Listener struct {
+	// Mode is reverse (the default: clients send here and the relay
+	// forwards to the servers) or forward (this listener is the
+	// controlled egress a downstream relay agent uses).
+	Mode string `yaml:"mode"`
+	// Upstream is the server pool. Required.
+	Upstream string `yaml:"upstream"`
+	// AllowClients and DenyClients are the networks a message may arrive
+	// from. Deny is evaluated first.
+	//
+	// On a segment these are link-local addresses, which every client has
+	// before it has anything else -- so unlike DHCPv4, where a client
+	// sends from 0.0.0.0 and cannot be told apart at all, this list does
+	// say something here. It says less than it looks: a link-local
+	// address is the sender's own choice.
+	AllowClients []string `yaml:"allow_clients"`
+	DenyClients  []string `yaml:"deny_clients"`
+	// AllowServers are the addresses a reply may come from, and it is the
+	// single most valuable line in the file. An ADVERTISE or a REPLY from
+	// anywhere else is dropped and counted, whatever it says.
+	//
+	// Empty means the endpoints of the upstream pool, which is almost
+	// always what an operator means.
+	AllowServers []string `yaml:"allow_servers"`
+	// MessageTypes is the allow list of message types a client may send.
+	// Empty allows the ordinary lease cycle -- solicit, request, renew,
+	// rebind, confirm, release, decline and information_request -- which
+	// leaves out the lease-query family: a relay agent's own diagnostic,
+	// and an inventory of every lease in the estate to anything else.
+	MessageTypes []string `yaml:"message_types"`
+	// DenyOptions are the options a *server* may not send. Empty uses the
+	// built-in list, which is longer than DHCPv4's and says why in the
+	// protocol page: the resolvers and the search list, the boot file URL
+	// and its parameters, the captive portal URL, the bootstrap server,
+	// the DS-Lite and S46 transition options -- which put a host's IPv4
+	// traffic through a border relay of the sender's choosing -- and the
+	// Server Unicast option, which tells a client to stop using the relay
+	// and so turns off every policy this listener has.
+	DenyOptions []string `yaml:"deny_options"`
+	// AllowOptions turns the answer policy inside out: when it is set, an
+	// option outside it is removed. On a network whose clients need three
+	// options it is a shorter and safer thing to write than a deny list.
+	AllowOptions []string `yaml:"allow_options"`
+	// OnDeniedOption is strip (the default) or deny. strip removes the
+	// option and forwards the rest, so a client still gets its address
+	// and no longer gets a resolver it should not have; deny refuses the
+	// whole reply, which leaves the client with no address at all.
+	OnDeniedOption string `yaml:"on_denied_option"`
+	// DenyRequestedOptions are options a client may not *ask* for, in its
+	// Option Request Option. A client asking for the captive portal URL is
+	// a client that will open one if anything offers it; the ask is
+	// removed rather than the message refused.
+	DenyRequestedOptions []string `yaml:"deny_requested_options"`
+	// AllowResolvers are the addresses the DNS server option may name, and
+	// AllowDomains are shell patterns the domain search list may match.
+	// These are the positive form of the same policy as DenyOptions and
+	// the more useful one: an estate knows its own resolvers, so a reply
+	// naming anything else is wrong whoever sent it.
+	AllowResolvers []string `yaml:"allow_resolvers"`
+	AllowDomains   []string `yaml:"allow_domains"`
+	// AllowBootURLs are shell patterns the boot file URL (RFC 5970) may
+	// match, for the machines that boot from the network. This is where an
+	// estate says which images exist.
+	AllowBootURLs []string `yaml:"allow_boot_urls"`
+	// PrefixDelegation bounds what a reply may delegate and what a client
+	// may ask for. It has no DHCPv4 equivalent and it is the setting worth
+	// reading twice: a reply delegating ::/0 has handed a host the whole
+	// of IPv6 to route.
+	PrefixDelegation *DHCP6PrefixPolicy `yaml:"prefix_delegation"`
+	// AllowTemporaryAddresses accepts an IA_TA. Default true: temporary
+	// addresses are the privacy mechanism of RFC 8415 s6.5 and refusing
+	// them would be refusing clients that are doing the right thing.
+	AllowTemporaryAddresses *bool `yaml:"allow_temporary_addresses"`
+	// AllowReconfigure forwards a RECONFIGURE from a server. Default
+	// false: it is a message to a client that answers nothing, RFC 8415
+	// s18.3.11 requires it to be authenticated with a key nobody deploys,
+	// and a client that accepts one can be made to re-ask a server of the
+	// sender's choosing.
+	AllowReconfigure bool `yaml:"allow_reconfigure"`
+	// MinLeaseTime and MaxLeaseTime bound the valid lifetime a server may
+	// hand out, on an address or a delegated prefix. Zero leaves either
+	// end unbounded. A valid lifetime of zero is not bounded: it is how a
+	// server withdraws an address, and rewriting it would be turning a
+	// withdrawal into a lease.
+	MinLeaseTime Duration `yaml:"min_lease_time"`
+	MaxLeaseTime Duration `yaml:"max_lease_time"`
+	// RefuseRepeatedOptions refuses a message carrying an option twice
+	// where the standard has no meaning for a second one. Default true:
+	// two implementations read such a message differently, and a relay
+	// that decided about the first value while the server acted on the
+	// last would be the reason nobody could find the bug. The identity
+	// associations are exempt, because a client legitimately sends several.
+	RefuseRepeatedOptions *bool `yaml:"refuse_repeated_options"`
+	// MaxRelayHops bounds the relay chain. Default 4; RFC 8415 s19.1.1
+	// makes 32 the outer limit. A message arriving already wrapped several
+	// times has been somewhere.
+	MaxRelayHops int `yaml:"max_relay_hops"`
+	// LinkAddress is the address this relay puts in a RELAY-FORW's link
+	// address field, which is what tells the server which segment to
+	// allocate from. Required in reverse mode: a relay that left it
+	// unspecified would be asking the server to guess.
+	LinkAddress string `yaml:"link_address"`
+	// InterfaceID, RemoteID and SubscriberID fill in the relay's own
+	// options (RFC 8415 s21.18, RFC 4649, RFC 4580), which is how a server
+	// learns which circuit and which subscriber a message came from.
+	// Empty leaves each out. RemoteID needs an enterprise number, which is
+	// the first four octets of that option.
+	InterfaceID        string `yaml:"interface_id"`
+	RemoteID           string `yaml:"remote_id"`
+	RemoteIDEnterprise int    `yaml:"remote_id_enterprise"`
+	SubscriberID       string `yaml:"subscriber_id"`
+	// OnClientRelayOption is what to do when a *client* sends one of the
+	// relay's own options: strip (the default) or deny. A client has no
+	// business asserting which circuit it is on, because that assertion is
+	// exactly what the option exists to make on its behalf.
+	OnClientRelayOption string `yaml:"on_client_relay_option"`
+	// Rules decide each message, in order, first match wins. A message
+	// that matches no rule takes DefaultAction.
+	Rules []DHCP6Rule `yaml:"rules"`
+	// DefaultAction is allow (the default) or deny.
+	//
+	// Allow, as in the DHCPv4 kind and for the same reason: DHCP is
+	// infrastructure, a listener that refused every request until somebody
+	// wrote a rule would be a listener that stops an estate booting, and
+	// the protections here are the answer policy and the server list,
+	// which are on by default and do not depend on a rule existing.
+	DefaultAction string `yaml:"default_action"`
+	// MaxPending bounds the requests outstanding towards servers, which is
+	// the table that pairs a reply with the client that asked. Default 256.
+	MaxPending int `yaml:"max_pending"`
+	// RequestTimeout is how long a server has to answer before its answer
+	// is too late to pair. Default 10s.
+	RequestTimeout Duration `yaml:"request_timeout"`
+	// MaxMessageBytes bounds one message. Default 1500. A relay chain
+	// grows a message, so this is the bound on what arrives rather than on
+	// what a client sent.
+	MaxMessageBytes int `yaml:"max_message_bytes"`
+	// RateLimit and RateBurst bound messages a second per *DUID*, which is
+	// the key that matters on this protocol: pool exhaustion is one host
+	// sending thousands of SOLICITs with a made-up identifier in each, and
+	// a limit keyed on the source address would see one sender doing
+	// nothing unusual.
+	RateLimit int `yaml:"rate_limit"`
+	RateBurst int `yaml:"rate_burst"`
+	// MaxClients bounds the distinct identifiers this listener tracks at
+	// once. It is the other half of the starvation bound: the rate limit
+	// slows one identifier down, and this stops a flood of new ones from
+	// filling the table that does the limiting. Default 8192.
+	MaxClients int `yaml:"max_clients"`
+	// LogMessages writes an access line per message.
+	LogMessages bool `yaml:"log_messages"`
+	// LogLeases writes a line for every address and prefix handed out:
+	// which identifier got which lease, for how long, from which server.
+	// Default true, and it is the record an estate is asked for.
+	LogLeases *bool `yaml:"log_leases"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
+}
+
+// DHCP6PrefixPolicy bounds prefix delegation.
+//
+// Prefix delegation is the part of DHCPv6 with no DHCPv4 equivalent, and
+// the part where a wrong answer is largest: a reply delegating ::/0 has
+// handed a host the whole of IPv6 to route, and a request for a /48 where
+// the estate delegates /56s is a client asking for two hundred and
+// fifty-six times what it should have.
+type DHCP6PrefixPolicy struct {
+	// Enabled carries prefix delegation at all. Default true: an estate
+	// that does not use it should say so, because then an IA_PD arriving
+	// from anywhere is a question worth refusing.
+	Enabled *bool `yaml:"enabled"`
+	// Prefixes are the prefixes a delegation may come from. A delegated
+	// prefix outside all of them is refused, and the refusal names it.
+	Prefixes []string `yaml:"prefixes"`
+	// MinLength and MaxLength bound the prefix length, in bits. An estate
+	// that delegates /56s writes 56 in both, and then a /48 is refused
+	// whoever offered it.
+	MinLength int `yaml:"min_length"`
+	MaxLength int `yaml:"max_length"`
+}
+
+// Delegating says whether prefix delegation is carried.
+func (p *DHCP6PrefixPolicy) Delegating() bool {
+	return p == nil || p.Enabled == nil || *p.Enabled
+}
+
+// DHCP6Rule decides one message.
+type DHCP6Rule struct {
+	// Name identifies the rule in the logs and the counters. Required.
+	Name string `yaml:"name"`
+	// Action is allow, deny or observe. observe logs and counts and then
+	// keeps looking, which is how a rule is tried on live traffic before
+	// it decides anything.
+	Action string `yaml:"action"`
+	// Clients are the networks the message arrived from.
+	Clients []string `yaml:"clients"`
+	// DUIDs are shell patterns the client identifier's rendering matches,
+	// which is "ll:0003*" for a vendor's whole fleet and the whole
+	// identifier for one machine. The rendering is the type and the
+	// hexadecimal octets, which is what the logs carry too.
+	DUIDs []string `yaml:"duids"`
+	// MessageTypes are the message types this rule covers.
+	MessageTypes []string `yaml:"message_types"`
+	// VendorClasses and UserClasses match the vendor class and user class
+	// options as shell patterns, which is how a rule about PXE clients is
+	// written.
+	VendorClasses []string `yaml:"vendor_classes"`
+	UserClasses   []string `yaml:"user_classes"`
+	// DenyOptions, AllowResolvers, AllowDomains and AllowBootURLs narrow
+	// the answer policy for this rule's traffic, which is how "the boot
+	// segment may be told a boot URL and nothing else may" is written.
+	DenyOptions    []string `yaml:"deny_options"`
+	AllowResolvers []string `yaml:"allow_resolvers"`
+	AllowDomains   []string `yaml:"allow_domains"`
+	AllowBootURLs  []string `yaml:"allow_boot_urls"`
+	// MaxLeaseTime overrides the listener's lease bound for this rule.
+	MaxLeaseTime Duration `yaml:"max_lease_time"`
+	// InterfaceID overrides the listener's interface identifier, so that a
+	// rule about one segment can tell the server which segment it is.
+	InterfaceID string `yaml:"interface_id"`
+	// Schedule limits the rule to a time window.
+	Schedule *ModbusSchedule `yaml:"schedule"`
+}
+
+// Alerts says whether a refusal writes a security event.
+func (m *DHCP6Listener) Alerts() bool {
+	return m == nil || m.AlertOnDeny == nil || *m.AlertOnDeny
+}
+
+// Leases says whether a lease line is written.
+func (m *DHCP6Listener) Leases() bool {
+	return m == nil || m.LogLeases == nil || *m.LogLeases
+}
+
+// RefusesRepeated says whether a repeated option refuses the message.
+func (m *DHCP6Listener) RefusesRepeated() bool {
+	return m == nil || m.RefuseRepeatedOptions == nil || *m.RefuseRepeatedOptions
+}
+
+// TemporaryAddresses says whether an IA_TA is carried.
+func (m *DHCP6Listener) TemporaryAddresses() bool {
+	return m == nil || m.AllowTemporaryAddresses == nil || *m.AllowTemporaryAddresses
 }
 
 // SNMPDeception answers as an agent that is not there.

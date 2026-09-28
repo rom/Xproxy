@@ -398,6 +398,32 @@ type Stats struct {
 	DHCPUnsolicited  atomic.Uint64
 	DHCPPending      atomic.Int64
 	DHCPClients      atomic.Int64
+
+	// DHCPv6, which is its own listener on its own port. The names mirror
+	// the DHCPv4 ones except where the protocol has something the other
+	// does not: DHCP6RogueServer is the reply refused because it came from
+	// an address that is not a server, and DHCP6LeaseBounded counts the
+	// replies whose valid lifetime this relay wrote down.
+	DHCP6Messages        atomic.Uint64
+	DHCP6Solicits        atomic.Uint64
+	DHCP6Requests        atomic.Uint64
+	DHCP6Replies         atomic.Uint64
+	DHCP6Relayed         atomic.Uint64
+	DHCP6Answered        atomic.Uint64
+	DHCP6Releases        atomic.Uint64
+	DHCP6Denied          atomic.Uint64
+	DHCP6WouldDeny       atomic.Uint64
+	DHCP6RogueServer     atomic.Uint64
+	DHCP6OptionsStripped atomic.Uint64
+	DHCP6LeaseBounded    atomic.Uint64
+	DHCP6Malformed       atomic.Uint64
+	DHCP6Rejected        atomic.Uint64
+	DHCP6RateLimited     atomic.Uint64
+	DHCP6UpstreamFail    atomic.Uint64
+	DHCP6SendFailed      atomic.Uint64
+	DHCP6Unsolicited     atomic.Uint64
+	DHCP6Pending         atomic.Int64
+	DHCP6Clients         atomic.Int64
 	// The device inventory.
 	//
 	// AssetFindings is the one to alert on: an identity change, or a device
@@ -924,6 +950,26 @@ type Snapshot struct {
 	DHCPUnsolicited       uint64 `json:"dhcp_unsolicited"`
 	DHCPPending           int64  `json:"dhcp_pending"`
 	DHCPClients           int64  `json:"dhcp_clients"`
+	DHCP6Messages         uint64 `json:"dhcp6_messages"`
+	DHCP6Solicits         uint64 `json:"dhcp6_solicits"`
+	DHCP6Requests         uint64 `json:"dhcp6_requests"`
+	DHCP6Replies          uint64 `json:"dhcp6_replies"`
+	DHCP6Relayed          uint64 `json:"dhcp6_relayed"`
+	DHCP6Answered         uint64 `json:"dhcp6_answered"`
+	DHCP6Releases         uint64 `json:"dhcp6_releases"`
+	DHCP6Denied           uint64 `json:"dhcp6_denied"`
+	DHCP6WouldDeny        uint64 `json:"dhcp6_would_deny"`
+	DHCP6RogueServer      uint64 `json:"dhcp6_rogue_server"`
+	DHCP6OptionsStripped  uint64 `json:"dhcp6_options_stripped"`
+	DHCP6LeaseBounded     uint64 `json:"dhcp6_lease_bounded"`
+	DHCP6Malformed        uint64 `json:"dhcp6_malformed"`
+	DHCP6Rejected         uint64 `json:"dhcp6_rejected"`
+	DHCP6RateLimited      uint64 `json:"dhcp6_rate_limited"`
+	DHCP6UpstreamFail     uint64 `json:"dhcp6_upstream_failed"`
+	DHCP6SendFailed       uint64 `json:"dhcp6_send_failed"`
+	DHCP6Unsolicited      uint64 `json:"dhcp6_unsolicited"`
+	DHCP6Pending          int64  `json:"dhcp6_pending"`
+	DHCP6Clients          int64  `json:"dhcp6_clients"`
 	AssetObservations     uint64 `json:"asset_observations"`
 	AssetFindings         uint64 `json:"asset_findings"`
 	AssetUnexpected       uint64 `json:"asset_unexpected_role"`
@@ -1388,6 +1434,26 @@ func (s *Stats) snapshot() Snapshot {
 		DHCPUpstreamFail:        s.DHCPUpstreamFail.Load(),
 		DHCPUnsolicited:         s.DHCPUnsolicited.Load(),
 		DHCPPending:             s.DHCPPending.Load(),
+		DHCP6Messages:           s.DHCP6Messages.Load(),
+		DHCP6Solicits:           s.DHCP6Solicits.Load(),
+		DHCP6Requests:           s.DHCP6Requests.Load(),
+		DHCP6Replies:            s.DHCP6Replies.Load(),
+		DHCP6Relayed:            s.DHCP6Relayed.Load(),
+		DHCP6Answered:           s.DHCP6Answered.Load(),
+		DHCP6Releases:           s.DHCP6Releases.Load(),
+		DHCP6Denied:             s.DHCP6Denied.Load(),
+		DHCP6WouldDeny:          s.DHCP6WouldDeny.Load(),
+		DHCP6RogueServer:        s.DHCP6RogueServer.Load(),
+		DHCP6OptionsStripped:    s.DHCP6OptionsStripped.Load(),
+		DHCP6LeaseBounded:       s.DHCP6LeaseBounded.Load(),
+		DHCP6Malformed:          s.DHCP6Malformed.Load(),
+		DHCP6Rejected:           s.DHCP6Rejected.Load(),
+		DHCP6RateLimited:        s.DHCP6RateLimited.Load(),
+		DHCP6UpstreamFail:       s.DHCP6UpstreamFail.Load(),
+		DHCP6SendFailed:         s.DHCP6SendFailed.Load(),
+		DHCP6Unsolicited:        s.DHCP6Unsolicited.Load(),
+		DHCP6Pending:            s.DHCP6Pending.Load(),
+		DHCP6Clients:            s.DHCP6Clients.Load(),
 		DHCPClients:             s.DHCPClients.Load(),
 		AssetObservations:       s.AssetObservations.Load(),
 		AssetFindings:           s.AssetFindings.Load(),

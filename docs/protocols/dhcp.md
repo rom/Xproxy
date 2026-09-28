@@ -134,8 +134,10 @@ and carries the traffic.
 - **It cannot stop a rogue server on the same segment.** `allow_servers` stops a
   rogue answer *through this relay*. A client that can hear a broadcast answer
   directly needs the switch's DHCP snooping, which is where that control belongs.
-- **It does not do DHCPv6.** A different protocol with different messages; IPv6
-  address assignment more often uses router advertisements anyway.
+- **It does not do DHCPv6.** That is a different protocol with different
+  messages, a nested relay mechanism and options DHCPv4 has no equivalent of, so
+  it is a listener of its own: [dhcp6](dhcp6.md). An estate running both runs
+  both.
 - **It does not rewrite addresses.** An offered address outside the policy is
   refused, not changed: a client and a server disagreeing about which address
   was leased is a fault that takes days to find.
@@ -160,4 +162,5 @@ and carries the traffic.
 - The estate-wide policy above it: [docs/CONFIG.md `authorization`](../CONFIG.md#authorization)
 - The settings: [docs/CONFIG.md `server.listeners[].dhcp`](../CONFIG.md#serverlistenersdhcp-kind-dhcp)
 - A worked configuration: [`examples/addressing/dhcp.yaml`](../../examples/addressing/dhcp.yaml)
+- The other half of a dual-stack estate: [dhcp6](dhcp6.md)
 - The other protocol in a provisioning path: [tftp](tftp.md)

@@ -6,6 +6,7 @@ import (
 	"github.com/rom/xproxy/internal/assets"
 	bacnetwire "github.com/rom/xproxy/internal/bacnet"
 	dhcpwire "github.com/rom/xproxy/internal/dhcp"
+	"github.com/rom/xproxy/internal/dhcp6"
 	"github.com/rom/xproxy/internal/dns"
 	"github.com/rom/xproxy/internal/expr"
 	"github.com/rom/xproxy/internal/filter"
@@ -501,6 +502,9 @@ func (v *validator) config(c *Config) {
 			// time listener that verified nothing and said it had.
 			v.ntsKeyListener(fmt.Sprintf("server.listeners[%d].ntp.nts", i), c, n.NTS.KeyListener)
 		}
+		if m := c.Server.Listeners[i].DHCP6; m != nil && m.Upstream != "" && !upstreams[m.Upstream] {
+			v.errf("server.listeners[%d].dhcp6.upstream: unknown upstream %q", i, m.Upstream)
+		}
 		if h := c.Server.Listeners[i].SSH; h != nil && h.Upstream != "" && !upstreams[h.Upstream] {
 			v.errf("server.listeners[%d].ssh.upstream: unknown upstream %q", i, h.Upstream)
 		}
@@ -889,6 +893,17 @@ func (v *validator) server(s *Server) {
 			} else {
 				v.dhcpListener(p+".dhcp", ln.DHCP)
 			}
+		case "dhcp6":
+			// No tls section, for the same reason as dhcp: the protocol is
+			// UDP and has no transport security of any kind.
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C || ln.TLS != nil {
+				v.errf("%s: a dhcp6 listener takes only address and dhcp6: the protocol is UDP and has no TLS", p)
+			}
+			if ln.DHCP6 == nil {
+				v.errf("%s.dhcp6: required for kind dhcp6", p)
+			} else {
+				v.dhcp6Listener(p+".dhcp6", ln.DHCP6, ln.Address)
+			}
 		case "bacnet":
 			// No tls section: Annex J is BACnet over UDP and the protocol
 			// has no transport security anywhere, so a listener carrying a
@@ -1007,6 +1022,9 @@ func (v *validator) server(s *Server) {
 		}
 		if ln.NTP != nil && ln.Kind != "ntp" {
 			v.errf("%s.ntp: set on a %s listener (kind: ntp)", p, ln.Kind)
+		}
+		if ln.DHCP6 != nil && ln.Kind != "dhcp6" {
+			v.errf("%s.dhcp6: set on a %s listener (kind: dhcp6)", p, kindOrHTTP(ln.Kind))
 		}
 		if ln.NTSKE != nil && ln.Kind != "ntske" {
 			v.errf("%s.ntske: set on a %s listener (kind: ntske)", p, ln.Kind)
@@ -2619,7 +2637,7 @@ var denyReasons = map[string]bool{
 	// trigger until they were written here.
 	"dns_denied": true, "dns_threat_intel": true,
 	"modbus_denied": true, "iec104_denied": true, "ntp_denied": true, "ntske_denied": true,
-	"snmp_denied": true, "ldap_denied": true, "tftp_denied": true, "dhcp_denied": true, "postgres_denied": true, "mysql_denied": true, "tds_denied": true, "redis_denied": true,
+	"snmp_denied": true, "ldap_denied": true, "tftp_denied": true, "dhcp_denied": true, "dhcp6_denied": true, "postgres_denied": true, "mysql_denied": true, "tds_denied": true, "redis_denied": true,
 	"bacnet_denied": true, "amqp_denied": true, "s7_denied": true,
 }
 
@@ -7871,6 +7889,211 @@ func (v *validator) ldapDNs(p string, in []string) {
 		}
 		if _, err := ldapwire.ParseDN(dn); err != nil {
 			v.errf("%s[%d]: %v", p, i, err)
+		}
+	}
+}
+
+// dhcp6Listener checks the DHCPv6 relay.
+func (v *validator) dhcp6Listener(p string, m *DHCP6Listener, address string) {
+	switch m.Mode {
+	case "", "reverse", "forward":
+	default:
+		v.errf("%s.mode: must be reverse or forward", p)
+	}
+	if m.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	v.modbusCIDRs(p+".allow_clients", m.AllowClients)
+	v.modbusCIDRs(p+".deny_clients", m.DenyClients)
+	v.modbusCIDRs(p+".allow_servers", m.AllowServers)
+	v.dhcp6Addrs(p+".allow_resolvers", m.AllowResolvers)
+	v.dhcp6Types(p+".message_types", m.MessageTypes)
+	v.dhcp6Options(p+".deny_options", m.DenyOptions)
+	v.dhcp6Options(p+".allow_options", m.AllowOptions)
+	v.dhcp6Options(p+".deny_requested_options", m.DenyRequestedOptions)
+	v.dhcpPatterns(p+".allow_domains", m.AllowDomains)
+	v.dhcpPatterns(p+".allow_boot_urls", m.AllowBootURLs)
+	if len(m.DenyOptions) > 0 && len(m.AllowOptions) > 0 {
+		v.errf("%s: deny_options and allow_options are two ways of writing the same policy; set one", p)
+	}
+	if len(m.DenyOptions) > 0 {
+		// The list replaces the built-in one, so an operator who wrote a
+		// shorter one has turned protections off without meaning to.
+		missing := make([]string, 0, 4)
+		named := map[uint16]bool{}
+		for _, s := range m.DenyOptions {
+			if c, ok := dhcp6.OptionOf(s); ok {
+				named[c] = true
+			}
+		}
+		for _, c := range dhcp6.DangerousOptions {
+			if !named[c] {
+				missing = append(missing, dhcp6.OptionName(c))
+			}
+		}
+		if len(missing) > 0 {
+			v.warnf("%s.deny_options replaces the built-in list, and leaves out %s: each of those carries a configuration rather than a value, and a server that sends one is configuring the client",
+				p, strings.Join(missing, ", "))
+		}
+	}
+	switch m.OnDeniedOption {
+	case "", "strip", "deny":
+	default:
+		v.errf("%s.on_denied_option: must be strip or deny", p)
+	}
+	switch m.OnClientRelayOption {
+	case "", "strip", "deny":
+	default:
+		v.errf("%s.on_client_relay_option: must be strip or deny", p)
+	}
+	switch m.DefaultAction {
+	case "", "allow", "deny":
+	default:
+		v.errf("%s.default_action: must be allow or deny", p)
+	}
+	if m.MaxRelayHops != 0 && (m.MaxRelayHops < 1 || m.MaxRelayHops > dhcp6.MaxHopCount) {
+		v.errf("%s.max_relay_hops: must be between 1 and %d", p, dhcp6.MaxHopCount)
+	}
+	if m.MaxMessageBytes != 0 && (m.MaxMessageBytes < 128 || m.MaxMessageBytes > dhcp6.MaxMessage) {
+		v.errf("%s.max_message_bytes: must be between 128 and %d", p, dhcp6.MaxMessage)
+	}
+	if m.MaxPending != 0 && (m.MaxPending < 1 || m.MaxPending > 1<<20) {
+		v.errf("%s.max_pending: must be between 1 and 1048576", p)
+	}
+	if m.MaxClients != 0 && (m.MaxClients < 1 || m.MaxClients > 1<<20) {
+		v.errf("%s.max_clients: must be between 1 and 1048576", p)
+	}
+	if d := m.RequestTimeout; d != 0 && (d.D() < time.Second || d.D() > time.Minute) {
+		v.errf("%s.request_timeout: must be between 1s and 1m", p)
+	}
+	if m.RateLimit < 0 || m.RateBurst < 0 {
+		v.errf("%s.rate_limit and rate_burst cannot be negative", p)
+	}
+	if m.MinLeaseTime != 0 && m.MaxLeaseTime != 0 && m.MinLeaseTime.D() > m.MaxLeaseTime.D() {
+		v.errf("%s: min_lease_time is longer than max_lease_time", p)
+	}
+	if m.RemoteIDEnterprise < 0 || m.RemoteIDEnterprise > 0xffffffff {
+		v.errf("%s.remote_id_enterprise: must be a 32-bit enterprise number", p)
+	}
+	if m.RemoteID != "" && m.RemoteIDEnterprise == 0 {
+		v.warnf("%s.remote_id has no remote_id_enterprise, so it goes out under enterprise number 0: RFC 4649 s3 puts the number first, and a server that indexes on it will not find this relay where it expects", p)
+	}
+	v.dhcp6Prefixes(p+".prefix_delegation", m.PrefixDelegation)
+	if m.Mode != "forward" && m.LinkAddress == "" {
+		v.errf("%s.link_address: required in reverse mode: a relay agent that left it unspecified would be asking the server to guess which segment to allocate from", p)
+	}
+	if m.LinkAddress != "" {
+		a, err := netip.ParseAddr(m.LinkAddress)
+		switch {
+		case err != nil:
+			v.errf("%s.link_address: %q is not an address", p, m.LinkAddress)
+		case !a.Is6() || a.Is4In6():
+			v.errf("%s.link_address: %q is not an IPv6 address", p, m.LinkAddress)
+		case a.IsLinkLocalUnicast():
+			v.errf("%s.link_address: %q is link-local, which tells a server nothing about which segment to allocate from", p, m.LinkAddress)
+		}
+	}
+	if m.AllowReconfigure {
+		v.warnf("%s.allow_reconfigure carries a RECONFIGURE from a server: it is a message to a client that answers nothing, RFC 8415 s18.3.11 requires it to be authenticated with a key almost nobody deploys, and a client that accepts one can be made to re-ask a server of the sender's choosing", p)
+	}
+	if len(m.AllowResolvers) == 0 {
+		v.warnf("%s.allow_resolvers: empty, so any resolver a server names is carried. An estate knows its own resolvers, and a reply naming anything else is wrong whoever sent it -- which is the check that catches a compromised real server as well as a rogue one", p)
+	}
+	if _, port, err := net.SplitHostPort(address); err == nil && port != "547" && port != "0" {
+		v.warnf("%s is on port %s rather than 547: a DHCPv6 client sends to 547 and nothing else will reach this listener", p, port)
+	}
+	names := map[string]bool{}
+	for i := range m.Rules {
+		r := &m.Rules[i]
+		rp := fmt.Sprintf("%s.rules[%d]", p, i)
+		if r.Name == "" {
+			v.errf("%s.name: required", rp)
+		} else if names[r.Name] {
+			v.errf("%s.name: %q is used twice", rp, r.Name)
+		}
+		names[r.Name] = true
+		switch r.Action {
+		case "", "allow", "deny", "observe":
+		default:
+			v.errf("%s.action: must be allow, deny or observe", rp)
+		}
+		v.modbusCIDRs(rp+".clients", r.Clients)
+		v.dhcp6Types(rp+".message_types", r.MessageTypes)
+		v.dhcp6Options(rp+".deny_options", r.DenyOptions)
+		v.dhcp6Addrs(rp+".allow_resolvers", r.AllowResolvers)
+		v.dhcpPatterns(rp+".duids", r.DUIDs)
+		v.dhcpPatterns(rp+".vendor_classes", r.VendorClasses)
+		v.dhcpPatterns(rp+".user_classes", r.UserClasses)
+		v.dhcpPatterns(rp+".allow_domains", r.AllowDomains)
+		v.dhcpPatterns(rp+".allow_boot_urls", r.AllowBootURLs)
+		v.modbusSchedule(rp+".schedule", r.Schedule)
+	}
+}
+
+// dhcp6Prefixes checks the prefix delegation policy.
+func (v *validator) dhcp6Prefixes(p string, pd *DHCP6PrefixPolicy) {
+	if pd == nil {
+		return
+	}
+	for i, s := range pd.Prefixes {
+		pfx, err := netip.ParsePrefix(s)
+		switch {
+		case err != nil:
+			v.errf("%s.prefixes[%d]: %q is not a network", p, i, s)
+		case !pfx.Addr().Is6() || pfx.Addr().Is4In6():
+			v.errf("%s.prefixes[%d]: %q is not an IPv6 network", p, i, s)
+		case pfx.Bits() == 0:
+			v.errf("%s.prefixes[%d]: ::/0 is every prefix there is, which is not a bound", p, i)
+		}
+	}
+	for _, b := range []struct {
+		key string
+		val int
+	}{{"min_length", pd.MinLength}, {"max_length", pd.MaxLength}} {
+		if b.val != 0 && (b.val < 1 || b.val > 128) {
+			v.errf("%s.%s: must be between 1 and 128", p, b.key)
+		}
+	}
+	if pd.MinLength != 0 && pd.MaxLength != 0 && pd.MinLength > pd.MaxLength {
+		v.errf("%s: min_length is longer than max_length", p)
+	}
+	if pd.Delegating() && len(pd.Prefixes) == 0 && pd.MaxLength == 0 {
+		v.warnf("%s: prefix delegation is carried with no prefixes and no length bound, so a reply delegating ::/0 is forwarded -- which hands a host the whole of IPv6 to route", p)
+	}
+}
+
+// dhcp6Types checks a list of DHCPv6 message type names.
+func (v *validator) dhcp6Types(p string, in []string) {
+	for i, s := range in {
+		t, ok := dhcp6.TypeOf(s)
+		if !ok {
+			v.errf("%s[%d]: %q is not a DHCPv6 message type", p, i, s)
+			continue
+		}
+		if t.IsRelay() {
+			v.errf("%s[%d]: %q is a relay agent's own message, not one a client sends", p, i, s)
+		}
+	}
+}
+
+// dhcp6Options checks a list of DHCPv6 option names or numbers.
+func (v *validator) dhcp6Options(p string, in []string) {
+	for i, s := range in {
+		if _, ok := dhcp6.OptionOf(s); !ok {
+			v.errf("%s[%d]: %q is not a DHCPv6 option name or number", p, i, s)
+		}
+	}
+}
+
+// dhcp6Addrs checks a list of IPv6 addresses.
+func (v *validator) dhcp6Addrs(p string, in []string) {
+	for i, s := range in {
+		a, err := netip.ParseAddr(s)
+		switch {
+		case err != nil:
+			v.errf("%s[%d]: %q is not an address", p, i, s)
+		case !a.Is6() || a.Is4In6():
+			v.errf("%s[%d]: %q is not an IPv6 address", p, i, s)
 		}
 	}
 }

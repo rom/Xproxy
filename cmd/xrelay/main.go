@@ -24,6 +24,7 @@ import (
 	_ "github.com/rom/xproxy/internal/kinds/amqp"     // listener kind: amqp
 	_ "github.com/rom/xproxy/internal/kinds/bacnet"   // listener kind: bacnet
 	_ "github.com/rom/xproxy/internal/kinds/dhcp"     // listener kind: dhcp
+	_ "github.com/rom/xproxy/internal/kinds/dhcp6"    // listener kind: dhcp6
 	_ "github.com/rom/xproxy/internal/kinds/ftp"      // listener kind: ftp
 	_ "github.com/rom/xproxy/internal/kinds/iec104"   // listener kind: iec104
 	_ "github.com/rom/xproxy/internal/kinds/ldap"     // listener kind: ldap

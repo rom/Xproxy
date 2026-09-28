@@ -149,8 +149,8 @@ off) logs a warning and lists them under `mismatched_peers`.
 | `h3` | object | defaults when `h3` is listed | QUIC tuning; see below |
 | `h2c` | bool | `false` | Accept HTTP/2 without TLS (prior knowledge and Upgrade) on a plaintext listener, for gRPC clients inside a trusted network |
 | `tls` | object | none | TLS termination; see below |
-| `proxy_protocol` | bool | `false` | Read a PROXY protocol v1 or v2 header at the start of every connection from a peer in `trusted_proxies`: the client address it carries becomes the peer for limits, bans, ACLs, logs and forwarding headers, and the per address connection count moves to it. A trusted peer that sends no header, or a malformed one, is dropped without a response (`drop_connection` with reason `proxy_protocol`, counted in `rejected_connections`); `LOCAL` headers keep the balancer's address; connections from other peers are served unchanged, so a client cannot choose its own address. Requires `trusted_proxies`; read on `kind:` `http`, `forward`, `ssh`, `telnet`, `vnc`, `rdp`, `smtp`, `mqtt`, `ftp`, `syslog` and `modbus`, and not on `tcp` (which reads the first bytes itself to route by server name, and forwards a header instead), `dns`, `udp`, `ntp` or `ntske` -- the datagram kinds have no connection to put a header at the start of, and the key establishment relay reads the ClientHello. |
-| `kind` | `http`, `tcp`, `udp`, `forward`, `dns`, `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `ntp`, `ntske`, `ssh`, `telnet`, `vnc`, `rdp` | `http` | `tcp` is a layer 4 stream listener and `udp` its datagram counterpart, `forward` an explicit proxy for clients, `dns` a DNS proxy, `smtp` a protocol-aware SMTP and submission proxy, `mqtt` an MQTT proxy, `ftp` an FTP proxy, `syslog` a syslog relay, `modbus` a Modbus relay, `ntp` an NTP and NTS time gateway with `ntske` its key establishment relay, and `ssh`, `telnet`, `vnc` and `rdp` the access gateways; see below. The kind also decides which daemon serves the listener: `http`, `forward`, `tcp`, `udp` and `dns` are xproxy's, `ssh`, `telnet`, `vnc` and `rdp` are xgate's, and `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `ntp` and `ntske` are xrelay's. A daemon handed a listener of another kind validates it and leaves it alone; it is never served by the wrong data plane |
+| `proxy_protocol` | bool | `false` | Read a PROXY protocol v1 or v2 header at the start of every connection from a peer in `trusted_proxies`: the client address it carries becomes the peer for limits, bans, ACLs, logs and forwarding headers, and the per address connection count moves to it. A trusted peer that sends no header, or a malformed one, is dropped without a response (`drop_connection` with reason `proxy_protocol`, counted in `rejected_connections`); `LOCAL` headers keep the balancer's address; connections from other peers are served unchanged, so a client cannot choose its own address. Requires `trusted_proxies`; read on `kind:` `http`, `forward`, `ssh`, `telnet`, `vnc`, `rdp`, `smtp`, `mqtt`, `ftp`, `syslog` and `modbus`, and not on `tcp` (which reads the first bytes itself to route by server name, and forwards a header instead), `dns`, `udp`, `ntp`, `ntske`, `dhcp` or `dhcp6` -- the datagram kinds have no connection to put a header at the start of, and the key establishment relay reads the ClientHello. |
+| `kind` | `http`, `tcp`, `udp`, `forward`, `dns`, `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `ntp`, `ntske`, `dhcp`, `dhcp6`, `ssh`, `telnet`, `vnc`, `rdp` | `http` | `tcp` is a layer 4 stream listener and `udp` its datagram counterpart, `forward` an explicit proxy for clients, `dns` a DNS proxy, `smtp` a protocol-aware SMTP and submission proxy, `mqtt` an MQTT proxy, `ftp` an FTP proxy, `syslog` a syslog relay, `modbus` a Modbus relay, `ntp` an NTP and NTS time gateway with `ntske` its key establishment relay, and `ssh`, `telnet`, `vnc` and `rdp` the access gateways; see below. The kind also decides which daemon serves the listener: `http`, `forward`, `tcp`, `udp` and `dns` are xproxy's, `ssh`, `telnet`, `vnc` and `rdp` are xgate's, and `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `ntp` and `ntske` are xrelay's. A daemon handed a listener of another kind validates it and leaves it alone; it is never served by the wrong data plane |
 | `redirect_to_https` | bool | `false` | Answer every request with 308 to `https://host/path?query`. Plaintext listeners only. |
 | `connection_rate` | object | none | `{per_second, burst}`: how fast this listener accepts, replacing `server.limits.connection_rate` for it. See below |
 | `connection_rate_per_source` | object | none | `{per_second, burst, ipv4_prefix, ipv6_prefix, max_sources}`: how fast one source network may connect to this listener |
@@ -3497,6 +3497,142 @@ triggers, and the fine-grained reason is in the refusal counters:
 `too_many_pending`, `rate_limited`, `client_agent_option`, `option_stripped`,
 `option_denied`, `boot_server_not_allowed`, `boot_file_not_allowed`, `rule`,
 `default_deny`, `unencodable`, `unencodable_reply`.
+
+### server.listeners[].dhcp6 (kind: dhcp6)
+
+A `kind: dhcp6` listener is a DHCPv6 relay agent (RFC 8415) on UDP 547 that
+reads what it relays.
+
+It is a separate listener from `kind: dhcp` because DHCPv6 is a separate
+protocol: a different packet format, different message types, a nested
+relay mechanism rather than a field, a client identified by a DUID rather
+than a hardware address, and its own options — including prefix
+delegation, which has no DHCPv4 equivalent at all. An estate running both
+runs both listeners, and writing both down is the point.
+
+The shape of the policy is the DHCPv4 one because the shape of the threat
+is the same: **answering is the attack**, so the interesting half faces
+upstream. What differs is what an answer can carry, and there is more of
+it.
+
+- The **resolvers** (option 23) and the **domain search list** (24) are the
+  obvious pair.
+- The **boot file URL** (59, RFC 5970) and its parameters (60) are what a
+  machine boots.
+- The **captive portal URL** (103, RFC 8910) is a URL a client will open.
+- The **SZTP bootstrap server** (136, RFC 8572) is a configuration a switch
+  will fetch and apply to itself.
+- The **S46 transition containers** (94 to 97, RFC 7598) and the
+  **AFTR name** (64) put a host's *IPv4* traffic through a border relay of
+  the sender's choosing — a takeover of a protocol this message is not even
+  about.
+- The **Server Unicast option** (12) tells a client to stop talking to the
+  relay and address the server directly, which turns off every policy this
+  listener has.
+
+Each is in the built-in `deny_options` list, and the default is to strip
+them and forward the rest: a client that still gets its address and no
+longer gets a resolver it should not have is a client that works.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `mode` | enum | `reverse` | `reverse` (clients here, servers upstream) or `forward` (this listener is the controlled egress a downstream relay agent uses) |
+| `upstream` | upstream | required | The server pool |
+| `allow_clients`, `deny_clients` | list of CIDR | `[]` | The networks a message may arrive from. Deny first. A DHCPv6 client sends from a link-local address it chose itself, so this says less than it looks |
+| `allow_servers` | list of CIDR | the pool's endpoints | The addresses a reply may come from, and the single most valuable line in the file. A reply from anywhere else is dropped and counted whatever it says. Empty means the endpoints of the upstream pool — never "anybody" |
+| `message_types` | list | the lease cycle | The types a client may send: `solicit`, `request`, `renew`, `rebind`, `confirm`, `release`, `decline`, `information_request`. The default leaves out the lease-query family, which is a relay agent's own diagnostic and an inventory of every lease in the estate to anything else |
+| `deny_options` | list | the built-in list above | The options a *server* may not send. Setting the list replaces it, and leaving one of the built-ins out warns |
+| `allow_options` | list | `[]` | Turns the answer policy inside out: an option outside the list is removed. On a network whose clients need three options this is shorter and safer than a deny list |
+| `on_denied_option` | enum | `strip` | `strip` removes the option and forwards the rest; `deny` refuses the whole reply, which leaves the client with no address at all |
+| `deny_requested_options` | list | `[]` | Options a client may not *ask* for, in its Option Request Option. The ask is removed rather than the message refused |
+| `allow_resolvers` | list of IPv6 | `[]` (any) | The addresses the DNS server option may name. Empty warns: an estate knows its own resolvers, and a reply naming anything else is wrong whoever sent it — which is the check that catches a compromised real server as well as a rogue one |
+| `allow_domains` | list of pattern | `[]` (any) | Shell patterns the domain search list may match |
+| `allow_boot_urls` | list of pattern | `[]` (any) | Shell patterns the boot file URL may match. This is where an estate says which images exist |
+| `prefix_delegation` | section | carried, unbounded | What a reply may delegate and what a client may ask for; see below |
+| `allow_temporary_addresses` | bool | `true` | Carry an IA_TA. Temporary addresses are the privacy mechanism of RFC 8415 §6.5, and refusing them would be refusing clients that are doing the right thing |
+| `allow_reconfigure` | bool | `false` | Carry a RECONFIGURE from a server. It warns: it is a message to a client that answers nothing, RFC 8415 §18.3.11 requires it to be authenticated with a key almost nobody deploys, and a client that accepts one can be made to re-ask a server of the sender's choosing |
+| `min_lease_time`, `max_lease_time` | duration | unbounded | Bound the valid lifetime a server may hand out, on an address or a delegated prefix. A valid lifetime of **zero is never bounded up**: zero is how a server withdraws an address (RFC 8415 §18.2.10), and rewriting it would turn a withdrawal into a lease. The preferred lifetime comes down with the valid one, because a preferred lifetime longer than the valid one makes the option invalid |
+| `refuse_repeated_options` | bool | `true` | Refuse a message carrying an option twice where the standard has no meaning for a second one. Two implementations read such a message differently, and a relay that decided about the first value while the server acted on the last would be the reason nobody could find the bug. The identity associations are exempt, because a client legitimately sends several |
+| `max_relay_hops` | int | `4` | The relay chain's depth (1 to 32; RFC 8415 §19.1.1 makes 32 the outer limit). A message arriving already wrapped several times has been somewhere |
+| `link_address` | IPv6 | required in reverse mode | What this relay puts in a RELAY-FORW's link address field, which tells the server which segment to allocate from. A link-local address is refused: it tells the server nothing |
+| `interface_id`, `remote_id`, `remote_id_enterprise`, `subscriber_id` | string / int | none | The relay's own identifying options (RFC 8415 §21.18, RFC 4649, RFC 4580). `remote_id` without an enterprise number warns: RFC 4649 puts the number first, and a server indexing on it will not find this relay where it expects |
+| `on_client_relay_option` | enum | `strip` | What to do when a *client* sends one of the relay's own options. A client has no business asserting which circuit it is on, because that assertion is exactly what the option exists to make on its behalf |
+| `rules` | list | `[]` | Per-message rules; see below |
+| `default_action` | enum | `allow` | Allow, as in the DHCPv4 kind and for the same reason: DHCP is infrastructure, a listener that refused every request until somebody wrote a rule would stop an estate booting, and the protections here are the answer policy and the server list, which are on by default |
+| `max_pending` | int | `256` | Requests outstanding towards servers — the table that pairs a reply with the client that asked |
+| `request_timeout` | duration | `10s` | How long a server has to answer before its answer is too late to pair (1s to 1m) |
+| `max_message_bytes` | int | `1500` | One message. A relay chain grows a message, so this bounds what arrives rather than what a client sent |
+| `rate_limit`, `rate_burst` | int | `0` (off) | Messages a second per **DUID**, which is the key that matters here: pool exhaustion is one host sending thousands of SOLICITs with a made-up identifier in each, and a limit keyed on the source address would see one sender doing nothing unusual |
+| `max_clients` | int | `8192` | The distinct identifiers tracked at once. The other half of the starvation bound: the rate limit slows one identifier down, and this stops a flood of new ones filling the table that does the limiting |
+| `log_messages` | bool | `false` | An access line per message |
+| `log_leases` | bool | `true` | A line for every address and prefix handed out: which identifier got which lease, for how long, from which server |
+| `alert_on_deny` | bool | `true` | A security event for every refusal |
+
+A deployment on a port other than 547 warns: a DHCPv6 client sends to 547
+and nothing else will reach the listener.
+
+#### server.listeners[].dhcp6.prefix_delegation
+
+Prefix delegation is the part of DHCPv6 with no DHCPv4 equivalent, and the
+part where a wrong answer is largest. A reply delegating `::/0` has handed a
+host the whole of IPv6 to route. A request for a /48 where the estate
+delegates /56s is a client asking for two hundred and fifty-six times what
+it should have — and a real server that grants it has given a segment away.
+
+Both ends are checked, and a prefix outside the estate's is a **refusal
+rather than a strip**: there is no useful half of a delegation to keep, and a
+client that acted on the rest would be routing a prefix the relay decided
+against.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Carry prefix delegation at all. An estate that does not use it should say so, because then an IA_PD arriving from anywhere is a question worth refusing |
+| `prefixes` | list of IPv6 CIDR | `[]` | The prefixes a delegation may come from. `::/0` is refused as a value: it is every prefix there is, which is not a bound |
+| `min_length`, `max_length` | int | unbounded | The prefix length in bits (1 to 128). An estate that delegates /56s writes 56 in both, and then a /48 is refused whoever offered it |
+
+Carrying delegation with no prefixes and no length bound warns, because
+that configuration forwards a reply delegating `::/0`.
+
+An IA_PREFIX hint of `::/0` **from a client** is not refused: RFC 8415
+§21.22 lets a client send one to mean "any", and refusing it would refuse
+every client that does not already know its prefix.
+
+#### server.listeners[].dhcp6.rules[]
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | string | required | Names the rule in the logs and the counters |
+| `action` | enum | `allow` | `allow`, `deny` or `observe`. `observe` logs and counts and then keeps looking, which is how a rule is tried on live traffic before it decides anything |
+| `clients` | list of CIDR | `[]` | The networks the message arrived from |
+| `duids` | list of pattern | `[]` | Shell patterns the client identifier's rendering matches: `ll:0003*` for a vendor's fleet, the whole identifier for one machine. The rendering is the type and the hexadecimal octets, which is what the logs carry too |
+| `message_types` | list | `[]` (any) | The message types this rule covers |
+| `vendor_classes`, `user_classes` | list of pattern | `[]` | Match the vendor class and user class options as shell patterns, which is how a rule about PXE clients is written |
+| `deny_options`, `allow_resolvers`, `allow_domains`, `allow_boot_urls` | list | inherited | Narrow the answer policy for this rule's traffic, which is how "the boot segment may be told a boot URL and nothing else may" is written |
+| `max_lease_time` | duration | inherited | Overrides the listener's lease bound for this rule |
+| `interface_id` | string | inherited | Overrides the listener's interface identifier, so a rule about one segment can tell the server which segment it is |
+| `schedule` | section | none | Limits the rule to a time window |
+
+Counters: `dhcp6_messages`, `dhcp6_solicits`, `dhcp6_requests`,
+`dhcp6_replies`, `dhcp6_relayed`, `dhcp6_answered`, `dhcp6_releases`,
+`dhcp6_denied`, `dhcp6_would_deny`, `dhcp6_malformed`, `dhcp6_rejected`,
+`dhcp6_rate_limited`, `dhcp6_upstream_failed`, `dhcp6_send_failed`,
+`dhcp6_unsolicited`, and the two worth reading first —
+`dhcp6_rogue_server`, a reply refused because it came from an address that
+is not a server, and `dhcp6_options_stripped`, the options removed from
+replies, which is the number that says the answer policy is doing something
+a request-side check could not. `dhcp6_lease_bounded` counts the replies
+whose valid lifetime this relay wrote down; `dhcp6_pending` and
+`dhcp6_clients` are gauges.
+
+Refusals are `dhcp6_denied` for the ban triggers, and the fine-grained
+reason is in the refusal counters: `client_not_allowed`,
+`server_not_allowed`, `malformed`, `malformed_reply`, `message_too_large`,
+`unknown_message_type`, `relay_message_inside`,
+`server_message_from_client_side`, `client_message_from_server_side`,
+`repeated_option`, `message_type_not_allowed`, `request_not_allowed`,
+`client_relay_option`, `reconfigure_not_allowed`, `denied_option`,
+`bad_identity_association`, `too_many_hops`, `too_many_pending`,
+`rate_limited`, `unsolicited`, `rule`, `default_deny`, `unencodable`.
 
 ### server.listeners[].tftp (kind: tftp)
 
@@ -7709,7 +7845,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `flow`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `tcp_denied`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `amqp_denied`, `s7_denied`, `ntp_denied`, `ntske_denied`, `dns_denied`, `dns_threat_intel`, `dns_deceived`, `dns_tripwire`, `telnet_tripwire`, `ssh_tripwire`, `modbus_tripwire`, `iec104_tripwire`, `s7_tripwire`, `redis_tripwire`, `mysql_tripwire`, `postgres_tripwire`, `yara` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `flow`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `tcp_denied`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `dhcp6_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `amqp_denied`, `s7_denied`, `ntp_denied`, `ntske_denied`, `dns_denied`, `dns_threat_intel`, `dns_deceived`, `dns_tripwire`, `telnet_tripwire`, `ssh_tripwire`, `modbus_tripwire`, `iec104_tripwire`, `s7_tripwire`, `redis_tripwire`, `mysql_tripwire`, `postgres_tripwire`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |

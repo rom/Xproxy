@@ -38,6 +38,7 @@ server:
           tds: null
           redis: null
           dhcp: null
+          dhcp6: null
           bacnet: null
           amqp: null
           s7: null
@@ -102,6 +103,7 @@ server:
           tds: null
           redis: null
           dhcp: null
+          dhcp6: null
           bacnet: null
           amqp: null
           s7: null

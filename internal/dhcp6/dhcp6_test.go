@@ -272,8 +272,11 @@ func TestTheMessageTypesSaySoWhoSendsThem(t *testing.T) {
 		{InformationRequest, true, false, false, false},
 		{RelayForward, false, false, true, false},
 		{RelayReply, false, false, true, false},
-		{LeaseQuery, false, false, false, false},
+		// A requestor's message: towards a server, so the client's direction.
+		{LeaseQuery, true, false, false, false},
 		{LeaseQueryReply, false, true, false, false},
+		{LeaseQueryDone, false, true, false, false},
+		{LeaseQueryData, false, true, false, false},
 	} {
 		t.Run(tc.t.String(), func(t *testing.T) {
 			if tc.t.FromClient() != tc.client || tc.t.FromServer() != tc.server {
