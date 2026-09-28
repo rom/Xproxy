@@ -38,6 +38,9 @@ type ntsSource struct {
 	noCookies bool
 	wrongID   bool
 	noAuth    bool
+	// swallow is how many verified requests to read and not answer, which is
+	// what a lost answer looks like from the relay's side.
+	swallow atomic.Int64
 }
 
 func startNTSSource(t *testing.T, s *ntsSource) *ntsSource {
@@ -161,6 +164,10 @@ func (s *ntsSource) serveTime() {
 			continue
 		}
 		s.verified.Add(1)
+		if s.swallow.Load() > 0 {
+			s.swallow.Add(-1)
+			continue
+		}
 		out, err := s.answer(pkt, aead, keys)
 		if err != nil {
 			continue
@@ -469,5 +476,129 @@ func TestTheSourceConfigurationIsChecked(t *testing.T) {
 	}
 	if err == nil {
 		t.Fatal("a certificate authority file with no certificates in it started")
+	}
+}
+
+// The association sustains itself. Each answer carries a replacement for the
+// cookie the request spent, so a relay polling a source for a week does one key
+// establishment rather than one every eight exchanges -- and a relay that
+// dropped the replacements would be doing a TLS handshake per handful of time
+// packets without anybody noticing.
+func TestTheAssociationSustainsItself(t *testing.T) {
+	src := startNTSSource(t, &ntsSource{})
+	s, keAddr, timeAddr := sourceServer(t, "", src, "")
+	waitFor(t, "keys with the source", func() bool {
+		return s.Stats().NTPNTSSourceEstablished > 0
+	})
+	cookies, keys := establishKE(t, keAddr)
+	c := dialNTP(t, timeAddr)
+	// Three times the pool's depth, each exchange spending the cookie the last
+	// one handed back -- on both sides of the relay at once.
+	cookie := cookies[0]
+	for i := 0; i < 3*len(cookies); i++ {
+		raw, _ := ntsAsk(t, cookie, 0, keys.C2S)
+		c.raw(raw)
+		got, _, err := c.read(5 * time.Second)
+		if err != nil {
+			t.Fatalf("exchange %d went unanswered: %v", i, err)
+		}
+		inner, err := got.OpenNTS(keys.S2C)
+		if err != nil {
+			t.Fatalf("exchange %d did not verify: %v", i, err)
+		}
+		fresh := wire.NTSCookies(inner)
+		if len(fresh) == 0 {
+			t.Fatalf("exchange %d handed back no cookie", i)
+		}
+		cookie = fresh[0]
+	}
+	if got := s.Stats().NTPNTSSourceEstablished; got != 1 {
+		t.Fatalf("%d key establishments for %d exchanges: the replacements are not being kept",
+			got, 3*len(cookies))
+	}
+	if s.Stats().NTPNTSSourceVerified < uint64(3*len(cookies)) {
+		t.Errorf("the source's answers verified %d times", s.Stats().NTPNTSSourceVerified)
+	}
+}
+
+// A burst of requests to a relay that cannot reach the source's key
+// establishment draws one attempt, not one per request. The alternative is a
+// relay that turns a flood of time packets into a flood of TLS dials at a server
+// that is already having a bad day.
+func TestABurstWithNoKeysDrawsOneEstablishment(t *testing.T) {
+	src := startNTSSource(t, &ntsSource{})
+	dead, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := dead.Addr().String()
+	_ = dead.Close()
+
+	s, _, timeAddr := sourceServer(t, "", src, addr)
+	waitFor(t, "the first failure", func() bool { return s.Stats().NTPNTSSourceFailed > 0 })
+	c := dialNTP(t, timeAddr)
+	for i := 0; i < 20; i++ {
+		c.send(request(4, wire.ModeClient))
+	}
+	c.expectSilence("requests with no keys for the source")
+	// One exchange is in flight at a time, so a burst arriving faster than a
+	// dial adds nothing to the attempt already running.
+	if got := s.Stats().NTPNTSSourceFailed; got > 2 {
+		t.Fatalf("%d key establishment attempts for a burst of 20 requests", got)
+	}
+	if got := s.Stats().Refusals["ntp"]["nts_source_not_ready"]; got < 20 {
+		t.Errorf("%d requests refused, want 20", got)
+	}
+	// And requests spread out over time do not each draw one either: a failed
+	// establishment waits before it is tried again, because a source whose key
+	// establishment is down is not a source that wants to be dialled per packet.
+	before := s.Stats().NTPNTSSourceFailed
+	for i := 0; i < 5; i++ {
+		c.send(request(4, wire.ModeClient))
+		time.Sleep(150 * time.Millisecond)
+	}
+	if got := s.Stats().NTPNTSSourceFailed - before; got > 1 {
+		t.Fatalf("%d further attempts for five requests spread over a second", got)
+	}
+}
+
+// The placeholders are what recovers the pool after a lost answer. Without them
+// a relay whose answers go missing runs its cookies down and has to establish
+// keys again -- which works, and is a TLS handshake where a larger request would
+// have done.
+func TestLostAnswersAreRecoveredByThePlaceholders(t *testing.T) {
+	src := startNTSSource(t, &ntsSource{})
+	s, keAddr, timeAddr := sourceServer(t, `        request_timeout: 1s`, src, "")
+	waitFor(t, "keys with the source", func() bool {
+		return s.Stats().NTPNTSSourceEstablished > 0
+	})
+	cookies, keys := establishKE(t, keAddr)
+	c := dialNTP(t, timeAddr)
+
+	// Seven answers lost: the relay's pool goes from eight to one.
+	src.swallow.Store(7)
+	for i := 0; i < 7; i++ {
+		raw, _ := ntsAsk(t, cookies[i], 0, keys.C2S)
+		c.raw(raw)
+		_, _, _ = c.read(500 * time.Millisecond)
+	}
+	waitFor(t, "the lost requests to reach the source", func() bool {
+		return src.verified.Load() >= 7
+	})
+	// The eighth spends the last cookie and asks for a full pool back.
+	raw, _ := ntsAsk(t, cookies[7], 0, keys.C2S)
+	c.raw(raw)
+	if _, _, err := c.read(5 * time.Second); err != nil {
+		t.Fatalf("the eighth exchange went unanswered: %v", err)
+	}
+	// So the ninth has a cookie to spend without another key establishment.
+	fresh, freshKeys := establishKE(t, keAddr)
+	raw, _ = ntsAsk(t, fresh[0], 0, freshKeys.C2S)
+	c.raw(raw)
+	if _, _, err := c.read(5 * time.Second); err != nil {
+		t.Fatalf("the exchange after the pool was refilled went unanswered: %v", err)
+	}
+	if got := s.Stats().Refusals["ntp"]["nts_source_not_ready"]; got != 0 {
+		t.Errorf("%d requests found the pool empty", got)
 	}
 }

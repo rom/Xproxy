@@ -39,6 +39,11 @@ const (
 	// exchange and one comes back, so the pool only shrinks when answers are
 	// lost; the placeholders on each request top it back up.
 	cookieTarget = ke.CookiesPerResponse
+	// A request may carry at most MaxNTSCookies cookies and placeholders
+	// together, and the arithmetic above derives the placeholders from
+	// cookieTarget. This does not compile if cookieTarget ever grows past the
+	// bound, which is the only way that arithmetic could ask for too many.
+	_ = uint(wire.MaxNTSCookies - cookieTarget)
 	// establishRetry is how long a failed key establishment waits. A source
 	// whose key establishment server is down is a source this relay cannot ask
 	// for the time, and hammering it would not change that.
@@ -174,12 +179,12 @@ func (o *originator) take() (cookie []byte, placeholders int, keys *ke.Keys, ok 
 	cookie = o.cookies[0]
 	o.cookies = o.cookies[1:]
 	// One replacement for the cookie just spent comes back without asking; the
-	// placeholders are what tops the pool back up after a lost answer.
+	// placeholders are what tops the pool back up after a lost answer. There is
+	// no clamp here because there cannot be one to apply: the pool held at
+	// least the cookie just taken, so this is at most cookieTarget-1, and the
+	// assertion below keeps that true if either constant moves.
 	if want := cookieTarget - len(o.cookies) - 1; want > 0 {
 		placeholders = want
-		if placeholders > wire.MaxNTSCookies-1 {
-			placeholders = wire.MaxNTSCookies - 1
-		}
 	}
 	return cookie, placeholders, o.keys, true
 }
