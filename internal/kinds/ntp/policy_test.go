@@ -405,8 +405,8 @@ func TestTheLearningReportIsThePolicyLists(t *testing.T) {
 	for _, addr := range []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"} {
 		small.Observe(req(t, addr, clientPacket()), Decision{Allow: true}, now)
 	}
-	if small.Subjects() != 2 || small.Dropped.Load() != 1 {
-		t.Errorf("subjects %d dropped %d", small.Subjects(), small.Dropped.Load())
+	if small.Subjects() != 2 || small.Dropped() != 1 {
+		t.Errorf("subjects %d dropped %d", small.Subjects(), small.Dropped())
 	}
 	if !strings.Contains(small.Report(), "1 subjects dropped at the bound") {
 		t.Error("the report does not say the bound was reached")

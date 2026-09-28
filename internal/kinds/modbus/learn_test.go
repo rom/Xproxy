@@ -112,9 +112,15 @@ func TestTheReportCountsWhatThePolicyWouldHaveRefused(t *testing.T) {
 	}
 }
 
-// The bound is a bound, and a learning run that quietly stopped learning
-// is worse than one that says so.
-func TestTheSubjectBoundDropsTheOldestAndSaysSo(t *testing.T) {
+// The bound is a bound, and a learning run that quietly stopped learning is worse
+// than one that says so.
+//
+// At the bound the *new* subject is dropped and the table is left alone, which is
+// internal/learn's own choice and the right one: evicting a subject would throw away a
+// row still being written to, and would make the report's contents depend on when it
+// happened to be written. So the rows that survive are the first ones seen, and the
+// test says which rather than taking the count on trust.
+func TestTheSubjectBoundKeepsWhatItHasAndSaysSo(t *testing.T) {
 	l := NewLearner("plant", "", time.Minute, 2)
 	for _, unit := range []byte{1, 2, 3, 4} {
 		l.Observe(req(t, "10.0.0.7", "", unit, learnRead), true, learnDay)
@@ -122,11 +128,30 @@ func TestTheSubjectBoundDropsTheOldestAndSaysSo(t *testing.T) {
 	if l.Subjects() != 2 {
 		t.Fatalf("subjects: %d, want the bound of 2", l.Subjects())
 	}
-	if l.Dropped.Load() != 2 {
-		t.Fatalf("dropped: %d, want 2", l.Dropped.Load())
+	if l.Dropped() != 2 {
+		t.Fatalf("dropped: %d, want 2", l.Dropped())
 	}
-	if out := l.Report(); !strings.Contains(out, "2 subjects dropped at the bound") {
+	out := l.Report()
+	if !strings.Contains(out, "2 subjects dropped at the bound") {
 		t.Errorf("the report does not say the bound was reached:\n%s", out)
+	}
+	// Units 1 and 2 were seen first and are the ones kept; 3 and 4 were dropped.
+	for _, want := range []string{"unit: 1", "unit: 2"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the report lost %q, which it saw first:\n%s", want, out)
+		}
+	}
+	for _, never := range []string{"unit: 3", "unit: 4"} {
+		if strings.Contains(out, never) {
+			t.Errorf("the report holds %q, which the bound should have dropped:\n%s",
+				never, out)
+		}
+	}
+	// And the frame count is what was recorded, not what arrived: two frames were
+	// dropped with their subjects, and a header that counted them would not add up
+	// against the rows below it.
+	if !strings.Contains(out, "2 frames, 2 subjects") {
+		t.Errorf("the header does not account for the dropped frames:\n%s", out)
 	}
 }
 
@@ -180,8 +205,8 @@ func TestTheReportFileIsReplacedAtomically(t *testing.T) {
 	if len(entries) != 1 {
 		t.Errorf("the directory holds %d files, want only the report", len(entries))
 	}
-	if l.Writes.Load() != 2 {
-		t.Errorf("writes: %d, want 2", l.Writes.Load())
+	if l.Writes() != 2 {
+		t.Errorf("writes: %d, want 2", l.Writes())
 	}
 }
 
