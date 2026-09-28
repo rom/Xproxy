@@ -590,3 +590,56 @@ func TestTheFabricationKeepsTheTestBit(t *testing.T) {
 		t.Errorf("the confirmation: %+v", f.ASDU)
 	}
 }
+
+// The tripwire feeds the ban ladder, which is the difference between it and an
+// ordinary fabricated exchange: a centre that read a point nothing legitimate
+// reads has said something every other listener would want to act on, while
+// banning the exchange itself would end the collection.
+func TestATrippedFabricationReachesTheBanLadder(t *testing.T) {
+	s := proxytest.Start(t, fmt.Sprintf(decoyYAML, `        deception:
+          mode: decoy
+          common_addresses: ["1"]
+          spontaneous: false
+          tripwire: ["9000-9099"]
+          points:
+            - {addresses: "9000-9004", type: M_ME_NB_1}
+            - {addresses: "101-104", type: M_ME_NB_1}`)+`
+bans:
+  action: reject
+  triggers: [{name: traps, reasons: [iec104_tripwire], threshold: 1, window: 1m, duration: 1h}]
+`)
+	c := dialCentre(t, proxytest.Addr(t, s, "spare"))
+	c.startdt()
+	c.expect("the end of initialisation")
+	c.ask(read(1, 9001))
+	if f := c.expect("the tripwire answer"); f.ASDU == nil || f.ASDU.Negative {
+		t.Fatalf("a tripwire address was not answered: %+v", f.ASDU)
+	}
+	await(t, s, func(sn proxy.Snapshot) bool { return sn.BansActive >= 1 },
+		"the tripwire did not reach the ban ladder")
+}
+
+// And an ordinary fabricated read does not reach it: a client must not be
+// banned for having been answered.
+func TestAnOrdinaryFabricatedExchangeDoesNotBan(t *testing.T) {
+	s := proxytest.Start(t, fmt.Sprintf(decoyYAML, `        deception:
+          mode: decoy
+          common_addresses: ["1"]
+          spontaneous: false
+          points:
+            - {addresses: "101-104", type: M_ME_NB_1}`)+`
+bans:
+  action: reject
+  triggers: [{name: traps, reasons: [iec104_tripwire], threshold: 1, window: 1m, duration: 1h}]
+`)
+	c := dialCentre(t, proxytest.Addr(t, s, "spare"))
+	c.startdt()
+	c.expect("the end of initialisation")
+	c.ask(read(1, 101))
+	c.expect("the fabricated answer")
+	await(t, s, func(sn proxy.Snapshot) bool { return sn.IEC104Deceived >= 1 },
+		"the fabrication did not answer")
+	if n := s.Stats().BansActive; n != 0 {
+		t.Errorf("an ordinary fabricated exchange banned the centre: %d", n)
+	}
+}

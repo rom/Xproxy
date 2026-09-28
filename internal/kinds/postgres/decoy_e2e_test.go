@@ -332,3 +332,51 @@ func awaitPGCounter(t *testing.T, s *proxy.Server, ok func(proxy.Snapshot) bool,
 	}
 	t.Fatalf("%s: deceived %d, tripped %d", what, s.Stats().PostgresDeceived, s.Stats().PostgresTripwire)
 }
+
+// The tripwire feeds the ban ladder, which is the difference between it and an
+// ordinary fabricated exchange: a statement reaching for a file, a credential
+// table or a shell is something every other listener would want to act on, while
+// banning the exchange itself would end the collection.
+func TestATrippedFabricationReachesTheBanLadder(t *testing.T) {
+	s := proxytest.Start(t, pgDecoyYAML+`
+bans:
+  action: reject
+  triggers: [{name: traps, reasons: [postgres_tripwire], threshold: 1, window: 1m, duration: 1h}]
+`)
+	cl := dial(t, proxytest.Addr(t, s, "db"), "user", "app", "database", "app_production")
+	if e := cl.waitReady(t); e != "" {
+		t.Fatalf("the startup was refused: %s", e)
+	}
+	// Refused as the real server refuses it, and a tripwire either way: the
+	// reach is the finding, not whether it succeeded.
+	if r := cl.ask(t, "SELECT pg_read_file('/etc/passwd')"); r.code == "" {
+		t.Fatal("a file read was answered rather than refused")
+	}
+	awaitPGCounter(t, s, func(sn proxy.Snapshot) bool { return sn.BansActive >= 1 },
+		"the tripwire did not reach the ban ladder")
+}
+
+// And an ordinary fabricated statement does not reach it: a client must not be
+// banned for having been answered.
+func TestAnOrdinaryFabricatedPGStatementDoesNotBan(t *testing.T) {
+	s := proxytest.Start(t, pgDecoyYAML+`
+bans:
+  action: reject
+  triggers: [{name: traps, reasons: [postgres_tripwire], threshold: 1, window: 1m, duration: 1h}]
+`)
+	cl := dial(t, proxytest.Addr(t, s, "db"), "user", "app", "database", "app_production")
+	if e := cl.waitReady(t); e != "" {
+		t.Fatalf("the startup was refused: %s", e)
+	}
+	if got := onePG(t, cl.ask(t, "SELECT version()")); !strings.Contains(got, "13.14") {
+		t.Fatalf("version() answered %q", got)
+	}
+	if got := onePG(t, cl.ask(t, "SELECT current_database()")); got != "app_production" {
+		t.Fatalf("current_database answered %q", got)
+	}
+	awaitPGCounter(t, s, func(sn proxy.Snapshot) bool { return sn.PostgresDeceived >= 2 },
+		"the fabrication did not answer")
+	if n := s.Stats().BansActive; n != 0 {
+		t.Errorf("ordinary fabricated statements banned the client: %d", n)
+	}
+}

@@ -4732,7 +4732,7 @@ list
 T}	T{
 \fB[]\fR
 T}	T{
-Addresses no legitimate master has a reason to touch. Reading one is \fBanswered\fR,\: and raised as a \fBmodbus_\:tripwire\fR security event: the answer keeps the visitor reading and the event is what an operator acts on
+Addresses no legitimate master has a reason to touch. Reading one is \fBanswered\fR,\: and raised as a \fBmodbus_\:tripwire\fR security event: the answer keeps the visitor reading and the event is what an operator acts on. Nameable in a ban trigger\(aqs \fBreasons\fR as \fBmodbus_\:tripwire\fR
 T}
 T{
 \fBseed\fR
@@ -5436,7 +5436,7 @@ list
 T}	T{
 \fB[]\fR
 T}	T{
-Information object addresses no legitimate centre reads. One named in a read or a command is \fBanswered\fR,\: and raised as an \fBiec104_\:tripwire\fR security event: the answer keeps the visitor reading and the event is what an operator acts on
+Information object addresses no legitimate centre reads. One named in a read or a command is \fBanswered\fR,\: and raised as an \fBiec104_\:tripwire\fR security event: the answer keeps the visitor reading and the event is what an operator acts on. Nameable in a ban trigger\(aqs \fBreasons\fR as \fBiec104_\:tripwire\fR
 T}
 T{
 \fBspontaneous\fR
@@ -16357,7 +16357,7 @@ list
 T}	T{
 \fB[]\fR (all)
 T}	T{
-Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBtcp_\:denied\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBpostgres_\:denied\fR,\: \fBmysql_\:denied\fR,\: \fBtds_\:denied\fR,\: \fBredis_\:denied\fR,\: \fBbacnet_\:denied\fR,\: \fBamqp_\:denied\fR,\: \fBs7_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fBdns_\:denied\fR,\: \fBdns_\:threat_\:intel\fR,\: \fBdns_\:deceived\fR,\: \fBdns_\:tripwire\fR,\: \fBtelnet_\:tripwire\fR,\: \fBssh_\:tripwire\fR,\: \fByara\fR
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBtcp_\:denied\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBpostgres_\:denied\fR,\: \fBmysql_\:denied\fR,\: \fBtds_\:denied\fR,\: \fBredis_\:denied\fR,\: \fBbacnet_\:denied\fR,\: \fBamqp_\:denied\fR,\: \fBs7_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fBdns_\:denied\fR,\: \fBdns_\:threat_\:intel\fR,\: \fBdns_\:deceived\fR,\: \fBdns_\:tripwire\fR,\: \fBtelnet_\:tripwire\fR,\: \fBssh_\:tripwire\fR,\: \fBmodbus_\:tripwire\fR,\: \fBiec104_\:tripwire\fR,\: \fBs7_\:tripwire\fR,\: \fBredis_\:tripwire\fR,\: \fBmysql_\:tripwire\fR,\: \fBpostgres_\:tripwire\fR,\: \fByara\fR
 T}
 T{
 \fBthreshold\fR
@@ -26605,7 +26605,7 @@ list
 T}	T{
 
 T}	T{
-Object names \[u2014] a table,\: a function,\: a system variable \[u2014] that raise a \fBmysql_\:tripwire\fR event when a statement mentions one. \fBIn addition to\fR the built\-in set below
+Object names \[u2014] a table,\: a function,\: a system variable \[u2014] that raise a \fBmysql_\:tripwire\fR event when a statement mentions one. \fBIn addition to\fR the built\-in set below. Nameable in a ban trigger\(aqs \fBreasons\fR as \fBmysql_\:tripwire\fR
 T}
 T{
 \fBseed\fR
@@ -27222,7 +27222,7 @@ list
 T}	T{
 
 T}	T{
-Object names \[u2014] a catalogue table,\: a function \[u2014] that raise a \fBpostgres_\:tripwire\fR event when a statement mentions one. \fBIn addition to\fR the built\-in set below
+Object names \[u2014] a catalogue table,\: a function \[u2014] that raise a \fBpostgres_\:tripwire\fR event when a statement mentions one. \fBIn addition to\fR the built\-in set below. Nameable in a ban trigger\(aqs \fBreasons\fR as \fBpostgres_\:tripwire\fR
 T}
 T{
 \fBseed\fR
@@ -28300,7 +28300,7 @@ list
 T}	T{
 
 T}	T{
-Command names,\: or \fB"NAME SUB"\fR pairs,\: that raise a \fBredis_\:tripwire\fR event. \fBIn addition to\fR the built\-in set below
+Command names,\: or \fB"NAME SUB"\fR pairs,\: that raise a \fBredis_\:tripwire\fR event. \fBIn addition to\fR the built\-in set below. Nameable in a ban trigger\(aqs \fBreasons\fR as \fBredis_\:tripwire\fR
 T}
 T{
 \fBseed\fR
@@ -30230,7 +30230,7 @@ list
 T}	T{
 \fB[]\fR
 T}	T{
-Data block numbers no legitimate client reads. One named in a read is \fBanswered\fR,\: and raised as an \fBs7_\:tripwire\fR security event: the answer keeps the visitor reading and the event is what an operator acts on
+Data block numbers no legitimate client reads. One named in a read is \fBanswered\fR,\: and raised as an \fBs7_\:tripwire\fR security event: the answer keeps the visitor reading and the event is what an operator acts on. Nameable in a ban trigger\(aqs \fBreasons\fR as \fBs7_\:tripwire\fR
 T}
 T{
 \fBseed\fR

@@ -2569,10 +2569,17 @@ var denyReasons = map[string]bool{
 	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true, "honeypot": true, "dns_blocked": true, "dns_bogus": true, "dns_rpz": true,
 	"account_abuse": true, "api_abuse": true, "honeytoken": true, "scim": true, "threat_intel": true, "smtp_denied": true, "mqtt_denied": true, "ssh_denied": true, "ftp_denied": true, "syslog_denied": true, "yara": true,
 	"forward_sni_mismatch": true, "dns_tunnel": true, "dns_answer_denied": true,
-	// dns_deceived and dns_tripwire are the fabricated resolver's own events
-	// (decoy.go). Only the dns listener's events reach the ban list, which is why
-	// the other kinds' tripwire reasons are not here: a trigger naming one would
-	// load and never fire.
+	// The fabrications' own events (each kind's decoy.go).
+	//
+	// A tripwire reaches the ban ladder only where this proxy knows who sent
+	// the frame that tripped it. On a TCP kind the handshake has completed
+	// before any fabricated exchange, so the source address is the client's.
+	// On a datagram kind it is whatever the sender wrote, so banning on it
+	// would let one forged packet have somebody else's address banned -- which
+	// is why dns attributes an unverified datagram to nobody, and why
+	// snmp_tripwire is deliberately absent: the fabricated agent never answers
+	// a version 3 message, so every exchange it does answer is unauthenticated
+	// v1 or v2c. It stays in the security log, where it costs nobody anything.
 	//
 	// The tripwire is the one worth banning on. A client that asked a fabricated
 	// resolver for a zone transfer has said something; one that was merely
@@ -2586,7 +2593,12 @@ var denyReasons = map[string]bool{
 	"telnet_tripwire": true,
 	// ssh_tripwire is the same on the bastion: a command reaching for a payload,
 	// or a channel asking the fabrication to forward a connection somewhere.
-	"ssh_tripwire":  true,
+	"ssh_tripwire": true,
+	// And the same on the relays that front equipment and databases: an address
+	// or a block nobody has a reason to touch, a command nothing legitimate
+	// sends to a cache, a statement reaching for a file or a credential table.
+	"modbus_tripwire": true, "iec104_tripwire": true, "s7_tripwire": true,
+	"redis_tripwire": true, "mysql_tripwire": true, "postgres_tripwire": true,
 	"telnet_denied": true, "vnc_denied": true, "rdp_denied": true, "sftp_icap": true, "udp_denied": true,
 	// tcp_denied is the generic TCP relay's refusal by the imported lists or the
 	// authorisation policy. It is separate from tcp_no_route, which is a client
