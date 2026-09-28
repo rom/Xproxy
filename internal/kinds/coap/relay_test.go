@@ -290,9 +290,11 @@ func TestAPathNoRuleCoversIsRefusedAndAnswered(t *testing.T) {
 		t.Fatal("the refused request reached the device")
 	}
 	until(t, s, "the refusal", refused("default_deny"))
-	if s.Stats().CoAPRefusalsAnswered == 0 {
-		t.Error("the refusal was not counted as answered")
-	}
+	// Waited for rather than read: the counter is bumped after the answer is
+	// sent, so the client can be holding the refusal before the number moves.
+	until(t, s, "the refusal to be counted as answered", func(st proxy.Snapshot) bool {
+		return st.CoAPRefusalsAnswered > 0
+	})
 }
 
 // answer_refusals: false drops instead, which the validator warns about and which

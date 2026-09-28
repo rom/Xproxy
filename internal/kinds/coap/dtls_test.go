@@ -173,9 +173,12 @@ func TestARefusalInsideDTLSComesBackInsideTheSession(t *testing.T) {
 		t.Fatal("the refused request reached the device")
 	}
 	until(t, s, "the refusal", refused("default_deny"))
-	if s.Stats().CoAPRefusalsAnswered == 0 {
-		t.Error("the refusal was not counted as answered")
-	}
+	// Waited for rather than read, because the counter is bumped *after* the
+	// answer is sent -- a send that failed is not an answer -- so the client can
+	// be holding the refusal before the number moves.
+	until(t, s, "the refusal to be counted as answered", func(st proxy.Snapshot) bool {
+		return st.CoAPRefusalsAnswered > 0
+	})
 }
 
 // A plaintext CoAP datagram sent at a DTLS listener is not a CoAP message at all
