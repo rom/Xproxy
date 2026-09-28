@@ -2862,6 +2862,32 @@ type TFTPListener struct {
 	LogTransfers *bool `yaml:"log_transfers"`
 	// AlertOnDeny writes a security event for every refusal. Default true.
 	AlertOnDeny *bool `yaml:"alert_on_deny"`
+	// Learn records what crosses this listener and writes a proposed policy.
+	Learn *TFTPLearn `yaml:"learn"`
+}
+
+// TFTPLearn is a tftp listener's learning mode.
+type TFTPLearn struct {
+	// Enabled turns the recording on.
+	Enabled bool `yaml:"enabled"`
+	// File is where the report is written, as YAML. Required when enabled.
+	File string `yaml:"file"`
+	// Interval is how often it is rewritten. Default 5m; it is also written
+	// when the listener shuts down.
+	Interval Duration `yaml:"interval"`
+	// MaxSubjects bounds the observations held: one per client, direction and
+	// directory seen. Default 8192; past it the newest is dropped and the drops
+	// are counted, because a learning run that quietly stopped learning is
+	// worse than one that says so.
+	MaxSubjects int `yaml:"max_subjects"`
+	// Enforce keeps the policy in force while learning. Default false: a
+	// learning run is normally observe-only, and saying so here is what stops
+	// one being left on by accident.
+	//
+	// What it never relaxes is the block, window and transfer-size bounds.
+	// Those are what stop this listener being an amplifier, they are not
+	// policy, and no report proposes them.
+	Enforce bool `yaml:"enforce"`
 }
 
 // TFTPRule decides one transfer.

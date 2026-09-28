@@ -76,6 +76,7 @@ type server struct {
 
 	policy  *Policy
 	limiter *limits.KeyedLimiter
+	learner *learner
 
 	// transfers is what a shutdown waits for. It is acceptgroup rather
 	// than a bare WaitGroup because the check and the Add have to happen
@@ -107,6 +108,10 @@ func newServer(host proxy.Host, cfg config.Listener, pc net.PacketConn) (*server
 			burst = m.RateLimit
 		}
 		t.limiter = limits.NewKeyedLimiter(float64(m.RateLimit), burst, 65536)
+	}
+	if l := m.Learn; l != nil {
+		t.learner = newLearner(&learnConfig{enabled: l.Enabled, listener: cfg.Name,
+			file: l.File, interval: l.Interval.D(), maxSubjects: l.MaxSubjects})
 	}
 	return t, nil
 }
@@ -146,7 +151,22 @@ func (t *server) idleTimeout() time.Duration {
 
 // enforcing says whether this listener refuses for policy or only records
 // what it would have refused.
-func (t *server) enforcing() bool { return !t.cfg.Shadowing() }
+//
+// A learning run is observe-only unless it says otherwise, for the same reason
+// shadow mode is: a run that refused half the traffic would have changed the
+// thing it was measuring. What neither relaxes is a bound -- the block, the
+// window, the transfer size, the concurrency -- because shadowing those leaves a
+// working amplifier.
+func (t *server) enforcing() bool {
+	if t.cfg.Shadowing() {
+		return false
+	}
+	l := t.m.Learn
+	if l == nil || !l.Enabled {
+		return true
+	}
+	return l.Enforce
+}
 
 // alerts says whether a refusal writes a security event.
 func (t *server) alerts() bool { return t.m.AlertOnDeny == nil || *t.m.AlertOnDeny }
@@ -159,7 +179,15 @@ func (t *server) logTransfers() bool { return t.m.LogTransfers == nil || *t.m.Lo
 // default: a device that is told no stops.
 func (t *server) answering() bool { return t.m.DenyResponse != "drop" }
 
-func (t *server) serve() { t.serveRequests() }
+func (t *server) serve() {
+	if t.learner != nil {
+		t.learner.Start(func(err error) {
+			t.host.Logs().Error.Warn("tftp learning report could not be written",
+				"listener", t.cfg.Name, "error", err.Error())
+		})
+	}
+	t.serveRequests()
+}
 
 func (t *server) shutdown(ctx context.Context) {
 	t.once.Do(func() {
@@ -171,6 +199,7 @@ func (t *server) shutdown(ctx context.Context) {
 	t.transfers.Close()
 	t.transfers.Wait(ctx)
 	if ctx.Err() == nil {
+		t.stopLearning()
 		return
 	}
 	// A transfer can be minutes long, so a shutdown that waited for one to
@@ -182,6 +211,19 @@ func (t *server) shutdown(ctx context.Context) {
 	}
 	t.mu.Unlock()
 	t.transfers.Wait(context.Background())
+	t.stopLearning()
+}
+
+// stopLearning writes the report one last time. It runs after the transfers
+// have drained, so what it writes includes how they ended.
+func (t *server) stopLearning() {
+	if t.learner == nil {
+		return
+	}
+	if err := t.learner.Stop(); err != nil {
+		t.host.Logs().Error.Warn("tftp learning report could not be written at shutdown",
+			"listener", t.cfg.Name, "error", err.Error())
+	}
 }
 
 // admit puts a transfer in the table, or says why it may not start.

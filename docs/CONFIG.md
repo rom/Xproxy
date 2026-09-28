@@ -3211,6 +3211,65 @@ firmware.
 | `rate_limit`, `rate_burst` | int | `0` | Requests per second per client address |
 | `log_transfers` | bool | `true` | An access line per transfer: who, which direction, which path, how much moved, how it ended. This is the record an estate is asked for when somebody wants to know which switch got which firmware |
 | `alert_on_deny` | bool | `true` | A security event per refusal |
+| `learn` | object | | Record what crosses this listener and write a proposed policy; see below |
+
+#### server.listeners[].tftp.learn
+
+**`learn`** records what crosses this listener and writes a proposed policy.
+
+Nobody knows what an estate's TFTP traffic is, and on this protocol there is
+less to go on than on any other. There is no authentication, no session and no
+account, so nothing is auditable in the ordinary sense: a switch fetches its
+firmware at three in the morning, a phone fetches a configuration every time it
+reboots, and the server's own log -- when it has one -- gives an address and a
+path and says nothing about which of them were meant to happen. A policy written
+from the deployment guide refuses the half nobody documented, and on this
+protocol that means a switch that does not boot.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Turn the recording on |
+| `file` | path | required when enabled | Where the report is written, as YAML. Replaced atomically, owner readable only |
+| `interval` | duration | `5m` | How often it is rewritten; 10s..24h. It is also written at shutdown, after the transfers have drained, so what it says includes how they ended |
+| `max_subjects` | int | `8192` | Observations held: one per client, direction and directory. Past the bound the newest is dropped and the drops are counted, in the report's own header |
+| `enforce` | bool | `false` | Keep the policy in force while learning. Off -- the default -- means this listener records and decides nothing about *policy*, which is the only honest way to find out what a policy would have broken, and it warns so that it is not left on by accident |
+
+**A subject is one client, one direction and one directory**, because
+`directories` is the line an engineer argues about and a subject per file would
+be a report per file. The filenames inside it are listed, bounded, so that a
+`filenames` pattern can be written from what is actually there.
+
+**The amplification bounds are recorded and never proposed.** This is the part
+worth reading twice. `max_block_size`, `max_window_size` and
+`max_transfer_bytes` are what stop a twenty-octet read request yielding a whole
+file to whatever address the datagram claimed to come from, and a request past
+them is *lowered* to them rather than refused -- so a switch asking for a window
+of sixty-four still transfers, and the report still sees the sixty-four. A report
+that turned that into `max_window_size: 64` would have widened, from an
+observation, the one setting a learning run must not touch. So they appear only
+as observations, under the names `block_size_asked`, `window_asked`,
+`declared_size` and `bytes_moved`, which no rule uses. Raising a bound is a
+decision, not a measurement. `enforce: false` does not relax them either: what a
+learning run suspends is the path, direction and mode policy, never a bound.
+
+**Three things in the report are worth reading before the proposal.**
+`denied_by_policy` counts what the current policy refused, or would have.
+`server_errors` counts the transfers the *server* ended with an error packet -- a
+file it does not have -- and a subject with nothing but those is a client asking
+for something that does not exist, so no rule is proposed for it. And
+`path_class` says the name was not an ordinary relative path: those are recorded
+and never proposed, because a class this relay and the server would read
+differently is not something to write a rule about.
+
+**A pattern is proposed only when the names generalise.** The names in a
+directory become `firmware/*.bin` when they share a small set of extensions.
+When they do not -- no extension at all, or more distinct extensions than the
+report remembers -- no `filenames` key is written and the proposal says why,
+because the only pattern that always fits is `*` and a rule permitting every file
+on the server is not what "derived from the traffic" should produce.
+
+**No file contents are recorded.** A TFTP transfer is a configuration file or a
+firmware image, and a learning report is a file that gets pasted into a ticket.
 
 #### server.listeners[].tftp.rules[]
 

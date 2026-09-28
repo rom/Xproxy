@@ -6,6 +6,44 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (tftp: learning mode, with the amplification bound left alone)
+
+- **`tftp.learn` records what crosses the listener and writes a proposed
+  policy.** On this protocol there is less to go on than anywhere else: no
+  authentication, no session and no account, so nothing is auditable in the
+  ordinary sense. A switch fetches its firmware at three in the morning and the
+  server's own log, when it has one, gives an address and a path and says nothing
+  about which of them were meant to happen.
+
+- A subject is one client, one direction and one directory, because
+  `directories` is the line an engineer argues about and a subject per file would
+  be a report per file. The filenames inside it are listed, bounded.
+
+- **The amplification bounds are recorded and never proposed.** A request past
+  `max_window_size` or `max_block_size` is lowered to the bound and still
+  transfers, so the report sees the window of sixty-four a switch asked for — and
+  a report that turned that into `max_window_size: 64` would have widened, from
+  an observation, the one setting that stops a twenty-octet request yielding a
+  file to a forged address. They appear as `window_asked`, `block_size_asked`,
+  `declared_size` and `bytes_moved`, which no rule uses, and `enforce: false`
+  suspends the path, direction and mode policy without touching a bound.
+
+- **A `filenames` pattern is proposed only when the names generalise.** Names
+  sharing a small set of extensions become `firmware/*.bin`; names that share
+  nothing, or more extensions than the report remembers, get no pattern and a
+  note saying why. The only pattern that always fits is `*`, and a rule
+  permitting every file on the server is not what "derived from the traffic"
+  should produce. The *name* bound deliberately does not make a subject
+  ungeneralisable: every name's extension is recorded whether or not the name
+  itself was, so four hundred images all ending `.bin` still propose one pattern
+  that covers the ones the report did not list.
+
+- `server_errors` counts what the *server* refused, and a subject with nothing
+  but those is not proposed: a device asking for a file nobody uploaded is not a
+  rule to write. A filename in a class this relay and the server would read
+  differently is recorded under `path_class` and never proposed, and no file
+  contents are recorded at all.
+
 ### Added (s7: learning mode)
 
 - **`s7.learn` records what crosses the listener and writes a proposed policy.**

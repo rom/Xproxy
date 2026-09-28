@@ -135,6 +135,10 @@ func (t *server) request(raw []byte, from net.Addr) {
 	req := p.Request
 	pa := wire.Classify(req.Filename)
 	d := t.policy.Decide(request{client: ip, op: p.Op, path: pa, mode: req.Mode, at: time.Now()})
+	// The learning run sees the request and the decision, before the refusal:
+	// what a policy would have refused is the most useful line in the report,
+	// and a run that only saw what got through would not have it.
+	t.observeRequest(ip.String(), p.Op, pa, req.Mode, req, d.Allow, time.Now())
 	if !d.Allow {
 		t.refused(ip, p.Op, pa, req.Mode, d)
 		if t.enforcing() || d.Hard {

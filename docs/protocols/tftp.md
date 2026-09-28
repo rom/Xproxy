@@ -96,6 +96,38 @@ into somebody else's firmware download.
 window size, concurrent transfers overall and per client, and the transfer and
 idle timeouts.
 
+### Learning what the traffic is
+
+`learn` records what crosses this listener and writes a proposed policy. Nobody
+knows what an estate's TFTP traffic is, and here there is less to go on than
+anywhere else: no authentication, no session, no account, so nothing is auditable
+in the ordinary sense. A switch fetches its firmware at three in the morning, a
+phone fetches a configuration every time it reboots, and the server's own log --
+when it has one -- gives an address and a path and says nothing about which of
+them were meant to happen.
+
+A subject is one client, one direction and one directory, because `directories`
+is the line an engineer argues about. The filenames inside it are listed, and a
+`filenames` pattern is proposed only when they generalise: names sharing a small
+set of extensions become `firmware/*.bin`, and names that share nothing get no
+pattern and a note saying why, because the only pattern that always fits is `*`.
+
+**The amplification bounds are recorded and never proposed.** A request past
+`max_window_size` or `max_block_size` is lowered to the bound and still
+transfers, so the report sees what was asked for -- and a proposal that turned
+that into a rule would have widened, from an observation, the one setting that
+stops a twenty-octet request yielding a file to a forged address. They appear as
+`window_asked`, `block_size_asked`, `declared_size` and `bytes_moved`, which no
+rule uses. `enforce: false` suspends the path, direction and mode policy and
+never a bound.
+
+`server_errors` is what the server itself refused -- a file it does not have --
+and a subject with nothing but those is not proposed. `path_class` says the name
+was not an ordinary relative path; those are recorded and never proposed, because
+a class this relay and the server would read differently is not something to
+write a rule about. No file contents are recorded. See
+[docs/CONFIG.md](../CONFIG.md#serverlistenerstftplearn).
+
 ### The imported lists, and the estate's authorisation policy
 
 TFTP names nobody at all -- it has no authentication of any kind, which is most of
