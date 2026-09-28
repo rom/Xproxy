@@ -2567,7 +2567,7 @@ var denyReasons = map[string]bool{
 	"acl": true, "rate_limit": true, "waf": true, "body_size": true, "uri_length": true,
 	"bad_host": true, "no_route": true, "websocket": true, "concurrency": true, "challenge": true, "jwt": true, "icap": true,
 	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true, "honeypot": true, "dns_blocked": true, "dns_bogus": true, "dns_rpz": true,
-	"account_abuse": true, "api_abuse": true, "honeytoken": true, "scim": true, "threat_intel": true, "smtp_denied": true, "mqtt_denied": true, "ssh_denied": true, "ftp_denied": true, "syslog_denied": true, "yara": true,
+	"account_abuse": true, "api_abuse": true, "flow": true, "honeytoken": true, "scim": true, "threat_intel": true, "smtp_denied": true, "mqtt_denied": true, "ssh_denied": true, "ftp_denied": true, "syslog_denied": true, "yara": true,
 	"forward_sni_mismatch": true, "dns_tunnel": true, "dns_answer_denied": true,
 	// The fabrications' own events (each kind's decoy.go).
 	//

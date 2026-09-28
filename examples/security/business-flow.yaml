@@ -1,0 +1,137 @@
+# Business flow: the attack that is a valid request in the wrong order.
+#
+# The api-abuse.yaml beside this one watches the SHAPE of a sequence --
+# how many objects, how consecutive, how often refused -- and answers
+# questions nobody wrote down. This answers one somebody did: the
+# application has a flow, and a request that arrives out of it is not a
+# request the application meant to serve.
+#
+#   POST /api/cart/items        200
+#   POST /api/checkout/address  200
+#   POST /api/checkout/pay      200
+#
+# against
+#
+#   POST /api/checkout/pay      200   <- paid for a cart nobody filled
+#
+# Every one of those is correct on its own: the right method, the right
+# path, an authenticated caller, a well formed body. A WAF sees nothing.
+# An OpenAPI schema sees nothing. A rate limit sees nothing. A positive
+# security policy sees nothing, because each request is individually
+# permitted. What is wrong is the order.
+#
+# That is OWASP API Security Top 10 API6:2023, unrestricted access to
+# sensitive business flows -- and it is the same control the modbus kind
+# spells require_before. A plant will not let a valve be driven without
+# the select that precedes it; an application should not let a payment be
+# taken without the cart.
+#
+# The filter goes AFTER the identity filters, and here that is not a
+# detail. Keyed on an address, one NAT gateway's cart would satisfy
+# another user's payment, so every customer behind one corporate egress
+# would share a flow.
+#
+# Validate: xproxy -config examples/security/business-flow.yaml -validate
+version: 1
+server:
+  listeners:
+    - name: edge
+      address: "0.0.0.0:443"
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/certs/shop.pem, key_file: /etc/xproxy/certs/shop.key}
+
+# The identity the flow is followed by. Without one the filter falls back
+# to the client address, which is the weaker signal and, for a flow,
+# actively wrong behind a shared egress.
+jwt:
+  providers:
+    - name: customers
+      issuer: https://login.example.com
+      algorithms: [RS256]
+      jwks_url: https://login.example.com/.well-known/jwks.json
+      forward_claims: {X-User: sub}
+
+upstreams:
+  - name: shop
+    endpoints:
+      - {address: 10.0.0.21:8080}
+      - {address: 10.0.0.22:8080}
+
+filters:
+  # The customer checkout. Left as log deliberately: this is the first
+  # run, the relay cannot see the steps a caller took before it was in
+  # the path, and a flow declared slightly wrong refuses real customers.
+  # Read xproxy_flow_flagged_total and the access log for a week; when it
+  # is quiet, set action to block.
+  - name: checkout
+    kind: flow
+    options:
+      # Half an hour, because that is how long a real customer takes over
+      # the whole flow -- not how long one step takes. A window shorter
+      # than the flow refuses the customer who went to make a cup of tea
+      # between the address and the payment.
+      window: 30m
+      action: log
+      flows:
+        - name: checkout
+          steps:
+            # The entry step: no `after`, so it is always allowed. It is
+            # what starts a caller's flow.
+            - {name: cart, methods: [POST, DELETE], paths: [/api/cart]}
+            - {name: address, methods: [POST], paths: [/api/checkout/address], after: [cart]}
+            # once is off. A customer who pressed Pay again after a
+            # timeout is the commonest reason for a second payment
+            # request, and the second press is the one that works.
+            - {name: pay, methods: [POST], paths: [/api/checkout/pay], after: [address]}
+
+  # The account flow, where the order IS the control. Changing an e-mail
+  # address without re-authenticating is how an account is taken over
+  # with a stolen session, and no single request in it is malformed.
+  #
+  # block here, not log: this flow is two steps, both of them are the
+  # application's own, and getting it wrong costs a re-authentication
+  # rather than a lost sale.
+  - name: account
+    kind: flow
+    options:
+      # Five minutes: a re-authentication older than that is not a
+      # re-authentication, it is a login.
+      window: 5m
+      action: block
+      flows:
+        - name: sensitive-change
+          steps:
+            - {name: reauth, methods: [POST], paths: [/api/account/reauth]}
+            - {name: change, methods: [POST, PUT], paths: [/api/account/email, /api/account/password],
+               after: [reauth]}
+
+routes:
+  - name: shop-api
+    hosts: [shop.example.com]
+    paths: ["/api/"]
+    upstream: shop
+    # The identity first, then both flows. A request that is a step of
+    # neither is not judged by either.
+    filters: [checkout, account]
+
+  # Browsing is not part of any flow, and neither filter touches it: a
+  # filter that decided about every request would be a second,
+  # accidental positive security policy.
+  - name: catalogue
+    hosts: [shop.example.com]
+    paths: ["/products/"]
+    upstream: shop
+
+# A caller that keeps arriving out of order after being refused is one to
+# stop at the edge rather than in the filter.
+bans:
+  triggers:
+    - name: flow-walkers
+      reasons: [flow]
+      threshold: 20
+      window: 10m
+      duration: 1h
+
+logging:
+  access: {enabled: true}

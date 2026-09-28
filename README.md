@@ -1446,6 +1446,7 @@ and referenced by routes, in the order the route lists them:
 | `form_guard` | Hidden-field and timing honeypots on forms |
 | `account_guard` | Credential stuffing, brute force, registration, reset, hoarding and scraping, with campaign detection |
 | `api_abuse` | What one identity does with an API over a window: distinct objects, consecutive identifiers, the share refused |
+| `flow` | The **order** of a business flow: a payment reached without the cart is three valid requests and one wrong sequence |
 | `api_key` | API keys with scopes and a lifecycle |
 | `openapi` | An OpenAPI description used as an allow list, read from a file or a URL and re-read when it changes |
 | `graphql` | Depth, breadth, complexity and introspection bounds, per operation |
