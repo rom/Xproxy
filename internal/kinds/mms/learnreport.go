@@ -234,8 +234,13 @@ func proposeMMS(b *strings.Builder, subjects []learn.Subject[learnKey, learnObs]
 			byIdent[k.identity] = p
 			order = append(order, k.identity)
 		}
-		p.requests += o.requests
-		p.errors += o.serverErrors
+		if k.class != wire.ClassSession {
+			// The association is not a request. Counting it here would mean an
+			// identity whose every *request* the IED refused still looked as
+			// though something had worked, and a rule would be proposed for it.
+			p.requests += o.requests
+			p.errors += o.serverErrors
+		}
 		if k.class != wire.ClassSession {
 			p.beyondAssociation = true
 			for s := range o.services {
