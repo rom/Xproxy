@@ -93,21 +93,17 @@ func AppendIOA(dst []byte, ioa uint32) []byte {
 	return append(dst, byte(ioa), byte(ioa>>8), byte(ioa>>16))
 }
 
-// Quality descriptors. Zero is a good value from a working device, and the
-// bits say what is wrong with it; a decoy that set any of them would be
-// reporting a fault nobody is going to find.
-const (
-	// QualityGood is a value the device stands behind.
-	QualityGood byte = 0x00
-	// QualityInvalid marks a value the device does not stand behind.
-	QualityInvalid byte = 0x80
-)
+// QualityGood is a value the device stands behind: no bit set. The bits that
+// say what is wrong with one are Quality's own, in element.go, so that the
+// encoder and the decoder name the same five things the same way -- a decoy that
+// set any of them would be reporting a fault nobody is going to find.
+const QualityGood Quality = 0
 
 // AppendSinglePoint appends an M_SP_NA_1 object: an address and one bit
 // with its quality.
-func AppendSinglePoint(dst []byte, ioa uint32, on bool, quality byte) []byte {
+func AppendSinglePoint(dst []byte, ioa uint32, on bool, quality Quality) []byte {
 	dst = AppendIOA(dst, ioa)
-	siq := quality & 0xF0
+	siq := byte(quality) & 0xF0
 	if on {
 		siq |= 0x01
 	}
@@ -116,18 +112,18 @@ func AppendSinglePoint(dst []byte, ioa uint32, on bool, quality byte) []byte {
 
 // AppendScaled appends an M_ME_NB_1 object: a scaled measurement, which is
 // what most of a substation's analogue traffic is.
-func AppendScaled(dst []byte, ioa uint32, value int16, quality byte) []byte {
+func AppendScaled(dst []byte, ioa uint32, value int16, quality Quality) []byte {
 	dst = AppendIOA(dst, ioa)
 	dst = binary.LittleEndian.AppendUint16(dst, uint16(value)) //nolint:gosec // the standard's own signed encoding
-	return append(dst, quality)
+	return append(dst, byte(quality))
 }
 
 // AppendFloat appends an M_ME_NC_1 object: a short floating point
 // measurement, which is what newer equipment reports.
-func AppendFloat(dst []byte, ioa uint32, value float32, quality byte) []byte {
+func AppendFloat(dst []byte, ioa uint32, value float32, quality Quality) []byte {
 	dst = AppendIOA(dst, ioa)
 	dst = binary.LittleEndian.AppendUint32(dst, math.Float32bits(value))
-	return append(dst, quality)
+	return append(dst, byte(quality))
 }
 
 // AppendTotal appends an M_IT_NA_1 object: an integrated total with its

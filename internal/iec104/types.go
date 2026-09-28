@@ -322,29 +322,17 @@ func upper(s string) string {
 	return string(b)
 }
 
-// SetpointKind is how a setpoint command encodes the value it carries. The
-// three are not interchangeable: the same two octets mean a fraction of full
-// scale in one and an engineering integer in another, so a bound written
-// against the wrong one is a bound about nothing.
-type SetpointKind int
+// SetpointKind is how a setpoint command encodes the value it carries, which is
+// the same vocabulary the monitoring direction uses for the same three
+// encodings: an alias rather than a second set of names, because a bound written
+// against a scaled setpoint and a bound written against a scaled measurement are
+// the same arithmetic. See ValueKind in element.go.
+type SetpointKind = ValueKind
 
-const (
-	// NotASetpoint is every type that carries no setpoint value: the
-	// single, double and regulating step commands, the bitstring command,
-	// and everything in the monitoring direction.
-	NotASetpoint SetpointKind = iota
-	// Normalised is NVA: a 16-bit signed fraction of full scale, where
-	// 0x7fff is very nearly +1 and 0x8000 is -1. The engineering value
-	// depends on a range configured in the device, which this relay does
-	// not know -- so a bound on it is a bound on the fraction.
-	Normalised
-	// Scaled is SVA: a 16-bit signed integer in whatever unit the point is
-	// in. This is the one an engineer usually means by "setpoint".
-	Scaled
-	// ShortFloat is R32-IEEE-754, four octets, little endian like
-	// everything else here.
-	ShortFloat
-)
+// NotASetpoint is every type that carries no setpoint value: the single, double
+// and regulating step commands, the bitstring command, and everything in the
+// monitoring direction.
+const NotASetpoint = NoValue
 
 // SetpointEncoding says how a type carries its value, and where in the
 // information element that value starts. The offset is always zero -- the value
