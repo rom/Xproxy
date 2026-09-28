@@ -1977,6 +1977,57 @@ the file is the answer.
 | `max_subjects` | int | `8192` | Observations held: one per client, role, unit and function code. Past it the oldest goes and the drops are counted, in the report |
 | `enforce` | bool | `false` | Keep the policy in force while learning. Off — the default — means this listener records and decides nothing, which is the only honest way to find out what a policy would have broken, and warns so it is not left on by accident |
 
+**The report has two halves, and the second one is the point of it.** The first
+is the allow-list: which client, as which role, may reach which unit with which
+function code over which addresses. That says *where* a master may write and
+nothing about *what*.
+
+The second is the **process baseline**, per address: the envelope of the values
+written there, the largest step between consecutive writes, and the most writes
+seen in any one minute. Those are exactly what `values` is written from --
+`min`/`max`, `max_delta` and `rate` -- and the report proposes them as a `values`
+block. A value policy belongs to a rule rather than to the listener, so the block
+is pasted as the `values:` of the rule that allows those writes
+(`modbus.rules[].values`), which is what the report says above it.
+
+**Why per address rather than per subject.** A master writing a 0..40 bar
+setpoint at register 400 and a 0..3 mode at 401 is one subject. One value span
+over both is 0..40, and a bound built from it permits setting the mode to 40 --
+looser than the traffic it claims to be derived from, and wrong in a way that
+looks like evidence. So the envelope belongs to the point. Adjacent addresses
+whose baselines really are the same are folded into one entry, because a report
+with a line per register of a forty-register block is a report nobody reads;
+adjacent addresses that differ stay apart, which is the whole reason for
+recording them separately.
+
+**A baseline is where a conversation starts and not a control**, and the report
+says so in capitals. It is derived from traffic, and traffic is what somebody who
+was already inside has been shaping: a run on a plant that has been quietly driven
+out of its envelope for a month learns the wider envelope. Nothing installs
+itself; an engineer reads the numbers against the drawings and the instrument
+ranges, and pastes what survives that.
+
+Three smaller decisions in it worth knowing:
+
+- **A read sets no baseline.** A read tells the relay what a value *is*, which
+  the runtime delta check uses and a bound must not: a bound proposed from values
+  the process produced would permit a master to write anything the plant ever
+  reached on its own.
+- **A step is a distance.** A setpoint dropped by fifty moved as far as one raised
+  by fifty. Where every write carried the same value no step was observed and
+  `max_delta` is left out rather than written as 0, which would refuse every
+  change.
+- **A coil is observed and not proposed.** Which ways it was driven is recorded;
+  no rule is written from it, because "this coil may only be set" derived from a
+  run where nobody happened to clear it would refuse the reset somebody needs at
+  three in the morning.
+- **Only the codes that write values set an envelope**, which is 6, 16 and the
+  write half of 23. Three others carry something in the same place on the wire
+  that is not a value at an address: code 5 encodes a coil's bit as `0xFF00`,
+  code 22 carries an AND mask and an OR mask, and code 8 a diagnostic argument.
+  A baseline that read them as values proposed `min: 65280, max: 65280` for a
+  coil somebody switched on.
+
 **`trace`** writes one JSON object per frame for as long as it is
 enabled: the engineer's tool for "what is this master actually doing". It
 is a different thing from the audit log, which answers "who was refused
