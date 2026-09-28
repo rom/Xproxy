@@ -63,7 +63,7 @@ func (m *Mux) Dropped() uint64 { return m.dropped.Load() }
 // not call this: it reads the socket itself and hands over the datagrams that
 // are records, with Deliver.
 func (m *Mux) Run() {
-	buf := make([]byte, m.b.Datagram)
+	buf := make([]byte, m.b.Datagram())
 	for {
 		n, from, err := m.pc.ReadFrom(buf)
 		if err != nil {

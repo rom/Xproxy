@@ -4,13 +4,16 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/pion/dtls/v3"
+	"github.com/rom/xproxy/internal/dtlsx"
 	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/proxytest"
 	wire "github.com/rom/xproxy/internal/snmp"
@@ -408,6 +411,39 @@ func TestATransportModelMessageClaimingLessThanTheSessionGaveIsRefused(t *testin
 	}
 }
 
+// A transport security model message on a transport that provides no security.
+//
+// The model's whole claim is that the transport authenticated and encrypted the
+// message: the flags say authPriv and there is no digest, because the session
+// was supposed to be the digest. Arriving as a plain datagram, that claim is
+// backed by nothing, and forwarding it would mean carrying "authenticated and
+// encrypted" on a datagram from an address anybody can claim.
+//
+// It is refused even where require_security_name is off, because the two are
+// different questions: that switch is about whether a *name* is needed, and this
+// is about whether the message's own statement about its transport is true.
+func TestATransportModelMessageOnAPlainDatagramIsRefused(t *testing.T) {
+	a := startAgent(t, &agent{})
+	s, addr := snmpServer(t, `        upstream: agents
+        allow_clients: ["127.0.0.0/8"]
+        default_action: allow`, a.udpAddr())
+
+	m := dialManager(t, addr)
+	m.send(t, tsm(61, 0x03, get(1001, 1, 3, 6, 1, 2, 1, 1, 1, 0)))
+	// The refusal is answerable under this model, which is the other half of
+	// what makes it worth relaying -- but nothing reaches the agent.
+	if got := m.answer(t, time.Second); got != nil && got.PDU != nil &&
+		got.PDU.ErrorStatus != wire.StatusNoAccess {
+		t.Errorf("the answer was %+v", got.PDU)
+	}
+	if seen := a.seen(); len(seen) != 0 {
+		t.Fatalf("a transport model message on a plain datagram reached the agent: %+v", seen)
+	}
+	awaitCounter(t, s, func(sn proxy.Snapshot) bool {
+		return sn.Refusals["snmp"]["tsm_transport"] >= 1
+	}, "the transport mismatch was not counted")
+}
+
 // Cleartext at a listener that requires DTLS. There is no session to answer in
 // and answering would tell a scanner that something is here, so it is counted
 // and dropped.
@@ -540,5 +576,61 @@ func TestAPeerWithNoCertificateIsEndedByTheHandshakeBound(t *testing.T) {
 	}
 	if seen := a.seen(); len(seen) != 0 {
 		t.Fatalf("a peer with no certificate reached the agent: %+v", seen)
+	}
+}
+
+// A message past the bound, inside a session.
+//
+// The bound is applied to the plaintext after the record layer, which is where
+// it has to be: a message is refused unread because reading it to find out what
+// it asked for is the work the bound exists to avoid, and inside DTLS "unread"
+// means after decryption and before parsing. There is somebody to say so to,
+// but nothing to say it against -- the message was not parsed, so there is no
+// request identifier to answer -- so it is counted and dropped.
+func TestAnOversizeMessageInsideASessionIsRefusedUnread(t *testing.T) {
+	e := newEstate(t)
+	a := startAgent(t, &agent{})
+	s, addr := dtlsServer(t, e, "require", `        upstream: agents
+        allow_clients: ["127.0.0.0/8"]
+        dtls_mode: implicit
+        default_action: allow
+        max_message_bytes: 484
+        cert_to_name: [{fingerprint: any, map: san_dns}]`, a.udpAddr())
+
+	m := dialDTLS(t, addr, e.client(t, "nms1.ops.example.com"))
+	// A valid message, and too long: the value is what makes it long, so
+	// nothing about it is malformed except its size.
+	long := v2c("public", set(1101, strings.Repeat("x", 600), 1, 3, 6, 1, 2, 1, 1, 5, 0))
+	if len(long) <= 484 {
+		t.Fatalf("the test message is %d octets, which is inside the bound", len(long))
+	}
+	m.send(t, long)
+	awaitCounter(t, s, func(sn proxy.Snapshot) bool {
+		return sn.Refusals["snmp"]["message_too_large"] >= 1
+	}, "the oversize message was not counted")
+	if seen := a.seen(); len(seen) != 0 {
+		t.Fatalf("a message past the bound reached the agent: %+v", seen)
+	}
+	// And the session is still usable: the bound refused one message rather
+	// than the peer, because a poller that sent one oversize request is not a
+	// peer to stop reading from.
+	m.send(t, v2c("public", get(1102, 1, 3, 6, 1, 2, 1, 1, 1, 0)))
+	seen := a.await(t, 1, "the session did not survive an oversize message")
+	if seen[0] == nil || seen[0].PDU.RequestID != 1102 {
+		t.Fatalf("the agent saw %+v", seen[0])
+	}
+}
+
+// Why a session has no certificate to derive a name from, which is two facts
+// rather than one: a peer that offered none was not configured with one, and a
+// certificate that would not parse means the peer was. An operator reading the
+// first looks at the client's configuration and one reading the second looks at
+// its certificate store.
+func TestTheReasonSaysWhetherThereWasACertificateAtAll(t *testing.T) {
+	if got := certReason(dtlsx.ErrNoCertificate); got != "no_certificate" {
+		t.Errorf("a peer with no certificate reported %q", got)
+	}
+	if got := certReason(errors.New("x509: malformed certificate")); got != "bad_certificate" {
+		t.Errorf("a certificate that would not parse reported %q", got)
 	}
 }

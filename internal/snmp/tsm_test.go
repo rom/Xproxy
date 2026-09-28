@@ -162,3 +162,64 @@ func TestSecurityModelsAreNamedAsTheirStandardsName(t *testing.T) {
 		t.Error("a v2c message reported itself TSM")
 	}
 }
+
+// A refusal, which is the thing a USM message cannot have.
+//
+// wire.Refusal returns nothing for a version 3 message because a refusal would
+// have to be signed with the manager's own key. Under the transport security
+// model there is no key and no digest, so the refusal is an ordinary message
+// written into the session -- which is the difference between a manager seeing
+// noAccess in its own monitoring system and a manager seeing a timeout.
+func TestATransportSecurityModelRequestCanBeRefusedInWords(t *testing.T) {
+	get := pdu(TagGetRequest, 71, 0, 0, varbind(oid(1, 3, 6, 1, 2, 1, 1, 5, 0), tlv(TagNull)))
+	raw := v3msg(31, 0x03, SecurityModelTSM, tlv(TagOctetStr), scopedPDU("switch-3", "vlan-9", get))
+	m, err := Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := Refusal(m)
+	if out == nil {
+		t.Fatal("a transport security model request could not be refused")
+	}
+	answer, err := Parse(out)
+	if err != nil {
+		t.Fatalf("the refusal does not parse: %v", err)
+	}
+	if !answer.IsTSM() {
+		t.Fatalf("the refusal was %s model %+v", answer.Version, answer.V3)
+	}
+	// The envelope is the request's, echoed. The message identifier is what the
+	// manager's stack pairs the refusal with, and a refusal it cannot pair is a
+	// timeout with extra steps.
+	if answer.V3.MessageID != 31 {
+		t.Errorf("message id %d, want 31", answer.V3.MessageID)
+	}
+	if string(answer.V3.ContextEngineID) != "switch-3" || answer.V3.ContextName != "vlan-9" {
+		t.Errorf("context %q %q, want the request's", answer.V3.ContextEngineID, answer.V3.ContextName)
+	}
+	if answer.V3.Level != AuthPriv {
+		t.Errorf("level %s: the transport's, not this relay's choice", answer.V3.Level)
+	}
+	// And the refusal itself: the word version 2c and 3 have for "you may not",
+	// with the request identifier and the bindings the request carried.
+	if answer.PDU == nil || answer.PDU.Type != Response {
+		t.Fatalf("pdu %+v", answer.PDU)
+	}
+	if answer.PDU.RequestID != 71 || answer.PDU.ErrorStatus != StatusNoAccess {
+		t.Errorf("request %d status %d", answer.PDU.RequestID, answer.PDU.ErrorStatus)
+	}
+	if len(answer.PDU.VarBinds) != 1 || answer.PDU.VarBinds[0].OID.String() != "1.3.6.1.2.1.1.5.0" {
+		t.Errorf("bindings %+v: an agent answers with the ones it was asked about", answer.PDU.VarBinds)
+	}
+
+	// A USM message is still unanswerable, which is the rule this is the
+	// exception to rather than a rule that has gone away.
+	usmMsg, err := Parse(v3msg(32, 0x01, SecurityModelUSM, usm("e", 1, 2, "u", "0123456789ab", ""),
+		scopedPDU("e", "", get)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if Refusal(usmMsg) != nil {
+		t.Error("a USM message was answered with a refusal this relay cannot sign")
+	}
+}

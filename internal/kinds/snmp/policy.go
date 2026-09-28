@@ -445,24 +445,35 @@ func (r *rule) matches(req request, now time.Time) (bool, string) {
 		}
 	}
 	if r.users != nil {
-		if m.Version != wire.V3 || m.IsTSM() || !r.users[req.credential()] {
-			// A rule naming USM users does not cover a message under the
-			// transport security model, which has no user: its credential is
-			// a certificate, and security_names is the field about it. Letting
-			// the two cross over would make a rule written about a pass phrase
-			// apply to a message authenticated by something else entirely.
+		// A rule naming USM users cannot cover a message under the transport
+		// security model either, and it does not need a clause of its own to
+		// say so: that model carries no user, so the credential is empty, and
+		// a rule naming an empty user name is refused at load.
+		if m.Version != wire.V3 || !r.users[req.credential()] {
 			return false, ""
 		}
 	}
 	if r.names != nil {
-		if !m.IsTSM() || !r.names[req.name] {
+		// The name is the *session's*, derived from the peer's certificate,
+		// rather than something the message carried. So a rule naming it
+		// covers every message in a session whose certificate mapped -- a v2c
+		// poller that has been given a certificate included, which is the
+		// half-migrated case worth being able to write a rule about.
+		//
+		// A session that derived no name matches nothing here, and needs no
+		// clause of its own to say so: the name is empty, and a rule naming an
+		// empty security name is refused at load.
+		if !r.names[req.name] {
 			return false, ""
 		}
 	}
 	if r.transports != nil {
 		// A rule that names no transport covers all of them, which keeps every
-		// policy written before this field meant what it meant.
-		if req.transport == "" || !r.transports[req.transport] {
+		// policy written before this field meant what it meant. A request whose
+		// transport was never set matches none of them, for the reason the
+		// names above need no clause either: the set cannot hold the empty
+		// transport, because TransportOf refuses it.
+		if !r.transports[req.transport] {
 			return false, ""
 		}
 	}

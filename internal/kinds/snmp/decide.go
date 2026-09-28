@@ -466,7 +466,22 @@ func (t *server) inspectTransport(m *wire.Message, p *peer) Decision {
 	}
 	c := t.host.Counters()
 	c.SNMPTSMMessages.Add(1)
-	if !tsmLevelOK(m, p.transport) {
+	if !p.transport.Secure() {
+		// The model's whole claim is that the transport authenticated and
+		// encrypted this message before this relay read it. On a plain
+		// datagram nothing did, and the message says otherwise in its own
+		// flags -- so forwarding it would mean carrying a claim of authPriv
+		// that nothing backs. There is no configuration in which this is a
+		// real manager: RFC 5591 s3.1.1 derives the flags from a transport,
+		// and this transport has none to derive them from.
+		return Decision{Reason: "snmp_tsm_transport", Detail: p.transport.String()}
+	}
+	if m.V3.Level != wire.AuthPriv {
+		// RFC 5591 s3.1.1 has the sender copy the flags from the transport's
+		// security level and RFC 6353 s3.1.2 says a (D)TLS transport provides
+		// authPriv, so a message claiming less is a sender that either did not
+		// implement the model or is asking whether this listener reads the
+		// flags as policy.
 		return Decision{Reason: "snmp_tsm_level", Detail: m.V3.Level.String()}
 	}
 	if p.name != "" {

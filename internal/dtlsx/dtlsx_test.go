@@ -78,7 +78,7 @@ func TestTheTranslationRefusesWhatItCannotDo(t *testing.T) {
 // listener and not for a datagram one.
 func TestTheMuxSplitsByPeerAndIsBounded(t *testing.T) {
 	pc := mustPacketConn(t)
-	mux := NewMux(pc, Bounds{Peers: 2, Datagram: 2048})
+	mux := NewMux(pc, Bounds{Peers: 2, Message: 2048})
 	go mux.Run()
 	t.Cleanup(mux.Close)
 
@@ -191,7 +191,7 @@ func TestTheMuxSplitsByPeerAndIsBounded(t *testing.T) {
 // silently: a DTLS record read short is a different record.
 func TestAnOversizeDatagramIsReportedNotTruncated(t *testing.T) {
 	pc := mustPacketConn(t)
-	mux := NewMux(pc, Bounds{Peers: 4, Datagram: 2048})
+	mux := NewMux(pc, Bounds{Peers: 4, Message: 2048})
 	go mux.Run()
 	t.Cleanup(mux.Close)
 
@@ -259,4 +259,39 @@ func mustPacketConn(t *testing.T) net.PacketConn {
 	}
 	t.Cleanup(func() { _ = pc.Close() })
 	return pc
+}
+
+// The socket buffer is derived from the message bound rather than equal to it,
+// which is the arithmetic a listener must not do for itself.
+//
+// A record is larger than the plaintext it carries: a header, a nonce and a tag.
+// A datagram read into a buffer sized to the plaintext is truncated *by the
+// read*, and a truncated record is not a shorter record -- it is one the record
+// layer refuses. So a listener that sized its buffer to its own message bound
+// would work for every message except the largest ones, which is the bound
+// failing exactly where an operator set it deliberately.
+func TestTheSocketBufferHasRoomForWhatTheRecordLayerAdds(t *testing.T) {
+	for what, b := range map[string]Bounds{
+		"a small message bound":         {Message: 484},
+		"the default":                   {},
+		"a message bound above the MTU": {Message: 8192},
+	} {
+		got := b.Datagram()
+		want := b.withDefaults().Message
+		if mtu := b.withDefaults().MTU; mtu > want {
+			want = mtu
+		}
+		if got != want+RecordOverhead {
+			t.Errorf("%s: buffer %d for a message bound of %d", what, got, want)
+		}
+		if got <= want {
+			t.Errorf("%s: a buffer of %d cannot hold a record carrying %d octets", what, got, want)
+		}
+	}
+	// And the handshake's own records fit whatever the message bound says,
+	// because a certificate flight is fragmented to the MTU and not to the
+	// application's idea of a large message.
+	if n := (Bounds{Message: 64}).Datagram(); n < DefaultMTU {
+		t.Errorf("a buffer of %d cannot hold a handshake fragment of %d", n, DefaultMTU)
+	}
 }

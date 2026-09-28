@@ -10,7 +10,6 @@ import (
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/safe"
-	wire "github.com/rom/xproxy/internal/snmp"
 )
 
 // SNMP inside DTLS: RFC 6353's transport model on the transport this protocol
@@ -75,17 +74,20 @@ func looksLikeDTLS(b []byte) bool {
 
 // dtlsBounds are the transport's bounds for this listener.
 //
-// The datagram bound is the listener's own message bound plus one rather than
-// the handshake fragment size: a datagram larger than the read buffer would be
-// truncated by the read instead of refused by the bound, and a truncated SNMP
-// message is a different message. The plus one is what makes "larger than the
-// bound" detectable rather than silently exact.
+// The message bound is this listener's own plus one -- the plus one is what
+// makes "larger than the bound" detectable rather than silently exact -- and
+// the socket buffer is the transport's to derive from it, because what arrives
+// on the socket is a record and a record is larger than the message inside it.
+// A buffer sized to the message bound would truncate a message at the bound in
+// the read, and a truncated record is refused by the record layer: the bound
+// would stop working for exactly the largest real messages and say nothing
+// about why. dtlsx.RecordOverhead is where that arithmetic lives.
 func (t *server) dtlsBounds() dtlsx.Bounds {
 	return dtlsx.Bounds{
 		Handshake: t.m.DTLSHandshakeTimeout.D(),
 		Idle:      t.m.DTLSIdleTimeout.D(),
 		Peers:     t.maxDTLSPeers(),
-		Datagram:  t.maxMessage() + 1,
+		Message:   t.maxMessage() + 1,
 	}
 }
 
@@ -162,7 +164,9 @@ func (t *server) serveDTLS() {
 // belongs: a record to the session layer, a plain message straight into the
 // policy when this listener takes both.
 func (t *server) readDTLSSocket(mux *dtlsx.Mux, agent net.PacketConn) {
-	buf := make([]byte, t.maxMessage()+1)
+	// The socket carries records, so the buffer is the transport's figure and
+	// not this listener's message bound: see dtlsBounds.
+	buf := make([]byte, t.dtlsBounds().Datagram())
 	detect := t.m.DTLSMode == "detect"
 	for {
 		select {
@@ -238,7 +242,11 @@ func (t *server) dtlsSession(agent net.PacketConn, pc net.PacketConn, raddr net.
 	defer c.SNMPDTLSSessions.Add(-1)
 	t.logDTLSSession(p)
 
-	buf := make([]byte, t.maxMessage()+1)
+	// Plaintext, read into a buffer the size of a whole record, because a
+	// record's plaintext is never larger than the record that carried it: a
+	// message past the bound is then refused by the bound below rather than by
+	// a short read, and the session survives it.
+	buf := make([]byte, t.dtlsBounds().Datagram())
 	for {
 		// The idle bound is the session's own deadline rather than the
 		// socket's, so it bounds the peer's silence and not the record layer's
@@ -272,12 +280,22 @@ func (t *server) dtlsSession(agent net.PacketConn, pc net.PacketConn, raddr net.
 func (t *server) securityName(sess *dtlsx.Session) (string, string) {
 	chain, err := sess.PeerCertificates()
 	if err != nil {
-		if errors.Is(err, dtlsx.ErrNoCertificate) {
-			return "", "no_certificate"
-		}
-		return "", "bad_certificate"
+		return "", certReason(err)
 	}
 	return t.names.Name(chain)
+}
+
+// certReason names why a session has no certificate to derive from.
+//
+// The two are different facts about a peer and an operator reading one would
+// look in a different place than an operator reading the other: a peer that
+// offered no certificate is a client that was not configured with one, and a
+// certificate that would not parse is a client that was.
+func certReason(err error) string {
+	if errors.Is(err, dtlsx.ErrNoCertificate) {
+		return "no_certificate"
+	}
+	return "bad_certificate"
 }
 
 // handshakeFailed records a handshake that did not complete.
@@ -305,20 +323,4 @@ func (t *server) streamPeer(c net.Conn, secure bool) *peer {
 		tr = TransportTLS
 	}
 	return &peer{ip: netutil.AddrOf(c.RemoteAddr().String()), from: c.RemoteAddr(), transport: tr}
-}
-
-// tsmLevelOK says whether a transport security model message's claimed level
-// matches what the transport actually provided.
-//
-// RFC 5591 s3.1.1 has the sender copy the flags from the transport's security
-// level, and RFC 6353 s3.1.2 says a (D)TLS transport provides authPriv. So a
-// TSM message inside a session claiming less is a sender that either did not
-// implement the model or is asking whether this listener reads the flags as
-// policy. Refusing costs nothing correct: there is no configuration in which a
-// real manager sends authNoPriv over DTLS.
-func tsmLevelOK(m *wire.Message, tr Transport) bool {
-	if !m.IsTSM() || !tr.Secure() {
-		return true
-	}
-	return m.V3.Level == wire.AuthPriv
 }

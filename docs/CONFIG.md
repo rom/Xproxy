@@ -3311,14 +3311,19 @@ a client certificate, and validation warns when `tls.client_auth` is not
 `require` with a `tls.client_ca_file` beside it -- without those, the name is
 derived from whatever a peer chose to send.
 
-Two refusals exist because of this table. `tsm_no_name` is a transport security
-model message whose certificate mapped to nothing, refused when
-`require_security_name` is on. `tsm_level` is a message inside a session
-claiming less than the session gave: RFC 5591 §3.1.1 has the sender copy the
-flags from the transport's security level and RFC 6353 §3.1.2 says a (D)TLS
-transport provides `authPriv`, so a message claiming `authNoPriv` inside DTLS is
-a sender that either did not implement the model or is asking whether this
-listener reads the flags as policy.
+Three refusals come with the transport security model. `tsm_no_name` is a
+message whose certificate mapped to nothing, refused when
+`require_security_name` is on. `tsm_level` is a message inside a session claiming
+less than the session gave: RFC 5591 §3.1.1 has the sender copy the flags from
+the transport's security level and RFC 6353 §3.1.2 says a (D)TLS transport
+provides `authPriv`, so a message claiming `authNoPriv` inside DTLS is a sender
+that either did not implement the model or is asking whether this listener reads
+the flags as policy. And `tsm_transport` is such a message arriving on a
+transport that provides no security at all — a plain datagram or an unprotected
+stream — where the flags claim authPriv and nothing backs the claim. That one is
+refused whatever `require_security_name` says, because the two are different
+questions: the switch is about whether a *name* is needed, and this is about
+whether the message's own statement about its transport is true.
 
 #### server.listeners[].snmp.deception
 
@@ -3408,7 +3413,7 @@ and it is the same choice the Modbus section makes about a refused write.
 | `versions` | list | The protocol versions this rule covers |
 | `communities` | list | The community strings (v1 and v2c) this rule covers. A rule naming communities cannot match a v3 message, and one naming users cannot match a v2c one: letting either cross over would make a rule written about one authentication scheme apply to another |
 | `users` | list | The v3 USM user names this rule covers |
-| `security_names` | list | The transport security model names this rule covers: the name `cert_to_name` derived from the peer's certificate. A rule naming them covers no other message, the way a rule naming communities covers no v3 message; `users` and `security_names` in one rule match nothing, and validation refuses it |
+| `security_names` | list | The security names this rule covers: the name `cert_to_name` derived from the peer's certificate. The name is the *session's* rather than something a message carried, so a rule naming it covers every message in a session whose certificate mapped — a v2c poller that has been given a certificate included, which is the half-migrated case worth being able to write a rule about. A session that derived no name matches no such rule. `users` and `security_names` in one rule match nothing, and validation refuses it |
 | `transports` | list | `udp`, `tcp`, `tls`, `dtls`. Empty covers all four. On this protocol the transport is half the credential -- a community string in a plain datagram is a cleartext password from an address anybody can claim, and the same request inside DTLS came from a peer that proved it holds a private key -- so this is the field that lets one listener hold two policies at once |
 | `min_security_level` | string | The lowest v3 level this rule covers, so that "this subtree only with authPriv" is one rule |
 | `pdus` | list | Operations by name: `get`, `get_next`, `get_bulk`, `set`, `trap`, `trap_v1`, `inform`, `response`, `report` |
@@ -3475,7 +3480,7 @@ fine-grained reason is in the refusal counters: `client_not_allowed`,
 `wrong_direction`, `too_many_pending`, `upgrade_failed`, `usm_downgrade`,
 `usm_engine`, `usm_engines`, `auth_failed`, `replay`, `usm_no_privacy_key`,
 `unreadable`, `dtls_handshake_failed`, `cleartext_at_dtls_listener`,
-`tsm_no_name`, `tsm_level`.
+`tsm_no_name`, `tsm_level`, `tsm_transport`.
 
 ### server.listeners[].dhcp (kind: dhcp)
 

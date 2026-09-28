@@ -58,6 +58,18 @@ const (
 	DefaultMTU = 1200
 	// DefaultReplayWindow is RFC 6347's replay protection window.
 	DefaultReplayWindow = 64
+	// RecordOverhead is what the record layer adds to the plaintext it
+	// carries: a 13-octet header, an explicit nonce, and an AEAD tag or a
+	// block cipher's padding and MAC.
+	//
+	// It is why a listener cannot size its socket buffer to its own message
+	// bound. A datagram read into a buffer that fits only the plaintext is
+	// *truncated by the read*, and a truncated record is not a shorter record
+	// -- it is one the record layer refuses, which on a protocol whose bound
+	// an operator set to the size of its largest real message means the
+	// largest real messages stop working and nothing says why. 64 is generous
+	// for every cipher suite this library offers.
+	RecordOverhead = 64
 )
 
 // Bounds are the transport's bounds. A zero field takes the default above,
@@ -76,9 +88,14 @@ type Bounds struct {
 	// Peers bounds the sessions one listener holds, Queue the datagrams held
 	// for one peer, and Pending the peers waiting to be accepted.
 	Peers, Queue, Pending int
-	// MTU is the handshake fragment size and Datagram the largest datagram
-	// read from the socket at all. Datagram defaults to MTU.
-	MTU, Datagram int
+	// MTU is the handshake fragment size.
+	MTU int
+	// Message is the largest plaintext the listener above this transport will
+	// read: its own message bound. The socket's buffer is derived from it and
+	// from MTU rather than set directly, because what arrives on the socket is
+	// a record and a record is larger than what it carries -- see
+	// RecordOverhead.
+	Message int
 	// ReplayWindow is RFC 6347's replay protection window.
 	ReplayWindow int
 }
@@ -103,8 +120,8 @@ func (b Bounds) withDefaults() Bounds {
 	if b.MTU <= 0 {
 		b.MTU = DefaultMTU
 	}
-	if b.Datagram <= 0 {
-		b.Datagram = b.MTU
+	if b.Message <= 0 {
+		b.Message = b.MTU
 	}
 	if b.ReplayWindow <= 0 {
 		b.ReplayWindow = DefaultReplayWindow
@@ -130,6 +147,23 @@ type Config struct {
 // Bounds are the bounds this configuration was built with, defaults filled
 // in.
 func (c *Config) Bounds() Bounds { return c.b }
+
+// Datagram is how large a buffer a reader of the socket needs: the larger of
+// the message bound and the handshake fragment size, plus what the record
+// layer adds to either.
+//
+// A caller that reads the socket itself -- because it carries something besides
+// records on the same port -- uses this rather than its own message bound, and
+// so does the mux. It is also the size to read *plaintext* into, because a
+// record's plaintext is never larger than the record that carried it.
+func (b Bounds) Datagram() int {
+	b = b.withDefaults()
+	n := b.Message
+	if b.MTU > n {
+		n = b.MTU
+	}
+	return n + RecordOverhead
+}
 
 // NewConfig translates a listener's TLS configuration into a DTLS one.
 //

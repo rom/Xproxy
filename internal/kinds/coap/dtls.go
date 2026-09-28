@@ -56,16 +56,17 @@ func (s *server) serveDTLS(tc *tls.Config) {
 // dtlsBounds are the transport's bounds for this listener: the two a CoAP
 // deployment moves, and the message size this protocol reads.
 //
-// The datagram bound is the listener's own message bound plus one, not the
-// handshake MTU: a datagram larger than the mux's read buffer would be
-// truncated by the read rather than refused by the policy, and a truncated
-// CoAP message is a different message.
+// The message bound is this listener's own, and the transport derives the socket
+// buffer from it: a record is larger than the plaintext it carries, so a buffer
+// sized to the plaintext would truncate the largest real messages in the read
+// and refuse them at the record layer, which is a bound that looks like a
+// network fault. dtlsx.RecordOverhead is where that arithmetic lives.
 func (s *server) dtlsBounds() dtlsx.Bounds {
 	return dtlsx.Bounds{
 		Handshake: s.m.DTLSHandshakeTimeout.D(),
 		Idle:      s.m.DTLSIdleTimeout.D(),
 		Peers:     s.maxClients(),
-		Datagram:  s.maxMessage() + 1,
+		Message:   s.maxMessage() + 1,
 	}
 }
 

@@ -11123,11 +11123,12 @@ func (v *validator) snmpCertToName(p string, m *SNMPListener, tc *TLS) {
 			v.warnf("%s.map: common_name is RFC 6353's last resort and it advises against it: a common name is free text that has meant several things, and two authorities can issue the same one. A subject alternative name is what a certificate issued this decade puts the subject in", q)
 		}
 		algo, _, err := snmpwire.ParseFingerprint(r.Fingerprint)
-		if err != nil {
+		switch {
+		case err != nil:
 			v.errf("%s.fingerprint: %v", q, err)
-		} else if algo == "" {
+		case algo == "":
 			anyRow = true
-		} else if algo == "sha1" {
+		case algo == "sha1":
 			v.warnf("%s.fingerprint: sha1 is in RFC 6353 for the equipment that shipped with it; sha256 is what to write for anything issued since", q)
 		}
 	}

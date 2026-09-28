@@ -151,8 +151,12 @@ this protocol actually runs on. Inside either, `cert_to_name` is RFC 6353 §5.3'
 certificate it is about and how to derive a name from it — `specified`,
 `san_rfc822`, `san_dns`, `san_ip`, `san_any`, or `common_name`, which the
 standard provides and advises against. That name is what `security_names` on a
-rule names, and a rule naming it covers no other message: `users` is about USM
-and one message is never both.
+rule names. It is the *session's* name rather than something a message carried,
+so such a rule covers every message in a session whose certificate mapped —
+including a v2c poller that has been given a certificate, which is the
+half-migrated case worth being able to write a rule about — and covers nothing
+from a session that derived no name. `users` is the other kind of credential,
+the one in the message, and one message is never both.
 
 `dtls_mode: detect` takes records and plain datagrams on the same socket,
 because a DTLS content type (20–25, followed by a version whose major octet is
@@ -164,13 +168,18 @@ chooses which to speak, so the *policy* is what requires the certificate —
 `transports` on a rule, and `default_action: deny`. Validation says so when a
 `detect` listener's rules name neither.
 
-Three checks come with the model, before the rules:
+Four checks come with the model, before the rules:
 
 - A message whose certificate maps to **no name** is refused
   (`tsm_no_name`), because a transport model message with no derived name has no
   credential at all. `require_security_name: false` is the listener saying it
   wants the session for confidentiality and will decide on the address and the
   objects alone.
+- A message on a transport that **provides no security at all** is refused
+  (`tsm_transport`): the model's claim is that the transport authenticated and
+  encrypted it, and on a plain datagram nothing did. That one holds whatever
+  `require_security_name` says, because it is about whether the message's own
+  statement is true rather than about whether a name is needed.
 - A message claiming **less than the session gave** is refused (`tsm_level`).
   RFC 5591 §3.1.1 has the sender copy the flags from the transport's security
   level and RFC 6353 §3.1.2 says a (D)TLS transport provides `authPriv`, so

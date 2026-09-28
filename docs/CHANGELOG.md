@@ -49,14 +49,18 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   what requires the certificate, and validation says so when a `detect`
   listener's rules name neither `transports` nor `security_names`.
 
-- **Two refusals the model brings.** `tsm_no_name` is a message whose certificate
-  mapped to nothing, refused because a transport model message with no derived
-  name has no credential at all (`require_security_name: false` is the listener
-  saying it wants confidentiality and will decide on the address alone).
+- **Three refusals the model brings.** `tsm_no_name` is a message whose
+  certificate mapped to nothing, refused because a transport model message with
+  no derived name has no credential at all (`require_security_name: false` is the
+  listener saying it wants confidentiality and will decide on the address alone).
   `tsm_level` is a message claiming less than its session gave: the flags are
   supposed to be copied from the transport, so `authNoPriv` inside DTLS is a
   sender that did not implement the model or is probing for a listener that reads
-  the flags as policy.
+  the flags as policy. And `tsm_transport` is such a message on a transport that
+  provides no security at all, where the flags claim authPriv and nothing backs
+  the claim; it is refused whatever `require_security_name` says, because that
+  switch is about whether a name is needed and this is about whether the
+  message's own statement about its transport is true.
 
 - Counters: `snmp_dtls_handshakes`, `snmp_dtls_handshake_failed`,
   `snmp_dtls_sessions`, `snmp_dtls_datagrams_dropped`, `snmp_tsm_messages`,
@@ -74,6 +78,20 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   that confinement a copy. The dependency is now in one package's imports and no
   package outside it names a type from the library. [AMR-051](AMR.md) records the
   move.
+
+### Fixed
+
+- **A DTLS listener's socket buffer was sized to its message bound, so the
+  largest messages it was configured to carry were truncated by the read.** A
+  record is larger than the plaintext inside it — a header, a nonce and a tag —
+  and a truncated record is not a shorter record: the record layer refuses it. So
+  a listener with `max_message_bytes` set to the size of its largest real message
+  worked for everything except those messages, and said nothing about why. The
+  arithmetic now lives in `dtlsx.RecordOverhead` and the transport derives the
+  buffer from the listener's message bound, which fixes `kind: coap` inside DTLS
+  as well as the new SNMP path. The plaintext is read into a buffer the size of a
+  whole record for the same reason, so a message past the bound is refused *by
+  the bound* and the session survives it.
 
 - The RFC 6353 port constants in `internal/snmp` were mislabelled: 10161 is the
   command responder and 10162 the notification receiver on *both* transports, so
