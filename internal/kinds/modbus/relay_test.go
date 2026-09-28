@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1269,5 +1270,218 @@ func TestModbusValueSemanticsEndToEnd(t *testing.T) {
 	}
 	if sn.ModbusValuePoints == 0 {
 		t.Error("the value table is empty although writes and reads were relayed")
+	}
+}
+
+// Behavioural detection through a real listener.
+//
+// The detector alerts and carries the frame, which is what a detector built on
+// novelty has to do: the first legitimate maintenance write of the year is novel
+// too. So the counters move, the events are written, and the device gets the
+// write.
+func TestAnUnusualCommandIsReportedAndCarried(t *testing.T) {
+	dev := startPLC(t, &plc{framing: wire.FramingTCP})
+	s, addr := modbusServer(t, `        upstream: plc
+        default_action: allow
+        anomaly:
+          enabled: true
+          settle: 0s`, map[string]*plc{"plc": dev})
+
+	m := dialMaster(t, addr, wire.FramingTCP)
+	if _, err := m.ask(1, readTwo); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if _, err := m.ask(1, setPoint); err != nil {
+		t.Fatalf("the detector refused a write it was only meant to report: %v", err)
+	}
+	if _, ok := dev.saw(wire.FCWriteSingleRegister); !ok {
+		t.Fatal("the reported write did not reach the device")
+	}
+	sn := s.Stats()
+	if sn.ModbusDenied != 0 {
+		t.Fatalf("an alert was counted as a refusal: %d", sn.ModbusDenied)
+	}
+	// With no settling window the read is novel too -- it is the first function
+	// code this master has used -- so the function finding is two: the read and
+	// the write. The address finding is one, because only the write has an
+	// address the master drove.
+	for want, times := range map[string]uint64{"anomaly_new_function": 2, "anomaly_new_write_address": 1} {
+		if got := sn.Refusals["modbus"][want]; got != times {
+			t.Errorf("%s was counted %d times, wanted %d: %+v", want, got, times, sn.Refusals["modbus"])
+		}
+	}
+}
+
+// And with action: deny it refuses, as the device's own exception.
+//
+// It refuses the *first* occurrence and records it, so the retry goes through.
+// That is a deliberate limit and not an oversight: refusing every occurrence
+// until somebody intervened would mean a plant that could not be driven after any
+// novelty, with no mechanism here for the intervening. What deny buys is a hard
+// stop on the first attempt and an operator's attention. It is not a block, and
+// the policy is what blocks.
+func TestTheDetectorCanBeAskedToRefuseTheFirstOccurrence(t *testing.T) {
+	dev := startPLC(t, &plc{framing: wire.FramingTCP})
+	s, addr := modbusServer(t, `        upstream: plc
+        default_action: allow
+        anomaly:
+          enabled: true
+          settle: 0s
+          action: deny`, map[string]*plc{"plc": dev})
+
+	m := dialMaster(t, addr, wire.FramingTCP)
+	// With no settling window even the first read is novel, and that is exactly
+	// what the configuration warning about settle: 0s says it would be.
+	m.send(1, readTwo)
+	m.expectException("the first read of a master with no settling window", wire.ExIllegalFunction)
+	// The same read again: recorded by the refusal, so no longer novel.
+	if _, err := m.ask(1, readTwo); err != nil {
+		t.Fatalf("the second read was refused as well: %v", err)
+	}
+	m.send(1, setPoint)
+	m.expectException("a write the detector had not seen this master make", wire.ExIllegalFunction)
+	if _, ok := dev.saw(wire.FCWriteSingleRegister); ok {
+		t.Fatal("the refused write reached the device")
+	}
+	// And the retry goes through to the device.
+	if _, err := m.ask(1, setPoint); err != nil {
+		t.Fatalf("the second write was refused as well: %v", err)
+	}
+	if _, ok := dev.saw(wire.FCWriteSingleRegister); !ok {
+		t.Fatal("the retried write did not reach the device")
+	}
+	if sn := s.Stats(); sn.ModbusDenied != 2 {
+		t.Fatalf("denied: %d, wanted the first read and the first write", sn.ModbusDenied)
+	}
+}
+
+// A request the policy refuses is not recorded by the detector. Recording one
+// would teach the detector that a refused probe is this master's normal traffic,
+// so the probe that got through afterwards would look like business as usual.
+func TestARefusedRequestTeachesTheDetectorNothing(t *testing.T) {
+	dev := startPLC(t, &plc{framing: wire.FramingTCP})
+	s, addr := modbusServer(t, `        upstream: plc
+        read_only: true
+        default_action: allow
+        anomaly:
+          enabled: true
+          settle: 0s`, map[string]*plc{"plc": dev})
+
+	m := dialMaster(t, addr, wire.FramingTCP)
+	// The read-only listener refuses the write, and the detector never sees it.
+	m.send(1, setPoint)
+	m.expectException("a write on a read-only listener", wire.ExIllegalFunction)
+	sn := s.Stats()
+	if got := sn.Refusals["modbus"]["anomaly_new_write_address"]; got != 0 {
+		t.Errorf("the detector recorded a request the policy refused: %+v", sn.Refusals["modbus"])
+	}
+	if got := sn.Refusals["modbus"]["read_only"]; got != 1 {
+		t.Errorf("the policy's own refusal was counted %d times", got)
+	}
+}
+
+// The detector's alerts do not reach the ban ladder.
+//
+// This is the load-bearing part of "it alerts". The signal is novelty, and a
+// plant's master doing something novel is usually an engineer; a ban would drop
+// its connections and take the process away from the control room over a function
+// code nobody had used yet. The ban ladder is for a client doing something it may
+// not do, which is what the rules decide.
+//
+// The trigger below fires on one modbus_denied, so a single observation would ban
+// the master outright -- which is what makes the assertion worth anything.
+func TestTheDetectorsAlertsDoNotBan(t *testing.T) {
+	dev := startPLC(t, &plc{framing: wire.FramingTCP})
+	s := proxytest.Start(t, fmt.Sprintf(`
+version: 1
+server:
+  listeners:
+    - name: plant
+      address: "127.0.0.1:0"
+      kind: modbus
+      modbus:
+        upstream: plc
+        default_action: allow
+        anomaly:
+          enabled: true
+          settle: 0s
+logging: {access: {enabled: false}}
+bans:
+  triggers:
+    - {name: any, reasons: [modbus_denied], threshold: 1, window: 1m, duration: 1h}
+upstreams:
+  - {name: plc, endpoints: [{address: %q}]}
+`, dev.addr()))
+	addr := proxytest.Addr(t, s, "plant")
+
+	m := dialMaster(t, addr, wire.FramingTCP)
+	if _, err := m.ask(1, readTwo); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if _, err := m.ask(1, setPoint); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	// The alerts happened.
+	sn := s.Stats()
+	if got := sn.Refusals["modbus"]["anomaly_new_write_address"]; got == 0 {
+		t.Fatalf("nothing was alerted on, so this test asserts nothing: %+v", sn.Refusals["modbus"])
+	}
+	// And the master is not banned.
+	ip := netip.MustParseAddr("127.0.0.1")
+	if bl := s.Bans(); bl != nil && bl.Banned(ip) {
+		t.Error("an alert banned the plant's master")
+	}
+}
+
+// Shadow mode and action: deny. The detector refuses nothing and the would-be
+// refusal goes to the same ledger the policy's do, because a listener in shadow
+// mode refusing something would make the mode worthless for the one thing it is
+// for: finding out what enforcing would cost before enforcing.
+func TestTheDetectorRefusesNothingInShadowMode(t *testing.T) {
+	dev := startPLC(t, &plc{framing: wire.FramingTCP})
+	s := proxytest.Start(t, fmt.Sprintf(`
+version: 1
+policy: {mode: shadow}
+server:
+  listeners:
+    - name: plant
+      address: "127.0.0.1:0"
+      kind: modbus
+      modbus:
+        upstream: plc
+        default_action: allow
+        anomaly:
+          enabled: true
+          settle: 0s
+          action: deny
+logging: {access: {enabled: false}}
+upstreams:
+  - {name: plc, endpoints: [{address: %q}]}
+`, dev.addr()))
+	addr := proxytest.Addr(t, s, "plant")
+
+	m := dialMaster(t, addr, wire.FramingTCP)
+	if _, err := m.ask(1, setPoint); err != nil {
+		t.Fatalf("a write the detector would have refused was refused in shadow mode: %v", err)
+	}
+	if got := dev.regs[400]; got != 50 {
+		t.Fatalf("the write did not reach the device: %d", got)
+	}
+	sn := s.Stats()
+	if sn.ModbusDenied != 0 {
+		t.Errorf("shadow mode refused %d frames", sn.ModbusDenied)
+	}
+	if sn.ModbusWouldDeny == 0 {
+		t.Errorf("the would-be refusal was not counted: %+v", sn.WouldRefusals["modbus"])
+	}
+	// The detector's own findings are in the ledger, named as its own.
+	var found bool
+	for _, e := range s.Shadow().Report() {
+		if e.Rule == "anomaly" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("the ledger does not carry the detector's finding: %+v", s.Shadow().Report())
 	}
 }

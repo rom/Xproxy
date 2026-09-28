@@ -77,6 +77,10 @@ type Learner struct {
 
 	mu   sync.Mutex
 	seen map[subjectKey]*observation
+	// base is the per-address value baseline, which is what a value policy is
+	// written from. Kept beside the subjects rather than inside them because a
+	// value's envelope is a property of the point and not of whoever wrote it.
+	base *baselines
 	// order is insertion order, so the bound drops the oldest subject
 	// rather than a random one.
 	order []subjectKey
@@ -106,7 +110,7 @@ func NewLearner(listener, path string, interval time.Duration, max int) *Learner
 		max = 8192
 	}
 	return &Learner{path: path, interval: interval, max: max, listener: listener,
-		seen: map[subjectKey]*observation{}, stop: make(chan struct{})}
+		seen: map[subjectKey]*observation{}, base: newBaselines(), stop: make(chan struct{})}
 }
 
 // Start runs the periodic write. onError hears about a report that could
@@ -192,7 +196,22 @@ func (l *Learner) Observe(req request, allowed bool, now time.Time) {
 	if lo, hi, ok := writeSpan(p); ok && hi >= 0 {
 		o.writeAddresses = addRange(o.writeAddresses, lo, hi)
 	}
-	for _, v := range p.Registers {
+	// The per-address baseline. The subject-wide span below is kept as an
+	// observation because it answers "did this master write values at all",
+	// and it is no longer *proposed* as a bound: one span for every register a
+	// master touched permits the narrow ones to be set to the widest one's
+	// limit.
+	l.base.observe(req.unit, p, now)
+	// carriesValues for the same reason it is used there: a coil write's
+	// Registers holds 0xFF00, a masked write's holds two masks and a diagnostic's
+	// holds a sub-function argument. Recording any of them here reported a
+	// values_written span the plant never wrote -- 65280..65280 for a coil
+	// somebody switched on.
+	var regs []uint16
+	if carriesValues(p.Function) {
+		regs = p.Registers
+	}
+	for _, v := range regs {
 		val := int(v)
 		o.haveValues = true
 		if val < o.minValue {
@@ -344,6 +363,7 @@ func (l *Learner) Report() string {
 		snapshot = append(snapshot, *l.seen[k])
 	}
 	dropped, observed := l.Dropped.Load(), l.Observed.Load()
+	baseKeys, basePts, baseDropped := l.base.snapshot()
 	l.mu.Unlock()
 
 	var b strings.Builder
@@ -382,7 +402,8 @@ func (l *Learner) Report() string {
 			fmt.Fprintf(&b, "    write_addresses: [%s]\n", rangeList(o.writeAddresses))
 		}
 		if o.haveValues {
-			fmt.Fprintf(&b, "    values_written: {min: %d, max: %d}\n", o.minValue, o.maxValue)
+			fmt.Fprintf(&b, "    values_written: {min: %d, max: %d}  # across every address this subject wrote; the per-address envelopes are below\n",
+				o.minValue, o.maxValue)
 		}
 		if o.coilSet || o.coilClear {
 			fmt.Fprintf(&b, "    coils_written: {set: %t, cleared: %t}\n", o.coilSet, o.coilClear)
@@ -414,9 +435,6 @@ func (l *Learner) Report() string {
 		if len(o.writeAddresses) > 0 {
 			fmt.Fprintf(&b, "    write_addresses: [%s]\n", rangeList(o.writeAddresses))
 		}
-		if o.haveValues {
-			fmt.Fprintf(&b, "    values: [{min: %d, max: %d}]\n", o.minValue, o.maxValue)
-		}
 		if o.exceptions > 0 {
 			fmt.Fprintf(&b, "    comment: \"the device refused %d of these\"\n", o.exceptions)
 		}
@@ -424,6 +442,7 @@ func (l *Learner) Report() string {
 	if len(keys) == 0 {
 		b.WriteString("  []\n")
 	}
+	renderBaselines(&b, baseKeys, basePts, baseDropped)
 	return b.String()
 }
 

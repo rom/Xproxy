@@ -50,9 +50,15 @@ are open, and before it reports ready, the daemon confines itself
 - A seccomp deny list installed on every thread: process tracing and
   memory access to other processes, module loading, kexec and reboot,
   mounts, namespaces, chroot, keyrings, BPF, `perf_event_open`,
-  io_uring, memory policy, identity changes, `execve` and `clone3`
-  return `EPERM`; a system call from a foreign architecture (including
-  the x32 ABI on x86_64) kills the process.
+  io_uring, memory policy, identity changes and `execve` return `EPERM`; a
+  system call from a foreign architecture (including the x32 ABI on
+  x86_64) kills the process. `clone3` is refused with **`ENOSYS`** rather
+  than `EPERM`, deliberately: glibc's `pthread_create` tries `clone3`
+  first and falls back to plain `clone` -- which the filter allows -- only
+  on `ENOSYS`. Refused with `EPERM` it does not fall back, and a process
+  linked against glibc cannot create a thread at all. Nothing is given
+  away by it, because `clone` is allowed either way, so refusing `clone3`
+  was never what stopped a new process; `execve` and `execveat` are.
 - Capability clearing: ambient, bounding, effective, permitted and
   inheritable sets are emptied. Under the unit they already are and the
   step verifies it.

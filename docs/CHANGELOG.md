@@ -6,6 +6,126 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Fixed (sandbox: the seccomp filter stopped a hardened process creating threads)
+
+- **`clone3` was refused with `EPERM`, and it has to be `ENOSYS`.** glibc's
+  `pthread_create` calls `clone3` first and falls back to plain `clone` — which
+  this filter allows — only on `ENOSYS`. Refused with `EPERM` it does not fall
+  back: it fails, and a process linked against glibc **cannot create a thread at
+  all** once the sandbox is on. The Go runtime calls `clone` directly, so the
+  shipped `CGO_ENABLED=0` binaries never hit it; a cgo-linked build aborts with
+  `runtime/cgo: pthread_create failed: Operation not permitted` the moment
+  anything wants an OS thread after hardening.
+
+- Nothing is given away by the change. `clone` is allowed either way, so refusing
+  `clone3` was never what stopped a new process being made — `execve` and
+  `execveat` are, and they stay `EPERM`.
+
+- **It surfaced as a test that failed only under load.** `TestApplyLinux` runs the
+  sandbox in a helper subprocess, and the race-enabled test binary is a cgo
+  binary: under load the runtime wanted another thread after the sandbox went on,
+  the helper aborted *after* passing every check it made, and the parent reported
+  "helper failed: exit status 2". The helper now starts twenty-four locked OS
+  threads deliberately and the parent asserts it got them, so the property is
+  checked rather than sampled.
+
+### Added (modbus: behavioural detection, which needs no rules)
+
+- **`anomaly` answers a question the rules cannot**: not *is this permitted* but
+  *is this what this master has been doing*, with nothing written down. Control
+  traffic is repetitive in a way other traffic is not — a master's scan cycle is
+  the same few function codes over the same few address ranges, every cycle, for
+  years — so "this client has never done this before" is a signal here where on a
+  web front end it would be noise. It watches a function code the client has not
+  used (`anomaly_new_function`), a write to a register it has never driven
+  (`anomaly_new_write_address`) and a burst of writes across every address
+  (`anomaly_write_burst`).
+
+- **The burst is the one that a value rule's `rate` cannot see.** A rate of "this
+  setpoint may move once a minute" does not notice a master that wrote forty
+  *different* registers once each, which is not a rate violation anywhere and is
+  exactly the shape of somebody walking the address space.
+
+- **It alerts, and the alerts do not reach the ban ladder.** A detector built on
+  novelty fires on the first legitimate maintenance write of the year, and banning
+  a plant's master for it would take the process away from the control room —
+  worse than what is being guarded against. `action: deny` exists for the plants
+  that want it, refuses the *first* occurrence and records it so a retry goes
+  through, and is warned about at validation: it buys a hard stop and an
+  operator's attention, not a block.
+
+- **It settles before it reports.** When the relay starts everything is new, so a
+  client's first `settle` (10m by default) is recorded quietly. The burst is not
+  suppressed during it, because that bound is a number an operator set rather than
+  something learned.
+
+- A master that writes more distinct ranges than the detector holds has its
+  novelty detection turned off and counted, rather than having its ranges
+  collapsed into one span: widening what counts as seen would make the detector
+  stop detecting while it went on looking like it worked.
+
+- `settle` and `write_burst` are read as pointers, so `0s` and `0` mean *off*
+  rather than *default*. The first version read them as plain values, so a
+  listener configured with `write_burst: 0` silently kept the default of twenty
+  and went on reporting bursts — a detector that had been turned off and was not.
+  The test that found it now asserts fifty writes against a bound of zero.
+
+### Fixed and added (modbus: the learning report proposed a bound looser than the traffic)
+
+- **The value bound a learning report proposed was derived from every register a
+  subject touched.** A master writing a 0..40 bar setpoint at register 400 and a
+  0..3 mode at 401 is one subject, so the report proposed
+  `values: [{min: 0, max: 40}]` — which permits setting the mode to 40. An
+  engineer who pasted it got a value policy that was wrong in a way that *looked*
+  derived from evidence, which is worse than having none. That proposal is gone.
+
+- **In its place, a process baseline per address**: the envelope of the values
+  written there, the largest step between consecutive writes, and the most writes
+  seen in any one sliding minute. Those are what `min`, `max`, `max_delta` and
+  `rate` are written from, and the report proposes them as a `values` block. This
+  is what turns a learning run from an allow-list into something a value policy
+  can be written from — the gap the roadmap named as "learning today produces
+  allow-lists, not anomaly detection".
+
+- Adjacent addresses whose baselines really are the same are one entry, because a
+  report with a line per register of a forty-register block is a report nobody
+  reads. Adjacent addresses that differ stay apart, which is the whole reason for
+  recording them separately.
+
+- **The report says, in capitals, that a baseline is where a conversation starts
+  and not a control.** It is derived from traffic, and traffic is what somebody
+  already inside has been shaping: a run on a plant quietly driven out of its
+  envelope for a month learns the wider envelope. Nothing installs itself.
+
+- Three narrower decisions: a **read** sets no baseline, because a bound proposed
+  from what the process produced would permit a master to write anything the plant
+  ever reached on its own; a **step is a distance**, so a setpoint dropped by
+  fifty moved as far as one raised by fifty, and where no step was observed
+  `max_delta` is left out rather than written as `0`, which would refuse every
+  change; and a **coil** is observed and never proposed, because "this coil may
+  only be set" from a run where nobody happened to clear it would refuse the reset
+  somebody needs at three in the morning.
+
+- **Two defects the baseline work found in the report that was already there.**
+  The proposed block said to paste it under `modbus.values`, and there is no such
+  key: a value policy belongs to a rule, so the block is the `values:` of the rule
+  that allows those writes. And the *observation* of what a subject wrote read the
+  register words of every writing function code, including three whose words are
+  not values at addresses — code 5 encodes a coil's bit as `0xFF00`, code 22
+  carries an AND mask and an OR mask, and code 8 a diagnostic argument. Switching
+  one coil on therefore reported `values_written: {min: 65280, max: 65280}`, and
+  the new per-address baseline would have proposed it as a bound. Both are fixed,
+  and there is now a test that loads every block the report proposes through the
+  real configuration parser, because a proposal in a vocabulary the loader does
+  not read is worse than no proposal: the engineer's conclusion is that the tool
+  is broken rather than that the line is wrong.
+
+- Folding adjacent addresses into one entry now requires the write *count* to
+  match as well as the envelope, the step and the peak rate. Every one of those is
+  printed, so folding on anything less printed one address's number for another's:
+  two registers written the same two values, one of them twice over, became a
+  single line claiming two writes for an address that had four.
+
 ### Added (iec104: IEC 62351-5 recognised, counted and requirable)
 
 - **The thirteen IEC 60870-5-7 secure-authentication types are named.** Before

@@ -69,7 +69,13 @@ func TestAPortWhoseDatagramSideIsTakenIsReported(t *testing.T) {
 	// from a leak in one attempt, and it happens. A socket this process
 	// leaked is held for the life of the process, so it fails every
 	// attempt and the test still says so.
-	deadline := time.Now().Add(2 * time.Second)
+	//
+	// The bound is generous for that reason. It was two seconds and a full
+	// run of the suite exceeded it -- a sibling package had the port for
+	// longer than that -- which failed a test about a leak on a machine that
+	// had none. Half a minute costs nothing in the passing case, where the
+	// first attempt succeeds, and a real leak still fails every one of them.
+	deadline := time.Now().Add(30 * time.Second)
 	var last error
 	for {
 		ln, err := net.Listen("tcp", "127.0.0.1:"+port)

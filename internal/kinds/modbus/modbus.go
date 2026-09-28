@@ -69,6 +69,7 @@ type server struct {
 	learner   *Learner
 	tracer    *Tracer
 	limiter   *limits.KeyedLimiter
+	anomalies *anomalies
 
 	open atomic.Int64
 	wg   sync.WaitGroup
@@ -137,6 +138,11 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener, tc *tls.Co
 	if l := m.Learn; l != nil && l.Enabled {
 		t.learner = NewLearner(cfg.Name, l.File, l.Interval.D(), l.MaxSubjects)
 	}
+	ap, err := compileAnomaly(m.Anomaly)
+	if err != nil {
+		return nil, fmt.Errorf("modbus %s: %w", cfg.Name, err)
+	}
+	t.anomalies = newAnomalies(ap)
 	if tr := m.Trace; tr != nil {
 		req := tr.Requests == nil || *tr.Requests
 		resp := tr.Responses == nil || *tr.Responses
@@ -522,6 +528,22 @@ func (se *session) run() string {
 			t.host.Shadow().Record("modbus", t.cfg.Name, decision.Reason, decision.Rule,
 				fmt.Sprintf("unit %d %s %s", frame.Unit, wire.FunctionName(pdu.Function), pdu.Access))
 		}
+		// Behavioural detection, here rather than beside the policy decision:
+		// the detector learns from the frames that reach the device, and a
+		// request the policy refused never got there. Recording one would teach
+		// the detector that a refused probe is this master's normal traffic,
+		// which is the opposite of what it is for.
+		if reason, ok := t.decideAnomaly(se, frame, pdu, req, enforcing); !ok {
+			switch t.m.DenyResponse {
+			case "drop":
+				continue
+			case "close":
+				return reason
+			default:
+				se.answerException(frame, pdu.Function, exceptionFor(Decision{Reason: reason}), nil)
+				continue
+			}
+		}
 		if t.m.LogFrames {
 			t.logFrame(se, frame, pdu, decision)
 		}
@@ -889,11 +911,17 @@ func exceptionFor(d Decision) byte {
 		// which is what an illegal data value means to a master's own
 		// diagnostics.
 		return wire.ExIllegalValue
-	case "value_rate":
+	case "value_rate", "anomaly_write_burst":
 		// Not an illegal value: the same write would be accepted later.
 		// Server busy is the nearest true thing the protocol has, and a
 		// master reads it as "ask again".
 		return wire.ExServerBusy
+	case "anomaly_new_function":
+		// The master asked for a function code this relay has not seen it use.
+		// Illegal function is what its own diagnostics will make sense of, and
+		// it is also nearly true: the function is not one this master's
+		// behaviour says it has.
+		return wire.ExIllegalFunction
 	case "unit_not_allowed":
 		return wire.ExGatewayPathUnavail
 	}
@@ -983,6 +1011,26 @@ func (t *server) deny(ip netip.Addr, what, detail string) {
 	if bl := t.host.Bans(); bl != nil && ip.IsValid() {
 		bl.Observe(ip, "modbus_denied")
 	}
+}
+
+// alert records something worth telling an operator about that is not a refusal:
+// a master doing something it has not done before.
+//
+// It does not reach the ban ladder, and that is the point. The behavioural
+// detection fires on novelty, and the first legitimate maintenance write of the
+// year is novel; banning the plant's master for it would take the process away
+// from the control room over a signal that says only "this has not happened
+// before". The event and the counter are what an operator acts on.
+func (t *server) alert(ip netip.Addr, what, detail string) {
+	t.host.Counters().Refuse("modbus", what)
+	if !t.m.Alerts() {
+		return
+	}
+	attrs := []any{"listener", t.cfg.Name, "client_ip", ip.String(), "proto", "modbus"}
+	if detail != "" {
+		attrs = append(attrs, "detail", detail)
+	}
+	t.host.Logs().SecurityEvent(context.Background(), "alert", "modbus_"+what, attrs...)
 }
 
 // refuse records a frame the policy refused: the event carries what was

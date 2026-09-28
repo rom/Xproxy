@@ -257,6 +257,25 @@ server:
           clients: ["10.30.1.99/32"]   # the contractor's laptop
           units: ["1-32"]
 
+        # Behavioural detection, which needs no rules at all. A master's
+        # scan cycle is the same handful of function codes over the same
+        # handful of registers every cycle for years, so "this client has
+        # never done this before" is a real signal here -- and a burst of
+        # writes across forty different registers is not a rate violation
+        # anywhere, which is exactly why it is worth watching.
+        #
+        # Left as alert, deliberately. The signal is novelty, and the
+        # first legitimate maintenance write of the year is novel too; the
+        # events are what somebody reads, and the rules above are what
+        # refuse. A quarter of an hour of settling because this plant's
+        # masters run a recipe download when they reconnect, and none of
+        # that is what they do for the rest of the year.
+        anomaly:
+          enabled: true
+          settle: 15m
+          write_burst: 30          # this plant downloads recipes
+          burst_period: 10s
+
         # An afternoon's trace during a commissioning. The data bytes
         # are process data, so they are off.
         trace:

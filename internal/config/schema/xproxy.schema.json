@@ -6293,6 +6293,47 @@
       },
       "additionalProperties": false
     },
+    "ModbusAnomaly": {
+      "description": "ModbusAnomaly is behavioural detection: what a master has been doing, and when it stops. The rules answer \"is this permitted\", from what somebody wrote down. This answers \"is this what this master has been doing\", and answers it without anybody having written anything. Control traffic is repetitive in a way other traffic is not -- a master's scan cycle is the same few function codes over the same few address ranges, every cycle, for years -- so \"this client has never done this before\" is a signal here where elsewhere it would be noise. It alerts. A detector built on \"I have not seen this before\" refuses the first legitimate thing anybody does after a quiet year, so the default is an event and a counter, the events do not reach the ban ladder, and `action: deny` is there for the plants that want it.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "Action is alert (the default) or deny. deny refuses the request the detection fired on, which on a signal derived from novelty means refusing a maintenance write nobody has made before. It is a real choice and not a default. It refuses the *first* occurrence and records it, so a retry goes through. That is deliberate: refusing every occurrence until somebody intervened would mean a plant that could not be driven after any novelty, with nothing here to do the intervening. deny buys a hard stop on the first attempt and an operator's attention. It is not a block, and the rules are what block.",
+          "type": "string"
+        },
+        "burst_period": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "enabled": {
+          "description": "Enabled turns the detection on.",
+          "type": "boolean"
+        },
+        "max_clients": {
+          "description": "MaxClients bounds the masters remembered. Default 1024; past it the drops are counted rather than silent.",
+          "type": "integer"
+        },
+        "new_function": {
+          "description": "NewFunction reports a function code this client has not used. Default true.",
+          "type": "boolean"
+        },
+        "new_write_address": {
+          "description": "NewWriteAddress reports a write to an address this client has not written. Default true.",
+          "type": "boolean"
+        },
+        "settle": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "write_burst": {
+          "description": "WriteBurst and BurstPeriod bound one client's writes across every address: default 20 in 10s. It is not the per-address rate of a value rule, and the difference is the point -- a rate of \"this setpoint may move once a minute\" does not notice a master that wrote forty different registers once each, which is the shape of somebody walking the address space. 0 disables it. A pointer for the same reason `settle` is one: 0 means off, and an unset key means the default. Read as a plain int, `write_burst: 0` silently kept the default of twenty, so a listener configured with the burst turned off went on reporting bursts.",
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
     "ModbusDeception": {
       "description": "ModbusDeception answers as a device that is not there. A refusal is information. A relay that answers \"gateway path unavailable\" for every unit identifier nothing is behind is doing exactly what the specification says, and a sweep of 1 to 247 therefore draws the map: which units exist, and by the same argument which function codes the policy permits. The scan is refused and the survey completes. This answers instead, from a fabricated device whose values are stable per address and move slowly with time, so the crawl finishes and the map is wrong. **On a plant floor the failure mode of this tool is not a confused scanner.** It is an operator reading a fabricated tank level off an HMI and acting on it. So one rule holds, and it is tested rather than intended: a frame the policy allowed is never deceived -- deception replaces a refusal and never an answer. In mode answer, where there are real devices behind the listener, clients is required: a section that would lie to anybody who connects is not something to arrive at by leaving a field out.",
       "type": "object",
@@ -6441,6 +6482,14 @@
           "items": {
             "type": "string"
           }
+        },
+        "anomaly": {
+          "description": "Anomaly watches what each master has been doing and reports when it stops: a function code it has never used, a write to a register it has never written, a burst of writes. It needs no rules, which is the point of it.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/ModbusAnomaly"
+            }
+          ]
         },
         "connect_timeout": {
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",

@@ -84,7 +84,46 @@ each side, and the relay re-frames rather than tunnelling — which means the
 policy applies to the request rather than to an opaque payload.
 
 `learn` watches a running plant and writes down what it actually does, which
-is how a policy gets written for equipment nobody has documentation for.
+is how a policy gets written for equipment nobody has documentation for. It
+produces two things: the allow-list of who may reach what, and a **process
+baseline** per address -- the envelope of the values written there, the largest
+step between consecutive writes, and the most writes seen in any one minute,
+which is what `min`, `max`, `max_delta` and `rate` are written from.
+
+The baseline is per *address* and not per subject, because one span over every
+register a master touched is looser than the traffic it came from: a master
+writing a 0..40 setpoint and a 0..3 mode would get a bound permitting the mode to
+be set to 40. And a baseline is where a conversation starts and not a control --
+it is derived from traffic, and traffic is what somebody already inside has been
+shaping, so the report says in as many words that the numbers are read against the
+drawings before anything is pasted -- as the `values:` of the rule that allows
+those writes, since a value policy belongs to a rule and not to the listener.
+
+Only the function codes that really write values set an envelope: 6, 16 and the
+write half of 23. Code 5 puts a coil's bit on the wire as `0xFF00`, code 22
+carries an AND mask and an OR mask, and code 8 a diagnostic argument; none of
+them is a value at an address, and a baseline that read them as values proposed
+`min: 65280, max: 65280` for a coil somebody switched on.
+
+## Behavioural detection
+
+`anomaly` is the other half of it, and it needs nothing written down. The rules
+answer *is this permitted*; this answers *is this what this master has been
+doing*. Control traffic is repetitive in a way other traffic is not -- a master's
+scan cycle is the same few function codes over the same few address ranges, every
+cycle, for years -- so "this client has never done this before" is a signal here
+where elsewhere it would be noise. A function code the client has not used, a
+write to a register it has never driven, and a burst of writes across every
+address, which is the one thing a per-address `rate` cannot see: forty different
+registers written once each is not a rate violation anywhere and is exactly the
+shape of somebody walking the address space.
+
+It alerts, and the alerts do not reach the ban ladder: the first legitimate
+maintenance write of the year is novel too, and banning the plant's master for it
+would take the process away from the control room. `action: deny` refuses the
+first occurrence and records it, so a retry goes through -- a hard stop and an
+operator's attention, not a block. And it settles before it reports, because when
+the relay starts everything is new.
 
 A refused request is answered with a Modbus **exception** — the protocol's own
 "illegal data address" or "illegal function" — so the master's own library

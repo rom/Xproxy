@@ -9,7 +9,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -31,6 +34,12 @@ type helperResult struct {
 	CapsEmpty     bool    `json:"caps_empty"`
 	NoNewPrivs    int     `json:"no_new_privs"`
 	Bind          string  `json:"bind"`
+	// Threads is how many OS threads the confined process managed to start
+	// after the sandbox went on. A sandbox that cannot be threaded is a
+	// sandbox no server can run under, and the filter refuses clone3 -- so
+	// this is asked deliberately rather than left to whether the runtime
+	// happened to want a thread before the process exited.
+	Threads int `json:"threads"`
 }
 
 func errString(err error) string {
@@ -106,8 +115,39 @@ sandbox:
 		res.Bind = errString(unix.Bind(fd, &unix.SockaddrInet4{Port: 0, Addr: [4]byte{127, 0, 0, 1}}))
 		_ = unix.Close(fd)
 	}
+	res.Threads = threadsAfter()
 	b, _ := json.Marshal(res)
 	fmt.Fprintf(os.Stdout, "\nRESULT %s\n", b)
+}
+
+// threadsAfter forces the runtime to take new OS threads and counts how many it
+// got. Each goroutine locks its thread and then blocks in a system call, so the
+// scheduler cannot serve them all from the threads that already exist: it has to
+// create them, under the filter that is now in force.
+//
+// This is the assertion that a sandboxed process can still be threaded. It used
+// to be nobody's assertion, and the consequence was a test that failed only under
+// load -- when the runtime wanted a thread after the sandbox went on, and the
+// filter's EPERM on clone3 stopped glibc's pthread_create from falling back to
+// clone. The cause was in the filter and the symptom was an abort in a helper
+// that had already passed every check it made.
+func threadsAfter() int {
+	const want = 24
+	var got atomic.Int64
+	var wg sync.WaitGroup
+	for i := 0; i < want; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			runtime.LockOSThread()
+			defer runtime.UnlockOSThread()
+			got.Add(1)
+			ts := unix.Timespec{Nsec: 5_000_000}
+			_ = unix.Nanosleep(&ts, nil)
+		}()
+	}
+	wg.Wait()
+	return int(got.Load())
 }
 
 func TestApplyLinux(t *testing.T) {
@@ -155,6 +195,12 @@ func TestApplyLinux(t *testing.T) {
 		t.Errorf("debuggable: %+v", m)
 	} else if res.Dumpable != 0 || res.CoreLimit != 0 {
 		t.Errorf("dumpable %d core %d", res.Dumpable, res.CoreLimit)
+	}
+	// The confined process could still be threaded. If it could not, a server
+	// cannot run under this sandbox at all -- and the failure would not look like
+	// this test: it would look like an abort under load, somewhere else.
+	if res.Threads != 24 {
+		t.Errorf("the confined process started %d of 24 OS threads, so the filter refuses threading", res.Threads)
 	}
 	if m := states["no_new_privs"]; m.State != StateApplied || res.NoNewPrivs != 1 {
 		t.Errorf("no_new_privs: %+v (%d)", m, res.NoNewPrivs)
