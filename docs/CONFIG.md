@@ -3119,7 +3119,7 @@ field means what it meant.
 | `dtls_handshake_timeout` | duration | `10s` | How long a peer has to finish a DTLS handshake. The bound that matters most on a datagram listener: a handshake is where a peer that has proved nothing already costs a socket, a goroutine and a slot in the peer table |
 | `dtls_idle_timeout` | duration | `5m` | How long a DTLS session with nothing on it is kept. A poller on a thirty-second cycle keeps its session, which matters because the handshake is the expensive part of the exchange |
 | `max_dtls_peers` | int | `64` | DTLS sessions this listener holds. Past it a new peer's datagrams are dropped and counted in `snmp_dtls_datagrams_dropped`, because there is no session to refuse them in |
-| `cert_to_name` | list | | RFC 6353 §5.3's `snmpTlstmCertToTSNTable`: how a peer's certificate becomes the security name a rule names. See below |
+| `cert_to_name` | list | | RFC 6353 §5.3's certificate-to-name table: how a peer's certificate becomes the security name a rule names. See below |
 | `require_security_name` | bool | `true` | Refuse a transport security model message whose certificate maps to no name. The model carries no user, no engine and no digest, so a message with no derived name has no credential at all; `false` is for a listener that wants DTLS for confidentiality and decides on the address and the objects alone |
 | `allow_clients` | list of CIDR | all | Networks a manager may send from. On this protocol this is the most valuable line in the file after `read_only`, because a community string is not a secret in any useful sense |
 | `deny_clients` | list of CIDR | | Evaluated before `allow_clients` |

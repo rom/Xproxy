@@ -254,8 +254,19 @@ func TestTerminatingAnswersABadRequestWithTheRightCode(t *testing.T) {
 			if kerr.Code != tc.want {
 				t.Errorf("error code %d, want %d", kerr.Code, tc.want)
 			}
-			if got := s.Stats().Refusals["ntske"][tc.refusal]; got == 0 {
-				t.Errorf("refusals: %+v", s.Stats().Refusals["ntske"])
+			// Polled rather than read once: the answer is written before the
+			// refusal is counted, so a client that read its error has not
+			// waited for the counter. The first failure of this assertion
+			// printed a map that already held the count it had just found
+			// missing.
+			for deadline := time.Now().Add(10 * time.Second); ; {
+				if s.Stats().Refusals["ntske"][tc.refusal] != 0 {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("refusals: %+v", s.Stats().Refusals["ntske"])
+				}
+				time.Sleep(10 * time.Millisecond)
 			}
 		})
 	}
