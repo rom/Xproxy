@@ -174,6 +174,9 @@ far from it they are.
   every key.
 - [`examples/ot/mms.yaml`](../../examples/ot/mms.yaml) for a substation with a
   control centre, an engineering station and a learning run.
+- [`examples/ot/packs/industroyer-mms.yaml`](../../examples/ot/packs/industroyer-mms.yaml),
+  a behaviour pack for Industroyer's IEC 61850 module, with
+  [what a pack is and is not](../../examples/ot/packs/README.md).
 - [S7comm](s7.md), which shares the TPKT and COTP layers and nothing above them.
 - [OPC UA](opcua.md), the other industrial protocol with security of its own —
   and the one where the equivalent password knob defaults the other way, for the

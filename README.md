@@ -1779,6 +1779,17 @@ any other request-and-response protocol at all — time needs the round
 trip — so the time gateway belongs beside its consumers, not behind a
 diode.
 
+[examples/ot/packs/](examples/ot/packs/README.md) is a smaller set with a
+narrower claim: six configurations written against what a named piece of
+ICS tooling did -- Industroyer on IEC 104 and on MMS, FrostyGoop on
+Modbus, PIPEDREAM's Modicon and OPC UA modules, and the block writes a
+Stuxnet-shaped payload makes to an S7 -- so that an estate that has
+nothing else can start from something. None of them is a signature: every
+rule is a statement about what this plant does, the addresses in each
+file have to be replaced with the plant's own, and each pack has a test
+that loads the file as it ships and sends the traffic through the relay,
+which is how the claim in its name is checked rather than asserted.
+
 ## Operating it
 
 `xproxyctl` talks to the management socket, whose caller identity the

@@ -1,0 +1,147 @@
+# Behaviour pack: Industroyer and Industroyer2, the IEC 104 half.
+#
+# Industroyer (2016, Ukrenergo) and Industroyer2 (2022) are the only malware
+# families written to operate a power grid through its own telecontrol
+# protocol. The 104 payload does three things, and each one is a line below.
+#
+# It **enumerates the information objects** on a station -- walking a range of
+# information object addresses, sending each a single or double command, in
+# both directions -- because the attacker knows the protocol and not the
+# substation. Industroyer2 carried the station's configuration hard-coded
+# instead, which changes the reconnaissance and not the commanding.
+#
+# It **sends the commands properly**: select, then execute. So
+# select-before-operate does not stop it, and this pack says that rather than
+# implying otherwise. What stops it is the list of objects a control centre may
+# command at all, and the rate at which commands may arrive.
+#
+# And it **takes the connection**. The 2016 payload stopped the legitimate
+# process on the compromised host so that it owned the TCP session to the
+# station. On the relay that is a second connection from the control centre's
+# own network -- which is what the redundancy group below is for: only the
+# connection holding data transfer may command anything, and taking it is a
+# logged failover rather than a silent change of who is in charge.
+#
+# MITRE ATT&CK for ICS techniques this pack is about:
+#   T0855  Unauthorized Command Message  -- the breaker commands themselves
+#   T0861  Point & Tag Identification    -- the information object walk
+#   T0814  Denial of Service             -- STOPDT, and the connection takeover
+#   T0816  Device Restart/Shutdown       -- C_RP_NA_1, the process reset
+#   T0801  Monitor Process State         -- what the legitimate traffic is
+# The technique identifiers are MITRE's; the mapping is this pack's reading of
+# published analysis and not MITRE's own.
+#
+# **The addresses here are examples.** 10.40.1.0/24 stands for the control
+# centre's network and the object ranges for one substation's breakers.
+# Replace them: on this protocol a pack that names the wrong objects refuses
+# the wrong switching.
+
+version: 1
+
+server:
+  listeners:
+    - name: substation-gateway
+      address: "10.40.0.10:2404"
+      kind: iec104
+      iec104:
+        upstream: rtu
+
+        allow_clients: ["10.40.1.0/24"]
+        # One substation per listener. A control centre that may address one
+        # station and reaches ten is the commonest finding on this protocol,
+        # and it is what let one compromised host reach every substation.
+        common_addresses: ["1"]
+
+        # STOPDT is not in the list. It is not a command and it changes
+        # nothing in the field, so it reads as harmless -- and a client that
+        # may send it stops data transfer, which blinds a control room without
+        # refusing anything. Naming STARTDT_act names its confirmation.
+        allow_controls: [STARTDT_act, TESTFR_act]
+
+        # The two-step form, which Industroyer itself satisfied. It is here
+        # because it stops the *single injected frame* that is the other shape
+        # of this attack, and because the redundancy group below makes it
+        # survivable in a control room.
+        require_select: true
+        select_timeout: 30s
+
+        # The control centre's paths, declared. Only the one holding data
+        # transfer may send anything, so a second connection -- which is what
+        # the 2016 payload arranged -- carries nothing until it has taken data
+        # transfer, and taking it raises iec104_failover naming both
+        # addresses.
+        redundancy:
+          groups:
+            - name: control-centre
+              clients: ["10.40.1.11/32", "10.40.1.12/32"]
+              max_connections: 2
+              takeover: switch
+
+        # The command rate, separately from the frame rate. This is the bound
+        # the object walk runs into: a control centre sends a breaker command
+        # when an operator clicks, which is units per hour, and a frame limit
+        # loose enough for telemetry says nothing about that.
+        rate_limit: 200
+        rate_burst: 400
+        command_rate_limit: 2
+        command_rate_burst: 4
+
+        rules:
+          # Telemetry up (T0801), which is what the link is for and most of
+          # what crosses it.
+          - name: telemetry
+            action: allow
+            class: [monitoring]
+
+          - name: interrogation
+            action: allow
+            clients: ["10.40.1.0/24"]
+            types: [C_IC_NA_1, C_CI_NA_1]
+
+          # The objects this control centre may switch: the breakers it
+          # operates and no others. Everything outside the range is refused by
+          # the rule below, by name. An `iec104` rule carries no `comment`
+          # field the way a `modbus` one does, so the technique is in the rule
+          # name -- which is what the security event's `rule` attribute
+          # carries, and what a SIEM query is written against.
+          - name: switching
+            action: allow
+            clients: ["10.40.1.0/24"]
+            types: [C_SC_NA_1, C_DC_NA_1]
+            addresses: ["4000-4099"]
+
+          - name: industroyer-object-walk-t0861
+            action: deny
+            # T0861, T0855: a command to an object this centre does not operate.
+            types: [C_SC_NA_1, C_DC_NA_1, C_RC_NA_1]
+
+          # A process reset restarts the station: telemetry stops, and the
+          # control room finds out by noticing. A clock change moves every
+          # timestamp in the historian and every protection function keyed to
+          # one. Neither is switching, and neither belongs on this path.
+          - name: industroyer-station-reset-t0816
+            action: deny
+            # T0816: process reset and clock synchronisation.
+            types: [C_RP_NA_1, C_CS_NA_1]
+
+          # Parameter and file services: not what a control centre does
+          # through this listener, and where a payload would put something
+          # persistent.
+          - name: industroyer-parameters-and-files-t0821
+            action: deny
+            # T0821: parameter loading and file transfer.
+            class: [parameter, file]
+
+        default_action: deny
+        deny_response: negative
+
+        # A command is a line somebody will read after an incident. The frame
+        # log is off because telemetry is most of the traffic; the command log
+        # is the record a grid operator is asked for.
+        log_frames: false
+        log_commands: true
+
+upstreams:
+  - name: rtu
+    endpoints:
+      - {address: "10.40.9.31:2404"}

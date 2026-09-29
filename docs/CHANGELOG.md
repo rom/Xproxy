@@ -69,6 +69,47 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   and the sessions count stops climbing — from a scanner sending flights of
   nonsense at the port, which never touches it.
 
+### Added (behaviour packs for the known ICS tooling)
+
+- **Six shipped configurations, one per tool, under
+  [`examples/ot/packs/`](../examples/ot/packs/README.md).** FrostyGoop and
+  PIPEDREAM's Schneider module on `modbus`, Industroyer and Industroyer2 on
+  `iec104`, Industroyer's IEC 61850 module on `mms`, a Stuxnet-shaped attack on
+  `s7`, and PIPEDREAM's OPC UA module on `opcua`. Each is a complete, loadable
+  document whose comments are most of its content, because the point is that
+  nobody should have to read the Industroyer analysis to write a policy that
+  would have refused it.
+
+- **None of them is a signature, and the packs say so first.** Every one of
+  these tools used the protocol as designed: FrostyGoop wrote holding
+  registers, Industroyer sent select-then-execute properly, Stuxnet downloaded
+  a block. So a pack is a statement about what the estate's traffic *is* -- the
+  hosts, the registers, the information objects, the data blocks -- and a named
+  refusal for everything outside it.
+
+- **Each pack has a test that drives the tool's own behaviour through the
+  relay.** In the listener kind's own package, loading the file as it ships
+  against a fabricated device, substituting nothing but the listener's port and
+  the network of the host under test. That found a real mistake in one of them:
+  the OPC UA pack first demanded `sign_and_encrypt`, which leaves the relay
+  nothing to read and makes its own service and node rules silent -- the pack
+  now takes `sign` with `require_readable_bodies`, and says why in place.
+
+- **The technique goes in the rule name**, because that is what the security
+  event's `rule` attribute carries and what a SIEM query is written against.
+  Where a kind's rule also has a `comment`, the technique is spelled out there
+  too. Two kinds differ and the packs are explicit about it: an `iec104` rule
+  has no comment field, and an `s7` rule matches a *session* rather than a
+  request, so on that kind the finding is the refusal reason with the matched
+  rule's comment beside it. Carrying the technique onto the event itself, with
+  the matrix release recorded, is separate work and is not done.
+
+- **What is not covered is stated rather than implied.** Two of PIPEDREAM's
+  modules speak protocols this proxy does not parse -- CODESYS on UDP 1740-1743
+  and TCP 2455, and Omron FINS on UDP 9600. A `kind: udp` listener in front of
+  those ports is a bound and a rate limit, not a detection, and segmentation is
+  the control there.
+
 ### Added (iec104: the redundancy groups of edition 2)
 
 - **`redundancy.groups` declares which connections are one controlling
