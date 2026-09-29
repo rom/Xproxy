@@ -13745,6 +13745,62 @@ func (v *validator) assetInventory(a *AssetInventory) {
 	if a.Enabled && a.StateFile == "" {
 		v.warnf("%s.state_file: empty, so the inventory starts from nothing after every restart and reports the whole estate as new -- which is the fastest way to teach an operator to ignore it", p)
 	}
+	if a.Advisories != nil {
+		v.advisories(p+".advisories", a, a.Advisories)
+	}
+}
+
+// advisories checks the CSAF matching.
+//
+// Everything here is checked at load rather than at the first read, for the
+// reason the package itself gives: a source that cannot be read is a set that
+// silently matches nothing, and a proxy reporting no advisories against an
+// estate is the one wrong answer this feature must not give.
+func (v *validator) advisories(p string, inv *AssetInventory, a *Advisories) {
+	if a.Enabled && !inv.Enabled {
+		v.errf("%s.enabled: the advisory matching needs the inventory it matches, so asset_inventory.enabled must be true as well", p)
+	}
+	if a.Enabled && len(a.Sources) == 0 {
+		v.errf("%s.sources: required when the advisory matching is enabled", p)
+	}
+	seen := map[string]bool{}
+	for i := range a.Sources {
+		src := &a.Sources[i]
+		where := fmt.Sprintf("%s.sources[%d]", p, i)
+		switch {
+		case src.Name == "":
+			v.errf("%s.name: required; it is what names the source in the status view", where)
+		case seen[src.Name]:
+			v.errf("%s.name: duplicate name %q", where, src.Name)
+		default:
+			seen[src.Name] = true
+			where = p + ".sources." + src.Name
+		}
+		switch {
+		case src.File == "" && src.Directory == "":
+			v.errf("%s: one of file or directory is required", where)
+		case src.File != "" && src.Directory != "":
+			v.errf("%s: file and directory are alternatives, not both", where)
+		}
+		for key, path := range map[string]string{"file": src.File, "directory": src.Directory} {
+			if path != "" && !filepath.IsAbs(path) {
+				v.errf("%s.%s: must be an absolute path", where, key)
+			}
+		}
+	}
+	if d := a.Refresh; d != nil && *d != 0 && (d.D() < time.Minute || d.D() > 7*24*time.Hour) {
+		v.errf("%s.refresh: must be between 1m and 168h, or 0 for never", p)
+	}
+	if a.MinSeverity != "" {
+		switch strings.ToLower(a.MinSeverity) {
+		case "critical", "high", "medium", "low":
+		default:
+			v.errf("%s.min_severity: must be critical, high, medium or low", p)
+		}
+	}
+	if a.Enabled && inv.StateFile == "" {
+		v.warnf("%s: the inventory is not written to a file, so every restart re-assesses an estate it has forgotten and the findings arrive again as if they were new", p)
+	}
 }
 
 // roleNames lists the roles for a validation message.

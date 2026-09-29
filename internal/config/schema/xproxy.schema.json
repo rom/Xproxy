@@ -858,6 +858,59 @@
       },
       "additionalProperties": false
     },
+    "Advisories": {
+      "description": "Advisories matches the inventory against published CSAF 2.0 advisories. The documents come from a directory on disk and nothing here fetches them. That is deliberate twice over: a relay on a process network dialling a vendor's website every hour is a network dependency in the one place that is supposed to have none, and advisory distribution already has downloaders -- the CSAF standard defines one, and every publisher in scope (Siemens ProductCERT, Schneider Electric, the CISA ICS advisories) offers a feed or a directory listing. The machine that is allowed out runs that, and is also where the detached signatures are verified.",
+      "type": "object",
+      "properties": {
+        "alert_on_affected": {
+          "description": "AlertOnAffected writes a security event for a device an advisory names, once per device per version rather than once per observation: a controller that is affected is affected until somebody updates it, and an event per Modbus frame would bury the estate. Default true.",
+          "type": "boolean"
+        },
+        "alert_on_not_assessed": {
+          "description": "AlertOnNotAssessed writes an event for a device whose exposure could not be established -- its firmware string is not a version anything can compare, or the advisory's own range carries a condition this cannot evaluate. Default false, because on a first run it is most of the estate and it is a list to work through rather than an alert to answer. The list is always in `xproxyctl assets advisories`.",
+          "type": "boolean"
+        },
+        "enabled": {
+          "description": "Enabled turns the matching on. Default false: reading advisories is cheap and *reporting* against them is a claim about somebody's estate, so it is asked for rather than assumed.",
+          "type": "boolean"
+        },
+        "min_severity": {
+          "description": "MinSeverity is the floor for an event: critical, high, medium or low. Empty means every severity. A finding the vendor scored with nothing is reported whatever the floor says, because a record nobody scored is not a record to hide behind a threshold.",
+          "type": "string"
+        },
+        "refresh": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "sources": {
+          "description": "Sources are the directories and files the documents come from, each named so that a stale one is attributable in the status view.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AdvisorySource"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "AdvisorySource": {
+      "description": "AdvisorySource is one place advisories are read from.",
+      "type": "object",
+      "properties": {
+        "directory": {
+          "type": "string"
+        },
+        "file": {
+          "description": "File is one document and Directory a directory of them, walked into subdirectories because every publisher's distribution is a directory per year. Exactly one of the two.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Name is what an operator calls it: siemens-productcert, cisa-ics. It appears in the status view beside the document count and the time of the last read, so that a directory nobody has updated for a year is visible as itself rather than as a total.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "Affinity": {
       "description": "Affinity is signed cookie session affinity.",
       "type": "object",
@@ -881,6 +934,14 @@
       "description": "AssetInventory is the estate's own record of what is on its network, built from the traffic the proxy was already carrying. An operational network cannot be scanned: an active scan is how a programmable controller gets knocked over, and on a safety network it is a thing people lose their jobs for. So the inventory is a by-product. Nothing here probes, connects or sends anything.",
       "type": "object",
       "properties": {
+        "advisories": {
+          "description": "Advisories matches the firmware versions in the inventory against CSAF 2.0 security advisories, which is the question an estate that cannot patch actually has: not \"is there an advisory for this controller\" but \"is the version we are running one of the affected ones\".",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Advisories"
+            }
+          ]
+        },
         "alert_on_change": {
           "description": "AlertOnChange writes a security event when a device's identity changes: its address taken over by another device, its role changed, its vendor re-resolved. Default true, and this is the setting worth leaving on -- a steady-state inventory is a reference document, and the deltas are the security value.",
           "type": "boolean"

@@ -3,11 +3,13 @@ package mgmt
 import (
 	"context"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/rom/xproxy/internal/assets"
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/csaf"
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/proxy"
 )
@@ -229,3 +231,81 @@ func TestAnAddressTakenOverIsFoundByTheChangedFilter(t *testing.T) {
 		t.Fatalf("change: %+v", rep.Assets[0].Changes)
 	}
 }
+
+// The advisory view over the control plane.
+//
+// The state filter is the query an operator actually runs -- "give me the ones
+// nobody has assessed" is a different job from "give me the ones that are
+// affected" -- so a state that is not a state is refused rather than answering
+// with an empty list, which would read as "the estate is clean".
+func TestTheAdvisoryViewOverTheSocket(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "ssa.json"), []byte(mgmtAdvisory), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, p := inventoryServer(t, inventoryOn+
+		"  advisories:\n    enabled: true\n    sources:\n      - name: test\n        directory: "+dir+"\n")
+	p.ObserveAsset(assets.Observation{Proto: "modbus", Listener: "line1",
+		Addr: netip.MustParseAddr("10.30.10.21"), Hardware: []byte{0x00, 0x1b, 0x1b, 1, 2, 3},
+		Server: true, Units: []int{1}, Funcs: []int{3},
+		Maker: "Siemens", Model: "SIMATIC S7-1200 CPU 1212C", Firmware: "V4.2.1"})
+
+	rep, err := c.Advisories("", true)
+	if err != nil {
+		t.Fatalf("advisories: %v", err)
+	}
+	if rep.Counts.Documents != 1 {
+		t.Errorf("%d documents", rep.Counts.Documents)
+	}
+	if len(rep.Advisories) != 1 || rep.Advisories[0].ID != "SSA-MGMT" {
+		t.Errorf("the documents themselves were not returned: %+v", rep.Advisories)
+	}
+	var affected int
+	for _, one := range rep.Assessments {
+		if one.State == csaf.StateAffected {
+			affected++
+		}
+	}
+	if affected != 1 {
+		t.Errorf("%d devices affected, want the controller below the bound", affected)
+	}
+
+	// One state at a time.
+	got, err := c.Advisories(csaf.StateAffected, false)
+	if err != nil {
+		t.Fatalf("filtered: %v", err)
+	}
+	if len(got.Assessments) != 1 {
+		t.Errorf("%d affected devices with the filter", len(got.Assessments))
+	}
+	if len(got.Advisories) != 0 {
+		t.Error("the documents were returned without being asked for")
+	}
+	// And a state that is not a state.
+	if _, err := c.Advisories("probably-fine", false); err == nil {
+		t.Error("a state nobody defined was accepted, so a typo would read as a clean estate")
+	}
+}
+
+// Without the section the endpoint says so rather than answering for an estate
+// nobody asked about.
+func TestTheAdvisoryViewWithoutAdvisories(t *testing.T) {
+	c, _ := inventoryServer(t, inventoryOn)
+	if _, err := c.Advisories("", false); err == nil {
+		t.Error("an advisory view with no advisories configured")
+	}
+}
+
+const mgmtAdvisory = `{
+  "document": {"category": "csaf_security_advisory", "csaf_version": "2.0",
+    "title": "A test advisory", "publisher": {"category": "vendor", "name": "Siemens ProductCERT"},
+    "tracking": {"id": "SSA-MGMT", "status": "final", "version": "1",
+      "current_release_date": "2024-02-13T00:00:00Z"}},
+  "product_tree": {"branches": [{"category": "vendor", "name": "Siemens", "branches": [
+    {"category": "product_name", "name": "SIMATIC S7-1200 CPU family", "branches": [
+      {"category": "product_version_range", "name": "vers:all/<V4.5",
+       "product": {"product_id": "P1", "name": "SIMATIC S7-1200 < V4.5"}}]}]}]},
+  "vulnerabilities": [{"cve": "CVE-2024-22222",
+    "product_status": {"known_affected": ["P1"]},
+    "scores": [{"products": ["P1"], "cvss_v3": {"baseScore": 9.1, "baseSeverity": "CRITICAL"}}]}]
+}`

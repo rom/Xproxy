@@ -6231,6 +6231,88 @@ to would be making a decision about their data for them.
 `examples/ot/inventory.yaml` is the whole thing: six relay listeners an
 estate would run anyway, and the section that collects what they saw.
 
+### Matching the estate against the vendors' advisories
+
+An inventory that knows a controller's firmware revision can answer the
+question an estate that cannot patch actually has. Not "is there an
+advisory for this controller" -- a newsletter says that -- but "is the
+version we are running one of the affected ones", which today means
+reading a PDF per advisory against a spreadsheet nobody has updated.
+
+The vendors publish CSAF 2.0 now: JSON, with the affected products and
+version ranges per CVE. Siemens ProductCERT, Schneider Electric and the
+CISA ICS advisories all do. Point a directory at them:
+
+```yaml
+asset_inventory:
+  enabled: true
+  state_file: /var/lib/xproxy/assets.json
+  advisories:
+    enabled: true
+    sources:
+      - name: siemens-productcert
+        directory: /var/lib/xproxy/csaf/siemens
+      - name: cisa-ics
+        directory: /var/lib/xproxy/csaf/cisa
+    min_severity: high
+```
+
+Nothing here fetches them. A downloader on a machine that is allowed out
+fills those directories -- the CSAF standard defines one, every publisher
+offers a feed -- because a relay on a process network dialling a vendor's
+website every hour is a second network dependency in the one place that is
+supposed to have none, and that machine is also where a publisher's
+detached signature is verified.
+
+Then read it:
+
+```
+$ xproxyctl assets advisories
+412 advisories, 3106 product records, read 12m ago
+affected 3, not_assessed 11, fixed 2, unknown_product 84
+siemens-productcert: 380 advisories from /var/lib/xproxy/csaf/siemens, 2 files ignored
+cisa-ics: 32 advisories from /var/lib/xproxy/csaf/cisa
+
+DEVICE             STATE         SEVERITY      FIRMWARE      ADVISORY        FIXED IN  PRODUCT
+0c:8f:ff:21:0a:31  affected      critical 9.8  V3.10         ICSA-24-012-03  V3.60     Modicon M340 BMXP342020
+0c:8f:ff:21:0a:44  affected      high 7.5      V4.2.1        SSA-482757 +2   V4.5      SIMATIC S7-1200 CPU 1212C
+10.30.4.19        not_assessed  -             Rel. 04.03                              SCALANCE X204IRT
+```
+
+The six states matter more than the numbers, and five of them are not
+"affected". The one to read twice is **`not_assessed`**: it is the devices
+whose exposure nobody has established -- a firmware string no comparison
+can order, an advisory range carrying a condition ("all versions < V2.9.2
+with CP1604 fitted"), a device that reports no version at all -- and each
+carries the text that could not be read, so
+`xproxyctl assets advisories -state not_assessed -long` is a work list
+rather than an error log. What those devices are never reported as is
+"not affected": a wrong "not affected" is a device somebody stops looking
+at, and on this kind of estate it would be most of them.
+
+`unknown_product` is the other one to read carefully. It means no loaded
+advisory names a product this could tie to the device -- which depends
+entirely on which documents were loaded, and is not the same sentence as
+"no advisory affects this device".
+
+| Signal | What it is |
+|--------|------------|
+| `asset_advisory_affected` | An advisory names this product, and the version this device reports is inside the range it is about. Written once per device per version, not per frame |
+| `asset_advisory_not_assessed` | A device whose exposure could not be established, with the string or the sentence that could not be read. Off by default: on a first run it is most of the estate |
+| `xproxy_advisory_affected` | A gauge, so it goes down as an estate is patched |
+| `xproxy_advisory_not_assessed` | A gauge of how much of this estate the matching cannot answer for -- a fact about the estate rather than a fault in the matching |
+| `xproxy_advisory_failures_total` | A source that has stopped being readable, so the assessment is getting older than it looks |
+
+Where the firmware comes from is worth knowing, because it decides how
+much of an estate can be assessed at all. On Modbus it is the answer to a
+master's Read Device Identification request (function code 43, MEI type
+14), which carries a vendor name, a product code and a firmware revision --
+the one place in that protocol where a device names itself. The relay reads
+the answer as it passes and never asks the question: a frame this proxy
+invented would be a frame on a process network nobody scheduled. So a plant
+whose masters never ask gets `not_assessed`, honestly, rather than a
+guess.
+
 ## Web GUI
 
 `xproxy-admin` serves the browser interface. It is a separate process from

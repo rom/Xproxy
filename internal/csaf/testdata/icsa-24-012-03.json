@@ -1,0 +1,67 @@
+{
+  "document": {
+    "category": "csaf_security_advisory",
+    "csaf_version": "2.0",
+    "title": "Schneider Electric Modicon M340 improper input validation",
+    "publisher": {"category": "coordinator", "name": "CISA", "namespace": "https://www.cisa.gov"},
+    "tracking": {
+      "id": "ICSA-24-012-03",
+      "status": "final",
+      "version": "1",
+      "current_release_date": "2024-01-12T00:00:00Z"
+    },
+    "distribution": {"tlp": {"label": "WHITE"}},
+    "references": [
+      {"category": "self", "url": "https://www.cisa.gov/sites/default/files/csaf/icsa-24-012-03.json"}
+    ]
+  },
+  "product_tree": {
+    "branches": [
+      {
+        "category": "vendor",
+        "name": "Schneider Electric",
+        "branches": [
+          {
+            "category": "product_name",
+            "name": "Modicon M340 firmware",
+            "branches": [
+              {
+                "category": "product_version_range",
+                "name": "All versions < V3.60",
+                "product": {"product_id": "CSAFPID-0010", "name": "Modicon M340 firmware < V3.60"}
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "full_product_names": [
+      {"product_id": "CSAFPID-0011", "name": "Modicon M340 BMXP342020"}
+    ],
+    "relationships": [
+      {
+        "category": "installed_on",
+        "product_reference": "CSAFPID-0010",
+        "relates_to_product_reference": "CSAFPID-0011",
+        "full_product_name": {
+          "product_id": "CSAFPID-0012",
+          "name": "Modicon M340 firmware < V3.60 installed on Modicon M340 BMXP342020"
+        }
+      }
+    ]
+  },
+  "vulnerabilities": [
+    {
+      "cve": "CVE-2024-99992",
+      "title": "Improper Input Validation",
+      "product_status": {"known_affected": ["CSAFPID-0012"], "under_investigation": ["CSAFPID-0011"]},
+      "scores": [
+        {"products": ["CSAFPID-0012"],
+         "cvss_v3": {"version": "3.1", "baseScore": 9.8, "baseSeverity": "CRITICAL"}}
+      ],
+      "remediations": [
+        {"category": "mitigation", "details": "Restrict Modbus to the engineering network", "product_ids": ["CSAFPID-0012"]}
+      ]
+    }
+  ]
+}

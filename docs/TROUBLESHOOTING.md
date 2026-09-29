@@ -5255,6 +5255,57 @@ changing a hot security parser to carry data it deliberately discards
 would be a poor trade for a string the device chose anyway. The object
 identifiers a device asks for and serves are what the inventory gets.
 
+### Matching against advisories
+
+**The proxy will not start: "csaf source ...".** A directory or file under
+`asset_inventory.advisories.sources` could not be read, and that is a
+startup error on purpose: a proxy that came up reporting no advisories
+because a path was misspelled would be claiming the estate has nothing
+against it. The message names the source and the path. A directory with no
+CSAF documents in it is the same error, with the count of files it ignored.
+
+**Every device says `unknown_product`.** No loaded advisory names a product
+that could be tied to a device, which is two different situations. Either
+the documents are for equipment this estate does not run -- check
+`xproxyctl assets advisories -documents`, which lists what is actually
+loaded -- or the devices have not said what they are: a device with no
+`model` cannot be matched at all, and it appears with the reason "this
+device has not said what it is". `xproxyctl assets -long` shows what each
+record holds.
+
+**Every device says `not_assessed`, and the estate is large.** That is the
+honest answer rather than a fault, and the reason on each one says which
+of the three cases it is. A firmware string no comparison can order
+(`Rel. 04.03`, `1.20.4 build 7`) -- nothing decides whether that is below
+`V4.2`, so nothing pretends to. An advisory range with a condition in it
+(`All versions < V2.9.2 with CP1604 fitted`) -- the vendor is saying
+something true that this cannot evaluate. Or no firmware at all, which is
+the ordinary case: it reaches the inventory only where a protocol lets a
+device say so, and on Modbus that means a master has to have asked for the
+device's identification (function code 43, MEI type 14) while the relay was
+watching. Nothing here sends that request itself.
+`xproxyctl assets advisories -state not_assessed -long` is the work list.
+
+**A device is reported affected and the plant says it is patched.** Read
+the `versions` line on each advisory in `-long`: the comparison is against
+the version the *inventory* holds, and the inventory holds what the device
+last said. A controller updated since its last identification response
+still reports the old revision here. The finding moves the next time a
+master asks it what it is.
+
+**The numbers stopped moving.** `xproxy_advisory_failures_total` is the one
+to look at: a source that has stopped being readable keeps the documents it
+last gave -- a directory being rewritten must not empty the assessment --
+so the set goes stale rather than empty, and only that counter and the
+source's own row in `xproxyctl assets advisories` say so.
+
+**There are no events, and the report shows affected devices.**
+`min_severity` filters events and not the report, and a device is reported
+once per version rather than once per observation: a controller that is
+affected stays affected until somebody updates it. `advisory_findings`
+counts what was found regardless of the floor, so a rising counter with a
+quiet log is the floor doing its job.
+
 ## Kubernetes ingress mode
 
 **No routes appear.** In order: the ingress class on the resource must

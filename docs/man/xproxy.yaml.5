@@ -34450,7 +34450,7 @@ T}
 T{
 \fBmodbus\fR
 T}	T{
-Unit identifiers and function codes,\: at most 64 of each per device,\: and whether the peer asked or answered
+Unit identifiers and function codes,\: at most 64 of each per device,\: and whether the peer asked or answered. Also the \fIanswer\fR to a master\(aqs Read Device Identification request (function code 43,\: MEI type 14),\: which is the one place in this protocol where a device names its vendor,\: its product and its firmware revision \-\- the fields \fBadvisories\fR below matches on. Nothing asks the question: a relay that issued a request of its own would be putting a frame on a process network nobody scheduled
 T}
 T{
 \fBiec104\fR
@@ -34527,6 +34527,185 @@ Every classification keeps a confidence from 0 to 100 and the evidence that prod
 .SS "The baseline"
 .PP
 \fBxproxyctl assets baseline\fR takes the current set of devices as what the estate has. Everything seen afterwards that is not in it is reported as new. This is what turns the inventory from a reference document into a detection, so both freezing and forgetting a baseline (\fBxproxyctl assets baseline \-forget\fR) are written to the audit log with the caller\(aqs kernel\-reported credentials, like a ban.
+.SS "Matching against published advisories"
+.PP
+\fBadvisories\fR answers the question an estate that cannot patch actually has. Not "is there an advisory for this controller" \-\- a newsletter says that \-\- but "is the version we are running one of the affected ones", which today means reading a PDF per advisory against a spreadsheet nobody has updated, which is why it does not get done.
+.PP
+The inventory above already knows what is on the network and, for the protocols where a device says so, what firmware each one reports. CSAF 2.0 (OASIS) is the machine\-readable form the vendors now publish their advisories in \-\- Siemens ProductCERT, Schneider Electric and the CISA ICS advisories all do \-\- and a CSAF document says which products and which version ranges each CVE affects. This puts the two together.
+.PP
+.RS 4
+.nf
+.ft CR
+asset_inventory:
+  enabled: true
+  state_file: /var/lib/xproxy/assets.json
+  advisories:
+    enabled: true
+    sources:
+      \- name: siemens\-productcert
+        directory: /var/lib/xproxy/csaf/siemens
+      \- name: cisa\-ics
+        directory: /var/lib/xproxy/csaf/cisa
+    refresh: 1h
+    min_severity: high
+.ft
+.fi
+.RE
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.9i) lbw(1.1i) lbx
+lw(1.2i) lw(0.9i) lw(1.1i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBadvisories.\:enabled\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Match the inventory against the advisories. Needs \fBasset_\:inventory.\:enabled\fR as well,\: since it matches what that collects
+T}
+T{
+\fBadvisories.\:sources\fR
+T}	T{
+list
+T}	T{
+\fI(none)\fR
+T}	T{
+Where the documents come from. Required when enabled
+T}
+T{
+\fBadvisories.\:sources[].\:name\fR
+T}	T{
+string
+T}	T{
+\fI(required)\fR
+T}	T{
+What an operator calls this source: \fBsiemens\-\:productcert\fR,\: \fBcisa\-\:ics\fR. It appears in the status view beside the document count and the time of the last read,\: so a directory nobody has updated for a year is visible as itself rather than as part of a total
+T}
+T{
+\fBadvisories.\:sources[].\:directory\fR
+T}	T{
+path
+T}	T{
+\fI(none)\fR
+T}	T{
+A directory of CSAF documents,\: walked into subdirectories because every publisher\(aqs distribution is a directory per year. Files that are not CSAF \-\- an index,\: a provider\-metadata file,\: a signature,\: a README \-\- are counted as ignored rather than treated as errors
+T}
+T{
+\fBadvisories.\:sources[].\:file\fR
+T}	T{
+path
+T}	T{
+\fI(none)\fR
+T}	T{
+One document. Exactly one of \fBfile\fR and \fBdirectory\fR per source
+T}
+T{
+\fBadvisories.\:refresh\fR
+T}	T{
+duration
+T}	T{
+\fB1h\fR
+T}	T{
+How often the sources are re\-read;\: minimum \fB1m\fR,\: \fB0\fR for never (a reload still re\-reads them). A refresh that fails keeps the advisories already loaded and counts the failure,\: which is the opposite of the rule at load: \fBa source that cannot be read at startup is a startup error\fR,\: because a proxy reporting no advisories because a path was misspelled would be claiming an estate has nothing against it
+T}
+T{
+\fBadvisories.\:alert_\:on_\:affected\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Write \fBasset_\:advisory_\:affected\fR for a device an advisory names. Once per device per version,\: not per observation: a controller that is affected stays affected until somebody updates it,\: and an event per Modbus frame would bury the estate
+T}
+T{
+\fBadvisories.\:alert_\:on_\:not_\:assessed\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Write \fBasset_\:advisory_\:not_\:assessed\fR for a device whose exposure could not be established. Off by default because on a first run it is most of the estate \-\- it is a list to work through,\: and the list is always in \fBxproxyctl assets advisories \-\:state not_\:assessed\fR
+T}
+T{
+\fBadvisories.\:min_\:severity\fR
+T}	T{
+string
+T}	T{
+any
+T}	T{
+The floor for an event: \fBcritical\fR,\: \fBhigh\fR,\: \fBmedium\fR or \fBlow\fR. A finding the vendor scored with nothing is reported whatever the floor says,\: because a record nobody scored is not a record to hide behind a threshold
+T}
+.TE
+.PP
+\fBNothing here fetches.\fR The documents are read from disk, and that is deliberate twice over. A relay on a process network dialling a vendor\(aqs website every hour is a second network dependency in the one place that is supposed to have none, and an OT change board would refuse it. And advisory distribution already has downloaders \-\- the CSAF standard defines one, and every publisher in scope offers a ROLIE feed or a directory listing \-\- so the machine that is allowed out runs that on a schedule and writes the documents where this can read them. That machine is also where the detached signatures belong: verifying a publisher\(aqs signature is not something a proxy should be inventing.
+.SS "The six answers, and why five of them are not \(dqaffected\(dq"
+.PP
+.TS
+allbox;
+lbw(1.4i) lbx
+lw(1.4i) lx.
+T{
+State
+T}	T{
+What it means
+T}
+T{
+\fBaffected\fR
+T}	T{
+An advisory names this product,\: and the version this device reports is inside the range the advisory is about
+T}
+T{
+\fBunder_\:investigation\fR
+T}	T{
+The vendor has not decided yet,\: and says so in the document
+T}
+T{
+\fBnot_\:assessed\fR
+T}	T{
+\fBWork to do.\fR The version could not be compared \-\- the device\(aqs firmware string is not a version anything can order (\fBRel.\: 04.\:03\fR,\: \fB1.\:20.\:4 build 7\fR),\: or the advisory\(aqs own range carries a condition this will not evaluate (\fBAll versions < V2.\:9.\:2 with CP1604 fitted\fR),\: or the device reports no version at all. Each carries the text it could not read,\: so the finding says what to check by hand
+T}
+T{
+\fBfixed\fR
+T}	T{
+The version this device runs is the one the document lists as carrying the fix
+T}
+T{
+\fBnot_\:affected\fR
+T}	T{
+Either the vendor says this version is not affected,\: or the version is outside every affected range \-\- established by a comparison that succeeded,\: never by one that failed
+T}
+T{
+\fBunknown_\:product\fR
+T}	T{
+No loaded advisory names a product this could tie to this device. \fBThis is not "no advisory affects this device"\fR: it depends entirely on which documents were loaded
+T}
+.TE
+.PP
+The asymmetry is the whole design. \fBAn unmatched version is never reported as "not affected".\fR A wrong "not affected" is a device somebody stops looking at, and the estate that most needs this is the one whose devices report the least parseable version strings \-\- so a comparison this cannot defend line by line produces \fBnot_assessed\fR with the string in the reason. "These eleven devices have to be checked by hand" is a useful sentence; "these eleven devices are fine" would be a lie with a number in it.
+.PP
+What it will compare: an optional \fBV\fR, dot\-separated numbers, and one recognised update or service\-pack ordinal after them (\fBV4.2\fR, \fBV4.2.1\fR, \fBV2.9.2 Update 4\fR, \fBV1.2 SP3\fR, \fBV4.2 P01\fR). A missing component is zero, so \fBV4.2\fR and \fBV4.2.0\fR are the same version. Two different ordinal kinds on the same numbers (\fBV1.2 SP3\fR against \fBV1.2 HF1\fR) are not comparable, because nothing says which is later. Neither is a single number against a dotted one: \fB20240115\fR is arithmetically larger than \fB4.2\fR and says nothing about whether the device is below \fBV4.2\fR, so that comparison is refused rather than made.
+.PP
+Version \fIranges\fR are read as \fBvers\fR expressions (the syntax CSAF asks for: \fBvers:all/<V4.2\fR, \fBvers:all/>=V2.0|<V2.9.2\fR, \fBvers:all/*\fR) and as the English the vendors write instead (\fBAll versions\fR, \fBAll versions < V4.2\fR, \fBprior to V4.2\fR, \fBV4.2 and earlier\fR, \fBV4.0 \- V4.2\fR, \fBup to and including V1.5\fR). A range this cannot read makes every device that matched the product \fBnot_assessed\fR, naming the sentence \-\- rather than dropping the condition and reporting the devices as affected.
+.PP
+Products are tied to devices by \fBname\fR, and conservatively: the advisory\(aqs product name and the device\(aqs model have to share a contiguous run of at least two words, or match exactly. So "SIMATIC S7\-1200 CPU family" reaches a device calling itself "SIMATIC S7\-1200 CPU 1212C DC/DC/DC", and does not reach an S7\-1500. A relationship in the document ("this firmware, installed on that controller") is matched on either name, since the version lives on the one and the recognisable name on the other. The vendor is reported but \fBnot required to agree\fR: an inventory\(aqs vendor comes from an IEEE hardware prefix or a protocol field and an advisory\(aqs from a legal entity, so "Siemens" against "Siemens AG" is ordinary, and a matcher that demanded agreement would drop real findings to tidy up its output.
+.PP
+An advisory that names a product and no version at all \-\- which is how an advisory with no fix yet is published \-\- is about every version of it. That case needs no comparison, so it reaches the device whose firmware string nobody can read, which is exactly the device a version\-comparing matcher would quietly drop.
+.SS "Reading the advisories"
+.PP
+\fBGET /v1/assets/advisories\fR answers the counts, the sources and one assessment per device, with \fBstate\fR to narrow to one of the six and \fBdocuments=1\fR to list what is loaded. \fBxproxyctl assets advisories\fR is the same as a table, \fB\-long\fR one block per device with every advisory that names it and the remediation each one gives, and \fB\-documents\fR the list of advisories the proxy is actually working from \-\- the first question to ask of a directory somebody else fills.
+.PP
+The counters are \fBadvisory_affected\fR and \fBadvisory_not_assessed\fR (gauges: the first goes down as an estate is patched, the second says how much of it the matching cannot answer for), \fBadvisory_findings\fR and \fBadvisory_failures\fR.
 .SS "Reading it"
 .PP
 \fBGET /v1/assets\fR answers the summary, the known roles and the devices, with \fBrole\fR, \fBlistener\fR, \fBproto\fR, \fBvendor\fR, \fBnew=1\fR, \fBchanged=1\fR and \fBtop\fR as filters, or \fBid\fR to look one device up by identifier, address or hardware address \-\- whichever a log line happened to carry. \fBxproxyctl assets\fR is the same thing as a table, \fBxproxyctl assets \-long\fR one block per device with the evidence, and \fBxproxyctl assets show KEY\fR one device.

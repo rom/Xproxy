@@ -1,0 +1,83 @@
+{
+  "document": {
+    "category": "csaf_security_advisory",
+    "csaf_version": "2.0",
+    "title": "Denial of Service in the web server of SIMATIC S7-1200 CPUs",
+    "publisher": {"category": "vendor", "name": "Siemens ProductCERT", "namespace": "https://siemens.com"},
+    "tracking": {
+      "id": "SSA-482757",
+      "status": "final",
+      "version": "1.2",
+      "current_release_date": "2024-02-13T00:00:00Z",
+      "initial_release_date": "2024-01-09T00:00:00Z"
+    },
+    "distribution": {"tlp": {"label": "WHITE"}},
+    "aggregate_severity": {"text": "critical"},
+    "references": [
+      {"category": "self", "summary": "SSA-482757 as CSAF", "url": "https://cert-portal.siemens.com/productcert/csaf/ssa-482757.json"}
+    ]
+  },
+  "product_tree": {
+    "branches": [
+      {
+        "category": "vendor",
+        "name": "Siemens AG",
+        "branches": [
+          {
+            "category": "product_name",
+            "name": "SIMATIC S7-1200 CPU family",
+            "branches": [
+              {
+                "category": "product_version_range",
+                "name": "vers:all/<V4.5",
+                "product": {"product_id": "CSAFPID-0001", "name": "SIMATIC S7-1200 CPU family < V4.5"}
+              },
+              {
+                "category": "product_version",
+                "name": "V4.5",
+                "product": {"product_id": "CSAFPID-0002", "name": "SIMATIC S7-1200 CPU family V4.5"}
+              }
+            ]
+          },
+          {
+            "category": "product_name",
+            "name": "SIMATIC S7-1500 CPU family",
+            "branches": [
+              {
+                "category": "product_version_range",
+                "name": "vers:all/<V2.9.2",
+                "product": {"product_id": "CSAFPID-0003", "name": "SIMATIC S7-1500 CPU family < V2.9.2"}
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "vulnerabilities": [
+    {
+      "cve": "CVE-2023-99991",
+      "title": "Uncontrolled Resource Consumption",
+      "cwe": {"id": "CWE-400", "name": "Uncontrolled Resource Consumption"},
+      "product_status": {
+        "known_affected": ["CSAFPID-0001", "CSAFPID-0003"],
+        "fixed": ["CSAFPID-0002"]
+      },
+      "scores": [
+        {
+          "products": ["CSAFPID-0001", "CSAFPID-0003"],
+          "cvss_v3": {"version": "3.1", "baseScore": 7.5, "baseSeverity": "HIGH",
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"}
+        }
+      ],
+      "remediations": [
+        {
+          "category": "vendor_fix",
+          "details": "Update to V4.5 or later",
+          "product_ids": ["CSAFPID-0001"],
+          "url": "https://support.industry.siemens.com/cs/ww/en/view/109999999"
+        }
+      ]
+    }
+  ]
+}

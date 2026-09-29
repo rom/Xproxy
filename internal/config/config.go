@@ -3126,6 +3126,95 @@ type AssetInventory struct {
 	// "there are no engineering workstations on the process network" is
 	// written down.
 	Roles []string `yaml:"roles"`
+	// Advisories matches the firmware versions in the inventory against CSAF
+	// 2.0 security advisories, which is the question an estate that cannot
+	// patch actually has: not "is there an advisory for this controller" but
+	// "is the version we are running one of the affected ones".
+	Advisories *Advisories `yaml:"advisories"`
+}
+
+// Advisories matches the inventory against published CSAF 2.0 advisories.
+//
+// The documents come from a directory on disk and nothing here fetches them.
+// That is deliberate twice over: a relay on a process network dialling a
+// vendor's website every hour is a network dependency in the one place that is
+// supposed to have none, and advisory distribution already has downloaders --
+// the CSAF standard defines one, and every publisher in scope (Siemens
+// ProductCERT, Schneider Electric, the CISA ICS advisories) offers a feed or a
+// directory listing. The machine that is allowed out runs that, and is also
+// where the detached signatures are verified.
+type Advisories struct {
+	// Enabled turns the matching on. Default false: reading advisories is
+	// cheap and *reporting* against them is a claim about somebody's estate,
+	// so it is asked for rather than assumed.
+	Enabled bool `yaml:"enabled"`
+	// Sources are the directories and files the documents come from, each
+	// named so that a stale one is attributable in the status view.
+	Sources []AdvisorySource `yaml:"sources"`
+	// Refresh is how often the sources are re-read. Default 1h, minimum 1m,
+	// 0 for never -- a reload of the configuration still re-reads them. A
+	// source that fails a refresh keeps the advisories already loaded and is
+	// counted, which is the opposite of the rule at load: there, a source that
+	// cannot be read is a startup error, because a proxy reporting no
+	// advisories because a path was misspelled would be claiming an estate has
+	// nothing against it.
+	Refresh *Duration `yaml:"refresh"`
+	// AlertOnAffected writes a security event for a device an advisory names,
+	// once per device per version rather than once per observation: a
+	// controller that is affected is affected until somebody updates it, and
+	// an event per Modbus frame would bury the estate. Default true.
+	AlertOnAffected *bool `yaml:"alert_on_affected"`
+	// AlertOnNotAssessed writes an event for a device whose exposure could not
+	// be established -- its firmware string is not a version anything can
+	// compare, or the advisory's own range carries a condition this cannot
+	// evaluate. Default false, because on a first run it is most of the estate
+	// and it is a list to work through rather than an alert to answer. The
+	// list is always in `xproxyctl assets advisories`.
+	AlertOnNotAssessed *bool `yaml:"alert_on_not_assessed"`
+	// MinSeverity is the floor for an event: critical, high, medium or low.
+	// Empty means every severity. A finding the vendor scored with nothing is
+	// reported whatever the floor says, because a record nobody scored is not
+	// a record to hide behind a threshold.
+	MinSeverity string `yaml:"min_severity"`
+}
+
+// AdvisorySource is one place advisories are read from.
+type AdvisorySource struct {
+	// Name is what an operator calls it: siemens-productcert, cisa-ics. It
+	// appears in the status view beside the document count and the time of the
+	// last read, so that a directory nobody has updated for a year is visible
+	// as itself rather than as a total.
+	Name string `yaml:"name"`
+	// File is one document and Directory a directory of them, walked into
+	// subdirectories because every publisher's distribution is a directory per
+	// year. Exactly one of the two.
+	File      string `yaml:"file"`
+	Directory string `yaml:"directory"`
+}
+
+// RefreshInterval is how often the advisory sources are re-read, with the
+// default filled in.
+func (a *Advisories) RefreshInterval() Duration {
+	switch {
+	case a == nil:
+		return 0
+	case a.Refresh == nil:
+		return Duration(time.Hour)
+	default:
+		return *a.Refresh
+	}
+}
+
+// AlertsOnAffected reports whether a device an advisory names becomes a
+// security event.
+func (a *Advisories) AlertsOnAffected() bool {
+	return a == nil || a.AlertOnAffected == nil || *a.AlertOnAffected
+}
+
+// AlertsOnNotAssessed reports whether a device whose exposure could not be
+// established becomes a security event.
+func (a *Advisories) AlertsOnNotAssessed() bool {
+	return a != nil && a.AlertOnNotAssessed != nil && *a.AlertOnNotAssessed
 }
 
 // DHCPListener is a kind: dhcp listener: a DHCP relay agent that reads what it

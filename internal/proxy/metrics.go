@@ -204,6 +204,19 @@ func (s *Server) Collect(e metrics.Collector) {
 		e.Counter("xproxy_assets_dropped_total", "Devices the bound evicted, least recently seen first.", nil, float64(a.Dropped))
 		e.Counter("xproxy_assets_expired_total", "Devices forgotten after ttl.", nil, float64(a.Expired))
 		e.Counter("xproxy_asset_save_failures_total", "Times the inventory could not be written to its state file.", nil, float64(sn.AssetSaveFailures))
+		// The advisory matching. The two gauges say different things and both
+		// are worth a panel: the first goes down as an estate is patched, and
+		// the second says how much of the estate the matching cannot answer
+		// for, which is a fact about the equipment rather than a fault in the
+		// matching.
+		if adv := s.Advisories(); adv != nil {
+			c := adv.Counts()
+			e.Gauge("xproxy_advisory_documents", "Security advisories loaded.", nil, float64(c.Documents))
+			e.Gauge("xproxy_advisory_affected", "Devices an advisory names at the version they report.", nil, float64(sn.AdvisoryAffected))
+			e.Gauge("xproxy_advisory_not_assessed", "Devices whose exposure could not be established.", nil, float64(sn.AdvisoryNotAssessed))
+			e.Counter("xproxy_advisory_findings_total", "Devices found affected, counted as they were found.", nil, float64(sn.AdvisoryFindings))
+			e.Counter("xproxy_advisory_failures_total", "Times an advisory source could not be re-read.", nil, float64(sn.AdvisoryFailures))
+		}
 	}
 	if node := s.cluster.Load(); node != nil {
 		st := node.Status()
