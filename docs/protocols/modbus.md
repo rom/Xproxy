@@ -37,6 +37,24 @@ So a register number on its own does not name a thing: register 40001 in one
 vendor's documentation is holding register 0 in another's, and a policy has to
 be written against the function code and the address together.
 
+**And three function codes carry a second code that says what they actually
+do.** `0x08` is "diagnostic": a sub-function word, then one data word.
+Sub-function 11 returns a bus message count; sub-function 4 is Force Listen
+Only Mode, which is four bytes that take the device off the bus until
+something restarts it, and 10 to 21 clear the counters and the event log.
+`0x2B` (43) is either a device identification request (MEI type 14) or a
+CANopen tunnel (MEI type 13), which are not the same kind of thing at all.
+And `0x5A` (90) is not in the specification: it is Schneider's **UMAS**, the
+protocol every Unity and EcoStruxure engineering station speaks to a Modicon
+PLC, carrying a session byte, a command of its own, and then the command's
+data.
+
+UMAS is where a PLC gets stopped and where a control program gets
+downloaded. What is known about its commands is published research rather
+than a standard, which this listener is explicit about: the commands it
+recognises it names, and one it does not it reports as unknown rather than
+as harmless.
+
 ## What the protocol gives you
 
 Nothing, in the base protocol. There is **no authentication, no integrity and
@@ -64,6 +82,16 @@ against the device's documentation is a policy nobody maintains:
   the only thing that says *which device*.
 - **The function code**, and therefore the table and the direction. `read_only`
   is one line that refuses every writing function code for every client.
+- **The sub-function**, because the function code is not always the whole
+  question. "The diagnostic counters, yes; Force Listen Only Mode, never" is
+  two rules; so is "this engineering station may read variables over UMAS and
+  may not stop the PLC or download a block". A rule names them by name
+  (`diagnostics`, `umas_commands`) or by what they *do* (`effects`:
+  `control`, `program`, `clear`, `unknown`), and the effect form is the one
+  that outlives the code that carried it. By default a sub-function in those
+  four groups is refused to an allow rule that never mentioned the
+  sub-function at all, because a rule allowing `diagnostic` was written by
+  somebody thinking of counter polls.
 - **The register range**, as ranges per function code, so "the historian may
   read the process values and nothing else" is a line rather than a hope.
 - **The value**, which is the part a protocol-level filter usually cannot do.
@@ -209,6 +237,20 @@ family this belongs to and
   guess is a bound that trips during a legitimate ramp.
 - **It is not a substitute for segmentation.** A master that can reach TCP 502
   on the device directly is not covered by anything here.
+- **It does not claim to know UMAS.** Function code 90 is parsed as far as the
+  session byte and the command, which is what a policy decides on, and no
+  further: nothing here reads a UMAS payload, so there is no value bound on a
+  variable written over UMAS and no bound invented for a payload whose shape
+  is not published. The command table is public research, so a command absent
+  from it is `unknown` -- refused by default rather than assumed harmless --
+  and a read-only listener refuses every UMAS frame whatever the command,
+  because a reading derived from reverse engineering is not one a relay can
+  vouch for. The other vendor protocols on a Modicon estate are not parsed at
+  all.
+- **It does not police a CANopen tunnel.** MEI type 13 of function code 43
+  carries a second protocol, and this relay reads none of it. The tunnel is
+  classified `unknown`, which means a rule has to name it before it passes --
+  policy about the tunnel's existence, not about its contents.
 - **A decoy does not know your plant.** The fabricated values are plausible, not
   meaningful: they are inside their bands and they move, and nothing here knows
   that register 40010 is a tank level in centimetres. Somebody who knows the
@@ -224,6 +266,7 @@ family this belongs to and
 | Modbus Messaging on TCP/IP Implementation Guide V1.0b | The MBAP header and the TCP behaviour |
 | Modbus over Serial Line Specification V1.02 | The RTU and ASCII framings |
 | Modbus/TCP Security Protocol Specification (2018) | TLS with mutual authentication and the role extension |
+| Published research on Schneider UMAS (function code 90) | The command table behind `umas_commands`. Not a standard, and treated as what it is: a command absent from it is unknown rather than harmless |
 | IEC 62443 | The zone and conduit model a plant's security architecture is written against |
 
 ## See also

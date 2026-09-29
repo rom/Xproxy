@@ -230,7 +230,7 @@ protocol so that a policy can be written in that protocol's own terms:
 | `opcua` | `xrelay` | OPC UA (IEC 62541) over `opc.tcp`, chunked UA TCP, the secure channel, sessions and identity tokens, with a learning mode that proposes the node rules | The security policies -- with the two IEC 62541 withdrew refused unless named twice -- the message security mode, the endpoint, the client application's URI checked against its own certificate, the identity token kind, the user, and a password that crossed unprotected; then, where the mode left a body readable, the service, the node identifiers, the **attribute** (a write to `value` moves an actuator; a write to `access_level` changes who may), the method on its object, the operations in one request, and the publishing interval a subscription asked for |
 | `ftp` | `xrelay` | FTP and FTPS | Commands, paths, extensions, and the data connection itself |
 | `syslog` | `xrelay` | RFC 5424 and RFC 3164 over UDP, TCP, TLS | Facility, severity, sender, the text; re-emitted in one dialect |
-| `modbus` | `xrelay` | Modbus/TCP, RTU and ASCII, Modbus/TCP Security | Unit identifiers, function codes, register ranges, values, roles, schedules, behavioural detection |
+| `modbus` | `xrelay` | Modbus/TCP, RTU and ASCII, Modbus/TCP Security | Unit identifiers, function codes, diagnostic sub-functions, Schneider UMAS commands, register ranges, values, roles, schedules, behavioural detection |
 | `iec104` | `xrelay` | IEC 60870-5-104, IEC 62351-3 TLS, IEC 60870-5-7 secure authentication recognised | Type identifications, causes of transmission, common and originator addresses, information object ranges, select-before-operate, setpoint value and step bounds, schedules; the information element too -- the quality descriptor a station attached to a reading, the value it reported, and the timestamp on a time-tagged command, which is this protocol's own replay check |
 | `snmp` | `xrelay` | SNMP v1, v2c and v3 (USM and TSM), UDP and TCP, RFC 6353 TLS and DTLS | Versions, community strings and USM users, security levels, operations, object subtrees, the amplification bounds; with the user's pass phrases, v3 digests verified and payloads decrypted so the rules apply to v3 too; USM **terminated and re-originated**, so a v1 poller reaches a v3-only agent; and, under RFC 6353, the **certificate** as the identity — mapped to a security name a rule names, with the transport itself a rule field |
 | `ldap` | `xrelay` | LDAP v3, LDAPS, StartTLS | Bind methods, the bound identity, operations, naming contexts and subtrees, scopes, attributes in both directions, filter and entry bounds |
@@ -428,7 +428,14 @@ protocol so that a policy can be written in that protocol's own terms:
   roles, units, function codes, access classes, address ranges and
   quantities, **value bounds** a setpoint must stay inside (and coil
   bounds that say which way a coil may be driven), and **schedules** for
-  the maintenance window. Refusals are the protocol's own exceptions, so
+  the maintenance window. Policy goes **below the function code** where
+  the function code is not the whole question: function 8 covers both a
+  counter poll and Force Listen Only Mode, four bytes that take a device
+  off the bus, and function 90 is Schneider's UMAS, carrying a variable
+  read, a PLC stop and a program download under one code. Both are named
+  per sub-function, or by what the sub-function *does* — and by default a
+  rule that never mentioned the sub-function does not permit the ones that
+  stop a device or change what it runs. Refusals are the protocol's own exceptions, so
   the master carries on and its diagnostics say something true.
   **Modbus/TCP Security** for the devices that have it: TLS with mutual
   authentication and the role in the client certificate. And **learning

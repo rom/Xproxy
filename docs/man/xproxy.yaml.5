@@ -4027,6 +4027,15 @@ T}	T{
 Refuse every function code that changes anything,\: for every client,\: before any rule is read. A rule cannot override it
 T}
 T{
+\fBrefuse_\:unsafe_\:sub_\:functions\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse a frame whose sub\-function stops a device,\: changes what it runs,\: clears the record of either,\: or is one this relay cannot read \[u2014] unless the allow rule that permitted it named the sub\-function. Below. Off warns
+T}
+T{
 \fBrules\fR
 T}	T{
 list
@@ -4291,8 +4300,8 @@ T}
 .PP
 .TS
 allbox;
-lbw(1.0i) lbw(0.7i) lbw(1.1i) lbx
-lw(1.0i) lw(0.7i) lw(1.1i) lx.
+lbw(1.2i) lbw(0.7i) lbw(1.1i) lbx
+lw(1.2i) lw(0.7i) lw(1.1i) lx.
 T{
 Key
 T}	T{
@@ -4366,6 +4375,33 @@ T}	T{
 What the code does: \fBread\fR,\: \fBwrite\fR,\: \fBdiagnostic\fR,\: \fBidentify\fR or \fBvendor\fR. The durable way to write "no writing" without listing every code that writes
 T}
 T{
+\fBdiagnostics\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+The sub\-functions of function code 8,\: by name (\fBforce_\:listen_\:only\fR),\: number or range (\fB11\-\:18\fR). A rule naming them matches only a diagnostic request. Below
+T}
+T{
+\fBumas_\:commands\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+The Schneider UMAS commands of function code 90,\: by name (\fBstop_\:plc\fR),\: number or range. A rule naming them matches only a UMAS request. Below
+T}
+T{
+\fBeffects\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+What the sub\-function \fIdoes\fR,\: whichever code carried it: \fBread\fR,\: \fBwrite\fR,\: \fBcontrol\fR,\: \fBprogram\fR,\: \fBclear\fR,\: \fBsession\fR,\: \fBunknown\fR. A rule naming it matches only a frame that has a sub\-function. Below
+T}
+T{
 \fBaddresses\fR
 T}	T{
 list
@@ -4420,6 +4456,103 @@ T}	T{
 Carried into the logs when the rule decides,\: for the change record a plant keeps
 T}
 .TE
+.PP
+\fBThe second code inside a function code.\fR Three function codes are not one thing each, and a policy that could only say yes or no to the code could not say the thing an engineer wants to say.
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBFunction 8, diagnostic.\fR Sub\-function 11 returns a bus message count; a maintenance tool polls it all day. Sub\-function 4 is Force Listen Only Mode: four bytes, and the device answers nobody until something restarts it. Sub\-function 1 restarts the communications option and 10 to 21 clear counters and the event log \[u2014] the record of whatever else happened.
+.PP
+.ti -3n
+\(bu
+\fBFunction 43, encapsulated interface.\fR MEI type 14 asks the device what it is. MEI type 13 is a CANopen tunnel, which carries whatever CANopen carries and is therefore not something this relay can police.
+.PP
+.ti -3n
+\(bu
+\fBFunction 90, Schneider UMAS.\fR The protocol every Unity and EcoStruxure engineering station speaks to a Modicon PLC. It is not in the specification \[u2014] 90 is outside both vendor ranges \[u2014] and it carries \fBread_variables\fR, \fBstop_plc\fR and \fBupload_block\fR under one code. What is known about it is published research rather than a standard, so a command this relay does not recognise is reported as \fBunknown\fR and not as harmless, and \fBa read\-only listener refuses every UMAS frame whatever the command\fR, because a reading derived from reverse engineering is not a reading a relay can vouch for.
+.RE
+.PP
+.PP
+So the sub\-function is parsed, named in the logs and the trace, recorded per sub\-function by the learning run, and selectable three ways: by name (\fBdiagnostics\fR, \fBumas_commands\fR) or by what it does (\fBeffects\fR). The effects are:
+.PP
+.TS
+allbox;
+lbw(0.8i) lbx
+lw(0.8i) lx.
+T{
+Effect
+T}	T{
+What it covers
+T}
+T{
+\fBread\fR
+T}	T{
+Reads a counter,\: a variable,\: an identity or a program,\: and changes nothing
+T}
+T{
+\fBwrite\fR
+T}	T{
+Changes process data: a variable,\: a register,\: a coil
+T}
+T{
+\fBcontrol\fR
+T}	T{
+Changes the device\(aqs own state rather than the process: \fBrestart_\:communications\fR,\: \fBforce_\:listen_\:only\fR,\: \fBstart_\:plc\fR,\: \fBstop_\:plc\fR
+T}
+T{
+\fBprogram\fR
+T}	T{
+Carries a control program,\: \fBin either direction\fR: the UMAS strategy transfers,\: and \fBwrite_\:io_\:object\fR. A block read out of a PLC changes nothing and is the step before a change tailored to what the plant actually runs,\: so it is classified with the block written in
+T}
+T{
+\fBclear\fR
+T}	T{
+Clears counters,\: the diagnostic register or the event log. Touches neither the process nor the program,\: and is how the record of something that did goes away
+T}
+T{
+\fBsession\fR
+T}	T{
+The housekeeping UMAS needs first: \fBinit_\:comm\fR,\: \fBkeep_\:alive\fR,\: and the reservation that pairs a station with a PLC. The reservation is a pairing step and not a safety boundary \[u2014] a PLC hands it to whoever asks first
+T}
+T{
+\fBunknown\fR
+T}	T{
+A sub\-function this relay cannot read,\: and the CANopen tunnel
+T}
+.TE
+.PP
+\fB\fBrefuse_unsafe_sub_functions\fR (default on).\fR \fBcontrol\fR, \fBprogram\fR, \fBclear\fR and \fBunknown\fR are refused to an allow rule that did not mention the sub\-function at all, and to \fBdefault_action: allow\fR. The reason is what a rule means: \fBfunctions: [diagnostic]\fR was written by somebody thinking of counter polls, and the same rule used to permit sub\-function 4. So a rule that names the sub\-function \[u2014] by any of the three keys \[u2014] decides it, and a rule that does not, does not permit those four. The refusal is \fBunsafe_sub_function\fR, answered as an illegal\-function exception.
+.PP
+A plant that has a reason to hand a whole function code back sets \fBrefuse_unsafe_sub_functions: false\fR, which validation warns about. What it usually wants instead is two rules:
+.PP
+.RS 4
+.nf
+.ft CR
+rules:
+  \- name: no\-listen\-only          # the deny goes first, because first match wins
+    action: deny
+    diagnostics: [force_listen_only, restart_communications]
+    comment: "one frame and the device is off the bus"
+  \- name: counters
+    action: allow
+    clients: ["10.20.0.9/32"]
+    functions: [diagnostic]
+    diagnostics: ["11\-18"]        # the counter block, by range
+  \- name: engineering\-reads
+    action: allow
+    clients: ["10.20.0.10/32"]
+    functions: [umas]
+    umas_commands: [init_comm, keep_alive, take_plc_reservation,
+                    release_plc_reservation, read_id, read_variables]
+  \- name: nothing\-destructive     # the durable form: whichever code carries it
+    action: deny
+    effects: [control, program, clear, unknown]
+.ft
+.fi
+.RE
+.PP
+A rule naming a sub\-function of one code never matches another code\(aqs frame, whether or not it also named the code: the sub\-function numbers are not one namespace, and \fBdiagnostics: [4]\fR is Force Listen Only Mode while UMAS command 4 reads the PLC\(aqs identity. Validation warns when a rule names a sub\-function of a function code its own \fBfunctions\fR list excludes, because that rule can never match \[u2014] it looks like a control and is not one.
 .PP
 \fB\fBvalues[]\fR\fR is the deep inspection a plant actually needs: a setpoint register that may hold 0 to 100 and nothing else.
 .PP
@@ -4868,9 +5001,11 @@ T}	T{
 The directions traced
 T}
 .TE
+.PP
+A traced frame carrying a sub\-function also carries \fBsub_function\fR, \fBeffect\fR and, for UMAS, \fBumas_session\fR \[u2014] because \fBfunction: diagnostic\fR is the line an engineer would otherwise have decoded by hand, and it is the line that says whether a device was polled or taken off the bus. The security event and the \fBlog_frames\fR access line carry the same three fields.
 .SS "What the relay decides, and in what order"
 .PP
-1. The client address, against \fBdeny_clients\fR then \fBallow_clients\fR. 2. TLS and the role, when \fBsecurity\fR asks for one. A role can only come from a certificate and a certificate can only come from TLS, so a listener asking for roles without TLS refuses every session and says \fBsecurity_requires_tls\fR rather than leaving a mystery. 3. The frame, whole. A frame that does not parse is refused: a relay that forwarded what it could not read would be forwarding what it could not decide about, and the device behind it will read those bytes somehow. 4. \fBread_only\fR, which no rule can override. 5. \fBunits\fR. 6. The rules, in order. The first \fBallow\fR or \fBdeny\fR decides; an \fBobserve\fR rule records and the search continues. A frame that matches no rule takes \fBdefault_action\fR. 7. The value bounds of the rule that matched. A value outside them is refused \fBby that rule\fR rather than falling through to a later rule that would permit it, because a bound that can be escaped by writing another rule underneath it is not a bound.
+1. The client address, against \fBdeny_clients\fR then \fBallow_clients\fR. 2. TLS and the role, when \fBsecurity\fR asks for one. A role can only come from a certificate and a certificate can only come from TLS, so a listener asking for roles without TLS refuses every session and says \fBsecurity_requires_tls\fR rather than leaving a mystery. 3. The frame, whole. A frame that does not parse is refused: a relay that forwarded what it could not read would be forwarding what it could not decide about, and the device behind it will read those bytes somehow. 4. \fBread_only\fR, which no rule can override. 5. \fBunits\fR. 6. The rules, in order. The first \fBallow\fR or \fBdeny\fR decides; an \fBobserve\fR rule records and the search continues. A frame that matches no rule takes \fBdefault_action\fR. 7. \fBrefuse_unsafe_sub_functions\fR, against the rule that allowed the frame: an allow rule that never named the sub\-function does not permit the ones that stop a device, change what it runs, clear the record of either, or are unreadable. This is checked \fIafter\fR the rules and not before them, because it is about what a particular rule meant \[u2014] which is why naming the sub\-function in the rule lifts it, and why \fBdefault_action: allow\fR, which names nothing, never does. 8. The value bounds of the rule that matched. A value outside them is refused \fBby that rule\fR rather than falling through to a later rule that would permit it, because a bound that can be escaped by writing another rule underneath it is not a bound.
 .SS "Architectural decisions"
 .PP
 \fBRequests are serialised towards each device.\fR A Modbus slave has one scan. A relay that pipelined into it would be turning a policy engine into a load generator, so each session holds one connection per route and one request in flight at a time, with \fBmax_pending\fR bounding the queue behind it. A master whose queue is full is answered with exception 06 (server busy), which is the protocol\(aqs own way of saying what happened. The serial framings default to \fBmax_pending: 1\fR because they have no transaction identifier: a second request in flight could not be told from the first.
@@ -5085,7 +5220,7 @@ T}
 .PP
 Where a decoy is worth having: an address on the plant network with nothing behind it (\fBmode: decoy\fR), so that anything talking Modbus to it is either lost or looking. \fBxproxyctl honeypot\fR lists the visitors, \fBmodbus_deceived\fR and \fBmodbus_tripwire\fR count them, and the \fBmodbus_deceived\fR / \fBmodbus_tripwire\fR security events carry the client, the unit and the function. \fBA decoy nobody reads is an ornament\fR; the tripwire is the signal worth alerting on, because nothing legitimate touches those addresses.
 .PP
-Counters: \fBmodbus_sessions\fR, \fBmodbus_sessions_open\fR, \fBmodbus_requests\fR, \fBmodbus_responses\fR, \fBmodbus_denied\fR, \fBmodbus_would_deny\fR, \fBmodbus_exceptions\fR, \fBmodbus_malformed\fR, \fBmodbus_refused\fR, \fBmodbus_rejected\fR, \fBmodbus_rate_limited\fR, \fBmodbus_queue_full\fR, \fBmodbus_upstream_failed\fR, \fBmodbus_traced\fR, \fBmodbus_learned\fR, \fBmodbus_deceived\fR, \fBmodbus_tripwire\fR. Refusals are \fBmodbus_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBtls_handshake\fR, \fBno_client_certificate\fR, \fBno_role\fR, \fBrole_not_allowed\fR, \fBsecurity_requires_tls\fR, \fBframing\fR, \fBframe_too_large\fR, \fBmalformed\fR, \fBmalformed_response\fR, \fBresponse_unit_mismatch\fR, \fBno_route_for_unit\fR, \fBmax_connections\fR, \fBrate_limit\fR, \fBqueue_full\fR, \fBread_only\fR, \fBread_only_unknown_function\fR, \fBunit_not_allowed\fR, \fBrule_deny\fR, \fBno_rule\fR, \fBvalue_out_of_range\fR, \fBvalue_delta\fR, \fBvalue_transition\fR, \fBvalue_rate\fR, \fBvalue_no_select\fR, \fBvalue_unknown\fR, \fBvalue_masked_write\fR, \fBcoil_set_not_allowed\fR, \fBcoil_clear_not_allowed\fR. A selector that does not match is not a refusal of its own: the frame falls through to the next rule, and to \fBno_rule\fR if none matches.
+Counters: \fBmodbus_sessions\fR, \fBmodbus_sessions_open\fR, \fBmodbus_requests\fR, \fBmodbus_responses\fR, \fBmodbus_denied\fR, \fBmodbus_would_deny\fR, \fBmodbus_exceptions\fR, \fBmodbus_malformed\fR, \fBmodbus_refused\fR, \fBmodbus_rejected\fR, \fBmodbus_rate_limited\fR, \fBmodbus_queue_full\fR, \fBmodbus_upstream_failed\fR, \fBmodbus_traced\fR, \fBmodbus_learned\fR, \fBmodbus_deceived\fR, \fBmodbus_tripwire\fR. Refusals are \fBmodbus_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBtls_handshake\fR, \fBno_client_certificate\fR, \fBno_role\fR, \fBrole_not_allowed\fR, \fBsecurity_requires_tls\fR, \fBframing\fR, \fBframe_too_large\fR, \fBmalformed\fR, \fBmalformed_response\fR, \fBresponse_unit_mismatch\fR, \fBno_route_for_unit\fR, \fBmax_connections\fR, \fBrate_limit\fR, \fBqueue_full\fR, \fBread_only\fR, \fBread_only_unknown_function\fR, \fBunsafe_sub_function\fR, \fBunit_not_allowed\fR, \fBrule_deny\fR, \fBno_rule\fR, \fBvalue_out_of_range\fR, \fBvalue_delta\fR, \fBvalue_transition\fR, \fBvalue_rate\fR, \fBvalue_no_select\fR, \fBvalue_unknown\fR, \fBvalue_masked_write\fR, \fBcoil_set_not_allowed\fR, \fBcoil_clear_not_allowed\fR. A selector that does not match is not a refusal of its own: the frame falls through to the next rule, and to \fBno_rule\fR if none matches.
 .SS "server.listeners[].iec104 (kind: iec104)"
 .PP
 IEC 60870\-5\-104 is the protocol that operates electricity transmission and distribution, and it is the grid\(aqs Modbus: a controlling station (the SCADA master) and a controlled station (a substation gateway or an RTU) exchange application service data units over a plain TCP connection on port 2404, with no authentication, no integrity and no confidentiality anywhere in the standard. Anyone who can reach the gateway can trip a breaker on it. IEC 62351\-3 adds TLS and is almost nowhere deployed, because the controlled stations are substation equipment with twenty\-year service lives.

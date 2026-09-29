@@ -38,6 +38,26 @@ type subjectKey struct {
 	role     string
 	unit     byte
 	function byte
+	// sub is the sub-function, for the function codes that have one, and
+	// hasSub says the code does. It is part of what a subject *is* rather
+	// than something recorded inside the observation, because the two
+	// halves of function code 8 -- a counter poll and Force Listen Only
+	// Mode -- are not one activity to be reported as a range. A report
+	// that merged them would propose a rule allowing `diagnostic`, which
+	// is a rule allowing an outage.
+	sub    uint16
+	hasSub bool
+}
+
+// subjectOf is what a request is, as a subject: who, as what, to which
+// device, doing what -- to the depth the function code has.
+func subjectOf(req request) subjectKey {
+	k := subjectKey{client: req.client.String(), role: req.role,
+		unit: req.unit, function: req.pdu.Function}
+	if req.pdu.HasSubFunction {
+		k.sub, k.hasSub = req.pdu.SubFunction, true
+	}
+	return k
 }
 
 // observation is what was seen of one subject.
@@ -107,7 +127,10 @@ func lessSubject(a, b subjectKey) bool {
 	if a.unit != b.unit {
 		return a.unit < b.unit
 	}
-	return a.function < b.function
+	if a.function != b.function {
+		return a.function < b.function
+	}
+	return a.sub < b.sub
 }
 
 // Dropped, Observed, Writes and Failures are the run's own counters, exposed
@@ -180,8 +203,7 @@ func (l *Learner) Observe(req request, allowed bool, now time.Time) {
 	if l == nil {
 		return
 	}
-	key := subjectKey{client: req.client.String(), role: req.role,
-		unit: req.unit, function: req.pdu.Function}
+	key := subjectOf(req)
 	p := req.pdu
 	// The per-address baseline, outside the subject table because it is keyed on
 	// the point rather than on who wrote it.
@@ -239,8 +261,7 @@ func (l *Learner) ObserveException(req request, now time.Time) {
 	if l == nil {
 		return
 	}
-	key := subjectKey{client: req.client.String(), role: req.role,
-		unit: req.unit, function: req.pdu.Function}
+	key := subjectOf(req)
 	// ObserveExisting rather than Observe: an exception belongs to a request this
 	// run already recorded, and creating a subject from the answer alone would
 	// invent one the run never saw asked for.
@@ -343,6 +364,12 @@ func (l *Learner) report(listener string, subjects []learn.Subject[subjectKey, o
 		fmt.Fprintf(&b, "    function: %s\n", wire.FunctionName(k.function))
 		access, _ := wire.AccessOf(k.function)
 		fmt.Fprintf(&b, "    access: %s\n", access)
+		if k.hasSub {
+			fmt.Fprintf(&b, "    sub_function: %s\n", wire.SubName(k.function, k.sub))
+			if e, ok := wire.SubEffectOf(k.function, k.sub); ok {
+				fmt.Fprintf(&b, "    effect: %s\n", e)
+			}
+		}
 		fmt.Fprintf(&b, "    frames: %d\n", o.frames)
 		if o.denied > 0 {
 			fmt.Fprintf(&b, "    denied_by_policy: %d\n", o.denied)
@@ -376,7 +403,16 @@ func (l *Learner) report(listener string, subjects []learn.Subject[subjectKey, o
 		if o.frames == 0 {
 			continue
 		}
-		fmt.Fprintf(&b, "  - name: learned-%s-u%d-%s\n", sanitise(k.client), k.unit, wire.FunctionName(k.function))
+		// The function and sub-function names are already identifiers, so
+		// only the client address is sanitised: a name run through
+		// sanitise as well would have read_holding_registers in it as
+		// read-holding-registers, which is not what the rule's functions
+		// list says two lines below.
+		name := wire.FunctionName(k.function)
+		if k.hasSub {
+			name += "_" + wire.SubName(k.function, k.sub)
+		}
+		fmt.Fprintf(&b, "  - name: learned-%s-u%d-%s\n", sanitise(k.client), k.unit, name)
 		b.WriteString("    action: allow\n")
 		fmt.Fprintf(&b, "    clients: [%s/32]\n", k.client)
 		if k.role != "" {
@@ -384,6 +420,21 @@ func (l *Learner) report(listener string, subjects []learn.Subject[subjectKey, o
 		}
 		fmt.Fprintf(&b, "    units: [%d]\n", k.unit)
 		fmt.Fprintf(&b, "    functions: [%s]\n", wire.FunctionName(k.function))
+		// The sub-function goes into the rule as well as into the
+		// observation, and not only because it is more exact. A listener
+		// refuses the sub-functions that stop a device to a rule that did
+		// not name them, so a learned rule that named the function code
+		// alone would be a rule that does not permit the traffic it was
+		// generated from -- and the difference would show up on the shift
+		// after enforcement went on rather than here.
+		switch {
+		case k.hasSub && k.function == wire.FCDiagnostic:
+			fmt.Fprintf(&b, "    diagnostics: [%s]\n", wire.SubName(k.function, k.sub))
+		case k.hasSub && k.function == wire.FCUMAS:
+			fmt.Fprintf(&b, "    umas_commands: [%s]\n", wire.SubName(k.function, k.sub))
+		case k.hasSub:
+			fmt.Fprintf(&b, "    effects: [%s]\n", subEffectName(k))
+		}
 		if len(o.addresses) > 0 {
 			fmt.Fprintf(&b, "    addresses: [%s]\n", rangeList(o.addresses))
 		}
@@ -399,6 +450,18 @@ func (l *Learner) report(listener string, subjects []learn.Subject[subjectKey, o
 	}
 	renderBaselines(&b, baseKeys, basePts, baseDropped)
 	return b.String()
+}
+
+// subEffectName is the effect of a subject's sub-function, for the one
+// function code that has sub-functions and no selector of its own: the
+// encapsulated interface, whose MEI type is named by what it does because
+// a rule about "the CANopen tunnel" is a rule about a tunnel.
+func subEffectName(k subjectKey) string {
+	e, ok := wire.SubEffectOf(k.function, k.sub)
+	if !ok {
+		return string(wire.SubUnknown)
+	}
+	return string(e)
 }
 
 // rangeList renders numrange.Set the way the policy reads them.

@@ -508,3 +508,100 @@ func TestModbusDeceptionWarnings(t *testing.T) {
 		t.Errorf("no warning about deny_response: %v", cfg.Advice())
 	}
 }
+
+// The sub-function selectors. Each of these is a policy that would read as
+// something it is not: a rule naming a sub-function of a function code it
+// excludes, or a name from the wrong namespace.
+func TestModbusSubFunctionSelectors(t *testing.T) {
+	for _, tc := range []struct{ name, section, want string }{
+		{"a diagnostic name that is not one", `        upstream: plc
+        rules: [{name: r, action: deny, diagnostics: [force_listen_onlyy]}]
+`, "is not a diagnostic sub-function name"},
+		{"a UMAS command from the diagnostic namespace", `        upstream: plc
+        rules: [{name: r, action: deny, diagnostics: [stop_plc]}]
+`, "is not a diagnostic sub-function name"},
+		{"a diagnostic sub-function past the field", `        upstream: plc
+        rules: [{name: r, action: deny, diagnostics: ["70000"]}]
+`, "is not a diagnostic sub-function name"},
+		{"a UMAS command past a byte", `        upstream: plc
+        rules: [{name: r, action: deny, umas_commands: ["300"]}]
+`, "is not a umas sub-function name"},
+		{"an effect that is not one", `        upstream: plc
+        rules: [{name: r, action: deny, effects: [destructive]}]
+`, "must be read, write, control, program, clear, session or unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseWith([]byte(modbusConfig(tc.section)), false)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %v, want one about %q", err, tc.want)
+			}
+		})
+	}
+	// A rule that names a diagnostic sub-function and a function list
+	// without function code 8 in it can never match, which is a rule that
+	// looks like a control and is not one.
+	cfg, err := ParseWith([]byte(modbusConfig(`        upstream: plc
+        log_frames: true
+        allow_clients: ["10.20.0.0/24"]
+        rules:
+          - {name: r, action: deny, functions: [write_single_register], diagnostics: [force_listen_only]}
+`)), false)
+	if err != nil {
+		t.Fatalf("the document did not load: %v", err)
+	}
+	if !hasAdvice(cfg, "can never match") {
+		t.Fatalf("no advice about a rule that cannot match: %v", cfg.Advice())
+	}
+	// Naming the function code by number counts as naming it, so the same
+	// rule written the other way is quiet.
+	cfg, err = ParseWith([]byte(modbusConfig(`        upstream: plc
+        log_frames: true
+        allow_clients: ["10.20.0.0/24"]
+        rules:
+          - {name: r, action: deny, functions: ["8"], diagnostics: [force_listen_only]}
+          - {name: u, action: deny, functions: [umas], umas_commands: [stop_plc]}
+          - {name: e, action: allow, access: [read]}
+`)), false)
+	if err != nil {
+		t.Fatalf("the document did not load: %v", err)
+	}
+	for _, a := range cfg.Advice() {
+		if strings.Contains(a, "can never match") {
+			t.Errorf("a sound rule warned: %q", a)
+		}
+	}
+}
+
+// Turning the guard off is allowed and it is not quiet: the listener has
+// just handed a whole function code back, and sub-function 4 is in it.
+func TestModbusUnsafeSubFunctionGuardWarnsWhenItIsOff(t *testing.T) {
+	cfg, err := ParseWith([]byte(modbusConfig(`        upstream: plc
+        log_frames: true
+        allow_clients: ["10.20.0.0/24"]
+        refuse_unsafe_sub_functions: false
+        rules: [{name: r, action: allow, functions: [diagnostic]}]
+`)), false)
+	if err != nil {
+		t.Fatalf("the document did not load: %v", err)
+	}
+	if !hasAdvice(cfg, "Force Listen Only Mode") {
+		t.Fatalf("no advice about the guard being off: %v", cfg.Advice())
+	}
+	// And leaving it on -- or saying so -- is quiet, because a validator
+	// warning that fires on a correct configuration is a warning an
+	// operator learns to scroll past.
+	cfg, err = ParseWith([]byte(modbusConfig(`        upstream: plc
+        log_frames: true
+        allow_clients: ["10.20.0.0/24"]
+        refuse_unsafe_sub_functions: true
+        rules: [{name: r, action: allow, functions: [diagnostic], diagnostics: ["11-18"]}]
+`)), false)
+	if err != nil {
+		t.Fatalf("the document did not load: %v", err)
+	}
+	for _, a := range cfg.Advice() {
+		if strings.Contains(a, "sub_function") || strings.Contains(a, "sub-function") {
+			t.Errorf("a sound configuration warned: %q", a)
+		}
+	}
+}

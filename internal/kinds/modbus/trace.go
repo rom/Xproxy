@@ -37,13 +37,22 @@ type TraceEntry struct {
 	Unit        uint8  `json:"unit"`
 	Function    string `json:"function"`
 	Access      string `json:"access,omitempty"`
-	Address     *int   `json:"address,omitempty"`
-	Quantity    *int   `json:"quantity,omitempty"`
-	Exception   string `json:"exception,omitempty"`
-	Decision    string `json:"decision,omitempty"`
-	Rule        string `json:"rule,omitempty"`
-	Data        string `json:"data,omitempty"`
-	Bytes       int    `json:"bytes"`
+	// SubFunction and Effect are the second code a frame carries where it
+	// has one -- a diagnostic sub-function, a UMAS command -- and what it
+	// does. They are in the trace because "function: diagnostic" is the
+	// line an engineer would have had to decode by hand, and it is the
+	// line that says whether a device was polled or taken off the bus.
+	SubFunction string `json:"sub_function,omitempty"`
+	Effect      string `json:"effect,omitempty"`
+	// Session is the UMAS pairing key, when there is one.
+	Session   *int   `json:"umas_session,omitempty"`
+	Address   *int   `json:"address,omitempty"`
+	Quantity  *int   `json:"quantity,omitempty"`
+	Exception string `json:"exception,omitempty"`
+	Decision  string `json:"decision,omitempty"`
+	Rule      string `json:"rule,omitempty"`
+	Data      string `json:"data,omitempty"`
+	Bytes     int    `json:"bytes"`
 }
 
 // Tracer writes the trace file.
@@ -131,6 +140,16 @@ func (t *Tracer) write(e TraceEntry, pdu *wire.PDU, raw []byte, dir string) {
 	if pdu != nil {
 		e.Function = wire.FunctionName(pdu.Function)
 		e.Access = string(pdu.Access)
+		if pdu.HasSubFunction {
+			e.SubFunction = pdu.SubName()
+			if eff, ok := pdu.SubEffect(); ok {
+				e.Effect = string(eff)
+			}
+		}
+		if pdu.HasSession {
+			sess := int(pdu.Session)
+			e.Session = &sess
+		}
 		if pdu.HasRange {
 			addr, qty := int(pdu.Address), int(pdu.Quantity)
 			e.Address, e.Quantity = &addr, &qty

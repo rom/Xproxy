@@ -129,12 +129,42 @@ server:
             clients: ["10.30.1.0/24"]
             access: [read, identify]
 
-          # A diagnostic is how a device is restarted or its counters
-          # cleared. Worth seeing before it is worth allowing.
-          - name: diagnostics
-            action: observe
-            access: [diagnostic]
-            comment: "watching: decide after the next outage"
+          # Function code 8 is not one thing. Sub-function 11 returns a
+          # bus message count, which a maintenance tool polls all day;
+          # sub-function 4 is Force Listen Only Mode, which is four
+          # bytes that take the device off the bus until somebody walks
+          # out to it. So the deny goes first and names them, and the
+          # allow names the counter block by range.
+          - name: no-listen-only
+            action: deny
+            diagnostics: [force_listen_only, restart_communications,
+                          clear_counters, clear_overrun_counter]
+            comment: "one frame and the device stops answering"
+          - name: diagnostic-counters
+            action: allow
+            clients: ["10.30.1.0/24"]
+            functions: [diagnostic]
+            diagnostics: ["11-18"]
+            comment: "the read-only counters, from the maintenance network"
+
+          # Function code 90 is Schneider's UMAS: the protocol the
+          # engineering station speaks to a Modicon PLC. It is one code
+          # carrying a variable read, a PLC stop and a program download,
+          # so the policy is written per command. Reading is allowed from
+          # the engineering network and nothing that changes the PLC is
+          # allowed from anywhere -- a program change goes through the
+          # plant's change process, at the panel, not over the relay.
+          - name: umas-reads
+            action: allow
+            clients: ["10.30.1.0/24"]
+            functions: [umas]
+            umas_commands: [init_comm, keep_alive, take_plc_reservation,
+                            release_plc_reservation, read_id,
+                            read_plc_info, read_variables]
+          - name: nothing-that-stops-a-plc
+            action: deny
+            effects: [control, program, clear, unknown]
+            comment: "stop, start, block transfer, and the CANopen tunnel"
 
         default_action: deny
         # A master reads an exception as the device's own refusal and
@@ -204,12 +234,24 @@ server:
             roles: [engineer]
             access: [read, write, identify]
             addresses: ["0-1999"]
+          # Inside the window a restart is legitimate and listen-only
+          # mode still is not: a device nobody can talk to is the same
+          # outage on a Sunday. So the restart is allowed by name, before
+          # the general maintenance rule -- which names `diagnostic` and
+          # therefore permits none of the sub-functions that stop a
+          # device, including this one.
+          - name: maintenance-restart
+            action: allow
+            roles: [maintenance]
+            diagnostics: [restart_communications]
+            schedule: {days: [sat, sun], from: "22:00", to: "04:00", timezone: Europe/Stockholm}
+            comment: "a restart during the window, by name"
           - name: maintenance-window
             action: allow
             roles: [maintenance]
             access: [read, write, diagnostic, identify]
             schedule: {days: [sat, sun], from: "22:00", to: "04:00", timezone: Europe/Stockholm}
-            comment: "the planned window; outside it maintenance reads only"
+            comment: "the planned window; the counters, not the sub-functions that stop a device"
           - {name: maintenance-reads, action: allow, roles: [maintenance], access: [read, identify]}
 
         default_action: deny

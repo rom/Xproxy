@@ -1843,6 +1843,7 @@ server needs.
 | `deny_clients` | list of CIDR | `[]` | Refused whatever the allow list says |
 | `units` | list | `[]` (any) | Unit identifiers the listener accepts at all, as `3` or `1-16` |
 | `read_only` | bool | `false` | Refuse every function code that changes anything, for every client, before any rule is read. A rule cannot override it |
+| `refuse_unsafe_sub_functions` | bool | `true` | Refuse a frame whose sub-function stops a device, changes what it runs, clears the record of either, or is one this relay cannot read — unless the allow rule that permitted it named the sub-function. Below. Off warns |
 | `rules` | list | `[]` | The policy, in order, first match wins. Below |
 | `default_action` | enum | `deny` | What happens to a frame no rule matched |
 | `deny_response` | enum | `exception` | How a refusal is answered: `exception` (the master reads it as the device's own refusal), `drop` (no answer, which a master reads as a timeout) or `close` |
@@ -1895,12 +1896,94 @@ a list is written.
 | `units` | list | `[]` (any) | Unit identifiers, as numbers or ranges |
 | `functions` | list | `[]` (any) | Function codes by name (`read_holding_registers`) or number |
 | `access` | list | `[]` (any) | What the code does: `read`, `write`, `diagnostic`, `identify` or `vendor`. The durable way to write "no writing" without listing every code that writes |
+| `diagnostics` | list | `[]` (any) | The sub-functions of function code 8, by name (`force_listen_only`), number or range (`11-18`). A rule naming them matches only a diagnostic request. Below |
+| `umas_commands` | list | `[]` (any) | The Schneider UMAS commands of function code 90, by name (`stop_plc`), number or range. A rule naming them matches only a UMAS request. Below |
+| `effects` | list | `[]` (any) | What the sub-function *does*, whichever code carried it: `read`, `write`, `control`, `program`, `clear`, `session`, `unknown`. A rule naming it matches only a frame that has a sub-function. Below |
 | `addresses` | list | `[]` (any) | Register or coil ranges the request may name, as `0-999`. A request whose range is not **entirely** inside one of them does not match: splitting a read is not the relay's decision |
 | `write_addresses` | list | `[]` | The write half of function code 23, and every writing code when set, so one rule can allow a wide read and a narrow write |
 | `max_quantity` | int | `0` (the protocol's own bound) | Registers or coils one request may name; 0..2000 |
 | `values` | list | `[]` | Bound what may be written, below |
 | `schedule` | object | | When the rule is in force, below |
 | `comment` | string | | Carried into the logs when the rule decides, for the change record a plant keeps |
+
+**The second code inside a function code.** Three function codes are not
+one thing each, and a policy that could only say yes or no to the code
+could not say the thing an engineer wants to say.
+
+- **Function 8, diagnostic.** Sub-function 11 returns a bus message count;
+  a maintenance tool polls it all day. Sub-function 4 is Force Listen Only
+  Mode: four bytes, and the device answers nobody until something restarts
+  it. Sub-function 1 restarts the communications option and 10 to 21 clear
+  counters and the event log — the record of whatever else happened.
+- **Function 43, encapsulated interface.** MEI type 14 asks the device what
+  it is. MEI type 13 is a CANopen tunnel, which carries whatever CANopen
+  carries and is therefore not something this relay can police.
+- **Function 90, Schneider UMAS.** The protocol every Unity and EcoStruxure
+  engineering station speaks to a Modicon PLC. It is not in the
+  specification — 90 is outside both vendor ranges — and it carries
+  `read_variables`, `stop_plc` and `upload_block` under one code. What is
+  known about it is published research rather than a standard, so a command
+  this relay does not recognise is reported as `unknown` and not as
+  harmless, and **a read-only listener refuses every UMAS frame whatever
+  the command**, because a reading derived from reverse engineering is not
+  a reading a relay can vouch for.
+
+So the sub-function is parsed, named in the logs and the trace, recorded
+per sub-function by the learning run, and selectable three ways: by name
+(`diagnostics`, `umas_commands`) or by what it does (`effects`). The
+effects are:
+
+| Effect | What it covers |
+|--------|----------------|
+| `read` | Reads a counter, a variable, an identity or a program, and changes nothing |
+| `write` | Changes process data: a variable, a register, a coil |
+| `control` | Changes the device's own state rather than the process: `restart_communications`, `force_listen_only`, `start_plc`, `stop_plc` |
+| `program` | Carries a control program, **in either direction**: the UMAS strategy transfers, and `write_io_object`. A block read out of a PLC changes nothing and is the step before a change tailored to what the plant actually runs, so it is classified with the block written in |
+| `clear` | Clears counters, the diagnostic register or the event log. Touches neither the process nor the program, and is how the record of something that did goes away |
+| `session` | The housekeeping UMAS needs first: `init_comm`, `keep_alive`, and the reservation that pairs a station with a PLC. The reservation is a pairing step and not a safety boundary — a PLC hands it to whoever asks first |
+| `unknown` | A sub-function this relay cannot read, and the CANopen tunnel |
+
+**`refuse_unsafe_sub_functions` (default on).** `control`, `program`,
+`clear` and `unknown` are refused to an allow rule that did not mention the
+sub-function at all, and to `default_action: allow`. The reason is what a
+rule means: `functions: [diagnostic]` was written by somebody thinking of
+counter polls, and the same rule used to permit sub-function 4. So a rule
+that names the sub-function — by any of the three keys — decides it, and a
+rule that does not, does not permit those four. The refusal is
+`unsafe_sub_function`, answered as an illegal-function exception.
+
+A plant that has a reason to hand a whole function code back sets
+`refuse_unsafe_sub_functions: false`, which validation warns about. What it
+usually wants instead is two rules:
+
+```yaml
+rules:
+  - name: no-listen-only          # the deny goes first, because first match wins
+    action: deny
+    diagnostics: [force_listen_only, restart_communications]
+    comment: "one frame and the device is off the bus"
+  - name: counters
+    action: allow
+    clients: ["10.20.0.9/32"]
+    functions: [diagnostic]
+    diagnostics: ["11-18"]        # the counter block, by range
+  - name: engineering-reads
+    action: allow
+    clients: ["10.20.0.10/32"]
+    functions: [umas]
+    umas_commands: [init_comm, keep_alive, take_plc_reservation,
+                    release_plc_reservation, read_id, read_variables]
+  - name: nothing-destructive     # the durable form: whichever code carries it
+    action: deny
+    effects: [control, program, clear, unknown]
+```
+
+A rule naming a sub-function of one code never matches another code's
+frame, whether or not it also named the code: the sub-function numbers are
+not one namespace, and `diagnostics: [4]` is Force Listen Only Mode while
+UMAS command 4 reads the PLC's identity. Validation warns when a rule names
+a sub-function of a function code its own `functions` list excludes, because
+that rule can never match — it looks like a control and is not one.
 
 **`values[]`** is the deep inspection a plant actually needs: a setpoint
 register that may hold 0 to 100 and nothing else.
@@ -2101,6 +2184,12 @@ and why", keeps forever and is shipped off the machine.
 | `include_data` | bool | `false` | Write the frame's data bytes as hex. That is process data, and it warns |
 | `requests`, `responses` | bool | `true` | The directions traced |
 
+A traced frame carrying a sub-function also carries `sub_function`, `effect`
+and, for UMAS, `umas_session` — because `function: diagnostic` is the line an
+engineer would otherwise have decoded by hand, and it is the line that says
+whether a device was polled or taken off the bus. The security event and the
+`log_frames` access line carry the same three fields.
+
 #### What the relay decides, and in what order
 
 1. The client address, against `deny_clients` then `allow_clients`.
@@ -2116,7 +2205,14 @@ and why", keeps forever and is shipped off the machine.
 6. The rules, in order. The first `allow` or `deny` decides; an `observe`
    rule records and the search continues. A frame that matches no rule
    takes `default_action`.
-7. The value bounds of the rule that matched. A value outside them is
+7. `refuse_unsafe_sub_functions`, against the rule that allowed the frame:
+   an allow rule that never named the sub-function does not permit the ones
+   that stop a device, change what it runs, clear the record of either, or
+   are unreadable. This is checked *after* the rules and not before them,
+   because it is about what a particular rule meant — which is why naming
+   the sub-function in the rule lifts it, and why `default_action: allow`,
+   which names nothing, never does.
+8. The value bounds of the rule that matched. A value outside them is
    refused **by that rule** rather than falling through to a later rule
    that would permit it, because a bound that can be escaped by writing
    another rule underneath it is not a bound.
@@ -2250,7 +2346,8 @@ the refusal counters: `client_not_allowed`, `tls_handshake`,
 `security_requires_tls`, `framing`, `frame_too_large`, `malformed`,
 `malformed_response`, `response_unit_mismatch`, `no_route_for_unit`,
 `max_connections`, `rate_limit`, `queue_full`, `read_only`,
-`read_only_unknown_function`, `unit_not_allowed`, `rule_deny`, `no_rule`,
+`read_only_unknown_function`, `unsafe_sub_function`, `unit_not_allowed`,
+`rule_deny`, `no_rule`,
 `value_out_of_range`, `value_delta`, `value_transition`, `value_rate`,
 `value_no_select`, `value_unknown`, `value_masked_write`, `coil_set_not_allowed`,
 `coil_clear_not_allowed`. A selector that does not match is not a refusal
