@@ -12,7 +12,7 @@ level checklist, [USAGE.md](USAGE.md) for operation and
   (`Type=notify-reload`), SELinux enforcing; a kernel with Landlock
   (Fedora's has it) for the in-process file system rules
 - macOS 13 or newer is supported as well: see [SETUP_MACOS.md](SETUP_MACOS.md)
-- Go 1.25 or newer to build from source (no runtime dependency)
+- Go 1.26 or newer to build from source (no runtime dependency)
 - `selinux-policy-devel` to build the SELinux module, `rpm-build`,
   `rpmlint` and `systemd-rpm-macros` to build the packages
 

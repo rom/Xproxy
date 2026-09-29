@@ -29,7 +29,7 @@ License:        Proprietary
 URL:            https://github.com/rom/xproxy
 Source0:        %{name}-%{version}.tar.gz
 
-BuildRequires:  golang >= 1.25
+BuildRequires:  golang >= 1.26
 BuildRequires:  make
 BuildRequires:  systemd-rpm-macros
 Requires:       systemd

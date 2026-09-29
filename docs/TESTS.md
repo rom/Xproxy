@@ -14,7 +14,7 @@ it, what each layer is responsible for and what is added in later phases.
 | `make cover-gate` | `make cover` then the gate: core packages at least 80 % together, none below 60 % (`COVER_MIN`, `COVER_FLOOR`) |
 | `make mutate` | Mutation testing with gremlins on `limits`, `router` and `netutil` (`.gremlins.yaml` sets the thresholds) |
 | `make fuzz FUZZTIME=30s` | Runs every `Fuzz*` target for the given budget |
-| `make lint` | `golangci-lint` with the configuration in `.golangci.yml` |
+| `make lint` | `golangci-lint` with the configuration in `.golangci.yml`. The binary has to be built with a Go at least as new as `go.mod`'s directive, or it refuses to load the configuration: `GOTOOLCHAIN=go1.26.0 go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.5.0` builds one |
 | `make vet`, `make fmt` | `go vet`, formatting check |
 | `make vet-all` | `go vet` for Linux amd64 and arm64 and macOS arm64 and amd64, so the macOS port cannot rot |
 | `make vuln` | `govulncheck` |

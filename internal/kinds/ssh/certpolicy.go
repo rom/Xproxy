@@ -20,9 +20,10 @@ import (
 // where those restrictions do not exist:
 //
 //   - source-address is a critical option naming the networks the
-//     certificate may be used from. x/crypto/ssh's CheckCert skips it,
-//     because it is enforced by the callback that knows the client's
-//     address -- which is here.
+//     certificate may be used from. CheckCert does not evaluate it --
+//     naming it in SupportedCriticalOptions says only that somebody
+//     will -- because the check needs the client's address, which the
+//     callback here has and CheckCert does not.
 //   - force-command is a critical option fixing the command the session
 //     runs, whatever the client asks for. OpenSSH replaces the client's
 //     command with it, and so does this: a certificate issued to run one
@@ -125,9 +126,13 @@ func (t *server) certLifetime(cert *cssh.Certificate) error {
 }
 
 // certSourceAddress enforces the source-address critical option, which
-// x/crypto/ssh deliberately leaves to the caller: it is the one option
-// whose check needs the client's address, and the library's CheckCert
-// does not have it.
+// CheckCert leaves to the caller: it is the one option whose check needs
+// the client's address, and CheckCert does not have it.
+//
+// The library enforces it too, from Permissions.CriticalOptions, which
+// this gateway's callback does not fill in -- so this is the only place
+// it happens, and it is the place whose refusal carries this listener's
+// own reason and counter.
 //
 // A gateway that skipped it would accept from anywhere a certificate the
 // CA restricted to one network, which is the opposite of what issuing it

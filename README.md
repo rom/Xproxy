@@ -1627,7 +1627,7 @@ and referenced by routes, in the order the route lists them:
 
 ### Install
 
-**From source.** Go 1.25 or newer, no cgo, no C toolchain:
+**From source.** Go 1.26 or newer, no cgo, no C toolchain:
 
 ```sh
 make build      # bin/{xproxy,xgate,xrelay,xproxyctl,xproxy-admin,xproxy-fleet,xproxy-replay,xsigner}, static and stripped
@@ -1833,7 +1833,7 @@ make rpm            # Fedora package with the SELinux policy
 make build-darwin   # macOS binaries (arm64 and amd64), see docs/SETUP_MACOS.md
 ```
 
-Go 1.25 or newer. No cgo. Dependencies are few, listed and justified in
+Go 1.26 or newer. No cgo. Dependencies are few, listed and justified in
 [docs/AMR.md](docs/AMR.md) (AMR-004): the YAML parser, the Coraza WAF
 engine with the Core Rule Set, bbolt for ban state, quic-go for HTTP/3,
 wazero for WebAssembly, and `golang.org/x/crypto` for the SSH bastion.

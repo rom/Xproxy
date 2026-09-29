@@ -129,8 +129,13 @@ implemented on the standard library. `CGO_ENABLED=0` is mandatory; any module
 requiring cgo is rejected.
 
 **Consequences.** The data plane binary depends on `yaml.v3`, `coraza`,
-`coraza-coreruleset` and `bbolt`, and will add `quic-go`. Coraza requires
-Go 1.25, which is therefore the minimum toolchain. The management GUI does
+`coraza-coreruleset` and `bbolt`, and will add `quic-go`. The minimum toolchain
+is whatever the strictest dependency asks for: Coraza set it at Go 1.25, and
+`golang.org/x/crypto` v0.56.0 -- the first release carrying the fix for the SSH
+channel-deadlock advisories -- raised it to Go 1.26. A dependency's `go`
+directive is not negotiable, so a security fix in a transport this product
+terminates can move the floor, and the packaging's `BuildRequires` moves with
+it. The management GUI does
 not pull a JavaScript build chain: static assets are hand written and
 embedded.
 

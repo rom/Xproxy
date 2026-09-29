@@ -69,6 +69,51 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   and the sessions count stops climbing — from a scanner sending flights of
   nonsense at the port, which never touches it.
 
+### Security
+
+- **`golang.org/x/crypto` v0.54.0 -> v0.57.0, past the SSH channel-deadlock
+  advisories.** Go's advisories put those issues in versions before v0.56.0, and
+  an earlier govulncheck run had found reachable SSH call paths here. A
+  reachable path is not by itself a demonstration that this proxy is
+  exploitable; the fix is cheap and the SSH gate is the one listener whose whole
+  job is to stand between people and the machines they administer.
+
+  The upgrade moves the minimum Go toolchain to **1.26**, because v0.56.0 is the
+  first release carrying the fix and its own `go` directive says 1.26.0. There is
+  no version of this fix that does not. `BuildRequires: golang >= 1.26` in the
+  RPM spec, and the setup documents say so; CI takes its toolchain from `go.mod`
+  and needs no edit. The Fedora packaging builds with `GOTOOLCHAIN=local`, so a
+  build host whose `golang` package is older than 1.26 now fails at the
+  toolchain check rather than silently building something else.
+
+- **A certificate carrying `source-address` was refused outright by the SSH
+  gate after that upgrade, whatever its value.** x/crypto up to v0.54.0 skipped
+  that one critical option inside `CheckCert`, on the grounds that its own
+  `serverAuthenticate` would enforce it later, and a caller calling `CheckCert`
+  directly inherited the skip. v0.55.0 removed the special case, so this
+  gateway -- which calls `CheckCert` directly and enforces the option itself,
+  because the check needs the client's address -- had to name it.
+
+  Fail-closed, and exactly backwards: it refused the certificates an estate had
+  hardened and never ran the check that reads them. The option list is now a
+  named value, `certOptionsImplemented`, with a test that asserts the gate
+  against it in both directions -- the end-to-end tests could not catch this,
+  because a certificate restricted to another network is refused either way and
+  SSH gives the client no reason.
+
+- **The ALPN reader's test helper had been editing a different extension.**
+  The Go 1.26 toolchain the upgrade brings in adds another post-quantum group
+  identifier to the client hello, which moved the bytes `00 10` -- the ALPN
+  extension type -- into `supported_groups` at an offset whose next two octets
+  read as a length in range. `breakALPN` took the first such match, corrupted
+  somebody else's extension, and handed back a hello whose ALPN was untouched:
+  four assertions then reported a reader that believed a bad length when the
+  reader was right. The helper now checks that the body it found has an ALPN
+  body's shape -- a list length covering exactly the rest, holding
+  length-prefixed names that consume it exactly -- which is what its own comment
+  had promised. The reader itself needed no change, and its fuzz properties held
+  throughout.
+
 ### Changed
 
 - **The DTLS transport moved out of the CoAP kind into `internal/dtlsx`.**
