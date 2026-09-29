@@ -9,7 +9,30 @@ COMMIT    ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 # The build date comes from the commit, not the wall clock, so two builds
 # of the same revision with the same toolchain produce the same bytes and
 # the checksums over a release can be reproduced independently.
-DATE      ?= $(shell date -u -d "@$${SOURCE_DATE_EPOCH:-$$(git log -1 --format=%ct 2>/dev/null || echo 0)}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo 1970-01-01T00:00:00Z)
+#
+# git formats it rather than this passing an epoch through date(1), because
+# `date -d @N` is a GNU extension and BSD date spells the same thing
+# `date -r N`. The obvious one-liner therefore failed on macOS and fell back
+# to the epoch, which stamped 1970-01-01T00:00:00Z on every binary a Mac host
+# built -- including the darwin release binaries, which are the ones a date is
+# most wanted on.
+#
+# SOURCE_DATE_EPOCH still wins where it is set, because that is what rpmbuild
+# and the reproducible-builds convention use, and it is converted with
+# whichever of the two date(1) spellings the host has.
+#
+# What is deliberately not here is a wall-clock fallback, or the epoch. A date
+# nobody could determine reads as "unknown", which is what it is; 1970 reads as
+# a fact, and a binary claiming to have been built before the protocol it
+# proxies existed is worse than one that admits it does not know.
+DATE      ?= $(shell \
+	if [ -n "$$SOURCE_DATE_EPOCH" ]; then \
+	  d=$$(date -u -d "@$$SOURCE_DATE_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+	    || date -u -r "$$SOURCE_DATE_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null); \
+	else \
+	  d=$$(TZ=UTC0 git log -1 --date=format-local:%Y-%m-%dT%H:%M:%SZ --format=%cd 2>/dev/null); \
+	fi; \
+	echo "$${d:-unknown}")
 PKG        = github.com/rom/xproxy/internal/version
 LDFLAGS    = -s -w -buildid= -X $(PKG).Version=$(VERSION) -X $(PKG).Commit=$(COMMIT) -X $(PKG).BuildDate=$(DATE)
 # readonly: a build never rewrites go.mod or go.sum, so a tampered import

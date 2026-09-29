@@ -134,7 +134,13 @@ types and the booleans xproxy_connect_any and xproxy_admin_manage_service.
 %build
 export GOTOOLCHAIN=local
 export GOFLAGS=-mod=vendor
-make build GOMODFLAG=-mod=vendor VERSION=%{version}-%{release} COMMIT=%{gitcommit} DATE=$(date -u -d @${SOURCE_DATE_EPOCH:-$(date +%%s)} +%%Y-%%m-%%dT%%H:%%M:%%SZ)
+# DATE is not passed: the tarball has no git metadata, so the Makefile takes
+# the date from SOURCE_DATE_EPOCH, which rpmbuild sets from the changelog --
+# which is what makes the binaries in a rebuilt package byte-identical. This
+# used to convert the epoch here with `date -d @N`, duplicating the Makefile
+# and falling back to the wall clock, which would have made a package built
+# without SOURCE_DATE_EPOCH unreproducible for the one reason that matters.
+make build GOMODFLAG=-mod=vendor VERSION=%{version}-%{release} COMMIT=%{gitcommit}
 ( cd deploy/selinux && make -f %{_datadir}/selinux/devel/Makefile %{modulename}.pp && bzip2 -9 %{modulename}.pp )
 
 %install
