@@ -1,0 +1,138 @@
+# Behaviour pack: PIPEDREAM / INCONTROLLER, the Schneider half.
+#
+# PIPEDREAM is a toolkit rather than one payload, and its modules are written
+# against particular equipment. The one this pack is about targets Modicon
+# controllers over TCP 502, and it does not do it with Modbus: it does it with
+# **UMAS**, Schneider's own protocol carried inside Modbus function code 90.
+# That is where a Modicon gets stopped, where its password gets brute-forced,
+# and where its control program gets read out and written back.
+#
+# A relay that treated function code 90 as "vendor" could see the frames and
+# say nothing about them. This listener parses the command inside, so the
+# policy below is written in UMAS's own words: stop_plc, upload_block,
+# write_io_object.
+#
+# MITRE ATT&CK for ICS techniques this pack is about:
+#   T0858  Change Operating Mode        -- stop_plc, start_plc
+#   T0843  Program Download             -- the strategy transfers into the PLC
+#   T0845  Program Upload               -- and the ones out of it
+#   T0821  Modify Controller Tasking    -- write_io_object, memory writes
+#   T0846  Remote System Discovery      -- the read sweep that precedes all of it
+#   T0855  Unauthorized Command Message
+# The technique identifiers are MITRE's; the mapping is this pack's reading of
+# published analysis and not MITRE's own.
+#
+# **Two of PIPEDREAM's modules are not covered here and cannot be.** The
+# CODESYS module speaks CODESYS on UDP 1740-1743 and TCP 2455, and the Omron
+# module speaks FINS on UDP 9600. This proxy does not parse either, so there is
+# no policy it can write about them and no detection it can honestly claim: a
+# `kind: udp` listener in front of those ports is a bound on who may reach them
+# and a rate limit, which is worth having and is not a detection. Segmentation
+# is the control there. See examples/ot/packs/README.md.
+#
+# **The addresses here are examples.** 10.30.1.0/24 stands for the engineering
+# network and 10.30.2.0/24 for the SCADA master's. Replace both.
+
+version: 1
+
+server:
+  listeners:
+    - name: modicon-cell
+      address: "10.30.0.10:502"
+      kind: modbus
+      modbus:
+        upstream: modicon
+        allow_clients: ["10.30.1.0/24", "10.30.2.0/24"]
+        units: ["1-4"]
+        log_frames: true
+
+        rules:
+          # First, by name, the UMAS commands that change what the controller
+          # is or what it runs. They are denied from everywhere, including the
+          # engineering network: a program change goes through the plant's
+          # change process at the panel, and a relay that allowed it from a
+          # network is a relay that allows it from whatever is on that network.
+          - name: pipedream-umas-program-change-t0843
+            action: deny
+            umas_commands:
+              [initialize_upload, upload_block, end_upload,
+               initialize_download, download_block, end_download,
+               write_io_object]
+            comment: "T0843/T0845/T0821 the strategy transfers: the control program, in either direction"
+
+          - name: pipedream-umas-stop-plc-t0858
+            action: deny
+            umas_commands: [stop_plc, start_plc]
+            comment: "T0858 one frame, and the cell is stopped"
+
+          # Then the same statement in the durable form, which covers a UMAS
+          # command this relay does not have a name for -- and the command
+          # table is published research rather than a specification, so there
+          # will be commands it does not have a name for.
+          - name: pipedream-umas-unreadable-t0855
+            action: deny
+            effects: [program, control, clear, unknown]
+            comment: "T0855 anything under function code 90 this relay cannot read is not carried"
+
+          # What the engineering station is actually for: reading the PLC's
+          # identity and its variables, during the maintenance window.
+          - name: engineering-umas-reads
+            action: allow
+            clients: ["10.30.1.0/24"]
+            functions: [umas]
+            umas_commands:
+              [init_comm, keep_alive, take_plc_reservation,
+               release_plc_reservation, read_id, read_plc_info,
+               read_project_info, read_variables, read_memory_block,
+               monitor_plc, check_plc]
+            schedule:
+              days: [sat, sun]
+              from: "22:00"
+              to: "04:00"
+              timezone: Europe/Stockholm
+            comment: "T0888 reading a Modicon is engineering work, and it has a window"
+
+          # The ordinary Modbus traffic, bounded. max_quantity is the bound
+          # PIPEDREAM's own reconnaissance runs into: a read of the whole
+          # address space in the largest frames the protocol allows is not a
+          # poll, and a poller that asks for twenty registers does not notice
+          # the bound.
+          - name: master-polls
+            action: allow
+            clients: ["10.30.2.0/24"]
+            access: [read]
+            addresses: ["0-999"]
+            max_quantity: 32
+
+          - name: master-writes-setpoints
+            action: allow
+            clients: ["10.30.2.0/24"]
+            functions: [write_single_register, write_multiple_registers]
+            write_addresses: ["500-519"]
+            values:
+              - registers: "500-519"
+                min: 0
+                max: 100
+                max_delta: 10
+                on_unknown: refuse
+
+          - name: pipedream-unexpected-write-t0855
+            action: deny
+            access: [write]
+            comment: "T0855 any other write, named so the event says which finding this is"
+
+        default_action: deny
+
+        anomaly:
+          enabled: true
+          settle: 30m
+          new_function: true
+          new_write_address: true
+          write_burst: 16
+          burst_period: 10s
+          action: alert
+
+upstreams:
+  - name: modicon
+    endpoints:
+      - {address: "10.30.9.21:502"}

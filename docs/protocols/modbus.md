@@ -274,5 +274,6 @@ family this belongs to and
 - The estate-wide policy above it: [docs/CONFIG.md `authorization`](../CONFIG.md#authorization)
 - The settings: [docs/CONFIG.md `server.listeners[].modbus`](../CONFIG.md#serverlistenersmodbus-kind-modbus)
 - A worked configuration: [`examples/ot/modbus.yaml`](../../examples/ot/modbus.yaml)
+- Behaviour packs for the known tooling: [`examples/ot/packs/frostygoop-modbus.yaml`](../../examples/ot/packs/frostygoop-modbus.yaml) and [`examples/ot/packs/pipedream-modbus.yaml`](../../examples/ot/packs/pipedream-modbus.yaml), with [what a pack is and is not](../../examples/ot/packs/README.md)
 - The other protocols on a plant: [s7](s7.md), [iec104](iec104.md),
   [bacnet](bacnet.md)

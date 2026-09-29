@@ -1,0 +1,121 @@
+# Behaviour pack: a Stuxnet-shaped attack on an S7 controller.
+#
+# Stuxnet is fifteen years old and is still the clearest statement of what a
+# controller attack is, because it did not exploit the protocol. It used
+# S7comm as designed: it read the blocks out of the CPU, wrote its own in,
+# hooked the cyclic block so its code ran every scan, and wrote a data block
+# that held the parameters. The centrifuges were destroyed by a program the
+# PLC was told to run.
+#
+# Every family since that touches a Siemens controller does some subset of the
+# same thing, and the operations have names in this listener's vocabulary:
+# `upload` reads a block out, `download` writes one in, `control` inserts and
+# deletes them, `stop` stops the CPU. So the pack is not a signature. It is the
+# statement that those four operations are engineering work, they happen in a
+# window, and they do not happen from an HMI.
+#
+# MITRE ATT&CK for ICS techniques this pack is about:
+#   T0843  Program Download           -- writing a block into the CPU
+#   T0845  Program Upload             -- reading the program out first
+#   T0821  Modify Controller Tasking  -- hooking the cyclic block
+#   T0858  Change Operating Mode      -- stop and restart around the transfer
+#   T0836  Modify Parameter           -- the data block that holds the setpoints
+#   T0839  Module Firmware            -- what the same path reaches next
+# The technique identifiers are MITRE's; the mapping is this pack's reading of
+# published analysis and not MITRE's own.
+#
+# **The addresses here are examples.** 10.20.1.0/24 stands for the HMI and
+# SCADA network, 10.20.3.0/24 for the engineering station's. Replace both, and
+# the data block numbers, with the plant's own.
+
+version: 1
+
+server:
+  listeners:
+    - name: line-controller
+      address: "10.20.0.10:102"
+      kind: s7
+      s7:
+        upstream: cpu
+        allow_clients: ["10.20.1.0/24", "10.20.3.0/24"]
+        # A line per request: on this protocol a transfer is a handful of
+        # frames, so the record costs little and is what a change review reads.
+        log_requests: true
+
+        # The deny list is what no rule can widen, and this is the pack: the
+        # operations by which a controller's program is read out (T0845),
+        # written back (T0843), restarted or stopped (T0858), plus the debugger
+        # and the password functions. An HMI needs none of them, and an
+        # engineering station that needs one has a change request rather than a
+        # rule -- which is why they are here rather than in a scheduled rule.
+        deny_operations: [upload, download, control, stop, programmer, security]
+
+        # What an HMI does: negotiate, read, write its own data blocks, read
+        # the CPU's status, subscribe to cyclic data, read the clock.
+        operations: [setup, read, write, szl, cyclic, time_read, blocks]
+
+        # The address space, at the listener. This is where the data block
+        # Stuxnet wrote is excluded -- by not being in the list, which is the
+        # form this kind has: DB890, DB8062 and DB8063 are outside 100-199, so
+        # a write to one is refused as `db_not_allowed` with the matched rule
+        # and its comment on the event.
+        #
+        # Reviewing this list is the work. A plant's own blocks move; the
+        # blocks the published analysis names do not.
+        areas: [db, inputs, outputs, flags]
+        dbs: ["100-199"]
+        write_addresses: ["0-511"]
+
+        # And not set it. The clock is what every log line, every batch record
+        # and every protection function is stamped with, so moving it is how
+        # the record of everything else stops lining up.
+        default_action: deny
+
+        rules:
+          # An `s7` rule is not like a `modbus` or an `iec104` one, and a pack
+          # has to be written in the model the kind has. A rule here matches
+          # the *session* -- the client, the rack, the slot, the connection
+          # resource -- and its own lists then bound everything that session
+          # does. So there is no rule that matches "a write to DB890": a rule
+          # that tried would match the connection negotiation as well and
+          # refuse the session before it started.
+          #
+          # What that means for a pack: the finding is the refusal *reason*
+          # rather than a rule name. `operation_denied` is a program transfer,
+          # `db_not_allowed` is a write to a block this estate does not write,
+          # and the rule's comment is what carries the technique into the log.
+
+          # The HMI: negotiate, read, write the setpoint blocks the listener's
+          # own `dbs` names, read the CPU's status, subscribe to cyclic data.
+          - name: hmi
+            action: allow
+            clients: ["10.20.1.0/24"]
+            operations: [setup, read, write, szl, cyclic, time_read]
+            comment: "T0836 an HMI writes setpoints in DB100-199; a write anywhere else is db_not_allowed"
+
+          # The engineering station, during the shutdown window. Still no
+          # upload, download, control or stop: those are in the listener's deny
+          # list, which no rule widens, because a program change is a change
+          # request carried out at the panel and not a network operation.
+          - name: engineering-window
+            action: allow
+            clients: ["10.20.3.0/24"]
+            operations: [setup, read, write, blocks, szl]
+            schedule:
+              days: [sat, sun]
+              from: "22:00"
+              to: "04:00"
+              timezone: Europe/Stockholm
+            comment: "T0843 the shutdown window; the transfers themselves are a change request, not a rule"
+
+        # S7comm-plus is what an S7-1200 or S7-1500 speaks, and its write and
+        # admin classes are the same attack on newer hardware. `refuse` is the
+        # posture for a listener in front of classic controllers; a plant with
+        # both writes `policy` and a function list.
+        s7comm_plus:
+          mode: refuse
+
+upstreams:
+  - name: cpu
+    endpoints:
+      - {address: "10.20.9.41:102"}

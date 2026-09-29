@@ -82,6 +82,9 @@ type server struct {
 
 	policy  *Policy
 	selects *selects
+	// groups are the redundancy groups of edition 2: which connections are
+	// one controlling station, and which of them holds data transfer.
+	groups *groups
 	// quality, stamps and measures are the policies about the information
 	// element: what a station reported, and when a control centre said it.
 	quality  *qualityPolicy
@@ -125,6 +128,9 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener, tc *tls.Co
 		return nil, fmt.Errorf("iec104 %s: %w", cfg.Name, err)
 	}
 	t.selects = newSelects(m.MaxSelections, m.SelectTimeout.D(), time.Now)
+	if t.groups, err = compileRedundancy(m.Redundancy); err != nil {
+		return nil, fmt.Errorf("iec104 %s: %w", cfg.Name, err)
+	}
 	if t.decoy, err = newDecoy(m.Deception, cfg.Name); err != nil {
 		return nil, fmt.Errorf("iec104 %s: %w", cfg.Name, err)
 	}
@@ -295,6 +301,11 @@ type session struct {
 
 	// upstreamName is the pool this session is relayed to, for the log.
 	upstreamName string
+	// group is the redundancy group this connection belongs to, or nil. It
+	// decides two things: whether this connection may carry data at all
+	// (only the group's active one may), and who owns the selections it
+	// makes.
+	group *group
 	// clientEnd and stationEnd are the relay's own ends of the
 	// association: what it has read from each peer, what it has written to
 	// each peer, and the numbering of both. See apci.go for why a relay
@@ -375,7 +386,20 @@ func (t *server) handle(client net.Conn) {
 		// that outlived its connection would let a later client execute
 		// on an earlier one's intention, which is exactly the injection
 		// the check exists to stop.
-		t.selects.Close(se.id)
+		//
+		// A redundancy group's carried selections are the exception, and
+		// they go when its last connection does: while another path is up,
+		// the selection surviving is the point of having declared the
+		// group; once the whole association is gone, nobody is waiting on
+		// it.
+		var last string
+		if se.group != nil {
+			if se.group.leave(se.id) {
+				last = se.group.name
+			}
+			t.host.Counters().IEC104RedundancyActive.Store(int64(t.groups.Active()))
+		}
+		t.selects.Close(se.id, last)
 		if se.up != nil {
 			_ = se.up.Close()
 		}
@@ -386,6 +410,18 @@ func (t *server) handle(client net.Conn) {
 		t.deny(ip, "client_not_allowed", "")
 		t.log(se, start, "client_not_allowed")
 		return
+	}
+	// The redundancy group, before anything is dialled: a group that is
+	// already holding the connections the operator said it had is a group
+	// whose further connection is refused rather than admitted into it.
+	if g := t.groups.of(ip); g != nil {
+		if !g.join(se.id, ip) {
+			s.Counters().IEC104Rejected.Add(1)
+			t.deny(ip, "iec104_redundancy_full", g.name)
+			t.log(se, start, "iec104_redundancy_full")
+			return
+		}
+		se.group = g
 	}
 	// The imported lists and the estate's authorisation policy, after this
 	// listener's own address lists -- those are local policy about local

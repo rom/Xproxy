@@ -1,0 +1,102 @@
+# Behaviour pack: Industroyer, the IEC 61850 half.
+#
+# Industroyer carried four payloads, and the 61850 one is the most instructive
+# because it did not need to know the substation. It enumerated the device
+# model over MMS -- walking the logical devices and their objects -- found the
+# ones whose names said they were circuit breakers, and wrote their control
+# objects. A protocol that describes itself was read by an attacker who had
+# never seen the station.
+#
+# So the pack has two halves. The **browse** is not stopped, because browsing
+# is how every legitimate client finds anything; it is bounded and recorded.
+# The **operate** is the boundary: a Write to `$CO$...$Oper` is what moves a
+# breaker, and this listener can require the select first -- which is the one
+# check in this protocol a relay can make that the IED may not, because
+# IEC 61850 leaves it to each object's `ctlModel` and `ctlModel` lives in
+# `$CF$`, which is writable.
+#
+# MITRE ATT&CK for ICS techniques this pack is about:
+#   T0846  Remote System Discovery      -- the model walk
+#   T0888  Remote System Information Discovery
+#   T0861  Point & Tag Identification   -- reading the names to find breakers
+#   T0855  Unauthorized Command Message -- the Oper write
+#   T0821  Modify Controller Tasking    -- writes to CF, SG and SE
+# The technique identifiers are MITRE's; the mapping is this pack's reading of
+# published analysis and not MITRE's own.
+#
+# **The addresses here are examples.** 10.50.1.0/24 stands for the control
+# centre's network and 10.50.3.0/24 for the engineering one. Replace both, and
+# the domain and object names with the ones in the station's SCL.
+
+version: 1
+
+server:
+  listeners:
+    - name: substation-ieds
+      address: "10.50.0.10:102"
+      kind: mms
+      mms:
+        upstream: ieds
+        allow_clients: ["10.50.1.0/24", "10.50.3.0/24"]
+
+        # The coarse form first, because a substation's services are eighty
+        # and its classes nine. Domain and file are not in the list: deleting
+        # or downloading a domain is how something persistent gets onto an
+        # IED, and it is not what a control centre does.
+        service_classes: [browse, read, report, dataset, session, control]
+        deny_service_classes: [domain, file]
+
+        # The constraints a Write may address. Not CF, SG or SE: those change
+        # what the device will do in a fault rather than what it is doing now,
+        # and `ctlModel` -- the flag that decides whether an operate needs a
+        # select at all -- lives in CF.
+        write_constraints: [ST, MX, SP, SV, BL, CO]
+        deny_constraints: [CF, SG, SE]
+
+        # The boundary. An operate is carried only for the rule that names it,
+        # and only after a select this relay saw the IED accept.
+        allow_operate: false
+        require_select_before_operate: true
+        select_timeout: 30s
+
+        # The model walk, bounded. A GetNameList that asks for everything is
+        # how the payload found the breakers; a client that needs the whole
+        # model asks for it in pages, and one that asks for ten thousand names
+        # in one request is not a client this station has.
+        max_names: 500
+
+        rules:
+          # The control centre operates the breakers it is responsible for,
+          # and the select comes first.
+          - name: control-centre
+            action: allow
+            clients: ["10.50.1.0/24"]
+            service_classes: [browse, read, report, dataset, session, control]
+            domains: ["AA1J1Q01A1LD0"]
+            objects: ["AA1J1Q01A1LD0/XCBR*", "AA1J1Q01A1LD0/MMXU*"]
+            allow_operate: true
+            comment: "T0855 the breakers this centre operates, select first"
+
+          # Engineering reads and browses. It does not operate, and this is
+          # where a pack earns its keep: the payload's own behaviour --
+          # enumerate, then write -- is exactly an engineering session that
+          # started operating.
+          - name: engineering-reads
+            action: allow
+            clients: ["10.50.3.0/24"]
+            service_classes: [browse, read, session]
+            comment: "T0846/T0888 browsing is engineering work; operating is not"
+
+          # And the rule this pack exists for, named so the event says which
+          # finding it is rather than `no_rule`.
+          - name: industroyer-mms-operate-t0855
+            action: deny
+            service_classes: [control, write]
+            comment: "T0855 a control write from a client that does not operate this station"
+
+        default_action: deny
+
+upstreams:
+  - name: ieds
+    endpoints:
+      - {address: "10.50.9.51:102"}

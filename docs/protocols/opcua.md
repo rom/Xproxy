@@ -339,6 +339,7 @@ could be written down is a moved actuator.
 - The estate-wide policy above it: [docs/CONFIG.md `authorization`](../CONFIG.md#authorization)
 - The settings: [docs/CONFIG.md `server.listeners[].opcua`](../CONFIG.md#serverlistenersopcua-kind-opcua)
 - A worked configuration: [`examples/ot/opcua.yaml`](../../examples/ot/opcua.yaml)
+- A behaviour pack for PIPEDREAM's OPC UA module: [`examples/ot/packs/pipedream-opcua.yaml`](../../examples/ot/packs/pipedream-opcua.yaml), with [what a pack is and is not](../../examples/ot/packs/README.md)
 - The protocol it replaced on most plants: [s7](s7.md)
 - The other protocol whose policy is about what a value means: [modbus](modbus.md)
 - The device bus that ended up beside it: [mqtt](mqtt.md)

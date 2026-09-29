@@ -11611,6 +11611,86 @@ func (v *validator) iec104Deception(p string, m *IEC104Listener) {
 	}
 }
 
+// iec104Redundancy checks the redundancy groups of edition 2.
+//
+// A group is an assertion that a set of addresses is one controlling
+// station, and every check here is about the ways that assertion can be
+// wrong in a way an operator would not notice: a group that claims a client
+// another group also claims, a group whose client list is so wide that it
+// is not an assertion at all, and a group that carries selections across
+// connections nothing else distinguishes.
+func (v *validator) iec104Redundancy(p string, m *IEC104Listener) {
+	r := m.Redundancy
+	if r == nil {
+		return
+	}
+	if len(r.Groups) == 0 {
+		v.warnf("%s: no groups, so nothing about redundancy is enforced: take the section out or name the connection groups", p)
+		return
+	}
+	names := map[string]bool{}
+	type claimed struct {
+		group  string
+		prefix netip.Prefix
+	}
+	var seen []claimed
+	for i := range r.Groups {
+		g := &r.Groups[i]
+		q := fmt.Sprintf("%s.groups[%d]", p, i)
+		if !nameRE.MatchString(g.Name) {
+			v.errf("%s.name: %q is not a valid name", q, g.Name)
+		} else if names[g.Name] {
+			v.errf("%s.name: duplicate %q", q, g.Name)
+		}
+		names[g.Name] = true
+		if len(g.Clients) == 0 {
+			v.errf("%s.clients: required; the client list is what says which connections are one controlling station", q)
+		}
+		v.modbusCIDRs(q+".clients", g.Clients)
+		if g.MaxConnections != 0 && (g.MaxConnections < 1 || g.MaxConnections > 8) {
+			v.errf("%s.max_connections: must be between 1 and 8", q)
+		}
+		switch g.Takeover {
+		case "", "switch", "refuse":
+		default:
+			v.errf("%s.takeover: must be switch or refuse", q)
+		}
+		carries := g.CarrySelects == nil || *g.CarrySelects
+		for _, c := range g.Clients {
+			pre, err := netip.ParsePrefix(strings.TrimSpace(c))
+			if err != nil {
+				continue // already reported by modbusCIDRs
+			}
+			for _, was := range seen {
+				if was.prefix.Overlaps(pre) {
+					v.errf("%s.clients: %s overlaps %s in group %q: a connection in two groups would be two controlling stations at once",
+						q, pre, was.prefix, was.group)
+				}
+			}
+			seen = append(seen, claimed{group: g.Name, prefix: pre})
+			// A group carries a selection across its connections on the
+			// strength of this list, so how wide it is *is* the bound. A
+			// /16 of a control centre's network is fourteen thousand
+			// addresses that can consume each other's selections.
+			if carries && m.RequireSelect && pre.Bits() < carryPrefixAdvice(pre) {
+				v.warnf("%s.clients: %s is wider than the two or three paths a redundancy group has, carry_selects is on and require_select is on, so any address in it can execute a command another selected. The group's own rule -- only the connection holding data transfer may send anything -- is what bounds that, so pair a list this wide with takeover: refuse, or narrow it to the paths that exist",
+					q, pre)
+			}
+		}
+	}
+}
+
+// carryPrefixAdvice is the prefix length below which a group's client list
+// stops being an assertion about a few paths. A redundancy group is two or
+// three addresses; /29 leaves room for eight, which is the group's own
+// bound on connections.
+func carryPrefixAdvice(pre netip.Prefix) int {
+	if pre.Addr().Is4() {
+		return 29
+	}
+	return 125
+}
+
 func (v *validator) iec104Listener(p string, m *IEC104Listener, hasTLS bool) {
 	switch m.Mode {
 	case "", "reverse", "forward":
@@ -11685,6 +11765,7 @@ func (v *validator) iec104Listener(p string, m *IEC104Listener, hasTLS bool) {
 	if m.MaxSelections < 0 || m.MaxSelections > 1<<20 {
 		v.errf("%s.max_selections: must be between 0 and 1048576", p)
 	}
+	v.iec104Redundancy(p+".redundancy", m)
 	if m.K != 0 && (m.K < 1 || m.K > 32767) {
 		v.errf("%s.k: must be between 1 and 32767", p)
 	}

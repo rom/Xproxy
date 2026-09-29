@@ -295,3 +295,71 @@ func TestTheSocketBufferHasRoomForWhatTheRecordLayerAdds(t *testing.T) {
 		t.Errorf("a buffer of %d cannot hold a handshake fragment of %d", n, DefaultMTU)
 	}
 }
+
+// A deadline set while a read is already waiting reaches that read.
+//
+// This is net.Conn's own contract -- "a deadline applies to all current and
+// future Read calls" -- and here it is what keeps an established DTLS session
+// alive. Accept puts the handshake bound on this connection and clears it once
+// the handshake is done, while the library's reader goroutine is already
+// blocked on it. A pending read that kept the deadline it started under would
+// fire at the handshake bound and take the session with it, however long the
+// idle bound said: on the default bound, every session in the estate, ten
+// seconds in.
+func TestADeadlineReachesAReadAlreadyWaiting(t *testing.T) {
+	pc := mustPacketConn(t)
+	mux := NewMux(pc, Bounds{Peers: 4, Message: 2048})
+	go mux.Run()
+	t.Cleanup(mux.Close)
+
+	peer, _ := speak(t, pc.LocalAddr().String(), "hello")
+	defer func() { _ = peer.Close() }()
+	conn, _, err := mux.Accept()
+	if err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	buf := make([]byte, 64)
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := conn.ReadFrom(buf); err != nil {
+		t.Fatalf("the first datagram: %v", err)
+	}
+
+	// A short deadline, a read blocked under it, and then the deadline cleared
+	// -- the shape Accept has once a handshake completes.
+	if err := conn.SetReadDeadline(time.Now().Add(150 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		b := make([]byte, 64)
+		_, _, err := conn.ReadFrom(b)
+		done <- err
+	}()
+	// Long enough that the read is certainly waiting, short enough that the
+	// deadline it is waiting under has not passed.
+	time.Sleep(30 * time.Millisecond)
+	if err := conn.SetReadDeadline(time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	// Past the old deadline, the read must still be waiting rather than have
+	// timed out.
+	select {
+	case err := <-done:
+		t.Fatalf("the read ended at the deadline that was cleared: %v", err)
+	case <-time.After(400 * time.Millisecond):
+	}
+	// And it still delivers when something arrives.
+	if _, err := peer.Write([]byte("again")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("the datagram after the cleared deadline: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Error("the datagram after the cleared deadline never arrived")
+	}
+}

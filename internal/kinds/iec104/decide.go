@@ -39,6 +39,15 @@ func (se *session) decide(frame *wire.Frame, fromClient bool) (string, bool) {
 	if reason, ok := se.decideAck(frame, fromClient); !ok {
 		return reason, false
 	}
+	// Then, on a listener with redundancy groups, whether this connection is
+	// the one in its group that may carry data at all. It is before the
+	// policy and before the rate limits because it is not policy: the
+	// standard says a connection that has not been started carries nothing,
+	// and a frame from a standby path is refused whatever the rules would
+	// have said about it.
+	if reason, ok := se.decideStandby(fromClient); !ok {
+		return reason, false
+	}
 	a := frame.ASDU
 	if a == nil {
 		return "", true
@@ -226,6 +235,14 @@ func (se *session) decideControl(frame *wire.Frame, fromClient bool) (string, bo
 	t := se.t
 	d := t.policy.Control(frame.Control)
 	if d.Allow {
+		if fromClient {
+			// Data transfer is what a redundancy group is about, and
+			// STARTDT and STOPDT are how it moves. The group is updated
+			// here, on the activation, because that is the frame there is
+			// still a decision to make about: the station's confirmation
+			// only says it agreed.
+			return se.decideDataTransfer(frame)
+		}
 		return "", true
 	}
 	if !fromClient {
@@ -330,16 +347,17 @@ func (se *session) decideSelect(frame *wire.Frame) (string, bool) {
 	if a == nil || !a.Type.Command() || !a.Cause.Commanding() {
 		return "", true
 	}
+	owner := se.selectOwner()
 	switch {
 	case a.Cause == wire.CauseDeactivation:
 		// The controlling station thinking better of it. The selection goes
 		// whether or not it was the client that made it: a deactivation
 		// naming a point this session did not select releases nothing.
-		t.selects.Release(se.id, a)
+		t.selects.Release(owner, a)
 		return "", true
 	case a.Select:
 		t.host.Counters().IEC104Selects.Add(1)
-		if !t.selects.Select(se.id, a) {
+		if !t.selects.Select(owner, a) {
 			// The table is full, or the command names no point. Either way
 			// the selection was not recorded, so an execute after it
 			// cannot be matched -- and letting the execute through on a
@@ -357,28 +375,148 @@ func (se *session) decideSelect(frame *wire.Frame) (string, bool) {
 		return "", true
 	default:
 		t.host.Counters().IEC104Executes.Add(1)
-		selected := t.selects.Take(se.id, a)
+		took := t.selects.Take(owner, a)
 		held, _ := t.selects.Status()
 		t.host.Counters().IEC104SelectsHeld.Store(int64(held))
-		if selected || !t.m.RequireSelect || !a.Type.SelectSupported() {
+		if took == TakeOK || !t.m.RequireSelect || !a.Type.SelectSupported() {
 			// A type with no two-step form in the standard -- a 32-bit
 			// bitstring output -- cannot be selected, so requiring a
 			// selection for it would refuse every use of it for ever.
 			return "", true
 		}
-		t.host.Counters().IEC104Unselected.Add(1)
-		t.host.Counters().Refuse("iec104", "unselected")
-		t.deny(se.ip, "iec104_unselected", detailOf(a))
+		// Which refusal it is matters to whoever reads the log. A bare
+		// execute is somebody sending a command that was never selected; an
+		// expired one is an operator who selected a point and came back to
+		// it too late; and a selection held by another connection in the
+		// same redundancy group is a two-step command that was done
+		// properly and a failover in the middle dropped -- which is the
+		// diagnosis nobody can make from outside the relay.
+		reason := "iec104_unselected"
+		switch took {
+		case TakeExpired:
+			reason = "iec104_select_expired"
+		case TakeOther:
+			reason = "iec104_select_other_connection"
+		}
+		// The shadow branch first, and nothing counted before it. A
+		// listener under trial must not report a refusal it did not make:
+		// the operator reading its refusal count is exactly the person who
+		// must not be told enforcement is happening when it is not.
 		if !t.enforcing() {
 			t.host.Counters().IEC104WouldDeny.Add(1)
-			t.host.Counters().WouldRefuse("iec104", "iec104_unselected")
-			t.shadowed("iec104_unselected", "", a)
+			t.host.Counters().WouldRefuse("iec104", reason)
+			t.shadowed(reason, "", a)
 			return "", true
 		}
+		t.host.Counters().IEC104Unselected.Add(1)
+		// Refuse strips the kind's own prefix, so the counter is
+		// select_expired rather than iec104_select_expired.
+		t.host.Counters().Refuse("iec104", reason)
+		t.deny(se.ip, reason, detailOf(a))
 		t.host.Counters().IEC104Denied.Add(1)
 		se.denied.Add(1)
-		return "iec104_unselected", false
+		return reason, false
 	}
+}
+
+// selectOwner is who this connection's selections belong to.
+//
+// A connection in a redundancy group that carries selections makes them on
+// behalf of the group, so a failover does not drop them. Every other
+// connection owns its own, which is what keeps one client from executing on
+// another's intention. Either way the group's name goes in, because it is
+// what lets a refusal tell the two cases apart.
+func (se *session) selectOwner() selectOwner {
+	if se.group == nil {
+		return selectOwner{session: se.id}
+	}
+	if se.group.carry {
+		return selectOwner{group: se.group.name}
+	}
+	return selectOwner{group: se.group.name, session: se.id}
+}
+
+// decideStandby refuses an I frame from a connection that is in a
+// redundancy group and is not the one holding data transfer.
+//
+// This is the standard's own rule -- a connection that has not been started
+// carries no data -- and it is what makes a group a control rather than
+// bookkeeping: a second connection from the control centre's own network
+// cannot command anything until it has taken data transfer, and taking it is
+// a logged failover.
+func (se *session) decideStandby(fromClient bool) (string, bool) {
+	t := se.t
+	if !fromClient || se.group == nil || se.group.holds(se.id) {
+		return "", true
+	}
+	if !t.enforcing() {
+		t.host.Counters().IEC104WouldDeny.Add(1)
+		t.host.Counters().WouldRefuse("iec104", "iec104_standby")
+		return "", true
+	}
+	t.host.Counters().IEC104Standby.Add(1)
+	t.host.Counters().Refuse("iec104", "standby")
+	t.deny(se.ip, "iec104_standby", se.group.name)
+	t.host.Counters().IEC104Denied.Add(1)
+	se.denied.Add(1)
+	return "iec104_standby", false
+}
+
+// decideDataTransfer moves data transfer inside a redundancy group.
+//
+// A STARTDT while another connection in the group holds it is a failover:
+// with takeover: switch the new connection takes over and the event is
+// logged, and with takeover: refuse the activation is refused, because on
+// that estate the paths are moved deliberately and a concurrent takeover
+// means something is wrong.
+func (se *session) decideDataTransfer(frame *wire.Frame) (string, bool) {
+	t := se.t
+	if se.group == nil {
+		return "", true
+	}
+	switch frame.Control {
+	case wire.StartDTAct:
+		prev, failover, ok := se.group.start(se.id, se.ip)
+		if !ok {
+			if !t.enforcing() {
+				t.host.Counters().IEC104WouldDeny.Add(1)
+				t.host.Counters().WouldRefuse("iec104", "iec104_redundancy_active")
+				return "", true
+			}
+			t.host.Counters().Refuse("iec104", "redundancy_active")
+			t.deny(se.ip, "iec104_redundancy_active", se.group.name+" held by "+prev.String())
+			t.host.Counters().IEC104Denied.Add(1)
+			se.denied.Add(1)
+			return "iec104_redundancy_active", false
+		}
+		t.host.Counters().IEC104RedundancyActive.Store(int64(t.groups.Active()))
+		if failover {
+			t.host.Counters().IEC104Failovers.Add(1)
+			t.logFailover(se, prev)
+		}
+	case wire.StopDTAct:
+		if se.group.stop(se.id) {
+			t.host.Counters().IEC104RedundancyActive.Store(int64(t.groups.Active()))
+		}
+	}
+	return "", true
+}
+
+// logFailover records that data transfer moved from one connection in a
+// group to another.
+//
+// It is a security event and not only an access line, because it is the one
+// transition an intruder inside the control centre's own networks has to
+// make: the group's standby connections may not command anything until they
+// have taken data transfer, so a command from a path nobody expected to be
+// active is preceded by exactly this line.
+func (t *server) logFailover(se *session, prev netip.Addr) {
+	if !t.alerts() {
+		return
+	}
+	t.host.Logs().SecurityEvent(context.Background(), "failover", "iec104_failover",
+		"listener", t.cfg.Name, "proto", "iec104", "group", se.group.name,
+		"client_ip", se.ip.String(), "previous_client_ip", prev.String())
 }
 
 // refuse records a frame the policy refused. The event carries what was

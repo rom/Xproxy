@@ -1,0 +1,134 @@
+# Behaviour pack: FrostyGoop, and anything else that writes Modbus registers
+# because it can.
+#
+# FrostyGoop was used in January 2024 against a district heating utility in
+# Lviv. What it did is the reason it is worth a pack: nothing. No exploit, no
+# protocol abuse, no malformed frame. It spoke Modbus TCP to the heating
+# controllers on port 502, read their holding registers and wrote them back
+# with different values, and the controllers did as they were told -- because
+# that is what Modbus is. The heating went off for two days in February.
+#
+# So there is no signature to write. What there is, is a *change of
+# behaviour*: a host that had only ever read started writing, to registers
+# nobody writes, from software that was not the SCADA master. Every rule below
+# is about that shape.
+#
+# MITRE ATT&CK for ICS techniques this pack is about:
+#   T0836  Modify Parameter            -- writing a controller's setpoints
+#   T0831  Manipulation of Control     -- the effect on the heating system
+#   T0855  Unauthorized Command Message -- a write from a host with no business
+#                                          writing
+# The technique identifiers are MITRE's; the mapping is this pack's reading of
+# published analysis and not MITRE's own.
+#
+# **The addresses here are examples.** 10.40.1.0/24 stands for the network the
+# SCADA master is on, 10.40.2.0/24 for the historian's. Replace both, and the
+# register ranges, with the plant's own -- a pack that is not edited is a pack
+# that refuses the wrong traffic.
+
+version: 1
+
+server:
+  listeners:
+    - name: heating-controllers
+      address: "10.40.0.10:502"
+      kind: modbus
+      modbus:
+        upstream: controllers
+
+        # The first control, and the cheapest: the list of hosts that may
+        # speak Modbus to this equipment at all. FrostyGoop ran from a host
+        # inside the network; a list that names the two machines which are
+        # supposed to be there is what makes "inside the network" insufficient.
+        allow_clients: ["10.40.1.0/24", "10.40.2.0/24"]
+        units: ["1-8"]
+
+        # The audit trail. A write to a heating controller is a line somebody
+        # will want six months later.
+        log_frames: true
+
+        rules:
+          # The historian reads and never writes. Written as an access class
+          # rather than a list of function codes, so it stays true when a
+          # later revision adds a reading code.
+          - name: historian-reads-only
+            action: allow
+            clients: ["10.40.2.0/24"]
+            access: [read]
+            addresses: ["0-1999"]
+            comment: "T0801 monitoring is all this host does"
+
+          # The master writes the setpoints it is supposed to write, inside
+          # the range the process can hold, and not faster than a process
+          # moves. The value bound is the part that matters here: FrostyGoop
+          # did not write nonsense, it wrote plausible numbers -- so a bound
+          # on *which* registers and how far each may move in one step is the
+          # bound that a plausible write runs into.
+          - name: master-writes-setpoints
+            action: allow
+            clients: ["10.40.1.0/24"]
+            functions: [write_single_register, write_multiple_registers]
+            write_addresses: ["400-449"]
+            values:
+              - registers: "400-449"
+                min: 10
+                max: 80
+                max_delta: 5
+                on_unknown: refuse
+                rate: {max: 2, period: 1m}
+            comment: "T0836 the only writes this estate has: flow temperature setpoints"
+
+          - name: master-reads
+            action: allow
+            clients: ["10.40.1.0/24"]
+            access: [read]
+            addresses: ["0-1999"]
+
+          # And the rule this pack exists for. Anything else that writes is
+          # refused by name, so the security event says which finding this is
+          # rather than "no_rule".
+          - name: frostygoop-unexpected-write-t0836
+            action: deny
+            access: [write]
+            comment: "T0836/T0855 a Modbus write from a host or to a register this estate does not write"
+
+          # A device the relay cannot vouch for is refused as itself: the
+          # diagnostic sub-functions that take a controller off the bus, and
+          # any vendor code. A heating controller does not need either.
+          - name: frostygoop-device-control-t0814
+            action: deny
+            effects: [control, program, clear, unknown]
+            comment: "T0814/T0816 force listen only, restart, and the vendor protocols"
+
+        default_action: deny
+
+        # The behavioural half, which needs nothing written down and is what
+        # catches the case the rules above were written too loosely for: a
+        # function code this client has never used, a write to a register it
+        # has never written, and a burst of writes across the address space --
+        # which is what walking a controller's registers looks like.
+        #
+        # action stays alert: on this signal a deny refuses the first
+        # legitimate maintenance write of the year. The events are the
+        # product; `xproxyctl` and the SIEM export are where they are read.
+        anomaly:
+          enabled: true
+          settle: 30m
+          new_function: true
+          new_write_address: true
+          write_burst: 20
+          burst_period: 10s
+          action: alert
+
+        # Run this for a week before the rules above are believed. The report
+        # says which registers the master actually writes, which is the list
+        # the value bounds should have been written from.
+        learn:
+          enabled: false
+          file: /var/lib/xproxy/heating-learned.yaml
+          enforce: true
+
+upstreams:
+  - name: controllers
+    endpoints:
+      - {address: "10.40.9.11:502"}

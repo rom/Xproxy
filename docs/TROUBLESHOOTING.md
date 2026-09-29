@@ -3162,6 +3162,26 @@ belongs to the connection that made it; one that outlived its connection
 would let a later client execute on an earlier one's intention.
 `iec104_selects_held` is how many are outstanding right now.
 
+**A selection stops working across a *failover*, which is not the same
+thing.** The refusal says which: `select_other_connection` means the select
+and the execute landed on two connections of one redundancy group, and
+`unselected` means there was no selection at all. If the paths really are one
+control centre, declare them as a `redundancy.groups` entry and leave
+`carry_selects` on; the selection then survives the failover, and only the
+connection holding data transfer can consume it.
+
+**Commands are refused as `standby` and the control centre insists it is
+connected.** It is connected and it has not taken data transfer:
+`iec104_redundancy_active` is below the number of groups configured. A
+conforming controlling station sends STARTDT before it sends anything else,
+so this is either a station that skips it or a connection nobody meant to be
+sending — and `iec104_standby` counts them either way.
+
+**A group fails over every few minutes.** `iec104_failovers` climbing
+steadily is paths flapping, or two things in the control centre both trying
+to be the active one. The `iec104_failover` security events name both
+addresses, which is what says which two.
+
 **The access log is unreadable.** Turn `log_frames` off and leave
 `log_commands` on (the default). On this protocol a station's periodic
 telemetry is most of the traffic, and a line per measurement buries the
@@ -5929,7 +5949,7 @@ actually being refused. What each kind can say:
 | `mqtt` | `client_not_allowed`, `max_connections`, `not_connect`, `second_connect`, `version_refused`, the client id policy (`empty_client_id`, `client_id_too_long`, `client_id_refused`), `no_username`, `keep_alive_refused`, the topic policy (`publish_topic_refused`, `subscribe_refused`, `retain_refused`, `will_topic_refused`, `will_retain_refused`), `packet_too_large`, `malformed`, the per-topic bounds (`payload_too_large`, `qos_too_high`, `qos_too_low`, `retain_refused`) and the Sparkplug policy (`sparkplug_not_sparkplug`, `sparkplug_namespace`, `sparkplug_message_type`, `sparkplug_command_refused`, `sparkplug_no_birth`, `sparkplug_sequence`) |
 | `ftp` | `client_refused`, `banned`, `max_connections`, `auth_failed`, `identity_refused`, `mfa_required`, `mfa_failed`, the command and path policy (`unknown_command`, `command_refused`, `path_refused`, `read_only`, `active_refused`, `no_data_connection`), the path shapes it will not guess about (`path_separator`, `path_control`, `path_encoding`), the commands that are half a decision (`rest_invalid`, `rest_unscannable`, `rename_out_of_order`), TLS (`tls_required`, `auth_refused`, `ccc_refused`, `tls_pipelined`), the data channel (`bounce_refused`, `malformed_address`, `data_stranger`, `upstream_address`, `transfer_cut`) and the line discipline (`line_too_long`, `malformed_line`, `malformed_command`) |
 | `syslog` | `sender_refused`, `max_connections`, `rate_limit`, `too_large`, `framing`, `malformed`, the message policy (`facility`, `severity`, `pattern`) and `queue_full` when the collector is behind |
-| `iec104` | `client_not_allowed`, `tls_handshake`, `max_connections`, `rate_limited`, `command_rate_limited`, the framing (`malformed`, `frame_too_long`), the policy (`monitor_only`, `common_address`, `rule`, `default_deny`, `control`), select-before-operate (`unselected`, `select_unavailable`), the numbering (`sequence`, `window`, `ack_ahead`) and the direction (`station_command`) |
+| `iec104` | `client_not_allowed`, `tls_handshake`, `max_connections`, `rate_limited`, `command_rate_limited`, the framing (`malformed`, `frame_too_long`), the policy (`monitor_only`, `common_address`, `rule`, `default_deny`, `control`), select-before-operate (`unselected`, `select_expired`, `select_other_connection`, `select_unavailable`), the redundancy groups (`standby`, `redundancy_active`, `redundancy_full`), the numbering (`sequence`, `window`, `ack_ahead`) and the direction (`station_command`) |
 | `modbus` | `client_not_allowed`, `max_connections`, `rate_limit`, `queue_full`, the session's own locks (`tls_handshake`, `no_client_certificate`, `no_role`, `role_not_allowed`, `security_requires_tls`), the framing (`framing`, `frame_too_large`, `malformed`), the policy (`read_only`, `read_only_unknown_function`, `unsafe_sub_function`, `unit_not_allowed`, `rule_deny`, `no_rule`, `value_out_of_range`, `value_delta`, `value_transition`, `value_rate`, `value_no_select`, `value_unknown`, `value_masked_write`, `coil_set_not_allowed`, `coil_clear_not_allowed`), the routing (`no_route_for_unit`) and what the device answered (`malformed_response`, `response_unit_mismatch`) |
 | `ldap` | `client_not_allowed`, `max_connections`, `rate_limited`, `bind_rate_limited`, TLS (`tls_handshake`, `upstream_tls`, `starttls_unavailable`, `starttls_twice`, `starttls_outstanding`), the framing (`malformed`, `malformed_response`, `message_too_large`, `framing`, `message_id_zero`, `wrong_direction`, `wrong_direction_response`), the bind (`anonymous_bind`, `unauthenticated_bind`, `bind_method`, `sasl_mechanism`, `bind_in_clear`, `bind_failed`, `version`), the policy (`read_only`, `base_dn`, `rule`, `default_deny`, `extended`, `control`), the filter and attribute bounds (`filter_terms`, `filter_depth`, `leading_wildcard`, `filter_attribute`, `attribute`, `attribute_not_allowed`) and the answers (`max_entries`, `unsolicited_entry`, `too_many_outstanding`) |
 | `snmp` | `client_not_allowed`, `max_connections`, `rate_limited`, TLS (`tls_handshake`, `upstream_tls`), the framing (`malformed`, `malformed_response`, `message_too_large`, `framing`), the credential (`version`, `community`, `user`, `security_level`), the policy (`read_only`, `direction`, `var_binds`, `rule`, `default_deny`), the amplification bounds (`max_repetitions`, `response_too_large`, `response_ratio`), the answer matching (`unsolicited_response`, `response_too_late`, `encrypted_response`, `wrong_direction`, `too_many_pending`) and the rewrite (`upgrade_failed`) |

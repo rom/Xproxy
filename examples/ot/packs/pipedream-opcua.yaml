@@ -1,0 +1,114 @@
+# Behaviour pack: PIPEDREAM / INCONTROLLER, the OPC UA half.
+#
+# The OPC UA module in PIPEDREAM is the general-purpose one: it does not target
+# a make of controller, it targets the protocol. It connects to a server,
+# brute-forces credentials where it has to, reads the address space to find out
+# what the plant is, and writes node values. Nothing in it is an exploit.
+#
+# OPC UA is the one industrial protocol that arrived with security in the
+# standard, which is why this pack looks different from the others: most of it
+# is refusing the *unauthenticated, unencrypted* modes that the installed base
+# leaves switched on, because a server reachable with `SecurityPolicy#None` and
+# an anonymous token is a server this module needs no credentials for at all.
+#
+# MITRE ATT&CK for ICS techniques this pack is about:
+#   T0846  Remote System Discovery      -- the address space walk
+#   T0888  Remote System Information Discovery
+#   T0855  Unauthorized Command Message -- the node writes
+#   T0836  Modify Parameter
+#   T0806  Brute Force I/O              -- the credential brute force this
+#                                          pack's token policy removes the
+#                                          point of
+# The technique identifiers are MITRE's; the mapping is this pack's reading of
+# published analysis and not MITRE's own.
+#
+# **The addresses and node identifiers here are examples.** 10.60.1.0/24 stands
+# for the HMI network. The nodes an HMI writes are the plant's own; read them
+# out of a learning run rather than guessing.
+
+version: 1
+
+server:
+  listeners:
+    - name: plant-opcua
+      address: "10.60.0.10:4840"
+      kind: opcua
+      opcua:
+        upstream: servers
+        allow_clients: ["10.60.1.0/24"]
+
+        # The part that matters most, and the part an estate usually has
+        # switched off. None is both a policy and a mode: a session with
+        # neither is a session anybody on the network can open.
+        deny_security_policies: ["None"]
+        #
+        # And then the trade this protocol forces, written down rather than
+        # discovered. A `sign_and_encrypt` channel leaves the relay nothing to
+        # read, so the service, node and method rules below are **silent** on
+        # one -- confidentiality on this hop and enforcement in the middle are
+        # alternatives. This pack chooses enforcement: `sign` authenticates
+        # every message and still detects modification, and
+        # require_readable_bodies refuses the encrypted mode so the rules can
+        # never quietly stop applying.
+        #
+        # A plant that needs confidentiality on this hop instead should say so
+        # here, and know that what is left is the channel policy, the session
+        # identity and the sizes -- not the per-node rules.
+        security_modes: [sign]
+        require_readable_bodies: true
+
+        # And the token. Anonymous is what the module uses when it can, and
+        # what it brute-forces when it cannot.
+        token_kinds: [x509, username]
+
+        # What a client may ask the server to do. The discovery and session
+        # services and the reading services are in; the node-management
+        # services, the method calls and the writes are not -- they are the
+        # rule's business below.
+        services: [get_endpoints, find_servers, create_session, activate_session,
+                   close_session,
+                   read, browse, browse_next, translate_browse_paths,
+                   create_subscription, create_monitored_items, publish,
+                   delete_subscriptions, delete_monitored_items]
+        deny_services: [add_nodes, delete_nodes, add_references, delete_references,
+                        call, history_update, register_nodes]
+
+        # The address space walk, bounded. A browse of everything in one
+        # request is how the module finds the plant; a client that needs the
+        # whole model asks for it in pages.
+        max_operations: 100
+
+        rules:
+          # The HMI writes the nodes it owns, and nothing else. This is the
+          # list to generate from a learning run: a `write_nodes` list written
+          # from a guess is a list that refuses an operator at three in the
+          # morning.
+          - name: hmi
+            action: allow
+            clients: ["10.60.1.0/24"]
+            services: [read, browse, browse_next, write, create_subscription,
+                       create_monitored_items, publish, create_session,
+                       activate_session, close_session, get_endpoints]
+            write_nodes: ["ns=2;s=Line1.Setpoint", "ns=2;s=Line1.Mode"]
+            comment: "T0836 the nodes an HMI writes, and no others"
+
+          # And the rule this pack exists for.
+          - name: pipedream-opcua-write-t0855
+            action: deny
+            services: [write]
+            comment: "T0855 a node write from a client that does not write this plant"
+
+        default_action: deny
+
+        # Learning first. On this protocol the address space is the plant's own
+        # and nobody has it written down: a week of a run says which nodes the
+        # HMI reads and writes, which is the list the rule above should hold.
+        learn:
+          enabled: false
+          file: /var/lib/xproxy/opcua-learned.yaml
+          enforce: true
+
+upstreams:
+  - name: servers
+    endpoints:
+      - {address: "10.60.9.61:4840"}
