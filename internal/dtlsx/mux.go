@@ -121,8 +121,9 @@ func (m *Mux) peerFor(from net.Addr) (*peerConn, bool) {
 	}
 	p := &peerConn{
 		mux: m, ap: ap, remote: from,
-		in:   make(chan []byte, m.b.Queue),
-		gone: make(chan struct{}),
+		in:    make(chan []byte, m.b.Queue),
+		gone:  make(chan struct{}),
+		reset: make(chan struct{}),
 	}
 	m.peers[ap] = p
 	return p, true
@@ -180,6 +181,17 @@ type peerConn struct {
 
 	mu       sync.Mutex
 	deadline time.Time
+	// reset is closed and replaced whenever the deadline moves, so that a read
+	// already blocked notices. net.Conn requires exactly that -- a deadline
+	// affects the calls already waiting, not only the next ones -- and here it
+	// is load-bearing rather than pedantry: the DTLS handshake bound is set on
+	// this connection and cleared again once the handshake is done, while the
+	// library's own reader goroutine is reading it. A pending read that had
+	// already taken the handshake deadline would keep it, fire at it, and kill
+	// an established session at the handshake bound -- which on the default
+	// ten seconds is every DTLS session in the estate, ten seconds in,
+	// whenever the clear lands a moment too late.
+	reset chan struct{}
 }
 
 // deliver hands a datagram to the peer, dropping it if the peer is behind.
@@ -209,15 +221,33 @@ func (p *peerConn) ReadFrom(b []byte) (int, net.Addr, error) {
 		return 0, nil, net.ErrClosed
 	default:
 	}
-	var timeout <-chan time.Time
-	p.mu.Lock()
-	d := p.deadline
-	p.mu.Unlock()
-	if !d.IsZero() {
-		t := time.NewTimer(time.Until(d))
-		defer t.Stop()
-		timeout = t.C
+	for {
+		p.mu.Lock()
+		d, reset := p.deadline, p.reset
+		p.mu.Unlock()
+		var timeout <-chan time.Time
+		var t *time.Timer
+		if !d.IsZero() {
+			t = time.NewTimer(time.Until(d))
+			timeout = t.C
+		}
+		n, addr, err, again := p.readOnce(b, timeout, reset)
+		if t != nil {
+			t.Stop()
+		}
+		if again {
+			// The deadline moved while this read was waiting. Taking the new
+			// one is the whole point: the old one may have been the handshake
+			// bound, which the session it established must not inherit.
+			continue
+		}
+		return n, addr, err
 	}
+}
+
+// readOnce waits for a datagram under one deadline, and says whether the
+// deadline changed under it rather than expiring.
+func (p *peerConn) readOnce(b []byte, timeout <-chan time.Time, reset <-chan struct{}) (int, net.Addr, error, bool) {
 	select {
 	case raw := <-p.in:
 		n := copy(b, raw)
@@ -225,15 +255,17 @@ func (p *peerConn) ReadFrom(b []byte) (int, net.Addr, error) {
 			// The caller's buffer is smaller than the datagram. Reporting the
 			// truncation rather than the short read is what stops a record being
 			// read as a shorter, different record.
-			return n, p.remote, fmt.Errorf("dtlsx: a datagram of %d octets into %d", len(raw), len(b))
+			return n, p.remote, fmt.Errorf("dtlsx: a datagram of %d octets into %d", len(raw), len(b)), false
 		}
-		return n, p.remote, nil
+		return n, p.remote, nil, false
 	case <-timeout:
-		return 0, nil, timeoutError{}
+		return 0, nil, timeoutError{}, false
+	case <-reset:
+		return 0, nil, nil, true
 	case <-p.gone:
-		return 0, nil, net.ErrClosed
+		return 0, nil, net.ErrClosed, false
 	case <-p.mux.done:
-		return 0, nil, net.ErrClosed
+		return 0, nil, net.ErrClosed, false
 	}
 }
 
@@ -263,10 +295,18 @@ func (p *peerConn) SetDeadline(t time.Time) error {
 	return p.SetReadDeadline(t)
 }
 
+// SetReadDeadline sets the deadline for the reads already waiting as well as
+// the ones to come, which is what net.Conn's contract says and what the
+// handshake bound above depends on.
 func (p *peerConn) SetReadDeadline(t time.Time) error {
 	p.mu.Lock()
 	p.deadline = t
+	// Wake whatever is already waiting, so that it takes this deadline rather
+	// than the one it started under.
+	old := p.reset
+	p.reset = make(chan struct{})
 	p.mu.Unlock()
+	close(old)
 	return nil
 }
 

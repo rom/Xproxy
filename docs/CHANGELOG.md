@@ -6,6 +6,20 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Fixed (a DTLS session no longer dies at the handshake bound)
+
+- **A deadline set on a peer's view of a shared DTLS socket now reaches the read
+  already waiting on it.** `net.Conn` requires that -- a deadline applies to the
+  calls already blocked, not only the next ones -- and here it was load-bearing.
+  The handshake bound is set on that connection and cleared once the handshake
+  completes, while the library's own reader goroutine is reading it: a pending
+  read that kept the deadline it started under would fire at the handshake bound
+  and take the established session with it. On the default bound that is every
+  DTLS session in the estate, ten seconds in, whenever the clear lands a moment
+  too late -- and for a battery-powered sensor a handshake per report is the
+  expensive part of the exchange. It surfaced as a coap test failing under load;
+  the test added with the fix fails without it.
+
 ### Added (snmp: RFC 6353, where the credential is a certificate)
 
 - **`dtls_mode` puts RFC 6353's transport model on the transport SNMP actually
