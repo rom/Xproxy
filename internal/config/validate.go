@@ -8,6 +8,7 @@ import (
 	dhcpwire "github.com/rom/xproxy/internal/dhcp"
 	"github.com/rom/xproxy/internal/dhcp6"
 	"github.com/rom/xproxy/internal/dns"
+	"github.com/rom/xproxy/internal/dtlsx"
 	"github.com/rom/xproxy/internal/expr"
 	"github.com/rom/xproxy/internal/filter"
 	"github.com/rom/xproxy/internal/fipsmode"
@@ -917,7 +918,7 @@ func (v *validator) server(s *Server) {
 			if ln.CoAP == nil {
 				v.errf("%s.coap: required for kind coap", p)
 			} else {
-				v.coapListener(p+".coap", ln.CoAP, ln.Address, ln.TLS != nil)
+				v.coapListener(p+".coap", ln.CoAP, ln.Address, ln.TLS)
 			}
 		case "bacnet":
 			// No tls section: Annex J is BACnet over UDP and the protocol
@@ -1113,7 +1114,7 @@ func (v *validator) server(s *Server) {
 				}
 			}
 		} else {
-			v.tls(p+".tls", ln.TLS)
+			v.tls(p+".tls", ln.TLS, pinsKeys(ln))
 		}
 		if h3 {
 			h1h2 := false
@@ -1186,7 +1187,7 @@ func (v *validator) server(s *Server) {
 	v.connectionRate("server.limits", l.ConnectionRate, l.ConnectionRatePerSource)
 }
 
-func (v *validator) tls(p string, t *TLS) {
+func (v *validator) tls(p string, t *TLS, pinsKeys bool) {
 	if o := t.OCSPStapling; o != nil {
 		if o.Timeout < Duration(time.Second) || o.Timeout > Duration(time.Minute) {
 			v.errf("%s.ocsp_stapling.timeout: must be between 1s and 1m", p)
@@ -1258,8 +1259,22 @@ func (v *validator) tls(p string, t *TLS) {
 		} else {
 			v.file(p+".client_ca_file", t.ClientCAFile)
 		}
+	case "require_any":
+		// A certificate demanded and checked against nothing. It is the shape
+		// RFC 7252 s9.1.3.2's raw public key mode takes here -- the key inside
+		// the certificate is pinned by the listener's public_keys table, and
+		// there is no authority to check a chain against -- and it is refused
+		// everywhere else, because a certificate nobody verified is not an
+		// identity and a policy written on one would be a policy about
+		// whatever a peer chose to send.
+		if !pinsKeys {
+			v.errf("%s.client_auth: require_any asks for a certificate and verifies it against nothing, which is only a credential where something else decides whether the peer is anybody. Write require with client_ca_file; require_any is for a coap listener whose public_keys table pins the key itself", p)
+		}
+		if t.ClientCAFile != "" {
+			v.errf("%s.client_ca_file: set with client_auth: require_any, which verifies no chain. Write require to check certificates against that authority, or drop the file", p)
+		}
 	default:
-		v.errf("%s.client_auth: must be none, request or require", p)
+		v.errf("%s.client_auth: must be none, request, require or require_any", p)
 	}
 	known := map[string]bool{}
 	for _, cs := range tls.CipherSuites() {
@@ -8352,7 +8367,8 @@ func (v *validator) opcuaAllowsOpaque(m *OPCUAListener) bool {
 }
 
 // coapListener checks the CoAP relay.
-func (v *validator) coapListener(p string, m *CoAPListener, address string, dtls bool) {
+func (v *validator) coapListener(p string, m *CoAPListener, address string, tc *TLS) {
+	dtls := tc != nil
 	switch m.Mode {
 	case "", "reverse", "forward":
 	default:
@@ -8408,8 +8424,101 @@ func (v *validator) coapListener(p string, m *CoAPListener, address string, dtls
 		v.errf("%s.request_timeout: must be between 1s and 1m", p)
 	}
 	v.coapBounds(p, m)
+	v.coapIdentities(p, m, dtls)
 	v.coapRules(p, m)
-	v.coapWarnings(p, m, address, dtls)
+	v.coapWarnings(p, m, address, tc)
+}
+
+// coapIdentities checks the two tables that turn a DTLS peer into a name: the
+// pre-shared keys and the pinned public keys.
+//
+// Everything here is checked at load because the alternative is a listener
+// that refuses every handshake, or worse accepts one and maps it to nothing:
+// on this protocol the identity *is* the identity, and a table with a typo in
+// it is a policy about a device that will never connect.
+func (v *validator) coapIdentities(p string, m *CoAPListener, dtls bool) {
+	names := map[string]bool{}
+	if m.PSK != nil {
+		q := p + ".psk"
+		// A table with no tls section is not an error: it is a PSK-only
+		// listener, which is the ordinary shape on a segment whose devices
+		// have no certificate machinery -- and whose estate therefore usually
+		// has no authority of its own. RFC 7252 s9.1.3.1's mode needs no
+		// certificate at either end.
+		if len(m.PSK.Identities) == 0 {
+			v.errf("%s.identities: required: a psk section with no identities offers the mode and holds no key, so every handshake in it fails", q)
+		}
+		if len(m.PSK.Hint) > dtlsx.MaxPSKIdentity {
+			v.errf("%s.hint: %d octets, past the %d-octet bound", q, len(m.PSK.Hint), dtlsx.MaxPSKIdentity)
+		}
+		if len(m.PSK.Identities) > dtlsx.MaxPSKEntries {
+			v.errf("%s.identities: %d entries, past the bound of %d", q, len(m.PSK.Identities), dtlsx.MaxPSKEntries)
+		}
+		seen := map[string]bool{}
+		for i := range m.PSK.Identities {
+			id := &m.PSK.Identities[i]
+			r := fmt.Sprintf("%s.identities[%d]", q, i)
+			switch {
+			case id.Identity == "":
+				v.errf("%s.identity: required: an empty identity is the row every client that names nothing would reach", r)
+			case len(id.Identity) > dtlsx.MaxPSKIdentity:
+				v.errf("%s.identity: %d octets, past the %d-octet bound", r, len(id.Identity), dtlsx.MaxPSKIdentity)
+			case seen[id.Identity]:
+				v.errf("%s.identity: %q appears twice, and two keys for one identity is a table nobody can read", r, id.Identity)
+			default:
+				seen[id.Identity] = true
+			}
+			if id.Key == "" {
+				v.errf("%s.key: required", r)
+			} else {
+				v.secretRef(r+".key", id.Key)
+			}
+			if id.Name != "" {
+				names[id.Name] = true
+			} else if id.Identity != "" {
+				names[id.Identity] = true
+			}
+		}
+	}
+	prints := map[string]bool{}
+	for i := range m.PublicKeys {
+		k := &m.PublicKeys[i]
+		r := fmt.Sprintf("%s.public_keys[%d]", p, i)
+		if !dtls {
+			// Unlike a pre-shared key, a pinned key is read out of the
+			// certificate a peer presents -- so the listener has to be doing a
+			// certificate handshake, which is what the tls section is.
+			v.errf("%s: a pinned public key is read from the certificate a peer presents, and this listener has no tls section to ask for one", r)
+		}
+		sum, err := dtlsx.ParseKeyFingerprint(k.Fingerprint)
+		switch {
+		case err != nil:
+			v.errf("%s.fingerprint: %v", r, err)
+		case prints[sum]:
+			v.errf("%s.fingerprint: the same key appears twice", r)
+		default:
+			prints[sum] = true
+		}
+		if k.Name == "" {
+			v.errf("%s.name: required: a pinned key with no name authenticates a peer and tells the policy nothing", r)
+		} else {
+			names[k.Name] = true
+		}
+	}
+	// A rule naming a security name that no table produces is a rule that
+	// never matches, which reads in a file as a control and is not one.
+	for i := range m.Rules {
+		for j, want := range m.Rules[i].SecurityNames {
+			if names[want] {
+				continue
+			}
+			v.errf("%s.rules[%d].security_names[%d]: %q is not a name any psk identity or public key maps to, so this rule can never match",
+				p, i, j, want)
+		}
+	}
+	if m.RequireSecurityName != nil && *m.RequireSecurityName && len(names) == 0 {
+		v.errf("%s.require_security_name: true with no psk identities and no public keys, so every message would be refused: there is nothing for a peer to map to", p)
+	}
 }
 
 // coapBounds checks the table sizes and the rate.
@@ -8467,9 +8576,9 @@ func (v *validator) coapRules(p string, m *CoAPListener) {
 
 // coapWarnings are the configurations that load and are probably not what the
 // operator meant.
-func (v *validator) coapWarnings(p string, m *CoAPListener, address string, dtls bool) {
-	if !dtls {
-		v.warnf("%s: no tls section, so this listener is CoAP NoSec: there is no identity of any kind, and a rule can name only the source address. RFC 7252 s9 puts CoAP inside DTLS on 5684, and most of the field does not -- which is why this warns rather than refuses", p)
+func (v *validator) coapWarnings(p string, m *CoAPListener, address string, tc *TLS) {
+	if tc == nil && (m.PSK == nil || len(m.PSK.Identities) == 0) {
+		v.warnf("%s: no tls section and no psk identities, so this listener is CoAP NoSec: there is no identity of any kind, and a rule can name only the source address. RFC 7252 s9 puts CoAP inside DTLS on 5684, and most of the field does not -- which is why this warns rather than refuses", p)
 	}
 	if _, port, err := net.SplitHostPort(address); err == nil &&
 		port != "5683" && port != "5684" && port != "0" {
@@ -8497,6 +8606,14 @@ func (v *validator) coapWarnings(p string, m *CoAPListener, address string, dtls
 	}
 	if !coapOn(m.AnswerRefusals) {
 		v.warnf("%s.answer_refusals: false, so a refused request is dropped. A Confirmable request is retransmitted until something answers, so each refusal becomes four or five more requests and the device's own logs show a timeout rather than a refusal", p)
+	}
+	if m.PSK != nil && len(m.PSK.Identities) > 0 && !m.RequiresSecurityName() {
+		v.warnf("%s.require_security_name: false with a psk table, so a session that authenticated some other way -- a certificate this listener also accepts -- carries no name, and every rule naming security_names is silently not about it", p)
+	}
+	if len(m.PublicKeys) > 0 && !coapAsksForAKey(tc) {
+		// The pin is on the key inside the certificate the peer sent, and a
+		// listener that does not ask for one gets no key to pin.
+		v.warnf("%s.public_keys: a pinned key is read from the certificate the peer presents, and this listener's tls section does not ask for one. Set tls.client_auth: require_any, which is the shape a raw public key takes here -- the key is pinned by this table rather than vouched for by an authority, so there is nothing for require (with client_ca_file) to verify it against", p)
 	}
 	if coapOn(m.AllowDiscovery) && len(m.AllowPaths) == 0 && len(m.Rules) == 0 {
 		v.warnf("%s: /.well-known/core is carried and no path policy is written, so a client may ask any device for a list of every resource it has -- the largest answer on the device for the smallest question (RFC 6690)", p)
@@ -14797,4 +14914,29 @@ func sortedStrings(in []string) []string {
 	copy(out, in)
 	sort.Strings(out)
 	return out
+}
+
+// coapAsksForAKey says whether the listener's TLS section makes a peer present
+// a certificate at all, which is what a pinned public key is read out of.
+//
+// Any of the three modes that ask for one will do, and require_any is the one
+// to write: a raw public key is pinned by the table rather than vouched for by
+// an authority, so there is no chain for require-with-client_ca_file to check
+// and a self-signed certificate is what a device will send.
+func coapAsksForAKey(tc *TLS) bool {
+	if tc == nil {
+		return false
+	}
+	switch tc.ClientAuth {
+	case "require", "require_any", "verify_if_given":
+		return true
+	}
+	return false
+}
+
+// pinsKeys says whether this listener pins peer public keys of its own, which
+// is the one place a certificate verified against no authority is a credential
+// rather than a hole.
+func pinsKeys(ln *Listener) bool {
+	return ln != nil && ln.Kind == "coap" && ln.CoAP != nil && len(ln.CoAP.PublicKeys) > 0
 }

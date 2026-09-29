@@ -4054,15 +4054,18 @@ Four defaults are worth reading before anything else.
 | `max_clients` | int | `8192` | The distinct sources tracked at once |
 | `dtls_handshake_timeout` | duration | `10s` | How long a peer has to finish a DTLS handshake. The bound that matters most on a datagram listener: a handshake is where a peer that has proved nothing already costs a socket, a goroutine and a slot in the peer table |
 | `dtls_idle_timeout` | duration | `5m` | How long a session with nothing on it is kept. Worth raising where devices report on a long cycle: for a battery-powered sensor the handshake is the expensive part of the exchange |
+| `psk` | section | none | RFC 7252 §9.1.3.1's pre-shared key mode: the identity-to-key table, below |
+| `public_keys` | list | `[]` | RFC 7252 §9.1.3.2's raw public key mode: peers pinned by the key they hold, below |
+| `require_security_name` | bool | see below | Refuse a message whose session maps to no security name. True by default where a `psk` or `public_keys` table exists, false where neither does |
 | `answer_refusals` | bool | `true` | Send the standard's response code rather than dropping the datagram |
 | `log_messages` | bool | `false` | An access line per message and per answer, the second carrying the request's size, the answer's and the factor between them |
 | `alert_on_deny` | bool | `true` | A security event for every refusal |
 
-A listener with no `tls` section warns: it is CoAP **NoSec**, where there is
-no identity of any kind — not a weak one, none — and a rule can name only the
-source address. RFC 7252 §9 puts CoAP inside DTLS on 5684, and most of the
-field does not, which is why this warns rather than refuses. A deployment on
-a port other than 5683 or 5684 warns too.
+A listener with neither a `tls` section nor a `psk` table warns: it is CoAP
+**NoSec**, where there is no identity of any kind — not a weak one, none — and
+a rule can name only the source address. RFC 7252 §9 puts CoAP inside DTLS on
+5684, and most of the field does not, which is why this warns rather than
+refuses. A deployment on a port other than 5683 or 5684 warns too.
 
 #### CoAP over DTLS
 
@@ -4107,6 +4110,116 @@ sentence the configuration can hold. `coap_handshakes`,
 `coap_datagrams_dropped` says whether a bound is being reached rather than
 merely existing.
 
+#### Pre-shared keys, and the identity they carry
+
+```yaml
+coap:
+  psk:
+    hint: plant-a
+    identities:
+      - {identity: hall-sensor-1, key: "file:/etc/xproxy/psk/hall-1", name: hall-sensors}
+      - {identity: pump-controller, key: "file:/etc/xproxy/psk/pump"}
+  rules:
+    - {name: sensors, action: allow, security_names: [hall-sensors], methods: [get], paths: ["/3303/..."]}
+    - {name: pump, action: allow, security_names: [pump-controller], methods: [put], paths: ["/3311/..."]}
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `psk.identities[].identity` | string | required | What the client sends in the clear, in its ClientKeyExchange. An empty one is refused at load: it would be the row reached by every client that names nothing. At most 128 octets |
+| `psk.identities[].key` | secret | required | The shared secret in the usual `file:`/`env:`/`vault:` form, read as raw octets unless it is hexadecimal with an `0x` prefix. At least 16 octets, which is the width of the cipher key the mandatory suite uses |
+| `psk.identities[].name` | string | the identity | The security name this identity maps to. A name is for the estate that wants several devices to share one line in the policy without sharing a key |
+| `psk.hint` | string | none | The PSK identity hint the server sends (RFC 4279 §5.2). Most constrained clients ignore it; an estate running two key sets on one segment uses it to say which one this listener is |
+
+This is the mode a constrained device actually ships with. RFC 7252 §9.1.3.1
+makes `TLS_PSK_WITH_AES_128_CCM_8` mandatory for it, because a certificate
+chain, a clock to check it against and an asymmetric verification are things a
+part with sixty kilobytes of flash and a coin cell does not have.
+
+**A `psk` table turns DTLS on by itself**, with no `tls` section and no
+certificate. That is not a convenience: a segment whose devices have no
+certificate machinery is usually run by an estate that has no authority of its
+own either, and requiring a server certificate to serve the mode that exists
+*because* certificates are too expensive would be requiring the thing the mode
+replaces. A listener may hold both, and then serves both modes.
+
+The suites offered are the four AEAD ones the library has:
+`TLS_PSK_WITH_AES_128_GCM_SHA256`, `TLS_PSK_WITH_AES_128_CCM`,
+`TLS_PSK_WITH_AES_128_CCM_8` and `TLS_PSK_WITH_CHACHA20_POLY1305_SHA256`.
+There is no forward secrecy in this mode here, and that is a limit worth
+knowing: the only `ECDHE_PSK` suite the library implements is a CBC one, and
+offering the construction every attack on TLS record padding has been about,
+in order to gain a property, is not a trade this makes. An estate that wants
+forward secrecy on this listener wants the certificate mode.
+
+**An identity the table does not hold fails the handshake**, is counted in
+`coap_unknown_identity` and raises `coap_unknown_psk_identity` with the name
+the peer used. That event is worth an alert: on this protocol the identity is
+the only thing that distinguishes one device from another, so a name nobody
+enrolled is either one device provisioned wrong, repeatedly, or somebody
+trying names, once each.
+
+#### Raw public keys
+
+```yaml
+      tls:
+        client_auth: require_any
+        certificates:
+          - {cert_file: /etc/xproxy/coap.pem, key_file: /etc/xproxy/coap.key}
+      coap:
+        public_keys:
+          - {fingerprint: "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", name: gateway}
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `public_keys[].fingerprint` | string | required | The SHA-256 of the key's SubjectPublicKeyInfo as hexadecimal, with `sha256:` allowed in front and colons, spaces or hyphens ignored. `xproxyctl spki CERT.pem` prints it |
+| `public_keys[].name` | string | required | The security name this key maps to. A pinned key with no name would authenticate a peer and tell the policy nothing |
+
+RFC 7252 §9.1.3.2's mode is an asymmetric key with nothing vouching for it: no
+chain, no authority, no expiry. For an estate with a hundred sensors and no
+certificate authority that is the right shape — the policy names the key, and
+a device is whichever peer holds it.
+
+What is pinned is the **key**, not the certificate that carried it, so a
+certificate reissued around the same key keeps working and one reissued with a
+new key does not. `client_auth: require_any` is the client-certificate mode to
+write here, and the only place this proxy accepts it: it asks for a
+certificate and verifies it against nothing, which is a credential exactly
+because the table below it pins the key. Validation refuses `require_any`
+anywhere else.
+
+**What this is not** is RFC 7250 on the wire. The DTLS library here does not
+negotiate the `client_certificate_type` and `server_certificate_type`
+extensions, so the key travels inside a certificate — a self-signed one, from
+the device — rather than in RFC 7250's own `RawPublicKey` structure. The
+policy is the same in every way that matters (the key is the identity, nothing
+vouches for it, the fingerprint is what the rule names) and the handshake is a
+few hundred octets larger than it would be. A device that can *only* speak
+RFC 7250's structure cannot talk to this listener, and
+[docs/protocols/coap.md](protocols/coap.md) says so in the limits.
+
+#### Security names in rules
+
+A rule's `security_names` covers the peers whose identity maps to one of those
+names, and **no message from a session without one** — including every NoSec
+client. That is the point: a rule written about an authenticated device must
+not apply to an unauthenticated one that happens to be at the same address.
+Naming a name no table produces is a load error, because a rule that can never
+match reads in a file as a control and is not one.
+
+`require_security_name` decides what a session that authenticated *some other
+way* means. A listener holding both a key table and a certificate accepts a
+certificate peer that matches no row, and that session has no name: every rule
+naming `security_names` is unmatchable for it, and what is left would be a
+policy about addresses. So its messages are refused with 4.01 and counted in
+`coap_unnamed_sessions`. It is true by default exactly where a table exists,
+and setting it false where one does is worth a warning.
+
+The identity reaches the logs as well as the policy: one line per established
+session (`security`, `identity`, `cipher_suite`), and `identity` on every
+message line and refusal from a named peer.
+
 #### server.listeners[].coap.rules[]
 
 | Key | Type | Default | Description |
@@ -4118,6 +4231,7 @@ merely existing.
 | `paths` | list of pattern | `[]` | Patterns over the request path. They both **select** the rule and are checked by it, so a rule about one subtree does not decide about another |
 | `queries`, `content_formats` | list | inherited | Narrow the listener's own lists for this rule's traffic |
 | `secure_only` | bool | `false` | Refuse this rule's traffic when it arrived in the clear rather than inside DTLS, which is how "the actuators may only be written by a client that authenticated" is written |
+| `security_names` | list | `[]` | The peer identities this rule covers: a pre-shared key identity's name, or the name a pinned public key maps to. A rule naming them covers no message from a session without one |
 | `allow_proxying`, `allow_observe` | bool | `false`, `true` | Override the listener's switches for this rule's traffic |
 | `max_payload_bytes` | int | inherited | Overrides the listener's payload bound |
 | `schedule` | section | none | Limits the rule to a time window |
@@ -4127,7 +4241,8 @@ Counters: `coap_messages`, `coap_requests`, `coap_responses`, `coap_empty`,
 `coap_would_deny`, `coap_malformed`, `coap_rejected`, `coap_oversize`,
 `coap_rate_limited`, `coap_upstream_failed`, `coap_send_failed`,
 `coap_unsolicited`, `coap_refused_observe`, `coap_handshakes`, `coap_handshakes_failed`,
-`coap_sessions`, `coap_datagrams_dropped`, and the three worth reading
+`coap_sessions`, `coap_datagrams_dropped`, `coap_psk_sessions`,
+`coap_unknown_identity`, `coap_unnamed_sessions`, and the three worth reading
 first — `coap_rogue_device`, an answer refused because it came from an address
 that is not a device; `coap_amplified`, an answer refused for being too large
 a multiple of the question, which is the number that says this listener is

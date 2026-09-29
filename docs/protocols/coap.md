@@ -79,10 +79,30 @@ sixty kilobytes of flash shipped it without a handshake. In NoSec there is no
 identity whatsoever: not a weak one, none. So a policy has the source address,
 the method, the path, the content format and the payload.
 
-Where DTLS *is* deployed, it gives what TLS gives — and the session's identity
-is a certificate, which is a real name that a rule can require. That is what
-`secure_only` is for, and it is the reason to put this listener inside DTLS
-rather than beside it.
+Where DTLS *is* deployed, it gives what TLS gives — and the session carries an
+identity, which is a real name that a rule can require. That is what
+`secure_only` and `security_names` are for, and it is the reason to put this
+listener inside DTLS rather than beside it.
+
+§9 has three ways for a peer to be somebody, and this listener serves all
+three, because they are not a matter of taste:
+
+| Mode | What the peer proves | What the policy names |
+|------|----------------------|-----------------------|
+| **PreSharedKey** (§9.1.3.1) | It holds the key for the identity it named in the clear | The identity, or a name the table maps it to |
+| **RawPublicKey** (§9.1.3.2) | It holds the private key for a public key this listener pinned | The name the pinned key maps to |
+| **Certificate** (§9.1.3.3) | A chain to an authority this listener trusts | `secure_only`, and a pinned key where the table has one |
+
+The first is the one in the field. `TLS_PSK_WITH_AES_128_CCM_8` is mandatory
+for it precisely because the device that needs it has sixty kilobytes of flash
+and a coin cell: no chain to walk, no clock to check it against, no asymmetric
+verification. A `psk` table turns DTLS on by itself — no `tls` section, no
+certificate at either end — since an estate whose devices cannot hold
+certificates usually has no authority of its own either.
+
+What the identity buys is the difference between a policy about addresses and
+a policy about devices. On a shared segment the source address is a guess
+about which sensor sent something; `security_names: [hall-sensors]` is not.
 
 A `tls` section on the listener is what turns it on. The certificates and the
 client-certificate policy are the same configuration every other listener
@@ -204,17 +224,32 @@ an amplified answer and wrote it down would be an amplifier with logging.
 - **It is not a substitute for DTLS.** In NoSec anything that can reach the
   segment can send a well-formed request from any address, and the only reason
   this relay helps is that it is the one place the request passes through.
-- **It does not do DTLS 1.3, pre-shared keys or raw public keys.** RFC 7252 §9
-  names three security modes and this serves the certificate one. PSK is the
-  mode most constrained devices actually ship with, so its absence is a real
-  gap rather than a tidy exclusion — it is named here so that nobody discovers
-  it from a handshake failure.
+- **It does not do DTLS 1.3.** RFC 7252 §9 is DTLS 1.2 and 1.3 is not
+  implemented in the transport here, so `min_version: "1.3"` is a load error
+  rather than a setting that quietly does nothing.
+- **Raw public keys are pinned, not negotiated.** The policy is RFC 7250's —
+  the key is the identity, nothing vouches for it, and `public_keys` names its
+  SHA-256 — but the key travels inside a self-signed certificate rather than
+  in RFC 7250's own `RawPublicKey` structure, because the DTLS library here
+  does not negotiate the `client_certificate_type` and
+  `server_certificate_type` extensions. A device that can only speak that
+  structure cannot talk to this listener; one that can send a self-signed
+  certificate around the same key can, and the handshake is a few hundred
+  octets larger for it.
+- **There is no forward secrecy in pre-shared key mode.** The only `ECDHE_PSK`
+  suite the library implements is CBC-based, and offering the construction
+  every attack on TLS record padding has been about, in order to gain a
+  property, is not a trade this makes. The four AEAD PSK suites are offered;
+  an estate that wants forward secrecy on this listener wants the certificate
+  mode.
 
 ## Standards
 
 | Document | What it covers |
 |----------|----------------|
-| RFC 7252 | The Constrained Application Protocol: the message layer, the options, the option classes, DTLS and NoSec, the proxy rules |
+| RFC 7252 | The Constrained Application Protocol: the message layer, the options, the option classes, DTLS and NoSec, the three security modes, the proxy rules |
+| RFC 4279 | The pre-shared key cipher suites, the identity a client sends and the hint a server offers |
+| RFC 7250 | Raw public keys in TLS and DTLS: the mode whose *policy* this serves, by pinning the key a certificate carries |
 | RFC 7959 | Block-wise transfers, and the Size1 and Size2 declarations |
 | RFC 7641 | Observing resources: registration and notifications |
 | RFC 6690 | The link format, and `/.well-known/core` resource discovery |

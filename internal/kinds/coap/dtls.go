@@ -1,6 +1,7 @@
 package coap
 
 import (
+	"context"
 	"crypto/tls"
 	"net"
 	"net/netip"
@@ -9,6 +10,7 @@ import (
 	wire "github.com/rom/xproxy/internal/coap"
 	"github.com/rom/xproxy/internal/dtlsx"
 	"github.com/rom/xproxy/internal/proxy"
+	"github.com/rom/xproxy/internal/textsafe"
 )
 
 // CoAP inside DTLS, RFC 7252 s9.
@@ -28,7 +30,12 @@ import (
 // one session loop per peer.
 func (s *server) serveDTLS(tc *tls.Config) {
 	b := s.dtlsBounds()
-	dc, err := dtlsx.NewConfig("coap", tc, b)
+	// The pre-shared key table goes to the transport, which is where the
+	// handshake that consults it happens. Everything this kind does with the
+	// identity afterwards -- the name, the rules, the log line -- is on this
+	// side, because a security name is a policy idea and the transport has no
+	// policy.
+	dc, err := dtlsx.NewConfig("coap", tc, b, dtlsx.WithPSK(s.ids.psk))
 	if err != nil {
 		s.host.Logs().Error.Error("coap could not build its DTLS configuration",
 			"listener", s.cfg.Name, "error", err.Error())
@@ -95,7 +102,17 @@ func (s *server) dtlsSession(pc net.PacketConn, raddr net.Addr, dc *dtlsx.Config
 	c.CoAPSessions.Add(1)
 	defer c.CoAPSessions.Add(-1)
 
-	to := &session{conn: conn, to: raddr}
+	// Who the peer is, derived once. Neither a pre-shared key identity nor a
+	// certificate can change inside a session, so deriving it per datagram
+	// would be hashing a key again to learn what is already known -- and the
+	// name has to be on the session anyway, because two peers handshaking at
+	// once are two names.
+	who := s.ids.of(conn)
+	if who.kind == identityPSK {
+		c.CoAPPSKSessions.Add(1)
+	}
+	s.logSession(raddr, who, conn.CipherSuite())
+	to := &session{conn: conn, to: raddr, who: who}
 	buf := make([]byte, s.maxMessage()+1)
 	for {
 		// The idle bound is the session's own deadline rather than the socket's,
@@ -151,6 +168,9 @@ func (s *server) idleTimeout() time.Duration {
 type session struct {
 	conn *dtlsx.Session
 	to   net.Addr
+	// who the peer turned out to be: the security name its pre-shared key
+	// identity or its pinned public key maps to, and how it proved it.
+	who identity
 }
 
 // send writes one CoAP message as one DTLS record.
@@ -161,6 +181,7 @@ func (d *session) send(b []byte) error {
 
 func (d *session) remote() net.Addr { return d.to }
 func (d *session) secure() bool     { return true }
+func (d *session) peer() identity   { return d.who }
 
 // hostOf is an address without its port, for a log line.
 func hostOf(a net.Addr) string {
@@ -173,3 +194,23 @@ func hostOf(a net.Addr) string {
 // The listener's message bound cannot exceed the wire package's -- which this
 // does not compile if it does.
 const _ = uint(wire.MaxMessage - dtlsx.DefaultMTU)
+
+// unknownIdentity is what the pre-shared key table calls when a peer names an
+// identity this listener does not hold.
+//
+// It runs on the handshake's own goroutine, before the peer has proved
+// anything, which is why it does no work beyond a counter and a line. It is
+// worth a security event rather than a debug log: on a segment where the
+// identity is the identity, a device announcing a name nobody enrolled is
+// either a device somebody provisioned wrong or somebody trying names, and an
+// estate should be able to tell those apart by how many there are.
+func (s *server) unknownIdentity(id string) {
+	c := s.host.Counters()
+	c.CoAPUnknownIdentity.Add(1)
+	c.Refuse("coap", "unknown_psk_identity")
+	if !s.alerts() {
+		return
+	}
+	s.host.Logs().SecurityEvent(context.Background(), "deny", "coap_unknown_psk_identity",
+		"listener", s.cfg.Name, "proto", "coap", "identity", textsafe.Clip(id, 128))
+}

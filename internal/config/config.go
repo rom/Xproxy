@@ -3813,6 +3813,27 @@ type CoAPListener struct {
 	// that speaks once an hour would otherwise handshake every time, which on
 	// a battery-powered device is the expensive part of the exchange.
 	DTLSIdleTimeout Duration `yaml:"dtls_idle_timeout"`
+	// PSK serves RFC 7252 s9.1.3.1's pre-shared key mode, which is the one a
+	// constrained device actually ships with. See CoAPPSK.
+	PSK *CoAPPSK `yaml:"psk"`
+	// PublicKeys pin peers by their public key rather than by an authority
+	// that vouched for it, which is what RFC 7252 s9.1.3.2's raw public key
+	// mode is about. See CoAPPublicKey.
+	PublicKeys []CoAPPublicKey `yaml:"public_keys"`
+	// RequireSecurityName refuses a message from a session whose peer maps to
+	// no security name. Default true where a psk or public_keys table exists
+	// and false where neither does, because a listener with no table has
+	// nothing to map a peer to and would otherwise refuse every message.
+	//
+	// It is the switch that decides what a session established some other way
+	// means. A listener with a key table and a certificate accepts both, and
+	// a certificate that matches no row leaves the session with no name --
+	// which is a peer this estate did not enrol, holding a certificate some
+	// authority issued. Refusing it is the default for the same reason the
+	// snmp kind's require_security_name is: a rule naming a security name is
+	// unmatchable otherwise, and the policy silently becomes one about
+	// addresses.
+	RequireSecurityName *bool `yaml:"require_security_name"`
 	// AnswerRefusals sends the response code the standard gives for a
 	// refusal rather than dropping the datagram. Default true, and it
 	// matters more here than elsewhere: a Confirmable request is
@@ -3824,6 +3845,80 @@ type CoAPListener struct {
 	LogMessages bool `yaml:"log_messages"`
 	// AlertOnDeny writes a security event for every refusal. Default true.
 	AlertOnDeny *bool `yaml:"alert_on_deny"`
+}
+
+// CoAPPSK is a listener's pre-shared key mode: the identity-to-key table, and
+// the hint the server offers.
+//
+// RFC 7252 s9.1.3.1 makes TLS_PSK_WITH_AES_128_CCM_8 mandatory for this mode,
+// which is why a device with sixty kilobytes of flash speaks it: a certificate
+// chain, a clock to check it against and an asymmetric verification are things
+// that part does not have. What it gives a relay in exchange is the one thing
+// this protocol otherwise has none of -- a name the client states and then
+// proves.
+//
+// That name is the security name a rule names, the same idea as the snmp
+// kind's cert_to_name table, so that an operator running both sees one idea
+// and not two.
+type CoAPPSK struct {
+	// Identities are the keys this listener holds. A handshake naming an
+	// identity that is not here fails, and the attempt is counted and logged:
+	// on a segment where the identity is the identity, a device announcing a
+	// name nobody enrolled is either misconfigured or is somebody guessing.
+	Identities []CoAPPSKIdentity `yaml:"identities"`
+	// Hint is the PSK identity hint the server sends (RFC 4279 s5.2). Most
+	// constrained clients ignore it; an estate running two key sets on one
+	// segment uses it to say which one this listener is.
+	Hint string `yaml:"hint"`
+}
+
+// CoAPPSKIdentity is one row of the pre-shared key table.
+type CoAPPSKIdentity struct {
+	// Identity is what the client sends in the clear, in its
+	// ClientKeyExchange. Required, and an empty one is refused at load: it
+	// would be the row reached by every client that names nothing.
+	Identity string `yaml:"identity"`
+	// Key is the shared secret, in the usual file:/env:/vault: form. It is
+	// read as raw octets unless it is hexadecimal with a 0x prefix, in which
+	// case it is decoded -- because half the devices in the field are
+	// provisioned with a hex string and the other half with a pass phrase,
+	// and guessing which would be the wrong kind of helpful.
+	//
+	// Sixteen octets is the least this accepts: that is the width of the
+	// cipher key the mandatory suite uses, and a shorter secret is a shorter
+	// cipher key whatever the suite says.
+	Key string `yaml:"key"`
+	// Name is the security name this identity maps to. Empty means the
+	// identity itself, which is what an estate that names its devices
+	// sensibly wants; a name is for the estate that wants several devices to
+	// share one line in the policy ("hall-sensors") without sharing a key.
+	Name string `yaml:"name"`
+}
+
+// CoAPPublicKey pins one peer by its public key.
+//
+// RFC 7252 s9.1.3.2's raw public key mode is the middle of the three: an
+// asymmetric key with nothing vouching for it, no chain to walk and no expiry
+// to check. For an estate with a hundred sensors and no certificate authority
+// that is the right shape -- the policy names the key, and a device is
+// whichever peer holds it.
+//
+// What this listener pins is the SHA-256 of the key's SubjectPublicKeyInfo,
+// which is the key itself and not the envelope it arrived in: a certificate
+// reissued around the same key has the same fingerprint here, and a
+// certificate reissued with a *new* key does not. The transport carries the
+// key inside a certificate rather than in RFC 7250's own structure, and
+// docs/protocols/coap.md says plainly what that costs and why.
+type CoAPPublicKey struct {
+	// Fingerprint is the key: the SHA-256 of its SubjectPublicKeyInfo as
+	// hexadecimal, with "sha256:" allowed in front and colons, spaces or
+	// hyphens between octets ignored, so it can be pasted from whatever
+	// printed it. `xproxyctl coap key-fingerprint FILE` prints one.
+	Fingerprint string `yaml:"fingerprint"`
+	// Name is the security name this key maps to. Required: a key with no
+	// name would be a row that authenticated a peer and told the policy
+	// nothing, which is the mode this table exists to avoid.
+	Name string `yaml:"name"`
 }
 
 // CoAPRule is one per-message rule on a kind: coap listener.
@@ -3850,6 +3945,18 @@ type CoAPRule struct {
 	// rather than inside DTLS, which is how "the actuators may only be
 	// written by a client that authenticated" is written.
 	SecureOnly bool `yaml:"secure_only"`
+	// SecurityNames are the peer identities this rule covers: a pre-shared
+	// key identity's name, or the name a pinned public key maps to. A rule
+	// naming them covers no message from a session without one, and none from
+	// a NoSec client at all -- a rule written about an authenticated device
+	// must not apply to an unauthenticated one that happens to be at the same
+	// address.
+	//
+	// This is the field that makes DTLS worth the handshake on this protocol.
+	// Without it a policy decides on the source address, which on a shared
+	// segment is a guess about which sensor sent something; with it the
+	// policy names the device.
+	SecurityNames []string `yaml:"security_names"`
 	// AllowProxying and AllowObserve override the listener's own switches
 	// for this rule's traffic.
 	AllowProxying bool  `yaml:"allow_proxying"`
@@ -3858,6 +3965,19 @@ type CoAPRule struct {
 	MaxPayloadBytes int `yaml:"max_payload_bytes"`
 	// Schedule limits the rule to a time window.
 	Schedule *ModbusSchedule `yaml:"schedule"`
+}
+
+// RequiresSecurityName says whether a message from a session with no security
+// name is refused. It is true by default exactly where there is a table to map
+// a peer through.
+func (m *CoAPListener) RequiresSecurityName() bool {
+	if m == nil {
+		return false
+	}
+	if m.RequireSecurityName != nil {
+		return *m.RequireSecurityName
+	}
+	return len(m.PublicKeys) > 0 || (m.PSK != nil && len(m.PSK.Identities) > 0)
 }
 
 // Alerts says whether a refusal writes a security event.
@@ -8070,7 +8190,18 @@ type TLS struct {
 	Certificates []Certificate `yaml:"certificates"`
 	// MinVersion is "1.2" or "1.3". Default "1.2".
 	MinVersion string `yaml:"min_version"`
-	// ClientAuth is one of none, request, require. Default none.
+	// ClientAuth is one of none, request, require and require_any. Default
+	// none.
+	//
+	// The first three take a client_ca_file and mean what they say: ask and
+	// check if given, or demand and check. require_any demands a certificate
+	// and checks it against *nothing*, which is only ever right where
+	// something else decides whether the peer is anybody -- and the one place
+	// that is true here is a coap listener with a public_keys table, where the
+	// key inside the certificate is pinned by the table and there is no
+	// authority in the picture at all (RFC 7252 s9.1.3.2's raw public key
+	// mode). Validation refuses it anywhere else, because a certificate
+	// nobody verified is not an identity.
 	ClientAuth string `yaml:"client_auth"`
 	// ClientCAFile is a PEM bundle used to verify client certificates.
 	ClientCAFile string `yaml:"client_ca_file"`

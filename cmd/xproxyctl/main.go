@@ -25,7 +25,7 @@
 //	ban TARGET     ban an address or CIDR (-duration 1h -reason text)
 //	unban TARGET   remove a ban
 //	cluster        show cluster peers and counters
-//	spki FILE      print the spki_pins value for a PEM certificate
+//	spki FILE      print the spki_pins value for a PEM certificate, and the same key as a coap public_keys fingerprint
 //	tui            full-screen live view (-refresh 2s, -no-color)
 //	acme           show managed certificates; "acme renew" forces renewal
 //	icap           show ICAP services and counters
@@ -64,6 +64,7 @@ import (
 
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/config/schema"
+	"github.com/rom/xproxy/internal/dtlsx"
 	_ "github.com/rom/xproxy/internal/filters" // built-in filter kinds for validate
 	"github.com/rom/xproxy/internal/filters/apikey"
 	"github.com/rom/xproxy/internal/intel"
@@ -1294,6 +1295,15 @@ func run(args []string, out, errOut io.Writer) int {
 			return fail(err)
 		}
 		_, _ = fmt.Fprintf(out, "%s  # %s, expires %s\n", tlsconf.SPKIPin(cert), cert.Subject.CommonName, cert.NotAfter.Format("2006-01-02"))
+		// The same hash of the same bytes, in the other spelling. A pin in an
+		// upstream's spki_pins is base64 because that is what the HTTP public
+		// key pinning tools print; a coap listener's public_keys fingerprint
+		// is hexadecimal because that is what a fingerprint looks like
+		// everywhere else in this file. Printing both means nobody has to
+		// convert one into the other by hand, which is a step that goes wrong
+		// silently.
+		_, _ = fmt.Fprintf(out, "sha256:%s  # the same key, for a coap listener's public_keys fingerprint\n",
+			dtlsx.KeyFingerprint(cert))
 		return 0
 	case "ech":
 		return echCommand(fs, out, errOut)

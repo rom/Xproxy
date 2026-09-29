@@ -38,10 +38,17 @@ func (s *server) serve() {
 	// The segment side is either the socket read straight, or a DTLS session per
 	// peer over the same socket. One listener is one address, so it is one or the
 	// other: RFC 7252 s9 puts the two on different ports for exactly this reason.
+	//
+	// A pre-shared key table turns DTLS on by itself, with no tls section and no
+	// certificate. That is not a convenience: a segment that speaks PSK is a
+	// segment whose devices have no certificate machinery, and an estate that
+	// has none for them usually has no authority of its own either. Requiring a
+	// server certificate to serve the mode that exists because certificates are
+	// too expensive would be requiring the thing the mode replaces.
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		if s.tls != nil {
+		if s.secured() {
 			s.serveDTLS(s.tls)
 			return
 		}
@@ -78,6 +85,10 @@ type replier interface {
 	// secure says the request arrived inside a session, which is the only
 	// identity this protocol offers.
 	secure() bool
+	// peer is who the session's far end turned out to be: the security name
+	// its pre-shared key identity or its pinned public key maps to. The zero
+	// identity is a NoSec client, which is nobody.
+	peer() identity
 }
 
 // plain writes onto the listener's own socket.
@@ -88,6 +99,7 @@ type plain struct {
 
 func (p plain) send(b []byte) error { _, err := p.pc.WriteTo(b, p.to); return err }
 func (p plain) remote() net.Addr    { return p.to }
+func (p plain) peer() identity      { return identity{} }
 func (p plain) secure() bool        { return false }
 
 func (s *server) fromClients() {
@@ -209,11 +221,16 @@ func (s *server) fromClient(raw []byte, to replier) {
 		c.CoAPEmpty.Add(1)
 	}
 
-	req := request{from: ip, msg: m, secure: secure, at: time.Now()}
+	who := to.peer()
+	req := request{from: ip, msg: m, secure: secure, at: time.Now(),
+		identity: who.name, named: who.name != ""}
 	d := s.policy.Decide(req)
 	s.observeRequest(m, ip, secure)
 	if !d.Allow {
-		s.refused(ip, m, d, "client")
+		if d.Reason == "no_security_name" {
+			c.CoAPUnnamed.Add(1)
+		}
+		s.refused(ip, m, d, "client", who)
 		if s.enforcing() || d.Hard {
 			s.answer(m, d, to)
 			return
@@ -248,7 +265,7 @@ func (s *server) fromClient(raw []byte, to replier) {
 		s.answer(m, hard("too_many_pending", "", wire.ServiceUnavailable), to)
 		return
 	}
-	s.logMessage(ip, m, d, "client", "allow", secure)
+	s.logMessage(ip, m, d, "client", "allow", secure, who)
 	up := s.device()
 	if up == nil {
 		// The listener has not finished starting, or has stopped. Either way
@@ -301,7 +318,11 @@ func (s *server) fromDevice(raw []byte, from net.Addr) {
 	}
 	d := s.policy.Answer(m, e.size, e.rule)
 	if !d.Allow {
-		s.refused(ip, m, d, "device")
+		// A device's answer carries the client's identity, because the line an
+		// operator reads is about the exchange rather than about one datagram
+		// of it: an answer refused for a device that a named client asked is a
+		// different finding from the same answer to an anonymous one.
+		s.refused(ip, m, d, "device", e.reply.peer())
 		if s.enforcing() || d.Hard {
 			s.pend.drop(e.key())
 			s.obs.remove(e.key())

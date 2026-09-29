@@ -175,6 +175,137 @@ server:
         log_messages: true
 
     # ---------------------------------------------------------------
+    # The battery field, inside DTLS with pre-shared keys on 5684.
+    #
+    # This is the listener most estates will actually run, and the reason is
+    # arithmetic rather than preference: these devices have a coin cell and
+    # sixty kilobytes of flash, and a certificate chain, a clock to check it
+    # against and an asymmetric verification are things they do not have.
+    # RFC 7252 s9.1.3.1 exists for them and makes TLS_PSK_WITH_AES_128_CCM_8
+    # mandatory.
+    #
+    # Note what is *not* here: a tls section. A key table turns DTLS on by
+    # itself, because an estate whose devices cannot hold certificates
+    # usually has no authority of its own either -- and requiring a server
+    # certificate to serve the mode that exists because certificates are too
+    # expensive would be requiring the thing the mode replaces.
+    #
+    # What this buys over the NoSec listener below is the only thing that
+    # matters on a shared segment: a name. The source address is a guess
+    # about which sensor sent something; security_names is not.
+    # ---------------------------------------------------------------
+    - name: battery-field
+      address: "10.40.2.1:5684"
+      kind: coap
+      coap:
+        upstream: sensors
+
+        psk:
+          # The hint says which key set this listener is, for an estate that
+          # runs two on one segment. Most constrained clients ignore it.
+          hint: plant-a
+
+          # One row per device. The key is a file mode 0600 that the
+          # provisioning system writes at the same time it writes the
+          # device's; sixteen octets is the least this accepts, because that
+          # is the width of the cipher key the mandatory suite uses.
+          #
+          # An identity nobody enrolled fails the handshake and raises
+          # coap_unknown_psk_identity with the name it used -- which is the
+          # event to alert on, because one device provisioned wrong repeats
+          # the same name and somebody trying names does not.
+          identities:
+            - identity: hall-sensor-1
+              key: "file:/etc/xproxy/psk/hall-sensor-1"
+              # Several devices, one line in the policy, separate keys.
+              name: hall-sensors
+            - identity: hall-sensor-2
+              key: "file:/etc/xproxy/psk/hall-sensor-2"
+              name: hall-sensors
+            - identity: valve-controller
+              key: "file:/etc/xproxy/psk/valve-controller"
+
+        methods: [get, put]
+        content_formats: [application/senml+cbor, text/plain]
+
+        rules:
+          # The sensors read their own object and nothing else. The rule is
+          # about the *devices*, so a client at one of their addresses with
+          # no key matches nothing here and falls to default_action.
+          - name: sensor-telemetry
+            action: allow
+            security_names: [hall-sensors]
+            methods: [get]
+            paths: ["/3303/..."]
+
+          # And the one device that actuates, by name.
+          - name: valve-writes
+            action: allow
+            security_names: [valve-controller]
+            methods: [put]
+            paths: ["/3306/0/5850"]
+
+        max_response_bytes: 256
+        amplification_factor: 4
+        max_payload_bytes: 64
+        rate_limit: 8
+        rate_burst: 16
+        max_clients: 2048
+
+        # The handshake is the expensive part of the exchange for these
+        # devices, so a session that reports hourly is kept rather than
+        # remade.
+        dtls_idle_timeout: 2h
+        dtls_handshake_timeout: 30s
+
+        log_messages: true
+
+    # ---------------------------------------------------------------
+    # The gateway, pinned by its public key rather than by an authority.
+    #
+    # RFC 7252 s9.1.3.2's mode: an asymmetric key with nothing vouching for
+    # it. There is no certificate authority in this estate and there is not
+    # going to be one, so the policy names the key and the device is
+    # whichever peer holds it. xproxyctl spki prints the fingerprint from the
+    # gateway's own certificate.
+    #
+    # client_auth: require_any is the client-certificate mode this takes --
+    # a certificate asked for and verified against nothing, which is a
+    # credential exactly because public_keys below pins the key inside it.
+    # It is refused on any listener that does not pin keys.
+    #
+    # What this is not is RFC 7250 on the wire: the key travels inside a
+    # self-signed certificate, because the DTLS transport here does not
+    # negotiate the certificate-type extensions. docs/protocols/coap.md says
+    # so in the limits.
+    # ---------------------------------------------------------------
+    - name: gateway
+      address: "10.40.3.1:5684"
+      kind: coap
+      tls:
+        certificates:
+          - cert_file: /etc/xproxy/certs/coap.pem
+            key_file: /etc/xproxy/private/coap.key
+        client_auth: require_any
+        min_version: "1.2"
+      coap:
+        upstream: sensors
+        public_keys:
+          - fingerprint: "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+            name: cell-gateway
+        rules:
+          - name: gateway-collection
+            action: allow
+            security_names: [cell-gateway]
+            methods: [get]
+            paths: ["/3303/...", "/3304/..."]
+        max_response_bytes: 1024
+        amplification_factor: 8
+        rate_limit: 32
+        rate_burst: 64
+        log_messages: true
+
+    # ---------------------------------------------------------------
     # The management segment: the LwM2M server's own path to the devices.
     #
     # Here writing is the point, so the rules are wider -- and a maintenance

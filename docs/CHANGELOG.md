@@ -6,6 +6,73 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (coap: the two security modes a constrained device actually has)
+
+- **`coap.psk` serves RFC 7252 §9.1.3.1, and the identity is the point.** The
+  kind served DTLS with certificates only, which is the mode a part with sixty
+  kilobytes of flash and a coin cell is least able to run: a chain to verify, a
+  clock to verify it against, and an asymmetric operation per handshake. The
+  pre-shared key mode is what such a device ships with. The listener holds an
+  identity-to-key table, the identity the client sent becomes a **security
+  name**, and a rule names it in `security_names` — the same shape as the SNMP
+  kind's `cert_to_name`, so an operator reading both sees one idea rather than
+  two. Several identities may map to one name, which is how a hall of sensors
+  gets one line in the policy without sharing a key.
+
+- **A `psk` table turns DTLS on by itself**, with no `tls` section and no
+  server certificate. Requiring a certificate in order to serve the mode that
+  exists *because* certificates are too expensive would be requiring the thing
+  the mode replaces: an estate whose devices have no certificate machinery
+  usually has no authority of its own either. A listener may hold both tables
+  and then serves both modes.
+
+- **The suites are named rather than inherited.** The four AEAD PSK suites the
+  library has, `TLS_PSK_WITH_AES_128_CCM_8` — the one RFC 7252 makes mandatory
+  for this mode — among them. What is *not* offered is stated rather than
+  discovered: there is no forward secrecy in PSK mode here, because the only
+  `ECDHE_PSK` suite the library implements is a CBC one, and taking the
+  construction every attack on TLS record padding has been about in order to
+  gain a property is not a trade this makes. An estate that wants forward
+  secrecy on this listener wants the certificate mode.
+
+- **`coap.public_keys` is §9.1.3.2's raw public key mode as a policy**: the
+  SHA-256 of a peer's SubjectPublicKeyInfo, pinned, mapping to a name. What is
+  pinned is the *key*, so a certificate reissued around the same key keeps
+  working and one reissued with a new key does not — which is the property the
+  mode is for. `client_auth: require_any` is the client-certificate mode to
+  write for it, and the only place this proxy accepts it: it asks for a
+  certificate and verifies it against nothing, which is a credential exactly
+  because the table below it pins the key. Validation refuses `require_any`
+  anywhere else. `xproxyctl spki CERT.pem` now prints the fingerprint in the
+  form the table takes.
+
+- **What that is not is RFC 7250 on the wire**, and the limits say so. The DTLS
+  library here does not negotiate the `client_certificate_type` and
+  `server_certificate_type` extensions, so the key travels inside a self-signed
+  certificate rather than in RFC 7250's own `RawPublicKey` structure. Every way
+  the mode matters is the same — the key is the identity, nothing vouches for
+  it, the fingerprint is what the rule names — and the handshake is a few
+  hundred octets larger. A device that can only speak RFC 7250's structure
+  cannot talk to this listener.
+
+- **Two refusals, and a bound on each table.** `unknown_psk_identity` fails the
+  handshake and raises an event carrying the name the peer used, because on a
+  shared segment the identity is the only thing telling one sensor from
+  another: a name nobody enrolled is one device provisioned wrong, repeatedly,
+  or somebody trying names, once each. `no_security_name` is a session that
+  authenticated some other way on a listener whose policy is written in names —
+  true by default exactly where a table exists, since what is left of such a
+  policy without a name is a policy about addresses. An empty identity is
+  refused at load (it would be the row every client that names nothing
+  reaches), an identity is at most 128 octets, a key at least 16, and a table
+  at most 8192 rows.
+
+- The identity reaches the logs as well as the policy: one line per established
+  session with `security` (the RFC 7252 mode, not this code's word for it),
+  `identity` and `cipher_suite`, and `identity` on every message line and
+  refusal from a named peer. Counters: `coap_psk_sessions`,
+  `coap_unknown_identity`, `coap_unnamed_sessions`.
+
 ### Added (the inventory, matched against the vendors' own advisories)
 
 - **`asset_inventory.advisories` answers the question an estate that cannot
