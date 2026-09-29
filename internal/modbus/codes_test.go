@@ -62,9 +62,10 @@ func TestEveryFunctionCodeRoundTrips(t *testing.T) {
 		{"read fifo queue", []byte{24, 0x04, 0xDE},
 			[]byte{24, 0x00, 0x06, 0x00, 0x02, 0x01, 0xB8, 0x12, 0x84}, AccessRead},
 		{"encapsulated interface", []byte{43, 14, 0x01, 0x00},
-			// Read Device Identification: conformity, more-follows, the
-			// next object id, one object, and the object itself.
-			[]byte{43, 14, 0x01, 0x00, 0x00, 0x01, 0x00, 0x03, 'A', 'C', 'M'}, AccessIdentify},
+			// Read Device Identification: the identification code, the
+			// conformity level, more-follows, the object id a walk
+			// resumes at, the number of objects, and the object itself.
+			[]byte{43, 14, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x03, 'A', 'C', 'M'}, AccessIdentify},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req, err := ParseRequest(tc.request)
@@ -263,8 +264,11 @@ func TestRTULengthsAreComputedPerCodeAndDirection(t *testing.T) {
 		{"an exception response", false, []byte{0x83, 0x02}},
 		{"a two-byte counted fifo response", false, []byte{24, 0x00, 0x06, 0x00, 0x02, 0x01, 0xB8, 0x12, 0x84}},
 		{"a counted event log response", false, []byte{12, 8, 0x00, 0x00, 0x01, 0x08, 0x01, 0x21, 0x20, 0x00}},
+		// Six fields before the object list: the MEI type, the
+		// identification code, the conformity level, more-follows, the
+		// object id a walk resumes at, and the number of objects.
 		{"a walked identification response", false,
-			[]byte{43, 14, 0x01, 0x00, 0x00, 0x02, 0x00, 0x03, 'A', 'C', 'M', 0x01, 0x02, 'v', '2'}},
+			[]byte{43, 14, 0x01, 0x01, 0xFF, 0x02, 0x02, 0x00, 0x03, 'A', 'C', 'M', 0x01, 0x02, 'v', '2'}},
 		{"a comm event counter response", false, []byte{11, 0xFF, 0xFF, 0x01, 0x08}},
 		{"an exception status response", false, []byte{7, 0x6D}},
 		{"a diagnostic response", false, []byte{8, 0x00, 0x00, 0xA5, 0x37}},

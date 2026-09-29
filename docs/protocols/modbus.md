@@ -55,6 +55,21 @@ than a standard, which this listener is explicit about: the commands it
 recognises it names, and one it does not it reports as unknown rather than
 as harmless.
 
+The identification half of `0x2B` is worth a paragraph of its own, because it
+is the only place in this protocol where a device says what it *is*: the
+response to MEI type 14 carries a vendor name, a product code and a
+`MajorMinorRevision` -- the firmware version -- with up to four more strings
+after them (section 6.21). There is no banner, no capability exchange and no
+version register everybody agrees on, so this answer is the whole of what a
+relay can learn about the equipment in front of it without asking a question
+of its own. This listener reads the answer as it passes and puts the three
+fields into the asset inventory, where
+[`asset_inventory.advisories`](../CONFIG.md#asset_inventory) matches them
+against the vendors' published CSAF advisories. It never sends an
+identification request of its own: a frame this relay invented would be a
+frame on a process network nobody scheduled, and a firmware version is not
+worth that.
+
 ## What the protocol gives you
 
 Nothing, in the base protocol. There is **no authentication, no integrity and

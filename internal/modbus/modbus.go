@@ -273,6 +273,12 @@ type PDU struct {
 	ByteCount int
 	// Records are the file records of codes 20 and 21.
 	Records []FileRecord
+	// Identity is what a device answered about itself: function code 43,
+	// MEI type 14, the one place in this protocol where a device names its
+	// vendor, product and firmware revision. It is set on a response and
+	// nowhere else, and nil everywhere else -- including on a CANopen answer,
+	// which shares the function code and is a tunnel rather than a statement.
+	Identity *DeviceIdentity
 }
 
 // FileRecord is one sub-request of a file record read or write.
@@ -701,7 +707,21 @@ func ParseResponse(pdu []byte, req *PDU) (*PDU, error) {
 		}
 		p.ByteCount = byteCount
 		p.Registers = decodeRegisters(data[4:])
-	case FCReadFileRecord, FCWriteFileRecord, FCReportServerID, FCEncapsulatedInterface,
+	case FCEncapsulatedInterface:
+		// The one variable shape below that this does read into fields: MEI
+		// type 14 is a device naming itself, and that is the whole of what a
+		// relay can learn about what it is in front of without asking a
+		// question of its own. A CANopen answer (type 13) stays opaque, and so
+		// does an identification response whose object list disagrees with its
+		// own length fields -- which is a malformed response rather than a
+		// device to read strings out of.
+		p.ByteCount = len(data)
+		id, err := parseIdentity(data)
+		if err != nil {
+			return nil, err
+		}
+		p.Identity = id
+	case FCReadFileRecord, FCWriteFileRecord, FCReportServerID,
 		FCGetCommEventCounter, FCGetCommEventLog, FCUMAS:
 		// Variable shapes whose own length fields are checked by the
 		// framing. There is nothing a policy decides on inside them,

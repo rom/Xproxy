@@ -782,6 +782,14 @@ func (se *session) exchange(w *worker, j *job) ([]byte, *wire.PDU, error) {
 			w.seen = true
 			t.observeDevice(w.ep.Address, unit)
 		}
+		// And when the answer is the device naming itself, what it said. This
+		// one is reported every time rather than once per worker: a master asks
+		// for identification when it connects or when an engineer presses a
+		// button, so it is rare, and a firmware revision that changed is the
+		// most interesting line an inventory can carry.
+		if pdu.Identity != nil && w.ep != nil {
+			t.observeIdentity(w.ep.Address, unit, pdu.Identity)
+		}
 		out = raw
 		if w.route.framing != t.framing || unit != j.frame.Unit {
 			out = wire.Encode(t.framing, &wire.Frame{Transaction: j.txn, Unit: j.frame.Unit, PDU: frame.PDU})
