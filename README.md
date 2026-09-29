@@ -1536,6 +1536,26 @@ describes it, validation refuses what cannot work, and
   expects and a device behaving like anything else is a finding, which is
   how "there are no engineering workstations on the process network" gets
   written down. Nothing here probes, scans or connects to anything
+- **The inventory matched against the vendors' own advisories.** An estate
+  that cannot patch does not need to be told an advisory exists; it needs
+  to know whether the version it is running is one of the affected ones,
+  which today means reading a PDF per advisory against a spreadsheet
+  nobody has updated. The vendors publish CSAF 2.0 now — Siemens
+  ProductCERT, Schneider Electric, the CISA ICS advisories — so
+  `asset_inventory.advisories` reads a directory of those documents and
+  says, per device, which of them name it. The firmware comes from the
+  traffic: on Modbus, the answer to a master's own Read Device
+  Identification request, which is the one place in that protocol where a
+  device names its vendor, product and revision, and which this relay
+  reads going past and never asks for. Six answers, and five of them are
+  not "affected": **an unmatched version is "not assessed", never "not
+  affected"**, and it comes back with the string or the sentence that
+  could not be read, because a wrong "not affected" is a device somebody
+  stops looking at. Nothing fetches the documents — a relay on a process
+  network dialling a vendor's website every hour is a second network
+  dependency in the one place that is supposed to have none, and a
+  downloader on a machine that is allowed out is where the publishers'
+  signatures get verified anyway
 - Shell completion for bash, zsh and fish, manual pages and a JSON
   schema of the configuration that gives editors completion and inline
   documentation

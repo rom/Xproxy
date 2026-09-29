@@ -120,6 +120,69 @@ asset_inventory:
     - router
     - embedded_device
 
+  # ---------------------------------------------------------------
+  # Stage four, and the reason a firmware version is worth collecting:
+  # match what the estate is running against what the vendors have
+  # published about it.
+  #
+  # The question is not "is there an advisory for this controller" -- a
+  # newsletter answers that -- but "is the version we are running one of
+  # the affected ones", which today means reading a PDF per advisory
+  # against a spreadsheet nobody has updated. The vendors now publish
+  # CSAF 2.0, which is JSON, and the inventory above already knows what
+  # firmware each device reports where a protocol lets it say so.
+  #
+  # Nothing here fetches. These directories are filled by a downloader on
+  # a machine that is allowed out -- the CSAF standard defines one, and
+  # every publisher here offers a feed -- because a relay on the process
+  # network dialling a vendor's website every hour is a second network
+  # dependency in the one place that is supposed to have none. That
+  # machine is also where the publishers' detached signatures are
+  # verified, which is not something a proxy should be inventing.
+  #
+  # A directory that cannot be read at startup is a startup error, not an
+  # empty set: a proxy reporting no advisories because a path was
+  # misspelled would be claiming this estate has nothing against it. A
+  # directory that fails a *refresh* keeps what is loaded and counts the
+  # failure, because a directory being rewritten must not empty the
+  # assessment.
+  advisories:
+    enabled: true
+    sources:
+      - name: siemens-productcert
+        directory: /var/lib/xproxy/csaf/siemens
+      - name: schneider-cybersecurity
+        directory: /var/lib/xproxy/csaf/schneider
+      - name: cisa-ics
+        directory: /var/lib/xproxy/csaf/cisa
+    refresh: 1h
+
+    # Once per device per version, not per observation: a controller that
+    # is affected stays affected until somebody updates it, and an event
+    # per Modbus frame would bury the estate.
+    alert_on_affected: true
+
+    # Off, and this is the setting to understand before reading the
+    # output. not_assessed is not a failure of the matching: it is the
+    # devices whose exposure nobody has established -- a firmware string
+    # no comparison can order ("Rel. 04.03"), an advisory whose range
+    # carries a condition ("all versions < V2.9.2 with CP1604 fitted"),
+    # a device that reports no version at all. On a first run that is
+    # most of an industrial estate, so it is a list to work through
+    # rather than an alert to answer:
+    #
+    #   xproxyctl assets advisories -state not_assessed -long
+    #
+    # What it will never be is "not affected". A wrong "not affected" is
+    # a device somebody stops looking at.
+    alert_on_not_assessed: false
+
+    # Events for high and critical. The whole list is still in
+    # xproxyctl assets advisories, and a finding the vendor scored with
+    # nothing is reported whatever this says -- an unscored record is not
+    # a record to hide behind a threshold.
+    min_severity: high
+
 server:
   listeners:
     # ---------------------------------------------------------------

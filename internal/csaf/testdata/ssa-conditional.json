@@ -1,0 +1,38 @@
+{
+  "document": {
+    "category": "csaf_security_advisory",
+    "csaf_version": "2.0",
+    "title": "SIMATIC S7-400 advisory with a conditional version range",
+    "publisher": {"category": "vendor", "name": "Siemens ProductCERT"},
+    "tracking": {"id": "SSA-CONDITIONAL", "status": "final", "version": "1",
+      "current_release_date": "2024-03-01T00:00:00Z"},
+    "aggregate_severity": {"text": "medium"}
+  },
+  "product_tree": {
+    "branches": [
+      {
+        "category": "vendor",
+        "name": "Siemens",
+        "branches": [
+          {
+            "category": "product_name",
+            "name": "SIMATIC S7-400 CPU family",
+            "branches": [
+              {
+                "category": "product_version_range",
+                "name": "All versions < V2.9.2 with CP1604 fitted",
+                "product": {"product_id": "CSAFPID-0020", "name": "SIMATIC S7-400 with CP1604"}
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "vulnerabilities": [
+    {
+      "cve": "CVE-2024-99993",
+      "product_status": {"known_affected": ["CSAFPID-0020"]}
+    }
+  ]
+}

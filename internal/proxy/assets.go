@@ -31,6 +31,9 @@ type assetKeeper struct {
 	// expected is the allow list of roles, empty when the estate did not say.
 	expected map[assets.Role]bool
 
+	// adv is the advisory matcher, or nil when the configuration has none.
+	adv *advisories
+
 	path     string
 	every    time.Duration
 	once     sync.Once
@@ -74,6 +77,17 @@ func newAssetKeeper(s *Server, c *config.AssetInventory) (*assetKeeper, error) {
 	}
 	k.inv = assets.New(assets.Options{Max: c.MaxAssets, TTL: c.TTL.D(),
 		Vendors: vendors, OnChange: k.changed})
+	if c.Advisories != nil && c.Advisories.Enabled {
+		adv, err := newAdvisories(s, c.Advisories)
+		if err != nil {
+			// A source that cannot be read is a startup error, unlike the
+			// state file below: an inventory that starts empty loses history,
+			// and an advisory set that starts empty reports an estate as
+			// having nothing against it.
+			return nil, err
+		}
+		k.adv = adv
+	}
 	if k.path != "" {
 		n, err := k.inv.Load(k.path)
 		if err != nil {
@@ -138,6 +152,12 @@ func (k *assetKeeper) observe(o assets.Observation) {
 		return
 	}
 	k.srv.stats.AssetObservations.Add(1)
+	if k.adv != nil {
+		// Assessed when the device says something about itself, and reported
+		// only when the answer is new: the matcher remembers what it has
+		// already said about this device at this version.
+		k.adv.assess(a)
+	}
 	if k.expected == nil || k.expected[a.Class.Role] {
 		return
 	}
@@ -161,8 +181,19 @@ func firstWhy(a *assets.Asset) string {
 	return a.Class.Why[0]
 }
 
-// start begins writing the file.
+// start begins writing the file and re-reading the advisories.
 func (k *assetKeeper) start() {
+	if k.adv != nil {
+		k.advisoryLoop(k.cfg.Advisories.RefreshInterval().D())
+		// The estate as it stands, against the advisories as they are now.
+		// Without this the first assessment of a device read back from the
+		// state file would wait for it to say something again, which on a
+		// controller that reports its firmware once at connection could be
+		// months.
+		for _, one := range k.inv.List() {
+			k.adv.assess(one)
+		}
+	}
 	if k.path == "" {
 		return
 	}

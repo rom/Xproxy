@@ -1,6 +1,7 @@
 package modbus
 
 import (
+	"net/netip"
 	"sync"
 
 	"github.com/rom/xproxy/internal/assets"
@@ -117,4 +118,63 @@ func (t *server) observeDevice(addr string, unit uint8) {
 		Listener: t.cfg.Name, Proto: "modbus", Addr: ip,
 		Server: true, Units: []int{int(unit)},
 	})
+}
+
+// observeIdentity reports what a device said about itself.
+//
+// Function code 43 with MEI type 14 is the only place in this protocol where a
+// device names its vendor, its product and its firmware revision, and the only
+// way those reach an inventory without somebody scanning the network. So the
+// answer to a master's own identification request is read on its way past.
+//
+// Nothing here asks the question. A relay that issued a request of its own
+// would be putting a frame on a process network that nobody scheduled, on a
+// protocol where a device answering one has a bounded number of things it can
+// do at once -- and a firmware version is not worth a frame the plant did not
+// plan for. If no master ever asks, the inventory simply does not know, and the
+// advisory matching says "not assessed" rather than guessing.
+func (t *server) observeIdentity(addr string, unit uint8, id *wire.DeviceIdentity) {
+	ip := netutil.AddrOf(addr)
+	if !ip.IsValid() {
+		return
+	}
+	o, ok := identityObservation(t.cfg.Name, ip, unit, id)
+	if !ok {
+		return
+	}
+	t.host.ObserveAsset(o)
+}
+
+// identityObservation turns an identification response into an observation, or
+// says there was nothing in it an inventory can use.
+//
+// It is separate from the call above so that what a device's answer *becomes*
+// can be checked without a network: the mapping is the part with a decision in
+// it, and the call is a line of plumbing.
+func identityObservation(listener string, ip netip.Addr, unit uint8, id *wire.DeviceIdentity) (assets.Observation, bool) {
+	if id.Empty() {
+		return assets.Observation{}, false
+	}
+	// ModelName is what a device is called and ProductName what family it
+	// belongs to; an advisory names either, so the more specific one is
+	// preferred and the other kept where it is the only one given.
+	model := id.Model
+	if model == "" {
+		model = id.Product
+	}
+	switch {
+	case model == "":
+		model = id.ProductCode
+	case id.ProductCode != "" && model != id.ProductCode:
+		// The product code is the orderable part number and is what a vendor's
+		// advisory often names -- "BMXP342020" rather than "Modicon M340" --
+		// so both go in, in the order a reader would write them.
+		model += " " + id.ProductCode
+	}
+	return assets.Observation{
+		Listener: listener, Proto: "modbus", Addr: ip,
+		Server: true, Units: []int{int(unit)},
+		Maker: id.Vendor, Model: model, Firmware: id.Revision,
+		Description: id.Application,
+	}, true
 }

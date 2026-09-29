@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/rom/xproxy/internal/assets"
+	"github.com/rom/xproxy/internal/csaf"
 	"github.com/rom/xproxy/internal/proxy"
 )
 
@@ -153,4 +154,33 @@ func (s *Server) thawAssets(w http.ResponseWriter, r *http.Request) {
 	inv.Thaw()
 	s.audit(r, "asset_baseline_thaw", "was_frozen", was, "baseline_size", n)
 	writeJSON(w, 200, map[string]any{"frozen": false, "was_frozen": was})
+}
+
+// listAdvisories answers GET /v1/assets/advisories: what the vendors' own
+// security advisories say about the devices on this network.
+//
+// The default answer is every device the advisories have something to say
+// about, worst state first. A state filter is the query an operator actually
+// runs -- "give me the ones nobody has assessed" is the list of things to check
+// by hand, and it is a different job from "give me the ones that are affected".
+func (s *Server) listAdvisories(w http.ResponseWriter, r *http.Request) {
+	if s.proxy.Advisories() == nil {
+		writeJSON(w, 404, result{Error: "advisory matching is not configured"})
+		return
+	}
+	q := r.URL.Query()
+	state := strings.ToLower(q.Get("state"))
+	if state != "" && !csaf.KnownState(state) {
+		// A state that is not a state is refused rather than matching nothing:
+		// an empty answer to a typo reads as "the estate is clean", which is
+		// the wrong answer to a misspelling.
+		writeJSON(w, 400, result{Error: "state: must be one of " + strings.Join(csaf.States(), ", ")})
+		return
+	}
+	rep := s.proxy.AdvisoryReport(state, q.Get("documents") == "1")
+	if rep == nil {
+		writeJSON(w, 404, result{Error: "advisory matching is not configured"})
+		return
+	}
+	writeJSON(w, 200, rep)
 }

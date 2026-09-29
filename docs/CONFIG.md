@@ -14276,7 +14276,7 @@ asset_inventory:
 | Kind | What it can honestly see |
 |------|--------------------------|
 | `dhcp` | The lease: the one message in which a device states its own hardware address, vendor class, user class, client identifier, host name and boot file together |
-| `modbus` | Unit identifiers and function codes, at most 64 of each per device, and whether the peer asked or answered |
+| `modbus` | Unit identifiers and function codes, at most 64 of each per device, and whether the peer asked or answered. Also the *answer* to a master's Read Device Identification request (function code 43, MEI type 14), which is the one place in this protocol where a device names its vendor, its product and its firmware revision -- the fields `advisories` below matches on. Nothing asks the question: a relay that issued a request of its own would be putting a frame on a process network nobody scheduled |
 | `iec104` | Common addresses, the same shape over a different protocol |
 | `snmp` | The object identifiers a manager asks for and an agent serves -- **not** their values. The SNMP parser keeps no varbind values by design, so `sysDescr` is not available to read; the OID set is weaker evidence and it is the evidence that exists |
 | `mqtt` | The client identifier on CONNECT |
@@ -14325,6 +14325,131 @@ new. This is what turns the inventory from a reference document into a
 detection, so both freezing and forgetting a baseline
 (`xproxyctl assets baseline -forget`) are written to the audit log with
 the caller's kernel-reported credentials, like a ban.
+
+### Matching against published advisories
+
+`advisories` answers the question an estate that cannot patch actually
+has. Not "is there an advisory for this controller" -- a newsletter says
+that -- but "is the version we are running one of the affected ones",
+which today means reading a PDF per advisory against a spreadsheet nobody
+has updated, which is why it does not get done.
+
+The inventory above already knows what is on the network and, for the
+protocols where a device says so, what firmware each one reports. CSAF 2.0
+(OASIS) is the machine-readable form the vendors now publish their
+advisories in -- Siemens ProductCERT, Schneider Electric and the CISA ICS
+advisories all do -- and a CSAF document says which products and which
+version ranges each CVE affects. This puts the two together.
+
+```yaml
+asset_inventory:
+  enabled: true
+  state_file: /var/lib/xproxy/assets.json
+  advisories:
+    enabled: true
+    sources:
+      - name: siemens-productcert
+        directory: /var/lib/xproxy/csaf/siemens
+      - name: cisa-ics
+        directory: /var/lib/xproxy/csaf/cisa
+    refresh: 1h
+    min_severity: high
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `advisories.enabled` | bool | `false` | Match the inventory against the advisories. Needs `asset_inventory.enabled` as well, since it matches what that collects |
+| `advisories.sources` | list | *(none)* | Where the documents come from. Required when enabled |
+| `advisories.sources[].name` | string | *(required)* | What an operator calls this source: `siemens-productcert`, `cisa-ics`. It appears in the status view beside the document count and the time of the last read, so a directory nobody has updated for a year is visible as itself rather than as part of a total |
+| `advisories.sources[].directory` | path | *(none)* | A directory of CSAF documents, walked into subdirectories because every publisher's distribution is a directory per year. Files that are not CSAF -- an index, a provider-metadata file, a signature, a README -- are counted as ignored rather than treated as errors |
+| `advisories.sources[].file` | path | *(none)* | One document. Exactly one of `file` and `directory` per source |
+| `advisories.refresh` | duration | `1h` | How often the sources are re-read; minimum `1m`, `0` for never (a reload still re-reads them). A refresh that fails keeps the advisories already loaded and counts the failure, which is the opposite of the rule at load: **a source that cannot be read at startup is a startup error**, because a proxy reporting no advisories because a path was misspelled would be claiming an estate has nothing against it |
+| `advisories.alert_on_affected` | bool | `true` | Write `asset_advisory_affected` for a device an advisory names. Once per device per version, not per observation: a controller that is affected stays affected until somebody updates it, and an event per Modbus frame would bury the estate |
+| `advisories.alert_on_not_assessed` | bool | `false` | Write `asset_advisory_not_assessed` for a device whose exposure could not be established. Off by default because on a first run it is most of the estate -- it is a list to work through, and the list is always in `xproxyctl assets advisories -state not_assessed` |
+| `advisories.min_severity` | string | any | The floor for an event: `critical`, `high`, `medium` or `low`. A finding the vendor scored with nothing is reported whatever the floor says, because a record nobody scored is not a record to hide behind a threshold |
+
+**Nothing here fetches.** The documents are read from disk, and that is
+deliberate twice over. A relay on a process network dialling a vendor's
+website every hour is a second network dependency in the one place that is
+supposed to have none, and an OT change board would refuse it. And
+advisory distribution already has downloaders -- the CSAF standard defines
+one, and every publisher in scope offers a ROLIE feed or a directory
+listing -- so the machine that is allowed out runs that on a schedule and
+writes the documents where this can read them. That machine is also where
+the detached signatures belong: verifying a publisher's signature is not
+something a proxy should be inventing.
+
+#### The six answers, and why five of them are not "affected"
+
+| State | What it means |
+|-------|---------------|
+| `affected` | An advisory names this product, and the version this device reports is inside the range the advisory is about |
+| `under_investigation` | The vendor has not decided yet, and says so in the document |
+| `not_assessed` | **Work to do.** The version could not be compared -- the device's firmware string is not a version anything can order (`Rel. 04.03`, `1.20.4 build 7`), or the advisory's own range carries a condition this will not evaluate (`All versions < V2.9.2 with CP1604 fitted`), or the device reports no version at all. Each carries the text it could not read, so the finding says what to check by hand |
+| `fixed` | The version this device runs is the one the document lists as carrying the fix |
+| `not_affected` | Either the vendor says this version is not affected, or the version is outside every affected range -- established by a comparison that succeeded, never by one that failed |
+| `unknown_product` | No loaded advisory names a product this could tie to this device. **This is not "no advisory affects this device"**: it depends entirely on which documents were loaded |
+
+The asymmetry is the whole design. **An unmatched version is never
+reported as "not affected".** A wrong "not affected" is a device somebody
+stops looking at, and the estate that most needs this is the one whose
+devices report the least parseable version strings -- so a comparison this
+cannot defend line by line produces `not_assessed` with the string in the
+reason. "These eleven devices have to be checked by hand" is a useful
+sentence; "these eleven devices are fine" would be a lie with a number in
+it.
+
+What it will compare: an optional `V`, dot-separated numbers, and one
+recognised update or service-pack ordinal after them (`V4.2`, `V4.2.1`,
+`V2.9.2 Update 4`, `V1.2 SP3`, `V4.2 P01`). A missing component is zero,
+so `V4.2` and `V4.2.0` are the same version. Two different ordinal kinds
+on the same numbers (`V1.2 SP3` against `V1.2 HF1`) are not comparable,
+because nothing says which is later. Neither is a single number against a
+dotted one: `20240115` is arithmetically larger than `4.2` and says
+nothing about whether the device is below `V4.2`, so that comparison is
+refused rather than made.
+
+Version *ranges* are read as `vers` expressions (the syntax CSAF asks for:
+`vers:all/<V4.2`, `vers:all/>=V2.0|<V2.9.2`, `vers:all/*`) and as the
+English the vendors write instead (`All versions`, `All versions < V4.2`,
+`prior to V4.2`, `V4.2 and earlier`, `V4.0 - V4.2`, `up to and including
+V1.5`). A range this cannot read makes every device that matched the
+product `not_assessed`, naming the sentence -- rather than dropping the
+condition and reporting the devices as affected.
+
+Products are tied to devices by **name**, and conservatively: the
+advisory's product name and the device's model have to share a contiguous
+run of at least two words, or match exactly. So "SIMATIC S7-1200 CPU
+family" reaches a device calling itself "SIMATIC S7-1200 CPU 1212C
+DC/DC/DC", and does not reach an S7-1500. A relationship in the document
+("this firmware, installed on that controller") is matched on either name,
+since the version lives on the one and the recognisable name on the other.
+The vendor is reported but **not required to agree**: an inventory's vendor
+comes from an IEEE hardware prefix or a protocol field and an advisory's
+from a legal entity, so "Siemens" against "Siemens AG" is ordinary, and a
+matcher that demanded agreement would drop real findings to tidy up its
+output.
+
+An advisory that names a product and no version at all -- which is how an
+advisory with no fix yet is published -- is about every version of it. That
+case needs no comparison, so it reaches the device whose firmware string
+nobody can read, which is exactly the device a version-comparing matcher
+would quietly drop.
+
+#### Reading the advisories
+
+`GET /v1/assets/advisories` answers the counts, the sources and one
+assessment per device, with `state` to narrow to one of the six and
+`documents=1` to list what is loaded. `xproxyctl assets advisories` is the
+same as a table, `-long` one block per device with every advisory that
+names it and the remediation each one gives, and `-documents` the list of
+advisories the proxy is actually working from -- the first question to ask
+of a directory somebody else fills.
+
+The counters are `advisory_affected` and `advisory_not_assessed` (gauges:
+the first goes down as an estate is patched, the second says how much of
+it the matching cannot answer for), `advisory_findings` and
+`advisory_failures`.
 
 ### Reading it
 

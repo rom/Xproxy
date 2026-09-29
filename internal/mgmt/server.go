@@ -208,6 +208,7 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 	mux.HandleFunc("GET /v1/assets", s.listAssets)
 	mux.HandleFunc("POST /v1/assets/baseline", s.freezeAssets)
 	mux.HandleFunc("DELETE /v1/assets/baseline", s.thawAssets)
+	mux.HandleFunc("GET /v1/assets/advisories", s.listAdvisories)
 	mux.HandleFunc("GET /v1/cluster", s.clusterStatus)
 	mux.HandleFunc("GET /v1/acme", func(w http.ResponseWriter, _ *http.Request) {
 		if s.proxy.ACME() == nil {

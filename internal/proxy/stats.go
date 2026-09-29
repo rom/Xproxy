@@ -518,6 +518,20 @@ type Stats struct {
 	AssetFindings     atomic.Uint64
 	AssetUnexpected   atomic.Uint64
 	AssetSaveFailures atomic.Uint64
+	// The inventory matched against published advisories.
+	//
+	// AdvisoryAffected and AdvisoryNotAssessed are gauges rather than totals,
+	// and both are worth watching. The first goes up when an advisory lands on
+	// a product the estate runs and down as the estate is patched. The second
+	// is the devices whose exposure nobody has established -- a firmware
+	// string no comparison can read, or an advisory whose range carries a
+	// condition -- and it is the number that says how much of this estate the
+	// matching cannot answer for, which is a fact about the estate rather than
+	// a fault in the matching.
+	AdvisoryAffected    atomic.Uint64
+	AdvisoryNotAssessed atomic.Uint64
+	AdvisoryFindings    atomic.Uint64
+	AdvisoryFailures    atomic.Uint64
 
 	// SNMPPending is how many requests are outstanding towards agents right
 	// now. It is a gauge rather than a total because the number an operator
@@ -1129,6 +1143,10 @@ type Snapshot struct {
 	AssetFindings          uint64 `json:"asset_findings"`
 	AssetUnexpected        uint64 `json:"asset_unexpected_role"`
 	AssetSaveFailures      uint64 `json:"asset_save_failures"`
+	AdvisoryAffected       uint64 `json:"advisory_affected"`
+	AdvisoryNotAssessed    uint64 `json:"advisory_not_assessed"`
+	AdvisoryFindings       uint64 `json:"advisory_findings"`
+	AdvisoryFailures       uint64 `json:"advisory_failures"`
 	// Access is the just-in-time access ledger's summary, absent when the
 	// configuration has no access section. It is here rather than only on
 	// the management view because a grant queue nobody drains and sessions
@@ -1662,6 +1680,10 @@ func (s *Stats) snapshot() Snapshot {
 		AssetFindings:           s.AssetFindings.Load(),
 		AssetUnexpected:         s.AssetUnexpected.Load(),
 		AssetSaveFailures:       s.AssetSaveFailures.Load(),
+		AdvisoryAffected:        s.AdvisoryAffected.Load(),
+		AdvisoryNotAssessed:     s.AdvisoryNotAssessed.Load(),
+		AdvisoryFindings:        s.AdvisoryFindings.Load(),
+		AdvisoryFailures:        s.AdvisoryFailures.Load(),
 		NTPRequests:             s.NTPRequests.Load(),
 		NTPForwarded:            s.NTPForwarded.Load(),
 		NTPResponses:            s.NTPResponses.Load(),

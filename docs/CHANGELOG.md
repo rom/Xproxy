@@ -6,6 +6,89 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (the inventory, matched against the vendors' own advisories)
+
+- **`asset_inventory.advisories` answers the question an estate that cannot
+  patch actually has.** Not "is there an advisory for this controller" -- a
+  newsletter says that -- but "is the version we are running one of the
+  affected ones", which today means reading a PDF per advisory against a
+  spreadsheet nobody has updated. The inventory already knows what is on the
+  network and, where a protocol lets a device say so, what firmware it reports;
+  CSAF 2.0 is the machine-readable form Siemens ProductCERT, Schneider Electric
+  and the CISA ICS advisories now publish in. This reads a directory of those
+  documents and says, per device, which of them name it.
+
+- **Six answers, and five of them are not "affected".** `affected`,
+  `under_investigation`, `not_assessed`, `fixed`, `not_affected`,
+  `unknown_product`. The two that carry the design: **an unmatched version is
+  `not_assessed`, never "not affected"** -- a device whose firmware reads
+  `Rel. 04.03`, or whose advisory range says "all versions < V2.9.2 with
+  CP1604 fitted", is a device nobody has assessed, and it comes back with the
+  text that could not be read so somebody can check it by hand. And
+  `unknown_product` says no *loaded* advisory names the product, which depends
+  on which documents were loaded and is not the sentence "no advisory affects
+  this device". A wrong "not affected" is a device somebody stops looking at,
+  and on this kind of estate it would have been most of them.
+
+- **What it will compare, and what it refuses.** An optional `V`,
+  dot-separated numbers, and one recognised update or service-pack ordinal
+  (`V4.2.1`, `V2.9.2 Update 4`, `V1.2 SP3`, `V4.2 P01`). A missing component is
+  zero. Refused: two different ordinal kinds on the same numbers (nothing says
+  whether SP3 precedes HF1), and a single number against a dotted one --
+  `20240115` is arithmetically larger than `4.2` and says nothing about whether
+  the device is below `V4.2`. Ranges are read as `vers` expressions and as the
+  English the vendors write instead (`All versions < V4.2`, `prior to V4.2`,
+  `V4.0 - V4.2`, `up to and including V1.5`); one this cannot read makes the
+  devices that matched the product `not_assessed`, naming the sentence, rather
+  than dropping the condition and calling them all affected.
+
+- **Products are tied to devices by name, conservatively**: a contiguous run of
+  at least two words, or an exact match. "SIMATIC S7-1200 CPU family" reaches a
+  device calling itself "SIMATIC S7-1200 CPU 1212C DC/DC/DC" and does not reach
+  an S7-1500. The vendor is reported and *not* required to agree, because an
+  inventory's vendor comes from a hardware prefix and an advisory's from a legal
+  entity. An advisory that names a product and no version -- how an advisory
+  with no fix yet is published -- is about every version, so it reaches the
+  device whose version string nobody can read.
+
+- **Nothing fetches.** The documents are read from disk. A relay on a process
+  network dialling a vendor's website every hour is a second network dependency
+  in the one place that is supposed to have none, and advisory distribution
+  already has downloaders -- the CSAF standard defines one, every publisher in
+  scope offers a feed -- run on a machine that is allowed out, which is also
+  where the detached signatures belong. A source that cannot be read **at load**
+  is a startup error, because a proxy reporting no advisories would be claiming
+  an estate has nothing against it; a source that fails a *refresh* keeps what
+  is loaded and counts the failure.
+
+- **Modbus function code 43, MEI type 14, is where the firmware comes from.**
+  The identification response is the one place in that protocol where a device
+  names its vendor, its product code and its `MajorMinorRevision`, so it is now
+  parsed into fields and put into the inventory (`maker`, `model`, `firmware`).
+  The relay reads a master's own request going past and never sends one: a frame
+  this proxy invented would be a frame on a process network nobody scheduled.
+  A plant whose masters never ask gets `not_assessed`, honestly.
+
+- `xproxyctl assets advisories`, with `-state` for one of the six, `-long` for
+  every advisory that names a device and the remediation each gives, and
+  `-documents` for what the proxy is actually working from -- the first question
+  to ask of a directory somebody else fills. `GET /v1/assets/advisories` is the
+  same. Counters: `advisory_affected` and `advisory_not_assessed` as gauges
+  (the first goes down as an estate is patched, the second says how much of it
+  the matching cannot answer for), `advisory_findings`, `advisory_failures`.
+
+### Fixed (Modbus identification responses were a field short)
+
+- **The RTU and ASCII framing of a Read Device Identification *response* read
+  five fields before the object list where the specification has six.** Section
+  6.21 puts the identification code, the conformity level, more-follows, the
+  object id a walk resumes at and *then* the number of objects after the MEI
+  type; taking the resume point for the count ends the frame five bytes in on
+  the ordinary answer -- more-follows nought, resume nought -- with the objects
+  still on the wire, and the device's answer then reads as malformed and is
+  refused. Modbus/TCP was unaffected, because the MBAP header's length delimits
+  the PDU.
+
 ### Fixed (a DTLS session no longer dies at the handshake bound)
 
 - **A deadline set on a peer's view of a shared DTLS socket now reaches the read

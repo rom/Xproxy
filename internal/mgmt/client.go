@@ -434,6 +434,20 @@ func (c *Client) FreezeAssets() (map[string]any, error) {
 	return out, c.doBody("POST", "/v1/assets/baseline", nil, &out)
 }
 
+// Advisories is what the published advisories say about this estate's devices,
+// optionally narrowed to one state and with the documents themselves.
+func (c *Client) Advisories(state string, documents bool) (*proxy.AdvisoryReport, error) {
+	v := url.Values{}
+	if state != "" {
+		v.Set("state", state)
+	}
+	if documents {
+		v.Set("documents", "1")
+	}
+	var out proxy.AdvisoryReport
+	return &out, c.do("GET", "/v1/assets/advisories?"+v.Encode(), &out)
+}
+
 // ThawAssets forgets the baseline.
 func (c *Client) ThawAssets() (map[string]any, error) {
 	var out map[string]any

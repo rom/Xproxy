@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/assets"
+	"github.com/rom/xproxy/internal/csaf"
 	"github.com/rom/xproxy/internal/mgmt"
+	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/textsafe"
 )
 
@@ -24,7 +26,8 @@ import (
 
 const assetsUsage = "usage: xproxyctl assets [-role R] [-listener L] [-proto P] [-vendor V] [-new] [-changed] [-top N] [-long]\n" +
 	"       xproxyctl assets show KEY\n" +
-	"       xproxyctl assets baseline [-forget]"
+	"       xproxyctl assets baseline [-forget]\n" +
+	"       xproxyctl assets advisories [-state S] [-documents] [-long]"
 
 func assetsCommand(c *mgmt.Client, fs *flag.FlagSet, out, errOut io.Writer, asJSON bool) int {
 	args := fs.Args()[1:]
@@ -34,6 +37,8 @@ func assetsCommand(c *mgmt.Client, fs *flag.FlagSet, out, errOut io.Writer, asJS
 			return assetShow(c, args[1:], out, errOut, asJSON)
 		case "baseline":
 			return assetBaseline(c, args[1:], out, errOut, asJSON)
+		case "advisories":
+			return assetAdvisories(c, args[1:], out, errOut, asJSON)
 		}
 	}
 	af := flag.NewFlagSet("assets", flag.ContinueOnError)
@@ -301,4 +306,181 @@ func intList(v []int) string {
 		out = append(out, fmt.Sprintf("%d", n))
 	}
 	return strings.Join(out, " ")
+}
+
+// assetAdvisories is what the vendors' own advisories say about this estate.
+//
+// The summary comes first and says all six numbers, because the useful output
+// of a first run is the *shape* of the exposure: how many devices an advisory
+// names, and how many nobody can assess yet. A tool that printed only the
+// affected ones would be answering a question nobody can act on without knowing
+// the size of the gap beside it.
+func assetAdvisories(c *mgmt.Client, args []string, out, errOut io.Writer, asJSON bool) int {
+	af := flag.NewFlagSet("assets advisories", flag.ContinueOnError)
+	af.SetOutput(errOut)
+	state := af.String("state", "", "only devices in this state: "+strings.Join(csaf.States(), ", "))
+	documents := af.Bool("documents", false, "list the advisories that are loaded")
+	long := af.Bool("long", false, "one block per device, with every advisory that names it")
+	if err := af.Parse(args); err != nil {
+		return 2
+	}
+	rep, err := c.Advisories(strings.ToLower(*state), *documents)
+	if err != nil {
+		_, _ = fmt.Fprintln(errOut, "error:", err)
+		return 1
+	}
+	if asJSON {
+		return printJSON(out, rep)
+	}
+	advisorySummary(out, rep)
+	if *documents {
+		advisoryDocuments(out, rep)
+	}
+	if len(rep.Assessments) == 0 {
+		_, _ = fmt.Fprintln(out, "no device matched")
+		return 0
+	}
+	if *long {
+		for _, one := range rep.Assessments {
+			advisoryBlock(out, one)
+		}
+		return 0
+	}
+	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	_, _ = fmt.Fprintln(tw, "DEVICE\tSTATE\tSEVERITY\tFIRMWARE\tADVISORY\tFIXED IN\tPRODUCT")
+	for _, one := range rep.Assessments {
+		advisory, fixed := "", ""
+		if len(one.Hits) > 0 {
+			advisory, fixed = one.Hits[0].Advisory, one.Hits[0].Fixed
+			if one.Total > 1 {
+				advisory += fmt.Sprintf(" +%d", one.Total-1)
+			}
+		}
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			one.Asset, one.State, severityField(one), textsafe.Clip64(firmwareField(one)),
+			advisory, textsafe.Clip64(fixed), textsafe.Clip64(one.Product))
+	}
+	_ = tw.Flush()
+	return 0
+}
+
+// advisorySummary is the six numbers, then where the documents came from.
+func advisorySummary(out io.Writer, rep *proxy.AdvisoryReport) {
+	c := rep.Counts
+	_, _ = fmt.Fprintf(out, "%d advisories, %d product records, read %s\n",
+		c.Documents, c.Records, ago(c.Loaded))
+	byState := map[string]int{}
+	for _, one := range rep.Assessments {
+		byState[one.State]++
+	}
+	var parts []string
+	for _, st := range csaf.States() {
+		if n := byState[st]; n > 0 {
+			parts = append(parts, fmt.Sprintf("%s %d", st, n))
+		}
+	}
+	if len(parts) > 0 {
+		_, _ = fmt.Fprintln(out, strings.Join(parts, ", "))
+	}
+	for _, src := range c.Sources {
+		line := fmt.Sprintf("%s: %d advisories from %s", src.Name, src.Documents,
+			textsafe.Clip256(src.Path))
+		if src.Ignored > 0 {
+			line += fmt.Sprintf(", %d files ignored", src.Ignored)
+		}
+		if src.Failures > 0 {
+			line += fmt.Sprintf(", %d unreadable", src.Failures)
+		}
+		if src.Error != "" {
+			line += ": " + textsafe.Clip256(src.Error)
+		}
+		_, _ = fmt.Fprintln(out, line)
+	}
+	_, _ = fmt.Fprintln(out)
+}
+
+// advisoryDocuments lists what is loaded, which is the answer to "what does
+// this proxy actually know about" -- the first question an operator asks of a
+// directory somebody else fills.
+func advisoryDocuments(out io.Writer, rep *proxy.AdvisoryReport) {
+	if len(rep.Advisories) == 0 {
+		return
+	}
+	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	_, _ = fmt.Fprintln(tw, "ADVISORY\tRELEASED\tSEVERITY\tPUBLISHER\tTITLE")
+	for _, a := range rep.Advisories {
+		released := ""
+		if !a.Released.IsZero() {
+			released = a.Released.Format("2006-01-02")
+		}
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", a.ID, released,
+			a.Severity, textsafe.Clip64(a.Publisher), textsafe.Clip256(a.Title))
+	}
+	_ = tw.Flush()
+	_, _ = fmt.Fprintln(out)
+}
+
+// advisoryBlock is one device with everything that names it, which is what
+// somebody reads before deciding what to do about it.
+func advisoryBlock(out io.Writer, one *csaf.Assessment) {
+	_, _ = fmt.Fprintf(out, "%s: %s\n", one.Asset, one.State)
+	if one.Product != "" {
+		_, _ = fmt.Fprintf(out, "  product     %s\n", textsafe.Clip256(one.Product))
+	}
+	if one.Vendor != "" {
+		_, _ = fmt.Fprintf(out, "  vendor      %s\n", textsafe.Clip64(one.Vendor))
+	}
+	_, _ = fmt.Fprintf(out, "  firmware    %s\n", textsafe.Clip64(firmwareField(one)))
+	if one.Reason != "" {
+		_, _ = fmt.Fprintf(out, "  reason      %s\n", textsafe.Clip256(one.Reason))
+	}
+	_, _ = fmt.Fprintf(out, "  compared    %d advisory records\n", one.Compared)
+	for _, h := range one.Hits {
+		line := fmt.Sprintf("  %s %s", h.Advisory, h.State)
+		if h.CVE != "" {
+			line += " " + h.CVE
+		}
+		if h.Severity != "" {
+			line += fmt.Sprintf(" %s", h.Severity)
+			if h.Score > 0 {
+				line += fmt.Sprintf(" %.1f", h.Score)
+			}
+		}
+		_, _ = fmt.Fprintln(out, line)
+		if h.Versions != "" {
+			_, _ = fmt.Fprintf(out, "    versions  %s\n", textsafe.Clip256(h.Versions))
+		}
+		if h.Fixed != "" {
+			_, _ = fmt.Fprintf(out, "    fixed in  %s\n", textsafe.Clip256(h.Fixed))
+		}
+		if h.Fix != "" {
+			_, _ = fmt.Fprintf(out, "    remedy    %s\n", textsafe.Clip256(h.Fix))
+		}
+		if h.URL != "" {
+			_, _ = fmt.Fprintf(out, "    reference %s\n", textsafe.Clip256(h.URL))
+		}
+	}
+	_, _ = fmt.Fprintln(out)
+}
+
+// severityField is the worst severity with the score beside it, or a dash: a
+// blank column reads as a missing value rather than as a device nothing has
+// scored.
+func severityField(one *csaf.Assessment) string {
+	if one.Worst == "" {
+		return "-"
+	}
+	if one.Score > 0 {
+		return fmt.Sprintf("%s %.1f", one.Worst, one.Score)
+	}
+	return one.Worst
+}
+
+// firmwareField says so when a device has never reported a version, because
+// that is a different thing from a version this could not read.
+func firmwareField(one *csaf.Assessment) string {
+	if one.Firmware == "" {
+		return "none reported"
+	}
+	return one.Firmware
 }

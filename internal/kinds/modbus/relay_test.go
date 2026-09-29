@@ -62,6 +62,11 @@ type plc struct {
 	silent bool
 	// exception answers every request with this exception code.
 	exception byte
+	// vendorName, productCode and revision are what the device says about
+	// itself when a master asks for its identification (function code 43,
+	// MEI type 14). Empty leaves the function unimplemented, which is what
+	// most of the installed base does.
+	vendorName, productCode, revision string
 }
 
 func startPLC(t *testing.T, p *plc) *plc {
@@ -196,6 +201,26 @@ func (p *plc) answer(q *wire.PDU, pdu []byte) []byte {
 		return []byte{q.Function, 3, 0x01, 0xFF, 0x00}
 	case wire.FCDiagnostic:
 		return append([]byte(nil), pdu...)
+	case wire.FCEncapsulatedInterface:
+		if p.vendorName == "" || q.SubFunction != wire.MEIIdentification {
+			break
+		}
+		// Basic identification, section 6.21: the identification code, the
+		// conformity level, more-follows, the object id a walk would resume
+		// at, the number of objects, and then the objects.
+		out := []byte{q.Function, wire.MEIIdentification, 0x01, 0x81, 0x00, 0x00, 0x03}
+		for _, o := range []struct {
+			id    byte
+			value string
+		}{
+			{wire.IDVendor, p.vendorName},
+			{wire.IDProductCode, p.productCode},
+			{wire.IDRevision, p.revision},
+		} {
+			out = append(out, o.id, byte(len(o.value)))
+			out = append(out, o.value...)
+		}
+		return out
 	}
 	return wire.ExceptionPDU(q.Function, wire.ExIllegalFunction)
 }

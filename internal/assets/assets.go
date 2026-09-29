@@ -106,6 +106,14 @@ type Observation struct {
 	UserAgent   string
 	Model       string
 	Firmware    string
+	// Maker is the manufacturer a device named *itself* -- a Modbus
+	// identification response's vendor name, an SNMP system description's
+	// first field. It is a different claim from Vendor on the asset, which is
+	// what a hardware prefix resolved to, and the two disagree often enough
+	// that collapsing them would lose information: a prefix belongs to
+	// whoever made the network module, and the device's own answer names
+	// whoever made the device.
+	Maker string
 
 	// The shapes of what it asked for or answered, which are the stronger
 	// evidence: a device cannot change these without changing what it does.
@@ -146,6 +154,11 @@ type Asset struct {
 	UserAgent   string `json:"user_agent,omitempty"`
 	Model       string `json:"model,omitempty"`
 	Firmware    string `json:"firmware,omitempty"`
+	// Maker is the manufacturer the device named itself, where a protocol let
+	// it. Kept beside Vendor rather than folded into it: Vendor is a hardware
+	// prefix resolved through a registry, this is the device's own answer, and
+	// an advisory search wants the second one first.
+	Maker string `json:"maker,omitempty"`
 
 	// Protos counts the observations per protocol, which is how an operator
 	// sees that a device speaks both Modbus and HTTP -- usually a gateway, and
@@ -417,6 +430,7 @@ func (inv *Inventory) merge(o Observation, hw string) (*Asset, []Change) {
 	setIf(&a.UserAgent, o.UserAgent)
 	setIf(&a.Model, o.Model)
 	setIf(&a.Firmware, o.Firmware)
+	setIf(&a.Maker, o.Maker)
 
 	if o.Proto != "" && len(a.Protos) < MaxProtos {
 		a.Protos[o.Proto]++

@@ -290,7 +290,16 @@ func rtuRemaining(r io.Reader, fc byte, request bool, pending byte) (rtuLen, err
 		// know where the frame ends -- and a CANopen answer (MEI type
 		// 13) carries whatever CANopen carries, which this framing
 		// cannot measure at all, so it is refused rather than guessed.
-		head := make([]byte, 5)
+		//
+		// Six fields come before the list, and all six have to be read
+		// here: the MEI type, the identification code, the conformity
+		// level, more-follows, the object id a walk resumes at, and
+		// only then the number of objects (section 6.21). Reading five
+		// of them takes the resume point for the count, which on the
+		// ordinary answer -- more-follows nought, resume nought -- is
+		// a frame that ends five bytes in with the objects still on
+		// the wire, and the device's answer becomes a malformed one.
+		head := make([]byte, 6)
 		if _, err := io.ReadFull(r, head); err != nil {
 			return rtuLen{}, err
 		}
@@ -298,7 +307,7 @@ func rtuRemaining(r io.Reader, fc byte, request bool, pending byte) (rtuLen, err
 			return rtuLen{}, ErrUnknownFunction
 		}
 		out := head
-		for i := 0; i < int(head[4]); i++ {
+		for i := 0; i < int(head[5]); i++ {
 			pair := make([]byte, 2)
 			if _, err := io.ReadFull(r, pair); err != nil {
 				return rtuLen{}, err
