@@ -444,7 +444,7 @@ func nodeStatus(srv *proxy.Server, sb *sandbox.Status) fleet.NodeStatus {
 // sibling.
 func split(role listener.Role, cfg *config.Config) (mine, theirs int) {
 	for _, lc := range cfg.Server.Listeners {
-		if role.Serves(lc.Kind) {
+		if role.Owns(lc.Kind, lc.Daemon) {
 			mine++
 		} else {
 			theirs++
@@ -466,11 +466,11 @@ func own(role listener.Role, cfg *config.Config, logs *logging.Logs) *config.Con
 	kept := make([]config.Listener, 0, len(cfg.Server.Listeners))
 	left := make([]string, 0, len(cfg.Server.Listeners))
 	for _, lc := range cfg.Server.Listeners {
-		if role.Serves(lc.Kind) {
+		if role.Owns(lc.Kind, lc.Daemon) {
 			kept = append(kept, lc)
 			continue
 		}
-		owner, _ := listener.RoleOf(lc.Kind)
+		owner, _ := listener.Owner(lc.Kind, lc.Daemon)
 		left = append(left, lc.Name+" (kind "+lc.Kind+", "+owner.Daemon()+")")
 	}
 	if len(left) == 0 {

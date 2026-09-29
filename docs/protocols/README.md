@@ -39,57 +39,62 @@ than the person's.
 | RFB 3.3–3.8, VeNCrypt | [vnc](vnc.md) | 5900+ |
 | RDP over TLS, NLA, or its own encryption | [rdp](rdp.md) | 3389 |
 
-## xrelay — the machines
+## xrelay — the services
 
-Machine to machine, and operational technology. No people, no recordings, and a
-policy written in each protocol's own terms.
+Machine to machine, between services. No people, no recordings, and a policy
+written in each protocol's own terms.
 
 ### Mail, messaging and files
 
 | Protocol | Page | Usual port |
 |----------|------|------------|
 | SMTP and submission | [smtp](smtp.md) | 25, 587, 465 |
-| MQTT 3.1.1 and 5.0 | [mqtt](mqtt.md) | 1883, 8883 |
-| CoAP, and CoAP over DTLS | [coap](coap.md) | 5683, 5684 |
-| OPC UA | [opcua](opcua.md) | 4840 |
 | AMQP 0-9-1 and AMQP 1.0 | [amqp](amqp.md) | 5672, 5671 |
 | FTP and FTPS | [ftp](ftp.md) | 21, 990 |
-| TFTP | [tftp](tftp.md) | 69 |
-| Syslog, RFC 5424 and RFC 3164 | [syslog](syslog.md) | 514, 6514 |
 
-### Infrastructure
+### Directory and databases
 
 | Protocol | Page | Usual port |
 |----------|------|------------|
-| SNMP v1, v2c and v3 | [snmp](snmp.md) | 161, 162 |
 | LDAP v3 and LDAPS | [ldap](ldap.md) | 389, 636 |
-| DHCPv4 | [dhcp](dhcp.md) | 67, 68 |
-| DHCPv6 | [dhcp6](dhcp6.md) | 547 |
-| NTP v1–v4, SNTP, NTS-protected | [ntp](ntp.md) | 123 |
-| NTS key establishment | [ntske](ntske.md) | 4460 |
-
-### Databases
-
-| Protocol | Page | Usual port |
-|----------|------|------------|
 | PostgreSQL frontend/backend v3 | [postgres](postgres.md) | 5432 |
 | MySQL and MariaDB | [mysql](mysql.md) | 3306 |
 | TDS 7.x for SQL Server | [tds](tds.md) | 1433 |
 | Redis, RESP2 and RESP3 | [redis](redis.md) | 6379 |
 
-### Operational technology
+## xot — the plant
 
 The protocols in front of equipment that cannot be patched on a release cycle.
 Every one of them was designed for a private network, and none has
-authentication worth the name.
+authentication worth the name — which is why the relay *is* the access control
+here, and why it is a binary that holds these protocols and nothing else.
 
 | Protocol | Page | Usual port |
 |----------|------|------------|
 | Modbus/TCP, RTU, ASCII, Modbus/TCP Security | [modbus](modbus.md) | 502, 802 |
 | IEC 60870-5-104, IEC 62351-3 TLS | [iec104](iec104.md) | 2404 |
-| BACnet/IP (ASHRAE 135 Annex J) | [bacnet](bacnet.md) | 47808 |
 | Siemens S7comm | [s7](s7.md) | 102 |
 | IEC 61850 MMS | [mms](mms.md) | 102 |
+| BACnet/IP (ASHRAE 135 Annex J) | [bacnet](bacnet.md) | 47808 |
+| OPC UA | [opcua](opcua.md) | 4840 |
+| CoAP, and CoAP over DTLS | [coap](coap.md) | 5683, 5684 |
+
+## xrelay and xot — the infrastructure both run
+
+Time, provisioning, logging and monitoring. A data centre runs these and so does
+a plant, so both binaries link them and the listener says which daemon binds it:
+`daemon: xot`, defaulting to `xrelay`.
+
+| Protocol | Page | Usual port |
+|----------|------|------------|
+| MQTT 3.1.1 and 5.0, with Sparkplug B | [mqtt](mqtt.md) | 1883, 8883 |
+| Syslog, RFC 5424 and RFC 3164 | [syslog](syslog.md) | 514, 6514 |
+| SNMP v1, v2c and v3 | [snmp](snmp.md) | 161, 162 |
+| TFTP | [tftp](tftp.md) | 69 |
+| DHCPv4 | [dhcp](dhcp.md) | 67, 68 |
+| DHCPv6 | [dhcp6](dhcp6.md) | 547 |
+| NTP v1–v4, SNTP, NTS-protected | [ntp](ntp.md) | 123 |
+| NTS key establishment | [ntske](ntske.md) | 4460 |
 
 ## Reading these pages
 

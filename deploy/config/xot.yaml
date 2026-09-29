@@ -1,0 +1,61 @@
+# Example xot configuration: the OT daemon, the protocols the plant
+# speaks. Every omitted value takes a conservative default; see
+# docs/CONFIG.md for the full reference.
+#
+# Validate before starting: xot -config /etc/xproxy/xot.yaml -validate
+version: 1
+
+# The shared fragments, as in xgate.yaml.
+# includes: [/etc/xproxy/estate.d/*.yaml]
+
+server:
+  listeners:
+    # The control protocol, in front of a PLC. The policy is positive:
+    # what is not written here is refused, which on a process network is
+    # the only default that means anything.
+    - name: plc
+      address: "0.0.0.0:502"
+      kind: modbus
+      modbus:
+        upstream: plc
+        allow_clients: ["10.30.1.0/24"]
+        log_frames: true
+        default_action: deny
+        rules:
+          - {name: scada-reads, action: allow, clients: ["10.30.1.0/24"], functions: [read_holding_registers, read_input_registers]}
+
+    # The plant's own syslog, named for this daemon rather than left to
+    # xrelay: both serve the kind, and the field equipment's logs belong
+    # on the side of the DMZ the field equipment is on.
+    - name: plant-logs
+      address: "0.0.0.0:514"
+      kind: syslog
+      daemon: xot
+      syslog:
+        upstream: collectors
+        udp: true
+        allow_senders: ["10.40.0.0/16"]
+        rate_limit: 2000
+
+# What the plant is, learned from the traffic rather than from a
+# spreadsheet -- and, where a vendor publishes CSAF, which advisories
+# name the versions it reports.
+asset_inventory:
+  enabled: true
+  state_file: /var/lib/xot/inventory.json
+
+management:
+  socket: /run/xot/mgmt.sock
+  socket_mode: "0660"
+  history_dir: /var/lib/xot/history
+metrics:
+  listen: "127.0.0.1:9103"
+logging:
+  directory: /var/log/xot
+  access: {enabled: true}
+
+upstreams:
+  - name: plc
+    endpoints: [{address: "10.40.1.10:502"}]
+  - name: collectors
+    endpoints: [{address: "10.20.4.10:514"}]

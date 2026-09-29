@@ -66,6 +66,7 @@ build:
 	$(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BIN)/xproxy ./cmd/xproxy
 	$(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BIN)/xgate ./cmd/xgate
 	$(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BIN)/xrelay ./cmd/xrelay
+	$(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BIN)/xot ./cmd/xot
 	$(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BIN)/xproxyctl ./cmd/xproxyctl
 	$(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BIN)/xproxy-admin ./cmd/xproxy-admin
 	$(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BIN)/xproxy-fleet ./cmd/xproxy-fleet
@@ -169,8 +170,8 @@ RELNAME  = xproxy-$(BASE_VERSION)-linux-amd64
 # macOS binaries, cross compiled (cgo is never needed). See docs/SETUP_MACOS.md.
 DARWIN_ARCHS ?= arm64 amd64
 # DARWIN_BINARIES is deliberately smaller than LINUX_BINARIES: macOS ships the
-# edge proxy, the control tools and the web GUI, and has no launchd job for xgate
-# or xrelay, so those two are not built or shipped for it. deploy/macos/install.sh
+# edge proxy, the control tools and the web GUI, and has no launchd job for xgate,
+# xrelay or xot, so those three are not built or shipped for it. deploy/macos/install.sh
 # installs exactly this list, and test/deploy holds the two together.
 DARWIN_BINARIES = xproxy xproxyctl xproxy-admin xproxy-fleet xproxy-replay
 
@@ -214,7 +215,7 @@ vet-all: vet
 # to configure two daemons the tarball did not contain, so an SSH bastion or any
 # relay listener could not be run from a release at all. test/deploy holds this
 # list against the build rules above.
-LINUX_BINARIES = xproxy xgate xrelay xproxyctl xproxy-admin xproxy-fleet xproxy-replay xsigner
+LINUX_BINARIES = xproxy xgate xrelay xot xproxyctl xproxy-admin xproxy-fleet xproxy-replay xsigner
 
 release: build dist
 	rm -rf $(DIST) && mkdir -p $(DIST)/$(RELNAME)
@@ -249,6 +250,7 @@ install: build
 	install -D -m 0755 $(BIN)/xproxy $(DESTDIR)$(PREFIX)/bin/xproxy
 	install -D -m 0755 $(BIN)/xgate $(DESTDIR)$(PREFIX)/bin/xgate
 	install -D -m 0755 $(BIN)/xrelay $(DESTDIR)$(PREFIX)/bin/xrelay
+	install -D -m 0755 $(BIN)/xot $(DESTDIR)$(PREFIX)/bin/xot
 	install -D -m 0755 $(BIN)/xproxyctl $(DESTDIR)$(PREFIX)/bin/xproxyctl
 	install -D -m 0755 $(BIN)/xproxy-admin $(DESTDIR)$(PREFIX)/bin/xproxy-admin
 	install -D -m 0755 $(BIN)/xproxy-fleet $(DESTDIR)$(PREFIX)/bin/xproxy-fleet
@@ -266,13 +268,17 @@ install: build
 	install -D -m 0644 deploy/systemd/xgate.socket $(DESTDIR)/etc/systemd/system/xgate.socket
 	install -D -m 0644 deploy/systemd/xrelay.service $(DESTDIR)/etc/systemd/system/xrelay.service
 	install -D -m 0644 deploy/systemd/xrelay.socket $(DESTDIR)/etc/systemd/system/xrelay.socket
+	install -D -m 0644 deploy/systemd/xot.service $(DESTDIR)/etc/systemd/system/xot.service
+	install -D -m 0644 deploy/systemd/xot.socket $(DESTDIR)/etc/systemd/system/xot.socket
 	install -D -m 0644 deploy/sysctl/90-xproxy.conf $(DESTDIR)/etc/sysctl.d/90-xproxy.conf
 	install -D -m 0644 deploy/logrotate/xproxy $(DESTDIR)/etc/logrotate.d/xproxy
 	install -D -m 0644 deploy/logrotate/xgate $(DESTDIR)/etc/logrotate.d/xgate
 	install -D -m 0644 deploy/logrotate/xrelay $(DESTDIR)/etc/logrotate.d/xrelay
+	install -D -m 0644 deploy/logrotate/xot $(DESTDIR)/etc/logrotate.d/xot
 	install -D -m 0640 -b deploy/config/xproxy.yaml $(DESTDIR)/etc/xproxy/xproxy.yaml
 	install -D -m 0640 -b deploy/config/xgate.yaml $(DESTDIR)/etc/xproxy/xgate.yaml
 	install -D -m 0640 -b deploy/config/xrelay.yaml $(DESTDIR)/etc/xproxy/xrelay.yaml
+	install -D -m 0640 -b deploy/config/xot.yaml $(DESTDIR)/etc/xproxy/xot.yaml
 	install -D -m 0644 deploy/sysusers/xproxy.conf $(DESTDIR)/usr/lib/sysusers.d/xproxy.conf
 	install -D -m 0644 deploy/tmpfiles/xproxy-cluster.conf $(DESTDIR)/usr/lib/tmpfiles.d/xproxy-cluster.conf
 	install -D -m 0644 deploy/tmpfiles/xproxy-config.conf $(DESTDIR)/usr/lib/tmpfiles.d/xproxy-config.conf
@@ -282,6 +288,7 @@ install: build
 	install -D -m 0644 docs/man/xproxy.8 $(DESTDIR)$(PREFIX)/share/man/man8/xproxy.8
 	install -D -m 0644 docs/man/xgate.8 $(DESTDIR)$(PREFIX)/share/man/man8/xgate.8
 	install -D -m 0644 docs/man/xrelay.8 $(DESTDIR)$(PREFIX)/share/man/man8/xrelay.8
+	install -D -m 0644 docs/man/xot.8 $(DESTDIR)$(PREFIX)/share/man/man8/xot.8
 	install -D -m 0644 docs/man/xproxyctl.8 $(DESTDIR)$(PREFIX)/share/man/man8/xproxyctl.8
 	install -D -m 0644 docs/man/xproxy-replay.8 $(DESTDIR)$(PREFIX)/share/man/man8/xproxy-replay.8
 	install -D -m 0644 docs/man/xsigner.8 $(DESTDIR)$(PREFIX)/share/man/man8/xsigner.8

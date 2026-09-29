@@ -12,19 +12,31 @@ configuration patterns and reading the logs. Installation is covered in
 |--------|---------|
 | `xproxy` | The edge data plane: `http`, `forward`, `tcp`, `udp` and `dns` listeners |
 | `xgate` | The gate: `ssh`, `telnet`, `vnc` and `rdp` listeners — the bastion and the remote access gateways, their policy, second factor and session recording |
-| `xrelay` | The relay: `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `ntp` and `ntske` listeners |
+| `xrelay` | The relay: `smtp`, `ftp`, `ldap`, `postgres`, `mysql`, `tds`, `redis` and `amqp` listeners, and the eight it shares with `xot` |
+| `xot` | The OT daemon: `modbus`, `iec104`, `s7`, `mms`, `bacnet`, `opcua` and `coap` listeners, and the shared `mqtt`, `syslog`, `snmp`, `tftp`, `dhcp`, `dhcp6`, `ntp` and `ntske` — the binary for level 3.5, with none of the relay's own protocols in it |
 | `xproxyctl` | Control tool talking to a daemon's Unix socket |
 | `xproxy-admin` | Web GUI: a separate process serving a browser interface over the same socket |
 | `xproxy-replay` | Reads a session recording and shows it: a terminal session replayed with its timing, a VNC one decoded into frames or one self-contained page, an RDP one as the timeline of what it did. It opens no sockets and needs no daemon |
 
-### The three daemons
+### The four daemons
 
-`xproxy`, `xgate` and `xrelay` are the same program with different
+`xproxy`, `xgate`, `xrelay` and `xot` are the same program with different
 protocol code linked into them, split by who is on the other end of the
-socket: the open internet, a person, or a machine. Run only the ones you
-need — a site with no bastion never installs `xgate`, and the SSH and
-SFTP implementation is then not present on the machine at all, rather
-than present and unconfigured.
+socket: the open internet, a person, a service, or the plant. Run only the
+ones you need — a site with no bastion never installs `xgate`, and the SSH
+and SFTP implementation is then not present on the machine at all, rather
+than present and unconfigured. The same argument is why `xot` exists: the
+proxy in front of a process network has no mail parser, no FTP, no
+directory and no database wire protocol in it.
+
+Eight kinds are served by both relays — `mqtt`, `syslog`, `snmp`, `tftp`,
+`dhcp`, `dhcp6`, `ntp` and `ntske`, which a plant and a data centre both
+run — and a listener of one of those says which daemon binds it with
+`daemon: xot`.
+Left unset it is `xrelay`'s, so a configuration written before `xot`
+existed is served by the daemon that has always served it. Every other
+kind belongs to exactly one daemon, and naming a different one is a load
+error.
 
 They take the same flags, read the same configuration format, and are
 controlled by the same `xproxyctl` over a socket each:
@@ -33,6 +45,7 @@ controlled by the same `xproxyctl` over a socket each:
 xproxy -config /etc/xproxy/xproxy.yaml     # run
 xgate  -config /etc/xproxy/xgate.yaml
 xrelay -config /etc/xproxy/xrelay.yaml
+xot    -config /etc/xproxy/xot.yaml
 
 xproxy -config file.yaml -validate         # validate and exit 0/1
 xproxy -version
@@ -74,7 +87,7 @@ Signals:
 | `SIGTERM`, `SIGINT` | Drain within `server.shutdown_timeout`, then exit |
 
 Under systemd use `systemctl reload xproxy` and `systemctl restart xproxy`
-(likewise `xgate` and `xrelay`);
+(likewise `xgate`, `xrelay` and `xot`);
 on macOS `launchctl kill HUP system/com.sysctl.xproxy` and `launchctl
 kickstart -k system/com.sysctl.xproxy`. A reload that names a file
 outside the directories the sandbox admitted at start is refused with
@@ -88,9 +101,9 @@ listener changes (which reload refuses) cost only the drain time.
 xproxyctl [-socket /run/xproxy/mgmt.sock] [-config /etc/xproxy/xproxy.yaml] [-json] COMMAND
 ```
 
-One `xproxyctl` talks to all three daemons; `-socket` picks which.
-`/run/xgate/mgmt.sock` and `/run/xrelay/mgmt.sock` are where the shipped
-units put the other two.
+One `xproxyctl` talks to any of the daemons; `-socket` picks which.
+`/run/xgate/mgmt.sock`, `/run/xrelay/mgmt.sock` and `/run/xot/mgmt.sock`
+are where the shipped units put the other three.
 
 | Command | Description |
 |---------|-------------|
@@ -1565,14 +1578,14 @@ fingerprint ban.
 
 ### Cluster of proxies
 
-A cluster is either **local** — the three daemons of one machine, over
+A cluster is either **local** — the daemons of one machine, over
 Unix sockets — or **networked**, over mutual TLS between hosts. The form
 of `listen` decides which, and `listen` and every `peers` entry must
 agree.
 
-#### The three daemons of one machine
+#### The daemons of one machine
 
-`xproxy`, `xgate` and `xrelay` share a ban list, so an address the
+`xproxy`, `xgate`, `xrelay` and `xot` share a ban list, so an address the
 bastion refuses at the SSH port is refused at the edge too. There is no
 certificate: the peers are processes this kernel can name.
 
@@ -1584,9 +1597,10 @@ cluster:
   peers:
     - unix:/run/xproxy-cluster/xproxy.sock
     - unix:/run/xproxy-cluster/xrelay.sock
+    - unix:/run/xproxy-cluster/xot.sock
   local:
     socket_mode: "0660"
-    allow_uids: [990, 991, 992]   # id -u xproxy xgate xrelay
+    allow_uids: [990, 991, 992, 993]   # id -u xproxy xgate xrelay xot
   share_rate_limits: false        # different protocols, different ports
   share_bans: true
   share_events: true
@@ -1595,7 +1609,7 @@ cluster:
 Two things admit a peer, and both have to be wrong before something
 else gets in. The sockets live in `/run/xproxy-cluster`, which the
 shipped `tmpfiles.d` entry creates as `0770 root:xproxy-cluster`; the
-three daemons are in that group and nothing else is. And `allow_uids`
+daemons are in that group and nothing else is. And `allow_uids`
 lists the user ids they run as, read from the connected socket rather
 than announced, so a peer cannot talk its way past it. Leaving
 `allow_uids` out leaves the whole decision to the file permissions and
@@ -5951,7 +5965,7 @@ correlation, not identity. `examples/security/captcha.yaml` is a complete config
 ### Failover: telling a check script whether this node should serve
 
 `docs/HA.md` is the full picture -- what survives a failover and what
-does not, a keepalived configuration, and the three daemons' different
+does not, a keepalived configuration, and the daemons' different
 costs when an address moves. This is the mechanism.
 
 ```sh

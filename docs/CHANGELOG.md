@@ -6,6 +6,61 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Changed (the OT protocols are a daemon of their own: `xot`)
+
+- **A fourth binary, for the box at level 3.5.** `xrelay` served SMTP,
+  MQTT, FTP, LDAP, the database wire protocols and AMQP alongside Modbus,
+  IEC 60870-5-104, S7, IEC 61850 MMS, BACnet, OPC UA and CoAP. Those are
+  not one estate. The proxy in front of a process network is reachable
+  from the plant on one side and the enterprise on the other, and it is
+  the one whose compromise moves equipment -- and it was carrying a mail
+  parser. `xot` links the control protocols and the protocols the field
+  equipment itself speaks, and nothing else: no SMTP, no FTP, no LDAP, no
+  PostgreSQL, MySQL, TDS or Redis, no AMQP. It is the same argument the
+  first split was made for (docs/AMR.md, AMR-048), applied to the daemon
+  whose failure mode is a plant.
+
+- **What moved.** `modbus`, `iec104`, `s7`, `mms`, `bacnet`, `opcua` and
+  `coap` are `xot`'s wherever they are written; `xrelay` no longer links
+  them. An estate running any of those under `xrelay` installs
+  `xproxy-xot` and runs `xot`: the configuration itself does not change,
+  and `xrelay` says in its log which listeners it left to a sibling.
+
+- **What is served by both, and the new `daemon:` key.** `syslog`,
+  `snmp`, `tftp`, `dhcp`, `dhcp6`, `ntp`, `ntske` and `mqtt` are run by a
+  plant and by a data centre alike, so both binaries link them and the
+  listener says which daemon binds it. **The default is `xrelay`**, so
+  every configuration written before this means what it meant. `mqtt` is
+  in that set for a narrower reason than the rest: the device inventory
+  collects what *one* daemon saw, and Sparkplug B births are among the
+  richest sources the fingerprinting has, so an estate whose device
+  identities arrive over MQTT and whose process traffic is Modbus would
+  otherwise have had two inventories holding half a device each.
+  `examples/ot/inventory.yaml` is the file that found that.
+
+- **One owner per listener, and that is the point of the field rather
+  than a consequence of it.** A shared estate configuration is read by
+  every daemon, each taking what is its own; "served by both" with no
+  tiebreak would mean two daemons on one host binding one port and one
+  failing to start -- an outage produced by a file that validated
+  everywhere. So `daemon:` names the one that binds it, naming a daemon
+  that does not carry that kind's code is a load error (a port nobody
+  binds is worse than a refusal), and naming the only daemon that serves
+  a kind is a warning.
+
+- **It is not a smaller binary than `xrelay`**, and bytes were never the
+  argument: measured together, `make build` produces 21.0 MiB of `xrelay`
+  and 21.3 of `xot`, because the protocols it keeps replace the ones it
+  drops. What changes is what an attacker who reaches one of the two
+  processes finds inside it.
+
+- Packaging, units and docs followed: the `xproxy-xot` RPM subpackage,
+  `xot.service` and `xot.socket`, the `xot` system user with its own log,
+  state and runtime directories and its own management socket
+  (`/run/xot/mgmt.sock`), `deploy/config/xot.yaml`, `xot(8)`,
+  `examples/estate/xot.yaml`, and the OT examples, which now carry
+  `daemon: xot` on their syslog, SNMP, TFTP, DHCP and time listeners.
+
 ### Added (coap: the two security modes a constrained device actually has)
 
 - **`coap.psk` serves RFC 7252 §9.1.3.1, and the identity is the point.** The

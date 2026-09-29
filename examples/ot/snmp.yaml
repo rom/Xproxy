@@ -52,6 +52,7 @@ server:
     - name: poll
       address: "10.50.0.10:161"
       kind: snmp
+      daemon: xot
       snmp:
         upstream: switches
 
@@ -140,6 +141,7 @@ server:
     - name: change
       address: "10.50.0.10:1161"
       kind: snmp
+      daemon: xot
       snmp:
         upstream: switches
         allow_clients: ["10.50.1.10/32"]   # the one workstation
@@ -199,6 +201,7 @@ server:
     - name: traps
       address: "10.50.0.10:162"
       kind: snmp
+      daemon: xot
       snmp:
         upstream: collector
         traps: true
@@ -241,6 +244,7 @@ server:
     - name: legacy-poller
       address: "10.50.0.10:1162"
       kind: snmp
+      daemon: xot
       snmp:
         upstream: switches
         allow_clients: ["10.50.1.20/32"]   # the one polling system
@@ -300,6 +304,7 @@ server:
     - name: poll-6353
       address: "10.50.0.10:10161"
       kind: snmp
+      daemon: xot
       tls:
         certificates:
           - {cert_file: /etc/xproxy/tls/snmp.crt, key_file: /etc/xproxy/tls/snmp.key}
@@ -362,6 +367,7 @@ server:
     - name: poll-migrating
       address: "10.50.0.12:161"
       kind: snmp
+      daemon: xot
       tls:
         certificates:
           - {cert_file: /etc/xproxy/tls/snmp.crt, key_file: /etc/xproxy/tls/snmp.key}
@@ -410,6 +416,7 @@ server:
     - name: poll-trial
       address: "10.50.0.11:161"
       kind: snmp
+      daemon: xot
       policy: {mode: shadow}
       snmp:
         upstream: switches
@@ -446,6 +453,7 @@ server:
     - name: sw-spare
       address: "10.50.0.41:161"
       kind: snmp
+      daemon: xot
       snmp:
         transport: udp
         deception:
@@ -475,6 +483,7 @@ server:
     - name: poll-decoyed
       address: "10.50.0.42:161"
       kind: snmp
+      daemon: xot
       snmp:
         transport: udp
         upstream: switches

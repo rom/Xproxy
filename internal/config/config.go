@@ -261,6 +261,22 @@ type Listener struct {
 	// URI requests to destinations the policy allows), dns (a DNS
 	// proxy) or smtp (a protocol-aware SMTP and submission proxy).
 	Kind string `yaml:"kind"`
+	// Daemon names the program that binds this listener, for the few
+	// kinds more than one of them serves: syslog, snmp, tftp, dhcp,
+	// dhcp6, ntp and ntske are run both by a data centre's relay and by
+	// a plant's own, so the code is linked into xrelay and xot alike.
+	//
+	// Empty means the kind's default, which is xrelay for those seven
+	// and the only daemon that serves it for every other kind -- so a
+	// configuration written before xot existed means what it meant. A
+	// plant that wants its field equipment's syslog, time and
+	// provisioning served by the daemon that speaks to the plant writes
+	// `daemon: xot` on those listeners.
+	//
+	// It is a field rather than a deployment convention because a shared
+	// estate configuration is read by every daemon, and two of them
+	// treating one listener as theirs would race for the port.
+	Daemon string `yaml:"daemon"`
 	// ConnectionRate and ConnectionRatePerSource bound how fast this
 	// listener accepts, replacing server.limits' own for it. See
 	// server.limits.connection_rate: it is the bound max_connections

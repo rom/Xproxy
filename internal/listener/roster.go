@@ -12,6 +12,17 @@
 // So every binary knows every kind's name and owner, which costs a few
 // hundred bytes, and links only the implementations it serves, which is
 // the part that carries the code, the dependencies and the risk.
+//
+// A few kinds are served by two daemons, because the protocol is run by
+// two different estates: syslog, SNMP, TFTP, DHCP and the time gateway
+// are how a plant's field equipment is provisioned, timed and watched,
+// and they are also how a data centre's servers are. MQTT is there for a
+// narrower reason -- Sparkplug B telemetry is a plant's own, and the
+// asset inventory collects what one daemon saw, so an estate whose device
+// births arrive over MQTT needs them on the same daemon as its Modbus.
+// Those kinds are linked into both binaries and the listener says which
+// daemon serves it, because a listener is bound once: two daemons reading
+// one file and both taking the same port is an outage, not a policy.
 package listener
 
 import "sort"
@@ -28,11 +39,23 @@ const (
 	// the remote desktop protocols. Sessions here are recorded, carry
 	// a second factor and belong to a named principal.
 	RoleGate Role = "gate"
-	// RoleRelay is xrelay: machine to machine and operational
-	// technology. Syslog, SMTP, MQTT, FTP, Modbus, NTP and its key
-	// establishment. No humans, no recordings, and a policy written in
-	// the protocol's own terms.
+	// RoleRelay is xrelay: machine to machine, between services. SMTP,
+	// MQTT, FTP, LDAP, the database wire protocols and the message
+	// brokers. No humans, no recordings, and a policy written in the
+	// protocol's own terms.
 	RoleRelay Role = "relay"
+	// RoleOT is xot: the plant. The control protocols -- Modbus,
+	// IEC 60870-5-104, S7, IEC 61850 MMS, BACnet, OPC UA, CoAP -- and
+	// the infrastructure the field equipment itself speaks for time,
+	// provisioning, logging and monitoring.
+	//
+	// It is a daemon of its own for the reason the first split was
+	// made: what a binary links is what an attack has to work with,
+	// and the process network's proxy has no business carrying a mail
+	// parser, a database wire protocol or a message broker front end.
+	// This is the binary that sits at level 3.5, and it holds the
+	// protocols that speak to equipment and nothing else.
+	RoleOT Role = "ot"
 )
 
 // Daemon is the program that serves a role.
@@ -44,44 +67,60 @@ func (r Role) Daemon() string {
 		return "xgate"
 	case RoleRelay:
 		return "xrelay"
+	case RoleOT:
+		return "xot"
 	}
 	return string(r)
 }
 
-// roster is every kind and its owner.
-var roster = map[string]Role{
-	"http":     RoleEdge,
-	"tcp":      RoleEdge,
-	"udp":      RoleEdge,
-	"forward":  RoleEdge,
-	"dns":      RoleEdge,
-	"ssh":      RoleGate,
-	"telnet":   RoleGate,
-	"vnc":      RoleGate,
-	"rdp":      RoleGate,
-	"smtp":     RoleRelay,
-	"mqtt":     RoleRelay,
-	"ftp":      RoleRelay,
-	"syslog":   RoleRelay,
-	"modbus":   RoleRelay,
-	"iec104":   RoleRelay,
-	"snmp":     RoleRelay,
-	"ldap":     RoleRelay,
-	"tftp":     RoleRelay,
-	"postgres": RoleRelay,
-	"mysql":    RoleRelay,
-	"tds":      RoleRelay,
-	"redis":    RoleRelay,
-	"dhcp":     RoleRelay,
-	"dhcp6":    RoleRelay,
-	"coap":     RoleRelay,
-	"opcua":    RoleRelay,
-	"mms":      RoleRelay,
-	"bacnet":   RoleRelay,
-	"amqp":     RoleRelay,
-	"s7":       RoleRelay,
-	"ntp":      RoleRelay,
-	"ntske":    RoleRelay,
+// roster is every kind and the daemons that serve it. The first is the
+// one a listener of that kind belongs to when it does not say otherwise;
+// where there is a second, a listener may name it in `daemon:`.
+var roster = map[string][]Role{
+	"http":    {RoleEdge},
+	"tcp":     {RoleEdge},
+	"udp":     {RoleEdge},
+	"forward": {RoleEdge},
+	"dns":     {RoleEdge},
+
+	"ssh":    {RoleGate},
+	"telnet": {RoleGate},
+	"vnc":    {RoleGate},
+	"rdp":    {RoleGate},
+
+	"smtp":     {RoleRelay},
+	"ftp":      {RoleRelay},
+	"ldap":     {RoleRelay},
+	"postgres": {RoleRelay},
+	"mysql":    {RoleRelay},
+	"tds":      {RoleRelay},
+	"redis":    {RoleRelay},
+	"amqp":     {RoleRelay},
+
+	// The plant's own protocols. Nothing else serves these: a Modbus
+	// listener is xot's wherever it is written.
+	"modbus": {RoleOT},
+	"iec104": {RoleOT},
+	"s7":     {RoleOT},
+	"mms":    {RoleOT},
+	"bacnet": {RoleOT},
+	"opcua":  {RoleOT},
+	"coap":   {RoleOT},
+
+	// Served by both, because both estates run them. The relay owns them
+	// by default, so a configuration written before xot existed means
+	// what it meant; a plant's own puts `daemon: xot` on the listener.
+	"syslog": {RoleRelay, RoleOT},
+	"snmp":   {RoleRelay, RoleOT},
+	"tftp":   {RoleRelay, RoleOT},
+	"dhcp":   {RoleRelay, RoleOT},
+	"dhcp6":  {RoleRelay, RoleOT},
+	"ntp":    {RoleRelay, RoleOT},
+	"ntske":  {RoleRelay, RoleOT},
+	// MQTT is here for Sparkplug B: a plant's telemetry, and one of the
+	// richest sources the device inventory has. The broker front end an
+	// enterprise runs is xrelay's, which is why xrelay keeps the default.
+	"mqtt": {RoleRelay, RoleOT},
 }
 
 // authorises is every kind that consults the estate's authorisation policy
@@ -144,11 +183,75 @@ func AuthorisingKinds() []string {
 	return out
 }
 
-// RoleOf returns the daemon that serves a kind, and whether the kind is
-// one this project implements at all.
+// RoleOf returns the daemon a listener of this kind belongs to when it
+// does not say otherwise, and whether the kind is one this project
+// implements at all.
 func RoleOf(kind string) (Role, bool) {
-	r, ok := roster[kind]
-	return r, ok
+	rs, ok := roster[kind]
+	if !ok || len(rs) == 0 {
+		return "", false
+	}
+	return rs[0], true
+}
+
+// ServedBy are the daemons that carry a kind's code, in the order they
+// are worth naming: the one that owns it by default first.
+func ServedBy(kind string) []Role {
+	rs := roster[kind]
+	out := make([]Role, len(rs))
+	copy(out, rs)
+	return out
+}
+
+// Shared reports whether more than one daemon serves a kind, which is
+// the case where a listener may name the one it belongs to.
+func Shared(kind string) bool { return len(roster[kind]) > 1 }
+
+// RoleByDaemon reads a role from the program name an operator writes.
+func RoleByDaemon(daemon string) (Role, bool) {
+	for _, r := range Roles() {
+		if r.Daemon() == daemon {
+			return r, true
+		}
+	}
+	return "", false
+}
+
+// Daemons are the programs that serve a kind, by name, for a message
+// that has to say where a listener can be run.
+func Daemons(kind string) []string {
+	rs := roster[kind]
+	out := make([]string, 0, len(rs))
+	for _, r := range rs {
+		out = append(out, r.Daemon())
+	}
+	return out
+}
+
+// Owner is the one daemon that binds a listener: the one it names, or
+// the kind's default. It reports false for a kind nobody serves and for
+// a listener naming a daemon that does not carry that kind's code --
+// both of which validation refuses, naming the kind.
+//
+// There is exactly one owner per listener, and that is the point of the
+// field rather than a consequence of it: a shared estate configuration
+// is read by every daemon, so two of them treating one listener as
+// theirs would race for the port and one would fail to start.
+func Owner(kind, daemon string) (Role, bool) {
+	if daemon == "" {
+		return RoleOf(kind)
+	}
+	r, ok := RoleByDaemon(daemon)
+	if !ok || !r.Serves(kind) {
+		return "", false
+	}
+	return r, true
+}
+
+// Owns reports whether this daemon is the one that binds a listener.
+func (r Role) Owns(kind, daemon string) bool {
+	o, ok := Owner(kind, daemon)
+	return ok && o == r
 }
 
 // Kinds are every kind name, sorted. Configuration validation uses it
@@ -162,11 +265,29 @@ func Kinds() []string {
 	return out
 }
 
-// KindsFor are the kinds one role serves, sorted.
+// KindsFor are the kinds one role serves, sorted. It is what a daemon's
+// own test compares its linked kinds against, so a kind served by two
+// daemons appears in both lists.
 func KindsFor(r Role) []string {
 	out := make([]string, 0, len(roster))
-	for k, kr := range roster {
-		if kr == r {
+	for k, rs := range roster {
+		for _, kr := range rs {
+			if kr == r {
+				out = append(out, k)
+				break
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// OwnedBy are the kinds a role owns by default, sorted: what it serves
+// minus what another daemon takes unless a listener says otherwise.
+func OwnedBy(r Role) []string {
+	out := make([]string, 0, len(roster))
+	for k, rs := range roster {
+		if len(rs) > 0 && rs[0] == r {
 			out = append(out, k)
 		}
 	}
@@ -175,13 +296,18 @@ func KindsFor(r Role) []string {
 }
 
 // Roles are the roles, in the order they are worth listing: the edge
-// faces the internet, the gate faces people, the relay faces machines.
-func Roles() []Role { return []Role{RoleEdge, RoleGate, RoleRelay} }
+// faces the internet, the gate faces people, the relay faces services
+// and the OT daemon faces the plant.
+func Roles() []Role { return []Role{RoleEdge, RoleGate, RoleRelay, RoleOT} }
 
-// Serves reports whether a role serves a kind. A kind the roster does
-// not know belongs to no role, and is refused by validation long before
-// this is asked.
+// Serves reports whether a role carries a kind's code. A kind the roster
+// does not know belongs to no role, and is refused by validation long
+// before this is asked.
 func (r Role) Serves(kind string) bool {
-	owner, ok := RoleOf(kind)
-	return ok && owner == r
+	for _, kr := range roster[kind] {
+		if kr == r {
+			return true
+		}
+	}
+	return false
 }

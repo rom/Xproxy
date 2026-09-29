@@ -197,6 +197,7 @@ server:
     - name: leases
       address: "10.30.0.1:67"
       kind: dhcp
+      daemon: xot
       dhcp:
         upstream: dhcp-servers
         relay_address: 10.30.0.1
@@ -250,6 +251,7 @@ server:
     - name: poll
       address: "10.30.0.12:161"
       kind: snmp
+      daemon: xot
       snmp:
         upstream: switches
         allow_clients: ["10.30.4.0/24"]
@@ -264,6 +266,7 @@ server:
     - name: boot
       address: "10.30.0.13:69"
       kind: tftp
+      daemon: xot
       tftp:
         upstream: fileservers
         allow_clients: ["10.30.0.0/16"]
@@ -278,6 +281,7 @@ server:
     - name: telemetry
       address: "10.30.0.14:1883"
       kind: mqtt
+      daemon: xot
       mqtt:
         upstream: broker
         allow_clients: ["10.30.0.0/16"]

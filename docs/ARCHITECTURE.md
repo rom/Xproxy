@@ -1,53 +1,69 @@
 # Architecture
 
 xproxy terminates protocols, applies security policy and forwards to
-upstream pools. It is not one program but three, split by who is on the
+upstream pools. It is not one program but four, split by who is on the
 other end of the socket — **xproxy** faces the internet, **xgate** faces
-people, **xrelay** faces machines — plus a control binary that manages
-any of them over a local socket. This document describes the split, the
-components, the request path, the data flows and the reasoning behind
-the shape. Decision records are in [AMR.md](AMR.md); requirements in
+people, **xrelay** faces services, **xot** faces the plant — plus a
+control binary that manages any of them over a local socket. This
+document describes the split, the components, the request path, the data
+flows and the reasoning behind the shape. Decision records are in [AMR.md](AMR.md); requirements in
 [ASR.md](ASR.md).
 
 ## 1. System context
 
 ```
-        internet                 operators              devices, services
-            |                        |                          |
- +----------v----------+  +----------v----------+  +------------v----------+
- | kernel: nftables,   |  | kernel              |  | kernel                |
- | conntrack, SYN queue|  |                     |  |                       |
- +----------+----------+  +----------+----------+  +------------+----------+
-            | accept                 | accept                   | accept
- +----------v----------+  +----------v----------+  +------------v----------+
- |       xproxy        |  |        xgate        |  |        xrelay         |
- |  http tcp udp       |  |   ssh telnet        |  | smtp mqtt ftp syslog  |
- |  forward dns        |  |   vnc rdp           |  | modbus iec104 snmp    |
- |                     |  |                     |  | ldap tftp dhcp        |
- |                     |  |                     |  | ntp ntske             |
- |  user: xproxy       |  |  user: xgate        |  |  user: xrelay         |
- +--+---------------+--+  +--+---------------+--+  +--+----------------+---+
-    |               |        |               |        |                |
-    | mgmt socket   |        | mgmt socket   |        | mgmt socket    |
-    v               |        v               |        v                |
- +------------------|--------+---------------|--------+------+         |
- | xproxyctl (CLI, TUI), xproxy-admin (web GUI)              |         |
- +-----------------------------------------------------------+         |
-                    |                        |                         |
-                    +-----> /run/xproxy-cluster <---------------------- +
+        internet            operators          services        the plant
+            |                    |                  |               |
+ +----------v--------+  +--------v--------+  +-------v------+  +-----v------+
+ | kernel: nftables, |  | kernel          |  | kernel       |  | kernel     |
+ | conntrack, SYN q  |  |                 |  |              |  |            |
+ +----------+--------+  +--------+--------+  +-------+------+  +-----+------+
+            | accept             | accept           | accept         | accept
+ +----------v--------+  +--------v--------+  +-------v------+  +-----v------+
+ |      xproxy       |  |      xgate      |  |    xrelay    |  |    xot     |
+ |  http tcp udp     |  |   ssh telnet    |  | smtp ftp     |  | modbus s7  |
+ |  forward dns      |  |   vnc rdp       |  | ldap amqp    |  | iec104 mms |
+ |                   |  |                 |  | postgres     |  | bacnet     |
+ |                   |  |                 |  | mysql tds    |  | opcua coap |
+ |                   |  |                 |  | redis        |  |            |
+ |                   |  |                 |  | mqtt syslog  |  | mqtt syslog|
+ |                   |  |                 |  | snmp tftp    |  | snmp tftp  |
+ |                   |  |                 |  | dhcp dhcp6   |  | dhcp dhcp6 |
+ |                   |  |                 |  | ntp ntske    |  | ntp ntske  |
+ |  user: xproxy     |  |  user: xgate    |  | user: xrelay |  | user: xot  |
+ +--+-------------+--+  +--+-----------+--+  +--+--------+--+  +--+------+--+
+    |             |        |           |        |        |        |      |
+    | mgmt socket |        | mgmt sock |        | mgmt   |        | mgmt |
+    v             |        v           |        v        |        v      |
+ +----------------|--------+-----------|--------+--------|--------+      |
+ | xproxyctl (CLI, TUI), xproxy-admin (web GUI)                   |      |
+ +----------------------------------------------------------------+      |
+                  |                    |             |                   |
+                  +--------> /run/xproxy-cluster <----+-------------------+
                        local cluster: bans, marks, revocations
-                    |                        |                         |
-                    v                        v                         v
+                  |                    |             |                   |
+                  v                    v             v                   v
  +---------------------------------------------------------------------+
- | upstream pools: applications, bastion targets, mail, brokers        |
+ | upstream pools: applications, bastion targets, mail, brokers, PLCs  |
  +---------------------------------------------------------------------+
 ```
 
-The three are the same engine with different protocol code linked into
+The eight kinds listed under both xrelay and xot are the ones both serve
+— MQTT, syslog, SNMP, TFTP, DHCP, DHCPv6, NTP and NTS — because a data
+centre and a plant both run them. Both binaries link them, and the
+listener says which daemon binds it: `daemon: xot`, defaulting to xrelay,
+so a configuration written before xot existed is served by the daemon
+that has always served it. Every other kind belongs to exactly one. MQTT
+is in that set for a narrower reason than the rest: Sparkplug B telemetry
+is the plant's, and the device inventory collects what *one* daemon saw,
+so an estate whose device births arrive over MQTT needs that listener on
+the daemon that serves its Modbus.
+
+The four are the same engine with different protocol code linked into
 them (section 3). Each runs as its own user, under its own systemd unit
 and its own sandbox, reads its own configuration file, and is reached on
 its own management socket. They share a ban list over a Unix socket
-cluster, so an address one of them refuses is refused by all three.
+cluster, so an address one of them refuses is refused by all of them.
 
 Trust boundaries:
 
@@ -57,19 +73,25 @@ Trust boundaries:
 2. People to xgate: authenticated but not trusted. A session belongs to a
    named principal and is recorded, and what it may do inside SSH is a
    policy rather than a destination list.
-3. Machines to xrelay: semi-trusted and unattended. Credentials are
+3. Services to xrelay: semi-trusted and unattended. Credentials are
    long-lived and often shared, so the policy is written in each
    protocol's own terms and the traffic is bounded rather than believed.
-4. Any daemon to its upstream: semi-trusted. Upstreams may be
+4. The plant to xot: unauthenticated, and the consequence of being wrong
+   is physical. Most of these protocols have no identity at all, so the
+   relay *is* the access control: the policy is positive, the default is
+   deny, and the daemon that enforces it carries the plant's protocols
+   and nothing else, because the binary at level 3.5 is the one an
+   attacker reaches from both sides.
+5. Any daemon to its upstream: semi-trusted. Upstreams may be
    compromised; responses are not executed but are size and time
    bounded.
-5. Operator to a management socket: trusted, authenticated by the kernel
+6. Operator to a management socket: trusted, authenticated by the kernel
    (Unix socket permissions and `SO_PEERCRED`), audited.
-6. Daemon to sibling daemon, over the local cluster socket: trusted
+7. Daemon to sibling daemon, over the local cluster socket: trusted
    completely — a peer places bans and is named in the audit trail —
    and admitted by the socket's permissions plus the user id the kernel
    reports, never by anything the peer announces.
-7. Configuration and certificate files: trusted, must be root or the
+8. Configuration and certificate files: trusted, must be root or the
    daemon's user owned and not world writable (the loader refuses world
    writable configuration).
 
@@ -83,15 +105,19 @@ authority a cluster peer has by design.
 ```
 cmd/xproxy          edge daemon: links the http, forward, tcp and dns kinds
 cmd/xgate           gate daemon: links the ssh, telnet, vnc and rdp kinds
-cmd/xrelay          relay daemon: links the smtp, mqtt, ftp, syslog, modbus,
-                    iec104, snmp, ldap, tftp, dhcp, ntp and ntske kinds
-cmd/xproxyctl       management CLI and TUI (talks to any of the three)
+cmd/xrelay          relay daemon: links the smtp, ftp, ldap, postgres, mysql,
+                    tds, redis and amqp kinds, and the eight it shares with
+                    xot: mqtt, syslog, snmp, tftp, dhcp, dhcp6, ntp, ntske
+cmd/xot             OT daemon: links the modbus, iec104, s7, mms, bacnet,
+                    opcua and coap kinds, and the same shared eight. Nothing
+                    from the relay's own list is in this binary
+cmd/xproxyctl       management CLI and TUI (talks to any of them)
 cmd/xproxy-admin    web GUI process (users, sessions, embedded assets)
 cmd/xproxy-fleet    fleet controller
 
-internal/daemon     the body of all three daemons: flags, loading, sandbox,
+internal/daemon     the body of every daemon: flags, loading, sandbox,
                     management and metrics, fleet agent, signals, systemd notify
-internal/listener   the roster: every listener kind and the role that serves it
+internal/listener   the roster: every listener kind and the roles that serve it
 internal/proxy      the engine: accept path, listener lifecycle and reload, the
                     kind registry, the Host and Plane interfaces, bans, pools,
                     counters, TLS material. No protocol at all (section 3)
@@ -273,12 +299,16 @@ Dependency direction (arrows point at the importer's dependency):
 
 ```
 cmd/xproxy ─┐
-cmd/xgate  ─┼─> daemon -> {proxy, mgmt, config, logging, sandbox, fleet,
-cmd/xrelay ─┘             metrics, ingress, listener, paths, version}
+cmd/xgate  ─┤
+cmd/xrelay ─┼─> daemon -> {proxy, mgmt, config, logging, sandbox, fleet,
+cmd/xot    ─┘             metrics, ingress, listener, paths, version}
     │
     └─ blank imports of its own kinds, and nothing else:
          kinds/{http,tcp,udp,dns,forward} | kinds/{ssh,telnet,vnc,rdp} |
-         kinds/{smtp,mqtt,ftp,syslog,modbus,iec104,snmp,ldap,tftp,dhcp,ntp,ntske}
+         kinds/{smtp,ftp,ldap,postgres,mysql,tds,redis,amqp} |
+         kinds/{modbus,iec104,s7,mms,bacnet,opcua,coap}
+       and, in both of the last two, the shared
+         kinds/{mqtt,syslog,snmp,tftp,dhcp,dhcp6,ntp,ntske}
 
 kinds/<k> -> {proxy, config, listener, and that protocol's wire package}
 proxy     -> {listener, router, upstream, limits, netutil, tlsconf, logging,
@@ -314,13 +344,18 @@ So the binary is split by who is on the other end of the socket:
 |--------|-------|----------------|
 | `xproxy` | the open internet | `http`, `forward`, `tcp`, `udp`, `dns` |
 | `xgate` | people | `ssh`, `telnet`, `vnc`, `rdp` |
-| `xrelay` | machines and equipment | `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `iec104`, `snmp`, `ldap`, `tftp`, `dhcp`, `ntp`, `ntske` |
+| `xrelay` | services | `smtp`, `ftp`, `ldap`, `postgres`, `mysql`, `tds`, `redis`, `amqp` |
+| `xot` | the plant | `modbus`, `iec104`, `s7`, `mms`, `bacnet`, `opcua`, `coap` |
+| `xrelay` **and** `xot` | both estates run them | `mqtt`, `syslog`, `snmp`, `tftp`, `dhcp`, `dhcp6`, `ntp`, `ntske` |
 
 One repository, one module, one version and one configuration format;
-three programs, three users, three systemd units, three sandboxes, three
+four programs, four users, four systemd units, four sandboxes, four
 management sockets. A host that is not a bastion does not have the SSH
 and SFTP implementation on it, rather than having it present and
-unconfigured.
+unconfigured. A host in front of a process network does not have the mail
+parser, the FTP proxy, the directory or the database wire protocols:
+`xot` is the daemon at level 3.5, and the last row is the only code it
+shares with the estate's relay.
 
 ### The kind registry
 
@@ -459,11 +494,11 @@ caught by whichever daemon reloads first — and binds only the listeners
 of its own role, naming the rest in the error log under `listeners left
 to a sibling daemon`.
 
-What the three cannot share is a file. `management.socket`,
+What they cannot share is a file. `management.socket`,
 `metrics.listen` and `logging.directory` each name something only one
 process can own, so each daemon reads `/etc/xproxy/<daemon>.yaml` and
 pulls the common part — upstreams, routes, rate limits, filters — out of
-`includes` all three name. `examples/estate/` is a worked set.
+`includes` they all name. `examples/estate/` is a worked set.
 
 ### The data plane is a kind too
 
@@ -507,7 +542,7 @@ plane calls it when the last request compiled against the superseded
 generation has finished — a pool closed under a long upload or an SSE
 stream cuts it.
 
-The management API is served by all three daemons, which decides how
+The management API is served by every daemon, which decides how
 the plane's status crosses the boundary. `PlaneStatus` is a plain
 interface the engine's own `WAF`, `Filters`, `Quotas` and the rest
 delegate to, answering zero values where no plane is linked, so
@@ -527,20 +562,33 @@ bastion and the mail relay. The types are aliased back into
 | `xgate`  | 42.7 MB | 40.5 MB | **21.8 MB** |
 | `xrelay` | 42.2 MB | 40.0 MB | **21.2 MB** |
 
-(`CGO_ENABLED=0`, unstripped; `make build` strips to 28.4, 15.3 and
-14.9 MiB.) The spread is the number that matters, not the total. The
-bastion and the relay carry none of the HTTP request path: no route
+(`CGO_ENABLED=0`, unstripped, on the Go release of the day; `make build`
+stripped them to 28.4, 15.3 and 14.9 MiB.) The spread is the number that
+matters, not the total. The bastion and the relays carry none of the HTTP
+request path: no route
 compiler, no Coraza and no rule sets, no load shedder, no challenge or
 CAPTCHA engine, no gRPC, WebSocket or WebTransport inspection, no
 response cache, no HTTP/3. A few small packages are still linked into
-all three because the management API they all serve speaks their status
+every daemon because the management API they all serve speaks their status
 types — the cache, the GeoIP reader, the ICAP client, the API inventory
 — but with none of the code that fills them in reachable, the linker
 keeps little more than the structs.
 
-What the three still share is the engine, the configuration package, the
-TLS and logging machinery and the management API, which is the point:
-those are the parts all three are meant to agree on.
+What they still share is the engine, the configuration package, the TLS
+and logging machinery and the management API, which is the point: those
+are the parts they are all meant to agree on.
+
+**The OT daemon is not smaller than the relay, and that is the point.**
+Measured together on one toolchain, `make build` produces 32.1 MiB of
+`xproxy`, 19.0 of `xgate`, 21.0 of `xrelay` and 21.3 of `xot`. The OT
+daemon drops SMTP, FTP, LDAP, the three database wire protocols, Redis
+and AMQP, and keeps seven control protocols in their place, which comes
+out about even. What this split buys is not bytes: it is that
+neither binary holds the other's parsers, so a flaw in the mail path is
+not code on the box in front of the PLCs, and a flaw in an ASN.1 control
+protocol is not code on the box that handles mail. Bytes were never the
+argument -- the first split reported them because they happened to fall;
+the argument is what an attacker who reaches one process finds in it.
 
 ## 4. Process model
 
@@ -611,7 +659,7 @@ A generation is compiled in two halves. The engine owns what every
 daemon has -- the upstream pools and the trusted prefix set -- and hands
 them to the data plane as a `proxy.Generation`; the plane compiles the
 router, the rate limiters and the routes against those pools. A daemon
-that links no plane (xgate, xrelay) stops after the first half.
+that links no plane (xgate, xrelay, xot) stops after the first half.
 
 `Server.Reload` builds a complete new runtime, asks the plane to prepare
 its half, reloads certificates, then swaps the pointers. Preparing is
@@ -1492,8 +1540,9 @@ that protocol's own terms, and bounds what a peer may say.
   handshakes in flight, and leaves the cryptography to the servers whose
   keys it is.
 
-All of them reach the engine through `Host` alone, which is why they link
-into `xrelay` and nowhere else.
+All of them reach the engine through `Host` alone, which is why the
+protocol code links into one daemon -- or, for the seven both estates
+run, into the two relays and nowhere else.
 
 What each of these protocols *is* -- its framing, the security it was designed
 with, and what this project decided to read of it -- is one page per kind under
@@ -1862,7 +1911,8 @@ enforces who may connect, and adding a token would only add a secret to
 manage.
 
 Each daemon serves its own socket — `/run/xproxy/mgmt.sock`,
-`/run/xgate/mgmt.sock`, `/run/xrelay/mgmt.sock` — and one `xproxyctl`
+`/run/xgate/mgmt.sock`, `/run/xrelay/mgmt.sock`, `/run/xot/mgmt.sock` —
+and one `xproxyctl`
 talks to any of them with `-socket`. The endpoints are the same set;
 what differs is which of them have anything to report, since a daemon
 that serves no HTTP listener has no routes, no WAF and no API
@@ -2240,7 +2290,7 @@ there is no TLS: a certificate would authenticate processes the kernel
 can already name, and it would have to be issued and rotated for a
 conversation that never leaves the host. Two things admit a peer
 instead. The sockets live in a directory the shipped `tmpfiles.d` entry
-creates `0770 root:xproxy-cluster`, with the three daemons in that
+creates `0770 root:xproxy-cluster`, with the daemons in that
 group and nothing else; and `cluster.local.allow_uids` lists the user
 ids, read from the connected socket with `SO_PEERCRED` rather than
 announced. A local peer is then recorded under that user id
@@ -2251,9 +2301,9 @@ clear one a killed process left, create it under a umask that permits
 nothing beyond the owner and widen it afterwards, so it never exists in
 the file system more open than it will end up.
 
-A local cluster is what the split uses to keep one ban list across three
+A local cluster is what the split uses to keep one ban list across the
 daemons: an address xgate refuses at the SSH port is refused by xproxy
-at :443 within a gossip interval, and by xrelay at :587. Rate limits are
+at :443 within a gossip interval, by xrelay at :587 and by xot at :502. Rate limits are
 usually left unshared there (`share_rate_limits: false`), because the
 three serve different protocols on different ports and a shared count
 would only add noise.
@@ -2390,8 +2440,8 @@ full size and rest on these properties:
   endpoint list; the Prometheus exposition drops from 10.6 MiB to 229 KiB
   with `metrics.endpoint_series: false`, which is the setting above a few
   thousand endpoints.
-- The three daemons are 28.4, 15.3 and 14.9 MiB as `make build` produces
-  them (`xproxy`, `xgate`, `xrelay`). The spread is the number that
+- The daemons are 32.1, 19.0, 21.0 and 21.3 MiB as `make build` produces
+  them (`xproxy`, `xgate`, `xrelay`, `xot`). The spread is the number that
   matters, not the total: the bastion and the relay carry neither the
   other daemons' protocol implementations nor the HTTP data plane, which
   is most of what `xproxy` is (section 3). What they still share is the

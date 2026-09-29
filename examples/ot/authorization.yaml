@@ -23,7 +23,7 @@
 # above them can say what a write to holding register 40001 means. This
 # section is the door; those are the rooms.
 #
-# Validate: xrelay -config examples/ot/authorization.yaml -validate
+# Validate: xot -config examples/ot/authorization.yaml -validate
 version: 1
 
 authorization:
@@ -164,6 +164,7 @@ server:
     - name: switches
       address: "0.0.0.0:161"
       kind: snmp
+      daemon: xot
       snmp:
         upstream: switches
         allow_clients: ["10.40.4.0/24"]
@@ -176,6 +177,7 @@ server:
     - name: boot
       address: "0.0.0.0:69"
       kind: tftp
+      daemon: xot
       tftp:
         upstream: fileservers
         allow_clients: ["10.40.9.0/24"]
@@ -189,6 +191,7 @@ server:
     - name: logs
       address: "0.0.0.0:514"
       kind: syslog
+      daemon: xot
       syslog:
         upstream: collectors
         allow_senders: ["10.40.0.0/16"]
@@ -198,7 +201,7 @@ server:
         rate_burst: 2000
 
 logging:
-  directory: /var/log/xrelay
+  directory: /var/log/xot
 
 upstreams:
   - name: line-plcs

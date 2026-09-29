@@ -55,7 +55,7 @@ make release SIGN_KEY=~/.ssh/release_ed25519   # also SHA256SUMS.sig (ssh-keygen
 `make release` builds with `CGO_ENABLED=0 -trimpath` and produces:
 
 - `xproxy-<version>-linux-amd64.tar.gz`: every binary the tree builds --
-  the three daemons `xproxy`, `xgate` and `xrelay`, the control tools
+  the four daemons `xproxy`, `xgate`, `xrelay` and `xot`, the control tools
   `xproxyctl`, `xproxy-admin`, `xproxy-fleet` and `xproxy-replay`, and
   `xsigner` -- with the deploy tree, the documentation and the licence.
   The list is `LINUX_BINARIES` in the Makefile and a test in
@@ -67,8 +67,8 @@ make release SIGN_KEY=~/.ssh/release_ed25519   # also SHA256SUMS.sig (ssh-keygen
   `xproxy-replay` with `deploy/macos`, the example configuration and the
   documentation, installed with `deploy/macos/install.sh`. Deliberately
   fewer than Linux: macOS ships the edge proxy, the control tools and the
-  web GUI, and there is no launchd job for `xgate` or `xrelay`, so
-  neither is built for it. The list is `DARWIN_BINARIES`, and the same
+  web GUI, and there is no launchd job for `xgate`, `xrelay` or `xot`, so
+  none of the three is built for it. The list is `DARWIN_BINARIES`, and the same
   test holds it against what the installer installs.
 - the vendored source tarball from `make dist`, the RPMs when `rpmbuild`
   is installed (on Fedora with the build dependencies from SETUP.md), the

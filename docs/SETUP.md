@@ -46,6 +46,7 @@ Six packages come out, one per thing you can choose to run:
 | `xproxy` | the edge daemon and `xproxyctl`, its four units, sysctl profile, logrotate, sysusers, the two tmpfiles entries, example configuration, documentation, Grafana dashboards and alert rules |
 | `xproxy-xgate` | `xgate`, its unit and socket, logrotate, example configuration, log and state directories |
 | `xproxy-xrelay` | `xrelay`, its unit and socket, logrotate, example configuration, log and state directories |
+| `xproxy-xot` | `xot`, its unit and socket, logrotate, example configuration, log and state directories |
 | `xproxy-admin` | `xproxy-admin`, its unit and the polkit rule |
 | `xproxy-fleet` | `xproxy-fleet`, its unit and state directory (for the management host of a fleet) |
 | `xproxy-selinux` | the policy module (loaded on install, relabels the paths) and the interface file for other policies |
@@ -86,14 +87,16 @@ useradd --system --home-dir /var/lib/xproxy --shell /usr/sbin/nologin --user-gro
 # Only for the daemons you will run:
 useradd --system --home-dir /var/lib/xgate  --shell /usr/sbin/nologin --user-group xgate
 useradd --system --home-dir /var/lib/xrelay --shell /usr/sbin/nologin --user-group xrelay
-# The group that owns /etc/xproxy, which all three read and none owns:
+useradd --system --home-dir /var/lib/xot    --shell /usr/sbin/nologin --user-group xot
+# The group that owns /etc/xproxy, which they all read and none owns:
 groupadd --system xproxy-config
-for d in xproxy xgate xrelay; do usermod -aG xproxy-config $d; done
+for d in xproxy xgate xrelay xot; do usermod -aG xproxy-config $d; done
 # Only if the daemons will share a ban list over a local cluster:
 groupadd --system xproxy-cluster
 usermod -aG xproxy-cluster xproxy
 usermod -aG xproxy-cluster xgate
 usermod -aG xproxy-cluster xrelay
+usermod -aG xproxy-cluster xot
 make install        # binaries, units, sysctl, logrotate, tmpfiles, example configs
 systemd-tmpfiles --create   # creates /etc/xproxy and the cluster socket directory
 chgrp xproxy-config /etc/xproxy/*.yaml && chmod 0640 /etc/xproxy/*.yaml
@@ -110,29 +113,33 @@ only.
 
 | Path | Content |
 |------|---------|
-| `/usr/local/bin/xproxy`, `/usr/local/bin/xgate`, `/usr/local/bin/xrelay`, `/usr/local/bin/xproxyctl`, `/usr/local/bin/xproxy-admin`, `/usr/local/bin/xproxy-fleet` | binaries |
+| `/usr/local/bin/xproxy`, `/usr/local/bin/xgate`, `/usr/local/bin/xrelay`, `/usr/local/bin/xot`, `/usr/local/bin/xproxyctl`, `/usr/local/bin/xproxy-admin`, `/usr/local/bin/xproxy-fleet` | binaries |
 | `/etc/systemd/system/xproxy-fleet.service` | fleet controller service (disabled until you enable it on a management host) |
 | `/etc/systemd/system/xproxy.service` | hardened service |
 | `/etc/systemd/system/xproxy-admin.service`, `/etc/polkit-1/rules.d/50-xproxy-admin.rules` | web GUI service (disabled until you enable it) and the polkit rule that lets it restart the data plane |
 | `/etc/systemd/system/xproxy.socket`, `xproxy-https.socket`, `xproxy-h3.socket` | listening sockets on TCP 80, TCP 443 and UDP 443 |
 | `/etc/systemd/system/xgate.service`, `xgate.socket` | the gate daemon and its socket on TCP 22 (disabled until you enable it; read the note in the socket unit first) |
-| `/etc/systemd/system/xrelay.service`, `xrelay.socket` | the relay daemon and its socket on TCP 25 (disabled until you enable it; copy the socket unit per listener -- `ListenStream` for Modbus on 502 or NTS key establishment on 4460, `ListenDatagram` for the time gateway on UDP 123) |
+| `/etc/systemd/system/xrelay.service`, `xrelay.socket` | the relay daemon and its socket on TCP 25 (disabled until you enable it; copy the socket unit per listener -- `ListenStream` for LDAP on 389 or NTS key establishment on 4460, `ListenDatagram` for the time gateway on UDP 123) |
+| `/etc/systemd/system/xot.service`, `xot.socket` | the OT daemon and its socket on TCP 502 (disabled until you enable it; copy the socket unit per listener -- `ListenStream` for IEC 104 on 2404, S7 or MMS on 102 and OPC UA on 4840, `ListenDatagram` for BACnet/IP on 47808, SNMP on 161 and CoAP over DTLS on 5684) |
 | `/usr/lib/tmpfiles.d/xproxy-cluster.conf` | `/run/xproxy-cluster`, `0770 root:xproxy-cluster`, where the daemons' local cluster sockets live |
 | `/etc/sysctl.d/90-xproxy.conf` | kernel profile |
-| `/etc/logrotate.d/xproxy`, `xgate`, `xrelay` | rotation calling `xproxyctl reopen-logs` on each daemon's socket |
+| `/etc/logrotate.d/xproxy`, `xgate`, `xrelay`, `xot` | rotation calling `xproxyctl reopen-logs` on each daemon's socket |
 | `/etc/xproxy/xproxy.yaml` | example configuration (existing file backed up) |
-| `/usr/local/share/man/man8/xproxy.8`, `xgate.8`, `xrelay.8`, `xproxyctl.8`, `/usr/local/share/man/man5/xproxy.yaml.5` | manual pages |
+| `/usr/local/share/man/man8/xproxy.8`, `xgate.8`, `xrelay.8`, `xot.8`, `xproxyctl.8`, `/usr/local/share/man/man5/xproxy.yaml.5` | manual pages |
 | `/usr/local/share/xproxy/xproxy.schema.json` | JSON schema of the configuration for editors |
 | `/usr/local/share/bash-completion/completions/xproxyctl`, `zsh/site-functions/_xproxyctl`, `fish/vendor_completions.d/xproxyctl.fish` | shell completion |
 
 systemd creates `/etc/xproxy`, `/var/log/xproxy`, `/run/xproxy` and
 `/var/lib/xproxy` with the right owner on first start, and the
-corresponding `xgate` and `xrelay` directories when those units start.
+corresponding `xgate`, `xrelay` and `xot` directories when those units
+start.
 
-Install the binaries you will actually run. `make install` puts all
-three down because it does not know which you want; a host that will
-never be a bastion is better off with `/usr/local/bin/xgate` deleted
-than with it present, unconfigured and executable.
+Install the binaries you will actually run. `make install` puts them all
+down because it does not know which you want; a host that will never be a
+bastion is better off with `/usr/local/bin/xgate` deleted than with it
+present, unconfigured and executable. The same goes the other way on a
+plant network: install `xot` and delete `xrelay`, and the mail, FTP and
+database parsers are not on the machine at all.
 
 ## Certificates
 
@@ -157,7 +164,8 @@ it only redirects.
 ## Configure
 
 Each daemon reads a file of its own: `/etc/xproxy/xproxy.yaml`,
-`/etc/xproxy/xgate.yaml`, `/etc/xproxy/xrelay.yaml`. Put whatever the
+`/etc/xproxy/xgate.yaml`, `/etc/xproxy/xrelay.yaml`,
+`/etc/xproxy/xot.yaml`. Put whatever the
 estate shares — upstreams, routes, rate limits, filters — in fragments
 under `/etc/xproxy/` and name them in each file's `includes`; keep
 `management`, `metrics` and `logging` in the per-daemon file, since each
@@ -166,7 +174,7 @@ own.
 
 Everything under `/etc/xproxy` -- the per-daemon files, the fragments
 and the certificates -- is `root:xproxy-config` and `0640`, or `0750`
-for a directory: that group is what admits all three daemons to a
+for a directory: that group is what admits every daemon to a
 directory none of them owns. A file dropped in without it is a file the
 daemon cannot read, which `xproxyctl validate` reports as a permission
 error rather than a configuration one.

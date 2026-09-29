@@ -1,6 +1,6 @@
 # OPC UA — the industrial protocol that brought its own security
 
-`kind: opcua`, served by **xrelay**, TCP **4840**.
+`kind: opcua`, served by **xot**, TCP **4840**.
 
 OPC UA (IEC 62541) is what the last fifteen years of industrial automation
 standardised on. A modern PLC, a historian, a SCADA client, an MES and a cloud

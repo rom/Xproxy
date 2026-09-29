@@ -1,6 +1,6 @@
 # CoAP — REST for things too small to run TLS
 
-`kind: coap`, served by **xrelay**, UDP **5683** (NoSec) and **5684** (DTLS).
+`kind: coap`, served by **xot**, UDP **5683** (NoSec) and **5684** (DTLS).
 
 CoAP is what a sensor, a valve, a street light, a smart meter or a
 LwM2M-managed handset speaks. It is REST — a method, a path, a content format

@@ -28,10 +28,10 @@
 # What this costs you is the cookie keys. They are the secret every
 # cookie's secrecy rests on — whoever can read them can forge an
 # authenticated time answer — so the state file belongs somewhere only
-# xrelay can read. And they rotate: see keep_keys, which is what stops a
+# xot can read. And they rotate: see keep_keys, which is what stops a
 # rotation invalidating the cookies already in flight.
 #
-# Validate: xrelay -config examples/ot/nts-gateway.yaml -validate
+# Validate: xot -config examples/ot/nts-gateway.yaml -validate
 version: 1
 server:
   listeners:
@@ -42,6 +42,7 @@ server:
     - name: ke
       address: "10.30.0.10:4460"
       kind: ntske
+      daemon: xot
 
       # The certificate is the whole of what an NTS client authenticates.
       # There is nothing else in the exchange that names this server, so a
@@ -100,6 +101,7 @@ server:
     - name: plant
       address: "10.30.0.10:123"
       kind: ntp
+      daemon: xot
       ntp:
         upstream: local_clocks
         allow_clients: ["10.30.0.0/16", "10.31.0.0/16"]

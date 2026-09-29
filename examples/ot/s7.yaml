@@ -26,7 +26,7 @@
 #   trial     — monitor mode, for finding out what a cell actually does
 #               before a policy is written for it
 #
-# Validate: xrelay -config examples/ot/s7.yaml -validate
+# Validate: xot -config examples/ot/s7.yaml -validate
 version: 1
 server:
   listeners:

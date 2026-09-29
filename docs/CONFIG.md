@@ -1,18 +1,19 @@
 # Configuration reference
 
-Three daemons read this format: **xproxy** (the edge: `http`, `forward`,
-`tcp`, `dns`), **xgate** (the gate: `ssh`) and **xrelay** (the relay:
-`smtp`, `mqtt`, `ftp`, `syslog`). Every one of them validates the whole
-file — a listener kind a sibling serves is checked as carefully here as
-at home — and binds only the listeners of its own role, saying in the
-log which it left to whom. That is what lets an estate keep its common
-parts in `includes` that all three pull in.
+Four daemons read this format: **xproxy** (the edge: `http`, `forward`,
+`tcp`, `dns`), **xgate** (the gate: `ssh`), **xrelay** (the relay:
+`smtp`, `ftp`, the databases) and **xot** (the plant: `modbus`,
+`iec104`, `s7`, `mms`, `bacnet`, `opcua`, `coap`). Every one of them
+validates the whole file — a listener kind a sibling serves is checked as
+carefully here as at home — and binds only the listeners it owns, saying
+in the log which it left to whom. That is what lets an estate keep its
+common parts in `includes` that they all pull in.
 
-What the three cannot share is a file: `management.socket`,
+What they cannot share is a file: `management.socket`,
 `metrics.listen` and `logging.directory` each name something only one
 process can own. So each daemon reads a file of its own —
 `/etc/xproxy/xproxy.yaml`, `/etc/xproxy/xgate.yaml`,
-`/etc/xproxy/xrelay.yaml` — carrying those three sections and pulling
+`/etc/xproxy/xrelay.yaml`, `/etc/xproxy/xot.yaml` — carrying those three sections and pulling
 the rest in with `includes`. Nothing stops you pointing two daemons at
 one file; they will then fight over the socket, and the second to start
 will lose.
@@ -22,7 +23,7 @@ takes the default listed here; a zero duration or count means "default",
 never "disabled". Paths must be absolute. Durations use Go syntax: `500ms`,
 `10s`, `5m`, `1h`. Names match `[A-Za-z0-9][A-Za-z0-9_.-]{0,63}`.
 
-Validate with `xproxy -config FILE -validate` (or `xgate`/`xrelay`, which
+Validate with `xproxy -config FILE -validate` (or `xgate`/`xrelay`/`xot`, which
 check the same file and additionally report how much of it they would
 serve); all problems are reported at once. The example in `deploy/config/xproxy.yaml` exercises most keys.
 
@@ -150,7 +151,8 @@ off) logs a warning and lists them under `mismatched_peers`.
 | `h2c` | bool | `false` | Accept HTTP/2 without TLS (prior knowledge and Upgrade) on a plaintext listener, for gRPC clients inside a trusted network |
 | `tls` | object | none | TLS termination; see below |
 | `proxy_protocol` | bool | `false` | Read a PROXY protocol v1 or v2 header at the start of every connection from a peer in `trusted_proxies`: the client address it carries becomes the peer for limits, bans, ACLs, logs and forwarding headers, and the per address connection count moves to it. A trusted peer that sends no header, or a malformed one, is dropped without a response (`drop_connection` with reason `proxy_protocol`, counted in `rejected_connections`); `LOCAL` headers keep the balancer's address; connections from other peers are served unchanged, so a client cannot choose its own address. Requires `trusted_proxies`; read on `kind:` `http`, `forward`, `ssh`, `telnet`, `vnc`, `rdp`, `smtp`, `mqtt`, `ftp`, `syslog` and `modbus`, and not on `tcp` (which reads the first bytes itself to route by server name, and forwards a header instead), `dns`, `udp`, `ntp`, `ntske`, `dhcp` or `dhcp6` -- the datagram kinds have no connection to put a header at the start of, and the key establishment relay reads the ClientHello. |
-| `kind` | `http`, `tcp`, `udp`, `forward`, `dns`, `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `ntp`, `ntske`, `dhcp`, `dhcp6`, `ssh`, `telnet`, `vnc`, `rdp` | `http` | `tcp` is a layer 4 stream listener and `udp` its datagram counterpart, `forward` an explicit proxy for clients, `dns` a DNS proxy, `smtp` a protocol-aware SMTP and submission proxy, `mqtt` an MQTT proxy, `ftp` an FTP proxy, `syslog` a syslog relay, `modbus` a Modbus relay, `ntp` an NTP and NTS time gateway with `ntske` its key establishment relay, and `ssh`, `telnet`, `vnc` and `rdp` the access gateways; see below. The kind also decides which daemon serves the listener: `http`, `forward`, `tcp`, `udp` and `dns` are xproxy's, `ssh`, `telnet`, `vnc` and `rdp` are xgate's, and `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `ntp` and `ntske` are xrelay's. A daemon handed a listener of another kind validates it and leaves it alone; it is never served by the wrong data plane |
+| `kind` | `http`, `tcp`, `udp`, `forward`, `dns`, `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `ntp`, `ntske`, `dhcp`, `dhcp6`, `ssh`, `telnet`, `vnc`, `rdp` | `http` | `tcp` is a layer 4 stream listener and `udp` its datagram counterpart, `forward` an explicit proxy for clients, `dns` a DNS proxy, `smtp` a protocol-aware SMTP and submission proxy, `mqtt` an MQTT proxy, `ftp` an FTP proxy, `syslog` a syslog relay, `modbus` a Modbus relay, `ntp` an NTP and NTS time gateway with `ntske` its key establishment relay, and `ssh`, `telnet`, `vnc` and `rdp` the access gateways; see below. The kind also decides which daemon serves the listener: `http`, `forward`, `tcp`, `udp` and `dns` are xproxy's; `ssh`, `telnet`, `vnc` and `rdp` are xgate's; `smtp`, `ftp`, `ldap`, `postgres`, `mysql`, `tds`, `redis` and `amqp` are xrelay's; `modbus`, `iec104`, `s7`, `mms`, `bacnet`, `opcua` and `coap` are xot's; and `mqtt`, `syslog`, `snmp`, `tftp`, `dhcp`, `dhcp6`, `ntp` and `ntske` are served by both relays, xrelay's unless the listener's `daemon` says otherwise. A daemon handed a listener of another kind validates it and leaves it alone; it is never served by the wrong data plane |
+| `daemon` | `xproxy`, `xgate`, `xrelay`, `xot` | the kind's own | Which program binds this listener, for the eight kinds both relays serve (`mqtt`, `syslog`, `snmp`, `tftp`, `dhcp`, `dhcp6`, `ntp`, `ntske`). Naming a daemon that does not carry that kind's code is a load error, because the alternative is a port nobody binds and a policy nobody enforces. Naming the only daemon that serves a kind is allowed and warned about. Left unset, the eight are xrelay's and every other kind belongs to the one daemon that serves it. MQTT is in that set because Sparkplug B telemetry is a plant's own and the device inventory collects what one daemon saw, so an estate whose device births arrive over MQTT wants that listener on the daemon serving its control protocols |
 | `redirect_to_https` | bool | `false` | Answer every request with 308 to `https://host/path?query`. Plaintext listeners only. |
 | `connection_rate` | object | none | `{per_second, burst}`: how fast this listener accepts, replacing `server.limits.connection_rate` for it. See below |
 | `connection_rate_per_source` | object | none | `{per_second, burst, ipv4_prefix, ipv6_prefix, max_sources}`: how fast one source network may connect to this listener |
@@ -10269,7 +10271,7 @@ A cluster comes in two shapes, decided by the form of `listen`:
 - **Networked**, `host:port`. Peers are on other machines and are
   authenticated by mutual TLS: `cluster.tls` is required.
 - **Local**, `unix:/path/to/socket`. Peers are the sibling daemons on
-  this machine — `xproxy`, `xgate` and `xrelay` — and are authenticated
+  this machine — `xproxy`, `xgate`, `xrelay` and `xot` — and are authenticated
   by the socket's own permissions plus, optionally, the user id the
   kernel reports for the connection. There is no certificate to issue
   and none to rotate, and `cluster.tls` is refused.
@@ -10281,7 +10283,7 @@ peers it dials, which is half a cluster that looks like a whole one. A
 host that needs both gives each daemon its own certificate and makes
 all three networked members.
 
-A local cluster is what the three daemons of one host use to share a ban
+A local cluster is what the daemons of one host use to share a ban
 list: an address the gate refuses at the SSH port is refused at the edge
 too, without the estate's cluster CA being involved.
 

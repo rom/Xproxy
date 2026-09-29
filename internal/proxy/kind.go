@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/rom/xproxy/internal/access"
@@ -418,10 +419,13 @@ func (s *Server) attachKind(bl *boundListener, inst Instance) {
 }
 
 // daemonFor names the program that serves a kind, for the error a
-// daemon gives when it is handed a listener belonging to a sibling.
+// daemon gives when it is handed a listener belonging to a sibling. A
+// kind two daemons serve names both, because either is a right answer
+// and which one is right here is what the listener's own `daemon:`
+// says.
 func daemonFor(kind string) string {
-	if r, ok := listener.RoleOf(kind); ok {
-		return r.Daemon()
+	if d := listener.Daemons(kind); len(d) > 0 {
+		return strings.Join(d, " or ")
 	}
 	return "no daemon in this project"
 }

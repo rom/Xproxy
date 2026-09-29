@@ -1,6 +1,6 @@
 # Modbus — the protocol under most of the world's plant
 
-`kind: modbus`, served by **xrelay**, TCP port **502** (Modbus/TCP), **802**
+`kind: modbus`, served by **xot**, TCP port **502** (Modbus/TCP), **802**
 (Modbus/TCP Security).
 
 Published in 1979 by Modicon for a serial line, and now the most widely

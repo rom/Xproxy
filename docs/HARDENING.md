@@ -111,9 +111,9 @@ ausearch -m AVC -c xproxy -ts today # empty
 ```
 
 **What the module does not cover yet.** It confines the edge data plane
-(`xproxy_t`) and the GUI (`xproxy_admin_t`). `xgate`, `xrelay` and
+(`xproxy_t`) and the GUI (`xproxy_admin_t`). `xgate`, `xrelay`, `xot` and
 `xsigner` have no domain of their own and run as `unconfined_service_t`,
-so on those three the systemd directives and the process's own Landlock
+so on those four the systemd directives and the process's own Landlock
 and seccomp layers are the confinement, and SELinux is not. That is a
 real gap and it is on the list for 1.0; until it closes, do not read a
 `getenforce` of `Enforcing` as meaning all five processes are confined by
@@ -170,14 +170,13 @@ from a lab address.
 | `/var/lib/xproxy` | `xproxy:xproxy` | `0700` |
 | `/run/xproxy/mgmt.sock` | `xproxy:xproxy` | `0660` |
 
-`xproxy-config` is the group the three daemons share for this directory
-and nothing else: each reads its own file there and they share the
-includes beside it, so no one of them can own it. It is created by
-`tmpfiles.d`, deliberately not by `ConfigurationDirectory=`, which
-systemd chowns to the unit's own user on every start -- three units
-declaring it is three daemons taking the directory from each other, and
-at `0750` the two that did not start last cannot read their
-configuration at all.
+`xproxy-config` is the group the daemons share for this directory and
+nothing else: each reads its own file there and they share the includes
+beside it, so no one of them can own it. It is created by `tmpfiles.d`,
+deliberately not by `ConfigurationDirectory=`, which systemd chowns to
+the unit's own user on every start -- several units declaring it is
+several daemons taking the directory from each other, and at `0750` the
+ones that did not start last cannot read their configuration at all.
 
 xproxy refuses a world writable configuration file. Nothing under
 `/etc/xproxy` should be writable by the service user; the unit mounts it

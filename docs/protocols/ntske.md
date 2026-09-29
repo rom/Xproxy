@@ -1,6 +1,6 @@
 # NTS-KE — key establishment for authenticated time
 
-`kind: ntske`, served by **xrelay**, TCP port **4460**.
+`kind: ntske`, served by **xrelay** or **xot**, TCP port **4460**.
 
 NTS key establishment is the TLS half of Network Time Security. It exists so
 that the *other* half — the actual time exchange — can stay a single

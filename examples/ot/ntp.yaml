@@ -17,7 +17,7 @@
 # that disagrees with its peers. A server that is reachable, synchronised,
 # authenticated and wrong is the case every other check passes.
 #
-# Validate: xrelay -config examples/ot/ntp.yaml -validate
+# Validate: xot -config examples/ot/ntp.yaml -validate
 version: 1
 server:
   listeners:
@@ -27,6 +27,7 @@ server:
     - name: plant
       address: "10.30.0.10:123"
       kind: ntp
+      daemon: xot
       ntp:
         upstream: local_clocks
 
@@ -161,6 +162,7 @@ server:
     - name: egress
       address: "10.30.0.10:1230"
       kind: ntp
+      daemon: xot
       ntp:
         mode: forward
         upstream: public_clocks
@@ -205,6 +207,7 @@ server:
     - name: ke
       address: "10.30.0.10:4460"
       kind: ntske
+      daemon: xot
       ntske:
         upstream: ke_servers
         allow_clients: ["10.30.0.0/16", "10.31.0.0/16"]

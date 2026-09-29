@@ -166,11 +166,11 @@ enforcement decisions in configuration (`docs/USAGE.md`, the WAF and
 bot_score sections) rather than leaving them to per-node learning, if a
 failover must not change how strictly the proxy behaves.
 
-## The three daemons
+## The four daemons
 
-An estate that runs `xproxy`, `xgate` and `xrelay` as separate daemons
-(`docs/ARCHITECTURE.md`) has three failure domains, not one, and they want
-different treatment:
+An estate that runs `xproxy`, `xgate`, `xrelay` and `xot` as separate
+daemons (`docs/ARCHITECTURE.md`) has four failure domains, not one, and
+they want different treatment:
 
 - **xproxy** (edge: HTTP, forward, DNS) is stateless per request. Two nodes
   behind one address with the cluster section on is the straightforward
@@ -180,18 +180,23 @@ different treatment:
   that. Two nodes here are about *reducing the window in which a new
   session cannot be opened*, not about surviving a failure mid-session.
   Tell operators that, or they will report it as a bug.
-- **xrelay** (OT and messaging: Modbus, NTP, MQTT, syslog) is where the
-  state is most awkward, because the policy depends on what the relay
-  *saw*. Modbus value bounds, the select-before-operate state, and the
-  Sparkplug birth and sequence tables are per node and per what passed
-  through it. A relay promoted mid-shift has seen nothing, so its
-  change-rate and delta rules have no baseline: with `on_unknown: refuse`
-  that is an outage, and with `on_unknown: allow` it is a gap. Prefer
-  `allow` on a node that may be promoted cold, and accept that the first
-  write to each point after a failover is unchecked (`docs/CONFIG.md`, the
-  Modbus values section).
+- **xrelay** (messaging and services: SMTP, MQTT, the databases) keeps
+  per-connection state and little else, so it behaves like the edge for
+  failover purposes; what it does not keep is the MQTT session a broker
+  holds, which is the broker's problem and not the relay's.
+- **xot** (the plant: Modbus, IEC 104, S7, MMS, BACnet, OPC UA, CoAP,
+  and the field infrastructure) is where the state is most awkward,
+  because the policy depends on what the relay *saw*. Modbus value
+  bounds, the select-before-operate state, the IEC 104 redundancy group's
+  view of which connection may carry data, and the Sparkplug birth and
+  sequence tables are per node and per what passed through it. A daemon
+  promoted mid-shift has seen nothing, so its change-rate and delta rules
+  have no baseline: with `on_unknown: refuse` that is an outage, and with
+  `on_unknown: allow` it is a gap. Prefer `allow` on a node that may be
+  promoted cold, and accept that the first write to each point after a
+  failover is unchecked (`docs/CONFIG.md`, the Modbus values section).
 
-Because the three daemons share a machine's cluster socket
+Because the daemons share a machine's cluster socket
 (`cluster.listen: unix:...`), siblings on one host share their state
 without a network hop; siblings across hosts need the networked form with
 mutual TLS.
@@ -237,7 +242,7 @@ should raise an alert *before* a failover happens:
 
 ## See also
 
-- `docs/ARCHITECTURE.md` — the three daemons and what each holds
+- `docs/ARCHITECTURE.md` — the four daemons and what each holds
 - `docs/CONFIG.md` — the `cluster`, `tls.expiry` and `session_tickets` keys
 - `docs/USAGE.md` — the fleet controller, WAF learning, `xproxyctl`
 - `docs/TROUBLESHOOTING.md` — what to collect when a failover went wrong

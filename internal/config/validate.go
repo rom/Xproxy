@@ -1055,6 +1055,7 @@ func (v *validator) server(s *Server) {
 		default:
 			v.errf("%s.kind: must be one of %s", p, strings.Join(listener.Kinds(), ", "))
 		}
+		v.listenerDaemon(p, ln)
 		v.connectionRate(p, ln.ConnectionRate, ln.ConnectionRatePerSource)
 		if ln.UDP != nil && ln.Kind != "udp" {
 			v.errf("%s.udp: set on a %s listener (kind: udp)", p, ln.Kind)
@@ -3471,6 +3472,49 @@ func (v *validator) anyEndpointZone(u *Upstream) bool {
 		}
 	}
 	return false
+}
+
+// listenerDaemon checks the program a listener names, for the kinds more
+// than one of them serves.
+//
+// It is refused rather than ignored where the named daemon does not
+// carry that kind's code, because the two ways to get it wrong are the
+// two ways a listener silently stops being served: a daemon that does
+// not exist, and one that exists and serves something else. Either
+// leaves a port nobody binds and a policy nobody enforces, and neither
+// shows up anywhere but in a log line saying the listener was left to a
+// sibling that is never going to take it.
+func (v *validator) listenerDaemon(p string, ln *Listener) {
+	if ln.Daemon == "" {
+		return
+	}
+	if _, ok := listener.RoleByDaemon(ln.Daemon); !ok {
+		v.errf("%s.daemon: %q is not one of %s", p, ln.Daemon,
+			strings.Join(daemonNames(), ", "))
+		return
+	}
+	if _, ok := listener.RoleOf(ln.Kind); !ok {
+		// The kind itself is already refused above; nothing to add.
+		return
+	}
+	if _, ok := listener.Owner(ln.Kind, ln.Daemon); !ok {
+		v.errf("%s.daemon: %s does not serve kind %s, which is served by %s",
+			p, ln.Daemon, ln.Kind, strings.Join(listener.Daemons(ln.Kind), " and "))
+		return
+	}
+	if !listener.Shared(ln.Kind) {
+		v.warnf("%s.daemon: kind %s is served only by %s, so naming it says nothing",
+			p, ln.Kind, ln.Daemon)
+	}
+}
+
+// daemonNames are the programs a listener may name, for a message.
+func daemonNames() []string {
+	out := make([]string, 0, 4)
+	for _, r := range listener.Roles() {
+		out = append(out, r.Daemon())
+	}
+	return out
 }
 
 // connectionRate validates an accept rate wherever one is set: on

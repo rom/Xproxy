@@ -13,14 +13,15 @@ import (
 	"testing"
 )
 
-// the three daemon units and the user each runs as.
+// the daemon units and the user each runs as.
 var daemons = map[string]string{
 	"xproxy.service": "xproxy",
 	"xgate.service":  "xgate",
 	"xrelay.service": "xrelay",
+	"xot.service":    "xot",
 }
 
-// configDir is the directory all three read their configuration from.
+// configDir is the directory they all read their configuration from.
 const configDir = "/etc/xproxy"
 
 const configGroup = "xproxy-config"

@@ -1,6 +1,6 @@
 # TFTP — the protocol under provisioning
 
-`kind: tftp`, served by **xrelay**, UDP port **69**.
+`kind: tftp`, served by **xrelay** or **xot**, UDP port **69**.
 
 Five packet types, no authentication of any kind, and it is how a switch pulls
 its firmware, a machine with no operating system pulls a boot image, and a

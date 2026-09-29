@@ -8,12 +8,12 @@ package paths
 
 import "path/filepath"
 
-// ConfigFileFor is a daemon's default configuration file. The three
-// daemons run side by side, so each reads a file of its own: a shared
+// ConfigFileFor is a daemon's default configuration file. The daemons
+// run side by side, so each reads a file of its own: a shared
 // file cannot give them different management sockets, metrics addresses
 // or log directories, and those are exactly the things two processes
 // cannot share. What is common between them belongs in an include the
-// three files pull in.
+// files pull in.
 func ConfigFileFor(daemon string) string {
 	if daemon == "" || daemon == "xproxy" {
 		return ConfigFile

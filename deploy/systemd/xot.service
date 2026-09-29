@@ -1,0 +1,96 @@
+# xot, the OT daemon: the control protocols -- Modbus, IEC 60870-5-104,
+# S7, IEC 61850 MMS, BACnet/IP, OPC UA, CoAP -- and the infrastructure the
+# field equipment speaks: SNMP, TFTP, DHCP, syslog and the NTP and NTS
+# time gateway. Pairs with xot.socket for socket activation so the
+# service never needs root or CAP_NET_BIND_SERVICE -- which the plant's
+# ports need: 123, 161 and 514 are all privileged.
+#
+# Install:  cp xot.service xot.socket /etc/systemd/system/
+#           systemctl daemon-reload && systemctl enable --now xot.socket
+[Unit]
+Description=xot OT protocol relay
+Documentation=https://github.com/rom/xproxy/tree/main/docs
+After=network-online.target
+Wants=network-online.target
+Requires=xot.socket
+
+[Service]
+# notify-reload: systemctl reload sends ReloadSignal and waits for the
+# RELOADING/READY notifications, so no helper binary runs in the sandbox.
+Type=notify-reload
+ReloadSignal=SIGHUP
+User=xot
+Group=xot
+ExecStart=/usr/local/bin/xot -config /etc/xproxy/xot.yaml
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=45s
+KillSignal=SIGTERM
+LimitNOFILE=1048576
+UMask=0027
+
+# Directories managed by systemd (created with the right owner and label).
+# /etc/xproxy is deliberately NOT a ConfigurationDirectory: every
+# daemon reads it, systemd chowns a ConfigurationDirectory to the unit's
+# own user on every start, and at 0750 that locks the other two out.
+# It is created by tmpfiles.d as root:xproxy-config instead.
+LogsDirectory=xot
+LogsDirectoryMode=0750
+RuntimeDirectory=xot
+RuntimeDirectoryMode=0750
+StateDirectory=xot
+StateDirectoryMode=0700
+
+# Sandboxing. Every directive here is verified by `systemd-analyze security`.
+# The process adds its own layer after start (Landlock rules derived from
+# the configuration, a seccomp deny list, capability clearing, non
+# dumpable; see the sandbox section of docs/CONFIG.md), so the two are
+# defence in depth: a directive missing here is still enforced there.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateUsers=no
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+KeyringMode=private
+PrivateMounts=yes
+# The binary is static: nothing else may be mapped executable.
+NoExecPaths=/
+ExecPaths=/usr/local/bin/xot
+# Only ordinary file systems (ignored where the BPF LSM is unavailable).
+RestrictFileSystems=@basic-api @common-block tmpfs
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @reboot @swap @obsolete @cpu-emulation @debug @module @raw-io @clock @keyring @pkey
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadOnlyPaths=/etc/xproxy
+ReadWritePaths=/var/log/xot /run/xot /var/lib/xot /run/xproxy-cluster
+IPAddressDeny=
+DevicePolicy=closed
+# Binds after start are refused by Landlock inside the process; to have
+# systemd enforce the same for a fixed port set, install a socket-bind
+# drop-in next to this unit and list the ports it needs.
+#
+# Add a ListenStream (or ListenDatagram, for the datagram protocols) per
+# listener to xot.socket, each with its own FileDescriptorName
+# matching the listener name in the configuration.
+
+[Install]
+WantedBy=multi-user.target

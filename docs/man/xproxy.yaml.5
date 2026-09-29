@@ -10,13 +10,13 @@ xproxy.yaml \- configuration of xproxy
 \fB/etc/xproxy/xproxy.yaml\fR
 .SH "DESCRIPTION"
 .PP
-Three daemons read this format: \fBxproxy\fR (the edge: \fBhttp\fR, \fBforward\fR, \fBtcp\fR, \fBdns\fR), \fBxgate\fR (the gate: \fBssh\fR) and \fBxrelay\fR (the relay: \fBsmtp\fR, \fBmqtt\fR, \fBftp\fR, \fBsyslog\fR). Every one of them validates the whole file \[u2014] a listener kind a sibling serves is checked as carefully here as at home \[u2014] and binds only the listeners of its own role, saying in the log which it left to whom. That is what lets an estate keep its common parts in \fBincludes\fR that all three pull in.
+Four daemons read this format: \fBxproxy\fR (the edge: \fBhttp\fR, \fBforward\fR, \fBtcp\fR, \fBdns\fR), \fBxgate\fR (the gate: \fBssh\fR), \fBxrelay\fR (the relay: \fBsmtp\fR, \fBftp\fR, the databases) and \fBxot\fR (the plant: \fBmodbus\fR, \fBiec104\fR, \fBs7\fR, \fBmms\fR, \fBbacnet\fR, \fBopcua\fR, \fBcoap\fR). Every one of them validates the whole file \[u2014] a listener kind a sibling serves is checked as carefully here as at home \[u2014] and binds only the listeners it owns, saying in the log which it left to whom. That is what lets an estate keep its common parts in \fBincludes\fR that they all pull in.
 .PP
-What the three cannot share is a file: \fBmanagement.socket\fR, \fBmetrics.listen\fR and \fBlogging.directory\fR each name something only one process can own. So each daemon reads a file of its own \[u2014] \fB/etc/xproxy/xproxy.yaml\fR, \fB/etc/xproxy/xgate.yaml\fR, \fB/etc/xproxy/xrelay.yaml\fR \[u2014] carrying those three sections and pulling the rest in with \fBincludes\fR. Nothing stops you pointing two daemons at one file; they will then fight over the socket, and the second to start will lose.
+What they cannot share is a file: \fBmanagement.socket\fR, \fBmetrics.listen\fR and \fBlogging.directory\fR each name something only one process can own. So each daemon reads a file of its own \[u2014] \fB/etc/xproxy/xproxy.yaml\fR, \fB/etc/xproxy/xgate.yaml\fR, \fB/etc/xproxy/xrelay.yaml\fR, \fB/etc/xproxy/xot.yaml\fR \[u2014] carrying those three sections and pulling the rest in with \fBincludes\fR. Nothing stops you pointing two daemons at one file; they will then fight over the socket, and the second to start will lose.
 .PP
 Each of them reads one YAML document. Unknown keys are errors. Every omitted value takes the default listed here; a zero duration or count means "default", never "disabled". Paths must be absolute. Durations use Go syntax: \fB500ms\fR, \fB10s\fR, \fB5m\fR, \fB1h\fR. Names match \fB[A\-Za\-z0\-9][A\-Za\-z0\-9_.\-]{0,63}\fR.
 .PP
-Validate with \fBxproxy \-config FILE \-validate\fR (or \fBxgate\fR/\fBxrelay\fR, which check the same file and additionally report how much of it they would serve); all problems are reported at once. The example in \fBdeploy/config/xproxy.yaml\fR exercises most keys.
+Validate with \fBxproxy \-config FILE \-validate\fR (or \fBxgate\fR/\fBxrelay\fR/\fBxot\fR, which check the same file and additionally report how much of it they would serve); all problems are reported at once. The example in \fBdeploy/config/xproxy.yaml\fR exercises most keys.
 .PP
 This reference is also installed as the manual page \fBxproxy.yaml(5)\fR, and a JSON schema generated from the same types (\fB/usr/share/xproxy/xproxy.schema.json\fR, \fBxproxyctl schema\fR) gives editors completion and inline documentation; put \fB# yaml\-language\-server: $schema=/usr/share/xproxy/xproxy.schema.json\fR on the first line of the file to enable it.
 .SH "Top level"
@@ -605,7 +605,16 @@ T}	T{
 T}	T{
 \fBhttp\fR
 T}	T{
-\fBtcp\fR is a layer 4 stream listener and \fBudp\fR its datagram counterpart,\: \fBforward\fR an explicit proxy for clients,\: \fBdns\fR a DNS proxy,\: \fBsmtp\fR a protocol\-aware SMTP and submission proxy,\: \fBmqtt\fR an MQTT proxy,\: \fBftp\fR an FTP proxy,\: \fBsyslog\fR a syslog relay,\: \fBmodbus\fR a Modbus relay,\: \fBntp\fR an NTP and NTS time gateway with \fBntske\fR its key establishment relay,\: and \fBssh\fR,\: \fBtelnet\fR,\: \fBvnc\fR and \fBrdp\fR the access gateways;\: see below. The kind also decides which daemon serves the listener: \fBhttp\fR,\: \fBforward\fR,\: \fBtcp\fR,\: \fBudp\fR and \fBdns\fR are xproxy\(aqs,\: \fBssh\fR,\: \fBtelnet\fR,\: \fBvnc\fR and \fBrdp\fR are xgate\(aqs,\: and \fBsmtp\fR,\: \fBmqtt\fR,\: \fBftp\fR,\: \fBsyslog\fR,\: \fBmodbus\fR,\: \fBntp\fR and \fBntske\fR are xrelay\(aqs. A daemon handed a listener of another kind validates it and leaves it alone;\: it is never served by the wrong data plane
+\fBtcp\fR is a layer 4 stream listener and \fBudp\fR its datagram counterpart,\: \fBforward\fR an explicit proxy for clients,\: \fBdns\fR a DNS proxy,\: \fBsmtp\fR a protocol\-aware SMTP and submission proxy,\: \fBmqtt\fR an MQTT proxy,\: \fBftp\fR an FTP proxy,\: \fBsyslog\fR a syslog relay,\: \fBmodbus\fR a Modbus relay,\: \fBntp\fR an NTP and NTS time gateway with \fBntske\fR its key establishment relay,\: and \fBssh\fR,\: \fBtelnet\fR,\: \fBvnc\fR and \fBrdp\fR the access gateways;\: see below. The kind also decides which daemon serves the listener: \fBhttp\fR,\: \fBforward\fR,\: \fBtcp\fR,\: \fBudp\fR and \fBdns\fR are xproxy\(aqs;\: \fBssh\fR,\: \fBtelnet\fR,\: \fBvnc\fR and \fBrdp\fR are xgate\(aqs;\: \fBsmtp\fR,\: \fBftp\fR,\: \fBldap\fR,\: \fBpostgres\fR,\: \fBmysql\fR,\: \fBtds\fR,\: \fBredis\fR and \fBamqp\fR are xrelay\(aqs;\: \fBmodbus\fR,\: \fBiec104\fR,\: \fBs7\fR,\: \fBmms\fR,\: \fBbacnet\fR,\: \fBopcua\fR and \fBcoap\fR are xot\(aqs;\: and \fBmqtt\fR,\: \fBsyslog\fR,\: \fBsnmp\fR,\: \fBtftp\fR,\: \fBdhcp\fR,\: \fBdhcp6\fR,\: \fBntp\fR and \fBntske\fR are served by both relays,\: xrelay\(aqs unless the listener\(aqs \fBdaemon\fR says otherwise. A daemon handed a listener of another kind validates it and leaves it alone;\: it is never served by the wrong data plane
+T}
+T{
+\fBdaemon\fR
+T}	T{
+\fBxproxy\fR,\: \fBxgate\fR,\: \fBxrelay\fR,\: \fBxot\fR
+T}	T{
+the kind\(aqs own
+T}	T{
+Which program binds this listener,\: for the eight kinds both relays serve (\fBmqtt\fR,\: \fBsyslog\fR,\: \fBsnmp\fR,\: \fBtftp\fR,\: \fBdhcp\fR,\: \fBdhcp6\fR,\: \fBntp\fR,\: \fBntske\fR). Naming a daemon that does not carry that kind\(aqs code is a load error,\: because the alternative is a port nobody binds and a policy nobody enforces. Naming the only daemon that serves a kind is allowed and warned about. Left unset,\: the eight are xrelay\(aqs and every other kind belongs to the one daemon that serves it. MQTT is in that set because Sparkplug B telemetry is a plant\(aqs own and the device inventory collects what one daemon saw,\: so an estate whose device births arrive over MQTT wants that listener on the daemon serving its control protocols
 T}
 T{
 \fBredirect_\:to_\:https\fR
@@ -24085,13 +24094,13 @@ A cluster comes in two shapes, decided by the form of \fBlisten\fR:
 .PP
 .ti -3n
 \(bu
-\fBLocal\fR, \fBunix:/path/to/socket\fR. Peers are the sibling daemons on this machine \[u2014] \fBxproxy\fR, \fBxgate\fR and \fBxrelay\fR \[u2014] and are authenticated by the socket\(aqs own permissions plus, optionally, the user id the kernel reports for the connection. There is no certificate to issue and none to rotate, and \fBcluster.tls\fR is refused.
+\fBLocal\fR, \fBunix:/path/to/socket\fR. Peers are the sibling daemons on this machine \[u2014] \fBxproxy\fR, \fBxgate\fR, \fBxrelay\fR and \fBxot\fR \[u2014] and are authenticated by the socket\(aqs own permissions plus, optionally, the user id the kernel reports for the connection. There is no certificate to issue and none to rotate, and \fBcluster.tls\fR is refused.
 .RE
 .PP
 .PP
 A cluster is one or the other: \fBlisten\fR and every entry of \fBpeers\fR must be all Unix paths or all \fBhost:port\fR. A node that listened on a socket and dialled a host would be reachable by its siblings and not by the peers it dials, which is half a cluster that looks like a whole one. A host that needs both gives each daemon its own certificate and makes all three networked members.
 .PP
-A local cluster is what the three daemons of one host use to share a ban list: an address the gate refuses at the SSH port is refused at the edge too, without the estate\(aqs cluster CA being involved.
+A local cluster is what the daemons of one host use to share a ban list: an address the gate refuses at the SSH port is refused at the edge too, without the estate\(aqs cluster CA being involved.
 .PP
 .TS
 allbox;

@@ -30,6 +30,11 @@ server:
         upstream_key_file: /dev/null
         upstream_known_hosts: /dev/null
     - {name: mail, address: "127.0.0.1:0", kind: smtp, smtp: {upstream: u}}
+    - {name: plc, address: "127.0.0.1:0", kind: modbus, modbus: {upstream: u}}
+    # A kind both relays serve: the plant's own syslog is named for xot,
+    # the estate's is left where it has always been.
+    - {name: plant-logs, address: "127.0.0.1:0", kind: syslog, daemon: xot, syslog: {upstream: u, udp: false}}
+    - {name: site-logs, address: "127.0.0.1:0", kind: syslog, syslog: {upstream: u, udp: false}}
 logging: {access: {enabled: false}}
 upstreams:
   - name: u
@@ -50,7 +55,7 @@ func TestOwnTakesOnlyItsShare(t *testing.T) {
 	for _, role := range listener.Roles() {
 		mine := own(role, cfg, nil)
 		for _, lc := range mine.Server.Listeners {
-			if !role.Serves(lc.Kind) {
+			if !role.Owns(lc.Kind, lc.Daemon) {
 				t.Errorf("%s kept %q, which is kind %q", role.Daemon(), lc.Name, lc.Kind)
 			}
 			if other, dup := seen[lc.Name]; dup {
@@ -63,7 +68,7 @@ func TestOwnTakesOnlyItsShare(t *testing.T) {
 		}
 		// The file it was given is not modified: the next daemon, and
 		// the history and diff views, still see the whole estate.
-		if len(cfg.Server.Listeners) != 4 {
+		if len(cfg.Server.Listeners) != 7 {
 			t.Fatal("own modified the configuration it was given")
 		}
 	}
@@ -72,6 +77,13 @@ func TestOwnTakesOnlyItsShare(t *testing.T) {
 	}
 	if seen["web"] != "xproxy" || seen["l4"] != "xproxy" || seen["bastion"] != "xgate" || seen["mail"] != "xrelay" {
 		t.Errorf("listeners went to the wrong daemons: %v", seen)
+	}
+	// The plant's protocols are xot's wherever they are written, and a
+	// kind both relays serve goes where its listener says -- which is
+	// xrelay when it says nothing, so a file written before xot existed
+	// is served by the daemon that has always served it.
+	if seen["plc"] != "xot" || seen["plant-logs"] != "xot" || seen["site-logs"] != "xrelay" {
+		t.Errorf("the OT split went wrong: %v", seen)
 	}
 }
 
@@ -83,7 +95,8 @@ func TestSplitCounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	for role, want := range map[listener.Role]int{
-		listener.RoleEdge: 2, listener.RoleGate: 1, listener.RoleRelay: 1,
+		listener.RoleEdge: 2, listener.RoleGate: 1, listener.RoleRelay: 2,
+		listener.RoleOT: 2,
 	} {
 		mine, theirs := split(role, cfg)
 		if mine != want || mine+theirs != len(cfg.Server.Listeners) {
