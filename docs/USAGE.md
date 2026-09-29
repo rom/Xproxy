@@ -3069,7 +3069,11 @@ boundary and `types` for the exceptions.
 the number a control room cares about, not `iec104_frames`;
 `iec104_unselected` says whether `require_select` is doing anything;
 `iec104_sequence_gaps` says whether something is replaying or the link is
-lossy. `log_commands` (the default) writes an access line per command in
+lossy. Where `redundancy.groups` is configured, `iec104_redundancy_active`
+below the number of groups is a control centre that is not talking to its
+substation, `iec104_failovers` climbing steadily is paths flapping, and
+`iec104_standby` is frames refused for arriving on a connection that has not
+taken data transfer. `log_commands` (the default) writes an access line per command in
 both directions and leaves the telemetry alone, which is what makes the
 access log readable on this protocol.
 

@@ -169,36 +169,40 @@ func TestASelectionDiesWithItsConnection(t *testing.T) {
 	now := time.Now()
 	s := newSelects(16, time.Minute, func() time.Time { return now })
 	a := sc(1, 4321, wire.CauseActivation, true)
+	one := selectOwner{session: 1}
+	two := selectOwner{session: 2}
 
-	if !s.Select(1, a) {
+	if !s.Select(one, a) {
 		t.Fatal("the selection was not recorded")
 	}
 	if held, _ := s.Status(); held != 1 {
 		t.Fatalf("held %d", held)
 	}
 	// Another connection cannot take it, even for the same point on the
-	// same station.
-	if s.Take(2, a) {
-		t.Error("another connection consumed a selection")
+	// same station -- and with no redundancy group in the picture, what it
+	// is told is that the point was never selected.
+	if took := s.Take(two, a); took != TakeNone {
+		t.Errorf("another connection consumed a selection: %v", took)
 	}
 	// And when the connection that made it ends, it is gone.
-	s.Close(1)
+	s.Close(1, "")
 	if held, _ := s.Status(); held != 0 {
 		t.Errorf("a closed connection left %d selections", held)
 	}
-	if s.Take(1, a) {
-		t.Error("a selection survived its connection")
+	if took := s.Take(one, a); took != TakeNone {
+		t.Errorf("a selection survived its connection: %v", took)
 	}
 
 	// The window expires, which is what stops an execute sent hours later
-	// riding on a selection somebody thought better of.
+	// riding on a selection somebody thought better of -- and the refusal
+	// says so rather than saying the point was never selected.
 	s2 := newSelects(16, 30*time.Second, func() time.Time { return now })
-	if !s2.Select(1, a) {
+	if !s2.Select(one, a) {
 		t.Fatal("select")
 	}
 	now = now.Add(31 * time.Second)
-	if s2.Take(1, a) {
-		t.Error("an expired selection was consumed")
+	if took := s2.Take(one, a); took != TakeExpired {
+		t.Errorf("an expired selection was %v", took)
 	}
 
 	// The bound refuses rather than forgetting silently, and a sweep of
@@ -207,23 +211,23 @@ func TestASelectionDiesWithItsConnection(t *testing.T) {
 	now = time.Now()
 	s3 := newSelects(2, time.Minute, func() time.Time { return now })
 	for i := uint32(1); i <= 2; i++ {
-		if !s3.Select(1, sc(1, i, wire.CauseActivation, true)) {
+		if !s3.Select(one, sc(1, i, wire.CauseActivation, true)) {
 			t.Fatalf("select %d", i)
 		}
 	}
-	if s3.Select(1, sc(1, 3, wire.CauseActivation, true)) {
+	if s3.Select(one, sc(1, 3, wire.CauseActivation, true)) {
 		t.Error("the bound was not a bound")
 	}
 	if _, dropped := s3.Status(); dropped != 1 {
 		t.Errorf("dropped %d", dropped)
 	}
 	now = now.Add(2 * time.Minute)
-	if !s3.Select(1, sc(1, 3, wire.CauseActivation, true)) {
+	if !s3.Select(one, sc(1, 3, wire.CauseActivation, true)) {
 		t.Error("a table full of expired selections stayed full")
 	}
 	// A command naming no point cannot be selected: there is nothing to
 	// key a selection on, and inventing one would let any execute match.
-	if s3.Select(1, &wire.ASDU{Type: wire.CScNA1, Cause: wire.CauseActivation}) {
+	if s3.Select(one, &wire.ASDU{Type: wire.CScNA1, Cause: wire.CauseActivation}) {
 		t.Error("a command with no address was selected")
 	}
 	// A nil-safe status, which is what a listener without the section has.

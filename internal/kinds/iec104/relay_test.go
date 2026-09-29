@@ -30,6 +30,11 @@ type station struct {
 	seq uint16
 	// send carries ASDUs for the station to number and send up.
 	send chan []byte
+	// control carries U-format control functions for the station to
+	// originate, which is not a thing a substation gateway does: it is what
+	// a compromised one would do, and the relay's handling of it is worth
+	// pinning.
+	control chan wire.Control
 	// silent reads and never answers the handshake, which is a station
 	// that is reachable and not talking.
 	silent bool
@@ -44,6 +49,9 @@ func startStation(t *testing.T, s *station) *station {
 	s.ln = ln
 	if s.send == nil {
 		s.send = make(chan []byte, 16)
+	}
+	if s.control == nil {
+		s.control = make(chan wire.Control, 4)
 	}
 	t.Cleanup(func() { _ = ln.Close() })
 	go func() {
@@ -68,6 +76,13 @@ func (s *station) serve(c net.Conn) {
 	go func() {
 		for a := range s.send {
 			if _, err := c.Write(s.next(a)); err != nil {
+				return
+			}
+		}
+	}()
+	go func() {
+		for u := range s.control {
+			if _, err := c.Write(uframe(u)); err != nil {
 				return
 			}
 		}

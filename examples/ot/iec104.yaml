@@ -59,6 +59,30 @@ server:
         require_select: true
         select_timeout: 30s
 
+        # The control centre reaches this substation over two paths, and
+        # edition 2 calls that a redundancy group. Declaring it does two
+        # things.
+        #
+        # It stops the second path carrying anything while the first has
+        # data transfer, so a command injected on a fresh connection from
+        # inside the control centre's network is refused before it reaches
+        # the RTU — and a takeover is a logged failover rather than a
+        # quiet change of path.
+        #
+        # And it is what makes require_select above survivable. A
+        # selection belongs to the connection that made it, so without
+        # the group a failover between the select and the execute refuses
+        # a legitimate two-step command — which is how require_select
+        # gets turned off after one bad night. carry_selects keeps it
+        # across the group's paths; the bound on that is the two-address
+        # client list here plus the rule that only the path holding data
+        # transfer may execute anything.
+        redundancy:
+          groups:
+            - name: control-centre
+              clients: ["10.40.1.11/32", "10.40.1.12/32"]
+              max_connections: 2
+
         # STOPDT_act is not in the list. It stops data transfer, so a
         # client that may send it blinds the control room without
         # refusing a single command — and naming STARTDT_act names its

@@ -2415,6 +2415,7 @@ bounds which stations may be addressed through it.
 | `require_select` | bool | `false` | Make the two-step form mandatory for every command type that has one |
 | `select_timeout` | duration | `30s` | How long a selection stays valid (1s to 10m) |
 | `max_selections` | int | `4096` | Outstanding selections this relay remembers |
+| `redundancy` | object | | The connection groups of edition 2: which connections are one controlling station, of which exactly one carries data at a time; see below |
 | `allow_controls` | list | all | The U-format control functions a client may send: `STARTDT_act`, `STARTDT_con`, `STOPDT_act`, `STOPDT_con`, `TESTFR_act`, `TESTFR_con`. Naming an activation names its confirmation |
 | `k` | int | `12` | The sending window: how many I frames an end may have unacknowledged. An end that exceeds it is refused |
 | `w` | int | `8` | After how many received frames this relay acknowledges. Must not exceed `k` |
@@ -2447,6 +2448,68 @@ bounds which stations may be addressed through it.
 | `max_objects` | int | Information objects one ASDU may carry (0 leaves the protocol's own 127) |
 | `select` | `select`, `execute` | Which half of a two-step command this rule is about. `select` on one client and `execute` on another is a four-eyes control: one operator arms and another fires |
 | `schedule` | object | `{days, from, to, timezone}`; a window whose `to` is before its `from` spans midnight and belongs to the day it started on |
+
+#### server.listeners[].iec104.redundancy
+
+A control centre does not reach a substation over one TCP connection. It
+opens several — different routers, different bearers, sometimes different
+buildings — and edition 2 of the standard calls that set a **redundancy
+group**: exactly one connection in a group carries data at a time, and the
+controlling station moves data transfer with STARTDT when a path fails. The
+standby connections stay open, exchange TESTFR, and carry nothing.
+
+Declaring the group here buys two things that pull in opposite directions,
+which is why it has to be declared rather than inferred.
+
+**A control.** Without a group, a second connection from the control
+centre's own network is just another client, and an injected command on it
+is decided exactly like one on the first. With a group, **only the
+connection holding data transfer may send anything at all**: an I frame
+from a standby connection is refused (`standby`) before it reaches the
+station, and taking data transfer away from a live connection is a
+*failover*, which is logged as an `iec104_failover` security event, counted
+in `iec104_failovers`, and refusable outright.
+
+**A concession.** Select-before-operate is enforced by remembering a
+selection, and a selection belongs to the connection that made it — so a
+failover between the select and the execute turns a legitimate two-step
+command into a refusal, and a control room that meets that during an outage
+learns to turn `require_select` off. `carry_selects` keeps the selection
+across the group instead. What it trusts is the group's `clients` list: any
+address in it can consume a selection another connection made. What bounds
+that is the control above — the selection can only be consumed by whichever
+connection currently holds data transfer, so an intruder inside those
+networks has to win a STARTDT as well, and that is a logged failover rather
+than a quiet execute.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `groups` | list | `[]` | The connection groups. No groups means no redundancy handling at all, which is how every listener written before this behaves |
+
+Each `groups` entry:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | name | required | Names the group in the logs, the counters and the status view |
+| `clients` | list of CIDR | required | The networks whose connections belong to this group. **The client list is the group's identity** — it is what says which connections are one controlling station — so a group without one does not load, and two groups whose lists overlap do not either |
+| `max_connections` | int | `4` | Connections the group may hold at once; 1 to 8. A redundancy group is two or three paths, so a number well past that is a client list that has caught something it should not: the connection past the bound is refused (`redundancy_full`) rather than admitted into the set |
+| `takeover` | `switch`, `refuse` | `switch` | What happens when a connection asks for data transfer while another in the group holds it. `switch` is a failover. `refuse` refuses the STARTDT (`redundancy_active`) and is for the estate where the paths are moved deliberately and a concurrent takeover means something is wrong |
+| `carry_selects` | bool | `true` | Keep a selection across a failover inside this group, as above |
+
+**Three refusals tell the three ways an execute can arrive unselected**, and
+they are different things to put in front of a control room: `unselected` is
+a bare command that was never selected at all, `select_expired` is an
+operator who selected a point and came back to it after `select_timeout`,
+and `select_other_connection` is a two-step command that was done properly
+and a failover in the middle dropped — which is the diagnosis nobody can
+make from outside the relay. The last one only arises on a group with
+`carry_selects: false`.
+
+**What declaring a group also requires.** The standard's STARTDT before data
+transfer, from the connections in the group. A conforming controlling
+station always sends it; one that skips it and starts sending I frames is
+refused as `standby`, which is the same refusal an injected frame on a fresh
+connection inside the group's networks gets.
 
 #### server.listeners[].iec104.setpoints[]
 
@@ -2730,7 +2793,8 @@ Counters: `iec104_sessions`, `iec104_sessions_open`, `iec104_frames`,
 `iec104_denied`,
 `iec104_would_deny`, `iec104_malformed`, `iec104_rejected`,
 `iec104_rate_limited`, `iec104_selects`, `iec104_executes`,
-`iec104_unselected`, `iec104_selects_held`, `iec104_setpoints`,
+`iec104_unselected`, `iec104_selects_held`, `iec104_failovers`,
+`iec104_standby`, `iec104_redundancy_active`, `iec104_setpoints`,
 `iec104_setpoint_points`, `iec104_setpoint_unknown`, `iec104_sequence_gaps`,
 `iec104_window_full`, `iec104_upstream_failed`. Refusals are
 `iec104_denied` for the ban triggers, and the fine-grained reason is in the
@@ -2738,7 +2802,9 @@ refusal counters: `client_not_allowed`, `tls_handshake`, `malformed`,
 `frame_too_long`, `max_connections`, `rate_limited`,
 `command_rate_limited`, `monitor_only`, `common_address`, `rule`,
 `default_deny`, `control`, `station_command`, `sequence`, `window`,
-`ack_ahead`, `unselected`, `select_unavailable`, `setpoint_range`,
+`ack_ahead`, `unselected`, `select_expired`, `select_other_connection`,
+`select_unavailable`, `standby`, `redundancy_active`, `redundancy_full`,
+`setpoint_range`,
 `setpoint_delta`, `setpoint_unknown`, `quality`, `measurement_range`,
 `command_timestamp_missing`, `command_timestamp_invalid`,
 `command_timestamp_old`, `command_timestamp_future`, `unauthenticated`.

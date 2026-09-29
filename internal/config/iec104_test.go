@@ -200,3 +200,93 @@ func TestIEC104DeceptionFieldsAreChecked(t *testing.T) {
 		})
 	}
 }
+
+// A redundancy group is an assertion that a set of addresses is one
+// controlling station. Each of these is a way of writing one that would not
+// be an assertion at all.
+func TestIEC104RedundancyRefusals(t *testing.T) {
+	for _, tc := range []struct{ name, section, want string }{
+		{"a group with no name", `        upstream: rtu
+        redundancy: {groups: [{clients: ["10.40.1.0/24"]}]}
+`, "is not a valid name"},
+		{"a group with no clients", `        upstream: rtu
+        redundancy: {groups: [{name: centre}]}
+`, "clients: required"},
+		{"a client that is not a network", `        upstream: rtu
+        redundancy: {groups: [{name: centre, clients: ["10.40.1.1"]}]}
+`, "clients"},
+		{"two groups with one name", `        upstream: rtu
+        redundancy:
+          groups:
+            - {name: centre, clients: ["10.40.1.0/24"]}
+            - {name: centre, clients: ["10.40.2.0/24"]}
+`, "duplicate"},
+		{"client lists that overlap", `        upstream: rtu
+        redundancy:
+          groups:
+            - {name: north, clients: ["10.40.0.0/16"]}
+            - {name: south, clients: ["10.40.2.0/24"]}
+`, "two controlling stations at once"},
+		{"more paths than a group has", `        upstream: rtu
+        redundancy: {groups: [{name: centre, clients: ["10.40.1.0/24"], max_connections: 99}]}
+`, "max_connections"},
+		{"a takeover that is neither", `        upstream: rtu
+        redundancy: {groups: [{name: centre, clients: ["10.40.1.0/24"], takeover: maybe}]}
+`, "must be switch or refuse"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseWith([]byte(iec104DeceptionConfig(tc.section)), false)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %v, want one about %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// Two warnings, and the shape that must be quiet. A section with no groups
+// enforces nothing, and a group carrying selections across a network wide
+// enough that the client list is not really an assertion about two or three
+// paths is trusting more than the operator probably meant to.
+func TestIEC104RedundancyAdvice(t *testing.T) {
+	for _, tc := range []struct{ name, section, want string }{
+		{"a section with no groups", `        upstream: rtu
+        allow_clients: ["10.40.1.0/24"]
+        redundancy: {groups: []}
+`, "nothing about redundancy is enforced"},
+		{"a group carrying selections across a whole network", `        upstream: rtu
+        allow_clients: ["10.40.0.0/16"]
+        require_select: true
+        redundancy: {groups: [{name: centre, clients: ["10.40.0.0/16"]}]}
+`, "wider than the two or three paths"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := ParseWith([]byte(iec104DeceptionConfig(tc.section)), false)
+			if err != nil {
+				t.Fatalf("the document did not load: %v", err)
+			}
+			if !hasAdvice(cfg, tc.want) {
+				t.Fatalf("no advice about %q: %v", tc.want, cfg.Advice())
+			}
+		})
+	}
+	// The group a control centre actually has -- two paths, named -- is
+	// quiet, because a validator warning that fires on a correct
+	// configuration is a warning an operator learns to scroll past.
+	cfg, err := ParseWith([]byte(iec104DeceptionConfig(`        upstream: rtu
+        allow_clients: ["10.40.1.0/24"]
+        require_select: true
+        redundancy:
+          groups:
+            - name: centre
+              clients: ["10.40.1.11/32", "10.40.1.12/32"]
+              max_connections: 2
+`)), false)
+	if err != nil {
+		t.Fatalf("the document did not load: %v", err)
+	}
+	for _, a := range cfg.Advice() {
+		if strings.Contains(a, "redundancy") || strings.Contains(a, "selections") {
+			t.Errorf("a sound group warned: %q", a)
+		}
+	}
+}

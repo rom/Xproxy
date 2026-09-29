@@ -231,7 +231,7 @@ protocol so that a policy can be written in that protocol's own terms:
 | `ftp` | `xrelay` | FTP and FTPS | Commands, paths, extensions, and the data connection itself |
 | `syslog` | `xrelay` | RFC 5424 and RFC 3164 over UDP, TCP, TLS | Facility, severity, sender, the text; re-emitted in one dialect |
 | `modbus` | `xrelay` | Modbus/TCP, RTU and ASCII, Modbus/TCP Security | Unit identifiers, function codes, diagnostic sub-functions, Schneider UMAS commands, register ranges, values, roles, schedules, behavioural detection |
-| `iec104` | `xrelay` | IEC 60870-5-104, IEC 62351-3 TLS, IEC 60870-5-7 secure authentication recognised | Type identifications, causes of transmission, common and originator addresses, information object ranges, select-before-operate, setpoint value and step bounds, schedules; the information element too -- the quality descriptor a station attached to a reading, the value it reported, and the timestamp on a time-tagged command, which is this protocol's own replay check |
+| `iec104` | `xrelay` | IEC 60870-5-104 (with the redundancy groups of edition 2), IEC 62351-3 TLS, IEC 60870-5-7 secure authentication recognised | Type identifications, causes of transmission, common and originator addresses, information object ranges, select-before-operate that survives a failover, which connection of a redundancy group may carry data, setpoint value and step bounds, schedules; the information element too -- the quality descriptor a station attached to a reading, the value it reported, and the timestamp on a time-tagged command, which is this protocol's own replay check |
 | `snmp` | `xrelay` | SNMP v1, v2c and v3 (USM and TSM), UDP and TCP, RFC 6353 TLS and DTLS | Versions, community strings and USM users, security levels, operations, object subtrees, the amplification bounds; with the user's pass phrases, v3 digests verified and payloads decrypted so the rules apply to v3 too; USM **terminated and re-originated**, so a v1 poller reaches a v3-only agent; and, under RFC 6353, the **certificate** as the identity — mapped to a security name a rule names, with the transport itself a rule field |
 | `ldap` | `xrelay` | LDAP v3, LDAPS, StartTLS | Bind methods, the bound identity, operations, naming contexts and subtrees, scopes, attributes in both directions, filter and entry bounds |
 | `dhcp` | `xrelay` | DHCPv4 with RFC 2132 options, RFC 3046 relay agent information, RFC 3442 routes | The server a reply came from, the options and addresses a reply may carry, the boot file, the lease bounds, the hardware-address rate |
@@ -470,7 +470,15 @@ protocol so that a policy can be written in that protocol's own terms:
   form and the equipment mostly does not check it, so a relay that
   remembers the selections is the only thing in the path that can require
   both steps — which turns one injected command frame from a breaker
-  operation into a refusal. **Setpoint values are bounded**, which is the
+  operation into a refusal. **The redundancy groups of edition 2**, which
+  is where that enforcement survives contact with a control room: a
+  control centre reaches a substation over several connections and
+  exactly one carries data at a time, so declaring the group lets the
+  relay refuse anything a standby connection sends, log a takeover as a
+  failover, and carry a selection across one — because a select and an
+  execute either side of a failover used to be a refusal, and a refusal
+  like that at three in the morning is how select-before-operate gets
+  turned off for good. **Setpoint values are bounded**, which is the
   other half of a policy about the grid: a rule says who may command a
   point, and `setpoints` says what that point may be set to (`min`, `max`)
   and how far one command may move it (`max_delta`), for all three of the

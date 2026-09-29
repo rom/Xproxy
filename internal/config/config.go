@@ -634,6 +634,10 @@ type IEC104Listener struct {
 	// MaxSelections bounds the outstanding selections this relay
 	// remembers. Default 4096.
 	MaxSelections int `yaml:"max_selections"`
+	// Redundancy declares the connection groups of edition 2: the sets of
+	// connections that are one controlling station, of which exactly one
+	// carries data at a time.
+	Redundancy *IEC104Redundancy `yaml:"redundancy"`
 	// AllowControls is the U-format control functions a client may send:
 	// STARTDT_act, STOPDT_act, TESTFR_act and their confirmations. Empty
 	// allows all of them. STOPDT_act is the one worth naming: it stops
@@ -4394,6 +4398,63 @@ type ModbusSecurity struct {
 	// RequireClientCert refuses a connection that presents no client
 	// certificate. Default true when mode is require.
 	RequireClientCert *bool `yaml:"require_client_cert"`
+}
+
+// IEC104Redundancy declares the redundancy groups of edition 2 of
+// IEC 60870-5-104.
+//
+// A control centre reaches a substation over several connections -- different
+// routers, different bearers -- and the standard calls that set a redundancy
+// group: exactly one of them carries data at a time, and the controlling
+// station moves data transfer with STARTDT when a path fails.
+//
+// Declaring it here buys two things. A frame from a connection in the group
+// that does not hold data transfer is refused before it reaches the station,
+// so a second connection from the control centre's own network cannot
+// command anything while it is standby. And a selection can survive the
+// failover, so a two-step command whose select and execute land either side
+// of one is not refused -- which is what makes require_select survivable in
+// a control room.
+type IEC104Redundancy struct {
+	// Groups are the connection groups. No groups means no redundancy
+	// handling, which is how every listener written before this behaves.
+	Groups []IEC104RedundancyGroup `yaml:"groups"`
+}
+
+// IEC104RedundancyGroup is one set of connections that are one controlling
+// station.
+type IEC104RedundancyGroup struct {
+	// Name identifies the group in the logs, the counters and the status
+	// view. Required.
+	Name string `yaml:"name"`
+	// Clients are the networks whose connections belong to this group.
+	// Required: the client list is what says which connections are one
+	// controlling station, and a group without one would claim every client
+	// on the listener is the same peer.
+	Clients []string `yaml:"clients"`
+	// MaxConnections bounds the connections the group may hold at once.
+	// Default 4; 1 to 8. A redundancy group is two or three paths, so a
+	// number well past that is a client list that has caught something it
+	// should not, and the connection past the bound is refused rather than
+	// admitted into a set the operator described as three paths.
+	MaxConnections int `yaml:"max_connections"`
+	// Takeover is what happens when a connection asks for data transfer
+	// while another connection in the group holds it: switch (the default,
+	// which is what a failover is) or refuse. refuse is for the estate
+	// where the paths are moved deliberately and a concurrent takeover
+	// means something is wrong.
+	Takeover string `yaml:"takeover"`
+	// CarrySelects keeps a selection across a failover inside this group,
+	// so a select on one path and the execute on another is one two-step
+	// command. Default true -- it is most of the reason to declare a group.
+	//
+	// What it trusts is the client list: any address in it can consume a
+	// selection another connection made. What bounds that is the group's
+	// own rule that only the connection holding data transfer may send
+	// anything, so taking over a live selection means winning a STARTDT
+	// first -- which is a logged failover, and refusable with
+	// takeover: refuse.
+	CarrySelects *bool `yaml:"carry_selects"`
 }
 
 // ModbusRule decides frames. Every selector that is set must match, and

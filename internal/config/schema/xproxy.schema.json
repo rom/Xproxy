@@ -4968,6 +4968,14 @@
           "description": "RateLimit and RateBurst bound frames per second per client address. Zero disables them.",
           "type": "integer"
         },
+        "redundancy": {
+          "description": "Redundancy declares the connection groups of edition 2: the sets of connections that are one controlling station, of which exactly one carries data at a time.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/IEC104Redundancy"
+            }
+          ]
+        },
         "require_select": {
           "description": "RequireSelect makes the two-step form mandatory for every command type that has one: a command must be selected, by the same client on the same connection, before it is executed. The standard describes select-before-operate; the equipment mostly does not enforce it, which is the gap this closes.",
           "type": "boolean"
@@ -5085,6 +5093,50 @@
           "items": {
             "type": "string"
           }
+        }
+      },
+      "additionalProperties": false
+    },
+    "IEC104Redundancy": {
+      "description": "IEC104Redundancy declares the redundancy groups of edition 2 of IEC 60870-5-104. A control centre reaches a substation over several connections -- different routers, different bearers -- and the standard calls that set a redundancy group: exactly one of them carries data at a time, and the controlling station moves data transfer with STARTDT when a path fails. Declaring it here buys two things. A frame from a connection in the group that does not hold data transfer is refused before it reaches the station, so a second connection from the control centre's own network cannot command anything while it is standby. And a selection can survive the failover, so a two-step command whose select and execute land either side of one is not refused -- which is what makes require_select survivable in a control room.",
+      "type": "object",
+      "properties": {
+        "groups": {
+          "description": "Groups are the connection groups. No groups means no redundancy handling, which is how every listener written before this behaves.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/IEC104RedundancyGroup"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "IEC104RedundancyGroup": {
+      "description": "IEC104RedundancyGroup is one set of connections that are one controlling station.",
+      "type": "object",
+      "properties": {
+        "carry_selects": {
+          "description": "CarrySelects keeps a selection across a failover inside this group, so a select on one path and the execute on another is one two-step command. Default true -- it is most of the reason to declare a group. What it trusts is the client list: any address in it can consume a selection another connection made. What bounds that is the group's own rule that only the connection holding data transfer may send anything, so taking over a live selection means winning a STARTDT first -- which is a logged failover, and refusable with takeover: refuse.",
+          "type": "boolean"
+        },
+        "clients": {
+          "description": "Clients are the networks whose connections belong to this group. Required: the client list is what says which connections are one controlling station, and a group without one would claim every client on the listener is the same peer.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_connections": {
+          "description": "MaxConnections bounds the connections the group may hold at once. Default 4; 1 to 8. A redundancy group is two or three paths, so a number well past that is a client list that has caught something it should not, and the connection past the bound is refused rather than admitted into a set the operator described as three paths.",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Name identifies the group in the logs, the counters and the status view. Required.",
+          "type": "string"
+        },
+        "takeover": {
+          "description": "Takeover is what happens when a connection asks for data transfer while another connection in the group holds it: switch (the default, which is what a failover is) or refuse. refuse is for the estate where the paths are moved deliberately and a concurrent takeover means something is wrong.",
+          "type": "string"
         }
       },
       "additionalProperties": false

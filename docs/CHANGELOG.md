@@ -69,6 +69,47 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   and the sessions count stops climbing — from a scanner sending flights of
   nonsense at the port, which never touches it.
 
+### Added (iec104: the redundancy groups of edition 2)
+
+- **`redundancy.groups` declares which connections are one controlling
+  station.** A control centre reaches a substation over several connections --
+  different routers, different bearers -- and edition 2 of the standard calls
+  that set a redundancy group, of which exactly one carries data at a time. The
+  relay now tracks which one holds data transfer, and **refuses an I frame from
+  a standby connection** (`standby`) before it reaches the station: without a
+  group, a second connection from the control centre's own network was just
+  another client, and an injected command on it was decided exactly like one on
+  the first.
+
+- **A failover is an event.** Taking data transfer from a live connection is
+  logged as an `iec104_failover` security event naming both addresses, counted
+  in `iec104_failovers`, and refusable outright with `takeover: refuse` for the
+  estate where paths are moved deliberately. `iec104_redundancy_active` says how
+  many groups have a connection carrying data at all, which is the gauge that
+  says a control centre is talking to its substation.
+
+- **`carry_selects` (default on inside a group) keeps a selection across a
+  failover**, which is most of the reason to declare a group. A selection
+  belongs to the connection that made it, so a failover between the select and
+  the execute refused a legitimate two-step command -- and a control room that
+  meets that during an outage turns `require_select` off, which loses this
+  protocol's one safety property for good. What the concession trusts is the
+  group's client list; what bounds it is the rule above, since the selection can
+  only be consumed by whichever connection currently holds data transfer, so an
+  intruder inside those networks has to win a STARTDT as well.
+
+- **Three refusals where there was one.** `unselected` is a bare execute that
+  was never selected, `select_expired` is an operator who selected a point and
+  came back to it too late, and `select_other_connection` is a two-step command
+  that was done properly and a failover in the middle dropped. That last one is
+  the diagnosis nobody can make from outside the relay, and it is the difference
+  between "our failover is losing selects" and "somebody is injecting commands".
+
+- **The setpoint memory needed nothing**, and the changelog says so rather than
+  claiming a fix: it is keyed on the point and was already per listener, because
+  the process does not reset when a control centre reconnects. A delta bound
+  that did would be a bound any client could clear by dropping its association.
+
 ### Added (modbus: the second code inside a function code)
 
 - **Function code 8's sub-function is now policy.** `diagnostics` on a rule names
@@ -179,6 +220,17 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   move.
 
 ### Fixed
+
+- **An `iec104` listener in shadow mode counted a real refusal on the
+  select-before-operate path.** The refusal counter sat above the branch that
+  records a would-be refusal, so a listener under trial reported a refusal it
+  did not make -- and the operator reading a trial listener's refusal count is
+  exactly the person who must not be told that enforcement is happening when it
+  is not. The project's own invariant test missed it because the two calls
+  spelled the same reason differently (`unselected` and `iec104_unselected`,
+  which the counter normalises to one name at runtime). The select path now
+  counts on the enforced path only; the same shape survives elsewhere in this
+  kind and is a sweep of its own rather than part of this change.
 
 - **`TestConfigReferenceComplete` ran the `internal/config` package past the
   ten-minute test timeout under `-race`.** It compiled one regular expression

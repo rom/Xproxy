@@ -5426,6 +5426,15 @@ T}	T{
 Outstanding selections this relay remembers
 T}
 T{
+\fBredundancy\fR
+T}	T{
+object
+T}	T{
+
+T}	T{
+The connection groups of edition 2: which connections are one controlling station,\: of which exactly one carries data at a time;\: see below
+T}
+T{
 \fBallow_\:controls\fR
 T}	T{
 list
@@ -5659,6 +5668,105 @@ T}	T{
 \fB{days,\: from,\: to,\: timezone}\fR;\: a window whose \fBto\fR is before its \fBfrom\fR spans midnight and belongs to the day it started on
 T}
 .TE
+.SS "server.listeners[].iec104.redundancy"
+.PP
+A control centre does not reach a substation over one TCP connection. It opens several \[u2014] different routers, different bearers, sometimes different buildings \[u2014] and edition 2 of the standard calls that set a \fBredundancy group\fR: exactly one connection in a group carries data at a time, and the controlling station moves data transfer with STARTDT when a path fails. The standby connections stay open, exchange TESTFR, and carry nothing.
+.PP
+Declaring the group here buys two things that pull in opposite directions, which is why it has to be declared rather than inferred.
+.PP
+\fBA control.\fR Without a group, a second connection from the control centre\(aqs own network is just another client, and an injected command on it is decided exactly like one on the first. With a group, \fBonly the connection holding data transfer may send anything at all\fR: an I frame from a standby connection is refused (\fBstandby\fR) before it reaches the station, and taking data transfer away from a live connection is a \fIfailover\fR, which is logged as an \fBiec104_failover\fR security event, counted in \fBiec104_failovers\fR, and refusable outright.
+.PP
+\fBA concession.\fR Select\-before\-operate is enforced by remembering a selection, and a selection belongs to the connection that made it \[u2014] so a failover between the select and the execute turns a legitimate two\-step command into a refusal, and a control room that meets that during an outage learns to turn \fBrequire_select\fR off. \fBcarry_selects\fR keeps the selection across the group instead. What it trusts is the group\(aqs \fBclients\fR list: any address in it can consume a selection another connection made. What bounds that is the control above \[u2014] the selection can only be consumed by whichever connection currently holds data transfer, so an intruder inside those networks has to win a STARTDT as well, and that is a logged failover rather than a quiet execute.
+.PP
+.TS
+allbox;
+lbw(0.7i) lbw(0.6i) lbw(0.8i) lbx
+lw(0.7i) lw(0.6i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBgroups\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The connection groups. No groups means no redundancy handling at all,\: which is how every listener written before this behaves
+T}
+.TE
+.PP
+Each \fBgroups\fR entry:
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.8i) lbw(0.9i) lbx
+lw(1.2i) lw(0.8i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+name
+T}	T{
+required
+T}	T{
+Names the group in the logs,\: the counters and the status view
+T}
+T{
+\fBclients\fR
+T}	T{
+list of CIDR
+T}	T{
+required
+T}	T{
+The networks whose connections belong to this group. \fBThe client list is the group\(aqs identity\fR \[u2014] it is what says which connections are one controlling station \[u2014] so a group without one does not load,\: and two groups whose lists overlap do not either
+T}
+T{
+\fBmax_\:connections\fR
+T}	T{
+int
+T}	T{
+\fB4\fR
+T}	T{
+Connections the group may hold at once;\: 1 to 8. A redundancy group is two or three paths,\: so a number well past that is a client list that has caught something it should not: the connection past the bound is refused (\fBredundancy_\:full\fR) rather than admitted into the set
+T}
+T{
+\fBtakeover\fR
+T}	T{
+\fBswitch\fR,\: \fBrefuse\fR
+T}	T{
+\fBswitch\fR
+T}	T{
+What happens when a connection asks for data transfer while another in the group holds it. \fBswitch\fR is a failover. \fBrefuse\fR refuses the STARTDT (\fBredundancy_\:active\fR) and is for the estate where the paths are moved deliberately and a concurrent takeover means something is wrong
+T}
+T{
+\fBcarry_\:selects\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Keep a selection across a failover inside this group,\: as above
+T}
+.TE
+.PP
+\fBThree refusals tell the three ways an execute can arrive unselected\fR, and they are different things to put in front of a control room: \fBunselected\fR is a bare command that was never selected at all, \fBselect_expired\fR is an operator who selected a point and came back to it after \fBselect_timeout\fR, and \fBselect_other_connection\fR is a two\-step command that was done properly and a failover in the middle dropped \[u2014] which is the diagnosis nobody can make from outside the relay. The last one only arises on a group with \fBcarry_selects: false\fR.
+.PP
+\fBWhat declaring a group also requires.\fR The standard\(aqs STARTDT before data transfer, from the connections in the group. A conforming controlling station always sends it; one that skips it and starts sending I frames is refused as \fBstandby\fR, which is the same refusal an injected frame on a fresh connection inside the group\(aqs networks gets.
 .SS "server.listeners[].iec104.setpoints[]"
 .PP
 A rule says a control centre may send \fBC_SE_NB_1\fR to point 4711. That is a statement about who may act and on what. It says nothing about \fIwhat may happen\fR, and on this protocol what may happen is bounded only by the encoding: a scaled setpoint carries anything from \-32768 to 32767, and a short float most of the real line. A turbine governor, a tap changer or a reactive\-power setpoint driven to the end of its encoding is a fault no RTU will refuse and no rule about type identifications can express.
@@ -5980,7 +6088,7 @@ T}
 .PP
 So the relay numbers what it writes, acknowledges what it reads at \fBw\fR (and on a timer, for a link too quiet to carry one), and terminates the supervisory frames \-\- an acknowledgement is about the stream this relay wrote, not about the stream the other end wrote. The application layer is still forwarded untouched: the ASDU that arrives is the ASDU that leaves, because re\-encoding it is how a relay and a station come to disagree about what was said. What \fBcheck_sequence\fR and \fBmax_unacknowledged\fR decide is whether a \fIpeer\(aqs\fR numbering is checked: a gap, a replay, or an end that has \fBk\fR frames outstanding that this relay has not acknowledged.
 .PP
-Counters: \fBiec104_sessions\fR, \fBiec104_sessions_open\fR, \fBiec104_frames\fR, \fBiec104_commands\fR, \fBiec104_system_commands\fR, \fBiec104_authentications\fR, \fBiec104_denied\fR, \fBiec104_would_deny\fR, \fBiec104_malformed\fR, \fBiec104_rejected\fR, \fBiec104_rate_limited\fR, \fBiec104_selects\fR, \fBiec104_executes\fR, \fBiec104_unselected\fR, \fBiec104_selects_held\fR, \fBiec104_setpoints\fR, \fBiec104_setpoint_points\fR, \fBiec104_setpoint_unknown\fR, \fBiec104_sequence_gaps\fR, \fBiec104_window_full\fR, \fBiec104_upstream_failed\fR. Refusals are \fBiec104_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBtls_handshake\fR, \fBmalformed\fR, \fBframe_too_long\fR, \fBmax_connections\fR, \fBrate_limited\fR, \fBcommand_rate_limited\fR, \fBmonitor_only\fR, \fBcommon_address\fR, \fBrule\fR, \fBdefault_deny\fR, \fBcontrol\fR, \fBstation_command\fR, \fBsequence\fR, \fBwindow\fR, \fBack_ahead\fR, \fBunselected\fR, \fBselect_unavailable\fR, \fBsetpoint_range\fR, \fBsetpoint_delta\fR, \fBsetpoint_unknown\fR, \fBquality\fR, \fBmeasurement_range\fR, \fBcommand_timestamp_missing\fR, \fBcommand_timestamp_invalid\fR, \fBcommand_timestamp_old\fR, \fBcommand_timestamp_future\fR, \fBunauthenticated\fR.
+Counters: \fBiec104_sessions\fR, \fBiec104_sessions_open\fR, \fBiec104_frames\fR, \fBiec104_commands\fR, \fBiec104_system_commands\fR, \fBiec104_authentications\fR, \fBiec104_denied\fR, \fBiec104_would_deny\fR, \fBiec104_malformed\fR, \fBiec104_rejected\fR, \fBiec104_rate_limited\fR, \fBiec104_selects\fR, \fBiec104_executes\fR, \fBiec104_unselected\fR, \fBiec104_selects_held\fR, \fBiec104_failovers\fR, \fBiec104_standby\fR, \fBiec104_redundancy_active\fR, \fBiec104_setpoints\fR, \fBiec104_setpoint_points\fR, \fBiec104_setpoint_unknown\fR, \fBiec104_sequence_gaps\fR, \fBiec104_window_full\fR, \fBiec104_upstream_failed\fR. Refusals are \fBiec104_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBtls_handshake\fR, \fBmalformed\fR, \fBframe_too_long\fR, \fBmax_connections\fR, \fBrate_limited\fR, \fBcommand_rate_limited\fR, \fBmonitor_only\fR, \fBcommon_address\fR, \fBrule\fR, \fBdefault_deny\fR, \fBcontrol\fR, \fBstation_command\fR, \fBsequence\fR, \fBwindow\fR, \fBack_ahead\fR, \fBunselected\fR, \fBselect_expired\fR, \fBselect_other_connection\fR, \fBselect_unavailable\fR, \fBstandby\fR, \fBredundancy_active\fR, \fBredundancy_full\fR, \fBsetpoint_range\fR, \fBsetpoint_delta\fR, \fBsetpoint_unknown\fR, \fBquality\fR, \fBmeasurement_range\fR, \fBcommand_timestamp_missing\fR, \fBcommand_timestamp_invalid\fR, \fBcommand_timestamp_old\fR, \fBcommand_timestamp_future\fR, \fBunauthenticated\fR.
 .SS "server.listeners[].iec104.learn"
 .PP
 \fB\fBlearn\fR\fR records what crosses this listener and writes a proposed policy.
