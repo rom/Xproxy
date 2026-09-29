@@ -156,6 +156,10 @@ var functions = map[byte]Table{
 	FCReadWriteMultiple:      {"read_write_multiple_registers", AccessWrite, false},
 	FCReadFIFOQueue:          {"read_fifo_queue", AccessRead, true},
 	FCEncapsulatedInterface:  {"encapsulated_interface", AccessIdentify, true},
+	// Not in the specification, and in the table anyway: see FCUMAS. It
+	// is named so a policy can be written about it and marked vendor so
+	// nothing here pretends to know what one of its commands means.
+	FCUMAS: {"umas", AccessVendor, false},
 }
 
 // userDefined are the two ranges the specification reserves for a
@@ -243,10 +247,20 @@ type PDU struct {
 	// an identification request does not.
 	Address, Quantity uint16
 	HasRange          bool
-	// SubFunction is the diagnostic sub-function (code 8) or the MEI
-	// type of an encapsulated request (code 43).
+	// SubFunction is the second code a function code carries where it
+	// has one: the diagnostic sub-function (code 8), the MEI type of an
+	// encapsulated request (code 43) or the UMAS command (code 90). See
+	// subfunction.go for what each one means, and SubEffect for what it
+	// does to the device.
 	SubFunction    uint16
 	HasSubFunction bool
+	// Session is the UMAS session byte, the pairing key an engineering
+	// station is given when it takes a PLC's reservation. It is here
+	// because it has to be read to find the command behind it, and it is
+	// worth a log line: a station sending commands under a session
+	// nobody issued is a station that guessed.
+	Session    byte
+	HasSession bool
 	// Registers are the 16-bit values a write carries, in order, and
 	// Coils the bits. Both are empty on a read request.
 	Registers []uint16
@@ -312,7 +326,16 @@ func (p *PDU) SafeUnderReadOnly() bool {
 
 // Writes says whether this request changes anything on the device.
 func (p *PDU) Writes() bool {
-	return p.Access == AccessWrite || p.Access == AccessDiagnostic && p.Function == FCDiagnostic
+	if p.Access == AccessWrite || p.Access == AccessDiagnostic && p.Function == FCDiagnostic {
+		return true
+	}
+	// UMAS is a protocol inside a function code, and most of what it
+	// carries is a change: stop the PLC, download a block, write a
+	// variable. The commands this package reads as pure reads are still
+	// not reads a relay can vouch for -- what these codes mean is
+	// published research and not a specification -- so the frame counts
+	// as a write and a read-only listener refuses the lot.
+	return p.Function == FCUMAS
 }
 
 // ParseRequest reads a request PDU: the function code and the fields
@@ -537,6 +560,19 @@ func ParseRequest(pdu []byte) (*PDU, error) {
 			return nil, ErrBounds
 		}
 		p.ByteCount = len(data) - 1
+	case FCUMAS:
+		// A session byte and then a command of UMAS's own, before
+		// whatever that command carries: 5A <session> <command> ...
+		// Nothing below the command is parsed, because nothing here
+		// knows the shape of a UMAS payload and a bound invented for one
+		// would be a bound a policy could be walked around. What is
+		// parsed is what a policy decides on: which command, from whom.
+		if len(data) < 2 {
+			return nil, ErrShort
+		}
+		p.Session, p.HasSession = data[0], true
+		p.SubFunction, p.HasSubFunction = uint16(data[1]), true
+		p.ByteCount = len(data) - 2
 	default:
 		if !known {
 			return nil, ErrUnknownFunction
@@ -666,11 +702,13 @@ func ParseResponse(pdu []byte, req *PDU) (*PDU, error) {
 		p.ByteCount = byteCount
 		p.Registers = decodeRegisters(data[4:])
 	case FCReadFileRecord, FCWriteFileRecord, FCReportServerID, FCEncapsulatedInterface,
-		FCGetCommEventCounter, FCGetCommEventLog:
+		FCGetCommEventCounter, FCGetCommEventLog, FCUMAS:
 		// Variable shapes whose own length fields are checked by the
 		// framing. There is nothing a policy decides on inside them,
 		// and inventing a structure here would be inventing a bound
-		// the specification does not have.
+		// the specification does not have. The UMAS reply is here for
+		// the same reason twice over: its shape is not published at
+		// all, and the decision was made about the request.
 		p.ByteCount = len(data)
 	default:
 		if !known {

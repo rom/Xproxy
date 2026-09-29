@@ -432,6 +432,21 @@ type ModbusListener struct {
 	// read-only listener that could be written through by one rule is
 	// not a read-only listener.
 	ReadOnly bool `yaml:"read_only"`
+	// RefuseUnsafeSubFunctions refuses a frame whose sub-function stops a
+	// device, changes what it runs, clears the record of either, or is
+	// one this relay cannot read -- unless the allow rule that permitted
+	// it named the sub-function, with diagnostics, umas_commands or
+	// effects. Default true.
+	//
+	// It is here because of what a function code covers. A rule allowing
+	// `diagnostic` was written by somebody thinking of counter polls, and
+	// the same rule allows sub-function 4, Force Listen Only Mode, which
+	// is four bytes that take a device off the bus until something
+	// restarts it. A rule allowing `umas` was written for an engineering
+	// station, and the same rule allows stop_plc. So a rule that does not
+	// mention the sub-function does not permit those: naming them is how
+	// a policy says it meant them.
+	RefuseUnsafeSubFunctions *bool `yaml:"refuse_unsafe_sub_functions"`
 	// Rules decide each frame, in order, first match wins. A frame that
 	// matches no rule takes DefaultAction.
 	Rules []ModbusRule `yaml:"rules"`
@@ -4406,6 +4421,24 @@ type ModbusRule struct {
 	// diagnostic, identify or vendor. It is the durable way to write
 	// "no writing" without listing every code that writes.
 	Access []string `yaml:"access"`
+	// Diagnostics are the sub-functions of function code 8 this rule
+	// covers, by name (force_listen_only, clear_counters,
+	// return_bus_message_count) or by number. A rule naming them matches
+	// only a diagnostic request, which is what lets "the counters yes,
+	// listen-only mode never" be written at all.
+	Diagnostics []string `yaml:"diagnostics"`
+	// UMASCommands are the Schneider UMAS commands of function code 90
+	// this rule covers, by name (stop_plc, upload_block, read_variables)
+	// or by number. A rule naming them matches only a UMAS request.
+	UMASCommands []string `yaml:"umas_commands"`
+	// Effects match what the sub-function does, whichever function code
+	// carried it: read, write, control (stop, start, restart,
+	// listen-only), program (a control program in either direction),
+	// clear (counters and the event log), session, or unknown (a
+	// sub-function this relay cannot read, and the CANopen tunnel). It is
+	// the durable way to write "nothing that stops a PLC", and a rule
+	// naming it matches only a frame that has a sub-function.
+	Effects []string `yaml:"effects"`
 	// Addresses are the register or coil ranges the request may name,
 	// as "0-999" or single numbers. A request whose range is not
 	// entirely inside one of them does not match.

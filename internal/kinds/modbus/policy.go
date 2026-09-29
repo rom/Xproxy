@@ -97,6 +97,18 @@ type rule struct {
 	maxQty    int
 	values    []valueRule
 	schedule  *schedule.Window
+
+	// diags, umas and effects are the sub-function selectors: which
+	// diagnostic sub-functions of function code 8, which UMAS commands of
+	// function code 90, and what the sub-function does whichever code
+	// carried it.
+	diags   numrange.Set
+	umas    numrange.Set
+	effects map[wire.SubEffect]bool
+	// namesSub says this rule mentions the sub-function at all, by any of
+	// the three. It is what lifts refuse_unsafe_sub_functions: a rule that
+	// names it meant it.
+	namesSub bool
 }
 
 // Policy is the compiled listener policy.
@@ -105,6 +117,7 @@ type Policy struct {
 	units         numrange.Set
 	rules         []*rule
 	defaultAllow  bool
+	refuseUnsafe  bool
 	allow, deny   []netip.Prefix
 	roleMode      string
 	roleSource    string
@@ -134,6 +147,7 @@ func compile(l *config.ModbusListener, now func() time.Time) (*Policy, error) {
 	if p.now == nil {
 		p.now = time.Now
 	}
+	p.refuseUnsafe = l.RefuseUnsafeSubFunctions == nil || *l.RefuseUnsafeSubFunctions
 	var err error
 	if p.units, err = numrange.Parse("units", l.Units, 255); err != nil {
 		return nil, err
@@ -227,6 +241,9 @@ func compileRule(c *config.ModbusRule) (*rule, error) {
 			}
 		}
 	}
+	if err := compileSubFunctions(c, r); err != nil {
+		return nil, err
+	}
 	for i := range c.Values {
 		v, err := compileValue(c.Name, &c.Values[i])
 		if err != nil {
@@ -253,6 +270,67 @@ func functionCode(s string) (byte, error) {
 		return 0, fmt.Errorf("%q is not a function code name or a number from 1 to 127", s)
 	}
 	return byte(n), nil
+}
+
+// compileSubFunctions compiles the three sub-function selectors.
+//
+// They are one function because they answer one question -- does this rule
+// mention the sub-function -- and because the answer decides whether the
+// rule may allow one of the sub-functions a listener refuses by default.
+func compileSubFunctions(c *config.ModbusRule, r *rule) error {
+	var err error
+	if r.diags, err = subSet(c.Name, "diagnostics", wire.FCDiagnostic, c.Diagnostics); err != nil {
+		return err
+	}
+	if r.umas, err = subSet(c.Name, "umas_commands", wire.FCUMAS, c.UMASCommands); err != nil {
+		return err
+	}
+	if len(c.Effects) > 0 {
+		r.effects = map[wire.SubEffect]bool{}
+		for _, s := range c.Effects {
+			e, ok := wire.ParseSubEffect(s)
+			if !ok {
+				return fmt.Errorf("rules.%s.effects: %q is not read, write, control, program, clear, session or unknown",
+					c.Name, s)
+			}
+			r.effects[e] = true
+		}
+	}
+	r.namesSub = len(r.diags) > 0 || len(r.umas) > 0 || len(r.effects) > 0
+	return nil
+}
+
+// subSet compiles a list of sub-functions written as names, numbers or
+// ranges.
+//
+// The names are translated to numbers and the whole list then goes through
+// numrange, which is where every other numeric list in a Modbus rule is
+// read: that is what makes `11-18` mean here what it means in an address
+// list, so an engineer writing "the counters" does not have to find out
+// that this one field reads ranges differently.
+func subSet(rule, field string, fc byte, in []string) (numrange.Set, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	where := "rules." + rule + "." + field
+	max := wire.SubMax(fc)
+	out := make(numrange.Set, 0, len(in))
+	for _, s := range in {
+		if sub, ok := wire.SubCode(fc, s); ok {
+			out = append(out, numrange.Range{Lo: int(sub), Hi: int(sub)})
+			continue
+		}
+		// Not a name and not a number, so it is a range or it is nothing.
+		// The message says all three forms rather than leaving an engineer
+		// who mistyped a name to read an error about numbers.
+		set, err := numrange.Parse(where, []string{s}, max)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %q is not a %s sub-function name, a number from 0 to %d, or a range of them",
+				where, s, wire.FunctionName(fc), max)
+		}
+		out = append(out, set...)
+	}
+	return out, nil
 }
 
 func compileValue(rule string, c *config.ModbusValueRule) (valueRule, error) {
@@ -501,6 +579,9 @@ func (p *Policy) Decide(req request) Decision {
 			// is tried against live traffic without deciding anything.
 			continue
 		default:
+			if !r.namesSub && p.unsafeSub(req) {
+				return Decision{Rule: r.name, Reason: "unsafe_sub_function", Comment: r.comment}
+			}
 			if reason := r.checkValues(req, p.state, now); reason != "" {
 				return Decision{Rule: r.name, Reason: reason, Comment: r.comment}
 			}
@@ -508,9 +589,36 @@ func (p *Policy) Decide(req request) Decision {
 		}
 	}
 	if p.defaultAllow {
+		// A default is the least deliberate thing in a configuration, so
+		// it is the last place a frame that stops a PLC should get
+		// through: default_action: allow permits the traffic nobody wrote
+		// a rule about, and forcing a device into listen-only mode is not
+		// that traffic.
+		if p.unsafeSub(req) {
+			return Decision{Reason: "unsafe_sub_function"}
+		}
 		return Decision{Allow: true, Reason: "default_allow"}
 	}
 	return Decision{Reason: "no_rule"}
+}
+
+// unsafeSub says this request carries a sub-function the listener refuses
+// unless a rule named it: one that stops a device, changes what it runs,
+// clears the record of either, or is one this relay cannot read.
+//
+// The guard is a separate thing from a rule because of what it is for. A
+// rule says what the traffic may be; this says that a rule permitting a
+// function code has not, by saying nothing, permitted the worst thing that
+// code can do. A listener that wants the whole code back says
+// refuse_unsafe_sub_functions: false, and a rule that wants one of them
+// names it -- both of which are visible in the configuration, which is the
+// point.
+func (p *Policy) unsafeSub(req request) bool {
+	if !p.refuseUnsafe || req.pdu == nil {
+		return false
+	}
+	e, ok := req.pdu.SubEffect()
+	return ok && e.Unsafe()
 }
 
 // observeWrite records the values a write carries, so the next write's
@@ -596,6 +704,30 @@ func (r *rule) matches(req request, now time.Time) bool {
 	}
 	if len(r.access) > 0 && !r.access[req.pdu.Access] {
 		return false
+	}
+	for _, sel := range []struct {
+		fc  byte
+		set numrange.Set
+	}{{wire.FCDiagnostic, r.diags}, {wire.FCUMAS, r.umas}} {
+		if len(sel.set) == 0 {
+			continue
+		}
+		// A rule naming a sub-function of one function code never matches
+		// another code's frame, whether or not the rule also named the
+		// code: the sub-function numbers are not one namespace.
+		if req.pdu.Function != sel.fc || !req.pdu.HasSubFunction ||
+			!sel.set.Has(int(req.pdu.SubFunction)) {
+			return false
+		}
+	}
+	if len(r.effects) > 0 {
+		// A rule about an effect never matches a frame that has no
+		// sub-function: "nothing that stops a PLC" is a statement about
+		// the frames that could, and a register read is not one of them.
+		e, ok := req.pdu.SubEffect()
+		if !ok || !r.effects[e] {
+			return false
+		}
 	}
 	if r.maxQty > 0 && req.pdu.HasRange && int(req.pdu.Quantity) > r.maxQty {
 		return false

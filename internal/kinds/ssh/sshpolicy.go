@@ -327,6 +327,28 @@ func (t *server) principalFor(user string, key cssh.PublicKey) (*sshPrincipal, b
 // question of policy: it is in authorized_keys, or it is a certificate
 // signed by a trusted user CA that is valid now and names the login the
 // client is connecting as.
+// certOptionsImplemented are the certificate critical options this gateway
+// implements, and therefore the only ones it will accept on a certificate.
+//
+// A critical option is critical: the CA meant it to be honoured or the
+// credential refused. CheckCert rejects any option not named here, which is the
+// behaviour to want -- an option this gateway does not implement must not be
+// quietly ignored -- so the list is exactly what it does implement.
+//
+// source-address is in it because this gateway does implement it, in
+// certSourceAddress, which is where the client's address is. It has to be named
+// explicitly: x/crypto/ssh up to v0.54.0 skipped this one option inside
+// CheckCert, on the grounds that its own serverAuthenticate would enforce it
+// later, and a caller calling CheckCert directly inherited that skip. v0.55.0
+// removed the special case -- CertChecker.Authenticate now adds the option to
+// its own copy of this list before calling CheckCert -- so a direct caller that
+// does not name it refuses every certificate carrying the option, whatever its
+// value.
+//
+// That failure is fail-closed and exactly backwards: it refuses the
+// certificates an estate hardened, and never runs the check that reads them.
+var certOptionsImplemented = []string{"force-command", "source-address"}
+
 func (t *server) acceptKey(c cssh.ConnMetadata, key cssh.PublicKey) (string, certDecision, error) {
 	var none certDecision
 	cert, isCert := key.(*cssh.Certificate)
@@ -352,21 +374,14 @@ func (t *server) acceptKey(c cssh.ConnMetadata, key cssh.PublicKey) (string, cer
 		return "", none, fmt.Errorf("a certificate was offered for %q and no user CA is configured", c.User())
 	}
 	checker := &cssh.CertChecker{
-		IsUserAuthority: func(auth cssh.PublicKey) bool { return t.caKeys[string(auth.Marshal())] },
-		// A critical option is critical: the CA meant it to be honoured
-		// or the credential refused. CheckCert rejects any option not
-		// named here, which is the behaviour to want -- an option this
-		// gateway does not implement must not be quietly ignored -- so
-		// the list is exactly what it does implement. source-address is
-		// not in it because the library skips that one itself, leaving
-		// it to the caller who has the client's address.
-		SupportedCriticalOptions: []string{"force-command"},
+		IsUserAuthority:          func(auth cssh.PublicKey) bool { return t.caKeys[string(auth.Marshal())] },
+		SupportedCriticalOptions: certOptionsImplemented,
 	}
 	// CheckCert verifies the signature, the validity window, that every
-	// critical option is one it knows, and that the principal list covers
-	// this login. What it deliberately leaves out is source-address,
-	// which needs the client's address, and it says nothing about the
-	// extensions -- so the rest is here.
+	// critical option is one this gateway named, and that the principal
+	// list covers this login. What it does not do is evaluate
+	// source-address -- naming it says only that somebody will -- and it
+	// says nothing about the extensions, so the rest is here.
 	if err := checker.CheckCert(c.User(), cert); err != nil {
 		return "", none, fmt.Errorf("certificate for %q: %w", c.User(), err)
 	}

@@ -123,12 +123,26 @@ func TestClientHelloALPNRefuses(t *testing.T) {
 
 // breakALPN finds the ALPN extension in a captured hello and lets a test
 // edit its body in place.
+//
+// The extension body lives inside the handshake message, which lives inside the
+// record, so this searches for the extension header rather than walking the
+// hello -- but a two-octet type and a plausible length are not enough to have
+// found it. The bytes 00 10 occur all over a modern hello: in the Go 1.26 client
+// they land inside supported_groups, whose contents grew another
+// post-quantum group identifier, at an offset whose next two octets read as a
+// length in range. This helper used to take the first such match, edit
+// somebody else's extension, and hand back a hello whose ALPN was untouched --
+// so four tests reported a reader that believed a bad length when the reader was
+// right and the helper had corrupted a different extension. The comment there
+// promised it would fail loudly if the shape changed; it did not, so the shape
+// is now checked.
+//
+// isALPNBody is that check: an ALPN body is a two-octet list length covering
+// exactly the rest of the body, holding length-prefixed names that consume the
+// list exactly. Nothing else in a hello has that shape by accident.
 func breakALPN(t *testing.T, hello []byte, edit func(body []byte)) []byte {
 	t.Helper()
 	out := append([]byte(nil), hello...)
-	// The extension body lives inside the handshake message, which lives
-	// inside the record: searching for the extension header is enough
-	// for a test, and it fails loudly if the shape changes.
 	for i := 0; i+4 < len(out); i++ {
 		if binary.BigEndian.Uint16(out[i:]) != extALPN {
 			continue
@@ -137,11 +151,33 @@ func breakALPN(t *testing.T, hello []byte, edit func(body []byte)) []byte {
 		if l < 4 || i+4+l > len(out) {
 			continue
 		}
-		edit(out[i+4 : i+4+l])
+		body := out[i+4 : i+4+l]
+		if !isALPNBody(body) {
+			continue
+		}
+		edit(body)
 		return out
 	}
 	t.Fatal("the captured hello has no ALPN extension")
 	return nil
+}
+
+// isALPNBody says whether these octets are an ALPN extension's body.
+func isALPNBody(body []byte) bool {
+	if len(body) < 3 {
+		return false
+	}
+	if int(binary.BigEndian.Uint16(body)) != len(body)-2 {
+		return false
+	}
+	for p := 2; p < len(body); {
+		n := int(body[p])
+		if n == 0 || p+1+n > len(body) {
+			return false
+		}
+		p += 1 + n
+	}
+	return true
 }
 
 // FuzzClientHelloALPN drives the reader with whatever arrives. The

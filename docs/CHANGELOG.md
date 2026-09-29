@@ -69,6 +69,105 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   and the sessions count stops climbing — from a scanner sending flights of
   nonsense at the port, which never touches it.
 
+### Added (modbus: the second code inside a function code)
+
+- **Function code 8's sub-function is now policy.** `diagnostics` on a rule names
+  the sub-functions it covers, by name (`force_listen_only`,
+  `return_bus_message_count`), number, or range (`11-18`), so "the counters, yes;
+  listen-only mode, never" is two rules. Before this, function code 8 could only
+  be allowed or refused whole -- and it covers both a counter poll a maintenance
+  tool makes all day and the four bytes that take a device off the bus until
+  somebody walks out to it.
+
+- **Function code 90 is parsed as Schneider UMAS**, down to the session byte and
+  the command, and `umas_commands` names them: `read_variables`, `stop_plc`,
+  `upload_block`, the strategy transfers. It used to be an unknown code and it
+  carries the two things that matter most on a Modicon estate -- stopping the PLC
+  and changing its program. What is known about the commands is published
+  research rather than a specification, and the implementation says so where it
+  counts: a command absent from the table is `unknown` rather than harmless,
+  nothing below the command is parsed (no bound invented for a payload whose
+  shape nobody publishes), and a read-only listener refuses every UMAS frame
+  whatever the command.
+
+- **`effects` is the durable form of the same rule.** It names what a
+  sub-function *does* -- `read`, `write`, `control` (stop, start, restart,
+  listen-only), `program` (a control program in either direction), `clear`
+  (counters and the event log), `session`, `unknown` -- whichever function code
+  carried it. `effects: [control, program, clear, unknown]` is one deny that
+  covers function 8, function 90 and the CANopen tunnel in function 43, and it
+  keeps covering them when the table learns another vendor's code.
+
+- **The sub-function reaches the trace and the learning report.** The trace line
+  carries `sub_function`, `effect` and the UMAS session; a learning subject is
+  per sub-function rather than per function code, so the report proposes
+  `diagnostics: [return_bus_message_count]` instead of `functions: [diagnostic]`
+  -- which is both more exact and what the new default requires.
+
+### Security
+
+- **A rule allowing a Modbus function code no longer allows the worst thing that
+  code can do.** `refuse_unsafe_sub_functions`, default **on**, refuses a
+  sub-function whose effect is `control`, `program`, `clear` or `unknown` to an
+  allow rule that never mentioned the sub-function, and to
+  `default_action: allow`. The reason is what a rule means: `functions:
+  [diagnostic]` was written by somebody thinking of counter polls, and it used to
+  permit Force Listen Only Mode as well. Naming the sub-function -- with
+  `diagnostics`, `umas_commands` or `effects` -- is how a policy says it meant
+  it. The refusal is `unsafe_sub_function`, answered as an illegal-function
+  exception, and `refuse_unsafe_sub_functions: false` hands the whole function
+  code back with a validation warning.
+
+  **Two behaviour changes follow, on configurations that load unchanged.** A rule
+  allowing function code 8 without naming sub-functions now refuses 1, 3, 4, 10,
+  20 and 21 and allows the counters. And a CANopen tunnel (function 43, MEI type
+  13) is classified `unknown`, so it too needs a rule that names it -- `effects:
+  [unknown]` -- because a tunnel carrying a second protocol is not something this
+  relay reads.
+
+- **`golang.org/x/crypto` v0.54.0 -> v0.57.0, past the SSH channel-deadlock
+  advisories.** Go's advisories put those issues in versions before v0.56.0, and
+  an earlier govulncheck run had found reachable SSH call paths here. A
+  reachable path is not by itself a demonstration that this proxy is
+  exploitable; the fix is cheap and the SSH gate is the one listener whose whole
+  job is to stand between people and the machines they administer.
+
+  The upgrade moves the minimum Go toolchain to **1.26**, because v0.56.0 is the
+  first release carrying the fix and its own `go` directive says 1.26.0. There is
+  no version of this fix that does not. `BuildRequires: golang >= 1.26` in the
+  RPM spec, and the setup documents say so; CI takes its toolchain from `go.mod`
+  and needs no edit. The Fedora packaging builds with `GOTOOLCHAIN=local`, so a
+  build host whose `golang` package is older than 1.26 now fails at the
+  toolchain check rather than silently building something else.
+
+- **A certificate carrying `source-address` was refused outright by the SSH
+  gate after that upgrade, whatever its value.** x/crypto up to v0.54.0 skipped
+  that one critical option inside `CheckCert`, on the grounds that its own
+  `serverAuthenticate` would enforce it later, and a caller calling `CheckCert`
+  directly inherited the skip. v0.55.0 removed the special case, so this
+  gateway -- which calls `CheckCert` directly and enforces the option itself,
+  because the check needs the client's address -- had to name it.
+
+  Fail-closed, and exactly backwards: it refused the certificates an estate had
+  hardened and never ran the check that reads them. The option list is now a
+  named value, `certOptionsImplemented`, with a test that asserts the gate
+  against it in both directions -- the end-to-end tests could not catch this,
+  because a certificate restricted to another network is refused either way and
+  SSH gives the client no reason.
+
+- **The ALPN reader's test helper had been editing a different extension.**
+  The Go 1.26 toolchain the upgrade brings in adds another post-quantum group
+  identifier to the client hello, which moved the bytes `00 10` -- the ALPN
+  extension type -- into `supported_groups` at an offset whose next two octets
+  read as a length in range. `breakALPN` took the first such match, corrupted
+  somebody else's extension, and handed back a hello whose ALPN was untouched:
+  four assertions then reported a reader that believed a bad length when the
+  reader was right. The helper now checks that the body it found has an ALPN
+  body's shape -- a list length covering exactly the rest, holding
+  length-prefixed names that consume it exactly -- which is what its own comment
+  had promised. The reader itself needed no change, and its fuzz properties held
+  throughout.
+
 ### Changed
 
 - **The DTLS transport moved out of the CoAP kind into `internal/dtlsx`.**
@@ -80,6 +179,16 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   move.
 
 ### Fixed
+
+- **`TestConfigReferenceComplete` ran the `internal/config` package past the
+  ten-minute test timeout under `-race`.** It compiled one regular expression
+  per configuration key and scanned the whole reference with each -- a
+  thousand-odd scans of a megabyte, which the race detector's overhead turned
+  into a timeout rather than a slow test. The document is now tokenised once
+  into the identifier runs a key has to appear as, which is the same question
+  asked in one pass: 600 seconds and a panic became under three. A key that is
+  not itself such a run still goes through the regular expression, so the two
+  readings cannot drift.
 
 - **Every binary built on a host whose `date` is not GNU's was stamped
   `BuildDate=1970-01-01T00:00:00Z`.** The Makefile converted an epoch with

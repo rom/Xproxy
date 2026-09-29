@@ -11,7 +11,7 @@ offers instead of systemd, SELinux, Landlock and seccomp.
 
 - macOS 13 (Ventura) or newer on Apple silicon or Intel. Ports below
   1024 need no privilege since macOS 10.14, so nothing runs as root.
-- Go 1.25 or newer to build; the binaries are static and have no
+- Go 1.26 or newer to build; the binaries are static and have no
   dependency on Homebrew or Xcode at run time.
 - Administrator access for the installation (users, launchd, pf).
 

@@ -903,7 +903,11 @@ func (se *session) answerException(frame *wire.Frame, fc, code byte, _ []byte) {
 // something true about what was refused.
 func exceptionFor(d Decision) byte {
 	switch d.Reason {
-	case "read_only", "read_only_unknown_function", "rule_deny", "no_rule":
+	case "read_only", "read_only_unknown_function", "rule_deny", "no_rule",
+		"unsafe_sub_function":
+		// The refusal is about which function the frame asked for -- a
+		// sub-function is still a function -- and illegal function is what
+		// an engineering tool's own diagnostics will make sense of.
 		return wire.ExIllegalFunction
 	case "value_out_of_range", "coil_set_not_allowed", "coil_clear_not_allowed", "value_masked_write",
 		"value_delta", "value_transition", "value_no_select", "value_unknown":
@@ -1047,11 +1051,31 @@ func (t *server) refuse(se *session, frame *wire.Frame, pdu *wire.PDU, d Decisio
 	}
 }
 
+// subAttrs adds the sub-function to a log line, where the frame has one.
+//
+// "unit 3, diagnostic, refused" is not an audit trail: the function code is
+// the same for a counter poll and for the frame that took the device off the
+// bus, and which one it was is the thing an incident is reconstructed from.
+func subAttrs(attrs []any, pdu *wire.PDU) []any {
+	if !pdu.HasSubFunction {
+		return attrs
+	}
+	attrs = append(attrs, "sub_function", pdu.SubName())
+	if e, ok := pdu.SubEffect(); ok {
+		attrs = append(attrs, "effect", string(e))
+	}
+	if pdu.HasSession {
+		attrs = append(attrs, "umas_session", pdu.Session)
+	}
+	return attrs
+}
+
 // audit writes the security event for one decision.
 func (t *server) audit(se *session, frame *wire.Frame, pdu *wire.PDU, d Decision, kind string) {
 	attrs := []any{"listener", t.cfg.Name, "client_ip", se.ip.String(), "proto", "modbus",
 		"unit", frame.Unit, "function", wire.FunctionName(pdu.Function),
 		"access", string(pdu.Access), "reason", d.Reason}
+	attrs = subAttrs(attrs, pdu)
 	if se.role != "" {
 		attrs = append(attrs, "role", se.role)
 	}
@@ -1077,6 +1101,7 @@ func (t *server) logFrame(se *session, frame *wire.Frame, pdu *wire.PDU, d Decis
 		"unit", frame.Unit, "transaction", frame.Transaction,
 		"function", wire.FunctionName(pdu.Function), "access", string(pdu.Access),
 		"decision", decisionName(d)}
+	attrs = subAttrs(attrs, pdu)
 	if se.role != "" {
 		attrs = append(attrs, "role", se.role)
 	}

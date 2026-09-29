@@ -11807,6 +11807,57 @@ func iec104ControlName(s string) (byte, bool) {
 	return byte(c), ok
 }
 
+// modbusSubFunctions checks a rule's three sub-function selectors, and
+// the one way they can be written so as to select nothing: a rule that
+// names a diagnostic sub-function and a function list without function
+// code 8 in it can never match, which is a rule that looks like a control
+// and is not one.
+func (v *validator) modbusSubFunctions(q string, r *ModbusRule) {
+	for _, sel := range []struct {
+		fc    byte
+		in    []string
+		field string
+	}{
+		{modbus.FCDiagnostic, r.Diagnostics, "diagnostics"},
+		{modbus.FCUMAS, r.UMASCommands, "umas_commands"},
+	} {
+		// A name, a number, or a range of numbers -- the same three forms
+		// as every other numeric list in a Modbus rule, so that the
+		// counters can be written as 11-18.
+		for j, s := range sel.in {
+			if _, ok := modbus.SubCode(sel.fc, s); ok {
+				continue
+			}
+			if _, err := numrange.Parse("sub", []string{s}, modbus.SubMax(sel.fc)); err == nil {
+				continue
+			}
+			v.errf("%s.%s[%d]: %q is not a %s sub-function name (%s), a number from 0 to %d, or a range of them",
+				q, sel.field, j, s, modbus.FunctionName(sel.fc),
+				strings.Join(modbus.SubNames(sel.fc), ", "), modbus.SubMax(sel.fc))
+		}
+		if len(sel.in) == 0 || len(r.Functions) == 0 {
+			continue
+		}
+		named := false
+		for _, f := range r.Functions {
+			if fc, ok := modbus.FunctionCode(f); ok && fc == sel.fc {
+				named = true
+			} else if n, err := strconv.Atoi(strings.TrimSpace(f)); err == nil && n == int(sel.fc) {
+				named = true
+			}
+		}
+		if !named {
+			v.warnf("%s.%s names a sub-function of function code %d, and %s.functions does not name that function code, so this rule can never match",
+				q, sel.field, sel.fc, q)
+		}
+	}
+	for j, e := range r.Effects {
+		if _, ok := modbus.ParseSubEffect(e); !ok {
+			v.errf("%s.effects[%d]: %q must be read, write, control, program, clear, session or unknown", q, j, e)
+		}
+	}
+}
+
 func (v *validator) modbusListener(p string, m *ModbusListener, hasTLS bool) {
 	if m.MaxValuePoints < 0 || m.MaxValuePoints > 1<<20 {
 		v.errf("%s.max_value_points: must be between 0 and 1048576", p)
@@ -11912,6 +11963,9 @@ func (v *validator) modbusListener(p string, m *ModbusListener, hasTLS bool) {
 	default:
 		v.errf("%s.deny_response: must be exception, drop or close", p)
 	}
+	if m.RefuseUnsafeSubFunctions != nil && !*m.RefuseUnsafeSubFunctions {
+		v.warnf("%s.refuse_unsafe_sub_functions is off, so a rule allowing function code 8 allows sub-function 4, Force Listen Only Mode, which is one frame that takes a device off the bus until something restarts it -- and a rule allowing function code 90 allows stop_plc. Leave it on and name the sub-functions a rule means, with diagnostics, umas_commands or effects", p)
+	}
 	ruleNames := map[string]bool{}
 	for i := range m.Rules {
 		r := &m.Rules[i]
@@ -11943,6 +11997,7 @@ func (v *validator) modbusListener(p string, m *ModbusListener, hasTLS bool) {
 				v.errf("%s.access[%d]: must be read, write, diagnostic, identify or vendor", q, j)
 			}
 		}
+		v.modbusSubFunctions(q, r)
 		if r.MaxQuantity < 0 || r.MaxQuantity > 2000 {
 			v.errf("%s.max_quantity: must be between 0 and 2000", q)
 		}

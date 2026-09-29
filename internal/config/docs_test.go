@@ -15,6 +15,36 @@ func keyRE(tag string) *regexp.Regexp {
 	return regexp.MustCompile(`(^|[^A-Za-z0-9_])` + regexp.QuoteMeta(tag) + `([^A-Za-z0-9_]|$)`)
 }
 
+// wordRE splits a document into the maximal runs of identifier characters,
+// which is what keyRE matches a key as.
+var wordRE = regexp.MustCompile(`[A-Za-z0-9_]+`)
+
+// docWords is the set of identifier-like words in a document.
+//
+// It exists for a reason that is not elegance: keyRE per key, against the
+// whole reference, is one regular expression scan of a megabyte for each of
+// a thousand-odd configuration keys, and under the race detector that ran
+// the package past the ten-minute test timeout. Tokenising the document
+// once says exactly the same thing -- a key matches keyRE when, and only
+// when, it appears as a whole run of identifier characters -- in one pass.
+// A key that is not itself such a run falls back to the regular
+// expression, so the two cannot drift.
+func docWords(text string) map[string]bool {
+	out := make(map[string]bool, 4096)
+	for _, w := range wordRE.FindAllString(text, -1) {
+		out[w] = true
+	}
+	return out
+}
+
+// mentioned says whether the document mentions this key.
+func mentioned(text string, words map[string]bool, tag string) bool {
+	if wordRE.FindString(tag) == tag {
+		return words[tag]
+	}
+	return keyRE(tag).MatchString(text)
+}
+
 // TestConfigReferenceComplete walks the configuration schema by reflection
 // and checks that every YAML key is mentioned in docs/CONFIG.md, so the
 // reference cannot silently fall behind the code (release checklist item
@@ -25,6 +55,7 @@ func TestConfigReferenceComplete(t *testing.T) {
 		t.Skip("docs not available:", err)
 	}
 	text := string(doc)
+	words := docWords(text)
 	var missing []string
 	seen := map[reflect.Type]bool{}
 	var walk func(rt reflect.Type, path string)
@@ -42,7 +73,7 @@ func TestConfigReferenceComplete(t *testing.T) {
 			if tag == "" || tag == "-" {
 				continue
 			}
-			if !keyRE(tag).MatchString(text) {
+			if !mentioned(text, words, tag) {
 				missing = append(missing, path+tag)
 			}
 			walk(f.Type, path+tag+".")
