@@ -81,6 +81,24 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ### Fixed
 
+- **Every binary built on a host whose `date` is not GNU's was stamped
+  `BuildDate=1970-01-01T00:00:00Z`.** The Makefile converted an epoch with
+  `date -d @N`, which is a GNU extension; BSD date spells it `date -r N` and
+  rejects `-d`, so the conversion failed and the expression fell back to the
+  epoch. macOS is a supported build host, which means the darwin release
+  binaries — the ones a build date is most wanted on — all claimed to predate
+  the protocols they proxy. git now formats the commit date itself, so no
+  `date(1)` is involved at all; `SOURCE_DATE_EPOCH` still wins where it is set
+  and is converted with whichever spelling the host has. Where neither is
+  available, the date is `unknown`, which is what it is: the epoch reads as a
+  fact.
+
+- The RPM spec no longer converts `SOURCE_DATE_EPOCH` itself before calling
+  `make`. It duplicated the Makefile with the same GNU-only spelling and fell
+  back to the wall clock, which would have made a package built without
+  `SOURCE_DATE_EPOCH` unreproducible for the one reason reproducibility is
+  claimed.
+
 - **A DTLS listener's socket buffer was sized to its message bound, so the
   largest messages it was configured to carry were truncated by the read.** A
   record is larger than the plaintext inside it — a header, a nonce and a tag —
