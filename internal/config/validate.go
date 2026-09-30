@@ -8010,6 +8010,7 @@ func (v *validator) ldapDNs(p string, in []string) {
 // about, because an index only means something against the server's own namespace
 // table and that table's order is not guaranteed across a firmware update.
 func (v *validator) opcuaListener(p string, m *OPCUAListener, address string) {
+	v.anomaly(p+".anomaly", m.Anomaly)
 	if m.Upstream == "" {
 		v.errf("%s.upstream: required", p)
 	}
@@ -8416,6 +8417,7 @@ func (v *validator) opcuaAllowsOpaque(m *OPCUAListener) bool {
 
 // coapListener checks the CoAP relay.
 func (v *validator) coapListener(p string, m *CoAPListener, address string, tc *TLS) {
+	v.anomaly(p+".anomaly", m.Anomaly)
 	dtls := tc != nil
 	switch m.Mode {
 	case "", "reverse", "forward":
@@ -9634,6 +9636,7 @@ func s7Version(s string) bool {
 }
 
 func (v *validator) s7Listener(p string, m *S7Listener) {
+	v.anomaly(p+".anomaly", m.Anomaly)
 	if m.Upstream == "" && !s7DecoyOnly(m) {
 		v.errf("%s.upstream: required", p)
 	}
@@ -11312,6 +11315,7 @@ func snmpVerifiesClients(tc *TLS) bool {
 }
 
 func (v *validator) snmpListener(p string, m *SNMPListener, tc *TLS) {
+	v.anomaly(p+".anomaly", m.Anomaly)
 	hasTLS := tc != nil
 	switch m.Mode {
 	case "", "reverse", "forward":
@@ -11857,6 +11861,7 @@ func carryPrefixAdvice(pre netip.Prefix) int {
 }
 
 func (v *validator) iec104Listener(p string, m *IEC104Listener, hasTLS bool) {
+	v.anomaly(p+".anomaly", m.Anomaly)
 	switch m.Mode {
 	case "", "reverse", "forward":
 	default:
@@ -14089,6 +14094,7 @@ func roleNames() string {
 // a rule that quietly matches nothing -- which on this protocol is a policy
 // with a hole in it that nothing reports.
 func (v *validator) bacnetListener(p string, m *BACnetListener) {
+	v.anomaly(p+".anomaly", m.Anomaly)
 	if m.Upstream == "" {
 		v.errf("%s.upstream: required", p)
 	}
@@ -14593,6 +14599,7 @@ func redisNameChar(c byte) bool {
 
 // mmsListener checks an mms listener's section.
 func (v *validator) mmsListener(p string, m *MMSListener, address string) {
+	v.anomaly(p+".anomaly", m.Anomaly)
 	if m.Upstream == "" {
 		v.errf("%s.upstream: required", p)
 	}

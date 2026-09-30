@@ -59,6 +59,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/admit"
+	"github.com/rom/xproxy/internal/anomaly"
 	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/correlate"
@@ -96,6 +97,7 @@ type server struct {
 	learner  *learner
 	limiter  *limits.KeyedLimiter
 	cmdRate  *limits.KeyedLimiter
+	anomaly  *anomaly.Detector
 
 	open atomic.Int64
 	wg   sync.WaitGroup
@@ -165,6 +167,9 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener, tc *tls.Co
 		// centre, and a frame limit loose enough for telemetry says
 		// nothing about that.
 		t.cmdRate = limits.NewKeyedLimiter(float64(m.CommandRateLimit), burst, 65536)
+	}
+	if t.anomaly, err = anomaly.FromConfig(m.Anomaly, time.Now()); err != nil {
+		return nil, fmt.Errorf("iec104 %s: %w", cfg.Name, err)
 	}
 	return t, nil
 }

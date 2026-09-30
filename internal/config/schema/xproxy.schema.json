@@ -1374,6 +1374,14 @@
           "description": "AllowSegmented carries a segmented request or reply. Default true. A relay sees one segment at a time and decides about the one that carries the service choice, so an estate that wants every request decided whole turns this off -- at the cost of the large reads a trend log download needs.",
           "type": "boolean"
         },
+        "anomaly": {
+          "description": "Anomaly watches what each client has been doing and reports when it stops: an operation it has never used, a point it has never driven, a scan cycle that changed, an order it has never followed, a value that stopped moving. It needs no rules, which is the point of it. The block is the same on every OT kind; see Anomaly.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Anomaly"
+            }
+          ]
+        },
         "broadcast_reply_window": {
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
@@ -2264,6 +2272,14 @@
         "amplification_factor": {
           "description": "AmplificationFactor bounds a response's size as a multiple of the request's. Zero is off. It is the check a per-datagram bound cannot make: a kilobyte answer is unremarkable on its own and is a hundred and fifty times the four-octet question that asked for it.",
           "type": "integer"
+        },
+        "anomaly": {
+          "description": "Anomaly watches what each client has been doing and reports when it stops: an operation it has never used, a point it has never driven, a scan cycle that changed, an order it has never followed, a value that stopped moving. It needs no rules, which is the point of it. The block is the same on every OT kind; see Anomaly.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Anomaly"
+            }
+          ]
         },
         "answer_refusals": {
           "description": "AnswerRefusals sends the response code the standard gives for a refusal rather than dropping the datagram. Default true, and it matters more here than elsewhere: a Confirmable request is retransmitted until something answers, so a dropped refusal turns one refused request into four or five -- and leaves the device's own logs showing a timeout instead of a refusal.",
@@ -5217,6 +5233,14 @@
             "type": "string"
           }
         },
+        "anomaly": {
+          "description": "Anomaly watches what each client has been doing and reports when it stops: an operation it has never used, a point it has never driven, a scan cycle that changed, an order it has never followed, a value that stopped moving. It needs no rules, which is the point of it. The block is the same on every OT kind; see Anomaly.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Anomaly"
+            }
+          ]
+        },
         "authentication": {
           "description": "Authentication is the posture on IEC 60870-5-7 secure authentication, which IEC 62351-5 specifies.",
           "allOf": [
@@ -6930,6 +6954,14 @@
         "allow_operate": {
           "description": "AllowOperate carries a Write to a control attribute that operates: `$CO$...$Oper`. Default true where the constraint is allowed at all, so that turning CO on does not silently turn operating on.",
           "type": "boolean"
+        },
+        "anomaly": {
+          "description": "Anomaly watches what each client has been doing and reports when it stops: an operation it has never used, a point it has never driven, a scan cycle that changed, an order it has never followed, a value that stopped moving. It needs no rules, which is the point of it. The block is the same on every OT kind; see Anomaly.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Anomaly"
+            }
+          ]
         },
         "ap_titles": {
           "description": "APTitles are the calling AP-titles an association may present, as object identifiers in dotted form, glob patterns allowed: `1.1.999.*`. Empty allows any. The AP-title is not a credential -- nothing proves it -- but it is what an SCL file configured and what the IEDs themselves check, so it is the field an estate's own drawings are written in. Treat it as an address.",
@@ -9470,6 +9502,14 @@
         "allow_reverse_hello": {
           "description": "AllowReverseHello carries a ReverseHello: a server dialling outward to reach a client behind a firewall. Default false. It inverts the direction everything else here assumes. The peer that dialled is the one that will be trusted as a server, so a listener that does not mean to support the pattern should refuse the message rather than pass it and find out.",
           "type": "boolean"
+        },
+        "anomaly": {
+          "description": "Anomaly watches what each client has been doing and reports when it stops: an operation it has never used, a point it has never driven, a scan cycle that changed, an order it has never followed, a value that stopped moving. It needs no rules, which is the point of it. The block is the same on every OT kind; see Anomaly.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Anomaly"
+            }
+          ]
         },
         "application_uris": {
           "description": "ApplicationURIs are the client application URIs a CreateSession may name, as glob patterns. Empty allows any. The URI must also appear in the client's own certificate, which is the cheapest identity check the protocol has: a server checks it and so does this relay when RequireCertificateURI is on.",
@@ -12075,6 +12115,14 @@
             "type": "string"
           }
         },
+        "anomaly": {
+          "description": "Anomaly watches what each client has been doing and reports when it stops: an operation it has never used, a point it has never driven, a scan cycle that changed, an order it has never followed, a value that stopped moving. It needs no rules, which is the point of it. The block is the same on every OT kind; see Anomaly.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Anomaly"
+            }
+          ]
+        },
         "areas": {
           "description": "Areas is the memory areas a request may name: db, inputs, outputs, flags, timer, counter, instance_db, local, peripheral and the 200-family areas. Empty allows any.",
           "type": "array",
@@ -12800,6 +12848,14 @@
           "items": {
             "type": "string"
           }
+        },
+        "anomaly": {
+          "description": "Anomaly watches what each client has been doing and reports when it stops: an operation it has never used, a point it has never driven, a scan cycle that changed, an order it has never followed, a value that stopped moving. It needs no rules, which is the point of it. The block is the same on every OT kind; see Anomaly.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Anomaly"
+            }
+          ]
         },
         "cert_to_name": {
           "description": "CertToName is RFC 6353 s5.3's snmpTlstmCertToTSNTable: how a peer's certificate becomes the security name a rule names. Rows are ordered and the first whose fingerprint matches decides. Without it a message under the transport security model has no name, and what happens then is require_security_name's business. See SNMPCertName.",

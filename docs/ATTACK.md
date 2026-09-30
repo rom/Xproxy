@@ -240,6 +240,16 @@ them, which is why an operations centre can filter on
 
 | Reason | Technique | Why this one |
 |--------|-----------|--------------|
+| `anomaly_correlation_broken` | T0831, T0832 |  |
+| `anomaly_cycle_changed` | T0801 | a general interrogation cycle that changed: this protocol's rhythm is a control centre's configuration, not a choice made per request |
+| `anomaly_new_pair` | T0846, T1046 | a controlling station addressing a common address it has never addressed, which is one control centre working through a substation list |
+| `anomaly_new_symbol` | T0855 | a type identification this controlling station has never sent: a control centre's repertoire does not change between projects |
+| `anomaly_new_talker` | T0886 |  |
+| `anomaly_new_write_point` | T0836, T0835 |  |
+| `anomaly_sequence_unseen` | T0855 |  |
+| `anomaly_telemetry_frozen` | T0832, T0856, T1565.002 | a measured value a substation has stopped moving, which is what a control room is shown while the process does something else |
+| `anomaly_telemetry_replayed` | T0832, T0856, T1565.002 |  |
+| `anomaly_write_burst` | T0806, T0836 |  |
 | `client_not_allowed` | T0883, T1133 |  |
 | `command_rate_limited` | T0806 |  |
 | `common_address` | T0846, T1046 |  |
@@ -330,6 +340,13 @@ them, which is why an operations centre can filter on
 | Reason | Technique | Why this one |
 |--------|-----------|--------------|
 | `address_not_allowed` | T0836 |  |
+| `anomaly_cycle_changed` | T0801 |  |
+| `anomaly_new_pair` | T0846, T1046 | a client on a rack and slot it has never addressed, which is how a station works along a cell |
+| `anomaly_new_symbol` | T0855 | an operation this station has never used, which on this protocol is the engineering workflow: a client that has only ever read, downloading |
+| `anomaly_new_talker` | T0886 |  |
+| `anomaly_new_write_point` | T0836, T0835 |  |
+| `anomaly_sequence_unseen` | T0855 | read, write, read back is what a tool does every time; a write with no read before it is a tool that is not this one |
+| `anomaly_write_burst` | T0806, T0836 |  |
 | `area_denied` | T0836, T0835 |  |
 | `area_not_allowed` | T0836, T0835 |  |
 | `block_type_not_allowed` | T0843, T0845 | a block operation is control logic moving in one direction or the other, and which one the operation says |

@@ -356,6 +356,20 @@ var otMappings = []mapping{
 		note: "an operate with no select before it is a command that skipped the protocol's own confirmation"},
 	{kind: "iec104", reason: "command_rate_limited", ids: []string{"T0806"}},
 	{kind: "iec104", reason: "client_not_allowed", ids: []string{"T0883", "T1133"}},
+	{kind: "iec104", reason: "anomaly_new_symbol", ids: []string{"T0855"},
+		note: "a type identification this controlling station has never sent: a control centre's repertoire does not change between projects"},
+	{kind: "iec104", reason: "anomaly_new_write_point", ids: []string{"T0836", "T0835"}},
+	{kind: "iec104", reason: "anomaly_write_burst", ids: []string{"T0806", "T0836"}},
+	{kind: "iec104", reason: "anomaly_new_talker", ids: []string{"T0886"}},
+	{kind: "iec104", reason: "anomaly_new_pair", ids: []string{"T0846", "T1046"},
+		note: "a controlling station addressing a common address it has never addressed, which is one control centre working through a substation list"},
+	{kind: "iec104", reason: "anomaly_cycle_changed", ids: []string{"T0801"},
+		note: "a general interrogation cycle that changed: this protocol's rhythm is a control centre's configuration, not a choice made per request"},
+	{kind: "iec104", reason: "anomaly_sequence_unseen", ids: []string{"T0855"}},
+	{kind: "iec104", reason: "anomaly_telemetry_frozen", ids: []string{"T0832", "T0856", "T1565.002"},
+		note: "a measured value a substation has stopped moving, which is what a control room is shown while the process does something else"},
+	{kind: "iec104", reason: "anomaly_telemetry_replayed", ids: []string{"T0832", "T0856", "T1565.002"}},
+	{kind: "iec104", reason: "anomaly_correlation_broken", ids: []string{"T0831", "T0832"}},
 
 	// S7comm. The protocol with the least security here, and the one
 	// whose operations are the engineering workflow itself.
@@ -373,6 +387,16 @@ var otMappings = []mapping{
 	{kind: "s7", reason: "slot_not_allowed", ids: []string{"T0846", "T1046"}},
 	{kind: "s7", reason: "s7comm_plus_denied", ids: []string{"T0855"}},
 	{kind: "s7", reason: "s7comm_plus_not_allowed", ids: []string{"T0855"}},
+	{kind: "s7", reason: "anomaly_new_symbol", ids: []string{"T0855"},
+		note: "an operation this station has never used, which on this protocol is the engineering workflow: a client that has only ever read, downloading"},
+	{kind: "s7", reason: "anomaly_new_write_point", ids: []string{"T0836", "T0835"}},
+	{kind: "s7", reason: "anomaly_write_burst", ids: []string{"T0806", "T0836"}},
+	{kind: "s7", reason: "anomaly_new_talker", ids: []string{"T0886"}},
+	{kind: "s7", reason: "anomaly_new_pair", ids: []string{"T0846", "T1046"},
+		note: "a client on a rack and slot it has never addressed, which is how a station works along a cell"},
+	{kind: "s7", reason: "anomaly_cycle_changed", ids: []string{"T0801"}},
+	{kind: "s7", reason: "anomaly_sequence_unseen", ids: []string{"T0855"},
+		note: "read, write, read back is what a tool does every time; a write with no read before it is a tool that is not this one"},
 
 	// IEC 61850 MMS, where the object names carry the semantics.
 	{kind: "mms", reason: "operate_not_allowed", ids: []string{"T0855", "T0871"}},

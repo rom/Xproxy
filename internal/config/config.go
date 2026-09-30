@@ -625,6 +625,12 @@ type IEC104Listener struct {
 	// because a policy written from the substation drawings refuses half the
 	// traffic on the first shift. See IEC104Learn.
 	Learn *IEC104Learn `yaml:"learn"`
+	// Anomaly watches what each client has been doing and reports when it
+	// stops: an operation it has never used, a point it has never driven, a
+	// scan cycle that changed, an order it has never followed, a value that
+	// stopped moving. It needs no rules, which is the point of it. The block
+	// is the same on every OT kind; see Anomaly.
+	Anomaly *Anomaly `yaml:"anomaly"`
 	// Setpoints bound the *value* a setpoint command may carry, per
 	// information object address. Without them a setpoint is bounded only
 	// by which point it names and when it may be sent, so a control
@@ -1027,6 +1033,12 @@ type SNMPListener struct {
 	// ProxyProtocol sends a PROXY protocol v2 header to the agent on a TCP
 	// listener.
 	ProxyProtocol bool `yaml:"proxy_protocol"`
+	// Anomaly watches what each client has been doing and reports when it
+	// stops: an operation it has never used, a point it has never driven, a
+	// scan cycle that changed, an order it has never followed, a value that
+	// stopped moving. It needs no rules, which is the point of it. The block
+	// is the same on every OT kind; see Anomaly.
+	Anomaly *Anomaly `yaml:"anomaly"`
 }
 
 // LDAPListener is a kind: ldap listener: an LDAP and LDAPS relay in front of
@@ -1932,6 +1944,12 @@ type S7Listener struct {
 	// because the drawings say which blocks a controller has and the traffic
 	// says which of them anything actually reads. See S7Learn.
 	Learn *S7Learn `yaml:"learn"`
+	// Anomaly watches what each client has been doing and reports when it
+	// stops: an operation it has never used, a point it has never driven, a
+	// scan cycle that changed, an order it has never followed, a value that
+	// stopped moving. It needs no rules, which is the point of it. The block
+	// is the same on every OT kind; see Anomaly.
+	Anomaly *Anomaly `yaml:"anomaly"`
 
 	// Rules decide each request, in order, first match wins. A request
 	// that matches no rule takes DefaultAction.
@@ -3930,6 +3948,12 @@ type CoAPListener struct {
 	LogMessages bool `yaml:"log_messages"`
 	// AlertOnDeny writes a security event for every refusal. Default true.
 	AlertOnDeny *bool `yaml:"alert_on_deny"`
+	// Anomaly watches what each client has been doing and reports when it
+	// stops: an operation it has never used, a point it has never driven, a
+	// scan cycle that changed, an order it has never followed, a value that
+	// stopped moving. It needs no rules, which is the point of it. The block
+	// is the same on every OT kind; see Anomaly.
+	Anomaly *Anomaly `yaml:"anomaly"`
 }
 
 // CoAPPSK is a listener's pre-shared key mode: the identity-to-key table, and
@@ -12571,6 +12595,12 @@ type BACnetListener struct {
 	LogRequests *bool `yaml:"log_requests"`
 	// AlertOnDeny writes a security event for every refusal. Default true.
 	AlertOnDeny *bool `yaml:"alert_on_deny"`
+	// Anomaly watches what each client has been doing and reports when it
+	// stops: an operation it has never used, a point it has never driven, a
+	// scan cycle that changed, an order it has never followed, a value that
+	// stopped moving. It needs no rules, which is the point of it. The block
+	// is the same on every OT kind; see Anomaly.
+	Anomaly *Anomaly `yaml:"anomaly"`
 }
 
 // BACnetRule decides one request.
@@ -12881,6 +12911,12 @@ type OPCUAListener struct {
 	// because the drawings say which nodes a server has and the traffic says
 	// which of them anything actually reads. See OPCUALearn.
 	Learn *OPCUALearn `yaml:"learn"`
+	// Anomaly watches what each client has been doing and reports when it
+	// stops: an operation it has never used, a point it has never driven, a
+	// scan cycle that changed, an order it has never followed, a value that
+	// stopped moving. It needs no rules, which is the point of it. The block
+	// is the same on every OT kind; see Anomaly.
+	Anomaly *Anomaly `yaml:"anomaly"`
 
 	// Rules decide each message, in order, first match wins. A message that
 	// matches no rule takes DefaultAction.
@@ -13199,6 +13235,12 @@ type MMSListener struct {
 	// Learn records what crosses this listener and writes a proposed rule
 	// set. See MMSLearn.
 	Learn *MMSLearn `yaml:"learn"`
+	// Anomaly watches what each client has been doing and reports when it
+	// stops: an operation it has never used, a point it has never driven, a
+	// scan cycle that changed, an order it has never followed, a value that
+	// stopped moving. It needs no rules, which is the point of it. The block
+	// is the same on every OT kind; see Anomaly.
+	Anomaly *Anomaly `yaml:"anomaly"`
 }
 
 // MMSRule is one rule of an mms listener's policy.
