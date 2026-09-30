@@ -135,12 +135,31 @@ func TestTerminatingIssuesCookiesForTheDerivedKeys(t *testing.T) {
 			t.Fatal("a cookie carries a session key in the clear")
 		}
 	}
-	sn := s.Stats()
-	if sn.NTSKETerminated != 1 || sn.NTSKECookies != 8 {
-		t.Errorf("counters: terminated %d cookies %d", sn.NTSKETerminated, sn.NTSKECookies)
-	}
-	if sn.NTSKERelayed != 0 {
+	// Waited for rather than read once: the listener counts the exchange
+	// *after* it has written the answer, so a client that has the answer in
+	// hand has not necessarily seen the counter move. Reading it once is a
+	// race that fails under load and passes on an idle machine, which is the
+	// worst kind of test.
+	awaitNTSKE(t, s, func(sn proxy.Snapshot) bool {
+		return sn.NTSKETerminated == 1 && sn.NTSKECookies == 8
+	}, "the exchange to be counted")
+	if sn := s.Stats(); sn.NTSKERelayed != 0 {
 		t.Errorf("a terminating listener relayed %d sessions", sn.NTSKERelayed)
+	}
+}
+
+// awaitNTSKE waits for a snapshot to satisfy a condition, for the counters this
+// listener bumps after it has answered.
+func awaitNTSKE(t *testing.T, s *proxy.Server, ok func(proxy.Snapshot) bool, what string) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		if ok(s.Stats()) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s: %+v", what, s.Stats())
+		}
+		time.Sleep(2 * time.Millisecond)
 	}
 }
 
