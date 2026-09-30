@@ -34501,6 +34501,122 @@ One record here is not a refusal by this relay and is the one that matters most 
 What is never logged is a \fBvalue\fR. A write\(aqs payload is a process value, and on a plant those are pressures, temperatures and recipe parameters: not secrets, but not something a relay should copy into a log file at poll rate either. The \fIaddress\fR is logged, because an address is what a policy is written about, and a refusal nobody can attribute to a byte range is a refusal nobody can act on.
 .PP
 Refusals are \fBs7_denied\fR for the ban triggers, with the reasons in the table above plus \fBoperation_not_allowed\fR, \fBoperation_denied\fR, \fBarea_not_allowed\fR, \fBarea_denied\fR, \fBdb_not_allowed\fR, \fBaddress_not_allowed\fR, \fBblock_type_not_allowed\fR, \fBno_rule_matched\fR, \fBrule_denied\fR, \fBoutside_schedule\fR, \fBno_connection_request\fR, \fBupstream_unavailable\fR and, for S7comm\-plus, \fBs7comm_plus_refused\fR (the variant is not enabled on this listener), \fBs7comm_plus_denied\fR (a deny list named it) and \fBs7comm_plus_not_allowed\fR (no list named it, including every function this relay could not name). The first two of those and \fBread_only\fR are hard; the third is soft, so monitor mode is useful for finding out what TIA Portal actually asks for before a policy is written about it.
+.SH "correlation"
+.PP
+The short memory a listener does not have: what each address has done on every listener of this daemon, for the last window.
+.PP
+Every policy here decides about one message on one listener, which is the right shape for a policy and the wrong shape for several real detections:
+.PP
+.TS
+allbox;
+lbw(1.2i) lbx
+lw(1.2i) lx.
+T{
+What it looks like
+T}	T{
+Why one listener cannot see it
+T}
+T{
+One host on Modbus,\: then S7,\: then IEC 104
+T}	T{
+three listeners,\: one actor
+T}
+T{
+An OT session a minute after a bastion session to the same jump host
+T}	T{
+two daemons,\: one machine
+T}
+T{
+An NTP offset step,\: then time\-tagged 104 commands
+T}	T{
+two protocols,\: one clock
+T}
+T{
+A device that has never published,\: publishing
+T}	T{
+one listener,\: two epochs
+T}
+.TE
+.PP
+.RS 4
+.nf
+.ft CR
+correlation:
+  window: 30m
+  max_actors: 4096
+  max_facts: 64
+  share: true
+.ft
+.fi
+.RE
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.9i) lbw(0.8i) lbx
+lw(0.8i) lw(0.9i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Keep the cross\-listener window. \fBfalse\fR remembers nothing between listeners,\: and the detections built on it then report nothing rather than reporting less \-\- which is warned about,\: because it is a choice rather than a default
+T}
+T{
+\fBwindow\fR
+T}	T{
+duration
+T}	T{
+\fB30m\fR
+T}	T{
+How long a fact is remembered,\: and so how far back every question can reach. Ceiling 24h: a longer window is a bigger table keyed by an address a stranger picks
+T}
+T{
+\fBmax_\:actors\fR
+T}	T{
+int
+T}	T{
+\fB4096\fR
+T}	T{
+Addresses remembered;\: the least recently active is evicted. The estate\(aqs own facts \-\- a clock step,\: a reload \-\- are not an actor and are never evicted,\: so a flood of addresses cannot push out the left half of a chain
+T}
+T{
+\fBmax_\:facts\fR
+T}	T{
+int
+T}	T{
+\fB64\fR
+T}	T{
+Facts per address;\: the oldest is dropped,\: and the drop is counted so a truncated window says so rather than answering "no" for the wrong reason
+T}
+T{
+\fBshare\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Send the facts worth sharing \-\- a gate session,\: a clock step,\: an engineering operation \-\- to the cluster peers. A pivot from a bastion into a control protocol crosses two daemons on this design (\fBxgate\fR and \fBxot\fR),\: so seeing it needs both of them in one cluster;\: without a \fBcluster\fR section this does nothing and says so
+T}
+.TE
+.PP
+\fBIt is not per message.\fR A frame every few milliseconds for years is what a control network is, and a store that took a lock per frame would be a latency tax on the scan cycle. A listener writes a fact when something \fIchanges\fR: a session opened, a first write, an engineering operation, a refusal, a clock step. Identical facts inside a second collapse into one with a count, so a burst of forty refusals is one fact rather than forty.
+.PP
+\fBIt is not the asset inventory.\fR That answers "what is on this network", keeps a record per device for as long as the estate runs, and is written to disk. This answers "what has this address done in the last half hour", holds a few dozen facts, and is gone on a restart \-\- the right trade for a detection window and the wrong one for an inventory.
+.PP
+\fBNothing here decides anything.\fR It records; what reads it decides. In particular nothing in it reaches the ban ladder, for the reason OT detections never do: banning a plant\(aqs master takes the process away from the control room.
+.PP
+\fBxproxyctl correlation\fR shows the window, what is in it and what the bounds have pushed out; \fBxproxy_correlation_*\fR are the counters.
 .SH "asset_inventory"
 .PP
 One record per device, built from traffic the proxy was already carrying.

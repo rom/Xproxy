@@ -96,6 +96,14 @@
         }
       ]
     },
+    "correlation": {
+      "description": "Correlation is the short cross-listener memory: what each address has done on every listener of this daemon for the last window. It is what the detections no single listener can make are built on -- one host touching three control protocols, an OT session that followed a bastion session, a clock step followed by time-tagged commands.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Correlation"
+        }
+      ]
+    },
     "degradation": {
       "description": "Degradation serves a suspect client slowly rather than refusing it outright.",
       "allOf": [
@@ -931,7 +939,6 @@
       "additionalProperties": false
     },
     "AssetInventory": {
-      "description": "AssetInventory is the estate's own record of what is on its network, built from the traffic the proxy was already carrying. An operational network cannot be scanned: an active scan is how a programmable controller gets knocked over, and on a safety network it is a thing people lose their jobs for. So the inventory is a by-product. Nothing here probes, connects or sends anything.",
       "type": "object",
       "properties": {
         "advisories": {
@@ -2440,6 +2447,34 @@
           "type": "string"
         },
         "wait": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Correlation": {
+      "description": "AssetInventory is the estate's own record of what is on its network, built from the traffic the proxy was already carrying. An operational network cannot be scanned: an active scan is how a programmable controller gets knocked over, and on a safety network it is a thing people lose their jobs for. So the inventory is a by-product. Nothing here probes, connects or sends anything. Correlation is the cross-listener window (internal/correlate). It is one section for the daemon rather than one per listener, because the whole point is that it spans listeners: a question like \"has this address been on another control protocol in the last ten minutes\" has no answer inside one listener's own state. Enabled by default, because the cost is a bounded table and a lock on the events that matter -- a session opened, a refusal, an engineering operation, a clock step -- rather than anything per frame, and because a detection that needs it is not available at all without it. Turning it off is for the estate that wants nothing remembered between listeners.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enabled turns it on. Default true; false keeps no cross-listener memory at all, and the detections built on it then report nothing rather than reporting less.",
+          "type": "boolean"
+        },
+        "max_actors": {
+          "description": "MaxActors bounds the addresses remembered; the least recently active is evicted. Default 4096.",
+          "type": "integer"
+        },
+        "max_facts": {
+          "description": "MaxFacts bounds one address's facts; the oldest is dropped, and the drop is counted so a truncated window says so rather than answering \"no\" for the wrong reason. Default 64.",
+          "type": "integer"
+        },
+        "share": {
+          "description": "Share sends the facts worth sharing -- a gate session, a clock step, an engineering operation -- to the cluster peers, so the daemon in front of the plant can see the bastion session that preceded an OT session. Those are two processes on this design, and without this the pivot is invisible to both. Default true when a cluster is configured; it does nothing without one.",
+          "type": "boolean"
+        },
+        "window": {
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"

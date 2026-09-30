@@ -29,6 +29,7 @@ import (
 	"net/netip"
 
 	"github.com/rom/xproxy/internal/authorization"
+	"github.com/rom/xproxy/internal/correlate"
 	"github.com/rom/xproxy/internal/intel"
 	"github.com/rom/xproxy/internal/logging"
 )
@@ -65,6 +66,15 @@ type Deps struct {
 	// Matched and Blocked count what the lists did, so an operator can see a
 	// feed working before anything is refused by it.
 	Matched, Blocked func()
+	// Observe, where a kind passes one, writes the admission to the
+	// cross-listener window: this client was on this listener, and whether
+	// it was let through.
+	//
+	// It is the kind's business whether to pass one, because the frequency
+	// is: a stream kind admits a client once per connection, and a
+	// datagram kind would be writing a fact per packet. The ones that
+	// admit per datagram record from their own session tables instead.
+	Observe func(correlate.Fact)
 }
 
 // Client asks both questions about one client and reports the reason to refuse,
@@ -82,6 +92,13 @@ type Deps struct {
 // a list asking for one is recorded like a log list rather than escalated into a
 // block -- which would be a policy the operator did not write.
 func Client(d Deps, sub authorization.Subject, g Gate) string {
+	reason := ask(d, sub, g)
+	note(d, sub, reason)
+	return reason
+}
+
+// ask is the two questions themselves.
+func ask(d Deps, sub authorization.Subject, g Gate) string {
 	if list := listed(d, sub); list != "" {
 		detail := list + " " + sub.Client.String()
 		if g.Shadowing != nil && g.Shadowing() {
@@ -101,6 +118,32 @@ func Client(d Deps, sub authorization.Subject, g Gate) string {
 		Record:    g.Record,
 		Deny:      g.Deny,
 	})
+}
+
+// note writes the admission to the cross-listener window.
+//
+// It is here rather than in each kind because this is the one point every
+// kind passes through with a client in hand and nothing carried yet, which
+// makes it the one place where "this address was on this listener" is
+// recorded the same way for all of them. The cross-kind questions -- one
+// host on Modbus, then S7, then IEC 104 -- are answered from these facts,
+// and a kind that recorded its own would be a kind that could spell the
+// class differently from its siblings.
+func note(d Deps, sub authorization.Subject, reason string) {
+	if d.Observe == nil {
+		return
+	}
+	f := correlate.Fact{
+		Class:    correlate.ClassSession,
+		Kind:     sub.Kind,
+		Listener: sub.Listener,
+		Identity: sub.User,
+	}
+	if reason != "" {
+		f.Class = correlate.ClassRefused
+		f.Detail = reason
+	}
+	d.Observe(f)
 }
 
 // listed asks the imported lists about the client and returns the name of the

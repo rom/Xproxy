@@ -6,6 +6,55 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (a short cross-listener memory, so the detections that need two listeners exist)
+
+- **`correlation` is the window a listener does not have.** Every policy
+  here decides about one message on one listener, which is the right shape
+  for a policy and the wrong shape for a whole class of real detections:
+  one host on Modbus, then S7, then IEC 104 (three listeners, one actor);
+  an OT session a minute after a bastion session to the same jump host (two
+  daemons, one machine); an NTP offset step followed by time-tagged 104
+  commands (two protocols, one clock). None of those is visible to the
+  listener that sees half of it.
+
+- **What a fact is, and what it is not.** A listener writes one when
+  something *changes* -- a session opened, a refusal, an engineering
+  operation, a clock step -- never per message: a frame every few
+  milliseconds for years is what a control network is, and a store taking a
+  lock per frame would be a latency tax on the scan cycle. Identical facts
+  inside a second collapse into one with a count, so a burst of forty
+  refusals is one fact rather than forty.
+
+- **Bounded, and the bounds say when they bit.** 4096 addresses with the
+  least recently active evicted, 64 facts each with the oldest dropped, a
+  30-minute window, every detail clipped -- and every drop counted, so a
+  detector reading a truncated window can say "as far as this relay
+  remembers" instead of answering "no" for the wrong reason. The estate's
+  own facts (a clock step) are not an actor and are never evicted, so a
+  flood of addresses cannot push out the left half of every chain.
+
+- **Facts cross the cluster, because the pivot crosses processes.** On this
+  design the bastion is `xgate` and the plant is `xot`, so "an OT session
+  right after an interactive session from an external identity" is
+  invisible to both alone. The four classes whose other half lives in a
+  sibling -- a gate session, a clock step, an engineering operation, a
+  credential event -- go over the existing cluster event channel; the rest
+  do not, because a session per device per listener across an estate would
+  be a gossip flood for something each daemon already sees.
+
+- **Nothing here decides anything.** It records; what reads it decides. In
+  particular nothing in it reaches the ban ladder, for the reason OT
+  detections never do. `xproxyctl correlation` shows the window and what
+  its bounds pushed out, `xproxy_correlation_*` are the counters, and
+  [docs/CONFIG.md](CONFIG.md#correlation) is the reference.
+
+- The first consumers are the five control-protocol kinds that admit a
+  client once per connection (modbus, iec104, s7, mms, opcua), through the
+  shared admission point every kind already calls -- so "this address was
+  on this listener" is recorded the same way for all of them rather than
+  spelled five ways. The datagram kinds record from their own session
+  tables, which is where their once-per-session moment is.
+
 ### Added (every refusal says what it means in ATT&CK for ICS terms)
 
 - **`technique`, `technique_name` and `tactic` on the security log line,

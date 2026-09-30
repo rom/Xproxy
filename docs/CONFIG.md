@@ -14350,6 +14350,58 @@ relay could not name). The first two of those and `read_only` are hard; the
 third is soft, so monitor mode is useful for finding out what TIA Portal
 actually asks for before a policy is written about it.
 
+## correlation
+
+The short memory a listener does not have: what each address has done on
+every listener of this daemon, for the last window.
+
+Every policy here decides about one message on one listener, which is the
+right shape for a policy and the wrong shape for several real detections:
+
+| What it looks like | Why one listener cannot see it |
+|--------------------|-------------------------------|
+| One host on Modbus, then S7, then IEC 104 | three listeners, one actor |
+| An OT session a minute after a bastion session to the same jump host | two daemons, one machine |
+| An NTP offset step, then time-tagged 104 commands | two protocols, one clock |
+| A device that has never published, publishing | one listener, two epochs |
+
+```yaml
+correlation:
+  window: 30m
+  max_actors: 4096
+  max_facts: 64
+  share: true
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Keep the cross-listener window. `false` remembers nothing between listeners, and the detections built on it then report nothing rather than reporting less -- which is warned about, because it is a choice rather than a default |
+| `window` | duration | `30m` | How long a fact is remembered, and so how far back every question can reach. Ceiling 24h: a longer window is a bigger table keyed by an address a stranger picks |
+| `max_actors` | int | `4096` | Addresses remembered; the least recently active is evicted. The estate's own facts -- a clock step, a reload -- are not an actor and are never evicted, so a flood of addresses cannot push out the left half of a chain |
+| `max_facts` | int | `64` | Facts per address; the oldest is dropped, and the drop is counted so a truncated window says so rather than answering "no" for the wrong reason |
+| `share` | bool | `true` | Send the facts worth sharing -- a gate session, a clock step, an engineering operation -- to the cluster peers. A pivot from a bastion into a control protocol crosses two daemons on this design (`xgate` and `xot`), so seeing it needs both of them in one cluster; without a `cluster` section this does nothing and says so |
+
+**It is not per message.** A frame every few milliseconds for years is what
+a control network is, and a store that took a lock per frame would be a
+latency tax on the scan cycle. A listener writes a fact when something
+*changes*: a session opened, a first write, an engineering operation, a
+refusal, a clock step. Identical facts inside a second collapse into one
+with a count, so a burst of forty refusals is one fact rather than forty.
+
+**It is not the asset inventory.** That answers "what is on this network",
+keeps a record per device for as long as the estate runs, and is written to
+disk. This answers "what has this address done in the last half hour",
+holds a few dozen facts, and is gone on a restart -- the right trade for a
+detection window and the wrong one for an inventory.
+
+**Nothing here decides anything.** It records; what reads it decides. In
+particular nothing in it reaches the ban ladder, for the reason OT
+detections never do: banning a plant's master takes the process away from
+the control room.
+
+`xproxyctl correlation` shows the window, what is in it and what the bounds
+have pushed out; `xproxy_correlation_*` are the counters.
+
 ## asset_inventory
 
 One record per device, built from traffic the proxy was already carrying.

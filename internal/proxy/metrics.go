@@ -271,6 +271,19 @@ func (s *Server) Collect(e metrics.Collector) {
 			e.Counter("xproxy_refusals_total", "Connections, sessions, datagrams, commands and channels refused by a protocol listener, by kind and reason.", L{"kind": k, "reason": r}, float64(refusals[k][r]))
 		}
 	}
+	if c := sn.Correlation; c != nil {
+		// The cross-listener window. The drops and the evictions are the
+		// pair worth an alert: a window being pushed out is one whose
+		// answers are becoming "no" for the wrong reason.
+		e.Gauge("xproxy_correlation_actors", "Addresses in the cross-listener correlation window.", nil, float64(c.Actors))
+		e.Gauge("xproxy_correlation_facts", "Facts in the cross-listener correlation window.", nil, float64(c.Facts))
+		e.Counter("xproxy_correlation_observed_total", "Facts written to the cross-listener correlation window.", nil, float64(c.Observed))
+		e.Counter("xproxy_correlation_collapsed_total", "Facts that bumped an identical fact's count rather than being appended.", nil, float64(c.Collapsed))
+		e.Counter("xproxy_correlation_dropped_total", "Facts the per-address bound pushed out of the window, so a detection reading it has less than the window to work with.", nil, float64(c.Dropped))
+		e.Counter("xproxy_correlation_evicted_total", "Addresses the actor bound evicted from the window.", nil, float64(c.Evicted))
+	}
+	e.Counter("xproxy_correlation_merged_total", "Correlation facts a cluster peer reported, which is how a pivot across two daemons is visible at all.", nil, float64(sn.CorrelationMerged))
+	e.Counter("xproxy_correlation_refused_total", "Correlation facts from a peer whose key did not decode -- a sibling of another version, or a message that is not one. Always zero in a healthy cluster.", nil, float64(sn.CorrelationRefused))
 	e.Counter("xproxy_refusals_untracked_total", "Refusals a listener kind named under an unknown kind or beyond its reason bound, so they carry no reason label. Always zero in a healthy process.", nil, float64(sn.RefusalsUntracked))
 	// The same refusals in the vocabulary an operations centre
 	// catalogues detections in. A reason carrying two techniques counts

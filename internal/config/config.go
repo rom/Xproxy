@@ -98,6 +98,13 @@ type Config struct {
 	// answers "what is on this estate's network" -- the question an
 	// operational network cannot answer with a scanner.
 	AssetInventory *AssetInventory `yaml:"asset_inventory"`
+	// Correlation is the short cross-listener memory: what each address
+	// has done on every listener of this daemon for the last window. It
+	// is what the detections no single listener can make are built on --
+	// one host touching three control protocols, an OT session that
+	// followed a bastion session, a clock step followed by time-tagged
+	// commands.
+	Correlation *Correlation `yaml:"correlation"`
 	// Shedding enables adaptive load shedding by priority class when
 	// present.
 	Shedding *Shedding `yaml:"shedding"`
@@ -3094,6 +3101,67 @@ type TFTPRule struct {
 // programmable controller gets knocked over, and on a safety network it is a
 // thing people lose their jobs for. So the inventory is a by-product. Nothing
 // here probes, connects or sends anything.
+// Correlation is the cross-listener window (internal/correlate).
+//
+// It is one section for the daemon rather than one per listener, because
+// the whole point is that it spans listeners: a question like "has this
+// address been on another control protocol in the last ten minutes" has
+// no answer inside one listener's own state.
+//
+// Enabled by default, because the cost is a bounded table and a lock on
+// the events that matter -- a session opened, a refusal, an engineering
+// operation, a clock step -- rather than anything per frame, and because
+// a detection that needs it is not available at all without it. Turning
+// it off is for the estate that wants nothing remembered between
+// listeners.
+type Correlation struct {
+	// Enabled turns it on. Default true; false keeps no cross-listener
+	// memory at all, and the detections built on it then report nothing
+	// rather than reporting less.
+	Enabled *bool `yaml:"enabled"`
+	// Window is how long a fact is remembered. Default 30m, ceiling 24h.
+	// It bounds what every question can reach back to, so it is also
+	// what decides whether "the bastion session before this" is still
+	// there to be found.
+	Window Duration `yaml:"window"`
+	// MaxActors bounds the addresses remembered; the least recently
+	// active is evicted. Default 4096.
+	MaxActors int `yaml:"max_actors"`
+	// MaxFacts bounds one address's facts; the oldest is dropped, and
+	// the drop is counted so a truncated window says so rather than
+	// answering "no" for the wrong reason. Default 64.
+	MaxFacts int `yaml:"max_facts"`
+	// Share sends the facts worth sharing -- a gate session, a clock
+	// step, an engineering operation -- to the cluster peers, so the
+	// daemon in front of the plant can see the bastion session that
+	// preceded an OT session. Those are two processes on this design,
+	// and without this the pivot is invisible to both. Default true when
+	// a cluster is configured; it does nothing without one.
+	Share *bool `yaml:"share"`
+}
+
+// CorrelationEnabled reports whether the cross-listener window is on.
+func (c *Config) CorrelationEnabled() bool {
+	if c.Correlation == nil {
+		return true
+	}
+	if c.Correlation.Enabled == nil {
+		return true
+	}
+	return *c.Correlation.Enabled
+}
+
+// CorrelationShares reports whether facts are shared with cluster peers.
+func (c *Config) CorrelationShares() bool {
+	if !c.CorrelationEnabled() {
+		return false
+	}
+	if c.Correlation == nil || c.Correlation.Share == nil {
+		return true
+	}
+	return *c.Correlation.Share
+}
+
 type AssetInventory struct {
 	// Enabled turns it on. Default false: an inventory is a record of
 	// somebody's estate, and a proxy that started keeping one without being

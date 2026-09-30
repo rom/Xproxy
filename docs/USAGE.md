@@ -129,6 +129,7 @@ are where the shipped units put the other three.
 | `ban TARGET` | Ban an address, CIDR or `ja4:<fingerprint>`; `-duration 1h`, `-reason text` |
 | `unban TARGET` | Remove a ban |
 | `policy` [`report`\|`reset`] | What the listeners in shadow mode would have refused, most frequent first, with the rule that decided and an example (`-top N`); `reset` empties the ledger |
+| `correlation` | The cross-listener window: what is in it, what its bounds have pushed out, and what cluster peers contributed (see [docs/CONFIG.md](CONFIG.md#correlation)) |
 | `techniques` [`-catalogue`] | What the refusals meant in MITRE ATT&CK for ICS terms, most seen first; `-catalogue` lists every technique this proxy can observe, seen or not (see [docs/ATTACK.md](ATTACK.md)) |
 | `sessions` | The sessions the daemon is serving now (ssh, sftp, telnet, vnc, rdp, ftp, modbus) with the client, login, target, one detail and how long; `-kill ID` closes one, `-kill-matching` with `-kind`, `-listener` or `-user` closes a set (audited) |
 | `cluster` | Peers, inbound connections and gossip counters |

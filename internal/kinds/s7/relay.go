@@ -15,6 +15,7 @@ import (
 	"github.com/rom/xproxy/internal/assets"
 	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/correlate"
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/proxy"
@@ -246,6 +247,11 @@ func (t *server) admitClient(ip netip.Addr) string {
 		Logs:    h.Logs(),
 		Matched: func() { h.Counters().ThreatIntelMatched.Add(1) },
 		Blocked: func() { h.Counters().ThreatIntelBlocked.Add(1) },
+		// One fact per connection, to the cross-listener window: this
+		// address was on this listener. It is what the questions no
+		// listener can answer by itself are built from -- one host on
+		// three control protocols is three of these facts and one actor.
+		Observe: func(f correlate.Fact) { h.ObserveFact(ip, f) },
 	}, authorization.Subject{
 		Listener: t.name,
 		Kind:     "s7",

@@ -191,6 +191,12 @@ func (s *Server) onClusterEvent(e cluster.Event, peer string) {
 		}
 		return
 	}
+	if s.applyCorrelationEvent(e, peer) {
+		// A sibling's fact about an actor, which is how a pivot from the
+		// bastion into the plant is visible at all: those are two
+		// daemons.
+		return
+	}
 	if pl := s.planeOrNil(); pl != nil {
 		pl.PeerEvent(e, peer)
 	}

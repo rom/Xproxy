@@ -1371,6 +1371,35 @@ func run(args []string, out, errOut io.Writer) int {
 			_ = tw.Flush()
 		}
 		return 0
+	case "correlation":
+		// The cross-listener window: what is in it, and what the bounds
+		// have pushed out. The second is the part an operator has to see,
+		// because a window being pushed out is one whose answers are
+		// becoming "no" for the wrong reason.
+		st, err := c.Status()
+		if err != nil {
+			return fail(err)
+		}
+		w := st.Stats.Correlation
+		if *asJSON {
+			return printJSON(out, w)
+		}
+		if w == nil {
+			_, _ = fmt.Fprintln(out, "the cross-listener window is off (correlation.enabled: false), "+
+				"so the detections that need two listeners report nothing")
+			return 0
+		}
+		_, _ = fmt.Fprintf(out, "window %s  actors %d/%d  facts %d  max per actor %d\n",
+			w.Window, w.Actors, w.MaxActors, w.Facts, w.MaxFacts)
+		_, _ = fmt.Fprintf(out, "observed %d  collapsed %d  dropped %d  evicted %d\n",
+			w.Observed, w.Collapsed, w.Dropped, w.Evicted)
+		_, _ = fmt.Fprintf(out, "from peers: merged %d  refused %d\n",
+			st.Stats.CorrelationMerged, st.Stats.CorrelationRefused)
+		if w.Dropped > 0 || w.Evicted > 0 {
+			_, _ = fmt.Fprintln(out, "the bounds are pushing facts out, so a question about "+
+				"the whole window is being answered from part of one; raise correlation.max_actors or max_facts")
+		}
+		return 0
 	case "techniques":
 		// What this daemon has seen, in the vocabulary an operations
 		// centre catalogues detections in, and -- with -catalogue -- what
