@@ -14462,6 +14462,9 @@ func (v *validator) access(c *Config) {
 	if d := a.MaxLead.D(); d < 0 || d > 30*24*time.Hour {
 		v.errf("%s.max_lead: must be between 0 and 720h", p)
 	}
+	if d := a.MaxWorkOrder.D(); d < time.Minute || d > 90*24*time.Hour {
+		v.errf("%s.max_work_order: must be between 1m and 2160h", p)
+	}
 	if a.MaxUses < 0 || a.MaxUses > 1000 {
 		v.errf("%s.max_uses: must be between 0 and 1000", p)
 	}

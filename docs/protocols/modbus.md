@@ -272,7 +272,7 @@ family this belongs to and
 Modbus has no word for engineering and the vendors' sub-protocols do. The
 `engineering` block — [documented once in docs/CONFIG.md](../CONFIG.md#engineering),
 the same on every OT kind — reads them as their own class of event, and can hold
-them to an approved work order out of the [access ledger](../CONFIG.md#access).
+them to an approved grant out of the [access ledger](../CONFIG.md#access).
 
 This relay already classifies a sub-function by *effect* rather than by number,
 because the number is a vendor's and the effect is a plant's, so the engineering
@@ -292,7 +292,7 @@ inside the function codes that carry a sub-protocol.
 reports a download.** "Something moved a program" is the fact; the safer reading
 of an ambiguous one is the one that gets looked at.
 
-Modbus names nobody, so the work order names the engineering station's *address*.
+Modbus names nobody, so the grant names the engineering station's *address*.
 That is what the plant has, and inventing an identity out of a socket would be
 worse than saying so. With `require_grant: true` a UMAS program write with no
 open grant is refused with `engineering_no_grant`, answered as exception 01 (or

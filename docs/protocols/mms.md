@@ -148,7 +148,7 @@ On IEC 61850 the object names say which writes are engineering and which are the
 control room doing its job. The `engineering` block —
 [documented once in docs/CONFIG.md](../CONFIG.md#engineering), the same on every
 OT kind — reads them as their own class of event, and can hold them to an
-approved work order out of the [access ledger](../CONFIG.md#access).
+approved grant out of the [access ledger](../CONFIG.md#access).
 
 | On MMS | Class | Why |
 |--------|-------|-----|
@@ -167,10 +167,10 @@ protocol.** A protection relay's trip characteristic is a handful of numbers in
 `$SG$`. Changing them is a legitimate engineering act, and it is also the most
 effective way to disable protection on a substation without sending a single
 command anybody would call a command — the alert says which of the two it looked
-like, and the work order says which it was.
+like, and the grant says which it was.
 
 The subject is the association's identity where the connection carried one, so
-"the protection engineer may change setting groups on Tuesday" is a work order
+"the protection engineer may change setting groups on Tuesday" is a grant
 naming a person rather than a socket.
 
 ## What it does not do

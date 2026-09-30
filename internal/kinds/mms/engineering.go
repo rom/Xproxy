@@ -91,11 +91,11 @@ func (t *server) decideEngineering(c *conn, m *wire.Message, ops []Operation) st
 	op.Subject = subject
 	return t.engineering.Decide(op, subject, t.mc.Upstream, nil, t.enforcing(),
 		engineering.Handler{
-			Report: func(op engineering.Operation, grant *access.Grant) {
-				t.reportEngineering(c, op, grant)
+			Report: func(op engineering.Operation, grant *access.Grant, order *access.WorkOrder) {
+				t.reportEngineering(c, op, grant, order)
 			},
-			Ungranted: func(op engineering.Operation, reason string) {
-				t.engineeringOutside(c, reason, op)
+			Ungranted: func(op engineering.Operation, reason string, order *access.WorkOrder) {
+				t.engineeringOutside(c, reason, op, order)
 			},
 			Would: func(op engineering.Operation, reason string) {
 				t.host.Counters().WouldRefuse("mms", reason)
@@ -111,7 +111,7 @@ func (t *server) decideEngineering(c *conn, m *wire.Message, ops []Operation) st
 
 // reportEngineering writes the operation down: its own event, its counter, and a
 // fact in the cross-listener window.
-func (t *server) reportEngineering(c *conn, op engineering.Operation, grant *access.Grant) {
+func (t *server) reportEngineering(c *conn, op engineering.Operation, grant *access.Grant, order *access.WorkOrder) {
 	t.host.Counters().Engineering("mms", string(op.Class))
 	t.host.ObserveFact(c.ip, correlate.Fact{
 		Class: correlate.ClassEngineering, Kind: "mms", Listener: t.name,
@@ -126,7 +126,17 @@ func (t *server) reportEngineering(c *conn, op engineering.Operation, grant *acc
 		a = append(a, "identity", op.Subject)
 	}
 	if grant != nil {
-		a = append(a, "grant", grant.ID, "work_order", textsafe.Clip64(grant.Reason))
+		a = append(a, "grant", grant.ID, "grant_reason", textsafe.Clip64(grant.Reason))
+	}
+	// The work order on file for the device, and the tone that follows
+	// from it. A work order is not an approval and permits nothing: it
+	// says somebody was expecting work here, which is why the event is a
+	// notice rather than a warning.
+	a = append(a, "severity", engineering.Severity(order))
+	if order != nil {
+		t.host.Counters().EngineeringFiled("mms", string(op.Class))
+		a = append(a, "work_order", order.Reference,
+			"work_order_by", textsafe.Clip64(order.By))
 	}
 	t.host.Logs().SecurityEvent(context.Background(), "engineering",
 		engineering.Reason(op.Class), a...)
@@ -155,7 +165,7 @@ func (t *server) alertEngineering(c *conn, reason string, op engineering.Operati
 // It counts EngineeringOutside rather than a refusal: the operation was
 // carried. The event itself is unchanged -- same action, same reason -- so the
 // behaviour packs and the ATT&CK mapping that read it are unaffected.
-func (t *server) engineeringOutside(c *conn, reason string, op engineering.Operation) {
+func (t *server) engineeringOutside(c *conn, reason string, op engineering.Operation, order *access.WorkOrder) {
 	t.host.Counters().EngineeringOutside("mms", string(op.Class), reason)
 	if !t.alerts() {
 		return
@@ -165,6 +175,14 @@ func (t *server) engineeringOutside(c *conn, reason string, op engineering.Opera
 		"operation", textsafe.Clip64(op.String())}
 	if op.Subject != "" {
 		a = append(a, "identity", op.Subject)
+	}
+	// The tone follows the work order, the same way the report's does: an
+	// operation somebody filed is a notice, one nobody filed is a warning.
+	// Both are events, because the listener carried the operation either way.
+	a = append(a, "severity", engineering.Severity(order))
+	if order != nil {
+		a = append(a, "work_order", order.Reference,
+			"work_order_by", textsafe.Clip64(order.By))
 	}
 	t.host.Logs().SecurityEvent(context.Background(), "alert", "mms_"+reason, a...)
 }

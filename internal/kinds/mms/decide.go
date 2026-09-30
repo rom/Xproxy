@@ -262,7 +262,7 @@ func (t *server) decideRequest(c *conn, m *wire.Message) (forward, fatal bool) {
 	}
 	// Engineering: a domain download, a file service, a $CF$ or $SG$ write.
 	// Reported whatever the policy said about it, and refused where this
-	// listener requires an approved work order.
+	// listener requires an approved grant.
 	if reason := t.decideEngineering(c, m, ops); reason != "" {
 		c.refusal()
 		return t.respond(c, m, Decision{Reason: reason, Rule: "engineering",

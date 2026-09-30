@@ -2318,14 +2318,25 @@ beside `xproxy_engineering_total`. The refusals stay in
 reason that belongs. The ATT&CK technique is observed either way: an operation
 outside every window is a detection whether or not anybody refused it.
 
-**A grant is a work order.** It is requested and approved through the same
+**The grant is the approval.** It is requested and approved through the same
 `/v1/access` machinery and `xproxyctl access` as a bastion session, against this
-listener's name, and its reason is the change reference. The reason goes into the
-security event as `work_order` and into the ledger beside the operation, so "who
-downloaded what, when, under which work order" has an answer that is not a
+listener's name, and its reason says what the change is. The event carries
+`grant` and `grant_reason`, and the ledger records them beside the operation, so
+"who downloaded what, when, under whose approval" has an answer that is not a
 person's memory. A listener with `require_grant: true` on a daemon with no
 ledger **fails closed at startup** rather than at four in the afternoon, the same
 way the gate kinds do.
+
+**The work order is a different thing, and is not an approval.** A
+[work order](#a-work-order-is-not-a-grant) is the change reference somebody
+filed against the device — nobody approves it and it permits nothing. Where one
+is open, every engineering event on that device carries `work_order` and
+`work_order_by`, its `severity` is `notice` rather than `warning`, and the
+operation counts under `xproxy_engineering_filed_total` as well as
+`xproxy_engineering_total`. Where none is, the event says `severity: warning`
+and names no reference. That is the whole of what a work order does: a listener
+with `require_grant: true` refuses an operation with no grant whatever work
+orders are open.
 
 **The refusal is the protocol's own.** It answers the way that kind answers a
 refused request — a Modbus exception, an S7 error class, an OPC UA service fault
@@ -15011,6 +15022,7 @@ access:
   approvals: 1            # four eyes: the person who asked and one other
   max_duration: 4h
   max_lead: 24h
+  max_work_order: 720h    # thirty days: a shutdown fits, a forgotten one does not
   max_uses: 0             # the window is the bound
   max_open: 256
 
@@ -15029,6 +15041,7 @@ server:
 | `approvals` | int | `1` | Approvals a grant needs **in addition to** the request. 1 is four eyes: the person who asked and one other. 0 means a request is in force the moment it is made -- still just-in-time and time-boxed, but nobody else has to agree, and it is warned about. At most 8 |
 | `max_duration` | duration | `4h` | The longest window a grant may cover; 1m to 24h |
 | `max_lead` | duration | `24h` | How far ahead of now a window may start, so an approval today cannot be a key for next quarter; 0 to 720h |
+| `max_work_order` | duration | `720h` | The longest window a [work order](#a-work-order-is-not-a-grant) may cover. Separate from `max_duration` because the two measure different things: a grant is a window somebody is admitted through and four hours is generous, while a work order is how long the work lasts and a plant shutdown is a fortnight. `max_lead` bounds its start as well; 1m to 2160h |
 | `max_uses` | int | `0` | Sessions one grant may open. 0 leaves the window as the only bound; 1 is a one-shot grant. 0 to 1000 |
 | `max_open` | int | `256` | Grants that may be pending or in force at once. A request queue nobody drains is how an approval system becomes a rubber stamp; 1 to 4096 |
 | `self_approval` | bool | `false` | Let the requester approve their own request. It is here for the estate with one operator, where the alternative is switching the requirement off altogether. Warned about every time |
@@ -15046,6 +15059,51 @@ in the afternoon, and only the second needs a work order, so there
 [`engineering`](#engineering) block and covers the engineering classes rather
 than the connection. The grant, the approvals, the window and the trail are
 the same machinery; what differs is the unit of access.
+
+### A work order is not a grant
+
+The two are both in this section, both in the trail, and they are not the
+same thing. Conflating them is the mistake this heading exists to stop.
+
+| | A grant | A work order |
+|-|---------|--------------|
+| What it is | an authorisation | a change reference somebody filed |
+| Who agrees | `approvals` other people | nobody |
+| What it permits | a session, or an engineering class, that would otherwise be refused | **nothing**. It never permits anything that was not already permitted |
+| What it changes | whether the operation happens | how the operation is *reported* |
+| Its window | `max_duration`, hours | `max_work_order`, up to a shutdown |
+| Filed by | the person who wants the access, approved by another | one person, alone |
+
+A work order is the identifier the maintenance system already issued —
+`WO-2026-0481` — filed against a device for a window, with a note saying
+what the work is. It is written to the ledger like everything else here, so
+"was that download filed, and by whom" has an answer nobody could edit
+afterwards. An engineering operation on that device while it is open is
+reported as expected work: the event carries `work_order`, its severity is
+`notice` rather than `warning`, and the operation counts under
+`xproxy_engineering_filed_total` as well. The same operation with nothing on
+file is reported as an operation nobody wrote down.
+
+**A listener with `require_grant: true` still refuses an operation with no
+grant, whatever work orders are open.** A work order cannot open a door. If
+it could, the person who wanted the access could file one for themselves and
+the approval requirement would be decoration.
+
+So the two are for two different estates, and most plants are the second one
+for a while before they are the first. An estate that can run four-eyes
+approval on every program download uses grants and refuses what has none. An
+estate that cannot yet — because the commissioning engineer is on site now
+and the approver is not — still files the reference, and then the weekly
+report has two lists: the engineering somebody filed, and the engineering
+nobody did. The second list is short, and it is the one worth reading. What
+it must not be is a single list of everything, which is what an estate with
+neither gets and therefore does not read.
+
+Work orders are filed over the management API (`POST /v1/workorders`), from
+`xproxyctl workorder`, and from the Plant screen of the web interface. There
+is no configuration for them beyond `max_work_order`: the `access` ledger is
+where they go, so a daemon with no `ledger` has nowhere to file one and says
+so.
 
 ### What a grant names
 

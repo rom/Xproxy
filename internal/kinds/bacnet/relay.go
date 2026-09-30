@@ -205,7 +205,7 @@ func (t *server) fromClient(device net.PacketConn, raw []byte, from net.Addr) {
 	}
 	// Engineering: a restart, a controller told to stop talking, a file into
 	// the device. Reported whatever the policy said, and refused where this
-	// listener requires an approved work order for it.
+	// listener requires an approved grant for it.
 	if reason := t.decideEngineering(req); reason != "" {
 		t.answerRefusal(a, from)
 		return

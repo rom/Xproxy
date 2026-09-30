@@ -303,6 +303,7 @@ func (s *Server) routes() {
 		"sessions": "/v1/sessions", "websocket": "/v1/websocket",
 		"tls-ech": "/v1/tls/ech", "tls-expiring": "/v1/tls/expiring",
 		"tls-key-exchange": "/v1/tls/key-exchange",
+		"workorders":       "/v1/workorders",
 	} {
 		m.HandleFunc("GET /api/"+name, s.passthrough(path, "application/json"))
 	}
@@ -315,6 +316,9 @@ func (s *Server) routes() {
 	// Actions.
 	m.HandleFunc("POST /api/bans", s.addBan)
 	m.HandleFunc("DELETE /api/bans", s.removeBan)
+	// A work order is filed as the logged-in operator: see workorders.go.
+	m.HandleFunc("POST /api/workorders", s.fileWorkOrder)
+	m.HandleFunc("DELETE /api/workorders", s.closeWorkOrder)
 	m.HandleFunc("POST /api/reload", s.action("reload", "/v1/reload"))
 	m.HandleFunc("POST /api/reload-certs", s.action("reload-certs", "/v1/reload-certs"))
 	m.HandleFunc("POST /api/reopen-logs", s.action("reopen-logs", "/v1/logs/reopen"))

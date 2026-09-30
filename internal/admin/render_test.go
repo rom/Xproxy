@@ -165,7 +165,7 @@ routes:
 	// configuration above provides are required to be here.
 	for _, must := range []string{"/api/status", "/api/stats", "/api/listeners", "/api/policy",
 		"/api/access", "/api/assets", "/api/patches", "/api/deceive", "/api/websocket",
-		"/api/sessions", "/api/bans", "/api/upstreams", "/api/quotas"} {
+		"/api/sessions", "/api/bans", "/api/upstreams", "/api/quotas", "/api/workorders"} {
 		if _, ok := fixtures[must]; !ok {
 			t.Errorf("%s did not answer, so the view that reads it was rendered empty", must)
 		}
@@ -188,5 +188,95 @@ routes:
 	t.Logf("%s", out)
 	if err != nil {
 		t.Fatalf("rendering the page failed: %v", err)
+	}
+}
+
+// The filer's name comes from the session, never from the page.
+//
+// The interface knows who is logged in. A work order whose `by` the browser
+// could set would be a record naming whoever the page felt like, which in a
+// trail whose whole purpose is "who said this was expected" is the one field
+// that must not be forgeable from the client.
+func TestAWorkOrderIsFiledUnderTheSessionsName(t *testing.T) {
+	dir := t.TempDir()
+	yaml := `version: 1
+access:
+  ledger: ` + filepath.Join(dir, "access.jsonl") + `
+  approvals: 1
+server:
+  listeners: [{name: web, address: "127.0.0.1:0"}]
+upstreams:
+  - {name: u, endpoints: [{address: "127.0.0.1:9"}]}
+routes:
+  - {name: r, paths: ["/"], upstream: u}
+`
+	cfg, err := config.Parse([]byte(yaml))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := proxy.New(cfg, logging.Discard())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sock := filepath.Join(dir, "m.sock")
+	m := mgmt.New(config.Management{Socket: sock, SocketMode: "0600"}, p, logging.Discard(), mgmt.Actions{})
+	if err := m.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.Shutdown(context.Background()) })
+
+	users := writeUsers(t, dir)
+	_, c := newTestServer(t, Options{Listen: "127.0.0.1:0", Socket: sock, UsersFile: users})
+	if st := c.login("op", "operator-password-1"); st != 200 {
+		t.Fatalf("login: %d", st)
+	}
+	// A page that tried to name the filer is refused outright: `by` is not a
+	// field of the form, so it cannot be sent at all rather than being sent
+	// and quietly ignored.
+	if st, body := c.do(http.MethodPost, "/api/workorders", map[string]string{
+		"reference": "WO-8", "device": "plc-line1", "duration": "4h", "by": "somebody-else",
+	}, true); st != 400 {
+		t.Errorf("a page naming the filer: %d %s", st, body)
+	}
+	st, body := c.do(http.MethodPost, "/api/workorders", map[string]string{
+		"reference": "WO-9", "device": "plc-line1", "duration": "4h", "note": "die change",
+	}, true)
+	if st != 200 {
+		t.Fatalf("filing: %d %s", st, body)
+	}
+	var filed struct {
+		Reference string `json:"reference"`
+		By        string `json:"by"`
+	}
+	if err := json.Unmarshal(body, &filed); err != nil {
+		t.Fatal(err)
+	}
+	if filed.By != "op" {
+		t.Errorf("filed by %q: the session decides this, not the page", filed.By)
+	}
+
+	// A viewer may read the work orders and may not file or close one.
+	if st := c.login("view", "viewer-password-01"); st != 200 {
+		t.Fatalf("viewer login: %d", st)
+	}
+	if st, _ := c.do(http.MethodGet, "/api/workorders", nil, true); st != 200 {
+		t.Errorf("a viewer could not read the work orders: %d", st)
+	}
+	if st, _ := c.do(http.MethodPost, "/api/workorders", map[string]string{
+		"reference": "WO-10", "device": "d", "duration": "1h"}, true); st != 403 {
+		t.Errorf("a viewer filed a work order: %d", st)
+	}
+	if st, _ := c.do(http.MethodDelete, "/api/workorders?reference=WO-9", nil, true); st != 403 {
+		t.Errorf("a viewer closed a work order: %d", st)
+	}
+	// And the operator can close it, under their own name again.
+	if st := c.login("op", "operator-password-1"); st != 200 {
+		t.Fatalf("login: %d", st)
+	}
+	if st, body := c.do(http.MethodDelete, "/api/workorders?reference=WO-9", nil, true); st != 200 {
+		t.Errorf("closing: %d %s", st, body)
+	}
+	if st, _ := c.do(http.MethodDelete, "/api/workorders", nil, true); st != 400 {
+		t.Error("closing with no reference was accepted")
 	}
 }

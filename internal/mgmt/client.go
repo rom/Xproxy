@@ -344,6 +344,51 @@ func (c *Client) Listeners() (proxy.ListenersReport, error) {
 	return out, c.do("GET", "/v1/listeners", &out)
 }
 
+// WorkOrders reads the work orders on file. state narrows to open, scheduled,
+// expired or closed; device to one device.
+func (c *Client) WorkOrders(state, device string) (WorkOrderReport, error) {
+	var out WorkOrderReport
+	q := url.Values{}
+	if state != "" {
+		q.Set("state", state)
+	}
+	if device != "" {
+		q.Set("device", device)
+	}
+	path := "/v1/workorders"
+	if len(q) > 0 {
+		path += "?" + q.Encode()
+	}
+	return out, c.do("GET", path, &out)
+}
+
+// FileWorkOrder records a change reference against a device for a window. It
+// is not an approval and permits nothing; see internal/access.WorkOrder.
+func (c *Client) FileWorkOrder(reference, device, listener, note, by, duration, start string) (access.WorkOrderView, error) {
+	body := map[string]any{"reference": reference, "device": device, "by": by, "duration": duration}
+	if listener != "" {
+		body["listener"] = listener
+	}
+	if note != "" {
+		body["note"] = note
+	}
+	if start != "" {
+		body["start"] = start
+	}
+	var out access.WorkOrderView
+	return out, c.doBody("POST", "/v1/workorders", body, &out)
+}
+
+// CloseWorkOrder ends one before its window runs out.
+func (c *Client) CloseWorkOrder(reference, by, note string) (access.WorkOrderView, error) {
+	q := url.Values{"reference": {reference}, "by": {by}}
+	if note != "" {
+		q.Set("note", note)
+	}
+	var out access.WorkOrderView
+	return out, c.do("DELETE", "/v1/workorders?"+q.Encode(), &out)
+}
+
 // Packs reads the behaviour packs in force and the engine's own numbers.
 func (c *Client) Packs() (proxy.PackReport, error) {
 	var out proxy.PackReport

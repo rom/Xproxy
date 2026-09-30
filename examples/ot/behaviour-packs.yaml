@@ -133,7 +133,7 @@ server:
 
         # An engineering operation on this listener is reported as its own class
         # of event whatever the rules said, which is what the T0843, T0845,
-        # T0858 and T0816 packs are built on. No work order is required here:
+        # T0858 and T0816 packs are built on. No grant is required here:
         # this file is about the detections, and the machinery for requiring one
         # is in examples/ot/s7.yaml.
         engineering:

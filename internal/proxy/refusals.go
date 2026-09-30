@@ -280,6 +280,52 @@ func (s *Stats) Engineering(kind, class string) {
 	c.Add(1)
 }
 
+// EngineeringFiled counts a recognised engineering operation that happened
+// while a work order was on file for the device.
+//
+// It is a subset of Engineering, not an alternative to it, because the useful
+// number is the difference: an estate reads "four hundred engineering
+// operations, three hundred and ninety of them filed" and then works through
+// the ten. A single total answers nothing, and so would a counter that only
+// had the unfiled ones, because there would be nothing to compare it with.
+func (s *Stats) EngineeringFiled(kind, class string) {
+	if _, known := listener.RoleOf(kind); !known || class == "" {
+		return
+	}
+	key := kind + "/" + class
+	e := &s.engineeringFiled
+	e.mu.RLock()
+	c := e.m[key]
+	e.mu.RUnlock()
+	if c == nil {
+		e.mu.Lock()
+		if e.m == nil {
+			e.m = make(map[string]*atomic.Uint64, 16)
+		}
+		if c = e.m[key]; c == nil {
+			c = new(atomic.Uint64)
+			e.m[key] = c
+		}
+		e.mu.Unlock()
+	}
+	c.Add(1)
+}
+
+// EngineeringFiledCounts copies the table, "kind/class" to count.
+func (s *Stats) EngineeringFiledCounts() map[string]uint64 {
+	e := &s.engineeringFiled
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if len(e.m) == 0 {
+		return nil
+	}
+	out := make(map[string]uint64, len(e.m))
+	for k, c := range e.m {
+		out[k] = c.Load()
+	}
+	return out
+}
+
 // EngineeringOutside counts an engineering operation that happened outside
 // every approved window, on a listener that does not require one.
 //

@@ -11563,8 +11563,19 @@ type Access struct {
 	// MaxDuration bounds the window a grant may cover. Default 4h.
 	MaxDuration Duration `yaml:"max_duration"`
 	// MaxLead bounds how far ahead of now a window may start, so that an
-	// approval today cannot be a key for next quarter. Default 24h.
+	// approval today cannot be a key for next quarter. Default 24h. It
+	// bounds a work order's start as well.
 	MaxLead Duration `yaml:"max_lead"`
+	// MaxWorkOrder bounds the window a work order may cover. Default 720h,
+	// thirty days.
+	//
+	// It is separate from max_duration because the two measure different
+	// things. A grant is a window somebody is admitted through, and four
+	// hours is generous. A work order is how long the work lasts, and a
+	// plant shutdown is a fortnight -- but a work order with no end is the
+	// one somebody files during a shutdown and never closes, after which
+	// every download on that device reads as expected work forever.
+	MaxWorkOrder Duration `yaml:"max_work_order"`
 	// MaxUses bounds the sessions one grant may open; 0 leaves the window as
 	// the only bound.
 	MaxUses int `yaml:"max_uses"`

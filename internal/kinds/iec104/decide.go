@@ -129,7 +129,7 @@ func (se *session) decide(frame *wire.Frame, fromClient bool) (string, bool) {
 	}
 	// Engineering: a reset, the clock, a parameter, a file transfer. Reported
 	// whatever the policy said about it, and refused where this listener
-	// requires an approved work order for it.
+	// requires an approved grant for it.
 	if reason, ok := se.decideEngineering(frame); !ok {
 		return reason, false
 	}

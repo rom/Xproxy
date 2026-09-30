@@ -110,6 +110,7 @@ are where the shipped units put the other three.
 | `status` | Version, pid, generation, listeners, counters |
 | `stats` | Counters only |
 | `listeners` | Every listener with its protocol, bound address, enforcement mode, TLS and the protocol guards that are on, then the refusals and shadow decisions per protocol; `-reasons` breaks them down by reason, `-kind K` and `-mode M` narrow |
+| `workorder` | Change references filed against a device: list, `file REFERENCE -device D -duration T`, `close REFERENCE`. Not grants -- they permit nothing, and a listener that requires a grant still refuses without one. What they change is how the engineering on that device is reported |
 | `upstreams` | Table of endpoints with health, ejection, active requests, request and error counts |
 | `quotas` | Usage per tenant, per route (requests by class, denied, rate limited, bytes) and per rate limit policy (decisions, top consumers with tokens left, `-top 10`), plus request share per upstream |
 | `config` | Active configuration as YAML, defaults filled in |
@@ -936,6 +937,68 @@ and daemon that own it. It covers *this* daemon's listeners: a shared
 estate configuration names the other roles' as well and each daemon drops
 the ones it does not own before the engine sees them, so ask each
 socket, or `GET /v1/fleet` for the estate.
+
+### Work orders: the change reference somebody filed
+
+An engineering operation on a controller is worth an event whether or not
+anybody approved it. The question an operations centre actually has, reading a
+week of those events, is which of them somebody was expecting -- and in most
+plants the answer exists already, as a work order number in the maintenance
+system. Filing it here puts it in the hash-chained trail and changes the tone of
+the events on that device while it is open:
+
+```
+$ xproxyctl workorder file WO-2026-0481 -device cpu-line1 -duration 8h \
+    -note "die change, drive replacement" -by maintenance
+work order WO-2026-0481 on file for cpu-line1, open until 2026-09-30T22:14:07+02:00
+It permits nothing: engineering on that device is now reported as expected work
+rather than as work nobody filed.
+
+$ xproxyctl workorder
+1 work orders, 1 open
+
+REFERENCE      DEVICE      LISTENER  STATE  FROM                       UNTIL                      FILED BY     WORK
+WO-2026-0481   cpu-line1   any       open   2026-09-30T14:14:07+02:00  2026-09-30T22:14:07+02:00  maintenance  die change, drive replacement
+
+$ xproxyctl workorder close WO-2026-0481 -by maintenance -note "finished early"
+work order WO-2026-0481 closed; engineering on cpu-line1 is unfiled again
+```
+
+**It is not a grant, and it permits nothing.** That is worth repeating because
+it is the one way to misread this feature. A grant is requested by one person,
+approved by another, short, and can refuse; a work order is one person writing a
+reference down. A listener with `engineering.require_grant: true` refuses an
+operation with no approved grant whatever work orders are open — if it did not,
+the person who wanted the access could file one for themselves and the approval
+requirement would be decoration. See
+[a work order is not a grant](CONFIG.md#a-work-order-is-not-a-grant) for the
+table.
+
+What it changes is the reporting. While a work order is open for the device,
+every engineering event on it carries `work_order` and `work_order_by` and says
+`severity: notice`; with nothing on file the same event says `severity: warning`
+and names no reference. The counters follow:
+`xproxy_engineering_filed_total{kind,operation}` is the subset somebody filed,
+and the difference between it and `xproxy_engineering_total` is the list to work
+through. The trail carries `work_order_ref` on the engineering record, so a year
+later "was that download expected, and who said so" is answered by the file
+rather than by somebody's memory.
+
+`-device` is matched literally against what the listener knows: the upstream
+pool name, an endpoint address, or a device address. No prefixes and no
+wildcards, because a work order that quietly covered a neighbouring controller
+would be worse than one that covered nothing. `-listener` narrows it to one
+listener; the default is every listener that reaches the device, which is
+usually right because the work is on the controller and not on a port.
+`-duration` is required and bounded by `access.max_work_order` (thirty days by
+default): a work order with no end is the one somebody files during a shutdown
+and never closes, after which every download on that device reads as expected
+work forever.
+
+Work orders live in the `access` ledger, so a daemon with no `access.ledger` has
+nowhere to file one and says so. Over the socket it is `GET`, `POST` and
+`DELETE` on `/v1/workorders`; in the web interface it is a form on the **Plant**
+screen, where the filer's name comes from the session rather than from the page.
 
 ### Usage per tenant and route
 
@@ -6415,7 +6478,7 @@ Roles:
 | Role | May |
 |------|-----|
 | `viewer` | See every screen: overview, alarms, listeners, upstreams, routes, WAF, policy, security, plant, sessions, bans, graphs, cluster, certificates, subsystems, MFA, history, the configuration file and the logs |
-| `operator` | Everything a viewer may, plus ban and unban, reload, reload certificates, reopen logs, renew certificates, reset the WAF statistics, empty the shadow policy ledger, roll back to a recorded configuration, edit and save the configuration file, restart the data plane |
+| `operator` | Everything a viewer may, plus ban and unban, file and close a work order, reload, reload certificates, reopen logs, renew certificates, reset the WAF statistics, empty the shadow policy ledger, roll back to a recorded configuration, edit and save the configuration file, restart the data plane |
 
 `viewer` is a trusted operator without write access, not a
 low-privilege or public role. It reads the whole configuration file —
@@ -6492,12 +6555,19 @@ Screens:
   refusals, the account guard, the bot score baselines, the API inventory
   and the packet capture window.
 - **Plant**: the OT half, which is a different estate with different
-  questions. The behaviour packs in force with what each is a detection
-  for, its severity, whether it may deny and who signed it; the
-  just-in-time grants with their state, window, uses and approvals; the
-  device inventory with role, vendor, model, firmware and the protocols
-  each device speaks, marking the ones that are not in the baseline; and
-  the published advisories matched against those firmware versions.
+  questions. First the [work orders](#work-orders-the-change-reference-somebody-filed):
+  what is on file, what is open now, and — for an operator — a form to file
+  one against a device and a button to close it. The form says in as many
+  words that filing a work order **permits nothing**, because the mistake
+  worth preventing is an operator filing one and believing the download is
+  now approved; the filer's name comes from the session rather than from the
+  page, so the record names whoever was logged in. Then the behaviour packs
+  in force with what each is a detection for, its severity, whether it may
+  deny and who signed it; the just-in-time grants with their state, window,
+  uses and approvals; the device inventory with role, vendor, model,
+  firmware and the protocols each device speaks, marking the ones that are
+  not in the baseline; and the published advisories matched against those
+  firmware versions.
 - **Sessions**: the sessions being served now — ssh, sftp, telnet, vnc,
   rdp, ftp, modbus — with the client, login, target, one detail and how
   long. Closing one is an operation on the estate and is audited, so it
@@ -6892,13 +6962,18 @@ that every program download, CPU stop, setting-group write and firmware push on
 a plant listener is reported under, whatever the policy said about it:
 
 ```json
-{"time":"...","level":"WARN","msg":"security","stream":"security","action":"engineering","reason":"engineering_program_download","listener":"plc","client_ip":"10.20.1.14","proto":"s7","class":"program_download","operation":"download block DB12","device":"rack 0 slot 1","grant":"9f2c4ab1","work_order":"change 4711","technique":"T0843","technique_name":"Program Download","tactic":"lateral-movement","matrix":"ics"}
+{"time":"...","level":"WARN","msg":"security","stream":"security","action":"engineering","reason":"engineering_program_download","listener":"plc","client_ip":"10.20.1.14","proto":"s7","class":"program_download","operation":"download block DB12","device":"rack 0 slot 1","grant":"9f2c4ab1","grant_reason":"change 4711: recipe update","severity":"notice","work_order":"WO-2026-0481","work_order_by":"maintenance","technique":"T0843","technique_name":"Program Download","tactic":"lateral-movement","matrix":"ics"}
 ```
 
-`class` is one of the eight engineering classes, `operation` is the protocol's
-own words for it, and `grant` and `work_order` are the access grant it happened
-under and that grant's change reference -- absent when there was none, which is
-what `engineering_ungranted` and `engineering_no_grant` report. The same
+`class` is one of the eight engineering classes and `operation` is the
+protocol's own words for it. `grant` and `grant_reason` are the approval it
+happened under and what that approval was for -- absent when there was none,
+which is what `engineering_ungranted` and `engineering_no_grant` report.
+`severity` is `notice` when a [work order](#work-orders-the-change-reference-somebody-filed)
+was on file for the device and `warning` when none was, and `work_order` and
+`work_order_by` name it where there was one. A work order is not an approval:
+`grant` says somebody authorised this, `work_order` says somebody was expecting
+it, and an operation can carry one, both or neither. The same
 operations are in the access ledger as `kind: engineering` records,
 hash-chained beside the requests and approvals, and `xproxyctl access` counts
 them on its summary line. `xproxy_engineering_total{kind,operation}` and the
