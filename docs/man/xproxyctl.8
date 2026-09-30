@@ -60,6 +60,11 @@ T}	T{
 Counters only
 T}
 T{
+\fBlisteners\fR [\fB\-\:kind\fR \fIK\fR] [\fB\-\:mode\fR \fIM\fR] [\fB\-\:reasons\fR]
+T}	T{
+Every listener this daemon serves: the protocol,\: the address it bound,\: the enforcement mode (\fBenforce\fR,\: \fBshadow\fR or the kind\(aqs own \fBmonitor\fR),\: whether it terminates TLS,\: and which of the protocol\(aqs guards are on with what each does. Then the refusals per protocol and,\: from a separate table that is never added to it,\: what the listeners in shadow mode would have refused;\: \fB\-\:reasons\fR breaks both down by reason. A protocol with guards and none of them on reads \fBnone of N\fR,\: because an empty column reads as nothing to report
+T}
+T{
 \fBupstreams\fR
 T}	T{
 Endpoints with health,\: ejection,\: active requests,\: request and error counts

@@ -91,10 +91,32 @@ did not build it" and "it does not apply" are different promises again.
 | RFC | Title | Status | Notes |
 |-----|-------|--------|-------|
 | 6455 | The WebSocket Protocol | Full | Framing parsed in both directions by `websocket_guard`: reserved bits and opcodes, masking, control frame size and fragmentation, continuation state, close codes and UTF-8 validity |
-| 7692 | Compression Extensions for WebSocket | Refused | No extension is negotiated on an inspected route, and a frame arriving with a reserved bit set — which is what `permessage-deflate` uses — closes the connection with a protocol error. A compressed frame cannot be inspected, so accepting it would turn every check off silently |
+| 7692 | Compression Extensions for WebSocket | Refused | On an inspected route the client's offer is **stripped from the upgrade request**, so no extension is negotiated anywhere on the path and both endpoints fall back to uncompressed frames — which is what the extension is designed to do when it is not agreed, and what keeps a browser (every one of which offers it by default) working. An origin that claims an extension regardless is refused at the 101 with `502`, and a frame arriving with a reserved bit set closes the connection with a protocol error, which now genuinely means a misbehaving peer. A compressed frame cannot be inspected, so accepting one would turn every check off silently |
 | 9297 | HTTP Datagrams and the Capsule Protocol | Full | Under CONNECT-UDP and CONNECT-IP |
 | 9298 | Proxying UDP in HTTP | Full | One socket per session, pinned to the target it was opened for |
 | 9484 | Proxying IP in HTTP | Partial | ADDRESS_ASSIGN and ROUTE_ADVERTISEMENT with per-packet anti-spoofing; the tunnel device is created by the operator, and the proxy refuses to start a session without `ip_assign` and `ip_routes` |
+
+
+**Why the extension is not decompressed instead, and what would change that.**
+Inspecting a compressed frame means running DEFLATE over bytes a peer chose,
+which is the one thing the rest of this guard is built to avoid: its stated
+design rule is that the proxy's memory must not be a function of what a client
+sends, which is why an oversize message is checked to a bound and forwarded
+rather than buffered. A DEFLATE stream inverts that — a small frame expands to
+an arbitrary one, `permessage-deflate` keeps its dictionary *across* messages
+so the state is per connection and cannot be dropped between frames, and
+`client_max_window_bits` lets the peer pick how much of that state the proxy
+must hold. A bounded implementation is possible (a hard ceiling on the
+decompressed size per message and on the window, the connection closed on
+either) but it is a resource-exhaustion surface bought deliberately, per route,
+for the bandwidth of one extension.
+
+So the decision is: **not by default, and not implicitly.** If it is added it
+is an explicit per-route opt-in with its own bounds, sitting beside the message
+schemas and per-type limits rather than arriving as a side effect of a client's
+offer, and the route that turns it on accepts the cost in writing. Until then
+the honest arrangement is the one above: no negotiation, uncompressed frames,
+every check working.
 
 ## TLS and certificates
 
@@ -542,7 +564,7 @@ the peer behind it.
 | A bare LF ending an SMTP line | SMTP | It ends the line for a permissive parser and not for a strict one, which is the whole of SMTP smuggling. Refused, or repaired to CRLF and re-emitted, never passed through |
 | `CHUNKING` / `BDAT` | SMTP | A length-framed message would put the end-of-message decision back in two places |
 | Data pipelined behind `STARTTLS` | SMTP | Written before the client could see the `220`: plaintext for one side, ciphertext for the other |
-| `permessage-deflate` | WebSocket | A compressed frame cannot be inspected; accepting the extension would disable every check silently |
+| `permessage-deflate` | WebSocket | A compressed frame cannot be inspected; accepting the extension would disable every check silently. The offer is stripped from an inspected upgrade rather than left to the endpoints, so a client that asks for it gets an uncompressed connection rather than a broken one |
 | A non-shortest MQTT remaining length | MQTT | Two spellings of one length are two readings of one packet |
 | An MQTT version the proxy cannot parse | MQTT | A packet it cannot check is a packet it cannot allow |
 | An SFTP version above 3 | SFTP | Packets this cannot be trusted to read; the policy would be guesswork |

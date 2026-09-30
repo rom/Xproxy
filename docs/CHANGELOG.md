@@ -6,6 +6,152 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (the listener inventory, and a web interface that admits the other thirty-three protocols exist)
+
+- **`GET /v1/listeners` and `xproxyctl listeners`: every listener with its
+  protocol, its bound address, its enforcement mode and its guards.** `GET
+  /v1/status` reported listeners as a map of name to address, which answers "is
+  it up" and nothing after it. A proxy that speaks thirty-four protocols needs
+  the kind and the mode beside the address before any other question can be
+  asked, and "which of my listeners is not enforcing" could until now only be
+  answered by re-reading the configuration file — which is the file somebody may
+  have got wrong in the first place.
+
+  The report gives, per listener: the kind, the role and daemon that own it, the
+  address it actually bound (so a listener configured on port 0 reports the port
+  the kernel handed out) and any further ports the kind took, `enforce`, `shadow`
+  or `monitor`, whether it terminates TLS, whether it holds its socket, and the
+  protocol's own guards — learning with whether it enforces what it learned,
+  anomaly detection with its action, engineering restrictions with theirs,
+  deception, session recording, a second factor, YARA, ICAP. Per protocol it
+  gives the refusals by reason and, from a separate table that is never added to
+  it, what the listeners in shadow mode would have refused.
+
+  A guard row exists for every guard the *protocol* has, not only the ones this
+  listener configured, so a listener with anomaly detection available and switched
+  off reads as switched off rather than as absent. Engineering is reported as on
+  where no block was written, because that is what the code does: an engineering
+  operation is an event on an OT listener whether or not anybody configured one.
+
+- **The web interface has a Listeners screen and a Policy screen.** Listeners is
+  the inventory above, with the listeners that are *not* enforcing listed first
+  and on their own — the one fact about a security proxy that must not be buried
+  in a table — and what the refusals meant in ATT&CK terms underneath. Policy is
+  the shadow ledger: what would have been refused, by kind, listener, reason and
+  rule, with one clipped example each, the ledger's bound stated when it is full,
+  and an operator button to empty it after a policy is fixed.
+
+- **Every management read the control tool can make, the web interface can now
+  make.** The pass-through table held twenty-five of them, chosen by whichever
+  screen had been written, so an estate could be running behaviour packs,
+  engineering restrictions, just-in-time grants and a shadow policy and the
+  interface would not mention any of it. It is now the whole set: packs, policy,
+  access, accounts, the API inventory, the device inventory's advisories, the bot
+  score, capture, decoys, degradation, drains, the fleet, handshake refusals,
+  maintenance, MASQUE, virtual patches, live sessions, the WebSocket guards and
+  the three TLS views. `GET /v1/origin-check` stays out on purpose: it reads like
+  a view and is a probe that dials the origins.
+
+- **An Alarms screen: everything that is asking for attention, on one page.**
+  Every fact on it was already reachable, in twelve different places, and an
+  operator who has to visit twelve pages to find out whether anything is wrong
+  visits none of them. A reload that failed, log records dropped, a hardening
+  mechanism not in force, a listener configured and not listening, certificates
+  near expiry, devices matching a published advisory, quarantined actors, any
+  table that hit its bound, cluster peers down — and, kept separate, the states
+  somebody chose and may have forgotten: maintenance mode, a drain, a listener
+  in shadow mode. Three levels and no more, because a page that painted a chosen
+  state red would be crying wolf at its own operator. When nothing is wrong it
+  says so, naming what it checked.
+
+- **Security, Plant and Sessions screens, and the fleet on the Cluster screen.**
+  Security is the guards that are neither the WAF nor a protocol's own: virtual
+  patches, deceptive answers, the WebSocket guards, the degradation levels,
+  handshake refusals, the account guard, the bot score, the API inventory and the
+  capture window. Plant is the OT half: the packs in force and who signed them,
+  the just-in-time grants with their windows and approvals, the device inventory
+  with what each device is and speaks, and the advisories matched against those
+  firmware versions. Sessions is what is being served right now.
+
+- **The navigation and the views are checked against each other, and so is every
+  endpoint the page reads — and every view is now rendered against the real
+  management API's own documents.** Nothing at run time noticed a menu entry pointing at
+  a view nobody wrote — the reader lands on the overview with no error — or a view
+  nothing links to. The second of those was already true: the ICAP page had been
+  unreachable, and now has a link from the subsystems screen that reaches it.
+
+  Six hundred lines of page JavaScript had never been run by anything. A test
+  now starts a real data plane and a real management server, asks it for every
+  document the page fetches, and renders all twenty views against what came
+  back, under a DOM small enough to run the page and no smaller. A field renamed
+  in Go, a list that is null rather than empty, a helper called with the wrong
+  shape: each of those used to be a card that threw in one view, which is
+  exactly where nobody looks until an operator needs it. The test skips where
+  `node` is not installed, and it does not replace the manual browser check --
+  it removes the part of it that was checking whether the code runs at all.
+
+### Fixed (the refusal counter counted engineering operations it had forwarded)
+
+- **An engineering operation outside every approved window is no longer counted as
+  a refusal.** On a listener with `engineering.require_grant` and `action: alert`
+  — the step every estate takes before it starts refusing — an operation with no
+  grant open for it is carried and alerted, reason `engineering_ungranted`. Six of
+  the eight kinds that recognise engineering routed that alert through the helper
+  that increments `xproxy_refusals_total`, and the other two did not. So the
+  refusal counter said the relay had refused a program download it had forwarded,
+  and disagreed with itself between protocols for the same event.
+
+  It now has a counter of its own, `xproxy_engineering_outside_window_total{kind,
+  operation}`, on all eight kinds, and `engineering_no_grant` — the actual refusal
+  — is the only engineering reason left in `xproxy_refusals_total`. The ATT&CK
+  technique is still observed, because an operation outside every window is a
+  detection whether or not anybody refused it, and the security event is byte for
+  byte the one it was, so the behaviour packs that read it are unaffected.
+
+  This surfaced while building the Listeners screen above, which prints refusals
+  per protocol: a plant running `action: alert` showed a refusal count for a
+  relay that had refused nothing.
+
+### Fixed (an inspected WebSocket route broke every browser that offered compression)
+
+- **The `permessage-deflate` offer is now stripped from an inspected upgrade
+  rather than forwarded.** The guard refuses a frame with a reserved bit set,
+  because a compressed frame cannot be inspected — but nothing stopped the two
+  *endpoints* agreeing compression behind the proxy. Browsers offer the
+  extension on every WebSocket by default, a compression-capable origin accepted
+  it, the client was told it had succeeded, and then the first data frame tripped
+  the reserved-bit check and the connection closed with a protocol error that
+  blamed the peer for what this proxy had let through. So turning
+  `websocket_guard` on broke every browser client of a compression-capable
+  application, in a way that looked like the application's fault.
+
+  Stripping the offer makes both ends fall back to uncompressed frames, which is
+  what the extension is designed to do when it is not agreed: the client works,
+  and the guard can read what it is inspecting. A reserved bit arriving anyway
+  now means what the message says — a peer using an extension nobody negotiated.
+
+- **An origin that claims an extension although none was offered is refused at
+  the 101**, with `502` and a `websocket:extension` violation, rather than at the
+  first frame. By then the client believes it has a working connection, and the
+  frames would be unreadable.
+
+- **The documentation said both things.** README claimed WebSocket "with
+  permessage-deflate" as a supported feature; docs/RFC.md said no extension is
+  negotiated on an inspected route. The first was false, and the second was true
+  only of what the proxy itself did rather than of the path. Both now describe
+  the behaviour above, as do the CONFIG, USAGE and TROUBLESHOOTING entries --
+  including the troubleshooting advice, which used to tell an operator to drop
+  the extension at the application or give up inspecting the route, and no longer
+  needs to.
+
+- **Why it is not decompressed instead is written down** in docs/RFC.md rather
+  than left implicit: `permessage-deflate` keeps its dictionary across messages,
+  so the state is per connection, and `client_max_window_bits` lets the peer
+  choose how much of it the proxy holds -- which is exactly the "memory as a
+  function of what a client sends" the guard is built to avoid. If it is ever
+  added it is an explicit per-route opt-in with its own bounds, not a side effect
+  of a client's offer.
+
 ### Added (behaviour packs as signed data, not as code and not as configurations)
 
 - **`internal/packs` is a pack format and an evaluator**, and a pack is a file:

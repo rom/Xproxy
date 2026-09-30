@@ -325,6 +325,23 @@ func (s *Server) Collect(e metrics.Collector) {
 			"Engineering operations recognised: program downloads and uploads, mode changes, restarts, configuration writes, firmware pushes, method calls and file transfers. Not refusals -- what was refused is in xproxy_refusals_total.",
 			L{"kind": kind, "operation": class}, float64(sn.EngineeringOps[k]))
 	}
+	// The subset nobody filed: carried, and worth a graph of its own, because
+	// "engineering is happening outside the windows" is the trend that decides
+	// whether an estate is ready to start refusing.
+	outside := make([]string, 0, len(sn.EngineeringOutside))
+	for k := range sn.EngineeringOutside {
+		outside = append(outside, k)
+	}
+	sort.Strings(outside)
+	for _, k := range outside {
+		kind, class, ok := strings.Cut(k, "/")
+		if !ok {
+			continue
+		}
+		e.Counter("xproxy_engineering_outside_window_total",
+			"Engineering operations that happened outside every approved grant window, on a listener that does not require one. They were carried: this is not a refusal, and the refusals are xproxy_refusals_total with reason engineering_no_grant.",
+			L{"kind": kind, "operation": class}, float64(sn.EngineeringOutside[k]))
+	}
 	// The pack engine's own numbers. The evictions are the one worth an alert:
 	// past the actor bound a sequence spanning the eviction stops being
 	// detectable, and the packs are then answering from part of their window.

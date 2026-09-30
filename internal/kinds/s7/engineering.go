@@ -2,6 +2,7 @@ package s7
 
 import (
 	"context"
+	"net/netip"
 
 	"github.com/rom/xproxy/internal/access"
 	"github.com/rom/xproxy/internal/correlate"
@@ -78,7 +79,7 @@ func (t *server) decideEngineering(se *session, pdu *wire.PDU) string {
 				t.reportEngineering(se, op, grant)
 			},
 			Ungranted: func(op engineering.Operation, reason string) {
-				t.alert(se.ip, reason, op.String())
+				t.engineeringOutside(se.ip, reason, op)
 			},
 			Would: func(op engineering.Operation, reason string) {
 				t.host.Counters().WouldRefuse("s7", reason)
@@ -113,4 +114,21 @@ func (t *server) reportEngineering(se *session, op engineering.Operation, grant 
 	}
 	t.host.Logs().SecurityEvent(context.Background(), "engineering",
 		engineering.Reason(op.Class), attrs...)
+}
+
+// engineeringOutside records an operation that happened outside every approved
+// window on a listener that does not require one.
+//
+// It counts EngineeringOutside rather than a refusal: the operation was
+// carried. The event itself is unchanged -- same action, same reason -- so the
+// behaviour packs and the ATT&CK mapping that read it are unaffected.
+func (t *server) engineeringOutside(ip netip.Addr, reason string, op engineering.Operation) {
+	t.host.Counters().EngineeringOutside("s7", string(op.Class), reason)
+	if !t.alerts() {
+		return
+	}
+	t.host.Logs().SecurityEvent(context.Background(), "alert", "s7_"+reason,
+		"listener", t.name, "client_ip", ip.String(), "proto", "s7",
+		"reason", reason, "class", string(op.Class),
+		"operation", textsafe.Clip64(op.String()))
 }

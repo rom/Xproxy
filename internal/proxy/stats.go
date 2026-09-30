@@ -784,6 +784,11 @@ type Stats struct {
 	// class. Not refusals -- most of them are a plant being engineered --
 	// which is why they are counted apart from them.
 	engineering engineeringCounts
+	// engineeringOutside is the subset that happened outside every approved
+	// window on a listener that does not require one. Same shape, separate
+	// table, because the answer to "how much engineering" and the answer to
+	// "how much of it nobody filed" are two numbers.
+	engineeringOutside engineeringCounts
 	// packs counts behaviour-pack findings per pack and severity.
 	packs packCounts
 	// RefusalsUntracked counts refusals named under a kind the roster
@@ -1395,6 +1400,11 @@ type Snapshot struct {
 	// nothing has been recognised, which on a plant with no engineering
 	// station behind this relay is the ordinary state.
 	EngineeringOps map[string]uint64 `json:"engineering_ops,omitempty"`
+	// EngineeringOutside is the same keys for the operations that happened
+	// outside every approved window on a listener that does not require one.
+	// They were carried: this is not a refusal count, and the refusals are in
+	// Refusals under engineering_no_grant.
+	EngineeringOutside map[string]uint64 `json:"engineering_outside,omitempty"`
 	// PackEngine is the behaviour-pack engine's own numbers: how many packs
 	// are in force, how many actors have state, how many are held out, and
 	// what the bounds have pushed out. Absent when no packs are loaded.
@@ -1463,6 +1473,7 @@ func (s *Stats) snapshot() Snapshot {
 		WouldRefusals:           s.WouldRefusalCounts(),
 		Techniques:              s.TechniqueCounts(),
 		EngineeringOps:          s.EngineeringCounts(),
+		EngineeringOutside:      s.EngineeringOutsideCounts(),
 		PackMatches:             s.PackCounts(),
 		CorrelationMerged:       s.CorrelationMerged.Load(),
 		CorrelationRefused:      s.CorrelationRefused.Load(),

@@ -104,3 +104,67 @@ func awaitEng(t *testing.T, s *proxy.Server, ok func(proxy.Snapshot) bool, what 
 	sn := s.Stats()
 	t.Fatalf("%s: refusals %+v engineering %+v", what, sn.Refusals["s7"], sn.EngineeringOps)
 }
+
+// The listener that only asks to be told, which is the step every estate takes
+// first, and the counter that was wrong about it.
+//
+// An operation outside every approved window on such a listener is carried. It
+// used to be counted as a refusal -- on six of the eight kinds that recognise
+// engineering, and not on the other two -- so the refusal counter said the relay
+// had refused a stop it had forwarded, and disagreed with itself between
+// protocols. It is now its own counter, and the technique is still observed,
+// because the operation is a detection whether or not anybody refused it.
+const engAlertYAML = `
+version: 1
+server:
+  listeners:
+    - name: plc
+      address: "127.0.0.1:0"
+      kind: s7
+      s7:
+        upstream: cpu
+        default_action: allow
+        operations: [setup, read, write, stop]
+        engineering:
+          require_grant: true
+          action: alert
+logging: {access: {enabled: false}}
+access:
+  ledger: %q
+  approvals: 1
+  max_duration: 2h
+upstreams:
+  - {name: cpu, endpoints: [{address: %q}]}
+`
+
+func TestAnOperationOutsideEveryWindowIsNotCountedAsARefusal(t *testing.T) {
+	p := startPLC(t, &fakePLC{})
+	ledger := filepath.Join(t.TempDir(), "access.jsonl")
+	s := proxytest.Start(t, fmt.Sprintf(engAlertYAML, ledger, p.addr()))
+	addr := proxytest.Addr(t, s, "plc")
+
+	cl := dial(t, addr)
+	cl.connect(wire.ResourcePG, 0, 2)
+
+	// action: alert, so the stop is carried and the alert is the product.
+	cl.allowed(stopJob(2))
+	if !p.got("stop") {
+		t.Fatal("action: alert refused a stop")
+	}
+	awaitEng(t, s, func(sn proxy.Snapshot) bool {
+		return sn.EngineeringOutside["s7/mode_change"] >= 1
+	}, "the operation outside every window")
+
+	sn := s.Stats()
+	if n := sn.Refusals["s7"]["engineering_ungranted"]; n != 0 {
+		t.Errorf("an operation that was carried was counted as %d refusal(s)", n)
+	}
+	if n := sn.Refusals["s7"]["engineering_no_grant"]; n != 0 {
+		t.Errorf("nothing was refused, so engineering_no_grant must be 0, got %d", n)
+	}
+	// T0859 (valid accounts) and T1078 are what the reason means, and losing
+	// them was the risk in moving the count off the refusal path.
+	if sn.Techniques["T0859"] == 0 {
+		t.Errorf("the technique was not observed: %+v", sn.Techniques)
+	}
+}

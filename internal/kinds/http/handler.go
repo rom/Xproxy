@@ -30,6 +30,7 @@ import (
 	"github.com/rom/xproxy/internal/originsig"
 	"github.com/rom/xproxy/internal/otlp"
 	"github.com/rom/xproxy/internal/securitytxt"
+	"github.com/rom/xproxy/internal/textsafe"
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/tracing"
 	"github.com/rom/xproxy/internal/upstream"
@@ -900,6 +901,22 @@ func (s *engine) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 			// the proxy can refuse. The subprotocol the origin picked
 			// is checked here, before any frame exists.
 			if resp.StatusCode == http.StatusSwitchingProtocols && cr.wsGuard != nil {
+				// An extension the origin claims although nothing was offered
+				// (the offer is stripped above). A server that does this is
+				// either broken or has been told to compress by something else,
+				// and either way its frames would arrive unreadable -- so the
+				// upgrade is refused here rather than at the first frame, where
+				// the client would already believe it had a connection.
+				if ext := strings.TrimSpace(resp.Header.Get("Sec-WebSocket-Extensions")); ext != "" {
+					cr.wsGuard.violations.Add(1)
+					s.stats.WSViolations.Add(1)
+					st.denied = "websocket:extension"
+					s.logs.SecurityEvent(r.Context(), "websocket", "websocket",
+						"route", st.route, "client_ip", st.clientIP.String(),
+						"reason", "extension", "detail", textsafe.Clip64(ext))
+					return &filterDenied{v: filter.Verdict{Deny: true, Status: http.StatusBadGateway,
+						Reason: "websocket", Detail: "extension " + ext}}
+				}
 				if sp, ok := cr.wsGuard.subprotocolAllowed(resp.Header.Get("Sec-WebSocket-Protocol")); !ok {
 					cr.wsGuard.violations.Add(1)
 					s.stats.WSViolations.Add(1)
@@ -1047,6 +1064,25 @@ func (s *engine) rewrite(pr *httputil.ProxyRequest, st *reqState, cr *compiledRo
 	}
 	if st.grpcWeb {
 		grpcWebRequest(out, in.Header.Get("Content-Type"))
+	}
+	// An inspected upgrade offers no extensions.
+	//
+	// The guard reads frames, and a `permessage-deflate` frame cannot be read:
+	// it arrives with RSV1 set over a DEFLATE stream whose dictionary spans
+	// messages. So the offer is taken out of the request rather than forwarded,
+	// which is the only way "no extension is negotiated on an inspected route"
+	// can be true of the whole path -- this proxy negotiating nothing itself
+	// does not stop the two endpoints agreeing compression behind it.
+	//
+	// Leaving it in was worse than it sounds. Browsers offer permessage-deflate
+	// on every WebSocket by default; a compression-capable origin accepted it;
+	// the client was told it was on; and then the first data frame tripped the
+	// reserved-bit check and the connection closed with a protocol error that
+	// blamed the peer for what this proxy had let through. Stripping the offer
+	// makes both endpoints fall back to uncompressed frames, which is what the
+	// extension is designed to do when it is not agreed.
+	if isUpgrade(in) && cr.wsGuard != nil {
+		out.Header.Del("Sec-WebSocket-Extensions")
 	}
 	// Forwarding headers: only a trusted peer's chain is preserved.
 	trustedPeer := netutil.Contains(rt.trusted, netutil.RemoteAddr(in))

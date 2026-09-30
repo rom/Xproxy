@@ -30,6 +30,7 @@ locally; everything else goes through the socket.
 |---------|-------------|
 | `status` | Version, pid, generation, listeners, counters, sandbox state |
 | `stats` | Counters only |
+| `listeners` [`-kind` *K*] [`-mode` *M*] [`-reasons`] | Every listener this daemon serves: the protocol, the address it bound, the enforcement mode (`enforce`, `shadow` or the kind's own `monitor`), whether it terminates TLS, and which of the protocol's guards are on with what each does. Then the refusals per protocol and, from a separate table that is never added to it, what the listeners in shadow mode would have refused; `-reasons` breaks both down by reason. A protocol with guards and none of them on reads `none of N`, because an empty column reads as nothing to report |
 | `upstreams` | Endpoints with health, ejection, active requests, request and error counts |
 | `quotas` [`-top` *N*] | Usage per tenant, per route and per rate limit policy with the top consumers, plus request share per upstream |
 | `config` | Active configuration as YAML, defaults filled in |
