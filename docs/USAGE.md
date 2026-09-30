@@ -1027,10 +1027,19 @@ $ xproxy-simulate -offline -a active.yaml -b proposed.yaml \
 
 Nothing reaches a real upstream: every pool is pointed at a sink inside the
 process, keeping the pool names and the per-route assignments, since which
-pool a request goes to is itself a decision. State files — the ban store,
-the access ledger — are copied into a directory of the simulation's own
-rather than opened. A TLS listener gets a throwaway certificate and the
-estate's private keys are not read. `cluster`, `fleet`, `acme`, `tracing`,
+pool a request goes to is itself a decision. A TLS listener gets a throwaway
+certificate and the estate's private keys are not read.
+
+Nothing is written outside the simulation's own directory either, which is
+two different problems. The state a decision depends on — the ban store, the
+access ledger, the asset and API inventories — is **copied** in, so the run
+starts from what the estate has: a banned address stays banned, an approved
+grant still approves, a device already in the inventory is not a new device.
+What the run produces — a learning report, a session recording — is
+**redirected** there. Those change no decision, which is exactly why they are
+easy to overlook, and a learning report overwritten with a simulation's
+traffic is the worst of them, because somebody promotes those into a policy
+later. `cluster`, `fleet`, `acme`, `tracing`,
 `icap`, `scim`, `ingress`, `capture`, `threat_intel` and the OTLP exporter in
 `metrics` are switched off, and so is `sandbox` — Landlock applied by a
 simulator locks the simulator. The output names every section that was.

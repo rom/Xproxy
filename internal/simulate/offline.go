@@ -74,25 +74,27 @@ var sections = map[string]treatment{
 	"honeytokens":     keepPolicy,
 	"handshake":       keepPolicy,
 	"degradation":     keepPolicy,
-	"api_inventory":   keepPolicy,
-	"asset_inventory": keepPolicy,
-	"correlation":     keepPolicy,
-	"packs":           keepPolicy, // signed files on disk, read only
-	"shedding":        keepPolicy,
-	"maintenance":     keepPolicy,
-	"challenge":       keepPolicy,
-	"jwt":             keepPolicy,
-	"filters":         keepPolicy,
-	"geoip":           keepPolicy, // a database file, read only
-	"cache":           keepPolicy,
-	"compression":     keepPolicy,
-	"authorization":   keepPolicy,
-	"fips":            keepPolicy,
-	"secrets":         keepPolicy, // resolved the same way, from the same place
 
-	// State the engine reads and writes. Copied in.
-	"bans":   copyState, // bans.state_file: a banned address must stay banned
-	"access": copyState, // the grants and work orders a decision depends on
+	"correlation":   keepPolicy,
+	"packs":         keepPolicy, // signed files on disk, read only
+	"shedding":      keepPolicy,
+	"maintenance":   keepPolicy,
+	"challenge":     keepPolicy,
+	"jwt":           keepPolicy,
+	"filters":       keepPolicy,
+	"geoip":         keepPolicy, // a database file, read only
+	"cache":         keepPolicy,
+	"compression":   keepPolicy,
+	"authorization": keepPolicy,
+	"fips":          keepPolicy,
+	"secrets":       keepPolicy, // resolved the same way, from the same place
+
+	// State the engine reads and writes. Copied in, so a run starts from what
+	// the estate has and writes nowhere near it.
+	"bans":            copyState, // bans.state_file: a banned address must stay banned
+	"access":          copyState, // the grants and work orders a decision depends on
+	"asset_inventory": copyState, // a device already in it is not a new device
+	"api_inventory":   copyState, // an endpoint already in it is not a shadow endpoint
 
 	// Outward. Nothing here changes a decision, and all of it would touch
 	// something real.
@@ -147,7 +149,8 @@ func Offline(in *config.Config, dir string) (*config.Config, Report, error) {
 	if !st.IsDir() {
 		return nil, Report{}, fmt.Errorf("simulation directory %s: not a directory", dir)
 	}
-	cfg := *in
+	// A real copy, so everything below may rewrite what it likes: see clone.go.
+	cfg := clone(in)
 	var rep Report
 
 	// Outward: switched off, and said so.
@@ -178,30 +181,58 @@ func Offline(in *config.Config, dir string) (*config.Config, Report, error) {
 
 	// State the engine reads and writes: copied, so the run starts from what
 	// the estate has and writes nowhere near it.
-	if b := cfg.Bans; b != nil && b.StateFile != "" {
-		c := *b
-		path, err := copyIn(dir, "bans.state", b.StateFile)
-		if err != nil {
-			return nil, rep, err
+	state := func(name, into string, get func() string, set func(string)) error {
+		from := get()
+		if from == "" {
+			return nil
 		}
-		c.StateFile = path
-		cfg.Bans = &c
-		rep.Copied = append(rep.Copied, "bans.state_file: "+b.StateFile)
+		path, err := copyIn(dir, into, from)
+		if err != nil {
+			return err
+		}
+		set(path)
+		rep.Copied = append(rep.Copied, name+": "+from)
+		return nil
 	}
-	if a := cfg.Access; a != nil && a.Ledger != "" {
-		c := *a
-		path, err := copyIn(dir, "access.jsonl", a.Ledger)
-		if err != nil {
+	if b := cfg.Bans; b != nil {
+		if err := state("bans.state_file", "bans.state",
+			func() string { return b.StateFile }, func(p string) { b.StateFile = p }); err != nil {
 			return nil, rep, err
 		}
-		c.Ledger = path
-		cfg.Access = &c
-		rep.Copied = append(rep.Copied, "access.ledger: "+a.Ledger)
+	}
+	if a := cfg.Access; a != nil {
+		if err := state("access.ledger", "access.jsonl",
+			func() string { return a.Ledger }, func(p string) { a.Ledger = p }); err != nil {
+			return nil, rep, err
+		}
+	}
+	// The inventories are state and not output: a device already in the
+	// inventory is not a new device, and an API already seen is not a shadow
+	// endpoint, so a simulation that started from an empty one would report
+	// findings the daemon would not. Copied in like the rest, which also keeps
+	// what this run invents out of the estate's file.
+	if k := cfg.AssetInventory; k != nil {
+		if err := state("asset_inventory.state_file", "assets.json",
+			func() string { return k.StateFile }, func(p string) { k.StateFile = p }); err != nil {
+			return nil, rep, err
+		}
+	}
+	if a := cfg.APIInventory; a != nil {
+		if err := state("api_inventory.state_file", "apis.json",
+			func() string { return a.StateFile }, func(p string) { a.StateFile = p }); err != nil {
+			return nil, rep, err
+		}
+	}
+
+	// Everything else the engine writes is output rather than state, and goes
+	// into the simulation's directory too: see writes.go.
+	if err := redirectWrites(cfg, dir, &rep); err != nil {
+		return nil, rep, err
 	}
 
 	sort.Strings(rep.SwitchedOff)
 	sort.Strings(rep.Copied)
-	return &cfg, rep, nil
+	return cfg, rep, nil
 }
 
 // copyIn copies a state file into the simulation's directory, or notes that

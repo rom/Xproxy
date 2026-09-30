@@ -36,13 +36,26 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 - **Nothing reaches a real upstream, and the output names everything that was
   switched off.** Every pool is pointed at a sink inside the process, keeping the
   pool names and the per-route assignments because which pool a request goes to is
-  itself a decision; state files are copied into a directory of the simulation's
-  own rather than opened; a TLS listener gets a throwaway certificate and the
-  estate's private keys are not read; `cluster`, `fleet`, `acme`, `tracing`,
-  `icap`, `scim`, `ingress`, `capture`, `threat_intel`, the OTLP exporter and
-  `sandbox` are switched off. A test asserts that every one of the forty-four
-  top-level configuration sections has a decision recorded about it, so a section
-  added later cannot be left unconsidered.
+  itself a decision; a TLS listener gets a throwaway certificate and the estate's
+  private keys are not read; `cluster`, `fleet`, `acme`, `tracing`, `icap`,
+  `scim`, `ingress`, `capture`, `threat_intel`, the OTLP exporter and `sandbox`
+  are switched off. A test asserts that every one of the top-level configuration
+  sections has a decision recorded about it, so a section added later cannot be
+  left unconsidered.
+
+- **Nothing is written outside the simulation's own directory.** The state a
+  decision depends on — the ban store, the access ledger, the asset and API
+  inventories — is copied into it, so a run starts from what the estate has: a
+  banned address stays banned, a grant still approves, a device already in the
+  inventory is not a new device. What a run produces — a learning report, a
+  session recording — is redirected into it; those change no decision, which is
+  why they were the half easy to overlook, and a learning report overwritten with
+  a simulation's traffic would be the worst of them because those get promoted
+  into policies. The output paths are found by type rather than by listing each
+  kind's field, so the eight learning sections and five recording ones are covered
+  and so is a kind added later. The configuration a caller passes in is deep
+  copied first, since the promise that it is not modified cannot rest on somebody
+  remembering to copy each struct before writing to it.
 
 - **`-offline` is required rather than assumed, and what it promises is stated
   exactly.** Neutralising a configuration is not the same as making it inert: the

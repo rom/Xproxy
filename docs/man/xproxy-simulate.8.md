@@ -34,11 +34,20 @@ daemon.
 Nothing reaches a real upstream. Every pool is pointed at a sink inside
 this process, keeping the pool names and the per-route assignments —
 which pool a request goes to is part of the policy — and changing only
-where that pool is. State files are copied into a directory of the
-simulation's own rather than opened. A TLS listener is given a throwaway
-certificate; the estate's private keys are not read. Every section that
-reaches outside the machine is switched off, and the output names each one
-that was, so the answer is never quietly narrower than it looks.
+where that pool is. A TLS listener is given a throwaway certificate; the
+estate's private keys are not read. Every section that reaches outside the
+machine is switched off, and the output names each one that was, so the
+answer is never quietly narrower than it looks.
+
+Nothing is written outside the simulation's own directory. The state a
+decision depends on — the ban store, the access ledger, the asset and API
+inventories — is copied into it, so the run starts from what the estate has:
+a banned address stays banned, a grant still approves, a device already in
+the inventory is not a new device. What a run produces — a learning report,
+a session recording — is redirected into it. Those change no decision, which
+is why they are easy to overlook; a learning report overwritten with a
+simulation's traffic would be the worst of them, since those get promoted
+into policies.
 
 ## WHY -offline IS REQUIRED
 
