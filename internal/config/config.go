@@ -496,9 +496,10 @@ type ModbusListener struct {
 	Learn *ModbusLearn `yaml:"learn"`
 	// Anomaly watches what each master has been doing and reports when it
 	// stops: a function code it has never used, a write to a register it
-	// has never written, a burst of writes. It needs no rules, which is
-	// the point of it.
-	Anomaly *ModbusAnomaly `yaml:"anomaly"`
+	// has never written, a burst of writes, a scan cycle that changed, an
+	// order it has never followed, a point that stopped moving. It needs
+	// no rules, which is the point of it. See Anomaly.
+	Anomaly *Anomaly `yaml:"anomaly"`
 	// Trace writes one line per frame for as long as it is enabled: the
 	// engineer's tool for "what is this master actually doing".
 	Trace *ModbusTrace `yaml:"trace"`
@@ -624,6 +625,12 @@ type IEC104Listener struct {
 	// because a policy written from the substation drawings refuses half the
 	// traffic on the first shift. See IEC104Learn.
 	Learn *IEC104Learn `yaml:"learn"`
+	// Anomaly watches what each client has been doing and reports when it
+	// stops: an operation it has never used, a point it has never driven, a
+	// scan cycle that changed, an order it has never followed, a value that
+	// stopped moving. It needs no rules, which is the point of it. The block
+	// is the same on every OT kind; see Anomaly.
+	Anomaly *Anomaly `yaml:"anomaly"`
 	// Setpoints bound the *value* a setpoint command may carry, per
 	// information object address. Without them a setpoint is bounded only
 	// by which point it names and when it may be sent, so a control
@@ -1026,6 +1033,12 @@ type SNMPListener struct {
 	// ProxyProtocol sends a PROXY protocol v2 header to the agent on a TCP
 	// listener.
 	ProxyProtocol bool `yaml:"proxy_protocol"`
+	// Anomaly watches what each client has been doing and reports when it
+	// stops: an operation it has never used, a point it has never driven, a
+	// scan cycle that changed, an order it has never followed, a value that
+	// stopped moving. It needs no rules, which is the point of it. The block
+	// is the same on every OT kind; see Anomaly.
+	Anomaly *Anomaly `yaml:"anomaly"`
 }
 
 // LDAPListener is a kind: ldap listener: an LDAP and LDAPS relay in front of
@@ -1931,6 +1944,12 @@ type S7Listener struct {
 	// because the drawings say which blocks a controller has and the traffic
 	// says which of them anything actually reads. See S7Learn.
 	Learn *S7Learn `yaml:"learn"`
+	// Anomaly watches what each client has been doing and reports when it
+	// stops: an operation it has never used, a point it has never driven, a
+	// scan cycle that changed, an order it has never followed, a value that
+	// stopped moving. It needs no rules, which is the point of it. The block
+	// is the same on every OT kind; see Anomaly.
+	Anomaly *Anomaly `yaml:"anomaly"`
 
 	// Rules decide each request, in order, first match wins. A request
 	// that matches no rule takes DefaultAction.
@@ -3929,6 +3948,12 @@ type CoAPListener struct {
 	LogMessages bool `yaml:"log_messages"`
 	// AlertOnDeny writes a security event for every refusal. Default true.
 	AlertOnDeny *bool `yaml:"alert_on_deny"`
+	// Anomaly watches what each client has been doing and reports when it
+	// stops: an operation it has never used, a point it has never driven, a
+	// scan cycle that changed, an order it has never followed, a value that
+	// stopped moving. It needs no rules, which is the point of it. The block
+	// is the same on every OT kind; see Anomaly.
+	Anomaly *Anomaly `yaml:"anomaly"`
 }
 
 // CoAPPSK is a listener's pre-shared key mode: the identity-to-key table, and
@@ -4956,29 +4981,37 @@ type ModbusLearn struct {
 	Enforce bool `yaml:"enforce"`
 }
 
-// DefaultModbusWriteBurst is the write burst applied when the key is
-// unset: twenty writes in ten seconds across every address. It lives here
-// rather than in the kind because validation has to know whether the burst
-// is on in order to refuse a detector with nothing to detect, and a number
-// kept in two places is a number that drifts.
-const DefaultModbusWriteBurst = 20
+// DefaultAnomalyBurst is the write burst applied when the key is unset:
+// twenty writes in ten seconds across every point. It lives here rather
+// than in the kinds because validation has to know whether the burst is on
+// in order to refuse a detector with nothing to detect, and a number kept
+// in two places is a number that drifts.
+const DefaultAnomalyBurst = 20
 
-// ModbusAnomaly is behavioural detection: what a master has been doing,
-// and when it stops.
+// Anomaly is behavioural detection: what a peer has been doing, and when
+// it stops.
 //
 // The rules answer "is this permitted", from what somebody wrote down.
-// This answers "is this what this master has been doing", and answers it
+// This answers "is this what this peer has been doing", and answers it
 // without anybody having written anything. Control traffic is repetitive
 // in a way other traffic is not -- a master's scan cycle is the same few
-// function codes over the same few address ranges, every cycle, for
-// years -- so "this client has never done this before" is a signal here
-// where elsewhere it would be noise.
+// operations over the same few points, every cycle, for years -- so "this
+// client has never done this before" is a signal here where elsewhere it
+// would be noise.
+//
+// The block is the same on every OT listener kind, because the models are
+// about the shape of traffic rather than about a protocol. What differs is
+// what the kind puts into them: a Modbus function code, an IEC 104 type
+// identification, an S7 operation, an MMS service, an OPC UA service and a
+// CoAP method are all *symbols*; a register, an information object
+// address, a data block range, an object name, a node identifier and a
+// path are all *points*. Each protocol's page says which is which.
 //
 // It alerts. A detector built on "I have not seen this before" refuses
 // the first legitimate thing anybody does after a quiet year, so the
 // default is an event and a counter, the events do not reach the ban
 // ladder, and `action: deny` is there for the plants that want it.
-type ModbusAnomaly struct {
+type Anomaly struct {
 	// Enabled turns the detection on.
 	Enabled bool `yaml:"enabled"`
 	// Settle is how long a client's traffic is recorded before anything
@@ -4993,25 +5026,6 @@ type ModbusAnomaly struct {
 	// restarted in place there is an argument for reporting from the first
 	// frame, and an operator who writes 0s should get what they wrote.
 	Settle *Duration `yaml:"settle"`
-	// NewFunction reports a function code this client has not used.
-	// Default true.
-	NewFunction *bool `yaml:"new_function"`
-	// NewWriteAddress reports a write to an address this client has not
-	// written. Default true.
-	NewWriteAddress *bool `yaml:"new_write_address"`
-	// WriteBurst and BurstPeriod bound one client's writes across every
-	// address: default 20 in 10s. It is not the per-address rate of a
-	// value rule, and the difference is the point -- a rate of "this
-	// setpoint may move once a minute" does not notice a master that
-	// wrote forty different registers once each, which is the shape of
-	// somebody walking the address space. 0 disables it.
-	//
-	// A pointer for the same reason `settle` is one: 0 means off, and an
-	// unset key means the default. Read as a plain int, `write_burst: 0`
-	// silently kept the default of twenty, so a listener configured with
-	// the burst turned off went on reporting bursts.
-	WriteBurst  *int     `yaml:"write_burst"`
-	BurstPeriod Duration `yaml:"burst_period"`
 	// Action is alert (the default) or deny. deny refuses the request the
 	// detection fired on, which on a signal derived from novelty means
 	// refusing a maintenance write nobody has made before. It is a real
@@ -5024,9 +5038,145 @@ type ModbusAnomaly struct {
 	// buys a hard stop on the first attempt and an operator's attention.
 	// It is not a block, and the rules are what block.
 	Action string `yaml:"action"`
-	// MaxClients bounds the masters remembered. Default 1024; past it
-	// the drops are counted rather than silent.
+	// MaxClients bounds the peers remembered. Default 1024; past it the
+	// drops are counted rather than silent.
 	MaxClients int `yaml:"max_clients"`
+	// Novelty is the "never seen this before" model, on by default when
+	// the block is enabled and nothing else is asked for.
+	Novelty *AnomalyNovelty `yaml:"novelty"`
+	// Cycle watches the rhythm: how regularly this peer asks, and when
+	// that changes. A control network's scan cycle is its most stable
+	// property and one of the few things an attacker cannot help
+	// disturbing -- a poller that has asked every two seconds for a year
+	// and now asks every two hundred milliseconds is a different program,
+	// whatever it is asking for.
+	Cycle *AnomalyCycle `yaml:"cycle"`
+	// Sequence watches the order: a first-order chain over the operations
+	// a peer uses, and a transition it has never made. The order is
+	// information the individual requests do not carry -- a tool that
+	// reads a block, writes it and reads it back does that in that order
+	// every time, and an operator's panel never writes twice in a row.
+	Sequence *AnomalySequence `yaml:"sequence"`
+	// Talkers watches who is speaking: a peer this listener has not seen,
+	// and a peer on a device it has never spoken to.
+	Talkers *AnomalyTalkers `yaml:"talkers"`
+	// Telemetry watches the values that crossed: a point that stopped
+	// moving, and a value sequence that repeats. Both are what a plant
+	// looks like when somebody is showing the control room a recording --
+	// the frozen point is the crude version and the repeating run is the
+	// careful one, which is what makes a screen look alive while the
+	// process does something else.
+	Telemetry *AnomalyTelemetry `yaml:"telemetry"`
+	// Correlations are pairs of points that are supposed to track each
+	// other. This is the one model that needs an operator: nothing in a
+	// protocol says a pump's speed and a flow meter belong together, and a
+	// relay that guessed would produce an alert a plant could not act on.
+	// What the configuration buys is the detection an attacker finds
+	// hardest to avoid -- a written value that is physically impossible
+	// next to a value the process itself produced.
+	Correlations []AnomalyCorrelation `yaml:"correlations"`
+}
+
+// AnomalyNovelty is the "never seen this before" model.
+type AnomalyNovelty struct {
+	// Symbols reports an operation this peer has not used. Default true.
+	Symbols *bool `yaml:"symbols"`
+	// WritePoints reports a write to a point this peer has not written.
+	// Default true.
+	WritePoints *bool `yaml:"write_points"`
+	// Burst and BurstPeriod bound one peer's writes across every point:
+	// default 20 in 10s. It is not the per-point rate of a value rule, and
+	// the difference is the point -- a rate of "this setpoint may move
+	// once a minute" does not notice a master that wrote forty different
+	// registers once each, which is the shape of somebody walking the
+	// address space. 0 disables it.
+	//
+	// A pointer for the same reason `settle` is one: 0 means off, and an
+	// unset key means the default. Read as a plain int, `burst: 0`
+	// silently kept the default of twenty, so a listener configured with
+	// the burst turned off went on reporting bursts.
+	Burst       *int     `yaml:"burst"`
+	BurstPeriod Duration `yaml:"burst_period"`
+}
+
+// AnomalyCycle is the poll-cycle model.
+type AnomalyCycle struct {
+	// Enabled turns it on. The model costs one interval per request and
+	// two floats per peer, so it is on wherever the block is enabled and
+	// this key is not written.
+	Enabled *bool `yaml:"enabled"`
+	// MinSamples is how many intervals are learned before anything is
+	// reported. Default 20; below about that the mean is not a rhythm.
+	MinSamples int `yaml:"min_samples"`
+	// Tolerance is how many times the learned jitter an interval may
+	// differ from the learned period before it is reported. Default 6,
+	// which is wide on purpose: this is about a cycle that *changed*, not
+	// about one late packet.
+	Tolerance float64 `yaml:"tolerance"`
+	// ReportEvery rate-limits the finding per peer, because a cycle that
+	// changed produces one on every request until the new rhythm is
+	// learned. Default 5m.
+	ReportEvery Duration `yaml:"report_every"`
+}
+
+// AnomalySequence is the order model.
+type AnomalySequence struct {
+	// Enabled turns it on. Default true where the block is enabled.
+	Enabled *bool `yaml:"enabled"`
+	// MinSamples is how many transitions are learned from a peer before
+	// anything is reported about its order. Default 200. Without it the
+	// model reports the traffic it is learning from, which on a short
+	// settling window is every transition once.
+	MinSamples int `yaml:"min_samples"`
+}
+
+// AnomalyTalkers is the "who is this" model.
+type AnomalyTalkers struct {
+	// Enabled turns it on. Default true where the block is enabled.
+	Enabled *bool `yaml:"enabled"`
+	// ReadyAfter is how long this process has to have been running before
+	// a new peer is worth reporting. Default 15m: every peer is new in the
+	// first minute of a process, and reporting that is how an operator
+	// learns to ignore the alerts.
+	ReadyAfter Duration `yaml:"ready_after"`
+}
+
+// AnomalyTelemetry is the value model.
+type AnomalyTelemetry struct {
+	// Enabled turns it on. Default true where the block is enabled; it
+	// costs nothing on a listener whose requests carry no values, because
+	// the model only ever sees the ones that crossed.
+	Enabled *bool `yaml:"enabled"`
+	// FrozenSamples is how many identical readings in a row, from a point
+	// that had been moving, are reported. Default 20.
+	FrozenSamples int `yaml:"frozen_samples"`
+	// ReplayWindow is the length of the repeating run that is reported: a
+	// sequence of this many readings immediately repeated. Default 8.
+	// Below about four it fires on any oscillation.
+	ReplayWindow int `yaml:"replay_window"`
+}
+
+// AnomalyCorrelation is one pair of points that are supposed to track each
+// other, and the slack they may drift by.
+type AnomalyCorrelation struct {
+	// Name is what the pair is called in a finding.
+	Name string `yaml:"name"`
+	// A and B are the two points, spelled the way this kind spells a
+	// point -- which its protocol page says and its trace shows.
+	A string `yaml:"a"`
+	B string `yaml:"b"`
+	// Ratio, when set, is the expected A/B; Difference, when set, is the
+	// largest |A-B| that is normal. At least one is required, because a
+	// pair with neither says nothing about anything.
+	Ratio      float64 `yaml:"ratio"`
+	Difference float64 `yaml:"difference"`
+	// Tolerance is the slack on the ratio, as a fraction of B. Default
+	// 0.1.
+	Tolerance float64 `yaml:"tolerance"`
+	// MaxAge is how old the other point's reading may be and still be
+	// compared. Default 1m: two readings a quarter of an hour apart say
+	// nothing about each other.
+	MaxAge Duration `yaml:"max_age"`
 }
 
 // ModbusDeception answers as a device that is not there.
@@ -12445,6 +12595,12 @@ type BACnetListener struct {
 	LogRequests *bool `yaml:"log_requests"`
 	// AlertOnDeny writes a security event for every refusal. Default true.
 	AlertOnDeny *bool `yaml:"alert_on_deny"`
+	// Anomaly watches what each client has been doing and reports when it
+	// stops: an operation it has never used, a point it has never driven, a
+	// scan cycle that changed, an order it has never followed, a value that
+	// stopped moving. It needs no rules, which is the point of it. The block
+	// is the same on every OT kind; see Anomaly.
+	Anomaly *Anomaly `yaml:"anomaly"`
 }
 
 // BACnetRule decides one request.
@@ -12755,6 +12911,12 @@ type OPCUAListener struct {
 	// because the drawings say which nodes a server has and the traffic says
 	// which of them anything actually reads. See OPCUALearn.
 	Learn *OPCUALearn `yaml:"learn"`
+	// Anomaly watches what each client has been doing and reports when it
+	// stops: an operation it has never used, a point it has never driven, a
+	// scan cycle that changed, an order it has never followed, a value that
+	// stopped moving. It needs no rules, which is the point of it. The block
+	// is the same on every OT kind; see Anomaly.
+	Anomaly *Anomaly `yaml:"anomaly"`
 
 	// Rules decide each message, in order, first match wins. A message that
 	// matches no rule takes DefaultAction.
@@ -13073,6 +13235,12 @@ type MMSListener struct {
 	// Learn records what crosses this listener and writes a proposed rule
 	// set. See MMSLearn.
 	Learn *MMSLearn `yaml:"learn"`
+	// Anomaly watches what each client has been doing and reports when it
+	// stops: an operation it has never used, a point it has never driven, a
+	// scan cycle that changed, an order it has never followed, a value that
+	// stopped moving. It needs no rules, which is the point of it. The block
+	// is the same on every OT kind; see Anomaly.
+	Anomaly *Anomaly `yaml:"anomaly"`
 }
 
 // MMSRule is one rule of an mms listener's policy.

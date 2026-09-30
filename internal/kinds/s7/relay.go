@@ -12,6 +12,7 @@ import (
 
 	"github.com/rom/xproxy/internal/acceptgroup"
 	"github.com/rom/xproxy/internal/admit"
+	"github.com/rom/xproxy/internal/anomaly"
 	"github.com/rom/xproxy/internal/assets"
 	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/config"
@@ -38,6 +39,9 @@ type server struct {
 
 	// limiter bounds requests per second per client address.
 	limiter *limits.KeyedLimiter
+
+	// anomaly is the behavioural models, nil when the block is off.
+	anomaly *anomaly.Detector
 
 	// gate bounds the sessions held, altogether and per client address.
 	gate *sesslimit.Gate
@@ -70,6 +74,9 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener) (*server, 
 			burst = n
 		}
 		t.limiter = limits.NewKeyedLimiter(float64(n), burst, 0)
+	}
+	if t.anomaly, err = anomaly.FromConfig(cfg.S7.Anomaly, time.Now()); err != nil {
+		return nil, fmt.Errorf("listener %s: %w", cfg.Name, err)
 	}
 	return t, nil
 }
@@ -508,6 +515,12 @@ func (t *server) decide(se *session, c *wire.COTP) (forward, fatal bool) {
 		}
 		se.negotiated(int(length))
 	}
+	// Behavioural detection, after the policy and on the requests that are
+	// going on to the controller: the models learn from what reached the CPU,
+	// and a request the policy refused never got there.
+	if reason := t.decideAnomaly(se, pdu); reason != "" {
+		return t.respond(se, pdu, reason)
+	}
 	if t.sc.LogRequests {
 		t.logRequest(se, pdu)
 	}
@@ -583,10 +596,18 @@ func (t *server) refusal(se *session, pdu *wire.PDU, d Decision) (forward, fatal
 	if !t.enforcing() && !d.Hard {
 		return true, false
 	}
+	return t.respond(se, pdu, d.Reason)
+}
+
+// respond is what the client is told about a request that was kept from the
+// controller. It is separate from refusal because the behavioural models have
+// already done their own recording by the time they refuse one, and doing it
+// twice would count the refusal twice.
+func (t *server) respond(se *session, pdu *wire.PDU, reason string) (forward, fatal bool) {
 	// The fabrication answers instead, for the clients it covers, and only
 	// here: this is the path where the request has already been kept from
 	// the controller.
-	if se.deceive(pdu, d.Reason) {
+	if se.deceive(pdu, reason) {
 		return false, false
 	}
 	switch t.policy.respond {

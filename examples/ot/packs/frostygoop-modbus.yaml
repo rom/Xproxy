@@ -114,11 +114,21 @@ server:
         anomaly:
           enabled: true
           settle: 30m
-          new_function: true
-          new_write_address: true
-          write_burst: 20
-          burst_period: 10s
           action: alert
+          novelty:
+            symbols: true
+            write_points: true
+            burst: 20
+            burst_period: 10s
+          # The rhythm and the order, which this protocol has and a rule
+          # cannot express: a poller whose scan cycle changed, and an
+          # operation in a place this master has never used it.
+          cycle: {enabled: true}
+          sequence: {enabled: true}
+          talkers: {enabled: true}
+          # And the values themselves, which is the one model a plant
+          # being shown a recording cannot avoid tripping.
+          telemetry: {enabled: true}
 
         # Run this for a week before the rules above are believed. The report
         # says which registers the master actually writes, which is the list

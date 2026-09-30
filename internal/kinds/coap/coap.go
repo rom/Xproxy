@@ -48,6 +48,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rom/xproxy/internal/anomaly"
 	wire "github.com/rom/xproxy/internal/coap"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/dtlsx"
@@ -70,6 +71,8 @@ type server struct {
 	// pre-shared keys and the pinned public keys. Never nil, and empty on a
 	// listener that has neither.
 	ids *identities
+	// anomaly is the behavioural models, nil when the block is off.
+	anomaly *anomaly.Detector
 	// demux is the DTLS side's per-peer splitter, kept so that the sweeper can
 	// read its drop count. Nil on a NoSec listener.
 	demux atomic.Pointer[dtlsx.Mux]
@@ -130,6 +133,9 @@ func newServer(h proxy.Host, cfg config.Listener, pc net.PacketConn, tc *tls.Con
 	}
 	if m.RateLimit > 0 {
 		s.limiter = limits.NewKeyedLimiter(float64(m.RateLimit), burstOf(m), s.maxClients())
+	}
+	if s.anomaly, err = anomaly.FromConfig(m.Anomaly, time.Now()); err != nil {
+		return nil, fmt.Errorf("listener %s: %w", cfg.Name, err)
 	}
 	s.pend = newPending(s.maxPending(), s.requestTimeout())
 	s.obs = newObservers(s.maxObservers())

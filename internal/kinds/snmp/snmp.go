@@ -58,6 +58,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/acceptgroup"
+	"github.com/rom/xproxy/internal/anomaly"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/dtlsx"
 	"github.com/rom/xproxy/internal/limits"
@@ -81,6 +82,8 @@ type server struct {
 	policy *Policy
 	decoy  *decoy
 	usm    *usm
+	// anomaly is the behavioural models, nil when the block is off.
+	anomaly *anomaly.Detector
 	// names is RFC 6353's certificate-to-security-name table, nil when the
 	// listener has none: a (D)TLS peer has proved it holds a key and that is
 	// not yet an identity a rule can name. See certname.go.
@@ -171,6 +174,9 @@ func newServer(host proxy.Host, cfg config.Listener, pc net.PacketConn, ln net.L
 			burst = m.RateLimit
 		}
 		t.limiter = limits.NewKeyedLimiter(float64(m.RateLimit), burst, 65536)
+	}
+	if t.anomaly, err = anomaly.FromConfig(m.Anomaly, time.Now()); err != nil {
+		return nil, err
 	}
 	t.pend = newPending(t.maxPending(), t.requestTimeout())
 	t.pend.onChange = t.publishPending

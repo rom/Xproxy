@@ -10,8 +10,9 @@ import (
 	"github.com/rom/xproxy/internal/config"
 )
 
-// A security event whose reason maps to an ATT&CK for ICS technique
-// carries the technique, and one that does not carries no such field.
+// A security event whose reason maps to an ATT&CK technique carries the
+// technique and the matrix it is from, and one that does not carries no
+// such field.
 //
 // It is tested here rather than in each kind because it happens here: one
 // choke point, so a kind that gains a refusal reason tomorrow gets the
@@ -52,18 +53,44 @@ func TestASecurityEventCarriesItsTechnique(t *testing.T) {
 	if m["tactic"] != "impair-process-control" {
 		t.Errorf("tactic %v", m["tactic"])
 	}
+	if m["matrix"] != "ics" {
+		t.Errorf("matrix %v", m["matrix"])
+	}
 	// The event's own fields are untouched, and the attributes a kind
 	// passed still arrive.
 	if m["reason"] != "modbus_read_only" || m["action"] != "deny" || m["client_ip"] != "10.40.1.9" {
 		t.Errorf("the event lost its own fields: %v", m)
 	}
 
-	// Protocol hygiene and the HTTP side carry nothing, because a
-	// technique label on those would be a claim in a coverage report.
-	for _, reason := range []string{"modbus_tls_handshake", "rate_limit", "waf"} {
+	// Protocol hygiene carries nothing, because a technique label on the
+	// noise floor would be a claim in a coverage report.
+	for _, reason := range []string{"modbus_tls_handshake", "ldap_malformed", "acl_deny"} {
 		m := read(t, "deny", reason)
 		if _, ok := m["technique"]; ok {
 			t.Errorf("%s was tagged %v", reason, m["technique"])
+		}
+	}
+
+	// The estate's own refusals carry Enterprise ATT&CK, which is the
+	// half of the taxonomy an operations centre outside a plant reads.
+	// The HTTP side logs a bare reason, and a WAF refusal logs the rule
+	// that fired after a colon: both resolve, because both are what is
+	// actually in the log.
+	for _, c := range []struct{ reason, id, matrix string }{
+		{"waf:942100", "T1190", "enterprise"},
+		{"rate_limit", "T1499", "enterprise"},
+		{"ldap_leading_wildcard", "T1087", "enterprise"},
+		{"postgres_copy_program", "T1059", "enterprise"},
+		// A bastion session with no access grant is one refusal with two
+		// readings: the way into a plant, and a step through an estate.
+		{"ssh_no_grant", "T0886,T1133,T1078", "ics,enterprise"},
+	} {
+		m := read(t, "deny", c.reason)
+		if m["technique"] != c.id {
+			t.Errorf("%s: technique %v, want %s", c.reason, m["technique"], c.id)
+		}
+		if m["matrix"] != c.matrix {
+			t.Errorf("%s: matrix %v, want %s", c.reason, m["matrix"], c.matrix)
 		}
 	}
 

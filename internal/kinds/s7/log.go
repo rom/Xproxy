@@ -88,6 +88,27 @@ func (t *server) deny(ip netip.Addr, reason, detail string) {
 	}
 }
 
+// alert records something worth telling an operator about that the rules did
+// not refuse: a behavioural finding from the models in internal/anomaly.
+//
+// It does not reach the ban ladder, and that is deliberate. The signal is
+// novelty, and the first legitimate maintenance download of the year is novel
+// too: banning the engineering station for it would take the plant's own tools
+// away over a detection about them. The event and the counter are what an
+// operator acts on.
+func (t *server) alert(ip netip.Addr, reason, detail string) {
+	t.host.Counters().Refuse("s7", reason)
+	if !t.alerts() {
+		return
+	}
+	attrs := []any{"listener", t.name, "client_ip", ip.String(), "proto", "s7",
+		"reason", reason}
+	if detail != "" {
+		attrs = append(attrs, "detail", textsafe.Clip64(detail))
+	}
+	t.host.Logs().SecurityEvent(context.Background(), "alert", "s7_"+reason, attrs...)
+}
+
 // alerts says whether a refusal writes a security event.
 func (t *server) alerts() bool { return t.sc.AlertOnDeny == nil || *t.sc.AlertOnDeny }
 

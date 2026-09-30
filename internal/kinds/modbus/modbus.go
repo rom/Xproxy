@@ -39,6 +39,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/admit"
+	"github.com/rom/xproxy/internal/anomaly"
 	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/correlate"
@@ -70,7 +71,7 @@ type server struct {
 	learner   *Learner
 	tracer    *Tracer
 	limiter   *limits.KeyedLimiter
-	anomalies *anomalies
+	anomaly   *anomaly.Detector
 
 	open atomic.Int64
 	wg   sync.WaitGroup
@@ -139,11 +140,9 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener, tc *tls.Co
 	if l := m.Learn; l != nil && l.Enabled {
 		t.learner = NewLearner(cfg.Name, l.File, l.Interval.D(), l.MaxSubjects)
 	}
-	ap, err := compileAnomaly(m.Anomaly)
-	if err != nil {
+	if t.anomaly, err = anomaly.FromConfig(m.Anomaly, time.Now()); err != nil {
 		return nil, fmt.Errorf("modbus %s: %w", cfg.Name, err)
 	}
-	t.anomalies = newAnomalies(ap)
 	if tr := m.Trace; tr != nil {
 		req := tr.Requests == nil || *tr.Requests
 		resp := tr.Responses == nil || *tr.Responses
@@ -704,7 +703,12 @@ func (se *session) serveWorker(w *worker) {
 		// holds, which is what a delta or a transition is measured
 		// against. An exception says nothing about a value.
 		if pdu != nil && !pdu.IsException {
-			t.policy.observeRead(j.req, pdu, time.Now())
+			now := time.Now()
+			t.policy.observeRead(j.req, pdu, now)
+			// And the behavioural half: a value that stopped moving, or a
+			// run of values that repeats, is what a control room is shown
+			// while the process does something else.
+			t.observeAnomalyReply(se, j.req, pdu, now)
 		}
 		t.traceResponse(se, w, j, resp, pdu)
 		se.send(resp)
@@ -924,16 +928,16 @@ func exceptionFor(d Decision) byte {
 		// which is what an illegal data value means to a master's own
 		// diagnostics.
 		return wire.ExIllegalValue
-	case "value_rate", "anomaly_write_burst":
+	case "value_rate", anomaly.ReasonWriteBurst, anomaly.ReasonCycleChanged:
 		// Not an illegal value: the same write would be accepted later.
 		// Server busy is the nearest true thing the protocol has, and a
 		// master reads it as "ask again".
 		return wire.ExServerBusy
-	case "anomaly_new_function":
-		// The master asked for a function code this relay has not seen it use.
-		// Illegal function is what its own diagnostics will make sense of, and
-		// it is also nearly true: the function is not one this master's
-		// behaviour says it has.
+	case anomaly.ReasonNewSymbol, anomaly.ReasonSequenceUnseen:
+		// The master asked for a function code this relay has not seen it use,
+		// or used one in a place it has never used it. Illegal function is what
+		// its own diagnostics will make sense of, and it is also nearly true:
+		// the function is not one this master's behaviour says it has.
 		return wire.ExIllegalFunction
 	case "unit_not_allowed":
 		return wire.ExGatewayPathUnavail

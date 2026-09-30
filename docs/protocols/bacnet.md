@@ -118,6 +118,31 @@ any other refusal. Either shadow switch -- `policy: {mode: shadow}` on the
 listener, or `shadow: true` on the section -- records what it would have refused
 and carries the traffic.
 
+## Behavioural detection
+
+`anomaly` is the other half of the policy, and it needs nothing written down.
+The rules answer *is this permitted*; the models answer *is this what this
+client has been doing*. They are `internal/anomaly`, the same models every OT
+kind runs, and [docs/CONFIG.md](../CONFIG.md) documents the block once. What is
+specific to this protocol is the translation:
+
+| The models' term | On BACnet | Used by |
+|------------------|-----------|---------|
+| symbol | the confirmed service (`ReadProperty`, `WriteProperty`, `ReinitializeDevice`), or the virtual link function for a message with no application layer | novelty, sequence |
+| device | the object instance the request addressed, which is the nearest thing to a device identity this protocol offers | talkers |
+| point | the object and property, `analog-output,3.present-value` | novelty about writes |
+| value | nothing | -- |
+
+**The talkers model earns its place here more than on most kinds.** A building's
+device list is written once at commissioning and does not change for a decade, so
+a new address on the segment -- `anomaly_new_talker` -- is a fact worth a line in
+a log, and a known controller talking to an object it has never addressed
+(`anomaly_new_pair`) is one host working along the building.
+
+**The two value models are inert here**, and the reference says so rather than
+pretending: a property value is tagged data whose type is the object's, and this relay does not decode it into a number. So `telemetry` and `correlations` have nothing to compare
+on this kind, and the other four models carry it.
+
 ## What it does not do
 
 - **It does not authenticate.** The client list is an address list and this is

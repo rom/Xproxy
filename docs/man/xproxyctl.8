@@ -185,9 +185,9 @@ T}	T{
 The cross\-listener window: the window length,\: how many addresses and facts are in it,\: how many facts the per\-address bound has pushed out and how many addresses were evicted,\: and what cluster peers have contributed. A window whose bounds are pushing facts out is one answering questions about the whole window from part of one,\: which this says rather than leaving it to be inferred
 T}
 T{
-\fBtechniques\fR [\fB\-\:catalogue\fR]
+\fBtechniques\fR [\fB\-\:catalogue\fR] [\fB\-\:matrix\fR \fIics\fR|\:*enterprise*]
 T}	T{
-What this daemon\(aqs refusals meant in MITRE ATT&CK for ICS terms: the technique,\: the tactic,\: MITRE\(aqs name for it and how often it was seen,\: most seen first. \fB\-\:catalogue\fR lists every technique this proxy can observe whether it has been seen or not,\: which is the honest form of a coverage answer \-\- a zero against a technique says "nothing tried",\: not "nothing detectable". The mapping from a refusal reason to a technique is in \fBdocs/\:ATTACK.\:md\fR
+What this daemon\(aqs refusals meant in MITRE ATT&CK terms: the technique,\: the matrix it is from,\: the tactic,\: MITRE\(aqs name for it and how often it was seen,\: most seen first. Both catalogues are tagged \-\- ATT&CK for ICS for the kinds a plant runs,\: Enterprise ATT&CK for the bastion,\: the edge,\: the directory and the stores \-\- and a refusal that means something in each carries both,\: which is the common case on a gate. \fB\-\:matrix\fR shows one of them,\: for an estate that reports on the plant and the rest separately. \fB\-\:catalogue\fR lists every technique this proxy can observe whether it has been seen or not,\: which is the honest form of a coverage answer \-\- a zero against a technique says "nothing tried",\: not "nothing detectable". The mapping from a refusal reason to a technique is in \fBdocs/\:ATTACK.\:md\fR
 T}
 T{
 \fBsessions\fR [\fB\-\:kill\fR \fIID\fR] [\fB\-\:kill\-\:matching\fR \fB\-\:kind\fR \fIK\fR \fB\-\:listener\fR \fIL\fR \fB\-\:user\fR \fIU\fR]

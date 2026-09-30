@@ -7,6 +7,7 @@ import (
 
 	"github.com/rom/xproxy/internal/acceptgroup"
 
+	"github.com/rom/xproxy/internal/anomaly"
 	wire "github.com/rom/xproxy/internal/bacnet"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/limits"
@@ -29,6 +30,8 @@ type server struct {
 	policy  *policy
 	pend    *pending
 	limiter *limits.KeyedLimiter
+	// anomaly is the behavioural models, nil when the block is off.
+	anomaly *anomaly.Detector
 
 	logRequests bool
 	alertOnDeny bool
@@ -71,6 +74,9 @@ func newServer(host proxy.Host, cfg config.Listener, pc net.PacketConn) (*server
 			burst = m.RateLimit
 		}
 		t.limiter = limits.NewKeyedLimiter(float64(m.RateLimit), burst, 4096)
+	}
+	if t.anomaly, err = anomaly.FromConfig(m.Anomaly, time.Now()); err != nil {
+		return nil, err
 	}
 	return t, nil
 }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/rom/xproxy/internal/acceptgroup"
 	"github.com/rom/xproxy/internal/admit"
+	"github.com/rom/xproxy/internal/anomaly"
 	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/correlate"
@@ -35,6 +36,7 @@ type server struct {
 
 	learner  *learner
 	limiter  *limits.KeyedLimiter
+	anomaly  *anomaly.Detector
 	gate     *sesslimit.Gate
 	sessions acceptgroup.Group
 }
@@ -58,6 +60,9 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener) (*server, 
 			burst = n
 		}
 		t.limiter = limits.NewKeyedLimiter(float64(n), burst, 0)
+	}
+	if t.anomaly, err = anomaly.FromConfig(cfg.MMS.Anomaly, time.Now()); err != nil {
+		return nil, fmt.Errorf("listener %s: %w", cfg.Name, err)
 	}
 	return t, nil
 }

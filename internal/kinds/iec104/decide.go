@@ -127,6 +127,14 @@ func (se *session) decide(frame *wire.Frame, fromClient bool) (string, bool) {
 	if reason, ok := se.decideSelect(frame); !ok {
 		return reason, false
 	}
+	// Behavioural detection last of all, and only on the frames that are
+	// going on to the station: the models learn from what reached the
+	// device, and a frame the policy refused never got there. Recording one
+	// would teach the models that a refused probe is this station's normal
+	// traffic, which is the opposite of what they are for.
+	if reason, ok := se.decideAnomaly(frame, fromClient); !ok {
+		return reason, false
+	}
 	// The frame is going on, so what it says about the process is what the
 	// relay knows about the process.
 	t.observeSetpoint(a, fromClient)

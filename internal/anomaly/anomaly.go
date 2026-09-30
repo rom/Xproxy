@@ -123,6 +123,16 @@ type Event struct {
 	Symbol string
 	// Point is the addressed thing, where the request names one.
 	Point string
+	// Block is the coarser key the novelty model uses for a write, where
+	// the kind has one, and Point where it is empty.
+	//
+	// It exists because a protocol that addresses a *span* -- Modbus
+	// registers 40100 to 40120, an S7 data block byte range -- would
+	// otherwise fill one peer's point set with spans that are all the same
+	// traffic, and a bounded set that fills stops detecting. The telemetry
+	// and correlation models always use Point, because a value history
+	// keyed on a span is a value history of nothing.
+	Block string
 	// Write says the request changes something. It is the kind's reading
 	// of its own protocol, not a guess from the symbol's name.
 	Write bool
@@ -267,7 +277,8 @@ type Correlation struct {
 // Policy is the compiled configuration of every model.
 type Policy struct {
 	// Settle is how long a peer's traffic is learned before novelty about
-	// it is reported. Default 10m.
+	// it is reported. Default 10m, and NoSettle to report from a peer's
+	// first event.
 	Settle time.Duration
 	// MaxActors bounds the peers remembered.
 	MaxActors int
@@ -279,6 +290,16 @@ type Policy struct {
 	Telemetry    Telemetry
 	Correlations []Correlation
 }
+
+// NoSettle is the Settle that means "report about a peer from its first
+// event", which an operator writes as `settle: 0s`.
+//
+// Zero cannot mean it, because zero is how a struct says "nothing was
+// asked for", and a detector that read an unset window as "no window"
+// would alert on every peer's first frame on every listener that turned it
+// on. Negative is the only value left, and it compares the way it has to:
+// every elapsed time is greater than it.
+const NoSettle = -1 * time.Nanosecond
 
 // The defaults and the ceilings.
 const (
@@ -310,7 +331,7 @@ const (
 // one worth refusing rather than defaulting: it is a mistake somebody
 // spends an afternoon on, because nothing is wrong and nothing is reported.
 func (p *Policy) Check() error {
-	if p.Settle < 0 {
+	if p.Settle < 0 && p.Settle != NoSettle {
 		return fmt.Errorf("settle %s: not negative", p.Settle)
 	}
 	if p.Settle == 0 {
@@ -655,17 +676,21 @@ func (s *Set) novelty(a *actor, e Event, now time.Time, settled bool) []Finding 
 	if !e.Write {
 		return out
 	}
-	if e.Point != "" && !a.writePoints[e.Point] {
+	point := e.Block
+	if point == "" {
+		point = e.Point
+	}
+	if point != "" && !a.writePoints[point] {
 		if len(a.writePoints) >= s.p.Novelty.MaxPoints {
 			if !a.pointsFull {
 				a.pointsFull = true
 				s.blinded++
 			}
 		} else {
-			a.writePoints[e.Point] = true
+			a.writePoints[point] = true
 			if settled && s.p.Novelty.WritePoints {
 				out = append(out, Finding{Model: ModelNovelty, Reason: ReasonNewWritePoint,
-					Detail: "first write to " + e.Point})
+					Detail: "first write to " + point})
 			}
 		}
 	}
@@ -783,6 +808,41 @@ func (s *Set) sequence(a *actor, e Event, settled bool) []Finding {
 	}
 	return []Finding{{Model: ModelSequence, Reason: ReasonSequenceUnseen,
 		Detail: e.Symbol + " has never followed " + from + " from this peer"}}
+}
+
+// Value records a reading this relay saw in a *reply* rather than in a
+// request, and runs the two models that are about values: telemetry and
+// correlations.
+//
+// It is separate from Observe because a reply is not something a peer did.
+// Running the whole set over one would count the answer as a second
+// request -- doubling the rhythm the cycle model learned, inventing a
+// transition the sequence model never saw -- and a detector that was wrong
+// about the traffic would be worse than one that only watched requests.
+//
+// Point and Value are what matter here; Symbol and Write are ignored. A
+// kind that decodes read replies (Modbus registers, an IEC 104 measured
+// value, an OPC UA data change) calls this for each reading, which is how
+// "the process values look too clean" is detectable at all: the writes a
+// relay sees are the ones an attacker chose, and the replies are what the
+// plant itself said.
+func (s *Set) Value(e Event) []Finding {
+	if s == nil || !e.HasValue || e.Point == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := e.At
+	if now.IsZero() {
+		now = s.now()
+	}
+	h := s.value(e, now)
+	out := append(s.telemetry(e, h), s.correlation(e, now)...)
+	s.findings += uint64(len(out))
+	for i := range out {
+		out[i].Detail = textsafe.Clip256(out[i].Detail)
+	}
+	return out
 }
 
 // value records a point's reading, for the two models that need one.

@@ -236,6 +236,13 @@ func (s *server) fromClient(raw []byte, to replier) {
 			return
 		}
 	}
+	// Behavioural detection, after the policy and on the requests that are
+	// going on to the device: the models learn from what reached it, and a
+	// request the policy refused never got there.
+	if reason := s.decideAnomaly(req); reason != "" {
+		s.answer(m, hard(reason, m.Path(), wire.Forbidden), to)
+		return
+	}
 	// An Observe registration is a flow with no end, so it takes a slot in a
 	// table of its own. The bound is never shadowed: "how many open-ended flows
 	// may exist" would otherwise be answered by whoever asked for the most.

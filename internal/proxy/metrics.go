@@ -285,8 +285,10 @@ func (s *Server) Collect(e metrics.Collector) {
 	e.Counter("xproxy_correlation_merged_total", "Correlation facts a cluster peer reported, which is how a pivot across two daemons is visible at all.", nil, float64(sn.CorrelationMerged))
 	e.Counter("xproxy_correlation_refused_total", "Correlation facts from a peer whose key did not decode -- a sibling of another version, or a message that is not one. Always zero in a healthy cluster.", nil, float64(sn.CorrelationRefused))
 	e.Counter("xproxy_refusals_untracked_total", "Refusals a listener kind named under an unknown kind or beyond its reason bound, so they carry no reason label. Always zero in a healthy process.", nil, float64(sn.RefusalsUntracked))
-	// The same refusals in the vocabulary an operations centre
-	// catalogues detections in. A reason carrying two techniques counts
+	// The same refusals in the vocabularies an operations centre
+	// catalogues detections in -- ATT&CK for ICS for the plant, Enterprise
+	// ATT&CK for the rest of the estate, and both where a refusal means
+	// something in each. A reason carrying two techniques counts
 	// under both, so these do not sum to the refusal total and are not
 	// meant to: the question they answer is "how much of this technique
 	// did we see", not "how many refusals were there".
@@ -301,8 +303,8 @@ func (s *Server) Collect(e metrics.Collector) {
 			continue
 		}
 		e.Counter("xproxy_attack_technique_total",
-			"Refusals and detections by MITRE ATT&CK for ICS technique, for the subset of techniques this proxy can observe.",
-			L{"technique": t.ID, "name": t.Name, "tactic": string(t.Tactic())},
+			"Refusals and detections by MITRE ATT&CK technique, for the subset of techniques this proxy can observe. The matrix label is ics for ATT&CK for ICS and enterprise for Enterprise ATT&CK, whose identifier spaces and tactic vocabularies are separate.",
+			L{"technique": t.ID, "name": t.Name, "tactic": string(t.Tactic()), "matrix": string(t.Matrix)},
 			float64(sn.Techniques[id]))
 	}
 	e.Counter("xproxy_tcp_connections_total", "Connections accepted on tcp listeners.", nil, float64(sn.TCPConnections))

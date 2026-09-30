@@ -6,12 +6,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rom/xproxy/internal/anomaly"
 	"github.com/rom/xproxy/internal/config"
 )
 
 // anomalyFor compiles a detector from the YAML an operator would write, so that
 // every default in the test is the default an operator gets.
-func anomalyFor(t *testing.T, section string) *anomalies {
+func anomalyFor(t *testing.T, section string) *detector {
 	t.Helper()
 	cfg, err := config.Parse([]byte(fmt.Sprintf(`
 version: 1
@@ -30,18 +31,31 @@ upstreams: [{name: plc, endpoints: [{address: "127.0.0.1:502"}]}]
 	if err != nil {
 		t.Fatalf("config: %v", err)
 	}
-	p, err := compileAnomaly(cfg.Server.Listeners[0].Modbus.Anomaly)
+	d, err := anomaly.FromConfig(cfg.Server.Listeners[0].Modbus.Anomaly, anomalyDay)
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	return newAnomalies(p)
+	return &detector{d}
 }
 
+// detector is the test's own view of the shared models: the kind's own
+// translation of a request, and the models' answer, with none of the logging
+// and refusing that decideAnomaly does around them.
+type detector struct{ *anomaly.Detector }
+
+func (d *detector) check(req request, now time.Time) []anomaly.Finding {
+	return d.Observe(anomalyEvent(req, now))
+}
+
+func (d *detector) clients() int    { return d.Status().Actors }
+func (d *detector) dropped() uint64 { return d.Status().Dropped }
+func (d *detector) blinded() uint64 { return d.Status().Blinded }
+
 // reasons is what one check reported, for comparing against a list.
-func reasons(fs []anomalyFinding) []string {
+func reasons(fs []anomaly.Finding) []string {
 	out := make([]string, 0, len(fs))
 	for _, f := range fs {
-		out = append(out, f.reason)
+		out = append(out, f.Reason)
 	}
 	return out
 }
@@ -78,7 +92,7 @@ func TestAFunctionThisMasterHasNotUsed(t *testing.T) {
 	a.check(req(t, "10.0.0.8", "", 3, readRegs), anomalyDay)
 	got := reasons(a.check(req(t, "10.0.0.8", "", 3, writeReg), settled))
 	// A first write is novel twice over: the function code and the address.
-	want := []string{"anomaly_new_function", "anomaly_new_write_address"}
+	want := []string{"anomaly_new_symbol", "anomaly_new_write_point"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("a first write reported %v, wanted %v", got, want)
 	}
@@ -96,7 +110,7 @@ func TestAnAddressThisMasterHasNotWritten(t *testing.T) {
 	a.check(req(t, "10.0.0.8", "", 3, writeReg), anomalyDay) // register 400
 	other := []byte{6, 0x01, 0xF4, 0x00, 0x0A}               // write 10 to register 500
 	got := reasons(a.check(req(t, "10.0.0.8", "", 3, other), settled))
-	if strings.Join(got, ",") != "anomaly_new_write_address" {
+	if strings.Join(got, ",") != "anomaly_new_write_point" {
 		t.Errorf("a write to an unwritten register reported %v", got)
 	}
 	// A read of a register nobody has written is not a new write address. The
@@ -105,7 +119,7 @@ func TestAnAddressThisMasterHasNotWritten(t *testing.T) {
 	// that finding is correct.)
 	far := []byte{3, 0x0F, 0xA0, 0x00, 0x02} // read 2 registers at 4000
 	got = reasons(a.check(req(t, "10.0.0.8", "", 3, far), settled.Add(time.Second)))
-	if contains(got, "anomaly_new_write_address") {
+	if contains(got, "anomaly_new_write_point") {
 		t.Errorf("a read was reported as a new write address: %v", got)
 	}
 }
@@ -128,7 +142,7 @@ func TestTheRecordIsPerMaster(t *testing.T) {
 // The burst is about a client across every address, which is what the
 // per-address rate of a value rule cannot see.
 func TestABurstOfWritesAcrossAddresses(t *testing.T) {
-	a := anomalyFor(t, "          settle: 1m\n          write_burst: 5\n          burst_period: 10s")
+	a := anomalyFor(t, "          settle: 1m\n          novelty: {burst: 5, burst_period: 10s}")
 	settled := anomalyDay.Add(2 * time.Minute)
 	// Five writes, each to a different register, inside the window. Five is the
 	// bound and not past it, so nothing is a burst yet -- and every one of them
@@ -154,7 +168,7 @@ func TestABurstOfWritesAcrossAddresses(t *testing.T) {
 
 // The window slides, so the same six writes spread out are not a burst.
 func TestWritesOutsideTheWindowAreNotABurst(t *testing.T) {
-	a := anomalyFor(t, "          settle: 1m\n          write_burst: 5\n          burst_period: 10s")
+	a := anomalyFor(t, "          settle: 1m\n          novelty: {burst: 5, burst_period: 10s}")
 	at := anomalyDay.Add(2 * time.Minute)
 	for i := 0; i < 6; i++ {
 		w := []byte{6, 0x02, byte(i), 0x00, 0x01}
@@ -170,7 +184,7 @@ func TestWritesOutsideTheWindowAreNotABurst(t *testing.T) {
 // bound is a number an operator set rather than something learned, so there is
 // nothing for the settling window to be about.
 func TestABurstIsReportedWhileSettling(t *testing.T) {
-	a := anomalyFor(t, "          settle: 1h\n          write_burst: 2\n          burst_period: 10s")
+	a := anomalyFor(t, "          settle: 1h\n          novelty: {burst: 2, burst_period: 10s}")
 	var last []string
 	for i := 0; i < 3; i++ {
 		w := []byte{6, 0x02, byte(i), 0x00, 0x01}
@@ -180,7 +194,7 @@ func TestABurstIsReportedWhileSettling(t *testing.T) {
 		t.Errorf("a burst during the settling window reported %v", last)
 	}
 	// And novelty still is not, which is the whole point of the difference.
-	if contains(last, "anomaly_new_write_address") {
+	if contains(last, "anomaly_new_write_point") {
 		t.Error("novelty was reported during the settling window")
 	}
 }
@@ -193,13 +207,13 @@ func TestEachDetectorCanBeTurnedOff(t *testing.T) {
 		// want is what a first write reports with that detector off, in order.
 		want string
 	}{
-		{"new_function off", "          new_function: false", "anomaly_new_write_address"},
-		{"new_write_address off", "          new_write_address: false", "anomaly_new_function"},
+		{"symbols off", "          novelty: {symbols: false, burst: 0}", "anomaly_new_write_point"},
+		{"write_points off", "          novelty: {write_points: false, burst: 0}", "anomaly_new_symbol"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			// The burst is off throughout: it is exercised on its own below,
 			// and two writes would not reach the default bound anyway.
-			a := anomalyFor(t, "          settle: 1m\n          write_burst: 0\n"+c.section)
+			a := anomalyFor(t, "          settle: 1m\n"+c.section)
 			settled := anomalyDay.Add(2 * time.Minute)
 			a.check(req(t, "10.0.0.8", "", 3, readRegs), anomalyDay)
 			got := reasons(a.check(req(t, "10.0.0.8", "", 3, writeReg), settled))
@@ -212,7 +226,7 @@ func TestEachDetectorCanBeTurnedOff(t *testing.T) {
 
 // And write_burst: 0 is off, not "bound of nought".
 func TestABurstOfZeroIsOff(t *testing.T) {
-	a := anomalyFor(t, "          settle: 1m\n          write_burst: 0\n          new_write_address: false")
+	a := anomalyFor(t, "          settle: 1m\n          novelty: {burst: 0, write_points: false}")
 	settled := anomalyDay.Add(2 * time.Minute)
 	for i := 0; i < 50; i++ {
 		w := []byte{6, 0x02, byte(i), 0x00, 0x01}
@@ -236,9 +250,7 @@ server:
         upstream: plc
         anomaly:
           enabled: true
-          new_function: false
-          new_write_address: false
-          write_burst: 0
+          novelty: {symbols: false, write_points: false, burst: 0}
 upstreams: [{name: plc, endpoints: [{address: "127.0.0.1:502"}]}]
 `))
 	if err == nil {
@@ -256,11 +268,11 @@ func TestTheClientBoundIsCounted(t *testing.T) {
 		ip := fmt.Sprintf("10.0.1.%d", i)
 		a.check(req(t, ip, "", 3, readRegs), anomalyDay)
 	}
-	if a.Clients() != 8 {
-		t.Errorf("the table holds %d clients against a bound of 8", a.Clients())
+	if a.clients() != 8 {
+		t.Errorf("the table holds %d clients against a bound of 8", a.clients())
 	}
-	if a.Dropped != 4 {
-		t.Errorf("four clients were turned away and %d were counted", a.Dropped)
+	if a.dropped() != 4 {
+		t.Errorf("four clients were turned away and %d were counted", a.dropped())
 	}
 }
 
@@ -274,24 +286,24 @@ func TestAMasterThatOutrunsItsAddressBoundBlindsTheDetector(t *testing.T) {
 	a := anomalyFor(t, "          settle: 1m")
 	settled := anomalyDay.Add(2 * time.Minute)
 	// Every other register, so no two spans coalesce.
-	for i := 0; i <= maxAnomalyRanges; i++ {
+	for i := 0; i <= anomaly.DefaultPoints; i++ {
 		w := []byte{6, byte(i * 2 >> 8), byte(i * 2), 0x00, 0x01}
 		a.check(req(t, "10.0.0.8", "", 3, w), settled)
 	}
-	if a.Blinded != 1 {
-		t.Fatalf("one client was blinded and %d were counted", a.Blinded)
+	if a.blinded() != 1 {
+		t.Fatalf("one client was blinded and %d were counted", a.blinded())
 	}
 	// A further new address is no longer reported, because the detector can no
 	// longer tell.
 	far := []byte{6, 0x7F, 0x00, 0x00, 0x01}
-	if got := reasons(a.check(req(t, "10.0.0.8", "", 3, far), settled)); contains(got, "anomaly_new_write_address") {
+	if got := reasons(a.check(req(t, "10.0.0.8", "", 3, far), settled)); contains(got, "anomaly_new_write_point") {
 		t.Errorf("a blinded detector still claimed novelty: %v", got)
 	}
 	// And the count stays at one. It counts clients, not frames: a number that
 	// climbed with every write from a blinded master would say nothing about how
 	// many masters the detector had stopped watching.
-	if a.Blinded != 1 {
-		t.Errorf("the blinded count climbed to %d on later writes", a.Blinded)
+	if a.blinded() != 1 {
+		t.Errorf("the blinded count climbed to %d on later writes", a.blinded())
 	}
 }
 

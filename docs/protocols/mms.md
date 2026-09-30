@@ -117,6 +117,31 @@ closes instead, because there is no invoke identifier there to echo and an ACSE
 reject would arrive as something the client's stack matches against a request it
 has not finished sending.
 
+## Behavioural detection
+
+`anomaly` is the other half of the policy, and it needs nothing written down.
+The rules answer *is this permitted*; the models answer *is this what this
+client has been doing*. They are `internal/anomaly`, the same models every OT
+kind runs, and [docs/CONFIG.md](../CONFIG.md) documents the block once. What is
+specific to this protocol is the translation:
+
+| The models' term | On MMS | Used by |
+|------------------|--------|---------|
+| symbol | the service, and the functional constraint with it where the name is in the 61850 form: `Write CO` moves a breaker and `Write CF` changes a setting | novelty, sequence |
+| device | the logical device (the domain) the request addressed | talkers |
+| point | the object name, `AA1J1Q01A1LD0/XCBR1$CO$Pos$Oper` | novelty about writes |
+| value | nothing | -- |
+
+Putting the functional constraint in the *symbol* rather than only in the point
+is the one judgement here worth stating: a client that has always written `$SP$`
+setpoints and now writes `$CF$` configuration has changed **what it does**, not
+only where, and a model that called both "Write" would have thrown away what
+this protocol says out loud.
+
+**The two value models are inert here**, and the reference says so rather than
+pretending: an MMS data value is typed data whose type is in the SCL this listener does not have, so a relay that turned one into a number would be guessing. So `telemetry` and `correlations` have nothing to compare
+on this kind, and the other four models carry it.
+
 ## What it does not do
 
 **It does not terminate TLS.** MMS on TCP 102 has none. IEC 62351-4 adds TLS

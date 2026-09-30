@@ -248,6 +248,15 @@ func (t *server) fromManager(agent net.PacketConn, raw []byte, p *peer) {
 			return
 		}
 	}
+	// Behavioural detection, after the policy and on the messages that are
+	// going on to the agent: the models learn from what reached it, and a
+	// message the policy refused never got there.
+	if reason := t.decideAnomaly(t.request(ip, m, p)); reason != "" {
+		if !t.deceive(m, p, reason) {
+			t.answerRefusal(m, p)
+		}
+		return
+	}
 	out := raw
 	// The GETBULK bound is applied by *lowering* the repetition count rather
 	// than by refusing the request. A poller asking for more than it should

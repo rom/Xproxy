@@ -6,6 +6,162 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (every OT kind on the behavioural models, not only modbus)
+
+- **All eight OT listener kinds run the `anomaly` block now**: modbus, iec104,
+  s7, mms, bacnet, opcua, coap and snmp. The models are the same on each, which
+  is the point -- an operations centre can filter on `anomaly_cycle_changed`
+  without knowing which protocol produced it -- and what differs is the
+  translation each kind does, which its protocol page states in a table.
+
+- **The translations are where the thought went.** On MMS the functional
+  constraint goes in the *symbol* with the service, because a client that has
+  always written `$SP$` setpoints and now writes `$CF$` configuration has
+  changed what it does and not only where. On OPC UA the device is the session's
+  user rather than the address, since this is the one industrial protocol that
+  brought an identity, and a `Call`'s symbol carries the method. On SNMP the
+  device is the credential, because a management station polls from several
+  addresses under one community string. On BACnet it is the object instance, on
+  CoAP the security name, on S7 the rack and slot, on IEC 104 the common
+  address.
+
+- **The value models are inert where a relay cannot honestly feed them, and the
+  documentation says so.** An MMS data value, an OPC UA variant, a BACnet
+  property, a CoAP payload and an SNMP binding are typed data whose type lives
+  in an SCL file, an address space, a MIB or a vendor's own encoding -- none of
+  which this relay has. Feeding a telemetry model the first two octets of
+  something would report about a value nobody has. Modbus and IEC 104 are the
+  two kinds that decode numbers in both directions, and they are the two where
+  `telemetry` and `correlations` work.
+
+- **A behavioural finding answers in the protocol's own words.** The refusal
+  path of each kind was factored so the models can answer a client -- a Modbus
+  exception, an S7 access fault, an MMS confirmed-error, an OPC UA service
+  fault, a CoAP 4.03, a BACnet Error PDU -- **without** the refusal's own
+  bookkeeping, because the models have already recorded the finding and, by
+  design, never reach the ban ladder.
+
+- **Seventy more rows in the ATT&CK table**, one per behavioural reason per kind
+  that can emit it, so a coverage report shows which of the six models each
+  protocol actually runs.
+
+### Added (the six behavioural models, as one block every OT kind can run)
+
+- **`internal/anomaly` is the detector without the protocol**, and the
+  `anomaly` block is the same on every OT listener kind. Six models: novelty
+  ("this peer has never done this"), the poll cycle (a rhythm that changed),
+  the order (an operation in a place it has never been), the talkers (a peer
+  nobody has seen, a peer on a device it has never addressed), the telemetry
+  (a point that stopped moving, a run of readings that repeats) and the
+  correlations (two points the process ties together that stopped agreeing).
+  What each kind puts into them -- what a symbol, a point and a value are on
+  its protocol -- is the kind's business, and its protocol page says.
+
+- **Modbus is the first kind on it**, and its own three-model detector is
+  gone in favour of the shared six. The configuration is nested now
+  (`novelty: {symbols, write_points, burst, burst_period}` in place of the
+  flat `new_function`, `new_write_address`, `write_burst`), and the two
+  reasons are renamed with it: `anomaly_new_function` is
+  `anomaly_new_symbol` and `anomaly_new_write_address` is
+  `anomaly_new_write_point`, which is what an operations centre filtering
+  across protocols needs them to be. A dashboard or SIEM query naming the old
+  strings has to be updated; the examples and the packs in this tree are.
+
+- **The values are both directions on Modbus**, because this relay already
+  decodes read replies for the value policy's deltas: the telemetry model
+  sees what the *device* answered as well as what a master wrote, which is
+  the half that matters. A frozen or replayed written value says something
+  about the master; a frozen or replayed read value is what a control room is
+  being shown while the process does something else. A finding in a reply
+  never refuses anything -- by the time an answer has arrived there is
+  nothing left to refuse.
+
+- **Novelty about writes is keyed on the span**, not on each address in it.
+  A master writes the same spans every scan cycle, and one recipe download
+  would otherwise fill a bounded set with addresses that are all the same
+  traffic. Past the bound the peer's novelty detection is turned off and the
+  count says so, rather than the set being widened.
+
+- **`settle: 0s` means "report from this peer's first request"** and an
+  unset key means the default ten minutes. They are different, so the models
+  spell the first `NoSettle`: a detector that read "nothing was asked for" as
+  "no window at all" would alert on every peer's first frame.
+
+- **Three more techniques in the ATT&CK catalogue**, because the models
+  reach behaviours the rules could not: T0801 *Monitor Process State* for a
+  scan cycle that changed, T0832 *Manipulation of View* and T1565.002
+  *Transmitted Data Manipulation* for telemetry that is frozen or replayed.
+  Every behavioural reason is mapped for the kinds that emit it, which today
+  is Modbus.
+
+- **Shadow mode records one would-be refusal per request**, not one per
+  finding. Enforcing would have stopped at the first, and the report exists
+  to answer exactly what enforcing costs.
+
+### Added (the same events in Enterprise ATT&CK terms, not only ATT&CK for ICS)
+
+- **Two catalogues, because this proxy stands in two worlds.** ATT&CK for
+  ICS is the vocabulary for a plant -- program downloads, operating-mode
+  changes, reporting messages -- and it has nothing to say about a brute
+  force on a bastion, a forwarded port, a directory read as a list or a
+  COPY that runs a program. Enterprise ATT&CK is the vocabulary for those,
+  so every technique in `internal/attack` now says which matrix it is from
+  and the event carries a `matrix` field beside `technique`,
+  `technique_name` and `tactic`. The identifier spaces do not collide (ICS
+  is T0xxx, Enterprise T1xxx with sub-techniques written `T1021.004`), so
+  one log field holds both and a query can still tell them apart.
+
+- **One refusal, two readings.** An SSH session admitted with no access
+  grant is T0886, *Remote Services*, to the plant's assessor and T1133,
+  *External Remote Services*, to the enterprise's -- the same refusal, read
+  by two teams whose dashboards do not share a vocabulary. Such an event
+  now carries the identifiers from both and `matrix: ics,enterprise`, which
+  is what stops each team maintaining its own translation table. The gate
+  kinds, an OT listener reached from an address the policy does not name,
+  a firmware image over TFTP and a file read off an IED are all in this
+  class.
+
+- **Every kind this project serves now tags something.** The table grew
+  from the eleven OT kinds and four gate `no_grant` rows to all
+  thirty-two: the bastion (authentication, what a session may carry, what
+  it may forward), the edge (WAF and virtual-patch matches, upgrades to a
+  stream protocol, bounds), the directory (anonymous binds, leading
+  wildcards, the extended operations that change an account), the stores
+  (a statement past the policy, `COPY ... FROM PROGRAM`, `LOAD DATA LOCAL
+  INFILE`, `xp_cmdshell`, a Redis `MODULE LOAD`), the brokers, DNS
+  (tunnelling, ANY over UDP, a name on a policy zone), NTP (authentication
+  stripped, an offset no drift explains, the mode-6 amplifiers) and the
+  layer 4 kinds. A test enforces it: a kind with no mapping is a kind whose
+  refusals reach a SIEM as strings nobody can catalogue.
+
+- **The access ledger's refusals are expanded across the kinds that ask
+  it**, rather than written out once per kind: `no_grant` and the whole
+  `grant_*` family -- pending, not yet, expired, denied, revoked, spent,
+  wrong target -- on ssh, telnet, vnc, rdp and ftp, all reading as remote
+  access outside an approved work order.
+
+- **The two spellings the HTTP side actually logs.** Its events carry a
+  bare reason (`waf`, `rate_limit`) rather than one prefixed with the kind,
+  and a WAF refusal carries the rule that fired after a colon
+  (`waf:942100`); both resolve now, so the edge's refusals are tagged
+  without changing a field a SIEM already parses. HTTP refusals remain
+  named counters of their own, so an HTTP technique appears in the security
+  log and not in `xproxy_attack_technique_total` -- the page says so.
+
+- **`xproxy_attack_technique_total` gained a `matrix` label** and
+  `xproxyctl techniques` a `MATRIX` column and a `-matrix ics|enterprise`
+  filter, for an estate that reports on the plant and the rest separately,
+  because most do: the two catalogues answer to different auditors.
+
+- **Still honest about the gaps.** Protocol hygiene stays untagged, and so
+  does a refusal with no counterpart in either catalogue -- an AMQP
+  performative, an RDP channel, an LDAP control -- because inventing a
+  technique for it would read in a coverage report as a detection this
+  proxy does not have. A technique with nothing mapped to it is still not
+  in a catalogue, and the package test still fails if one is added. And a
+  technique label still decides nothing: the ban ladder sees what it always
+  saw, and the OT kinds still never feed it.
+
 ### Added (a short cross-listener memory, so the detections that need two listeners exist)
 
 - **`correlation` is the window a listener does not have.** Every policy
