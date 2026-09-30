@@ -109,6 +109,18 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   `xproxy_pack_match_total{pack,severity}`, the `pack_matches` snapshot field, a
   fact in the cross-listener window, and `xproxyctl packs` / `packs show`.
 
+- **The operational surface with it**: `xproxy_packs_loaded`,
+  `xproxy_pack_actors`, `xproxy_pack_quarantined`, `xproxy_pack_enforcing`,
+  `xproxy_pack_actors_evicted_total` and
+  `xproxy_pack_quarantines_refused_total`; three Prometheus alert rules (a
+  high-or-critical finding, a quarantine in force -- which on a plant is a control
+  room losing a master and is worth looking at even when the detection was right
+  -- and the actor bound being reached, past which a sequence spanning the
+  eviction is no longer detectable); four Grafana panels; `GET /v1/packs` and
+  `POST /v1/packs/release`; and `pack_quarantine` documented in
+  docs/TROUBLESHOOTING.md's deny-reason table with **no** in the Ban column and
+  the reason why.
+
 ### Added (engineering activity as its own class of event, under the work order)
 
 - **`internal/engineering` is a third question, beside "is this permitted" and

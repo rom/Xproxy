@@ -125,6 +125,17 @@ reason -- and the OT kinds still never feed it, because banning a plant's
 master over a technique label would take the process away from the control
 room, which is a worse outcome than the one being guarded against.
 
+**A behaviour pack carries its technique too, and it is the one case where
+the identifier comes from a file rather than from this table.** A pack is a
+signed detection document read at start ([docs/CONFIG.md](CONFIG.md#packs),
+[packs/](../packs/README.md)), and a pack identifier cannot be in a table
+compiled into the binary. What keeps the two honest is the other direction:
+**a pack may only name a technique this table already has**, checked when
+the file loads, so the identifier on a `pack_<id>` event is one this page
+documents. A pack may likewise only name refusal reasons this build emits,
+and only ones at least one listener kind of that signal emits -- which means
+the mappings below are also the vocabulary a pack is written in.
+
 ## The ATT&CK for ICS techniques this proxy can observe
 
 | Technique | Name | Tactics | What makes an event an instance of it |

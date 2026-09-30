@@ -463,6 +463,10 @@ func (s *Server) Stats() Snapshot {
 	snap.RejectedConns = s.connLimiter.Rejected.Load()
 	snap.RateRefusedConns = s.rate().Rejected.Load()
 	snap.Assets = s.AssetReport()
+	if s.packs.On() {
+		st := s.packs.Status()
+		snap.PackEngine = &st
+	}
 	snap.Access = s.AccessReport()
 	snap.Authz = s.AuthorizationReport()
 	snap.Custody = s.CustodyReport()

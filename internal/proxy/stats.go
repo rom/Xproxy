@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"github.com/rom/xproxy/internal/packs"
 	"github.com/rom/xproxy/internal/shadow"
 	"sync"
 	"sync/atomic"
@@ -1394,6 +1395,10 @@ type Snapshot struct {
 	// nothing has been recognised, which on a plant with no engineering
 	// station behind this relay is the ordinary state.
 	EngineeringOps map[string]uint64 `json:"engineering_ops,omitempty"`
+	// PackEngine is the behaviour-pack engine's own numbers: how many packs
+	// are in force, how many actors have state, how many are held out, and
+	// what the bounds have pushed out. Absent when no packs are loaded.
+	PackEngine *packs.Status `json:"packs,omitempty"`
 	// PackMatches is the behaviour-pack findings, keyed "pack/severity".
 	// A pack is a signed file this daemon loaded at start, so the keys are
 	// bounded by the directory and not by anything a client sends.

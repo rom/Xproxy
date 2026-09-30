@@ -325,6 +325,17 @@ func (s *Server) Collect(e metrics.Collector) {
 			"Engineering operations recognised: program downloads and uploads, mode changes, restarts, configuration writes, firmware pushes, method calls and file transfers. Not refusals -- what was refused is in xproxy_refusals_total.",
 			L{"kind": kind, "operation": class}, float64(sn.EngineeringOps[k]))
 	}
+	// The pack engine's own numbers. The evictions are the one worth an alert:
+	// past the actor bound a sequence spanning the eviction stops being
+	// detectable, and the packs are then answering from part of their window.
+	if pe := sn.PackEngine; pe != nil {
+		e.Gauge("xproxy_packs_loaded", "Behaviour packs in force.", nil, float64(pe.Packs))
+		e.Gauge("xproxy_pack_actors", "Addresses with behaviour-pack state now.", nil, float64(pe.Actors))
+		e.Gauge("xproxy_pack_quarantined", "Addresses a behaviour pack is holding out of this daemon's listeners now. Not bans: each expires with the window of the pack that took it.", nil, float64(pe.Quarantined))
+		e.Gauge("xproxy_pack_enforcing", "1 when packs.enforce is on, so the packs that declare enforcement: deny may quarantine.", nil, b2f(pe.Enforcing))
+		e.Counter("xproxy_pack_actors_evicted_total", "Behaviour-pack state dropped for the packs.max_actors bound. Past it a sequence spanning the eviction is no longer detectable.", nil, float64(pe.Evicted))
+		e.Counter("xproxy_pack_quarantines_refused_total", "Quarantines not taken because packs.max_quarantined was reached.", nil, float64(pe.Refused))
+	}
 	// Behaviour-pack findings. The pack label is a pack identifier, which is
 	// bounded by a signed directory this daemon loaded at start, so nothing a
 	// client sends can grow the label set.
