@@ -1,0 +1,36 @@
+# A controller moved out of run by somebody who had not been there before.
+#
+# Changing a controller's operating mode is the cheapest destructive act on any
+# of these protocols: four bytes on Modbus function 8, one S7 stop, one BACnet
+# DeviceCommunicationControl. It needs no exploit and no credential on most of
+# the equipment in service.
+#
+# What makes a mode change worth an alarm rather than a log line is what came
+# before it. An engineer stopping a CPU has been reading that CPU all morning; a
+# tool stopping it opened a connection minutes ago and used a service it had
+# never used.
+pack: 1
+id: t0858-controller-taken-out-of-run
+revision: 1
+name: A mode change from a client that had not used the service
+summary: >-
+  A controller moved between run, program and stop by a client that had not used
+  that operation before. Four bytes stop most of the equipment in service, no
+  exploit and often no credential, so the question is never whether the request
+  was valid -- it is who sent it and whether they had ever sent one.
+technique: T0858
+kinds: [modbus, s7, bacnet]
+severity: critical
+enforcement: deny
+references:
+  - "MITRE ATT&CK for ICS T0858: Change Operating Mode"
+  - "Dragos, PIPEDREAM: the Modicon UMAS stop command"
+  - "CISA advisory on FrostyGoop's Modbus writes in Lviv, January 2024"
+detect:
+  window: 10m
+  ordered: true
+  signals:
+    - name: an-operation-this-client-has-never-used
+      reasons: [anomaly_new_symbol]
+    - name: then-a-mode-change
+      reasons: [engineering_mode_change]

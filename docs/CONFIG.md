@@ -14567,6 +14567,184 @@ the control room.
 `xproxyctl correlation` shows the window, what is in it and what the bounds
 have pushed out; `xproxy_correlation_*` are the counters.
 
+## packs
+
+Behaviour packs: signed, versioned detection documents read from a directory,
+each saying that a shape of events from one actor inside one window is one
+ATT&CK technique.
+
+```yaml
+packs:
+  directory: /usr/share/xproxy/packs
+  keys:
+    - {name: sysctl, file: /etc/xproxy/packs/sysctl.pub}
+  enforce: false          # the packs that declare deny may only alert until this is on
+  disabled: [tool-opcua-browse-storm]
+```
+
+**Why data and not code.** The first behaviour packs in this project were
+example listener configurations, written against the published behaviour of
+FrostyGoop, Industroyer, Stuxnet and PIPEDREAM — and they are still in
+[examples/ot/packs](../examples/ot/packs), because a policy is what actually
+refuses a program download. But a detection that ships as a configuration to
+copy has to be merged by hand into a policy somebody has already tuned, which
+means it is merged once and never again; and a detection that ships as a
+*binary* cannot reach an estate that is not taking a new binary this quarter,
+which is exactly what a plant is. A pack is a file: versioned, so a build
+refuses one it cannot read rather than reading it wrong, and signed, so a
+directory a daemon reads at start is not a way into that daemon.
+
+**What a pack decides about.** Not a frame. Every kind here already decides
+about frames with a policy an engineer wrote and can argue with. A pack sits one
+level up, on the stream of security events those decisions produce — the refusal
+reasons, the behavioural findings, the engineering operations. That is the layer
+where the named tooling is actually visible: none of it exploited a protocol, so
+there is nothing in a frame to match on, and what separates Industroyer from a
+control centre is the *shape* of a sequence across a quarter of an hour.
+
+Working from the event stream has a second property worth more than it looks:
+the vocabulary is closed and already documented. A pack names refusal reasons,
+and every reason this build can emit is in [docs/ATTACK.md](ATTACK.md). A pack
+naming one that is not — or naming one no listener kind of that signal emits —
+fails to load. **So a pack cannot claim a detection this build cannot make**,
+which is the rule that page is held to as well.
+
+**What a pack may do.** Every pack declares the most it may do. `alert` can
+never refuse anything, whatever an operator configures, and it is the right
+declaration for every detection derived from novelty — the first legitimate
+thing a plant does after a quiet year looks exactly like the first illegitimate
+one. `deny` is for the shapes whose evidence is a fact rather than an inference
+(a program download with no approved work order is one), and even then the
+operator has to set `enforce: true`.
+
+A pack's deny is a **quarantine and not a ban**: the actor is refused at
+admission on every listener of this daemon for the rest of that pack's own
+window, with reason `pack_quarantine`, and then it is over. Nothing reaches the
+ban list, no ladder escalates, no prefix or fingerprint is banned, and a restart
+clears it. OT detections have never fed the ban ladder in this project and they
+still do not — banning a plant's master takes the process away from the control
+room, which is worse than what is being guarded against. `xproxyctl packs
+release <address>` lifts one early.
+
+**The signature.** A detached file beside the pack, `<pack>.yaml.sig`, one line:
+
+```
+ed25519 <key name> <base64 signature>
+```
+
+over the pack file's exact bytes. Detached and textual on purpose: the pack
+stays a file an engineer can read and diff, and the signature can be produced by
+anything that can sign 32 bytes. Ed25519 and nothing else — a format with a
+choice of algorithm is a format with a downgrade, and there is no
+interoperability requirement here to pay for one with. `xproxyctl packs keygen`,
+`sign` and `verify` are the tooling; a signature naming a key this estate does
+not list is refused, because an unknown signer is not a weaker signature but no
+signature at all.
+
+**A file that does not load stops the daemon**, with the file and the reason
+named. That is the opposite of what a rule-set loader usually does, and it is
+deliberate: a pack directory is small, curated and signed, so a file in it that
+does not parse is a mistake somebody made minutes ago and wants to hear about —
+not a reason to start with a detection missing and nothing but a counter to say
+so.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Load the packs. Default true where a directory is named |
+| `directory` | path | required | The pack files and their detached signatures. Absolute |
+| `keys` | list | none | The public keys a signature may name; see below |
+| `allow_unsigned` | bool | `false` | Load a pack with no signature beside it. For the pack an engineer wrote this morning against their own plant, and warned about every time: an estate that turned it on to try something and left it on has a directory anybody who can write a file can put detections in |
+| `enforce` | bool | `false` | Let the packs that declare `enforcement: deny` quarantine. A pack that declares `alert` is never affected by this. Warned about |
+| `disabled` | list | none | Pack identifiers this estate does not want, by name — how one noisy pack is dropped without giving up the directory |
+| `max_actors` | int | `4096` | Addresses with pack state at once; the least recently seen is evicted and the eviction is counted |
+| `max_quarantined` | int | `256` | Actors held out at once. A detection that could quarantine an unbounded number of addresses is one somebody can use to take a plant off the air |
+
+### packs.keys[]
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | string | required | What a signature names, and what a loaded pack reports as its signer. Not a secret |
+| `key` | string | none | The ed25519 public key, base64. One of `key` or `file` |
+| `file` | path | none | The same thing in a file, so a key can be managed as one. Blank lines and `#` comments allowed. Absolute |
+
+### What a pack file holds
+
+A pack is loaded as **data**: there is no expression language, no negation, no
+regular expression and nothing that can name a Go symbol. The whole vocabulary
+is below, and a pack naming anything outside it fails to load rather than having
+the unknown part ignored.
+
+```yaml
+pack: 1                       # the format version this build reads
+id: t0843-download-with-no-work-order
+revision: 1
+name: A program download outside every approved change
+summary: >-
+  Control logic written into a device while no approved work order covered it.
+technique: T0843              # must be one internal/attack has
+kinds: [modbus, s7, mms]
+severity: critical            # info, low, medium, high, critical
+enforcement: deny             # the most this pack may ever do
+references:
+  - "MITRE ATT&CK for ICS T0843: Program Download"
+detect:
+  window: 5m
+  signals:
+    - name: a-download
+      reasons: [engineering_program_download]
+    - name: with-no-approval-open
+      reasons: [engineering_no_grant, engineering_ungranted]
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `pack` | int | required | The pack format version. A pack from a later format is refused by name rather than read with its unknown fields dropped |
+| `id` | string | required | Lower case letters, digits and dashes, 1..64. It is the finding's reason (`pack_<id>`), the metric label and what an operator disables by name, so it never changes: a corrected pack keeps its identifier and takes a higher `revision` |
+| `revision` | int | required | The pack's own version, 1 or more. Where a directory holds two files with one identifier the higher revision wins and the fact is reported, which is how an estate drops an update in beside what it has; the same revision twice is an error |
+| `name`, `summary` | string | required | The title and a paragraph of what the pack is about. Both reach the alert |
+| `technique` | string | required | The ATT&CK identifier this pack detects, in either matrix. Must be one this build can observe |
+| `kinds` | list | required | The listener kinds it applies to, each one this build serves |
+| `severity` | `info`…`critical` | `medium` | The pack author's judgement, in the pack rather than in the configuration because an operator assigning severities to detections they did not write assigns them all the same one |
+| `enforcement` | `alert`, `deny` | `alert` | The most this pack may do. `alert` can never refuse, whatever the configuration says |
+| `references` | list | none | Where the behaviour was published. Not used for anything; a detection nobody can trace back to an analysis is one nobody can argue with |
+
+### detect
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `window` | duration | `15m` | How long the signals have to arrive within; 1s..24h. It is anchored on the first matching event, and once it has passed the next match starts a new attempt rather than extending an old one |
+| `signals` | list | required | The steps; 1..16. All of them must be satisfied |
+| `ordered` | bool | `false` | The signals are looked for **one at a time**, so an event that would satisfy a later signal before its turn is not counted at all. That is what separates "read the program, then write one" from "did both this morning" |
+| `across_kinds` | int | `0` | Require the matching events to have come from at least this many distinct listener kinds. The one thing here that is not about a single protocol, and the cheapest true statement in the file: one host on three control protocols in ten minutes is not a control system |
+| `refire` | duration | the window | How long after a match the same actor's next match is reported. A campaign should be one alert and not one per frame |
+
+### detect.signals[]
+
+A signal is a conjunction: an event matches when its reason is one of `reasons`,
+its kind is one of `kinds` (or `kinds` is empty), and its action is one of
+`actions` (or `actions` is empty).
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | string | required | What this step is called in the finding, so an alert says which half fired first |
+| `reasons` | list | required | The security-event reasons that satisfy it. Each must be one this build emits, **and** one that at least one listener kind of this signal emits — so a Modbus-only pack cannot name an OPC UA reason and sit in a directory looking like a detection. The kind prefix is optional: `read_only` and `modbus_read_only` mean the same thing |
+| `kinds` | list | the pack's | Narrow the signal to those kinds, each one the pack itself names |
+| `actions` | list | any | Narrow it to `deny`, `alert`, `engineering` or `would_deny` |
+| `count` | int | `1` | How many matching events satisfy the signal; 1..100000 |
+
+### What a finding is
+
+A match is a security event of its own: `action: alert` (or `quarantine` where
+one was taken), reason `pack_<id>`, with the pack's name, its severity, the
+signal names in the order they were satisfied, the protocols they came from, and
+the pack's own technique in the `technique`, `technique_name`, `tactic` and
+`matrix` fields. It also goes to `xproxy_pack_match_total{pack,severity}`, to
+the `pack_matches` field of `xproxyctl status -json`, and to the
+[cross-listener window](#correlation).
+
+`xproxyctl packs` lists what is in force, with the revision, the technique and
+the signer of each; `xproxyctl packs show <id>` is one pack in full.
+
 ## asset_inventory
 
 One record per device, built from traffic the proxy was already carrying.

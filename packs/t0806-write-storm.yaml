@@ -1,0 +1,41 @@
+# Registers moved faster and wider than any control system moves them.
+#
+# Brute Force I/O is the crude end of the impact tactic and it is what the
+# opportunistic tooling actually does: rather than find the register that
+# matters, write to all of them. It looks nothing like control traffic, which
+# writes a handful of known points on a fixed cycle.
+#
+# Two signals rather than one, because a burst alone is also what a recipe
+# download looks like: the burst, and then a value the policy's own envelope
+# says the process does not use.
+pack: 1
+id: t0806-write-storm
+revision: 1
+name: Writes across the address space, then a value outside the envelope
+summary: >-
+  One actor writing across many points inside a short window, and a value
+  outside the range or rate the policy learned for that point. Control traffic
+  writes a few known points on a fixed cycle; this is the crude end of the
+  impact tactic, and it is what opportunistic tooling does instead of finding
+  the register that matters.
+technique: T0806
+kinds: [modbus, iec104]
+severity: high
+enforcement: alert
+references:
+  - "MITRE ATT&CK for ICS T0806: Brute Force I/O"
+  - "CISA, FrostyGoop: Modbus writes to heating system controllers"
+detect:
+  window: 10m
+  signals:
+    - name: a-burst-of-writes
+      reasons: [anomaly_write_burst]
+      count: 2
+    - name: and-a-value-outside-the-envelope
+      reasons:
+        - value_out_of_range
+        - value_rate
+        - value_delta
+        - value_transition
+        - setpoint_range
+        - setpoint_delta

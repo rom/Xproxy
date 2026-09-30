@@ -1,0 +1,36 @@
+# FrostyGoop, Lviv, January 2024.
+#
+# The first publicly documented ICS malware to reach heating for a city, and the
+# thing worth understanding about it is how ordinary it was: a Go binary with a
+# Modbus library, writing holding registers on ENCO controllers. No exploit, no
+# protocol abuse, no vulnerability. It read the registers it was going to write
+# and then it wrote them.
+#
+# So there is nothing to sign. What this pack names is the change: a host whose
+# traffic on this listener had only ever been reads, writing -- and writing to
+# points nobody had written before.
+pack: 1
+id: tool-frostygoop-modbus
+revision: 1
+name: FrostyGoop-shaped Modbus writes
+summary: >-
+  A host that had only ever read on this listener writing holding registers, to
+  points nothing has written before. FrostyGoop used Modbus exactly as
+  specified, so the change in what a host does is the whole of the signal -- and
+  it is the signal that would also have caught the tool's less famous relatives.
+technique: T0836
+kinds: [modbus]
+severity: high
+enforcement: alert
+references:
+  - "Dragos, FrostyGoop ICS malware (July 2024)"
+  - "CISA, heating utility incident in Lviv, January 2024"
+detect:
+  window: 15m
+  ordered: true
+  signals:
+    - name: a-host-that-had-only-read-writes
+      reasons: [anomaly_new_symbol]
+    - name: to-points-nobody-has-driven
+      reasons: [anomaly_new_write_point, read_only, coil_set_not_allowed, coil_clear_not_allowed]
+      count: 2

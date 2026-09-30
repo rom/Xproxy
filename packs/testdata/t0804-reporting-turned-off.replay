@@ -1,0 +1,10 @@
+# t0804-reporting-turned-off -- Reporting disabled, then a change made behind it
+# The sequence this pack is about. Each line is one security event:
+#   <listener kind> <action> <reason>
+# fire: the whole sequence, which must report.
+# hold: the same sequence one signal short, which must not.
+fire
+  bacnet engineering engineering_mode_change
+  bacnet engineering engineering_configuration
+hold
+  bacnet engineering engineering_mode_change

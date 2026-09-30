@@ -1,0 +1,10 @@
+# tool-cosmicenergy-iec104 -- A database session, then IEC 104 commands from the same host
+# The sequence this pack is about. Each line is one security event:
+#   <listener kind> <action> <reason>
+# fire: the whole sequence, which must report.
+# hold: the same sequence one signal short, which must not.
+fire
+  tds deny procedure_not_allowed
+  iec104 deny station_command
+hold
+  tds deny procedure_not_allowed

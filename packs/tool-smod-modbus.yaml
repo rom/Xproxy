@@ -1,0 +1,31 @@
+# smod, the Modbus penetration-testing framework.
+#
+# It enumerates function codes -- send each one, see which are answered -- and
+# then uses the write ones. The enumeration is what distinguishes it from a
+# master: a real master uses three or four function codes for its whole service
+# life, and a framework tries all of them because that is the point of it.
+pack: 1
+id: tool-smod-modbus
+revision: 1
+name: Modbus function codes enumerated, then written
+summary: >-
+  Several function codes from one client that had used none of them, and then a
+  write. A master uses three or four codes for its whole service life; a
+  framework tries all of them, which is what its function-code enumeration looks
+  like from a relay in the middle.
+technique: T0846
+kinds: [modbus]
+severity: medium
+enforcement: alert
+references:
+  - "smod, Modbus penetration-testing framework"
+  - "MITRE ATT&CK for ICS T0846: Remote System Discovery"
+detect:
+  window: 10m
+  ordered: true
+  signals:
+    - name: codes-this-client-has-never-used
+      reasons: [anomaly_new_symbol, read_only_unknown_function, no_rule]
+      count: 4
+    - name: then-a-write
+      reasons: [read_only, anomaly_new_write_point, coil_set_not_allowed, engineering_mode_change]

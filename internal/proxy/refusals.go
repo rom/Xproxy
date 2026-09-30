@@ -280,6 +280,56 @@ func (s *Stats) Engineering(kind, class string) {
 	c.Add(1)
 }
 
+// packCounts is the behaviour-pack matches per pack and severity.
+//
+// Bounded by the pack directory, which is a signed, curated set of files this
+// daemon loaded at start: nothing a client sends can add a key, which is the
+// property a metric label needs.
+type packCounts struct {
+	mu sync.RWMutex
+	m  map[string]*atomic.Uint64
+}
+
+// PackMatch counts one pack finding. The key is "pack/severity", so a
+// dashboard can graph the criticals without knowing the pack names.
+func (s *Stats) PackMatch(pack, severity string) {
+	if pack == "" || severity == "" {
+		return
+	}
+	key := pack + "/" + severity
+	e := &s.packs
+	e.mu.RLock()
+	c := e.m[key]
+	e.mu.RUnlock()
+	if c == nil {
+		e.mu.Lock()
+		if e.m == nil {
+			e.m = make(map[string]*atomic.Uint64, 16)
+		}
+		if c = e.m[key]; c == nil {
+			c = new(atomic.Uint64)
+			e.m[key] = c
+		}
+		e.mu.Unlock()
+	}
+	c.Add(1)
+}
+
+// PackCounts copies the table, "pack/severity" to count.
+func (s *Stats) PackCounts() map[string]uint64 {
+	e := &s.packs
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if len(e.m) == 0 {
+		return nil
+	}
+	out := make(map[string]uint64, len(e.m))
+	for k, c := range e.m {
+		out[k] = c.Load()
+	}
+	return out
+}
+
 // EngineeringCounts copies the table, "kind/class" to count.
 func (s *Stats) EngineeringCounts() map[string]uint64 {
 	e := &s.engineering

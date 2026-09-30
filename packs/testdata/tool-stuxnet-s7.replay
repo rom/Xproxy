@@ -1,0 +1,12 @@
+# tool-stuxnet-s7 -- Stuxnet-shaped S7 upload, download and parameter write
+# The sequence this pack is about. Each line is one security event:
+#   <listener kind> <action> <reason>
+# fire: the whole sequence, which must report.
+# hold: the same sequence one signal short, which must not.
+fire
+  s7 engineering engineering_program_upload
+  s7 engineering engineering_program_download
+  s7 engineering engineering_configuration
+hold
+  s7 engineering engineering_program_upload
+  s7 engineering engineering_program_download

@@ -1,0 +1,35 @@
+# Control logic written into a controller with nobody's approval open.
+#
+# This is the one pack in the set whose signal is not a guess. A program
+# download is named on the wire on every protocol that has one, this relay
+# already classifies it (internal/engineering), and the access ledger already
+# knows whether an approved work order covers it. So the detection is not
+# "something looked like a download": it is "a download happened, and no change
+# was open for it".
+#
+# It declares deny for that reason. It is still off until an operator turns
+# enforcement on.
+pack: 1
+id: t0843-download-with-no-work-order
+revision: 1
+name: A program download outside every approved change
+summary: >-
+  Control logic written into a device while no approved work order covered it.
+  The operation is named on the wire and the grant is in the hash-chained
+  ledger, so this is a fact rather than an inference -- which is why it is the
+  one detection here whose evidence is strong enough to hold an actor out.
+technique: T0843
+kinds: [modbus, s7, mms]
+severity: critical
+enforcement: deny
+references:
+  - "MITRE ATT&CK for ICS T0843: Program Download"
+  - "Langner, To Kill a Centrifuge (Stuxnet's S7 block download)"
+  - "Dragos, PIPEDREAM/INCONTROLLER: the Schneider UMAS module"
+detect:
+  window: 5m
+  signals:
+    - name: a-download
+      reasons: [engineering_program_download]
+    - name: with-no-approval-open
+      reasons: [engineering_no_grant, engineering_ungranted]

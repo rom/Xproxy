@@ -337,6 +337,22 @@ func (c *Client) Access(state string) (AccessReport, error) {
 	return out, c.do("GET", "/v1/access"+q, &out)
 }
 
+// Packs reads the behaviour packs in force and the engine's own numbers.
+func (c *Client) Packs() (proxy.PackReport, error) {
+	var out proxy.PackReport
+	return out, c.do("GET", "/v1/packs", &out)
+}
+
+// ReleasePack lifts a pack's quarantine on one address.
+func (c *Client) ReleasePack(addr, by, note string) error {
+	body := map[string]any{"address": addr, "by": by}
+	if note != "" {
+		body["note"] = note
+	}
+	var out result
+	return c.doBody("POST", "/v1/packs/release", body, &out)
+}
+
 // Grant reads one grant by id.
 func (c *Client) Grant(id string) (access.View, error) {
 	var out access.View

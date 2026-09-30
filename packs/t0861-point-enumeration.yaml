@@ -1,0 +1,44 @@
+# The address space read out, then something in it written.
+#
+# Point and tag identification is the step between "there is a controller here"
+# and "this is the register that opens the valve". A tool does it by asking for
+# things that are not there -- objects, nodes, data blocks, units -- and keeping
+# the ones that answer. On a policed listener most of those asks are refused,
+# which is what makes the walk visible at all: a control system asks for the
+# points it was configured with and gets no refusals for a decade.
+#
+# The write afterwards is what raises this from reconnaissance to preparation.
+pack: 1
+id: t0861-point-enumeration
+revision: 1
+name: The point list walked, then a point driven
+summary: >-
+  An actor refused repeatedly while naming objects, nodes, data blocks or units
+  that are not in the policy, and then writing to a point it has never written.
+  That is the published shape of point and tag identification followed by the
+  first use of what it found.
+technique: T0861
+kinds: [modbus, iec104, s7, mms, opcua, bacnet, snmp]
+severity: high
+enforcement: alert
+references:
+  - "MITRE ATT&CK for ICS T0861: Point & Tag Identification"
+  - "Dragos and ESET analyses of Industroyer's IEC 61850 and IEC 104 modules"
+detect:
+  window: 15m
+  ordered: true
+  signals:
+    - name: asking-for-what-is-not-there
+      reasons:
+        - object_not_allowed
+        - node_not_allowed
+        - db_not_allowed
+        - address_not_allowed
+        - unit_not_allowed
+        - common_address
+        - namespace_not_allowed
+        - var_binds
+        - rule_denied
+      count: 5
+    - name: then-driving-one
+      reasons: [anomaly_new_write_point]

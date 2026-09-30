@@ -1,0 +1,32 @@
+# plcscan, the Modbus and S7 identification sweep.
+#
+# It walks unit identifiers on Modbus and rack/slot pairs on S7, and it reports
+# what answered. That is all it does, which is why it survives: an estate cannot
+# stop a tool that only asks the questions the protocol was designed to answer.
+#
+# On a policed listener the walk is loud in a specific way -- refusals naming
+# units, racks and slots that are not in the policy -- and it is the one shape
+# here where the *count* is the whole detection. A control system knows which
+# unit and which slot it talks to.
+pack: 1
+id: tool-plcscan
+revision: 1
+name: A unit, rack and slot sweep
+summary: >-
+  Repeated refusals naming unit identifiers, racks or slots the policy does not
+  have. plcscan and its descendants walk those spaces and report what answered; a
+  control system knows which unit and which slot it talks to and never asks for
+  another.
+technique: T0846
+kinds: [modbus, s7]
+severity: medium
+enforcement: alert
+references:
+  - "plcscan (SCADAStrangeLove), Modbus and S7 identification"
+  - "MITRE ATT&CK for ICS T0846: Remote System Discovery"
+detect:
+  window: 5m
+  signals:
+    - name: units-racks-and-slots-that-are-not-there
+      reasons: [unit_not_allowed, rack_not_allowed, slot_not_allowed, no_rule, no_rule_matched]
+      count: 6

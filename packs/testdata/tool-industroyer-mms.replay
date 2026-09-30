@@ -1,0 +1,16 @@
+# tool-industroyer-mms -- Industroyer-shaped MMS model walk and control write
+# The sequence this pack is about. Each line is one security event:
+#   <listener kind> <action> <reason>
+# fire: the whole sequence, which must report.
+# hold: the same sequence one signal short, which must not.
+fire
+  mms deny domain_not_allowed
+  mms deny domain_not_allowed
+  mms deny domain_not_allowed
+  mms deny domain_not_allowed
+  mms deny write_object_not_allowed
+hold
+  mms deny domain_not_allowed
+  mms deny domain_not_allowed
+  mms deny domain_not_allowed
+  mms deny domain_not_allowed

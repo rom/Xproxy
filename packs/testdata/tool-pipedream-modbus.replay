@@ -1,0 +1,10 @@
+# tool-pipedream-modbus -- PIPEDREAM-shaped UMAS session on a Modicon
+# The sequence this pack is about. Each line is one security event:
+#   <listener kind> <action> <reason>
+# fire: the whole sequence, which must report.
+# hold: the same sequence one signal short, which must not.
+fire
+  modbus alert anomaly_new_symbol
+  modbus engineering engineering_mode_change
+hold
+  modbus alert anomaly_new_symbol

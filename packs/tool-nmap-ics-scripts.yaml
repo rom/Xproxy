@@ -1,0 +1,41 @@
+# The Nmap NSE scripts for control protocols.
+#
+# modbus-discover, s7-info, bacnet-info, enip-info, snmp-brute: the first thing
+# anybody points at a control network, including the estate's own auditors. They
+# are single-purpose identification probes and they are noisy by design, because
+# they were written to enumerate rather than to be quiet.
+#
+# The shape is a peer nobody has seen, on several devices, on more than one
+# protocol -- which is the part no single listener can see and the reason this
+# pack asks for two kinds.
+pack: 1
+id: tool-nmap-ics-scripts
+revision: 1
+name: Nmap's control-protocol scripts, across kinds
+summary: >-
+  A new peer identifying devices on more than one control protocol inside a few
+  minutes. The NSE scripts for these protocols are single-purpose identification
+  probes and noisy by design; what makes them visible here is the crossing --
+  Modbus, then S7, then BACnet, from one address, which is not a control system.
+technique: T1046
+kinds: [modbus, s7, bacnet, snmp, coap, iec104, mms, opcua]
+severity: medium
+enforcement: alert
+references:
+  - "Nmap NSE: modbus-discover, s7-info, bacnet-info, enip-info"
+  - "MITRE ATT&CK T1046: Network Service Discovery"
+detect:
+  window: 10m
+  across_kinds: 2
+  signals:
+    - name: a-peer-nobody-has-seen
+      reasons: [anomaly_new_talker]
+    - name: identifying-devices
+      reasons:
+        - anomaly_new_pair
+        - anomaly_new_symbol
+        - client_not_allowed
+        - rule_denied
+        - rule
+        - default_deny
+      count: 4

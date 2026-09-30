@@ -32,6 +32,7 @@ import (
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/metrics"
+	"github.com/rom/xproxy/internal/packs"
 	"github.com/rom/xproxy/internal/safe"
 	"github.com/rom/xproxy/internal/sessions"
 	"github.com/rom/xproxy/internal/shadow"
@@ -119,6 +120,10 @@ type Server struct {
 	// sharing go to the cluster peers.
 	correlation *correlate.Store
 	shareFacts  bool
+	// packs is the behaviour-pack engine, nil when no directory is
+	// configured. It is a reader of the security-event stream rather than
+	// something the kinds call.
+	packs *packs.Engine
 	// assets is the device inventory, absent unless the configuration asked
 	// for one.
 	assets atomic.Pointer[assetKeeper]
@@ -252,6 +257,24 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 	})
 	s.correlation = newCorrelation(cfg)
 	s.shareFacts = cfg.CorrelationShares() && cfg.Cluster != nil
+	// The packs before the listeners: a pack directory that does not load is a
+	// mistake to hear about now, not after the sockets are bound.
+	pe, notes, err := newPacks(cfg)
+	if err != nil {
+		return nil, err
+	}
+	s.packs = pe
+	for _, n := range notes {
+		logs.Error.Warn(n)
+	}
+	if pe.On() {
+		// The engine reads the security stream from here on. It is registered
+		// after the packs loaded, so a daemon that refused a pack never had a
+		// watcher at all.
+		logs.Watch(s)
+		logs.Error.Info("behaviour packs loaded", "packs", len(pe.Packs()),
+			"enforcing", cfg.Packs.Enforce)
+	}
 	if ai := cfg.AssetInventory; ai != nil && ai.Enabled {
 		k, err := newAssetKeeper(s, ai)
 		if err != nil {

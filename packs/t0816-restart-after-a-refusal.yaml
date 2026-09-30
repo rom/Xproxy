@@ -1,0 +1,42 @@
+# Something that was refused, restarting the device instead.
+#
+# A restart is the fallback when a tool cannot get what it wanted: it clears
+# whatever state was in the way, it reloads from configuration that may have just
+# been written, and on a great deal of field equipment it takes a protection
+# function out for the length of the reboot.
+#
+# The sequence is what carries the meaning. A restart after a clean morning is
+# maintenance. A restart from an address that has just been refused several times
+# is somebody trying the next thing.
+pack: 1
+id: t0816-restart-after-a-refusal
+revision: 1
+name: A device restarted by a client this listener has been refusing
+summary: >-
+  Several refusals from one address, and then a restart or reset of the device.
+  A restart is what a tool reaches for when it cannot get what it asked for: it
+  clears state, reloads configuration that may have just been written, and takes
+  protection out for the length of the reboot.
+technique: T0816
+kinds: [iec104, s7, bacnet]
+severity: high
+enforcement: deny
+references:
+  - "MITRE ATT&CK for ICS T0816: Device Restart/Shutdown"
+  - "ESET and Dragos on Industroyer2's C_RP_NA_1 use"
+detect:
+  window: 15m
+  ordered: true
+  signals:
+    - name: refused-more-than-once
+      reasons:
+        - rule
+        - rule_denied
+        - default_deny
+        - operation_denied
+        - monitor_only
+        - station_command
+        - no_rule_matched
+      count: 3
+    - name: then-a-restart
+      reasons: [engineering_restart]

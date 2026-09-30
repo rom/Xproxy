@@ -410,11 +410,13 @@ func newServer(host proxy.Host, lc config.Listener, udp net.PacketConn, tcp net.
 		// point is talking about a domain, and that belongs to the `dns` policy.
 		Admit: func(client netip.Addr, verified bool) string {
 			return admit.Client(admit.Deps{
-				Lists:   host.ThreatIntel(),
-				Policy:  host.Authorization(),
-				Logs:    host.Logs(),
-				Matched: func() { host.Counters().ThreatIntelMatched.Add(1) },
-				Blocked: func() { host.Counters().ThreatIntelBlocked.Add(1) },
+				Lists: host.ThreatIntel(),
+				// A behaviour pack holding this address out, where one is.
+				Quarantined: host.Packs().Quarantined,
+				Policy:      host.Authorization(),
+				Logs:        host.Logs(),
+				Matched:     func() { host.Counters().ThreatIntelMatched.Add(1) },
+				Blocked:     func() { host.Counters().ThreatIntelBlocked.Add(1) },
 			}, authorization.Subject{
 				Listener: lc.Name,
 				Kind:     "dns",

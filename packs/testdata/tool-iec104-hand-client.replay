@@ -1,0 +1,12 @@
+# tool-iec104-hand-client -- Commands from an IEC 104 master with no scan rhythm
+# The sequence this pack is about. Each line is one security event:
+#   <listener kind> <action> <reason>
+# fire: the whole sequence, which must report.
+# hold: the same sequence one signal short, which must not.
+fire
+  iec104 alert anomaly_cycle_changed
+  iec104 deny rule
+  iec104 deny rule
+  iec104 deny rule
+hold
+  iec104 alert anomaly_cycle_changed

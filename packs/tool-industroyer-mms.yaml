@@ -1,0 +1,40 @@
+# Industroyer's IEC 61850 module.
+#
+# It enumerated the device model -- GetNameList, over and over, because the
+# object names in a substation are not guessable -- and then wrote to a control
+# object. That is the whole of it, and again every message was correct MMS.
+#
+# On this relay the enumeration shows up as domain and object names outside the
+# policy, and the write as a functional constraint the listener does not grant.
+# A control centre reads the model once at start-up from its own SCL file and
+# then polls what it found.
+pack: 1
+id: tool-industroyer-mms
+revision: 1
+name: Industroyer-shaped MMS model walk and control write
+summary: >-
+  Repeated naming of domains and objects outside the policy, then a write to a
+  control or setting object. Industroyer's IEC 61850 module enumerated the device
+  model because substation object names are not guessable, and a control centre
+  does not: it reads the model once from its own SCL file.
+technique: T0861
+kinds: [mms]
+severity: critical
+enforcement: alert
+references:
+  - "ESET, Industroyer: a new threat for industrial control systems (2017)"
+  - "Dragos, CRASHOVERRIDE: analysis of the threat to electric grid operations"
+detect:
+  window: 20m
+  ordered: true
+  signals:
+    - name: the-model-walk
+      reasons: [domain_not_allowed, object_not_allowed, service_not_allowed, service_class_not_allowed]
+      count: 4
+    - name: then-a-control-or-setting-write
+      reasons:
+        - write_object_not_allowed
+        - write_constraint_not_allowed
+        - operate_not_allowed
+        - not_selected
+        - engineering_configuration

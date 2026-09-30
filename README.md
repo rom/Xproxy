@@ -1354,6 +1354,28 @@ describes it, validation refuses what cannot work, and
   connection. A kind added tomorrow starts outside the policy and a
   configuration naming it is refused at load, rather than left as a hole
   in a policy somebody believes is complete
+- **Detections that arrive as files, not as a release.** Twenty-five
+  **behaviour packs** ship with the product: ten for ATT&CK for ICS
+  techniques, six for the named malware (FrostyGoop, Industroyer and
+  Industroyer2, PIPEDREAM, Stuxnet, COSMICENERGY) and nine for the tooling
+  an estate actually meets — Nmap's control-protocol scripts, plcscan,
+  smod, Metasploit's Modbus modules, Redpoint, Snap7, the OPC UA clients,
+  the hand-driven IEC 104 masters. Each is a signed, versioned file saying
+  that a shape of events from one actor inside one window is one technique:
+  data, with no expression language, no negation and nothing that can name
+  a symbol in the binary. That matters because a plant will take a file
+  this quarter and will not take a new binary — and because a pack sits on
+  the *stream of events* the policies produce rather than on a frame, which
+  is the only layer the named tooling is visible at: none of it exploited a
+  protocol, so there is nothing in a frame to match on, and what separates
+  Industroyer from a control centre is the shape of a sequence across a
+  quarter of an hour. A pack may only name a technique and a refusal reason
+  this build already has, checked when the file loads, so **a pack cannot
+  claim a detection this proxy cannot make**. Twenty-one of the twenty-five
+  may only alert and say so in the file, because a shape has false
+  positives; the four that may deny rest on something named on the wire and
+  still do nothing until an operator turns enforcement on, and what they
+  then do is a time-boxed quarantine rather than a ban
 - **Just-in-time access, and it reaches the plant.** Nobody opens a
   session on a bastion unless there is a live grant naming them, the
   listener and the target: requested by somebody, approved by somebody
@@ -1834,6 +1856,18 @@ file have to be replaced with the plant's own, and each pack has a test
 that loads the file as it ships and sends the traffic through the relay,
 which is how the claim in its name is checked rather than asserted.
 
+[packs/](packs/README.md) is the other half of that idea, and the shape an
+estate can actually keep up to date: twenty-five **behaviour packs** as signed,
+versioned data rather than as configurations to copy. Ten are written per ATT&CK
+for ICS technique, six per named piece of malware and nine per tool, and each
+says that a shape of events from one actor inside one window is one technique.
+A pack notices; the configurations above refuse — and a pack is a file, so it can
+arrive next quarter without a new binary and without touching a policy somebody
+has already tuned. Each has a replay trace in `packs/testdata` that the test
+suite runs on every build, and a pack may only name a technique and a refusal
+reason this build already has, so none of them can claim a detection the binary
+cannot make.
+
 ## Operating it
 
 `xproxyctl` talks to the management socket, whose caller identity the
@@ -1874,6 +1908,7 @@ the stages a request can die at and every deny reason.
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Triage, a symptom index, the stages a request can die at, the timeout ladder, a section per subsystem, emergency procedures, every deny reason and what to collect for a bug report |
 | [docs/SETUP.md](docs/SETUP.md) | Installation on Fedora |
 | [docs/SETUP_MACOS.md](docs/SETUP_MACOS.md) | Installation on macOS |
+| [packs/](packs/README.md) | The behaviour packs that ship with the product: signed, versioned detection documents, ten per ATT&CK for ICS technique, six per named piece of malware and nine per tool, with what each one is a detection for and why most of them may only alert |
 | [examples/](examples/) | Complete configurations per deployment — the estate's daemons, the bastion, the mail and IoT relays, the operational-technology gateways, the encrypted resolver, the egress proxy — with WAF rules, block lists, filters, a WebAssembly module and rewriting examples beside them, all validated by tests |
 | [docs/HARDENING_MACOS.md](docs/HARDENING_MACOS.md) | Host hardening on macOS |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | The split into four daemons, the kind registry and the roster, components, request path, data flows |

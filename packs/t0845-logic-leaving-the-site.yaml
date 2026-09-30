@@ -1,0 +1,32 @@
+# The plant's process knowledge, read out.
+#
+# A program upload is how a site's control logic -- which is the accumulated
+# knowledge of how the process actually runs, often the most valuable thing the
+# company owns -- leaves it. It is also the first thing a tool that intends to
+# modify logic does, because it needs the original to modify.
+#
+# Unlike a download this is legitimate far more often: an engineer reads a block
+# out to look at it. So the pack asks for the upload *and* for the absence of an
+# approved change, and it alerts.
+pack: 1
+id: t0845-logic-leaving-the-site
+revision: 1
+name: Control logic read out with no change open
+summary: >-
+  A program or domain upload with no approved work order covering it. Reading
+  logic out is how a site's process knowledge leaves it, and it is the step
+  before logic is modified, because a tool needs the original first.
+technique: T0845
+kinds: [s7, mms]
+severity: high
+enforcement: alert
+references:
+  - "MITRE ATT&CK for ICS T0845: Program Upload"
+  - "ESET, Industroyer: a new threat for industrial control systems"
+detect:
+  window: 10m
+  signals:
+    - name: an-upload
+      reasons: [engineering_program_upload]
+    - name: with-no-approval-open
+      reasons: [engineering_no_grant, engineering_ungranted]

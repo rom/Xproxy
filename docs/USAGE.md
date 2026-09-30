@@ -6514,6 +6514,85 @@ shows the same numbers the TUI and GUI graph, sampled in process for the
 configured retention, so a graph is available on a host with no
 monitoring stack at all.
 
+### Behaviour packs: detections that arrive as files
+
+Twenty-five behaviour packs ship with the product, in
+`/usr/share/xproxy/packs`: ten for ATT&CK for ICS techniques, six for the named
+malware (FrostyGoop, Industroyer and Industroyer2, PIPEDREAM, Stuxnet,
+COSMICENERGY), nine for the tooling an estate actually meets — Nmap's control
+protocol scripts, plcscan, smod, Metasploit's Modbus modules, Redpoint, Snap7,
+the OPC UA clients, the hand-driven IEC 104 masters.
+
+A pack is **data**: a signed, versioned file that says a shape of events from one
+actor inside one window is one technique. It is not code, so it does not need a
+release; it is not a listener configuration, so it does not need merging into a
+policy somebody has already tuned. That is the whole point — a plant will take a
+file this quarter and will not take a binary.
+
+Sign the directory once, with a key whose private half lives wherever the estate
+signs things:
+
+```sh
+xproxyctl packs keygen -name plant-a -out /etc/xot/packs/plant-a
+xproxyctl packs sign   -key /etc/xot/packs/plant-a.key -name plant-a /usr/share/xproxy/packs
+xproxyctl packs verify -key /etc/xot/packs/plant-a.pub -name plant-a /usr/share/xproxy/packs
+```
+
+and point the daemon at it:
+
+```yaml
+packs:
+  directory: /usr/share/xproxy/packs
+  keys:
+    - {name: plant-a, file: /etc/xot/packs/plant-a.pub}
+```
+
+A file whose signature does not verify stops the daemon at start with the file
+named. That is deliberate: a pack directory is small and curated, so a file in it
+that does not verify is a mistake somebody made minutes ago, not a reason to run
+with a detection missing and only a counter to say so.
+
+**Read the reports for a month before enforcing anything.** Every pack declares
+the most it may do, and twenty-one of the twenty-five may only alert, because
+their evidence is a shape and a shape has false positives — the first legitimate
+thing a plant does after a quiet year looks very like the first illegitimate one.
+The four that declare `deny` rest on something named on the wire: a program
+download, a mode change, a firmware push, with no approved work order covering
+it. Even those do nothing until `packs.enforce: true`, and what they then do is a
+**quarantine**, not a ban: the actor is refused at admission on every listener of
+this daemon for the length of that pack's own window, and then it is over.
+Nothing is written to the ban list, no ladder escalates, and a restart clears it.
+
+```sh
+# what is in force, how often each has fired, and who signed it
+xproxyctl packs
+xproxyctl packs -severity high
+
+# one pack in full: what it is about, what it looked for, where it was published
+xproxyctl packs show t0861-point-enumeration
+
+# the laptop that tripped a pack turns out to be the commissioning engineer's
+xproxyctl packs release 10.40.9.33 -note "CR-2291, spoke to the integrator"
+```
+
+A finding reaches the security log as `pack_<id>` with the pack's name, the
+signals in the order they were satisfied, the protocols they came from and the
+technique — see [the security stream](#security). `xproxy_pack_match_total` is
+the counter, by pack and severity.
+
+**One pack noisy on your plant?** Drop it by name rather than giving up the
+directory:
+
+```yaml
+packs:
+  disabled: [tool-opcua-browse-storm]
+```
+
+[examples/ot/behaviour-packs.yaml](../examples/ot/behaviour-packs.yaml) is the
+whole arrangement, and [packs/README.md](../packs/README.md) lists the set with
+what each one is about. [docs/CONFIG.md](CONFIG.md#packs) documents the file
+format field by field, for an estate writing its own.
+
 ### Grafana dashboards and alert rules
 
 Two Grafana dashboards and a Prometheus rule file ship with the product
@@ -6674,6 +6753,20 @@ and a step through an estate -- carries the identifiers from each and
 of those fields deliberately; the mapping, and why it stops where it
 does, is [docs/ATTACK.md](ATTACK.md).
 
+A **behaviour pack** finding is `action: alert`, or `quarantine` where the pack
+and the operator both allowed one, with reason `pack_<id>`:
+
+```json
+{"time":"...","level":"WARN","msg":"security","stream":"security","action":"alert","reason":"pack_t0861-point-enumeration","pack":"t0861-point-enumeration","pack_name":"The point list walked, then a point driven","severity":"high","client_ip":"10.40.9.33","signals":"asking-for-what-is-not-there,then-driving-one","detail":"asking-for-what-is-not-there then then-driving-one on mms","protocols":"mms","technique":"T0861","technique_name":"Point & Tag Identification","tactic":"collection","matrix":"ics"}
+```
+
+`pack` is the pack that fired, `signals` the steps in the order they were
+satisfied, and `protocols` the listener kinds the events came from -- which is
+how a cross-kind finding says it crossed. The technique comes from the pack's own
+declaration; a pack may only name one this build already has, so the identifier
+is one [docs/ATTACK.md](ATTACK.md) documents. A quarantine also refuses sessions
+at admission, under reason `pack_quarantine`, until the pack's window is over.
+
 Not every line is a refusal. `action: alert` is a detection the proxy did not
 act on -- a behavioural finding on an OT listener, or an engineering operation
 outside an approved window -- and `action: engineering` is the class of its own
@@ -6716,6 +6809,7 @@ Prometheus endpoint). Names match the JSON fields: `requests`,
 `upstream_latency_ms`, `shedding_classes`, `challenges_issued`,
 `challenges_passed`, `challenges_failed`, `captchas_passed`,
 `honeytoken_hits`, `handshakes_refused`, `degraded`, `deceived`,
+`pack_matches`, `engineering_ops`,
 `denied_sensitive_data`, `denied_account_abuse`, `sensitive_findings`,
 `account_blocks`, `account_campaigns`, `account_blocks_active`, `reloads`,
 `reload_failures`,

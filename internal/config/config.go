@@ -105,6 +105,11 @@ type Config struct {
 	// followed a bastion session, a clock step followed by time-tagged
 	// commands.
 	Correlation *Correlation `yaml:"correlation"`
+	// Packs are behaviour packs: signed, versioned detection documents read
+	// from a directory, each saying that a shape of events inside a window is
+	// one ATT&CK technique. They are data rather than code so that an estate
+	// that cannot take a new binary this quarter can still take a detection.
+	Packs *Packs `yaml:"packs"`
 	// Shedding enables adaptive load shedding by priority class when
 	// present.
 	Shedding *Shedding `yaml:"shedding"`
@@ -3177,6 +3182,64 @@ type Correlation struct {
 	// and without this the pivot is invisible to both. Default true when
 	// a cluster is configured; it does nothing without one.
 	Share *bool `yaml:"share"`
+}
+
+// Packs is the behaviour-pack directory and what this estate trusts in it.
+//
+// A pack changes what the daemon alerts on and, where both the pack and this
+// section allow it, what it refuses -- so the directory is a supply chain and
+// is treated as one: a file loads when a key named here signed it.
+type Packs struct {
+	// Enabled turns the packs on. Default true where a directory is named.
+	Enabled *bool `yaml:"enabled"`
+	// Directory holds the pack files and their detached signatures. Absolute.
+	Directory string `yaml:"directory"`
+	// Keys are the public keys a pack's signature may name. Without at least
+	// one, every pack in the directory has to be unsigned and allow_unsigned
+	// has to be set, which is warned about.
+	Keys []PackKey `yaml:"keys"`
+	// AllowUnsigned loads a pack with no signature beside it. It is for the
+	// pack an engineer wrote this morning against their own plant, and it is
+	// warned about every time: an estate that turned it on to try something
+	// and left it on has a directory anybody who can write a file can put
+	// detections in.
+	AllowUnsigned bool `yaml:"allow_unsigned"`
+	// Enforce lets the packs that declare `enforcement: deny` quarantine the
+	// actor for the rest of their own window. Default false: a detection whose
+	// report nobody has read should not be refusing anything. A pack that
+	// declares `alert` is never affected by this.
+	Enforce bool `yaml:"enforce"`
+	// Disabled are pack identifiers this estate does not want, by name, which
+	// is how one noisy pack is dropped without giving up the directory.
+	Disabled []string `yaml:"disabled"`
+	// MaxActors bounds the addresses with pack state at once; the least
+	// recently seen is evicted and the eviction is counted. Default 4096.
+	MaxActors int `yaml:"max_actors"`
+	// MaxQuarantined bounds the actors held out at once. Default 256. A
+	// detection that could quarantine an unbounded number of addresses is a
+	// detection somebody can use to take a plant off the air.
+	MaxQuarantined int `yaml:"max_quarantined"`
+}
+
+// PackKey is one public key trusted to sign packs. Give it inline as `key` or
+// in a file as `file`, not both.
+type PackKey struct {
+	// Name is what a signature names and what a loaded pack reports as its
+	// signer. It is not a secret.
+	Name string `yaml:"name"`
+	// Key is the ed25519 public key, base64.
+	Key string `yaml:"key"`
+	// File holds the same thing, so a key can be managed as a file. Blank
+	// lines and `#` comments are allowed in it.
+	File string `yaml:"file"`
+}
+
+// PacksEnabled reports whether behaviour packs are loaded.
+func (c *Config) PacksEnabled() bool {
+	if c.Packs == nil || c.Packs.Directory == "" {
+		return false
+	}
+	return c.Packs.Enabled == nil || *c.Packs.Enabled
 }
 
 // CorrelationEnabled reports whether the cross-listener window is on.

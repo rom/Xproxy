@@ -35069,6 +35069,430 @@ T}
 \fBNothing here decides anything.\fR It records; what reads it decides. In particular nothing in it reaches the ban ladder, for the reason OT detections never do: banning a plant\(aqs master takes the process away from the control room.
 .PP
 \fBxproxyctl correlation\fR shows the window, what is in it and what the bounds have pushed out; \fBxproxy_correlation_*\fR are the counters.
+.SH "packs"
+.PP
+Behaviour packs: signed, versioned detection documents read from a directory, each saying that a shape of events from one actor inside one window is one ATT&CK technique.
+.PP
+.RS 4
+.nf
+.ft CR
+packs:
+  directory: /usr/share/xproxy/packs
+  keys:
+    \- {name: sysctl, file: /etc/xproxy/packs/sysctl.pub}
+  enforce: false          # the packs that declare deny may only alert until this is on
+  disabled: [tool\-opcua\-browse\-storm]
+.ft
+.fi
+.RE
+.PP
+\fBWhy data and not code.\fR The first behaviour packs in this project were example listener configurations, written against the published behaviour of FrostyGoop, Industroyer, Stuxnet and PIPEDREAM \[u2014] and they are still in examples/ot/packs, because a policy is what actually refuses a program download. But a detection that ships as a configuration to copy has to be merged by hand into a policy somebody has already tuned, which means it is merged once and never again; and a detection that ships as a \fIbinary\fR cannot reach an estate that is not taking a new binary this quarter, which is exactly what a plant is. A pack is a file: versioned, so a build refuses one it cannot read rather than reading it wrong, and signed, so a directory a daemon reads at start is not a way into that daemon.
+.PP
+\fBWhat a pack decides about.\fR Not a frame. Every kind here already decides about frames with a policy an engineer wrote and can argue with. A pack sits one level up, on the stream of security events those decisions produce \[u2014] the refusal reasons, the behavioural findings, the engineering operations. That is the layer where the named tooling is actually visible: none of it exploited a protocol, so there is nothing in a frame to match on, and what separates Industroyer from a control centre is the \fIshape\fR of a sequence across a quarter of an hour.
+.PP
+Working from the event stream has a second property worth more than it looks: the vocabulary is closed and already documented. A pack names refusal reasons, and every reason this build can emit is in docs/ATTACK.md. A pack naming one that is not \[u2014] or naming one no listener kind of that signal emits \[u2014] fails to load. \fBSo a pack cannot claim a detection this build cannot make\fR, which is the rule that page is held to as well.
+.PP
+\fBWhat a pack may do.\fR Every pack declares the most it may do. \fBalert\fR can never refuse anything, whatever an operator configures, and it is the right declaration for every detection derived from novelty \[u2014] the first legitimate thing a plant does after a quiet year looks exactly like the first illegitimate one. \fBdeny\fR is for the shapes whose evidence is a fact rather than an inference (a program download with no approved work order is one), and even then the operator has to set \fBenforce: true\fR.
+.PP
+A pack\(aqs deny is a \fBquarantine and not a ban\fR: the actor is refused at admission on every listener of this daemon for the rest of that pack\(aqs own window, with reason \fBpack_quarantine\fR, and then it is over. Nothing reaches the ban list, no ladder escalates, no prefix or fingerprint is banned, and a restart clears it. OT detections have never fed the ban ladder in this project and they still do not \[u2014] banning a plant\(aqs master takes the process away from the control room, which is worse than what is being guarded against. \fBxproxyctl packs release <address>\fR lifts one early.
+.PP
+\fBThe signature.\fR A detached file beside the pack, \fB<pack>.yaml.sig\fR, one line:
+.PP
+.RS 4
+.nf
+.ft CR
+ed25519 <key name> <base64 signature>
+.ft
+.fi
+.RE
+.PP
+over the pack file\(aqs exact bytes. Detached and textual on purpose: the pack stays a file an engineer can read and diff, and the signature can be produced by anything that can sign 32 bytes. Ed25519 and nothing else \[u2014] a format with a choice of algorithm is a format with a downgrade, and there is no interoperability requirement here to pay for one with. \fBxproxyctl packs keygen\fR, \fBsign\fR and \fBverify\fR are the tooling; a signature naming a key this estate does not list is refused, because an unknown signer is not a weaker signature but no signature at all.
+.PP
+\fBA file that does not load stops the daemon\fR, with the file and the reason named. That is the opposite of what a rule\-set loader usually does, and it is deliberate: a pack directory is small, curated and signed, so a file in it that does not parse is a mistake somebody made minutes ago and wants to hear about \[u2014] not a reason to start with a detection missing and nothing but a counter to say so.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.6i) lbw(0.9i) lbx
+lw(1.2i) lw(0.6i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Load the packs. Default true where a directory is named
+T}
+T{
+\fBdirectory\fR
+T}	T{
+path
+T}	T{
+required
+T}	T{
+The pack files and their detached signatures. Absolute
+T}
+T{
+\fBkeys\fR
+T}	T{
+list
+T}	T{
+none
+T}	T{
+The public keys a signature may name;\: see below
+T}
+T{
+\fBallow_\:unsigned\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Load a pack with no signature beside it. For the pack an engineer wrote this morning against their own plant,\: and warned about every time: an estate that turned it on to try something and left it on has a directory anybody who can write a file can put detections in
+T}
+T{
+\fBenforce\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Let the packs that declare \fBenforcement:\: deny\fR quarantine. A pack that declares \fBalert\fR is never affected by this. Warned about
+T}
+T{
+\fBdisabled\fR
+T}	T{
+list
+T}	T{
+none
+T}	T{
+Pack identifiers this estate does not want,\: by name \[u2014] how one noisy pack is dropped without giving up the directory
+T}
+T{
+\fBmax_\:actors\fR
+T}	T{
+int
+T}	T{
+\fB4096\fR
+T}	T{
+Addresses with pack state at once;\: the least recently seen is evicted and the eviction is counted
+T}
+T{
+\fBmax_\:quarantined\fR
+T}	T{
+int
+T}	T{
+\fB256\fR
+T}	T{
+Actors held out at once. A detection that could quarantine an unbounded number of addresses is one somebody can use to take a plant off the air
+T}
+.TE
+.SS "packs.keys[]"
+.PP
+.TS
+allbox;
+lbw(0.6i) lbw(0.7i) lbw(0.9i) lbx
+lw(0.6i) lw(0.7i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+What a signature names,\: and what a loaded pack reports as its signer. Not a secret
+T}
+T{
+\fBkey\fR
+T}	T{
+string
+T}	T{
+none
+T}	T{
+The ed25519 public key,\: base64. One of \fBkey\fR or \fBfile\fR
+T}
+T{
+\fBfile\fR
+T}	T{
+path
+T}	T{
+none
+T}	T{
+The same thing in a file,\: so a key can be managed as one. Blank lines and \fB#\fR comments allowed. Absolute
+T}
+.TE
+.SS "What a pack file holds"
+.PP
+A pack is loaded as \fBdata\fR: there is no expression language, no negation, no regular expression and nothing that can name a Go symbol. The whole vocabulary is below, and a pack naming anything outside it fails to load rather than having the unknown part ignored.
+.PP
+.RS 4
+.nf
+.ft CR
+pack: 1                       # the format version this build reads
+id: t0843\-download\-with\-no\-work\-order
+revision: 1
+name: A program download outside every approved change
+summary: >\-
+  Control logic written into a device while no approved work order covered it.
+technique: T0843              # must be one internal/attack has
+kinds: [modbus, s7, mms]
+severity: critical            # info, low, medium, high, critical
+enforcement: deny             # the most this pack may ever do
+references:
+  \- "MITRE ATT&CK for ICS T0843: Program Download"
+detect:
+  window: 5m
+  signals:
+    \- name: a\-download
+      reasons: [engineering_program_download]
+    \- name: with\-no\-approval\-open
+      reasons: [engineering_no_grant, engineering_ungranted]
+.ft
+.fi
+.RE
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(2.0i) lbw(0.9i) lbx
+lw(1.2i) lw(2.0i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBpack\fR
+T}	T{
+int
+T}	T{
+required
+T}	T{
+The pack format version. A pack from a later format is refused by name rather than read with its unknown fields dropped
+T}
+T{
+\fBid\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+Lower case letters,\: digits and dashes,\: 1..64. It is the finding\(aqs reason (\fBpack_\:<id>\fR),\: the metric label and what an operator disables by name,\: so it never changes: a corrected pack keeps its identifier and takes a higher \fBrevision\fR
+T}
+T{
+\fBrevision\fR
+T}	T{
+int
+T}	T{
+required
+T}	T{
+The pack\(aqs own version,\: 1 or more. Where a directory holds two files with one identifier the higher revision wins and the fact is reported,\: which is how an estate drops an update in beside what it has;\: the same revision twice is an error
+T}
+T{
+\fBname\fR,\: \fBsummary\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+The title and a paragraph of what the pack is about. Both reach the alert
+T}
+T{
+\fBtechnique\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+The ATT&CK identifier this pack detects,\: in either matrix. Must be one this build can observe
+T}
+T{
+\fBkinds\fR
+T}	T{
+list
+T}	T{
+required
+T}	T{
+The listener kinds it applies to,\: each one this build serves
+T}
+T{
+\fBseverity\fR
+T}	T{
+\fBinfo\fR\[u2026]\fBcritical\fR
+T}	T{
+\fBmedium\fR
+T}	T{
+The pack author\(aqs judgement,\: in the pack rather than in the configuration because an operator assigning severities to detections they did not write assigns them all the same one
+T}
+T{
+\fBenforcement\fR
+T}	T{
+\fBalert\fR,\: \fBdeny\fR
+T}	T{
+\fBalert\fR
+T}	T{
+The most this pack may do. \fBalert\fR can never refuse,\: whatever the configuration says
+T}
+T{
+\fBreferences\fR
+T}	T{
+list
+T}	T{
+none
+T}	T{
+Where the behaviour was published. Not used for anything;\: a detection nobody can trace back to an analysis is one nobody can argue with
+T}
+.TE
+.SS "detect"
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.9i) lbw(0.9i) lbx
+lw(0.8i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBwindow\fR
+T}	T{
+duration
+T}	T{
+\fB15m\fR
+T}	T{
+How long the signals have to arrive within;\: 1s..24h. It is anchored on the first matching event,\: and once it has passed the next match starts a new attempt rather than extending an old one
+T}
+T{
+\fBsignals\fR
+T}	T{
+list
+T}	T{
+required
+T}	T{
+The steps;\: 1..16. All of them must be satisfied
+T}
+T{
+\fBordered\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+The signals are looked for \fBone at a time\fR,\: so an event that would satisfy a later signal before its turn is not counted at all. That is what separates "read the program,\: then write one" from "did both this morning"
+T}
+T{
+\fBacross_\:kinds\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Require the matching events to have come from at least this many distinct listener kinds. The one thing here that is not about a single protocol,\: and the cheapest true statement in the file: one host on three control protocols in ten minutes is not a control system
+T}
+T{
+\fBrefire\fR
+T}	T{
+duration
+T}	T{
+the window
+T}	T{
+How long after a match the same actor\(aqs next match is reported. A campaign should be one alert and not one per frame
+T}
+.TE
+.SS "detect.signals[]"
+.PP
+A signal is a conjunction: an event matches when its reason is one of \fBreasons\fR, its kind is one of \fBkinds\fR (or \fBkinds\fR is empty), and its action is one of \fBactions\fR (or \fBactions\fR is empty).
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.7i) lbw(0.9i) lbx
+lw(0.8i) lw(0.7i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+What this step is called in the finding,\: so an alert says which half fired first
+T}
+T{
+\fBreasons\fR
+T}	T{
+list
+T}	T{
+required
+T}	T{
+The security\-event reasons that satisfy it. Each must be one this build emits,\: \fBand\fR one that at least one listener kind of this signal emits \[u2014] so a Modbus\-only pack cannot name an OPC UA reason and sit in a directory looking like a detection. The kind prefix is optional: \fBread_\:only\fR and \fBmodbus_\:read_\:only\fR mean the same thing
+T}
+T{
+\fBkinds\fR
+T}	T{
+list
+T}	T{
+the pack\(aqs
+T}	T{
+Narrow the signal to those kinds,\: each one the pack itself names
+T}
+T{
+\fBactions\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+Narrow it to \fBdeny\fR,\: \fBalert\fR,\: \fBengineering\fR or \fBwould_\:deny\fR
+T}
+T{
+\fBcount\fR
+T}	T{
+int
+T}	T{
+\fB1\fR
+T}	T{
+How many matching events satisfy the signal;\: 1..100000
+T}
+.TE
+.SS "What a finding is"
+.PP
+A match is a security event of its own: \fBaction: alert\fR (or \fBquarantine\fR where one was taken), reason \fBpack_<id>\fR, with the pack\(aqs name, its severity, the signal names in the order they were satisfied, the protocols they came from, and the pack\(aqs own technique in the \fBtechnique\fR, \fBtechnique_name\fR, \fBtactic\fR and \fBmatrix\fR fields. It also goes to \fBxproxy_pack_match_total{pack,severity}\fR, to the \fBpack_matches\fR field of \fBxproxyctl status \-json\fR, and to the cross\-listener window.
+.PP
+\fBxproxyctl packs\fR lists what is in force, with the revision, the technique and the signer of each; \fBxproxyctl packs show <id>\fR is one pack in full.
 .SH "asset_inventory"
 .PP
 One record per device, built from traffic the proxy was already carrying.

@@ -1,0 +1,45 @@
+# COSMICENERGY, and the reason a pack may span two daemons.
+#
+# Disclosed in 2023, it is IEC 104 tooling that does not speak to the grid
+# directly: it reaches a Microsoft SQL Server inside the estate and sends its
+# commands from there, because the SQL server is the machine that already has a
+# route to the substation. The IEC 104 half is unremarkable. The interesting part
+# is the pivot.
+#
+# This is the pack that needs the cross-listener window, and it is the argument
+# for having one. A relay in front of the database sees a statement it does not
+# recognise; a relay in front of the substation sees a command. Neither sees
+# COSMICENERGY. Both of them together, sharing facts about one address, do --
+# which on this design is two daemons, xrelay and xot, in one cluster.
+pack: 1
+id: tool-cosmicenergy-iec104
+revision: 1
+name: A database session, then IEC 104 commands from the same host
+summary: >-
+  A refused or unusual database session and IEC 104 commands from the same
+  address inside the window. COSMICENERGY sent its grid commands from a Microsoft
+  SQL Server inside the estate rather than from outside, because that server
+  already had the route -- so neither relay sees the tool alone and both of them
+  together do.
+technique: T0855
+kinds: [tds, iec104]
+severity: critical
+enforcement: alert
+references:
+  - "Mandiant, COSMICENERGY: OT malware with IEC 104 capability (May 2023)"
+  - "MITRE ATT&CK for ICS T0855: Unauthorized Command Message"
+detect:
+  window: 30m
+  across_kinds: 2
+  ordered: true
+  signals:
+    - name: a-database-session
+      reasons:
+        - procedure_not_allowed
+        - procedure_denied
+        - statement_not_allowed
+        - statement_denied
+        - user_not_allowed
+        - database_not_allowed
+    - name: then-grid-commands
+      reasons: [station_command, control, rule, default_deny, engineering_restart, engineering_configuration]

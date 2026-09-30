@@ -43,6 +43,32 @@ func Start(t *testing.T, yaml string) *proxy.Server {
 	return s
 }
 
+// StartError parses a configuration and tries to start a server from it,
+// returning the error rather than failing the test.
+//
+// It is for the arrangements whose whole point is that a daemon does *not*
+// start: a pack directory whose signature does not verify, a listener requiring
+// grants on a daemon with no ledger. A test that could only assert on a server
+// that started could not test those at all.
+func StartError(t *testing.T, yaml string) error {
+	t.Helper()
+	cfg, err := config.Parse([]byte(yaml))
+	if err != nil {
+		return err
+	}
+	s, err := proxy.New(cfg, logging.Discard())
+	if err != nil {
+		return err
+	}
+	if err := s.Start(); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = s.Shutdown(ctx)
+	return nil
+}
+
 // Addr is a started server's bound address for a listener, which is how
 // a test finds the port when the configuration asked for ":0".
 func Addr(t *testing.T, s *proxy.Server, listener string) string {

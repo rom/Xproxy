@@ -25,6 +25,7 @@ import (
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/numrange"
 	opcuawire "github.com/rom/xproxy/internal/opcua"
+	"github.com/rom/xproxy/internal/packs"
 	pgwire "github.com/rom/xproxy/internal/pgwire"
 	"github.com/rom/xproxy/internal/rdp"
 	"github.com/rom/xproxy/internal/recenc"
@@ -354,6 +355,9 @@ func (v *validator) config(c *Config) {
 	}
 	if c.Correlation != nil {
 		v.correlation(c)
+	}
+	if c.Packs != nil {
+		v.packs(c.Packs)
 	}
 	if c.SCIM != nil {
 		v.scim(c)
@@ -14034,6 +14038,66 @@ func (v *validator) correlation(c *Config) {
 	}
 	if !c.CorrelationEnabled() {
 		v.warnf("%s.enabled is false, so nothing is remembered between listeners: the detections that need two listeners -- one host on several control protocols, an OT session after a bastion session, a clock step before a time-tagged command -- report nothing rather than reporting less", p)
+	}
+}
+
+// packs validates the behaviour-pack directory. The files themselves are not
+// read here: a pack is loaded and verified at start by internal/packs, which
+// names the file and the reason when one does not pass. What this checks is the
+// arrangement -- that there is a directory, that something can vouch for what is
+// in it, and that a signature is asked for.
+func (v *validator) packs(a *Packs) {
+	const p = "packs"
+	if a.Directory == "" {
+		v.errf("%s.directory: required, and the packs do nothing without it", p)
+	} else if !filepath.IsAbs(a.Directory) {
+		v.errf("%s.directory: must be an absolute path", p)
+	}
+	names := map[string]bool{}
+	for i, k := range a.Keys {
+		q := fmt.Sprintf("%s.keys[%d]", p, i)
+		if strings.TrimSpace(k.Name) == "" {
+			v.errf("%s.name: required, because a signature names a key", q)
+		} else if names[k.Name] {
+			v.errf("%s.name: %q twice, so a signature naming it would be ambiguous", q, k.Name)
+		}
+		names[k.Name] = true
+		switch {
+		case k.Key != "" && k.File != "":
+			v.errf("%s: key and file both given; one of the two", q)
+		case k.Key == "" && k.File == "":
+			v.errf("%s: one of key or file", q)
+		case k.File != "" && !filepath.IsAbs(k.File):
+			v.errf("%s.file: must be an absolute path", q)
+		case k.Key != "":
+			if _, err := packs.ParseKey(k.Name, k.Key); err != nil {
+				v.errf("%s.key: %v", q, err)
+			}
+		}
+	}
+	if len(a.Keys) == 0 && !a.AllowUnsigned {
+		v.errf("%s: no keys and allow_unsigned is off, so every pack in the directory would be refused. "+
+			"Name the key that signs them, or say allow_unsigned for a directory this estate writes itself", p)
+	}
+	if a.AllowUnsigned {
+		v.warnf("%s.allow_unsigned is on, so a pack with no signature is loaded: anybody who can write a file in %s "+
+			"can change what this daemon alerts on, and -- where enforce is on -- what it refuses", p, a.Directory)
+	}
+	if a.Enforce {
+		v.warnf("%s.enforce is on, so a pack that declares `enforcement: deny` may hold an address out of the "+
+			"plant listeners for the length of its own window. That is not the ban ladder and it expires by itself, "+
+			"but it is still a control room losing a master: read the reports for a month first", p)
+	}
+	if a.MaxActors < 0 || a.MaxActors > 1<<20 {
+		v.errf("%s.max_actors: must be between 0 and 1048576", p)
+	}
+	if a.MaxQuarantined < 0 || a.MaxQuarantined > 65536 {
+		v.errf("%s.max_quarantined: must be between 0 and 65536", p)
+	}
+	for i, id := range a.Disabled {
+		if strings.TrimSpace(id) == "" {
+			v.errf("%s.disabled[%d]: empty", p, i)
+		}
 	}
 }
 

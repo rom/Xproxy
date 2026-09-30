@@ -1,0 +1,22 @@
+# tool-opcua-browse-storm -- An OPC UA address space browsed exhaustively
+# The sequence this pack is about. Each line is one security event:
+#   <listener kind> <action> <reason>
+# fire: the whole sequence, which must report.
+# hold: the same sequence one signal short, which must not.
+fire
+  opcua deny node_not_allowed
+  opcua deny node_not_allowed
+  opcua deny node_not_allowed
+  opcua deny node_not_allowed
+  opcua deny node_not_allowed
+  opcua deny node_not_allowed
+  opcua deny node_not_allowed
+  opcua deny node_not_allowed
+hold
+  opcua deny node_not_allowed
+  opcua deny node_not_allowed
+  opcua deny node_not_allowed
+  opcua deny node_not_allowed
+  opcua deny node_not_allowed
+  opcua deny node_not_allowed
+  opcua deny node_not_allowed

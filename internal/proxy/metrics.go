@@ -325,6 +325,23 @@ func (s *Server) Collect(e metrics.Collector) {
 			"Engineering operations recognised: program downloads and uploads, mode changes, restarts, configuration writes, firmware pushes, method calls and file transfers. Not refusals -- what was refused is in xproxy_refusals_total.",
 			L{"kind": kind, "operation": class}, float64(sn.EngineeringOps[k]))
 	}
+	// Behaviour-pack findings. The pack label is a pack identifier, which is
+	// bounded by a signed directory this daemon loaded at start, so nothing a
+	// client sends can grow the label set.
+	matches := make([]string, 0, len(sn.PackMatches))
+	for k := range sn.PackMatches {
+		matches = append(matches, k)
+	}
+	sort.Strings(matches)
+	for _, k := range matches {
+		pack, severity, ok := strings.Cut(k, "/")
+		if !ok {
+			continue
+		}
+		e.Counter("xproxy_pack_match_total",
+			"Behaviour-pack findings: a shape of events from one actor inside one window that a signed pack says is an ATT&CK technique. A finding is a detection and not necessarily a refusal -- what was refused is in xproxy_refusals_total.",
+			L{"pack": pack, "severity": severity}, float64(sn.PackMatches[k]))
+	}
 	e.Counter("xproxy_tcp_connections_total", "Connections accepted on tcp listeners.", nil, float64(sn.TCPConnections))
 	e.Counter("xproxy_tcp_rejected_total", "Connections on tcp listeners closed without a route or over the listener bound.", nil, float64(sn.TCPRejected))
 	e.Counter("xproxy_tcp_errors_total", "tcp listener connections that found no reachable endpoint.", nil, float64(sn.TCPErrors))

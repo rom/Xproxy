@@ -1,0 +1,14 @@
+# t0816-restart-after-a-refusal -- A device restarted by a client this listener has been refusing
+# The sequence this pack is about. Each line is one security event:
+#   <listener kind> <action> <reason>
+# fire: the whole sequence, which must report.
+# hold: the same sequence one signal short, which must not.
+fire
+  iec104 deny rule
+  iec104 deny rule
+  iec104 deny rule
+  iec104 engineering engineering_restart
+hold
+  iec104 deny rule
+  iec104 deny rule
+  iec104 deny rule
