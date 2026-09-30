@@ -1066,10 +1066,25 @@ server or a directory, because synthesising a plausible reply for thirty
 protocols would mean inventing answers, so policy that decides on what the
 device replied is outside what this covers.
 
-A client address labels an outcome and reaches the policy only where the
-listener parses a PROXY protocol header. A simulation cannot forge a source
-address on a loopback connection, and pretending otherwise would make an
-address-based allow list look as though it had been tested when it had not.
+A client address reaches the policy only where the listener parses a PROXY
+protocol header. Where it does, the simulation sends one -- `client=` on a
+corpus item, or the address out of a capture -- and adds loopback to
+`trusted_proxies` so the header is read, saying both in the output. That is
+what makes an address-based rule testable, which matters most on the plant,
+where an address and a unit identifier are most of what a policy has to work
+with:
+
+```
+DECISION  LISTENER  KIND    REASON   INPUT
+allowed   line1     modbus           a master writing the setpoint
+refused   line1     modbus  no_rule  somebody else writing the setpoint
+```
+
+Where the listener does not parse a header the address cannot be delivered,
+and the run names that listener and says the policy saw the loopback address
+instead. It is reported rather than ignored for the obvious reason: an
+operator reading `allowed` for an input they had labelled with an address
+their allow list excludes would conclude the allow list does not work.
 
 #### allowed, refused, and neither
 

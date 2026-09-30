@@ -137,7 +137,7 @@ Inputs are sent one at a time, and every security event between the write and th
 .PP
 The sink does not pretend to be a PLC, a mail server or a directory. Synthesising a plausible reply for thirty protocols would mean inventing answers, so policy that decides on what the device replied is outside what this covers.
 .PP
-A client address labels the outcome and reaches the policy only where the listener parses a PROXY protocol header. A simulation cannot forge a source address on a loopback connection, and pretending otherwise would make an address\-based allow list look as though it had been tested when it had not.
+A client address reaches the policy only where the listener parses a PROXY protocol header. Where it does, one is sent \[u2014] \fBclient=\fR on a corpus item, or the address out of a capture \[u2014] and loopback is added to \fBtrusted_proxies\fR so that header is read; both are named in the output. Where it does not, the address cannot be delivered, and the run names that listener and says the policy saw the loopback address instead, because an operator reading \fBallowed\fR for an input labelled with an address their allow list excludes would conclude the allow list does not work.
 .SH "EXIT STATUS"
 .PP
 0 when one configuration ran, or when two decided everything the same. 1 when the two configurations differ, or on an error. 2 on a usage mistake, which includes the missing \fB\-offline\fR.

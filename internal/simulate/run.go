@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sort"
@@ -31,11 +32,13 @@ type Input struct {
 	// listener the configuration has, which is the common case and saves an
 	// operator writing it on every line.
 	Listener string
-	// Client is the address to appear to come from. It reaches the policy
-	// through the PROXY protocol where the listener parses it, and otherwise
-	// only labels the outcome -- a simulation cannot forge a source address
-	// on a loopback connection, and pretending otherwise would make an
-	// address-based allow list look like it had been tested when it had not.
+	// Client is the address to appear to come from. On a listener that parses
+	// a PROXY protocol header the simulation sends one, and the policy decides
+	// on this address: an address-based allow list, which is most of what an OT
+	// policy has to work with, is then actually exercised. On a listener that
+	// does not, it only labels the outcome, and the report says so by name --
+	// a simulation cannot forge a source address on a loopback connection, and
+	// pretending otherwise would make an allow list look tested when it was not.
 	Client string
 	// Bytes is what to write.
 	Bytes []byte
@@ -56,6 +59,8 @@ type Outcome struct {
 	Reason string `json:"reason,omitempty"`
 	// Status is the HTTP status where the listener speaks HTTP.
 	Status int `json:"status,omitempty"`
+	// Client is the address the input claimed to come from, where it named one.
+	Client string `json:"client,omitempty"`
 	// Relayed says the input reached the simulation's sink, which is the
 	// positive evidence behind an "allowed": the listener did not merely fail
 	// to refuse, it passed the traffic on.
@@ -96,6 +101,12 @@ type Run struct {
 	// kinds maps a listener name to its kind and bound address.
 	kinds map[string]string
 	addrs map[string]string
+	// proxies are the listeners that parse a PROXY protocol header, so a
+	// client address can be delivered to them rather than only reported.
+	proxies map[string]bool
+	// noted are the listeners already named in a note about an ignored client
+	// address, so a corpus of five hundred items says it once per listener.
+	noted map[string]bool
 }
 
 // Start neutralises a configuration and starts it.
@@ -107,7 +118,8 @@ func Start(in *config.Config, dir string) (*Run, error) {
 	if err != nil {
 		return nil, err
 	}
-	r := &Run{cfg: cfg, report: rep, kinds: map[string]string{}, addrs: map[string]string{}}
+	r := &Run{cfg: cfg, report: rep, kinds: map[string]string{}, addrs: map[string]string{},
+		proxies: map[string]bool{}, noted: map[string]bool{}}
 	if r.sink, err = newSink(); err != nil {
 		return nil, err
 	}
@@ -145,6 +157,7 @@ func Start(in *config.Config, dir string) (*Run, error) {
 			kind = "http"
 		}
 		r.kinds[l.Name] = kind
+		r.proxies[l.Name] = l.ProxyProtocol
 		r.report.Listeners = append(r.report.Listeners, l.Name)
 	}
 	sort.Strings(r.report.Listeners)
@@ -187,9 +200,15 @@ func (r *Run) Ask(in Input) Outcome {
 		out.Decision, out.Err = Errored, "no listener named "+name+" in this configuration"
 		return out
 	}
+	out.Client = in.Client
+	payload, err := r.asClient(in, name, addr)
+	if err != nil {
+		out.Decision, out.Err = Errored, err.Error()
+		return out
+	}
 	from := r.events.mark()
 	atSink := r.sink.mark()
-	reply, status, err := exchange(addr, in.Bytes, r.kinds[name] == "http", func() bool {
+	reply, status, err := exchange(addr, payload, r.kinds[name] == "http", func() bool {
 		if r.sink.since(atSink) > 0 {
 			return true
 		}
@@ -239,6 +258,63 @@ func (r *Run) Ask(in Input) Outcome {
 		out.Err = "nothing was relayed, answered or refused: an incomplete input?"
 	}
 	return out
+}
+
+// asClient prepends a PROXY protocol header where the listener parses one, so
+// that an input naming a client address is decided on that address rather than
+// on the loopback address this program necessarily connects from.
+//
+// Where the listener does not parse one, the address is reported and nothing
+// else, and the run says so once per listener. Saying it matters more than the
+// feature does: an operator reading "allowed" for a frame they labelled with an
+// address their allow list excludes would conclude the allow list does not work.
+func (r *Run) asClient(in Input, listener, addr string) ([]byte, error) {
+	if in.Client == "" {
+		return in.Bytes, nil
+	}
+	if !r.proxies[listener] {
+		if !r.noted[listener] {
+			r.noted[listener] = true
+			r.report.Notes = append(r.report.Notes, "listener "+listener+
+				": a client address was given and could not be delivered, because the listener "+
+				"does not parse a PROXY protocol header. The policy saw the loopback address, "+
+				"so no rule about a client address was exercised")
+		}
+		return in.Bytes, nil
+	}
+	h, err := proxyHeader(in.Client, addr)
+	if err != nil {
+		return nil, err
+	}
+	return append(h, in.Bytes...), nil
+}
+
+// simClientPort is the source port in the header the simulation writes. The
+// PROXY protocol requires one and no policy in this project is written about a
+// client's ephemeral port, so it is a constant rather than a lie that varies.
+const simClientPort = 54321
+
+// proxyHeader writes a version 1 PROXY protocol header for one input.
+//
+// The destination is the loopback address of the client's own family rather
+// than the address the listener is really on: the header's two addresses must
+// agree on family or it is refused, and what the policy reads is the source.
+func proxyHeader(client, server string) ([]byte, error) {
+	src, err := netip.ParseAddr(client)
+	if err != nil {
+		return nil, fmt.Errorf("client %q: not an address", client)
+	}
+	src = src.Unmap()
+	family, dst := "TCP4", netip.AddrFrom4([4]byte{127, 0, 0, 1})
+	if !src.Is4() {
+		family, dst = "TCP6", netip.IPv6Loopback()
+	}
+	port := uint16(0)
+	if ap, err := netip.ParseAddrPort(server); err == nil {
+		port = ap.Port()
+	}
+	return []byte(fmt.Sprintf("PROXY %s %s %s %d %d\r\n",
+		family, src, dst, simClientPort, port)), nil
 }
 
 // refusal finds the event that refused, if one did.
@@ -438,6 +514,21 @@ func bindLocally(cfg *config.Config, dir string, rep *Report) error {
 	// simulation. It decides nothing, so it is not in the report.
 	if cfg.Server.ShutdownTimeout == 0 || time.Duration(cfg.Server.ShutdownTimeout) > simShutdown {
 		cfg.Server.ShutdownTimeout = config.Duration(simShutdown)
+	}
+	// A PROXY protocol header is read only from a peer in trusted_proxies, and
+	// the estate's list names its balancers rather than this program. Without
+	// loopback in it every client address a corpus named would be silently
+	// dropped -- which is the failure mode a simulator must not have, since the
+	// answer would look like a policy decision. Named in the report, because it
+	// is a change to a list whose whole job is to be short.
+	for _, l := range cfg.Server.Listeners {
+		if !l.ProxyProtocol {
+			continue
+		}
+		cfg.TrustedProxies = append(cfg.TrustedProxies, "127.0.0.1/32", "::1/128")
+		rep.Notes = append(rep.Notes, "loopback added to trusted_proxies, so the PROXY "+
+			"protocol header carrying each input's client address is read")
+		break
 	}
 	ls := make([]config.Listener, len(cfg.Server.Listeners))
 	for i, l := range cfg.Server.Listeners {

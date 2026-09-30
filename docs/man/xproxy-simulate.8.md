@@ -148,11 +148,14 @@ Synthesising a plausible reply for thirty protocols would mean inventing
 answers, so policy that decides on what the device replied is outside what
 this covers.
 
-A client address labels the outcome and reaches the policy only where the
-listener parses a PROXY protocol header. A simulation cannot forge a
-source address on a loopback connection, and pretending otherwise would
-make an address-based allow list look as though it had been tested when it
-had not.
+A client address reaches the policy only where the listener parses a PROXY
+protocol header. Where it does, one is sent — `client=` on a corpus item,
+or the address out of a capture — and loopback is added to
+`trusted_proxies` so that header is read; both are named in the output.
+Where it does not, the address cannot be delivered, and the run names that
+listener and says the policy saw the loopback address instead, because an
+operator reading `allowed` for an input labelled with an address their allow
+list excludes would conclude the allow list does not work.
 
 ## EXIT STATUS
 

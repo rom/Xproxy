@@ -73,10 +73,20 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   operator would rely on it. Such an input is reported as `error` with what it
   probably is, and an input only one side could answer is counted as a change
   rather than as agreement. Documented limits: inputs are serial, so policy that
-  depends on concurrency is not simulated; the sink does not synthesise device
-  replies, so policy that decides on a reply is not simulated; and a client
-  address reaches the policy only through a PROXY protocol header, because a
-  simulation cannot forge a source address on a loopback connection.
+  depends on concurrency is not simulated; and the sink does not synthesise
+  device replies, so policy that decides on a reply is not simulated.
+
+- **A client address is delivered where the listener parses a PROXY protocol
+  header, and reported as undeliverable where it does not.** `client=` on a
+  corpus item, or the address out of a capture file, is sent as a header and
+  loopback is added to `trusted_proxies` so it is read; both appear in the
+  output. That makes address-based rules testable, which matters most on the
+  plant, where an address and a unit identifier are much of what a policy has
+  to work with. Where the listener parses no header the run names it and says
+  the policy saw the loopback address, rather than answering as though the
+  address had been used: an operator reading `allowed` for an input labelled
+  with an address their allow list excludes would conclude the allow list does
+  not work.
 
 ### Added (work orders: the change reference somebody filed, which is not an approval)
 
