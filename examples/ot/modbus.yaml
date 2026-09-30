@@ -315,8 +315,25 @@ server:
         anomaly:
           enabled: true
           settle: 15m
-          write_burst: 30          # this plant downloads recipes
-          burst_period: 10s
+          novelty:
+            burst: 30              # this plant downloads recipes
+            burst_period: 10s
+          # The rhythm, the order and the values. None of these needs a
+          # rule written: they are what this master has been doing.
+          cycle: {enabled: true}
+          sequence: {enabled: true}
+          talkers: {enabled: true}
+          telemetry: {enabled: true}
+          # Two points the process itself ties together. A pump commanded
+          # to full speed next to a flow of nothing is either a broken
+          # pump or a screen that is lying about one of them.
+          correlations:
+            - name: pump-and-flow
+              a: "unit 3 40100"     # commanded speed, as the trace spells it
+              b: "unit 3 40110"     # measured flow
+              ratio: 1.0
+              tolerance: 0.2
+              max_age: 30s
 
         # An afternoon's trace during a commissioning. The data bytes
         # are process data, so they are off.

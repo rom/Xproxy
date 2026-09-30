@@ -4825,56 +4825,111 @@ Three smaller decisions in it worth knowing:
 .PP
 \fB\fBanomaly\fR\fR is behavioural detection, and it is the other half of the answer to "a policy is only as good as what somebody wrote down". The rules answer \fIis this permitted\fR. This answers \fIis this what this master has been doing\fR, and answers it with nothing written down at all.
 .PP
-Control traffic is repetitive in a way other traffic is not: a master\(aqs scan cycle is the same few function codes over the same few address ranges, every cycle, for years. So "this client has never done this before" is a signal here where on a web front end it would be noise. Three things are watched:
+The block is \fBthe same on every OT listener kind\fR \[u2014] \fBmodbus\fR, \fBiec104\fR, \fBs7\fR, \fBmms\fR, \fBbacnet\fR, \fBopcua\fR, \fBcoap\fR, \fBsnmp\fR \[u2014] because none of the six models is about a protocol. What differs is what the kind puts into them, and each protocol page says which of its fields is a \fIsymbol\fR, a \fIpoint\fR and a \fIvalue\fR. On Modbus a symbol is the function code\(aqs name, a point is \fBunit 1 40100\fR, a write\(aqs novelty is keyed on the span it wrote (\fBunit 1 40100\-40120\fR), and the values are the registers a write carried and the registers a read was answered with.
+.PP
+Control traffic is repetitive in a way other traffic is not: a master\(aqs scan cycle is the same few function codes over the same few address ranges, every cycle, for years. So "this client has never done this before" is a signal here where on a web front end it would be noise. Six models, each its own subsection:
 .PP
 .TS
 allbox;
-lbw(0.9i) lbw(0.9i) lbx
-lw(0.9i) lw(0.9i) lx.
+lbw(1.3i) lbw(1.3i) lbx
+lw(1.3i) lw(1.3i) lx.
 T{
-Signal
+Model
 T}	T{
 Reason
 T}	T{
 What it catches
 T}
 T{
-new function code
+\fBnovelty\fR
 T}	T{
-\fBanomaly_\:new_\:function\fR
+\fBanomaly_\:new_\:symbol\fR
 T}	T{
 A master that has only ever read,\: writing
 T}
 T{
-new write address
+\fBnovelty\fR
 T}	T{
-\fBanomaly_\:new_\:write_\:address\fR
+\fBanomaly_\:new_\:write_\:point\fR
 T}	T{
-A write to a register this master has never driven
+A write to a point this master has never driven
 T}
 T{
-burst of writes
+\fBnovelty\fR
 T}	T{
 \fBanomaly_\:write_\:burst\fR
 T}	T{
 Forty registers moved in ten seconds
 T}
+T{
+\fBtalkers\fR
+T}	T{
+\fBanomaly_\:new_\:talker\fR
+T}	T{
+A peer this listener has never seen
+T}
+T{
+\fBtalkers\fR
+T}	T{
+\fBanomaly_\:new_\:pair\fR
+T}	T{
+A known peer on a device it has never spoken to
+T}
+T{
+\fBcycle\fR
+T}	T{
+\fBanomaly_\:cycle_\:changed\fR
+T}	T{
+A poller that asked every two seconds for a year and now asks ten times a second
+T}
+T{
+\fBsequence\fR
+T}	T{
+\fBanomaly_\:sequence_\:unseen\fR
+T}	T{
+An operation in a place it has never been: a write straight after a write,\: where this master has always read in between
+T}
+T{
+\fBtelemetry\fR
+T}	T{
+\fBanomaly_\:telemetry_\:frozen\fR
+T}	T{
+A point that stopped moving: one value,\: for ever,\: from something that had been alive
+T}
+T{
+\fBtelemetry\fR
+T}	T{
+\fBanomaly_\:telemetry_\:replayed\fR
+T}	T{
+A run of values that repeats exactly \[u2014] a screen made to look alive while the process does something else
+T}
+T{
+\fBcorrelations\fR
+T}	T{
+\fBanomaly_\:correlation_\:broken\fR
+T}	T{
+Two points that are supposed to track each other and stopped: a pump at full speed next to no flow
+T}
 .TE
 .PP
 The burst is \fBnot\fR the per\-address \fBrate\fR of a value rule, and the difference is the point. A rate of "this setpoint may move once a minute" does not notice a master that wrote forty \fIdifferent\fR registers once each, which is the shape of somebody walking the address space rather than of a control action. This counts one client\(aqs writes across every address.
 .PP
+The last two are the ones an attacker finds hardest to avoid, and they are why this relay decodes read replies at all: the writes it sees are the ones somebody chose, and the replies are what the plant itself said. A frozen or replayed \fIread\fR value is what a control room is shown while the process does something else.
+.PP
+\fBCorrelations need an operator.\fR Nothing in a protocol says a pump\(aqs speed and a flow meter belong together, and a relay that guessed would produce an alert nobody could act on. Each pair names two points and either a \fBratio\fR (the expected A/B) or a \fBdifference\fR (the largest normal |A\[u2212]B|), with \fBtolerance\fR as the slack.
+.PP
 \fBIt alerts.\fR A detector built on "I have not seen this before" refuses the first legitimate thing anybody does after a quiet year: the maintenance write, the commissioning of a new point, the operator who finally uses a function the master has always been allowed to use. So the default is a security event and a counter, and the events \fBdo not reach the ban ladder\fR \-\- banning a plant\(aqs master over a function code it had not used yet takes the process away from the control room, which is worse than what is being guarded against.
 .PP
-\fBaction: deny\fR is there for the plants that want it, and it refuses the \fIfirst\fR occurrence and records it, so a retry goes through. That is deliberate: refusing every occurrence until somebody intervened would mean a plant that could not be driven after any novelty, with nothing here to do the intervening. deny buys a hard stop on the first attempt and an operator\(aqs attention. \fBIt is not a block\fR, and the rules are what block. In shadow mode or a learning run without \fBenforce\fR it refuses nothing and the would\-be refusals go to the shadow report, like every other decision on this listener.
+\fBaction: deny\fR is there for the plants that want it, and it refuses the \fIfirst\fR occurrence and records it, so a retry goes through. That is deliberate: refusing every occurrence until somebody intervened would mean a plant that could not be driven after any novelty, with nothing here to do the intervening. deny buys a hard stop on the first attempt and an operator\(aqs attention. \fBIt is not a block\fR, and the rules are what block. In shadow mode or a learning run without \fBenforce\fR it refuses nothing and the would\-be refusals go to the shadow report, like every other decision on this listener. A finding in a \fIreply\fR \[u2014] the two value models \[u2014] never refuses at all: by the time an answer has arrived there is nothing left to refuse.
 .PP
-\fBIt settles first.\fR When the relay starts, everything is new, so for \fBsettle\fR after a client is first seen its traffic is recorded and nothing about novelty is reported. The write burst is not suppressed during it: that bound is a number set here rather than something learned, and a burst while settling is still a burst.
+\fBIt settles first.\fR When the relay starts, everything is new, so for \fBsettle\fR after a client is first seen its traffic is recorded and nothing about novelty is reported. The write burst is not suppressed during it: that bound is a number set here rather than something learned, and a burst while settling is still a burst. The cycle and sequence models wait for their own \fBmin_samples\fR instead, because a rhythm learned from three intervals is the last few seconds rather than a cycle.
 .PP
-A master that writes more distinct address ranges than the detector holds has its \fInovelty\fR detection turned off, and the count is in the status view. The alternative \-\- collapsing the ranges into one span, which is what the learning report does \-\- widens what counts as seen, and would make the detector stop detecting while it went on looking like it worked.
+A master that writes more distinct spans than the detector holds has its \fInovelty\fR detection turned off, and the count is in the status view. The alternative \-\- collapsing the spans into one, which is what the learning report does \-\- widens what counts as seen, and would make the detector stop detecting while it went on looking like it worked.
 .PP
 .TS
 allbox;
-lbw(0.9i) lbw(0.9i) lbw(0.8i) lbx
-lw(0.9i) lw(0.9i) lw(0.8i) lx.
+lbw(0.8i) lbw(0.9i) lbw(0.8i) lbx
+lw(0.8i) lw(0.9i) lw(0.8i) lx.
 T{
 Key
 T}	T{
@@ -4903,42 +4958,6 @@ T}	T{
 How long a client\(aqs traffic is recorded before novelty is reported for it;\: 1m..168h,\: or \fB0s\fR for none. \fB0s\fR reports the first thing every master does,\: which after a restart is every master\(aqs whole scan cycle at once,\: and is warned about
 T}
 T{
-\fBnew_\:function\fR
-T}	T{
-bool
-T}	T{
-\fBtrue\fR
-T}	T{
-Report a function code this client has not used
-T}
-T{
-\fBnew_\:write_\:address\fR
-T}	T{
-bool
-T}	T{
-\fBtrue\fR
-T}	T{
-Report a write to an address this client has not written
-T}
-T{
-\fBwrite_\:burst\fR
-T}	T{
-int
-T}	T{
-\fB20\fR
-T}	T{
-Writes one client may make across every address within \fBburst_\:period\fR. 0 disables it
-T}
-T{
-\fBburst_\:period\fR
-T}	T{
-duration
-T}	T{
-\fB10s\fR
-T}	T{
-The burst window;\: 1s..1h
-T}
-T{
 \fBaction\fR
 T}	T{
 \fBalert\fR,\: \fBdeny\fR
@@ -4954,7 +4973,296 @@ int
 T}	T{
 \fB1024\fR
 T}	T{
-Masters remembered;\: 8..1000000. Past it the drops are counted
+Clients remembered;\: 8..1000000. Past it the drops are counted
+T}
+.TE
+.SS "anomaly.novelty"
+.PP
+Present by default when the block is enabled: "this peer has never done this" is the model that needs no configuration at all.
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.9i) lbw(0.8i) lbx
+lw(0.8i) lw(0.9i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBsymbols\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Report an operation this client has not used
+T}
+T{
+\fBwrite_\:points\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Report a write to a point this client has not written
+T}
+T{
+\fBburst\fR
+T}	T{
+int
+T}	T{
+\fB20\fR
+T}	T{
+Writes one client may make across every point within \fBburst_\:period\fR. 0 disables it
+T}
+T{
+\fBburst_\:period\fR
+T}	T{
+duration
+T}	T{
+\fB10s\fR
+T}	T{
+The burst window;\: 1s..1h
+T}
+.TE
+.SS "anomaly.cycle"
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.9i) lbw(0.8i) lbx
+lw(1.0i) lw(0.9i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+On where the subsection is written
+T}
+T{
+\fBmin_\:samples\fR
+T}	T{
+int
+T}	T{
+\fB20\fR
+T}	T{
+Intervals learned before a rhythm is called learned;\: 4..100000. Below 20 it warns,\: because a mean that short is the last few seconds
+T}
+T{
+\fBtolerance\fR
+T}	T{
+float
+T}	T{
+\fB6\fR
+T}	T{
+How many times the learned jitter an interval may differ from the learned period;\: 1..1000. Wide on purpose: this is about a cycle that changed,\: not one late packet
+T}
+T{
+\fBreport_\:every\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR
+T}	T{
+Rate limit per client,\: because a changed cycle fires on every request until the new rhythm is learned;\: 1s..24h
+T}
+.TE
+.SS "anomaly.sequence"
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.6i) lbw(0.8i) lbx
+lw(0.8i) lw(0.6i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+On where the subsection is written
+T}
+T{
+\fBmin_\:samples\fR
+T}	T{
+int
+T}	T{
+\fB200\fR
+T}	T{
+Transitions learned from a client before anything is reported about its order;\: 10..1000000. Without it the model reports the traffic it is learning from
+T}
+.TE
+.SS "anomaly.talkers"
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.9i) lbw(0.8i) lbx
+lw(0.8i) lw(0.9i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+On where the subsection is written
+T}
+T{
+\fBready_\:after\fR
+T}	T{
+duration
+T}	T{
+\fB15m\fR
+T}	T{
+How long this process must have been running before a new peer is worth reporting;\: 1s..168h. Every peer is new in the first minute of a process,\: and reporting that is how an operator learns to ignore the alerts
+T}
+.TE
+.SS "anomaly.telemetry"
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.6i) lbw(0.8i) lbx
+lw(0.8i) lw(0.6i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+On where the subsection is written. It costs nothing on a listener whose traffic carries no values
+T}
+T{
+\fBfrozen_\:samples\fR
+T}	T{
+int
+T}	T{
+\fB20\fR
+T}	T{
+Identical readings in a row,\: from a point that had been moving,\: that are reported;\: 3..32
+T}
+T{
+\fBreplay_\:window\fR
+T}	T{
+int
+T}	T{
+\fB8\fR
+T}	T{
+The length of the repeating run that is reported;\: 4..32. Below about four it fires on any oscillation
+T}
+.TE
+.SS "anomaly.correlations"
+.PP
+A list. Each entry is one pair of points that are supposed to track each other.
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(0.9i) lbw(0.9i) lbx
+lw(1.1i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+string
+T}	T{
+none
+T}	T{
+What the pair is called in the finding
+T}
+T{
+\fBa\fR,\: \fBb\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+The two points,\: spelled the way this kind spells a point \[u2014] which its protocol page says and its trace shows
+T}
+T{
+\fBratio\fR
+T}	T{
+float
+T}	T{
+none
+T}	T{
+The expected A/\:B. One of \fBratio\fR or \fBdifference\fR is required
+T}
+T{
+\fBdifference\fR
+T}	T{
+float
+T}	T{
+none
+T}	T{
+The largest normal |\:A\[u2212]B|\:
+T}
+T{
+\fBtolerance\fR
+T}	T{
+float
+T}	T{
+\fB0.\:1\fR
+T}	T{
+Slack on the ratio,\: as a fraction of B;\: 0..1
+T}
+T{
+\fBmax_\:age\fR
+T}	T{
+duration
+T}	T{
+\fB1m\fR
+T}	T{
+How old the other point\(aqs reading may be and still be compared;\: 1s..1h. Two readings a quarter of an hour apart say nothing about each other
 T}
 .TE
 .PP

@@ -6,6 +6,59 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (the six behavioural models, as one block every OT kind can run)
+
+- **`internal/anomaly` is the detector without the protocol**, and the
+  `anomaly` block is the same on every OT listener kind. Six models: novelty
+  ("this peer has never done this"), the poll cycle (a rhythm that changed),
+  the order (an operation in a place it has never been), the talkers (a peer
+  nobody has seen, a peer on a device it has never addressed), the telemetry
+  (a point that stopped moving, a run of readings that repeats) and the
+  correlations (two points the process ties together that stopped agreeing).
+  What each kind puts into them -- what a symbol, a point and a value are on
+  its protocol -- is the kind's business, and its protocol page says.
+
+- **Modbus is the first kind on it**, and its own three-model detector is
+  gone in favour of the shared six. The configuration is nested now
+  (`novelty: {symbols, write_points, burst, burst_period}` in place of the
+  flat `new_function`, `new_write_address`, `write_burst`), and the two
+  reasons are renamed with it: `anomaly_new_function` is
+  `anomaly_new_symbol` and `anomaly_new_write_address` is
+  `anomaly_new_write_point`, which is what an operations centre filtering
+  across protocols needs them to be. A dashboard or SIEM query naming the old
+  strings has to be updated; the examples and the packs in this tree are.
+
+- **The values are both directions on Modbus**, because this relay already
+  decodes read replies for the value policy's deltas: the telemetry model
+  sees what the *device* answered as well as what a master wrote, which is
+  the half that matters. A frozen or replayed written value says something
+  about the master; a frozen or replayed read value is what a control room is
+  being shown while the process does something else. A finding in a reply
+  never refuses anything -- by the time an answer has arrived there is
+  nothing left to refuse.
+
+- **Novelty about writes is keyed on the span**, not on each address in it.
+  A master writes the same spans every scan cycle, and one recipe download
+  would otherwise fill a bounded set with addresses that are all the same
+  traffic. Past the bound the peer's novelty detection is turned off and the
+  count says so, rather than the set being widened.
+
+- **`settle: 0s` means "report from this peer's first request"** and an
+  unset key means the default ten minutes. They are different, so the models
+  spell the first `NoSettle`: a detector that read "nothing was asked for" as
+  "no window at all" would alert on every peer's first frame.
+
+- **Three more techniques in the ATT&CK catalogue**, because the models
+  reach behaviours the rules could not: T0801 *Monitor Process State* for a
+  scan cycle that changed, T0832 *Manipulation of View* and T1565.002
+  *Transmitted Data Manipulation* for telemetry that is frozen or replayed.
+  Every behavioural reason is mapped for the kinds that emit it, which today
+  is Modbus.
+
+- **Shadow mode records one would-be refusal per request**, not one per
+  finding. Enforcing would have stopped at the first, and the report exists
+  to answer exactly what enforcing costs.
+
 ### Added (the same events in Enterprise ATT&CK terms, not only ATT&CK for ICS)
 
 - **Two catalogues, because this proxy stands in two worlds.** ATT&CK for

@@ -12335,7 +12335,7 @@ func (v *validator) modbusListener(p string, m *ModbusListener, hasTLS bool) {
 			v.warnf("%s.learn is enabled without enforce, so this listener records and decides nothing: turn enforce on, or take the learning section out, once the rules are written", p)
 		}
 	}
-	v.modbusAnomaly(p+".anomaly", m.Anomaly)
+	v.anomaly(p+".anomaly", m.Anomaly)
 	if tr := m.Trace; tr != nil {
 		if tr.File == "" {
 			v.errf("%s.trace.file: required", p)
@@ -12543,8 +12543,10 @@ func (v *validator) modbusCIDRs(p string, in []string) {
 // modbusSchedule validates a rule's time window. It is shared with the
 // IEC 104 rules, because "during the day shift" does not change with the
 // protocol.
-// modbusAnomaly validates the behavioural detector.
-func (v *validator) modbusAnomaly(p string, a *ModbusAnomaly) {
+// anomaly validates the behavioural detector. It is shared by every OT
+// listener kind, because the block is: the models are about the shape of
+// traffic rather than about a protocol.
+func (v *validator) anomaly(p string, a *Anomaly) {
 	if a == nil || !a.Enabled {
 		return
 	}
@@ -12553,24 +12555,11 @@ func (v *validator) modbusAnomaly(p string, a *ModbusAnomaly) {
 		case s.D() < 0:
 			v.errf("%s.settle: must not be negative", p)
 		case s.D() == 0:
-			v.warnf("%s.settle is 0, so the first thing every master does is reported as novel. "+
-				"After a restart that is every master's whole scan cycle at once", p)
+			v.warnf("%s.settle is 0, so the first thing every client does is reported as novel. "+
+				"After a restart that is every client's whole scan cycle at once", p)
 		case s.D() < time.Minute || s.D() > 7*24*time.Hour:
 			v.errf("%s.settle: must be 0 or between 1m and 168h", p)
 		}
-	}
-	burst := DefaultModbusWriteBurst
-	if a.WriteBurst != nil {
-		burst = *a.WriteBurst
-		switch {
-		case burst < 0:
-			v.errf("%s.write_burst: must not be negative", p)
-		case burst > 1_000_000:
-			v.errf("%s.write_burst: must be at most 1000000", p)
-		}
-	}
-	if a.BurstPeriod != 0 && (a.BurstPeriod.D() < time.Second || a.BurstPeriod.D() > time.Hour) {
-		v.errf("%s.burst_period: must be between 1s and 1h", p)
 	}
 	if a.MaxClients != 0 && (a.MaxClients < 8 || a.MaxClients > 1_000_000) {
 		v.errf("%s.max_clients: must be between 8 and 1000000", p)
@@ -12580,12 +12569,96 @@ func (v *validator) modbusAnomaly(p string, a *ModbusAnomaly) {
 	default:
 		v.errf("%s.action: must be alert or deny", p)
 	}
+	burst := DefaultAnomalyBurst
+	if n := a.Novelty; n != nil {
+		if n.Burst != nil {
+			burst = *n.Burst
+			switch {
+			case burst < 0:
+				v.errf("%s.novelty.burst: must not be negative", p)
+			case burst > 1_000_000:
+				v.errf("%s.novelty.burst: must be at most 1000000", p)
+			}
+		}
+		if n.BurstPeriod != 0 && (n.BurstPeriod.D() < time.Second || n.BurstPeriod.D() > time.Hour) {
+			v.errf("%s.novelty.burst_period: must be between 1s and 1h", p)
+		}
+	}
+	on := func(b *bool) bool { return b == nil || *b }
 	off := func(b *bool) bool { return b != nil && !*b }
-	if off(a.NewFunction) && off(a.NewWriteAddress) && burst == 0 {
-		v.errf("%s: enabled with nothing to detect: new_function, new_write_address and write_burst are all off", p)
+	if c := a.Cycle; c != nil {
+		if c.MinSamples != 0 && (c.MinSamples < 4 || c.MinSamples > 100_000) {
+			v.errf("%s.cycle.min_samples: must be between 4 and 100000", p)
+		}
+		if c.Tolerance != 0 && (c.Tolerance < 1 || c.Tolerance > 1000) {
+			v.errf("%s.cycle.tolerance: must be between 1 and 1000", p)
+		}
+		if c.ReportEvery != 0 && (c.ReportEvery.D() < time.Second || c.ReportEvery.D() > 24*time.Hour) {
+			v.errf("%s.cycle.report_every: must be between 1s and 24h", p)
+		}
+		if on(c.Enabled) && c.MinSamples != 0 && c.MinSamples < 20 {
+			v.warnf("%s.cycle.min_samples is %d, so a rhythm is called learned from %d intervals. "+
+				"A mean that short is the last few seconds rather than this poller's cycle", p, c.MinSamples, c.MinSamples)
+		}
+	}
+	if q := a.Sequence; q != nil && q.MinSamples != 0 &&
+		(q.MinSamples < 10 || q.MinSamples > 1_000_000) {
+		v.errf("%s.sequence.min_samples: must be between 10 and 1000000", p)
+	}
+	if t := a.Talkers; t != nil && t.ReadyAfter != 0 &&
+		(t.ReadyAfter.D() < time.Second || t.ReadyAfter.D() > 7*24*time.Hour) {
+		v.errf("%s.talkers.ready_after: must be between 1s and 168h", p)
+	}
+	if t := a.Telemetry; t != nil {
+		if t.FrozenSamples != 0 && (t.FrozenSamples < 3 || t.FrozenSamples > 32) {
+			v.errf("%s.telemetry.frozen_samples: must be between 3 and 32", p)
+		}
+		if t.ReplayWindow != 0 && (t.ReplayWindow < 4 || t.ReplayWindow > 32) {
+			v.errf("%s.telemetry.replay_window: must be between 4 and 32", p)
+		}
+	}
+	for i, c := range a.Correlations {
+		q := fmt.Sprintf("%s.correlations[%d]", p, i)
+		if c.A == "" || c.B == "" {
+			v.errf("%s: a and b are both required", q)
+		}
+		if c.A == c.B && c.A != "" {
+			v.errf("%s: a and b are the same point, which tracks itself", q)
+		}
+		if c.Ratio == 0 && c.Difference == 0 {
+			v.errf("%s: one of ratio or difference is required, or the pair says nothing", q)
+		}
+		if c.Ratio < 0 {
+			v.errf("%s.ratio: must not be negative", q)
+		}
+		if c.Difference < 0 {
+			v.errf("%s.difference: must not be negative", q)
+		}
+		if c.Tolerance < 0 || c.Tolerance > 1 {
+			v.errf("%s.tolerance: must be between 0 and 1", q)
+		}
+		if c.MaxAge != 0 && (c.MaxAge.D() < time.Second || c.MaxAge.D() > time.Hour) {
+			v.errf("%s.max_age: must be between 1s and 1h", q)
+		}
+	}
+	// A detector that is on with every model off is a mistake somebody
+	// spends an afternoon on, because nothing is wrong and nothing is
+	// reported.
+	novelty := a.Novelty == nil || on(a.Novelty.Symbols) || on(a.Novelty.WritePoints) || burst != 0
+	if a.Novelty != nil && off(a.Novelty.Symbols) && off(a.Novelty.WritePoints) && burst == 0 {
+		novelty = false
+	}
+	anything := novelty ||
+		(a.Cycle != nil && on(a.Cycle.Enabled)) ||
+		(a.Sequence != nil && on(a.Sequence.Enabled)) ||
+		(a.Talkers != nil && on(a.Talkers.Enabled)) ||
+		(a.Telemetry != nil && on(a.Telemetry.Enabled)) ||
+		len(a.Correlations) > 0
+	if !anything {
+		v.errf("%s: enabled with nothing to detect: every model is off", p)
 	}
 	if a.Action == "deny" {
-		v.warnf("%s.action is deny, so a master doing something this relay has not seen it do is refused. "+
+		v.warnf("%s.action is deny, so a client doing something this relay has not seen it do is refused. "+
 			"The signal is novelty, which the first legitimate maintenance write of the year also is: "+
 			"run it as alert first and read what it would have refused", p)
 	}

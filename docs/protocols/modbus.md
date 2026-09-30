@@ -155,11 +155,43 @@ answer *is this permitted*; this answers *is this what this master has been
 doing*. Control traffic is repetitive in a way other traffic is not -- a master's
 scan cycle is the same few function codes over the same few address ranges, every
 cycle, for years -- so "this client has never done this before" is a signal here
-where elsewhere it would be noise. A function code the client has not used, a
-write to a register it has never driven, and a burst of writes across every
-address, which is the one thing a per-address `rate` cannot see: forty different
+where elsewhere it would be noise.
+
+The models are `internal/anomaly`, shared with every other OT listener kind
+because none of them is about Modbus, and [docs/CONFIG.md](../CONFIG.md) documents
+the block once. What is specific to this protocol is the translation:
+
+| The models' term | On Modbus | Used by |
+|------------------|-----------|---------|
+| symbol | the function code's name: `read holding registers`, `write single coil` | novelty, sequence |
+| device | the unit identifier, `unit 3` | talkers |
+| block | the span a request wrote, `unit 3 40100-40120` | novelty about writes |
+| point | unit and address, `unit 3 40100` | telemetry, correlations |
+| value | a single-register write, and every register a read was answered with | telemetry, correlations |
+
+Novelty about writes is keyed on the **span** rather than on each address in it: a
+master writes the same spans every cycle, and one recipe download would otherwise
+fill a bounded set with addresses that are all the same traffic. A master that
+writes more distinct spans than the detector holds has its novelty detection
+turned off and the count says so, because collapsing the spans into one -- what the
+learning report does -- would widen what counts as seen and make the detector stop
+detecting while it went on looking like it worked.
+
+The burst is the one thing a per-address `rate` cannot see: forty different
 registers written once each is not a rate violation anywhere and is exactly the
 shape of somebody walking the address space.
+
+**The values are both directions.** This relay already decodes read replies for the
+value policy's deltas and transitions, so the telemetry model sees what the *device*
+answered as well as what the master wrote -- which is the half that matters. A
+frozen or replayed written value says something about the master; a frozen or
+replayed read value is what a control room is being shown while the process does
+something else. A finding in a reply never refuses anything: by the time an answer
+has arrived there is nothing left to refuse.
+
+The `correlations` are the one model that needs an operator, and the points are
+spelled the way the table above spells them (`unit 3 40100`), which is also how the
+trace writes them.
 
 It alerts, and the alerts do not reach the ban ladder: the first legitimate
 maintenance write of the year is novel too, and banning the plant's master for it

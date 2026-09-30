@@ -2118,22 +2118,47 @@ Three smaller decisions in it worth knowing:
 permitted*. This answers *is this what this master has been doing*, and answers it
 with nothing written down at all.
 
+The block is **the same on every OT listener kind** — `modbus`, `iec104`, `s7`,
+`mms`, `bacnet`, `opcua`, `coap`, `snmp` — because none of the six models is about
+a protocol. What differs is what the kind puts into them, and each protocol page
+says which of its fields is a *symbol*, a *point* and a *value*. On Modbus a
+symbol is the function code's name, a point is `unit 1 40100`, a write's novelty
+is keyed on the span it wrote (`unit 1 40100-40120`), and the values are the
+registers a write carried and the registers a read was answered with.
+
 Control traffic is repetitive in a way other traffic is not: a master's scan cycle
 is the same few function codes over the same few address ranges, every cycle, for
 years. So "this client has never done this before" is a signal here where on a web
-front end it would be noise. Three things are watched:
+front end it would be noise. Six models, each its own subsection:
 
-| Signal | Reason | What it catches |
-|--------|--------|-----------------|
-| new function code | `anomaly_new_function` | A master that has only ever read, writing |
-| new write address | `anomaly_new_write_address` | A write to a register this master has never driven |
-| burst of writes | `anomaly_write_burst` | Forty registers moved in ten seconds |
+| Model | Reason | What it catches |
+|-------|--------|-----------------|
+| `novelty` | `anomaly_new_symbol` | A master that has only ever read, writing |
+| `novelty` | `anomaly_new_write_point` | A write to a point this master has never driven |
+| `novelty` | `anomaly_write_burst` | Forty registers moved in ten seconds |
+| `talkers` | `anomaly_new_talker` | A peer this listener has never seen |
+| `talkers` | `anomaly_new_pair` | A known peer on a device it has never spoken to |
+| `cycle` | `anomaly_cycle_changed` | A poller that asked every two seconds for a year and now asks ten times a second |
+| `sequence` | `anomaly_sequence_unseen` | An operation in a place it has never been: a write straight after a write, where this master has always read in between |
+| `telemetry` | `anomaly_telemetry_frozen` | A point that stopped moving: one value, for ever, from something that had been alive |
+| `telemetry` | `anomaly_telemetry_replayed` | A run of values that repeats exactly — a screen made to look alive while the process does something else |
+| `correlations` | `anomaly_correlation_broken` | Two points that are supposed to track each other and stopped: a pump at full speed next to no flow |
 
 The burst is **not** the per-address `rate` of a value rule, and the difference is
 the point. A rate of "this setpoint may move once a minute" does not notice a
 master that wrote forty *different* registers once each, which is the shape of
 somebody walking the address space rather than of a control action. This counts one
 client's writes across every address.
+
+The last two are the ones an attacker finds hardest to avoid, and they are why this
+relay decodes read replies at all: the writes it sees are the ones somebody chose,
+and the replies are what the plant itself said. A frozen or replayed *read* value is
+what a control room is shown while the process does something else.
+
+**Correlations need an operator.** Nothing in a protocol says a pump's speed and a
+flow meter belong together, and a relay that guessed would produce an alert nobody
+could act on. Each pair names two points and either a `ratio` (the expected A/B) or
+a `difference` (the largest normal |A−B|), with `tolerance` as the slack.
 
 **It alerts.** A detector built on "I have not seen this before" refuses the first
 legitimate thing anybody does after a quiet year: the maintenance write, the
@@ -2150,29 +2175,84 @@ driven after any novelty, with nothing here to do the intervening. deny buys a h
 stop on the first attempt and an operator's attention. **It is not a block**, and
 the rules are what block. In shadow mode or a learning run without `enforce` it
 refuses nothing and the would-be refusals go to the shadow report, like every other
-decision on this listener.
+decision on this listener. A finding in a *reply* — the two value models — never
+refuses at all: by the time an answer has arrived there is nothing left to refuse.
 
 **It settles first.** When the relay starts, everything is new, so for `settle`
 after a client is first seen its traffic is recorded and nothing about novelty is
 reported. The write burst is not suppressed during it: that bound is a number set
 here rather than something learned, and a burst while settling is still a burst.
+The cycle and sequence models wait for their own `min_samples` instead, because a
+rhythm learned from three intervals is the last few seconds rather than a cycle.
 
-A master that writes more distinct address ranges than the detector holds has its
-*novelty* detection turned off, and the count is in the status view. The
-alternative -- collapsing the ranges into one span, which is what the learning
-report does -- widens what counts as seen, and would make the detector stop
-detecting while it went on looking like it worked.
+A master that writes more distinct spans than the detector holds has its *novelty*
+detection turned off, and the count is in the status view. The alternative --
+collapsing the spans into one, which is what the learning report does -- widens what
+counts as seen, and would make the detector stop detecting while it went on looking
+like it worked.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `enabled` | bool | `false` | Turn the detection on |
 | `settle` | duration | `10m` | How long a client's traffic is recorded before novelty is reported for it; 1m..168h, or `0s` for none. `0s` reports the first thing every master does, which after a restart is every master's whole scan cycle at once, and is warned about |
-| `new_function` | bool | `true` | Report a function code this client has not used |
-| `new_write_address` | bool | `true` | Report a write to an address this client has not written |
-| `write_burst` | int | `20` | Writes one client may make across every address within `burst_period`. 0 disables it |
-| `burst_period` | duration | `10s` | The burst window; 1s..1h |
 | `action` | `alert`, `deny` | `alert` | `deny` refuses the first occurrence, as the device's own exception, and warns |
-| `max_clients` | int | `1024` | Masters remembered; 8..1000000. Past it the drops are counted |
+| `max_clients` | int | `1024` | Clients remembered; 8..1000000. Past it the drops are counted |
+
+### anomaly.novelty
+
+Present by default when the block is enabled: "this peer has never done this" is
+the model that needs no configuration at all.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `symbols` | bool | `true` | Report an operation this client has not used |
+| `write_points` | bool | `true` | Report a write to a point this client has not written |
+| `burst` | int | `20` | Writes one client may make across every point within `burst_period`. 0 disables it |
+| `burst_period` | duration | `10s` | The burst window; 1s..1h |
+
+### anomaly.cycle
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | On where the subsection is written |
+| `min_samples` | int | `20` | Intervals learned before a rhythm is called learned; 4..100000. Below 20 it warns, because a mean that short is the last few seconds |
+| `tolerance` | float | `6` | How many times the learned jitter an interval may differ from the learned period; 1..1000. Wide on purpose: this is about a cycle that changed, not one late packet |
+| `report_every` | duration | `5m` | Rate limit per client, because a changed cycle fires on every request until the new rhythm is learned; 1s..24h |
+
+### anomaly.sequence
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | On where the subsection is written |
+| `min_samples` | int | `200` | Transitions learned from a client before anything is reported about its order; 10..1000000. Without it the model reports the traffic it is learning from |
+
+### anomaly.talkers
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | On where the subsection is written |
+| `ready_after` | duration | `15m` | How long this process must have been running before a new peer is worth reporting; 1s..168h. Every peer is new in the first minute of a process, and reporting that is how an operator learns to ignore the alerts |
+
+### anomaly.telemetry
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | On where the subsection is written. It costs nothing on a listener whose traffic carries no values |
+| `frozen_samples` | int | `20` | Identical readings in a row, from a point that had been moving, that are reported; 3..32 |
+| `replay_window` | int | `8` | The length of the repeating run that is reported; 4..32. Below about four it fires on any oscillation |
+
+### anomaly.correlations
+
+A list. Each entry is one pair of points that are supposed to track each other.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | string | none | What the pair is called in the finding |
+| `a`, `b` | string | required | The two points, spelled the way this kind spells a point — which its protocol page says and its trace shows |
+| `ratio` | float | none | The expected A/B. One of `ratio` or `difference` is required |
+| `difference` | float | none | The largest normal \|A−B\| |
+| `tolerance` | float | `0.1` | Slack on the ratio, as a fraction of B; 0..1 |
+| `max_age` | duration | `1m` | How old the other point's reading may be and still be compared; 1s..1h. Two readings a quarter of an hour apart say nothing about each other |
 
 **`trace`** writes one JSON object per frame for as long as it is
 enabled: the engineer's tool for "what is this master actually doing". It

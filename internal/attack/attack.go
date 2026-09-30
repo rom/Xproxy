@@ -157,6 +157,8 @@ type entry struct {
 
 // icsCatalogue is every ATT&CK for ICS technique this proxy can observe.
 var icsCatalogue = []entry{
+	{"T0801", "Monitor Process State", []Tactic{TacticCollection},
+		"Watching the process rather than touching it: a poller whose rhythm changed is reading the plant at a rate nobody configured, which is what reconnaissance on a control network looks like."},
 	{"T0802", "Automated Collection", []Tactic{TacticCollection},
 		"A bulk pull: an SNMP walk, an MMS or FTP fetch of configuration and fault records, a large history read. One request is a question; a sweep is collection."},
 	{"T0804", "Block Reporting Message", []Tactic{TacticInhibitResponse},
@@ -171,6 +173,8 @@ var icsCatalogue = []entry{
 		"A restart or a shutdown asked for over the control protocol: an S7 CPU stop, a Modbus diagnostic restart, a BACnet ReinitializeDevice."},
 	{"T0831", "Manipulation of Control", []Tactic{TacticImpact},
 		"The process driven somewhere it should not go, through the control protocol's own legitimate messages."},
+	{"T0832", "Manipulation of View", []Tactic{TacticImpairProcess},
+		"What the control room sees made wrong: a point that stopped moving, a run of readings that repeats, two values that cannot both be true of one process."},
 	{"T0835", "Manipulate I/O Image", []Tactic{TacticImpairProcess},
 		"A write that changes the controller's image of its inputs or outputs rather than a setting: coils and registers that are the I/O image itself."},
 	{"T0836", "Modify Parameter", []Tactic{TacticImpairProcess},
@@ -262,6 +266,8 @@ var enterpriseCatalogue = []entry{
 		"Something answering in place of the service: a provisioning answer from an address the estate does not run, authentication stripped from a time exchange, a resolver answer that points a client somewhere else."},
 	{"T1565.001", "Data Manipulation: Stored Data Manipulation", []Tactic{TacticImpact},
 		"A write to a store the policy grants only reads of: the database, key space or directory changed rather than read."},
+	{"T1565.002", "Data Manipulation: Transmitted Data Manipulation", []Tactic{TacticImpact},
+		"Data altered in flight rather than at rest: telemetry that repeats or has stopped moving as it crosses this relay, which is what an operator's screen is drawn from."},
 	{"T1572", "Protocol Tunneling", []Tactic{TacticCommandAndControl},
 		"A channel inside a channel: a forwarded port, an upgrade to a stream protocol, a datagram tunnel through a proxy that was asked for a request."},
 	{"T1621", "Multi-Factor Authentication Request Generation", []Tactic{TacticCredentialAccess},
@@ -311,10 +317,28 @@ var otMappings = []mapping{
 	{kind: "modbus", reason: "coil_clear_not_allowed", ids: []string{"T0831", "T0835"}},
 	{kind: "modbus", reason: "value_rate", ids: []string{"T0806"},
 		note: "a point written faster than the bound is the rate no operator produces and the mechanism cannot follow"},
-	{kind: "modbus", reason: "anomaly_new_function", ids: []string{"T0855"}},
-	{kind: "modbus", reason: "anomaly_new_write_address", ids: []string{"T0836", "T0835"}},
+	// The behavioural models (internal/anomaly). The reasons are the same
+	// on every kind that runs them, which is why an operations centre can
+	// filter on `anomaly_cycle_changed` without knowing the protocol.
+	{kind: "modbus", reason: "anomaly_new_symbol", ids: []string{"T0855"},
+		note: "a function code this master has never used: not a command the policy refused, a command this master's own history says it does not send"},
+	{kind: "modbus", reason: "anomaly_new_write_point", ids: []string{"T0836", "T0835"}},
 	{kind: "modbus", reason: "anomaly_write_burst", ids: []string{"T0806", "T0836"},
 		note: "writes across many addresses in a burst is the shape of walking the address space, not of a control action"},
+	{kind: "modbus", reason: "anomaly_new_talker", ids: []string{"T0886"},
+		note: "an address this listener has never served, on a segment whose device list does not change from one year to the next"},
+	{kind: "modbus", reason: "anomaly_new_pair", ids: []string{"T0846", "T1046"},
+		note: "a known master on a unit it has never addressed, which is one host working along the segment"},
+	{kind: "modbus", reason: "anomaly_cycle_changed", ids: []string{"T0801"},
+		note: "a scan cycle that changed: the same requests at a rate this poller has never used"},
+	{kind: "modbus", reason: "anomaly_sequence_unseen", ids: []string{"T0855"},
+		note: "a legitimate-looking request in an illegitimate place: an operation that has never followed the one before it"},
+	{kind: "modbus", reason: "anomaly_telemetry_frozen", ids: []string{"T0832", "T0856", "T1565.002"},
+		note: "a register that had been moving and stopped, which is the crude way to show a control room something other than the process"},
+	{kind: "modbus", reason: "anomaly_telemetry_replayed", ids: []string{"T0832", "T0856", "T1565.002"},
+		note: "a run of readings repeated exactly, which is the careful way: the screen stays alive while the process does something else"},
+	{kind: "modbus", reason: "anomaly_correlation_broken", ids: []string{"T0831", "T0832"},
+		note: "two points the process ties together that stopped agreeing: a pump commanded to full speed next to no flow at all"},
 
 	// IEC 60870-5-104. A control centre's protocol, where the type
 	// identification says what was asked for.

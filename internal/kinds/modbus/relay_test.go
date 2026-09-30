@@ -1330,7 +1330,7 @@ func TestAnUnusualCommandIsReportedAndCarried(t *testing.T) {
 	// code this master has used -- so the function finding is two: the read and
 	// the write. The address finding is one, because only the write has an
 	// address the master drove.
-	for want, times := range map[string]uint64{"anomaly_new_function": 2, "anomaly_new_write_address": 1} {
+	for want, times := range map[string]uint64{"anomaly_new_symbol": 2, "anomaly_new_write_point": 1} {
 		if got := sn.Refusals["modbus"][want]; got != times {
 			t.Errorf("%s was counted %d times, wanted %d: %+v", want, got, times, sn.Refusals["modbus"])
 		}
@@ -1397,7 +1397,7 @@ func TestARefusedRequestTeachesTheDetectorNothing(t *testing.T) {
 	m.send(1, setPoint)
 	m.expectException("a write on a read-only listener", wire.ExIllegalFunction)
 	sn := s.Stats()
-	if got := sn.Refusals["modbus"]["anomaly_new_write_address"]; got != 0 {
+	if got := sn.Refusals["modbus"]["anomaly_new_write_point"]; got != 0 {
 		t.Errorf("the detector recorded a request the policy refused: %+v", sn.Refusals["modbus"])
 	}
 	if got := sn.Refusals["modbus"]["read_only"]; got != 1 {
@@ -1448,7 +1448,7 @@ upstreams:
 	}
 	// The alerts happened.
 	sn := s.Stats()
-	if got := sn.Refusals["modbus"]["anomaly_new_write_address"]; got == 0 {
+	if got := sn.Refusals["modbus"]["anomaly_new_write_point"]; got == 0 {
 		t.Fatalf("nothing was alerted on, so this test asserts nothing: %+v", sn.Refusals["modbus"])
 	}
 	// And the master is not banned.

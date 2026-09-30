@@ -129,6 +129,7 @@ room, which is a worse outcome than the one being guarded against.
 
 | Technique | Name | Tactics | What makes an event an instance of it |
 |-----------|------|---------|----------------------------------------|
+| [T0801](https://attack.mitre.org/techniques/T0801/) | Monitor Process State | collection | Watching the process rather than touching it: a poller whose rhythm changed is reading the plant at a rate nobody configured, which is what reconnaissance on a control network looks like. |
 | [T0802](https://attack.mitre.org/techniques/T0802/) | Automated Collection | collection | A bulk pull: an SNMP walk, an MMS or FTP fetch of configuration and fault records, a large history read. One request is a question; a sweep is collection. |
 | [T0804](https://attack.mitre.org/techniques/T0804/) | Block Reporting Message | inhibit-response-function | Stopping the telemetry a control room watches: IEC 104 STOPDT, a report control block disabled, a device put into listen-only. |
 | [T0806](https://attack.mitre.org/techniques/T0806/) | Brute Force I/O | impair-process-control | Commands to one point faster than the equipment can follow -- a breaker or valve cycled at a rate no operator produces. |
@@ -136,6 +137,7 @@ room, which is a worse outcome than the one being guarded against.
 | [T0814](https://attack.mitre.org/techniques/T0814/) | Denial of Service | inhibit-response-function | A device or this relay made unable to answer: a flood, an amplification, a connection table filled, a frame crafted to cost more than it looks. |
 | [T0816](https://attack.mitre.org/techniques/T0816/) | Device Restart/Shutdown | inhibit-response-function | A restart or a shutdown asked for over the control protocol: an S7 CPU stop, a Modbus diagnostic restart, a BACnet ReinitializeDevice. |
 | [T0831](https://attack.mitre.org/techniques/T0831/) | Manipulation of Control | impact | The process driven somewhere it should not go, through the control protocol's own legitimate messages. |
+| [T0832](https://attack.mitre.org/techniques/T0832/) | Manipulation of View | impair-process-control | What the control room sees made wrong: a point that stopped moving, a run of readings that repeats, two values that cannot both be true of one process. |
 | [T0835](https://attack.mitre.org/techniques/T0835/) | Manipulate I/O Image | impair-process-control | A write that changes the controller's image of its inputs or outputs rather than a setting: coils and registers that are the I/O image itself. |
 | [T0836](https://attack.mitre.org/techniques/T0836/) | Modify Parameter | impair-process-control | A setting changed rather than a command sent: a setpoint, a protection threshold, an alarm limit, a device configuration attribute. |
 | [T0839](https://attack.mitre.org/techniques/T0839/) | Module Firmware | persistence | Firmware pushed to a module or a device -- the change that survives every restart and every program download after it. |
@@ -183,6 +185,7 @@ room, which is a worse outcome than the one being guarded against.
 | [T1499](https://attack.mitre.org/techniques/T1499/) | Endpoint Denial of Service | impact | A bound reached rather than a packet crafted: connections, sessions, channels, in-flight requests or bodies past what the listener holds for everybody else. |
 | [T1557](https://attack.mitre.org/techniques/T1557/) | Adversary-in-the-Middle | credential-access, collection | Something answering in place of the service: a provisioning answer from an address the estate does not run, authentication stripped from a time exchange, a resolver answer that points a client somewhere else. |
 | [T1565.001](https://attack.mitre.org/techniques/T1565/001/) | Data Manipulation: Stored Data Manipulation | impact | A write to a store the policy grants only reads of: the database, key space or directory changed rather than read. |
+| [T1565.002](https://attack.mitre.org/techniques/T1565/002/) | Data Manipulation: Transmitted Data Manipulation | impact | Data altered in flight rather than at rest: telemetry that repeats or has stopped moving as it crosses this relay, which is what an operator's screen is drawn from. |
 | [T1572](https://attack.mitre.org/techniques/T1572/) | Protocol Tunneling | command-and-control | A channel inside a channel: a forwarded port, an upgrade to a stream protocol, a datagram tunnel through a proxy that was asked for a request. |
 | [T1621](https://attack.mitre.org/techniques/T1621/) | Multi-Factor Authentication Request Generation | credential-access | A second factor asked for and not given: a push the person refused or was asked for too often, which is what it looks like when somebody else already has the password. |
 
@@ -193,10 +196,15 @@ labels and the security log's `reason` carries, with the kind's own prefix
 removed where a kind spells one. A reason not listed here carries no
 technique.
 
-The access ledger's refusals -- `no_grant` and the `grant_*` family --
-are the same on every kind that asks it, so they appear under each of
-them: a session the policy would otherwise allow, outside every approved
-work order.
+The access ledger's refusals -- `no_grant` and the `grant_*` family -- are
+the same on every kind that asks it, so they appear under each of them: a
+session the policy would otherwise allow, outside every approved work
+order. So are the behavioural findings (`anomaly_*`, from the models in
+`internal/anomaly`): they are the same reasons on every kind that runs
+them, which is why an operations centre can filter on
+`anomaly_cycle_changed` without knowing which protocol produced it.
+
+<!-- generated from internal/attack -->
 
 ### The plant: the kinds xot serves
 
@@ -269,8 +277,15 @@ work order.
 
 | Reason | Technique | Why this one |
 |--------|-----------|--------------|
-| `anomaly_new_function` | T0855 |  |
-| `anomaly_new_write_address` | T0836, T0835 |  |
+| `anomaly_correlation_broken` | T0831, T0832 | two points the process ties together that stopped agreeing: a pump commanded to full speed next to no flow at all |
+| `anomaly_cycle_changed` | T0801 | a scan cycle that changed: the same requests at a rate this poller has never used |
+| `anomaly_new_pair` | T0846, T1046 | a known master on a unit it has never addressed, which is one host working along the segment |
+| `anomaly_new_symbol` | T0855 | a function code this master has never used: not a command the policy refused, a command this master's own history says it does not send |
+| `anomaly_new_talker` | T0886 | an address this listener has never served, on a segment whose device list does not change from one year to the next |
+| `anomaly_new_write_point` | T0836, T0835 |  |
+| `anomaly_sequence_unseen` | T0855 | a legitimate-looking request in an illegitimate place: an operation that has never followed the one before it |
+| `anomaly_telemetry_frozen` | T0832, T0856, T1565.002 | a register that had been moving and stopped, which is the crude way to show a control room something other than the process |
+| `anomaly_telemetry_replayed` | T0832, T0856, T1565.002 | a run of readings repeated exactly, which is the careful way: the screen stays alive while the process does something else |
 | `anomaly_write_burst` | T0806, T0836 | writes across many addresses in a burst is the shape of walking the address space, not of a control action |
 | `client_not_allowed` | T0883, T1133 |  |
 | `coil_clear_not_allowed` | T0831, T0835 |  |
