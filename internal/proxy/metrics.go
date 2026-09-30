@@ -342,6 +342,23 @@ func (s *Server) Collect(e metrics.Collector) {
 			"Engineering operations that happened outside every approved grant window, on a listener that does not require one. They were carried: this is not a refusal, and the refusals are xproxy_refusals_total with reason engineering_no_grant.",
 			L{"kind": kind, "operation": class}, float64(sn.EngineeringOutside[k]))
 	}
+	// And the subset somebody filed a work order for, which is the other half
+	// of the same question: the difference between this and
+	// xproxy_engineering_total is the list an operations centre works through.
+	filed := make([]string, 0, len(sn.EngineeringFiled))
+	for k := range sn.EngineeringFiled {
+		filed = append(filed, k)
+	}
+	sort.Strings(filed)
+	for _, k := range filed {
+		kind, class, ok := strings.Cut(k, "/")
+		if !ok {
+			continue
+		}
+		e.Counter("xproxy_engineering_filed_total",
+			"Engineering operations that happened while a work order was on file for the device. A subset of xproxy_engineering_total, not an alternative to it: the difference between the two is the engineering nobody wrote down. A work order is not an approval and permits nothing.",
+			L{"kind": kind, "operation": class}, float64(sn.EngineeringFiled[k]))
+	}
 	// The pack engine's own numbers. The evictions are the one worth an alert:
 	// past the actor bound a sequence spanning the eviction stops being
 	// detectable, and the packs are then answering from part of their window.

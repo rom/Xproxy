@@ -2,7 +2,10 @@ package s7
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,7 +15,7 @@ import (
 	wire "github.com/rom/xproxy/internal/s7"
 )
 
-// "Downloads only during an approved work order", end to end: the machinery the
+// "Downloads only during an approved grant", end to end: the machinery the
 // bastions have had since the just-in-time work, applied to a request on the
 // plant's own protocol.
 //
@@ -44,7 +47,7 @@ upstreams:
   - {name: cpu, endpoints: [{address: %q}]}
 `
 
-func TestAStopNeedsAnApprovedWorkOrder(t *testing.T) {
+func TestAStopNeedsAnApprovedGrant(t *testing.T) {
 	p := startPLC(t, &fakePLC{})
 	ledger := filepath.Join(t.TempDir(), "access.jsonl")
 	s := proxytest.Start(t, fmt.Sprintf(engYAML, ledger, p.addr()))
@@ -56,7 +59,7 @@ func TestAStopNeedsAnApprovedWorkOrder(t *testing.T) {
 	// No work order: refused, and the CPU never hears about it.
 	cl.refused(stopJob(2))
 	if p.got("stop") {
-		t.Fatal("a stop with no approved work order reached the controller")
+		t.Fatal("a stop with no approved grant reached the controller")
 	}
 	awaitEng(t, s, func(sn proxy.Snapshot) bool {
 		return sn.Refusals["s7"]["engineering_no_grant"] >= 1 &&
@@ -167,4 +170,138 @@ func TestAnOperationOutsideEveryWindowIsNotCountedAsARefusal(t *testing.T) {
 	if sn.Techniques["T0859"] == 0 {
 		t.Errorf("the technique was not observed: %+v", sn.Techniques)
 	}
+}
+
+// A work order changes the tone and nothing else, which is the pair of claims
+// worth testing together: an operation on a device with one on file is reported
+// as expected work, and a listener that requires a grant still refuses it.
+//
+// The second half is the one that matters. If a work order could stand in for
+// an approval, the person who wanted the access could file one for themselves
+// and four eyes would be decoration.
+type securityEvents struct {
+	mu     sync.Mutex
+	events []recorded
+}
+
+type recorded struct {
+	action, reason string
+	attrs          map[string]any
+}
+
+func (c *securityEvents) SecurityEvent(action, reason string, attrs []any) {
+	m := map[string]any{}
+	for i := 0; i+1 < len(attrs); i += 2 {
+		k, _ := attrs[i].(string)
+		m[k] = attrs[i+1]
+	}
+	c.mu.Lock()
+	c.events = append(c.events, recorded{action: action, reason: reason, attrs: m})
+	c.mu.Unlock()
+}
+
+// find waits for an event with this reason and returns it.
+func (c *securityEvents) find(t *testing.T, reason string) recorded {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		c.mu.Lock()
+		for _, e := range c.events {
+			if e.reason == reason {
+				c.mu.Unlock()
+				return e
+			}
+		}
+		c.mu.Unlock()
+		time.Sleep(5 * time.Millisecond)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	t.Fatalf("no %s event; saw %+v", reason, c.events)
+	return recorded{}
+}
+
+func TestAWorkOrderChangesTheToneAndPermitsNothing(t *testing.T) {
+	p := startPLC(t, &fakePLC{})
+	ledger := filepath.Join(t.TempDir(), "access.jsonl")
+	s := proxytest.Start(t, fmt.Sprintf(engAlertYAML, ledger, p.addr()))
+	addr := proxytest.Addr(t, s, "plc")
+	cap := &securityEvents{}
+	s.Logs().Watch(cap)
+
+	// First, with nothing on file: the operation is reported as a warning and
+	// carries no reference.
+	cl := dial(t, addr)
+	cl.connect(wire.ResourcePG, 0, 2)
+	cl.allowed(stopJob(2))
+	ev := cap.find(t, "engineering_mode_change")
+	if got := ev.attrs["severity"]; got != "warning" {
+		t.Errorf("severity %v: with nothing on file this is work nobody filed", got)
+	}
+	if _, ok := ev.attrs["work_order"]; ok {
+		t.Errorf("an event with no work order named one: %+v", ev.attrs)
+	}
+
+	// Now file one against the pool this listener reaches.
+	led := s.Access()
+	if led == nil {
+		t.Fatal("the daemon has no access ledger")
+	}
+	if _, err := led.FileWorkOrder(access.WorkOrder{Reference: "WO-2026-0481",
+		Device: "cpu", Note: "die change on line 1", By: "maintenance",
+		Expires: time.Now().Add(8 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	cap.mu.Lock()
+	cap.events = nil
+	cap.mu.Unlock()
+
+	cl2 := dial(t, addr)
+	cl2.connect(wire.ResourcePG, 0, 2)
+	cl2.allowed(stopJob(3))
+	ev = cap.find(t, "engineering_mode_change")
+	if got := ev.attrs["severity"]; got != "notice" {
+		t.Errorf("severity %v: somebody filed this work", got)
+	}
+	if got := ev.attrs["work_order"]; got != "WO-2026-0481" {
+		t.Errorf("work_order %v", got)
+	}
+	awaitEng(t, s, func(sn proxy.Snapshot) bool {
+		return sn.EngineeringFiled["s7/mode_change"] >= 1
+	}, "the operation under a work order")
+
+	// The alert beside the report follows the same tone, because that is the
+	// event an alerting pipeline is filtering on.
+	alert := cap.find(t, "s7_engineering_ungranted")
+	if got := alert.attrs["severity"]; got != "notice" {
+		t.Errorf("the ungranted alert stayed at %v although the work was filed", got)
+	}
+	if got := alert.attrs["work_order"]; got != "WO-2026-0481" {
+		t.Errorf("the ungranted alert names work_order %v", got)
+	}
+
+	// And the reference is in the hash-chained trail beside the operation.
+	b, err := os.ReadFile(ledger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"work_order_ref":"WO-2026-0481"`) {
+		t.Errorf("the trail does not tie the operation to the work order:\n%s", b)
+	}
+
+	// The other half: a listener that requires a grant refuses the same
+	// operation, work order or not.
+	strict := proxytest.Start(t, fmt.Sprintf(engYAML, filepath.Join(t.TempDir(), "strict.jsonl"), p.addr()))
+	sled := strict.Access()
+	if _, err := sled.FileWorkOrder(access.WorkOrder{Reference: "WO-2026-0482",
+		Device: "cpu", Note: "the same work, filed", By: "maintenance",
+		Expires: time.Now().Add(8 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	sc := dial(t, proxytest.Addr(t, strict, "plc"))
+	sc.connect(wire.ResourcePG, 0, 2)
+	sc.refused(stopJob(4))
+	awaitEng(t, strict, func(sn proxy.Snapshot) bool {
+		return sn.Refusals["s7"]["engineering_no_grant"] >= 1
+	}, "the refusal, which a work order must not lift")
 }

@@ -287,7 +287,7 @@ on this kind, and the other four models carry it.
 Engineering on SNMP is one operation: a SET. The `engineering` block —
 [documented once in docs/CONFIG.md](../CONFIG.md#engineering), the same on every
 OT kind — reads it as its own class of event, and can hold it to an approved
-work order out of the [access ledger](../CONFIG.md#access).
+grant out of the [access ledger](../CONFIG.md#access).
 
 | Operation | Class | Why |
 |-----------|-------|-----|
@@ -303,7 +303,7 @@ community string or the USM user is what a management station *is*, so a work
 order for "reconfigure the substation switches on Tuesday" names that credential
 and the point is the first binding's object identifier. A v2c community is a
 weak thing to name, which is an argument for v3 rather than an argument against
-writing the work order down.
+writing the change down.
 
 ## What it does not do
 

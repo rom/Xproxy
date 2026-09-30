@@ -6,6 +6,46 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (work orders: the change reference somebody filed, which is not an approval)
+
+- **A work order can be filed against a device, from the Plant screen of the web
+  interface, `xproxyctl workorder` or `POST /v1/workorders`.** It is the identifier
+  the maintenance system already issued — `WO-2026-0481` — recorded against a
+  device for a window, with a note saying what the work is, in the same
+  hash-chained ledger as the grants. While it is open, every engineering event on
+  that device carries `work_order` and `work_order_by` and says `severity: notice`;
+  with nothing on file the same event says `severity: warning` and names no
+  reference. `xproxy_engineering_filed_total{kind,operation}` counts the subset
+  somebody filed, and the difference between it and `xproxy_engineering_total` is
+  the list an operations centre works through.
+
+  An engineering operation is worth an event either way — that has not changed.
+  What was missing was the answer to "was anybody expecting this", for the
+  estates that cannot yet run four-eyes approval on every program download but do
+  already have the work order number.
+
+- **A work order is not a grant and permits nothing.** A listener with
+  `engineering.require_grant: true` refuses an operation with no approved grant
+  whatever work orders are open, and the end-to-end test asserts exactly that. If
+  it were otherwise, the person who wanted the access could file one for
+  themselves and the approval requirement would be decoration. The distinction is
+  stated in the configuration reference (a table: who agrees, what it permits, what
+  it changes), in the command's own usage text, and above the form in the
+  interface, which is where somebody is most likely to assume the opposite.
+
+  The documentation used to use "approved work order" as a synonym for a grant,
+  and one code path logged the grant's reason under the attribute name
+  `work_order`. Both are corrected: a grant is a grant, its reason is
+  `grant_reason`, and `work_order` now names a work order. `access.max_work_order`
+  (default thirty days) bounds the window, because a work order with no end is the
+  one somebody files during a shutdown and never closes.
+
+- **`xproxyctl packs release ADDRESS -note ...` works as documented.** The tool's
+  usage puts the name before the flags, which is the order people type, but Go's
+  flag package stops parsing at the first non-flag argument — so every flag after
+  the address was silently unset and the command printed its usage instead. The
+  name is now taken off the front first, for `workorder` and for `packs release`.
+
 ### Added (the listener inventory, and a web interface that admits the other thirty-three protocols exist)
 
 - **`GET /v1/listeners` and `xproxyctl listeners`: every listener with its

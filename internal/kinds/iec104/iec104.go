@@ -100,7 +100,7 @@ type server struct {
 	cmdRate  *limits.KeyedLimiter
 	anomaly  *anomaly.Detector
 	// engineering recognises the substation's own tooling -- a reset, a
-	// parameter, a file transfer -- and ties it to an approved work order.
+	// parameter, a file transfer -- and ties it to an approved grant.
 	engineering *engineering.Guard
 
 	open atomic.Int64

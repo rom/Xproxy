@@ -5348,7 +5348,9 @@ T}
 .PP
 \fBengineering_ungranted\fR is \fBnot\fR a refusal and is not counted as one. The operation was carried \[u2014] that is the whole difference between the two reasons \[u2014] so it has a counter of its own, \fBxproxy_engineering_outside_window_total\fR, beside \fBxproxy_engineering_total\fR. The refusals stay in \fBxproxy_refusals_total\fR, where \fBengineering_no_grant\fR is the only engineering reason that belongs. The ATT&CK technique is observed either way: an operation outside every window is a detection whether or not anybody refused it.
 .PP
-\fBA grant is a work order.\fR It is requested and approved through the same \fB/v1/access\fR machinery and \fBxproxyctl access\fR as a bastion session, against this listener\(aqs name, and its reason is the change reference. The reason goes into the security event as \fBwork_order\fR and into the ledger beside the operation, so "who downloaded what, when, under which work order" has an answer that is not a person\(aqs memory. A listener with \fBrequire_grant: true\fR on a daemon with no ledger \fBfails closed at startup\fR rather than at four in the afternoon, the same way the gate kinds do.
+\fBThe grant is the approval.\fR It is requested and approved through the same \fB/v1/access\fR machinery and \fBxproxyctl access\fR as a bastion session, against this listener\(aqs name, and its reason says what the change is. The event carries \fBgrant\fR and \fBgrant_reason\fR, and the ledger records them beside the operation, so "who downloaded what, when, under whose approval" has an answer that is not a person\(aqs memory. A listener with \fBrequire_grant: true\fR on a daemon with no ledger \fBfails closed at startup\fR rather than at four in the afternoon, the same way the gate kinds do.
+.PP
+\fBThe work order is a different thing, and is not an approval.\fR A work order is the change reference somebody filed against the device \[u2014] nobody approves it and it permits nothing. Where one is open, every engineering event on that device carries \fBwork_order\fR and \fBwork_order_by\fR, its \fBseverity\fR is \fBnotice\fR rather than \fBwarning\fR, and the operation counts under \fBxproxy_engineering_filed_total\fR as well as \fBxproxy_engineering_total\fR. Where none is, the event says \fBseverity: warning\fR and names no reference. That is the whole of what a work order does: a listener with \fBrequire_grant: true\fR refuses an operation with no grant whatever work orders are open.
 .PP
 \fBThe refusal is the protocol\(aqs own.\fR It answers the way that kind answers a refused request \[u2014] a Modbus exception, an S7 error class, an OPC UA service fault \[u2014] and it does \fBnot\fR feed the ban ladder: an engineer who forgot to file a change should be told no, not locked out of the plant. In shadow mode, or a learning run without \fBenforce\fR, nothing is refused and the would\-be refusals go to the shadow report like every other decision on the listener.
 .PP
@@ -35906,6 +35908,7 @@ access:
   approvals: 1            # four eyes: the person who asked and one other
   max_duration: 4h
   max_lead: 24h
+  max_work_order: 720h    # thirty days: a shutdown fits, a forgotten one does not
   max_uses: 0             # the window is the bound
   max_open: 256
 
@@ -35970,6 +35973,15 @@ T}	T{
 How far ahead of now a window may start,\: so an approval today cannot be a key for next quarter;\: 0 to 720h
 T}
 T{
+\fBmax_\:work_\:order\fR
+T}	T{
+duration
+T}	T{
+\fB720h\fR
+T}	T{
+The longest window a work order may cover. Separate from \fBmax_\:duration\fR because the two measure different things: a grant is a window somebody is admitted through and four hours is generous,\: while a work order is how long the work lasts and a plant shutdown is a fortnight. \fBmax_\:lead\fR bounds its start as well;\: 1m to 2160h
+T}
+T{
 \fBmax_\:uses\fR
 T}	T{
 int
@@ -36001,6 +36013,72 @@ T}
 Each gate kind \-\- \fBssh\fR, \fBtelnet\fR, \fBvnc\fR, \fBrdp\fR and \fBftp\fR \-\- takes \fBrequire_grant: true\fR, in that one spelling, so an estate does not have to remember which protocol calls it what. A listener that requires a grant with no \fBaccess\fR section fails the load; an \fBaccess\fR section no listener asks is warned about.
 .PP
 The OT kinds ask for the same thing about a \fIrequest\fR rather than a session. A Modbus connection carries reads all day and one UMAS program write at four in the afternoon, and only the second needs a work order, so there \fBrequire_grant: true\fR sits in the listener\(aqs \fBengineering\fR block and covers the engineering classes rather than the connection. The grant, the approvals, the window and the trail are the same machinery; what differs is the unit of access.
+.SS "A work order is not a grant"
+.PP
+The two are both in this section, both in the trail, and they are not the same thing. Conflating them is the mistake this heading exists to stop.
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(1.4i) lbx
+lw(0.8i) lw(1.4i) lx.
+T{
+
+T}	T{
+A grant
+T}	T{
+A work order
+T}
+T{
+What it is
+T}	T{
+an authorisation
+T}	T{
+a change reference somebody filed
+T}
+T{
+Who agrees
+T}	T{
+\fBapprovals\fR other people
+T}	T{
+nobody
+T}
+T{
+What it permits
+T}	T{
+a session,\: or an engineering class,\: that would otherwise be refused
+T}	T{
+\fBnothing\fR. It never permits anything that was not already permitted
+T}
+T{
+What it changes
+T}	T{
+whether the operation happens
+T}	T{
+how the operation is \fIreported\fR
+T}
+T{
+Its window
+T}	T{
+\fBmax_\:duration\fR,\: hours
+T}	T{
+\fBmax_\:work_\:order\fR,\: up to a shutdown
+T}
+T{
+Filed by
+T}	T{
+the person who wants the access,\: approved by another
+T}	T{
+one person,\: alone
+T}
+.TE
+.PP
+A work order is the identifier the maintenance system already issued \[u2014] \fBWO\-2026\-0481\fR \[u2014] filed against a device for a window, with a note saying what the work is. It is written to the ledger like everything else here, so "was that download filed, and by whom" has an answer nobody could edit afterwards. An engineering operation on that device while it is open is reported as expected work: the event carries \fBwork_order\fR, its severity is \fBnotice\fR rather than \fBwarning\fR, and the operation counts under \fBxproxy_engineering_filed_total\fR as well. The same operation with nothing on file is reported as an operation nobody wrote down.
+.PP
+\fBA listener with \fBrequire_grant: true\fR still refuses an operation with no grant, whatever work orders are open.\fR A work order cannot open a door. If it could, the person who wanted the access could file one for themselves and the approval requirement would be decoration.
+.PP
+So the two are for two different estates, and most plants are the second one for a while before they are the first. An estate that can run four\-eyes approval on every program download uses grants and refuses what has none. An estate that cannot yet \[u2014] because the commissioning engineer is on site now and the approver is not \[u2014] still files the reference, and then the weekly report has two lists: the engineering somebody filed, and the engineering nobody did. The second list is short, and it is the one worth reading. What it must not be is a single list of everything, which is what an estate with neither gets and therefore does not read.
+.PP
+Work orders are filed over the management API (\fBPOST /v1/workorders\fR), from \fBxproxyctl workorder\fR, and from the Plant screen of the web interface. There is no configuration for them beyond \fBmax_work_order\fR: the \fBaccess\fR ledger is where they go, so a daemon with no \fBledger\fR has nowhere to file one and says so.
 .SS "What a grant names"
 .PP
 A grant names a \fBsubject\fR, a \fBlistener\fR and a \fBtarget\fR.

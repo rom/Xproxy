@@ -1388,9 +1388,9 @@ describes it, validation refuses what cannot work, and
   download or upload, a controller stopped, a protection setting group
   written, a firmware image pushed, an OPC UA method called — reported with
   its class whatever the rules said about it, and refusable where there is
-  no approved work order open for it. So "downloads only during an approved
+  no approved grant open for it. So "downloads only during an approved
   change" is a policy the relay enforces rather than a sentence in a
-  procedure, and "who downloaded what, when, under which work order" comes
+  procedure, and "who downloaded what, when, under which approval" comes
   out of the ledger rather than out of somebody's memory
 
 ### The estate: clusters, fleets and Kubernetes

@@ -80,8 +80,11 @@ const (
 	// window that may be booked a day ahead.
 	DefaultAccessApprovals   = 1
 	DefaultAccessMaxDuration = 4 * time.Hour
-	DefaultAccessMaxLead     = 24 * time.Hour
-	DefaultAccessMaxOpen     = 256
+	// DefaultAccessMaxWorkOrder is thirty days: a plant shutdown fits, and
+	// anything longer is not a work order but a policy change.
+	DefaultAccessMaxWorkOrder = 30 * 24 * time.Hour
+	DefaultAccessMaxLead      = 24 * time.Hour
+	DefaultAccessMaxOpen      = 256
 	// DefaultSecretRefresh is how long a resolved secret is used before
 	// its source is asked again; DefaultSignerTimeout bounds one
 	// signature from an external signer and DefaultSignerConns the
@@ -1104,6 +1107,7 @@ func applyDefaults(c *Config) {
 			a.Approvals = ptr(DefaultAccessApprovals)
 		}
 		setDur(&a.MaxDuration, DefaultAccessMaxDuration)
+		setDur(&a.MaxWorkOrder, DefaultAccessMaxWorkOrder)
 		setDur(&a.MaxLead, DefaultAccessMaxLead)
 		setInt(&a.MaxOpen, DefaultAccessMaxOpen)
 	}

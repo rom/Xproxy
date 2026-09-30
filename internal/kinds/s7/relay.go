@@ -45,7 +45,7 @@ type server struct {
 	anomaly *anomaly.Detector
 
 	// engineering recognises the plant's own tooling and ties it to an
-	// approved work order.
+	// approved grant.
 	engineering *engineering.Guard
 
 	// gate bounds the sessions held, altogether and per client address.
@@ -534,7 +534,7 @@ func (t *server) decide(se *session, c *wire.COTP) (forward, fatal bool) {
 	}
 	// And engineering: the operations that change what the machine is rather
 	// than what it is doing. Reported whatever the policy said, and refused
-	// where this listener requires an approved work order for them.
+	// where this listener requires an approved grant for them.
 	if reason := t.decideEngineering(se, pdu); reason != "" {
 		return t.respond(se, pdu, reason)
 	}

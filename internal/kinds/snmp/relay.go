@@ -252,7 +252,7 @@ func (t *server) fromManager(agent net.PacketConn, raw []byte, p *peer) {
 	}
 	// Engineering: a SET is a configuration change on this protocol. Reported
 	// whatever the policy said, and refused where this listener requires an
-	// approved work order for it.
+	// approved grant for it.
 	if reason := t.decideEngineering(t.request(ip, m, p)); reason != "" {
 		if !t.deceive(m, p, reason) {
 			t.answerRefusal(m, p)

@@ -416,11 +416,87 @@ views.alarms = { refresh: 15000, async render() {
 }};
 
 // ---- plant: the OT half, which is a different estate with different questions ----
+// ---- work orders ----
+//
+// A work order is the change reference somebody filed against a device. It is
+// *not* a grant: nobody approves it and it permits nothing. What it changes is
+// how the engineering on that device is reported while it is open -- expected
+// work rather than work nobody wrote down.
+//
+// The page says so in as many words, above the form. The mistake worth
+// preventing is an operator filing one and believing the download is now
+// approved, and a form that only said "work order" would invite exactly that.
+function workOrderForm(refresh) {
+  const ref = h('input', { id: 'wo-ref', placeholder: 'WO-2026-0481', size: 18, required: '' });
+  const device = h('input', { id: 'wo-device', placeholder: 'device: pool, address or asset', size: 26, required: '' });
+  const listener = h('input', { id: 'wo-listener', placeholder: 'listener (any)', size: 14 });
+  const duration = h('input', { id: 'wo-duration', placeholder: '8h', size: 6, required: '' });
+  const note = h('input', { id: 'wo-note', placeholder: 'what the work is', size: 34 });
+  const file = h('button', null, 'File work order');
+  const form = h('form', { class: 'row tight' }, ref, device, listener, duration, note, file);
+  form.addEventListener('submit', async ev => {
+    ev.preventDefault();
+    file.disabled = true;
+    try {
+      const v = await post('/api/workorders', {
+        reference: ref.value, device: device.value, listener: listener.value,
+        duration: duration.value, note: note.value,
+      });
+      flash('work order ' + v.reference + ' on file for ' + v.device + ' (' + v.state + '); it permits nothing', 'ok');
+      ref.value = ''; device.value = ''; listener.value = ''; note.value = '';
+      await refresh();
+    } catch (e) { flash(e.message, 'bad'); }
+    file.disabled = false;
+  });
+  return h('div', null,
+    h('p', { class: 'muted' }, 'Filing a work order ',
+      h('strong', null, 'permits nothing'),
+      '. A listener with engineering restrictions still refuses an operation with no approved grant. ',
+      'What this changes is the tone: engineering on that device while the work order is open is reported as ',
+      'expected work, with the reference on the event, instead of as work nobody filed.'),
+    form);
+}
+
+function workOrderTable(orders, refresh) {
+  return table(['Reference', 'Device', 'Listener', 'State', 'From', 'Until', 'Filed by', 'Work', ''],
+    orders.map(o => [
+      o.reference, o.device, o.listener || h('span', { class: 'muted' }, 'any'),
+      h('span', { class: o.state === 'open' ? 'ok' : o.state === 'scheduled' ? 'warn' : 'muted' }, o.state),
+      fmtTime(o.not_before), fmtTime(o.expires), o.by, h('span', { class: 'wrap' }, o.note || ''),
+      o.state === 'open' || o.state === 'scheduled' ? closeOrderButton(o, refresh) : (o.closed ? h('span', { class: 'muted' }, 'closed by ' + o.closed.by) : ''),
+    ]));
+}
+
+function closeOrderButton(o, refresh) {
+  if (!operator()) return '';
+  const b = h('button', { class: 'secondary' }, 'Close');
+  b.addEventListener('click', async () => {
+    if (!confirm('Close work order ' + o.reference + '? Engineering on ' + o.device + ' is unfiled again from now on.')) return;
+    b.disabled = true;
+    try { await api('DELETE', '/api/workorders?reference=' + encodeURIComponent(o.reference)); flash('closed ' + o.reference, 'ok'); await refresh(); }
+    catch (e) { flash(e.message, 'bad'); b.disabled = false; }
+  });
+  return b;
+}
+
 views.plant = { refresh: 15000, async render() {
-  const [packs, access, assets, adv] = await Promise.all([
+  const [packs, access, assets, adv, orders] = await Promise.all([
     get('/api/packs').catch(e => ({ e })), get('/api/access').catch(e => ({ e })),
-    get('/api/assets').catch(e => ({ e })), get('/api/advisories').catch(e => ({ e }))]);
+    get('/api/assets').catch(e => ({ e })), get('/api/advisories').catch(e => ({ e })),
+    get('/api/workorders').catch(e => ({ e }))]);
   clear(view);
+
+  const wcard = h('div', { class: 'card' }, h('h2', null, 'Work orders'));
+  if (orders.e) wcard.append(h('p', { class: 'muted' }, 'no access ledger, so there is nowhere to file one (' + orders.e.message + ')'));
+  else {
+    const list = orders.work_orders || [];
+    wcard.append(h('div', { class: 'grid' }, [
+      ['On file', list.length], ['Open now', orders.open || 0],
+    ].map(([k, v]) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v)))),
+      operator() ? workOrderForm(() => views.plant.render()) : h('p', { class: 'muted' }, 'filing a work order needs the operator role'),
+      list.length ? workOrderTable(list, () => views.plant.render()) : h('p', { class: 'muted mt-s' }, 'none on file'));
+  }
+  view.append(wcard);
 
   const pcard = h('div', { class: 'card' }, h('h2', null, 'Behaviour packs'));
   if (packs.e) pcard.append(h('p', { class: 'muted' }, 'not configured (' + packs.e.message + ')'));

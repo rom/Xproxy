@@ -135,7 +135,7 @@ server:
 
         # Every setting-group write, every domain download and every file
         # transfer is its own class of event, with the change reference from
-        # the work order beside it -- which is what makes "who changed the trip
+        # the grant beside it -- which is what makes "who changed the trip
         # characteristic, and under which CR" answerable a year later out of a
         # hash-chained file rather than out of somebody's memory.
         #
@@ -144,7 +144,7 @@ server:
         # approved window is reported as engineering_ungranted, and nothing is
         # refused. Read a month of those before moving to `deny`. The schedule
         # on the rules above is still enforced, so a setting write on a Monday
-        # is refused by the policy either way; what this adds is the work order.
+        # is refused by the policy either way; what this adds is the grant.
         engineering:
           require_grant: true
           action: alert
@@ -193,7 +193,7 @@ server:
         default_action: allow
         log_requests: false
 
-# The work orders the engineering listener reports against. Requested,
+# The grants the engineering listener reports against. Requested,
 # approved by somebody other than the requester, time-boxed, hash-chained --
 # the same machinery the bastions use, because an estate should not have one
 # access system for its servers and another for its substations.

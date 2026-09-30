@@ -166,6 +166,7 @@ func packsShow(c *mgmt.Client, args []string, out, errOut io.Writer, asJSON bool
 
 // packsRelease lifts a quarantine.
 func packsRelease(c *mgmt.Client, args []string, out, errOut io.Writer, asJSON bool) int {
+	address, args := leadingName(args)
 	rf := flag.NewFlagSet("release", flag.ContinueOnError)
 	rf.SetOutput(errOut)
 	note := rf.String("note", "", "why, for the audit log")
@@ -173,18 +174,34 @@ func packsRelease(c *mgmt.Client, args []string, out, errOut io.Writer, asJSON b
 	if err := rf.Parse(args); err != nil {
 		return 2
 	}
-	if rf.NArg() != 1 {
+	if address == "" || rf.NArg() != 0 {
 		_, _ = fmt.Fprintln(errOut, packsUsage)
 		return 2
 	}
-	if err := c.ReleasePack(rf.Arg(0), actor(*by), *note); err != nil {
+	if err := c.ReleasePack(address, actor(*by), *note); err != nil {
 		return packsFail(errOut, err)
 	}
 	if asJSON {
-		return printJSON(out, map[string]any{"released": rf.Arg(0)})
+		return printJSON(out, map[string]any{"released": address})
 	}
-	_, _ = fmt.Fprintf(out, "%s released\n", rf.Arg(0))
+	_, _ = fmt.Fprintf(out, "%s released\n", address)
 	return 0
+}
+
+// leadingName takes the name off the front of a subcommand's arguments.
+//
+// The usage text of this tool puts the name first -- "packs release ADDRESS
+// [-note TEXT]", "workorder close REFERENCE [-by NAME]" -- because that is the
+// order people type. Go's flag package stops parsing at the first non-flag
+// argument, so parsing those arguments as they stand leaves every flag after
+// the name unset and silently ignored: `packs release 10.0.0.1 -note why` used
+// to print the usage rather than the note. Taking the name off first makes the
+// documented form the form that works.
+func leadingName(args []string) (string, []string) {
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		return args[0], args[1:]
+	}
+	return "", args
 }
 
 // packsKeygen writes a signing keypair. The private half is 0600 and the public

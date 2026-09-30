@@ -1506,6 +1506,7 @@ func accessPolicy(a *config.Access) access.Policy {
 	p := access.Policy{
 		MaxDuration:  a.MaxDuration.D(),
 		MaxLead:      a.MaxLead.D(),
+		MaxWorkOrder: a.MaxWorkOrder.D(),
 		MaxUses:      a.MaxUses,
 		MaxOpen:      a.MaxOpen,
 		SelfApproval: a.SelfApproval,

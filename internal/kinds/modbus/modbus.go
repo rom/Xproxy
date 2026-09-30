@@ -74,7 +74,7 @@ type server struct {
 	limiter   *limits.KeyedLimiter
 	anomaly   *anomaly.Detector
 	// engineering recognises the plant's own tooling -- UMAS, the diagnostic
-	// sub-functions -- and ties it to an approved work order.
+	// sub-functions -- and ties it to an approved grant.
 	engineering *engineering.Guard
 
 	open atomic.Int64
@@ -543,7 +543,7 @@ func (se *session) run() string {
 		// which is the opposite of what it is for.
 		// Engineering: a UMAS program transfer, a CPU stop, a cleared event
 		// log. Reported whatever the policy said, and refused where this
-		// listener requires an approved work order for it.
+		// listener requires an approved grant for it.
 		if reason := t.decideEngineering(se, req); reason != "" {
 			switch t.m.DenyResponse {
 			case "drop":

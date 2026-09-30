@@ -20,7 +20,7 @@
 #               window of setpoints, and nothing else
 #   line3-eng — the same controller on a separate address for the
 #               engineering station, where a download happens inside a
-#               change window, against an approved work order, and is
+#               change window, against an approved grant, and is
 #               written down
 #   packaging — a whole cell of controllers, read-only, one line that no
 #               rule can override
@@ -186,7 +186,7 @@ server:
 
         # A download, an upload, a stop, a clock write: each is its own
         # class of event whatever the rules said about it, and on this
-        # listener each needs an approved work order open at the time. The
+        # listener each needs an approved grant open at the time. The
         # schedule below says *when* a change may happen; this says that
         # somebody asked, somebody else agreed, and the change reference is
         # in the trail beside the download.
@@ -199,7 +199,7 @@ server:
         # not an engineering operation.
         #
         # Start with `action: alert` on a line that has never run this: the
-        # operations are then recorded and the missing work orders reported
+        # operations are then recorded and the missing grants reported
         # without a commissioning day being stopped by a policy nobody has
         # read yet.
         engineering:
@@ -431,7 +431,27 @@ upstreams:
     balancer: hash
     max_connections_per_endpoint: 6
 
-# The work orders the engineering listener asks for: requested, approved by
+# Two different things live in this section, and conflating them is the one
+# mistake worth avoiding here.
+#
+# A *grant* is an authorisation: requested by one person, approved by another,
+# short, and able to refuse. `require_grant: true` above means an operation with
+# no grant open for it does not reach the CPU.
+#
+# A *work order* is the reference the maintenance system already issued, filed
+# against a device for the length of the work:
+#
+#   xproxyctl workorder file WO-2026-0481 -device cpu -duration 8h \
+#     -note "die change on line 1" -by maintenance
+#
+# Nobody approves it and it permits nothing -- the listener above still refuses
+# an ungranted download while it is open. What it changes is the reporting: the
+# engineering events on that device say `severity: notice` and carry the
+# reference instead of reading as work nobody filed, and
+# xproxy_engineering_filed_total counts them. For an estate not yet running
+# four-eyes approval on every download, that difference is the whole report.
+#
+# The grants the engineering listener asks for: requested, approved by
 # somebody who is not the requester, time-boxed, and written to a trail with a
 # hash over every record. This is the same machinery the bastions use, which is
 # the point -- an estate should not have two access systems, one for the
