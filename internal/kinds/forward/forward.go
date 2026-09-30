@@ -621,8 +621,6 @@ func (f *forwardServer) connect(w http.ResponseWriter, r *http.Request, p *forwa
 		return
 	}
 	h.Counters().ForwardTunnels.Add(1)
-	h.Counters().ForwardTunnelsOpen.Add(1)
-	defer h.Counters().ForwardTunnelsOpen.Add(-1)
 	f.track(client, true)
 	defer f.track(client, false)
 	if !f.tunnels.Enter() {
@@ -631,6 +629,14 @@ func (f *forwardServer) connect(w http.ResponseWriter, r *http.Request, p *forwa
 		return
 	}
 	defer f.tunnels.Leave()
+	// The open gauge inside the group, and deliberately *after* the deferred
+	// Leave, so that it is decremented before the group releases: deferred
+	// calls run in reverse, and a gauge registered above Leave would be
+	// decremented after shutdown's Wait had already returned. A drain that
+	// finished would then leave xproxy_forward_tunnels_open reading a tunnel
+	// that is not there, which is the number an operator watches a drain with.
+	h.Counters().ForwardTunnelsOpen.Add(1)
+	defer h.Counters().ForwardTunnelsOpen.Add(-1)
 	_ = client.SetDeadline(time.Time{})
 	_, err = bufrw.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
 	if err == nil {
@@ -679,14 +685,16 @@ func (f *forwardServer) connectH2(w http.ResponseWriter, r *http.Request, p *for
 	h := f.host
 	rc := http.NewResponseController(w)
 	h.Counters().ForwardTunnels.Add(1)
-	h.Counters().ForwardTunnelsOpen.Add(1)
-	defer h.Counters().ForwardTunnelsOpen.Add(-1)
 	f.track(dst, true)
 	defer f.track(dst, false)
 	if !f.tunnels.Enter() {
 		return
 	}
 	defer f.tunnels.Leave()
+	// After the deferred Leave, so the gauge drops before the group releases;
+	// see the note on the HTTP/1 path above.
+	h.Counters().ForwardTunnelsOpen.Add(1)
+	defer h.Counters().ForwardTunnelsOpen.Add(-1)
 	defer func() { _ = dst.Close() }()
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
