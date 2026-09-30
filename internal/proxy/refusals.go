@@ -1,9 +1,11 @@
 package proxy
 
 import (
+	"sort"
 	"sync"
 	"sync/atomic"
 
+	"github.com/rom/xproxy/internal/attack"
 	"github.com/rom/xproxy/internal/listener"
 )
 
@@ -52,6 +54,13 @@ func (s *Stats) Refuse(kind, reason string) {
 		return
 	}
 	reason = refusalReason(kind, reason)
+	// What the refusal means in ATT&CK for ICS terms, counted beside it.
+	// It is the same lookup the security log does, from the same table,
+	// so a graph by technique and a search by technique cannot disagree
+	// -- and it is counted only on the enforced path, because a listener
+	// in shadow mode did not detect a technique, it decided not to act on
+	// one. The shadow ledger is where that reading belongs.
+	s.techniques.observe(kind, reason)
 	r := &s.refusals
 	r.mu.RLock()
 	c := r.m[kind][reason]
@@ -165,5 +174,71 @@ func (r *refusals) counts() map[string]map[string]uint64 {
 		}
 		out[kind] = m
 	}
+	return out
+}
+
+// techniqueCounts is the refusals seen per ATT&CK for ICS technique.
+//
+// It is a table of its own rather than a label on the refusal counter for
+// two reasons. One reason carries more than one technique, so a label
+// would have to hold a list and nothing could then sum a technique's
+// total. And the set is bounded by the catalogue in internal/attack
+// rather than by anything a client does, so this table needs no bound of
+// its own: a technique that is not in the catalogue is not counted at
+// all.
+type techniqueCounts struct {
+	mu sync.RWMutex
+	m  map[string]*atomic.Uint64
+}
+
+// observe counts the techniques one refusal carries.
+func (t *techniqueCounts) observe(kind, reason string) {
+	ts := attack.Of(kind, reason)
+	if len(ts) == 0 {
+		return
+	}
+	for _, tech := range ts {
+		t.mu.RLock()
+		c := t.m[tech.ID]
+		t.mu.RUnlock()
+		if c == nil {
+			t.mu.Lock()
+			if t.m == nil {
+				t.m = make(map[string]*atomic.Uint64, 16)
+			}
+			if c = t.m[tech.ID]; c == nil {
+				c = new(atomic.Uint64)
+				t.m[tech.ID] = c
+			}
+			t.mu.Unlock()
+		}
+		c.Add(1)
+	}
+}
+
+// TechniqueCounts copies the table, identifier to count.
+func (s *Stats) TechniqueCounts() map[string]uint64 {
+	t := &s.techniques
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	if len(t.m) == 0 {
+		return nil
+	}
+	out := make(map[string]uint64, len(t.m))
+	for id, c := range t.m {
+		out[id] = c.Load()
+	}
+	return out
+}
+
+// TechniqueIDs are the identifiers seen, sorted, for a view that lists
+// them in a stable order.
+func (s *Stats) TechniqueIDs() []string {
+	counts := s.TechniqueCounts()
+	out := make([]string, 0, len(counts))
+	for id := range counts {
+		out = append(out, id)
+	}
+	sort.Strings(out)
 	return out
 }

@@ -1371,6 +1371,40 @@ func run(args []string, out, errOut io.Writer) int {
 			_ = tw.Flush()
 		}
 		return 0
+	case "techniques":
+		// What this daemon has seen, in the vocabulary an operations
+		// centre catalogues detections in, and -- with -catalogue -- what
+		// it could see at all. The two are different questions and the
+		// difference matters: a zero against a technique on a plant with
+		// no engineering listener means "nothing tried", and on one that
+		// has it means "nothing tried yet".
+		tf := flag.NewFlagSet("techniques", flag.ContinueOnError)
+		tf.SetOutput(errOut)
+		all := tf.Bool("catalogue", false, "list every technique this proxy can observe, seen or not")
+		if err := tf.Parse(fs.Args()[1:]); err != nil {
+			return 2
+		}
+		st, err := c.Status()
+		if err != nil {
+			return fail(err)
+		}
+		seen := st.Stats.Techniques
+		if *asJSON {
+			return printJSON(out, techniqueRows(seen, *all))
+		}
+		rows := techniqueRows(seen, *all)
+		if len(rows) == 0 {
+			_, _ = fmt.Fprintln(out, "no refusal has carried an ATT&CK for ICS technique yet "+
+				"(-catalogue lists what this proxy can observe)")
+			return 0
+		}
+		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, "TECHNIQUE\tCOUNT\tTACTIC\tNAME")
+		for _, r := range rows {
+			_, _ = fmt.Fprintf(tw, "%s\t%d\t%s\t%s\n", r.ID, r.Count, r.Tactic, r.Name)
+		}
+		_ = tw.Flush()
+		return 0
 	case "policy":
 		// What the listeners in shadow mode would have refused. The
 		// subcommand is "report" because that is what an operator asks

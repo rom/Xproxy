@@ -129,6 +129,7 @@ are where the shipped units put the other three.
 | `ban TARGET` | Ban an address, CIDR or `ja4:<fingerprint>`; `-duration 1h`, `-reason text` |
 | `unban TARGET` | Remove a ban |
 | `policy` [`report`\|`reset`] | What the listeners in shadow mode would have refused, most frequent first, with the rule that decided and an example (`-top N`); `reset` empties the ledger |
+| `techniques` [`-catalogue`] | What the refusals meant in MITRE ATT&CK for ICS terms, most seen first; `-catalogue` lists every technique this proxy can observe, seen or not (see [docs/ATTACK.md](ATTACK.md)) |
 | `sessions` | The sessions the daemon is serving now (ssh, sftp, telnet, vnc, rdp, ftp, modbus) with the client, login, target, one detail and how long; `-kill ID` closes one, `-kill-matching` with `-kind`, `-listener` or `-user` closes a set (audited) |
 | `cluster` | Peers, inbound connections and gossip counters |
 | `accounts` | Account guard state: endpoints with tracked keys, active blocks (`-top N` per endpoint), campaign state and the action counters |
@@ -6659,6 +6660,13 @@ WAF entries add `waf_profile`, `waf_mode`, `waf_matched` (rule ids),
 Detections in `detect` mode appear on the access line with
 `waf_detected: true`. Bans and unbans are logged with `msg: "client banned"`
 and `"client unbanned"`, including trigger name, duration and count.
+
+Where the reason means something in MITRE ATT&CK for ICS terms, the line
+also carries `technique`, `technique_name` and `tactic` -- so a refusal on
+a Modbus listener arrives in a SIEM as `T0855`, *Unauthorized Command
+Message*, rather than as a string somebody has to map. A reason that is
+protocol hygiene carries none of those fields deliberately; the mapping,
+and why it stops where it does, is [docs/ATTACK.md](ATTACK.md).
 
 ### error
 

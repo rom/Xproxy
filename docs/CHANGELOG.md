@@ -6,6 +6,54 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (every refusal says what it means in ATT&CK for ICS terms)
+
+- **`technique`, `technique_name` and `tactic` on the security log line,
+  where the reason maps to one.** An operations centre does not read
+  `modbus_read_only` or `mms_write_constraint_not_allowed`; it reads a
+  case in a SIEM whose detections are catalogued by technique, reports
+  coverage by technique, and is asked at an audit which techniques the
+  estate can see. A relay saying "a write was refused on a read-only
+  listener" is saying T0855, *Unauthorized Command Message*, and the
+  alternative to saying it here is a spreadsheet somebody else keeps that
+  goes stale the first time a kind gains a reason.
+
+- **Tagged at the two points every event already passes through** --
+  `logging.SecurityEvent` and the refusal counter -- rather than at each
+  call site in each kind. A kind that had to remember would be a kind
+  whose next refusal reason reaches a SIEM as a string nobody can
+  catalogue, and there are a hundred and forty of those reasons.
+
+- **What is deliberately not tagged.** A malformed frame, a failed TLS
+  handshake, a datagram over the size bound: protocol hygiene and bounds
+  an operator set. A technique label on those would appear in a coverage
+  report as a detection this proxy does not have, which is worse than an
+  empty cell. And a technique nothing here can observe is not in the
+  catalogue at all -- the package's own test fails when one is added
+  without a detection behind it, so `attack.All()` is an honest answer to
+  "what can this relay detect" rather than a copy of MITRE's matrix with
+  most of it unreachable.
+
+- **One reason may carry several techniques**, because the behaviours
+  overlap by construction: an unsafe Modbus diagnostic sub-function is a
+  restart (T0816) and a way to stop a device answering (T0804). Both are
+  logged and both are counted, so the technique counters do not sum to the
+  refusal count and are not meant to -- the question they answer is "how
+  much of this technique did we see".
+
+- **Shadow mode is not tagged.** A listener in shadow mode did not detect
+  a technique, it decided not to act on one, and that reading stays in the
+  shadow ledger where the two have always been kept apart. Nothing here
+  reaches the ban ladder either.
+
+- `xproxyctl techniques` shows what this daemon has seen, most seen first;
+  `-catalogue` lists every technique it could observe, which is the honest
+  form of a coverage answer -- a zero says "nothing tried", not "nothing
+  detectable". `xproxy_attack_technique_total{technique,name,tactic}` is
+  the metric, `techniques` the snapshot field, and
+  [docs/ATTACK.md](ATTACK.md) is the mapping with a justification per row
+  and a parity test that keeps the page and the code the same table.
+
 ### Changed (the OT protocols are a daemon of their own: `xot`)
 
 - **A fourth binary, for the box at level 3.5.** `xrelay` served SMTP,

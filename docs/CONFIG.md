@@ -8525,6 +8525,7 @@ Where to look, in roughly the order a request passes through:
 | Where it goes | [`upstreams[]`](#upstreams) |
 | What is remembered and what is compressed | [`cache`](#cache), [`compression`](#compression) |
 | What an attacker is told | [`decoys`](#decoys), and [docs/DECEPTION.md](DECEPTION.md) |
+| What a refusal means to an operations centre | the ATT&CK for ICS technique on every event, [docs/ATTACK.md](ATTACK.md) |
 
 The protocol itself -- the three wire formats, what each gives you, and the
 framing ambiguities this listener refuses rather than normalises -- is
