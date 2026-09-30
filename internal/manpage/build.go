@@ -28,6 +28,7 @@ func Build(docsDir string) (map[string][]byte, error) {
 		{"xproxyctl", "man/xproxyctl.8.md", "System administration"},
 		{"xproxy-fleet", "man/xproxy-fleet.8.md", "System administration"},
 		{"xproxy-replay", "man/xproxy-replay.8.md", "System administration"},
+		{"xproxy-simulate", "man/xproxy-simulate.8.md", "System administration"},
 		{"xsigner", "man/xsigner.8.md", "System administration"},
 	} {
 		md, err := os.ReadFile(filepath.Join(docsDir, p.src)) //nolint:gosec // documentation paths from the generator

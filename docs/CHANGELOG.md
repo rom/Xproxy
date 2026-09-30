@@ -6,6 +6,65 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (policy simulation: what a change would decide differently)
+
+- **`xproxy-simulate` sends traffic through a configuration and reports what it
+  decided; given two configurations it reports only what moved.** It is a
+  separate, offline binary next to `xproxy-replay`(8): it opens no management
+  socket, needs no running daemon, and every listener kind is linked into it, so
+  it answers about a configuration naming any role's listeners without the
+  operator working out which daemon would have served it. Exit status is 1
+  whenever the two configurations decide anything differently, so a change can be
+  gated on it in review or in a pipeline, and `-json` carries the whole answer
+  including every security event.
+
+  It is not a linter and it does not reason about the rules: it starts the engine
+  and sends the traffic through it, so the answer comes from the code that would
+  decide it in production — the same WAF profiles and rule files, the same route
+  matching, the same protocol policies, the same filters.
+
+- **Traffic comes from a text corpus of HTTP requests, a text corpus of protocol
+  frames as hex, or a pcapng file written by `xproxyctl capture`.** The two text
+  formats share a separator, comments and directives, and are text because of
+  what an operator has in the minute they need this: a request out of a security
+  log, a frame out of a vendor document, a ticket saying the shift supervisor's
+  tool stopped working after the change. A format they can type, paste and keep in
+  the repository beside the configuration is worth more than a richer one they
+  would have to generate. The pcapng reader is round-tripped in its tests against
+  the real capture writer rather than against a fixture somebody wrote by hand.
+
+- **Nothing reaches a real upstream, and the output names everything that was
+  switched off.** Every pool is pointed at a sink inside the process, keeping the
+  pool names and the per-route assignments because which pool a request goes to is
+  itself a decision; state files are copied into a directory of the simulation's
+  own rather than opened; a TLS listener gets a throwaway certificate and the
+  estate's private keys are not read; `cluster`, `fleet`, `acme`, `tracing`,
+  `icap`, `scim`, `ingress`, `capture`, `threat_intel`, the OTLP exporter and
+  `sandbox` are switched off. A test asserts that every one of the forty-four
+  top-level configuration sections has a decision recorded about it, so a section
+  added later cannot be left unconsidered.
+
+- **`-offline` is required rather than assumed, and what it promises is stated
+  exactly.** Neutralising a configuration is not the same as making it inert: the
+  policy runs, which means the filters, any WebAssembly modules, the rule files
+  and the secrets provider load as the daemon loads them. That is the point — a
+  simulation of something other than the real policy answers the wrong question —
+  and it is a decision about this machine that belongs to the operator. The flag
+  does not sandbox anything. It asserts.
+
+- **An allow is asserted only on evidence.** The listener relayed the input to the
+  sink, or answered the client itself; absence of a refusal is not evidence. A
+  listener that speaks bytes rather than HTTP answers only when the device does,
+  so a frame it could not finish reading produces no reply and no event at all,
+  and reading that as `allowed` would put a hole in the report exactly where an
+  operator would rely on it. Such an input is reported as `error` with what it
+  probably is, and an input only one side could answer is counted as a change
+  rather than as agreement. Documented limits: inputs are serial, so policy that
+  depends on concurrency is not simulated; the sink does not synthesise device
+  replies, so policy that decides on a reply is not simulated; and a client
+  address reaches the policy only through a PROXY protocol header, because a
+  simulation cannot forge a source address on a loopback connection.
+
 ### Added (work orders: the change reference somebody filed, which is not an approval)
 
 - **A work order can be filed against a device, from the Plant screen of the web
