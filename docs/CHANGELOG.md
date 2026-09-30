@@ -90,6 +90,28 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   `node` is not installed, and it does not replace the manual browser check --
   it removes the part of it that was checking whether the code runs at all.
 
+### Fixed (the refusal counter counted engineering operations it had forwarded)
+
+- **An engineering operation outside every approved window is no longer counted as
+  a refusal.** On a listener with `engineering.require_grant` and `action: alert`
+  — the step every estate takes before it starts refusing — an operation with no
+  grant open for it is carried and alerted, reason `engineering_ungranted`. Six of
+  the eight kinds that recognise engineering routed that alert through the helper
+  that increments `xproxy_refusals_total`, and the other two did not. So the
+  refusal counter said the relay had refused a program download it had forwarded,
+  and disagreed with itself between protocols for the same event.
+
+  It now has a counter of its own, `xproxy_engineering_outside_window_total{kind,
+  operation}`, on all eight kinds, and `engineering_no_grant` — the actual refusal
+  — is the only engineering reason left in `xproxy_refusals_total`. The ATT&CK
+  technique is still observed, because an operation outside every window is a
+  detection whether or not anybody refused it, and the security event is byte for
+  byte the one it was, so the behaviour packs that read it are unaffected.
+
+  This surfaced while building the Listeners screen above, which prints refusals
+  per protocol: a plant running `action: alert` showed a refusal count for a
+  relay that had refused nothing.
+
 ### Fixed (an inspected WebSocket route broke every browser that offered compression)
 
 - **The `permessage-deflate` offer is now stripped from an inspected upgrade

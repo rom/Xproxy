@@ -3,6 +3,7 @@ package modbus
 import (
 	"context"
 	"fmt"
+	"net/netip"
 
 	"github.com/rom/xproxy/internal/access"
 	"github.com/rom/xproxy/internal/correlate"
@@ -79,7 +80,7 @@ func (t *server) decideEngineering(se *session, req request) string {
 				t.reportEngineering(se, op, grant)
 			},
 			Ungranted: func(op engineering.Operation, reason string) {
-				t.alert(se.ip, reason, op.String())
+				t.engineeringOutside(se.ip, reason, op)
 			},
 			Would: func(op engineering.Operation, reason string) {
 				t.host.Counters().ModbusWouldDeny.Add(1)
@@ -110,4 +111,21 @@ func (t *server) reportEngineering(se *session, op engineering.Operation, grant 
 	}
 	t.host.Logs().SecurityEvent(context.Background(), "engineering",
 		engineering.Reason(op.Class), attrs...)
+}
+
+// engineeringOutside records an operation that happened outside every approved
+// window on a listener that does not require one.
+//
+// It counts EngineeringOutside rather than a refusal: the operation was
+// carried. The event itself is unchanged -- same action, same reason -- so the
+// behaviour packs and the ATT&CK mapping that read it are unaffected.
+func (t *server) engineeringOutside(ip netip.Addr, reason string, op engineering.Operation) {
+	t.host.Counters().EngineeringOutside("modbus", string(op.Class), reason)
+	if !t.m.Alerts() {
+		return
+	}
+	t.host.Logs().SecurityEvent(context.Background(), "alert", "modbus_"+reason,
+		"listener", t.cfg.Name, "client_ip", ip.String(), "proto", "modbus",
+		"reason", reason, "class", string(op.Class),
+		"operation", textsafe.Clip64(op.String()))
 }

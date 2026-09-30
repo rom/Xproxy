@@ -2310,6 +2310,14 @@ step every estate takes before it starts refusing. `action: alert` keeps
 `require_grant`'s bookkeeping and drops its refusal, which is how to run the
 policy for a fortnight and read the report before it can stop a commissioning.
 
+`engineering_ungranted` is **not** a refusal and is not counted as one. The
+operation was carried — that is the whole difference between the two reasons —
+so it has a counter of its own, `xproxy_engineering_outside_window_total`,
+beside `xproxy_engineering_total`. The refusals stay in
+`xproxy_refusals_total`, where `engineering_no_grant` is the only engineering
+reason that belongs. The ATT&CK technique is observed either way: an operation
+outside every window is a detection whether or not anybody refused it.
+
 **A grant is a work order.** It is requested and approved through the same
 `/v1/access` machinery and `xproxyctl access` as a bastion session, against this
 listener's name, and its reason is the change reference. The reason goes into the

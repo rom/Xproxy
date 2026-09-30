@@ -100,7 +100,7 @@ func (t *server) decideEngineering(c *conn, call *wire.ServiceCall, ops []Operat
 				t.reportEngineering(c, op, grant)
 			},
 			Ungranted: func(op engineering.Operation, reason string) {
-				t.alertEngineering(c, reason, op)
+				t.engineeringOutside(c, reason, op)
 			},
 			Would: func(op engineering.Operation, reason string) {
 				t.host.Counters().WouldRefuse("opcua", reason)
@@ -139,6 +139,26 @@ func (t *server) reportEngineering(c *conn, op engineering.Operation, grant *acc
 // It does not reach the ban ladder.
 func (t *server) alertEngineering(c *conn, reason string, op engineering.Operation) {
 	t.host.Counters().Refuse("opcua", reason)
+	if !t.alerts() {
+		return
+	}
+	a := []any{"listener", t.name, "client_ip", c.ip.String(), "proto", "opcua",
+		"reason", reason, "class", string(op.Class),
+		"operation", textsafe.Clip64(op.String())}
+	if op.Subject != "" {
+		a = append(a, "user", op.Subject)
+	}
+	t.host.Logs().SecurityEvent(context.Background(), "alert", "opcua_"+reason, a...)
+}
+
+// engineeringOutside records an operation that happened outside every approved
+// window on a listener that does not require one.
+//
+// It counts EngineeringOutside rather than a refusal: the operation was
+// carried. The event itself is unchanged -- same action, same reason -- so the
+// behaviour packs and the ATT&CK mapping that read it are unaffected.
+func (t *server) engineeringOutside(c *conn, reason string, op engineering.Operation) {
+	t.host.Counters().EngineeringOutside("opcua", string(op.Class), reason)
 	if !t.alerts() {
 		return
 	}

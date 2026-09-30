@@ -6907,6 +6907,14 @@ class, whether or not any of them was refused -- which is the number an
 operations centre graphs, because the interesting quarter is the one with a
 download nobody expected rather than the one with a refusal.
 
+`xproxy_engineering_outside_window_total{kind,operation}` is the subset that
+happened outside every approved window on a listener that does not require one.
+Those operations were **carried**, so they are not in `xproxy_refusals_total`
+and never were meant to be: the only engineering reason that belongs there is
+`engineering_no_grant`, the refusal. The ATT&CK technique is counted either
+way, because an operation outside every window is a detection whether or not
+anybody refused it.
+
 ### error
 
 Operational events: start, stop, listeners, reloads, upstream errors,
