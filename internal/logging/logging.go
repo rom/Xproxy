@@ -312,22 +312,28 @@ func parseLevel(s string) slog.Level {
 // (deny, tarpit, ban, limit), reason is the rule or limit that fired.
 //
 // Where the reason is one internal/attack maps, the entry also carries
-// what it means in MITRE ATT&CK for ICS terms: `technique`,
-// `technique_name` and `tactic`. It is added here, at the one place every
+// what it means in MITRE ATT&CK terms: `technique`, `technique_name`,
+// `tactic` and `matrix`. It is added here, at the one place every
 // security event passes through, rather than by each kind at each call
 // site -- a kind that had to remember would be a kind whose next refusal
 // reason reached a SIEM as a string nobody can catalogue. A reason with
 // no mapping carries no such field, which is deliberate: a technique
 // label on protocol hygiene would read in a coverage report as a
 // detection this proxy does not have.
+//
+// `matrix` is `ics`, `enterprise`, or both where the refusal means
+// something in each catalogue -- which is the common case on a bastion,
+// where one session is the way into a plant and a step through an
+// estate.
 func (l *Logs) SecurityEvent(ctx context.Context, action, reason string, attrs ...any) {
-	all := make([]any, 0, len(attrs)+10)
+	all := make([]any, 0, len(attrs)+12)
 	all = append(all, "action", action, "reason", reason)
 	if ts := attack.OfEvent(reason); len(ts) > 0 {
 		all = append(all,
 			"technique", attack.IDs(ts),
 			"technique_name", attack.Names(ts),
-			"tactic", attack.Tactics(ts))
+			"tactic", attack.Tactics(ts),
+			"matrix", attack.Matrices(ts))
 	}
 	all = append(all, attrs...)
 	l.Security.LogAttrs(ctx, slog.LevelWarn, "security", argsToAttrs(all)...)

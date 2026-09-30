@@ -58,7 +58,7 @@ var commandTable = []command{
 	{name: "honeypot", args: "[forget IP]", summary: "Clients marked by honeypot routes", words: []string{"forget"}},
 	{name: "patches", summary: "Virtual patches with state, hits and expiry"},
 	{name: "correlation", summary: "The cross-listener window -- how much of it is in use, what its bounds have pushed out, and what cluster peers have contributed"},
-	{name: "techniques", args: "[-catalogue]", summary: "What the refusals meant in MITRE ATT&CK for ICS terms, most seen first; -catalogue lists every technique this proxy can observe, seen or not", flags: []string{"-catalogue"}},
+	{name: "techniques", args: "[-catalogue] [-matrix ics|enterprise]", summary: "What the refusals meant in MITRE ATT&CK terms -- for ICS on the plant, Enterprise above it -- most seen first; -catalogue lists every technique this proxy can observe, seen or not", flags: []string{"-catalogue", "-matrix"}},
 	{name: "policy", args: "[report|reset] [-top N]", summary: "What the listeners in shadow mode would have refused, most frequent first; reset empties the ledger", words: []string{"report", "reset"}, flags: []string{"-top"}},
 	{name: "assets", args: "[-role R] [-listener L] [-proto P] [-vendor V] [-new] [-changed] [-top N] [-long] | show KEY | baseline [-forget] | advisories [-state S] [-documents] [-long]", summary: "The devices this proxy has seen, what it thinks each one is, the baseline of what the estate is supposed to have, and what the vendors' published advisories say about the firmware each one reports", words: []string{"show", "baseline", "advisories"}, flags: []string{"-role", "-listener", "-proto", "-vendor", "-new", "-changed", "-top", "-long", "-forget", "-state", "-documents"}},
 	{name: "access", args: "[-state S] | show ID | ask -subject NAME -listener L -target T -reason WHY -for 2h [-uses N] | approve|deny|revoke ID [-note TEXT] [-by NAME]", summary: "Just-in-time access -- the grants a gate listener admits sessions against, and asking for, approving, refusing or withdrawing one", words: []string{"show", "ask", "approve", "deny", "revoke"}, flags: []string{"-state", "-subject", "-listener", "-target", "-reason", "-for", "-start", "-uses", "-by", "-note"}},
@@ -115,9 +115,23 @@ func help(w io.Writer) {
 type techniqueRow struct {
 	ID     string `json:"technique"`
 	Name   string `json:"name"`
+	Matrix string `json:"matrix"`
 	Tactic string `json:"tactic"`
 	Count  uint64 `json:"count"`
 	Why    string `json:"why,omitempty"`
+}
+
+// inMatrix keeps the rows of one matrix, for an operator who reports on
+// the plant and the estate separately -- which most do, because the two
+// catalogues answer to different auditors.
+func inMatrix(rows []techniqueRow, m string) []techniqueRow {
+	out := make([]techniqueRow, 0, len(rows))
+	for _, r := range rows {
+		if r.Matrix == m {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // techniqueRows orders what a daemon reported. Most seen first, because
@@ -127,7 +141,7 @@ func techniqueRows(seen map[string]uint64, catalogue bool) []techniqueRow {
 	if catalogue {
 		out := make([]techniqueRow, 0, len(attack.All()))
 		for _, t := range attack.All() {
-			out = append(out, techniqueRow{ID: t.ID, Name: t.Name,
+			out = append(out, techniqueRow{ID: t.ID, Name: t.Name, Matrix: string(t.Matrix),
 				Tactic: string(t.Tactic()), Count: seen[t.ID], Why: t.Why})
 		}
 		return out
@@ -143,7 +157,7 @@ func techniqueRows(seen map[string]uint64, catalogue bool) []techniqueRow {
 			out = append(out, techniqueRow{ID: id, Count: n})
 			continue
 		}
-		out = append(out, techniqueRow{ID: t.ID, Name: t.Name,
+		out = append(out, techniqueRow{ID: t.ID, Name: t.Name, Matrix: string(t.Matrix),
 			Tactic: string(t.Tactic()), Count: n, Why: t.Why})
 	}
 	sort.Slice(out, func(i, j int) bool {

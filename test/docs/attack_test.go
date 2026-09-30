@@ -9,11 +9,11 @@ import (
 	"github.com/rom/xproxy/internal/attack"
 )
 
-// docs/ATTACK.md is what somebody answering "which ATT&CK for ICS
-// techniques does this see" reads, so it has to be the same table the
-// code tags with. Both directions matter: a technique or a mapping the
-// page does not name is a detection nobody knows about, and a technique
-// the page names that the code does not have is a claim.
+// docs/ATTACK.md is what somebody answering "which ATT&CK techniques does
+// this see" reads, so it has to be the same table the code tags with.
+// Both directions matter: a technique or a mapping the page does not name
+// is a detection nobody knows about, and a technique the page names that
+// the code does not have is a claim.
 
 func attackDoc(t *testing.T) string {
 	t.Helper()
@@ -39,11 +39,38 @@ func TestTheAttackPageNamesEveryTechnique(t *testing.T) {
 }
 
 func TestTheAttackPageNamesNoTechniqueTheCodeDoesNotHave(t *testing.T) {
-	doc := attackDoc(t)
-	for _, m := range regexp.MustCompile(`T0\d{3}`).FindAllString(doc, -1) {
+	// The link targets are stripped first: a sub-technique's identifier is
+	// written with a dot and its URL with a slash, so a page naming
+	// T1071.004 has "T1071/004" in the href, and scanning that would read
+	// as a claim about the parent technique.
+	doc := regexp.MustCompile(`\(https://attack\.mitre\.org/[^)]*\)`).
+		ReplaceAllString(attackDoc(t), "")
+	// Both identifier spaces, and an Enterprise sub-technique written
+	// with its dot, because the page names those too.
+	for _, m := range regexp.MustCompile(`T[01]\d{3}(\.\d{3})?`).FindAllString(doc, -1) {
 		if !attack.Known(m) {
 			t.Errorf("docs/ATTACK.md names %s, which internal/attack cannot observe: "+
 				"a page that claims a detection is worse than a page that admits a gap", m)
+		}
+	}
+}
+
+// Both catalogues are on the page, under headings of their own, because
+// an operations centre reads one of them and an assessor the other.
+func TestTheAttackPageCarriesBothMatrices(t *testing.T) {
+	doc := attackDoc(t)
+	for _, want := range []string{
+		"## The ATT&CK for ICS techniques this proxy can observe",
+		"## The Enterprise ATT&CK techniques this proxy can observe",
+		"`matrix`",
+	} {
+		if !strings.Contains(doc, want) {
+			t.Errorf("docs/ATTACK.md is missing %q", want)
+		}
+	}
+	for _, m := range []attack.Matrix{attack.MatrixICS, attack.MatrixEnterprise} {
+		if len(attack.InMatrix(m)) == 0 {
+			t.Errorf("the %s catalogue is empty", m)
 		}
 	}
 }

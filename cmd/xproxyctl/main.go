@@ -62,6 +62,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/rom/xproxy/internal/attack"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/config/schema"
 	"github.com/rom/xproxy/internal/dtlsx"
@@ -1410,7 +1411,14 @@ func run(args []string, out, errOut io.Writer) int {
 		tf := flag.NewFlagSet("techniques", flag.ContinueOnError)
 		tf.SetOutput(errOut)
 		all := tf.Bool("catalogue", false, "list every technique this proxy can observe, seen or not")
+		only := tf.String("matrix", "", "show one matrix only: ics or enterprise")
 		if err := tf.Parse(fs.Args()[1:]); err != nil {
+			return 2
+		}
+		switch *only {
+		case "", string(attack.MatrixICS), string(attack.MatrixEnterprise):
+		default:
+			_, _ = fmt.Fprintln(errOut, "techniques: -matrix is ics or enterprise")
 			return 2
 		}
 		st, err := c.Status()
@@ -1418,19 +1426,22 @@ func run(args []string, out, errOut io.Writer) int {
 			return fail(err)
 		}
 		seen := st.Stats.Techniques
-		if *asJSON {
-			return printJSON(out, techniqueRows(seen, *all))
-		}
 		rows := techniqueRows(seen, *all)
+		if *only != "" {
+			rows = inMatrix(rows, *only)
+		}
+		if *asJSON {
+			return printJSON(out, rows)
+		}
 		if len(rows) == 0 {
-			_, _ = fmt.Fprintln(out, "no refusal has carried an ATT&CK for ICS technique yet "+
+			_, _ = fmt.Fprintln(out, "no refusal has carried an ATT&CK technique yet "+
 				"(-catalogue lists what this proxy can observe)")
 			return 0
 		}
 		tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-		_, _ = fmt.Fprintln(tw, "TECHNIQUE\tCOUNT\tTACTIC\tNAME")
+		_, _ = fmt.Fprintln(tw, "TECHNIQUE\tCOUNT\tMATRIX\tTACTIC\tNAME")
 		for _, r := range rows {
-			_, _ = fmt.Fprintf(tw, "%s\t%d\t%s\t%s\n", r.ID, r.Count, r.Tactic, r.Name)
+			_, _ = fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\n", r.ID, r.Count, r.Matrix, r.Tactic, r.Name)
 		}
 		_ = tw.Flush()
 		return 0

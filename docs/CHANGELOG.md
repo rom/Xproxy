@@ -6,6 +6,70 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (the same events in Enterprise ATT&CK terms, not only ATT&CK for ICS)
+
+- **Two catalogues, because this proxy stands in two worlds.** ATT&CK for
+  ICS is the vocabulary for a plant -- program downloads, operating-mode
+  changes, reporting messages -- and it has nothing to say about a brute
+  force on a bastion, a forwarded port, a directory read as a list or a
+  COPY that runs a program. Enterprise ATT&CK is the vocabulary for those,
+  so every technique in `internal/attack` now says which matrix it is from
+  and the event carries a `matrix` field beside `technique`,
+  `technique_name` and `tactic`. The identifier spaces do not collide (ICS
+  is T0xxx, Enterprise T1xxx with sub-techniques written `T1021.004`), so
+  one log field holds both and a query can still tell them apart.
+
+- **One refusal, two readings.** An SSH session admitted with no access
+  grant is T0886, *Remote Services*, to the plant's assessor and T1133,
+  *External Remote Services*, to the enterprise's -- the same refusal, read
+  by two teams whose dashboards do not share a vocabulary. Such an event
+  now carries the identifiers from both and `matrix: ics,enterprise`, which
+  is what stops each team maintaining its own translation table. The gate
+  kinds, an OT listener reached from an address the policy does not name,
+  a firmware image over TFTP and a file read off an IED are all in this
+  class.
+
+- **Every kind this project serves now tags something.** The table grew
+  from the eleven OT kinds and four gate `no_grant` rows to all
+  thirty-two: the bastion (authentication, what a session may carry, what
+  it may forward), the edge (WAF and virtual-patch matches, upgrades to a
+  stream protocol, bounds), the directory (anonymous binds, leading
+  wildcards, the extended operations that change an account), the stores
+  (a statement past the policy, `COPY ... FROM PROGRAM`, `LOAD DATA LOCAL
+  INFILE`, `xp_cmdshell`, a Redis `MODULE LOAD`), the brokers, DNS
+  (tunnelling, ANY over UDP, a name on a policy zone), NTP (authentication
+  stripped, an offset no drift explains, the mode-6 amplifiers) and the
+  layer 4 kinds. A test enforces it: a kind with no mapping is a kind whose
+  refusals reach a SIEM as strings nobody can catalogue.
+
+- **The access ledger's refusals are expanded across the kinds that ask
+  it**, rather than written out once per kind: `no_grant` and the whole
+  `grant_*` family -- pending, not yet, expired, denied, revoked, spent,
+  wrong target -- on ssh, telnet, vnc, rdp and ftp, all reading as remote
+  access outside an approved work order.
+
+- **The two spellings the HTTP side actually logs.** Its events carry a
+  bare reason (`waf`, `rate_limit`) rather than one prefixed with the kind,
+  and a WAF refusal carries the rule that fired after a colon
+  (`waf:942100`); both resolve now, so the edge's refusals are tagged
+  without changing a field a SIEM already parses. HTTP refusals remain
+  named counters of their own, so an HTTP technique appears in the security
+  log and not in `xproxy_attack_technique_total` -- the page says so.
+
+- **`xproxy_attack_technique_total` gained a `matrix` label** and
+  `xproxyctl techniques` a `MATRIX` column and a `-matrix ics|enterprise`
+  filter, for an estate that reports on the plant and the rest separately,
+  because most do: the two catalogues answer to different auditors.
+
+- **Still honest about the gaps.** Protocol hygiene stays untagged, and so
+  does a refusal with no counterpart in either catalogue -- an AMQP
+  performative, an RDP channel, an LDAP control -- because inventing a
+  technique for it would read in a coverage report as a detection this
+  proxy does not have. A technique with nothing mapped to it is still not
+  in a catalogue, and the package test still fails if one is added. And a
+  technique label still decides nothing: the ban ladder sees what it always
+  saw, and the OT kinds still never feed it.
+
 ### Added (a short cross-listener memory, so the detections that need two listeners exist)
 
 - **`correlation` is the window a listener does not have.** Every policy
