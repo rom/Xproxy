@@ -5,6 +5,7 @@ import (
 	amqpwire "github.com/rom/xproxy/internal/amqpwire"
 	"github.com/rom/xproxy/internal/assets"
 	bacnetwire "github.com/rom/xproxy/internal/bacnet"
+	"github.com/rom/xproxy/internal/correlate"
 	dhcpwire "github.com/rom/xproxy/internal/dhcp"
 	"github.com/rom/xproxy/internal/dhcp6"
 	"github.com/rom/xproxy/internal/dns"
@@ -350,6 +351,9 @@ func (v *validator) config(c *Config) {
 	v.securityTxt(c)
 	if c.AssetInventory != nil {
 		v.assetInventory(c.AssetInventory)
+	}
+	if c.Correlation != nil {
+		v.correlation(c)
 	}
 	if c.SCIM != nil {
 		v.scim(c)
@@ -13875,6 +13879,42 @@ func endpointsOf(c *Config, name string) int {
 }
 
 // assetInventory validates the device inventory.
+// correlation checks the cross-listener window's bounds.
+//
+// The bounds are the whole of it: this is a table keyed by an address a
+// stranger picks, so a window nobody bounded is a window an address flood
+// fills. The package clamps to its own ceilings whatever this says, and
+// validation says so here rather than letting an operator believe a
+// 72-hour window is in force.
+func (v *validator) correlation(c *Config) {
+	a := c.Correlation
+	const p = "correlation"
+	if d := time.Duration(a.Window); d < 0 {
+		v.errf("%s.window: must not be negative", p)
+	} else if d > correlate.MaxWindow {
+		v.errf("%s.window: %s is above the %s ceiling; a longer window is a bigger table keyed by an address a stranger picks",
+			p, d, correlate.MaxWindow)
+	} else if d > 0 && d < time.Minute {
+		v.warnf("%s.window: %s is shorter than a scan cycle on most of these protocols, so a chain of two events will rarely be inside it", p, d)
+	}
+	if a.MaxActors < 0 {
+		v.errf("%s.max_actors: must not be negative", p)
+	} else if a.MaxActors > correlate.MaxActorsCeil {
+		v.errf("%s.max_actors: %d is above the %d ceiling", p, a.MaxActors, correlate.MaxActorsCeil)
+	}
+	if a.MaxFacts < 0 {
+		v.errf("%s.max_facts: must not be negative", p)
+	} else if a.MaxFacts > correlate.MaxFactsCeil {
+		v.errf("%s.max_facts: %d is above the %d ceiling", p, a.MaxFacts, correlate.MaxFactsCeil)
+	}
+	if a.Share != nil && *a.Share && c.Cluster == nil {
+		v.warnf("%s.share is on with no cluster section, so there is nobody to share with: a pivot from a bastion into a control protocol crosses two daemons, and seeing it needs both of them in one cluster", p)
+	}
+	if !c.CorrelationEnabled() {
+		v.warnf("%s.enabled is false, so nothing is remembered between listeners: the detections that need two listeners -- one host on several control protocols, an OT session after a bastion session, a clock step before a time-tagged command -- report nothing rather than reporting less", p)
+	}
+}
+
 func (v *validator) assetInventory(a *AssetInventory) {
 	const p = "asset_inventory"
 	if a.MaxAssets < 0 || a.MaxAssets > 1<<20 {

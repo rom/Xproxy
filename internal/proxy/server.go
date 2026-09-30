@@ -24,6 +24,7 @@ import (
 	"github.com/rom/xproxy/internal/capture"
 	"github.com/rom/xproxy/internal/cluster"
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/correlate"
 	"github.com/rom/xproxy/internal/dns"
 	"github.com/rom/xproxy/internal/fipsmode"
 	"github.com/rom/xproxy/internal/intel"
@@ -113,6 +114,11 @@ type Server struct {
 	// view and the exposition. Zero when the configuration has no fips
 	// section.
 	fips fipsmode.Status
+	// correlation is the cross-listener window, nil when the
+	// configuration turned it off, and shareFacts whether the facts worth
+	// sharing go to the cluster peers.
+	correlation *correlate.Store
+	shareFacts  bool
 	// assets is the device inventory, absent unless the configuration asked
 	// for one.
 	assets atomic.Pointer[assetKeeper]
@@ -244,6 +250,8 @@ func New(cfg *config.Config, logs *logging.Logs) (*Server, error) {
 	safe.SetReport(func(what string, value any, stack []byte) {
 		logs.Error.Error("panic contained", "where", what, "panic", fmt.Sprint(value), "stack", string(stack))
 	})
+	s.correlation = newCorrelation(cfg)
+	s.shareFacts = cfg.CorrelationShares() && cfg.Cluster != nil
 	if ai := cfg.AssetInventory; ai != nil && ai.Enabled {
 		k, err := newAssetKeeper(s, ai)
 		if err != nil {
@@ -456,6 +464,10 @@ func (s *Server) Stats() Snapshot {
 	// The live sessions, so a status view says what the table says: how
 	// many are on now, and how many an operator has closed.
 	snap.Shadow = s.wouldDeny.Status()
+	if s.correlation != nil {
+		st := s.correlation.Status()
+		snap.Correlation = &st
+	}
 	live := s.live.Status()
 	snap.SessionsLive, snap.SessionsOpened = live.Live, live.Opened
 	snap.SessionsClosed, snap.SessionsKilled = live.Closed, live.Killed

@@ -57,6 +57,7 @@ var commandTable = []command{
 	{name: "cache", args: "[purge [HOST [PATH-PREFIX]]]", summary: "Response cache counters; purge removes entries", words: []string{"purge"}},
 	{name: "honeypot", args: "[forget IP]", summary: "Clients marked by honeypot routes", words: []string{"forget"}},
 	{name: "patches", summary: "Virtual patches with state, hits and expiry"},
+	{name: "correlation", summary: "The cross-listener window -- how much of it is in use, what its bounds have pushed out, and what cluster peers have contributed"},
 	{name: "techniques", args: "[-catalogue]", summary: "What the refusals meant in MITRE ATT&CK for ICS terms, most seen first; -catalogue lists every technique this proxy can observe, seen or not", flags: []string{"-catalogue"}},
 	{name: "policy", args: "[report|reset] [-top N]", summary: "What the listeners in shadow mode would have refused, most frequent first; reset empties the ledger", words: []string{"report", "reset"}, flags: []string{"-top"}},
 	{name: "assets", args: "[-role R] [-listener L] [-proto P] [-vendor V] [-new] [-changed] [-top N] [-long] | show KEY | baseline [-forget] | advisories [-state S] [-documents] [-long]", summary: "The devices this proxy has seen, what it thinks each one is, the baseline of what the estate is supposed to have, and what the vendors' published advisories say about the firmware each one reports", words: []string{"show", "baseline", "advisories"}, flags: []string{"-role", "-listener", "-proto", "-vendor", "-new", "-changed", "-top", "-long", "-forget", "-state", "-documents"}},

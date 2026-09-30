@@ -8,6 +8,7 @@ import (
 
 	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/bodybudget"
+	"github.com/rom/xproxy/internal/correlate"
 	"github.com/rom/xproxy/internal/intel"
 	"github.com/rom/xproxy/internal/metrics"
 )
@@ -766,6 +767,11 @@ type Stats struct {
 	// breakdown for them, keyed by the kind and the reason the kind
 	// already logs.
 	refusals refusals
+	// CorrelationMerged counts the cross-listener facts a cluster peer
+	// reported, and CorrelationRefused the ones whose key did not decode
+	// -- a sibling of another version, or a message that is not one.
+	CorrelationMerged  atomic.Uint64
+	CorrelationRefused atomic.Uint64
 	// wouldRefusals is the same table for the listeners in shadow mode.
 	wouldRefusals refusals
 	// techniques is what the enforced refusals meant in ATT&CK for ICS
@@ -1371,6 +1377,15 @@ type Snapshot struct {
 	// this proxy cannot observe -- the identifiers come from the
 	// catalogue in internal/attack, which is the subset it can.
 	Techniques map[string]uint64 `json:"techniques,omitempty"`
+	// Correlation is the cross-listener window's own numbers: what is in
+	// it, and what its bounds have pushed out. The drops and evictions are
+	// the ones worth an alert, because a window being pushed out is one
+	// whose answers are becoming "no" for the wrong reason.
+	Correlation *correlate.Status `json:"correlation,omitempty"`
+	// CorrelationMerged and CorrelationRefused are the facts cluster peers
+	// reported and the ones whose key did not decode.
+	CorrelationMerged  uint64 `json:"correlation_merged"`
+	CorrelationRefused uint64 `json:"correlation_refused"`
 	// Shadow is the ledger's own totals.
 	Shadow            shadow.Status `json:"shadow"`
 	RefusalsUntracked uint64        `json:"refusals_untracked"`
@@ -1426,6 +1441,8 @@ func (s *Stats) snapshot() Snapshot {
 		Refusals:                s.RefusalCounts(),
 		WouldRefusals:           s.WouldRefusalCounts(),
 		Techniques:              s.TechniqueCounts(),
+		CorrelationMerged:       s.CorrelationMerged.Load(),
+		CorrelationRefused:      s.CorrelationRefused.Load(),
 		RefusalsUntracked:       s.RefusalsUntracked.Load(),
 		KeyExchangePQ:           s.KeyExchangePQ.Load(),
 		Degraded:                s.Degraded.Load(),

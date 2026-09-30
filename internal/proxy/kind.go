@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"net/netip"
 	"sort"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 	"github.com/rom/xproxy/internal/capture"
 	"github.com/rom/xproxy/internal/cluster"
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/correlate"
 	"github.com/rom/xproxy/internal/dns"
 	"github.com/rom/xproxy/internal/icap"
 	"github.com/rom/xproxy/internal/intel"
@@ -146,6 +148,22 @@ type Host interface {
 	// whole point of building an inventory this way is that an
 	// operational network cannot be scanned.
 	ObserveAsset(assets.Observation)
+	// Correlate is the cross-listener window: what every address has done
+	// on the other listeners of this daemon for the last window, and what
+	// a cluster peer reported about it. Nil when the configuration turned
+	// it off, and a nil store answers nothing, so a kind reads it without
+	// checking.
+	Correlate() *correlate.Store
+	// ObserveFact writes one fact to that window, and shares it with the
+	// cluster peers where its other half would be in a sibling daemon.
+	// An invalid address files it as a fact about the daemon rather than
+	// about a peer -- a clock step is not about an address.
+	//
+	// It is not per message. A frame every few milliseconds for years is
+	// what a control network is; a kind calls this when something
+	// changes, which is a session, a first write, an engineering
+	// operation, a refusal or a clock step.
+	ObserveFact(netip.Addr, correlate.Fact)
 	// TakeRemote asks the cluster owner of a rate limit key to decide.
 	// decided is false without a cluster, without an owner or when the
 	// answer did not come in time, and the caller falls back to the

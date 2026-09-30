@@ -180,6 +180,11 @@ T}	T{
 What the listeners in shadow mode would have refused and did not: the count,\: the kind,\: the listener,\: the reason,\: the rule that decided,\: when it was first and last seen,\: and one example of what was asked for,\: most frequent first. \fBreset\fR empties the ledger,\: which is what an operator does after fixing a policy so the next report is about the new one. Shadow mode is \fBpolicy:\: {mode:\: shadow}\fR for the estate or for one listener;\: it covers policy only \-\- authentication,\: bans,\: rate limits,\: bounds and malformed input are refused in shadow mode too
 T}
 T{
+\fBcorrelation\fR
+T}	T{
+The cross\-listener window: the window length,\: how many addresses and facts are in it,\: how many facts the per\-address bound has pushed out and how many addresses were evicted,\: and what cluster peers have contributed. A window whose bounds are pushing facts out is one answering questions about the whole window from part of one,\: which this says rather than leaving it to be inferred
+T}
+T{
 \fBtechniques\fR [\fB\-\:catalogue\fR]
 T}	T{
 What this daemon\(aqs refusals meant in MITRE ATT&CK for ICS terms: the technique,\: the tactic,\: MITRE\(aqs name for it and how often it was seen,\: most seen first. \fB\-\:catalogue\fR lists every technique this proxy can observe whether it has been seen or not,\: which is the honest form of a coverage answer \-\- a zero against a technique says "nothing tried",\: not "nothing detectable". The mapping from a refusal reason to a technique is in \fBdocs/\:ATTACK.\:md\fR
