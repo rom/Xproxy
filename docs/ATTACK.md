@@ -220,6 +220,12 @@ them, which is why an operations centre can filter on
 | `anomaly_sequence_unseen` | T0855 |  |
 | `anomaly_write_burst` | T0806, T0836 |  |
 | `client_not_allowed` | T0883, T1133 |  |
+| `engineering_configuration` | T0836 |  |
+| `engineering_file_transfer` | T0867, T1105 |  |
+| `engineering_mode_change` | T0858 |  |
+| `engineering_no_grant` | T0859, T1078 | an engineering operation with no approved work order open for it, on a listener that requires one |
+| `engineering_restart` | T0816 |  |
+| `engineering_ungranted` | T0859, T1078 | the same operation on a listener that only asks to be told: it happened, and it happened outside every window |
 | `forwarded_origin_mismatch` | T0856, T1557 |  |
 | `rule_denied` | T0855 |  |
 | `too_many_broadcasts` | T0846, T1046 | who-is with no range, repeated, is how a building's device list is collected |
@@ -269,6 +275,11 @@ them, which is why an operations centre can filter on
 | `common_address` | T0846, T1046 |  |
 | `control` | T0855 |  |
 | `default_deny` | T0855 |  |
+| `engineering_configuration` | T0836 |  |
+| `engineering_file_transfer` | T0867, T1105 |  |
+| `engineering_no_grant` | T0859, T1078 | an engineering operation with no approved work order open for it, on a listener that requires one |
+| `engineering_restart` | T0816 |  |
+| `engineering_ungranted` | T0859, T1078 | the same operation on a listener that only asks to be told: it happened, and it happened outside every window |
 | `monitor_only` | T0855 |  |
 | `rule` | T0855 |  |
 | `select_unavailable` | T0855 | an operate with no select before it is a command that skipped the protocol's own confirmation |
@@ -292,6 +303,12 @@ them, which is why an operations centre can filter on
 | `constraint_not_allowed` | T0836 |  |
 | `domain_denied` | T0843 |  |
 | `domain_not_allowed` | T0843 |  |
+| `engineering_configuration` | T0836 |  |
+| `engineering_file_transfer` | T0867, T1105 |  |
+| `engineering_no_grant` | T0859, T1078 | an engineering operation with no approved work order open for it, on a listener that requires one |
+| `engineering_program_download` | T0843 |  |
+| `engineering_program_upload` | T0845 |  |
+| `engineering_ungranted` | T0859, T1078 | the same operation on a listener that only asks to be told: it happened, and it happened outside every window |
 | `file_denied` | T0802, T0867, T1005 | the file services are how COMTRADE records and SCL descriptions leave an IED, which is the plant's own description of itself |
 | `file_not_allowed` | T0802, T0867, T1005 |  |
 | `not_selected` | T0855 |  |
@@ -321,6 +338,11 @@ them, which is why an operations centre can filter on
 | `client_not_allowed` | T0883, T1133 |  |
 | `coil_clear_not_allowed` | T0831, T0835 |  |
 | `coil_set_not_allowed` | T0831, T0835 |  |
+| `engineering_configuration` | T0836 |  |
+| `engineering_mode_change` | T0858 |  |
+| `engineering_no_grant` | T0859, T1078 | an engineering operation with no approved work order open for it, on a listener that requires one |
+| `engineering_program_download` | T0843 |  |
+| `engineering_ungranted` | T0859, T1078 | the same operation on a listener that only asks to be told: it happened, and it happened outside every window |
 | `no_rule` | T0855 |  |
 | `read_only` | T0855, T0835 | a write on a listener that grants none: the command was not authorised, and what it would have changed is the I/O image |
 | `read_only_unknown_function` | T0855 |  |
@@ -350,6 +372,10 @@ them, which is why an operations centre can filter on
 | `certificate_uri_mismatch` | T0859, T1078 |  |
 | `empty_user` | T0859 |  |
 | `endpoint_not_allowed` | T0886, T1133 |  |
+| `engineering_configuration` | T0836 |  |
+| `engineering_method_call` | T0871 | a method is whatever the server's author decided -- LoadRecipe, Reset, StartBatch -- so the operation's meaning is the vendor's and the work order is what says it was expected |
+| `engineering_no_grant` | T0859, T1078 | an engineering operation with no approved work order open for it, on a listener that requires one |
+| `engineering_ungranted` | T0859, T1078 | the same operation on a listener that only asks to be told: it happened, and it happened outside every window |
 | `method_denied` | T0871 |  |
 | `method_not_allowed` | T0871 |  |
 | `namespace_not_allowed` | T0861 |  |
@@ -379,6 +405,13 @@ them, which is why an operations centre can filter on
 | `area_not_allowed` | T0836, T0835 |  |
 | `block_type_not_allowed` | T0843, T0845 | a block operation is control logic moving in one direction or the other, and which one the operation says |
 | `db_not_allowed` | T0836 |  |
+| `engineering_configuration` | T0836 |  |
+| `engineering_mode_change` | T0858 |  |
+| `engineering_no_grant` | T0859, T1078 | an engineering operation with no approved work order open for it, on a listener that requires one |
+| `engineering_program_download` | T0843 |  |
+| `engineering_program_upload` | T0845 |  |
+| `engineering_restart` | T0816 |  |
+| `engineering_ungranted` | T0859, T1078 | the same operation on a listener that only asks to be told: it happened, and it happened outside every window |
 | `no_rule_matched` | T0855 |  |
 | `operation_denied` | T0855 |  |
 | `operation_not_allowed` | T0855 |  |
@@ -676,6 +709,9 @@ them, which is why an operations centre can filter on
 | `client_not_allowed` | T0883, T1133 |  |
 | `community` | T0812, T0859, T1078.001 | a community string this listener does not hold is the vendor default being tried more often than not |
 | `default_deny` | T0855 |  |
+| `engineering_configuration` | T0836 | an SNMP SET is a configuration change: a port disabled, a VLAN moved, a trap destination pointed somewhere else |
+| `engineering_no_grant` | T0859, T1078 | an engineering operation with no approved work order open for it, on a listener that requires one |
+| `engineering_ungranted` | T0859, T1078 | the same operation on a listener that only asks to be told: it happened, and it happened outside every window |
 | `max_repetitions` | T0888, T0814, T1498 | a GETBULK repetition count above the bound is a walk of the whole tree and an amplifier at the same time |
 | `read_only` | T0836 | an SNMP SET on network or field equipment is a configuration change, which is what this protocol's writes are |
 | `response_ratio` | T0814, T1498 |  |
@@ -725,6 +761,9 @@ them, which is why an operations centre can filter on
 | `client_not_allowed` | T0883, T1133 |  |
 | `directory_denied` | T0867, T1105 |  |
 | `directory_not_allowed` | T0867, T1105 |  |
+| `engineering_firmware` | T0857, T0839, T1105 | a write on this protocol puts an image where every device that boots from it will run it |
+| `engineering_no_grant` | T0859, T1078 | an engineering operation with no approved work order open for it, on a listener that requires one |
+| `engineering_ungranted` | T0859, T1078 | the same operation on a listener that only asks to be told: it happened, and it happened outside every window |
 | `filename_denied` | T0857, T0839, T1105 | on this protocol a filename is a firmware or configuration image, in one direction or the other |
 | `filename_not_allowed` | T0857, T0839, T1105 |  |
 | `operation_not_allowed` | T0867, T1105 |  |

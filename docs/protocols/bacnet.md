@@ -143,6 +143,31 @@ a log, and a known controller talking to an object it has never addressed
 pretending: a property value is tagged data whose type is the object's, and this relay does not decode it into a number. So `telemetry` and `correlations` have nothing to compare
 on this kind, and the other four models carry it.
 
+## Engineering activity
+
+Four of BACnet's confirmed services are engineering rather than operation. The
+`engineering` block — [documented once in docs/CONFIG.md](../CONFIG.md#engineering),
+the same on every OT kind — reads them as their own class of event, and can hold
+them to an approved work order out of the [access ledger](../CONFIG.md#access).
+
+| Service | Class | Why |
+|---------|-------|-----|
+| `ReinitializeDevice` | `restart` | A controller restarted, warm or cold |
+| `DeviceCommunicationControl` | `mode_change` | A controller told to stop talking |
+| `AtomicWriteFile` | `file_transfer` | A file into the device |
+| `CreateObject`, `DeleteObject` | `configuration` | The object model itself |
+
+**A `WriteProperty` to a present-value is not engineering.** That is a setpoint
+or a command, which the rules and the property policy are for.
+
+**`ReinitializeDevice` and `DeviceCommunicationControl` are the two a
+building's own tooling uses and an intruder uses for the same reason.** A
+controller that has been told to stop communicating is a controller the head end
+cannot see, and the head end's operator finds out from the alarm that never
+arrives. Both carry a password field on the wire, which is the device's own
+protection and is worth exactly what the device's default password is worth —
+the work order is the term that does not depend on it.
+
 ## What it does not do
 
 - **It does not authenticate.** The client list is an address list and this is

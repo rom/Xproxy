@@ -142,6 +142,37 @@ this protocol says out loud.
 pretending: an MMS data value is typed data whose type is in the SCL this listener does not have, so a relay that turned one into a number would be guessing. So `telemetry` and `correlations` have nothing to compare
 on this kind, and the other four models carry it.
 
+## Engineering activity
+
+On IEC 61850 the object names say which writes are engineering and which are the
+control room doing its job. The `engineering` block —
+[documented once in docs/CONFIG.md](../CONFIG.md#engineering), the same on every
+OT kind — reads them as their own class of event, and can hold them to an
+approved work order out of the [access ledger](../CONFIG.md#access).
+
+| On MMS | Class | Why |
+|--------|-------|-----|
+| The domain services, downloading | `program_download` | A domain's content is the device's logic |
+| The domain services, reading out | `program_upload` | The same, leaving the site |
+| A write to `$CF$` | `configuration` | A device's configuration |
+| A write to `$SG$` or `$SE$` | `configuration` | A protection relay's setting groups |
+| The file services | `file_transfer` | SCL, COMTRADE records, firmware images |
+
+**A `$CO$` write is not engineering.** That is a breaker being operated, which
+is the control room's own work and what the rules and the select-before-operate
+machinery are for. A `$SP$` setpoint is not either.
+
+**The setting groups are the case that makes this worth having on this
+protocol.** A protection relay's trip characteristic is a handful of numbers in
+`$SG$`. Changing them is a legitimate engineering act, and it is also the most
+effective way to disable protection on a substation without sending a single
+command anybody would call a command — the alert says which of the two it looked
+like, and the work order says which it was.
+
+The subject is the association's identity where the connection carried one, so
+"the protection engineer may change setting groups on Tuesday" is a work order
+naming a person rather than a socket.
+
 ## What it does not do
 
 **It does not terminate TLS.** MMS on TCP 102 has none. IEC 62351-4 adds TLS

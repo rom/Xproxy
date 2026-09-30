@@ -20,7 +20,8 @@
 #               window of setpoints, and nothing else
 #   line3-eng — the same controller on a separate address for the
 #               engineering station, where a download happens inside a
-#               change window and is written down
+#               change window, against an approved work order, and is
+#               written down
 #   packaging — a whole cell of controllers, read-only, one line that no
 #               rule can override
 #   trial     — monitor mode, for finding out what a cell actually does
@@ -182,6 +183,28 @@ server:
         # many lines on a poll loop and this is not one: an engineering
         # station is used by a person, a few hundred times a shift.
         log_requests: true
+
+        # A download, an upload, a stop, a clock write: each is its own
+        # class of event whatever the rules said about it, and on this
+        # listener each needs an approved work order open at the time. The
+        # schedule below says *when* a change may happen; this says that
+        # somebody asked, somebody else agreed, and the change reference is
+        # in the trail beside the download.
+        #
+        # `xproxyctl access ask -subject 10.40.9.3 -listener line3-eng \
+        #      -target line3_cpu -reason "CR-2291 recipe update" -for 4h`
+        # and somebody other than the requester approves it. Until then a
+        # download is refused with engineering_no_grant and the CPU never
+        # sees it; reading and diagnosing are untouched, because a read is
+        # not an engineering operation.
+        #
+        # Start with `action: alert` on a line that has never run this: the
+        # operations are then recorded and the missing work orders reported
+        # without a commissioning day being stopped by a policy nobody has
+        # read yet.
+        engineering:
+          require_grant: true
+          action: deny
 
         default_action: deny
         rules:
@@ -407,6 +430,18 @@ upstreams:
       - {address: "10.40.10.52:102"}
     balancer: hash
     max_connections_per_endpoint: 6
+
+# The work orders the engineering listener asks for: requested, approved by
+# somebody who is not the requester, time-boxed, and written to a trail with a
+# hash over every record. This is the same machinery the bastions use, which is
+# the point -- an estate should not have two access systems, one for the
+# servers and one for the plant.
+access:
+  ledger: /var/lib/xot/access.log
+  approvals: 1            # four eyes: the person who asked and one other
+  max_duration: 8h        # a Saturday day shift
+  max_lead: 168h          # a change filed a week ahead, not a quarter
+  max_open: 64
 
 logging:
   access:

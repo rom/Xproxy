@@ -1,0 +1,116 @@
+package s7
+
+import (
+	"context"
+
+	"github.com/rom/xproxy/internal/access"
+	"github.com/rom/xproxy/internal/correlate"
+	"github.com/rom/xproxy/internal/engineering"
+	wire "github.com/rom/xproxy/internal/s7"
+	"github.com/rom/xproxy/internal/textsafe"
+)
+
+// Engineering on S7comm, which is the protocol this whole idea is easiest to
+// argue for: the operations an engineering station uses are *named* on the wire,
+// and they are the operations a plant is compromised through.
+//
+//	download            control logic into the CPU        program_download
+//	upload              control logic out of it           program_upload
+//	stop, mode          run, program and stop             mode_change
+//	control             warm restart, block insert        restart
+//	time_write          the clock every batch record uses configuration
+//	programmer          force a variable, set a breakpoint mode_change
+//
+// A read is not engineering, and neither is a write to a data block: an HMI
+// writes setpoints all day and calling that an engineering operation would make
+// the class useless. The line is "this changes what the machine *is*, not what
+// it is doing".
+
+// engineeringOf classifies one request, and says whether it is engineering at
+// all.
+func engineeringOf(pdu *wire.PDU) (engineering.Operation, bool) {
+	if pdu == nil {
+		return engineering.Operation{}, false
+	}
+	op, ok := pdu.Op()
+	if !ok {
+		return engineering.Operation{}, false
+	}
+	var class engineering.Class
+	switch op {
+	case wire.OpDownload:
+		class = engineering.ClassProgramDownload
+	case wire.OpUpload:
+		class = engineering.ClassProgramUpload
+	case wire.OpStop, wire.OpMode, wire.OpProgrammer:
+		class = engineering.ClassModeChange
+	case wire.OpControl:
+		class = engineering.ClassRestart
+	case wire.OpTimeWrite:
+		class = engineering.ClassConfiguration
+	default:
+		return engineering.Operation{}, false
+	}
+	return engineering.Operation{Class: class, Detail: describe(pdu)}, true
+}
+
+// decideEngineering reports one engineering operation and says whether to carry
+// it: "" to go on, or the reason to refuse it.
+func (t *server) decideEngineering(se *session, pdu *wire.PDU) string {
+	if !t.engineering.On() {
+		return ""
+	}
+	op, ok := engineeringOf(pdu)
+	if !ok {
+		return ""
+	}
+	s := se.sess()
+	if s.Addressed {
+		op.Point = wire.ResourceName(s.Resource)
+	}
+	// S7comm has no identity, so the subject is the address. That is the honest
+	// answer and it is also the useful one: a work order for this protocol names
+	// the engineering station's address, because that is what the plant has.
+	subject := se.ip.String()
+	return t.engineering.Decide(op, subject, t.sc.Upstream, nil, t.enforcing(),
+		engineering.Handler{
+			Report: func(op engineering.Operation, grant *access.Grant) {
+				t.reportEngineering(se, op, grant)
+			},
+			Ungranted: func(op engineering.Operation, reason string) {
+				t.alert(se.ip, reason, op.String())
+			},
+			Would: func(op engineering.Operation, reason string) {
+				t.host.Counters().WouldRefuse("s7", reason)
+				t.host.Shadow().Record("s7", t.name, reason, "engineering", op.String())
+			},
+			Refused: func(op engineering.Operation, reason string) {
+				se.refusal()
+				t.host.Counters().Refuse("s7", reason)
+				t.alert(se.ip, reason, op.String())
+			},
+		})
+}
+
+// reportEngineering writes the operation down: its own security event, its
+// counter, and a fact in the cross-listener window -- which the sibling daemons
+// see, because "a bastion session, then a program download" is two processes.
+func (t *server) reportEngineering(se *session, op engineering.Operation, grant *access.Grant) {
+	t.host.Counters().Engineering("s7", string(op.Class))
+	t.host.ObserveFact(se.ip, correlate.Fact{
+		Class: correlate.ClassEngineering, Kind: "s7", Listener: t.name,
+		Identity: op.Subject, Detail: op.String(),
+	})
+	attrs := []any{"listener", t.name, "client_ip", se.ip.String(), "proto", "s7",
+		"class", string(op.Class), "operation", textsafe.Clip64(op.Detail)}
+	if op.Point != "" {
+		attrs = append(attrs, "resource", op.Point)
+	}
+	if grant != nil {
+		// The work order this happened under, which is the line an audit is
+		// actually asking for.
+		attrs = append(attrs, "grant", grant.ID, "work_order", grant.Reason)
+	}
+	t.host.Logs().SecurityEvent(context.Background(), "engineering",
+		engineering.Reason(op.Class), attrs...)
+}

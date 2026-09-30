@@ -2254,6 +2254,86 @@ A list. Each entry is one pair of points that are supposed to track each other.
 | `tolerance` | float | `0.1` | Slack on the ratio, as a fraction of B; 0..1 |
 | `max_age` | duration | `1m` | How old the other point's reading may be and still be compared; 1s..1h. Two readings a quarter of an hour apart say nothing about each other |
 
+### engineering
+
+**`engineering`** is the third question, after "is this permitted" and "is this
+what this master has been doing": *is there an approved work order open for it*.
+
+A program download, a CPU stop, a protection setting written, a firmware image
+pushed — these are legitimate, necessary, and the operations an estate is
+actually compromised through. They are also rare, planned, and done by people
+who filed a change. A relay that could only answer the first question has two
+bad options: a rule that allows downloads, which allows them at three in the
+morning from a laptop nobody knows about; or a rule that denies them, which the
+plant turns off on the first commissioning day. The work order is the missing
+term, and this block is where the just-in-time machinery — the same
+[`access`](#access) ledger, the same four-eyes approvals, the same time-boxed
+grants that the bastion kinds use — reaches the plant.
+
+The block is **the same on every OT listener kind** — `modbus`, `iec104`, `s7`,
+`mms`, `bacnet`, `opcua`, `snmp` — and on `tftp`, which is how firmware reaches
+a great many devices. What differs is what each kind recognises, and each
+protocol page says which of its services this relay reads as engineering and
+under which class. Eight classes, the same names on every protocol, because an
+operations centre asking "was anything downloaded to a controller this week" is
+not asking about a protocol:
+
+| Class | What it is | Where it comes from |
+|-------|-----------|---------------------|
+| `program_download` | Control logic written into a device | An S7 block download, a UMAS program write, an MMS domain download |
+| `program_upload` | Control logic read out of one — how a plant's process knowledge leaves the site | The same services in the other direction |
+| `mode_change` | A controller moved between run, program and stop | S7 stop and programmer commands, BACnet `DeviceCommunicationControl` |
+| `restart` | A device restarted or reset | IEC 104 `C_RP_NA_1`, BACnet `ReinitializeDevice`, an S7 control service |
+| `configuration` | A setting rather than a command | An MMS `$CF$` or `$SG$` write, an IEC 104 parameter, an OPC UA node-management call, an SNMP SET |
+| `firmware` | A firmware or boot image moved to a device | A TFTP write |
+| `method_call` | A method the object model exposes for the purpose | An OPC UA `Call`, the one service there that runs something rather than reading or writing it |
+| `file_transfer` | A file moved onto or off a device over the control protocol itself | IEC 104 `F_*`, MMS file services, BACnet `AtomicWriteFile` |
+
+**It reports whether or not anybody asked for a work order.** The block is
+absent by default and the reporting is not: an engineering operation is worth an
+event on any listener, and a relay that stayed quiet about a program download
+until it was configured to speak would be one whose logs did not have the
+download in them. Every recognised operation gets a security event with
+`action: engineering` and reason `engineering_<class>`, the
+`xproxy_engineering_total` counter, a fact in the
+[cross-listener window](#correlation), and — where the daemon has an
+[`access`](#access) ledger — a line in its hash-chained record. `enabled: false`
+is how an operator says otherwise.
+
+**Two things are refusable, and they are different.** `require_grant: true`
+refuses an operation with no open, approved grant covering it, reason
+`engineering_no_grant`. On a listener that does *not* require one, an operation
+that happens outside every approved window is still alerted —
+`engineering_ungranted` — because an engineering action nobody filed is worth
+telling somebody about even where the policy allows it, and that alert is the
+step every estate takes before it starts refusing. `action: alert` keeps
+`require_grant`'s bookkeeping and drops its refusal, which is how to run the
+policy for a fortnight and read the report before it can stop a commissioning.
+
+**A grant is a work order.** It is requested and approved through the same
+`/v1/access` machinery and `xproxyctl access` as a bastion session, against this
+listener's name, and its reason is the change reference. The reason goes into the
+security event as `work_order` and into the ledger beside the operation, so "who
+downloaded what, when, under which work order" has an answer that is not a
+person's memory. A listener with `require_grant: true` on a daemon with no
+ledger **fails closed at startup** rather than at four in the afternoon, the same
+way the gate kinds do.
+
+**The refusal is the protocol's own.** It answers the way that kind answers a
+refused request — a Modbus exception, an S7 error class, an OPC UA service fault
+— and it does **not** feed the ban ladder: an engineer who forgot to file a
+change should be told no, not locked out of the plant. In shadow mode, or a
+learning run without `enforce`, nothing is refused and the would-be refusals go
+to the shadow report like every other decision on the listener.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Recognise and report engineering operations. `false` is silence: no event, no counter, no ledger line |
+| `require_grant` | bool | `false` | Refuse an operation with no open approved grant for it |
+| `action` | `alert`, `deny` | `deny` | With `require_grant`, whether the missing work order refuses or only alerts. Without it, nothing is refused either way |
+| `classes` | list | every class | The classes a grant is required for. Naming classes without `require_grant` is an error, because nothing would be asked of them |
+| `ledger` | bool | `true` | Write each operation to the access ledger as well as the security log. Ignored on a daemon with no ledger |
+
 **`trace`** writes one JSON object per frame for as long as it is
 enabled: the engineer's tool for "what is this master actually doing". It
 is a different thing from the audit log, which answers "who was refused
@@ -2298,6 +2378,11 @@ whether a device was polled or taken off the bus. The security event and the
    refused **by that rule** rather than falling through to a later rule
    that would permit it, because a bound that can be escaped by writing
    another rule underneath it is not a bound.
+9. `engineering`, on the frames the policy allowed: a UMAS program transfer,
+   a CPU stop, a cleared event log. It is last because it is about what
+   reached the device — an operation the rules already refused never happened,
+   and recording it as engineering activity would put a probe in the work-order
+   record next to the real downloads.
 
 #### Architectural decisions
 
@@ -14743,7 +14828,7 @@ server:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `ledger` | path | none | The append-only file every request, approval, denial, revocation and use is written to, with a hash chain over the records. Absolute. Without it the grants live only in this process -- gone at the next restart, with no trail -- which is warned about rather than refused, because a test estate legitimately runs that way |
+| `ledger` | path | none | The append-only file every request, approval, denial, revocation, use and engineering operation is written to, with a hash chain over the records. Absolute. Without it the grants live only in this process -- gone at the next restart, with no trail -- which is warned about rather than refused, because a test estate legitimately runs that way |
 | `approvals` | int | `1` | Approvals a grant needs **in addition to** the request. 1 is four eyes: the person who asked and one other. 0 means a request is in force the moment it is made -- still just-in-time and time-boxed, but nobody else has to agree, and it is warned about. At most 8 |
 | `max_duration` | duration | `4h` | The longest window a grant may cover; 1m to 24h |
 | `max_lead` | duration | `24h` | How far ahead of now a window may start, so an approval today cannot be a key for next quarter; 0 to 720h |
@@ -14756,6 +14841,14 @@ Each gate kind -- `ssh`, `telnet`, `vnc`, `rdp` and `ftp` -- takes
 remember which protocol calls it what. A listener that requires a grant
 with no `access` section fails the load; an `access` section no listener
 asks is warned about.
+
+The OT kinds ask for the same thing about a *request* rather than a session.
+A Modbus connection carries reads all day and one UMAS program write at four
+in the afternoon, and only the second needs a work order, so there
+`require_grant: true` sits in the listener's
+[`engineering`](#engineering) block and covers the engineering classes rather
+than the connection. The grant, the approvals, the window and the trail are
+the same machinery; what differs is the unit of access.
 
 ### What a grant names
 
@@ -14818,7 +14911,12 @@ session in front of them.
 ### The trail
 
 Every act is one line of the ledger, and each line carries a hash over the
-previous one. A removed, edited, reordered or forged line is found when the
+previous one. An engineering operation on a plant listener is one of those
+acts, whether or not a grant was required for it: the line names the class,
+the operation in the protocol's own words, the subject, and the grant it
+happened under where there was one. So the trail answers "what was
+downloaded to a controller this quarter, and under which change" out of the
+same hash-chained file as "who opened a session on the bastion". A removed, edited, reordered or forged line is found when the
 file is read at start, and the daemon refuses to serve a trail it cannot
 stand behind rather than presenting it as intact. One process holds the file
 exclusively -- two daemons appending would interleave their chains -- so a

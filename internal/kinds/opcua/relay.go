@@ -18,6 +18,7 @@ import (
 	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/correlate"
+	"github.com/rom/xproxy/internal/engineering"
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/netutil"
 	wire "github.com/rom/xproxy/internal/opcua"
@@ -42,6 +43,9 @@ type server struct {
 	sessions acceptgroup.Group
 	// anomaly is the behavioural models, nil when the block is off.
 	anomaly *anomaly.Detector
+	// engineering recognises the plant's own tooling and ties it to an
+	// approved work order.
+	engineering *engineering.Guard
 }
 
 func newServer(host proxy.Host, cfg config.Listener, ln net.Listener) (*server, error) {
@@ -65,6 +69,10 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener) (*server, 
 		t.limiter = limits.NewKeyedLimiter(float64(n), burst, 0)
 	}
 	if t.anomaly, err = anomaly.FromConfig(cfg.OPCUA.Anomaly, time.Now()); err != nil {
+		return nil, fmt.Errorf("listener %s: %w", cfg.Name, err)
+	}
+	if t.engineering, err = engineering.FromConfig(cfg.OPCUA.Engineering, "opcua", cfg.Name,
+		host.Access(), host.Logs().Error); err != nil {
 		return nil, fmt.Errorf("listener %s: %w", cfg.Name, err)
 	}
 	return t, nil
@@ -624,6 +632,9 @@ func (t *server) decideCall(c *conn, ch *wire.Chunk, m *wire.Assembled, call *wi
 	case wire.SvcCreateMonitored:
 		return t.decideMonitored(c, m, call)
 	}
+	if f, fa, done := t.engineeringCheck(c, m, call, nil); done {
+		return f, fa
+	}
 	if f, fa, done := t.anomalyCheck(c, m, call, nil); done {
 		return f, fa
 	}
@@ -752,6 +763,9 @@ func (t *server) decideRead(c *conn, m *wire.Assembled, call *wire.ServiceCall) 
 	if !d.Allow {
 		return t.refused(c, m, d, describeOps(ops))
 	}
+	if f, fa, done := t.engineeringCheck(c, m, call, ops); done {
+		return f, fa
+	}
 	if f, fa, done := t.anomalyCheck(c, m, call, ops); done {
 		return f, fa
 	}
@@ -776,6 +790,9 @@ func (t *server) decideWrite(c *conn, m *wire.Assembled, call *wire.ServiceCall)
 	if !d.Allow {
 		return t.refused(c, m, d, describeOps(ops))
 	}
+	if f, fa, done := t.engineeringCheck(c, m, call, ops); done {
+		return f, fa
+	}
 	if f, fa, done := t.anomalyCheck(c, m, call, ops); done {
 		return f, fa
 	}
@@ -799,6 +816,9 @@ func (t *server) decideMethod(c *conn, m *wire.Assembled, call *wire.ServiceCall
 	if !d.Allow {
 		return t.refused(c, m, d, describeOps(ops))
 	}
+	if f, fa, done := t.engineeringCheck(c, m, call, ops); done {
+		return f, fa
+	}
 	if f, fa, done := t.anomalyCheck(c, m, call, ops); done {
 		return f, fa
 	}
@@ -820,6 +840,9 @@ func (t *server) decideBrowse(c *conn, m *wire.Assembled, call *wire.ServiceCall
 	t.observeRequest(c, sess, m.RequestID, call.Service, ops, d.Allow, false, time.Now())
 	if !d.Allow {
 		return t.refused(c, m, d, describeOps(ops))
+	}
+	if f, fa, done := t.engineeringCheck(c, m, call, ops); done {
+		return f, fa
 	}
 	if f, fa, done := t.anomalyCheck(c, m, call, ops); done {
 		return f, fa

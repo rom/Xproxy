@@ -248,6 +248,15 @@ func (t *server) fromManager(agent net.PacketConn, raw []byte, p *peer) {
 			return
 		}
 	}
+	// Engineering: a SET is a configuration change on this protocol. Reported
+	// whatever the policy said, and refused where this listener requires an
+	// approved work order for it.
+	if reason := t.decideEngineering(t.request(ip, m, p)); reason != "" {
+		if !t.deceive(m, p, reason) {
+			t.answerRefusal(m, p)
+		}
+		return
+	}
 	// Behavioural detection, after the policy and on the messages that are
 	// going on to the agent: the models learn from what reached it, and a
 	// message the policy refused never got there.

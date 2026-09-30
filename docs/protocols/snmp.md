@@ -282,6 +282,29 @@ configures its switches over SNMP.
 pretending: a binding's tag is read and not interpreted -- a policy about SNMP values would need a MIB per estate. So `telemetry` and `correlations` have nothing to compare
 on this kind, and the other four models carry it.
 
+## Engineering activity
+
+Engineering on SNMP is one operation: a SET. The `engineering` block —
+[documented once in docs/CONFIG.md](../CONFIG.md#engineering), the same on every
+OT kind — reads it as its own class of event, and can hold it to an approved
+work order out of the [access ledger](../CONFIG.md#access).
+
+| Operation | Class | Why |
+|-----------|-------|-----|
+| `SET` | `configuration` | A port disabled, a VLAN moved, a trap destination pointed somewhere else |
+
+On network and field equipment an SNMP write *is* a configuration change, and
+that is the whole of what this protocol changes. A GET is not engineering however
+deep it walks, and a GETBULK of the whole tree is a different problem — an
+amplifier, and the [behavioural models'](#behavioural-detection) business.
+
+**The subject is the credential, not the address.** On this protocol the
+community string or the USM user is what a management station *is*, so a work
+order for "reconfigure the substation switches on Tuesday" names that credential
+and the point is the first binding's object identifier. A v2c community is a
+weak thing to name, which is an argument for v3 rather than an argument against
+writing the work order down.
+
 ## What it does not do
 
 - **It does not sign or encrypt with `usm_users`.** Those keys are for reading:

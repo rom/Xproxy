@@ -5265,6 +5265,150 @@ T}	T{
 How old the other point\(aqs reading may be and still be compared;\: 1s..1h. Two readings a quarter of an hour apart say nothing about each other
 T}
 .TE
+.SS "engineering"
+.PP
+\fB\fBengineering\fR\fR is the third question, after "is this permitted" and "is this what this master has been doing": \fIis there an approved work order open for it\fR.
+.PP
+A program download, a CPU stop, a protection setting written, a firmware image pushed \[u2014] these are legitimate, necessary, and the operations an estate is actually compromised through. They are also rare, planned, and done by people who filed a change. A relay that could only answer the first question has two bad options: a rule that allows downloads, which allows them at three in the morning from a laptop nobody knows about; or a rule that denies them, which the plant turns off on the first commissioning day. The work order is the missing term, and this block is where the just\-in\-time machinery \[u2014] the same \fBaccess\fR ledger, the same four\-eyes approvals, the same time\-boxed grants that the bastion kinds use \[u2014] reaches the plant.
+.PP
+The block is \fBthe same on every OT listener kind\fR \[u2014] \fBmodbus\fR, \fBiec104\fR, \fBs7\fR, \fBmms\fR, \fBbacnet\fR, \fBopcua\fR, \fBsnmp\fR \[u2014] and on \fBtftp\fR, which is how firmware reaches a great many devices. What differs is what each kind recognises, and each protocol page says which of its services this relay reads as engineering and under which class. Eight classes, the same names on every protocol, because an operations centre asking "was anything downloaded to a controller this week" is not asking about a protocol:
+.PP
+.TS
+allbox;
+lbw(1.4i) lbw(1.1i) lbx
+lw(1.4i) lw(1.1i) lx.
+T{
+Class
+T}	T{
+What it is
+T}	T{
+Where it comes from
+T}
+T{
+\fBprogram_\:download\fR
+T}	T{
+Control logic written into a device
+T}	T{
+An S7 block download,\: a UMAS program write,\: an MMS domain download
+T}
+T{
+\fBprogram_\:upload\fR
+T}	T{
+Control logic read out of one \[u2014] how a plant\(aqs process knowledge leaves the site
+T}	T{
+The same services in the other direction
+T}
+T{
+\fBmode_\:change\fR
+T}	T{
+A controller moved between run,\: program and stop
+T}	T{
+S7 stop and programmer commands,\: BACnet \fBDeviceCommunicationControl\fR
+T}
+T{
+\fBrestart\fR
+T}	T{
+A device restarted or reset
+T}	T{
+IEC 104 \fBC_\:RP_\:NA_\:1\fR,\: BACnet \fBReinitializeDevice\fR,\: an S7 control service
+T}
+T{
+\fBconfiguration\fR
+T}	T{
+A setting rather than a command
+T}	T{
+An MMS \fB$CF$\fR or \fB$SG$\fR write,\: an IEC 104 parameter,\: an OPC UA node\-management call,\: an SNMP SET
+T}
+T{
+\fBfirmware\fR
+T}	T{
+A firmware or boot image moved to a device
+T}	T{
+A TFTP write
+T}
+T{
+\fBmethod_\:call\fR
+T}	T{
+A method the object model exposes for the purpose
+T}	T{
+An OPC UA \fBCall\fR,\: the one service there that runs something rather than reading or writing it
+T}
+T{
+\fBfile_\:transfer\fR
+T}	T{
+A file moved onto or off a device over the control protocol itself
+T}	T{
+IEC 104 \fBF_\:*\fR,\: MMS file services,\: BACnet \fBAtomicWriteFile\fR
+T}
+.TE
+.PP
+\fBIt reports whether or not anybody asked for a work order.\fR The block is absent by default and the reporting is not: an engineering operation is worth an event on any listener, and a relay that stayed quiet about a program download until it was configured to speak would be one whose logs did not have the download in them. Every recognised operation gets a security event with \fBaction: engineering\fR and reason \fBengineering_<class>\fR, the \fBxproxy_engineering_total\fR counter, a fact in the cross\-listener window, and \[u2014] where the daemon has an \fBaccess\fR ledger \[u2014] a line in its hash\-chained record. \fBenabled: false\fR is how an operator says otherwise.
+.PP
+\fBTwo things are refusable, and they are different.\fR \fBrequire_grant: true\fR refuses an operation with no open, approved grant covering it, reason \fBengineering_no_grant\fR. On a listener that does \fInot\fR require one, an operation that happens outside every approved window is still alerted \[u2014] \fBengineering_ungranted\fR \[u2014] because an engineering action nobody filed is worth telling somebody about even where the policy allows it, and that alert is the step every estate takes before it starts refusing. \fBaction: alert\fR keeps \fBrequire_grant\fR\(aqs bookkeeping and drops its refusal, which is how to run the policy for a fortnight and read the report before it can stop a commissioning.
+.PP
+\fBA grant is a work order.\fR It is requested and approved through the same \fB/v1/access\fR machinery and \fBxproxyctl access\fR as a bastion session, against this listener\(aqs name, and its reason is the change reference. The reason goes into the security event as \fBwork_order\fR and into the ledger beside the operation, so "who downloaded what, when, under which work order" has an answer that is not a person\(aqs memory. A listener with \fBrequire_grant: true\fR on a daemon with no ledger \fBfails closed at startup\fR rather than at four in the afternoon, the same way the gate kinds do.
+.PP
+\fBThe refusal is the protocol\(aqs own.\fR It answers the way that kind answers a refused request \[u2014] a Modbus exception, an S7 error class, an OPC UA service fault \[u2014] and it does \fBnot\fR feed the ban ladder: an engineer who forgot to file a change should be told no, not locked out of the plant. In shadow mode, or a learning run without \fBenforce\fR, nothing is refused and the would\-be refusals go to the shadow report like every other decision on the listener.
+.PP
+.TS
+allbox;
+lbw(0.9i) lbw(0.7i) lbw(0.8i) lbx
+lw(0.9i) lw(0.7i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBenabled\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Recognise and report engineering operations. \fBfalse\fR is silence: no event,\: no counter,\: no ledger line
+T}
+T{
+\fBrequire_\:grant\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse an operation with no open approved grant for it
+T}
+T{
+\fBaction\fR
+T}	T{
+\fBalert\fR,\: \fBdeny\fR
+T}	T{
+\fBdeny\fR
+T}	T{
+With \fBrequire_\:grant\fR,\: whether the missing work order refuses or only alerts. Without it,\: nothing is refused either way
+T}
+T{
+\fBclasses\fR
+T}	T{
+list
+T}	T{
+every class
+T}	T{
+The classes a grant is required for. Naming classes without \fBrequire_\:grant\fR is an error,\: because nothing would be asked of them
+T}
+T{
+\fBledger\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Write each operation to the access ledger as well as the security log. Ignored on a daemon with no ledger
+T}
+.TE
 .PP
 \fB\fBtrace\fR\fR writes one JSON object per frame for as long as it is enabled: the engineer\(aqs tool for "what is this master actually doing". It is a different thing from the audit log, which answers "who was refused and why", keeps forever and is shipped off the machine.
 .PP
@@ -5322,7 +5466,7 @@ T}
 A traced frame carrying a sub\-function also carries \fBsub_function\fR, \fBeffect\fR and, for UMAS, \fBumas_session\fR \[u2014] because \fBfunction: diagnostic\fR is the line an engineer would otherwise have decoded by hand, and it is the line that says whether a device was polled or taken off the bus. The security event and the \fBlog_frames\fR access line carry the same three fields.
 .SS "What the relay decides, and in what order"
 .PP
-1. The client address, against \fBdeny_clients\fR then \fBallow_clients\fR. 2. TLS and the role, when \fBsecurity\fR asks for one. A role can only come from a certificate and a certificate can only come from TLS, so a listener asking for roles without TLS refuses every session and says \fBsecurity_requires_tls\fR rather than leaving a mystery. 3. The frame, whole. A frame that does not parse is refused: a relay that forwarded what it could not read would be forwarding what it could not decide about, and the device behind it will read those bytes somehow. 4. \fBread_only\fR, which no rule can override. 5. \fBunits\fR. 6. The rules, in order. The first \fBallow\fR or \fBdeny\fR decides; an \fBobserve\fR rule records and the search continues. A frame that matches no rule takes \fBdefault_action\fR. 7. \fBrefuse_unsafe_sub_functions\fR, against the rule that allowed the frame: an allow rule that never named the sub\-function does not permit the ones that stop a device, change what it runs, clear the record of either, or are unreadable. This is checked \fIafter\fR the rules and not before them, because it is about what a particular rule meant \[u2014] which is why naming the sub\-function in the rule lifts it, and why \fBdefault_action: allow\fR, which names nothing, never does. 8. The value bounds of the rule that matched. A value outside them is refused \fBby that rule\fR rather than falling through to a later rule that would permit it, because a bound that can be escaped by writing another rule underneath it is not a bound.
+1. The client address, against \fBdeny_clients\fR then \fBallow_clients\fR. 2. TLS and the role, when \fBsecurity\fR asks for one. A role can only come from a certificate and a certificate can only come from TLS, so a listener asking for roles without TLS refuses every session and says \fBsecurity_requires_tls\fR rather than leaving a mystery. 3. The frame, whole. A frame that does not parse is refused: a relay that forwarded what it could not read would be forwarding what it could not decide about, and the device behind it will read those bytes somehow. 4. \fBread_only\fR, which no rule can override. 5. \fBunits\fR. 6. The rules, in order. The first \fBallow\fR or \fBdeny\fR decides; an \fBobserve\fR rule records and the search continues. A frame that matches no rule takes \fBdefault_action\fR. 7. \fBrefuse_unsafe_sub_functions\fR, against the rule that allowed the frame: an allow rule that never named the sub\-function does not permit the ones that stop a device, change what it runs, clear the record of either, or are unreadable. This is checked \fIafter\fR the rules and not before them, because it is about what a particular rule meant \[u2014] which is why naming the sub\-function in the rule lifts it, and why \fBdefault_action: allow\fR, which names nothing, never does. 8. The value bounds of the rule that matched. A value outside them is refused \fBby that rule\fR rather than falling through to a later rule that would permit it, because a bound that can be escaped by writing another rule underneath it is not a bound. 9. \fBengineering\fR, on the frames the policy allowed: a UMAS program transfer, a CPU stop, a cleared event log. It is last because it is about what reached the device \[u2014] an operation the rules already refused never happened, and recording it as engineering activity would put a probe in the work\-order record next to the real downloads.
 .SS "Architectural decisions"
 .PP
 \fBRequests are serialised towards each device.\fR A Modbus slave has one scan. A relay that pipelined into it would be turning a policy engine into a load generator, so each session holds one connection per route and one request in flight at a time, with \fBmax_pending\fR bounding the queue behind it. A master whose queue is full is answered with exception 06 (server busy), which is the protocol\(aqs own way of saying what happened. The serial framings default to \fBmax_pending: 1\fR because they have no transaction identifier: a second request in flight could not be told from the first.
@@ -35368,7 +35512,7 @@ path
 T}	T{
 none
 T}	T{
-The append\-only file every request,\: approval,\: denial,\: revocation and use is written to,\: with a hash chain over the records. Absolute. Without it the grants live only in this process \-\- gone at the next restart,\: with no trail \-\- which is warned about rather than refused,\: because a test estate legitimately runs that way
+The append\-only file every request,\: approval,\: denial,\: revocation,\: use and engineering operation is written to,\: with a hash chain over the records. Absolute. Without it the grants live only in this process \-\- gone at the next restart,\: with no trail \-\- which is warned about rather than refused,\: because a test estate legitimately runs that way
 T}
 T{
 \fBapprovals\fR
@@ -35427,6 +35571,8 @@ T}
 .TE
 .PP
 Each gate kind \-\- \fBssh\fR, \fBtelnet\fR, \fBvnc\fR, \fBrdp\fR and \fBftp\fR \-\- takes \fBrequire_grant: true\fR, in that one spelling, so an estate does not have to remember which protocol calls it what. A listener that requires a grant with no \fBaccess\fR section fails the load; an \fBaccess\fR section no listener asks is warned about.
+.PP
+The OT kinds ask for the same thing about a \fIrequest\fR rather than a session. A Modbus connection carries reads all day and one UMAS program write at four in the afternoon, and only the second needs a work order, so there \fBrequire_grant: true\fR sits in the listener\(aqs \fBengineering\fR block and covers the engineering classes rather than the connection. The grant, the approvals, the window and the trail are the same machinery; what differs is the unit of access.
 .SS "What a grant names"
 .PP
 A grant names a \fBsubject\fR, a \fBlistener\fR and a \fBtarget\fR.
@@ -35453,7 +35599,7 @@ A request nobody approved before its window closed is expired rather than pendin
 Each gate\(aqs access log line carries \fBgrant\fR \-\- the identifier of the grant the session was opened under \-\- and the ledger\(aqs \fBuse\fR record carries the session\(aqs identifier. So an investigation holding a recording can find the approval that allowed it, and one holding an approval can find every session opened under it. One direction alone leaves a reviewer guessing which window produced the session in front of them.
 .SS "The trail"
 .PP
-Every act is one line of the ledger, and each line carries a hash over the previous one. A removed, edited, reordered or forged line is found when the file is read at start, and the daemon refuses to serve a trail it cannot stand behind rather than presenting it as intact. One process holds the file exclusively \-\- two daemons appending would interleave their chains \-\- so a second daemon pointed at the same path fails to start and says so.
+Every act is one line of the ledger, and each line carries a hash over the previous one. An engineering operation on a plant listener is one of those acts, whether or not a grant was required for it: the line names the class, the operation in the protocol\(aqs own words, the subject, and the grant it happened under where there was one. So the trail answers "what was downloaded to a controller this quarter, and under which change" out of the same hash\-chained file as "who opened a session on the bastion". A removed, edited, reordered or forged line is found when the file is read at start, and the daemon refuses to serve a trail it cannot stand behind rather than presenting it as intact. One process holds the file exclusively \-\- two daemons appending would interleave their chains \-\- so a second daemon pointed at the same path fails to start and says so.
 .PP
 A record is written, flushed and synced \fBbefore\fR the grant it describes is in force. A grant that is in force in memory but not on disk is a grant nobody approved after the next restart, and an approval the caller was told about but that was never written is worse than one that was refused. \fBmax_uses\fR is durable for the same reason: a one\-shot grant that refills itself on restart is not one shot.
 .SS "Asking, approving and taking it back"

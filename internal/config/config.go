@@ -500,6 +500,10 @@ type ModbusListener struct {
 	// order it has never followed, a point that stopped moving. It needs
 	// no rules, which is the point of it. See Anomaly.
 	Anomaly *Anomaly `yaml:"anomaly"`
+	// Engineering reports this listener's engineering operations as their own
+	// class of event, and -- with require_grant -- refuses one with no approved
+	// work order open for it. See Engineering.
+	Engineering *Engineering `yaml:"engineering"`
 	// Trace writes one line per frame for as long as it is enabled: the
 	// engineer's tool for "what is this master actually doing".
 	Trace *ModbusTrace `yaml:"trace"`
@@ -631,6 +635,10 @@ type IEC104Listener struct {
 	// stopped moving. It needs no rules, which is the point of it. The block
 	// is the same on every OT kind; see Anomaly.
 	Anomaly *Anomaly `yaml:"anomaly"`
+	// Engineering reports this listener's engineering operations as their own
+	// class of event, and -- with require_grant -- refuses one with no approved
+	// work order open for it. See Engineering.
+	Engineering *Engineering `yaml:"engineering"`
 	// Setpoints bound the *value* a setpoint command may carry, per
 	// information object address. Without them a setpoint is bounded only
 	// by which point it names and when it may be sent, so a control
@@ -1039,6 +1047,10 @@ type SNMPListener struct {
 	// stopped moving. It needs no rules, which is the point of it. The block
 	// is the same on every OT kind; see Anomaly.
 	Anomaly *Anomaly `yaml:"anomaly"`
+	// Engineering reports this listener's engineering operations as their own
+	// class of event, and -- with require_grant -- refuses one with no approved
+	// work order open for it. See Engineering.
+	Engineering *Engineering `yaml:"engineering"`
 }
 
 // LDAPListener is a kind: ldap listener: an LDAP and LDAPS relay in front of
@@ -1950,6 +1962,10 @@ type S7Listener struct {
 	// stopped moving. It needs no rules, which is the point of it. The block
 	// is the same on every OT kind; see Anomaly.
 	Anomaly *Anomaly `yaml:"anomaly"`
+	// Engineering reports this listener's engineering operations as their own
+	// class of event, and -- with require_grant -- refuses one with no approved
+	// work order open for it. See Engineering.
+	Engineering *Engineering `yaml:"engineering"`
 
 	// Rules decide each request, in order, first match wins. A request
 	// that matches no rule takes DefaultAction.
@@ -3048,6 +3064,10 @@ type TFTPListener struct {
 	AlertOnDeny *bool `yaml:"alert_on_deny"`
 	// Learn records what crosses this listener and writes a proposed policy.
 	Learn *TFTPLearn `yaml:"learn"`
+	// Engineering reports a write for what it is -- an image or a
+	// configuration going where devices boot from -- and, with require_grant,
+	// refuses one with no approved work order. See Engineering.
+	Engineering *Engineering `yaml:"engineering"`
 }
 
 // TFTPLearn is a tftp listener's learning mode.
@@ -3954,6 +3974,10 @@ type CoAPListener struct {
 	// stopped moving. It needs no rules, which is the point of it. The block
 	// is the same on every OT kind; see Anomaly.
 	Anomaly *Anomaly `yaml:"anomaly"`
+	// Engineering reports this listener's engineering operations as their own
+	// class of event, and -- with require_grant -- refuses one with no approved
+	// work order open for it. See Engineering.
+	Engineering *Engineering `yaml:"engineering"`
 }
 
 // CoAPPSK is a listener's pre-shared key mode: the identity-to-key table, and
@@ -5075,6 +5099,56 @@ type Anomaly struct {
 	// hardest to avoid -- a written value that is physically impossible
 	// next to a value the process itself produced.
 	Correlations []AnomalyCorrelation `yaml:"correlations"`
+}
+
+// Engineering is the class of event a plant's own tooling produces, and the
+// tie between it and an approved work order.
+//
+// Every OT kind here refuses what a policy does not grant, which is the right
+// answer for a command: a breaker either may be operated by this client or may
+// not. Engineering is different in kind. A program download, a CPU stop, a
+// protection setting written, a firmware image pushed: legitimate, necessary,
+// and the operations an estate is actually compromised through. They are also
+// rare and planned, so the useful question is not "may this client do it" but
+// "is there an approved work order open for it right now".
+//
+// The just-in-time machinery (see Access) was built for the bastions, where a
+// session is the unit of access. This is what makes it cover the plant, where a
+// *request* is the unit: one Modbus connection carries reads all day and one
+// UMAS program write at four in the afternoon, and only the second needs a work
+// order.
+//
+// The block is optional, and its absence does not mean silence: an engineering
+// operation is reported as its own event on every OT listener whether or not
+// anybody asked for a work order, because a relay whose logs did not have the
+// download in them would be missing the one line that matters. `enabled: false`
+// is how an operator says otherwise.
+type Engineering struct {
+	// Enabled reports engineering operations at all. Default true, including
+	// when the block is absent.
+	Enabled *bool `yaml:"enabled"`
+	// RequireGrant refuses an engineering operation with no grant open for it
+	// in the access ledger -- "downloads only during an approved work order".
+	// A listener that requires one on a daemon with no `access` section
+	// refuses every operation, which validation refuses first.
+	RequireGrant bool `yaml:"require_grant"`
+	// Action is deny (the default where a grant is required) or alert. alert is
+	// the step every estate takes first: be told when a download happens
+	// outside a window, then refuse it once the windows are being filed.
+	//
+	// Whatever it says, an operation outside every approved window is reported.
+	// That is the point of having a ledger at all, and it is not configurable.
+	Action string `yaml:"action"`
+	// Classes are the classes a grant is required for: program_download,
+	// program_upload, mode_change, restart, configuration, firmware,
+	// method_call, file_transfer. Empty means all of them, which is what
+	// `require_grant: true` on its own meant.
+	Classes []string `yaml:"classes"`
+	// Ledger writes every recognised operation to the access ledger's own
+	// hash-chained trail as well as to the security log. Default true where
+	// the daemon has a ledger: the log rotates and the trail does not, and an
+	// engineering record is the one an audit asks for a year later.
+	Ledger *bool `yaml:"ledger"`
 }
 
 // AnomalyNovelty is the "never seen this before" model.
@@ -12601,6 +12675,10 @@ type BACnetListener struct {
 	// stopped moving. It needs no rules, which is the point of it. The block
 	// is the same on every OT kind; see Anomaly.
 	Anomaly *Anomaly `yaml:"anomaly"`
+	// Engineering reports this listener's engineering operations as their own
+	// class of event, and -- with require_grant -- refuses one with no approved
+	// work order open for it. See Engineering.
+	Engineering *Engineering `yaml:"engineering"`
 }
 
 // BACnetRule decides one request.
@@ -12917,6 +12995,10 @@ type OPCUAListener struct {
 	// stopped moving. It needs no rules, which is the point of it. The block
 	// is the same on every OT kind; see Anomaly.
 	Anomaly *Anomaly `yaml:"anomaly"`
+	// Engineering reports this listener's engineering operations as their own
+	// class of event, and -- with require_grant -- refuses one with no approved
+	// work order open for it. See Engineering.
+	Engineering *Engineering `yaml:"engineering"`
 
 	// Rules decide each message, in order, first match wins. A message that
 	// matches no rule takes DefaultAction.
@@ -13241,6 +13323,10 @@ type MMSListener struct {
 	// stopped moving. It needs no rules, which is the point of it. The block
 	// is the same on every OT kind; see Anomaly.
 	Anomaly *Anomaly `yaml:"anomaly"`
+	// Engineering reports this listener's engineering operations as their own
+	// class of event, and -- with require_grant -- refuses one with no approved
+	// work order open for it. See Engineering.
+	Engineering *Engineering `yaml:"engineering"`
 }
 
 // MMSRule is one rule of an mms listener's policy.

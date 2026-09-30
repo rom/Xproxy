@@ -17,6 +17,7 @@ import (
 	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/correlate"
+	"github.com/rom/xproxy/internal/engineering"
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/proxy"
@@ -42,6 +43,10 @@ type server struct {
 
 	// anomaly is the behavioural models, nil when the block is off.
 	anomaly *anomaly.Detector
+
+	// engineering recognises the plant's own tooling and ties it to an
+	// approved work order.
+	engineering *engineering.Guard
 
 	// gate bounds the sessions held, altogether and per client address.
 	gate *sesslimit.Gate
@@ -76,6 +81,10 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener) (*server, 
 		t.limiter = limits.NewKeyedLimiter(float64(n), burst, 0)
 	}
 	if t.anomaly, err = anomaly.FromConfig(cfg.S7.Anomaly, time.Now()); err != nil {
+		return nil, fmt.Errorf("listener %s: %w", cfg.Name, err)
+	}
+	if t.engineering, err = engineering.FromConfig(cfg.S7.Engineering, "s7", cfg.Name,
+		host.Access(), host.Logs().Error); err != nil {
 		return nil, fmt.Errorf("listener %s: %w", cfg.Name, err)
 	}
 	return t, nil
@@ -519,6 +528,12 @@ func (t *server) decide(se *session, c *wire.COTP) (forward, fatal bool) {
 	// going on to the controller: the models learn from what reached the CPU,
 	// and a request the policy refused never got there.
 	if reason := t.decideAnomaly(se, pdu); reason != "" {
+		return t.respond(se, pdu, reason)
+	}
+	// And engineering: the operations that change what the machine is rather
+	// than what it is doing. Reported whatever the policy said, and refused
+	// where this listener requires an approved work order for them.
+	if reason := t.decideEngineering(se, pdu); reason != "" {
 		return t.respond(se, pdu, reason)
 	}
 	if t.sc.LogRequests {

@@ -6,6 +6,82 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (engineering activity as its own class of event, under the work order)
+
+- **`internal/engineering` is a third question, beside "is this permitted" and
+  "is this what this master has been doing": is there an approved work order
+  open for it.** A program download, a CPU stop, a protection setting written,
+  a firmware image pushed -- legitimate, necessary, and the operations an estate
+  is actually compromised through. A relay that could only answer the first
+  question has two bad options: a rule that allows downloads, which allows them
+  at three in the morning from a laptop nobody knows about, or a rule that
+  denies them, which the plant turns off on the first commissioning day.
+
+- **Eight classes, the same names on every protocol**: `program_download`,
+  `program_upload`, `mode_change`, `restart`, `configuration`, `firmware`,
+  `method_call`, `file_transfer`. An operations centre asking "was anything
+  downloaded to a controller this week" is not asking about a protocol, so the
+  reason is `engineering_program_download` whether the download was an S7 block,
+  a UMAS program write in Modbus function 90 or an MMS domain service.
+
+- **Nine kinds classify their own traffic**: modbus, iec104, s7, mms, bacnet,
+  opcua, snmp and tftp each have an `engineering` block, and each protocol page
+  carries the table of which of its services this relay reads as engineering and
+  why. `coap` deliberately classifies none, and its page says so: a CoAP path's
+  meaning is the device's object model, so a relay guessing which URIs were
+  engineering would guess per device and be wrong on the one that mattered.
+
+- **The judgement in each table is the same line, drawn nine times**: this
+  changes what the machine *is*, not what it is doing. A holding-register write
+  is a setpoint and the value rules police it; a UMAS program transfer is not. An
+  MMS `$CO$` write is a breaker being operated; a `$SG$` write is a protection
+  relay's trip characteristic. An OPC UA `Write` to a value is an HMI; a write to
+  `AccessLevel` changes what the *next* client may do. A TFTP read is every
+  switch in the estate booting; a TFTP write is the step before all of them run
+  something new.
+
+- **It reports whether or not anybody asked for a work order.** The block is
+  absent by default and the reporting is not: `action: engineering` security
+  events, `xproxy_engineering_total{kind,operation}`, a fact in the
+  cross-listener window, and a line in the access ledger's hash-chained record
+  where the daemon has one. A relay that stayed quiet about a program download
+  until it was configured to speak would be one whose logs did not have the
+  download in them; `enabled: false` is how an operator says otherwise.
+
+- **`require_grant: true` ties it to the machinery that already existed.** The
+  same `access` ledger, the same four-eyes approvals, the same time-boxed grants
+  and the same `xproxyctl access` -- which covered only the bastions, where a
+  *session* is the unit of access. On a plant listener a *request* is the unit:
+  one Modbus connection carries reads all day and one program write at four in
+  the afternoon, and only the second needs a work order. An operation with no
+  open grant is refused with `engineering_no_grant`, in the protocol's own
+  words, and the device never sees it.
+
+- **`engineering_ungranted` is the step before that.** On a listener that does
+  not require a grant, an operation outside every approved window is still
+  alerted: an engineering action nobody filed is worth telling somebody about
+  even where the policy allows it. `action: alert` keeps the bookkeeping and
+  drops the refusal, which is how to run the policy for a fortnight and read the
+  report before it can stop a commissioning -- and the validator says so at load.
+
+- **The grant's reason is the change reference**, and it reaches the security
+  event as `work_order` and the ledger beside the operation. So "who downloaded
+  what, when, under which work order" is answerable a year later out of a
+  hash-chained file. A listener with `require_grant: true` on a daemon with no
+  ledger fails closed at startup rather than at four in the afternoon, the same
+  way the gate kinds do.
+
+- **Engineering refusals never feed the ban ladder**, like the behavioural
+  findings: an engineer who forgot to file a change should be told no, not locked
+  out of the plant. In shadow mode nothing is refused and the would-be refusals
+  go to the shadow report.
+
+- **ATT&CK rows for every class on every kind, in both matrices**: T0843
+  *Program Download*, T0845 *Program Upload*, T0858 *Change Operating Mode*,
+  T0816 *Device Restart/Shutdown*, T0836 *Modify Parameter*, T0857 *System
+  Firmware*, T0871 *Execution through API*, T0867 *Lateral Tool Transfer* with
+  T1105, and the missing work order itself as T0859 *Valid Accounts* with T1078.
+
 ### Added (every OT kind on the behavioural models, not only modbus)
 
 - **All eight OT listener kinds run the `anomaly` block now**: modbus, iec104,

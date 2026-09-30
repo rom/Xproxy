@@ -6674,6 +6674,28 @@ and a step through an estate -- carries the identifiers from each and
 of those fields deliberately; the mapping, and why it stops where it
 does, is [docs/ATTACK.md](ATTACK.md).
 
+Not every line is a refusal. `action: alert` is a detection the proxy did not
+act on -- a behavioural finding on an OT listener, or an engineering operation
+outside an approved window -- and `action: engineering` is the class of its own
+that every program download, CPU stop, setting-group write and firmware push on
+a plant listener is reported under, whatever the policy said about it:
+
+```json
+{"time":"...","level":"WARN","msg":"security","stream":"security","action":"engineering","reason":"engineering_program_download","listener":"plc","client_ip":"10.20.1.14","proto":"s7","class":"program_download","operation":"download block DB12","device":"rack 0 slot 1","grant":"9f2c4ab1","work_order":"change 4711","technique":"T0843","technique_name":"Program Download","tactic":"lateral-movement","matrix":"ics"}
+```
+
+`class` is one of the eight engineering classes, `operation` is the protocol's
+own words for it, and `grant` and `work_order` are the access grant it happened
+under and that grant's change reference -- absent when there was none, which is
+what `engineering_ungranted` and `engineering_no_grant` report. The same
+operations are in the access ledger as `kind: engineering` records,
+hash-chained beside the requests and approvals, and `xproxyctl access` counts
+them on its summary line. `xproxy_engineering_total{kind,operation}` and the
+`engineering_ops` field of `xproxyctl status -json` count them per kind and
+class, whether or not any of them was refused -- which is the number an
+operations centre graphs, because the interesting quarter is the one with a
+download nobody expected rather than the one with a refusal.
+
 ### error
 
 Operational events: start, stop, listeners, reloads, upstream errors,

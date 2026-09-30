@@ -842,6 +842,59 @@ var itMappings = []mapping{
 	{kind: "ntske", reason: "max_connections", ids: []string{"T1499"}},
 }
 
+// engineeringMappings are the plant's own tooling: the operations internal/
+// engineering recognises, per kind, and the two reasons the access ledger gives
+// about them.
+//
+// An engineering operation is reported whether or not the policy allowed it, so
+// these rows are the one place in this table where the event is not a refusal.
+// The technique is the same either way -- a program download is T0843 whoever
+// asked for it -- and what the rest of the event says is whether there was an
+// approved work order open at the time.
+var engineeringMappings = []mapping{
+	{kind: "modbus", reason: "engineering_program_download", ids: []string{"T0843"}},
+	{kind: "modbus", reason: "engineering_mode_change", ids: []string{"T0858"}},
+	{kind: "modbus", reason: "engineering_configuration", ids: []string{"T0836"}},
+	{kind: "iec104", reason: "engineering_restart", ids: []string{"T0816"}},
+	{kind: "iec104", reason: "engineering_configuration", ids: []string{"T0836"}},
+	{kind: "iec104", reason: "engineering_file_transfer", ids: []string{"T0867", "T1105"}},
+	{kind: "s7", reason: "engineering_program_download", ids: []string{"T0843"}},
+	{kind: "s7", reason: "engineering_program_upload", ids: []string{"T0845"}},
+	{kind: "s7", reason: "engineering_mode_change", ids: []string{"T0858"}},
+	{kind: "s7", reason: "engineering_restart", ids: []string{"T0816"}},
+	{kind: "s7", reason: "engineering_configuration", ids: []string{"T0836"}},
+	{kind: "mms", reason: "engineering_program_download", ids: []string{"T0843"}},
+	{kind: "mms", reason: "engineering_program_upload", ids: []string{"T0845"}},
+	{kind: "mms", reason: "engineering_configuration", ids: []string{"T0836"}},
+	{kind: "mms", reason: "engineering_file_transfer", ids: []string{"T0867", "T1105"}},
+	{kind: "bacnet", reason: "engineering_restart", ids: []string{"T0816"}},
+	{kind: "bacnet", reason: "engineering_mode_change", ids: []string{"T0858"}},
+	{kind: "bacnet", reason: "engineering_configuration", ids: []string{"T0836"}},
+	{kind: "bacnet", reason: "engineering_file_transfer", ids: []string{"T0867", "T1105"}},
+	{kind: "opcua", reason: "engineering_method_call", ids: []string{"T0871"},
+		note: "a method is whatever the server's author decided -- LoadRecipe, Reset, StartBatch -- so the operation's meaning is the vendor's and the work order is what says it was expected"},
+	{kind: "opcua", reason: "engineering_configuration", ids: []string{"T0836"}},
+	{kind: "snmp", reason: "engineering_configuration", ids: []string{"T0836"},
+		note: "an SNMP SET is a configuration change: a port disabled, a VLAN moved, a trap destination pointed somewhere else"},
+	{kind: "tftp", reason: "engineering_firmware", ids: []string{"T0857", "T0839", "T1105"},
+		note: "a write on this protocol puts an image where every device that boots from it will run it"},
+}
+
+// engineeringKinds are the kinds that recognise engineering operations, for the
+// two reasons the access ledger gives about any of them.
+var engineeringKinds = []string{"modbus", "iec104", "s7", "mms", "bacnet", "opcua", "snmp", "tftp"}
+
+// grantlessMappings are the access ledger's answers about an engineering
+// operation: none at all, and the alert on a listener that only wants to be
+// told. Both are a real identity acting outside every approved window, which is
+// what T0859 and T1078 are.
+var grantlessMappings = []mapping{
+	{reason: "engineering_no_grant", ids: []string{"T0859", "T1078"},
+		note: "an engineering operation with no approved work order open for it, on a listener that requires one"},
+	{reason: "engineering_ungranted", ids: []string{"T0859", "T1078"},
+		note: "the same operation on a listener that only asks to be told: it happened, and it happened outside every window"},
+}
+
 // grantKinds are the kinds a just-in-time access grant covers today: the
 // gate, and FTP, which is a gate protocol with a data connection.
 var grantKinds = []string{"ssh", "telnet", "vnc", "rdp", "ftp"}
@@ -883,10 +936,13 @@ func across(kinds []string, rows ...mapping) []mapping {
 
 // mappings is the whole table.
 var mappings = func() []mapping {
-	out := make([]mapping, 0, len(otMappings)+len(itMappings)+len(grantKinds)*len(grantMappings))
+	out := make([]mapping, 0, len(otMappings)+len(itMappings)+len(grantKinds)*len(grantMappings)+
+		len(engineeringMappings)+len(engineeringKinds)*len(grantlessMappings))
 	out = append(out, otMappings...)
 	out = append(out, itMappings...)
 	out = append(out, across(grantKinds, grantMappings...)...)
+	out = append(out, engineeringMappings...)
+	out = append(out, across(engineeringKinds, grantlessMappings...)...)
 	return out
 }()
 

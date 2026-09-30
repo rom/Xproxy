@@ -217,6 +217,22 @@ does not.
 pretending: a CoAP payload is CBOR, SenML, plain text or a vendor's own encoding, and this relay does not decode it into numbers. So `telemetry` and `correlations` have nothing to compare
 on this kind, and the other four models carry it.
 
+## Engineering activity
+
+**This kind classifies no engineering operations, and that is a decision rather
+than an omission.** The [`engineering`](../CONFIG.md#engineering) block reads a
+control protocol's own services — a program download, a CPU stop, a setting group
+written — and CoAP has none. A path is whatever the device's object model says it
+is: `/3303/0/5700` is a temperature under LwM2M and could be a firmware slot on
+the next vendor's device, so a relay that guessed which URIs were engineering
+would be guessing per device and would be wrong on the one that mattered.
+
+What this kind has instead is the [rules](#what-this-listener-decides), which are
+written against the paths of the estate actually in front of it, and the
+[behavioural models](#behavioural-detection), which need nothing written down.
+Where a CoAP device's firmware arrives over LwM2M block-wise transfer, the rule
+naming that path is the place to say so.
+
 ## What it does not do
 
 - **It is not a CoAP server.** There is no resource tree here and no cache. It

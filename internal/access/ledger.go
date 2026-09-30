@@ -25,6 +25,12 @@ const (
 	kindDeny    = "deny"
 	kindRevoke  = "revoke"
 	kindUse     = "use"
+	// kindEngineering is an engineering operation a listener recognised. It is
+	// in this file rather than only in the security log because the log rotates
+	// and this trail is hash-chained: "who downloaded to that controller, when,
+	// under whose approval" is a question an audit asks a year later, and the
+	// answer has to be one nobody could quietly edit.
+	kindEngineering = "engineering"
 )
 
 // maxRecords bounds a replay. A ledger is an audit trail and grows without
@@ -61,6 +67,14 @@ type record struct {
 	// Session is carried by a use record: which session this grant opened,
 	// so a recording can be tied to the approval that allowed it.
 	Session string `json:"session,omitempty"`
+	// Listener, Proto, Class and Refusal are carried by an engineering record:
+	// which listener saw the operation, on which protocol, what class of
+	// engineering it was, and -- when there was no grant open for it -- the
+	// reason the ledger gave.
+	Listener string `json:"listener,omitempty"`
+	Proto    string `json:"proto,omitempty"`
+	Class    string `json:"class,omitempty"`
+	Refusal  string `json:"refusal,omitempty"`
 	// Prev is the previous record's Hash, and Hash covers this record with
 	// Hash itself empty.
 	Prev string `json:"prev"`
@@ -74,6 +88,9 @@ type Stats struct {
 	Denials     uint64 `json:"denials"`
 	Revocations uint64 `json:"revocations"`
 	Uses        uint64 `json:"uses"`
+	// Engineering counts the engineering operations written to this trail,
+	// which is the number an audit starts from.
+	Engineering uint64 `json:"engineering"`
 	// Refusals counts sessions turned away, by reason.
 	Refusals map[string]uint64 `json:"refusals,omitempty"`
 }
@@ -206,6 +223,13 @@ func (l *Ledger) apply(r record) error {
 		l.byID[g.ID] = &g
 		l.order = append(l.order, g.ID)
 		l.stats.Requests++
+		return nil
+	}
+	if r.Kind == kindEngineering {
+		// An engineering record names a grant only when one was open, and
+		// stands on its own when none was: the operation happened either way,
+		// and that is exactly what the trail is for.
+		l.stats.Engineering++
 		return nil
 	}
 	g := l.byID[r.ID]
@@ -526,6 +550,50 @@ func (l *Ledger) Use(id, session string) error {
 		return fmt.Errorf("%w: %s", ErrNotOpen, g.State(now))
 	}
 	return l.append(record{At: now, Kind: kindUse, ID: g.ID, Session: session})
+}
+
+// An EngineeringRecord is one engineering operation, as it is written to the
+// trail.
+type EngineeringRecord struct {
+	At time.Time
+	// Kind is the listener kind, Listener its name.
+	Kind, Listener string
+	// Subject is the identity the operation was attributed to: the protocol's
+	// own where it has one, and the client address where it has none.
+	Subject string
+	// Class is the engineering class, Detail the operation in the protocol's
+	// own words.
+	Class, Detail string
+	// Grant is the identifier of the grant that covered it, empty when none
+	// was open.
+	Grant string
+	// Refusal is the ledger's reason when no grant covered it, empty when one
+	// did. It is recorded whether or not the listener refused the operation:
+	// "this happened outside every approved window" is the fact, and what was
+	// done about it is the listener's configuration.
+	Refusal string
+}
+
+// Engineering writes one engineering operation to the trail.
+//
+// It is an append and nothing else: no grant is spent, no state changes, and a
+// record with no grant is as valid as one with. The error is returned so a
+// caller can log it, and every caller here logs rather than refusing the
+// operation -- the operation has already happened, and a relay whose
+// bookkeeping decided the process would be the wrong trade.
+func (l *Ledger) Engineering(e EngineeringRecord) error {
+	if l == nil {
+		return nil
+	}
+	at := e.At
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if at.IsZero() {
+		at = l.now()
+	}
+	return l.append(record{At: at, Kind: kindEngineering, ID: e.Grant,
+		Actor: e.Subject, Note: e.Detail, Listener: e.Listener,
+		Proto: e.Kind, Class: e.Class, Refusal: e.Refusal})
 }
 
 // Deadline is when a session opened under this grant must end. A gate sets it

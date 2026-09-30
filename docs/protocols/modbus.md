@@ -267,6 +267,38 @@ See [docs/DECEPTION.md](../DECEPTION.md#a-device-that-is-not-there) for the
 family this belongs to and
 [docs/CONFIG.md](../CONFIG.md#serverlistenersmodbusdeception) for every setting.
 
+## Engineering activity
+
+Modbus has no word for engineering and the vendors' sub-protocols do. The
+`engineering` block — [documented once in docs/CONFIG.md](../CONFIG.md#engineering),
+the same on every OT kind — reads them as their own class of event, and can hold
+them to an approved work order out of the [access ledger](../CONFIG.md#access).
+
+This relay already classifies a sub-function by *effect* rather than by number,
+because the number is a vendor's and the effect is a plant's, so the engineering
+classes fall out of the classification that is already there:
+
+| Effect | Class | Where it comes from |
+|--------|-------|---------------------|
+| `program` | `program_download` | A UMAS program transfer in function 90 on a Modicon |
+| `control` | `mode_change` | Stop, start, restart, listen-only — the diagnostic sub-functions of function 8 |
+| `clear` | `configuration` | The diagnostic register and the event log wiped |
+
+**A holding-register write is not engineering.** That is a setpoint, and the
+value rules and their bounds are what police it. What is engineering arrives
+inside the function codes that carry a sub-protocol.
+
+**Direction is what the sub-function says, and where this relay cannot tell it
+reports a download.** "Something moved a program" is the fact; the safer reading
+of an ambiguous one is the one that gets looked at.
+
+Modbus names nobody, so the work order names the engineering station's *address*.
+That is what the plant has, and inventing an identity out of a socket would be
+worse than saying so. With `require_grant: true` a UMAS program write with no
+open grant is refused with `engineering_no_grant`, answered as exception 01 (or
+dropped, or the session closed, as `deny_response` says), and the device never
+sees it.
+
 ## What it does not do
 
 - **It does not rewrite values.** A setpoint outside the bounds is refused, not

@@ -8011,6 +8011,7 @@ func (v *validator) ldapDNs(p string, in []string) {
 // table and that table's order is not guaranteed across a firmware update.
 func (v *validator) opcuaListener(p string, m *OPCUAListener, address string) {
 	v.anomaly(p+".anomaly", m.Anomaly)
+	v.engineering(p+".engineering", m.Engineering)
 	if m.Upstream == "" {
 		v.errf("%s.upstream: required", p)
 	}
@@ -8418,6 +8419,7 @@ func (v *validator) opcuaAllowsOpaque(m *OPCUAListener) bool {
 // coapListener checks the CoAP relay.
 func (v *validator) coapListener(p string, m *CoAPListener, address string, tc *TLS) {
 	v.anomaly(p+".anomaly", m.Anomaly)
+	v.engineering(p+".engineering", m.Engineering)
 	dtls := tc != nil
 	switch m.Mode {
 	case "", "reverse", "forward":
@@ -9637,6 +9639,7 @@ func s7Version(s string) bool {
 
 func (v *validator) s7Listener(p string, m *S7Listener) {
 	v.anomaly(p+".anomaly", m.Anomaly)
+	v.engineering(p+".engineering", m.Engineering)
 	if m.Upstream == "" && !s7DecoyOnly(m) {
 		v.errf("%s.upstream: required", p)
 	}
@@ -10661,6 +10664,7 @@ func (v *validator) postgresCopy(p string, in []string) {
 }
 
 func (v *validator) tftpListener(p string, m *TFTPListener) {
+	v.engineering(p+".engineering", m.Engineering)
 	switch m.Mode {
 	case "", "reverse", "forward":
 	default:
@@ -11316,6 +11320,7 @@ func snmpVerifiesClients(tc *TLS) bool {
 
 func (v *validator) snmpListener(p string, m *SNMPListener, tc *TLS) {
 	v.anomaly(p+".anomaly", m.Anomaly)
+	v.engineering(p+".engineering", m.Engineering)
 	hasTLS := tc != nil
 	switch m.Mode {
 	case "", "reverse", "forward":
@@ -11862,6 +11867,7 @@ func carryPrefixAdvice(pre netip.Prefix) int {
 
 func (v *validator) iec104Listener(p string, m *IEC104Listener, hasTLS bool) {
 	v.anomaly(p+".anomaly", m.Anomaly)
+	v.engineering(p+".engineering", m.Engineering)
 	switch m.Mode {
 	case "", "reverse", "forward":
 	default:
@@ -12341,6 +12347,7 @@ func (v *validator) modbusListener(p string, m *ModbusListener, hasTLS bool) {
 		}
 	}
 	v.anomaly(p+".anomaly", m.Anomaly)
+	v.engineering(p+".engineering", m.Engineering)
 	if tr := m.Trace; tr != nil {
 		if tr.File == "" {
 			v.errf("%s.trace.file: required", p)
@@ -12548,6 +12555,43 @@ func (v *validator) modbusCIDRs(p string, in []string) {
 // modbusSchedule validates a rule's time window. It is shared with the
 // IEC 104 rules, because "during the day shift" does not change with the
 // protocol.
+// engineering validates the engineering block. It is shared by every OT
+// listener kind, because the block is.
+//
+// The fail-closed check -- require_grant with no access section -- is in
+// access() with the gate kinds', because it is the same mistake and the message
+// naming every listener that made it is more use than one per listener.
+func (v *validator) engineering(p string, e *Engineering) {
+	if e == nil {
+		return
+	}
+	off := e.Enabled != nil && !*e.Enabled
+	switch e.Action {
+	case "", "alert", "deny":
+	default:
+		v.errf("%s.action: must be alert or deny", p)
+	}
+	for i, c := range e.Classes {
+		switch c {
+		case "program_download", "program_upload", "mode_change", "restart",
+			"configuration", "firmware", "method_call", "file_transfer":
+		default:
+			v.errf("%s.classes[%d]: %q is not an engineering class", p, i, c)
+		}
+	}
+	if len(e.Classes) > 0 && !e.RequireGrant {
+		v.errf("%s.classes are named without require_grant, so nothing would be asked of them", p)
+	}
+	if off && e.RequireGrant {
+		v.errf("%s: enabled is false and require_grant is true, which cannot both be meant", p)
+	}
+	if e.RequireGrant && e.Action == "alert" {
+		v.warnf("%s.action is alert, so an engineering operation outside every approved "+
+			"work order is reported and carried. That is the right first step; an estate "+
+			"that has been filing its windows for a month should move it to deny", p)
+	}
+}
+
 // anomaly validates the behavioural detector. It is shared by every OT
 // listener kind, because the block is: the models are about the shape of
 // traffic rather than about a protocol.
@@ -14095,6 +14139,7 @@ func roleNames() string {
 // with a hole in it that nothing reports.
 func (v *validator) bacnetListener(p string, m *BACnetListener) {
 	v.anomaly(p+".anomaly", m.Anomaly)
+	v.engineering(p+".engineering", m.Engineering)
 	if m.Upstream == "" {
 		v.errf("%s.upstream: required", p)
 	}
@@ -14273,6 +14318,11 @@ func (v *validator) bacnetRanges(p string, specs []string) {
 	}
 }
 
+// grantRequired says whether an engineering block asks the ledger for
+// anything, which is what makes a listener one the access section has to exist
+// for.
+func grantRequired(e *Engineering) bool { return e != nil && e.RequireGrant }
+
 // access checks the access section and the listeners that require a grant.
 //
 // The two halves are checked together on purpose: a listener that requires a
@@ -14293,6 +14343,19 @@ func (v *validator) access(c *Config) {
 			{"vnc", l.VNC != nil && l.VNC.RequireGrant},
 			{"rdp", l.RDP != nil && l.RDP.RequireGrant},
 			{"ftp", l.FTP != nil && l.FTP.RequireGrant},
+			// The OT kinds ask for a grant per engineering operation rather
+			// than per session, and the mistake is the same one: a listener
+			// told to check a ledger that does not exist refuses every
+			// download.
+			{"modbus engineering", l.Modbus != nil && grantRequired(l.Modbus.Engineering)},
+			{"iec104 engineering", l.IEC104 != nil && grantRequired(l.IEC104.Engineering)},
+			{"s7 engineering", l.S7 != nil && grantRequired(l.S7.Engineering)},
+			{"mms engineering", l.MMS != nil && grantRequired(l.MMS.Engineering)},
+			{"bacnet engineering", l.BACnet != nil && grantRequired(l.BACnet.Engineering)},
+			{"opcua engineering", l.OPCUA != nil && grantRequired(l.OPCUA.Engineering)},
+			{"coap engineering", l.CoAP != nil && grantRequired(l.CoAP.Engineering)},
+			{"snmp engineering", l.SNMP != nil && grantRequired(l.SNMP.Engineering)},
+			{"tftp engineering", l.TFTP != nil && grantRequired(l.TFTP.Engineering)},
 		} {
 			if g.on {
 				need = append(need, l.Name+" ("+g.kind+")")
@@ -14600,6 +14663,7 @@ func redisNameChar(c byte) bool {
 // mmsListener checks an mms listener's section.
 func (v *validator) mmsListener(p string, m *MMSListener, address string) {
 	v.anomaly(p+".anomaly", m.Anomaly)
+	v.engineering(p+".engineering", m.Engineering)
 	if m.Upstream == "" {
 		v.errf("%s.upstream: required", p)
 	}

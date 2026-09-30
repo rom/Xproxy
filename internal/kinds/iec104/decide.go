@@ -127,6 +127,12 @@ func (se *session) decide(frame *wire.Frame, fromClient bool) (string, bool) {
 	if reason, ok := se.decideSelect(frame); !ok {
 		return reason, false
 	}
+	// Engineering: a reset, the clock, a parameter, a file transfer. Reported
+	// whatever the policy said about it, and refused where this listener
+	// requires an approved work order for it.
+	if reason, ok := se.decideEngineering(frame); !ok {
+		return reason, false
+	}
 	// Behavioural detection last of all, and only on the frames that are
 	// going on to the station: the models learn from what reached the
 	// device, and a frame the policy refused never got there. Recording one

@@ -201,6 +201,13 @@ func (t *server) fromClient(device net.PacketConn, raw []byte, from net.Addr) {
 			return
 		}
 	}
+	// Engineering: a restart, a controller told to stop talking, a file into
+	// the device. Reported whatever the policy said, and refused where this
+	// listener requires an approved work order for it.
+	if reason := t.decideEngineering(req); reason != "" {
+		t.answerRefusal(a, from)
+		return
+	}
 	// Behavioural detection, after the policy and on the messages that are
 	// going on into the building: the models learn from what reached it, and a
 	// message the policy refused never got there.
