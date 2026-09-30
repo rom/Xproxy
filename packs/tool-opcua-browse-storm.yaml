@@ -1,0 +1,33 @@
+# The public OPC UA clients, used to map a server.
+#
+# UaExpert, opcua-client-gui, the Python and Node libraries: none of them is an
+# attack tool and all of them browse an address space exhaustively, because that
+# is what they are for. A server in a plant meets them during commissioning and
+# then should not meet them again, because the HMIs and historians that talk to
+# it subscribe to the nodes they were configured with.
+#
+# So this pack is deliberately at medium and alert-only: it is a "somebody is
+# exploring this server" signal, which is worth having on a listener in
+# production and is not evidence of anything by itself.
+pack: 1
+id: tool-opcua-browse-storm
+revision: 1
+name: An OPC UA address space browsed exhaustively
+summary: >-
+  Browse and read services naming nodes and namespaces outside the policy, in
+  quantity, from one session. The public OPC UA clients all do this because it is
+  what they are for; a production server meets them at commissioning and then
+  should not, because its HMIs subscribe to the nodes they were configured with.
+technique: T0888
+kinds: [opcua]
+severity: medium
+enforcement: alert
+references:
+  - "OPC Foundation UA specification part 4: the Browse service set"
+  - "MITRE ATT&CK for ICS T0888: Remote System Information Discovery"
+detect:
+  window: 10m
+  signals:
+    - name: nodes-and-namespaces-outside-the-policy
+      reasons: [node_not_allowed, namespace_not_allowed, attribute_not_allowed, service_not_allowed]
+      count: 8

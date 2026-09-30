@@ -1,0 +1,37 @@
+# A stranger counting the plant.
+#
+# Every one of the published ICS tool sets starts here, because none of these
+# protocols will tell you what is on a network without being asked device by
+# device. So the shape is always the same: an address nobody has seen before,
+# and then that address addressing device after device.
+#
+# There is nothing in a frame to match on -- each request is legitimate and
+# would be answered by the equipment -- so what this names is the shape of a
+# dozen of them.
+pack: 1
+id: t0846-control-network-sweep
+revision: 1
+name: A new talker counting the devices
+summary: >-
+  An address this listener has never seen, addressing several devices in
+  succession. On a control network the set of peers is fixed for years and each
+  peer speaks to the same few devices, so a new one walking the address space is
+  either a commissioning engineer or somebody finding out what is here.
+technique: T0846
+kinds: [modbus, iec104, s7, mms, bacnet, opcua, snmp, coap]
+severity: medium
+# Alert, and it could not honestly be anything else: the first legitimate thing
+# a new engineering laptop does looks exactly like this.
+enforcement: alert
+references:
+  - "MITRE ATT&CK for ICS T0846: Remote System Discovery"
+  - "CISA ICS advisories on PIPEDREAM/INCONTROLLER reconnaissance modules"
+detect:
+  window: 10m
+  ordered: true
+  signals:
+    - name: a-peer-nobody-has-seen
+      reasons: [anomaly_new_talker]
+    - name: device-after-device
+      reasons: [anomaly_new_pair]
+      count: 3

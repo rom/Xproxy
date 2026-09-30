@@ -133,6 +133,22 @@ server:
               timezone: Europe/Stockholm
             comment: CR-2026-0312, firmware and CID only
 
+        # Every setting-group write, every domain download and every file
+        # transfer is its own class of event, with the change reference from
+        # the work order beside it -- which is what makes "who changed the trip
+        # characteristic, and under which CR" answerable a year later out of a
+        # hash-chained file rather than out of somebody's memory.
+        #
+        # `action: alert` on purpose here, and it is the posture to start in:
+        # the operations are recognised and recorded, an operation outside every
+        # approved window is reported as engineering_ungranted, and nothing is
+        # refused. Read a month of those before moving to `deny`. The schedule
+        # on the rules above is still enforced, so a setting write on a Monday
+        # is refused by the policy either way; what this adds is the work order.
+        engineering:
+          require_grant: true
+          action: alert
+
         # Nothing else. An engineering station that may operate a breaker is an
         # engineering station that will, by accident, at three in the morning.
         default_action: deny
@@ -176,6 +192,17 @@ server:
 
         default_action: allow
         log_requests: false
+
+# The work orders the engineering listener reports against. Requested,
+# approved by somebody other than the requester, time-boxed, hash-chained --
+# the same machinery the bastions use, because an estate should not have one
+# access system for its servers and another for its substations.
+access:
+  ledger: /var/lib/xot/access.log
+  approvals: 1
+  max_duration: 4h
+  max_lead: 168h
+  max_open: 64
 
 upstreams:
   - name: bay-ieds

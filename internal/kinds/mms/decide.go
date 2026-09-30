@@ -260,6 +260,14 @@ func (t *server) decideRequest(c *conn, m *wire.Message) (forward, fatal bool) {
 	if !d.Allow {
 		return t.refused(c, m, d, describe(ops))
 	}
+	// Engineering: a domain download, a file service, a $CF$ or $SG$ write.
+	// Reported whatever the policy said about it, and refused where this
+	// listener requires an approved work order.
+	if reason := t.decideEngineering(c, m, ops); reason != "" {
+		c.refusal()
+		return t.respond(c, m, Decision{Reason: reason, Rule: "engineering",
+			ErrorClass: ErrClassAccess, ErrorCode: ErrCodeObjectAccessDenied})
+	}
 	// Behavioural detection, after the policy and on the requests that are
 	// going on to the IED: the models learn from what reached the device, and a
 	// request the policy refused never got there.

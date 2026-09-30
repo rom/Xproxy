@@ -1,0 +1,12 @@
+# t0846-control-network-sweep -- A new talker counting the devices
+# The sequence this pack is about. Each line is one security event:
+#   <listener kind> <action> <reason>
+# fire: the whole sequence, which must report.
+# hold: the same sequence one signal short, which must not.
+fire
+  modbus alert anomaly_new_talker
+  modbus alert anomaly_new_pair
+  modbus alert anomaly_new_pair
+  modbus alert anomaly_new_pair
+hold
+  modbus alert anomaly_new_talker

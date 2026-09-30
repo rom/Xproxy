@@ -334,9 +334,16 @@ routes: []
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	s.Shutdown(ctx)
+	// The error matters as much as the gauge. A shutdown that ran out of time
+	// and one that drained cleanly leave the same number behind once the
+	// listener has closed what was left, so a test that read only the gauge
+	// would report "tunnels open after shutdown" for a timeout -- which sends
+	// somebody looking at the accounting rather than at the drain.
+	if err := s.Shutdown(ctx); err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
 	if sn := s.Stats(); sn.ForwardTunnelsOpen != 0 {
-		t.Fatalf("tunnels open after shutdown: %d", sn.ForwardTunnelsOpen)
+		t.Fatalf("tunnels open after a drained shutdown: %d", sn.ForwardTunnelsOpen)
 	}
 }
 

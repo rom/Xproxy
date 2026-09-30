@@ -1,0 +1,16 @@
+# tool-pipedream-opcua -- PIPEDREAM-shaped anonymous OPC UA browse and write
+# The sequence this pack is about. Each line is one security event:
+#   <listener kind> <action> <reason>
+# fire: the whole sequence, which must report.
+# hold: the same sequence one signal short, which must not.
+fire
+  opcua deny empty_user
+  opcua deny node_not_allowed
+  opcua deny node_not_allowed
+  opcua deny node_not_allowed
+  opcua deny node_denied
+hold
+  opcua deny empty_user
+  opcua deny node_not_allowed
+  opcua deny node_not_allowed
+  opcua deny node_not_allowed

@@ -1,0 +1,31 @@
+# An image put where every device in the estate will fetch it.
+#
+# TFTP is how switches, phones, protection relays and RTUs boot. A write to that
+# server is not one device compromised: it is every device that reads from it,
+# on its next restart, running what was written -- which is the highest-leverage
+# single act available on a plant network and takes no exploit at all.
+#
+# The filename says nothing. An image called test.txt is still what the next
+# device runs, which is why this pack does not look at names.
+pack: 1
+id: t0857-firmware-pushed-to-the-boot-server
+revision: 1
+name: A firmware or configuration image written with no change open
+summary: >-
+  A write to the server the estate's equipment boots from, with no approved work
+  order covering it. One write reaches every device that reads from that server
+  on its next restart, and the filename is not evidence of anything.
+technique: T0857
+kinds: [tftp]
+severity: critical
+enforcement: deny
+references:
+  - "MITRE ATT&CK for ICS T0857: System Firmware"
+  - "MITRE ATT&CK T1105: Ingress Tool Transfer"
+detect:
+  window: 5m
+  signals:
+    - name: an-image-written
+      reasons: [engineering_firmware]
+    - name: with-no-approval-open
+      reasons: [engineering_no_grant, engineering_ungranted]

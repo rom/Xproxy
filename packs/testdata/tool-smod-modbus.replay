@@ -1,0 +1,16 @@
+# tool-smod-modbus -- Modbus function codes enumerated, then written
+# The sequence this pack is about. Each line is one security event:
+#   <listener kind> <action> <reason>
+# fire: the whole sequence, which must report.
+# hold: the same sequence one signal short, which must not.
+fire
+  modbus alert anomaly_new_symbol
+  modbus alert anomaly_new_symbol
+  modbus alert anomaly_new_symbol
+  modbus alert anomaly_new_symbol
+  modbus deny read_only
+hold
+  modbus alert anomaly_new_symbol
+  modbus alert anomaly_new_symbol
+  modbus alert anomaly_new_symbol
+  modbus alert anomaly_new_symbol

@@ -1,0 +1,35 @@
+# The head end stopped being told, and then something was changed.
+#
+# Block Reporting Message is the quietest step in an ICS intrusion, because
+# nothing about it is an error: a controller told to stop communicating is doing
+# what it was asked, and the operator finds out from the alarm that never
+# arrives. On BACnet that is DeviceCommunicationControl; on IEC 61850 it is a
+# write to the report control blocks in $BR$ and $RP$.
+#
+# What makes it a detection rather than a log line is what follows. Reporting
+# turned off and nothing after it is a commissioning step. Reporting turned off
+# and then a setting written is the sequence worth waking somebody for.
+pack: 1
+id: t0804-reporting-turned-off
+revision: 1
+name: Reporting disabled, then a change made behind it
+summary: >-
+  A controller told to stop communicating, or a report control block written,
+  and then a configuration change from the same actor. Nothing about the first
+  half is an error -- the device is doing what it was asked -- and the operator
+  finds out from the alarm that never arrives.
+technique: T0804
+kinds: [bacnet, mms]
+severity: high
+enforcement: deny
+references:
+  - "MITRE ATT&CK for ICS T0804: Block Reporting Message"
+  - "ESET, Industroyer: the IEC 61850 module's control-block writes"
+detect:
+  window: 20m
+  ordered: true
+  signals:
+    - name: reporting-disabled
+      reasons: [engineering_mode_change, write_constraint_not_allowed, constraint_denied]
+    - name: then-a-change-behind-it
+      reasons: [engineering_configuration, anomaly_new_write_point]

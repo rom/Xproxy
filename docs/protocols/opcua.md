@@ -273,6 +273,38 @@ user is the operator.
 pretending: this relay reads a Write's nodes and attributes, not the variant a value arrives as -- an OPC UA value is typed data whose type is in the server's address space. So `telemetry` and `correlations` have nothing to compare
 on this kind, and the other four models carry it.
 
+## Engineering activity
+
+On OPC UA one service runs something and the rest read and write. The
+`engineering` block — [documented once in docs/CONFIG.md](../CONFIG.md#engineering),
+the same on every OT kind — reads that one and the address-space services as
+their own class of event, and can hold them to an approved work order out of the
+[access ledger](../CONFIG.md#access).
+
+| Service | Class | Why |
+|---------|-------|-----|
+| `Call` | `method_call` | A method the object model exposes for the purpose |
+| `AddNodes`, `DeleteNodes` | `configuration` | The address space itself |
+| `AddReferences`, `DeleteReferences` | `configuration` | The same |
+| `HistoryUpdate` | `configuration` | The record of what the plant did |
+| `Write` to `AccessLevel` | `configuration` | Who may do what, afterwards |
+
+**A `Write` to a variable's value is not engineering.** That is an HMI moving a
+setpoint, which the node rules and the value bounds are for. A write to
+`AccessLevel` is, because it changes what the *next* client may do — the same
+kind of change as adding a node, and the reason the attribute is a policy field
+in this relay at all.
+
+**`Call` is worth the most here.** On this protocol a method is whatever the
+server's author decided — `LoadRecipe`, `Reset`, `StartBatch` — so a method call
+is an operation whose meaning this relay cannot read and whose consequences are
+the vendor's. The honest thing is to name it, record which method it was, and
+let the work order say whether it was expected. The finding carries the method's
+node identifier and the object it was called on.
+
+The subject is the session's authenticated user where the client supplied one,
+so a work order on this kind names a person and not an address.
+
 ## What it does not do
 
 - **Decrypt.** No key agreement, no private key of the plant's, no termination of

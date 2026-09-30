@@ -4,6 +4,7 @@ import (
 	"io"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/rom/xproxy/internal/attack"
@@ -306,6 +307,51 @@ func (s *Server) Collect(e metrics.Collector) {
 			"Refusals and detections by MITRE ATT&CK technique, for the subset of techniques this proxy can observe. The matrix label is ics for ATT&CK for ICS and enterprise for Enterprise ATT&CK, whose identifier spaces and tactic vocabularies are separate.",
 			L{"technique": t.ID, "name": t.Name, "tactic": string(t.Tactic()), "matrix": string(t.Matrix)},
 			float64(sn.Techniques[id]))
+	}
+	// The plant's own tooling, which is not a refusal and is counted apart
+	// from them: a program download is a plant being engineered, and the
+	// question here is "how much engineering happened, of what kind, where".
+	ops := make([]string, 0, len(sn.EngineeringOps))
+	for k := range sn.EngineeringOps {
+		ops = append(ops, k)
+	}
+	sort.Strings(ops)
+	for _, k := range ops {
+		kind, class, ok := strings.Cut(k, "/")
+		if !ok {
+			continue
+		}
+		e.Counter("xproxy_engineering_total",
+			"Engineering operations recognised: program downloads and uploads, mode changes, restarts, configuration writes, firmware pushes, method calls and file transfers. Not refusals -- what was refused is in xproxy_refusals_total.",
+			L{"kind": kind, "operation": class}, float64(sn.EngineeringOps[k]))
+	}
+	// The pack engine's own numbers. The evictions are the one worth an alert:
+	// past the actor bound a sequence spanning the eviction stops being
+	// detectable, and the packs are then answering from part of their window.
+	if pe := sn.PackEngine; pe != nil {
+		e.Gauge("xproxy_packs_loaded", "Behaviour packs in force.", nil, float64(pe.Packs))
+		e.Gauge("xproxy_pack_actors", "Addresses with behaviour-pack state now.", nil, float64(pe.Actors))
+		e.Gauge("xproxy_pack_quarantined", "Addresses a behaviour pack is holding out of this daemon's listeners now. Not bans: each expires with the window of the pack that took it.", nil, float64(pe.Quarantined))
+		e.Gauge("xproxy_pack_enforcing", "1 when packs.enforce is on, so the packs that declare enforcement: deny may quarantine.", nil, b2f(pe.Enforcing))
+		e.Counter("xproxy_pack_actors_evicted_total", "Behaviour-pack state dropped for the packs.max_actors bound. Past it a sequence spanning the eviction is no longer detectable.", nil, float64(pe.Evicted))
+		e.Counter("xproxy_pack_quarantines_refused_total", "Quarantines not taken because packs.max_quarantined was reached.", nil, float64(pe.Refused))
+	}
+	// Behaviour-pack findings. The pack label is a pack identifier, which is
+	// bounded by a signed directory this daemon loaded at start, so nothing a
+	// client sends can grow the label set.
+	matches := make([]string, 0, len(sn.PackMatches))
+	for k := range sn.PackMatches {
+		matches = append(matches, k)
+	}
+	sort.Strings(matches)
+	for _, k := range matches {
+		pack, severity, ok := strings.Cut(k, "/")
+		if !ok {
+			continue
+		}
+		e.Counter("xproxy_pack_match_total",
+			"Behaviour-pack findings: a shape of events from one actor inside one window that a signed pack says is an ATT&CK technique. A finding is a detection and not necessarily a refusal -- what was refused is in xproxy_refusals_total.",
+			L{"pack": pack, "severity": severity}, float64(sn.PackMatches[k]))
 	}
 	e.Counter("xproxy_tcp_connections_total", "Connections accepted on tcp listeners.", nil, float64(sn.TCPConnections))
 	e.Counter("xproxy_tcp_rejected_total", "Connections on tcp listeners closed without a route or over the listener bound.", nil, float64(sn.TCPRejected))

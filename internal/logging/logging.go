@@ -41,6 +41,34 @@ type Logs struct {
 	redactor *Redactor
 	// writeErrors counts failed file writes across all streams.
 	writeErrors atomic.Uint64
+	// watcher is told about every security event, for the detections built on
+	// the stream of them rather than on one message. It is an interface set by
+	// the engine at start rather than a call the kinds make, for the reason the
+	// ATT&CK tagging is done here: a kind that had to remember to feed it
+	// would be a kind whose next refusal reached no detection at all.
+	watcher atomic.Pointer[SecurityWatcher]
+}
+
+// A SecurityWatcher is told about each security event as it is written.
+//
+// It is called on the writing goroutine, with the lock-free part of this
+// package, so an implementation has to be quick and must not block: the caller
+// is a relay in front of a controller. Nothing it does can change the event,
+// which is the point -- the log is the record and a watcher is a reader of it.
+type SecurityWatcher interface {
+	SecurityEvent(action, reason string, attrs []any)
+}
+
+// Watch sets the watcher, replacing any previous one. Passing nil clears it.
+func (l *Logs) Watch(w SecurityWatcher) {
+	if l == nil {
+		return
+	}
+	if w == nil {
+		l.watcher.Store(nil)
+		return
+	}
+	l.watcher.Store(&w)
 }
 
 // Open creates the streams described by cfg. Files are created with mode
@@ -337,6 +365,12 @@ func (l *Logs) SecurityEvent(ctx context.Context, action, reason string, attrs .
 	}
 	all = append(all, attrs...)
 	l.Security.LogAttrs(ctx, slog.LevelWarn, "security", argsToAttrs(all)...)
+	// After the log and not before it: a watcher that panicked or blocked
+	// would then have lost the event as well, and the record matters more
+	// than the detection built on it.
+	if w := l.watcher.Load(); w != nil {
+		(*w).SecurityEvent(action, reason, attrs)
+	}
 }
 
 func argsToAttrs(args []any) []slog.Attr {

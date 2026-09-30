@@ -197,6 +197,7 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 	// Just-in-time access: the grants a gate listener admits sessions
 	// against, and the four calls that change them.
 	s.accessRoutes(mux)
+	s.packRoutes(mux)
 	mux.HandleFunc("GET /v1/sessions", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, 200, s.proxy.Sessions().List())
 	})

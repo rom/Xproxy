@@ -62,11 +62,13 @@ func (t *server) serveRequests() {
 func (t *server) admitClient(ip netip.Addr) string {
 	h := t.host
 	return admit.Client(admit.Deps{
-		Lists:   h.ThreatIntel(),
-		Policy:  h.Authorization(),
-		Logs:    h.Logs(),
-		Matched: func() { h.Counters().ThreatIntelMatched.Add(1) },
-		Blocked: func() { h.Counters().ThreatIntelBlocked.Add(1) },
+		Lists: h.ThreatIntel(),
+		// A behaviour pack holding this address out, where one is.
+		Quarantined: h.Packs().Quarantined,
+		Policy:      h.Authorization(),
+		Logs:        h.Logs(),
+		Matched:     func() { h.Counters().ThreatIntelMatched.Add(1) },
+		Blocked:     func() { h.Counters().ThreatIntelBlocked.Add(1) },
 	}, authorization.Subject{
 		Listener: t.cfg.Name,
 		Kind:     "tftp",
@@ -145,6 +147,13 @@ func (t *server) request(raw []byte, from net.Addr) {
 			t.answer(from, refusalCode(d.Reason), "refused")
 			return
 		}
+	}
+	// Engineering: a write is an image or a configuration going where devices
+	// boot from. Reported whatever the policy said, and refused where this
+	// listener requires an approved work order for it.
+	if reason := t.decideEngineering(ip, p.Op, pa); reason != "" {
+		t.answer(from, wire.ErrAccessViolation, "no approved work order")
+		return
 	}
 	// The bounds, applied by rewriting the request rather than refusing it.
 	// These are never shadowed: a listener whose policy was in shadow mode

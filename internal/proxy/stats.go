@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"github.com/rom/xproxy/internal/packs"
 	"github.com/rom/xproxy/internal/shadow"
 	"sync"
 	"sync/atomic"
@@ -778,6 +779,13 @@ type Stats struct {
 	// terms, which is the vocabulary an operations centre catalogues
 	// detections in.
 	techniques techniqueCounts
+	// engineering is the plant's own tooling: the program downloads, mode
+	// changes and firmware pushes this relay recognised, per kind and
+	// class. Not refusals -- most of them are a plant being engineered --
+	// which is why they are counted apart from them.
+	engineering engineeringCounts
+	// packs counts behaviour-pack findings per pack and severity.
+	packs packCounts
 	// RefusalsUntracked counts refusals named under a kind the roster
 	// does not have or beyond a kind's reason bound. Zero in a healthy
 	// process; anything else is a bug in a listener kind.
@@ -1382,6 +1390,19 @@ type Snapshot struct {
 	// the ones worth an alert, because a window being pushed out is one
 	// whose answers are becoming "no" for the wrong reason.
 	Correlation *correlate.Status `json:"correlation,omitempty"`
+	// EngineeringOps is the engineering operations recognised, keyed
+	// "kind/class": modbus/program_download, s7/mode_change. Omitted while
+	// nothing has been recognised, which on a plant with no engineering
+	// station behind this relay is the ordinary state.
+	EngineeringOps map[string]uint64 `json:"engineering_ops,omitempty"`
+	// PackEngine is the behaviour-pack engine's own numbers: how many packs
+	// are in force, how many actors have state, how many are held out, and
+	// what the bounds have pushed out. Absent when no packs are loaded.
+	PackEngine *packs.Status `json:"packs,omitempty"`
+	// PackMatches is the behaviour-pack findings, keyed "pack/severity".
+	// A pack is a signed file this daemon loaded at start, so the keys are
+	// bounded by the directory and not by anything a client sends.
+	PackMatches map[string]uint64 `json:"pack_matches,omitempty"`
 	// CorrelationMerged and CorrelationRefused are the facts cluster peers
 	// reported and the ones whose key did not decode.
 	CorrelationMerged  uint64 `json:"correlation_merged"`
@@ -1441,6 +1462,8 @@ func (s *Stats) snapshot() Snapshot {
 		Refusals:                s.RefusalCounts(),
 		WouldRefusals:           s.WouldRefusalCounts(),
 		Techniques:              s.TechniqueCounts(),
+		EngineeringOps:          s.EngineeringCounts(),
+		PackMatches:             s.PackCounts(),
 		CorrelationMerged:       s.CorrelationMerged.Load(),
 		CorrelationRefused:      s.CorrelationRefused.Load(),
 		RefusalsUntracked:       s.RefusalsUntracked.Load(),

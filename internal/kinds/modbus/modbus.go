@@ -43,6 +43,7 @@ import (
 	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/correlate"
+	"github.com/rom/xproxy/internal/engineering"
 	"github.com/rom/xproxy/internal/limits"
 	wire "github.com/rom/xproxy/internal/modbus"
 	"github.com/rom/xproxy/internal/netutil"
@@ -72,6 +73,9 @@ type server struct {
 	tracer    *Tracer
 	limiter   *limits.KeyedLimiter
 	anomaly   *anomaly.Detector
+	// engineering recognises the plant's own tooling -- UMAS, the diagnostic
+	// sub-functions -- and ties it to an approved work order.
+	engineering *engineering.Guard
 
 	open atomic.Int64
 	wg   sync.WaitGroup
@@ -141,6 +145,10 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener, tc *tls.Co
 		t.learner = NewLearner(cfg.Name, l.File, l.Interval.D(), l.MaxSubjects)
 	}
 	if t.anomaly, err = anomaly.FromConfig(m.Anomaly, time.Now()); err != nil {
+		return nil, fmt.Errorf("modbus %s: %w", cfg.Name, err)
+	}
+	if t.engineering, err = engineering.FromConfig(m.Engineering, "modbus", cfg.Name,
+		host.Access(), host.Logs().Error); err != nil {
 		return nil, fmt.Errorf("modbus %s: %w", cfg.Name, err)
 	}
 	if tr := m.Trace; tr != nil {
@@ -533,6 +541,20 @@ func (se *session) run() string {
 		// request the policy refused never got there. Recording one would teach
 		// the detector that a refused probe is this master's normal traffic,
 		// which is the opposite of what it is for.
+		// Engineering: a UMAS program transfer, a CPU stop, a cleared event
+		// log. Reported whatever the policy said, and refused where this
+		// listener requires an approved work order for it.
+		if reason := t.decideEngineering(se, req); reason != "" {
+			switch t.m.DenyResponse {
+			case "drop":
+				continue
+			case "close":
+				return reason
+			default:
+				se.answerException(frame, pdu.Function, wire.ExIllegalFunction, nil)
+				continue
+			}
+		}
 		if reason, ok := t.decideAnomaly(se, frame, pdu, req, enforcing); !ok {
 			switch t.m.DenyResponse {
 			case "drop":
@@ -957,11 +979,13 @@ func exceptionFor(d Decision) byte {
 func (t *server) admitClient(ip netip.Addr) string {
 	h := t.host
 	return admit.Client(admit.Deps{
-		Lists:   h.ThreatIntel(),
-		Policy:  h.Authorization(),
-		Logs:    h.Logs(),
-		Matched: func() { h.Counters().ThreatIntelMatched.Add(1) },
-		Blocked: func() { h.Counters().ThreatIntelBlocked.Add(1) },
+		Lists: h.ThreatIntel(),
+		// A behaviour pack holding this address out, where one is.
+		Quarantined: h.Packs().Quarantined,
+		Policy:      h.Authorization(),
+		Logs:        h.Logs(),
+		Matched:     func() { h.Counters().ThreatIntelMatched.Add(1) },
+		Blocked:     func() { h.Counters().ThreatIntelBlocked.Add(1) },
 		// One fact per connection, to the cross-listener window: this
 		// address was on this listener. It is what the questions no
 		// listener can answer by itself are built from -- one host on

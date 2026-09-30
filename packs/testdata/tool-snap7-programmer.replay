@@ -1,0 +1,11 @@
+# tool-snap7-programmer -- A programmer connection from somewhere new, then blocks listed
+# The sequence this pack is about. Each line is one security event:
+#   <listener kind> <action> <reason>
+# fire: the whole sequence, which must report.
+# hold: the same sequence one signal short, which must not.
+fire
+  s7 deny operation_not_allowed
+  s7 deny block_type_not_allowed
+  s7 deny block_type_not_allowed
+hold
+  s7 deny operation_not_allowed

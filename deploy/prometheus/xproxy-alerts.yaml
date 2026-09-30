@@ -153,6 +153,24 @@ groups:
         annotations:
           summary: "Refusals on {{ $labels.instance }} carried no reason label"
           description: "A bug rather than an attack: a listener kind named a refusal under an unknown kind or past its reason bound, so it is missing from xproxy_refusals_total. The refusals themselves still happened and the security log still has them. Worth a report."
+      - alert: XproxyPackFinding
+        expr: sum by (instance, pack) (increase(xproxy_pack_match_total{severity=~"high|critical"}[15m])) > 0
+        labels: {severity: page}
+        annotations:
+          summary: "Behaviour pack {{ $labels.pack }} matched on {{ $labels.instance }}"
+          description: "A signed behaviour pack recognised a shape of events from one actor as an ATT&CK technique. xproxyctl packs show {{ $labels.pack }} says what it looked for and where the behaviour was published; the security log line (reason pack_{{ $labels.pack }}) names the actor, the signals in the order they were satisfied and the protocols they came from. High and critical only: the lower severities are worth a dashboard rather than a page."
+      - alert: XproxyPackQuarantine
+        expr: sum by (instance) (increase(xproxy_refusals_total{reason="pack_quarantine"}[5m])) > 0
+        labels: {severity: page}
+        annotations:
+          summary: "A behaviour pack is holding an address out of {{ $labels.instance }}"
+          description: "Sessions are being refused at admission because a pack that declares enforcement: deny matched and packs.enforce is on. On a plant that is a control room losing a master, so it is worth looking at immediately even when the detection was right: xproxyctl packs shows which pack and how many addresses are held, and xproxyctl packs release ADDRESS lifts one. It is not a ban and expires with the pack's own window."
+      - alert: XproxyPackBoundsReached
+        expr: sum by (instance) (increase(xproxy_pack_actors_evicted_total[1h])) > 0
+        labels: {severity: warn}
+        annotations:
+          summary: "Behaviour-pack state is being evicted on {{ $labels.instance }}"
+          description: "More addresses are being tracked than packs.max_actors allows, so a sequence spanning the eviction is no longer detectable and the packs are answering from part of their window. Raise packs.max_actors."
       - alert: XproxyHoneypotActivity
         expr: sum by (instance) (increase(xproxy_honeypot_hits_total[1h])) > 20
         labels: {severity: warn}

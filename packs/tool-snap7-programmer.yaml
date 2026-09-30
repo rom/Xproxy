@@ -1,0 +1,36 @@
+# Snap7, the open S7 library, used as a programming device.
+#
+# Snap7 is the reason S7comm tooling is cheap: an open implementation of the
+# protocol with a client that can take a pg (programmer) connection, list the
+# blocks on a CPU and upload them. Every Python script anybody has written
+# against a Siemens PLC is this library underneath.
+#
+# The connection resource is the signal an operator can act on. A pg connection
+# from an address that is not the engineering station is the whole question, and
+# this relay decides it from the COTP connection request before the CPU is
+# dialled -- which is why the refusal comes first in this sequence.
+pack: 1
+id: tool-snap7-programmer
+revision: 1
+name: A programmer connection from somewhere new, then blocks listed
+summary: >-
+  A programming-device connection this listener does not grant to that address,
+  and then block or area operations. Snap7 is the open library underneath
+  practically every script written against a Siemens PLC, and a pg connection
+  from anywhere but the engineering station is the question worth asking.
+technique: T0845
+kinds: [s7]
+severity: high
+enforcement: alert
+references:
+  - "Snap7: an open S7comm implementation with a full client"
+  - "MITRE ATT&CK for ICS T0845: Program Upload"
+detect:
+  window: 15m
+  ordered: true
+  signals:
+    - name: a-programmer-connection-from-somewhere-new
+      reasons: [operation_not_allowed, operation_denied, anomaly_new_talker, rule_denied]
+    - name: then-blocks-or-areas
+      reasons: [block_type_not_allowed, area_not_allowed, db_not_allowed, engineering_program_upload]
+      count: 2

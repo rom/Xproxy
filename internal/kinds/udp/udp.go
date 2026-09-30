@@ -453,11 +453,13 @@ func (s *server) admitClient(client netip.AddrPort) string {
 	e := s.engine
 	ip := client.Addr().Unmap()
 	return admit.Client(admit.Deps{
-		Lists:   e.ThreatIntel(),
-		Policy:  e.Authorization(),
-		Logs:    e.Logs(),
-		Matched: func() { e.Counters().ThreatIntelMatched.Add(1) },
-		Blocked: func() { e.Counters().ThreatIntelBlocked.Add(1) },
+		Lists: e.ThreatIntel(),
+		// A behaviour pack holding this address out, where one is.
+		Quarantined: e.Packs().Quarantined,
+		Policy:      e.Authorization(),
+		Logs:        e.Logs(),
+		Matched:     func() { e.Counters().ThreatIntelMatched.Add(1) },
+		Blocked:     func() { e.Counters().ThreatIntelBlocked.Add(1) },
 	}, authorization.Subject{
 		Listener: s.cfg.Name,
 		Kind:     "udp",

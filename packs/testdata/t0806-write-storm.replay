@@ -1,0 +1,12 @@
+# t0806-write-storm -- Writes across the address space, then a value outside the envelope
+# The sequence this pack is about. Each line is one security event:
+#   <listener kind> <action> <reason>
+# fire: the whole sequence, which must report.
+# hold: the same sequence one signal short, which must not.
+fire
+  modbus alert anomaly_write_burst
+  modbus alert anomaly_write_burst
+  modbus deny value_out_of_range
+hold
+  modbus alert anomaly_write_burst
+  modbus alert anomaly_write_burst

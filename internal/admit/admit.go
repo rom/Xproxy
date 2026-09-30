@@ -40,6 +40,15 @@ import (
 // rule or somebody else's feed.
 const Reason = "threat_intel"
 
+// QuarantineReason is the deny reason a behaviour pack's quarantine carries.
+//
+// A separate reason from everything else here on purpose. An operator reading a
+// refused session needs to know it was this proxy's own detection holding the
+// address out for a window rather than a feed, a rule or a ban -- because the
+// three are undone in three different places, and a quarantine is undone by
+// waiting or by `xproxyctl packs release`.
+const QuarantineReason = "pack_quarantine"
+
 // Gate is what a listener kind lends this package so a refusal made here is
 // counted, logged and banned on exactly as one the kind made itself.
 //
@@ -75,6 +84,14 @@ type Deps struct {
 	// datagram kind would be writing a fact per packet. The ones that
 	// admit per datagram record from their own session tables instead.
 	Observe func(correlate.Fact)
+	// Quarantined reports whether a behaviour pack is holding this address
+	// out, and which pack. Nil asks nothing, which is what a daemon with no
+	// pack directory passes.
+	//
+	// It is asked here for the reason the lists and the policy are: a tool
+	// refused on Modbus tries S7 next, so a detection that held an actor on
+	// one listener only would be a detection somebody walks around.
+	Quarantined func(netip.Addr) (string, bool)
 }
 
 // Client asks both questions about one client and reports the reason to refuse,
@@ -97,8 +114,26 @@ func Client(d Deps, sub authorization.Subject, g Gate) string {
 	return reason
 }
 
-// ask is the two questions themselves.
+// ask is the questions themselves.
 func ask(d Deps, sub authorization.Subject, g Gate) string {
+	// The quarantine first. It is this proxy's own finding about this address,
+	// made minutes ago from its own traffic, so a session refused for it should
+	// say so rather than being attributed to whichever import or rule would
+	// have refused it next. It obeys shadow mode like everything else here: a
+	// listener recording what it would have refused records this too.
+	if d.Quarantined != nil {
+		if pack, held := d.Quarantined(sub.Client); held {
+			detail := pack + " " + sub.Client.String()
+			if g.Shadowing != nil && g.Shadowing() {
+				g.Record(QuarantineReason, pack, detail)
+			} else {
+				if g.Deny != nil {
+					g.Deny(QuarantineReason, pack, detail)
+				}
+				return QuarantineReason
+			}
+		}
+	}
 	if list := listed(d, sub); list != "" {
 		detail := list + " " + sub.Client.String()
 		if g.Shadowing != nil && g.Shadowing() {

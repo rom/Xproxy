@@ -1,0 +1,36 @@
+# An IEC 104 master driven by hand.
+#
+# The open IEC 104 client libraries -- lib60870, iec104-python, the Wireshark
+# generator scripts -- let anybody send a C_IC interrogation or a C_SC command
+# from a laptop. They are how the protocol is learned and tested, and they are
+# also exactly the tooling the published grid intrusions used, because there was
+# no need for anything better.
+#
+# A control centre is a state machine: STARTDT, then a general interrogation,
+# then periodic data, then commands on operator action. A client driven by hand
+# is not, and the visible difference is commands arriving with no rhythm and
+# addresses that are not in anybody's database.
+pack: 1
+id: tool-iec104-hand-client
+revision: 1
+name: Commands from an IEC 104 master with no scan rhythm
+summary: >-
+  A controlling station whose poll cycle does not hold, sending commands to
+  points outside the policy. A control centre is a state machine with a rhythm;
+  a client driven from a laptop is not, and the open IEC 104 libraries are both
+  how the protocol is learned and what the published grid intrusions used.
+technique: T0855
+kinds: [iec104]
+severity: high
+enforcement: alert
+references:
+  - "lib60870 and iec104-python: open IEC 60870-5-104 client implementations"
+  - "MITRE ATT&CK for ICS T0855: Unauthorized Command Message"
+detect:
+  window: 15m
+  signals:
+    - name: no-rhythm
+      reasons: [anomaly_cycle_changed, anomaly_new_talker, anomaly_sequence_unseen]
+    - name: commands-to-points-nobody-polls
+      reasons: [rule, default_deny, station_command, control, setpoint_unknown, common_address]
+      count: 3

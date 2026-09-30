@@ -1,0 +1,35 @@
+# The control room shown something that is not happening.
+#
+# Manipulation of view is the half of an ICS attack that decides whether anybody
+# intervenes. A process driven outside its envelope is survivable if an operator
+# sees it; the same process with a frozen or replayed screen is not.
+#
+# The relay can see this because it decodes values in both directions on the two
+# protocols where a value is a number on the wire. A reading that stopped moving,
+# or a run of readings that repeats exactly, is what a screen made to look alive
+# looks like from the middle -- and a write from the same actor beside it is the
+# other half of the same act.
+pack: 1
+id: t0832-a-screen-made-to-look-alive
+revision: 1
+name: Telemetry that stopped being real, beside a write
+summary: >-
+  Readings from a point that stopped moving or that repeat exactly, and a write
+  from the same actor to a point it has never driven. Values that look too clean
+  are what a control room is shown while the process does something else, and it
+  is the half of an attack that decides whether anybody intervenes.
+technique: T0832
+kinds: [modbus, iec104]
+severity: high
+enforcement: alert
+references:
+  - "MITRE ATT&CK for ICS T0832: Manipulation of View"
+  - "Langner, To Kill a Centrifuge: recorded values replayed to the operators"
+detect:
+  window: 30m
+  signals:
+    - name: values-that-are-too-clean
+      reasons: [anomaly_telemetry_frozen, anomaly_telemetry_replayed]
+      count: 2
+    - name: and-a-write-beside-them
+      reasons: [anomaly_new_write_point, value_out_of_range, setpoint_range]

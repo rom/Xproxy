@@ -1,0 +1,11 @@
+# tool-frostygoop-modbus -- FrostyGoop-shaped Modbus writes
+# The sequence this pack is about. Each line is one security event:
+#   <listener kind> <action> <reason>
+# fire: the whole sequence, which must report.
+# hold: the same sequence one signal short, which must not.
+fire
+  modbus alert anomaly_new_symbol
+  modbus alert anomaly_new_write_point
+  modbus alert anomaly_new_write_point
+hold
+  modbus alert anomaly_new_symbol

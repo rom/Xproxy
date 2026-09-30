@@ -187,6 +187,11 @@ func actor(flagValue string) string {
 func accessSummary(out io.Writer, s access.Stats) {
 	_, _ = fmt.Fprintf(out, "requests %d  approvals %d  denials %d  revocations %d  uses %d\n",
 		s.Requests, s.Approvals, s.Denials, s.Revocations, s.Uses)
+	// Engineering operations share the trail with the grants, and an operator
+	// reading this view is the person who wants to know how many there were.
+	if s.Engineering > 0 {
+		_, _ = fmt.Fprintf(out, "engineering operations recorded: %d\n", s.Engineering)
+	}
 	if len(s.Refusals) > 0 {
 		parts := make([]string, 0, len(s.Refusals))
 		for _, r := range []string{access.ReasonNoGrant, access.ReasonPending, access.ReasonEarly,

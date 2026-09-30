@@ -1,0 +1,35 @@
+# Metasploit's modbusclient and modbus_findunitid.
+#
+# Two modules that between them read and write any register and find which unit
+# identifiers respond. They are in the default install of the most widely
+# deployed offensive framework there is, which makes them the lowest-effort
+# route to a Modbus register on any network, and the one an estate is most
+# likely to actually meet.
+#
+# findunitid walks the unit space; modbusclient then writes. The pack is that
+# pair, in order.
+pack: 1
+id: tool-metasploit-modbusclient
+revision: 1
+name: A unit-identifier walk, then a single register written
+summary: >-
+  A walk of the unit identifier space, then a single-register or single-coil
+  write. Metasploit ships both halves in its default install, which makes this
+  the lowest-effort route to a Modbus register on any network and the one an
+  estate is most likely to meet.
+technique: T0835
+kinds: [modbus]
+severity: high
+enforcement: alert
+references:
+  - "Metasploit auxiliary/scanner/scada/modbus_findunitid"
+  - "Metasploit auxiliary/scanner/scada/modbusclient"
+detect:
+  window: 10m
+  ordered: true
+  signals:
+    - name: the-unit-walk
+      reasons: [unit_not_allowed]
+      count: 4
+    - name: then-a-single-write
+      reasons: [read_only, coil_set_not_allowed, coil_clear_not_allowed, anomaly_new_write_point]

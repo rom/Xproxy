@@ -1,0 +1,38 @@
+# PIPEDREAM's OPC UA module.
+#
+# It connected anonymously where a server allowed it, browsed the address space,
+# and wrote nodes. The interesting detail from the analyses is the anonymity:
+# OPC UA is the one industrial protocol that brought a real identity, and the
+# module's first choice was not to use it.
+#
+# So the shape here is an anonymous or unauthenticated session, a browse storm,
+# and a write -- and the first signal is the one an operator should have been
+# looking at already, because a server that accepts anonymous sessions has given
+# up the only advantage this protocol has.
+pack: 1
+id: tool-pipedream-opcua
+revision: 1
+name: PIPEDREAM-shaped anonymous OPC UA browse and write
+summary: >-
+  An anonymous or unauthenticated session, then nodes named outside the policy in
+  quantity, then a write. OPC UA is the one industrial protocol with a real
+  identity in it, and the module's first choice was not to use one -- which makes
+  the empty user the signal an operator should already have been watching.
+technique: T0861
+kinds: [opcua]
+severity: high
+enforcement: alert
+references:
+  - "Dragos, PIPEDREAM/INCONTROLLER: the OPC UA module (2022)"
+  - "CISA advisory AA22-103A"
+detect:
+  window: 20m
+  ordered: true
+  signals:
+    - name: a-session-with-no-identity
+      reasons: [empty_user, token_kind_not_allowed, plaintext_password, application_not_allowed]
+    - name: the-address-space-walked
+      reasons: [node_not_allowed, namespace_not_allowed, service_not_allowed, attribute_not_allowed]
+      count: 3
+    - name: then-a-write-or-a-call
+      reasons: [node_denied, method_not_allowed, method_denied, engineering_method_call, engineering_configuration]

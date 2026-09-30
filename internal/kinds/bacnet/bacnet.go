@@ -10,6 +10,7 @@ import (
 	"github.com/rom/xproxy/internal/anomaly"
 	wire "github.com/rom/xproxy/internal/bacnet"
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/engineering"
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/proxy"
 )
@@ -32,6 +33,9 @@ type server struct {
 	limiter *limits.KeyedLimiter
 	// anomaly is the behavioural models, nil when the block is off.
 	anomaly *anomaly.Detector
+	// engineering recognises the building's own tooling and ties it to an
+	// approved work order.
+	engineering *engineering.Guard
 
 	logRequests bool
 	alertOnDeny bool
@@ -76,6 +80,10 @@ func newServer(host proxy.Host, cfg config.Listener, pc net.PacketConn) (*server
 		t.limiter = limits.NewKeyedLimiter(float64(m.RateLimit), burst, 4096)
 	}
 	if t.anomaly, err = anomaly.FromConfig(m.Anomaly, time.Now()); err != nil {
+		return nil, err
+	}
+	if t.engineering, err = engineering.FromConfig(m.Engineering, "bacnet", cfg.Name,
+		host.Access(), host.Logs().Error); err != nil {
 		return nil, err
 	}
 	return t, nil

@@ -30,6 +30,7 @@ import (
 	"github.com/rom/xproxy/internal/logging"
 	"github.com/rom/xproxy/internal/mfa"
 	"github.com/rom/xproxy/internal/ntske"
+	"github.com/rom/xproxy/internal/packs"
 	"github.com/rom/xproxy/internal/sessions"
 	"github.com/rom/xproxy/internal/shadow"
 	"github.com/rom/xproxy/internal/tlsconf"
@@ -164,6 +165,14 @@ type Host interface {
 	// changes, which is a session, a first write, an engineering
 	// operation, a refusal or a clock step.
 	ObserveFact(netip.Addr, correlate.Fact)
+	// Packs is the behaviour-pack engine: the signed detection documents
+	// this daemon loaded at start. Nil where no directory is configured,
+	// and a nil engine holds nobody, so a kind reads it without checking.
+	//
+	// A kind uses it for one thing: to ask, at its admission point, whether
+	// a pack is holding this address out. Feeding the packs is not a kind's
+	// business -- that happens once, at the security-event stream.
+	Packs() *packs.Engine
 	// TakeRemote asks the cluster owner of a rate limit key to decide.
 	// decided is false without a cluster, without an owner or when the
 	// answer did not come in time, and the caller falls back to the

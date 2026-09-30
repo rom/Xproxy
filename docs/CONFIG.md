@@ -2254,6 +2254,86 @@ A list. Each entry is one pair of points that are supposed to track each other.
 | `tolerance` | float | `0.1` | Slack on the ratio, as a fraction of B; 0..1 |
 | `max_age` | duration | `1m` | How old the other point's reading may be and still be compared; 1s..1h. Two readings a quarter of an hour apart say nothing about each other |
 
+### engineering
+
+**`engineering`** is the third question, after "is this permitted" and "is this
+what this master has been doing": *is there an approved work order open for it*.
+
+A program download, a CPU stop, a protection setting written, a firmware image
+pushed — these are legitimate, necessary, and the operations an estate is
+actually compromised through. They are also rare, planned, and done by people
+who filed a change. A relay that could only answer the first question has two
+bad options: a rule that allows downloads, which allows them at three in the
+morning from a laptop nobody knows about; or a rule that denies them, which the
+plant turns off on the first commissioning day. The work order is the missing
+term, and this block is where the just-in-time machinery — the same
+[`access`](#access) ledger, the same four-eyes approvals, the same time-boxed
+grants that the bastion kinds use — reaches the plant.
+
+The block is **the same on every OT listener kind** — `modbus`, `iec104`, `s7`,
+`mms`, `bacnet`, `opcua`, `snmp` — and on `tftp`, which is how firmware reaches
+a great many devices. What differs is what each kind recognises, and each
+protocol page says which of its services this relay reads as engineering and
+under which class. Eight classes, the same names on every protocol, because an
+operations centre asking "was anything downloaded to a controller this week" is
+not asking about a protocol:
+
+| Class | What it is | Where it comes from |
+|-------|-----------|---------------------|
+| `program_download` | Control logic written into a device | An S7 block download, a UMAS program write, an MMS domain download |
+| `program_upload` | Control logic read out of one — how a plant's process knowledge leaves the site | The same services in the other direction |
+| `mode_change` | A controller moved between run, program and stop | S7 stop and programmer commands, BACnet `DeviceCommunicationControl` |
+| `restart` | A device restarted or reset | IEC 104 `C_RP_NA_1`, BACnet `ReinitializeDevice`, an S7 control service |
+| `configuration` | A setting rather than a command | An MMS `$CF$` or `$SG$` write, an IEC 104 parameter, an OPC UA node-management call, an SNMP SET |
+| `firmware` | A firmware or boot image moved to a device | A TFTP write |
+| `method_call` | A method the object model exposes for the purpose | An OPC UA `Call`, the one service there that runs something rather than reading or writing it |
+| `file_transfer` | A file moved onto or off a device over the control protocol itself | IEC 104 `F_*`, MMS file services, BACnet `AtomicWriteFile` |
+
+**It reports whether or not anybody asked for a work order.** The block is
+absent by default and the reporting is not: an engineering operation is worth an
+event on any listener, and a relay that stayed quiet about a program download
+until it was configured to speak would be one whose logs did not have the
+download in them. Every recognised operation gets a security event with
+`action: engineering` and reason `engineering_<class>`, the
+`xproxy_engineering_total` counter, a fact in the
+[cross-listener window](#correlation), and — where the daemon has an
+[`access`](#access) ledger — a line in its hash-chained record. `enabled: false`
+is how an operator says otherwise.
+
+**Two things are refusable, and they are different.** `require_grant: true`
+refuses an operation with no open, approved grant covering it, reason
+`engineering_no_grant`. On a listener that does *not* require one, an operation
+that happens outside every approved window is still alerted —
+`engineering_ungranted` — because an engineering action nobody filed is worth
+telling somebody about even where the policy allows it, and that alert is the
+step every estate takes before it starts refusing. `action: alert` keeps
+`require_grant`'s bookkeeping and drops its refusal, which is how to run the
+policy for a fortnight and read the report before it can stop a commissioning.
+
+**A grant is a work order.** It is requested and approved through the same
+`/v1/access` machinery and `xproxyctl access` as a bastion session, against this
+listener's name, and its reason is the change reference. The reason goes into the
+security event as `work_order` and into the ledger beside the operation, so "who
+downloaded what, when, under which work order" has an answer that is not a
+person's memory. A listener with `require_grant: true` on a daemon with no
+ledger **fails closed at startup** rather than at four in the afternoon, the same
+way the gate kinds do.
+
+**The refusal is the protocol's own.** It answers the way that kind answers a
+refused request — a Modbus exception, an S7 error class, an OPC UA service fault
+— and it does **not** feed the ban ladder: an engineer who forgot to file a
+change should be told no, not locked out of the plant. In shadow mode, or a
+learning run without `enforce`, nothing is refused and the would-be refusals go
+to the shadow report like every other decision on the listener.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Recognise and report engineering operations. `false` is silence: no event, no counter, no ledger line |
+| `require_grant` | bool | `false` | Refuse an operation with no open approved grant for it |
+| `action` | `alert`, `deny` | `deny` | With `require_grant`, whether the missing work order refuses or only alerts. Without it, nothing is refused either way |
+| `classes` | list | every class | The classes a grant is required for. Naming classes without `require_grant` is an error, because nothing would be asked of them |
+| `ledger` | bool | `true` | Write each operation to the access ledger as well as the security log. Ignored on a daemon with no ledger |
+
 **`trace`** writes one JSON object per frame for as long as it is
 enabled: the engineer's tool for "what is this master actually doing". It
 is a different thing from the audit log, which answers "who was refused
@@ -2298,6 +2378,11 @@ whether a device was polled or taken off the bus. The security event and the
    refused **by that rule** rather than falling through to a later rule
    that would permit it, because a bound that can be escaped by writing
    another rule underneath it is not a bound.
+9. `engineering`, on the frames the policy allowed: a UMAS program transfer,
+   a CPU stop, a cleared event log. It is last because it is about what
+   reached the device — an operation the rules already refused never happened,
+   and recording it as engineering activity would put a probe in the work-order
+   record next to the real downloads.
 
 #### Architectural decisions
 
@@ -14482,6 +14567,184 @@ the control room.
 `xproxyctl correlation` shows the window, what is in it and what the bounds
 have pushed out; `xproxy_correlation_*` are the counters.
 
+## packs
+
+Behaviour packs: signed, versioned detection documents read from a directory,
+each saying that a shape of events from one actor inside one window is one
+ATT&CK technique.
+
+```yaml
+packs:
+  directory: /usr/share/xproxy/packs
+  keys:
+    - {name: sysctl, file: /etc/xproxy/packs/sysctl.pub}
+  enforce: false          # the packs that declare deny may only alert until this is on
+  disabled: [tool-opcua-browse-storm]
+```
+
+**Why data and not code.** The first behaviour packs in this project were
+example listener configurations, written against the published behaviour of
+FrostyGoop, Industroyer, Stuxnet and PIPEDREAM — and they are still in
+[examples/ot/packs](../examples/ot/packs), because a policy is what actually
+refuses a program download. But a detection that ships as a configuration to
+copy has to be merged by hand into a policy somebody has already tuned, which
+means it is merged once and never again; and a detection that ships as a
+*binary* cannot reach an estate that is not taking a new binary this quarter,
+which is exactly what a plant is. A pack is a file: versioned, so a build
+refuses one it cannot read rather than reading it wrong, and signed, so a
+directory a daemon reads at start is not a way into that daemon.
+
+**What a pack decides about.** Not a frame. Every kind here already decides
+about frames with a policy an engineer wrote and can argue with. A pack sits one
+level up, on the stream of security events those decisions produce — the refusal
+reasons, the behavioural findings, the engineering operations. That is the layer
+where the named tooling is actually visible: none of it exploited a protocol, so
+there is nothing in a frame to match on, and what separates Industroyer from a
+control centre is the *shape* of a sequence across a quarter of an hour.
+
+Working from the event stream has a second property worth more than it looks:
+the vocabulary is closed and already documented. A pack names refusal reasons,
+and every reason this build can emit is in [docs/ATTACK.md](ATTACK.md). A pack
+naming one that is not — or naming one no listener kind of that signal emits —
+fails to load. **So a pack cannot claim a detection this build cannot make**,
+which is the rule that page is held to as well.
+
+**What a pack may do.** Every pack declares the most it may do. `alert` can
+never refuse anything, whatever an operator configures, and it is the right
+declaration for every detection derived from novelty — the first legitimate
+thing a plant does after a quiet year looks exactly like the first illegitimate
+one. `deny` is for the shapes whose evidence is a fact rather than an inference
+(a program download with no approved work order is one), and even then the
+operator has to set `enforce: true`.
+
+A pack's deny is a **quarantine and not a ban**: the actor is refused at
+admission on every listener of this daemon for the rest of that pack's own
+window, with reason `pack_quarantine`, and then it is over. Nothing reaches the
+ban list, no ladder escalates, no prefix or fingerprint is banned, and a restart
+clears it. OT detections have never fed the ban ladder in this project and they
+still do not — banning a plant's master takes the process away from the control
+room, which is worse than what is being guarded against. `xproxyctl packs
+release <address>` lifts one early.
+
+**The signature.** A detached file beside the pack, `<pack>.yaml.sig`, one line:
+
+```
+ed25519 <key name> <base64 signature>
+```
+
+over the pack file's exact bytes. Detached and textual on purpose: the pack
+stays a file an engineer can read and diff, and the signature can be produced by
+anything that can sign 32 bytes. Ed25519 and nothing else — a format with a
+choice of algorithm is a format with a downgrade, and there is no
+interoperability requirement here to pay for one with. `xproxyctl packs keygen`,
+`sign` and `verify` are the tooling; a signature naming a key this estate does
+not list is refused, because an unknown signer is not a weaker signature but no
+signature at all.
+
+**A file that does not load stops the daemon**, with the file and the reason
+named. That is the opposite of what a rule-set loader usually does, and it is
+deliberate: a pack directory is small, curated and signed, so a file in it that
+does not parse is a mistake somebody made minutes ago and wants to hear about —
+not a reason to start with a detection missing and nothing but a counter to say
+so.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Load the packs. Default true where a directory is named |
+| `directory` | path | required | The pack files and their detached signatures. Absolute |
+| `keys` | list | none | The public keys a signature may name; see below |
+| `allow_unsigned` | bool | `false` | Load a pack with no signature beside it. For the pack an engineer wrote this morning against their own plant, and warned about every time: an estate that turned it on to try something and left it on has a directory anybody who can write a file can put detections in |
+| `enforce` | bool | `false` | Let the packs that declare `enforcement: deny` quarantine. A pack that declares `alert` is never affected by this. Warned about |
+| `disabled` | list | none | Pack identifiers this estate does not want, by name — how one noisy pack is dropped without giving up the directory |
+| `max_actors` | int | `4096` | Addresses with pack state at once; the least recently seen is evicted and the eviction is counted |
+| `max_quarantined` | int | `256` | Actors held out at once. A detection that could quarantine an unbounded number of addresses is one somebody can use to take a plant off the air |
+
+### packs.keys[]
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | string | required | What a signature names, and what a loaded pack reports as its signer. Not a secret |
+| `key` | string | none | The ed25519 public key, base64. One of `key` or `file` |
+| `file` | path | none | The same thing in a file, so a key can be managed as one. Blank lines and `#` comments allowed. Absolute |
+
+### What a pack file holds
+
+A pack is loaded as **data**: there is no expression language, no negation, no
+regular expression and nothing that can name a Go symbol. The whole vocabulary
+is below, and a pack naming anything outside it fails to load rather than having
+the unknown part ignored.
+
+```yaml
+pack: 1                       # the format version this build reads
+id: t0843-download-with-no-work-order
+revision: 1
+name: A program download outside every approved change
+summary: >-
+  Control logic written into a device while no approved work order covered it.
+technique: T0843              # must be one internal/attack has
+kinds: [modbus, s7, mms]
+severity: critical            # info, low, medium, high, critical
+enforcement: deny             # the most this pack may ever do
+references:
+  - "MITRE ATT&CK for ICS T0843: Program Download"
+detect:
+  window: 5m
+  signals:
+    - name: a-download
+      reasons: [engineering_program_download]
+    - name: with-no-approval-open
+      reasons: [engineering_no_grant, engineering_ungranted]
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `pack` | int | required | The pack format version. A pack from a later format is refused by name rather than read with its unknown fields dropped |
+| `id` | string | required | Lower case letters, digits and dashes, 1..64. It is the finding's reason (`pack_<id>`), the metric label and what an operator disables by name, so it never changes: a corrected pack keeps its identifier and takes a higher `revision` |
+| `revision` | int | required | The pack's own version, 1 or more. Where a directory holds two files with one identifier the higher revision wins and the fact is reported, which is how an estate drops an update in beside what it has; the same revision twice is an error |
+| `name`, `summary` | string | required | The title and a paragraph of what the pack is about. Both reach the alert |
+| `technique` | string | required | The ATT&CK identifier this pack detects, in either matrix. Must be one this build can observe |
+| `kinds` | list | required | The listener kinds it applies to, each one this build serves |
+| `severity` | `info`…`critical` | `medium` | The pack author's judgement, in the pack rather than in the configuration because an operator assigning severities to detections they did not write assigns them all the same one |
+| `enforcement` | `alert`, `deny` | `alert` | The most this pack may do. `alert` can never refuse, whatever the configuration says |
+| `references` | list | none | Where the behaviour was published. Not used for anything; a detection nobody can trace back to an analysis is one nobody can argue with |
+
+### detect
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `window` | duration | `15m` | How long the signals have to arrive within; 1s..24h. It is anchored on the first matching event, and once it has passed the next match starts a new attempt rather than extending an old one |
+| `signals` | list | required | The steps; 1..16. All of them must be satisfied |
+| `ordered` | bool | `false` | The signals are looked for **one at a time**, so an event that would satisfy a later signal before its turn is not counted at all. That is what separates "read the program, then write one" from "did both this morning" |
+| `across_kinds` | int | `0` | Require the matching events to have come from at least this many distinct listener kinds. The one thing here that is not about a single protocol, and the cheapest true statement in the file: one host on three control protocols in ten minutes is not a control system |
+| `refire` | duration | the window | How long after a match the same actor's next match is reported. A campaign should be one alert and not one per frame |
+
+### detect.signals[]
+
+A signal is a conjunction: an event matches when its reason is one of `reasons`,
+its kind is one of `kinds` (or `kinds` is empty), and its action is one of
+`actions` (or `actions` is empty).
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | string | required | What this step is called in the finding, so an alert says which half fired first |
+| `reasons` | list | required | The security-event reasons that satisfy it. Each must be one this build emits, **and** one that at least one listener kind of this signal emits — so a Modbus-only pack cannot name an OPC UA reason and sit in a directory looking like a detection. The kind prefix is optional: `read_only` and `modbus_read_only` mean the same thing |
+| `kinds` | list | the pack's | Narrow the signal to those kinds, each one the pack itself names |
+| `actions` | list | any | Narrow it to `deny`, `alert`, `engineering` or `would_deny` |
+| `count` | int | `1` | How many matching events satisfy the signal; 1..100000 |
+
+### What a finding is
+
+A match is a security event of its own: `action: alert` (or `quarantine` where
+one was taken), reason `pack_<id>`, with the pack's name, its severity, the
+signal names in the order they were satisfied, the protocols they came from, and
+the pack's own technique in the `technique`, `technique_name`, `tactic` and
+`matrix` fields. It also goes to `xproxy_pack_match_total{pack,severity}`, to
+the `pack_matches` field of `xproxyctl status -json`, and to the
+[cross-listener window](#correlation).
+
+`xproxyctl packs` lists what is in force, with the revision, the technique and
+the signer of each; `xproxyctl packs show <id>` is one pack in full.
+
 ## asset_inventory
 
 One record per device, built from traffic the proxy was already carrying.
@@ -14743,7 +15006,7 @@ server:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `ledger` | path | none | The append-only file every request, approval, denial, revocation and use is written to, with a hash chain over the records. Absolute. Without it the grants live only in this process -- gone at the next restart, with no trail -- which is warned about rather than refused, because a test estate legitimately runs that way |
+| `ledger` | path | none | The append-only file every request, approval, denial, revocation, use and engineering operation is written to, with a hash chain over the records. Absolute. Without it the grants live only in this process -- gone at the next restart, with no trail -- which is warned about rather than refused, because a test estate legitimately runs that way |
 | `approvals` | int | `1` | Approvals a grant needs **in addition to** the request. 1 is four eyes: the person who asked and one other. 0 means a request is in force the moment it is made -- still just-in-time and time-boxed, but nobody else has to agree, and it is warned about. At most 8 |
 | `max_duration` | duration | `4h` | The longest window a grant may cover; 1m to 24h |
 | `max_lead` | duration | `24h` | How far ahead of now a window may start, so an approval today cannot be a key for next quarter; 0 to 720h |
@@ -14756,6 +15019,14 @@ Each gate kind -- `ssh`, `telnet`, `vnc`, `rdp` and `ftp` -- takes
 remember which protocol calls it what. A listener that requires a grant
 with no `access` section fails the load; an `access` section no listener
 asks is warned about.
+
+The OT kinds ask for the same thing about a *request* rather than a session.
+A Modbus connection carries reads all day and one UMAS program write at four
+in the afternoon, and only the second needs a work order, so there
+`require_grant: true` sits in the listener's
+[`engineering`](#engineering) block and covers the engineering classes rather
+than the connection. The grant, the approvals, the window and the trail are
+the same machinery; what differs is the unit of access.
 
 ### What a grant names
 
@@ -14818,7 +15089,12 @@ session in front of them.
 ### The trail
 
 Every act is one line of the ledger, and each line carries a hash over the
-previous one. A removed, edited, reordered or forged line is found when the
+previous one. An engineering operation on a plant listener is one of those
+acts, whether or not a grant was required for it: the line names the class,
+the operation in the protocol's own words, the subject, and the grant it
+happened under where there was one. So the trail answers "what was
+downloaded to a controller this quarter, and under which change" out of the
+same hash-chained file as "who opened a session on the bastion". A removed, edited, reordered or forged line is found when the
 file is read at start, and the daemon refuses to serve a trail it cannot
 stand behind rather than presenting it as intact. One process holds the file
 exclusively -- two daemons appending would interleave their chains -- so a

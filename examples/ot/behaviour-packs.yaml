@@ -1,0 +1,161 @@
+# Behaviour packs in front of a plant: the detections that arrive as files
+# rather than as a release.
+#
+# The rest of this directory is policy — which function codes, which registers,
+# which services, written against the equipment actually in front of the relay.
+# This file is the layer above it. A pack does not decide about a frame; it
+# watches the stream of decisions the policy makes and says "these five events
+# from one address inside ten minutes are Point & Tag Identification". Twenty-five
+# of them ship with the product ([packs/](../../packs)), covering ten ATT&CK for
+# ICS techniques, the named malware and the tooling an estate meets — including
+# its own auditors'.
+#
+# Why they are not compiled in: a plant does not take a new binary because a
+# detection was published. It takes a file. So a pack is signed, versioned data,
+# and this section is what an estate trusts in the directory.
+#
+# Two listeners, so the cross-kind packs have something to see: one Modbus and
+# one S7 in front of the same cell. A pack like
+# `tool-nmap-ics-scripts` needs both — one host on two control protocols inside
+# ten minutes is the statement neither listener can make alone.
+#
+# Validate: xot -config examples/ot/behaviour-packs.yaml -validate
+
+version: 1
+
+# -----------------------------------------------------------------------
+# The packs.
+# -----------------------------------------------------------------------
+packs:
+  # What ships with the product, plus whatever this estate has written and
+  # signed with the same key. A file that does not parse, or whose signature
+  # does not verify, stops this daemon at start with the file named — which is
+  # the right trade for a directory this small: a detection quietly missing is
+  # worse than a daemon that would not start.
+  directory: /usr/share/xproxy/packs
+
+  # The key that vouches for the directory. A pack's signature names a key by
+  # name, and a signature naming one that is not here is refused — an unknown
+  # signer is not a weaker signature, it is no signature.
+  #
+  #   xproxyctl packs keygen -name plant-a -out /etc/xot/packs/plant-a
+  #   xproxyctl packs sign -key /etc/xot/packs/plant-a.key -name plant-a \
+  #        /usr/share/xproxy/packs
+  #
+  # The private half belongs on whatever machine signs the release, not on this
+  # one. Verifying needs only the public half.
+  keys:
+    - {name: plant-a, file: /etc/xot/packs/plant-a.pub}
+
+  # Off, and it should stay off for a month.
+  #
+  # With it on, the four packs that declare `enforcement: deny` may hold an
+  # address out of every listener here for the length of their own window. That
+  # is not the ban ladder — nothing is written to the ban list, no ladder
+  # escalates, and a restart clears it — but it is still a control room losing a
+  # master, so read the reports first. The packs that declare `alert` are never
+  # affected by this either way.
+  enforce: false
+
+  # One pack dropped, by name. Every public OPC UA client browses an address
+  # space exhaustively because that is what it is for, and on a site whose
+  # integrator is in and out every week that pack is noise rather than signal.
+  # Dropping one is better than giving up the directory.
+  disabled:
+    - tool-opcua-browse-storm
+
+  # The bounds. Pack state is per address and the addresses are chosen by
+  # whoever connects, so both are bounded and both count what they push out.
+  max_actors: 4096
+  max_quarantined: 64
+
+# The cross-listener window is what lets a pack span protocols: a fact about an
+# address written by one listener and read by a detection about another. Without
+# it the per-kind packs still work and the cross-kind ones report nothing.
+correlation:
+  enabled: true
+  window: 30m
+
+server:
+  listeners:
+    # -----------------------------------------------------------------
+    # The cell's Modbus master path. An ordinary read-mostly policy; what
+    # is worth noticing here is that the packs are watching its refusals
+    # rather than its frames.
+    # -----------------------------------------------------------------
+    - name: cell4-modbus
+      address: "10.40.0.20:502"
+      kind: modbus
+      modbus:
+        upstream: cell4_plcs
+        allow_clients: ["10.40.1.0/24", "10.40.3.7/32"]
+        units: ["1-6"]
+        default_action: deny
+        rules:
+          - name: panels
+            clients: ["10.40.1.0/24"]
+            access: [read]
+          - name: setpoints
+            clients: ["10.40.1.0/24"]
+            functions: [write_single_register]
+            addresses: ["400-499"]
+            values: [{registers: "400-499", min: 0, max: 100}]
+
+        # The behavioural models feed several of the packs: a new talker, a new
+        # write point and a write burst are three of the reasons the technique
+        # packs name. They cost nothing on a listener that has them already.
+        anomaly:
+          enabled: true
+          talkers: {enabled: true}
+
+    # -----------------------------------------------------------------
+    # The same cell's S7 path. Two kinds in one daemon is what a pack
+    # asking `across_kinds: 2` is about.
+    # -----------------------------------------------------------------
+    - name: cell4-s7
+      address: "10.40.0.21:102"
+      kind: s7
+      s7:
+        upstream: cell4_cpu
+        allow_clients: ["10.40.1.0/24", "10.40.9.0/28"]
+        racks: ["0"]
+        slots: ["2"]
+        operations: [setup, read, szl, cyclic, time_read]
+        default_action: deny
+        rules:
+          - name: panels
+            clients: ["10.40.1.0/24"]
+            operations: [setup, read, szl, cyclic, time_read]
+
+        anomaly:
+          enabled: true
+          talkers: {enabled: true}
+
+        # An engineering operation on this listener is reported as its own class
+        # of event whatever the rules said, which is what the T0843, T0845,
+        # T0858 and T0816 packs are built on. No work order is required here:
+        # this file is about the detections, and the machinery for requiring one
+        # is in examples/ot/s7.yaml.
+        engineering:
+          require_grant: false
+
+upstreams:
+  - name: cell4_plcs
+    endpoints:
+      - {address: "10.40.10.11:502"}
+      - {address: "10.40.10.12:502"}
+  - name: cell4_cpu
+    endpoints:
+      - {address: "10.40.10.11:102"}
+
+logging:
+  security:
+    enabled: true
+
+# A pack finding reaches the security log as its own event: action alert (or
+# quarantine where one was taken), reason `pack_<id>`, with the pack's name, its
+# severity, the signals in the order they were satisfied, the protocols they came
+# from, and the technique in the technique, technique_name, tactic and matrix
+# fields. `xproxyctl packs` lists what is in force and how often each has fired;
+# `xproxyctl packs show <id>` is one in full, which is what somebody woken by a
+# finding reads.

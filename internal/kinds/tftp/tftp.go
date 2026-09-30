@@ -62,6 +62,7 @@ import (
 
 	"github.com/rom/xproxy/internal/acceptgroup"
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/engineering"
 	"github.com/rom/xproxy/internal/limits"
 	"github.com/rom/xproxy/internal/proxy"
 	wire "github.com/rom/xproxy/internal/tftp"
@@ -77,6 +78,10 @@ type server struct {
 	policy  *Policy
 	limiter *limits.KeyedLimiter
 	learner *learner
+	// engineering recognises a write for what it is -- an image or a
+	// configuration put where devices boot from -- and ties it to an approved
+	// work order.
+	engineering *engineering.Guard
 
 	// transfers is what a shutdown waits for. It is acceptgroup rather
 	// than a bare WaitGroup because the check and the Add have to happen
@@ -112,6 +117,10 @@ func newServer(host proxy.Host, cfg config.Listener, pc net.PacketConn) (*server
 	if l := m.Learn; l != nil {
 		t.learner = newLearner(&learnConfig{enabled: l.Enabled, listener: cfg.Name,
 			file: l.File, interval: l.Interval.D(), maxSubjects: l.MaxSubjects})
+	}
+	if t.engineering, err = engineering.FromConfig(m.Engineering, "tftp", cfg.Name,
+		host.Access(), host.Logs().Error); err != nil {
+		return nil, err
 	}
 	return t, nil
 }

@@ -1,0 +1,15 @@
+# tool-redpoint-enumeration -- Redpoint-shaped device and property enumeration
+# The sequence this pack is about. Each line is one security event:
+#   <listener kind> <action> <reason>
+# fire: the whole sequence, which must report.
+# hold: the same sequence one signal short, which must not.
+fire
+  bacnet deny too_many_broadcasts
+  bacnet deny too_many_broadcasts
+  bacnet deny rule_denied
+  bacnet deny rule_denied
+  bacnet deny rule_denied
+  bacnet deny rule_denied
+hold
+  bacnet deny too_many_broadcasts
+  bacnet deny too_many_broadcasts

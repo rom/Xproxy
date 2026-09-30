@@ -94,11 +94,13 @@ func (t *server) deviceSocket() (net.PacketConn, error) {
 func (t *server) admitClient(ip netip.Addr) string {
 	h := t.host
 	return admit.Client(admit.Deps{
-		Lists:   h.ThreatIntel(),
-		Policy:  h.Authorization(),
-		Logs:    h.Logs(),
-		Matched: func() { h.Counters().ThreatIntelMatched.Add(1) },
-		Blocked: func() { h.Counters().ThreatIntelBlocked.Add(1) },
+		Lists: h.ThreatIntel(),
+		// A behaviour pack holding this address out, where one is.
+		Quarantined: h.Packs().Quarantined,
+		Policy:      h.Authorization(),
+		Logs:        h.Logs(),
+		Matched:     func() { h.Counters().ThreatIntelMatched.Add(1) },
+		Blocked:     func() { h.Counters().ThreatIntelBlocked.Add(1) },
 	}, authorization.Subject{
 		Listener: t.name,
 		Kind:     "bacnet",
@@ -200,6 +202,13 @@ func (t *server) fromClient(device net.PacketConn, raw []byte, from net.Addr) {
 			t.answerRefusal(a, from)
 			return
 		}
+	}
+	// Engineering: a restart, a controller told to stop talking, a file into
+	// the device. Reported whatever the policy said, and refused where this
+	// listener requires an approved work order for it.
+	if reason := t.decideEngineering(req); reason != "" {
+		t.answerRefusal(a, from)
+		return
 	}
 	// Behavioural detection, after the policy and on the messages that are
 	// going on into the building: the models learn from what reached it, and a

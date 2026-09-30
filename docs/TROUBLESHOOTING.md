@@ -5951,6 +5951,7 @@ innocent.
 | `vnc_denied` | The VNC gateway: a security type outside the policy, a failed VNC authentication or factor, a target that offered nothing mediable, a client outside `allow_clients`, or a bound on the picture -- a framebuffer, a rectangle or a clipboard transfer past what `bounds` allows (`what` says which, and `detail` carries the numbers) | yes |
 | `rdp_denied` | The RDP gateway: a refused channel or device, a failed factor, a connection sequence it could not read, or a client outside `allow_clients` (`detail` says which) | yes |
 | `sftp_icap` | The SFTP scanner refused a file. The security event beside it is `sftp_icap_blocked`; the ban trigger names the observation | yes |
+| `pack_quarantine` | A [behaviour pack](CONFIG.md#packs) is holding this address out. It is not a ban and is not undone like one: the pack that fired declared `enforcement: deny`, the operator set `packs.enforce: true`, and the hold lasts the length of that pack's own window and then expires. `detail` names the pack. `xproxyctl packs release ADDRESS` lifts one early, and a restart clears them all | **no** -- and this is the deliberate limit. An OT detection that fed the ban ladder would take a plant's master away from the control room on a shape it inferred, which is worse than what is being guarded against |
 
 A trigger naming a reason that is not in the Ban column fails
 validation with the list of the ones that are, so this is not something

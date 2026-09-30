@@ -1,0 +1,32 @@
+# Redpoint, the Digital Bond enumeration scripts.
+#
+# bacnet-discover-enumerate, s7-enumerate, modicon-info and the rest: written for
+# assessors, and the most thorough enumeration of this equipment that exists in
+# public. The BACnet script in particular asks a device for every property it
+# might have, which is a specific and recognisable shape -- a broadcast with no
+# range, repeated, and then property after property.
+pack: 1
+id: tool-redpoint-enumeration
+revision: 1
+name: Redpoint-shaped device and property enumeration
+summary: >-
+  An unranged broadcast repeated, and then properties and objects named in
+  quantity. The Digital Bond scripts ask a device for every property it might
+  have, which is the most thorough public enumeration of this equipment and a
+  shape nothing in a building management system produces.
+technique: T0888
+kinds: [bacnet, s7, modbus]
+severity: medium
+enforcement: alert
+references:
+  - "Digital Bond Redpoint: bacnet-discover-enumerate, s7-enumerate, modicon-info"
+  - "MITRE ATT&CK for ICS T0888: Remote System Information Discovery"
+detect:
+  window: 10m
+  signals:
+    - name: unranged-broadcasts
+      reasons: [too_many_broadcasts, unsolicited_broadcast]
+      count: 2
+    - name: property-after-property
+      reasons: [rule_denied, address_not_allowed, db_not_allowed, no_rule, anomaly_new_symbol]
+      count: 4

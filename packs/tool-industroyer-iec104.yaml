@@ -1,0 +1,38 @@
+# Industroyer and Industroyer2, on the protocol that operates the grid.
+#
+# The IEC 104 module's published behaviour is three steps, and all three are
+# valid protocol. It enumerates the information object addresses on a station,
+# because it does not know which ones are breakers. It then operates them --
+# select then execute, properly, the way a control centre does. Industroyer2
+# added the station reset.
+#
+# The enumeration is the only part that leaves a trace on a policed listener,
+# because a control centre asks for the points in its own database and is never
+# refused. The pack is that walk followed by a command, and it does not pretend
+# the command itself is distinguishable.
+pack: 1
+id: tool-industroyer-iec104
+revision: 1
+name: Industroyer-shaped IEC 104 object walk and command
+summary: >-
+  An information object walk -- addresses outside the policy, repeatedly -- and
+  then a command from the same controlling station. Industroyer's IEC 104 module
+  sent correct select-before-execute sequences, so the walk that precedes them is
+  where the tool differs from a control centre, which asks only for the points in
+  its own database.
+technique: T0861
+kinds: [iec104]
+severity: critical
+enforcement: alert
+references:
+  - "ESET, Industroyer: a new threat for industrial control systems (2017)"
+  - "ESET and CERT-UA, Industroyer2 (April 2022)"
+detect:
+  window: 20m
+  ordered: true
+  signals:
+    - name: the-object-walk
+      reasons: [rule, default_deny, common_address, monitor_only]
+      count: 4
+    - name: then-a-command
+      reasons: [station_command, control, select_unavailable, engineering_restart, anomaly_new_write_point]

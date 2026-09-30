@@ -936,6 +936,7 @@ fleet: null
 api_inventory: null
 asset_inventory: null
 correlation: null
+packs: null
 shedding:
     target_latency: 250ms
     window: 10s

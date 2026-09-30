@@ -105,6 +105,11 @@ type Config struct {
 	// followed a bastion session, a clock step followed by time-tagged
 	// commands.
 	Correlation *Correlation `yaml:"correlation"`
+	// Packs are behaviour packs: signed, versioned detection documents read
+	// from a directory, each saying that a shape of events inside a window is
+	// one ATT&CK technique. They are data rather than code so that an estate
+	// that cannot take a new binary this quarter can still take a detection.
+	Packs *Packs `yaml:"packs"`
 	// Shedding enables adaptive load shedding by priority class when
 	// present.
 	Shedding *Shedding `yaml:"shedding"`
@@ -500,6 +505,10 @@ type ModbusListener struct {
 	// order it has never followed, a point that stopped moving. It needs
 	// no rules, which is the point of it. See Anomaly.
 	Anomaly *Anomaly `yaml:"anomaly"`
+	// Engineering reports this listener's engineering operations as their own
+	// class of event, and -- with require_grant -- refuses one with no approved
+	// work order open for it. See Engineering.
+	Engineering *Engineering `yaml:"engineering"`
 	// Trace writes one line per frame for as long as it is enabled: the
 	// engineer's tool for "what is this master actually doing".
 	Trace *ModbusTrace `yaml:"trace"`
@@ -631,6 +640,10 @@ type IEC104Listener struct {
 	// stopped moving. It needs no rules, which is the point of it. The block
 	// is the same on every OT kind; see Anomaly.
 	Anomaly *Anomaly `yaml:"anomaly"`
+	// Engineering reports this listener's engineering operations as their own
+	// class of event, and -- with require_grant -- refuses one with no approved
+	// work order open for it. See Engineering.
+	Engineering *Engineering `yaml:"engineering"`
 	// Setpoints bound the *value* a setpoint command may carry, per
 	// information object address. Without them a setpoint is bounded only
 	// by which point it names and when it may be sent, so a control
@@ -1039,6 +1052,10 @@ type SNMPListener struct {
 	// stopped moving. It needs no rules, which is the point of it. The block
 	// is the same on every OT kind; see Anomaly.
 	Anomaly *Anomaly `yaml:"anomaly"`
+	// Engineering reports this listener's engineering operations as their own
+	// class of event, and -- with require_grant -- refuses one with no approved
+	// work order open for it. See Engineering.
+	Engineering *Engineering `yaml:"engineering"`
 }
 
 // LDAPListener is a kind: ldap listener: an LDAP and LDAPS relay in front of
@@ -1950,6 +1967,10 @@ type S7Listener struct {
 	// stopped moving. It needs no rules, which is the point of it. The block
 	// is the same on every OT kind; see Anomaly.
 	Anomaly *Anomaly `yaml:"anomaly"`
+	// Engineering reports this listener's engineering operations as their own
+	// class of event, and -- with require_grant -- refuses one with no approved
+	// work order open for it. See Engineering.
+	Engineering *Engineering `yaml:"engineering"`
 
 	// Rules decide each request, in order, first match wins. A request
 	// that matches no rule takes DefaultAction.
@@ -3048,6 +3069,10 @@ type TFTPListener struct {
 	AlertOnDeny *bool `yaml:"alert_on_deny"`
 	// Learn records what crosses this listener and writes a proposed policy.
 	Learn *TFTPLearn `yaml:"learn"`
+	// Engineering reports a write for what it is -- an image or a
+	// configuration going where devices boot from -- and, with require_grant,
+	// refuses one with no approved work order. See Engineering.
+	Engineering *Engineering `yaml:"engineering"`
 }
 
 // TFTPLearn is a tftp listener's learning mode.
@@ -3157,6 +3182,64 @@ type Correlation struct {
 	// and without this the pivot is invisible to both. Default true when
 	// a cluster is configured; it does nothing without one.
 	Share *bool `yaml:"share"`
+}
+
+// Packs is the behaviour-pack directory and what this estate trusts in it.
+//
+// A pack changes what the daemon alerts on and, where both the pack and this
+// section allow it, what it refuses -- so the directory is a supply chain and
+// is treated as one: a file loads when a key named here signed it.
+type Packs struct {
+	// Enabled turns the packs on. Default true where a directory is named.
+	Enabled *bool `yaml:"enabled"`
+	// Directory holds the pack files and their detached signatures. Absolute.
+	Directory string `yaml:"directory"`
+	// Keys are the public keys a pack's signature may name. Without at least
+	// one, every pack in the directory has to be unsigned and allow_unsigned
+	// has to be set, which is warned about.
+	Keys []PackKey `yaml:"keys"`
+	// AllowUnsigned loads a pack with no signature beside it. It is for the
+	// pack an engineer wrote this morning against their own plant, and it is
+	// warned about every time: an estate that turned it on to try something
+	// and left it on has a directory anybody who can write a file can put
+	// detections in.
+	AllowUnsigned bool `yaml:"allow_unsigned"`
+	// Enforce lets the packs that declare `enforcement: deny` quarantine the
+	// actor for the rest of their own window. Default false: a detection whose
+	// report nobody has read should not be refusing anything. A pack that
+	// declares `alert` is never affected by this.
+	Enforce bool `yaml:"enforce"`
+	// Disabled are pack identifiers this estate does not want, by name, which
+	// is how one noisy pack is dropped without giving up the directory.
+	Disabled []string `yaml:"disabled"`
+	// MaxActors bounds the addresses with pack state at once; the least
+	// recently seen is evicted and the eviction is counted. Default 4096.
+	MaxActors int `yaml:"max_actors"`
+	// MaxQuarantined bounds the actors held out at once. Default 256. A
+	// detection that could quarantine an unbounded number of addresses is a
+	// detection somebody can use to take a plant off the air.
+	MaxQuarantined int `yaml:"max_quarantined"`
+}
+
+// PackKey is one public key trusted to sign packs. Give it inline as `key` or
+// in a file as `file`, not both.
+type PackKey struct {
+	// Name is what a signature names and what a loaded pack reports as its
+	// signer. It is not a secret.
+	Name string `yaml:"name"`
+	// Key is the ed25519 public key, base64.
+	Key string `yaml:"key"`
+	// File holds the same thing, so a key can be managed as a file. Blank
+	// lines and `#` comments are allowed in it.
+	File string `yaml:"file"`
+}
+
+// PacksEnabled reports whether behaviour packs are loaded.
+func (c *Config) PacksEnabled() bool {
+	if c.Packs == nil || c.Packs.Directory == "" {
+		return false
+	}
+	return c.Packs.Enabled == nil || *c.Packs.Enabled
 }
 
 // CorrelationEnabled reports whether the cross-listener window is on.
@@ -3954,6 +4037,10 @@ type CoAPListener struct {
 	// stopped moving. It needs no rules, which is the point of it. The block
 	// is the same on every OT kind; see Anomaly.
 	Anomaly *Anomaly `yaml:"anomaly"`
+	// Engineering reports this listener's engineering operations as their own
+	// class of event, and -- with require_grant -- refuses one with no approved
+	// work order open for it. See Engineering.
+	Engineering *Engineering `yaml:"engineering"`
 }
 
 // CoAPPSK is a listener's pre-shared key mode: the identity-to-key table, and
@@ -5075,6 +5162,56 @@ type Anomaly struct {
 	// hardest to avoid -- a written value that is physically impossible
 	// next to a value the process itself produced.
 	Correlations []AnomalyCorrelation `yaml:"correlations"`
+}
+
+// Engineering is the class of event a plant's own tooling produces, and the
+// tie between it and an approved work order.
+//
+// Every OT kind here refuses what a policy does not grant, which is the right
+// answer for a command: a breaker either may be operated by this client or may
+// not. Engineering is different in kind. A program download, a CPU stop, a
+// protection setting written, a firmware image pushed: legitimate, necessary,
+// and the operations an estate is actually compromised through. They are also
+// rare and planned, so the useful question is not "may this client do it" but
+// "is there an approved work order open for it right now".
+//
+// The just-in-time machinery (see Access) was built for the bastions, where a
+// session is the unit of access. This is what makes it cover the plant, where a
+// *request* is the unit: one Modbus connection carries reads all day and one
+// UMAS program write at four in the afternoon, and only the second needs a work
+// order.
+//
+// The block is optional, and its absence does not mean silence: an engineering
+// operation is reported as its own event on every OT listener whether or not
+// anybody asked for a work order, because a relay whose logs did not have the
+// download in them would be missing the one line that matters. `enabled: false`
+// is how an operator says otherwise.
+type Engineering struct {
+	// Enabled reports engineering operations at all. Default true, including
+	// when the block is absent.
+	Enabled *bool `yaml:"enabled"`
+	// RequireGrant refuses an engineering operation with no grant open for it
+	// in the access ledger -- "downloads only during an approved work order".
+	// A listener that requires one on a daemon with no `access` section
+	// refuses every operation, which validation refuses first.
+	RequireGrant bool `yaml:"require_grant"`
+	// Action is deny (the default where a grant is required) or alert. alert is
+	// the step every estate takes first: be told when a download happens
+	// outside a window, then refuse it once the windows are being filed.
+	//
+	// Whatever it says, an operation outside every approved window is reported.
+	// That is the point of having a ledger at all, and it is not configurable.
+	Action string `yaml:"action"`
+	// Classes are the classes a grant is required for: program_download,
+	// program_upload, mode_change, restart, configuration, firmware,
+	// method_call, file_transfer. Empty means all of them, which is what
+	// `require_grant: true` on its own meant.
+	Classes []string `yaml:"classes"`
+	// Ledger writes every recognised operation to the access ledger's own
+	// hash-chained trail as well as to the security log. Default true where
+	// the daemon has a ledger: the log rotates and the trail does not, and an
+	// engineering record is the one an audit asks for a year later.
+	Ledger *bool `yaml:"ledger"`
 }
 
 // AnomalyNovelty is the "never seen this before" model.
@@ -12601,6 +12738,10 @@ type BACnetListener struct {
 	// stopped moving. It needs no rules, which is the point of it. The block
 	// is the same on every OT kind; see Anomaly.
 	Anomaly *Anomaly `yaml:"anomaly"`
+	// Engineering reports this listener's engineering operations as their own
+	// class of event, and -- with require_grant -- refuses one with no approved
+	// work order open for it. See Engineering.
+	Engineering *Engineering `yaml:"engineering"`
 }
 
 // BACnetRule decides one request.
@@ -12917,6 +13058,10 @@ type OPCUAListener struct {
 	// stopped moving. It needs no rules, which is the point of it. The block
 	// is the same on every OT kind; see Anomaly.
 	Anomaly *Anomaly `yaml:"anomaly"`
+	// Engineering reports this listener's engineering operations as their own
+	// class of event, and -- with require_grant -- refuses one with no approved
+	// work order open for it. See Engineering.
+	Engineering *Engineering `yaml:"engineering"`
 
 	// Rules decide each message, in order, first match wins. A message that
 	// matches no rule takes DefaultAction.
@@ -13241,6 +13386,10 @@ type MMSListener struct {
 	// stopped moving. It needs no rules, which is the point of it. The block
 	// is the same on every OT kind; see Anomaly.
 	Anomaly *Anomaly `yaml:"anomaly"`
+	// Engineering reports this listener's engineering operations as their own
+	// class of event, and -- with require_grant -- refuses one with no approved
+	// work order open for it. See Engineering.
+	Engineering *Engineering `yaml:"engineering"`
 }
 
 // MMSRule is one rule of an mms listener's policy.

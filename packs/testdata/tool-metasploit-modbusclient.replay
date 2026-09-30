@@ -1,0 +1,16 @@
+# tool-metasploit-modbusclient -- A unit-identifier walk, then a single register written
+# The sequence this pack is about. Each line is one security event:
+#   <listener kind> <action> <reason>
+# fire: the whole sequence, which must report.
+# hold: the same sequence one signal short, which must not.
+fire
+  modbus deny unit_not_allowed
+  modbus deny unit_not_allowed
+  modbus deny unit_not_allowed
+  modbus deny unit_not_allowed
+  modbus deny read_only
+hold
+  modbus deny unit_not_allowed
+  modbus deny unit_not_allowed
+  modbus deny unit_not_allowed
+  modbus deny unit_not_allowed

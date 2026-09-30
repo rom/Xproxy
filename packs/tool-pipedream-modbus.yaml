@@ -1,0 +1,34 @@
+# PIPEDREAM's Schneider module, which speaks UMAS inside Modbus function 90.
+#
+# This is the one place in the published ICS tooling where a vendor's own
+# sub-protocol carries the destructive verbs: a UMAS session inside function code
+# 90 can stop a Modicon and transfer its program. Function 90 on the wire is one
+# byte and says nothing; this relay classifies the sub-function by effect, so the
+# stop and the program transfer are named.
+#
+# Which makes this pack unusually direct for the named set: the signals are the
+# effects, not a shape.
+pack: 1
+id: tool-pipedream-modbus
+revision: 1
+name: PIPEDREAM-shaped UMAS session on a Modicon
+summary: >-
+  A UMAS stop or program transfer inside Modbus function code 90, from a client
+  that had not used that function before. Function 90 is one byte on the wire and
+  carries a vendor sub-protocol with the destructive verbs in it; this relay
+  classifies the sub-function by what it does, so the stop and the transfer are
+  named rather than guessed at.
+technique: T0858
+kinds: [modbus]
+severity: critical
+enforcement: deny
+references:
+  - "Dragos, PIPEDREAM/INCONTROLLER: the CODESYS and Modicon modules (2022)"
+  - "CISA advisory AA22-103A"
+detect:
+  window: 10m
+  signals:
+    - name: an-unfamiliar-function
+      reasons: [anomaly_new_symbol, unsafe_sub_function]
+    - name: a-umas-stop-or-transfer
+      reasons: [engineering_mode_change, engineering_program_download, engineering_configuration]

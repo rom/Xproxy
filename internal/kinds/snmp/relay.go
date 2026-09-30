@@ -138,11 +138,13 @@ func (t *server) agentSocket() (net.PacketConn, error) {
 func (t *server) admitClient(ip netip.Addr) string {
 	h := t.host
 	return admit.Client(admit.Deps{
-		Lists:   h.ThreatIntel(),
-		Policy:  h.Authorization(),
-		Logs:    h.Logs(),
-		Matched: func() { h.Counters().ThreatIntelMatched.Add(1) },
-		Blocked: func() { h.Counters().ThreatIntelBlocked.Add(1) },
+		Lists: h.ThreatIntel(),
+		// A behaviour pack holding this address out, where one is.
+		Quarantined: h.Packs().Quarantined,
+		Policy:      h.Authorization(),
+		Logs:        h.Logs(),
+		Matched:     func() { h.Counters().ThreatIntelMatched.Add(1) },
+		Blocked:     func() { h.Counters().ThreatIntelBlocked.Add(1) },
 	}, authorization.Subject{
 		Listener: t.cfg.Name,
 		Kind:     "snmp",
@@ -247,6 +249,15 @@ func (t *server) fromManager(agent net.PacketConn, raw []byte, p *peer) {
 			}
 			return
 		}
+	}
+	// Engineering: a SET is a configuration change on this protocol. Reported
+	// whatever the policy said, and refused where this listener requires an
+	// approved work order for it.
+	if reason := t.decideEngineering(t.request(ip, m, p)); reason != "" {
+		if !t.deceive(m, p, reason) {
+			t.answerRefusal(m, p)
+		}
+		return
 	}
 	// Behavioural detection, after the policy and on the messages that are
 	// going on to the agent: the models learn from what reached it, and a

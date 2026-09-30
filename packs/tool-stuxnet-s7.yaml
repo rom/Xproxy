@@ -1,0 +1,36 @@
+# Stuxnet, on S7comm, which is the sequence this whole idea was built around.
+#
+# Four steps, in order, every one of them a service an engineering station uses
+# every day: read the existing blocks out, write blocks in, hook the cyclic block
+# so the new code runs, and write the parameter block that changes what the
+# process does. There is no exploit anywhere in it. The order is the evidence.
+#
+# It is the clearest argument for a pack being a sequence rather than a
+# signature: any one of these steps is a Tuesday, and the four of them inside an
+# hour, from one station, are not.
+pack: 1
+id: tool-stuxnet-s7
+revision: 1
+name: Stuxnet-shaped S7 upload, download and parameter write
+summary: >-
+  Blocks read out, blocks written in, and a parameter or data write, in that
+  order, from one station. Every step is a service an engineering station uses
+  daily and none of them is an exploit; the order inside one hour is the
+  evidence, which is why this is a sequence and not a signature.
+technique: T0843
+kinds: [s7]
+severity: critical
+enforcement: deny
+references:
+  - "Langner, To Kill a Centrifuge (2013)"
+  - "Symantec, W32.Stuxnet Dossier"
+detect:
+  window: 60m
+  ordered: true
+  signals:
+    - name: the-blocks-read-out
+      reasons: [engineering_program_upload, block_type_not_allowed]
+    - name: blocks-written-in
+      reasons: [engineering_program_download]
+    - name: then-the-parameters
+      reasons: [engineering_configuration, db_not_allowed, area_not_allowed, anomaly_new_write_point]

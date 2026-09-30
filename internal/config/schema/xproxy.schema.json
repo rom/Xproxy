@@ -211,6 +211,14 @@
         }
       ]
     },
+    "packs": {
+      "description": "Packs are behaviour packs: signed, versioned detection documents read from a directory, each saying that a shape of events inside a window is one ATT\u0026CK technique. They are data rather than code so that an estate that cannot take a new binary this quarter can still take a detection.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Packs"
+        }
+      ]
+    },
     "policy": {
       "description": "Policy is the estate's enforcement mode: whether the listeners enforce their policies or only evaluate them and write down what they would have refused.",
       "allOf": [
@@ -1425,6 +1433,14 @@
             "type": "string"
           }
         },
+        "engineering": {
+          "description": "Engineering reports this listener's engineering operations as their own class of event, and -- with require_grant -- refuses one with no approved work order open for it. See Engineering.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Engineering"
+            }
+          ]
+        },
         "log_requests": {
           "description": "LogRequests writes an access line per request: who, which service, which object and property, and how it was decided. Default true. This is the record an estate is asked for when somebody wants to know who set the setpoint.",
           "type": "boolean"
@@ -2317,6 +2333,14 @@
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "engineering": {
+          "description": "Engineering reports this listener's engineering operations as their own class of event, and -- with require_grant -- refuses one with no approved work order open for it. See Engineering.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Engineering"
+            }
+          ]
         },
         "log_messages": {
           "description": "LogMessages writes an access line per message.",
@@ -4200,6 +4224,36 @@
       },
       "additionalProperties": false
     },
+    "Engineering": {
+      "description": "Engineering is the class of event a plant's own tooling produces, and the tie between it and an approved work order. Every OT kind here refuses what a policy does not grant, which is the right answer for a command: a breaker either may be operated by this client or may not. Engineering is different in kind. A program download, a CPU stop, a protection setting written, a firmware image pushed: legitimate, necessary, and the operations an estate is actually compromised through. They are also rare and planned, so the useful question is not \"may this client do it\" but \"is there an approved work order open for it right now\". The just-in-time machinery (see Access) was built for the bastions, where a session is the unit of access. This is what makes it cover the plant, where a *request* is the unit: one Modbus connection carries reads all day and one UMAS program write at four in the afternoon, and only the second needs a work order. The block is optional, and its absence does not mean silence: an engineering operation is reported as its own event on every OT listener whether or not anybody asked for a work order, because a relay whose logs did not have the download in them would be missing the one line that matters. `enabled: false` is how an operator says otherwise.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "Action is deny (the default where a grant is required) or alert. alert is the step every estate takes first: be told when a download happens outside a window, then refuse it once the windows are being filed. Whatever it says, an operation outside every approved window is reported. That is the point of having a ledger at all, and it is not configurable.",
+          "type": "string"
+        },
+        "classes": {
+          "description": "Classes are the classes a grant is required for: program_download, program_upload, mode_change, restart, configuration, firmware, method_call, file_transfer. Empty means all of them, which is what `require_grant: true` on its own meant.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "enabled": {
+          "description": "Enabled reports engineering operations at all. Default true, including when the block is absent.",
+          "type": "boolean"
+        },
+        "ledger": {
+          "description": "Ledger writes every recognised operation to the access ledger's own hash-chained trail as well as to the security log. Default true where the daemon has a ledger: the log rotates and the trail does not, and an engineering record is the one an audit asks for a year later.",
+          "type": "boolean"
+        },
+        "require_grant": {
+          "description": "RequireGrant refuses an engineering operation with no grant open for it in the access ledger -- \"downloads only during an approved work order\". A listener that requires one on a daemon with no `access` section refuses every operation, which validation refuses first.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
     "ErrorPages": {
       "description": "ErrorPages replaces the plain status bodies the proxy writes (denials, upstream failures, unknown routes, static misses) with documents from a directory, chosen by exact status (\"404\"), class (\"4xx\", \"5xx\") or \"default\". Documents are read at load and may use ${status}, ${status_text}, ${request_id}, ${host}, ${path}, ${reason} and the other request variables; unknown ${...} sequences are kept as they are.",
       "type": "object",
@@ -5293,6 +5347,14 @@
         "deny_response": {
           "description": "DenyResponse is how a refused activation is answered: negative (the default: the same ASDU returned with the negative-confirm bit and cause actcon, which is what the standard says a station does and what a control centre's alarm list understands), drop (no answer, which the centre reads as a timeout) or close.",
           "type": "string"
+        },
+        "engineering": {
+          "description": "Engineering reports this listener's engineering operations as their own class of event, and -- with require_grant -- refuses one with no approved work order open for it. See Engineering.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Engineering"
+            }
+          ]
         },
         "idle_timeout": {
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
@@ -7040,6 +7102,14 @@
             "type": "string"
           }
         },
+        "engineering": {
+          "description": "Engineering reports this listener's engineering operations as their own class of event, and -- with require_grant -- refuses one with no approved work order open for it. See Engineering.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Engineering"
+            }
+          ]
+        },
         "files": {
           "description": "Files are the file paths a file service may name, as glob patterns against the joined path: `COMTRADE/*`. Empty allows any.",
           "type": "array",
@@ -7970,6 +8040,14 @@
         "deny_response": {
           "description": "DenyResponse is how a refused request is answered: exception (the default, an illegal-function or illegal-address exception the master understands), drop (no answer at all, which a master reads as a timeout) or close (end the connection).",
           "type": "string"
+        },
+        "engineering": {
+          "description": "Engineering reports this listener's engineering operations as their own class of event, and -- with require_grant -- refuses one with no approved work order open for it. See Engineering.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Engineering"
+            }
+          ]
         },
         "framing": {
           "description": "Framing is what arrives from the master: tcp (MBAP, the default), rtu or ascii. The serial framings are here because every \"Modbus gateway\" ever sold tunnels them over TCP, and a relay that could not read them would be a relay the estate goes around.",
@@ -9581,6 +9659,14 @@
             "type": "string"
           }
         },
+        "engineering": {
+          "description": "Engineering reports this listener's engineering operations as their own class of event, and -- with require_grant -- refuses one with no approved work order open for it. See Engineering.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Engineering"
+            }
+          ]
+        },
         "handshake_timeout": {
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
@@ -10073,6 +10159,70 @@
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
         },
         "max_ejection_percent": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "PackKey": {
+      "description": "PackKey is one public key trusted to sign packs. Give it inline as `key` or in a file as `file`, not both.",
+      "type": "object",
+      "properties": {
+        "file": {
+          "description": "File holds the same thing, so a key can be managed as a file. Blank lines and `#` comments are allowed in it.",
+          "type": "string"
+        },
+        "key": {
+          "description": "Key is the ed25519 public key, base64.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Name is what a signature names and what a loaded pack reports as its signer. It is not a secret.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Packs": {
+      "description": "Packs is the behaviour-pack directory and what this estate trusts in it. A pack changes what the daemon alerts on and, where both the pack and this section allow it, what it refuses -- so the directory is a supply chain and is treated as one: a file loads when a key named here signed it.",
+      "type": "object",
+      "properties": {
+        "allow_unsigned": {
+          "description": "AllowUnsigned loads a pack with no signature beside it. It is for the pack an engineer wrote this morning against their own plant, and it is warned about every time: an estate that turned it on to try something and left it on has a directory anybody who can write a file can put detections in.",
+          "type": "boolean"
+        },
+        "directory": {
+          "description": "Directory holds the pack files and their detached signatures. Absolute.",
+          "type": "string"
+        },
+        "disabled": {
+          "description": "Disabled are pack identifiers this estate does not want, by name, which is how one noisy pack is dropped without giving up the directory.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "enabled": {
+          "description": "Enabled turns the packs on. Default true where a directory is named.",
+          "type": "boolean"
+        },
+        "enforce": {
+          "description": "Enforce lets the packs that declare `enforcement: deny` quarantine the actor for the rest of their own window. Default false: a detection whose report nobody has read should not be refusing anything. A pack that declares `alert` is never affected by this.",
+          "type": "boolean"
+        },
+        "keys": {
+          "description": "Keys are the public keys a pack's signature may name. Without at least one, every pack in the directory has to be unsigned and allow_unsigned has to be set, which is warned about.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PackKey"
+          }
+        },
+        "max_actors": {
+          "description": "MaxActors bounds the addresses with pack state at once; the least recently seen is evicted and the eviction is counted. Default 4096.",
+          "type": "integer"
+        },
+        "max_quarantined": {
+          "description": "MaxQuarantined bounds the actors held out at once. Default 256. A detection that could quarantine an unbounded number of addresses is a detection somebody can use to take a plant off the air.",
           "type": "integer"
         }
       },
@@ -12180,6 +12330,14 @@
           "description": "DenyResponse is error (the default: an S7 acknowledgement carrying an access-fault error, which is what a protected CPU answers, so the client's own library reports a refusal), drop or close.",
           "type": "string"
         },
+        "engineering": {
+          "description": "Engineering reports this listener's engineering operations as their own class of event, and -- with require_grant -- refuses one with no approved work order open for it. See Engineering.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Engineering"
+            }
+          ]
+        },
         "handshake_timeout": {
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
@@ -12911,6 +13069,14 @@
         "dtls_mode": {
           "description": "DTLSMode puts RFC 6353's transport model on the transport this protocol actually uses: none (the default), implicit, or detect. implicit is the standard's own arrangement -- UDP 10161, DTLS from the first octet, every datagram inside a session. A manager authenticates with a certificate, which is an identity an estate already knows how to issue, revoke and rotate, rather than a USM pass phrase per user per engine; and because the session carries the security, the relay can answer a refusal and rebuild a response without holding a credential of the manager's. That is the half of the secure upgrade facing the management station, with plain v2c going on towards a switch whose firmware has nothing else. detect takes both on one port: a datagram beginning with a DTLS content type is a record, one beginning with a BER SEQUENCE is a plain SNMP message, and the two cannot be confused because 0x30 is not a content type and no content type is 0x30. It is not what RFC 6353 describes -- the standard gives DTLS a port of its own -- and it exists for the estate that is moving: the new managers speak DTLS and the old pollers do not, and nobody is going to reconfigure two hundred switches to change a port. What it costs is stated plainly: a client chooses which of the two it speaks, so the *policy* has to be what requires the certificate. Write rules naming transports, keep default_action at deny, and validation will say so if you do not. Either mode needs a tls section for the certificate, and a client_ca_file with client_auth: require_and_verify is what makes the identity worth naming -- without it a peer presents whatever it likes.",
           "type": "string"
+        },
+        "engineering": {
+          "description": "Engineering reports this listener's engineering operations as their own class of event, and -- with require_grant -- refuses one with no approved work order open for it. See Engineering.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Engineering"
+            }
+          ]
         },
         "idle_timeout": {
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
@@ -14741,6 +14907,14 @@
           "items": {
             "type": "string"
           }
+        },
+        "engineering": {
+          "description": "Engineering reports a write for what it is -- an image or a configuration going where devices boot from -- and, with require_grant, refuses one with no approved work order. See Engineering.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Engineering"
+            }
+          ]
         },
         "filenames": {
           "description": "Filenames and DenyFilenames are shell patterns matched against the whole cleaned path (as in firmware/*.bin). Deny is evaluated first and no rule can override it.",

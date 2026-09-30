@@ -16,6 +16,7 @@ import (
 	"github.com/rom/xproxy/internal/authorization"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/correlate"
+	"github.com/rom/xproxy/internal/engineering"
 	"github.com/rom/xproxy/internal/limits"
 	wire "github.com/rom/xproxy/internal/mms"
 	"github.com/rom/xproxy/internal/netutil"
@@ -34,11 +35,14 @@ type server struct {
 	policy *policy
 	ln     net.Listener
 
-	learner  *learner
-	limiter  *limits.KeyedLimiter
-	anomaly  *anomaly.Detector
-	gate     *sesslimit.Gate
-	sessions acceptgroup.Group
+	learner *learner
+	limiter *limits.KeyedLimiter
+	anomaly *anomaly.Detector
+	// engineering recognises the substation's own tooling and ties it to an
+	// approved work order.
+	engineering *engineering.Guard
+	gate        *sesslimit.Gate
+	sessions    acceptgroup.Group
 }
 
 func newServer(host proxy.Host, cfg config.Listener, ln net.Listener) (*server, error) {
@@ -62,6 +66,10 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener) (*server, 
 		t.limiter = limits.NewKeyedLimiter(float64(n), burst, 0)
 	}
 	if t.anomaly, err = anomaly.FromConfig(cfg.MMS.Anomaly, time.Now()); err != nil {
+		return nil, fmt.Errorf("listener %s: %w", cfg.Name, err)
+	}
+	if t.engineering, err = engineering.FromConfig(cfg.MMS.Engineering, "mms", cfg.Name,
+		host.Access(), host.Logs().Error); err != nil {
 		return nil, fmt.Errorf("listener %s: %w", cfg.Name, err)
 	}
 	return t, nil
@@ -305,11 +313,13 @@ func (c *conn) writeUp(b []byte) error {
 func (t *server) admitClient(ip netip.Addr) string {
 	h := t.host
 	return admit.Client(admit.Deps{
-		Lists:   h.ThreatIntel(),
-		Policy:  h.Authorization(),
-		Logs:    h.Logs(),
-		Matched: func() { h.Counters().ThreatIntelMatched.Add(1) },
-		Blocked: func() { h.Counters().ThreatIntelBlocked.Add(1) },
+		Lists: h.ThreatIntel(),
+		// A behaviour pack holding this address out, where one is.
+		Quarantined: h.Packs().Quarantined,
+		Policy:      h.Authorization(),
+		Logs:        h.Logs(),
+		Matched:     func() { h.Counters().ThreatIntelMatched.Add(1) },
+		Blocked:     func() { h.Counters().ThreatIntelBlocked.Add(1) },
 		// One fact per connection, to the cross-listener window: this
 		// address was on this listener. It is what the questions no
 		// listener can answer by itself are built from -- one host on

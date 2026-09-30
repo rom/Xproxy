@@ -6,6 +6,197 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (behaviour packs as signed data, not as code and not as configurations)
+
+- **`internal/packs` is a pack format and an evaluator**, and a pack is a file:
+  versioned, so a build refuses one it cannot read rather than reading it wrong,
+  and signed, so a directory a daemon reads at start is not a way into that
+  daemon. Twenty-five ship in `packs/` and install to
+  `/usr/share/xproxy/packs`.
+
+- **Why data.** The first behaviour packs here were example listener
+  configurations, and they are still in examples/ot/packs because a policy is
+  what actually refuses a program download. But a detection that ships as a
+  configuration has to be merged by hand into a policy somebody has already
+  tuned, which happens once and never again; and one that ships as a *binary*
+  cannot reach an estate that is not taking a new binary this quarter, which is
+  exactly what a plant is. A pack is the shape that can be kept up to date.
+
+- **What a pack decides about: the event stream, not a frame.** Every kind here
+  already decides about frames with a policy an engineer wrote. A pack sits one
+  level up, on the refusal reasons, behavioural findings and engineering
+  operations those decisions produce -- which is the only layer the named tooling
+  is visible at, because none of it exploited a protocol and what separates
+  Industroyer from a control centre is the shape of a sequence across a quarter
+  of an hour. It is fed from `logging.SecurityEvent`, the one place every such
+  event already passes through, so a kind gains pack coverage by having a
+  refusal reason rather than by remembering to call anything.
+
+- **A pack cannot claim a detection this build cannot make.** It may only name a
+  technique internal/attack has, a reason this build emits, and -- the check that
+  matters most -- a reason that at least one listener kind of that signal
+  actually emits. A Modbus-only pack naming an OPC UA reason fails to load
+  rather than sitting in a directory looking like a detection. It is the same
+  rule docs/ATTACK.md is held to, in the other direction.
+
+- **Ten technique packs**, one per ATT&CK for ICS technique and written to be
+  true of any tool using it: T0846 a new talker counting devices, T0861 the
+  point list walked then a point driven, T0843 a download with no approved work
+  order, T0845 logic read out, T0858 a mode change from a client that had never
+  used the service, T0857 an image written to the boot server, T0816 a restart
+  after refusals, T0832 frozen or replayed telemetry beside a write, T0806
+  writes across the address space then a value outside the envelope, T0804
+  reporting disabled then a change made behind it.
+
+- **The named malware reworked the same way**: FrostyGoop, Industroyer on IEC 104
+  and on MMS, PIPEDREAM's Modicon and OPC UA modules, Stuxnet on S7 -- each now a
+  detection document as well as a configuration, with the configuration's own
+  README saying which half answers which question.
+
+- **Nine tooling packs**, for the software an estate actually meets including its
+  own auditors': Nmap's control-protocol scripts, plcscan, smod, Metasploit's
+  modbusclient and findunitid, Digital Bond's Redpoint, Snap7 as a programming
+  device, the public OPC UA clients, the hand-driven IEC 104 masters, and
+  COSMICENERGY -- which is the pack that needs the cross-listener window, because
+  it sent its grid commands from a SQL Server inside the estate and neither
+  relay sees it alone.
+
+- **`across_kinds` is the statement no single listener can make.** One host on
+  three control protocols in ten minutes is not a control system, and it is the
+  cheapest true thing a pack can say. Three of the shipped packs use it.
+
+- **Every pack declares the most it may do, and the file wins.** `alert` can
+  never refuse whatever an operator configures, which is the right declaration
+  for the twenty-one whose evidence is a shape -- the first legitimate thing a
+  plant does after a quiet year looks very like the first illegitimate one. The
+  four that declare `deny` rest on something named on the wire and still do
+  nothing until `packs.enforce: true`; a test asserts that no pack may deny on
+  behavioural findings alone.
+
+- **A pack's deny is a quarantine and not a ban.** The actor is refused at
+  admission -- in `internal/admit`, so on every listener of the daemon and not
+  only the one that tripped the pack -- for the length of that pack's own window,
+  under reason `pack_quarantine`, and then it is over. Nothing reaches the ban
+  list, no ladder escalates, no prefix or fingerprint is banned, a restart clears
+  it, and `xproxyctl packs release` lifts one early. **OT detections still never
+  feed the ban ladder.**
+
+- **The signature is a detached line**, `ed25519 <key name> <base64>`, over the
+  pack's exact bytes, in `<pack>.yaml.sig`. Ed25519 and nothing else: a format
+  with a choice of algorithm is a format with a downgrade. `xproxyctl packs
+  keygen`, `sign` and `verify` are the tooling and none of them touches the
+  management socket, because signing a directory happens on a machine that need
+  not be running anything -- and verifying needs only the public half, which is
+  the case that matters.
+
+- **A file that does not load stops the daemon**, with the file and the reason
+  named. That is the opposite of what a rule-set loader usually does and it is
+  deliberate: a pack directory is small, curated and signed, so a file in it
+  that does not parse is a mistake somebody made minutes ago rather than a
+  reason to run with a detection missing.
+
+- **A replay trace per pack**, in `packs/testdata`: the sequence the pack is
+  about, which must report, and the same sequence one signal short, which must
+  not. The suite replays all twenty-five on every run, so a count raised, a
+  reason renamed in a kind or a window shortened past its own signals fails a
+  test rather than quietly becoming a detection that never fires. Modbus has the
+  end-to-end half: a signed pack in a directory, a real relay, a master that
+  trips it, a quarantine at admission, and a release.
+
+- **A finding is its own security event**: `pack_<id>`, with the pack's name and
+  severity, the signals in the order they were satisfied, the protocols they
+  came from, and the pack's declared technique in the usual four fields. Plus
+  `xproxy_pack_match_total{pack,severity}`, the `pack_matches` snapshot field, a
+  fact in the cross-listener window, and `xproxyctl packs` / `packs show`.
+
+- **The operational surface with it**: `xproxy_packs_loaded`,
+  `xproxy_pack_actors`, `xproxy_pack_quarantined`, `xproxy_pack_enforcing`,
+  `xproxy_pack_actors_evicted_total` and
+  `xproxy_pack_quarantines_refused_total`; three Prometheus alert rules (a
+  high-or-critical finding, a quarantine in force -- which on a plant is a control
+  room losing a master and is worth looking at even when the detection was right
+  -- and the actor bound being reached, past which a sequence spanning the
+  eviction is no longer detectable); four Grafana panels; `GET /v1/packs` and
+  `POST /v1/packs/release`; and `pack_quarantine` documented in
+  docs/TROUBLESHOOTING.md's deny-reason table with **no** in the Ban column and
+  the reason why.
+
+### Added (engineering activity as its own class of event, under the work order)
+
+- **`internal/engineering` is a third question, beside "is this permitted" and
+  "is this what this master has been doing": is there an approved work order
+  open for it.** A program download, a CPU stop, a protection setting written,
+  a firmware image pushed -- legitimate, necessary, and the operations an estate
+  is actually compromised through. A relay that could only answer the first
+  question has two bad options: a rule that allows downloads, which allows them
+  at three in the morning from a laptop nobody knows about, or a rule that
+  denies them, which the plant turns off on the first commissioning day.
+
+- **Eight classes, the same names on every protocol**: `program_download`,
+  `program_upload`, `mode_change`, `restart`, `configuration`, `firmware`,
+  `method_call`, `file_transfer`. An operations centre asking "was anything
+  downloaded to a controller this week" is not asking about a protocol, so the
+  reason is `engineering_program_download` whether the download was an S7 block,
+  a UMAS program write in Modbus function 90 or an MMS domain service.
+
+- **Nine kinds classify their own traffic**: modbus, iec104, s7, mms, bacnet,
+  opcua, snmp and tftp each have an `engineering` block, and each protocol page
+  carries the table of which of its services this relay reads as engineering and
+  why. `coap` deliberately classifies none, and its page says so: a CoAP path's
+  meaning is the device's object model, so a relay guessing which URIs were
+  engineering would guess per device and be wrong on the one that mattered.
+
+- **The judgement in each table is the same line, drawn nine times**: this
+  changes what the machine *is*, not what it is doing. A holding-register write
+  is a setpoint and the value rules police it; a UMAS program transfer is not. An
+  MMS `$CO$` write is a breaker being operated; a `$SG$` write is a protection
+  relay's trip characteristic. An OPC UA `Write` to a value is an HMI; a write to
+  `AccessLevel` changes what the *next* client may do. A TFTP read is every
+  switch in the estate booting; a TFTP write is the step before all of them run
+  something new.
+
+- **It reports whether or not anybody asked for a work order.** The block is
+  absent by default and the reporting is not: `action: engineering` security
+  events, `xproxy_engineering_total{kind,operation}`, a fact in the
+  cross-listener window, and a line in the access ledger's hash-chained record
+  where the daemon has one. A relay that stayed quiet about a program download
+  until it was configured to speak would be one whose logs did not have the
+  download in them; `enabled: false` is how an operator says otherwise.
+
+- **`require_grant: true` ties it to the machinery that already existed.** The
+  same `access` ledger, the same four-eyes approvals, the same time-boxed grants
+  and the same `xproxyctl access` -- which covered only the bastions, where a
+  *session* is the unit of access. On a plant listener a *request* is the unit:
+  one Modbus connection carries reads all day and one program write at four in
+  the afternoon, and only the second needs a work order. An operation with no
+  open grant is refused with `engineering_no_grant`, in the protocol's own
+  words, and the device never sees it.
+
+- **`engineering_ungranted` is the step before that.** On a listener that does
+  not require a grant, an operation outside every approved window is still
+  alerted: an engineering action nobody filed is worth telling somebody about
+  even where the policy allows it. `action: alert` keeps the bookkeeping and
+  drops the refusal, which is how to run the policy for a fortnight and read the
+  report before it can stop a commissioning -- and the validator says so at load.
+
+- **The grant's reason is the change reference**, and it reaches the security
+  event as `work_order` and the ledger beside the operation. So "who downloaded
+  what, when, under which work order" is answerable a year later out of a
+  hash-chained file. A listener with `require_grant: true` on a daemon with no
+  ledger fails closed at startup rather than at four in the afternoon, the same
+  way the gate kinds do.
+
+- **Engineering refusals never feed the ban ladder**, like the behavioural
+  findings: an engineer who forgot to file a change should be told no, not locked
+  out of the plant. In shadow mode nothing is refused and the would-be refusals
+  go to the shadow report.
+
+- **ATT&CK rows for every class on every kind, in both matrices**: T0843
+  *Program Download*, T0845 *Program Upload*, T0858 *Change Operating Mode*,
+  T0816 *Device Restart/Shutdown*, T0836 *Modify Parameter*, T0857 *System
+  Firmware*, T0871 *Execution through API*, T0867 *Lateral Tool Transfer* with
+  T1105, and the missing work order itself as T0859 *Valid Accounts* with T1078.
+
 ### Added (every OT kind on the behavioural models, not only modbus)
 
 - **All eight OT listener kinds run the `anomaly` block now**: modbus, iec104,

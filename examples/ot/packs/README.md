@@ -1,9 +1,20 @@
-# Behaviour packs
+# Behaviour packs: the policy half
 
 A behaviour pack is a configuration for one listener, written against the
 published behaviour of one piece of ICS tooling. It exists because nobody
 should have to read the Industroyer analysis to write a policy that would have
 refused it.
+
+**These are the policy half.** The other half is [`packs/`](../../../packs) at
+the top of the tree: the same behaviour as signed, versioned *detection*
+documents the daemon loads at start, which notice a shape of events and report
+it in ATT&CK terms. The two answer different questions and an estate wants both.
+A configuration here is what actually refuses a program download, and it has to
+be merged into a policy somebody has already tuned — which happens once. A pack
+there is a file that can be updated next quarter without touching either the
+policy or the binary, and it tells you that something happened rather than
+stopping it. Read these when writing a policy; load those to know what is going
+on.
 
 Each pack is a complete, loadable document. Copy the listener's body into your
 own configuration, replace the example addresses, and read the comments: most
@@ -61,8 +72,9 @@ Two kinds work differently and the packs say so in place:
 
 The technique identifiers are MITRE ATT&CK for ICS. The mapping from a pack's
 rules to them is the pack author's reading of published analysis, not MITRE's.
-Carrying the technique onto the security event itself — as a field, with the
-matrix release recorded — is a separate piece of work and is not done yet.
+Every refusal and detection these listeners make now carries its technique on
+the security event itself, in both matrices where a refusal means something in
+each — see [docs/ATTACK.md](../../../docs/ATTACK.md).
 
 ## They are tested
 

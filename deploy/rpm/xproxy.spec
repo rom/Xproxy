@@ -91,6 +91,12 @@ level 3.5 between a process network and everything else should be able
 to say. It
 runs as its own user under its own hardened unit and reads its own file
 in /etc/xproxy.
+.
+It also carries the behaviour packs, in %{_datadir}/xproxy/packs: signed,
+versioned detection documents that say a shape of events from one actor inside
+one window is one MITRE ATT&CK for ICS technique. They ship unsigned, because a
+private key in a package is not one: sign the directory with
+`xproxyctl packs sign` and name the public half in the `packs.keys` list.
 
 %package        signer
 Summary:        Signing helper for xproxy: the process that holds the private keys
@@ -231,6 +237,16 @@ install -D -m 0644 deploy/grafana/xproxy-overview.json %{buildroot}%{_datadir}/x
 install -D -m 0644 deploy/grafana/xproxy-security.json %{buildroot}%{_datadir}/xproxy/grafana/xproxy-security.json
 install -D -m 0644 deploy/grafana/README.md %{buildroot}%{_datadir}/xproxy/grafana/README.md
 install -D -m 0644 deploy/prometheus/xproxy-alerts.yaml %{buildroot}%{_datadir}/xproxy/prometheus/xproxy-alerts.yaml
+
+# The behaviour packs: signed, versioned detection data the OT daemon reads at
+# start. They ship as sources, unsigned, because a private key in a package is
+# not a private key -- the estate signs the directory it installs, with
+# `xproxyctl packs sign`, and lists the public half in `packs.keys`. The
+# directory is 0755 and the files 0644 so that a daemon running as xot can read
+# them and only root can change them.
+install -d -m 0755 %{buildroot}%{_datadir}/xproxy/packs
+install -m 0644 packs/*.yaml %{buildroot}%{_datadir}/xproxy/packs/
+install -m 0644 packs/README.md %{buildroot}%{_datadir}/xproxy/packs/README.md
 install -d -m 0755 %{buildroot}%{_datadir}/bash-completion/completions %{buildroot}%{_datadir}/zsh/site-functions %{buildroot}%{_datadir}/fish/vendor_completions.d
 bin/xproxyctl completion bash > %{buildroot}%{_datadir}/bash-completion/completions/xproxyctl
 bin/xproxyctl completion zsh  > %{buildroot}%{_datadir}/zsh/site-functions/_xproxyctl
@@ -378,6 +394,9 @@ fi
 
 %files xot
 %{_bindir}/xot
+%dir %{_datadir}/xproxy/packs
+%{_datadir}/xproxy/packs/*.yaml
+%{_datadir}/xproxy/packs/README.md
 %{_mandir}/man8/xot.8*
 %{_unitdir}/xot.service
 %{_unitdir}/xot.socket

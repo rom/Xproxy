@@ -1,0 +1,10 @@
+# t0843-download-with-no-work-order -- A program download outside every approved change
+# The sequence this pack is about. Each line is one security event:
+#   <listener kind> <action> <reason>
+# fire: the whole sequence, which must report.
+# hold: the same sequence one signal short, which must not.
+fire
+  modbus engineering engineering_program_download
+  modbus alert engineering_no_grant
+hold
+  modbus engineering engineering_program_download

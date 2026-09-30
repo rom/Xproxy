@@ -158,6 +158,33 @@ any other refusal. Either shadow switch -- `policy: {mode: shadow}` on the
 listener, or `shadow: true` on the section -- records what it would have refused
 and carries the traffic.
 
+## Engineering activity
+
+Engineering on TFTP is one operation: a write. The `engineering` block —
+[documented once in docs/CONFIG.md](../CONFIG.md#engineering), the same on the OT
+kinds — reads it as its own class of event, and can hold it to an approved work
+order out of the [access ledger](../CONFIG.md#access).
+
+| Operation | Class | Why |
+|-----------|-------|-----|
+| A write (`WRQ`) | `firmware` | Somebody putting an image or a configuration onto the server every device in the estate boots from |
+
+**A read is not engineering, and saying so is the whole judgement here.** Every
+switch, phone and field device in an estate boots by reading its own
+configuration or firmware over this protocol, thousands of times a week. A class
+that included those would be a class nobody could read. A write is the other
+thing: the step before every one of those devices runs something new.
+
+**A write is `firmware` whatever the filename says.** The path classification
+this kind already does is about hygiene — a NUL, a traversal, a control
+character — and it does not say what a file *is*. An image called `test.txt` is
+still what the next device will run.
+
+With `engineering: {require_grant: true}` a write with no open approved grant is
+refused with `engineering_no_grant`, answered as a TFTP error, and the file
+never reaches the server. This protocol has no identity at all, so the work
+order names the client's address.
+
 ## What it does not do
 
 - **It does not authenticate, because there is nothing to authenticate.** The
