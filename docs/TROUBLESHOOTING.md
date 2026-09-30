@@ -1618,10 +1618,12 @@ will not hand back a connection for it.
 
 **Connections close with code 1002 (protocol error).** The guard found
 something the RFC forbids, and the security log says which: an unmasked
-client frame, a reserved bit (usually a client that negotiated
-`permessage-deflate` — see below), a reserved opcode, a fragmented
-control frame, a continuation with nothing to continue, a close code
-that must not be sent, or text that is not UTF-8.
+client frame, a reserved bit, a reserved opcode, a fragmented control
+frame, a continuation with nothing to continue, a close code that must
+not be sent, or text that is not UTF-8. A reserved bit means a peer is
+using an extension that was not negotiated — the guard strips the
+`permessage-deflate` offer from the upgrade, so on an inspected route no
+extension is ever agreed and nothing legitimate sets one.
 
 **Connections close with 1009 (too big).** `max_frame_bytes` or
 `max_message_bytes`. Read `xproxy_websocket_messages_total` and the
@@ -1632,11 +1634,19 @@ than anything legitimate sends is still worth having.
 the route does not allow, or the message rate. The security event names
 which.
 
-**A compression extension stopped working.** It is refused on purpose.
-A `permessage-deflate` frame cannot be inspected, so accepting the
-negotiation would turn every check off without saying so. Either drop
-the extension at the application or accept that the route cannot be
-inspected and remove the guard.
+**`permessage-deflate` is not being used on an inspected route.** On
+purpose, and the connection still works: the guard strips the offer from
+the upgrade, so both ends fall back to uncompressed frames the way the
+extension is designed to when it is not agreed. A compressed frame cannot
+be inspected, so agreeing it would turn every check off without saying so.
+Nothing needs changing at the application — it will use more bandwidth on
+that route, and if that matters more than inspection does, remove the guard
+and the extension is negotiated again.
+
+Two things that are *not* this: a `502` on the upgrade means the origin
+claimed an extension although none was offered, which is the origin
+misbehaving; and a close with 1002 for a reserved bit means a peer
+compressed anyway.
 
 **The violation count is double what you expect.** Both directions are
 inspected, so a denied message and the origin's echo of it are two.

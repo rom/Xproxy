@@ -5052,9 +5052,11 @@ before any frame exists, so an application that answers with an
 unlisted one never gets a connection. Messages over
 `max_inspect_bytes` are checked up to that bound and forwarded, because
 the alternative is buffering whatever a client sends. And
-`permessage-deflate` is refused rather than ignored: a compressed frame
-cannot be inspected, so a negotiated compression extension would turn
-every check above off silently.
+`permessage-deflate` is never negotiated: the offer is stripped from the
+upgrade, so a client that asks for compression — which every browser does by
+default — gets a working uncompressed connection rather than a broken
+compressed one. A compressed frame cannot be inspected, so agreeing the
+extension would turn every check above off silently.
 
 `examples/routes/websocket.yaml` pairs a chat route with tight bounds
 and a market-data feed with wide ones and no inspection.

@@ -177,7 +177,7 @@ its own for what is deliberately *not* implemented and why.
 
 | Family | What is spoken here | Where |
 |--------|---------------------|-------|
-| HTTP | HTTP/1.1, HTTP/2 (ALPN or `h2c`), HTTP/3 over QUIC v1; extended CONNECT; WebSocket (RFC 6455) with permessage-deflate; WebTransport over HTTP/3; gRPC and gRPC-web; Early Hints, trailers, ranges and priority signals | `http` |
+| HTTP | HTTP/1.1, HTTP/2 (ALPN or `h2c`), HTTP/3 over QUIC v1; extended CONNECT; WebSocket (RFC 6455), with `permessage-deflate` deliberately not negotiated on an inspected route; WebTransport over HTTP/3; gRPC and gRPC-web; Early Hints, trailers, ranges and priority signals | `http` |
 | TLS | 1.2 and 1.3, SNI, ALPN, mutual TLS in both directions, SPKI pinning, session tickets with rotating keys, OCSP stapling, Certificate Transparency, ACME (HTTP-01 and TLS-ALPN-01), Encrypted Client Hello, the `X25519MLKEM768` hybrid key exchange, JA3 and JA4 fingerprints | every TLS listener |
 | Layer 4 | TLS and QUIC passthrough routed by server name; any datagram protocol; PROXY protocol v1 and v2, read and written; `IP_TRANSPARENT` with the original destination read from the socket | `tcp`, `udp` |
 | DNS | UDP, TCP, DoT (RFC 7858), DoH (RFC 8484) and DoQ (RFC 9250); DNSSEC validation with aggressive NSEC and NSEC3 caching (RFC 8198); response policy zones; DNS64 (RFC 6147); designated-resolver discovery (RFC 9462); SVCB and HTTPS records (RFC 9460); DNS cookies; EDNS client subnet policy | `dns` |

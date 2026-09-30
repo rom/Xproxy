@@ -9712,9 +9712,20 @@ with a real false-positive rate — start with `action: log` and read
 
 Messages larger than `max_inspect_bytes` are checked up to that bound
 and forwarded: the alternative is buffering whatever a client chooses
-to send. Compressed frames (`permessage-deflate`) cannot be inspected
-at all, which is why a reserved bit is refused rather than ignored — a
-negotiated compression extension would silently turn every check off.
+to send.
+
+**Compression is not negotiated on an inspected route.** A
+`permessage-deflate` frame cannot be inspected at all, so where a guard is
+present the client's `Sec-WebSocket-Extensions` offer is **stripped from the
+upgrade request**: the origin never sees it, never accepts it, and both ends
+fall back to uncompressed frames. That is deliberate and it is the friendly
+half — browsers offer the extension on every WebSocket, and leaving the offer
+to the endpoints meant they agreed compression behind the proxy, the client
+was told it had succeeded, and the first data frame then closed the connection
+with a protocol error. An origin that claims an extension although none was
+offered is refused at the 101 with `502`, because its frames would be
+unreadable. A reserved bit arriving after all is still refused, and now means
+what it says: a peer using an extension nobody negotiated.
 
 Violations are security events with reason `websocket`, counted per
 route by `xproxyctl` and `GET /v1/websocket`, and exported as

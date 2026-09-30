@@ -6,6 +6,46 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Fixed (an inspected WebSocket route broke every browser that offered compression)
+
+- **The `permessage-deflate` offer is now stripped from an inspected upgrade
+  rather than forwarded.** The guard refuses a frame with a reserved bit set,
+  because a compressed frame cannot be inspected — but nothing stopped the two
+  *endpoints* agreeing compression behind the proxy. Browsers offer the
+  extension on every WebSocket by default, a compression-capable origin accepted
+  it, the client was told it had succeeded, and then the first data frame tripped
+  the reserved-bit check and the connection closed with a protocol error that
+  blamed the peer for what this proxy had let through. So turning
+  `websocket_guard` on broke every browser client of a compression-capable
+  application, in a way that looked like the application's fault.
+
+  Stripping the offer makes both ends fall back to uncompressed frames, which is
+  what the extension is designed to do when it is not agreed: the client works,
+  and the guard can read what it is inspecting. A reserved bit arriving anyway
+  now means what the message says — a peer using an extension nobody negotiated.
+
+- **An origin that claims an extension although none was offered is refused at
+  the 101**, with `502` and a `websocket:extension` violation, rather than at the
+  first frame. By then the client believes it has a working connection, and the
+  frames would be unreadable.
+
+- **The documentation said both things.** README claimed WebSocket "with
+  permessage-deflate" as a supported feature; docs/RFC.md said no extension is
+  negotiated on an inspected route. The first was false, and the second was true
+  only of what the proxy itself did rather than of the path. Both now describe
+  the behaviour above, as do the CONFIG, USAGE and TROUBLESHOOTING entries --
+  including the troubleshooting advice, which used to tell an operator to drop
+  the extension at the application or give up inspecting the route, and no longer
+  needs to.
+
+- **Why it is not decompressed instead is written down** in docs/RFC.md rather
+  than left implicit: `permessage-deflate` keeps its dictionary across messages,
+  so the state is per connection, and `client_max_window_bits` lets the peer
+  choose how much of it the proxy holds -- which is exactly the "memory as a
+  function of what a client sends" the guard is built to avoid. If it is ever
+  added it is an explicit per-route opt-in with its own bounds, not a side effect
+  of a client's offer.
+
 ### Added (behaviour packs as signed data, not as code and not as configurations)
 
 - **`internal/packs` is a pack format and an evaluator**, and a pack is a file:
