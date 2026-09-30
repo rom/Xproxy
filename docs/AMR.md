@@ -1514,7 +1514,7 @@ has fewer members than nodes.
 
 ---
 
-## AMR-048: One repository, three daemons, split by who is on the other end
+## AMR-048: One repository, several daemons, split by who is on the other end
 
 **Context.** The product grew from an HTTP reverse proxy into something
 that terminates HTTP, TLS passthrough, DNS, a forward proxy with
@@ -1532,7 +1532,7 @@ module, several binaries differing only in what they link.
 **Decision.** (c). The split is by *who is on the other end of the
 socket*, because that is what the trust decisions actually differ by:
 `xproxy` faces the internet, `xgate` faces people, `xrelay` faces
-machines. Each listener kind is a package that registers itself with
+services and `xot` faces the plant (AMR-052 split that last one out). Each listener kind is a package that registers itself with
 `proxy.Register` and reaches the engine through a five-method
 `proxy.Host`; a daemon is a role plus the blank imports of its own
 kinds, and `internal/daemon` holds everything else once.
@@ -1554,11 +1554,11 @@ needs a module boundary.
 afterwards. It does not remove the parser that got compromised, and it
 cannot: seccomp does not know which `read` came from the MQTT reader.
 
-**Consequences.** Three users, three units, three sandboxes, three
-management sockets, and a configuration file per daemon, because
+**Consequences.** A user, a unit, a sandbox and a management socket per
+daemon, and a configuration file per daemon, because
 `management.socket`, `metrics.listen` and `logging.directory` each name
 something only one process can own; what the estate shares goes in
-includes all three pull in. The daemons share a ban list over a local
+includes they all pull in. The daemons share a ban list over a local
 cluster (AMR-021 update). The engine may not import a kind, which is
 enforced by the direction of the `Host` interface and checked by a test
 per binary on the exact kind set it links.
@@ -1724,7 +1724,7 @@ would land in one copy and not the other. Rejected.
 
 *Export it from the CoAP kind.* A relay kind importing another relay kind for
 a transport is a dependency edge nobody would predict from the names, and it
-would link CoAP's parser into `xrelay` builds that serve only SNMP. Rejected.
+would link CoAP's parser into daemon builds that serve only SNMP. Rejected.
 
 *Re-export the library's types from the new package.* Simpler to write, and it
 gives up the property worth having: with `Session` opaque, a change in the
@@ -1738,6 +1738,67 @@ own bounds -- CoAP reads its datagram size from `max_message_bytes`, SNMP from
 its own -- because `Bounds` takes them and fills the rest with the transport's
 defaults. The write lock that stops two goroutines interleaving one DTLS
 record moved with the session, so a kind cannot forget it.
+
+**Status.** Accepted.
+
+## AMR-052: The OT protocols are a daemon of their own
+
+**Context.** AMR-048 split the binary by who is on the other end of the
+socket, and put everything that is not a person and not the internet into
+one daemon: `xrelay` served SMTP, MQTT, FTP, LDAP, the database wire
+protocols and AMQP alongside Modbus, IEC 60870-5-104, S7, MMS, BACnet,
+OPC UA and CoAP. The estates are not the same estate. The box that
+proxies a process network sits at level 3.5 of the Purdue model, is
+reachable from the plant on one side and the enterprise on the other, and
+is the one whose compromise moves equipment. It was carrying a mail
+parser.
+
+**Decision.** A fourth role and a fourth binary, `xot`, holding the
+control protocols -- `modbus`, `iec104`, `s7`, `mms`, `bacnet`, `opcua`,
+`coap` -- and the protocols the field equipment itself speaks: `syslog`,
+`snmp`, `tftp`, `dhcp`, `dhcp6`, `ntp`, `ntske`, `mqtt`. Those last
+eight stay in `xrelay` as well, because a data centre runs them too, and
+the roster gained a *list* of roles per kind with the first as the
+default owner. A listener of a shared kind names its daemon in
+`daemon: xot`; every other kind belongs to exactly one, and naming a
+daemon that does not carry that kind's code is a load error.
+
+**Why the identity of the owner had to stay single.** A shared estate
+configuration is read by every daemon, each taking the listeners that are
+its own (AMR-048). If a shared kind were simply "served by both", two
+daemons on one host would each bind the same port and one would fail to
+start -- an outage produced by a configuration that validated everywhere.
+So ownership is computed, not inferred: exactly one daemon owns each
+listener, and a test holds that across the whole roster.
+
+**Why the default is `xrelay`.** Every configuration written before this
+existed has to keep working unchanged, and a syslog listener that
+silently stopped being bound because a new daemon now claims the kind is
+the worst failure this change could produce.
+
+**Why not a build tag.** `xrelay` without the OT kinds and `xot` as the
+same binary built differently would make the two indistinguishable at
+run time, so "is the mail parser in this process" would be a question
+about how somebody invoked the compiler. A separate binary, unit, user
+and management socket answers it.
+
+**Why MQTT is in the shared set rather than the relay's own.** A broker
+front end is the enterprise side of the DMZ, which argues for leaving it
+in `xrelay`, and the first cut of this change did. The device inventory
+settled it: observations are collected per daemon, and Sparkplug B births
+are among the richest sources the fingerprinting has, so an estate whose
+device identities arrive over MQTT and whose process traffic is Modbus
+would have had two inventories, each holding half of every device. It is
+shared, the default is still `xrelay`, and `examples/ot/inventory.yaml`
+is the file that found it.
+
+**Consequences.** `xot` has no SMTP, FTP, LDAP, AMQP, PostgreSQL,
+MySQL, TDS or Redis code in it at all, and `xrelay` has none of the
+plant's protocols. It is not a smaller binary than `xrelay` -- the
+protocols it keeps replace the ones it drops -- and bytes were never the
+argument: what changes is what an attacker who reaches one of the two
+processes finds inside it. The estate that runs both at 3.5 runs them as
+two users with two sandboxes, and the plant-facing host runs only one.
 
 **Status.** Accepted.
 

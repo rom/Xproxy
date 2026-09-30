@@ -41,6 +41,7 @@ package coap
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"net"
 	"net/netip"
 	"sync"
@@ -65,6 +66,10 @@ type server struct {
 	// tls is the listener's configuration where it has one, which is what makes
 	// this a CoAP-over-DTLS listener rather than a NoSec one.
 	tls *tls.Config
+	// ids are the tables that turn a DTLS peer into a security name: the
+	// pre-shared keys and the pinned public keys. Never nil, and empty on a
+	// listener that has neither.
+	ids *identities
 	// demux is the DTLS side's per-peer splitter, kept so that the sweeper can
 	// read its drop count. Nil on a NoSec listener.
 	demux atomic.Pointer[dtlsx.Mux]
@@ -108,6 +113,10 @@ type server struct {
 // mux is the DTLS splitter, or nil.
 func (s *server) mux() *dtlsx.Mux { return s.demux.Load() }
 
+// secured says this listener puts CoAP inside DTLS rather than serving NoSec:
+// it has a certificate, a pre-shared key table, or both.
+func (s *server) secured() bool { return s.tls != nil || s.ids.psk != nil }
+
 func newServer(h proxy.Host, cfg config.Listener, pc net.PacketConn, tc *tls.Config) (*server, error) {
 	m := cfg.CoAP
 	p, err := compile(m, time.Now)
@@ -116,6 +125,9 @@ func newServer(h proxy.Host, cfg config.Listener, pc net.PacketConn, tc *tls.Con
 	}
 	s := &server{host: h, cfg: cfg, m: m, policy: p, pc: pc, tls: tc,
 		done: make(chan struct{}), started: make(chan struct{})}
+	if s.ids, err = compileIdentities(m, h.Secrets(), s.unknownIdentity); err != nil {
+		return nil, fmt.Errorf("listener %s: %w", cfg.Name, err)
+	}
 	if m.RateLimit > 0 {
 		s.limiter = limits.NewKeyedLimiter(float64(m.RateLimit), burstOf(m), s.maxClients())
 	}

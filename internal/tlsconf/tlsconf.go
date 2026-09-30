@@ -559,6 +559,12 @@ func Server(cfg *config.TLS, protocols []config.Protocol, opts ...Option) (*tls.
 		} else {
 			tc.ClientAuth = tls.VerifyClientCertIfGiven
 		}
+	case "require_any":
+		// A certificate demanded and no chain checked, because there is no
+		// authority in the picture: this is the raw public key shape, where
+		// the listener's own table pins the key the certificate carries.
+		// Validation allows it only there.
+		tc.ClientAuth = tls.RequireAnyClientCert
 	}
 	return tc, r, nil
 }

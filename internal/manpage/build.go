@@ -24,6 +24,7 @@ func Build(docsDir string) (map[string][]byte, error) {
 		{"xproxy", "man/xproxy.8.md", "System administration"},
 		{"xgate", "man/xgate.8.md", "System administration"},
 		{"xrelay", "man/xrelay.8.md", "System administration"},
+		{"xot", "man/xot.8.md", "System administration"},
 		{"xproxyctl", "man/xproxyctl.8.md", "System administration"},
 		{"xproxy-fleet", "man/xproxy-fleet.8.md", "System administration"},
 		{"xproxy-replay", "man/xproxy-replay.8.md", "System administration"},

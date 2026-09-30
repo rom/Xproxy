@@ -38,9 +38,10 @@ cluster:
   peers:
     - unix:/run/xproxy-cluster/xproxy.sock
     - unix:/run/xproxy-cluster/xgate.sock
+    - unix:/run/xproxy-cluster/xot.sock
   local:
     socket_mode: "0660"
-    allow_uids: [990, 991, 992]
+    allow_uids: [990, 991, 992, 993]
   share_rate_limits: false
   share_bans: true
   share_events: true

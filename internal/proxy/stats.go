@@ -468,6 +468,20 @@ type Stats struct {
 	CoAPUnsolicited      atomic.Uint64
 	CoAPHandshakes       atomic.Uint64
 	CoAPHandshakeFailed  atomic.Uint64
+	// CoAPPSKSessions counts the sessions established with a pre-shared key
+	// (RFC 7252 s9.1.3.1) rather than a certificate, and CoAPUnknownIdentity
+	// the handshakes refused because the identity a peer named is not in the
+	// listener's table.
+	//
+	// The second is the one to alert on. On this protocol the identity is the
+	// only thing that distinguishes one device from another, so a name nobody
+	// enrolled is either a device provisioned wrong -- one of them, repeatedly
+	// -- or somebody trying names, which is many of them, once each.
+	CoAPPSKSessions     atomic.Uint64
+	CoAPUnknownIdentity atomic.Uint64
+	// CoAPUnnamed counts the messages refused because their session mapped to
+	// no security name, which is what require_security_name decides.
+	CoAPUnnamed          atomic.Uint64
 	CoAPDatagramsDropped atomic.Uint64
 	CoAPPending          atomic.Int64
 	CoAPObservers        atomic.Int64
@@ -1123,6 +1137,9 @@ type Snapshot struct {
 	CoAPUnsolicited        uint64 `json:"coap_unsolicited"`
 	CoAPHandshakes         uint64 `json:"coap_handshakes"`
 	CoAPHandshakeFailed    uint64 `json:"coap_handshakes_failed"`
+	CoAPPSKSessions        uint64 `json:"coap_psk_sessions"`
+	CoAPUnknownIdentity    uint64 `json:"coap_unknown_identity"`
+	CoAPUnnamed            uint64 `json:"coap_unnamed_sessions"`
 	CoAPDatagramsDropped   uint64 `json:"coap_datagrams_dropped"`
 	CoAPPending            int64  `json:"coap_pending"`
 	CoAPObservers          int64  `json:"coap_observers"`
@@ -1659,6 +1676,9 @@ func (s *Stats) snapshot() Snapshot {
 		CoAPUnsolicited:         s.CoAPUnsolicited.Load(),
 		CoAPHandshakes:          s.CoAPHandshakes.Load(),
 		CoAPHandshakeFailed:     s.CoAPHandshakeFailed.Load(),
+		CoAPPSKSessions:         s.CoAPPSKSessions.Load(),
+		CoAPUnknownIdentity:     s.CoAPUnknownIdentity.Load(),
+		CoAPUnnamed:             s.CoAPUnnamed.Load(),
 		CoAPDatagramsDropped:    s.CoAPDatagramsDropped.Load(),
 		CoAPPending:             s.CoAPPending.Load(),
 		CoAPObservers:           s.CoAPObservers.Load(),

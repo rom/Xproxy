@@ -38,13 +38,21 @@ func TestPagesCurrent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(pages) != 8 {
+	// One page per Markdown source under docs/man, plus xproxy.yaml.5 from
+	// CONFIG.md. Counted rather than written down: a number here is what
+	// went stale when a fourth daemon brought a fifth page, and the
+	// failure it produced said nothing about the page that was missing.
+	sources, err := filepath.Glob("../../docs/man/*.8.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pages) != len(sources)+1 {
 		names := make([]string, 0, len(pages))
 		for n := range pages {
 			names = append(names, n)
 		}
 		sort.Strings(names)
-		t.Fatalf("pages: %v", names)
+		t.Fatalf("%d pages from %d sources: %v", len(pages), len(sources), names)
 	}
 	for name, want := range pages {
 		path := filepath.Join("../../docs/man", name)

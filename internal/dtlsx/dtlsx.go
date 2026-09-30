@@ -165,6 +165,31 @@ func (b Bounds) Datagram() int {
 	return n + RecordOverhead
 }
 
+// Option is something a listener asks of the transport beyond what a TLS
+// configuration can say.
+//
+// It is this package's own type rather than the library's, for the reason
+// Config gives: a kind names nothing from the dependency, so what a kind can
+// ask for is this file's list.
+type Option func(*options)
+
+// options are what the Options collected.
+type options struct{ psk *PSK }
+
+// WithPSK serves the pre-shared key mode (RFC 4279) from this table, beside
+// the certificate mode where the listener also has a certificate.
+//
+// A listener with a table and no certificate is a PSK-only listener, which is
+// the ordinary shape for a segment of constrained devices, and NewConfig
+// therefore stops requiring a certificate when one is given.
+func WithPSK(t *PSK) Option {
+	return func(o *options) {
+		if t != nil && t.Len() > 0 {
+			o.psk = t
+		}
+	}
+}
+
 // NewConfig translates a listener's TLS configuration into a DTLS one.
 //
 // It is a translation rather than a pass-through, which is the point: the
@@ -176,10 +201,20 @@ func (b Bounds) Datagram() int {
 //
 // The kind names itself in what, so that a configuration fault an operator
 // reads says which listener could not be built.
-func NewConfig(what string, tc *tls.Config, b Bounds) (*Config, error) {
+func NewConfig(what string, tc *tls.Config, b Bounds, with ...Option) (*Config, error) {
 	b = b.withDefaults()
-	if tc == nil || (len(tc.Certificates) == 0 && tc.GetCertificate == nil) {
-		return nil, fmt.Errorf("a %s listener inside DTLS needs a certificate", what)
+	var o options
+	for _, fn := range with {
+		fn(&o)
+	}
+	hasCert := tc != nil && (len(tc.Certificates) > 0 || tc.GetCertificate != nil)
+	if !hasCert && o.psk == nil {
+		return nil, fmt.Errorf("a %s listener inside DTLS needs a certificate or a pre-shared key table", what)
+	}
+	if tc == nil {
+		// A PSK-only listener: there is nothing to translate, so the rest of
+		// this function reads an empty configuration rather than a nil one.
+		tc = &tls.Config{MinVersion: tls.VersionTLS12} //nolint:gosec // DTLS 1.2 is what this transport speaks
 	}
 	// DTLS 1.2 is what this library speaks. A listener asking for TLS 1.3 is
 	// asking for something this transport cannot do here, and that is better
@@ -207,6 +242,26 @@ func NewConfig(what string, tc *tls.Config, b Bounds) (*Config, error) {
 	// how a certificate reload reaches a running listener. A DTLS listener
 	// holding the certificate it was started with would keep serving it after
 	// the keyring rotated, and nobody would find out until it expired.
+	if o.psk != nil {
+		// The suites have to be named: the library's default list holds no PSK
+		// suite, so a configuration with a callback and no list refuses to
+		// build -- and naming them is also how a listener keeps the
+		// certificate mode while gaining this one.
+		suites := make([]dtls.CipherSuiteID, 0, len(PSKSuites())+len(certificateSuites()))
+		for _, id := range PSKSuites() {
+			suites = append(suites, dtls.CipherSuiteID(id))
+		}
+		if hasCert {
+			suites = append(suites, certificateSuites()...)
+		}
+		opts = append(opts, dtls.WithPSK(o.psk.lookup), dtls.WithCipherSuites(suites...))
+		if len(o.psk.hint) > 0 {
+			opts = append(opts, dtls.WithPSKIdentityHint(o.psk.hint))
+		}
+	}
+	if !hasCert {
+		return &Config{what: what, opts: opts, b: b}, nil
+	}
 	if tc.GetCertificate != nil {
 		get := tc.GetCertificate
 		opts = append(opts, dtls.WithGetCertificate(
@@ -339,6 +394,37 @@ func (s *Session) RemoteAddr() net.Addr { return s.remote }
 // two are different facts about a peer: one did not offer an identity and the
 // other offered something that is not one.
 var ErrNoCertificate = errors.New("dtlsx: the peer presented no certificate")
+
+// PeerIdentity is the pre-shared key identity the peer named, and whether the
+// session was established with one at all.
+//
+// It is read from the session rather than recorded by the table's own
+// callback, because the callback is the listener's and this is the
+// connection's: two peers handshaking at once name two identities, and a table
+// that remembered "the last identity" would hand one peer's name to the
+// other's session.
+//
+// The identity is bounded at lookup, so what comes back here is at most
+// MaxPSKIdentity octets of what a peer said -- and it is what a peer said,
+// which is why every caller clips it again on its way to a log.
+func (s *Session) PeerIdentity() ([]byte, bool) {
+	st, ok := s.conn.ConnectionState()
+	if !ok || len(st.IdentityHint) == 0 {
+		return nil, false
+	}
+	return append([]byte(nil), st.IdentityHint...), true
+}
+
+// CipherSuite is the suite the handshake settled on, for a log line that has
+// to say which security mode a session is in. Zero when the session has no
+// state to read.
+func (s *Session) CipherSuite() uint16 {
+	st, ok := s.conn.ConnectionState()
+	if !ok {
+		return 0
+	}
+	return uint16(st.CipherSuiteID)
+}
 
 // PeerCertificates are the peer's certificates, leaf first, parsed.
 //

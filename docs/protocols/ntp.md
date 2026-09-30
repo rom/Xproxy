@@ -1,6 +1,6 @@
 # NTP — the thing everything else depends on
 
-`kind: ntp`, served by **xrelay**, UDP port **123**.
+`kind: ntp`, served by **xrelay** or **xot**, UDP port **123**.
 
 Every certificate expiry check, every log correlation, every batch record and
 every one-time password depends on the clock. A machine whose clock is wrong by

@@ -2,6 +2,8 @@ package coap
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -22,7 +24,7 @@ import (
 // character in one does its work.
 
 // refused records a message the policy refused.
-func (s *server) refused(ip netip.Addr, m *wire.Message, d Decision, side string) {
+func (s *server) refused(ip netip.Addr, m *wire.Message, d Decision, side string, who identity) {
 	c := s.host.Counters()
 	switch d.Reason {
 	case "proxying_not_allowed":
@@ -39,12 +41,12 @@ func (s *server) refused(ip netip.Addr, m *wire.Message, d Decision, side string
 		c.WouldRefuse("coap", d.Reason)
 		s.host.Shadow().Record("coap", s.cfg.Name, d.Reason, d.Rule,
 			side+" "+m.Code.String()+" "+textsafe.Clip256(m.Path()))
-		s.logMessage(ip, m, d, side, "would_deny", false)
+		s.logMessage(ip, m, d, side, "would_deny", false, who)
 		return
 	}
 	c.Refuse("coap", d.Reason)
 	c.CoAPDenied.Add(1)
-	s.logMessage(ip, m, d, side, "deny", false)
+	s.logMessage(ip, m, d, side, "deny", false, who)
 	if !s.alerts() {
 		return
 	}
@@ -87,9 +89,44 @@ func (s *server) deny(ip netip.Addr, what, detail string) {
 	}
 }
 
+// logSession writes one line per established DTLS session: who the peer
+// turned out to be, and how it proved it.
+//
+// It is a line per session rather than per message because that is what it
+// describes, and because the interesting part is the handshake: a device that
+// appears with a name nobody expected, or with no name on a listener whose
+// policy is written in names, is a thing to see once rather than on every
+// reading it sends.
+func (s *server) logSession(raddr net.Addr, who identity, suite uint16) {
+	attrs := []any{"listener", s.cfg.Name, "client", raddr.String(),
+		"security", securityMode(who), "cipher_suite", fmt.Sprintf("%#04x", suite)}
+	if who.name != "" {
+		attrs = append(attrs, "identity", textsafe.Clip64(who.name))
+	}
+	if who.why != "" {
+		attrs = append(attrs, "no_identity", who.why)
+	}
+	s.host.Logs().Access.Info("coap dtls session", attrs...)
+}
+
+// securityMode names how a peer proved itself, for a log line. It is the
+// RFC 7252 s9 mode rather than this package's own word, so that what an
+// operator reads is what the standard calls it.
+func securityMode(who identity) string {
+	switch who.kind {
+	case identityPSK:
+		return "pre_shared_key"
+	case identityKey:
+		return "raw_public_key"
+	case identityCert:
+		return "certificate"
+	}
+	return "nosec"
+}
+
 // logMessage writes the access line for one message from the segment.
 func (s *server) logMessage(ip netip.Addr, m *wire.Message, d Decision,
-	side, decision string, secure bool) {
+	side, decision string, secure bool, who identity) {
 	if !s.m.LogMessages && decision == "allow" {
 		return
 	}
@@ -97,6 +134,18 @@ func (s *server) logMessage(ip netip.Addr, m *wire.Message, d Decision,
 		"type", m.Type.String(), "code", m.Code.String(),
 		"path", textsafe.Clip256(m.Path()), "decision", decision,
 		"secure", secure}
+	if who.name != "" {
+		// The identity is the point of putting this listener inside DTLS: on a
+		// shared segment the address is a guess about which device sent
+		// something, and this is not.
+		attrs = append(attrs, "identity", textsafe.Clip64(who.name),
+			"security", securityMode(who))
+	} else if who.kind != identityNone || who.why != "" {
+		attrs = append(attrs, "security", securityMode(who))
+		if who.why != "" {
+			attrs = append(attrs, "no_identity", who.why)
+		}
+	}
 	if q := m.Query(); q != "" {
 		attrs = append(attrs, "query", textsafe.Clip256(q))
 	}

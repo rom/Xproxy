@@ -1,6 +1,6 @@
 # MQTT — the protocol under the devices
 
-`kind: mqtt`, served by **xrelay**, TCP port **1883** (cleartext) and **8883**
+`kind: mqtt`, served by **xrelay** or **xot**, TCP port **1883** (cleartext) and **8883**
 (TLS).
 
 A publish/subscribe protocol designed in 1999 for telemetry over links that

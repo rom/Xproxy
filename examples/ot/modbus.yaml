@@ -16,7 +16,7 @@
 #   egress  — forward: the plant's own masters reach a device at another
 #             site, and the routes say which destinations exist at all
 #
-# Validate: xrelay -config examples/ot/modbus.yaml -validate
+# Validate: xot -config examples/ot/modbus.yaml -validate
 version: 1
 server:
   listeners:

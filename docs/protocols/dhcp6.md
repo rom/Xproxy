@@ -1,6 +1,6 @@
 # DHCPv6 — how a machine finds out where it is, on IPv6
 
-`kind: dhcp6`, served by **xrelay**, UDP port **547** (server and relay).
+`kind: dhcp6`, served by **xrelay** or **xot**, UDP port **547** (server and relay).
 
 DHCPv6 is the other half of a dual-stack estate's provisioning path, and it is
 not DHCPv4 with longer addresses. It is a different packet format, a different

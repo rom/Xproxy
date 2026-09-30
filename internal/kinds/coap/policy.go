@@ -62,9 +62,18 @@ type request struct {
 	from netip.Addr
 	msg  *wire.Message
 	// secure says the message arrived inside a DTLS session rather than in the
-	// clear, which is the only identity this protocol offers.
+	// clear, which is the weakest identity this protocol offers.
 	secure bool
-	at     time.Time
+	// identity is the security name the session's peer maps to: the name of
+	// its pre-shared key identity, or of the public key this listener pinned.
+	// Empty on a NoSec client and on a session that mapped to nothing.
+	//
+	// named is separate rather than derived, because "this listener has no
+	// tables and therefore nobody has a name" and "this peer has no name"
+	// are the same empty string and different facts.
+	identity string
+	named    bool
+	at       time.Time
 }
 
 // Policy is the compiled listener policy.
@@ -97,7 +106,10 @@ type Policy struct {
 
 	rules        []*rule
 	defaultAllow bool
-	now          func() time.Time
+	// needName refuses a message from a session that mapped to no security
+	// name, which is what require_security_name decides.
+	needName bool
+	now      func() time.Time
 }
 
 type rule struct {
@@ -111,8 +123,13 @@ type rule struct {
 	formats map[uint16]bool
 
 	secureOnly bool
-	proxying   bool
-	observe    bool
+	// names are the security names this rule covers. A rule naming them
+	// covers no message from a session without one, which is the point: a
+	// rule written about an authenticated device must not apply to an
+	// unauthenticated one at the same address.
+	names    map[string]bool
+	proxying bool
+	observe  bool
 
 	maxPayload int
 	sched      *schedule.Window
@@ -138,6 +155,7 @@ func compile(m *config.CoAPListener, now func() time.Time) (*Policy, error) {
 		maxResponse:   intOr(m.MaxResponseBytes, wire.MaxMessage),
 		factor:        m.AmplificationFactor,
 		defaultAllow:  m.DefaultAction == "allow",
+		needName:      m.RequiresSecurityName(),
 		now:           now,
 	}
 	var err error
@@ -176,6 +194,12 @@ func compileRule(c *config.CoAPRule) (*rule, error) {
 		secureOnly: c.SecureOnly, proxying: c.AllowProxying,
 		observe:    on(c.AllowObserve),
 		maxPayload: c.MaxPayloadBytes,
+	}
+	if len(c.SecurityNames) > 0 {
+		r.names = make(map[string]bool, len(c.SecurityNames))
+		for _, n := range c.SecurityNames {
+			r.names[n] = true
+		}
 	}
 	var err error
 	if r.clients, err = prefixes(c.Clients); err != nil {
@@ -256,6 +280,15 @@ func (p *Policy) Decide(req request) Decision {
 	}
 	if !p.types[m.Type] {
 		return deny("message_type_not_allowed", m.Type.String(), 0)
+	}
+	if p.needName && !req.named {
+		// The listener holds a table that turns a peer into a name, and this
+		// message came from one that mapped to none: a NoSec client, or a
+		// session that authenticated some other way. Refused before the rules,
+		// because every rule naming a security name is unmatchable for it and
+		// what is left would be a policy about addresses -- which is the thing
+		// putting this listener inside DTLS was meant to stop being.
+		return deny("no_security_name", "", wire.Unauthorized)
 	}
 	if p.repeated {
 		if rep := m.Repeated(); len(rep) > 0 {
@@ -503,6 +536,13 @@ func (p *Policy) match(req request) Decision {
 func (r *rule) matches(req request, now time.Time) bool {
 	m := req.msg
 	if len(r.clients) > 0 && !contains(r.clients, req.from) {
+		return false
+	}
+	// The identity selects the rule, and an unnamed peer matches no rule that
+	// names one -- including a NoSec client, which has no identity at all.
+	// Falling through to the default is what should happen to a message this
+	// rule is not about.
+	if len(r.names) > 0 && (!req.named || !r.names[req.identity]) {
 		return false
 	}
 	if len(r.methods) > 0 && !r.methods[m.Code] {

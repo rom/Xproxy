@@ -1,0 +1,24 @@
+# Listening sockets for xot. The names in FileDescriptorName must match
+# the listener names in xot.yaml; xot also matches by address.
+#
+# One [Socket] unit can carry several ports, but only one
+# FileDescriptorName, so a daemon with more than one listener wants one
+# unit per listener: copy this file, change the port and the name, and
+# list each in Requires= of xot.service. Most of the plant is datagrams
+# and takes ListenDatagram rather than ListenStream -- BACnet/IP is
+# ListenDatagram=0.0.0.0:47808, SNMP 161, the time gateway 123, TFTP 69
+# and CoAP over DTLS 5684 -- while Modbus (502), IEC 60870-5-104 (2404),
+# S7 (102), MMS (102) and OPC UA (4840) are ordinary ListenStream ports.
+#
+# The shipped default is Modbus, because it is the one every estate has.
+[Unit]
+Description=xot listening sockets
+
+[Socket]
+ListenStream=0.0.0.0:502
+FileDescriptorName=plc
+Backlog=256
+NoDelay=true
+
+[Install]
+WantedBy=sockets.target

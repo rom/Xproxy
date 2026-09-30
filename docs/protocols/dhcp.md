@@ -1,6 +1,6 @@
 # DHCP — how a machine finds out where it is
 
-`kind: dhcp`, served by **xrelay**, UDP ports **67** (server) and **68**
+`kind: dhcp`, served by **xrelay** or **xot**, UDP ports **67** (server) and **68**
 (client).
 
 DHCP is how a machine learns its address, its gateway, its resolvers, its

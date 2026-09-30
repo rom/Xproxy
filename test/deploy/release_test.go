@@ -73,8 +73,8 @@ func TestTheMacInstallerInstallsWhatItsTarballCarries(t *testing.T) {
 		t.Errorf("the darwin tarball carries %v and install.sh installs %v", tarball, installer)
 	}
 	// macOS ships fewer on purpose, and the reason is that it has no launchd job
-	// for these two. If one is ever added, this is where the decision surfaces.
-	for _, absent := range []string{"xgate", "xrelay"} {
+	// for these three. If one is ever added, this is where the decision surfaces.
+	for _, absent := range []string{"xgate", "xrelay", "xot"} {
 		for _, b := range tarball {
 			if b == absent {
 				t.Errorf("the darwin tarball carries %s; macOS has no launchd job for "+
@@ -106,7 +106,7 @@ func TestTheReleaseProcedureDoesNotMiscountTheBinaries(t *testing.T) {
 	}
 	// And it names the two daemons that were missing, so a reader can tell what a
 	// download contains without unpacking one.
-	for _, want := range []string{"xgate", "xrelay"} {
+	for _, want := range []string{"xgate", "xrelay", "xot"} {
 		if !strings.Contains(doc, want) {
 			t.Errorf("RELEASING.md does not mention %s anywhere", want)
 		}

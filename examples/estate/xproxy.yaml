@@ -50,13 +50,14 @@ cluster:
   peers:
     - unix:/run/xproxy-cluster/xgate.sock
     - unix:/run/xproxy-cluster/xrelay.sock
+    - unix:/run/xproxy-cluster/xot.sock
   local:
-    # The shared directory is 0770 root:xproxy-cluster and the three
+    # The shared directory is 0770 root:xproxy-cluster and the
     # daemons are in that group, so the socket's mode is already the
     # boundary. The user ids say it a second time, from the connection
     # rather than from the file system.
     socket_mode: "0660"
-    allow_uids: [990, 991, 992]
+    allow_uids: [990, 991, 992, 993]
   # Bans are the point of a local cluster. Rate limits are per daemon
   # anyway -- they serve different protocols on different ports -- and
   # sharing them would only add noise.

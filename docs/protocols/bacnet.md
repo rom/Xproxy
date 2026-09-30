@@ -1,6 +1,6 @@
 # BACnet/IP — the building
 
-`kind: bacnet`, served by **xrelay**, UDP port **47808** (0xBAC0).
+`kind: bacnet`, served by **xot**, UDP port **47808** (0xBAC0).
 
 ASHRAE 135, and the protocol behind the air handling, the lighting, the lifts
 and the access control in most commercial buildings built in the last twenty

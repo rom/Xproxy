@@ -21,7 +21,7 @@ func spec(t *testing.T) string {
 // Every daemon binary the Makefile builds is installed and packaged.
 func TestEveryDaemonIsPackaged(t *testing.T) {
 	s := spec(t)
-	for _, bin := range []string{"xproxy", "xgate", "xrelay", "xproxyctl", "xproxy-admin", "xproxy-fleet"} {
+	for _, bin := range []string{"xproxy", "xgate", "xrelay", "xot", "xproxyctl", "xproxy-admin", "xproxy-fleet"} {
 		if !strings.Contains(read(t, "Makefile"), "-o $(BIN)/"+bin+" ") {
 			t.Errorf("the Makefile no longer builds %s; this list is stale", bin)
 			continue
@@ -88,7 +88,7 @@ func TestTmpfilesArePackaged(t *testing.T) {
 // that starts with no configuration at all.
 func TestEachDaemonShipsItsExampleConfiguration(t *testing.T) {
 	s := spec(t)
-	for _, d := range []string{"xproxy", "xgate", "xrelay"} {
+	for _, d := range []string{"xproxy", "xgate", "xrelay", "xot"} {
 		unit := read(t, "deploy", "systemd", d+".service")
 		want := configDir + "/" + d + ".yaml"
 		if !strings.Contains(unit, want) {

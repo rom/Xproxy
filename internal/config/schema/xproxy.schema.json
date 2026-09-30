@@ -2146,6 +2146,21 @@
           "description": "Mode is reverse (the default: clients here and devices upstream) or forward (this listener is the controlled egress a downstream client uses to reach devices elsewhere).",
           "type": "string"
         },
+        "psk": {
+          "description": "PSK serves RFC 7252 s9.1.3.1's pre-shared key mode, which is the one a constrained device actually ships with. See CoAPPSK.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/CoAPPSK"
+            }
+          ]
+        },
+        "public_keys": {
+          "description": "PublicKeys pin peers by their public key rather than by an authority that vouched for it, which is what RFC 7252 s9.1.3.2's raw public key mode is about. See CoAPPublicKey.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CoAPPublicKey"
+          }
+        },
         "rate_burst": {
           "type": "integer"
         },
@@ -2170,6 +2185,10 @@
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
         },
+        "require_security_name": {
+          "description": "RequireSecurityName refuses a message from a session whose peer maps to no security name. Default true where a psk or public_keys table exists and false where neither does, because a listener with no table has nothing to map a peer to and would otherwise refuse every message. It is the switch that decides what a session established some other way means. A listener with a key table and a certificate accepts both, and a certificate that matches no row leaves the session with no name -- which is a peer this estate did not enrol, holding a certificate some authority issued. Refusing it is the default for the same reason the snmp kind's require_security_name is: a rule naming a security name is unmatchable otherwise, and the policy silently becomes one about addresses.",
+          "type": "boolean"
+        },
         "require_token": {
           "description": "RequireToken refuses a request with an empty token. RFC 7252 s5.3.1 permits one; requiring it is how an estate makes every answer traceable to the question, because the token is the only thing that pairs them.",
           "type": "boolean"
@@ -2183,6 +2202,58 @@
         },
         "upstream": {
           "description": "Upstream is the device pool. Required.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "CoAPPSK": {
+      "description": "CoAPPSK is a listener's pre-shared key mode: the identity-to-key table, and the hint the server offers. RFC 7252 s9.1.3.1 makes TLS_PSK_WITH_AES_128_CCM_8 mandatory for this mode, which is why a device with sixty kilobytes of flash speaks it: a certificate chain, a clock to check it against and an asymmetric verification are things that part does not have. What it gives a relay in exchange is the one thing this protocol otherwise has none of -- a name the client states and then proves. That name is the security name a rule names, the same idea as the snmp kind's cert_to_name table, so that an operator running both sees one idea and not two.",
+      "type": "object",
+      "properties": {
+        "hint": {
+          "description": "Hint is the PSK identity hint the server sends (RFC 4279 s5.2). Most constrained clients ignore it; an estate running two key sets on one segment uses it to say which one this listener is.",
+          "type": "string"
+        },
+        "identities": {
+          "description": "Identities are the keys this listener holds. A handshake naming an identity that is not here fails, and the attempt is counted and logged: on a segment where the identity is the identity, a device announcing a name nobody enrolled is either misconfigured or is somebody guessing.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CoAPPSKIdentity"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "CoAPPSKIdentity": {
+      "description": "CoAPPSKIdentity is one row of the pre-shared key table.",
+      "type": "object",
+      "properties": {
+        "identity": {
+          "description": "Identity is what the client sends in the clear, in its ClientKeyExchange. Required, and an empty one is refused at load: it would be the row reached by every client that names nothing.",
+          "type": "string"
+        },
+        "key": {
+          "description": "Key is the shared secret, in the usual file:/env:/vault: form. It is read as raw octets unless it is hexadecimal with a 0x prefix, in which case it is decoded -- because half the devices in the field are provisioned with a hex string and the other half with a pass phrase, and guessing which would be the wrong kind of helpful. Sixteen octets is the least this accepts: that is the width of the cipher key the mandatory suite uses, and a shorter secret is a shorter cipher key whatever the suite says.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Name is the security name this identity maps to. Empty means the identity itself, which is what an estate that names its devices sensibly wants; a name is for the estate that wants several devices to share one line in the policy (\"hall-sensors\") without sharing a key.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "CoAPPublicKey": {
+      "description": "CoAPPublicKey pins one peer by its public key. RFC 7252 s9.1.3.2's raw public key mode is the middle of the three: an asymmetric key with nothing vouching for it, no chain to walk and no expiry to check. For an estate with a hundred sensors and no certificate authority that is the right shape -- the policy names the key, and a device is whichever peer holds it. What this listener pins is the SHA-256 of the key's SubjectPublicKeyInfo, which is the key itself and not the envelope it arrived in: a certificate reissued around the same key has the same fingerprint here, and a certificate reissued with a *new* key does not. The transport carries the key inside a certificate rather than in RFC 7250's own structure, and docs/protocols/coap.md says plainly what that costs and why.",
+      "type": "object",
+      "properties": {
+        "fingerprint": {
+          "description": "Fingerprint is the key: the SHA-256 of its SubjectPublicKeyInfo as hexadecimal, with \"sha256:\" allowed in front and colons, spaces or hyphens between octets ignored, so it can be pasted from whatever printed it. `xproxyctl coap key-fingerprint FILE` prints one.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Name is the security name this key maps to. Required: a key with no name would be a row that authenticated a peer and told the policy nothing, which is the mode this table exists to avoid.",
           "type": "string"
         }
       },
@@ -2256,6 +2327,13 @@
         "secure_only": {
           "description": "SecureOnly refuses the rule's traffic when it arrived in the clear rather than inside DTLS, which is how \"the actuators may only be written by a client that authenticated\" is written.",
           "type": "boolean"
+        },
+        "security_names": {
+          "description": "SecurityNames are the peer identities this rule covers: a pre-shared key identity's name, or the name a pinned public key maps to. A rule naming them covers no message from a session without one, and none from a NoSec client at all -- a rule written about an authenticated device must not apply to an unauthenticated one that happens to be at the same address. This is the field that makes DTLS worth the handshake on this protocol. Without it a policy decides on the source address, which on a shared segment is a guess about which sensor sent something; with it the policy names the device.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false
@@ -5969,6 +6047,10 @@
         },
         "connection_rate_per_source": {
           "$ref": "#/$defs/SourceRate"
+        },
+        "daemon": {
+          "description": "Daemon names the program that binds this listener, for the few kinds more than one of them serves: syslog, snmp, tftp, dhcp, dhcp6, ntp and ntske are run both by a data centre's relay and by a plant's own, so the code is linked into xrelay and xot alike. Empty means the kind's default, which is xrelay for those seven and the only daemon that serves it for every other kind -- so a configuration written before xot existed means what it meant. A plant that wants its field equipment's syslog, time and provisioning served by the daemon that speaks to the plant writes `daemon: xot` on those listeners. It is a field rather than a deployment convention because a shared estate configuration is read by every daemon, and two of them treating one listener as theirs would race for the port.",
+          "type": "string"
         },
         "dhcp": {
           "description": "DHCP configures a kind: dhcp listener.",
@@ -14615,7 +14697,7 @@
           }
         },
         "client_auth": {
-          "description": "ClientAuth is one of none, request, require. Default none.",
+          "description": "ClientAuth is one of none, request, require and require_any. Default none. The first three take a client_ca_file and mean what they say: ask and check if given, or demand and check. require_any demands a certificate and checks it against *nothing*, which is only ever right where something else decides whether the peer is anybody -- and the one place that is true here is a coap listener with a public_keys table, where the key inside the certificate is pinned by the table and there is no authority in the picture at all (RFC 7252 s9.1.3.2's raw public key mode). Validation refuses it anywhere else, because a certificate nobody verified is not an identity.",
           "type": "string",
           "enum": [
             "none",

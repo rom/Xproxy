@@ -1,18 +1,19 @@
 # Configuration reference
 
-Three daemons read this format: **xproxy** (the edge: `http`, `forward`,
-`tcp`, `dns`), **xgate** (the gate: `ssh`) and **xrelay** (the relay:
-`smtp`, `mqtt`, `ftp`, `syslog`). Every one of them validates the whole
-file — a listener kind a sibling serves is checked as carefully here as
-at home — and binds only the listeners of its own role, saying in the
-log which it left to whom. That is what lets an estate keep its common
-parts in `includes` that all three pull in.
+Four daemons read this format: **xproxy** (the edge: `http`, `forward`,
+`tcp`, `dns`), **xgate** (the gate: `ssh`), **xrelay** (the relay:
+`smtp`, `ftp`, the databases) and **xot** (the plant: `modbus`,
+`iec104`, `s7`, `mms`, `bacnet`, `opcua`, `coap`). Every one of them
+validates the whole file — a listener kind a sibling serves is checked as
+carefully here as at home — and binds only the listeners it owns, saying
+in the log which it left to whom. That is what lets an estate keep its
+common parts in `includes` that they all pull in.
 
-What the three cannot share is a file: `management.socket`,
+What they cannot share is a file: `management.socket`,
 `metrics.listen` and `logging.directory` each name something only one
 process can own. So each daemon reads a file of its own —
 `/etc/xproxy/xproxy.yaml`, `/etc/xproxy/xgate.yaml`,
-`/etc/xproxy/xrelay.yaml` — carrying those three sections and pulling
+`/etc/xproxy/xrelay.yaml`, `/etc/xproxy/xot.yaml` — carrying those three sections and pulling
 the rest in with `includes`. Nothing stops you pointing two daemons at
 one file; they will then fight over the socket, and the second to start
 will lose.
@@ -22,7 +23,7 @@ takes the default listed here; a zero duration or count means "default",
 never "disabled". Paths must be absolute. Durations use Go syntax: `500ms`,
 `10s`, `5m`, `1h`. Names match `[A-Za-z0-9][A-Za-z0-9_.-]{0,63}`.
 
-Validate with `xproxy -config FILE -validate` (or `xgate`/`xrelay`, which
+Validate with `xproxy -config FILE -validate` (or `xgate`/`xrelay`/`xot`, which
 check the same file and additionally report how much of it they would
 serve); all problems are reported at once. The example in `deploy/config/xproxy.yaml` exercises most keys.
 
@@ -150,7 +151,8 @@ off) logs a warning and lists them under `mismatched_peers`.
 | `h2c` | bool | `false` | Accept HTTP/2 without TLS (prior knowledge and Upgrade) on a plaintext listener, for gRPC clients inside a trusted network |
 | `tls` | object | none | TLS termination; see below |
 | `proxy_protocol` | bool | `false` | Read a PROXY protocol v1 or v2 header at the start of every connection from a peer in `trusted_proxies`: the client address it carries becomes the peer for limits, bans, ACLs, logs and forwarding headers, and the per address connection count moves to it. A trusted peer that sends no header, or a malformed one, is dropped without a response (`drop_connection` with reason `proxy_protocol`, counted in `rejected_connections`); `LOCAL` headers keep the balancer's address; connections from other peers are served unchanged, so a client cannot choose its own address. Requires `trusted_proxies`; read on `kind:` `http`, `forward`, `ssh`, `telnet`, `vnc`, `rdp`, `smtp`, `mqtt`, `ftp`, `syslog` and `modbus`, and not on `tcp` (which reads the first bytes itself to route by server name, and forwards a header instead), `dns`, `udp`, `ntp`, `ntske`, `dhcp` or `dhcp6` -- the datagram kinds have no connection to put a header at the start of, and the key establishment relay reads the ClientHello. |
-| `kind` | `http`, `tcp`, `udp`, `forward`, `dns`, `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `ntp`, `ntske`, `dhcp`, `dhcp6`, `ssh`, `telnet`, `vnc`, `rdp` | `http` | `tcp` is a layer 4 stream listener and `udp` its datagram counterpart, `forward` an explicit proxy for clients, `dns` a DNS proxy, `smtp` a protocol-aware SMTP and submission proxy, `mqtt` an MQTT proxy, `ftp` an FTP proxy, `syslog` a syslog relay, `modbus` a Modbus relay, `ntp` an NTP and NTS time gateway with `ntske` its key establishment relay, and `ssh`, `telnet`, `vnc` and `rdp` the access gateways; see below. The kind also decides which daemon serves the listener: `http`, `forward`, `tcp`, `udp` and `dns` are xproxy's, `ssh`, `telnet`, `vnc` and `rdp` are xgate's, and `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `ntp` and `ntske` are xrelay's. A daemon handed a listener of another kind validates it and leaves it alone; it is never served by the wrong data plane |
+| `kind` | `http`, `tcp`, `udp`, `forward`, `dns`, `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `ntp`, `ntske`, `dhcp`, `dhcp6`, `ssh`, `telnet`, `vnc`, `rdp` | `http` | `tcp` is a layer 4 stream listener and `udp` its datagram counterpart, `forward` an explicit proxy for clients, `dns` a DNS proxy, `smtp` a protocol-aware SMTP and submission proxy, `mqtt` an MQTT proxy, `ftp` an FTP proxy, `syslog` a syslog relay, `modbus` a Modbus relay, `ntp` an NTP and NTS time gateway with `ntske` its key establishment relay, and `ssh`, `telnet`, `vnc` and `rdp` the access gateways; see below. The kind also decides which daemon serves the listener: `http`, `forward`, `tcp`, `udp` and `dns` are xproxy's; `ssh`, `telnet`, `vnc` and `rdp` are xgate's; `smtp`, `ftp`, `ldap`, `postgres`, `mysql`, `tds`, `redis` and `amqp` are xrelay's; `modbus`, `iec104`, `s7`, `mms`, `bacnet`, `opcua` and `coap` are xot's; and `mqtt`, `syslog`, `snmp`, `tftp`, `dhcp`, `dhcp6`, `ntp` and `ntske` are served by both relays, xrelay's unless the listener's `daemon` says otherwise. A daemon handed a listener of another kind validates it and leaves it alone; it is never served by the wrong data plane |
+| `daemon` | `xproxy`, `xgate`, `xrelay`, `xot` | the kind's own | Which program binds this listener, for the eight kinds both relays serve (`mqtt`, `syslog`, `snmp`, `tftp`, `dhcp`, `dhcp6`, `ntp`, `ntske`). Naming a daemon that does not carry that kind's code is a load error, because the alternative is a port nobody binds and a policy nobody enforces. Naming the only daemon that serves a kind is allowed and warned about. Left unset, the eight are xrelay's and every other kind belongs to the one daemon that serves it. MQTT is in that set because Sparkplug B telemetry is a plant's own and the device inventory collects what one daemon saw, so an estate whose device births arrive over MQTT wants that listener on the daemon serving its control protocols |
 | `redirect_to_https` | bool | `false` | Answer every request with 308 to `https://host/path?query`. Plaintext listeners only. |
 | `connection_rate` | object | none | `{per_second, burst}`: how fast this listener accepts, replacing `server.limits.connection_rate` for it. See below |
 | `connection_rate_per_source` | object | none | `{per_second, burst, ipv4_prefix, ipv6_prefix, max_sources}`: how fast one source network may connect to this listener |
@@ -4054,15 +4056,18 @@ Four defaults are worth reading before anything else.
 | `max_clients` | int | `8192` | The distinct sources tracked at once |
 | `dtls_handshake_timeout` | duration | `10s` | How long a peer has to finish a DTLS handshake. The bound that matters most on a datagram listener: a handshake is where a peer that has proved nothing already costs a socket, a goroutine and a slot in the peer table |
 | `dtls_idle_timeout` | duration | `5m` | How long a session with nothing on it is kept. Worth raising where devices report on a long cycle: for a battery-powered sensor the handshake is the expensive part of the exchange |
+| `psk` | section | none | RFC 7252 §9.1.3.1's pre-shared key mode: the identity-to-key table, below |
+| `public_keys` | list | `[]` | RFC 7252 §9.1.3.2's raw public key mode: peers pinned by the key they hold, below |
+| `require_security_name` | bool | see below | Refuse a message whose session maps to no security name. True by default where a `psk` or `public_keys` table exists, false where neither does |
 | `answer_refusals` | bool | `true` | Send the standard's response code rather than dropping the datagram |
 | `log_messages` | bool | `false` | An access line per message and per answer, the second carrying the request's size, the answer's and the factor between them |
 | `alert_on_deny` | bool | `true` | A security event for every refusal |
 
-A listener with no `tls` section warns: it is CoAP **NoSec**, where there is
-no identity of any kind — not a weak one, none — and a rule can name only the
-source address. RFC 7252 §9 puts CoAP inside DTLS on 5684, and most of the
-field does not, which is why this warns rather than refuses. A deployment on
-a port other than 5683 or 5684 warns too.
+A listener with neither a `tls` section nor a `psk` table warns: it is CoAP
+**NoSec**, where there is no identity of any kind — not a weak one, none — and
+a rule can name only the source address. RFC 7252 §9 puts CoAP inside DTLS on
+5684, and most of the field does not, which is why this warns rather than
+refuses. A deployment on a port other than 5683 or 5684 warns too.
 
 #### CoAP over DTLS
 
@@ -4107,6 +4112,116 @@ sentence the configuration can hold. `coap_handshakes`,
 `coap_datagrams_dropped` says whether a bound is being reached rather than
 merely existing.
 
+#### Pre-shared keys, and the identity they carry
+
+```yaml
+coap:
+  psk:
+    hint: plant-a
+    identities:
+      - {identity: hall-sensor-1, key: "file:/etc/xproxy/psk/hall-1", name: hall-sensors}
+      - {identity: pump-controller, key: "file:/etc/xproxy/psk/pump"}
+  rules:
+    - {name: sensors, action: allow, security_names: [hall-sensors], methods: [get], paths: ["/3303/..."]}
+    - {name: pump, action: allow, security_names: [pump-controller], methods: [put], paths: ["/3311/..."]}
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `psk.identities[].identity` | string | required | What the client sends in the clear, in its ClientKeyExchange. An empty one is refused at load: it would be the row reached by every client that names nothing. At most 128 octets |
+| `psk.identities[].key` | secret | required | The shared secret in the usual `file:`/`env:`/`vault:` form, read as raw octets unless it is hexadecimal with an `0x` prefix. At least 16 octets, which is the width of the cipher key the mandatory suite uses |
+| `psk.identities[].name` | string | the identity | The security name this identity maps to. A name is for the estate that wants several devices to share one line in the policy without sharing a key |
+| `psk.hint` | string | none | The PSK identity hint the server sends (RFC 4279 §5.2). Most constrained clients ignore it; an estate running two key sets on one segment uses it to say which one this listener is |
+
+This is the mode a constrained device actually ships with. RFC 7252 §9.1.3.1
+makes `TLS_PSK_WITH_AES_128_CCM_8` mandatory for it, because a certificate
+chain, a clock to check it against and an asymmetric verification are things a
+part with sixty kilobytes of flash and a coin cell does not have.
+
+**A `psk` table turns DTLS on by itself**, with no `tls` section and no
+certificate. That is not a convenience: a segment whose devices have no
+certificate machinery is usually run by an estate that has no authority of its
+own either, and requiring a server certificate to serve the mode that exists
+*because* certificates are too expensive would be requiring the thing the mode
+replaces. A listener may hold both, and then serves both modes.
+
+The suites offered are the four AEAD ones the library has:
+`TLS_PSK_WITH_AES_128_GCM_SHA256`, `TLS_PSK_WITH_AES_128_CCM`,
+`TLS_PSK_WITH_AES_128_CCM_8` and `TLS_PSK_WITH_CHACHA20_POLY1305_SHA256`.
+There is no forward secrecy in this mode here, and that is a limit worth
+knowing: the only `ECDHE_PSK` suite the library implements is a CBC one, and
+offering the construction every attack on TLS record padding has been about,
+in order to gain a property, is not a trade this makes. An estate that wants
+forward secrecy on this listener wants the certificate mode.
+
+**An identity the table does not hold fails the handshake**, is counted in
+`coap_unknown_identity` and raises `coap_unknown_psk_identity` with the name
+the peer used. That event is worth an alert: on this protocol the identity is
+the only thing that distinguishes one device from another, so a name nobody
+enrolled is either one device provisioned wrong, repeatedly, or somebody
+trying names, once each.
+
+#### Raw public keys
+
+```yaml
+      tls:
+        client_auth: require_any
+        certificates:
+          - {cert_file: /etc/xproxy/coap.pem, key_file: /etc/xproxy/coap.key}
+      coap:
+        public_keys:
+          - {fingerprint: "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", name: gateway}
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `public_keys[].fingerprint` | string | required | The SHA-256 of the key's SubjectPublicKeyInfo as hexadecimal, with `sha256:` allowed in front and colons, spaces or hyphens ignored. `xproxyctl spki CERT.pem` prints it |
+| `public_keys[].name` | string | required | The security name this key maps to. A pinned key with no name would authenticate a peer and tell the policy nothing |
+
+RFC 7252 §9.1.3.2's mode is an asymmetric key with nothing vouching for it: no
+chain, no authority, no expiry. For an estate with a hundred sensors and no
+certificate authority that is the right shape — the policy names the key, and
+a device is whichever peer holds it.
+
+What is pinned is the **key**, not the certificate that carried it, so a
+certificate reissued around the same key keeps working and one reissued with a
+new key does not. `client_auth: require_any` is the client-certificate mode to
+write here, and the only place this proxy accepts it: it asks for a
+certificate and verifies it against nothing, which is a credential exactly
+because the table below it pins the key. Validation refuses `require_any`
+anywhere else.
+
+**What this is not** is RFC 7250 on the wire. The DTLS library here does not
+negotiate the `client_certificate_type` and `server_certificate_type`
+extensions, so the key travels inside a certificate — a self-signed one, from
+the device — rather than in RFC 7250's own `RawPublicKey` structure. The
+policy is the same in every way that matters (the key is the identity, nothing
+vouches for it, the fingerprint is what the rule names) and the handshake is a
+few hundred octets larger than it would be. A device that can *only* speak
+RFC 7250's structure cannot talk to this listener, and
+[docs/protocols/coap.md](protocols/coap.md) says so in the limits.
+
+#### Security names in rules
+
+A rule's `security_names` covers the peers whose identity maps to one of those
+names, and **no message from a session without one** — including every NoSec
+client. That is the point: a rule written about an authenticated device must
+not apply to an unauthenticated one that happens to be at the same address.
+Naming a name no table produces is a load error, because a rule that can never
+match reads in a file as a control and is not one.
+
+`require_security_name` decides what a session that authenticated *some other
+way* means. A listener holding both a key table and a certificate accepts a
+certificate peer that matches no row, and that session has no name: every rule
+naming `security_names` is unmatchable for it, and what is left would be a
+policy about addresses. So its messages are refused with 4.01 and counted in
+`coap_unnamed_sessions`. It is true by default exactly where a table exists,
+and setting it false where one does is worth a warning.
+
+The identity reaches the logs as well as the policy: one line per established
+session (`security`, `identity`, `cipher_suite`), and `identity` on every
+message line and refusal from a named peer.
+
 #### server.listeners[].coap.rules[]
 
 | Key | Type | Default | Description |
@@ -4118,6 +4233,7 @@ merely existing.
 | `paths` | list of pattern | `[]` | Patterns over the request path. They both **select** the rule and are checked by it, so a rule about one subtree does not decide about another |
 | `queries`, `content_formats` | list | inherited | Narrow the listener's own lists for this rule's traffic |
 | `secure_only` | bool | `false` | Refuse this rule's traffic when it arrived in the clear rather than inside DTLS, which is how "the actuators may only be written by a client that authenticated" is written |
+| `security_names` | list | `[]` | The peer identities this rule covers: a pre-shared key identity's name, or the name a pinned public key maps to. A rule naming them covers no message from a session without one |
 | `allow_proxying`, `allow_observe` | bool | `false`, `true` | Override the listener's switches for this rule's traffic |
 | `max_payload_bytes` | int | inherited | Overrides the listener's payload bound |
 | `schedule` | section | none | Limits the rule to a time window |
@@ -4127,7 +4243,8 @@ Counters: `coap_messages`, `coap_requests`, `coap_responses`, `coap_empty`,
 `coap_would_deny`, `coap_malformed`, `coap_rejected`, `coap_oversize`,
 `coap_rate_limited`, `coap_upstream_failed`, `coap_send_failed`,
 `coap_unsolicited`, `coap_refused_observe`, `coap_handshakes`, `coap_handshakes_failed`,
-`coap_sessions`, `coap_datagrams_dropped`, and the three worth reading
+`coap_sessions`, `coap_datagrams_dropped`, `coap_psk_sessions`,
+`coap_unknown_identity`, `coap_unnamed_sessions`, and the three worth reading
 first — `coap_rogue_device`, an answer refused because it came from an address
 that is not a device; `coap_amplified`, an answer refused for being too large
 a multiple of the question, which is the number that says this listener is
@@ -10154,7 +10271,7 @@ A cluster comes in two shapes, decided by the form of `listen`:
 - **Networked**, `host:port`. Peers are on other machines and are
   authenticated by mutual TLS: `cluster.tls` is required.
 - **Local**, `unix:/path/to/socket`. Peers are the sibling daemons on
-  this machine — `xproxy`, `xgate` and `xrelay` — and are authenticated
+  this machine — `xproxy`, `xgate`, `xrelay` and `xot` — and are authenticated
   by the socket's own permissions plus, optionally, the user id the
   kernel reports for the connection. There is no certificate to issue
   and none to rotate, and `cluster.tls` is refused.
@@ -10166,7 +10283,7 @@ peers it dials, which is half a cluster that looks like a whole one. A
 host that needs both gives each daemon its own certificate and makes
 all three networked members.
 
-A local cluster is what the three daemons of one host use to share a ban
+A local cluster is what the daemons of one host use to share a ban
 list: an address the gate refuses at the SSH port is refused at the edge
 too, without the estate's cluster CA being involved.
 

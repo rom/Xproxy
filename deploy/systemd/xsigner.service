@@ -32,7 +32,7 @@
 [Unit]
 Description=xsigner TLS signing helper
 Documentation=https://github.com/rom/xproxy/tree/main/docs/SIGNER.md
-Before=xproxy.service xgate.service xrelay.service
+Before=xproxy.service xgate.service xrelay.service xot.service
 
 [Service]
 Type=exec

@@ -162,7 +162,8 @@ those all come up clean and then fail every handshake, which looks from
 outside exactly like the listener being down.
 
 It also means the helper must be running before the proxy starts. The shipped
-unit orders itself `Before=xproxy.service xgate.service xrelay.service`; add
+unit orders itself `Before=xproxy.service xgate.service xrelay.service
+xot.service`; add
 `After=xsigner.service` to a drop-in on the proxy's unit if you start them
 another way.
 

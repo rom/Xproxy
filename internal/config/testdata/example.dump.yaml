@@ -12,6 +12,7 @@ server:
           h3: null
           h2c: false
           kind: http
+          daemon: ""
           connection_rate: null
           connection_rate_per_source: null
           tcp: null
@@ -80,6 +81,7 @@ server:
             webtransport: false
           h2c: false
           kind: http
+          daemon: ""
           connection_rate: null
           connection_rate_per_source: null
           tcp: null

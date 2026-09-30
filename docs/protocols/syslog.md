@@ -1,6 +1,6 @@
 # Syslog — the estate's memory
 
-`kind: syslog`, served by **xrelay**, UDP port **514**, TCP **514**, TLS
+`kind: syslog`, served by **xrelay** or **xot**, UDP port **514**, TCP **514**, TLS
 **6514**.
 
 Logs are the record an incident is reconstructed from, which makes the log path

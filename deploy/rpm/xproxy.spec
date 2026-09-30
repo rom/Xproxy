@@ -7,14 +7,15 @@
 #   xproxy          edge data plane, xproxyctl, units, sysctl profile,
 #                   logrotate, sysusers, tmpfiles, example configuration
 #   xproxy-xgate    gate daemon (interactive access by people)
-#   xproxy-xrelay   relay daemon (the protocols machines speak)
+#   xproxy-xrelay   relay daemon (the protocols services speak)
+#   xproxy-xot      OT daemon (the protocols the plant speaks)
 #   xproxy-signer   the process that holds the private keys instead
 #   xproxy-admin    web GUI, its unit and polkit rule
 #   xproxy-selinux  SELinux policy module (noarch)
 #
-# The three daemons share one module, one configuration format and
+# The daemons share one module, one configuration format and
 # /etc/xproxy, which belongs to the xproxy-config group because no one
-# of them can own what all three read.
+# of them can own what all of them read.
 
 %global selinuxtype targeted
 %global modulename  xproxy
@@ -67,10 +68,29 @@ Requires:       %{name} = %{version}-%{release}
 %{?systemd_requires}
 
 %description    xrelay
-xrelay serves the protocols machines speak to each other -- SMTP and
-submission, MQTT, FTP and syslog -- with the same policy, logging and
-management surface as its siblings. It runs as its own user under its
-own hardened unit and reads its own file in /etc/xproxy.
+xrelay serves the protocols services speak to each other -- SMTP and
+submission, FTP, LDAP, the database wire protocols and AMQP, and MQTT,
+syslog, SNMP, TFTP, DHCP and the time gateway where a listener does not
+hand them to xot -- with the same policy, logging and management surface
+as its siblings. It runs as its own user under its own hardened unit and
+reads its own file in /etc/xproxy.
+
+%package        xot
+Summary:        OT daemon for xproxy: the protocols the plant speaks
+Requires:       %{name} = %{version}-%{release}
+%{?systemd_requires}
+
+%description    xot
+xot serves the control protocols -- Modbus, IEC 60870-5-104, S7,
+IEC 61850 MMS, BACnet/IP, OPC UA and CoAP -- and the protocols the field
+equipment itself speaks: SNMP, TFTP, DHCP, syslog, the NTP and NTS time
+gateway, and MQTT for Sparkplug B telemetry. It is a package of its own
+because it is a binary of its own: there is no mail parser, no FTP, no
+directory and no database wire protocol in it, which is what a proxy at
+level 3.5 between a process network and everything else should be able
+to say. It
+runs as its own user under its own hardened unit and reads its own file
+in /etc/xproxy.
 
 %package        signer
 Summary:        Signing helper for xproxy: the process that holds the private keys
@@ -147,6 +167,7 @@ make build GOMODFLAG=-mod=vendor VERSION=%{version}-%{release} COMMIT=%{gitcommi
 install -D -m 0755 bin/xproxy        %{buildroot}%{_bindir}/xproxy
 install -D -m 0755 bin/xgate         %{buildroot}%{_bindir}/xgate
 install -D -m 0755 bin/xrelay        %{buildroot}%{_bindir}/xrelay
+install -D -m 0755 bin/xot           %{buildroot}%{_bindir}/xot
 install -D -m 0755 bin/xproxyctl     %{buildroot}%{_bindir}/xproxyctl
 install -D -m 0755 bin/xproxy-replay %{buildroot}%{_bindir}/xproxy-replay
 install -D -m 0755 bin/xproxy-admin  %{buildroot}%{_bindir}/xproxy-admin
@@ -158,11 +179,12 @@ install -d -m 0750 %{buildroot}%{_sharedstatedir}/xproxy-fleet
 # /usr/local/bin for source installs; rewrite for the packaged layout.
 for u in xproxy.service xproxy.socket xproxy-https.socket xproxy-h3.socket \
          xgate.service xgate.socket xrelay.service xrelay.socket \
+         xot.service xot.socket \
          xproxy-admin.service xproxy-fleet.service xsigner.service; do
   sed 's|/usr/local/bin|%{_bindir}|g' deploy/systemd/$u > $u.tmp
   install -D -m 0644 $u.tmp %{buildroot}%{_unitdir}/$u
 done
-for l in xproxy xgate xrelay; do
+for l in xproxy xgate xrelay xot; do
   sed 's|/usr/local/bin|%{_bindir}|g' deploy/logrotate/$l > logrotate.$l.tmp
   install -D -m 0644 logrotate.$l.tmp      %{buildroot}%{_sysconfdir}/logrotate.d/$l
 done
@@ -180,13 +202,14 @@ install -d -m 0750 %{buildroot}%{_sysconfdir}/xproxy
 install -D -m 0640 deploy/config/xproxy.yaml %{buildroot}%{_sysconfdir}/xproxy/xproxy.yaml
 install -D -m 0640 deploy/config/xgate.yaml  %{buildroot}%{_sysconfdir}/xproxy/xgate.yaml
 install -D -m 0640 deploy/config/xrelay.yaml %{buildroot}%{_sysconfdir}/xproxy/xrelay.yaml
+install -D -m 0640 deploy/config/xot.yaml    %{buildroot}%{_sysconfdir}/xproxy/xot.yaml
 # The signer's configuration is NOT under /etc/xproxy: that directory is
-# readable by the xproxy-config group, which is the three proxy daemons, and
+# readable by the xproxy-config group, which is the proxy daemons, and
 # the point of this process is that they cannot read what it reads.
 install -d -m 0750 %{buildroot}%{_sysconfdir}/xsigner
 install -d -m 0700 %{buildroot}%{_sysconfdir}/xsigner/keys
 install -D -m 0640 deploy/config/xsigner.yaml %{buildroot}%{_sysconfdir}/xsigner/xsigner.yaml
-for d in xproxy xgate xrelay; do
+for d in xproxy xgate xrelay xot; do
   install -d -m 0750 %{buildroot}%{_localstatedir}/log/$d
   install -d -m 0700 %{buildroot}%{_sharedstatedir}/$d
 done
@@ -197,6 +220,7 @@ install -m 0644 README.md docs/*.md %{buildroot}%{_docdir}/%{name}/
 install -D -m 0644 docs/man/xproxy.8      %{buildroot}%{_mandir}/man8/xproxy.8
 install -D -m 0644 docs/man/xgate.8      %{buildroot}%{_mandir}/man8/xgate.8
 install -D -m 0644 docs/man/xrelay.8     %{buildroot}%{_mandir}/man8/xrelay.8
+install -D -m 0644 docs/man/xot.8        %{buildroot}%{_mandir}/man8/xot.8
 install -D -m 0644 docs/man/xproxyctl.8   %{buildroot}%{_mandir}/man8/xproxyctl.8
 install -D -m 0644 docs/man/xproxy-replay.8 %{buildroot}%{_mandir}/man8/xproxy-replay.8
 install -D -m 0644 docs/man/xproxy-fleet.8 %{buildroot}%{_mandir}/man8/xproxy-fleet.8
@@ -254,11 +278,20 @@ sysctl -q -p %{_sysctldir}/90-xproxy.conf >/dev/null 2>&1 || :
 %post xrelay
 %systemd_post xrelay.service xrelay.socket
 
+%post xot
+%systemd_post xot.service xot.socket
+
 %preun xrelay
 %systemd_preun xrelay.service xrelay.socket
 
+%preun xot
+%systemd_preun xot.service xot.socket
+
 %postun xrelay
 %systemd_postun_with_restart xrelay.service
+
+%postun xot
+%systemd_postun_with_restart xot.service
 
 %post admin
 %systemd_post xproxy-admin.service
@@ -342,6 +375,16 @@ fi
 %config(noreplace) %attr(0640,root,xproxy-config) %{_sysconfdir}/xproxy/xrelay.yaml
 %dir %attr(0750,xrelay,xrelay) %{_localstatedir}/log/xrelay
 %dir %attr(0700,xrelay,xrelay) %{_sharedstatedir}/xrelay
+
+%files xot
+%{_bindir}/xot
+%{_mandir}/man8/xot.8*
+%{_unitdir}/xot.service
+%{_unitdir}/xot.socket
+%config(noreplace) %{_sysconfdir}/logrotate.d/xot
+%config(noreplace) %attr(0640,root,xproxy-config) %{_sysconfdir}/xproxy/xot.yaml
+%dir %attr(0750,xot,xot) %{_localstatedir}/log/xot
+%dir %attr(0700,xot,xot) %{_sharedstatedir}/xot
 
 %files signer
 %{_bindir}/xsigner

@@ -1,6 +1,6 @@
 # IEC 61850 MMS
 
-The protocol a substation speaks. `kind: mms`, TCP 102.
+The protocol a substation speaks. `kind: mms`, served by **xot**, TCP 102.
 
 ## On the wire
 

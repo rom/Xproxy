@@ -1,6 +1,6 @@
 # SNMP — the protocol that manages the network
 
-`kind: snmp`, served by **xrelay**, UDP port **161** (requests), **162**
+`kind: snmp`, served by **xrelay** or **xot**, UDP port **161** (requests), **162**
 (traps and notifications), TCP **161** and **10161** (RFC 6353 TLS).
 
 Every switch, router, printer, UPS and access point in an estate answers SNMP,

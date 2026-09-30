@@ -1172,9 +1172,14 @@ func checkOneDaemon(t *testing.T, cfg *config.Config) {
 	t.Helper()
 	owners := map[string][]string{}
 	for _, lc := range cfg.Server.Listeners {
-		role, ok := listener.RoleOf(lc.Kind)
+		// The owner rather than the kind's default, because a kind two
+		// daemons serve goes where the listener's `daemon:` says -- and a
+		// plant's syslog beside its Modbus is one file for one daemon
+		// exactly when it says so.
+		role, ok := listener.Owner(lc.Kind, lc.Daemon)
 		if !ok {
-			t.Fatalf("listener %q has kind %q, which no daemon serves", lc.Name, lc.Kind)
+			t.Fatalf("listener %q has kind %q and daemon %q, which no daemon serves",
+				lc.Name, lc.Kind, lc.Daemon)
 		}
 		owners[role.Daemon()] = append(owners[role.Daemon()], lc.Name)
 	}
