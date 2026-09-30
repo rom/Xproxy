@@ -52,11 +52,43 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   the three TLS views. `GET /v1/origin-check` stays out on purpose: it reads like
   a view and is a probe that dials the origins.
 
+- **An Alarms screen: everything that is asking for attention, on one page.**
+  Every fact on it was already reachable, in twelve different places, and an
+  operator who has to visit twelve pages to find out whether anything is wrong
+  visits none of them. A reload that failed, log records dropped, a hardening
+  mechanism not in force, a listener configured and not listening, certificates
+  near expiry, devices matching a published advisory, quarantined actors, any
+  table that hit its bound, cluster peers down — and, kept separate, the states
+  somebody chose and may have forgotten: maintenance mode, a drain, a listener
+  in shadow mode. Three levels and no more, because a page that painted a chosen
+  state red would be crying wolf at its own operator. When nothing is wrong it
+  says so, naming what it checked.
+
+- **Security, Plant and Sessions screens, and the fleet on the Cluster screen.**
+  Security is the guards that are neither the WAF nor a protocol's own: virtual
+  patches, deceptive answers, the WebSocket guards, the degradation levels,
+  handshake refusals, the account guard, the bot score, the API inventory and the
+  capture window. Plant is the OT half: the packs in force and who signed them,
+  the just-in-time grants with their windows and approvals, the device inventory
+  with what each device is and speaks, and the advisories matched against those
+  firmware versions. Sessions is what is being served right now.
+
 - **The navigation and the views are checked against each other, and so is every
-  endpoint the page reads.** Nothing at run time noticed a menu entry pointing at
+  endpoint the page reads — and every view is now rendered against the real
+  management API's own documents.** Nothing at run time noticed a menu entry pointing at
   a view nobody wrote — the reader lands on the overview with no error — or a view
   nothing links to. The second of those was already true: the ICAP page had been
   unreachable, and now has a link from the subsystems screen that reaches it.
+
+  Six hundred lines of page JavaScript had never been run by anything. A test
+  now starts a real data plane and a real management server, asks it for every
+  document the page fetches, and renders all twenty views against what came
+  back, under a DOM small enough to run the page and no smaller. A field renamed
+  in Go, a list that is null rather than empty, a helper called with the wrong
+  shape: each of those used to be a card that threw in one view, which is
+  exactly where nobody looks until an operator needs it. The test skips where
+  `node` is not installed, and it does not replace the manual browser check --
+  it removes the part of it that was checking whether the code runs at all.
 
 ### Fixed (an inspected WebSocket route broke every browser that offered compression)
 

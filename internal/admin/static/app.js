@@ -281,6 +281,277 @@ views.policy = { refresh: 15000, async render() {
       'Empty the shadow policy ledger? Do this after fixing a policy, so the next report is about the new one.')) : null));
 }};
 
+// ---- alarms: everything that is asking for attention, on one page ----
+//
+// Every fact here was already reachable, in eleven different places. An
+// operator who has to visit eleven pages to find out whether anything is
+// wrong visits none of them, so this page asks all of them and prints only
+// what is not normal. An empty page is the good answer and says so.
+//
+// What it does not do is invent a severity. `bad` is "something is not
+// working or not protected"; `warn` is "this will need attention"; `info`
+// is a state somebody chose and may have forgotten about -- maintenance
+// mode, a drain, a listener in shadow mode. A page that painted a chosen
+// state red would be crying wolf at its own operator.
+function alarm(level, what, detail, where) {
+  return { level, what, detail, where };
+}
+
+async function gatherAlarms() {
+  const names = ['status', 'listeners', 'policy', 'tls-expiring', 'advisories', 'packs',
+    'maintenance', 'degradation', 'drain', 'cluster', 'assets', 'sandbox'];
+  const got = await Promise.all(names.map(n => get('/api/' + n).then(d => d).catch(() => null)));
+  const d = {};
+  names.forEach((n, i) => { d[n] = got[i]; });
+  const out = [];
+
+  const st = d.status;
+  if (st && st.stats) {
+    const s = st.stats;
+    if (s.reload_failures) out.push(alarm('bad', 'A reload failed', s.reload_failures + ' failure(s) since start; the running configuration is the last one that validated', '#history'));
+    if (s.log_syslog_dropped || s.log_journald_dropped) out.push(alarm('bad', 'Log records were dropped', 'syslog ' + s.log_syslog_dropped + ', journald ' + s.log_journald_dropped + ' -- the record of what happened is incomplete', '#logs'));
+    if (s.refusals_untracked) out.push(alarm('warn', 'Refusals counted under no protocol', s.refusals_untracked + ' -- a reason table is full or a kind is not in the roster; the refusal happened, the label did not', '#listeners'));
+    if (s.shedding_classes && s.shedding_classes.length) out.push(alarm('warn', 'Load shedding', 'shedding ' + s.shedding_classes.join(', ') + ' at load ' + s.load_level.toFixed(2), '#graphs'));
+    if (s.upstream_errors || s.upstream_timeouts) out.push(alarm('info', 'Upstream errors', fmtNum(s.upstream_errors) + ' errors, ' + fmtNum(s.upstream_timeouts) + ' timeouts since start', '#upstreams'));
+  }
+  const sb = d.sandbox;
+  if (sb && sb.enabled) {
+    for (const m of sb.mechanisms || []) {
+      if (m.state === 'unavailable' || m.state === 'failed') {
+        out.push(alarm('bad', 'Hardening not in force: ' + m.name, m.state + (m.detail ? ' -- ' + m.detail : ''), '#subsystems'));
+      }
+    }
+  } else if (sb && sb.platform && !sb.enabled) {
+    out.push(alarm('warn', 'In-process hardening is disabled', 'no sandbox section, or sandbox.enabled: false', '#subsystems'));
+  }
+
+  const inv = d.listeners;
+  if (inv) {
+    const quiet = (inv.listeners || []).filter(l => l.mode !== 'enforce');
+    if (quiet.length) out.push(alarm('info', quiet.length + ' listener(s) are not enforcing', quiet.map(l => l.name + ' (' + l.kind + ', ' + l.mode + ')').join(', '), '#listeners'));
+    const unbound = (inv.listeners || []).filter(l => !l.bound);
+    if (unbound.length) out.push(alarm('bad', unbound.length + ' listener(s) are configured and not listening', unbound.map(l => l.name + ' (' + l.kind + ')').join(', '), '#listeners'));
+  }
+  if (d.policy && d.policy.status && d.policy.status.full) {
+    out.push(alarm('warn', 'The shadow policy ledger is full', 'decisions after the bound were not recorded, so the report is incomplete', '#policy'));
+  }
+
+  const exp = d['tls-expiring'];
+  if (exp) {
+    for (const ln of Object.keys(exp).sort()) {
+      out.push(alarm('bad', 'Certificates expiring or expired on ' + ln, (exp[ln] || []).join(', '), '#certificates'));
+    }
+  }
+
+  const adv = d.advisories;
+  if (adv && adv.assessments) {
+    const hit = adv.assessments.filter(a => a.state === 'affected');
+    if (hit.length) {
+      out.push(alarm('bad', hit.length + ' device(s) match a published advisory',
+        hit.slice(0, 8).map(a => a.asset + ' (' + [a.vendor, a.product, a.firmware].filter(Boolean).join(' ') + (a.worst_severity ? ', ' + a.worst_severity : '') + ')').join('; ')
+        + (hit.length > 8 ? ' and ' + (hit.length - 8) + ' more' : ''), '#plant'));
+    }
+  }
+
+  const packs = d.packs;
+  if (packs && packs.status) {
+    const ps = packs.status;
+    if (ps.quarantined) out.push(alarm('bad', ps.quarantined + ' actor(s) are quarantined by a behaviour pack', 'they are refused on every listener the pack covers until the quarantine lapses or an operator lifts it', '#plant'));
+    if (ps.evicted || ps.quarantines_refused) out.push(alarm('warn', 'A behaviour pack bound was reached', (ps.evicted || 0) + ' actor(s) evicted, ' + (ps.quarantines_refused || 0) + ' quarantine(s) not taken; raise packs.max_actors or packs.max_quarantined', '#plant'));
+    const unsigned = (packs.packs || []).filter(p => !p.signer);
+    if (unsigned.length) out.push(alarm('warn', unsigned.length + ' pack(s) are loaded unsigned', unsigned.map(p => p.id).join(', ') + ' -- a detection nobody signed', '#plant'));
+  }
+
+  if (d.maintenance && d.maintenance.on) out.push(alarm('info', 'Maintenance mode is on', 'every request but the allowlist is held behind a 503', '#overview'));
+  const deg = d.degradation;
+  if (Array.isArray(deg)) {
+    const applied = deg.filter(x => x.applied);
+    if (applied.length) out.push(alarm('info', 'Graduated degradation has applied', applied.map(x => x.name + ' ' + fmtNum(x.applied) + '×').join(', '), '#security'));
+  }
+  const dr = d.drain;
+  if (dr) {
+    const pools = Object.keys(dr.pools || {}).filter(k => dr.pools[k]);
+    const eps = [];
+    for (const p of Object.keys(dr.endpoints || {})) {
+      for (const e of Object.keys(dr.endpoints[p] || {})) if (dr.endpoints[p][e]) eps.push(p + '/' + e);
+    }
+    if (pools.length || eps.length) out.push(alarm('info', 'Taken out of rotation by an operator', pools.concat(eps).join(', ') + ' -- a drain survives a reload, so it stays until somebody undoes it', '#upstreams'));
+  }
+  const cl = d.cluster;
+  if (cl && (cl.peers || []).length) {
+    const down = cl.peers.filter(p => !p.connected);
+    if (down.length) out.push(alarm('warn', down.length + ' cluster peer(s) are down', down.map(p => p.address + (p.last_error ? ' (' + p.last_error + ')' : '')).join(', '), '#cluster'));
+  }
+  const as = d.assets && d.assets.summary;
+  if (as) {
+    if (as.frozen && as.new) out.push(alarm('warn', as.new + ' device(s) are not in the baseline', 'the estate was declared complete and these appeared after it', '#plant'));
+    if (as.dropped || as.refused) out.push(alarm('warn', 'The device inventory reached a bound', (as.dropped || 0) + ' dropped, ' + (as.refused || 0) + ' refused -- raise assets.max_assets', '#plant'));
+  }
+  const rank = { bad: 0, warn: 1, info: 2 };
+  out.sort((a, b) => rank[a.level] - rank[b.level]);
+  return out;
+}
+
+views.alarms = { refresh: 15000, async render() {
+  const rows = await gatherAlarms();
+  clear(view);
+  const counts = { bad: 0, warn: 0, info: 0 };
+  for (const r of rows) counts[r.level]++;
+  view.append(h('div', { class: 'grid' }, [
+    ['Not working or not protected', counts.bad], ['Will need attention', counts.warn],
+    ['States somebody chose', counts.info],
+  ].map(([k, v], i) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k),
+    h('div', { class: v ? ['v bad', 'v warn', 'v'][i] : 'v' }, v)))));
+  if (!rows.length) {
+    view.append(h('div', { class: 'card mt' }, h('h2', { class: 'ok' }, 'Nothing is asking for attention'),
+      h('p', { class: 'muted' }, 'Every listener is enforcing and listening, the hardening is in force, no certificate is near expiry, no device matches an advisory, nothing is quarantined, no bound has been reached and nothing is drained or in maintenance.')));
+    return;
+  }
+  view.append(h('div', { class: 'card mt' }, h('h2', null, 'Asking for attention'),
+    table(['', 'What', 'Detail', ''], rows.map(r => [
+      h('span', { class: 'pill ' + (r.level === 'info' ? 'muted' : r.level) },
+        r.level === 'bad' ? 'problem' : r.level === 'warn' ? 'warning' : 'chosen'),
+      r.what, h('span', { class: 'wrap' }, r.detail), h('a', { href: r.where }, 'look'),
+    ]))));
+}};
+
+// ---- plant: the OT half, which is a different estate with different questions ----
+views.plant = { refresh: 15000, async render() {
+  const [packs, access, assets, adv] = await Promise.all([
+    get('/api/packs').catch(e => ({ e })), get('/api/access').catch(e => ({ e })),
+    get('/api/assets').catch(e => ({ e })), get('/api/advisories').catch(e => ({ e }))]);
+  clear(view);
+
+  const pcard = h('div', { class: 'card' }, h('h2', null, 'Behaviour packs'));
+  if (packs.e) pcard.append(h('p', { class: 'muted' }, 'not configured (' + packs.e.message + ')'));
+  else {
+    const ps = packs.status || {};
+    pcard.append(h('div', { class: 'grid' }, [
+      ['Packs', ps.packs || 0], ['Mode', ps.enforcing ? 'enforcing' : 'alert only'],
+      ['Actors tracked', ps.actors || 0], ['Quarantined', ps.quarantined || 0],
+    ].map(([k, v]) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v)))),
+      table(['Pack', { label: 'Rev', num: true }, 'Technique', 'Severity', 'May', 'Protocols', { label: 'Findings', num: true }, 'Signer'],
+        (packs.packs || []).map(p => [p.id, p.revision, p.technique + (p.tactic ? ' (' + p.matrix + ', ' + p.tactic + ')' : ''),
+          h('span', { class: p.severity === 'critical' || p.severity === 'high' ? 'bad' : p.severity === 'medium' ? 'warn' : 'muted' }, p.severity),
+          p.enforcement, (p.kinds || []).join(' '), fmtNum(p.matches),
+          p.signer ? p.signer : h('span', { class: 'warn' }, 'unsigned')])),
+      h('p', { class: 'muted mt-s' }, 'A pack is signed data, not code and not configuration: the directory and the keys are in the configuration, and nothing here can add a detection nobody signed.'));
+  }
+  view.append(pcard);
+
+  const acard = h('div', { class: 'card' }, h('h2', null, 'Just-in-time access'));
+  if (access.e) acard.append(h('p', { class: 'muted' }, 'not configured (' + access.e.message + ')'));
+  else {
+    const as = access.stats || {};
+    acard.append(h('div', { class: 'grid' }, [
+      ['Requested', fmtNum(as.requests || 0)], ['Approved', fmtNum(as.approvals || 0)],
+      ['Denied', fmtNum(as.denials || 0)], ['Revoked', fmtNum(as.revocations || 0)],
+      ['Sessions opened', fmtNum(as.uses || 0)], ['Engineering operations', fmtNum(as.engineering || 0)],
+    ].map(([k, v]) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v)))),
+      table(['State', 'Subject', 'Listener', 'Target', 'Reason', 'Asked by', 'Window', { label: 'Uses', num: true }, 'Approvals'],
+        (access.grants || []).map(g => [
+          h('span', { class: g.state === 'active' ? 'ok' : g.state === 'pending' ? 'warn' : 'muted' }, g.state),
+          g.subject, g.listener, g.target, h('span', { class: 'wrap' }, g.reason), g.by,
+          fmtTime(g.not_before) + ' to ' + fmtTime(g.expires),
+          g.max_uses ? (g.uses || 0) + ' / ' + g.max_uses : (g.uses || 0),
+          (g.approvals || []).map(a => a.by).join(', ') + ' of ' + g.need_approvals])),
+      h('p', { class: 'muted mt-s' }, 'A grant is four-eyes approved, time-boxed and can refuse. Engineering operations are reported whether or not a grant was open; the ones outside every window are the finding.'));
+  }
+  view.append(acard);
+
+  const icard = h('div', { class: 'card' }, h('h2', null, 'Device inventory'));
+  if (assets.e) icard.append(h('p', { class: 'muted' }, 'not configured (' + assets.e.message + ')'));
+  else {
+    const s = assets.summary || {};
+    icard.append(h('div', { class: 'grid' }, [
+      ['Devices', s.assets || 0], ['New', s.new || 0], ['Unclassified', s.unknown || 0],
+      ['Baseline', s.baseline_frozen ? 'frozen at ' + s.baseline_size : 'not frozen'],
+      ['Findings', fmtNum(s.findings || 0)],
+    ].map(([k, v]) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v)))),
+      table(['Device', 'Addresses', 'Role', 'Vendor', 'Model', 'Firmware', 'Protocols', 'Last seen'],
+        (assets.assets || []).map(a => [
+          a.new ? h('span', { class: 'warn', title: 'not in the baseline' }, a.id) : a.id,
+          (a.addresses || []).join(' '), (a.classification || {}).role || '-',
+          a.vendor || a.maker || '-', a.model || '-', a.firmware || '-',
+          Object.keys(a.protocols || {}).sort().join(' '), fmtTime(a.last_seen)])),
+      assets.matched > (assets.assets || []).length
+        ? h('p', { class: 'muted mt-s' }, 'showing ' + assets.assets.length + ' of ' + assets.matched) : null);
+  }
+  view.append(icard);
+
+  const vcard = h('div', { class: 'card' }, h('h2', null, 'Published advisories against what is out there'));
+  if (adv.e) vcard.append(h('p', { class: 'muted' }, 'not configured (' + adv.e.message + ')'));
+  else {
+    const c = adv.counts || {};
+    vcard.append(h('div', { class: 'grid' }, [
+      ['Documents', c.documents || 0], ['Product records', c.records || 0],
+      ['Assessed', fmtNum(c.assessments || 0)], ['Affected', fmtNum(c.affected || 0)],
+      ['Loaded', fmtTime(c.loaded)],
+    ].map(([k, v]) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v)))),
+      table(['Device', 'Vendor', 'Product', 'Firmware', 'State', 'Worst', { label: 'Advisories', num: true }, 'Why'],
+        (adv.assessments || []).map(a => [a.asset, a.vendor || '-', a.product || '-', a.firmware || '-',
+          h('span', { class: a.state === 'affected' ? 'bad' : a.state === 'unknown' ? 'warn' : 'ok' }, a.state),
+          a.worst_severity ? a.worst_severity + (a.worst_score ? ' ' + a.worst_score : '') : '-',
+          a.total || (a.advisories || []).length, h('span', { class: 'wrap' }, a.reason || '')])));
+  }
+  view.append(vcard);
+}};
+
+// ---- sessions: the ones being served now, not the recordings on disk ----
+views.sessions = { refresh: 5000, async render() {
+  const ss = await get('/api/sessions');
+  clear(view);
+  const rows = ss || [];
+  const byKind = {};
+  for (const s of rows) byKind[s.kind] = (byKind[s.kind] || 0) + 1;
+  view.append(h('div', { class: 'grid' }, [['Live sessions', rows.length]]
+    .concat(Object.keys(byKind).sort().map(k => [k, byKind[k]]))
+    .map(([k, v]) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v)))));
+  view.append(h('div', { class: 'card mt' }, h('h2', null, 'Being served now'),
+    rows.length ? table(['Kind', 'Listener', 'Client', 'Login', 'Target', 'Detail', 'Started', { label: 'Duration', num: true }],
+      rows.map(s => [s.kind, s.listener, s.client, s.user || '-', s.target || '-',
+        h('span', { class: 'wrap' }, s.detail || ''), fmtTime(s.started), fmtDur(s.duration_ms / 1000)]))
+      : h('p', { class: 'muted' }, 'none'),
+    h('p', { class: 'muted mt-s' }, 'Closing a session is an operation on the estate and is audited, so it is `xproxyctl sessions -kill ID`. These are the live ones; the recordings on disk are `xproxyctl session`.')));
+}};
+
+// ---- security: the guards that are not the WAF and not a protocol's own ----
+const securityPages = [
+  ['Virtual patches', '/api/patches', d => (d || []).length
+    ? table(['Patch', 'Action', { label: 'Status', num: true }, 'State', 'Expires', { label: 'Hits', num: true }, 'Last hit', 'Description'],
+      d.map(p => [p.id, p.action, p.status,
+        p.expired ? h('span', { class: 'muted' }, 'expired') : p.enabled ? h('span', { class: 'ok' }, 'enabled') : h('span', { class: 'warn' }, 'disabled'),
+        p.expires ? fmtTime(p.expires) : '-', fmtNum(p.hits), fmtTime(p.last_hit), p.description || '']))
+    : h('p', { class: 'muted' }, 'none configured')],
+  ['Deceptive answers', '/api/deceive', d => (d || []).length
+    ? table(['Route', { label: 'Status', num: true }, { label: 'Served', num: true }, { label: 'Body bytes', num: true }, 'Marks', 'From score'],
+      d.map(x => [x.route, x.status, fmtNum(x.served), x.body_bytes, x.marked ? 'yes' : 'no', x.bot_score_at || '-']))
+    : h('p', { class: 'muted' }, 'none configured')],
+  ['WebSocket guards', '/api/websocket', d => (d || []).length
+    ? table(['Route', 'Action', { label: 'Connections', num: true }, { label: 'Messages', num: true }, { label: 'Violations', num: true }, { label: 'Closed', num: true }],
+      d.map(g => [g.route, g.action, fmtNum(g.connections), fmtNum(g.messages),
+        g.violations ? h('span', { class: 'warn' }, fmtNum(g.violations)) : '0', fmtNum(g.closed)]))
+    : h('p', { class: 'muted' }, 'no route has a websocket_guard')],
+  ['Graduated degradation', '/api/degradation', d => (d || []).length
+    ? table(['Level', { label: 'Applied', num: true }, 'Bytes per second', 'Delay', 'Close'],
+      d.map(x => [x.name, fmtNum(x.applied), x.bytes_per_second || '-', x.delay || '-', x.close ? 'yes' : 'no']))
+    : h('p', { class: 'muted' }, 'none configured')],
+  ['Handshake refusals', '/api/handshake', jsonView],
+  ['Account guard', '/api/accounts', jsonView],
+  ['Bot score', '/api/botscore', jsonView],
+  ['API inventory', '/api/api', jsonView],
+  ['Packet capture', '/api/capture', jsonView],
+];
+views.security = { refresh: 15000, async render() {
+  const results = await Promise.all(securityPages.map(([, path]) => get(path).then(d => ({ d })).catch(e => ({ e }))));
+  clear(view);
+  securityPages.forEach(([title, , render], i) => {
+    const r = results[i];
+    view.append(h('div', { class: 'card' }, h('h2', null, title),
+      r.e ? h('p', { class: 'muted' }, 'not configured (' + r.e.message + ')') : render(r.d)));
+  });
+}};
+
 views.upstreams = { refresh: 5000, async render() {
   const [ups, pools] = await Promise.all([get('/api/upstreams'), get('/api/pools').catch(() => ({}))]);
   clear(view);
@@ -379,6 +650,13 @@ views.cluster = { refresh: 5000, async render() {
         (c.peers || []).map(p => [p.address, p.node_id || '-', p.connected ? h('span', { class: 'ok' }, 'connected') : h('span', { class: 'bad' }, 'down'), p.connected ? fmtTime(p.connected_at) : '-', fmtNum(p.messages_out), p.reconnects, p.last_error || '']))),
     h('div', { class: 'card' }, h('h2', null, 'Inbound'),
       table(['Remote', 'Node', 'Certificate', 'Since', 'Last seen'], (c.inbound || []).map(i => [i.remote, i.node_id || '-', i.cert_name, fmtTime(i.since), fmtTime(i.last_seen)]))));
+  // The fleet is the other estate view: a cluster shares decisions between
+  // proxies, a fleet collects status from nodes that need not share
+  // anything. Both belong on the page somebody opens to ask "what else is
+  // out there".
+  const fleet = await get('/api/fleet').catch(e => ({ e }));
+  view.append(h('div', { class: 'card' }, h('h2', null, 'Fleet'),
+    fleet.e ? h('p', { class: 'muted' }, 'not configured (' + fleet.e.message + ')') : jsonView(fleet)));
 }};
 
 views.certificates = { refresh: 30000, async render() {

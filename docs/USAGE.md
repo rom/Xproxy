@@ -6414,7 +6414,7 @@ Roles:
 
 | Role | May |
 |------|-----|
-| `viewer` | See every screen: overview, listeners, upstreams, routes, WAF, policy, bans, graphs, cluster, certificates, subsystems, MFA, history, the configuration file and the logs |
+| `viewer` | See every screen: overview, alarms, listeners, upstreams, routes, WAF, policy, security, plant, sessions, bans, graphs, cluster, certificates, subsystems, MFA, history, the configuration file and the logs |
 | `operator` | Everything a viewer may, plus ban and unban, reload, reload certificates, reopen logs, renew certificates, reset the WAF statistics, empty the shadow policy ledger, roll back to a recorded configuration, edit and save the configuration file, restart the data plane |
 
 `viewer` is a trusted operator without write access, not a
@@ -6447,6 +6447,18 @@ Screens:
 - **Overview**: version, uptime, generation, request and response counters,
   denials by reason, load level, listeners; the action buttons for
   operators.
+- **Alarms**: everything that is asking for attention, gathered from the
+  twelve places it used to live: a reload that failed, log records dropped,
+  a hardening mechanism not in force, a listener configured and not
+  listening, certificates near expiry, devices matching a published
+  advisory, actors a behaviour pack has quarantined, a bound reached by any
+  of the tables, cluster peers down, and the states somebody chose and may
+  have forgotten — maintenance mode, a drain, a listener in shadow mode.
+  Three levels and no more: something is not working or not protected,
+  something will need attention, and something is a state somebody chose. A
+  page that painted a chosen state red would be crying wolf at its own
+  operator. When nothing is wrong the page says so, in one sentence naming
+  what it checked.
 - **Listeners**: every listener this daemon serves with its protocol, the
   address it actually bound, its enforcement mode, whether it terminates
   TLS and which of the protocol's own guards are on — learning, anomaly
@@ -6473,12 +6485,33 @@ Screens:
   report that is not complete says so. Nothing in that table was refused.
   Operators empty the ledger after fixing a policy, so the next week's
   report is about the new one.
+- **Security**: the guards that are neither the WAF nor a protocol's own —
+  virtual patches with their hits and expiry, deceptive answers per route,
+  the WebSocket guards with connections, messages and violations, the
+  graduated degradation levels and how often each applied, handshake
+  refusals, the account guard, the bot score baselines, the API inventory
+  and the packet capture window.
+- **Plant**: the OT half, which is a different estate with different
+  questions. The behaviour packs in force with what each is a detection
+  for, its severity, whether it may deny and who signed it; the
+  just-in-time grants with their state, window, uses and approvals; the
+  device inventory with role, vendor, model, firmware and the protocols
+  each device speaks, marking the ones that are not in the baseline; and
+  the published advisories matched against those firmware versions.
+- **Sessions**: the sessions being served now — ssh, sftp, telnet, vnc,
+  rdp, ftp, modbus — with the client, login, target, one detail and how
+  long. Closing one is an operation on the estate and is audited, so it
+  stays `xproxyctl sessions -kill`.
 - **Bans**: the active list with expiry, source and count; add a ban with a
   duration and reason (recorded as `admin:<user>: <reason>`), unban.
 - **Graphs**: requests, denials, bytes, connections, load level, upstream
   latency, bans and cluster peers from the sampled series buffer, with a
   selectable window.
-- **Cluster**; **Certificates**: every served certificate per listener
+- **Cluster**: this node's peers, the gossip counters and the inbound
+  connections, then the fleet — the other estate view, because a cluster
+  shares decisions between proxies and a fleet collects status from nodes
+  that need not share anything, and both answer "what else is out there".
+- **Certificates**: every served certificate per listener
   with issuer, days left, source, OCSP status and Certificate
   Transparency verdict, then the ACME status with a renew button.
 - **Subsystems**: one page for the status documents of the sandbox
