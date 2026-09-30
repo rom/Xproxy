@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/rom/xproxy/internal/attack"
 	"github.com/rom/xproxy/internal/metrics"
 	"github.com/rom/xproxy/internal/safe"
 	"github.com/rom/xproxy/internal/upstream"
@@ -271,6 +272,26 @@ func (s *Server) Collect(e metrics.Collector) {
 		}
 	}
 	e.Counter("xproxy_refusals_untracked_total", "Refusals a listener kind named under an unknown kind or beyond its reason bound, so they carry no reason label. Always zero in a healthy process.", nil, float64(sn.RefusalsUntracked))
+	// The same refusals in the vocabulary an operations centre
+	// catalogues detections in. A reason carrying two techniques counts
+	// under both, so these do not sum to the refusal total and are not
+	// meant to: the question they answer is "how much of this technique
+	// did we see", not "how many refusals were there".
+	techniques := make([]string, 0, len(sn.Techniques))
+	for id := range sn.Techniques {
+		techniques = append(techniques, id)
+	}
+	sort.Strings(techniques)
+	for _, id := range techniques {
+		t, ok := attack.Get(id)
+		if !ok {
+			continue
+		}
+		e.Counter("xproxy_attack_technique_total",
+			"Refusals and detections by MITRE ATT&CK for ICS technique, for the subset of techniques this proxy can observe.",
+			L{"technique": t.ID, "name": t.Name, "tactic": string(t.Tactic())},
+			float64(sn.Techniques[id]))
+	}
 	e.Counter("xproxy_tcp_connections_total", "Connections accepted on tcp listeners.", nil, float64(sn.TCPConnections))
 	e.Counter("xproxy_tcp_rejected_total", "Connections on tcp listeners closed without a route or over the listener bound.", nil, float64(sn.TCPRejected))
 	e.Counter("xproxy_tcp_errors_total", "tcp listener connections that found no reachable endpoint.", nil, float64(sn.TCPErrors))

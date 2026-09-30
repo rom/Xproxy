@@ -1854,6 +1854,7 @@ the stages a request can die at and every deny reason.
 | [docs/CONFIG.md](docs/CONFIG.md) | Configuration reference, every key with its default |
 | [docs/RFC.md](docs/RFC.md) | Every standard this proxy implements, in part or not at all: what is full, what is a named subset, and what is deliberately refused — because a proxy that quietly ignores a feature reads a message differently from the peer behind it |
 | [docs/DECEPTION.md](docs/DECEPTION.md) | Honeypot routes, decoys, honeytokens, form honeypots, WAF shape rules, the slow lane, deceptive answers and handshake refusal as one family: what each costs an attacker, how the signals chain, and the order to build them in |
+| [docs/ATTACK.md](docs/ATTACK.md) | What each refusal and detection means in MITRE ATT&CK for ICS terms: the techniques this proxy can observe, which reason maps to which, where the identifiers appear (log, snapshot, metrics), and why protocol hygiene is deliberately left untagged |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Triage, a symptom index, the stages a request can die at, the timeout ladder, a section per subsystem, emergency procedures, every deny reason and what to collect for a bug report |
 | [docs/SETUP.md](docs/SETUP.md) | Installation on Fedora |
 | [docs/SETUP_MACOS.md](docs/SETUP_MACOS.md) | Installation on macOS |

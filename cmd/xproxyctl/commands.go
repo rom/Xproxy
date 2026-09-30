@@ -3,8 +3,11 @@ package main
 import (
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"text/tabwriter"
+
+	"github.com/rom/xproxy/internal/attack"
 )
 
 // command describes one xproxyctl command for the usage text, the help
@@ -54,6 +57,7 @@ var commandTable = []command{
 	{name: "cache", args: "[purge [HOST [PATH-PREFIX]]]", summary: "Response cache counters; purge removes entries", words: []string{"purge"}},
 	{name: "honeypot", args: "[forget IP]", summary: "Clients marked by honeypot routes", words: []string{"forget"}},
 	{name: "patches", summary: "Virtual patches with state, hits and expiry"},
+	{name: "techniques", args: "[-catalogue]", summary: "What the refusals meant in MITRE ATT&CK for ICS terms, most seen first; -catalogue lists every technique this proxy can observe, seen or not", flags: []string{"-catalogue"}},
 	{name: "policy", args: "[report|reset] [-top N]", summary: "What the listeners in shadow mode would have refused, most frequent first; reset empties the ledger", words: []string{"report", "reset"}, flags: []string{"-top"}},
 	{name: "assets", args: "[-role R] [-listener L] [-proto P] [-vendor V] [-new] [-changed] [-top N] [-long] | show KEY | baseline [-forget] | advisories [-state S] [-documents] [-long]", summary: "The devices this proxy has seen, what it thinks each one is, the baseline of what the estate is supposed to have, and what the vendors' published advisories say about the firmware each one reports", words: []string{"show", "baseline", "advisories"}, flags: []string{"-role", "-listener", "-proto", "-vendor", "-new", "-changed", "-top", "-long", "-forget", "-state", "-documents"}},
 	{name: "access", args: "[-state S] | show ID | ask -subject NAME -listener L -target T -reason WHY -for 2h [-uses N] | approve|deny|revoke ID [-note TEXT] [-by NAME]", summary: "Just-in-time access -- the grants a gate listener admits sessions against, and asking for, approving, refusing or withdrawing one", words: []string{"show", "ask", "approve", "deny", "revoke"}, flags: []string{"-state", "-subject", "-listener", "-target", "-reason", "-for", "-start", "-uses", "-by", "-note"}},
@@ -103,4 +107,49 @@ func help(w io.Writer) {
 	_ = tw.Flush()
 	_, _ = fmt.Fprintln(w)
 	_, _ = fmt.Fprintln(w, "-json switches the status views to machine readable output.")
+}
+
+// techniqueRow is one line of the techniques view: what was seen, and
+// what it is called where an operations centre catalogues it.
+type techniqueRow struct {
+	ID     string `json:"technique"`
+	Name   string `json:"name"`
+	Tactic string `json:"tactic"`
+	Count  uint64 `json:"count"`
+	Why    string `json:"why,omitempty"`
+}
+
+// techniqueRows orders what a daemon reported. Most seen first, because
+// that is the question an operator has; the catalogue form is by
+// identifier, because that is a list rather than a ranking.
+func techniqueRows(seen map[string]uint64, catalogue bool) []techniqueRow {
+	if catalogue {
+		out := make([]techniqueRow, 0, len(attack.All()))
+		for _, t := range attack.All() {
+			out = append(out, techniqueRow{ID: t.ID, Name: t.Name,
+				Tactic: string(t.Tactic()), Count: seen[t.ID], Why: t.Why})
+		}
+		return out
+	}
+	out := make([]techniqueRow, 0, len(seen))
+	for id, n := range seen {
+		t, ok := attack.Get(id)
+		if !ok {
+			// A daemon of another version reporting a technique this
+			// binary does not know: shown rather than dropped, because
+			// the count is real and hiding it would be worse than an
+			// empty name.
+			out = append(out, techniqueRow{ID: id, Count: n})
+			continue
+		}
+		out = append(out, techniqueRow{ID: t.ID, Name: t.Name,
+			Tactic: string(t.Tactic()), Count: n, Why: t.Why})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out
 }

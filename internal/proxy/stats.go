@@ -768,6 +768,10 @@ type Stats struct {
 	refusals refusals
 	// wouldRefusals is the same table for the listeners in shadow mode.
 	wouldRefusals refusals
+	// techniques is what the enforced refusals meant in ATT&CK for ICS
+	// terms, which is the vocabulary an operations centre catalogues
+	// detections in.
+	techniques techniqueCounts
 	// RefusalsUntracked counts refusals named under a kind the roster
 	// does not have or beyond a kind's reason bound. Zero in a healthy
 	// process; anything else is a bug in a listener kind.
@@ -1361,6 +1365,12 @@ type Snapshot struct {
 	// mode: what they would have refused and did not. The detail is in
 	// the shadow ledger (xproxyctl policy report).
 	WouldRefusals map[string]map[string]uint64 `json:"would_refusals,omitempty"`
+	// Techniques is what the refusals meant in MITRE ATT&CK for ICS
+	// terms: technique identifier to count. Omitted while nothing that
+	// maps to one has been refused, and never a claim about a technique
+	// this proxy cannot observe -- the identifiers come from the
+	// catalogue in internal/attack, which is the subset it can.
+	Techniques map[string]uint64 `json:"techniques,omitempty"`
 	// Shadow is the ledger's own totals.
 	Shadow            shadow.Status `json:"shadow"`
 	RefusalsUntracked uint64        `json:"refusals_untracked"`
@@ -1415,6 +1425,7 @@ func (s *Stats) snapshot() Snapshot {
 		KeyExchange:             s.KeyExchangeCounts(),
 		Refusals:                s.RefusalCounts(),
 		WouldRefusals:           s.WouldRefusalCounts(),
+		Techniques:              s.TechniqueCounts(),
 		RefusalsUntracked:       s.RefusalsUntracked.Load(),
 		KeyExchangePQ:           s.KeyExchangePQ.Load(),
 		Degraded:                s.Degraded.Load(),
