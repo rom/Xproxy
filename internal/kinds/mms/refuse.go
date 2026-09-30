@@ -47,6 +47,14 @@ func (t *server) refused(c *conn, m *wire.Message, d Decision, detail string) (f
 	c.refusal()
 	t.deny(c.ip, d.Reason, detail)
 	t.alertDeny(c, d, detail)
+	return t.respond(c, m, d)
+}
+
+// respond is what the client is told about a request that was kept from the
+// IED. It is separate from refused because the behavioural models do their own
+// recording -- and deliberately do not reach the ban ladder -- so they need the
+// answer without the refusal's bookkeeping.
+func (t *server) respond(c *conn, m *wire.Message, d Decision) (forward, fatal bool) {
 	switch t.denyResponse() {
 	case denyDrop:
 		return false, false

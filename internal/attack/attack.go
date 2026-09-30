@@ -416,6 +416,17 @@ var otMappings = []mapping{
 	{kind: "mms", reason: "file_not_allowed", ids: []string{"T0802", "T0867", "T1005"}},
 	{kind: "mms", reason: "service_not_allowed", ids: []string{"T0855"}},
 	{kind: "mms", reason: "service_class_not_allowed", ids: []string{"T0855"}},
+	// The behavioural models. On this protocol the symbol carries the
+	// functional constraint with the service, so "a client that has always
+	// written $SP$ setpoints and now writes $CF$" is a new symbol rather than
+	// another write.
+	{kind: "mms", reason: "anomaly_new_symbol", ids: []string{"T0855"}},
+	{kind: "mms", reason: "anomaly_new_write_point", ids: []string{"T0836", "T0835"}},
+	{kind: "mms", reason: "anomaly_write_burst", ids: []string{"T0806", "T0836"}},
+	{kind: "mms", reason: "anomaly_new_talker", ids: []string{"T0886"}},
+	{kind: "mms", reason: "anomaly_new_pair", ids: []string{"T0846", "T1046"}},
+	{kind: "mms", reason: "anomaly_cycle_changed", ids: []string{"T0801"}},
+	{kind: "mms", reason: "anomaly_sequence_unseen", ids: []string{"T0855"}},
 
 	// BACnet/IP: a building's protocol, with no user and no session.
 	{kind: "bacnet", reason: "rule_denied", ids: []string{"T0855"}},
@@ -425,6 +436,16 @@ var otMappings = []mapping{
 	{kind: "bacnet", reason: "unsolicited_broadcast", ids: []string{"T0846", "T1046"}},
 	{kind: "bacnet", reason: "unsolicited_reply", ids: []string{"T0856", "T1557"}},
 	{kind: "bacnet", reason: "forwarded_origin_mismatch", ids: []string{"T0856", "T1557"}},
+	// The behavioural models. The talkers model is worth more here than on
+	// most kinds: a building's device list is written at commissioning and
+	// does not change for a decade.
+	{kind: "bacnet", reason: "anomaly_new_symbol", ids: []string{"T0855"}},
+	{kind: "bacnet", reason: "anomaly_new_write_point", ids: []string{"T0836", "T0835"}},
+	{kind: "bacnet", reason: "anomaly_write_burst", ids: []string{"T0806", "T0836"}},
+	{kind: "bacnet", reason: "anomaly_new_talker", ids: []string{"T0886"}},
+	{kind: "bacnet", reason: "anomaly_new_pair", ids: []string{"T0846", "T1046"}},
+	{kind: "bacnet", reason: "anomaly_cycle_changed", ids: []string{"T0801"}},
+	{kind: "bacnet", reason: "anomaly_sequence_unseen", ids: []string{"T0855"}},
 
 	// OPC UA: the one industrial protocol that brought its own security.
 	{kind: "opcua", reason: "service_denied", ids: []string{"T0855"}},
@@ -446,6 +467,15 @@ var otMappings = []mapping{
 	{kind: "opcua", reason: "publishing_interval", ids: []string{"T0814", "T1499"},
 		note: "a subscription asking for a publishing interval below the bound is amplification the server pays for"},
 	{kind: "opcua", reason: "sampling_interval", ids: []string{"T0814", "T1499"}},
+	// The behavioural models. A Call's symbol carries the method with it,
+	// because "Call" on its own says almost nothing.
+	{kind: "opcua", reason: "anomaly_new_symbol", ids: []string{"T0855"}},
+	{kind: "opcua", reason: "anomaly_new_write_point", ids: []string{"T0836", "T0835"}},
+	{kind: "opcua", reason: "anomaly_write_burst", ids: []string{"T0806", "T0836"}},
+	{kind: "opcua", reason: "anomaly_new_talker", ids: []string{"T0886"}},
+	{kind: "opcua", reason: "anomaly_new_pair", ids: []string{"T0846", "T1046"}},
+	{kind: "opcua", reason: "anomaly_cycle_changed", ids: []string{"T0801"}},
+	{kind: "opcua", reason: "anomaly_sequence_unseen", ids: []string{"T0855"}},
 
 	// CoAP, where the path is the object model.
 	{kind: "coap", reason: "method_not_allowed", ids: []string{"T0855"}},
@@ -463,6 +493,15 @@ var otMappings = []mapping{
 	{kind: "coap", reason: "device_not_allowed", ids: []string{"T0856", "T1557"}},
 	{kind: "coap", reason: "unsolicited", ids: []string{"T0856", "T1557"}},
 	{kind: "coap", reason: "amplified", ids: []string{"T0814", "T1498"}},
+	// The behavioural models, keyed on the method and the path -- which on an
+	// LwM2M device is the object model.
+	{kind: "coap", reason: "anomaly_new_symbol", ids: []string{"T0855"}},
+	{kind: "coap", reason: "anomaly_new_write_point", ids: []string{"T0836", "T0835"}},
+	{kind: "coap", reason: "anomaly_write_burst", ids: []string{"T0806", "T0836"}},
+	{kind: "coap", reason: "anomaly_new_talker", ids: []string{"T0886"}},
+	{kind: "coap", reason: "anomaly_new_pair", ids: []string{"T0846", "T1046"}},
+	{kind: "coap", reason: "anomaly_cycle_changed", ids: []string{"T0801"}},
+	{kind: "coap", reason: "anomaly_sequence_unseen", ids: []string{"T0855"}},
 
 	// SNMP: the estate's own equipment, where the credential is a
 	// cleartext password in every datagram.
@@ -483,6 +522,16 @@ var otMappings = []mapping{
 	{kind: "snmp", reason: "response_too_large", ids: []string{"T0814", "T1498"}},
 	{kind: "snmp", reason: "unsolicited_response", ids: []string{"T0856", "T1557"}},
 	{kind: "snmp", reason: "client_not_allowed", ids: []string{"T0883", "T1133"}},
+	// The behavioural models. The device here is the credential rather than
+	// the address: on this protocol the community string or the USM user is
+	// what a poller is.
+	{kind: "snmp", reason: "anomaly_new_symbol", ids: []string{"T0855"}},
+	{kind: "snmp", reason: "anomaly_new_write_point", ids: []string{"T0836", "T0835"}},
+	{kind: "snmp", reason: "anomaly_write_burst", ids: []string{"T0806", "T0836"}},
+	{kind: "snmp", reason: "anomaly_new_talker", ids: []string{"T0886"}},
+	{kind: "snmp", reason: "anomaly_new_pair", ids: []string{"T0846", "T1046"}},
+	{kind: "snmp", reason: "anomaly_cycle_changed", ids: []string{"T0801"}},
+	{kind: "snmp", reason: "anomaly_sequence_unseen", ids: []string{"T0855"}},
 
 	// TFTP: how field equipment is provisioned, and how firmware moves.
 	{kind: "tftp", reason: "filename_denied", ids: []string{"T0857", "T0839", "T1105"},

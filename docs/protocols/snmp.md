@@ -256,6 +256,32 @@ any other refusal. Either shadow switch -- `policy: {mode: shadow}` on the
 listener, or `shadow: true` on the section -- records what it would have refused
 and carries the traffic.
 
+## Behavioural detection
+
+`anomaly` is the other half of the policy, and it needs nothing written down.
+The rules answer *is this permitted*; the models answer *is this what this
+client has been doing*. They are `internal/anomaly`, the same models every OT
+kind runs, and [docs/CONFIG.md](../CONFIG.md) documents the block once. What is
+specific to this protocol is the translation:
+
+| The models' term | On SNMP | Used by |
+|------------------|---------|---------|
+| symbol | the PDU type: `get`, `get-next`, `get-bulk`, `set`, `trap` | novelty, sequence |
+| device | the credential -- the community string for v1 and v2c, the USM user for v3, the security name for the transport model | talkers |
+| point | the first binding's object identifier | novelty about writes |
+| value | nothing | -- |
+
+The device is the **credential** because on this protocol that is what a poller
+*is*: one network management station polls from several addresses and every one of
+them presents the same community string. A write is a SET, so
+`anomaly_new_write_point` reads as "this manager has never set that object",
+which is one of the more useful things a relay can say about an estate that
+configures its switches over SNMP.
+
+**The two value models are inert here**, and the reference says so rather than
+pretending: a binding's tag is read and not interpreted -- a policy about SNMP values would need a MIB per estate. So `telemetry` and `correlations` have nothing to compare
+on this kind, and the other four models carry it.
+
 ## What it does not do
 
 - **It does not sign or encrypt with `usm_users`.** Those keys are for reading:

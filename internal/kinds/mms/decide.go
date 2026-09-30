@@ -260,6 +260,14 @@ func (t *server) decideRequest(c *conn, m *wire.Message) (forward, fatal bool) {
 	if !d.Allow {
 		return t.refused(c, m, d, describe(ops))
 	}
+	// Behavioural detection, after the policy and on the requests that are
+	// going on to the IED: the models learn from what reached the device, and a
+	// request the policy refused never got there.
+	if reason := t.decideAnomaly(c, m, ops); reason != "" {
+		c.refusal()
+		return t.respond(c, m, Decision{Reason: reason, Rule: "anomaly",
+			ErrorClass: ErrClassAccess, ErrorCode: ErrCodeObjectAccessDenied})
+	}
 	// Remembered after the decision, so that a refused request leaves nothing in
 	// the table: its answer is this relay's own error and not the IED's.
 	c.remember(m.InvokeID, svc, selecting(m, ops))

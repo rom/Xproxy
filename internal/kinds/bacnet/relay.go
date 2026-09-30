@@ -201,6 +201,13 @@ func (t *server) fromClient(device net.PacketConn, raw []byte, from net.Addr) {
 			return
 		}
 	}
+	// Behavioural detection, after the policy and on the messages that are
+	// going on into the building: the models learn from what reached it, and a
+	// message the policy refused never got there.
+	if reason := t.decideAnomaly(req); reason != "" {
+		t.answerRefusal(a, from)
+		return
+	}
 	// The hop count is lowered rather than refused. It is what stops a
 	// routing loop, and a message that arrives claiming more hops than this
 	// relay allows is still a message the building should get -- with fewer

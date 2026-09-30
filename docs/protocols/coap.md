@@ -193,6 +193,30 @@ traffic, with the exception stated above: the size bounds and the
 amplification factor are enforced regardless, because a listener that carried
 an amplified answer and wrote it down would be an amplifier with logging.
 
+## Behavioural detection
+
+`anomaly` is the other half of the policy, and it needs nothing written down.
+The rules answer *is this permitted*; the models answer *is this what this
+client has been doing*. They are `internal/anomaly`, the same models every OT
+kind runs, and [docs/CONFIG.md](../CONFIG.md) documents the block once. What is
+specific to this protocol is the translation:
+
+| The models' term | On CoAP | Used by |
+|------------------|---------|---------|
+| symbol | the method: GET, PUT, POST, DELETE | novelty, sequence |
+| device | the security name the DTLS session mapped to, where there is one | talkers |
+| point | the path, `/3303/0/5700`, which on an LwM2M device *is* the object model | novelty about writes |
+| value | nothing | -- |
+
+A write is PUT, POST or DELETE. The device is the security name rather than the
+address because on this protocol an address is the weakest identity there is: a
+constrained device behind a NAT changes address and a pre-shared key identity
+does not.
+
+**The two value models are inert here**, and the reference says so rather than
+pretending: a CoAP payload is CBOR, SenML, plain text or a vendor's own encoding, and this relay does not decode it into numbers. So `telemetry` and `correlations` have nothing to compare
+on this kind, and the other four models carry it.
+
 ## What it does not do
 
 - **It is not a CoAP server.** There is no resource tree here and no cache. It

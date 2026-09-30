@@ -249,6 +249,30 @@ would discard it and the operator would read a timeout. The `ERR` carries a stat
 code and this relay's own reason, which is what an operator correlates against the
 refusal in the log.
 
+## Behavioural detection
+
+`anomaly` is the other half of the policy, and it needs nothing written down.
+The rules answer *is this permitted*; the models answer *is this what this
+client has been doing*. They are `internal/anomaly`, the same models every OT
+kind runs, and [docs/CONFIG.md](../CONFIG.md) documents the block once. What is
+specific to this protocol is the translation:
+
+| The models' term | On OPC UA | Used by |
+|------------------|-----------|---------|
+| symbol | the service, and for a `Call` the method with it: `Call ns=2;s=Recipe.Load` rather than `Call` | novelty, sequence |
+| device | the session's user, where the listener established one | talkers |
+| point | the node identifier, `ns=2;s=Line1.Setpoint` | novelty about writes |
+| value | nothing | -- |
+
+The device is the **user** rather than the address on purpose: this is the one
+industrial protocol that brought its own identity, and on a server reached by
+four clients through one integration platform the address is the platform and the
+user is the operator.
+
+**The two value models are inert here**, and the reference says so rather than
+pretending: this relay reads a Write's nodes and attributes, not the variant a value arrives as -- an OPC UA value is typed data whose type is in the server's address space. So `telemetry` and `correlations` have nothing to compare
+on this kind, and the other four models carry it.
+
 ## What it does not do
 
 - **Decrypt.** No key agreement, no private key of the plant's, no termination of

@@ -212,6 +212,13 @@ them, which is why an operations centre can filter on
 
 | Reason | Technique | Why this one |
 |--------|-----------|--------------|
+| `anomaly_cycle_changed` | T0801 |  |
+| `anomaly_new_pair` | T0846, T1046 |  |
+| `anomaly_new_symbol` | T0855 |  |
+| `anomaly_new_talker` | T0886 |  |
+| `anomaly_new_write_point` | T0836, T0835 |  |
+| `anomaly_sequence_unseen` | T0855 |  |
+| `anomaly_write_burst` | T0806, T0836 |  |
 | `client_not_allowed` | T0883, T1133 |  |
 | `forwarded_origin_mismatch` | T0856, T1557 |  |
 | `rule_denied` | T0855 |  |
@@ -224,6 +231,13 @@ them, which is why an operations centre can filter on
 | Reason | Technique | Why this one |
 |--------|-----------|--------------|
 | `amplified` | T0814, T1498 |  |
+| `anomaly_cycle_changed` | T0801 |  |
+| `anomaly_new_pair` | T0846, T1046 |  |
+| `anomaly_new_symbol` | T0855 |  |
+| `anomaly_new_talker` | T0886 |  |
+| `anomaly_new_write_point` | T0836, T0835 |  |
+| `anomaly_sequence_unseen` | T0855 |  |
+| `anomaly_write_burst` | T0806, T0836 |  |
 | `client_not_allowed` | T0883, T1133 |  |
 | `default_deny` | T0855 |  |
 | `device_not_allowed` | T0856, T1557 |  |
@@ -267,6 +281,13 @@ them, which is why an operations centre can filter on
 
 | Reason | Technique | Why this one |
 |--------|-----------|--------------|
+| `anomaly_cycle_changed` | T0801 |  |
+| `anomaly_new_pair` | T0846, T1046 |  |
+| `anomaly_new_symbol` | T0855 |  |
+| `anomaly_new_talker` | T0886 |  |
+| `anomaly_new_write_point` | T0836, T0835 |  |
+| `anomaly_sequence_unseen` | T0855 |  |
+| `anomaly_write_burst` | T0806, T0836 |  |
 | `constraint_denied` | T0836 | the functional constraint says what a write is: $CF$ is configuration and $SG$ and $SE$ are a protection relay's trip characteristic |
 | `constraint_not_allowed` | T0836 |  |
 | `domain_denied` | T0843 |  |
@@ -317,6 +338,13 @@ them, which is why an operations centre can filter on
 
 | Reason | Technique | Why this one |
 |--------|-----------|--------------|
+| `anomaly_cycle_changed` | T0801 |  |
+| `anomaly_new_pair` | T0846, T1046 |  |
+| `anomaly_new_symbol` | T0855 |  |
+| `anomaly_new_talker` | T0886 |  |
+| `anomaly_new_write_point` | T0836, T0835 |  |
+| `anomaly_sequence_unseen` | T0855 |  |
+| `anomaly_write_burst` | T0806, T0836 |  |
 | `application_not_allowed` | T0886, T1078 |  |
 | `attribute_not_allowed` | T0836 | a write to `value` moves an actuator and a write to `access_level` changes who may, which is why the attribute is a policy field |
 | `certificate_uri_mismatch` | T0859, T1078 |  |
@@ -638,6 +666,13 @@ them, which is why an operations centre can filter on
 
 | Reason | Technique | Why this one |
 |--------|-----------|--------------|
+| `anomaly_cycle_changed` | T0801 |  |
+| `anomaly_new_pair` | T0846, T1046 |  |
+| `anomaly_new_symbol` | T0855 |  |
+| `anomaly_new_talker` | T0886 |  |
+| `anomaly_new_write_point` | T0836, T0835 |  |
+| `anomaly_sequence_unseen` | T0855 |  |
+| `anomaly_write_burst` | T0806, T0836 |  |
 | `client_not_allowed` | T0883, T1133 |  |
 | `community` | T0812, T0859, T1078.001 | a community string this listener does not hold is the vendor default being tried more often than not |
 | `default_deny` | T0855 |  |

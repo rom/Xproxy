@@ -110,6 +110,14 @@ func (t *server) refused(c *conn, m *wire.Assembled, d Decision, what string) (f
 		// through, except for the hard decisions.
 		return true, false
 	}
+	return t.respond(c, m, d)
+}
+
+// respond is what the client is told about a call that was kept from the
+// server. It is separate from refused because the behavioural models do their
+// own recording -- and deliberately do not reach the ban ladder -- so they need
+// the answer without the refusal's bookkeeping.
+func (t *server) respond(c *conn, m *wire.Assembled, d Decision) (forward, fatal bool) {
 	switch t.policy.respondWith() {
 	case "drop":
 		return false, false

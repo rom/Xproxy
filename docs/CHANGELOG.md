@@ -6,6 +6,45 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (every OT kind on the behavioural models, not only modbus)
+
+- **All eight OT listener kinds run the `anomaly` block now**: modbus, iec104,
+  s7, mms, bacnet, opcua, coap and snmp. The models are the same on each, which
+  is the point -- an operations centre can filter on `anomaly_cycle_changed`
+  without knowing which protocol produced it -- and what differs is the
+  translation each kind does, which its protocol page states in a table.
+
+- **The translations are where the thought went.** On MMS the functional
+  constraint goes in the *symbol* with the service, because a client that has
+  always written `$SP$` setpoints and now writes `$CF$` configuration has
+  changed what it does and not only where. On OPC UA the device is the session's
+  user rather than the address, since this is the one industrial protocol that
+  brought an identity, and a `Call`'s symbol carries the method. On SNMP the
+  device is the credential, because a management station polls from several
+  addresses under one community string. On BACnet it is the object instance, on
+  CoAP the security name, on S7 the rack and slot, on IEC 104 the common
+  address.
+
+- **The value models are inert where a relay cannot honestly feed them, and the
+  documentation says so.** An MMS data value, an OPC UA variant, a BACnet
+  property, a CoAP payload and an SNMP binding are typed data whose type lives
+  in an SCL file, an address space, a MIB or a vendor's own encoding -- none of
+  which this relay has. Feeding a telemetry model the first two octets of
+  something would report about a value nobody has. Modbus and IEC 104 are the
+  two kinds that decode numbers in both directions, and they are the two where
+  `telemetry` and `correlations` work.
+
+- **A behavioural finding answers in the protocol's own words.** The refusal
+  path of each kind was factored so the models can answer a client -- a Modbus
+  exception, an S7 access fault, an MMS confirmed-error, an OPC UA service
+  fault, a CoAP 4.03, a BACnet Error PDU -- **without** the refusal's own
+  bookkeeping, because the models have already recorded the finding and, by
+  design, never reach the ban ladder.
+
+- **Seventy more rows in the ATT&CK table**, one per behavioural reason per kind
+  that can emit it, so a coverage report shows which of the six models each
+  protocol actually runs.
+
 ### Added (the six behavioural models, as one block every OT kind can run)
 
 - **`internal/anomaly` is the detector without the protocol**, and the
