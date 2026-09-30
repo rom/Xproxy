@@ -337,6 +337,13 @@ func (c *Client) Access(state string) (AccessReport, error) {
 	return out, c.do("GET", "/v1/access"+q, &out)
 }
 
+// Listeners reads the inventory: every listener this daemon serves, with
+// its kind, mode and guards, and what each kind has refused.
+func (c *Client) Listeners() (proxy.ListenersReport, error) {
+	var out proxy.ListenersReport
+	return out, c.do("GET", "/v1/listeners", &out)
+}
+
 // Packs reads the behaviour packs in force and the engine's own numbers.
 func (c *Client) Packs() (proxy.PackReport, error) {
 	var out proxy.PackReport

@@ -109,6 +109,7 @@ are where the shipped units put the other three.
 |---------|-------------|
 | `status` | Version, pid, generation, listeners, counters |
 | `stats` | Counters only |
+| `listeners` | Every listener with its protocol, bound address, enforcement mode, TLS and the protocol guards that are on, then the refusals and shadow decisions per protocol; `-reasons` breaks them down by reason, `-kind K` and `-mode M` narrow |
 | `upstreams` | Table of endpoints with health, ejection, active requests, request and error counts |
 | `quotas` | Usage per tenant, per route (requests by class, denied, rate limited, bytes) and per rate limit policy (decisions, top consumers with tokens left, `-top 10`), plus request share per upstream |
 | `config` | Active configuration as YAML, defaults filled in |
@@ -880,6 +881,61 @@ restart, a listener with a UDP socket (`h3`, `tcp.quic`, plain `dns`)
 changed on the same address, because that socket stays bound until the
 drain ends. A port that cannot be bound fails the reload with the
 running set untouched.
+
+### What is listening, and is it enforcing
+
+`xproxyctl status` answers "is it up". The question after that -- which of
+the thirty-four protocols is this daemon actually serving, and which of
+them is refusing anything -- is `xproxyctl listeners`:
+
+```
+$ xproxyctl listeners
+xot, generation 4: 5 listeners, 4 enforcing, 1 in shadow mode
+
+LISTENER   KIND     ADDRESS           MODE     TLS  GUARDS
+line1      modbus   10.20.0.4:502     enforce  no   learn=enforce anomaly=alert engineering=deny
+line2      modbus   10.20.0.4:5020    shadow   no   learn=observe anomaly=alert engineering=alert
+substation iec104   10.20.0.4:2404    enforce  no   anomaly=alert engineering=deny
+plc-eng    s7       10.20.0.4:102     enforce  no   engineering=deny
+field-log  syslog   10.20.0.4:514     enforce  no   none of 1
+
+KIND    LISTENERS  REFUSED  WOULD REFUSE
+iec104  1          17       0
+modbus  2          204      31
+s7      1          2        0
+syslog  1          0        0
+```
+
+The two columns `status` cannot give are `KIND` and `MODE`, and the mode
+is the one an operator checks after a change window: a listener somebody
+believes is enforcing and is not is worse than no listener. `enforce` is
+the default and `shadow` comes from `policy.mode`; `monitor` is a kind's
+own `monitor_only`. What shadow mode does *not* stop is still refused --
+a malformed message, a failed authentication or second factor, a ban, a
+rate limit, a bound, a TLS handshake refusal -- because forwarding those
+would mean acting on bytes the code could not read.
+
+`GUARDS` is what the protocol's own section switched on, with what each
+one does where it says so. A protocol that has guards and has none of
+them on reads `none of N` rather than a blank column: "no anomaly
+detection here" is the finding, and an empty cell reads as nothing to
+report. `-reasons` adds the refusal breakdown per protocol, and
+`-kind` and `-mode` narrow both tables together.
+
+Refusals are counted per protocol and reason, not per listener, so the
+two `modbus` listeners share one row and `LISTENERS` says so. `REFUSED`
+and `WOULD REFUSE` come from two separate tables and are never added
+together: one is what happened, the other is what a listener in shadow
+mode decided not to do. `xproxyctl policy report` is the detail behind
+the second column -- which rule, and an example of what was asked for.
+
+Over the socket it is `GET /v1/listeners`, which also carries the further
+addresses a kind took (an HTTP/3 endpoint, a datagram port beside a
+stream one), whether each listener is holding its socket, and the role
+and daemon that own it. It covers *this* daemon's listeners: a shared
+estate configuration names the other roles' as well and each daemon drops
+the ones it does not own before the engine sees them, so ask each
+socket, or `GET /v1/fleet` for the estate.
 
 ### Usage per tenant and route
 
@@ -6358,8 +6414,8 @@ Roles:
 
 | Role | May |
 |------|-----|
-| `viewer` | See every screen: overview, upstreams, routes, WAF, bans, graphs, cluster, certificates, subsystems, history, the configuration file and the logs |
-| `operator` | Everything a viewer may, plus ban and unban, reload, reload certificates, reopen logs, renew certificates, reset the WAF statistics, roll back to a recorded configuration, edit and save the configuration file, restart the data plane |
+| `viewer` | See every screen: overview, listeners, upstreams, routes, WAF, policy, bans, graphs, cluster, certificates, subsystems, MFA, history, the configuration file and the logs |
+| `operator` | Everything a viewer may, plus ban and unban, reload, reload certificates, reopen logs, renew certificates, reset the WAF statistics, empty the shadow policy ledger, roll back to a recorded configuration, edit and save the configuration file, restart the data plane |
 
 `viewer` is a trusted operator without write access, not a
 low-privilege or public role. It reads the whole configuration file —
@@ -6391,6 +6447,15 @@ Screens:
 - **Overview**: version, uptime, generation, request and response counters,
   denials by reason, load level, listeners; the action buttons for
   operators.
+- **Listeners**: every listener this daemon serves with its protocol, the
+  address it actually bound, its enforcement mode, whether it terminates
+  TLS and which of the protocol's own guards are on — learning, anomaly
+  detection, engineering restrictions, deception, session recording, a
+  second factor, YARA, ICAP — then the refusals per protocol broken down
+  by reason, the shadow counters beside them but never added to them, and
+  what the refusals meant in ATT&CK terms. The listeners that are *not*
+  enforcing are listed first and on their own, because that is the one
+  fact about a security proxy that must not be buried in a table.
 - **Upstreams**: every endpoint with health, ejection, active requests and
   error counts, refreshed every five seconds; per pool the balancer,
   availability, circuit breaker state, concurrency gate and queue
@@ -6402,6 +6467,12 @@ Screens:
   CRS version, route assignments, the most matched rules with block and
   detect counts, the exclusion proposals with their directives and a
   SecLang download; operators reset the statistics.
+- **Policy**: what the listeners in shadow mode would have refused — kind,
+  listener, reason, rule, count, first and last sighting and one clipped
+  example — with the ledger's own bound stated when it is full, so a
+  report that is not complete says so. Nothing in that table was refused.
+  Operators empty the ledger after fixing a policy, so the next week's
+  report is about the new one.
 - **Bans**: the active list with expiry, source and count; add a ban with a
   duration and reason (recorded as `admin:<user>: <reason>`), unban.
 - **Graphs**: requests, denials, bytes, connections, load level, upstream
@@ -6412,8 +6483,9 @@ Screens:
   Transparency verdict, then the ACME status with a renew button.
 - **Subsystems**: one page for the status documents of the sandbox
   (mechanisms and Landlock rules), telemetry exporters, dns listeners,
-  ICAP, cache, GeoIP, honeypots, filters, ingress and the OpenTelemetry
-  metrics exporter; unconfigured ones say so.
+  ICAP (with a link to its own page), cache, GeoIP, honeypots, filters,
+  ingress and the OpenTelemetry metrics exporter; unconfigured ones say
+  so.
 - **History**: the pending changes between the file and the active
   configuration (a dry run), and the recorded generations with a roll
   back button for operators.
@@ -6425,6 +6497,17 @@ Screens:
   *Reload data plane* applies it.
 - **Logs**: the last lines of a stream and a live follow with a substring
   filter and pause.
+
+Every read the management socket answers is reachable from the GUI under
+`/api/<name>`, not only the ones a screen was written for: the behaviour
+packs, the just-in-time grants, the device inventory and its advisories,
+the API inventory, the account guard, the bot score, the capture state,
+the decoys, the degradation levels, the drains, the fleet, the handshake
+refusals, maintenance, MASQUE, the virtual patches, the live sessions,
+the WebSocket guards and the three TLS views. `GET /v1/origin-check` is
+the one deliberate exception: it reads like a view and is in fact a probe
+that dials the origins, so it stays an action of `xproxyctl` and is not a
+page somebody can leave open and refreshing.
 
 Access: the default listener is `127.0.0.1:8443` in plain HTTP, reached
 through an SSH tunnel (`ssh -L 8443:127.0.0.1:8443 edge`). Binding to any

@@ -6,6 +6,58 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (the listener inventory, and a web interface that admits the other thirty-three protocols exist)
+
+- **`GET /v1/listeners` and `xproxyctl listeners`: every listener with its
+  protocol, its bound address, its enforcement mode and its guards.** `GET
+  /v1/status` reported listeners as a map of name to address, which answers "is
+  it up" and nothing after it. A proxy that speaks thirty-four protocols needs
+  the kind and the mode beside the address before any other question can be
+  asked, and "which of my listeners is not enforcing" could until now only be
+  answered by re-reading the configuration file — which is the file somebody may
+  have got wrong in the first place.
+
+  The report gives, per listener: the kind, the role and daemon that own it, the
+  address it actually bound (so a listener configured on port 0 reports the port
+  the kernel handed out) and any further ports the kind took, `enforce`, `shadow`
+  or `monitor`, whether it terminates TLS, whether it holds its socket, and the
+  protocol's own guards — learning with whether it enforces what it learned,
+  anomaly detection with its action, engineering restrictions with theirs,
+  deception, session recording, a second factor, YARA, ICAP. Per protocol it
+  gives the refusals by reason and, from a separate table that is never added to
+  it, what the listeners in shadow mode would have refused.
+
+  A guard row exists for every guard the *protocol* has, not only the ones this
+  listener configured, so a listener with anomaly detection available and switched
+  off reads as switched off rather than as absent. Engineering is reported as on
+  where no block was written, because that is what the code does: an engineering
+  operation is an event on an OT listener whether or not anybody configured one.
+
+- **The web interface has a Listeners screen and a Policy screen.** Listeners is
+  the inventory above, with the listeners that are *not* enforcing listed first
+  and on their own — the one fact about a security proxy that must not be buried
+  in a table — and what the refusals meant in ATT&CK terms underneath. Policy is
+  the shadow ledger: what would have been refused, by kind, listener, reason and
+  rule, with one clipped example each, the ledger's bound stated when it is full,
+  and an operator button to empty it after a policy is fixed.
+
+- **Every management read the control tool can make, the web interface can now
+  make.** The pass-through table held twenty-five of them, chosen by whichever
+  screen had been written, so an estate could be running behaviour packs,
+  engineering restrictions, just-in-time grants and a shadow policy and the
+  interface would not mention any of it. It is now the whole set: packs, policy,
+  access, accounts, the API inventory, the device inventory's advisories, the bot
+  score, capture, decoys, degradation, drains, the fleet, handshake refusals,
+  maintenance, MASQUE, virtual patches, live sessions, the WebSocket guards and
+  the three TLS views. `GET /v1/origin-check` stays out on purpose: it reads like
+  a view and is a probe that dials the origins.
+
+- **The navigation and the views are checked against each other, and so is every
+  endpoint the page reads.** Nothing at run time noticed a menu entry pointing at
+  a view nobody wrote — the reader lands on the overview with no error — or a view
+  nothing links to. The second of those was already true: the ICAP page had been
+  unreachable, and now has a link from the subsystems screen that reaches it.
+
 ### Fixed (an inspected WebSocket route broke every browser that offered compression)
 
 - **The `permessage-deflate` offer is now stripped from an inspected upgrade

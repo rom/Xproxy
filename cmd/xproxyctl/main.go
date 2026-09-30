@@ -1507,6 +1507,10 @@ func run(args []string, out, errOut io.Writer) int {
 		// Just-in-time access: the grants a gate listener admits sessions
 		// against, and the four acts on them.
 		return accessCommand(c, fs, out, errOut, *asJSON)
+	case "listeners":
+		// The inventory: every listener this daemon serves, with the two
+		// columns status cannot print -- the kind and the mode.
+		return listenersCommand(c, fs, out, errOut, *asJSON)
 	case "packs":
 		// Behaviour packs: what is in force, what each one is a detection
 		// for, and the signing tooling -- which does not touch the socket,

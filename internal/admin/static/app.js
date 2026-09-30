@@ -121,7 +121,8 @@ const operator = () => me && me.role === 'operator';
 
 // ---- views ----
 views.overview = { refresh: 5000, async render() {
-  const st = await get('/api/status'); const s = st.stats;
+  const [st, inv] = await Promise.all([get('/api/status'), get('/api/listeners').catch(() => null)]);
+  const s = st.stats;
   const denied = s.denied_acl + s.denied_rate_limit + s.tarpitted + s.denied_concurrency + s.denied_body_size + s.denied_uri_length + s.denied_no_route + s.denied_websocket + s.denied_bad_host + s.denied_ban + s.denied_waf + s.denied_jwt + s.denied_icap;
   const stats = [
     ['Version', st.version], ['Uptime', fmtDur(s.uptime_seconds)], ['Generation', st.generation], ['Routes / upstreams', st.routes + ' / ' + st.upstreams],
@@ -137,7 +138,9 @@ views.overview = { refresh: 5000, async render() {
   view.append(
     h('div', { class: 'grid' }, stats.map(([k, v]) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v)))),
     h('div', { class: 'card mt' }, h('h2', null, 'Listeners'),
-      table(['Name', 'Address'], Object.entries(st.listeners).map(([k, v]) => [k, v]))),
+      inv && inv.listeners ? listenerTable(inv.listeners)
+        : table(['Name', 'Address'], Object.entries(st.listeners).map(([k, v]) => [k, v])),
+      inv ? h('p', { class: 'muted mt-s' }, h('a', { href: '#listeners' }, 'every protocol, mode and guard')) : null),
     h('div', { class: 'card' }, h('h2', null, 'Denials by reason'),
       denies.length ? table(['Reason', { label: 'Count', num: true }], denies.map(([k, v]) => [k.replace('denied_', ''), fmtNum(v)])) : h('p', { class: 'muted' }, 'none')),
     operator() ? h('div', { class: 'card' }, h('h2', null, 'Actions'), h('div', { class: 'row' },
@@ -156,6 +159,127 @@ function actionButton(label, path, cls, confirmText) {
   });
   return b;
 }
+
+// ---- listeners: every protocol, its mode and its guards ----
+//
+// The mode is the field this page exists for. A listener an operator
+// believes is enforcing and is not is worse than no listener at all, so
+// anything but "enforce" is coloured and spelled out rather than left as
+// one word in a column of twenty rows.
+function modePill(mode) {
+  const cls = mode === 'enforce' ? 'ok' : 'warn';
+  return h('span', { class: 'pill ' + cls, title: mode === 'enforce' ? 'the policy is enforced'
+    : mode === 'shadow' ? 'the policy is evaluated and nothing is refused for it'
+    : 'the kind is in monitor_only: it reads and reports, and refuses nothing' }, mode);
+}
+
+// guardPills names the guards that are on, and says so when a protocol
+// has guards and none of them is on: an empty cell reads as "nothing to
+// report", which is the opposite of the finding.
+function guardPills(features) {
+  if (!features || !features.length) return h('span', { class: 'muted' }, '-');
+  const on = features.filter(f => f.enabled);
+  if (!on.length) return h('span', { class: 'warn', title: features.map(f => f.name).join(', ') + ' are available here' }, 'none of ' + features.length);
+  return h('span', null, on.map(f => h('span', { class: 'pill', title: f.mode ? f.name + ': ' + f.mode : f.name },
+    f.mode ? f.name + ' ' + f.mode : f.name)));
+}
+
+function listenerTable(ls) {
+  return table(['Listener', 'Kind', 'Address', 'Mode', 'TLS', 'Guards'], ls.map(l => [
+    l.bound ? l.name : h('span', { class: 'bad', title: 'configured but not holding a socket' }, l.name),
+    l.kind, h('span', { class: 'wrap' }, addressOf(l)), modePill(l.mode),
+    l.tls ? 'yes' : h('span', { class: 'muted' }, 'no'), guardPills(l.features),
+  ]));
+}
+
+// addressOf is the accept socket plus the further ports a kind took --
+// an HTTP/3 endpoint, a datagram port beside a stream one -- because a
+// page that showed one of two ports would be answering "what is open"
+// wrongly.
+function addressOf(l) {
+  const extra = Object.entries(l.extra_addresses || {}).sort();
+  if (!extra.length) return l.address;
+  return l.address + ' (' + extra.map(([k, v]) => k + ' ' + v).join(', ') + ')';
+}
+
+views.listeners = { refresh: 10000, async render() {
+  const [inv, stats] = await Promise.all([get('/api/listeners'), get('/api/stats').catch(() => null)]);
+  const ls = inv.listeners || [];
+  const kinds = inv.kinds || [];
+  clear(view);
+  view.append(h('div', { class: 'grid' }, [
+    ['Listeners', ls.length], ['Protocols', kinds.length],
+    ['Enforcing', ls.length ? inv.enforcing + ' of ' + ls.length : '-'],
+    ['Shadow mode', inv.shadowing || 0], ['Monitor only', inv.monitoring || 0],
+    ['Daemon', (inv.daemon || '-') + (inv.role ? ' (' + inv.role + ')' : '')],
+    ['Generation', inv.generation],
+  ].map(([k, v]) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k),
+    h('div', { class: k === 'Shadow mode' && inv.shadowing ? 'v warn' : 'v' }, v)))));
+
+  if (inv.shadowing || inv.monitoring) {
+    view.append(h('div', { class: 'card mt' }, h('h2', null, 'Not enforcing'),
+      h('p', null, 'These listeners evaluate their policy and refuse nothing for it. ',
+        'A malformed message, a failed authentication, a ban, a rate limit and a bound are still refused; ',
+        'the policy decisions are recorded instead. ',
+        h('a', { href: '#policy' }, 'What they would have refused')),
+      listenerTable(ls.filter(l => l.mode !== 'enforce'))));
+  }
+
+  view.append(h('div', { class: 'card mt' }, h('h2', null, 'Every listener'),
+    ls.length ? listenerTable(ls) : h('p', { class: 'muted' }, 'no listeners')));
+
+  view.append(h('div', { class: 'card' }, h('h2', null, 'Decisions by protocol'),
+    kinds.length ? table(['Kind', 'Daemon', { label: 'Listeners', num: true }, { label: 'Refused', num: true }, { label: 'Would refuse', num: true }],
+      kinds.map(k => [k.kind, k.daemon, k.listeners, fmtNum(k.refused),
+        k.would_refuse ? h('span', { class: 'warn' }, fmtNum(k.would_refuse)) : fmtNum(k.would_refuse)]))
+      : h('p', { class: 'muted' }, 'none'),
+    h('p', { class: 'muted mt-s' }, 'Refusals are counted per protocol, not per listener, so listeners of one kind share a row. Refused and would refuse are two tables and are never added together.')));
+
+  for (const k of kinds) {
+    const rows = (k.reasons || []).map(r => ['refused', r.reason, fmtNum(r.count)])
+      .concat((k.shadow_reasons || []).map(r => ['would refuse', r.reason, fmtNum(r.count)]));
+    if (!rows.length) continue;
+    view.append(h('div', { class: 'card' }, h('h2', null, k.kind + ': why'),
+      table(['Decision', 'Reason', { label: 'Count', num: true }], rows)));
+  }
+
+  const tech = stats && stats.techniques ? Object.entries(stats.techniques).sort((a, b) => b[1] - a[1]) : [];
+  if (tech.length) {
+    view.append(h('div', { class: 'card' }, h('h2', null, 'What the refusals meant (MITRE ATT&CK)'),
+      table(['Technique', { label: 'Refusals', num: true }], tech.map(([id, n]) => [id, fmtNum(n)])),
+      h('p', { class: 'muted mt-s' }, 'Counted on the enforced path only: a listener in shadow mode did not detect a technique, it decided not to act on one.')));
+  }
+}};
+
+// ---- policy: what the listeners in shadow mode would have refused ----
+//
+// This is the page a new policy is introduced through: put the listener in
+// shadow mode, run a week of real traffic, read what would have broken,
+// then enforce. Which makes the "would have refused" table the safest
+// thing in the product and the most misread: nothing here was refused.
+views.policy = { refresh: 15000, async render() {
+  const rep = await get('/api/policy');
+  const st = rep.status || {};
+  const entries = rep.entries || [];
+  clear(view);
+  view.append(h('div', { class: 'grid' }, [
+    ['Distinct decisions', st.entries || 0], ['Recorded', fmtNum(st.recorded || 0)],
+    ['Dropped by the bound', st.dropped || 0], ['Ledger', st.full ? 'full' : 'has room'],
+  ].map(([k, v]) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v)))));
+  if (st.full) {
+    view.append(h('div', { class: 'card mt' }, h('h2', { class: 'warn' }, 'The report is not complete'),
+      h('p', null, 'The ledger is at its bound, so decisions after it were not recorded. Raise policy.max_reasons, or empty the ledger once the ones here are dealt with.')));
+  }
+  view.append(h('div', { class: 'card mt' }, h('h2', null, 'Would have been refused'),
+    entries.length ? table(['Kind', 'Listener', 'Reason', 'Rule', { label: 'Count', num: true }, 'First', 'Last', 'Example'],
+      entries.map(e => [e.kind, e.listener, e.reason, e.rule || '-', fmtNum(e.count), fmtTime(e.first), fmtTime(e.last),
+        h('code', { class: 'wrap' }, e.sample || '')]))
+      : h('p', { class: 'muted' }, 'nothing: either no listener is in shadow mode, or none of them has seen anything its policy would refuse'),
+    h('p', { class: 'muted mt-s' }, 'Nothing in this table was refused. The example came off the network and is shown clipped. ',
+      h('a', { href: '#listeners' }, 'Which listeners are in shadow mode')),
+    operator() ? h('div', { class: 'row mt-s' }, actionButton('Empty the ledger', '/api/policy/reset', 'secondary',
+      'Empty the shadow policy ledger? Do this after fixing a policy, so the next report is about the new one.')) : null));
+}};
 
 views.upstreams = { refresh: 5000, async render() {
   const [ups, pools] = await Promise.all([get('/api/upstreams'), get('/api/pools').catch(() => ({}))]);
@@ -490,7 +614,8 @@ const subsystems = [
     d.landlocked ? h('p', { class: 'muted' }, 'read: ' + (d.read_paths || []).join(', ') + ' — write: ' + (d.write_paths || []).join(', ')) : null)],
   ['Telemetry', '/api/telemetry', d => h('div', null, ...[['Metrics', d.metrics], ['Traces', d.traces], ['Logs', d.logs]].map(([k, v]) => h('div', null, h('h3', null, k), v ? jsonView(v) : h('p', { class: 'muted' }, 'not configured'))))],
   ['DNS', '/api/dns', d => (d || []).length ? h('div', null, ...d.map(l => h('div', null, h('h3', null, l.listener + (l.encrypted ? ' (DoT/DoH)' : '')), jsonView(l)))) : h('p', { class: 'muted' }, 'no dns listeners')],
-  ['ICAP', '/api/icap', jsonView],
+  // ICAP has a page of its own; this is the summary with the way to it.
+  ['ICAP', '/api/icap', d => h('div', null, jsonView(d), h('p', { class: 'muted mt-s' }, h('a', { href: '#icap' }, 'per service, with the scan counters')))],
   ['Cache', '/api/cache', jsonView],
   ['GeoIP', '/api/geoip', jsonView],
   ['Honeypots', '/api/honeypot', jsonView],

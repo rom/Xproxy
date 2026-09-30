@@ -24,6 +24,7 @@ type command struct {
 var commandTable = []command{
 	{name: "status", summary: "Version, pid, generation, listeners and counters"},
 	{name: "stats", summary: "Counters only"},
+	{name: "listeners", args: "[-kind K] [-mode M] [-reasons]", summary: "Every listener with its protocol, address, enforcement mode and guards, and what each protocol refused", flags: []string{"-kind", "-mode", "-reasons"}},
 	{name: "upstreams", summary: "Endpoints with health, ejection, active requests and error counts"},
 	{name: "quotas", args: "[-top N]", summary: "Usage per tenant, route, rate limit policy and upstream", flags: []string{"-top"}},
 	{name: "waf", args: "[rules|proposals|anomalies|exclusions|reset] [-top N]", summary: "WAF profiles, rule statistics, learned exclusions, flagged clients", words: []string{"rules", "proposals", "anomalies", "exclusions", "reset"}, flags: []string{"-top"}},

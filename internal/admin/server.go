@@ -271,6 +271,19 @@ func (s *Server) routes() {
 	}
 
 	// Read-only pass-through to the management API.
+	//
+	// Every management GET is here. It used to be twenty-five of them,
+	// chosen by whichever view had been written, so an estate could be
+	// running Modbus behaviour packs, engineering restrictions and a
+	// shadow policy and the web interface would not mention any of it.
+	// The rule now is that a read the control tool can do, the interface
+	// can do -- a GET is a GET, and leaving one out only means the
+	// operator has to log into the host to answer a question the socket
+	// was already answering.
+	//
+	// /v1/origin-check is the exception and stays out: it reads like a
+	// view and is in fact a probe that dials the origins, which is an
+	// action, not a page somebody can leave open and refreshing.
 	for name, path := range map[string]string{
 		"status": "/v1/status", "stats": "/v1/stats", "upstreams": "/v1/upstreams", "bans": "/v1/bans",
 		"cluster": "/v1/cluster", "acme": "/v1/acme", "icap": "/v1/icap", "active-config": "/v1/config",
@@ -279,6 +292,17 @@ func (s *Server) routes() {
 		"geoip": "/v1/geoip", "cache": "/v1/cache", "filters": "/v1/filters", "ingress": "/v1/ingress",
 		"otlp": "/v1/otlp", "history": "/v1/history", "diff": "/v1/diff", "tls-tickets": "/v1/tls/tickets",
 		"assets": "/v1/assets?top=200",
+		// The inventory the per-protocol views hang off, and the rest of
+		// what a daemon will tell you about itself.
+		"listeners": "/v1/listeners", "packs": "/v1/packs", "policy": "/v1/policy",
+		"access": "/v1/access", "accounts": "/v1/accounts", "api": "/v1/api",
+		"advisories": "/v1/assets/advisories", "botscore": "/v1/botscore",
+		"capture": "/v1/capture", "deceive": "/v1/deceive", "degradation": "/v1/degradation",
+		"drain": "/v1/drain", "fleet": "/v1/fleet", "handshake": "/v1/handshake",
+		"maintenance": "/v1/maintenance", "masque": "/v1/masque", "patches": "/v1/patches",
+		"sessions": "/v1/sessions", "websocket": "/v1/websocket",
+		"tls-ech": "/v1/tls/ech", "tls-expiring": "/v1/tls/expiring",
+		"tls-key-exchange": "/v1/tls/key-exchange",
 	} {
 		m.HandleFunc("GET /api/"+name, s.passthrough(path, "application/json"))
 	}
@@ -296,6 +320,9 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/reopen-logs", s.action("reopen-logs", "/v1/logs/reopen"))
 	m.HandleFunc("POST /api/acme/renew", s.action("acme-renew", "/v1/acme/renew"))
 	m.HandleFunc("POST /api/waf/reset", s.action("waf-reset", "/v1/waf/reset"))
+	// Emptying the shadow ledger is what an operator does after fixing a
+	// policy, so next week's report is about the new one.
+	m.HandleFunc("POST /api/policy/reset", s.methodAction(http.MethodDelete, "policy-reset", "/v1/policy"))
 	m.HandleFunc("POST /api/rollback", s.rollback)
 	m.HandleFunc("POST /api/reload/dry-run", s.dryRun)
 	m.HandleFunc("POST /api/restart", s.restart)
@@ -665,9 +692,16 @@ func (s *Server) series(w http.ResponseWriter, r *http.Request) {
 
 // action forwards a POST with no body and audits it.
 func (s *Server) action(name, path string) http.HandlerFunc {
+	return s.methodAction(http.MethodPost, name, path)
+}
+
+// methodAction is the same for the few control-plane calls that are not a
+// POST: emptying the shadow ledger is a DELETE, because what it removes is
+// a collection of records rather than a command to the daemon.
+func (s *Server) methodAction(method, name, path string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		sess := sessionFrom(r)
-		if err := s.client.Do(http.MethodPost, path, nil, nil); err != nil {
+		if err := s.client.Do(method, path, nil, nil); err != nil {
 			s.audit(r, sess, name, "ok", false, "err", err.Error())
 			writeJSON(w, 409, map[string]any{"error": err.Error()})
 			return
