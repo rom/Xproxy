@@ -153,3 +153,72 @@ func hasAdvice(c *Config, substr string) bool {
 	}
 	return false
 }
+
+// httpAwareConfig is a forward listener with one rule that needs a visible
+// request, and whatever intercept section the caller wants under it.
+func httpAwareConfig(intercept string) string {
+	return `
+version: 1
+server:
+  listeners:
+    - name: fwd
+      address: ":3128"
+      kind: forward
+      forward:
+        rules:
+          - name: no-uploads
+            action: deny
+            methods: [POST]
+` + intercept + `
+upstreams:
+  - name: app
+    endpoints: [{address: 127.0.0.1:9000}]
+routes: []
+`
+}
+
+// TestInterceptHTTPAwareness: whether the requests inside a decrypted tunnel
+// are read is the setting that decides whether a rule about a method is a
+// policy or a decoration, so the three answers are pinned, and so is the
+// advice for the one combination that cannot fire -- rules that need a request
+// on a listener that decrypts and then does not read.
+func TestInterceptHTTPAwareness(t *testing.T) {
+	const section = "        intercept:\n" + interceptKeys + "          hosts: [a.test]\n"
+
+	// The default says what a tunnel does when nobody chose.
+	cfg, err := ParseWith([]byte(httpAwareConfig(section)), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Server.Listeners[0].Forward.Intercept.HTTP; got != "auto" {
+		t.Errorf("intercept.http defaulted to %q, want auto", got)
+	}
+	if hasAdvice(cfg, "intercept.http is off") {
+		t.Errorf("warned about a listener that does read the requests: %v", cfg.Advice())
+	}
+
+	// Off is allowed -- an estate may want the stream rules and nothing else
+	// -- and is never quiet when the policy needed the other answer.
+	cfg, err = ParseWith([]byte(httpAwareConfig(section+"          http: off\n")), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasAdvice(cfg, "intercept.http is off") {
+		t.Errorf("no advice about a rule that cannot fire: %v", cfg.Advice())
+	}
+
+	// On is the other end of it, and reads every tunnel.
+	cfg, err = ParseWith([]byte(httpAwareConfig(section+"          http: on\n")), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasAdvice(cfg, "intercept.http is off") {
+		t.Errorf("warned about a listener set to read: %v", cfg.Advice())
+	}
+
+	// And nothing else is a setting.
+	_, err = ParseWith([]byte(httpAwareConfig(section+"          http: sometimes\n")), false)
+	if err == nil || !strings.Contains(err.Error(), "not auto, on or off") {
+		t.Errorf("http: sometimes loaded, or the error did not say what is allowed: %v", err)
+	}
+}

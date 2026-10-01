@@ -6,6 +6,81 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (forward proxy: HTTP-aware inspection inside intercepted tunnels)
+
+- **`intercept.http` reads the requests inside a tunnel this listener is already
+  decrypting, so the egress rules about a method, a path, a content type or a body
+  size decide there too.** Those selectors could only ever be decided on a plain
+  request through the proxy, which on an estate whose egress is nearly all HTTPS
+  meant they were a policy about almost nothing; the previous version said so in
+  its validation and its documentation, which is better than pretending otherwise
+  and is still not a policy. A decrypted tunnel carries ordinary HTTP messages:
+  each request is read, decided about and relayed, each response head is decided
+  about before its body travels, and it is the same rules, the same two phases, the
+  same events and the same counters as port 80 — because an operator should not
+  have to learn that a rule means one thing on one port and another on the next.
+
+  `auto` is the default and reads when there is something to decide, which is when
+  the listener has at least one rule needing a visible request: a policy about
+  destinations alone gains nothing from parsing, and an upgrade does not change
+  what a deployment does. `on` reads every intercepted tunnel, which is what to
+  set while writing such rules so the access log carries the requests first. `off`
+  relays the plaintext to the stream rules and to nothing else, and validation
+  warns when rules that need a request are written on a listener set that way.
+
+- **A refusal inside a tunnel is an HTTP 403 on the connection the client believes
+  is end to end**, naming the reason, after which the connection closes — keeping
+  it alive would mean reading the rest of a body nobody is allowed to send, which
+  is a bound an attacker would be choosing. The access line is
+  `forward_intercept_request` with the method, the destination and the status: the
+  method and not the path, because this listener logs destinations rather than URLs
+  everywhere else, and an intercepted connection is the last place to start
+  writing down more of what somebody asked for.
+
+- **The `Host` header is held to the destination the tunnel was opened to**, under
+  the same `sni` setting and for the same reason as the server name: otherwise a
+  client permitted to reach one name uses the connection to that name's address to
+  ask for another. `enforce` answers 403 with reason `host_mismatch`, `observe`
+  records `forward_tunnel_host_mismatch` and relays, `off` does not look; a tunnel
+  opened to an address is the same exception it is for `sni`. The new reason maps
+  to T1572 and T1090, and a ban trigger can name `forward_host_mismatch`.
+
+- **A head the proxy cannot frame is refused rather than passed on.** A request
+  carrying both a length and a chunked encoding is the request-smuggling shape, and
+  an intercepting proxy is the only place in this project that can see one inside
+  TLS at all: 400, reason `bad_request`, event `forward_tunnel_bad_request`, mapped
+  to T1190. Requests that are relayed are relayed as they arrived — no `Via`, no
+  forwarded headers — because the point of interception here is that the
+  destination sees the message the client wrote and the policy judged.
+
+- **Three things are relayed as bytes rather than read, and each is counted**, so
+  "nothing was read" is never a silent answer: a tunnel that negotiated `h2`, since
+  this reads HTTP/1 and a proxy guessing at HTTP/2 framing corrupts the stream it
+  is inspecting; a tunnel whose first bytes are not a request line, since SSH, a
+  database session and a line protocol inside TLS all happen and answering one with
+  a 400 breaks it for no reason; and everything after a 101, since the connection
+  has stopped being request-and-response and a WebSocket through an intercepting
+  proxy is ordinary traffic. The counters are `forward_intercept_requests` and
+  `forward_intercept_bytes_only`.
+
+  Whether the first bytes are a request line is decided by the version at the end
+  of the line and not by a list of methods, so `PROPFIND` and everything else an
+  extension invented is still HTTP.
+
+- **`GET /v1/listeners` carries an `egress` section for a forward listener with
+  rules**: how many there are, how many of them need a visible request, and
+  whether this listener reads inside the tunnels it decrypts. The previous
+  version's documentation promised that count and nothing served it — the policy
+  built a report that no endpoint reached. The two numbers belong side by side,
+  because rules that need a request on a listener that is not reading are a
+  policy about the plain path alone.
+
+- **The stream rules still see everything.** The scanning sits on the reads rather
+  than on the message bodies, so YARA sees the heads in both directions exactly as
+  it did when the tunnel was relayed unread: turning on a policy feature must not
+  turn off a detection one. A match in a head stops the request there, before it is
+  relayed, which is what the same rule did when this tunnel was bytes.
+
 ### Added (forward proxy: an egress policy about who may send what, where and when)
 
 - **`forward.rules` is the egress policy, and `forward.categories` is what it is
@@ -47,10 +122,11 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   a destination and nothing else, so a rule naming a method or a content type is
   skipped there — and on an estate whose egress is nearly all HTTPS that means
   such a rule covers almost nothing without `intercept` over those destinations.
-  Validation names those rules when the listener has no `intercept` section at
-  all, `GET /v1/listeners` carries the count, and `docs/protocols/forward.md` has
-  a section on it. Reading those rules inside an intercepted tunnel is the next
-  piece of work on this listener and is not in this version.
+  Validation names those rules when nothing will read them — a listener with no
+  `intercept` section at all, or one that intercepts with `http: off` —
+  `GET /v1/listeners` carries the count, and `docs/protocols/forward.md` has a
+  section on it. Reading those rules inside an intercepted tunnel is
+  `intercept.http`, below.
 
   The other two limits are in the same places: a response rule is decided when
   the head arrives, which is after the destination was contacted — the body does

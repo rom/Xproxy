@@ -123,6 +123,41 @@ func TestHashRing(t *testing.T) {
 	}
 }
 
+// tamperMAC changes one character of a cookie's MAC, and nothing else.
+//
+// It used to be `cookie[:len(cookie)-2] + "AA"`, which left the cookie
+// untouched whenever it already ended in those two characters -- the last
+// character of this cookie carries only two significant bits, so that is about
+// one run in two hundred and fifty. The test then failed with "tampered cookie
+// accepted", which reads like the signature check being broken rather than like
+// a coin landing the wrong way up, and a flake that looks like a security
+// failure is the worst kind to leave in a suite.
+//
+// So the change is made where it cannot fail to be a change: the decoded cookie
+// is a head and then a sixteen-byte MAC, and the head is twelve bytes, which is
+// exactly sixteen base64 characters. Character sixteen is therefore the first
+// one made entirely of MAC bits, with all six of them significant -- changing it
+// changes the MAC and leaves the index and the expiry alone, which is the thing
+// this assertion is about.
+func tamperMAC(t *testing.T, cookie string) string {
+	t.Helper()
+	const firstMACChar = (4 + 8) * 8 / 6
+	if len(cookie) <= firstMACChar {
+		t.Fatalf("cookie %q is shorter than its own header", cookie)
+	}
+	b := []byte(cookie)
+	if b[firstMACChar] == 'A' {
+		b[firstMACChar] = 'B'
+	} else {
+		b[firstMACChar] = 'A'
+	}
+	out := string(b)
+	if out == cookie {
+		t.Fatal("the tampered cookie is the cookie")
+	}
+	return out
+}
+
 func TestAffinity(t *testing.T) {
 	c := testCfg("round_robin", "a:1", "b:1")
 	c.Affinity = &config.Affinity{CookieName: "S", TTL: config.Duration(time.Hour)}
@@ -141,7 +176,7 @@ func TestAffinity(t *testing.T) {
 		}
 	}
 	// Tampered cookie is ignored.
-	bad := cookie[:len(cookie)-2] + "AA"
+	bad := tamperMAC(t, cookie)
 	if _, c2 := p.Pick("", bad, nil, CanaryAny); c2 == "" {
 		t.Fatal("tampered cookie accepted")
 	}

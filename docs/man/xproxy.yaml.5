@@ -1527,9 +1527,9 @@ A forward proxy sees two different things, and this is the limit to understand b
 .PP
 A \fBplain request\fR through the proxy carries its method, its path, its content type and usually its length, so every selector above can be decided about it.
 .PP
-A \fBCONNECT tunnel\fR carries a destination and nothing else. The method and the content types are inside TLS. So a rule naming \fBmethods\fR, \fBpaths\fR, \fBrequest_types\fR, \fBresponse_types\fR or a byte bound \fBdecides nothing for a destination reached through a tunnel this listener does not intercept\fR.
+A \fBCONNECT tunnel\fR carries a destination and nothing else. The method and the content types are inside TLS. So a rule naming \fBmethods\fR, \fBpaths\fR, \fBrequest_types\fR, \fBresponse_types\fR or a byte bound \fBdecides nothing for a destination reached through a tunnel, unless this listener is reading inside it\fR \[u2014] which is \fBintercept\fR with \fBhttp\fR left at its default, and is where those rules are worth what they look like they are worth. The messages in a tunnel that is being decrypted are ordinary HTTP, and the same rules decide about them in the same phases, so a policy means one thing on port 80 and the same thing on port 443. Reading HTTP inside the tunnel is what that path does and does not cover.
 .PP
-That is not left to be discovered. Validation names the rules in that position, \fBxproxyctl listeners\fR shows the listener\(aqs rule count, and \fBGET /v1/listeners\fR carries how many of them need a visible request. The remedy is \fBintercept\fR for the destinations those rules are about \[u2014] or reading them as a policy for the plain path, which for an estate whose egress is almost all HTTPS means reading them as very little.
+Without interception the limit stands, and it is not left to be discovered. Validation names the rules in that position \[u2014] including on a listener that intercepts with \fBhttp: off\fR, which is the same silence written differently \[u2014] \fBxproxyctl listeners\fR shows the listener\(aqs rule count, and \fBGET /v1/listeners\fR carries an \fBegress\fR section with how many of them need a visible request and whether this listener reads inside its tunnels.
 .PP
 The three honest limits of the rest:
 .RS 3n
@@ -1681,6 +1681,15 @@ T}	T{
 Offered to the destination and accepted from the client;\: \fBh2\fR warns
 T}
 T{
+\fBhttp\fR
+T}	T{
+enum
+T}	T{
+\fBauto\fR
+T}	T{
+Read the plaintext as HTTP,\: so that a rule about a method,\: a path,\: a content type or a body size decides inside the tunnel too: \fBauto\fR does it when the listener has such a rule,\: \fBon\fR always,\: \fBoff\fR never. See below
+T}
+T{
 \fByara\fR
 T}	T{
 object
@@ -1704,6 +1713,50 @@ The issued certificate carries the \fIreal\fR certificate\(aqs names \[u2014] it
 \fBsocks5\fR tunnels on the same listener are intercepted by the same rules: a destination reachable in either protocol on one port under one policy is not a policy if one of the two walks past it.
 .PP
 An intercepted connection writes a \fBforward_intercept\fR access line with the client, user, destination, negotiated ALPN and the TLS version reached upstream. Counters: \fBforward_intercepted\fR, \fBforward_intercept_refused\fR, \fBforward_intercept_passed\fR and \fBforward_intercept_bytes\fR.
+.PP
+##### Reading HTTP inside the tunnel
+.PP
+Decrypting a tunnel is what makes the rest of this listener\(aqs policy possible; reading it as HTTP is what makes the egress rules decide in there. \fBhttp\fR says whether to:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBauto\fR, the default, reads when there is something to decide \[u2014] when the listener has at least one rule naming a method, a path, a content type or a body size. A policy that is only about destinations gains nothing from parsing, and an estate that upgrades does not get a behaviour it did not ask for.
+.PP
+.ti -3n
+\(bu
+\fBon\fR reads every intercepted tunnel, which is what to set while writing those rules so that the access log carries the requests before any rule refuses one.
+.PP
+.ti -3n
+\(bu
+\fBoff\fR never reads, and the tunnel is relayed as bytes to YARA and the rest exactly as before. Validation warns if rules that need a request are written on a listener set this way, because that combination is a policy that cannot fire.
+.RE
+.PP
+.PP
+What is read is \fBHTTP/1.1\fR, which is what \fBalpn\fR offers. Three things are relayed as bytes instead, and each is counted, so "nothing was read" is never a silent answer:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+a tunnel that negotiated \fBh2\fR, because this reads HTTP/1 and a proxy guessing at HTTP/2 framing is a proxy that breaks sites;
+.PP
+.ti -3n
+\(bu
+a tunnel whose first bytes are \fBnot a request line\fR, because SSH, a database session and a line protocol inside TLS all happen, and answering one with a 400 breaks it for no reason. The decision is the version at the end of the line rather than a list of methods, so \fBPROPFIND\fR and anything else an extension invented is still HTTP;
+.PP
+.ti -3n
+\(bu
+everything \fBafter a 101\fR, because the connection has stopped being request\-and\-response. A WebSocket through an intercepting proxy is ordinary traffic and is relayed as such \[u2014] what its messages carry is the WebSocket guard\(aqs question rather than this one.
+.RE
+.PP
+.PP
+Those two counters are \fBforward_intercept_requests\fR, the requests read, and \fBforward_intercept_bytes_only\fR, the tunnels relayed without being read.
+.PP
+\fBA refusal is an HTTP response on the client\(aqs own connection\fR: 403 with the reason, and then the connection closes, because keeping it alive would mean reading the rest of a body nobody is allowed to send. The access line is \fBforward_intercept_request\fR with the method, the destination and the status \[u2014] the method and not the path, because this listener logs destinations rather than URLs everywhere else, and an intercepted connection is the last place to start writing down more of what somebody asked for.
+.PP
+\fBRequests are relayed as they arrived.\fR Nothing is added: no \fBVia\fR, no forwarded headers, because the point of interception here is that the destination sees what the client sent and judges the message the client wrote. What the parse does refuse is framing it cannot agree with \[u2014] a request carrying both a length and a chunked encoding is the request\-smuggling shape, and it is answered with 400, counted as \fBbad_request\fR, and logged as \fBforward_tunnel_bad_request\fR rather than being passed on for the destination to disagree about.
+.PP
+\fBThe \fBHost\fR a request names has to be the host the tunnel was opened to\fR, under the same \fBsni\fR setting and for the same reason: otherwise a client permitted to reach one name uses the connection to that name\(aqs address to ask for another. \fBenforce\fR answers 403 with reason \fBhost_mismatch\fR, \fBobserve\fR records \fBforward_tunnel_host_mismatch\fR and relays it, \fBoff\fR does not look; a tunnel opened to an address is the same exception as it is for \fBsni\fR.
 .PP
 .RS 4
 .nf
@@ -1815,7 +1868,7 @@ A policy refusal is answered with the closest SOCKS reply code rather than a bla
 .PP
 \fBUDP associations\fR (\fBsocks_udp: true\fR) are how DNS and QUIC travel through a SOCKS proxy. Each association binds its own socket, is fixed to the client address that opened it (the first datagram sets it), only relays answers from destinations that client has actually sent to, and dies with its TCP control connection \[u2014] which is what RFC 1928 requires and what keeps the socket from becoming an open reflector. Datagram headers are parsed with the same care as the handshake: fragments are dropped rather than reassembled, and the peer table is bounded. \fBforward_udp_associations\fR, \fBforward_udp_open\fR and \fBforward_udp_dropped\fR count the association and everything refused.
 .PP
-Each request writes one \fBforward\fR line to the access log with the client address, user, method, destination, status, bytes and duration. SOCKS connections write the same line with \fBprotocol: socks5\fR. Counters: \fBforward_requests\fR, \fBforward_tunnels\fR, \fBforward_tunnels_open\fR, \fBforward_denied\fR, \fBforward_auth_failed\fR, \fBforward_rejected\fR, \fBforward_errors\fR, \fBforward_bytes_in\fR, \fBforward_bytes_out\fR, \fBforward_socks\fR, \fBforward_udp_associations\fR, \fBforward_udp_open\fR, \fBforward_udp_dropped\fR, \fBforward_intercepted\fR, \fBforward_intercept_refused\fR, \fBforward_intercept_passed\fR, \fBforward_intercept_bytes\fR; \fBxproxy_forward_*\fR metrics. The policy and the users file reload; the address and TLS settings need a restart like every listener.
+Each request writes one \fBforward\fR line to the access log with the client address, user, method, destination, status, bytes and duration. SOCKS connections write the same line with \fBprotocol: socks5\fR. Counters: \fBforward_requests\fR, \fBforward_tunnels\fR, \fBforward_tunnels_open\fR, \fBforward_denied\fR, \fBforward_auth_failed\fR, \fBforward_rejected\fR, \fBforward_errors\fR, \fBforward_bytes_in\fR, \fBforward_bytes_out\fR, \fBforward_socks\fR, \fBforward_udp_associations\fR, \fBforward_udp_open\fR, \fBforward_udp_dropped\fR, \fBforward_intercepted\fR, \fBforward_intercept_refused\fR, \fBforward_intercept_passed\fR, \fBforward_intercept_bytes\fR, \fBforward_intercept_requests\fR, \fBforward_intercept_bytes_only\fR; \fBxproxy_forward_*\fR metrics. The policy and the users file reload; the address and TLS settings need a restart like every listener.
 .SS "server.listeners[].dns (kind: dns)"
 .PP
 A \fBkind: dns\fR listener is a forwarding DNS proxy on the listener address over UDP and TCP. Queries are answered from a bounded cache when they can be, refused or blocked by policy, and otherwise forwarded to the upstream resolvers with a fresh transaction id on a fresh socket (random source port) per query; the answer must echo the id and the question. A truncated UDP answer is retried over TCP to the upstream, and an answer larger than the client\(aqs UDP size (512 bytes or its EDNS advertisement, honoured up to 1232 bytes per RFC 9715 so a spoofed source cannot draw a large reply) is truncated so the client retries over TCP. Only one question per query and the QUERY opcode are handled (FORMERR and NOTIMP otherwise); responses arriving as queries and packets from banned clients are dropped. A dns listener takes \fBaddress\fR, \fBdns\fR and optionally \fBtls\fR; bans and the global connection limits apply to TCP clients as on every listener. The policy, upstreams and cache bounds reload (the cache is kept); the address needs a restart.
@@ -20928,7 +20981,7 @@ list
 T}	T{
 \fB[]\fR (all)
 T}	T{
-Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBflow\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBtcp_\:denied\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBdhcp6_\:denied\fR,\: \fBcoap_\:denied\fR,\: \fBopcua_\:denied\fR,\: \fBmms_\:denied\fR,\: \fBpostgres_\:denied\fR,\: \fBmysql_\:denied\fR,\: \fBtds_\:denied\fR,\: \fBredis_\:denied\fR,\: \fBbacnet_\:denied\fR,\: \fBamqp_\:denied\fR,\: \fBs7_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fBdns_\:denied\fR,\: \fBdns_\:threat_\:intel\fR,\: \fBdns_\:deceived\fR,\: \fBdns_\:tripwire\fR,\: \fBtelnet_\:tripwire\fR,\: \fBssh_\:tripwire\fR,\: \fBmodbus_\:tripwire\fR,\: \fBiec104_\:tripwire\fR,\: \fBs7_\:tripwire\fR,\: \fBredis_\:tripwire\fR,\: \fBmysql_\:tripwire\fR,\: \fBpostgres_\:tripwire\fR,\: \fByara\fR
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBflow\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBforward_\:host_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBtcp_\:denied\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBdhcp6_\:denied\fR,\: \fBcoap_\:denied\fR,\: \fBopcua_\:denied\fR,\: \fBmms_\:denied\fR,\: \fBpostgres_\:denied\fR,\: \fBmysql_\:denied\fR,\: \fBtds_\:denied\fR,\: \fBredis_\:denied\fR,\: \fBbacnet_\:denied\fR,\: \fBamqp_\:denied\fR,\: \fBs7_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fBdns_\:denied\fR,\: \fBdns_\:threat_\:intel\fR,\: \fBdns_\:deceived\fR,\: \fBdns_\:tripwire\fR,\: \fBtelnet_\:tripwire\fR,\: \fBssh_\:tripwire\fR,\: \fBmodbus_\:tripwire\fR,\: \fBiec104_\:tripwire\fR,\: \fBs7_\:tripwire\fR,\: \fBredis_\:tripwire\fR,\: \fBmysql_\:tripwire\fR,\: \fBpostgres_\:tripwire\fR,\: \fByara\fR
 T}
 T{
 \fBthreshold\fR

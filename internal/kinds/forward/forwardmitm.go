@@ -116,8 +116,8 @@ func (in *interceptor) wants(host string, ips []netip.Addr) bool {
 // client therefore never sees a forged certificate for a server whose
 // own certificate did not verify — it sees the handshake fail, which is
 // what it would have seen without a proxy in the way.
-func (f *forwardServer) intercept(client, dst net.Conn, host string,
-	ip netip.Addr, user string) (int64, int64, string) {
+func (f *forwardServer) intercept(client, dst net.Conn, host string, port int,
+	p *forwardPolicy, ip netip.Addr, user string) (int64, int64, string) {
 	in := f.mitm
 	br, ok := readerOf(client)
 	if !ok {
@@ -219,10 +219,16 @@ func (f *forwardServer) intercept(client, dst net.Conn, host string,
 		return 0, 0, "client_tls"
 	}
 	f.host.Counters().Intercepted.Add(1)
+	alpn := srv.ConnectionState().NegotiatedProtocol
 	f.host.Logs().Access.Info("forward_intercept", "listener", f.name, "client_ip", ip.String(),
 		"user", textsafe.Clip64(user), "dest", host, "sni", name,
-		"alpn", srv.ConnectionState().NegotiatedProtocol,
-		"upstream_tls", tlsconf.VersionName(state.Version))
+		"alpn", alpn, "upstream_tls", tlsconf.VersionName(state.Version))
+	// Read the plaintext as HTTP where there is something to decide about it,
+	// and relay it as bytes otherwise: see intercepthttp.go.
+	if p != nil && f.wantsHTTP(p, alpn) {
+		return f.serveInterceptedHTTP(srv, upstream, p, in, ip, user, host, port)
+	}
+	f.host.Counters().InterceptBytesOnly.Add(1)
 	return f.relayDecrypted(srv, upstream, in, ip, host)
 }
 
@@ -316,21 +322,8 @@ func (f *forwardServer) copyScanned(dst io.Writer, src io.Reader, scan *streamsc
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {
-			if scan.Feed(buf[:n]) {
-				f.host.Counters().YARAMatches.Add(1)
-				names := make([]string, 0, 4)
-				for _, m := range scan.Matches() {
-					names = append(names, m.Rule)
-				}
-				f.host.Logs().SecurityEvent(context.Background(), in.yara.Cfg.Action, "yara_match",
-					"listener", f.name, "client_ip", ip.String(), "proto", "forward_intercept",
-					"dest", host, "rules", strings.Join(names, ","))
-				if bl := f.host.Bans(); bl != nil && ip.IsValid() {
-					bl.Observe(ip, "yara")
-				}
-				if in.yara.Cfg.Action == "close" {
-					return total, "yara"
-				}
+			if scan.Feed(buf[:n]) && f.yaraMatched(scan, in, ip, host) {
+				return total, "yara"
 			}
 			w, werr := dst.Write(buf[:n])
 			total += int64(w)
@@ -342,6 +335,29 @@ func (f *forwardServer) copyScanned(dst io.Writer, src io.Reader, scan *streamsc
 			return total, ""
 		}
 	}
+}
+
+// yaraMatched records one stream match and reports whether the connection ends.
+//
+// It is one function because there are now two readers of the decrypted stream
+// -- the byte relay and the HTTP reader -- and a match has to be counted, logged
+// and banned on identically whichever of them saw it. The alternative was the
+// same twenty lines twice, which is how two code paths come to disagree about
+// what a match means.
+func (f *forwardServer) yaraMatched(scan *streamscan.Stream, in *interceptor,
+	ip netip.Addr, host string) bool {
+	f.host.Counters().YARAMatches.Add(1)
+	names := make([]string, 0, 4)
+	for _, m := range scan.Matches() {
+		names = append(names, m.Rule)
+	}
+	f.host.Logs().SecurityEvent(context.Background(), in.yara.Cfg.Action, "yara_match",
+		"listener", f.name, "client_ip", ip.String(), "proto", "forward_intercept",
+		"dest", host, "rules", strings.Join(names, ","))
+	if bl := f.host.Bans(); bl != nil && ip.IsValid() {
+		bl.Observe(ip, "yara")
+	}
+	return in.yara.Cfg.Action == "close"
 }
 
 // spliceBuffered relays a tunnel whose first bytes were already read.

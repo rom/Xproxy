@@ -722,7 +722,7 @@ func (f *forwardServer) connect(w http.ResponseWriter, r *http.Request, p *forwa
 		// Whatever the client sent before our reply is the start of the
 		// handshake this is about to terminate, so it stays on the
 		// client's side rather than being sent on to the destination.
-		in, out, reason := f.intercept(bufferedConn(client, bufrw.Reader), dst, host, ip, user)
+		in, out, reason := f.intercept(bufferedConn(client, bufrw.Reader), dst, host, port, p, ip, user)
 		h.Counters().ForwardBytesIn.Add(uint64(in))   //nolint:gosec // non-negative
 		h.Counters().ForwardBytesOut.Add(uint64(out)) //nolint:gosec // non-negative
 		f.log(r, ip, user, r.Host, http.StatusOK, in, out, start, reason)
@@ -774,7 +774,7 @@ func (f *forwardServer) connectH2(w http.ResponseWriter, r *http.Request, p *for
 		// hijacked HTTP/1 connection. Adapt it to net.Conn so interception
 		// cannot be bypassed by selecting h2 on the outer proxy connection.
 		client := &h2StreamConn{body: r.Body, w: w, rc: rc}
-		in, out, reason := f.intercept(client, dst, host, ip, user)
+		in, out, reason := f.intercept(client, dst, host, portOf(r.Host, 443), p, ip, user)
 		h.Counters().ForwardBytesIn.Add(uint64(in))   //nolint:gosec // non-negative
 		h.Counters().ForwardBytesOut.Add(uint64(out)) //nolint:gosec // non-negative
 		f.log(r, ip, user, r.Host, http.StatusOK, in, out, start, reason)

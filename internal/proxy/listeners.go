@@ -78,6 +78,12 @@ type ListenerView struct {
 	// whether it is on. A kind reports only its own: there is no mfa row
 	// on a Modbus listener, because Modbus has nobody to ask.
 	Features []FeatureView `json:"features,omitempty"`
+	// Egress is the forward proxy's rule policy, where the listener has
+	// one: the count the feature row carries, how many of those rules
+	// need a visible request, and whether this listener reads the
+	// requests inside the tunnels it decrypts. Absent for every other
+	// kind, and for a forward listener with no rules.
+	Egress *EgressStatus `json:"egress,omitempty"`
 }
 
 // FeatureView is one guard of a listener's own section, in the name the
@@ -204,6 +210,9 @@ func (s *Server) ListenersReport() ListenersReport {
 			v.Bound = true
 			if bl.ln != nil {
 				v.Address = bl.ln.Addr().String()
+			}
+			if r, ok := bl.inst.(EgressReporter); ok {
+				v.Egress = r.EgressStatus()
 			}
 			if a, ok := bl.inst.(ExtraAddrs); ok {
 				if extra := a.Addrs(); len(extra) > 0 {

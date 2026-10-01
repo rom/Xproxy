@@ -472,6 +472,8 @@ func (s *Server) Collect(e metrics.Collector) {
 	e.Counter("xproxy_forward_intercept_refused_total", "Tunnels refused rather than intercepted: the destination did not verify, the handshake named another host, or the client did not trust the CA.", nil, float64(sn.InterceptRefused))
 	e.Counter("xproxy_forward_intercept_passed_total", "Tunnels passed through untouched because they were not carrying TLS.", nil, float64(sn.InterceptPassed))
 	e.Counter("xproxy_forward_intercept_bytes_total", "Plaintext bytes relayed through an intercepted tunnel.", nil, float64(sn.InterceptBytes))
+	e.Counter("xproxy_forward_intercept_requests_total", "Requests read inside intercepted tunnels and decided about by the egress rules.", nil, float64(sn.InterceptRequests))
+	e.Counter("xproxy_forward_intercept_bytes_only_total", "Intercepted tunnels relayed as bytes rather than read as HTTP: h2 was negotiated, the stream was not HTTP, or intercept.http did not ask.", nil, float64(sn.InterceptBytesOnly))
 	for name, st := range s.ECH() {
 		e.Counter("xproxy_tls_ech_total", "TLS handshakes by Encrypted Client Hello outcome.", L{"listener": name, "outcome": "accepted"}, float64(st.Accepted))
 		e.Counter("xproxy_tls_ech_total", "TLS handshakes by Encrypted Client Hello outcome.", L{"listener": name, "outcome": "not_used"}, float64(st.Rejected))

@@ -2661,7 +2661,7 @@ var denyReasons = map[string]bool{
 	"bad_host": true, "no_route": true, "websocket": true, "concurrency": true, "challenge": true, "jwt": true, "icap": true,
 	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true, "honeypot": true, "dns_blocked": true, "dns_bogus": true, "dns_rpz": true,
 	"account_abuse": true, "api_abuse": true, "flow": true, "honeytoken": true, "scim": true, "threat_intel": true, "smtp_denied": true, "mqtt_denied": true, "ssh_denied": true, "ftp_denied": true, "syslog_denied": true, "yara": true,
-	"forward_sni_mismatch": true, "dns_tunnel": true, "dns_answer_denied": true,
+	"forward_sni_mismatch": true, "forward_host_mismatch": true, "dns_tunnel": true, "dns_answer_denied": true,
 	// The fabrications' own events (each kind's decoy.go).
 	//
 	// A tripwire reaches the ban ladder only where this proxy knows who sent
@@ -5894,13 +5894,21 @@ func (v *validator) forwardEgress(p string, f *ForwardListener) {
 			requestLevel++
 		}
 	}
-	// A rule about a request cannot be decided inside a tunnel nobody opens,
-	// which is the one way this policy can look stronger than it is.
-	if requestLevel > 0 && f.Intercept == nil {
+	// A rule about a request cannot be decided inside a tunnel nothing is
+	// reading, which is the one way this policy can look stronger than it is.
+	// Two configurations are in that position and they want different advice.
+	switch {
+	case requestLevel > 0 && f.Intercept == nil:
 		v.warnf("%s.rules: %d rule(s) name a method, path, content type or body size, which are "+
 			"only visible on a plain request through the proxy -- inside a CONNECT tunnel they "+
-			"decide nothing. Add intercept for the destinations they are about, or read them as "+
+			"decide nothing. Add intercept for the destinations they are about, which reads the "+
+			"requests inside those tunnels and decides these rules there too, or read them as "+
 			"a policy for the plain path only", p, requestLevel)
+	case requestLevel > 0 && f.Intercept.HTTP == "off":
+		v.warnf("%s.rules: %d rule(s) name a method, path, content type or body size, and "+
+			"intercept.http is off, so nothing reads the requests inside the tunnels this "+
+			"listener does decrypt and these rules decide nothing there. Set intercept.http "+
+			"to auto or on, or write the rules about destinations", p, requestLevel)
 	}
 }
 
@@ -5969,6 +5977,9 @@ func (v *validator) forwardIntercept(p string, ic *ForwardIntercept) {
 	} else {
 		v.file(p+".ca_key_file", ic.CAKeyFile)
 		v.privateFile(p+".ca_key_file", ic.CAKeyFile)
+	}
+	if ic.HTTP != "" && !ForwardHTTPModes[ic.HTTP] {
+		v.errf("%s.http: %q is not auto, on or off", p, ic.HTTP)
 	}
 	for _, d := range ic.Hosts {
 		if !destinationPatternOK(d) {

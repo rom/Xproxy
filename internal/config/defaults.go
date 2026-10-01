@@ -214,6 +214,7 @@ func applyDefaults(c *Config) {
 					ic.VerifyUpstream = &t
 				}
 				setStr(&ic.MinVersion, "1.2")
+				setStr(&ic.HTTP, "auto")
 				setInt(&ic.MaxCache, 1024)
 				setDur(&ic.LeafTTL, 24*time.Hour)
 				if len(ic.ALPN) == 0 {
