@@ -560,7 +560,16 @@ func TestWatches(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctrl.Start()
-	deadline := time.Now().Add(5 * time.Second)
+	// The waits below are generous on purpose. What is being tested is that a
+	// watch event syncs well before the resync interval -- an hour here -- and
+	// not how fast this machine is. Both of these used to allow five seconds,
+	// which is the controller's own Timeout above, so a sync that was merely
+	// slow and a controller that never synced looked the same: a full coverage
+	// run of the suite, where every package is instrumented and several run at
+	// once, failed this test on a tree where nothing was wrong. Waiting longer
+	// costs nothing when it passes, because each loop breaks on the condition.
+	const settle = 30 * time.Second
+	deadline := time.Now().Add(settle)
 	for time.Now().Before(deadline) && ctrl.Status().Watching < len(watchPaths) {
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -573,7 +582,7 @@ func TestWatches(t *testing.T) {
 	api.mu.Unlock()
 	api.event("ADDED")
 	api.event("MODIFIED")
-	deadline = time.Now().Add(5 * time.Second)
+	deadline = time.Now().Add(settle)
 	for time.Now().Before(deadline) {
 		mu.Lock()
 		n := reloads
