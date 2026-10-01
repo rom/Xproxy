@@ -392,3 +392,87 @@ func readerOf(c net.Conn) (*bufio.Reader, bool) {
 	}
 	return nil, false
 }
+
+// peekClientHello reads enough of a tunnel's first bytes to find the server
+// name in a TLS ClientHello, without consuming them.
+//
+// It is the half of interception that is worth having on its own. Pulled out of
+// intercept so a tunnel nobody is decrypting can be asked the same question,
+// which is the one question a name-based egress policy depends on.
+func peekClientHello(client net.Conn, br *bufio.Reader, wait time.Duration) (*bufio.Reader, string, bool) {
+	if br == nil {
+		br = bufio.NewReaderSize(client, maxHelloRecord)
+	} else if br.Size() < maxHelloRecord {
+		// The reader the CONNECT left behind is sized for a request head, and
+		// the name is in the hello's tail.
+		br = bufio.NewReaderSize(br, maxHelloRecord)
+	}
+	_ = client.SetReadDeadline(time.Now().Add(wait))
+	defer func() { _ = client.SetReadDeadline(time.Time{}) }()
+	peek, err := br.Peek(5)
+	if err != nil && len(peek) == 0 {
+		return br, "", false
+	}
+	if len(peek) == 5 && peek[0] == recordHandshake {
+		if full, perr := br.Peek(5 + int(binary.BigEndian.Uint16(peek[3:5]))); perr == nil || len(full) > len(peek) {
+			peek = full
+		}
+	}
+	name, isTLS := mitm.ClientHelloName(peek)
+	return br, name, isTLS
+}
+
+// sniGuard is the destination check a tunnel still needs when nothing is
+// decrypting it.
+//
+// A client allowed to reach cdn.example.com can open a tunnel there and then
+// handshake for anything else that address serves, which on a shared CDN is a
+// great many things. The destination policy then decided about a name nobody
+// used. The check costs a peek at bytes the client was going to send anyway, and
+// it is the difference between an allow list of names and an allow list of
+// addresses that happen to have names.
+//
+// A handshake with no server name is not a mismatch: that is what Encrypted
+// Client Hello looks like from here, and refusing it would be refusing a client
+// for using a privacy feature. A tunnel opened to an address is not a mismatch
+// either -- there the policy checked the address, and the bytes go to that
+// address whatever the handshake says.
+//
+// It returns the reader to carry on with, and the refusal reason where the mode
+// is enforce.
+func (f *forwardServer) sniGuard(mode string, client net.Conn, br *bufio.Reader, host string,
+	ip netip.Addr, wait time.Duration) (*bufio.Reader, string) {
+	if mode == "off" {
+		return br, ""
+	}
+	br, name, isTLS := peekClientHello(client, br, wait)
+	if !isTLS || name == "" || strings.EqualFold(name, host) {
+		return br, ""
+	}
+	if _, err := netip.ParseAddr(strings.Trim(host, "[]")); err == nil {
+		return br, ""
+	}
+	f.host.Logs().SecurityEvent(context.Background(), actionFor(mode), "forward_sni_mismatch",
+		"listener", f.name, "client_ip", ip.String(), "connect", textsafe.Clip256(host),
+		"sni", textsafe.Clip256(name), "mode", mode)
+	if mode != "enforce" {
+		f.host.Counters().WouldRefuse("forward", "sni_mismatch")
+		f.host.Shadow().Record("forward", f.name, "sni_mismatch", "sni", name+" through "+host)
+		return br, ""
+	}
+	f.host.Counters().Refuse("forward", "sni_mismatch")
+	if bl := f.host.Bans(); bl != nil && ip.IsValid() {
+		bl.Observe(ip, "forward_sni_mismatch")
+	}
+	return br, "sni_mismatch"
+}
+
+// actionFor is the event action one of the sni modes writes under: a refusal is
+// a deny, and a recorded mismatch is an alert, which is the spelling every other
+// observe-only decision here uses.
+func actionFor(mode string) string {
+	if mode == "enforce" {
+		return "deny"
+	}
+	return "alert"
+}

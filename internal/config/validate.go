@@ -5743,6 +5743,18 @@ func (v *validator) forwardListener(p string, f *ForwardListener) {
 		if strings.ContainsAny(f.Auth.Realm, "\"\r\n") {
 			v.errf("%s.auth.realm: must not contain quotes or line breaks", p)
 		}
+		if len(f.Auth.Groups) > maxForwardGroups {
+			v.errf("%s.auth.groups: %d is more than the %d this bounds a listener to",
+				p, len(f.Auth.Groups), maxForwardGroups)
+		}
+		for name, members := range f.Auth.Groups {
+			if name == "" {
+				v.errf("%s.auth.groups: a group with no name", p)
+			}
+			if len(members) == 0 {
+				v.errf("%s.auth.groups.%s: names no members, so every rule about it is a rule about nobody", p, name)
+			}
+		}
 	}
 	if f.ConnectTimeout <= 0 || f.ConnectTimeout > Duration(5*time.Minute) {
 		v.errf("%s.connect_timeout: must be positive and at most 5m", p)
@@ -5765,12 +5777,178 @@ func (v *validator) forwardListener(p string, f *ForwardListener) {
 		// side there is no header a middlebox will strip by accident.
 		v.warnf("%s.socks5: no auth is configured, so anyone who can reach this port can use the proxy; restrict the listener address, the destinations, or add auth", p)
 	}
+	v.forwardEgress(p, f)
 	v.forwardIntercept(p+".intercept", f.Intercept)
 	v.masque(p, f)
 	if f.SOCKSUDP {
 		v.warnf("%s.socks_udp: a UDP association relays datagrams for the client that opened it; it is bound to that client's address and dies with the control connection, but it is a wider exposure than a TCP tunnel", p)
 	}
 }
+
+// forwardEgress checks the categories and the egress rules.
+//
+// The checks that matter most here are the two that would otherwise leave an
+// operator believing a rule decides something it does not: a category name a
+// rule misspells is a rule about nothing, and a rule about a method on a
+// destination this listener never sees inside is a rule that cannot run.
+func (v *validator) forwardEgress(p string, f *ForwardListener) {
+	if !ForwardSNIModes[fwSNIMode(f.SNI)] {
+		v.errf("%s.sni: %q is not off, observe or enforce", p, f.SNI)
+	}
+	if len(f.Categories) > maxForwardCategories {
+		v.errf("%s.categories: %d is more than the %d this bounds a listener to",
+			p, len(f.Categories), maxForwardCategories)
+	}
+	cats := map[string]bool{}
+	for i := range f.Categories {
+		c := &f.Categories[i]
+		q := fmt.Sprintf("%s.categories[%d]", p, i)
+		switch {
+		case c.Name == "":
+			v.errf("%s.name: required", q)
+		case cats[strings.ToLower(c.Name)]:
+			v.errf("%s.name: %q is used twice", q, c.Name)
+		default:
+			cats[strings.ToLower(c.Name)] = true
+		}
+		for _, d := range c.Hosts {
+			if !destinationPatternOK(d) {
+				v.errf("%s.hosts: %q is not a name, *.suffix, address or CIDR", q, d)
+			}
+		}
+		if c.File != "" {
+			if !filepath.IsAbs(c.File) {
+				v.errf("%s.file: must be an absolute path", q)
+			} else {
+				v.file(q+".file", c.File)
+			}
+		}
+		if len(c.Hosts) == 0 && c.File == "" {
+			v.errf("%s: names no hosts and no file, so every rule about it is a rule about nothing", q)
+		}
+	}
+	if len(f.Rules) > maxForwardRules {
+		v.errf("%s.rules: %d is more than the %d this bounds a listener to",
+			p, len(f.Rules), maxForwardRules)
+	}
+	names := map[string]bool{}
+	requestLevel := 0
+	for i := range f.Rules {
+		r := &f.Rules[i]
+		q := fmt.Sprintf("%s.rules[%d]", p, i)
+		switch {
+		case r.Name == "":
+			v.errf("%s.name: required", q)
+		case names[r.Name]:
+			v.errf("%s.name: %q is used twice", q, r.Name)
+		default:
+			names[r.Name] = true
+		}
+		if r.Action != "" && !ForwardActions[r.Action] {
+			v.errf("%s.action: %q is not allow, deny or observe", q, r.Action)
+		}
+		for _, d := range r.Hosts {
+			if !destinationPatternOK(d) {
+				v.errf("%s.hosts: %q is not a name, *.suffix, address or CIDR", q, d)
+			}
+		}
+		for _, d := range r.NotHosts {
+			if !destinationPatternOK(d) {
+				v.errf("%s.not_hosts: %q is not a name, *.suffix, address or CIDR", q, d)
+			}
+		}
+		for _, name := range append(append([]string{}, r.Categories...), r.NotCategories...) {
+			if !cats[strings.ToLower(name)] {
+				v.errf("%s: names category %q, which this listener does not define", q, name)
+			}
+		}
+		for _, port := range r.Ports {
+			if port < 1 || port > 65535 {
+				v.errf("%s.ports: %d is not a port", q, port)
+			}
+		}
+		for _, n := range append(append([]string{}, r.Networks...), r.NotNetworks...) {
+			if !cidrOrAddr(n) {
+				v.errf("%s.networks: %q is not an address or CIDR", q, n)
+			}
+		}
+		for _, m := range r.Methods {
+			if m == "" || m != strings.ToUpper(m) || strings.ContainsAny(m, " \t\r\n") {
+				v.errf("%s.methods: %q is not an HTTP method in upper case", q, m)
+			}
+		}
+		for _, t := range append(append([]string{}, r.RequestTypes...), r.ResponseTypes...) {
+			if !mediaPatternOK(t) {
+				v.errf("%s: %q is not a media type or a type/* tree", q, t)
+			}
+		}
+		if r.RequestBytesOver < 0 || r.ResponseBytesOver < 0 {
+			v.errf("%s: a byte bound must not be negative", q)
+		}
+		v.modbusSchedule(q+".schedule", r.Schedule)
+		if (len(r.Users) > 0 || len(r.Groups) > 0) && f.Auth == nil {
+			v.warnf("%s: names users or groups on a listener with no auth, so the name is always "+
+				"empty and this rule matches nobody; add auth, or write the rule about networks", q)
+		}
+		if fwRequestLevel(r) {
+			requestLevel++
+		}
+	}
+	// A rule about a request cannot be decided inside a tunnel nobody opens,
+	// which is the one way this policy can look stronger than it is.
+	if requestLevel > 0 && f.Intercept == nil {
+		v.warnf("%s.rules: %d rule(s) name a method, path, content type or body size, which are "+
+			"only visible on a plain request through the proxy -- inside a CONNECT tunnel they "+
+			"decide nothing. Add intercept for the destinations they are about, or read them as "+
+			"a policy for the plain path only", p, requestLevel)
+	}
+}
+
+// fwSNIMode fills in the default for the sni setting.
+func fwSNIMode(s string) string {
+	if s == "" {
+		return "observe"
+	}
+	return s
+}
+
+// fwRequestLevel reports whether a rule names something only a visible request
+// can answer.
+func fwRequestLevel(r *ForwardRule) bool {
+	return len(r.Methods) > 0 || len(r.Paths) > 0 || len(r.RequestTypes) > 0 ||
+		len(r.ResponseTypes) > 0 || r.RequestBytesOver > 0 || r.ResponseBytesOver > 0
+}
+
+// mediaPatternOK accepts "type/subtype" and "type/*", which is as much shape as
+// a media type selector needs and no more than can be matched exactly.
+func mediaPatternOK(s string) bool {
+	if s == "" || strings.ContainsAny(s, " \t\r\n;\"") {
+		return false
+	}
+	t, sub, ok := strings.Cut(s, "/")
+	if !ok || t == "" || sub == "" || strings.Contains(t, "*") {
+		return false
+	}
+	return sub == "*" || !strings.Contains(sub, "*")
+}
+
+// cidrOrAddr accepts a bare address or a CIDR.
+func cidrOrAddr(s string) bool {
+	if _, err := netip.ParsePrefix(s); err == nil {
+		return true
+	}
+	_, err := netip.ParseAddr(s)
+	return err == nil
+}
+
+// Bounds on an egress policy. A listener with a thousand rules is a mistake
+// rather than a policy, and both are checked so the table a reload builds
+// cannot be unbounded.
+const (
+	maxForwardCategories = 256
+	maxForwardRules      = 512
+	maxForwardGroups     = 256
+)
 
 // forwardIntercept checks the TLS interception section. Every check here
 // exists because the feature is the one that replaces a connection the

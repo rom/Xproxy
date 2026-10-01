@@ -6,6 +6,70 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (forward proxy: an egress policy about who may send what, where and when)
+
+- **`forward.rules` is the egress policy, and `forward.categories` is what it is
+  written in.** `allow` and `deny` said whether a destination exists for a
+  listener; these say who may reach it, with which method, carrying which content
+  type, inside which hours. A rule names any of users, groups, networks,
+  categories, hosts, ports, methods, path globs, request and response media types,
+  request and response body bounds, and a schedule; first match decides, `observe`
+  records and keeps looking, and a destination no rule matched is refused under
+  `no_rule` — the same shape the OT relays use, for the same reason. A category
+  takes its patterns inline or from a file, because the list an estate actually
+  has came from somewhere else and is long.
+
+  An `allow` rule means this policy has nothing to object to; it does not skip
+  what follows. The imported threat lists and the estate's own `authorization`
+  section still decide, so a listener's rule narrows the estate's policy and can
+  never widen it.
+
+- **`forward.auth.groups` gives the listener an identity to write rules about** —
+  and gives the estate-wide `authorization` section something to compare its
+  `groups` selector against on this listener, which it had had nothing to put in
+  since it was written.
+
+- **`forward.sni` checks the server name inside a tunnel nothing is decrypting.**
+  A client allowed to reach a CDN could open a tunnel there and then handshake for
+  anything else that address serves, which is how domain fronting gets through a
+  name-based allow list: the destination policy had decided about a name the
+  client then did not use. `intercept` has carried this check for its own tunnels
+  since it was written; this is the same check for the ordinary case, and it costs
+  a peek at bytes the client was going to send anyway. `enforce` refuses,
+  `observe` (the default, so nothing changes for an existing deployment until an
+  operator asks) records and relays, `off` does not look. A handshake with no
+  server name — which is what Encrypted Client Hello looks like from here — is not
+  a mismatch, and neither is a tunnel opened to an address.
+
+- **What a rule can be decided from is stated rather than left to be
+  discovered.** A plain request through the proxy carries its method, its path and
+  its content types, so every selector decides about it. A CONNECT tunnel carries
+  a destination and nothing else, so a rule naming a method or a content type is
+  skipped there — and on an estate whose egress is nearly all HTTPS that means
+  such a rule covers almost nothing without `intercept` over those destinations.
+  Validation names those rules when the listener has no `intercept` section at
+  all, `GET /v1/listeners` carries the count, and `docs/protocols/forward.md` has
+  a section on it. Reading those rules inside an intercepted tunnel is the next
+  piece of work on this listener and is not in this version.
+
+  The other two limits are in the same places: a response rule is decided when
+  the head arrives, which is after the destination was contacted — the body does
+  not arrive, the request did leave; and a byte bound on a chunked body is counted
+  as it travels and cut past the bound, because what has already gone cannot be
+  recalled, which is why a size rule is worth less on egress than a destination
+  rule.
+
+- **`rule_deny` and `no_rule` on a forward listener map to T1048, T1567 and
+  T1071**, so an egress refusal reads as exfiltration or as a channel in
+  `xproxyctl techniques` rather than as a number. T1071 (Application Layer
+  Protocol) and T1567 (Exfiltration Over Web Service) are new in the Enterprise
+  catalogue.
+
+- **`xproxyctl listeners` shows a kind's rule list as a guard.** Discovered by
+  shape rather than listed per kind, so the fifteen kinds that have had a `rules:`
+  section all along now say how many rules they are serving, which the inventory
+  previously did not mention at all.
+
 ### Added (policy simulation: what a change would decide differently)
 
 - **`xproxy-simulate` sends traffic through a configuration and reports what it

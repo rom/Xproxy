@@ -181,6 +181,7 @@ the mappings below are also the vocabulary a pack is written in.
 | [T1046](https://attack.mitre.org/techniques/T1046/) | Network Service Discovery | discovery | Finding what answers: a client choosing destination after destination through a relay, a request for a name or a host this edge does not serve. |
 | [T1048](https://attack.mitre.org/techniques/T1048/) | Exfiltration Over Alternative Protocol | exfiltration | Data leaving over a protocol that exists for something else: a name query carrying payload in its labels, a tunnel inside a service the policy allows out. |
 | [T1059](https://attack.mitre.org/techniques/T1059/) | Command and Scripting Interpreter | execution | A command interpreter reached through a protocol that is not meant to be one: COPY ... PROGRAM, a LOAD from a program, xp_cmdshell, a Redis MODULE or SCRIPT, a shell command on a bastion the policy does not grant. |
+| [T1071](https://attack.mitre.org/techniques/T1071/) | Application Layer Protocol | command-and-control | An ordinary protocol carrying something else: a request through a forward proxy to a destination no egress rule covers, which is where a channel is built out of traffic that looks like browsing. |
 | [T1071.004](https://attack.mitre.org/techniques/T1071/004/) | Application Layer Protocol: DNS | command-and-control | Name resolution used as a channel rather than as a lookup: a name on a block list or a policy zone, a query whose shape is a tunnel. |
 | [T1078](https://attack.mitre.org/techniques/T1078/) | Valid Accounts | defense-evasion, initial-access, persistence, privilege-escalation | A real credential used where the policy does not grant it: an account, an application identity or a certificate that authenticates and is still not allowed here, now, or for this target. |
 | [T1078.001](https://attack.mitre.org/techniques/T1078/001/) | Valid Accounts: Default Accounts | defense-evasion, initial-access, persistence, privilege-escalation | A credential the equipment or the product shipped with: an SNMP community of `public`, a vendor account, a password this estate never set. |
@@ -197,6 +198,7 @@ the mappings below are also the vocabulary a pack is written in.
 | [T1557](https://attack.mitre.org/techniques/T1557/) | Adversary-in-the-Middle | credential-access, collection | Something answering in place of the service: a provisioning answer from an address the estate does not run, authentication stripped from a time exchange, a resolver answer that points a client somewhere else. |
 | [T1565.001](https://attack.mitre.org/techniques/T1565/001/) | Data Manipulation: Stored Data Manipulation | impact | A write to a store the policy grants only reads of: the database, key space or directory changed rather than read. |
 | [T1565.002](https://attack.mitre.org/techniques/T1565/002/) | Data Manipulation: Transmitted Data Manipulation | impact | Data altered in flight rather than at rest: telemetry that repeats or has stopped moving as it crosses this relay, which is what an operator's screen is drawn from. |
+| [T1567](https://attack.mitre.org/techniques/T1567/) | Exfiltration Over Web Service | exfiltration | Data leaving through a service that exists to receive it: an upload to file sharing, a paste site, a webhook -- which is why an egress policy about a method and a destination category is worth more than one about addresses. |
 | [T1572](https://attack.mitre.org/techniques/T1572/) | Protocol Tunneling | command-and-control | A channel inside a channel: a forwarded port, an upgrade to a stream protocol, a datagram tunnel through a proxy that was asked for a request. |
 | [T1621](https://attack.mitre.org/techniques/T1621/) | Multi-Factor Authentication Request Generation | credential-access | A second factor asked for and not given: a push the person refused or was asked for too often, which is what it looks like when somebody else already has the password. |
 
@@ -805,6 +807,8 @@ them, which is why an operations centre can filter on
 | `masque_context` | T1090 |  |
 | `masque_spoofed` | T1090 |  |
 | `masque_unsolicited` | T1090 |  |
+| `no_rule` | T1071, T1090 | a destination no egress rule covers is the one an estate has not decided about, which is where a tool that brought its own destination list goes first |
+| `rule_deny` | T1048, T1567, T1071 | an egress rule refusing names what was being sent and where: a body to a destination nobody approved is exfiltration over an alternative protocol or over a web service, and the proxy is the application layer it went through |
 | `sni_mismatch` | T1572, T1090 | the name in the handshake and the name in the CONNECT disagreeing is a tunnel to one host hidden behind permission for another |
 | `tunnel_limit` | T1499 |  |
 | `udp_disabled` | T1572 |  |

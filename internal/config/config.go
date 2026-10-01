@@ -8225,7 +8225,144 @@ type ForwardListener struct {
 	SOCKSUDP bool `yaml:"socks_udp"`
 	// Masque enables the MASQUE proxying protocols on this listener.
 	Masque *Masque `yaml:"masque"`
+	// Categories are named sets of destinations a rule can talk about, so
+	// an egress policy is written in the estate's own words rather than
+	// repeating a list of domains in every rule.
+	Categories []ForwardCategory `yaml:"categories"`
+	// Rules are the egress policy: who may send what, where, and when.
+	// First match decides and an unmatched request is refused.
+	Rules []ForwardRule `yaml:"rules"`
+	// SNI decides what happens when a tunnel this listener is *not*
+	// intercepting carries a TLS handshake whose server name is not the
+	// destination the client asked for.
+	//
+	// It is the one check that makes a name-based egress policy mean
+	// something without interception. A client that is allowed to reach
+	// cdn.example.com can open a tunnel there and then handshake for
+	// anything else the same address serves -- which on a shared CDN is a
+	// great many things, and is how domain fronting works. The destination
+	// policy then decided about a name nobody used.
+	//
+	// enforce refuses it, observe records it and relays it anyway, off does
+	// not look. Default observe: a name that disagrees is almost always
+	// this, and occasionally a client with a stale DNS answer or a
+	// configuration that pins one address for several names, so an estate
+	// reads its own traffic before this refuses anything. A handshake with
+	// no name at all -- which is what Encrypted Client Hello looks like
+	// from here -- is not a mismatch and is never refused by this.
+	SNI string `yaml:"sni"`
 }
+
+// ForwardCategory is a named set of destinations.
+//
+// A category is how an egress policy stops being a wall of domains. "No
+// uploads to file sharing" is one sentence about one category, and the list
+// behind it is maintained in one place -- or in a file, because the list an
+// estate actually has came from somewhere else and has a few thousand lines
+// in it.
+type ForwardCategory struct {
+	// Name is what a rule names. Rules refer to it exactly, so it is
+	// compared without case but not globbed: a typo in a rule is a rule
+	// about nothing, and validation refuses one.
+	Name string `yaml:"name"`
+	// Hosts are destination patterns in the same spelling as allow and
+	// deny: an exact name, *.suffix for a domain and everything under it,
+	// an address, or a CIDR.
+	Hosts []string `yaml:"hosts"`
+	// File holds further patterns, one per line, # for a comment. Absolute.
+	// It is read at start and on reload, and a file that cannot be read
+	// fails the load rather than leaving the category quietly smaller than
+	// the policy says.
+	File string `yaml:"file"`
+}
+
+// ForwardRule is one decision about egress.
+//
+// Every selector it names has to hold, and a rule that names none matches
+// everything, which is how a catch-all is written. First match decides, and a
+// destination no rule matched is refused -- the same shape the OT relays use,
+// for the same reason: a policy that permits what nobody wrote a rule for is a
+// policy whose gaps are invisible.
+//
+// # What a rule can be decided from
+//
+// A forward proxy sees two very different things. A plain request through the
+// proxy carries its method, its URL and its content types, so every selector
+// here can be decided about it. A CONNECT tunnel carries a destination and
+// nothing else: the method and the content types are inside TLS.
+//
+// So a rule that names method, path or content type is a rule about a request,
+// and it decides nothing for a destination reached through a tunnel this
+// listener does not intercept. That is not left to be discovered -- validation
+// says which rules those are, and `xproxyctl listeners` marks them -- but it is
+// the operator's to resolve, by intercepting those destinations or by accepting
+// that the rule covers the plain path only.
+type ForwardRule struct {
+	// Name is what the security event, the shadow ledger and the status
+	// view call this rule. A decision nobody can name is a decision nobody
+	// can find in a log.
+	Name string `yaml:"name"`
+	// Action is allow, deny or observe. Default deny: a rule somebody
+	// forgot to finish refuses rather than permits. observe records a match
+	// and keeps looking, which is how a rule is tried on real traffic
+	// before it decides anything.
+	Action string `yaml:"action"`
+
+	// Who: the name the proxy authenticated with auth, and the groups
+	// something it trusts said that name is in. Compared without case.
+	//
+	// On a listener with no auth the name is empty, so a rule naming users
+	// or groups matches nobody -- which makes it a rule about people on a
+	// listener that has none, and validation says so.
+	Users     []string `yaml:"users"`
+	Groups    []string `yaml:"groups"`
+	NotUsers  []string `yaml:"not_users"`
+	NotGroups []string `yaml:"not_groups"`
+	// Networks are the client addresses or CIDRs this rule is about.
+	Networks    []string `yaml:"networks"`
+	NotNetworks []string `yaml:"not_networks"`
+
+	// Where to: categories by name, destination patterns in the allow and
+	// deny spelling, and ports.
+	Categories    []string `yaml:"categories"`
+	NotCategories []string `yaml:"not_categories"`
+	Hosts         []string `yaml:"hosts"`
+	NotHosts      []string `yaml:"not_hosts"`
+	Ports         []int    `yaml:"ports"`
+
+	// What: request-level selectors, decidable where the request is
+	// visible. Methods are compared in upper case. Paths are globs in which
+	// * does not cross a slash, so "/upload/*" is one directory.
+	Methods []string `yaml:"methods"`
+	Paths   []string `yaml:"paths"`
+	// RequestTypes and ResponseTypes match the media type without its
+	// parameters, and take a trailing * for a whole tree: "image/*".
+	RequestTypes  []string `yaml:"request_types"`
+	ResponseTypes []string `yaml:"response_types"`
+	// RequestBytesOver and ResponseBytesOver match a body larger than this.
+	// A declared length is checked before anything is sent; a body with no
+	// declared length is counted as it goes past, and then the connection
+	// is cut rather than the rest being carried -- what has already gone
+	// cannot be recalled, which is the whole reason a size rule is worth
+	// less on egress than a destination rule.
+	RequestBytesOver  int64 `yaml:"request_bytes_over"`
+	ResponseBytesOver int64 `yaml:"response_bytes_over"`
+
+	// Schedule limits the rule to certain hours. A rule outside its window
+	// does not match, so the next rule -- or the refusal -- decides.
+	Schedule *ModbusSchedule `yaml:"schedule"`
+	// Comment is carried into the event and the shadow ledger, which is
+	// where a change number belongs.
+	Comment string `yaml:"comment"`
+}
+
+// ForwardActions are what a rule may do, used by validation here and by the
+// runtime through the configuration so the vocabulary cannot differ between
+// what loads and what is enforced.
+var ForwardActions = map[string]bool{"allow": true, "deny": true, "observe": true}
+
+// ForwardSNIModes are what the sni setting may say.
+var ForwardSNIModes = map[string]bool{"off": true, "observe": true, "enforce": true}
 
 // Masque configures UDP proxying (RFC 9298) and IP proxying (RFC 9484)
 // over extended CONNECT. Both need HTTP/2 or HTTP/3, so the listener
@@ -8322,6 +8459,15 @@ type ForwardAuth struct {
 	UsersFile string `yaml:"users_file"`
 	// Realm is sent in Proxy-Authenticate. Default "proxy".
 	Realm string `yaml:"realm"`
+	// Groups names sets of users, so an egress rule is written about the
+	// build agents rather than about eleven account names -- and so the
+	// estate's own authorization section, which has had a groups selector
+	// all along, finally has something to compare on this listener.
+	//
+	// It is a map from group name to member names. A name in no group is in
+	// no group: there is no implicit "everybody", because a rule that
+	// matched everybody by accident is the kind of rule nobody notices.
+	Groups map[string][]string `yaml:"groups"`
 }
 
 // WebSocketGuard is the frame policy of an upgraded connection. Every

@@ -61,9 +61,21 @@ application makes through the proxy it was given, and both are refused by defaul
 **The ports**, with `ports`, because a proxy that allows a hostname on any port is
 a proxy to every service on that host.
 
-**Who is asking**, with `auth`, and the identity then selects the rules — so the
-build agents, the developers' laptops and the payment service can each have their
-own destination list rather than sharing one.
+**Who is asking**, with `auth` and `auth.groups`, and the identity then selects
+the rules — so the build agents, the developers' laptops and the payment service
+can each have their own destination list rather than sharing one.
+
+**What may be sent, and when**, with `categories` and `rules`. `allow` and `deny`
+say whether a destination exists for this listener; the rules say who may reach
+it, with which method, carrying which content type, inside which hours. "Nobody
+POSTs to file sharing" is one rule about one category, and "the vendor's portal
+during the change window" is another with a `schedule` and the change number in
+its `comment`. First match decides and an unmatched destination is refused, which
+is the same shape as the OT relays' rules and refuses for the same reason.
+
+What those rules can be decided from differs by what the proxy can see, and the
+difference is large enough to be the first thing to understand: see
+**[What a tunnel does not say](#what-a-tunnel-does-not-say)** below.
 
 **Whether to look inside**, with `intercept`. This is the explicit,
 deliberately-named setting for TLS interception: the proxy terminates the client's
@@ -77,6 +89,13 @@ estate that intercepts still should not intercept its people's banking.
 tunnel must match the destination the CONNECT asked for**. Without it, a client
 can `CONNECT allowed.example.com:443` and then handshake for `anything.else`, and
 the destination policy has decided nothing.
+
+**`sni` is that same check for the tunnels nothing is decrypting**, which is most
+of them on most proxies. It costs a peek at bytes the client was going to send
+anyway. `enforce` refuses a mismatch, `observe` (the default) records it and
+relays it, `off` does not look. A handshake with no server name — which is what
+Encrypted Client Hello looks like from here — is not a mismatch, and a tunnel
+opened to an address rather than a name is not one either.
 
 **SOCKS5's own shapes**, with `socks5` and `socks_udp`: whether SOCKS5 is served
 at all, and whether `UDP ASSOCIATE` is — the latter being a UDP relay with the
@@ -117,6 +136,52 @@ counted as `xproxy_refusals_total{kind="forward",reason="authorization"}`, so it
 reads like every other refusal this listener makes. Either shadow switch --
 `policy: {mode: shadow}` on the listener, or `shadow: true` on the section --
 records what it would have refused and lets the request through.
+
+## What a tunnel does not say
+
+This is the shape of the whole problem, and it decides what an egress policy on
+this listener is worth.
+
+A **plain request** through the proxy — an absolute `http://` URI, which is how
+HTTP without TLS travels through a proxy — carries its method, its path, its
+content type and usually its length. Every selector in `rules` can be decided
+about it, in both directions: the request before it is sent, and the response
+head before its body is relayed.
+
+A **CONNECT tunnel** carries `host:port` and nothing else. Everything a rule
+about a method or a content type would need is inside TLS. So those rules are
+**skipped** at a tunnel's admission point, and what decides there is the part of
+the policy that is about the destination, the identity and the hour.
+
+That has three consequences worth stating rather than discovering:
+
+1. A rule naming `methods`, `paths`, `request_types`, `response_types`,
+   `request_bytes_over` or `response_bytes_over` **decides nothing for a
+   destination reached through a tunnel this listener does not intercept**. On an
+   estate whose egress is almost entirely HTTPS, that means such a rule covers
+   almost nothing unless `intercept` covers those destinations. Validation names
+   the rules in that position when the listener has no `intercept` section at
+   all, and `GET /v1/listeners` carries the count, so it is visible rather than
+   assumed.
+2. The destination half still works, and is where most of the value is. "These
+   groups, these categories, these hours" is decidable for a tunnel, and it is
+   the policy an egress proxy is bought for.
+3. `sni` is what makes the destination half mean what it says. Without it a
+   tunnel's destination policy decided about a name the client then need not use.
+
+Within a plain request, two more limits:
+
+- A **response** rule is decided when the response head arrives — after the
+  destination was contacted. The body does not have to arrive; the request did
+  leave.
+- A **byte bound** is decided before anything is sent when the length was
+  declared. On a chunked body the bytes are counted as they travel and the
+  connection is cut past the bound: what has already gone cannot be recalled,
+  which is why a size rule is worth less on egress than a destination rule.
+
+Reading those inside an intercepted tunnel — so that a rule about a method
+decides there too — is the next piece of work on this listener, not something
+this version does.
 
 ## What it does not do
 
@@ -160,6 +225,6 @@ records what it would have refused and lets the request through.
 
 - The settings: [docs/CONFIG.md `server.listeners[].forward`](../CONFIG.md#serverlistenersforward-kind-forward)
 - The estate-wide policy above it: [docs/CONFIG.md `authorization`](../CONFIG.md#authorization)
-- A worked configuration: [`examples/forward/socks.yaml`](../../examples/forward/socks.yaml), [`intercept.yaml`](../../examples/forward/intercept.yaml) and [`masque.yaml`](../../examples/forward/masque.yaml)
+- A worked configuration: [`examples/forward/egress.yaml`](../../examples/forward/egress.yaml), [`socks.yaml`](../../examples/forward/socks.yaml), [`intercept.yaml`](../../examples/forward/intercept.yaml) and [`masque.yaml`](../../examples/forward/masque.yaml)
 - Routing TLS without terminating it: [tcp](tcp.md)
 - The inward-facing HTTP pipeline: [http](http.md)
