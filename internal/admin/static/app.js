@@ -604,10 +604,27 @@ const securityPages = [
       d.map(x => [x.route, x.status, fmtNum(x.served), x.body_bytes, x.marked ? 'yes' : 'no', x.bot_score_at || '-']))
     : h('p', { class: 'muted' }, 'none configured')],
   ['WebSocket guards', '/api/websocket', d => (d || []).length
-    ? table(['Route', 'Action', { label: 'Connections', num: true }, { label: 'Messages', num: true }, { label: 'Violations', num: true }, { label: 'Closed', num: true }],
-      d.map(g => [g.route, g.action, fmtNum(g.connections), fmtNum(g.messages),
-        g.violations ? h('span', { class: 'warn' }, fmtNum(g.violations)) : '0', fmtNum(g.closed)]))
+    ? table(['Route', 'Action', 'Compression', { label: 'Connections', num: true }, { label: 'Messages', num: true }, { label: 'Violations', num: true }, { label: 'Closed', num: true }, { label: 'Unknown type', num: true }],
+      d.map(g => [g.route, g.action, g.compression || 'strip', fmtNum(g.connections), fmtNum(g.messages),
+        g.violations ? h('span', { class: 'warn' }, fmtNum(g.violations)) : '0', fmtNum(g.closed),
+        g.unknown ? h('span', { class: 'warn' }, fmtNum(g.unknown)) : '0']))
     : h('p', { class: 'muted' }, 'no route has a websocket_guard')],
+  // The message policy, which is the half an application's owner reads: one
+  // row per kind of message a route says it carries.
+  ['WebSocket message types', '/api/websocket', d => {
+    const rows = [];
+    for (const g of d || []) {
+      for (const t of g.types || []) {
+        rows.push([g.route, t.name, t.direction || 'both', t.max_bytes ? fmtBytes(t.max_bytes) : '-',
+          t.messages_per_second || '-', t.schema ? 'yes' : 'no', fmtNum(t.messages),
+          t.violations ? h('span', { class: 'warn' }, fmtNum(t.violations)) : '0']);
+      }
+    }
+    return rows.length
+      ? table(['Route', 'Type', 'Direction', 'Max bytes', { label: 'Per second', num: true }, 'Schema',
+        { label: 'Messages', num: true }, { label: 'Violations', num: true }], rows)
+      : h('p', { class: 'muted' }, 'no route names its message types');
+  }],
   ['Graduated degradation', '/api/degradation', d => (d || []).length
     ? table(['Level', { label: 'Applied', num: true }, 'Bytes per second', 'Delay', 'Close'],
       d.map(x => [x.name, fmtNum(x.applied), x.bytes_per_second || '-', x.delay || '-', x.close ? 'yes' : 'no']))

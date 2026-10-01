@@ -68,14 +68,18 @@ type reqState struct {
 	// ln is the listener this request arrived on, for the decisions that are
 	// about a listener rather than a route: the estate's authorisation policy
 	// names listeners and honours each one's own shadow switch.
-	ln         *config.Listener
-	span       *tracing.Span // server span, nil without tracing
-	upSpan     *tracing.Span // client span of the upstream exchange
-	propagate  bool
-	cache      string // hit, miss or bypass on a cached route
-	hadCookie  bool   // the client sent a cookie before request filters mutated the headers
-	encoding   string // gzip when the proxy compressed the response
-	canary     bool   // the response came from a canary endpoint
+	ln        *config.Listener
+	span      *tracing.Span // server span, nil without tracing
+	upSpan    *tracing.Span // client span of the upstream exchange
+	propagate bool
+	cache     string // hit, miss or bypass on a cached route
+	hadCookie bool   // the client sent a cookie before request filters mutated the headers
+	encoding  string // gzip when the proxy compressed the response
+	// wsDeflate says the origin accepted this proxy's permessage-deflate
+	// offer on terms the guard can read, which is decided on the 101 and
+	// read when the connection is hijacked.
+	wsDeflate  bool
+	canary     bool // the response came from a canary endpoint
 	cacheKey   string
 	marked     bool         // client previously hit a honeypot
 	degraded   string       // the degradation level serving this request, if any
@@ -831,6 +835,21 @@ func (s *engine) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 		s.deny(rw, r, st, http.StatusForbidden, "websocket")
 		return
 	}
+	if isUpgrade(r) && cr.wsGuard != nil && cr.wsGuard.cfg.Compression == wsCompressRefuse &&
+		r.Header.Get("Sec-WebSocket-Extensions") != "" {
+		// The route would rather say no than quietly change what the
+		// client asked for. Stripping the offer is friendlier and is the
+		// default; this is for an estate that would rather a client's
+		// own logs recorded the refusal.
+		cr.wsGuard.violations.Add(1)
+		s.stats.WSViolations.Add(1)
+		st.denied = "websocket:extension"
+		s.logs.SecurityEvent(r.Context(), "websocket", "websocket",
+			"route", st.route, "client_ip", st.clientIP.String(), "reason", "extension",
+			"detail", textsafe.Clip64(r.Header.Get("Sec-WebSocket-Extensions")))
+		s.deny(rw, r, st, http.StatusBadRequest, "websocket")
+		return
+	}
 	if isUpgrade(r) && cr.wsGuard != nil {
 		// The reverse proxy hijacks the connection when the origin
 		// answers 101; the guard is installed now so that it is in
@@ -908,14 +927,30 @@ func (s *engine) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 				// upgrade is refused here rather than at the first frame, where
 				// the client would already believe it had a connection.
 				if ext := strings.TrimSpace(resp.Header.Get("Sec-WebSocket-Extensions")); ext != "" {
-					cr.wsGuard.violations.Add(1)
-					s.stats.WSViolations.Add(1)
-					st.denied = "websocket:extension"
-					s.logs.SecurityEvent(r.Context(), "websocket", "websocket",
-						"route", st.route, "client_ip", st.clientIP.String(),
-						"reason", "extension", "detail", textsafe.Clip64(ext))
-					return &filterDenied{v: filter.Verdict{Deny: true, Status: http.StatusBadGateway,
-						Reason: "websocket", Detail: "extension " + ext}}
+					// On a route that offered compression this is the
+					// acceptance, and it has to be the offer that was
+					// made: a stream this guard cannot inflate is one it
+					// would have to choose between closing and not
+					// reading. Anywhere else an extension is one nothing
+					// offered, so its frames would arrive unreadable --
+					// and either way the refusal belongs here rather
+					// than at the first frame, where the client already
+					// believes it has a connection.
+					ok, why := false, "an extension nothing offered"
+					if cr.wsGuard.cfg.Compression == wsCompressInspect {
+						ok, why = wsDeflateAccepted(ext)
+					}
+					if !ok {
+						cr.wsGuard.violations.Add(1)
+						s.stats.WSViolations.Add(1)
+						st.denied = "websocket:extension"
+						s.logs.SecurityEvent(r.Context(), "websocket", "websocket",
+							"route", st.route, "client_ip", st.clientIP.String(),
+							"reason", "extension", "detail", textsafe.Clip64(ext+": "+why))
+						return &filterDenied{v: filter.Verdict{Deny: true, Status: http.StatusBadGateway,
+							Reason: "websocket", Detail: "extension " + ext}}
+					}
+					st.wsDeflate = true
 				}
 				if sp, ok := cr.wsGuard.subprotocolAllowed(resp.Header.Get("Sec-WebSocket-Protocol")); !ok {
 					cr.wsGuard.violations.Add(1)
@@ -1082,7 +1117,17 @@ func (s *engine) rewrite(pr *httputil.ProxyRequest, st *reqState, cr *compiledRo
 	// makes both endpoints fall back to uncompressed frames, which is what the
 	// extension is designed to do when it is not agreed.
 	if isUpgrade(in) && cr.wsGuard != nil {
-		out.Header.Del("Sec-WebSocket-Extensions")
+		if cr.wsGuard.cfg.Compression == wsCompressInspect && in.Header.Get("Sec-WebSocket-Extensions") != "" {
+			// The client offered compression and this route reads
+			// compressed messages, so the offer is narrowed to the terms
+			// that make a message inflatable on its own rather than
+			// forwarded as it came: whatever the client asked for, what
+			// the origin is offered is no context takeover in either
+			// direction.
+			out.Header.Set("Sec-WebSocket-Extensions", wsDeflateOffer)
+		} else {
+			out.Header.Del("Sec-WebSocket-Extensions")
+		}
 	}
 	// Forwarding headers: only a trusted peer's chain is preserved.
 	trustedPeer := netutil.Contains(rt.trusted, netutil.RemoteAddr(in))

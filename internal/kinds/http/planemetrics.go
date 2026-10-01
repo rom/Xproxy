@@ -68,6 +68,11 @@ func (s *engine) Collect(e metrics.Collector) {
 		e.Counter("xproxy_websocket_messages_total", "WebSocket messages seen by a guard.", L{"route": g.Route}, float64(g.Messages))
 		e.Counter("xproxy_websocket_violations_total", "WebSocket frames or messages that broke the route's policy.", L{"route": g.Route}, float64(g.Violations))
 		e.Counter("xproxy_websocket_closed_total", "Connections closed by a websocket guard.", L{"route": g.Route}, float64(g.Closed))
+		e.Counter("xproxy_websocket_unknown_type_total", "Messages whose type the route does not name.", L{"route": g.Route}, float64(g.Unknown))
+		for _, t := range g.Types {
+			e.Counter("xproxy_websocket_type_messages_total", "Messages of one named type.", L{"route": g.Route, "type": t.Name}, float64(t.Messages))
+			e.Counter("xproxy_websocket_type_violations_total", "Messages of one named type that broke its policy.", L{"route": g.Route, "type": t.Name}, float64(t.Violations))
+		}
 	}
 	if c := s.cache.Load(); c != nil {
 		cs := c.Stats()

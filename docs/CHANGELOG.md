@@ -6,6 +6,73 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (WebSocket: a message policy, not only a frame policy)
+
+- **`websocket_guard.types` is the policy the application actually has.** The
+  frame bounds beside it answer the protocol's question, which is the same on
+  every route; `max_message_bytes` for a connection is the bound of its largest
+  message, which is the bound that lets every other message be that large too. A
+  route now names the kinds of message it carries — `type_field` is the JSON
+  member that names one, `type` by default — and gives each its own `max_bytes`,
+  its own `messages_per_second` (per connection and per direction), its own
+  `direction`, and a `schema_file` every message of that type must match. A
+  keepalive and an order stop sharing one bound.
+
+- **`unknown_types` is the positive half**: `deny` refuses a message whose type
+  the route does not name and is the default once `types` names anything, because
+  a list of what a route carries that also carries everything else is not a list;
+  `observe` records it and forwards it, which is how the list gets written from
+  the events and `xproxy_websocket_unknown_type_total` rather than from somebody's
+  memory of the API; `allow` ignores it, which is every configuration written
+  before this existed. `require_json` is the same question about a text message
+  that is not JSON at all.
+
+  Where each check decides is stated rather than implied. A type is read out of a
+  complete message: from the client that is still before anything reaches the
+  origin, because the guard already holds a client message until the whole of it
+  has passed inspection; from the origin it is at the end of the message, because
+  each frame is forwarded as it is checked. A schema needs the whole message, so
+  one larger than `max_inspect_bytes` is refused rather than passed — a check that
+  stops applying above a size the sender chooses is not a check — and validation
+  warns where a type's `max_bytes` makes that certain.
+
+- **`websocket_guard.compression` makes compression a decision instead of a
+  silent downgrade.** `strip` is what the previous version did and is still the
+  default: the client's `permessage-deflate` offer is taken out of the upgrade, so
+  both ends fall back to uncompressed frames. `refuse` answers the upgrade with
+  400 instead, for an estate that would rather a client's own logs recorded it.
+  `inspect` is new ground: the offer forwarded to the origin is narrowed to
+  `permessage-deflate; client_no_context_takeover; server_no_context_takeover`,
+  which makes every message a DEFLATE stream of its own, and each message is
+  inflated before the rest of the policy reads it. An acceptance that is not that
+  offer — an origin that kept context takeover, or claimed an extension nothing
+  offered — is refused at the 101 with 502, because a stream the guard cannot
+  inflate would leave it choosing between closing every connection and reading
+  nothing.
+
+  So a route can now be compressed *and* inspected, which it could not be
+  before: an estate that wanted its WebSocket messages read had to make every
+  client send them uncompressed. `max_inflate_ratio` (default 100) is the bound
+  that comes with that — a kilobyte on the wire becoming a megabyte in the
+  application is the shape of the attack rather than the size of it, and past it
+  the message is refused as `compression_bomb` without being inflated further.
+  The sizes, the UTF-8 check, the patterns, the type and the schema are all about
+  the inflated message, because that is the message.
+
+- **The report says which type a route is arguing with.** `GET /v1/websocket`
+  and `xproxyctl` carry the per-type message and violation counts, the
+  compression mode, and how many messages arrived with a type the route does not
+  name; the metrics are `xproxy_websocket_type_messages_total{route,type}`,
+  `xproxy_websocket_type_violations_total{route,type}` and
+  `xproxy_websocket_unknown_type_total{route}`. Every finding names itself in its
+  event: `compression`, `compression_bomb`, `json`, `message_type`, `type_size`,
+  `type_rate` and `schema` join the frame guard's own reasons.
+
+- **`docs/protocols/http.md` says what happens after the 101**, which it did not
+  mention at all: what the guard decides, and that a WebSocket over HTTP/2's
+  extended CONNECT is not served (so clients fall back to the upgrade the guard
+  reads) while a WebTransport session is relayed rather than inspected.
+
 ### Added (forward proxy: HTTP-aware inspection inside intercepted tunnels)
 
 - **`intercept.http` reads the requests inside a tunnel this listener is already

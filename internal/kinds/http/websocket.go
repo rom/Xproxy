@@ -66,12 +66,18 @@ type wsGuard struct {
 	subprotos  map[string]bool
 	inspectAll bool
 	inspectTxt bool
+	// types is the message-type policy, nil where the route names none.
+	types *wsTypes
 
 	// Counters, per route, for the management view.
 	connections atomic.Uint64
 	messages    atomic.Uint64
 	violations  atomic.Uint64
 	closed      atomic.Uint64
+	// unknown counts the messages whose type the route does not name,
+	// whatever unknown_types then does about them: on a route that
+	// allows them it is the number that says a type list is incomplete.
+	unknown atomic.Uint64
 }
 
 func newWSGuard(c *config.WebSocketGuard) (*wsGuard, error) {
@@ -115,6 +121,11 @@ func newWSGuard(c *config.WebSocketGuard) (*wsGuard, error) {
 		g.inspectTxt = true
 	case "none":
 	}
+	t, err := newWSTypes(c)
+	if err != nil {
+		return nil, err
+	}
+	g.types = t
 	return g, nil
 }
 
@@ -176,6 +187,11 @@ type wsViolation struct {
 	reason string
 	detail string
 	code   int
+	// observe marks a finding that is recorded and then forwarded
+	// whatever the route's action is: unknown_types: observe is how a
+	// type list gets written, and a list being written must not be a
+	// list being enforced.
+	observe bool
 }
 
 func (v *wsViolation) Error() string { return "websocket " + v.reason + ": " + v.detail }
@@ -193,12 +209,26 @@ type wsSide struct {
 	fragging   bool
 	fragBytes  int64
 	// inspect holds the prefix of the current message kept for pattern
-	// matching, bounded by max_inspect_bytes.
+	// matching, bounded by max_inspect_bytes. For a compressed message
+	// it holds the inflated prefix, because that is the message.
 	inspect []byte
+	// deflate says permessage-deflate was negotiated on terms this guard
+	// can read, so RSV1 on the first frame of a message means compressed
+	// rather than "an extension nobody agreed".
+	deflate bool
+	// rsv1 is the compression bit of the frame being parsed, and
+	// compressed whether the message being assembled carries it. comp
+	// holds a compressed message's bytes until it is complete, because a
+	// DEFLATE stream cannot be inflated a frame at a time and stay
+	// bounded.
+	rsv1       bool
+	compressed bool
+	comp       []byte
 
-	// Rate accounting over a one second window.
-	windowStart time.Time
-	windowCount int
+	// Rate accounting over a one second window, for the connection and
+	// then per message type.
+	window     wsWindow
+	typeWindow map[string]*wsWindow
 }
 
 // wsConn wraps the hijacked client connection. Reads carry frames from
@@ -232,9 +262,13 @@ func (c *wsConn) maxPending() int64 { return c.g.cfg.MaxFrameBytes + 16 }
 
 func (s *engine) newWSConn(inner net.Conn, g *wsGuard, st *reqState) net.Conn {
 	g.connections.Add(1)
+	// Whether the origin accepted this proxy's compression offer, which
+	// ModifyResponse decided on the 101 and checked before the client was
+	// told it had a connection.
+	deflate := st != nil && st.wsDeflate
 	return &wsConn{Conn: inner, g: g, st: st, s: s,
-		fromCli: &wsSide{g: g, fromClient: true},
-		fromSrv: &wsSide{g: g}}
+		fromCli: &wsSide{g: g, fromClient: true, deflate: deflate},
+		fromSrv: &wsSide{g: g, deflate: deflate}}
 }
 
 func (c *wsConn) Read(p []byte) (int, error) {
@@ -293,7 +327,7 @@ func (c *wsConn) readEnforced(p []byte) (int, error) {
 				c.readBuf = nil
 				c.readHold = nil
 				c.mu.Unlock()
-				return 0, c.fail(&wsViolation{"frame_size", "a frame header or payload larger than max_frame_bytes", wsCloseTooBig})
+				return 0, c.fail(&wsViolation{reason: "frame_size", detail: "a frame header or payload larger than max_frame_bytes", code: wsCloseTooBig})
 			}
 		}
 		if c.readErr != nil {
@@ -350,7 +384,7 @@ func (c *wsConn) scan(buf *[]byte, data []byte, side *wsSide) *wsViolation {
 		*buf = (*buf)[consumed:]
 	}
 	if int64(len(*buf)) > c.maxPending() {
-		return &wsViolation{"frame_size", "a frame header or payload larger than max_frame_bytes", wsCloseTooBig}
+		return &wsViolation{reason: "frame_size", detail: "a frame header or payload larger than max_frame_bytes", code: wsCloseTooBig}
 	}
 	return nil
 }
@@ -380,7 +414,7 @@ func (s *wsSide) parse(b []byte, c *wsConn) (int, *wsViolation) {
 		}
 		v := binary.BigEndian.Uint64(b[off:])
 		if v > 1<<62 {
-			return 0, &wsViolation{"protocol", "a frame length that is not a length", wsCloseProtocolError}
+			return 0, &wsViolation{reason: "protocol", detail: "a frame length that is not a length", code: wsCloseProtocolError}
 		}
 		length = int64(v) //nolint:gosec // bounded above
 		off += 8
@@ -406,7 +440,13 @@ func (s *wsSide) parse(b []byte, c *wsConn) (int, *wsViolation) {
 		payload = unmasked
 	}
 	if v := s.checkPayload(fin, opcode, payload, c); v != nil {
-		return 0, v
+		if !v.observe {
+			return 0, v
+		}
+		// Recorded where every finding is recorded, and then the message
+		// travels on: this is the frame the policy is still learning
+		// about rather than the one it has decided about.
+		c.record(v)
 	}
 	return off + len(payload), nil
 }
@@ -414,53 +454,66 @@ func (s *wsSide) parse(b []byte, c *wsConn) (int, *wsViolation) {
 // checkHeader applies the rules that need only the header.
 func (s *wsSide) checkHeader(fin bool, rsv, opcode byte, masked bool, length int64) *wsViolation {
 	g := s.g
-	if rsv != 0 {
-		// A reserved bit means an extension was negotiated. The proxy
-		// does not negotiate extensions, so a peer setting one is
-		// either confused or trying to make the frames mean something
-		// the guard does not read (permessage-deflate is the usual
-		// one, and a compressed frame cannot be inspected).
-		return &wsViolation{"protocol", "reserved bits set without a negotiated extension", wsCloseProtocolError}
+	if rsv&0x30 != 0 {
+		// RSV2 and RSV3 belong to extensions nothing here negotiates, so
+		// a peer setting one is either confused or trying to make the
+		// frames mean something the guard does not read.
+		return &wsViolation{reason: "protocol", detail: "reserved bits set without a negotiated extension", code: wsCloseProtocolError}
+	}
+	s.rsv1 = rsv&0x40 != 0
+	if s.rsv1 {
+		if !s.deflate {
+			// permessage-deflate is the usual one, and a compressed
+			// frame cannot be inspected -- which is why a route that
+			// wants to inspect either strips the offer or negotiates
+			// terms it can read. Neither of those happened here.
+			return &wsViolation{reason: "protocol", detail: "reserved bits set without a negotiated extension", code: wsCloseProtocolError}
+		}
+		if opcode&0x8 != 0 || opcode == wsOpContinuation {
+			// RFC 7692 puts the compression bit on the first frame of a
+			// message and nowhere else.
+			return &wsViolation{reason: "compression", detail: "RSV1 on a " + wsOpcodeName(opcode) + " frame", code: wsCloseProtocolError}
+		}
 	}
 	if opcode >= 0x3 && opcode <= 0x7 || opcode >= 0xB {
-		return &wsViolation{"protocol", "reserved opcode " + wsOpcodeName(opcode), wsCloseProtocolError}
+		return &wsViolation{reason: "protocol", detail: "reserved opcode " + wsOpcodeName(opcode), code: wsCloseProtocolError}
 	}
 	if !g.opcodes[opcode] {
-		return &wsViolation{"opcode", wsOpcodeName(opcode) + " is not allowed on this route", wsClosePolicy}
+		return &wsViolation{reason: "opcode", detail: wsOpcodeName(opcode) + " is not allowed on this route", code: wsClosePolicy}
 	}
 	if g.cfg.Masked() {
 		if s.fromClient && !masked {
 			// RFC 6455 5.1: a client frame must be masked. An unmasked
 			// one is how a request is smuggled past an intermediary
 			// that caches on frame boundaries.
-			return &wsViolation{"protocol", "an unmasked frame from the client", wsCloseProtocolError}
+			return &wsViolation{reason: "protocol", detail: "an unmasked frame from the client", code: wsCloseProtocolError}
 		}
 		if !s.fromClient && masked {
-			return &wsViolation{"protocol", "a masked frame from the server", wsCloseProtocolError}
+			return &wsViolation{reason: "protocol", detail: "a masked frame from the server", code: wsCloseProtocolError}
 		}
 	}
 	if length > g.cfg.MaxFrameBytes {
-		return &wsViolation{"frame_size", "frame of " + strconv.FormatInt(length, 10) + " bytes", wsCloseTooBig}
+		return &wsViolation{reason: "frame_size", detail: "frame of " + strconv.FormatInt(length, 10) + " bytes", code: wsCloseTooBig}
 	}
 	isControl := opcode&0x8 != 0
 	if isControl {
 		if !fin {
-			return &wsViolation{"protocol", "a fragmented control frame", wsCloseProtocolError}
+			return &wsViolation{reason: "protocol", detail: "a fragmented control frame", code: wsCloseProtocolError}
 		}
 		if length > 125 {
-			return &wsViolation{"protocol", "a control frame over 125 bytes", wsCloseProtocolError}
+			return &wsViolation{reason: "protocol", detail: "a control frame over 125 bytes", code: wsCloseProtocolError}
 		}
 		return nil
 	}
 	// Data frames: fragmentation must be well formed.
 	if opcode == wsOpContinuation && !s.fragging {
-		return &wsViolation{"protocol", "a continuation frame with nothing to continue", wsCloseProtocolError}
+		return &wsViolation{reason: "protocol", detail: "a continuation frame with nothing to continue", code: wsCloseProtocolError}
 	}
 	if opcode != wsOpContinuation && s.fragging {
-		return &wsViolation{"protocol", "a new message before the previous one finished", wsCloseProtocolError}
+		return &wsViolation{reason: "protocol", detail: "a new message before the previous one finished", code: wsCloseProtocolError}
 	}
 	if s.fragBytes+length > g.cfg.MaxMessageBytes {
-		return &wsViolation{"message_size", "a message over max_message_bytes", wsCloseTooBig}
+		return &wsViolation{reason: "message_size", detail: "a message over max_message_bytes", code: wsCloseTooBig}
 	}
 	return nil
 }
@@ -471,14 +524,14 @@ func (s *wsSide) checkPayload(fin bool, opcode byte, payload []byte, c *wsConn) 
 	if opcode&0x8 != 0 {
 		if opcode == wsOpClose && len(payload) > 0 {
 			if len(payload) < 2 {
-				return &wsViolation{"protocol", "a close frame with one byte of status", wsCloseProtocolError}
+				return &wsViolation{reason: "protocol", detail: "a close frame with one byte of status", code: wsCloseProtocolError}
 			}
 			code := binary.BigEndian.Uint16(payload[:2])
 			if !wsValidCloseCode(code) {
-				return &wsViolation{"protocol", "close code " + strconv.Itoa(int(code)), wsCloseProtocolError}
+				return &wsViolation{reason: "protocol", detail: "close code " + strconv.Itoa(int(code)), code: wsCloseProtocolError}
 			}
 			if !utf8.Valid(payload[2:]) {
-				return &wsViolation{"protocol", "a close reason that is not UTF-8", wsCloseProtocolError}
+				return &wsViolation{reason: "protocol", detail: "a close reason that is not UTF-8", code: wsCloseProtocolError}
 			}
 		}
 		return nil
@@ -487,11 +540,17 @@ func (s *wsSide) checkPayload(fin bool, opcode byte, payload []byte, c *wsConn) 
 	if opcode != wsOpContinuation {
 		s.fragOpcode = opcode
 		s.inspect = s.inspect[:0]
+		s.compressed = s.rsv1
+		s.comp = s.comp[:0]
 	}
 	s.fragging = !fin
 	s.fragBytes += int64(len(payload))
 	wantText := s.fragOpcode == wsOpText
-	if (g.inspectAll || (g.inspectTxt && wantText)) && int64(len(s.inspect)) < g.cfg.MaxInspectBytes {
+	keep := g.inspectAll || (g.inspectTxt && wantText)
+	switch {
+	case keep && s.compressed:
+		s.comp = append(s.comp, payload...)
+	case keep && int64(len(s.inspect)) < g.cfg.MaxInspectBytes:
 		room := g.cfg.MaxInspectBytes - int64(len(s.inspect))
 		if int64(len(payload)) < room {
 			room = int64(len(payload))
@@ -505,6 +564,7 @@ func (s *wsSide) checkPayload(fin bool, opcode byte, payload []byte, c *wsConn) 
 	defer func() {
 		s.fragBytes = 0
 		s.fragging = false
+		s.comp = s.comp[:0]
 	}()
 	g.messages.Add(1)
 	c.s.stats.WSMessages.Add(1)
@@ -513,18 +573,52 @@ func (s *wsSide) checkPayload(fin bool, opcode byte, payload []byte, c *wsConn) 
 			return v
 		}
 	}
+	if keep && s.compressed {
+		// Everything below reads a message, so a compressed one becomes
+		// a message here or the checks below are about nothing.
+		if v := s.inflate(); v != nil {
+			return v
+		}
+	}
 	if wantText && g.cfg.UTF8() && !utf8.Valid(s.inspect) && s.fragBytes <= g.cfg.MaxInspectBytes {
 		// Only when the whole message was inspected: a prefix of a
 		// valid UTF-8 message can end mid-rune.
-		return &wsViolation{"protocol", "a text message that is not UTF-8", wsCloseProtocolError}
+		return &wsViolation{reason: "protocol", detail: "a text message that is not UTF-8", code: wsCloseProtocolError}
 	}
 	if len(g.deny) > 0 && (g.inspectAll || wantText) {
 		for _, re := range g.deny {
 			if re.Match(s.inspect) {
-				return &wsViolation{"pattern", "a message matching a denied pattern", wsClosePolicy}
+				return &wsViolation{reason: "pattern", detail: "a message matching a denied pattern", code: wsClosePolicy}
 			}
 		}
 	}
+	return s.checkMessage(wantText)
+}
+
+// inflate turns the compressed message this side collected into the inspected
+// prefix, and refuses one that expands past what the route allows.
+//
+// The bound is the smaller of max_message_bytes and max_inflate_ratio times
+// what arrived, so a message that is small on the wire and enormous once read
+// is refused for what it would have cost rather than passed for what it did.
+func (s *wsSide) inflate() *wsViolation {
+	g := s.g
+	limit := g.cfg.MaxMessageBytes
+	if ratio := int64(g.cfg.MaxInflateRatio) * int64(len(s.comp)); ratio < limit {
+		limit = ratio
+	}
+	prefix, total, err := wsInflate(s.comp, g.cfg.MaxInspectBytes, limit)
+	if err != nil {
+		return &wsViolation{reason: "compression", detail: "a compressed message that does not inflate", code: wsCloseProtocolError}
+	}
+	if total > limit {
+		return &wsViolation{reason: "compression_bomb", detail: strconv.FormatInt(int64(len(s.comp)), 10) +
+			" compressed bytes inflating past " + strconv.FormatInt(limit, 10), code: wsCloseTooBig}
+	}
+	s.inspect = prefix
+	// What the rest of the policy is about is the message the application
+	// will see, not the bytes that carried it.
+	s.fragBytes = total
 	return nil
 }
 
@@ -533,13 +627,8 @@ func (s *wsSide) rate() *wsViolation {
 	if s.g.cfg.MessagesPerSecond <= 0 {
 		return nil
 	}
-	now := time.Now()
-	if now.Sub(s.windowStart) >= time.Second {
-		s.windowStart, s.windowCount = now, 0
-	}
-	s.windowCount++
-	if s.windowCount > s.g.cfg.MessagesPerSecond {
-		return &wsViolation{"rate", "more than messages_per_second from the client", wsClosePolicy}
+	if !s.window.allow(s.g.cfg.MessagesPerSecond) {
+		return &wsViolation{reason: "rate", detail: "more than messages_per_second from the client", code: wsClosePolicy}
 	}
 	return nil
 }
@@ -558,6 +647,22 @@ func wsValidCloseCode(code uint16) bool {
 	return code >= 3000 && code <= 4999
 }
 
+// record counts a finding and says what it was, without deciding anything.
+// Every violation goes through here, including the ones nothing is done
+// about, so that "the guard saw this" is one code path and one event shape.
+func (c *wsConn) record(v *wsViolation) {
+	g := c.g
+	g.violations.Add(1)
+	c.s.stats.WSViolations.Add(1)
+	route := ""
+	if c.st != nil {
+		route = c.st.route
+	}
+	c.s.logs.SecurityEvent(nil, "websocket", "websocket", //nolint:staticcheck // no request context on a hijacked connection
+		"route", route, "client_ip", netutil.PeerAddr(c.Conn.RemoteAddr()).String(),
+		"reason", v.reason, "detail", v.detail, "close_code", v.code)
+}
+
 // fail records a violation, tries to tell the peer why, and closes.
 func (c *wsConn) fail(v *wsViolation) error {
 	c.mu.Lock()
@@ -571,16 +676,8 @@ func (c *wsConn) fail(v *wsViolation) error {
 	c.mu.Unlock()
 
 	g := c.g
-	g.violations.Add(1)
-	c.s.stats.WSViolations.Add(1)
-	route := ""
-	if c.st != nil {
-		route = c.st.route
-	}
-	c.s.logs.SecurityEvent(nil, "websocket", "websocket", //nolint:staticcheck // no request context on a hijacked connection
-		"route", route, "client_ip", netutil.PeerAddr(c.Conn.RemoteAddr()).String(),
-		"reason", v.reason, "detail", v.detail, "close_code", v.code)
-	if g.cfg.Action == "log" {
+	c.record(v)
+	if g.cfg.Action == "log" || v.observe {
 		// Observation only: the connection continues and the frame is
 		// forwarded. The counter and the event are the product.
 		c.mu.Lock()
@@ -618,9 +715,20 @@ func (s *engine) WebSocketGuards() []proxy.WSGuardStatus {
 			continue
 		}
 		g := cr.wsGuard
-		out = append(out, proxy.WSGuardStatus{Route: cr.cfg.Name, Connections: g.connections.Load(),
+		st := proxy.WSGuardStatus{Route: cr.cfg.Name, Connections: g.connections.Load(),
 			Messages: g.messages.Load(), Violations: g.violations.Load(),
-			Closed: g.closed.Load(), Action: g.cfg.Action})
+			Closed: g.closed.Load(), Action: g.cfg.Action,
+			Compression: g.cfg.Compression, Unknown: g.unknown.Load()}
+		if g.types != nil {
+			st.UnknownTypes = g.types.unknown
+			for _, t := range g.types.order {
+				st.Types = append(st.Types, proxy.WSTypeStatus{Name: t.name,
+					Messages: t.messages.Load(), Violations: t.violations.Load(),
+					MaxBytes: t.maxBytes, MessagesPerSecond: t.perSecond,
+					Direction: t.direction(), Schema: t.schema != nil})
+			}
+		}
+		out = append(out, st)
 	}
 	return out
 }

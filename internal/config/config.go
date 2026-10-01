@@ -8524,6 +8524,71 @@ type WebSocketGuard struct {
 	Action string `yaml:"action"`
 	// CloseCode overrides the close code sent on a violation.
 	CloseCode int `yaml:"close_code"`
+	// Compression says what happens to a client's permessage-deflate
+	// offer on this route. A compressed frame cannot be read without
+	// being inflated, so this is the setting that decides whether an
+	// inspected route is also a compressed one.
+	//
+	// strip, the default, takes the offer out of the upgrade request, so
+	// the origin never accepts it and both ends fall back to uncompressed
+	// frames -- which is what the extension is designed to do when it is
+	// not agreed. refuse answers the upgrade instead, for an estate that
+	// would rather a client was told than quietly changed. inspect
+	// negotiates compression on terms this proxy can read (no context
+	// takeover in either direction, so each message is a stream of its
+	// own) and inflates every message before the rest of the policy sees
+	// it.
+	Compression string `yaml:"compression"`
+	// MaxInflateRatio bounds how far one compressed message may expand
+	// before it is a bomb rather than a message: a few hundred bytes of
+	// zeroes inflate to whatever the sender chose, and a guard that
+	// inflated it to find out how large it was would be the thing the
+	// bomb was aimed at. Default 100. Only read with compression:
+	// inspect.
+	MaxInflateRatio int `yaml:"max_inflate_ratio"`
+	// TypeField is the JSON member that names a message's type, which is
+	// what Types match on. Default "type".
+	TypeField string `yaml:"type_field"`
+	// RequireJSON makes a text message that is not a JSON object a
+	// violation rather than a message the type policy cannot read.
+	// Default false.
+	RequireJSON *bool `yaml:"require_json"`
+	// UnknownTypes is allow, observe or deny: what happens to a message
+	// whose type Types does not name. The default is deny once Types
+	// names any and allow when it names none, because a list of the
+	// messages a route carries that also carries everything else is not
+	// a list.
+	UnknownTypes string `yaml:"unknown_types"`
+	// Types is the policy per kind of message. One max_message_bytes for
+	// a connection is the bound of its largest message, which is the
+	// bound that lets every other message be that large too; this is
+	// where the keepalive and the order get different answers.
+	Types []WebSocketMessageType `yaml:"types"`
+}
+
+// WebSocketMessageType is one kind of message a route carries: how large it
+// may be, how often it may arrive, which way it travels, and the shape it
+// must have.
+type WebSocketMessageType struct {
+	// Name is the value of TypeField this entry is about.
+	Name string `yaml:"name"`
+	// MaxBytes bounds one message of this type, after inflation where the
+	// route inspects compressed messages. 0 leaves it to
+	// max_message_bytes.
+	MaxBytes int64 `yaml:"max_bytes"`
+	// MessagesPerSecond bounds this type's rate, per connection and per
+	// direction. 0 is no bound of this type's own; the connection's
+	// messages_per_second still applies to the client.
+	MessagesPerSecond int `yaml:"messages_per_second"`
+	// SchemaFile is a JSON Schema (JSON or YAML) every message of this
+	// type must match. It is read at load and on reload, and a message
+	// too large to have been inspected whole cannot be validated and is
+	// refused.
+	SchemaFile string `yaml:"schema_file"`
+	// Direction is client, server or both. Default both. A message type
+	// that only ever travels one way is one more thing a client cannot
+	// claim to be.
+	Direction string `yaml:"direction"`
 }
 
 // Masked reports the effective require_masked.
@@ -8531,6 +8596,11 @@ func (w *WebSocketGuard) Masked() bool { return w == nil || w.RequireMasked == n
 
 // UTF8 reports the effective validate_utf8.
 func (w *WebSocketGuard) UTF8() bool { return w == nil || w.ValidateUTF8 == nil || *w.ValidateUTF8 }
+
+// JSONRequired reports the effective require_json.
+func (w *WebSocketGuard) JSONRequired() bool {
+	return w != nil && w.RequireJSON != nil && *w.RequireJSON
+}
 
 // TCPListener routes raw connections to upstream pools. TLS connections
 // are routed by the server name of the ClientHello (peeked, never

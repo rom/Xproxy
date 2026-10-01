@@ -23221,8 +23221,8 @@ An upgraded connection is the one place a request\-oriented proxy stops looking.
 .PP
 .TS
 allbox;
-lbw(1.3i) lbw(0.7i) lbw(1.1i) lbx
-lw(1.3i) lw(0.7i) lw(1.1i) lx.
+lbw(1.3i) lbw(0.9i) lbw(1.1i) lbx
+lw(1.3i) lw(0.9i) lw(1.1i) lx.
 T{
 Key
 T}	T{
@@ -23340,6 +23340,122 @@ protocol\(aqs own
 T}	T{
 Override the close code;\: 3000\-4999 only
 T}
+T{
+\fBcompression\fR
+T}	T{
+\fBstrip\fR,\: \fBrefuse\fR,\: \fBinspect\fR
+T}	T{
+\fBstrip\fR
+T}	T{
+What happens to a client\(aqs \fBpermessage\-\:deflate\fR offer;\: see below
+T}
+T{
+\fBmax_\:inflate_\:ratio\fR
+T}	T{
+int
+T}	T{
+\fB100\fR
+T}	T{
+How far one message may expand before it is a bomb rather than a message;\: \fBcompression:\: inspect\fR only
+T}
+T{
+\fBtype_\:field\fR
+T}	T{
+string
+T}	T{
+\fBtype\fR
+T}	T{
+The JSON member that names a message\(aqs type
+T}
+T{
+\fBtypes\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The policy per kind of message;\: see below
+T}
+T{
+\fBunknown_\:types\fR
+T}	T{
+\fBallow\fR,\: \fBobserve\fR,\: \fBdeny\fR
+T}	T{
+\fBdeny\fR with \fBtypes\fR,\: else \fBallow\fR
+T}	T{
+A message whose type \fBtypes\fR does not name
+T}
+T{
+\fBrequire_\:json\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse a text message that is not a JSON object
+T}
+.TE
+.PP
+Each entry of \fBtypes\fR:
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.8i) lbw(0.9i) lbx
+lw(1.0i) lw(0.8i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+The value of \fBtype_\:field\fR this entry is about
+T}
+T{
+\fBmax_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Largest message of this type,\: after inflation;\: 0 leaves it to \fBmax_\:message_\:bytes\fR
+T}
+T{
+\fBmessages_\:per_\:second\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+This type\(aqs rate,\: per connection and per direction
+T}
+T{
+\fBschema_\:file\fR
+T}	T{
+path
+T}	T{
+
+T}	T{
+A JSON Schema (JSON or YAML) every message of this type must match
+T}
+T{
+\fBdirection\fR
+T}	T{
+\fBclient\fR,\: \fBserver\fR,\: \fBboth\fR
+T}	T{
+\fBboth\fR
+T}	T{
+Which way this type travels
+T}
 .TE
 .PP
 The structural checks are the half with no false positives, because they are the protocol\(aqs own rules: a reserved bit set without a negotiated extension, a reserved opcode, an unmasked client frame or a masked server one, a fragmented or oversize control frame, a continuation with nothing to continue, a new message before the previous one finished, a close frame with one byte of status, a close code that must never appear on the wire, a close reason or text message that is not UTF\-8. A client that does any of these is not a browser.
@@ -23347,10 +23463,74 @@ The structural checks are the half with no false positives, because they are the
 The bounds are the half worth thinking about: \fBmax_frame_bytes\fR and \fBmax_message_bytes\fR are what stop one connection deciding how much memory the proxy uses, and \fBmessages_per_second\fR is what stops it deciding how much CPU the origin uses. The pattern list is the part with a real false\-positive rate \[u2014] start with \fBaction: log\fR and read \fBxproxy_websocket_violations_total{route}\fR for a week.
 .PP
 Messages larger than \fBmax_inspect_bytes\fR are checked up to that bound and forwarded: the alternative is buffering whatever a client chooses to send.
+.SS "What kinds of message the route carries"
 .PP
-\fBCompression is not negotiated on an inspected route.\fR A \fBpermessage\-deflate\fR frame cannot be inspected at all, so where a guard is present the client\(aqs \fBSec\-WebSocket\-Extensions\fR offer is \fBstripped from the upgrade request\fR: the origin never sees it, never accepts it, and both ends fall back to uncompressed frames. That is deliberate and it is the friendly half \[u2014] browsers offer the extension on every WebSocket, and leaving the offer to the endpoints meant they agreed compression behind the proxy, the client was told it had succeeded, and the first data frame then closed the connection with a protocol error. An origin that claims an extension although none was offered is refused at the 101 with \fB502\fR, because its frames would be unreadable. A reserved bit arriving after all is still refused, and now means what it says: a peer using an extension nobody negotiated.
+The bounds above are about the connection, and \fBmax_message_bytes\fR for a connection is the bound of its largest message \[u2014] which is the bound that lets every other message be that large too. A WebSocket API carries several kinds of message, and the bounds that are right for a keepalive are nowhere near the ones that are right for an order.
 .PP
-Violations are security events with reason \fBwebsocket\fR, counted per route by \fBxproxyctl\fR and \fBGET /v1/websocket\fR, and exported as \fBxproxy_websocket_violations_total\fR and \fBxproxy_websocket_closed_total\fR.
+\fBtypes\fR is where that is written. Each entry names a value of \fBtype_field\fR (the JSON member an application uses for this, conventionally \fBtype\fR) and says how large that kind of message may be, how often it may arrive, which direction it travels in, and the schema it must match:
+.PP
+.RS 4
+.nf
+.ft CR
+websocket_guard:
+  max_message_bytes: 1048576
+  type_field: op
+  types:
+    \- {name: ping, max_bytes: 64, messages_per_second: 2}
+    \- {name: subscribe, max_bytes: 4096, messages_per_second: 10, schema_file: /etc/xproxy/ws/subscribe.json}
+    \- {name: order, max_bytes: 16384, messages_per_second: 50, schema_file: /etc/xproxy/ws/order.json}
+    \- {name: tick, direction: server}
+  unknown_types: observe
+.ft
+.fi
+.RE
+.PP
+\fB\fBunknown_types\fR is the positive half.\fR A message whose type is not in the list is the interesting one: \fBdeny\fR refuses it, which is what a route that knows its API wants and is the default once \fBtypes\fR names anything; \fBobserve\fR records it and forwards it, which is how the list gets written (run for a week, read \fBxproxy_websocket_unknown_type_total{route}\fR and the events, promote what belongs); \fBallow\fR ignores it. A route with no \fBtypes\fR allows them, so nothing changes for a configuration written before this existed.
+.PP
+\fBWhere each check decides is not the same.\fR The type is read out of the message, so it is known when the message is complete:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+From the \fBclient\fR that is still before anything reaches the origin \[u2014] the guard already holds a client message until the whole of it has passed inspection, so a per\-type bound refuses the message rather than reporting it.
+.PP
+.ti -3n
+\(bu
+From the \fBorigin\fR each frame is forwarded as it is checked, so a bound broken by a fragmented message is found at the end of it: the connection closes and what had already been written has gone. That is the same limit the pattern list has had, and it is why a \fBdirection: server\fR type is a statement about what the application does rather than a gate in front of it.
+.PP
+.ti -3n
+\(bu
+A \fBschema\fR needs the whole message, and the guard keeps \fBmax_inspect_bytes\fR of it. A message under a schema that is longer than that cannot be validated and is refused rather than passed, because a check that stops applying above a size the sender chooses is not a check. Validation warns where a type\(aqs \fBmax_bytes\fR makes that certain.
+.PP
+.ti -3n
+\(bu
+The type policy reads \fBtext\fR messages, because the type is a JSON member. A binary message is a format this does not claim to read, and \fBrequire_json\fR (which refuses a text message that is not a JSON object) is how a route whose messages are all JSON says so.
+.RE
+.PP
+.SS "Compression"
+.PP
+A \fBpermessage\-deflate\fR frame cannot be read without being inflated, so this is the setting that decides whether an inspected route is also a compressed one.
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fB\fBstrip\fR\fR, the default, takes the client\(aqs \fBSec\-WebSocket\-Extensions\fR offer out of the upgrade request: the origin never sees it, never accepts it, and both ends fall back to uncompressed frames, which is what the extension is designed to do when it is not agreed. This is the friendly half \[u2014] browsers offer the extension on every WebSocket, and leaving the offer to the endpoints meant they agreed compression behind the proxy, the client was told it had succeeded, and the first data frame then closed the connection with a protocol error that blamed the peer.
+.PP
+.ti -3n
+\(bu
+\fB\fBrefuse\fR\fR answers the upgrade with \fB400\fR instead, for an estate that would rather a client\(aqs own logs recorded the refusal than have its offer quietly changed.
+.PP
+.ti -3n
+\(bu
+\fB\fBinspect\fR\fR keeps compression and reads it. The offer forwarded to the origin is narrowed to \fBpermessage\-deflate; client_no_context_takeover; server_no_context_takeover\fR, whatever the client asked for: with context takeover a message can only be inflated by a decoder that has seen every message before it, and a proxy holding that state per direction per connection has agreed to unbounded work on behalf of whoever opened the connection. Without takeover each message is a stream of its own. An acceptance that is not that offer is refused at the 101 with \fB502\fR \[u2014] including an origin that accepts plain \fBpermessage\-deflate\fR \[u2014] because a stream the guard cannot inflate would leave it choosing between closing every connection and reading nothing.
+.RE
+.PP
+.PP
+With \fBinspect\fR, every check above is about the inflated message: its size, its UTF\-8, the patterns, the type and the schema. Two bounds then matter that do not otherwise: \fBmax_message_bytes\fR is the largest message after inflation, and \fBmax_inflate_ratio\fR (default 100) is how far one message may expand \[u2014] a kilobyte on the wire becoming a megabyte in the application is the shape of the attack rather than the size of it, and past either bound the message is refused as \fBcompression_bomb\fR without being inflated any further.
+.PP
+An origin that claims an extension on a route that offered none is still refused at the 101, and a reserved bit arriving after all means what it says: a peer using an extension nobody negotiated.
+.PP
+Violations are security events with reason \fBwebsocket\fR, carrying the specific finding \[u2014] \fBprotocol\fR, \fBopcode\fR, \fBframe_size\fR, \fBmessage_size\fR, \fBrate\fR, \fBpattern\fR, \fBextension\fR, \fBcompression\fR, \fBcompression_bomb\fR, \fBjson\fR, \fBmessage_type\fR, \fBtype_size\fR, \fBtype_rate\fR or \fBschema\fR \[u2014] counted per route by \fBxproxyctl\fR and \fBGET /v1/websocket\fR, and exported as \fBxproxy_websocket_violations_total\fR, \fBxproxy_websocket_closed_total\fR, \fBxproxy_websocket_unknown_type_total\fR and, per named type, \fBxproxy_websocket_type_messages_total\fR and \fBxproxy_websocket_type_violations_total\fR.
 .SS "routes[].deceive"
 .PP
 A refusal is information. A scanner that gets 403 has learned that the request it sent was the interesting one, and it will vary that request until something is not refused \[u2014] the refusal is the oracle that tells it when it has found the way through. \fBdeceive\fR answers a client the route no longer trusts with something ordinary instead: the crawl completes, the data is wrong, and the request that would have worked looks exactly like the one that did not.
