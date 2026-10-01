@@ -6,6 +6,47 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Fixed (a reload that drops nothing, including on a datagram listener)
+
+- **A datagram listener could not be reloaded at all.** A UDP socket cannot be
+  bound twice, and a rebuilt listener opened its own: so a reload that changed
+  anything on a `tftp`, `ntp`, `dhcp`, `dhcpv6`, `bacnet` or `coap` listener, or
+  on the datagram side of `syslog` or `snmp`, failed with `bind: address already
+  in use` — about a port this process was itself holding. For the three cases
+  the engine did know bound UDP (`kind: udp`, plain `dns`, and any listener with
+  `h3`) it refused the reload up front and asked for a restart instead, which is
+  the same hole with a better error. An estate whose OT relays are datagram
+  protocols could not change a policy without stopping the daemon.
+
+  The datagram socket is now owned by the engine for the listener's life and
+  handed from one generation to the next, exactly as the accept socket has been:
+  a `packetSource` holds it and each generation reads a `packetFront`, which can
+  be closed without closing the socket. Those fronts are closed before the new
+  generation serves, so from the moment of the switch every datagram is answered
+  by the generation whose policy decided it — on these protocols a datagram is a
+  whole conversation, and one answered under the old rules a moment after a
+  reload is the bug an operator would report. Nothing is lost in between: the
+  socket is never closed, so what arrives during the handover waits in its
+  receive buffer. Writes are not stopped, because a reply the retiring
+  generation is composing belongs to a request it accepted.
+
+- **"Restart required" now means QUIC, and nothing else.** A QUIC connection is
+  not a datagram: it is cryptographic state inside the transport that holds the
+  socket, so handing the socket over would end every connection on it. That is
+  the one change a reload still refuses — a listener carrying `h3`, `tcp.quic`
+  or `dns.doq` changed on the same address — and the refusal now says why.
+  `config.ListenerHasQUIC` is what the engine and the dry run ask, where both
+  used to ask whether the listener bound UDP at all.
+
+- **Three documented limits were not limits.** The forward listener's page said
+  "the address and TLS settings need a restart like every listener": both
+  reload, the TLS settings by rebuilding the listener on the socket it already
+  holds and the address by binding the new one while the old drains. The dns
+  listener's page said "the address needs a restart"; it is the one change that
+  always worked. "Changing a tcp listener needs a restart" was true only with
+  `quic: true`. All three are corrected, and `docs/ARCHITECTURE.md` now
+  describes the datagram handover beside the stream one.
+
 ### Added (WebSocket: a message policy, not only a frame policy)
 
 - **`websocket_guard.types` is the policy the application actually has.** The

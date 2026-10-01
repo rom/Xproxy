@@ -212,7 +212,9 @@ a peer; the access log's `closed` field says which), `tcp_bytes_in`,
 flows are keyed by client address, so a client that migrates to a new
 address starts a new flow (its first packet is not an Initial and is
 dropped; the client falls back or retries); QUIC versions other than 1
-are dropped. Changing a tcp listener needs a restart.
+are dropped. A tcp listener's settings reload like any other; with
+`quic: true` a change on the same address needs a restart instead,
+because the flows are state inside the socket's transport.
 
 #### Transparent interception
 
@@ -851,8 +853,11 @@ Counters: `forward_requests`, `forward_tunnels`, `forward_tunnels_open`,
 `forward_intercept_refused`, `forward_intercept_passed`,
 `forward_intercept_bytes`, `forward_intercept_requests`,
 `forward_intercept_bytes_only`;
-`xproxy_forward_*` metrics. The policy and the users file reload; the
-address and TLS settings need a restart like every listener.
+`xproxy_forward_*` metrics. The policy and the users file apply in place,
+without touching a connection; the TLS settings and the address reload
+too, by rebuilding the listener on the socket it already holds (or
+binding the new address and draining the old one), so neither needs a
+restart.
 
 ### server.listeners[].dns (kind: dns)
 
@@ -871,7 +876,12 @@ NOTIMP otherwise); responses arriving as queries and packets from
 banned clients are dropped. A dns listener takes `address`, `dns` and
 optionally `tls`; bans and the global connection limits apply to TCP
 clients as on every listener. The policy, upstreams and cache bounds
-reload (the cache is kept); the address needs a restart.
+apply in place and the cache is kept. Anything else about the listener
+reloads by rebuilding it on the datagram socket it already holds, which
+is handed from one generation to the next: no query is lost and no
+restart is needed. With `doq` that handover is not possible -- a QUIC
+connection is state inside the transport -- so a change on the same
+address asks for a restart.
 
 With `tls` (certificates only, no ACME) the listener is encrypted: no
 plain UDP is bound, the TCP port serves DNS over TLS (RFC 7858, ALPN

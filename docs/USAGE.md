@@ -878,11 +878,21 @@ socket is handed to the new listener, so a socket passed by systemd or
 bound on a privileged port is kept and no client sees a refused
 connection; the old generation drains as for a removal. Certificate
 files, forward and dns policies still apply in place without a drain.
+A datagram socket is handed over the same way, so a `dns`, `udp`,
+`tftp`, `ntp`, `dhcp`, `dhcpv6`, `bacnet`, `coap`, `syslog` or `snmp`
+listener is rebuilt on the socket it already holds: the retiring
+generation stops reading before the new one starts, so every datagram
+after the switch is answered by the new policy, and one that arrives
+during the switch waits in the socket's receive buffer rather than
+being lost.
+
 The dry run lists the drains and the one case that still needs a
-restart, a listener with a UDP socket (`h3`, `tcp.quic`, plain `dns`)
-changed on the same address, because that socket stays bound until the
-drain ends. A port that cannot be bound fails the reload with the
-running set untouched.
+restart: a listener **carrying QUIC** (`h3`, `tcp.quic`, `dns.doq`)
+changed on the same address. A QUIC connection is cryptographic state
+inside the transport holding the socket, so handing the socket over
+would end every connection on it — refusing that one change is what
+keeps "a reload drops nothing" true. A port that cannot be bound fails
+the reload with the running set untouched.
 
 ### What is listening, and is it enforcing
 

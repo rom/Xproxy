@@ -695,9 +695,27 @@ happens before the runtime swap; a failure releases what was built and
 leaves the old set serving. After the swap, replaced and removed
 listeners close their front and drain (`http.Server.Shutdown` and the
 per kind equivalents) for `shutdown_timeout`; the socket is closed only
-when no replacement inherited it. A listener with a UDP socket cannot be
-rebuilt on the same address because the old socket stays bound until
-the drain ends, so that change still needs a restart.
+when no replacement inherited it.
+
+A datagram socket is inherited the same way, through a `packetSource`
+that owns it for the listener's life and gives each generation a
+`packetFront`: closing a front stops that generation reading without
+closing the socket. It has to be inherited rather than re-bound, because
+a UDP socket cannot be bound twice -- a rebuilt datagram listener that
+opened its own failed with "address already in use" on a port this
+process was itself holding. The fronts of the retiring generation are
+closed before the new one serves, so that from the moment of the switch
+every datagram is answered by the generation whose policy decided it; a
+datagram that arrives during the handover waits in the socket's receive
+buffer. Writes are not stopped, because a reply the old generation is
+composing belongs to a request it accepted.
+
+The one datagram socket that cannot be handed over carries **QUIC**
+(`h3`, `tcp.quic`, `dns.doq`): a QUIC connection is cryptographic state
+inside the transport that holds the socket, so a handover would end
+every connection on it. A change on the same address to such a listener
+is refused with "restart required", which is the only change a reload
+cannot make without dropping something.
 
 ## 6. Request path
 
