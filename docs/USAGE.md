@@ -934,7 +934,11 @@ the second column -- which rule, and an example of what was asked for.
 Over the socket it is `GET /v1/listeners`, which also carries the further
 addresses a kind took (an HTTP/3 endpoint, a datagram port beside a
 stream one), whether each listener is holding its socket, and the role
-and daemon that own it. It covers *this* daemon's listeners: a shared
+and daemon that own it. A forward listener with egress rules carries an
+`egress` section besides: how many rules it has, how many of them need a
+visible request, and whether it reads the requests inside the tunnels it
+decrypts. The last two belong together — rules that need a request, on a
+listener that is not reading, are a policy about the plain path alone. It covers *this* daemon's listeners: a shared
 estate configuration names the other roles' as well and each daemon drops
 the ones it does not own before the engine sees them, so ask each
 socket, or `GET /v1/fleet` for the estate.

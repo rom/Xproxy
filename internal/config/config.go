@@ -8364,6 +8364,9 @@ var ForwardActions = map[string]bool{"allow": true, "deny": true, "observe": tru
 // ForwardSNIModes are what the sni setting may say.
 var ForwardSNIModes = map[string]bool{"off": true, "observe": true, "enforce": true}
 
+// ForwardHTTPModes are what intercept.http may say.
+var ForwardHTTPModes = map[string]bool{"auto": true, "on": true, "off": true}
+
 // Masque configures UDP proxying (RFC 9298) and IP proxying (RFC 9484)
 // over extended CONNECT. Both need HTTP/2 or HTTP/3, so the listener
 // needs tls with h2 in its protocols.
@@ -8450,6 +8453,24 @@ type ForwardIntercept struct {
 	// YARA scans the decrypted stream, which is the point of doing any
 	// of this.
 	YARA *YARAPolicy `yaml:"yara"`
+	// HTTP reads the decrypted stream as HTTP/1.1 rather than relaying it
+	// as bytes, which is what makes the egress rules about a method, a
+	// path, a content type or a body size decide inside a tunnel. Without
+	// it those rules can only ever have covered a plain request through the
+	// proxy, which on an estate whose egress is HTTPS is almost nothing.
+	//
+	// auto (the default) reads the stream when the listener has a rule that
+	// needs a request and relays bytes when it has none, so the parsing
+	// happens exactly where there is something to decide and an existing
+	// deployment is unchanged until a rule asks for it. on reads it always,
+	// which is how to get a log line per request inside tunnels without
+	// writing a rule. off never does.
+	//
+	// What is read is HTTP/1.1. A tunnel that negotiated h2, or that turns
+	// out not to carry HTTP at all, is relayed as bytes whatever this says,
+	// and the output says which tunnels those were -- a proxy that silently
+	// read nothing would be worse than one that says it read nothing.
+	HTTP string `yaml:"http"`
 }
 
 // ForwardAuth is the credential source of a forward listener.

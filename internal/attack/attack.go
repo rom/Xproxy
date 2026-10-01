@@ -764,6 +764,10 @@ var itMappings = []mapping{
 	// somewhere, and whose refusals are therefore about where.
 	{kind: "forward", reason: "sni_mismatch", ids: []string{"T1572", "T1090"},
 		note: "the name in the handshake and the name in the CONNECT disagreeing is a tunnel to one host hidden behind permission for another"},
+	{kind: "forward", reason: "host_mismatch", ids: []string{"T1572", "T1090"},
+		note: "the same disagreement one layer in: a request inside an intercepted tunnel naming a host the tunnel was not opened to is one name's permission being spent on another"},
+	{kind: "forward", reason: "bad_request", ids: []string{"T1190"},
+		note: "a head inside a tunnel that the two ends would frame differently -- a length and a chunked encoding both -- is the smuggling shape, and an intercepting proxy is the only place it can be seen at all"},
 	{kind: "forward", reason: "masque_spoofed", ids: []string{"T1090"}},
 	{kind: "forward", reason: "masque_unsolicited", ids: []string{"T1090"}},
 	{kind: "forward", reason: "masque_context", ids: []string{"T1090"}},

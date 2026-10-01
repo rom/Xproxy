@@ -534,14 +534,20 @@ type and usually its length, so every selector above can be decided about it.
 A **CONNECT tunnel** carries a destination and nothing else. The method and the
 content types are inside TLS. So a rule naming `methods`, `paths`,
 `request_types`, `response_types` or a byte bound **decides nothing for a
-destination reached through a tunnel this listener does not intercept**.
+destination reached through a tunnel, unless this listener is reading inside
+it** — which is `intercept` with `http` left at its default, and is where those
+rules are worth what they look like they are worth. The messages in a tunnel
+that is being decrypted are ordinary HTTP, and the same rules decide about them
+in the same phases, so a policy means one thing on port 80 and the same thing on
+port 443. [Reading HTTP inside the tunnel](#reading-http-inside-the-tunnel) is
+what that path does and does not cover.
 
-That is not left to be discovered. Validation names the rules in that position,
+Without interception the limit stands, and it is not left to be discovered.
+Validation names the rules in that position — including on a listener that
+intercepts with `http: off`, which is the same silence written differently —
 `xproxyctl listeners` shows the listener's rule count, and `GET /v1/listeners`
-carries how many of them need a visible request. The remedy is `intercept` for
-the destinations those rules are about — or reading them as a policy for the
-plain path, which for an estate whose egress is almost all HTTPS means reading
-them as very little.
+carries an `egress` section with how many of them need a visible request and
+whether this listener reads inside its tunnels.
 
 The three honest limits of the rest:
 
@@ -610,6 +616,7 @@ things follow from that, and none of them is optional.
 | `leaf_ttl` | duration | `24h` | Validity of an issued certificate; at most 720h |
 | `max_cache` | int | `1024` | Issued certificates kept in memory; the oldest are dropped |
 | `alpn` | list | `["http/1.1"]` | Offered to the destination and accepted from the client; `h2` warns |
+| `http` | enum | `auto` | Read the plaintext as HTTP, so that a rule about a method, a path, a content type or a body size decides inside the tunnel too: `auto` does it when the listener has such a rule, `on` always, `off` never. See below |
 | `yara` | object | none | Rules over the decrypted stream, with the same keys as everywhere else |
 
 **The destination is verified first, and only then is a certificate
@@ -662,6 +669,71 @@ the client, user, destination, negotiated ALPN and the TLS version
 reached upstream. Counters: `forward_intercepted`,
 `forward_intercept_refused`, `forward_intercept_passed` and
 `forward_intercept_bytes`.
+
+##### Reading HTTP inside the tunnel
+
+Decrypting a tunnel is what makes the rest of this listener's policy
+possible; reading it as HTTP is what makes [the egress
+rules](#egress-rules-who-may-send-what-where-and-when) decide in there. `http` says whether to:
+
+- `auto`, the default, reads when there is something to decide — when
+  the listener has at least one rule naming a method, a path, a content
+  type or a body size. A policy that is only about destinations gains
+  nothing from parsing, and an estate that upgrades does not get a
+  behaviour it did not ask for.
+- `on` reads every intercepted tunnel, which is what to set while
+  writing those rules so that the access log carries the requests before
+  any rule refuses one.
+- `off` never reads, and the tunnel is relayed as bytes to YARA and the
+  rest exactly as before. Validation warns if rules that need a request
+  are written on a listener set this way, because that combination is a
+  policy that cannot fire.
+
+What is read is **HTTP/1.1**, which is what `alpn` offers. Three things
+are relayed as bytes instead, and each is counted, so "nothing was read"
+is never a silent answer:
+
+- a tunnel that negotiated **h2**, because this reads HTTP/1 and a proxy
+  guessing at HTTP/2 framing is a proxy that breaks sites;
+- a tunnel whose first bytes are **not a request line**, because SSH, a
+  database session and a line protocol inside TLS all happen, and
+  answering one with a 400 breaks it for no reason. The decision is the
+  version at the end of the line rather than a list of methods, so
+  `PROPFIND` and anything else an extension invented is still HTTP;
+- everything **after a 101**, because the connection has stopped being
+  request-and-response. A WebSocket through an intercepting proxy is
+  ordinary traffic and is relayed as such — what its messages carry is
+  the [WebSocket guard](#routeswebsocket_guard)'s question rather than this one.
+
+Those two counters are `forward_intercept_requests`, the requests read,
+and `forward_intercept_bytes_only`, the tunnels relayed without being
+read.
+
+**A refusal is an HTTP response on the client's own connection**: 403
+with the reason, and then the connection closes, because keeping it
+alive would mean reading the rest of a body nobody is allowed to send.
+The access line is `forward_intercept_request` with the method, the
+destination and the status — the method and not the path, because this
+listener logs destinations rather than URLs everywhere else, and an
+intercepted connection is the last place to start writing down more of
+what somebody asked for.
+
+**Requests are relayed as they arrived.** Nothing is added: no `Via`, no
+forwarded headers, because the point of interception here is that the
+destination sees what the client sent and judges the message the client
+wrote. What the parse does refuse is framing it cannot agree with — a
+request carrying both a length and a chunked encoding is the
+request-smuggling shape, and it is answered with 400, counted as
+`bad_request`, and logged as `forward_tunnel_bad_request` rather than
+being passed on for the destination to disagree about.
+
+**The `Host` a request names has to be the host the tunnel was opened
+to**, under the same `sni` setting and for the same reason: otherwise a
+client permitted to reach one name uses the connection to that name's
+address to ask for another. `enforce` answers 403 with reason
+`host_mismatch`, `observe` records `forward_tunnel_host_mismatch` and
+relays it, `off` does not look; a tunnel opened to an address is the
+same exception as it is for `sni`.
 
 ```yaml
 - name: egress
@@ -777,7 +849,8 @@ Counters: `forward_requests`, `forward_tunnels`, `forward_tunnels_open`,
 `forward_socks`, `forward_udp_associations`, `forward_udp_open`,
 `forward_udp_dropped`, `forward_intercepted`,
 `forward_intercept_refused`, `forward_intercept_passed`,
-`forward_intercept_bytes`;
+`forward_intercept_bytes`, `forward_intercept_requests`,
+`forward_intercept_bytes_only`;
 `xproxy_forward_*` metrics. The policy and the users file reload; the
 address and TLS settings need a restart like every listener.
 
@@ -9190,7 +9263,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `flow`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `tcp_denied`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `dhcp6_denied`, `coap_denied`, `opcua_denied`, `mms_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `amqp_denied`, `s7_denied`, `ntp_denied`, `ntske_denied`, `dns_denied`, `dns_threat_intel`, `dns_deceived`, `dns_tripwire`, `telnet_tripwire`, `ssh_tripwire`, `modbus_tripwire`, `iec104_tripwire`, `s7_tripwire`, `redis_tripwire`, `mysql_tripwire`, `postgres_tripwire`, `yara` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `flow`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `forward_host_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `tcp_denied`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `dhcp6_denied`, `coap_denied`, `opcua_denied`, `mms_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `amqp_denied`, `s7_denied`, `ntp_denied`, `ntske_denied`, `dns_denied`, `dns_threat_intel`, `dns_deceived`, `dns_tripwire`, `telnet_tripwire`, `ssh_tripwire`, `modbus_tripwire`, `iec104_tripwire`, `s7_tripwire`, `redis_tripwire`, `mysql_tripwire`, `postgres_tripwire`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |

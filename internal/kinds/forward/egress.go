@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/config"
+	"github.com/rom/xproxy/internal/proxy"
 	"github.com/rom/xproxy/internal/schedule"
 )
 
@@ -479,6 +480,25 @@ func (p *egressPolicy) Report() Report {
 			Hits: r.hits.Load(), Comment: r.comment, Request: r.request})
 	}
 	return rep
+}
+
+// EgressStatus is what GET /v1/listeners says about this listener's rules.
+//
+// nil where there are none, so the field is absent for every listener that is
+// not policing egress. The one number it exists for is RequestOnly beside
+// Reading: rules that need a visible request, on a listener that is not reading
+// inside its tunnels, are a policy about the plain path alone.
+func (f *forwardServer) EgressStatus() *proxy.EgressStatus {
+	p := f.policy.Load()
+	if p == nil || p.egress == nil {
+		return nil
+	}
+	rep := p.egress.Report()
+	if len(rep.Rules) == 0 {
+		return nil
+	}
+	return &proxy.EgressStatus{Rules: len(rep.Rules), RequestOnly: rep.RequestOnly,
+		Reading: f.wantsHTTP(p, "")}
 }
 
 // maxPatternFileBytes bounds a category file. A list of domains is a text file

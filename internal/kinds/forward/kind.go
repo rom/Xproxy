@@ -107,6 +107,11 @@ func (i *instance) Apply(lc config.Listener) error {
 	return i.f.apply(lc.Forward)
 }
 
+// EgressStatus implements proxy.EgressReporter, by the same route as
+// MasqueStatus: the engine's view reaches a forward listener without the
+// engine importing this package.
+func (i *instance) EgressStatus() *proxy.EgressStatus { return i.f.EgressStatus() }
+
 // MasqueStatus implements proxy.MasqueReporter, which is how the
 // management view reaches a forward listener without the engine
 // importing this package.

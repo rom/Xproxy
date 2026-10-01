@@ -804,6 +804,8 @@ them, which is why an operations centre can filter on
 
 | Reason | Technique | Why this one |
 |--------|-----------|--------------|
+| `bad_request` | T1190 | a head inside a tunnel that the two ends would frame differently -- a length and a chunked encoding both -- is the smuggling shape, and an intercepting proxy is the only place it can be seen at all |
+| `host_mismatch` | T1572, T1090 | the same disagreement one layer in: a request inside an intercepted tunnel naming a host the tunnel was not opened to is one name's permission being spent on another |
 | `masque_context` | T1090 |  |
 | `masque_spoofed` | T1090 |  |
 | `masque_unsolicited` | T1090 |  |

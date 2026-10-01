@@ -206,6 +206,30 @@ type Decoy interface{ DecoyStatus() (DecoyStatus, bool) }
 // the listener's name in the address view.
 type ExtraAddrs interface{ Addrs() map[string]string }
 
+// EgressStatus is what a forward listener's egress rules amount to,
+// beside the count the generic feature row already carries.
+//
+// It exists for one number: how many of the rules can only be decided
+// about a visible request. On a listener that is not reading inside its
+// tunnels those rules decide nothing there, which on an estate whose
+// egress is nearly all HTTPS is nearly nothing at all -- a policy that
+// looks stronger than it is, and the one thing a status view is for.
+type EgressStatus struct {
+	// Rules is how many rules the policy has.
+	Rules int `json:"rules"`
+	// RequestOnly is how many of them need a visible request.
+	RequestOnly int `json:"request_only"`
+	// Reading says the requests inside the tunnels this listener
+	// decrypts are read as HTTP, so those rules decide there too
+	// (intercept.http).
+	Reading bool `json:"reading"`
+}
+
+// EgressReporter is an instance with an egress policy of its own. It
+// returns nil where the listener has no rules, so the view carries the
+// section only for the listeners that have one.
+type EgressReporter interface{ EgressStatus() *EgressStatus }
+
 // Applier is an instance whose policy can be replaced where it stands,
 // so a reload does not have to rebind the socket and drop what is
 // connected to it.

@@ -23,12 +23,13 @@
 # way a rule list silently does nothing.
 #
 # **A rule about a method is a rule about a request.** Inside a CONNECT tunnel
-# there is no method and no content type: a rule naming one is skipped there, and
-# what decides is the part about the destination, the identity and the hour. On an
-# estate whose egress is nearly all HTTPS that matters a great deal, which is why
-# the `intercept` section below is not optional decoration — it is what makes the
-# method and content-type rules apply to anything. docs/protocols/forward.md
-# ("What a tunnel does not say") is the long form.
+# nothing is reading there is no method and no content type: a rule naming one is
+# skipped, and what decides is the part about the destination, the identity and
+# the hour. On an estate whose egress is nearly all HTTPS that matters a great
+# deal, which is why the `intercept` section below is not optional decoration —
+# it decrypts those tunnels, and `http` reads the requests inside them so that
+# the same rules decide there. docs/protocols/forward.md ("What a tunnel does
+# not say") is the long form.
 #
 # Validate: xproxy -config examples/forward/egress.yaml -validate
 version: 1
@@ -65,7 +66,8 @@ server:
         # asked for. Without this check a client allowed to reach a CDN can
         # handshake for anything else that CDN serves, and the destination
         # policy decided about a name nobody used. Start at observe, read the
-        # events for a week, then set enforce.
+        # events for a week, then set enforce. The same setting holds the Host
+        # header to the same answer inside the tunnels that are being read.
         sni: enforce
 
         # Named sets of destinations, so a rule is one sentence rather than a
@@ -189,6 +191,13 @@ server:
         # unread, and an estate that does not write exclusions is reading its
         # people's private traffic.
         intercept:
+          # Decrypting is half of it; reading the requests inside is what makes
+          # `methods` and `response_types` above decide in there. `auto` would
+          # do it here too, because this policy has such rules — `on` is written
+          # out so that the access log carries every request inside a tunnel
+          # from the first day, which is what a rule gets written from. `off`
+          # would relay the plaintext to YARA and to nothing else.
+          http: on
           ca_cert_file: /etc/xproxy/mitm/ca.pem
           ca_key_file: /etc/xproxy/mitm/ca-key.pem
           hosts:

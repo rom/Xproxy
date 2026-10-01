@@ -669,6 +669,8 @@ type Stats struct {
 	InterceptRefused   atomic.Uint64
 	InterceptPassed    atomic.Uint64
 	InterceptBytes     atomic.Uint64
+	InterceptRequests  atomic.Uint64
+	InterceptBytesOnly atomic.Uint64
 	SSHRecorded        atomic.Uint64
 	SSHRejected        atomic.Uint64
 	SSHAuthFailed      atomic.Uint64
@@ -1275,6 +1277,8 @@ type Snapshot struct {
 	InterceptRefused        uint64             `json:"forward_intercept_refused"`
 	InterceptPassed         uint64             `json:"forward_intercept_passed"`
 	InterceptBytes          uint64             `json:"forward_intercept_bytes"`
+	InterceptRequests       uint64             `json:"forward_intercept_requests"`
+	InterceptBytesOnly      uint64             `json:"forward_intercept_bytes_only"`
 	SSHRecorded             uint64             `json:"ssh_recorded"`
 	SSHRejected             uint64             `json:"ssh_rejected"`
 	SSHAuthFailed           uint64             `json:"ssh_auth_failed"`
@@ -1839,6 +1843,8 @@ func (s *Stats) snapshot() Snapshot {
 		Intercepted:             s.Intercepted.Load(),
 		InterceptRefused:        s.InterceptRefused.Load(),
 		InterceptPassed:         s.InterceptPassed.Load(),
+		InterceptRequests:       s.InterceptRequests.Load(),
+		InterceptBytesOnly:      s.InterceptBytesOnly.Load(),
 		InterceptBytes:          s.InterceptBytes.Load(),
 		SSHRecorded:             s.SSHRecorded.Load(),
 		SSHRejected:             s.SSHRejected.Load(),
