@@ -210,6 +210,31 @@ type WSGuardStatus struct {
 	Violations  uint64 `json:"violations"`
 	Closed      uint64 `json:"closed"`
 	Action      string `json:"action"`
+	// Compression is what the route does about permessage-deflate:
+	// strip, refuse or inspect.
+	Compression string `json:"compression,omitempty"`
+	// Types is the per-message-type policy with what each type has
+	// carried, in the order the configuration names them.
+	Types []WSTypeStatus `json:"types,omitempty"`
+	// UnknownTypes is allow, observe or deny, and Unknown counts the
+	// messages whose type the route does not name. On a route that
+	// allows them the count is the number that says the list is
+	// incomplete; on one that denies them it is what was refused.
+	UnknownTypes string `json:"unknown_types,omitempty"`
+	Unknown      uint64 `json:"unknown,omitempty"`
+}
+
+// WSTypeStatus is one message type of a route's policy.
+type WSTypeStatus struct {
+	Name              string `json:"name"`
+	Messages          uint64 `json:"messages"`
+	Violations        uint64 `json:"violations"`
+	MaxBytes          int64  `json:"max_bytes,omitempty"`
+	MessagesPerSecond int    `json:"messages_per_second,omitempty"`
+	// Direction is client, server or both.
+	Direction string `json:"direction,omitempty"`
+	// Schema says this type carries a schema every message must match.
+	Schema bool `json:"schema,omitempty"`
 }
 
 // OriginCheckResult is one endpoint's origin-lock probe.

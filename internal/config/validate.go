@@ -1469,6 +1469,115 @@ func (v *validator) websocketGuard(p string, r *Route) {
 	if !g.Masked() {
 		v.warnf("%s.websocket_guard.require_masked: false accepts unmasked client frames, which RFC 6455 forbids and which is how a request is smuggled past an intermediary", p)
 	}
+	v.websocketCompression(p, g)
+	v.websocketTypes(p, g)
+}
+
+// maxWebSocketTypes bounds how many message types one route may name. A
+// route with more kinds of message than this is several APIs.
+const maxWebSocketTypes = 64
+
+// websocketCompression checks what the route does about permessage-deflate.
+func (v *validator) websocketCompression(p string, g *WebSocketGuard) {
+	switch g.Compression {
+	case "", "strip":
+		g.Compression = "strip"
+	case "refuse":
+	case "inspect":
+		if g.Inspect == "none" {
+			// Inflating every message and then reading none of them is
+			// the cost of inspection without the inspection.
+			v.errf("%s.websocket_guard.compression: inspect with inspect: none inflates every message and reads none of them; use strip, or inspect text", p)
+		}
+	default:
+		v.errf("%s.websocket_guard.compression: must be strip, refuse or inspect", p)
+	}
+	if g.MaxInflateRatio == 0 {
+		g.MaxInflateRatio = 100
+	}
+	if g.MaxInflateRatio < 2 || g.MaxInflateRatio > 10000 {
+		v.errf("%s.websocket_guard.max_inflate_ratio: must be between 2 and 10000", p)
+	}
+}
+
+// websocketTypes checks the per-message-type policy.
+func (v *validator) websocketTypes(p string, g *WebSocketGuard) {
+	if g.TypeField == "" {
+		g.TypeField = "type"
+	}
+	if len(g.TypeField) > 64 || strings.ContainsAny(g.TypeField, "\x00\n\r") {
+		v.errf("%s.websocket_guard.type_field: must be a JSON member name of at most 64 characters", p)
+	}
+	switch g.UnknownTypes {
+	case "":
+		if len(g.Types) > 0 {
+			g.UnknownTypes = "deny"
+		} else {
+			g.UnknownTypes = "allow"
+		}
+	case "allow", "observe", "deny":
+	default:
+		v.errf("%s.websocket_guard.unknown_types: must be allow, observe or deny", p)
+	}
+	if len(g.Types) == 0 {
+		if g.UnknownTypes == "deny" {
+			v.errf("%s.websocket_guard.unknown_types: deny with no types refuses every message on the route", p)
+		}
+		return
+	}
+	if g.Inspect == "none" {
+		// A type is read out of the message, so a policy about types on
+		// a route that keeps no bytes decides about nothing.
+		v.errf("%s.websocket_guard: types with inspect: none decides nothing, because no message is read", p)
+	}
+	if len(g.Types) > maxWebSocketTypes {
+		v.errf("%s.websocket_guard.types: at most %d types", p, maxWebSocketTypes)
+	}
+	seen := map[string]bool{}
+	for i := range g.Types {
+		t := &g.Types[i]
+		q := fmt.Sprintf("%s.websocket_guard.types[%d]", p, i)
+		switch {
+		case t.Name == "":
+			v.errf("%s.name: required", q)
+		case len(t.Name) > 128 || strings.ContainsAny(t.Name, "\x00\n\r"):
+			v.errf("%s.name: at most 128 characters and no control characters", q)
+		case seen[t.Name]:
+			// Two entries for one type name: the second would never be
+			// reached, so one of them is not the policy somebody wrote.
+			v.errf("%s.name: %q is already a type on this route", q, t.Name)
+		}
+		seen[t.Name] = true
+		if t.MaxBytes < 0 || t.MaxBytes > g.MaxMessageBytes {
+			v.errf("%s.max_bytes: must be between 0 and max_message_bytes (%d)", q, g.MaxMessageBytes)
+		}
+		if t.MessagesPerSecond < 0 || t.MessagesPerSecond > 1_000_000 {
+			v.errf("%s.messages_per_second: must be between 0 and 1000000", q)
+		}
+		switch t.Direction {
+		case "", "both", "client", "server":
+		default:
+			v.errf("%s.direction: must be client, server or both", q)
+		}
+		if t.SchemaFile == "" {
+			continue
+		}
+		v.file(q+".schema_file", t.SchemaFile)
+		// A schema is checked against the inspected prefix, so a message
+		// this type allows to be longer than that prefix cannot be
+		// validated -- and an unvalidatable message under a schema is
+		// refused rather than passed, which is a refusal the operator
+		// should hear about now rather than in production.
+		bound := t.MaxBytes
+		if bound == 0 {
+			bound = g.MaxMessageBytes
+		}
+		if bound > g.MaxInspectBytes {
+			v.warnf("%s: a message of this type may be larger than max_inspect_bytes (%d), and one that is "+
+				"cannot be validated against the schema, so it is refused; raise max_inspect_bytes or lower max_bytes",
+				q, g.MaxInspectBytes)
+		}
+	}
 }
 
 // keyExchange checks the named groups. An empty list is the default,

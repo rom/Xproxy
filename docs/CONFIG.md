@@ -9937,6 +9937,22 @@ only recorded, depending on `action`.
 | `deny_patterns` | list of RE2 | `[]` | Patterns matched against inspected messages |
 | `action` | `close`, `log` | `close` | Close the connection, or record and forward |
 | `close_code` | int | protocol's own | Override the close code; 3000-4999 only |
+| `compression` | `strip`, `refuse`, `inspect` | `strip` | What happens to a client's `permessage-deflate` offer; see below |
+| `max_inflate_ratio` | int | `100` | How far one message may expand before it is a bomb rather than a message; `compression: inspect` only |
+| `type_field` | string | `type` | The JSON member that names a message's type |
+| `types` | list | `[]` | The policy per kind of message; see below |
+| `unknown_types` | `allow`, `observe`, `deny` | `deny` with `types`, else `allow` | A message whose type `types` does not name |
+| `require_json` | bool | `false` | Refuse a text message that is not a JSON object |
+
+Each entry of `types`:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | string | required | The value of `type_field` this entry is about |
+| `max_bytes` | int | `0` | Largest message of this type, after inflation; 0 leaves it to `max_message_bytes` |
+| `messages_per_second` | int | `0` | This type's rate, per connection and per direction |
+| `schema_file` | path | | A JSON Schema (JSON or YAML) every message of this type must match |
+| `direction` | `client`, `server`, `both` | `both` | Which way this type travels |
 
 The structural checks are the half with no false positives, because
 they are the protocol's own rules: a reserved bit set without a
@@ -9958,22 +9974,107 @@ Messages larger than `max_inspect_bytes` are checked up to that bound
 and forwarded: the alternative is buffering whatever a client chooses
 to send.
 
-**Compression is not negotiated on an inspected route.** A
-`permessage-deflate` frame cannot be inspected at all, so where a guard is
-present the client's `Sec-WebSocket-Extensions` offer is **stripped from the
-upgrade request**: the origin never sees it, never accepts it, and both ends
-fall back to uncompressed frames. That is deliberate and it is the friendly
-half — browsers offer the extension on every WebSocket, and leaving the offer
-to the endpoints meant they agreed compression behind the proxy, the client
-was told it had succeeded, and the first data frame then closed the connection
-with a protocol error. An origin that claims an extension although none was
-offered is refused at the 101 with `502`, because its frames would be
-unreadable. A reserved bit arriving after all is still refused, and now means
-what it says: a peer using an extension nobody negotiated.
+#### What kinds of message the route carries
 
-Violations are security events with reason `websocket`, counted per
-route by `xproxyctl` and `GET /v1/websocket`, and exported as
-`xproxy_websocket_violations_total` and `xproxy_websocket_closed_total`.
+The bounds above are about the connection, and `max_message_bytes` for a
+connection is the bound of its largest message — which is the bound that lets
+every other message be that large too. A WebSocket API carries several kinds of
+message, and the bounds that are right for a keepalive are nowhere near the ones
+that are right for an order.
+
+`types` is where that is written. Each entry names a value of `type_field` (the
+JSON member an application uses for this, conventionally `type`) and says how
+large that kind of message may be, how often it may arrive, which direction it
+travels in, and the schema it must match:
+
+```yaml
+websocket_guard:
+  max_message_bytes: 1048576
+  type_field: op
+  types:
+    - {name: ping, max_bytes: 64, messages_per_second: 2}
+    - {name: subscribe, max_bytes: 4096, messages_per_second: 10, schema_file: /etc/xproxy/ws/subscribe.json}
+    - {name: order, max_bytes: 16384, messages_per_second: 50, schema_file: /etc/xproxy/ws/order.json}
+    - {name: tick, direction: server}
+  unknown_types: observe
+```
+
+**`unknown_types` is the positive half.** A message whose type is not in the
+list is the interesting one: `deny` refuses it, which is what a route that knows
+its API wants and is the default once `types` names anything; `observe` records
+it and forwards it, which is how the list gets written (run for a week, read
+`xproxy_websocket_unknown_type_total{route}` and the events, promote what
+belongs); `allow` ignores it. A route with no `types` allows them, so nothing
+changes for a configuration written before this existed.
+
+**Where each check decides is not the same.** The type is read out of the
+message, so it is known when the message is complete:
+
+- From the **client** that is still before anything reaches the origin — the
+  guard already holds a client message until the whole of it has passed
+  inspection, so a per-type bound refuses the message rather than reporting it.
+- From the **origin** each frame is forwarded as it is checked, so a bound
+  broken by a fragmented message is found at the end of it: the connection
+  closes and what had already been written has gone. That is the same limit the
+  pattern list has had, and it is why a `direction: server` type is a statement
+  about what the application does rather than a gate in front of it.
+- A **schema** needs the whole message, and the guard keeps `max_inspect_bytes`
+  of it. A message under a schema that is longer than that cannot be validated
+  and is refused rather than passed, because a check that stops applying above a
+  size the sender chooses is not a check. Validation warns where a type's
+  `max_bytes` makes that certain.
+- The type policy reads **text** messages, because the type is a JSON member. A
+  binary message is a format this does not claim to read, and `require_json`
+  (which refuses a text message that is not a JSON object) is how a route whose
+  messages are all JSON says so.
+
+#### Compression
+
+A `permessage-deflate` frame cannot be read without being inflated, so this is
+the setting that decides whether an inspected route is also a compressed one.
+
+- **`strip`**, the default, takes the client's `Sec-WebSocket-Extensions` offer
+  out of the upgrade request: the origin never sees it, never accepts it, and
+  both ends fall back to uncompressed frames, which is what the extension is
+  designed to do when it is not agreed. This is the friendly half — browsers
+  offer the extension on every WebSocket, and leaving the offer to the endpoints
+  meant they agreed compression behind the proxy, the client was told it had
+  succeeded, and the first data frame then closed the connection with a protocol
+  error that blamed the peer.
+- **`refuse`** answers the upgrade with `400` instead, for an estate that would
+  rather a client's own logs recorded the refusal than have its offer quietly
+  changed.
+- **`inspect`** keeps compression and reads it. The offer forwarded to the origin
+  is narrowed to `permessage-deflate; client_no_context_takeover;
+  server_no_context_takeover`, whatever the client asked for: with context
+  takeover a message can only be inflated by a decoder that has seen every
+  message before it, and a proxy holding that state per direction per connection
+  has agreed to unbounded work on behalf of whoever opened the connection.
+  Without takeover each message is a stream of its own. An acceptance that is
+  not that offer is refused at the 101 with `502` — including an origin that
+  accepts plain `permessage-deflate` — because a stream the guard cannot inflate
+  would leave it choosing between closing every connection and reading nothing.
+
+With `inspect`, every check above is about the inflated message: its size, its
+UTF-8, the patterns, the type and the schema. Two bounds then matter that do not
+otherwise: `max_message_bytes` is the largest message after inflation, and
+`max_inflate_ratio` (default 100) is how far one message may expand — a kilobyte
+on the wire becoming a megabyte in the application is the shape of the attack
+rather than the size of it, and past either bound the message is refused as
+`compression_bomb` without being inflated any further.
+
+An origin that claims an extension on a route that offered none is still refused
+at the 101, and a reserved bit arriving after all means what it says: a peer
+using an extension nobody negotiated.
+
+Violations are security events with reason `websocket`, carrying the specific
+finding — `protocol`, `opcode`, `frame_size`, `message_size`, `rate`, `pattern`,
+`extension`, `compression`, `compression_bomb`, `json`, `message_type`,
+`type_size`, `type_rate` or `schema` — counted per route by `xproxyctl` and
+`GET /v1/websocket`, and exported as `xproxy_websocket_violations_total`,
+`xproxy_websocket_closed_total`, `xproxy_websocket_unknown_type_total` and,
+per named type, `xproxy_websocket_type_messages_total` and
+`xproxy_websocket_type_violations_total`.
 
 ### routes[].deceive
 

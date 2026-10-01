@@ -74,6 +74,19 @@ certificate-bound tokens for sender constraint, API keys with a lifecycle, LDAP,
 Basic, WebAuthn, SAML as a service provider, TOTP as a second factor, and client
 certificate identity in the RFC 9440 form.
 
+**What an upgraded connection carries**, with `websocket_guard`. Everything
+above happens before the 101; after it, a request-oriented proxy stops looking,
+and applications put their real API in there — chat, trading, terminals,
+subscriptions. The guard parses RFC 6455 frames in both directions and applies
+the protocol's own rules (opcodes, masking, fragmentation, control frames,
+UTF-8), the connection's bounds (frame, message, rate), and then the
+application's: `types` names the kinds of message the route carries, each with
+its own size bound, its own rate and a JSON Schema it must match, and
+`unknown_types` says what happens to a message the list does not name.
+`compression` is where `permessage-deflate` is decided — stripped from the offer
+so everything stays readable, refused so the client is told, or negotiated on
+terms the proxy can inflate so the messages are both compressed and inspected.
+
 **Whether the request is what it claims**, with the WAF: SecLang rules through
 Coraza with the OWASP Core Rule Set, a learning mode, per-rule statistics and
 measured confidence, gradual enforcement by block share and canary client, XML
@@ -166,6 +179,14 @@ and serves the request.
   identity and pass it on; what a user may do with a given object is the
   application's, and the API abuse detection watches for enumeration rather than
   deciding per object.
+- **It does not rewrite a frame.** The WebSocket guard refuses or records; it
+  never edits what is travelling, because an intermediary that changes a message
+  is an intermediary both endpoints then disagree with.
+- **It does not serve WebSocket over HTTP/2's extended CONNECT (RFC 8441).**
+  The listener does not advertise that setting, so a client that would have used
+  it falls back to the HTTP/1.1 upgrade — which is the one the frame guard reads.
+  A WebTransport session over HTTP/3 is relayed as streams and datagrams and is
+  not message-inspected.
 - **It does not see inside an end-to-end encrypted body.** A body encrypted by the
   client for the origin is opaque, and the WAF has nothing to say about it.
 - **It does not guarantee the WAF catches things.** A rule set is a set of rules.
