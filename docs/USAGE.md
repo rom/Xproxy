@@ -17,6 +17,7 @@ configuration patterns and reading the logs. Installation is covered in
 | `xproxyctl` | Control tool talking to a daemon's Unix socket |
 | `xproxy-admin` | Web GUI: a separate process serving a browser interface over the same socket |
 | `xproxy-replay` | Reads a session recording and shows it: a terminal session replayed with its timing, a VNC one decoded into frames or one self-contained page, an RDP one as the timeline of what it did. It opens no sockets and needs no daemon |
+| `xproxy-simulate` | Sends traffic through a configuration, offline, and reports what it decided — or through two configurations, and reports only what a change would decide differently. Every listener kind is in it, so it answers about any role's listeners; it opens no management socket and needs no daemon |
 
 ### The four daemons
 
@@ -937,6 +938,178 @@ and daemon that own it. It covers *this* daemon's listeners: a shared
 estate configuration names the other roles' as well and each daemon drops
 the ones it does not own before the engine sees them, so ask each
 socket, or `GET /v1/fleet` for the estate.
+
+### Policy simulation: what a change would decide differently
+
+Every other answer in this document is about traffic that already happened.
+The one an operator actually needs before a change window is about traffic
+that has not: introduce a WAF profile, narrow a Modbus write window, tighten
+a forward-proxy destination list — what stops working, and what starts?
+
+`xproxy-simulate` answers that by running the engine. It loads a
+configuration, starts it in its own process with everything that reaches
+outward switched off, sends traffic through it, and reports the decision for
+each piece. Given two configurations it reports only what moved:
+
+```
+$ xproxy-simulate -offline -a /etc/xproxy/xproxy.yaml -b /tmp/with-waf.yaml \
+    -requests corpus/edge.http
+/etc/xproxy/xproxy.yaml: 4 listeners, switched off: acme cluster metrics
+  copied, not opened: bans.state_file
+/tmp/with-waf.yaml: 4 listeners, switched off: acme cluster metrics
+  copied, not opened: bans.state_file
+
+7 inputs, 5 the same, 2 changed: 2 newly refused
+
+CHANGE         LISTENER  INPUT                                    BEFORE       AFTER
+newly refused  edge      what the scanner report had              allowed 200  refused (waf) 403
+newly refused  edge      a checkout with an implausible quantity   allowed 200  refused (waf) 403
+```
+
+The second row is the one this is for. Nobody needed a tool to tell them the
+injection would be refused; the checkout being refused with it is the finding,
+and it is cheaper to read here than in an incident. Where a change moves
+decisions both ways, newly allowed is listed first, because a hole is worse
+than an outage. Exit status is 1 whenever anything moved, so the command gates
+a change in review or in a pipeline; `-json` gives the whole answer, every
+event included.
+
+The same thing on the plant, where the question is a write window rather
+than a rule set:
+
+```
+$ xproxy-simulate -offline -a /etc/xproxy/xot.yaml -b /tmp/narrower.yaml \
+    -frames corpus/line1.hex -listener line1
+
+4 inputs, 2 the same, 2 changed: 1 newly allowed, 1 newly refused
+
+CHANGE         LISTENER  INPUT               BEFORE             AFTER
+newly allowed  line1     write register 400  refused (no_rule)  allowed
+newly refused  line1     write register 0    allowed            refused (no_rule)
+```
+
+Traffic comes from one of three places. `-requests` and `-frames` are text
+files somebody can type, paste and keep in the repository beside the
+configuration, because what an operator has in the minute they need this is
+a request out of a security log or a frame out of a vendor document:
+
+```
+# corpus/edge.http -- a comment between items is ignored
+>>> listener=edge name="what the scanner report had"
+GET /?id=1%27+OR+1%3D1-- HTTP/1.1
+Host: shop.example.com
+
+>>> listener=edge name="the checkout that has to keep working"
+POST /checkout HTTP/1.1
+Host: shop.example.com
+Content-Length: 9
+
+qty=99999
+```
+
+```
+# corpus/line1.hex -- whitespace inside a frame is ignored
+>>> listener=line1 name="write multiple registers at 40001"
+0002 0000 0009 01 10 0000 0001 02 0064
+```
+
+`-pcap` is the third: a capture file from `xproxyctl capture` replayed
+against the proposed configuration, which is how to ask the question about
+traffic the estate actually carried rather than traffic somebody imagined.
+
+```
+$ xproxyctl capture start -duration 10m
+$ xproxy-simulate -offline -a active.yaml -b proposed.yaml \
+    -pcap /var/lib/xproxy/capture/xproxy-20260930-101500.pcapng -listener edge
+```
+
+#### What is switched off, and what is not
+
+Nothing reaches a real upstream: every pool is pointed at a sink inside the
+process, keeping the pool names and the per-route assignments, since which
+pool a request goes to is itself a decision. A TLS listener gets a throwaway
+certificate and the estate's private keys are not read.
+
+Nothing is written outside the simulation's own directory either, which is
+two different problems. The state a decision depends on — the ban store, the
+access ledger, the asset and API inventories — is **copied** in, so the run
+starts from what the estate has: a banned address stays banned, an approved
+grant still approves, a device already in the inventory is not a new device.
+What the run produces — a learning report, a session recording — is
+**redirected** there. Those change no decision, which is exactly why they are
+easy to overlook, and a learning report overwritten with a simulation's
+traffic is the worst of them, because somebody promotes those into a policy
+later. `cluster`, `fleet`, `acme`, `tracing`,
+`icap`, `scim`, `ingress`, `capture`, `threat_intel` and the OTLP exporter in
+`metrics` are switched off, and so is `sandbox` — Landlock applied by a
+simulator locks the simulator. The output names every section that was.
+
+What is **not** switched off is the policy, which is the point: the filters,
+any WebAssembly modules, the rule files and the secrets provider load
+exactly as the daemon loads them. That is why `-offline` is required rather
+than assumed — it is the operator saying this configuration may be started
+on this machine — and it is worth being precise about what the flag does and
+does not promise. It does not sandbox anything. It asserts.
+
+#### What it does not answer
+
+Three limits, each of them deliberate.
+
+Inputs are sent one at a time, and every security event between the write
+and the reply is attributed to that input. That exactness is what makes the
+report worth acting on, and it means a rate limit, a correlation window or
+an abuse sequence sees a serial client rather than the estate's concurrency.
+Policy that depends on concurrency is not policy this answers.
+
+The sink reads and says nothing. It does not pretend to be a PLC, a mail
+server or a directory, because synthesising a plausible reply for thirty
+protocols would mean inventing answers, so policy that decides on what the
+device replied is outside what this covers.
+
+A client address reaches the policy only where the listener parses a PROXY
+protocol header. Where it does, the simulation sends one -- `client=` on a
+corpus item, or the address out of a capture -- and adds loopback to
+`trusted_proxies` so the header is read, saying both in the output. That is
+what makes an address-based rule testable, which matters most on the plant,
+where an address and a unit identifier are most of what a policy has to work
+with:
+
+```
+DECISION  LISTENER  KIND    REASON   INPUT
+allowed   line1     modbus           a master writing the setpoint
+refused   line1     modbus  no_rule  somebody else writing the setpoint
+```
+
+Where the listener does not parse a header the address cannot be delivered,
+and the run names that listener and says the policy saw the loopback address
+instead. It is reported rather than ignored for the obvious reason: an
+operator reading `allowed` for an input they had labelled with an address
+their allow list excludes would conclude the allow list does not work.
+
+#### allowed, refused, and neither
+
+A refusal is an event that refused, named with the reason the security log
+uses, or an HTTP status of 400 or more. An alert that did not refuse is not a
+refusal — the alert-only modes exist precisely so the operation goes through
+— but it is in the output, because a rule about to start refusing usually
+alerts first.
+
+`allowed` is asserted only on evidence: the listener relayed the input to the
+sink, or answered the client itself. Absence of a refusal is not evidence. A
+listener that speaks bytes rather than HTTP answers only when the device
+does, so a frame it could not finish reading produces no reply and no event
+at all, and reading that as `allowed` would put a hole in the report exactly
+where an operator would rely on it. So there is a third answer:
+
+```
+DECISION  LISTENER  KIND    REASON                                                          INPUT
+error     line1     modbus  nothing was relayed, answered or refused: an incomplete input?   a frame with a wrong length
+```
+
+`error` is a real answer rather than a failure of the tool: no decision was
+taken, and the corpus is usually why. It is never counted as agreement
+between two configurations either — an input only one side could answer is
+reported as unanswerable, not as unchanged.
 
 ### Work orders: the change reference somebody filed
 

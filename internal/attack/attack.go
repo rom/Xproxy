@@ -236,6 +236,8 @@ var enterpriseCatalogue = []entry{
 		"Data leaving over a protocol that exists for something else: a name query carrying payload in its labels, a tunnel inside a service the policy allows out."},
 	{"T1059", "Command and Scripting Interpreter", []Tactic{TacticExecution},
 		"A command interpreter reached through a protocol that is not meant to be one: COPY ... PROGRAM, a LOAD from a program, xp_cmdshell, a Redis MODULE or SCRIPT, a shell command on a bastion the policy does not grant."},
+	{"T1071", "Application Layer Protocol", []Tactic{TacticCommandAndControl},
+		"An ordinary protocol carrying something else: a request through a forward proxy to a destination no egress rule covers, which is where a channel is built out of traffic that looks like browsing."},
 	{"T1071.004", "Application Layer Protocol: DNS", []Tactic{TacticCommandAndControl},
 		"Name resolution used as a channel rather than as a lookup: a name on a block list or a policy zone, a query whose shape is a tunnel."},
 	{"T1078", "Valid Accounts", []Tactic{TacticDefenseEvasion, TacticInitialAccess, TacticPersistence, TacticPrivilegeEsc},
@@ -268,6 +270,8 @@ var enterpriseCatalogue = []entry{
 		"A write to a store the policy grants only reads of: the database, key space or directory changed rather than read."},
 	{"T1565.002", "Data Manipulation: Transmitted Data Manipulation", []Tactic{TacticImpact},
 		"Data altered in flight rather than at rest: telemetry that repeats or has stopped moving as it crosses this relay, which is what an operator's screen is drawn from."},
+	{"T1567", "Exfiltration Over Web Service", []Tactic{TacticExfiltration},
+		"Data leaving through a service that exists to receive it: an upload to file sharing, a paste site, a webhook -- which is why an egress policy about a method and a destination category is worth more than one about addresses."},
 	{"T1572", "Protocol Tunneling", []Tactic{TacticCommandAndControl},
 		"A channel inside a channel: a forwarded port, an upgrade to a stream protocol, a datagram tunnel through a proxy that was asked for a request."},
 	{"T1621", "Multi-Factor Authentication Request Generation", []Tactic{TacticCredentialAccess},
@@ -768,6 +772,13 @@ var itMappings = []mapping{
 	{kind: "forward", reason: "udp_disabled", ids: []string{"T1572"}},
 	{kind: "forward", reason: "tunnel_limit", ids: []string{"T1499"}},
 	{kind: "forward", reason: "udp_peer_table_full", ids: []string{"T1499"}},
+	{kind: "forward", reason: "rule_deny", ids: []string{"T1048", "T1567", "T1071"},
+		note: "an egress rule refusing names what was being sent and where: a body to a destination " +
+			"nobody approved is exfiltration over an alternative protocol or over a web service, and " +
+			"the proxy is the application layer it went through"},
+	{kind: "forward", reason: "no_rule", ids: []string{"T1071", "T1090"},
+		note: "a destination no egress rule covers is the one an estate has not decided about, " +
+			"which is where a tool that brought its own destination list goes first"},
 
 	// The layer 4 kinds, where the destination is the only thing said.
 	{kind: "tcp", reason: "destination_not_allowed", ids: []string{"T1090", "T1046"},

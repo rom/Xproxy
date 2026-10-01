@@ -1711,7 +1711,7 @@ and referenced by routes, in the order the route lists them:
 **From source.** Go 1.26 or newer, no cgo, no C toolchain:
 
 ```sh
-make build      # bin/{xproxy,xgate,xrelay,xproxyctl,xproxy-admin,xproxy-fleet,xproxy-replay,xsigner}, static and stripped
+make build      # bin/{xproxy,xgate,xrelay,xot,xproxyctl,xproxy-admin,xproxy-fleet,xproxy-replay,xproxy-simulate,xsigner}, static and stripped
 make check      # fmt, vet, race tests, lint — what CI runs
 sudo make install                 # PREFIX=/usr/local: binaries, units, man pages,
                                   # completions, the JSON schema, Grafana and Prometheus assets
@@ -1887,6 +1887,7 @@ script:
 | Records | `tail`, `session` (list, show, play), `capture` (start, stop, status), `reopen-logs` |
 | Views | `tui` — a full screen terminal view; the web GUI is `xproxy-admin`, with viewer and operator roles, validated configuration editing, graphs and live logs |
 | Recordings | `xproxy-replay` reads a session file and shows it: a terminal session replayed with its timing, a VNC one decoded into frames or one self-contained page, an RDP one as the timeline of what it did. It needs no daemon and opens no sockets |
+| Policy simulation | `xproxy-simulate` sends traffic through a configuration, offline, and reports what it decided — or through two configurations, and reports only what a change would decide differently, exiting non-zero when anything moved. It starts the engine rather than reasoning about the rules, points every upstream at a sink in its own process and names every section it switched off. It needs no daemon |
 
 Four JSON log streams (access, error, security, audit) go to files,
 journald or syslog with per-stream redaction; a request identifier ties

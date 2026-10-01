@@ -4609,12 +4609,44 @@
       "description": "ForwardAuth is the credential source of a forward listener.",
       "type": "object",
       "properties": {
+        "groups": {
+          "description": "Groups names sets of users, so an egress rule is written about the build agents rather than about eleven account names -- and so the estate's own authorization section, which has had a groups selector all along, finally has something to compare on this listener. It is a map from group name to member names. A name in no group is in no group: there is no implicit \"everybody\", because a rule that matched everybody by accident is the kind of rule nobody notices.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
         "realm": {
           "description": "Realm is sent in Proxy-Authenticate. Default \"proxy\".",
           "type": "string"
         },
         "users_file": {
           "description": "UsersFile holds name:hash lines from xproxyctl htpasswd. Re-read on reload.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ForwardCategory": {
+      "description": "ForwardCategory is a named set of destinations. A category is how an egress policy stops being a wall of domains. \"No uploads to file sharing\" is one sentence about one category, and the list behind it is maintained in one place -- or in a file, because the list an estate actually has came from somewhere else and has a few thousand lines in it.",
+      "type": "object",
+      "properties": {
+        "file": {
+          "description": "File holds further patterns, one per line, # for a comment. Absolute. It is read at start and on reload, and a file that cannot be read fails the load rather than leaving the category quietly smaller than the policy says.",
+          "type": "string"
+        },
+        "hosts": {
+          "description": "Hosts are destination patterns in the same spelling as allow and deny: an exact name, *.suffix for a domain and everything under it, an address, or a CIDR.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "description": "Name is what a rule names. Rules refer to it exactly, so it is compared without case but not globbed: a typo in a rule is a rule about nothing, and validation refuses one.",
           "type": "string"
         }
       },
@@ -4707,6 +4739,13 @@
             }
           ]
         },
+        "categories": {
+          "description": "Categories are named sets of destinations a rule can talk about, so an egress policy is written in the estate's own words rather than repeating a list of domains in every rule.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ForwardCategory"
+          }
+        },
         "connect_timeout": {
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
@@ -4755,6 +4794,17 @@
             "type": "integer"
           }
         },
+        "rules": {
+          "description": "Rules are the egress policy: who may send what, where, and when. First match decides and an unmatched request is refused.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ForwardRule"
+          }
+        },
+        "sni": {
+          "description": "SNI decides what happens when a tunnel this listener is *not* intercepting carries a TLS handshake whose server name is not the destination the client asked for. It is the one check that makes a name-based egress policy mean something without interception. A client that is allowed to reach cdn.example.com can open a tunnel there and then handshake for anything else the same address serves -- which on a shared CDN is a great many things, and is how domain fronting works. The destination policy then decided about a name nobody used. enforce refuses it, observe records it and relays it anyway, off does not look. Default observe: a name that disagrees is almost always this, and occasionally a client with a stale DNS answer or a configuration that pins one address for several names, so an estate reads its own traffic before this refuses anything. A handshake with no name at all -- which is what Encrypted Client Hello looks like from here -- is not a mismatch and is never refused by this.",
+          "type": "string"
+        },
         "socks5": {
           "description": "SOCKS5 also accepts SOCKS5 (RFC 1928) on this listener. The two protocols share the port: a greeting starts with the version byte and an HTTP request with a method, so one byte tells them apart. Destinations, ports, credentials, bans and logging are the same.",
           "type": "boolean"
@@ -4762,6 +4812,135 @@
         "socks_udp": {
           "description": "SOCKSUDP allows UDP ASSOCIATE, which is how DNS and QUIC travel through a SOCKS proxy. Each association is bound to the client address that opened it and dies with its control connection.",
           "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ForwardRule": {
+      "description": "ForwardRule is one decision about egress. Every selector it names has to hold, and a rule that names none matches everything, which is how a catch-all is written. First match decides, and a destination no rule matched is refused -- the same shape the OT relays use, for the same reason: a policy that permits what nobody wrote a rule for is a policy whose gaps are invisible. # What a rule can be decided from A forward proxy sees two very different things. A plain request through the proxy carries its method, its URL and its content types, so every selector here can be decided about it. A CONNECT tunnel carries a destination and nothing else: the method and the content types are inside TLS. So a rule that names method, path or content type is a rule about a request, and it decides nothing for a destination reached through a tunnel this listener does not intercept. That is not left to be discovered -- validation says which rules those are, and `xproxyctl listeners` marks them -- but it is the operator's to resolve, by intercepting those destinations or by accepting that the rule covers the plain path only.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "Action is allow, deny or observe. Default deny: a rule somebody forgot to finish refuses rather than permits. observe records a match and keeps looking, which is how a rule is tried on real traffic before it decides anything.",
+          "type": "string"
+        },
+        "categories": {
+          "description": "Where to: categories by name, destination patterns in the allow and deny spelling, and ports.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "comment": {
+          "description": "Comment is carried into the event and the shadow ledger, which is where a change number belongs.",
+          "type": "string"
+        },
+        "groups": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "hosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "methods": {
+          "description": "What: request-level selectors, decidable where the request is visible. Methods are compared in upper case. Paths are globs in which * does not cross a slash, so \"/upload/*\" is one directory.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "description": "Name is what the security event, the shadow ledger and the status view call this rule. A decision nobody can name is a decision nobody can find in a log.",
+          "type": "string"
+        },
+        "networks": {
+          "description": "Networks are the client addresses or CIDRs this rule is about.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "not_categories": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "not_groups": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "not_hosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "not_networks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "not_users": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "ports": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "request_bytes_over": {
+          "description": "RequestBytesOver and ResponseBytesOver match a body larger than this. A declared length is checked before anything is sent; a body with no declared length is counted as it goes past, and then the connection is cut rather than the rest being carried -- what has already gone cannot be recalled, which is the whole reason a size rule is worth less on egress than a destination rule.",
+          "type": "integer"
+        },
+        "request_types": {
+          "description": "RequestTypes and ResponseTypes match the media type without its parameters, and take a trailing * for a whole tree: \"image/*\".",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "response_bytes_over": {
+          "type": "integer"
+        },
+        "response_types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "schedule": {
+          "description": "Schedule limits the rule to certain hours. A rule outside its window does not match, so the next rule -- or the refusal -- decides.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/ModbusSchedule"
+            }
+          ]
+        },
+        "users": {
+          "description": "Who: the name the proxy authenticated with auth, and the groups something it trusts said that name is in. Compared without case. On a listener with no auth the name is empty, so a rule naming users or groups matches nobody -- which makes it a rule about people on a listener that has none, and validation says so.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false

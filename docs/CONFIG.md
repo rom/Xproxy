@@ -422,6 +422,10 @@ connection limits and the header timeouts apply as on every listener.
 | `auth` | object | none | Require `Proxy-Authorization: Basic` credentials; without it the listener is open to every client the bans and limits admit |
 | `auth.users_file` | path | required | `name:hash` lines from `xproxyctl htpasswd`; re-read on reload and a bad file fails the reload; verified credentials are cached for five minutes and the cache is dropped on reload |
 | `auth.realm` | string | `proxy` | Sent in `Proxy-Authenticate` with 407 |
+| `auth.groups` | map | none | Group name to member names, so a rule is written about the build agents rather than about eleven accounts; also what the estate's `authorization` section compares its `groups` selector against on this listener |
+| `sni` | enum | `observe` | What to do when a tunnel this listener is *not* intercepting carries a TLS handshake whose server name is not the destination the CONNECT asked for: `enforce` refuses it, `observe` records it and relays it, `off` does not look. See below |
+| `categories` | list | `[]` | Named sets of destinations an egress rule can talk about; see below |
+| `rules` | list | `[]` | The egress policy: who may send what, where and when; see below |
 | `connect_timeout` | duration | `10s` | Name resolution and dial bound per destination; at most 5m |
 | `idle_timeout` | duration | `10m` | Close a tunnel after no bytes in either direction; at most 24h |
 | `max_tunnels` | int | `10000` | Open CONNECT tunnels on this listener; over it CONNECT answers 503 |
@@ -430,6 +434,154 @@ connection limits and the header timeouts apply as on every listener.
 | `socks_udp` | bool | `false` | Allow SOCKS5 `UDP ASSOCIATE` (requires `socks5`) |
 | `masque` | object | none | UDP and IP proxying over extended CONNECT (RFC 9298, RFC 9484); see below |
 | `intercept` | object | none | Terminate TLS inside a CONNECT tunnel and read what passes through it; see below |
+
+#### Egress rules: who may send what, where, and when
+
+`allow` and `deny` answer whether a destination exists for this listener at
+all. `rules` answer the question after that, which is the one an estate running
+a forward proxy actually has: the build agents may reach the package mirrors and
+nothing else, nobody may POST to file sharing, the vendor's support portal is
+reachable during the change window.
+
+```yaml
+forward:
+  auth:
+    users_file: /etc/xproxy/proxy.htpasswd
+    groups:
+      agents: [build1, build2, build3]
+      staff: [alice, bob]
+  categories:
+    - name: mirrors
+      hosts: ["*.debian.org", "proxy.golang.org", "registry.npmjs.org"]
+    - name: file-sharing
+      file: /etc/xproxy/categories/file-sharing.txt   # one pattern per line
+  rules:
+    # The denials come first. First match decides, so a broad deny written
+    # underneath an allow is a deny the allow has already decided for.
+    - name: no-uploads-to-file-sharing
+      action: deny
+      categories: [file-sharing]
+      methods: [POST, PUT, PATCH]
+      comment: "change 2026-41"
+    - name: no-executables-back
+      action: deny
+      response_types: ["application/octet-stream", "application/x-dosexec"]
+    - name: no-large-uploads
+      action: deny
+      request_bytes_over: 10485760
+
+    - name: agents-to-mirrors
+      action: allow
+      groups: [agents]
+      categories: [mirrors]
+    - name: staff-reads
+      action: allow
+      groups: [staff]
+      methods: [GET, HEAD, CONNECT]
+    - name: vendor-in-the-change-window
+      action: allow
+      hosts: ["support.vendor.example"]
+      schedule: {days: [tue], from: "02:00", to: "04:00", timezone: Europe/Stockholm}
+      comment: "CR-2026-118"
+
+    # Nothing else is permitted. This rule only makes that visible in the
+    # report; without it the refusal is the same, under the reason no_rule.
+    - name: everything-else
+      action: observe
+```
+
+**First match decides, and a destination no rule matched is refused**, under the
+reason `no_rule` — the same shape the OT relays use, for the same reason: a
+policy that permits what nobody wrote a rule for is a policy whose gaps are
+invisible. A `rules` list therefore needs a rule that allows, or the listener
+refuses everything.
+
+An `allow` rule means this policy has nothing to object to; it does not skip
+what comes after it. The imported threat lists and the estate's own
+`authorization` section still decide, so a listener's rule can narrow the
+estate's policy and never widen it.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `categories[].name` | string | required | What a rule names; compared without case and never globbed, so a typo is refused by validation rather than becoming a rule about nothing |
+| `categories[].hosts` | list | `[]` | Destination patterns in the `allow`/`deny` spelling: an exact name, `*.suffix`, an address or a CIDR |
+| `categories[].file` | path | none | Further patterns, one per line, `#` for a comment; absolute, read at start and on reload, and a file that cannot be read fails the load |
+| `rules[].name` | string | required | What the security event, the shadow ledger and the report call this rule |
+| `rules[].action` | enum | `deny` | `allow`, `deny` or `observe`; `observe` records a match and keeps looking |
+| `rules[].users`, `not_users` | list | `[]` | The name the proxy authenticated, compared without case |
+| `rules[].groups`, `not_groups` | list | `[]` | Groups from `auth.groups` |
+| `rules[].networks`, `not_networks` | list | `[]` | Client addresses or CIDRs |
+| `rules[].categories`, `not_categories` | list | `[]` | Category names this listener defines |
+| `rules[].hosts`, `not_hosts` | list | `[]` | Destination patterns, as for a category |
+| `rules[].ports` | list of int | `[]` | Destination ports |
+| `rules[].methods` | list | `[]` | HTTP methods, upper case |
+| `rules[].paths` | list | `[]` | Request path globs: `*` within one segment, `**` across segments |
+| `rules[].request_types` | list | `[]` | Request media types; `type/*` for a whole tree. The parameters are dropped, so `text/html; charset=utf-8` is `text/html`, and a header that is not a media type matches nothing |
+| `rules[].response_types` | list | `[]` | Response media types, decided when the response head arrives |
+| `rules[].request_bytes_over` | int | `0` | Match a request body larger than this |
+| `rules[].response_bytes_over` | int | `0` | Match a response body larger than this |
+| `rules[].schedule` | object | none | Hours the rule is in force, in the spelling [`modbus`](#modbus) uses; outside them the rule does not match |
+| `rules[].comment` | string | none | Carried into the event and the ledger, which is where a change number belongs |
+
+##### What a rule can be decided from
+
+A forward proxy sees two different things, and this is the limit to understand
+before writing a policy here.
+
+A **plain request** through the proxy carries its method, its path, its content
+type and usually its length, so every selector above can be decided about it.
+
+A **CONNECT tunnel** carries a destination and nothing else. The method and the
+content types are inside TLS. So a rule naming `methods`, `paths`,
+`request_types`, `response_types` or a byte bound **decides nothing for a
+destination reached through a tunnel this listener does not intercept**.
+
+That is not left to be discovered. Validation names the rules in that position,
+`xproxyctl listeners` shows the listener's rule count, and `GET /v1/listeners`
+carries how many of them need a visible request. The remedy is `intercept` for
+the destinations those rules are about — or reading them as a policy for the
+plain path, which for an estate whose egress is almost all HTTPS means reading
+them as very little.
+
+The three honest limits of the rest:
+
+- A **response** rule is decided when the response head arrives, which is after
+  the destination was contacted. A body nobody is allowed to receive still does
+  not have to arrive, but the request did leave.
+- A **byte bound** on a body whose length was declared is decided before
+  anything is sent. On a body with no declared length — a chunked upload — the
+  bytes are counted as they travel and the connection is cut past the bound.
+  What has already gone cannot be recalled, which is why a size rule is worth
+  less on egress than a destination rule.
+- A rule about **users or groups** on a listener with no `auth` matches nobody,
+  because there is no name. Validation warns rather than guessing.
+
+#### The server name inside a tunnel
+
+A client allowed to reach `cdn.example.com` can open a tunnel there and then
+handshake for anything else that address serves — which on a shared CDN is a
+great many things, and is how domain fronting works. The destination policy then
+decided about a name nobody used.
+
+`sni` is the check that closes it, and it needs no interception: the first bytes
+of the tunnel are a ClientHello the client was going to send anyway, and the
+name in it either is the destination or is not.
+
+- `enforce` refuses a mismatch (`forward_sni_mismatch`, reason `sni_mismatch`,
+  and the client address observed for a ban).
+- `observe`, the default, records it and relays it. A name that disagrees is
+  almost always fronting and occasionally a client with a stale DNS answer, so
+  an estate reads its own traffic before this refuses any of it.
+- `off` does not look.
+
+A handshake with **no** server name is not a mismatch and is never refused by
+this: that is what Encrypted Client Hello looks like from here, and refusing it
+would be refusing a client for using a privacy feature. A tunnel opened to an
+address rather than a name is not a mismatch either — there the policy checked
+the address, and the bytes go to that address whatever the handshake says.
+
+`intercept` has carried this check for its own tunnels since it was written;
+`sni` is the same check for the tunnels nothing is decrypting.
 
 #### TLS interception on a forward listener
 

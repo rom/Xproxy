@@ -21,7 +21,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 # xproxy-fleet and xproxy-replay were shipped to every Mac and installed on none.
 # macOS has no launchd job for xgate or xrelay, so neither is built or shipped for
 # it; test/deploy holds this list and the Makefile's together.
-BINARIES="xproxy xproxyctl xproxy-admin xproxy-fleet xproxy-replay"
+BINARIES="xproxy xproxyctl xproxy-admin xproxy-fleet xproxy-replay xproxy-simulate"
 
 [ "$(id -u)" -eq 0 ] || { echo "run as root (sudo)"; exit 1; }
 [ "$(uname -s)" = Darwin ] || { echo "this installer is for macOS"; exit 1; }

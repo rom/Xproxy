@@ -200,6 +200,14 @@ func applyDefaults(c *Config) {
 			if f.Auth != nil {
 				setStr(&f.Auth.Realm, "proxy")
 			}
+			// observe rather than enforce, because a server name that
+			// disagrees with the destination is usually domain fronting and
+			// occasionally a client with a stale answer: an estate reads its
+			// own traffic before this refuses any of it.
+			setStr(&f.SNI, "observe")
+			for j := range f.Rules {
+				setStr(&f.Rules[j].Action, "deny")
+			}
 			if ic := f.Intercept; ic != nil {
 				if ic.VerifyUpstream == nil {
 					t := true

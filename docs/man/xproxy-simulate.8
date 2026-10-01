@@ -1,0 +1,192 @@
+.\" Generated from Markdown by internal/manpage; do not edit.
+.TH XPROXY\-SIMULATE 8 "" "Xproxy" "System administration"
+.nh
+.ad l
+.SH "NAME"
+.PP
+xproxy\-simulate \- what a configuration would decide, and what a change to it would decide differently
+.SH "SYNOPSIS"
+.PP
+\fBxproxy\-simulate\fR \fB\-offline\fR \fB\-a\fR \fIFILE\fR [\fB\-b\fR \fIFILE\fR] (\fB\-requests\fR \fIFILE\fR | \fB\-frames\fR \fIFILE\fR | \fB\-pcap\fR \fIFILE\fR \fB\-listener\fR \fINAME\fR) [\fB\-listener\fR \fINAME\fR] [\fB\-quiet\fR] [\fB\-json\fR]
+.SH "DESCRIPTION"
+.PP
+\fBxproxy\-simulate\fR answers one question about a configuration change: what would it decide differently. Given one configuration it reports the decision for each piece of traffic it is handed. Given two it reports only what moved between them, and exits non\-zero when anything did, so a change can be gated on it in review or in a pipeline.
+.PP
+It is not a linter and it does not reason about the rules. It starts the engine \[u2014] this configuration, in this process, offline \[u2014] and sends the traffic through it, so the answer comes from the same code that would decide it in production: the same WAF profiles and rule files, the same route matching, the same protocol policies, the same filters. A rule that matches here matches there.
+.PP
+Every listener kind is linked into this program, so it answers about a configuration file naming any role\(aqs listeners without the operator having to work out which of \fBxproxy\fR(8), \fBxgate\fR(8), \fBxrelay\fR(8) or \fBxot\fR(8) would have served it. It opens no management socket and needs no running daemon.
+.PP
+Nothing reaches a real upstream. Every pool is pointed at a sink inside this process, keeping the pool names and the per\-route assignments \[u2014] which pool a request goes to is part of the policy \[u2014] and changing only where that pool is. A TLS listener is given a throwaway certificate; the estate\(aqs private keys are not read. Every section that reaches outside the machine is switched off, and the output names each one that was, so the answer is never quietly narrower than it looks.
+.PP
+Nothing is written outside the simulation\(aqs own directory. The state a decision depends on \[u2014] the ban store, the access ledger, the asset and API inventories \[u2014] is copied into it, so the run starts from what the estate has: a banned address stays banned, a grant still approves, a device already in the inventory is not a new device. What a run produces \[u2014] a learning report, a session recording \[u2014] is redirected into it. Those change no decision, which is why they are easy to overlook; a learning report overwritten with a simulation\(aqs traffic would be the worst of them, since those get promoted into policies.
+.SH "WHY \-offline IS REQUIRED"
+.PP
+Neutralising a configuration is not the same as making it inert. The policy itself runs: the filters, any WebAssembly modules, the rule files and the secrets provider are loaded exactly as the daemon would load them. That is the point \[u2014] a simulation of something other than the real policy answers the wrong question \[u2014] and it is also a decision about this machine that belongs to the operator rather than to this program. \fB\-offline\fR is that assertion. Without it nothing is started and nothing is read.
+.SH "OPTIONS"
+.PP
+.TS
+allbox;
+lbw(0.9i) lbx
+lw(0.9i) lx.
+T{
+Option
+T}	T{
+Description
+T}
+T{
+\fB\-\:offline\fR
+T}	T{
+Assert that this configuration may be started here. Required;\: see above.
+T}
+T{
+\fB\-\:a\fR \fIFILE\fR
+T}	T{
+The configuration to ask about.
+T}
+T{
+\fB\-\:b\fR \fIFILE\fR
+T}	T{
+A second configuration. With it,\: only the decisions that differ between the two are reported.
+T}
+T{
+\fB\-\:requests\fR \fIFILE\fR
+T}	T{
+A corpus of HTTP requests (see \fBCORPUS FORMATS\fR).
+T}
+T{
+\fB\-\:frames\fR \fIFILE\fR
+T}	T{
+A corpus of protocol frames,\: written as hex.
+T}
+T{
+\fB\-\:pcap\fR \fIFILE\fR
+T}	T{
+A pcapng file written by \fBxproxyctl capture\fR: the requests it recorded are replayed as inputs. Needs \fB\-\:listener\fR.
+T}
+T{
+\fB\-\:listener\fR \fINAME\fR
+T}	T{
+The listener to send to,\: for inputs that do not name one. A configuration with exactly one listener needs no \fB\-\:listener\fR at all.
+T}
+T{
+\fB\-\:quiet\fR
+T}	T{
+Print only what changed.
+T}
+T{
+\fB\-\:json\fR
+T}	T{
+Print the whole answer \[u2014] what was switched off,\: every outcome,\: every event,\: and the differences \[u2014] as JSON.
+T}
+T{
+\fB\-\:version\fR
+T}	T{
+Print the version and exit.
+T}
+.TE
+.SH "CORPUS FORMATS"
+.PP
+Both text formats are line based, take comments, and separate items with \fB>>>\fR, which may carry \fBlistener=\fR, \fBname=\fR, \fBclient=\fR and \fBraw\fR.
+.PP
+HTTP requests, for \fB\-requests\fR:
+.PP
+.RS 4
+.nf
+.ft CR
+# a comment between items is ignored
+>>> listener=edge name="what the scanner report flagged"
+GET /?id=1%27+OR+1%3D1\-\- HTTP/1.1
+Host: shop.example.com
+
+>>> listener=edge name="the checkout that has to keep working"
+POST /checkout HTTP/1.1
+Host: shop.example.com
+Content\-Length: 9
+
+qty=99999
+.ft
+.fi
+.RE
+.PP
+Line endings are normalised to CRLF and an item with no blank line in it gets the terminator a request head needs, because a request refused for a bare newline would be a finding about the corpus rather than about the policy. \fBraw\fR on the separator line skips both, which is how to send something deliberately malformed.
+.PP
+Protocol frames, for \fB\-frames\fR:
+.PP
+.RS 4
+.nf
+.ft CR
+>>> listener=line1 name="write multiple registers at 40001"
+0002 0000 0009 01 10 0000 0001 02 0064
+.ft
+.fi
+.RE
+.PP
+Whitespace inside a frame is ignored, so bytes can be grouped the way the protocol\(aqs own documentation groups them, and several lines concatenate into one payload.
+.SH "DECISIONS"
+.PP
+Each input is reported as \fBallowed\fR, \fBrefused\fR or \fBerror\fR.
+.PP
+\fBrefused\fR is an event that refused it, named with the reason the security log uses, or an HTTP status of 400 or more. An alert that did not refuse is not a refusal \[u2014] the whole point of the alert\-only modes is that the operation went through \[u2014] but it is carried in the output, since a rule about to start refusing usually alerts first.
+.PP
+\fBallowed\fR is asserted only on evidence: the listener relayed the input to the sink, or answered the client itself. Absence of a refusal is not evidence. A listener that speaks bytes rather than HTTP answers only when the device does, so an input it could not finish reading produces no reply and no event at all, and reading that as \fBallowed\fR would put a hole in the report exactly where an operator would rely on it.
+.PP
+\fBerror\fR is therefore a real answer and not a failure of the tool: nothing was relayed, answered or refused, so no decision was taken. Usually the input is incomplete \[u2014] a frame whose length field disagrees with its contents, a request head that was never terminated.
+.SH "WHAT IT DOES NOT SIMULATE"
+.PP
+Inputs are sent one at a time, and every security event between the write and the reply is attributed to that input. That is what makes the attribution exact, and it is the one deliberate difference from real traffic: a rate limit, a correlation window or an abuse sequence sees a serial client rather than whatever concurrency the estate has. Policy that depends on concurrency is not policy this answers.
+.PP
+The sink does not pretend to be a PLC, a mail server or a directory. Synthesising a plausible reply for thirty protocols would mean inventing answers, so policy that decides on what the device replied is outside what this covers.
+.PP
+A client address reaches the policy only where the listener parses a PROXY protocol header. Where it does, one is sent \[u2014] \fBclient=\fR on a corpus item, or the address out of a capture \[u2014] and loopback is added to \fBtrusted_proxies\fR so that header is read; both are named in the output. Where it does not, the address cannot be delivered, and the run names that listener and says the policy saw the loopback address instead, because an operator reading \fBallowed\fR for an input labelled with an address their allow list excludes would conclude the allow list does not work.
+.SH "EXIT STATUS"
+.PP
+0 when one configuration ran, or when two decided everything the same. 1 when the two configurations differ, or on an error. 2 on a usage mistake, which includes the missing \fB\-offline\fR.
+.SH "EXAMPLES"
+.PP
+What a new WAF profile would change, before it is deployed:
+.PP
+.RS 4
+.nf
+.ft CR
+xproxy\-simulate \-offline \-a /etc/xproxy/xproxy.yaml \-b /tmp/with\-waf.yaml \e
+    \-requests corpus/edge.http
+.ft
+.fi
+.RE
+.PP
+What tightening a Modbus write window would change on the plant:
+.PP
+.RS 4
+.nf
+.ft CR
+xproxy\-simulate \-offline \-a /etc/xproxy/xot.yaml \-b /tmp/narrower.yaml \e
+    \-frames corpus/line1.hex \-listener line1
+.ft
+.fi
+.RE
+.PP
+The traffic the proxy actually handled, out of a capture window, under the configuration that is about to replace the running one:
+.PP
+.RS 4
+.nf
+.ft CR
+xproxyctl capture start \-duration 10m
+xproxy\-simulate \-offline \-a /etc/xproxy/xproxy.yaml \-b /tmp/new.yaml \e
+    \-pcap /var/lib/xproxy/capture/xproxy\-20260930\-101500.pcapng \-listener edge
+.ft
+.fi
+.RE
+.PP
+In a pipeline, where a non\-zero exit is the review trigger:
+.PP
+.RS 4
+.nf
+.ft CR
+xproxy\-simulate \-offline \-a active.yaml \-b proposed.yaml \-requests corpus/edge.http \-json \e
+  > report.json || echo "the policy decides differently; see report.json"
+.ft
+.fi
+.RE
+.SH "SEE ALSO"
+.PP
+\fBxproxyctl\fR(8), \fBxproxy\fR(8), \fBxgate\fR(8), \fBxrelay\fR(8), \fBxot\fR(8), \fBxproxy\-replay\fR(8), \fBxproxy.yaml\fR(5)

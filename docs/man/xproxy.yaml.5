@@ -1093,8 +1093,8 @@ A \fBkind: forward\fR listener is an explicit proxy that clients configure in th
 .PP
 .TS
 allbox;
-lbw(1.0i) lbw(0.9i) lbw(0.9i) lbx
-lw(1.0i) lw(0.9i) lw(0.9i) lx.
+lbw(1.1i) lbw(0.9i) lbw(0.9i) lbx
+lw(1.1i) lw(0.9i) lw(0.9i) lx.
 T{
 Key
 T}	T{
@@ -1166,6 +1166,42 @@ T}	T{
 \fBproxy\fR
 T}	T{
 Sent in \fBProxy\-\:Authenticate\fR with 407
+T}
+T{
+\fBauth.\:groups\fR
+T}	T{
+map
+T}	T{
+none
+T}	T{
+Group name to member names,\: so a rule is written about the build agents rather than about eleven accounts;\: also what the estate\(aqs \fBauthorization\fR section compares its \fBgroups\fR selector against on this listener
+T}
+T{
+\fBsni\fR
+T}	T{
+enum
+T}	T{
+\fBobserve\fR
+T}	T{
+What to do when a tunnel this listener is \fInot\fR intercepting carries a TLS handshake whose server name is not the destination the CONNECT asked for: \fBenforce\fR refuses it,\: \fBobserve\fR records it and relays it,\: \fBoff\fR does not look. See below
+T}
+T{
+\fBcategories\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Named sets of destinations an egress rule can talk about;\: see below
+T}
+T{
+\fBrules\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The egress policy: who may send what,\: where and when;\: see below
 T}
 T{
 \fBconnect_\:timeout\fR
@@ -1240,6 +1276,301 @@ T}	T{
 Terminate TLS inside a CONNECT tunnel and read what passes through it;\: see below
 T}
 .TE
+.SS "Egress rules: who may send what, where, and when"
+.PP
+\fBallow\fR and \fBdeny\fR answer whether a destination exists for this listener at all. \fBrules\fR answer the question after that, which is the one an estate running a forward proxy actually has: the build agents may reach the package mirrors and nothing else, nobody may POST to file sharing, the vendor\(aqs support portal is reachable during the change window.
+.PP
+.RS 4
+.nf
+.ft CR
+forward:
+  auth:
+    users_file: /etc/xproxy/proxy.htpasswd
+    groups:
+      agents: [build1, build2, build3]
+      staff: [alice, bob]
+  categories:
+    \- name: mirrors
+      hosts: ["*.debian.org", "proxy.golang.org", "registry.npmjs.org"]
+    \- name: file\-sharing
+      file: /etc/xproxy/categories/file\-sharing.txt   # one pattern per line
+  rules:
+    # The denials come first. First match decides, so a broad deny written
+    # underneath an allow is a deny the allow has already decided for.
+    \- name: no\-uploads\-to\-file\-sharing
+      action: deny
+      categories: [file\-sharing]
+      methods: [POST, PUT, PATCH]
+      comment: "change 2026\-41"
+    \- name: no\-executables\-back
+      action: deny
+      response_types: ["application/octet\-stream", "application/x\-dosexec"]
+    \- name: no\-large\-uploads
+      action: deny
+      request_bytes_over: 10485760
+
+    \- name: agents\-to\-mirrors
+      action: allow
+      groups: [agents]
+      categories: [mirrors]
+    \- name: staff\-reads
+      action: allow
+      groups: [staff]
+      methods: [GET, HEAD, CONNECT]
+    \- name: vendor\-in\-the\-change\-window
+      action: allow
+      hosts: ["support.vendor.example"]
+      schedule: {days: [tue], from: "02:00", to: "04:00", timezone: Europe/Stockholm}
+      comment: "CR\-2026\-118"
+
+    # Nothing else is permitted. This rule only makes that visible in the
+    # report; without it the refusal is the same, under the reason no_rule.
+    \- name: everything\-else
+      action: observe
+.ft
+.fi
+.RE
+.PP
+\fBFirst match decides, and a destination no rule matched is refused\fR, under the reason \fBno_rule\fR \[u2014] the same shape the OT relays use, for the same reason: a policy that permits what nobody wrote a rule for is a policy whose gaps are invisible. A \fBrules\fR list therefore needs a rule that allows, or the listener refuses everything.
+.PP
+An \fBallow\fR rule means this policy has nothing to object to; it does not skip what comes after it. The imported threat lists and the estate\(aqs own \fBauthorization\fR section still decide, so a listener\(aqs rule can narrow the estate\(aqs policy and never widen it.
+.PP
+.TS
+allbox;
+lbw(1.4i) lbw(0.7i) lbw(0.9i) lbx
+lw(1.4i) lw(0.7i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBcategories[].\:name\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+What a rule names;\: compared without case and never globbed,\: so a typo is refused by validation rather than becoming a rule about nothing
+T}
+T{
+\fBcategories[].\:hosts\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Destination patterns in the \fBallow\fR/\:\fBdeny\fR spelling: an exact name,\: \fB*.\:suffix\fR,\: an address or a CIDR
+T}
+T{
+\fBcategories[].\:file\fR
+T}	T{
+path
+T}	T{
+none
+T}	T{
+Further patterns,\: one per line,\: \fB#\fR for a comment;\: absolute,\: read at start and on reload,\: and a file that cannot be read fails the load
+T}
+T{
+\fBrules[].\:name\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+What the security event,\: the shadow ledger and the report call this rule
+T}
+T{
+\fBrules[].\:action\fR
+T}	T{
+enum
+T}	T{
+\fBdeny\fR
+T}	T{
+\fBallow\fR,\: \fBdeny\fR or \fBobserve\fR;\: \fBobserve\fR records a match and keeps looking
+T}
+T{
+\fBrules[].\:users\fR,\: \fBnot_\:users\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The name the proxy authenticated,\: compared without case
+T}
+T{
+\fBrules[].\:groups\fR,\: \fBnot_\:groups\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Groups from \fBauth.\:groups\fR
+T}
+T{
+\fBrules[].\:networks\fR,\: \fBnot_\:networks\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Client addresses or CIDRs
+T}
+T{
+\fBrules[].\:categories\fR,\: \fBnot_\:categories\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Category names this listener defines
+T}
+T{
+\fBrules[].\:hosts\fR,\: \fBnot_\:hosts\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Destination patterns,\: as for a category
+T}
+T{
+\fBrules[].\:ports\fR
+T}	T{
+list of int
+T}	T{
+\fB[]\fR
+T}	T{
+Destination ports
+T}
+T{
+\fBrules[].\:methods\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+HTTP methods,\: upper case
+T}
+T{
+\fBrules[].\:paths\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Request path globs: \fB*\fR within one segment,\: \fB**\fR across segments
+T}
+T{
+\fBrules[].\:request_\:types\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Request media types;\: \fBtype/\:*\fR for a whole tree. The parameters are dropped,\: so \fBtext/\:html; charset=\:utf\-\:8\fR is \fBtext/\:html\fR,\: and a header that is not a media type matches nothing
+T}
+T{
+\fBrules[].\:response_\:types\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Response media types,\: decided when the response head arrives
+T}
+T{
+\fBrules[].\:request_\:bytes_\:over\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Match a request body larger than this
+T}
+T{
+\fBrules[].\:response_\:bytes_\:over\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Match a response body larger than this
+T}
+T{
+\fBrules[].\:schedule\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Hours the rule is in force,\: in the spelling \fBmodbus\fR uses;\: outside them the rule does not match
+T}
+T{
+\fBrules[].\:comment\fR
+T}	T{
+string
+T}	T{
+none
+T}	T{
+Carried into the event and the ledger,\: which is where a change number belongs
+T}
+.TE
+.PP
+##### What a rule can be decided from
+.PP
+A forward proxy sees two different things, and this is the limit to understand before writing a policy here.
+.PP
+A \fBplain request\fR through the proxy carries its method, its path, its content type and usually its length, so every selector above can be decided about it.
+.PP
+A \fBCONNECT tunnel\fR carries a destination and nothing else. The method and the content types are inside TLS. So a rule naming \fBmethods\fR, \fBpaths\fR, \fBrequest_types\fR, \fBresponse_types\fR or a byte bound \fBdecides nothing for a destination reached through a tunnel this listener does not intercept\fR.
+.PP
+That is not left to be discovered. Validation names the rules in that position, \fBxproxyctl listeners\fR shows the listener\(aqs rule count, and \fBGET /v1/listeners\fR carries how many of them need a visible request. The remedy is \fBintercept\fR for the destinations those rules are about \[u2014] or reading them as a policy for the plain path, which for an estate whose egress is almost all HTTPS means reading them as very little.
+.PP
+The three honest limits of the rest:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+A \fBresponse\fR rule is decided when the response head arrives, which is after the destination was contacted. A body nobody is allowed to receive still does not have to arrive, but the request did leave.
+.PP
+.ti -3n
+\(bu
+A \fBbyte bound\fR on a body whose length was declared is decided before anything is sent. On a body with no declared length \[u2014] a chunked upload \[u2014] the bytes are counted as they travel and the connection is cut past the bound. What has already gone cannot be recalled, which is why a size rule is worth less on egress than a destination rule.
+.PP
+.ti -3n
+\(bu
+A rule about \fBusers or groups\fR on a listener with no \fBauth\fR matches nobody, because there is no name. Validation warns rather than guessing.
+.RE
+.PP
+.SS "The server name inside a tunnel"
+.PP
+A client allowed to reach \fBcdn.example.com\fR can open a tunnel there and then handshake for anything else that address serves \[u2014] which on a shared CDN is a great many things, and is how domain fronting works. The destination policy then decided about a name nobody used.
+.PP
+\fBsni\fR is the check that closes it, and it needs no interception: the first bytes of the tunnel are a ClientHello the client was going to send anyway, and the name in it either is the destination or is not.
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBenforce\fR refuses a mismatch (\fBforward_sni_mismatch\fR, reason \fBsni_mismatch\fR, and the client address observed for a ban).
+.PP
+.ti -3n
+\(bu
+\fBobserve\fR, the default, records it and relays it. A name that disagrees is almost always fronting and occasionally a client with a stale DNS answer, so an estate reads its own traffic before this refuses any of it.
+.PP
+.ti -3n
+\(bu
+\fBoff\fR does not look.
+.RE
+.PP
+.PP
+A handshake with \fBno\fR server name is not a mismatch and is never refused by this: that is what Encrypted Client Hello looks like from here, and refusing it would be refusing a client for using a privacy feature. A tunnel opened to an address rather than a name is not a mismatch either \[u2014] there the policy checked the address, and the bytes go to that address whatever the handshake says.
+.PP
+\fBintercept\fR has carried this check for its own tunnels since it was written; \fBsni\fR is the same check for the tunnels nothing is decrypting.
 .SS "TLS interception on a forward listener"
 .PP
 A CONNECT tunnel is opaque by design: the proxy sees a name and a byte count and nothing else, so a destination policy is the only policy it can apply. \fBintercept\fR changes that. The proxy answers the client\(aqs handshake with a certificate it signs itself, opens its own TLS connection to the destination, and relays the plaintext between the two \[u2014] which is what lets YARA rules, and everything else that reads bytes, see inside HTTPS.

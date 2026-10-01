@@ -3,6 +3,7 @@ package proxy
 import (
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -169,6 +170,7 @@ var listenerFeatures = []feature{
 	{name: "mfa"},
 	{name: "yara"},
 	{name: "icap"},
+	{name: "rules"},
 }
 
 // ListenersReport is the inventory of this daemon's listeners with the
@@ -426,6 +428,17 @@ func (f feature) view(fv reflect.Value) FeatureView {
 			return out
 		}
 		fv = fv.Elem()
+	}
+	// A guard written as a list of rules rather than a section: it is on when
+	// it has rules, and how many there are is the one thing worth saying about
+	// it in a table this wide. Which rules, and what each has decided, is the
+	// kind's own report.
+	if fv.Kind() == reflect.Slice {
+		out.Enabled = fv.Len() > 0
+		if out.Enabled {
+			out.Mode = strconv.Itoa(fv.Len())
+		}
+		return out
 	}
 	if fv.Kind() != reflect.Struct {
 		return out

@@ -6,6 +6,152 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (forward proxy: an egress policy about who may send what, where and when)
+
+- **`forward.rules` is the egress policy, and `forward.categories` is what it is
+  written in.** `allow` and `deny` said whether a destination exists for a
+  listener; these say who may reach it, with which method, carrying which content
+  type, inside which hours. A rule names any of users, groups, networks,
+  categories, hosts, ports, methods, path globs, request and response media types,
+  request and response body bounds, and a schedule; first match decides, `observe`
+  records and keeps looking, and a destination no rule matched is refused under
+  `no_rule` — the same shape the OT relays use, for the same reason. A category
+  takes its patterns inline or from a file, because the list an estate actually
+  has came from somewhere else and is long.
+
+  An `allow` rule means this policy has nothing to object to; it does not skip
+  what follows. The imported threat lists and the estate's own `authorization`
+  section still decide, so a listener's rule narrows the estate's policy and can
+  never widen it.
+
+- **`forward.auth.groups` gives the listener an identity to write rules about** —
+  and gives the estate-wide `authorization` section something to compare its
+  `groups` selector against on this listener, which it had had nothing to put in
+  since it was written.
+
+- **`forward.sni` checks the server name inside a tunnel nothing is decrypting.**
+  A client allowed to reach a CDN could open a tunnel there and then handshake for
+  anything else that address serves, which is how domain fronting gets through a
+  name-based allow list: the destination policy had decided about a name the
+  client then did not use. `intercept` has carried this check for its own tunnels
+  since it was written; this is the same check for the ordinary case, and it costs
+  a peek at bytes the client was going to send anyway. `enforce` refuses,
+  `observe` (the default, so nothing changes for an existing deployment until an
+  operator asks) records and relays, `off` does not look. A handshake with no
+  server name — which is what Encrypted Client Hello looks like from here — is not
+  a mismatch, and neither is a tunnel opened to an address.
+
+- **What a rule can be decided from is stated rather than left to be
+  discovered.** A plain request through the proxy carries its method, its path and
+  its content types, so every selector decides about it. A CONNECT tunnel carries
+  a destination and nothing else, so a rule naming a method or a content type is
+  skipped there — and on an estate whose egress is nearly all HTTPS that means
+  such a rule covers almost nothing without `intercept` over those destinations.
+  Validation names those rules when the listener has no `intercept` section at
+  all, `GET /v1/listeners` carries the count, and `docs/protocols/forward.md` has
+  a section on it. Reading those rules inside an intercepted tunnel is the next
+  piece of work on this listener and is not in this version.
+
+  The other two limits are in the same places: a response rule is decided when
+  the head arrives, which is after the destination was contacted — the body does
+  not arrive, the request did leave; and a byte bound on a chunked body is counted
+  as it travels and cut past the bound, because what has already gone cannot be
+  recalled, which is why a size rule is worth less on egress than a destination
+  rule.
+
+- **`rule_deny` and `no_rule` on a forward listener map to T1048, T1567 and
+  T1071**, so an egress refusal reads as exfiltration or as a channel in
+  `xproxyctl techniques` rather than as a number. T1071 (Application Layer
+  Protocol) and T1567 (Exfiltration Over Web Service) are new in the Enterprise
+  catalogue.
+
+- **`xproxyctl listeners` shows a kind's rule list as a guard.** Discovered by
+  shape rather than listed per kind, so the fifteen kinds that have had a `rules:`
+  section all along now say how many rules they are serving, which the inventory
+  previously did not mention at all.
+
+### Added (policy simulation: what a change would decide differently)
+
+- **`xproxy-simulate` sends traffic through a configuration and reports what it
+  decided; given two configurations it reports only what moved.** It is a
+  separate, offline binary next to `xproxy-replay`(8): it opens no management
+  socket, needs no running daemon, and every listener kind is linked into it, so
+  it answers about a configuration naming any role's listeners without the
+  operator working out which daemon would have served it. Exit status is 1
+  whenever the two configurations decide anything differently, so a change can be
+  gated on it in review or in a pipeline, and `-json` carries the whole answer
+  including every security event.
+
+  It is not a linter and it does not reason about the rules: it starts the engine
+  and sends the traffic through it, so the answer comes from the code that would
+  decide it in production — the same WAF profiles and rule files, the same route
+  matching, the same protocol policies, the same filters.
+
+- **Traffic comes from a text corpus of HTTP requests, a text corpus of protocol
+  frames as hex, or a pcapng file written by `xproxyctl capture`.** The two text
+  formats share a separator, comments and directives, and are text because of
+  what an operator has in the minute they need this: a request out of a security
+  log, a frame out of a vendor document, a ticket saying the shift supervisor's
+  tool stopped working after the change. A format they can type, paste and keep in
+  the repository beside the configuration is worth more than a richer one they
+  would have to generate. The pcapng reader is round-tripped in its tests against
+  the real capture writer rather than against a fixture somebody wrote by hand.
+
+- **Nothing reaches a real upstream, and the output names everything that was
+  switched off.** Every pool is pointed at a sink inside the process, keeping the
+  pool names and the per-route assignments because which pool a request goes to is
+  itself a decision; a TLS listener gets a throwaway certificate and the estate's
+  private keys are not read; `cluster`, `fleet`, `acme`, `tracing`, `icap`,
+  `scim`, `ingress`, `capture`, `threat_intel`, the OTLP exporter and `sandbox`
+  are switched off. A test asserts that every one of the top-level configuration
+  sections has a decision recorded about it, so a section added later cannot be
+  left unconsidered.
+
+- **Nothing is written outside the simulation's own directory.** The state a
+  decision depends on — the ban store, the access ledger, the asset and API
+  inventories — is copied into it, so a run starts from what the estate has: a
+  banned address stays banned, a grant still approves, a device already in the
+  inventory is not a new device. What a run produces — a learning report, a
+  session recording — is redirected into it; those change no decision, which is
+  why they were the half easy to overlook, and a learning report overwritten with
+  a simulation's traffic would be the worst of them because those get promoted
+  into policies. The output paths are found by type rather than by listing each
+  kind's field, so the eight learning sections and five recording ones are covered
+  and so is a kind added later. The configuration a caller passes in is deep
+  copied first, since the promise that it is not modified cannot rest on somebody
+  remembering to copy each struct before writing to it.
+
+- **`-offline` is required rather than assumed, and what it promises is stated
+  exactly.** Neutralising a configuration is not the same as making it inert: the
+  policy runs, which means the filters, any WebAssembly modules, the rule files
+  and the secrets provider load as the daemon loads them. That is the point — a
+  simulation of something other than the real policy answers the wrong question —
+  and it is a decision about this machine that belongs to the operator. The flag
+  does not sandbox anything. It asserts.
+
+- **An allow is asserted only on evidence.** The listener relayed the input to the
+  sink, or answered the client itself; absence of a refusal is not evidence. A
+  listener that speaks bytes rather than HTTP answers only when the device does,
+  so a frame it could not finish reading produces no reply and no event at all,
+  and reading that as `allowed` would put a hole in the report exactly where an
+  operator would rely on it. Such an input is reported as `error` with what it
+  probably is, and an input only one side could answer is counted as a change
+  rather than as agreement. Documented limits: inputs are serial, so policy that
+  depends on concurrency is not simulated; and the sink does not synthesise
+  device replies, so policy that decides on a reply is not simulated.
+
+- **A client address is delivered where the listener parses a PROXY protocol
+  header, and reported as undeliverable where it does not.** `client=` on a
+  corpus item, or the address out of a capture file, is sent as a header and
+  loopback is added to `trusted_proxies` so it is read; both appear in the
+  output. That makes address-based rules testable, which matters most on the
+  plant, where an address and a unit identifier are much of what a policy has
+  to work with. Where the listener parses no header the run names it and says
+  the policy saw the loopback address, rather than answering as though the
+  address had been used: an operator reading `allowed` for an input labelled
+  with an address their allow list excludes would conclude the allow list does
+  not work.
+
 ### Added (work orders: the change reference somebody filed, which is not an approval)
 
 - **A work order can be filed against a device, from the Plant screen of the web

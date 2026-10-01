@@ -65,7 +65,7 @@ authorization:
 		{"an anonymous client", office, "", "www.example.com", 443, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := f.admitByPolicy(tc.client, tc.user, tc.host, tc.port)
+			got := f.admitByPolicy(f.policy.Load(), tc.client, tc.user, tc.host, tc.port)
 			if (got != "") != tc.wantRefusal {
 				t.Errorf("admitByPolicy(%v, %q, %q, %d) = %q, want refusal=%v",
 					tc.client, tc.user, tc.host, tc.port, got, tc.wantRefusal)
@@ -85,7 +85,7 @@ upstreams:
 routes: []
 `)
 	open := &forwardServer{host: plain, name: "fwd"}
-	if got := open.admitByPolicy(office, "", "www.example.com", 443); got != "" {
+	if got := open.admitByPolicy(open.policy.Load(), office, "", "www.example.com", 443); got != "" {
 		t.Errorf("a listener with no policy refused: %q", got)
 	}
 }
