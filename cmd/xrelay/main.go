@@ -34,12 +34,14 @@ import (
 	_ "github.com/rom/xproxy/internal/kinds/dhcp"     // listener kind: dhcp
 	_ "github.com/rom/xproxy/internal/kinds/dhcp6"    // listener kind: dhcp6
 	_ "github.com/rom/xproxy/internal/kinds/ftp"      // listener kind: ftp
+	_ "github.com/rom/xproxy/internal/kinds/imap"     // listener kind: imap
 	_ "github.com/rom/xproxy/internal/kinds/kkdcp"    // listener kind: kkdcp
 	_ "github.com/rom/xproxy/internal/kinds/ldap"     // listener kind: ldap
 	_ "github.com/rom/xproxy/internal/kinds/mqtt"     // listener kind: mqtt
 	_ "github.com/rom/xproxy/internal/kinds/mysql"    // listener kind: mysql
 	_ "github.com/rom/xproxy/internal/kinds/ntp"      // listener kind: ntp
 	_ "github.com/rom/xproxy/internal/kinds/ntske"    // listener kind: ntske
+	_ "github.com/rom/xproxy/internal/kinds/pop3"     // listener kind: pop3
 	_ "github.com/rom/xproxy/internal/kinds/postgres" // listener kind: postgres
 	_ "github.com/rom/xproxy/internal/kinds/radius"   // listener kind: radius
 	_ "github.com/rom/xproxy/internal/kinds/redis"    // listener kind: redis

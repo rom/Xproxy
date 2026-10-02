@@ -12948,6 +12948,764 @@ T}	T{
 Limit the rule to a time window
 T}
 .TE
+.SS "server.listeners[].imap (kind: imap)"
+.PP
+IMAP on 143 and IMAPS on 993: the protocol a mail client reads a mailbox with, which makes this the relay in front of the most complete record of what an organisation has said and been told that exists anywhere.
+.PP
+\fBThe setting that matters most is a bound, not a list.\fR Every other control here is about access, and access is what the mail server already decides. \fBmax_fetch_messages\fR is about \fIvolume\fR: \fBUID FETCH 1:* (BODY[])\fR is three dozen characters and every message in the mailbox, and it is what both a mail client\(aqs first synchronisation and an emptied account look like. The bound counts what a sequence set \fInames\fR, before the server reads anything, and an open\-ended set (\fB1:*\fR, \fB*\fR) is refused outright once it is set \[u2014] because the size of that request is the mailbox\(aqs rather than the client\(aqs. \fBallow_open_sets\fR is the exemption for the estate whose clients legitimately synchronise everything.
+.PP
+\fBA password in the clear is refused by default.\fR LOGIN on 143, and AUTHENTICATE with PLAIN or LOGIN, put a mailbox password on the wire. \fBrequire_tls\fR defaults on and is not shadowable: by the time a policy could be consulted the password has travelled. A listener with a certificate and \fBtls_mode: starttls\fR terminates RFC 2595\(aqs upgrade itself, which is how a client nobody can reconfigure gets TLS anyway.
+.PP
+\fBThe capability list is narrowed on the way out.\fR A mechanism \fBmechanisms\fR does not name is removed from what the client is shown, and \fBLOGINDISABLED\fR is added where LOGIN will be refused \[u2014] RFC 3501 \[u00A7]6.2.3 makes that the way a server says so, and a client that reads it asks for something else instead of sending a password into a refusal. \fBCOMPRESS=DEFLATE\fR is removed whenever \fBrefuse_compression\fR is on, which is the default: a deflated connection cannot be inspected, so advertising it would be offering to stop.
+.PP
+\fBA literal is decided on its declared size.\fR \fBAPPEND INBOX {310}\fR says the next 310 octets are a message, and RFC 7888\(aqs \fB{310+}\fR sends them without waiting for anybody to agree \[u2014] so \fBmax_append_bytes\fR is checked on the command line, and a refused command\(aqs octets are read and dropped rather than left to desynchronise the connection.
+.PP
+\fBA PREAUTH greeting is not carried.\fR RFC 9051 \[u00A7]7.1.4 lets a server decide from the transport that no credential is needed; a relay that carried that would make every later decision here about a name it never saw. The connection is closed and \fBimap_preauth_refused\fR counts it.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.9i) lbw(1.2i) lbx
+lw(1.2i) lw(0.9i) lw(1.2i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Meaning
+T}
+T{
+\fBupstream\fR
+T}	T{
+string
+T}	T{
+\[u2014]
+T}	T{
+The pool of IMAP servers. Required
+T}
+T{
+\fBtls_\:mode\fR
+T}	T{
+string
+T}	T{
+\fBimplicit\fR with a \fBtls\fR section,\: else \fBnone\fR
+T}	T{
+\fBimplicit\fR (IMAPS from the first octet),\: \fBstarttls\fR (RFC 2595\(aqs upgrade,\: terminated here) or \fBnone\fR
+T}
+T{
+\fBrequire_\:tls\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse LOGIN,\: and AUTHENTICATE with a mechanism that carries the password,\: on an unencrypted connection. Not shadowable
+T}
+T{
+\fBupstream_\:tls_\:mode\fR
+T}	T{
+string
+T}	T{
+\fBdisable\fR
+T}	T{
+\fBdisable\fR,\: \fBimplicit\fR or \fBstarttls\fR towards the server
+T}
+T{
+\fBupstream_\:tls\fR
+T}	T{
+object
+T}	T{
+\[u2014]
+T}	T{
+Verification for that leg. See \fBupstream_\:tls\fR
+T}
+T{
+\fBallow_\:clients\fR,\: \fBdeny_\:clients\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Networks a client may connect from;\: deny is evaluated first
+T}
+T{
+\fBmechanisms\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+\fBlogin\fR for the LOGIN command plus a SASL name per AUTHENTICATE mechanism. Enforced twice: a mechanism not named is refused,\: and it is removed from the advertised capabilities
+T}
+T{
+\fBusers\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+The identities that may be claimed,\: folded for comparison. A claim rather than a proven identity: the server checks the password
+T}
+T{
+\fBcommands\fR,\: \fBdeny_\:commands\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Allow and deny lists of IMAP command names;\: deny is evaluated first. A \fBUID\fR command is the command it qualifies
+T}
+T{
+\fBmailboxes\fR,\: \fBdeny_\:mailboxes\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Allow and deny lists of mailbox names,\: compared on the \fBdecoded\fR name so a rule written \fBSent\fR matches the modified UTF\-7 a client sent. A name may end in \fB*\fR (the rest of the name,\: hierarchy included) or \fB%\fR (within one level);\: a wildcard anywhere else is refused at load
+T}
+T{
+\fBread_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse every command that changes a mailbox: APPEND,\: CREATE,\: DELETE,\: RENAME,\: STORE,\: COPY,\: MOVE,\: EXPUNGE,\: the ACL and quota writes
+T}
+T{
+\fBmax_\:fetch_\:messages\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (unbounded)
+T}	T{
+How many messages one FETCH,\: SEARCH,\: COPY or MOVE may name. The mailbox\-copying bound;\: validation advises setting it
+T}
+T{
+\fBallow_\:open_\:sets\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Carry an open\-ended sequence set even with \fBmax_\:fetch_\:messages\fR set
+T}
+T{
+\fBmax_\:append_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB33554432\fR
+T}	T{
+The literal of an APPEND: a message written into a mailbox
+T}
+T{
+\fBmax_\:literal_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB65536\fR
+T}	T{
+Any other literal: a mailbox name,\: a search string,\: a credential
+T}
+T{
+\fBmax_\:literals\fR
+T}	T{
+int
+T}	T{
+\fB8\fR
+T}	T{
+The literals one command may chain,\: because a command continues after each one
+T}
+T{
+\fBmax_\:line_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB8192\fR
+T}	T{
+One command line. RFC 9051 bounds a line not at all
+T}
+T{
+\fBmax_\:response_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB65536\fR
+T}	T{
+One response line;\: servers send longer ones than clients
+T}
+T{
+\fBmax_\:commands\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (unbounded)
+T}	T{
+The commands one connection may send
+T}
+T{
+\fBrefuse_\:compression\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Remove \fBCOMPRESS=\:DEFLATE\fR from the capabilities and refuse the command
+T}
+T{
+\fBrefuse_\:preauth\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse a PREAUTH greeting
+T}
+T{
+\fBallow_\:idle\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Carry RFC 2177\(aqs IDLE. Every mail client uses it
+T}
+T{
+\fBmax_\:idle_\:duration\fR
+T}	T{
+duration
+T}	T{
+\fB30m\fR
+T}	T{
+How long one IDLE may hold a connection silent
+T}
+T{
+\fBmax_\:connections\fR
+T}	T{
+int
+T}	T{
+\fB512\fR
+T}	T{
+Connections served at once
+T}
+T{
+\fBmax_\:sessions\fR,\: \fBmax_\:sessions_\:per_\:client\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Sessions in flight in total and per client address
+T}
+T{
+\fBrate_\:limit\fR,\: \fBrate_\:burst\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Connections per second per client address
+T}
+T{
+\fBidle_\:timeout\fR,\: \fBsession_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB30m\fR,\: \fB24h\fR
+T}	T{
+Silence outside an IDLE,\: and the life of a connection
+T}
+T{
+\fBrules\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Per\-user,\: per\-client and per\-mailbox rules,\: first match wins
+T}
+T{
+\fBdefault_\:action\fR
+T}	T{
+string
+T}	T{
+\fBallow\fR
+T}	T{
+\fBallow\fR or \fBdeny\fR. It defaults to allow because IMAP has sixty commands a client needs,\: and the controls that matter here are the bounds and the mailbox list
+T}
+T{
+\fBdeny_\:response\fR
+T}	T{
+string
+T}	T{
+\fBno\fR
+T}	T{
+\fBno\fR (a tagged NO,\: which every client displays),\: \fBbad\fR,\: \fBdrop\fR or \fBclose\fR
+T}
+T{
+\fBlog_\:commands\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+An access line per command
+T}
+T{
+\fBlog_\:fetches\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A line per FETCH,\: SEARCH,\: COPY and MOVE with the number of messages it named: the record of how much left
+T}
+T{
+\fBalert_\:on_\:deny\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A security event per refusal
+T}
+T{
+\fBmonitor_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Evaluate and enforce nothing;\: the bounds and the malformed\-command refusals still apply
+T}
+T{
+\fBanomaly\fR
+T}	T{
+object
+T}	T{
+\[u2014]
+T}	T{
+Behavioural detection. See \fBanomaly\fR
+T}
+.TE
+.PP
+Counters: \fBimap_connections\fR, \fBimap_commands\fR, \fBimap_auth_failures\fR, \fBimap_fetched_messages\fR, \fBimap_append_bytes\fR, \fBimap_plaintext_logins\fR, \fBimap_capabilities_stripped\fR and \fBimap_preauth_refused\fR. \fBimap_fetched_messages\fR is the one to graph \[u2014] it is how much of the estate\(aqs mail crossed this relay \[u2014] and \fBimap_auth_failures\fR the one to alert on.
+.PP
+Ban reasons: \fBimap_denied\fR for a policy refusal, \fBimap_auth_failed\fR for a credential the server rejected, and \fBimap_anomaly\fR for a behavioural finding.
+.SS "server.listeners[].imap.rules[]"
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.7i) lbw(1.0i) lbx
+lw(1.0i) lw(0.7i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Meaning
+T}
+T{
+\fBname\fR
+T}	T{
+string
+T}	T{
+\[u2014]
+T}	T{
+Appears in the logs and the shadow report
+T}
+T{
+\fBusers\fR,\: \fBclients\fR,\: \fBmailboxes\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Which commands this rule decides about. Every mailbox a command names has to match,\: because a COPY names two
+T}
+T{
+\fBcommands\fR,\: \fBdeny_\:commands\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+This rule\(aqs own command lists
+T}
+T{
+\fBread_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse the commands that change a mailbox,\: for this rule\(aqs clients and users
+T}
+T{
+\fBmax_\:fetch_\:messages\fR,\: \fBmax_\:append_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (inherit)
+T}	T{
+This rule\(aqs own bounds: how the one account that really does synchronise a whole mailbox is written down
+T}
+T{
+\fBaction\fR
+T}	T{
+string
+T}	T{
+\fBallow\fR
+T}	T{
+\fBallow\fR or \fBdeny\fR
+T}
+T{
+\fBschedule\fR
+T}	T{
+object
+T}	T{
+\[u2014]
+T}	T{
+Limit the rule to a time window. See \fBschedule\fR
+T}
+.TE
+.SS "server.listeners[].pop3 (kind: pop3)"
+.PP
+POP3 on 110 and POP3S on 995: the older mailbox protocol, and the one still configured on the scripts, appliances and phones nobody has revisited.
+.PP
+\fBThe credential is least protected here of anywhere in this configuration.\fR \fBUSER\fR names an identity and \fBPASS\fR sends the password in the clear on the next line, with no negotiation in between and nothing to inspect. Either the transport protects it or it is published, so \fBrequire_tls\fR defaults on and is not shadowable. \fBtls_mode: starttls\fR terminates RFC 2595\(aqs STLS, and the upgrade is answered here rather than forwarded \[u2014] anything the client pipelined behind it would be plaintext to one end and ciphertext to the other, which is the injection SMTP\(aqs STARTTLS has.
+.PP
+\fBThe copying bound is a running total.\fR This protocol has no sequence set to measure: a client asks for one message at a time, so the only honest bound is the octets and the messages counted as they pass. \fBmax_retr_bytes\fR and \fBmax_messages\fR are that, and they are enforced \fImid\-transfer\fR as well as before a command \[u2014] a bound that only applied to the next command is one a client walks past one message at a time.
+.PP
+\fBAPOP works because the greeting is not rewritten.\fR The \fB<...>\fR in a POP3 greeting is the challenge an APOP digest is computed over, so a relay that invented its own greeting would have to refuse APOP outright. This one carries the server\(aqs unchanged, which means a digest the client computes verifies at the server that issued the challenge.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.9i) lbw(1.2i) lbx
+lw(1.2i) lw(0.9i) lw(1.2i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Meaning
+T}
+T{
+\fBupstream\fR
+T}	T{
+string
+T}	T{
+\[u2014]
+T}	T{
+The pool of POP3 servers. Required
+T}
+T{
+\fBtls_\:mode\fR
+T}	T{
+string
+T}	T{
+\fBimplicit\fR with a \fBtls\fR section,\: else \fBnone\fR
+T}	T{
+\fBimplicit\fR (POP3S),\: \fBstarttls\fR (STLS,\: terminated here) or \fBnone\fR
+T}
+T{
+\fBrequire_\:tls\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse USER,\: PASS,\: APOP and a plaintext SASL mechanism on an unencrypted connection. Not shadowable
+T}
+T{
+\fBupstream_\:tls_\:mode\fR
+T}	T{
+string
+T}	T{
+\fBdisable\fR
+T}	T{
+\fBdisable\fR,\: \fBimplicit\fR or \fBstarttls\fR towards the server
+T}
+T{
+\fBupstream_\:tls\fR
+T}	T{
+object
+T}	T{
+\[u2014]
+T}	T{
+Verification for that leg. See \fBupstream_\:tls\fR
+T}
+T{
+\fBallow_\:clients\fR,\: \fBdeny_\:clients\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Networks a client may connect from;\: deny is evaluated first
+T}
+T{
+\fBmechanisms\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+\fBuser\fR for the USER and PASS pair,\: \fBapop\fR for the digest,\: and a SASL name per AUTH mechanism. A mechanism not named is refused \fIand\fR removed from the CAPA list
+T}
+T{
+\fBusers\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+The identities that may be claimed,\: folded for comparison
+T}
+T{
+\fBcommands\fR,\: \fBdeny_\:commands\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Allow and deny lists of POP3 command names;\: deny is evaluated first
+T}
+T{
+\fBread_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse DELE and RSET,\: the two commands that change what the mailbox holds after the update state
+T}
+T{
+\fBmax_\:messages\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (unbounded)
+T}	T{
+Messages one connection may retrieve
+T}
+T{
+\fBmax_\:retr_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (unbounded)
+T}	T{
+Octets one connection may retrieve across every RETR and TOP. The mailbox\-copying bound;\: validation advises setting one of the two
+T}
+T{
+\fBmax_\:line_\:bytes\fR,\: \fBmax_\:response_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB512\fR,\: \fB4096\fR
+T}	T{
+One command line and one reply line
+T}
+T{
+\fBmax_\:connections\fR
+T}	T{
+int
+T}	T{
+\fB256\fR
+T}	T{
+Connections served at once
+T}
+T{
+\fBmax_\:sessions\fR,\: \fBmax_\:sessions_\:per_\:client\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Sessions in flight in total and per client address
+T}
+T{
+\fBrate_\:limit\fR,\: \fBrate_\:burst\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Connections per second per client address
+T}
+T{
+\fBidle_\:timeout\fR,\: \fBsession_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB10m\fR,\: \fB1h\fR
+T}	T{
+Silence,\: and the life of a connection: a POP3 client connects,\: takes its mail and goes
+T}
+T{
+\fBrules\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Per\-user and per\-client rules,\: first match wins
+T}
+T{
+\fBdefault_\:action\fR
+T}	T{
+string
+T}	T{
+\fBallow\fR
+T}	T{
+\fBallow\fR or \fBdeny\fR
+T}
+T{
+\fBdeny_\:response\fR
+T}	T{
+string
+T}	T{
+\fBerr\fR
+T}	T{
+\fBerr\fR (\fB\-\:ERR\fR with the reason),\: \fBdrop\fR or \fBclose\fR
+T}
+T{
+\fBlog_\:commands\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+An access line per command
+T}
+T{
+\fBlog_\:retrievals\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A line per RETR and TOP with the octets it carried
+T}
+T{
+\fBalert_\:on_\:deny\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A security event per refusal
+T}
+T{
+\fBmonitor_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Evaluate and enforce nothing
+T}
+T{
+\fBanomaly\fR
+T}	T{
+object
+T}	T{
+\[u2014]
+T}	T{
+Behavioural detection. See \fBanomaly\fR
+T}
+.TE
+.PP
+Counters: \fBpop3_connections\fR, \fBpop3_commands\fR, \fBpop3_auth_failures\fR, \fBpop3_retrieved_bytes\fR, \fBpop3_deletes\fR, \fBpop3_plaintext_logins\fR and \fBpop3_capabilities_stripped\fR. \fBpop3_retrieved_bytes\fR is the one to graph.
+.PP
+Ban reasons: \fBpop3_denied\fR, \fBpop3_auth_failed\fR and \fBpop3_anomaly\fR.
+.SS "server.listeners[].pop3.rules[]"
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.7i) lbw(1.0i) lbx
+lw(1.0i) lw(0.7i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Meaning
+T}
+T{
+\fBname\fR
+T}	T{
+string
+T}	T{
+\[u2014]
+T}	T{
+Appears in the logs and the shadow report
+T}
+T{
+\fBusers\fR,\: \fBclients\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Which commands this rule decides about
+T}
+T{
+\fBcommands\fR,\: \fBdeny_\:commands\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+This rule\(aqs own command lists
+T}
+T{
+\fBread_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse DELE and RSET for this rule\(aqs clients and users
+T}
+T{
+\fBmax_\:messages\fR,\: \fBmax_\:retr_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (inherit)
+T}	T{
+This rule\(aqs own bounds
+T}
+T{
+\fBaction\fR
+T}	T{
+string
+T}	T{
+\fBallow\fR
+T}	T{
+\fBallow\fR or \fBdeny\fR
+T}
+T{
+\fBschedule\fR
+T}	T{
+object
+T}	T{
+\[u2014]
+T}	T{
+Limit the rule to a time window. See \fBschedule\fR
+T}
+.TE
 .SS "server.listeners[].tftp (kind: tftp)"
 .PP
 TFTP is the protocol under provisioning. A switch pulls its firmware over it, a machine with no operating system yet pulls a boot image, a telephone pulls its configuration, and an engineer pushes a running configuration off a router with it. It has \fBno authentication of any kind\fR: no user, no password, no token, no transport security, and no extension that adds one. A request is a filename and a mode, and a server that receives one answers it.
@@ -22290,7 +23048,7 @@ list
 T}	T{
 \fB[]\fR (all)
 T}	T{
-Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBflow\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBforward_\:host_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBtcp_\:denied\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBdhcp6_\:denied\fR,\: \fBcoap_\:denied\fR,\: \fBopcua_\:denied\fR,\: \fBmms_\:denied\fR,\: \fBpostgres_\:denied\fR,\: \fBmysql_\:denied\fR,\: \fBtds_\:denied\fR,\: \fBredis_\:denied\fR,\: \fBbacnet_\:denied\fR,\: \fBamqp_\:denied\fR,\: \fBs7_\:denied\fR,\: \fBradius_\:denied\fR,\: \fBtacacs_\:denied\fR,\: \fBkkdcp_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fBdns_\:denied\fR,\: \fBdns_\:threat_\:intel\fR,\: \fBdns_\:deceived\fR,\: \fBdns_\:tripwire\fR,\: \fBtelnet_\:tripwire\fR,\: \fBssh_\:tripwire\fR,\: \fBmodbus_\:tripwire\fR,\: \fBiec104_\:tripwire\fR,\: \fBs7_\:tripwire\fR,\: \fBredis_\:tripwire\fR,\: \fBmysql_\:tripwire\fR,\: \fBpostgres_\:tripwire\fR,\: \fByara\fR
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBflow\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBforward_\:host_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBtcp_\:denied\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBdhcp6_\:denied\fR,\: \fBcoap_\:denied\fR,\: \fBopcua_\:denied\fR,\: \fBmms_\:denied\fR,\: \fBpostgres_\:denied\fR,\: \fBmysql_\:denied\fR,\: \fBtds_\:denied\fR,\: \fBredis_\:denied\fR,\: \fBbacnet_\:denied\fR,\: \fBamqp_\:denied\fR,\: \fBs7_\:denied\fR,\: \fBradius_\:denied\fR,\: \fBtacacs_\:denied\fR,\: \fBkkdcp_\:denied\fR,\: \fBimap_\:denied\fR,\: \fBimap_\:auth_\:failed\fR,\: \fBimap_\:anomaly\fR,\: \fBpop3_\:denied\fR,\: \fBpop3_\:auth_\:failed\fR,\: \fBpop3_\:anomaly\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fBdns_\:denied\fR,\: \fBdns_\:threat_\:intel\fR,\: \fBdns_\:deceived\fR,\: \fBdns_\:tripwire\fR,\: \fBtelnet_\:tripwire\fR,\: \fBssh_\:tripwire\fR,\: \fBmodbus_\:tripwire\fR,\: \fBiec104_\:tripwire\fR,\: \fBs7_\:tripwire\fR,\: \fBredis_\:tripwire\fR,\: \fBmysql_\:tripwire\fR,\: \fBpostgres_\:tripwire\fR,\: \fByara\fR
 T}
 T{
 \fBthreshold\fR

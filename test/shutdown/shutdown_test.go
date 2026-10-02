@@ -48,6 +48,7 @@ import (
 	_ "github.com/rom/xproxy/internal/kinds/dhcp6"
 	_ "github.com/rom/xproxy/internal/kinds/ftp"
 	_ "github.com/rom/xproxy/internal/kinds/iec104"
+	_ "github.com/rom/xproxy/internal/kinds/imap"
 	_ "github.com/rom/xproxy/internal/kinds/ldap"
 	_ "github.com/rom/xproxy/internal/kinds/mms"
 	_ "github.com/rom/xproxy/internal/kinds/modbus"
@@ -56,6 +57,7 @@ import (
 	_ "github.com/rom/xproxy/internal/kinds/ntp"
 	_ "github.com/rom/xproxy/internal/kinds/ntske"
 	_ "github.com/rom/xproxy/internal/kinds/opcua"
+	_ "github.com/rom/xproxy/internal/kinds/pop3"
 	_ "github.com/rom/xproxy/internal/kinds/postgres"
 	_ "github.com/rom/xproxy/internal/kinds/radius"
 	_ "github.com/rom/xproxy/internal/kinds/rdp"
@@ -124,6 +126,8 @@ var cases = map[string]kindCase{
 	"mms":    {section: "mms: {upstream: u}"},
 	"tacacs": {section: "tacacs: {upstream: u}"},
 	"radius": {section: "radius: {upstream: u}", datagram: true},
+	"imap":   {section: "imap: {upstream: u, require_tls: false}"},
+	"pop3":   {section: "pop3: {upstream: u, require_tls: false}"},
 }
 
 // excluded are the kinds this test does not start, each with the reason.

@@ -31,7 +31,7 @@ func FuzzParseCommand(f *testing.F) {
 			t.Fatalf("keyword %q from %q", c.Name, in)
 		}
 		for _, r := range c.Name {
-			if !(r >= 'A' && r <= 'Z') {
+			if r < 'A' || r > 'Z' {
 				t.Fatalf("keyword %q from %q is not folded letters", c.Name, in)
 			}
 		}
@@ -53,8 +53,13 @@ func FuzzParseCommand(f *testing.F) {
 		}
 		// Multiline has to be a function of the command and its argument
 		// count alone, because a session that asked twice could get two
-		// answers and then read the reply the wrong way.
-		if c.Multiline() != c.Multiline() {
+		// answers and then read the reply the wrong way. Two parses of one
+		// line are what prove that, where asking one value twice would not.
+		again, err := ParseCommand([]byte(in))
+		if err != nil {
+			t.Fatalf("%q parsed once and not twice", in)
+		}
+		if c.Multiline() != again.Multiline() {
 			t.Fatalf("%q answers Multiline inconsistently", in)
 		}
 	})
