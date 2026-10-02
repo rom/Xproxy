@@ -50,6 +50,7 @@ import (
 	_ "github.com/rom/xproxy/internal/kinds/ftp"      // listener kind: ftp
 	_ "github.com/rom/xproxy/internal/kinds/http"     // listener kind: http, and the data plane behind it
 	_ "github.com/rom/xproxy/internal/kinds/iec104"   // listener kind: iec104
+	_ "github.com/rom/xproxy/internal/kinds/kkdcp"    // listener kind: kkdcp
 	_ "github.com/rom/xproxy/internal/kinds/ldap"     // listener kind: ldap
 	_ "github.com/rom/xproxy/internal/kinds/mms"      // listener kind: mms
 	_ "github.com/rom/xproxy/internal/kinds/modbus"   // listener kind: modbus
@@ -59,6 +60,7 @@ import (
 	_ "github.com/rom/xproxy/internal/kinds/ntske"    // listener kind: ntske
 	_ "github.com/rom/xproxy/internal/kinds/opcua"    // listener kind: opcua
 	_ "github.com/rom/xproxy/internal/kinds/postgres" // listener kind: postgres
+	_ "github.com/rom/xproxy/internal/kinds/radius"   // listener kind: radius
 	_ "github.com/rom/xproxy/internal/kinds/rdp"      // listener kind: rdp
 	_ "github.com/rom/xproxy/internal/kinds/redis"    // listener kind: redis
 	_ "github.com/rom/xproxy/internal/kinds/s7"       // listener kind: s7
@@ -66,6 +68,7 @@ import (
 	_ "github.com/rom/xproxy/internal/kinds/snmp"     // listener kind: snmp
 	_ "github.com/rom/xproxy/internal/kinds/ssh"      // listener kind: ssh
 	_ "github.com/rom/xproxy/internal/kinds/syslog"   // listener kind: syslog
+	_ "github.com/rom/xproxy/internal/kinds/tacacs"   // listener kind: tacacs
 	_ "github.com/rom/xproxy/internal/kinds/tcp"      // listener kind: tcp
 	_ "github.com/rom/xproxy/internal/kinds/tds"      // listener kind: tds
 	_ "github.com/rom/xproxy/internal/kinds/telnet"   // listener kind: telnet
