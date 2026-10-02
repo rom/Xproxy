@@ -585,3 +585,126 @@ func TestAFailedLoginIsCountedAndReported(t *testing.T) {
 		t.Fatalf("imap_auth_failures is %d, want 1", got)
 	}
 }
+
+// A rule is how the one account that really does synchronise a whole mailbox
+// is written down, and its bounds and lists are its own.
+func TestARuleCarriesItsOwnBoundsAndLists(t *testing.T) {
+	srv := startServer(t, &fakeServer{})
+	section := noTLS + `        max_fetch_messages: 5
+        rules:
+          - name: sync
+            users: [backup]
+            max_fetch_messages: 500
+          - name: people
+            clients: [127.0.0.0/8]
+            deny_commands: [SEARCH]
+`
+	_, addr := relay(t, section, srv.addr())
+	c := dial(t, addr)
+	c.line()
+	c.send("a1 LOGIN backup secret")
+	c.until("a1")
+	c.send("a2 SELECT INBOX")
+	c.until("a2")
+	c.send("a3 FETCH 1:100 (BODY[])")
+	last := c.until("a3")
+	if answer := last[len(last)-1]; !strings.Contains(answer, "OK") {
+		t.Fatalf("a 100-message fetch for the named account: %q", answer)
+	}
+	// Everybody else matches the second rule: the listener's bound applies
+	// and SEARCH is refused.
+	o := dial(t, addr)
+	o.line()
+	o.send("b1 LOGIN bob secret")
+	o.until("b1")
+	o.send("b2 SELECT INBOX")
+	o.until("b2")
+	o.send("b3 FETCH 1:100 (BODY[])")
+	last = o.until("b3")
+	if answer := last[len(last)-1]; !strings.Contains(answer, "fetch_too_large") {
+		t.Fatalf("a 100-message fetch for everybody else: %q", answer)
+	}
+	o.send("b4 SEARCH ALL")
+	last = o.until("b4")
+	if answer := last[len(last)-1]; !strings.Contains(answer, "command_denied") {
+		t.Fatalf("SEARCH under the rule: %q", answer)
+	}
+}
+
+// A client that is not allowed to connect is refused before the server is
+// dialled at all.
+func TestAClientOffTheListIsRefusedBeforeTheServerIsDialled(t *testing.T) {
+	srv := startServer(t, &fakeServer{})
+	_, addr := relay(t, noTLS+"        allow_clients: [10.0.0.0/8]\n", srv.addr())
+	c := dial(t, addr)
+	if _, err := c.br.ReadString('\n'); err == nil {
+		t.Fatal("a client off the allow list got a greeting")
+	}
+	if seen := srv.saw(); len(seen) != 0 {
+		t.Errorf("the server was dialled anyway: %v", seen)
+	}
+}
+
+// The behavioural models see the command, the mailbox, the account and the
+// number of messages a request named.
+func TestTheAnomalyModelsSeeTheCommandsAndTheVolume(t *testing.T) {
+	srv := startServer(t, &fakeServer{})
+	section := noTLS + `        anomaly:
+          enabled: true
+          action: alert
+          settle: 0s
+          novelty: {symbols: true}
+`
+	s, addr := relay(t, section, srv.addr())
+	c := dial(t, addr)
+	c.line()
+	c.send("a1 LOGIN bob secret")
+	c.until("a1")
+	c.send("a2 SELECT INBOX")
+	c.until("a2")
+	c.send("a3 FETCH 1:3 (BODY[])")
+	last := c.until("a3")
+	if answer := last[len(last)-1]; !strings.Contains(answer, "OK") {
+		t.Fatalf("a fetch with the models on: %q", answer)
+	}
+	if counts := s.Counters().RefusalCounts()["imap"]; len(counts) == 0 {
+		t.Error("the models reported nothing with settle: 0s and novelty on")
+	}
+	if got := s.Stats().IMAPFetchedMessages; got != 3 {
+		t.Errorf("imap_fetched_messages is %d, want 3", got)
+	}
+}
+
+// deny_response: drop says nothing, and the connection stays in step: the
+// next command gets its own answer.
+func TestDenyResponseDropSaysNothing(t *testing.T) {
+	srv := startServer(t, &fakeServer{})
+	_, addr := relay(t, noTLS+"        read_only: true\n        deny_response: drop\n", srv.addr())
+	c := dial(t, addr)
+	c.line()
+	c.send("a1 LOGIN bob secret")
+	c.until("a1")
+	c.send("a2 CREATE Scratch")
+	c.send("a3 NOOP")
+	last := c.until("a3")
+	if answer := last[len(last)-1]; !strings.Contains(answer, "OK") {
+		t.Fatalf("after a dropped refusal: %q", answer)
+	}
+	if seen := strings.Join(srv.saw(), "\n"); strings.Contains(seen, "CREATE") {
+		t.Errorf("the refused command reached the server:\n%s", seen)
+	}
+}
+
+// A LOGOUT ends the session the protocol's own way: the server's BYE and its
+// tagged OK both cross, and the connection closes.
+func TestALogoutEndsTheSession(t *testing.T) {
+	srv := startServer(t, &fakeServer{})
+	_, addr := relay(t, noTLS, srv.addr())
+	c := dial(t, addr)
+	c.line()
+	c.send("a1 LOGOUT")
+	got := strings.Join(c.until("a1"), "\n")
+	if !strings.Contains(got, "BYE") || !strings.Contains(got, "OK") {
+		t.Fatalf("a logout: %q", got)
+	}
+}

@@ -57,6 +57,9 @@ type fakeServer struct {
 	message []string
 	// fail names the commands answered -ERR.
 	fail map[string]bool
+	// sasl answers AUTH with a challenge and then an +OK, which is the
+	// exchange whose lines are credential material.
+	sasl bool
 
 	mu   sync.Mutex
 	seen []string
@@ -122,6 +125,20 @@ func (f *fakeServer) serve(c net.Conn) {
 			continue
 		}
 		switch name {
+		case "AUTH":
+			if f.sasl {
+				_, _ = fmt.Fprintf(c, "+ Y2hhbGxlbmdl\r\n")
+				answer, err := br.ReadString('\n')
+				if err != nil {
+					return
+				}
+				f.mu.Lock()
+				f.seen = append(f.seen, strings.TrimRight(answer, "\r\n"))
+				f.mu.Unlock()
+				_, _ = fmt.Fprintf(c, "+OK welcome\r\n")
+				continue
+			}
+			_, _ = fmt.Fprintf(c, "+OK AUTH\r\n")
 		case "CAPA":
 			_, _ = fmt.Fprintf(c, "+OK capability list follows\r\n")
 			for _, l := range f.capa {
@@ -484,5 +501,149 @@ func TestTheGreetingIsCarriedUnchangedSoAPOPCanWork(t *testing.T) {
 	}
 	if seen := strings.Join(srv.saw(), "\n"); !strings.Contains(seen, "c4c9334bac560ecc979e58001b3e22fb") {
 		t.Errorf("the digest did not reach the server:\n%s", seen)
+	}
+}
+
+// A rule is how the one account that really does take its whole mailbox
+// every morning is written down, and the bound it carries is its own.
+func TestARuleCarriesItsOwnBoundAndItsOwnLists(t *testing.T) {
+	srv := startServer(t, &fakeServer{})
+	section := noTLS + `        max_messages: 1
+        rules:
+          - name: archiver
+            users: [archive]
+            max_messages: 3
+          - name: readers
+            clients: [127.0.0.0/8]
+            deny_commands: [DELE]
+`
+	_, addr := relay(t, section, srv.addr())
+	// The named account gets the rule's bound.
+	c := dial(t, addr)
+	c.line()
+	c.send("USER archive")
+	c.line()
+	c.send("PASS secret")
+	c.line()
+	for i := 1; i <= 3; i++ {
+		c.send(fmt.Sprintf("RETR %d", i))
+		if l := c.line(); !strings.HasPrefix(l, "+OK") {
+			t.Fatalf("RETR %d for the named account: %q", i, l)
+		}
+		c.body()
+	}
+	c.send("RETR 4")
+	if l := c.line(); !strings.Contains(l, "too_many_messages") {
+		t.Fatalf("the fourth RETR under the rule's bound of three: %q", l)
+	}
+	// Everybody else matches the second rule, which allows one message and
+	// refuses DELE.
+	o := dial(t, addr)
+	o.login()
+	o.send("DELE 1")
+	if l := o.line(); !strings.Contains(l, "command_denied") {
+		t.Fatalf("DELE under the rule: %q", l)
+	}
+	o.send("RETR 1")
+	if l := o.line(); !strings.HasPrefix(l, "+OK") {
+		t.Fatalf("the first RETR: %q", l)
+	}
+	o.body()
+	o.send("RETR 2")
+	if l := o.line(); !strings.Contains(l, "too_many_messages") {
+		t.Fatalf("the second RETR under the listener's bound of one: %q", l)
+	}
+}
+
+// A SASL exchange's lines are credential material: forwarded, never parsed
+// as commands, and the state moves only on the answer that ends it.
+func TestASASLExchangeIsCarriedWithoutBeingRead(t *testing.T) {
+	srv := startServer(t, &fakeServer{sasl: true})
+	_, addr := relay(t, noTLS, srv.addr())
+	c := dial(t, addr)
+	c.line()
+	c.send("AUTH PLAIN")
+	if l := c.line(); !strings.HasPrefix(l, "+ ") {
+		t.Fatalf("the challenge: %q", l)
+	}
+	// A line that looks like a command is a credential here, and is carried
+	// as one rather than decided about.
+	c.send("UkVUUiAx")
+	if l := c.line(); !strings.HasPrefix(l, "+OK") {
+		t.Fatalf("the answer to the exchange: %q", l)
+	}
+	// And the connection is in the transaction state afterwards, which is
+	// what the exchange established.
+	c.send("STAT")
+	if l := c.line(); l != "+OK 2 460" {
+		t.Fatalf("after the exchange: %q", l)
+	}
+	if seen := strings.Join(srv.saw(), "\n"); !strings.Contains(seen, "UkVUUiAx") {
+		t.Errorf("the exchange's line did not reach the server:\n%s", seen)
+	}
+}
+
+// A client that is not allowed to connect is refused before anything is
+// dialled, which is the one refusal this kind makes with no session at all.
+func TestAClientOffTheListIsRefusedBeforeTheServerIsDialled(t *testing.T) {
+	srv := startServer(t, &fakeServer{})
+	_, addr := relay(t, noTLS+"        allow_clients: [10.0.0.0/8]\n", srv.addr())
+	c := dial(t, addr)
+	if _, err := c.br.ReadString('\n'); err == nil {
+		t.Fatal("a client off the allow list got a greeting")
+	}
+	if seen := srv.saw(); len(seen) != 0 {
+		t.Errorf("the server was dialled anyway: %v", seen)
+	}
+}
+
+// deny_response: drop says nothing at all, which is what a listener facing
+// the open internet may prefer: a refused client learns that the command
+// went nowhere and nothing about why.
+func TestDenyResponseDropSaysNothing(t *testing.T) {
+	srv := startServer(t, &fakeServer{})
+	_, addr := relay(t, noTLS+"        read_only: true\n        deny_response: drop\n", srv.addr())
+	c := dial(t, addr)
+	c.login()
+	c.send("DELE 1")
+	// Nothing comes back for the refused command, and the next one is
+	// answered normally -- so the connection is still in step.
+	c.send("STAT")
+	if l := c.line(); l != "+OK 2 460" {
+		t.Fatalf("after a dropped refusal: %q", l)
+	}
+	if seen := strings.Join(srv.saw(), "\n"); strings.Contains(seen, "DELE") {
+		t.Errorf("the refused command reached the server:\n%s", seen)
+	}
+}
+
+// The behavioural models see the account, the command and the volume, and a
+// finding on this kind reaches the ban ladder.
+func TestTheAnomalyModelsSeeTheCommandsAndTheVolume(t *testing.T) {
+	srv := startServer(t, &fakeServer{})
+	section := noTLS + `        anomaly:
+          enabled: true
+          action: alert
+          settle: 0s
+          novelty: {symbols: true}
+`
+	s, addr := relay(t, section, srv.addr())
+	c := dial(t, addr)
+	c.login()
+	c.send("STAT")
+	if l := c.line(); l != "+OK 2 460" {
+		t.Fatalf("STAT with the models on: %q", l)
+	}
+	c.send("UIDL")
+	if l := c.line(); !strings.HasPrefix(l, "+OK") {
+		t.Fatalf("UIDL with the models on: %q", l)
+	}
+	c.body()
+	// With no settling window every command is a symbol the models have not
+	// seen, and the action is alert -- so the traffic is carried and the
+	// findings are counted, which is the combination an estate turns on
+	// first.
+	if counts := s.Counters().RefusalCounts()["pop3"]; len(counts) == 0 {
+		t.Error("the models reported nothing with settle: 0s and novelty on")
 	}
 }
