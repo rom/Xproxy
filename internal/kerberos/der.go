@@ -3,6 +3,7 @@ package kerberos
 import (
 	"errors"
 	"fmt"
+	"math"
 	"time"
 )
 
@@ -85,7 +86,7 @@ type element struct {
 }
 
 // is says the element carries this class and tag.
-func (e element) is(class byte, tag uint32) bool { return e.class == class && e.tag == tag }
+func (e element) is(tag uint32) bool { return e.class == classUniversal && e.tag == tag }
 
 // ctx says the element is a context tag with this number, which is how
 // every field of every Kerberos structure is encoded.
@@ -181,19 +182,6 @@ func (r *der) inner(e element) (*der, error) {
 	return &der{b: e.data, depth: r.depth + 1}, nil
 }
 
-// expect reads the next element and requires a class and tag.
-func (r *der) expect(class byte, tag uint32) (element, error) {
-	e, err := r.next()
-	if err != nil {
-		return element{}, err
-	}
-	if !e.is(class, tag) {
-		return element{}, fmt.Errorf("%w: class %#x tag %d where class %#x tag %d must be",
-			ErrTag, e.class, e.tag, class, tag)
-	}
-	return e, nil
-}
-
 // sequence descends into a SEQUENCE.
 func (r *der) sequence(e element) (*der, error) {
 	if !e.cons {
@@ -224,10 +212,16 @@ func (r *der) only(e element) (element, *der, error) {
 	return inner, in, nil
 }
 
-// integer reads an INTEGER as an int64, bounded to the widths Kerberos
-// defines.
-func derInteger(e element) (int64, error) {
-	if !e.is(classUniversal, tagInteger) {
+// derInteger reads an INTEGER as RFC 4120's Int32, which is what every
+// numeric field of a Kerberos message is: a message type, an encryption
+// type, a pre-authentication type, an error code, a nonce.
+//
+// Returning int32 rather than a wider integer is deliberate. Every caller
+// turns the number into a type of that width, and a reader that handed
+// back an int64 would make each of those a narrowing conversion whose
+// safety the next reader has to re-derive.
+func derInteger(e element) (int32, error) {
+	if !e.is(tagInteger) {
 		return 0, fmt.Errorf("%w: not an INTEGER", ErrTag)
 	}
 	b := e.data
@@ -245,7 +239,13 @@ func derInteger(e element) (int64, error) {
 	for _, c := range b[1:] {
 		v = v<<8 | int64(c)
 	}
-	return v, nil
+	// maxInteger admits five octets, because that is the longest DER
+	// encoding of a value a peer might send; a value that does not fit in
+	// an Int32 is one the standard does not define a field for.
+	if v < math.MinInt32 || v > math.MaxInt32 {
+		return 0, ErrInteger
+	}
+	return int32(v), nil
 }
 
 // derString reads a KerberosString, which RFC 4120 §5.2.1 constrains to
@@ -273,7 +273,7 @@ func derString(e element) (string, error) {
 // derTime reads a KerberosTime: a GeneralizedTime in UTC with no
 // fractional seconds, which is what RFC 4120 §5.2.3 requires.
 func derTime(e element) (time.Time, error) {
-	if !e.is(classUniversal, tagGeneralTime) {
+	if !e.is(tagGeneralTime) {
 		return time.Time{}, fmt.Errorf("%w: not a GeneralizedTime", ErrTag)
 	}
 	t, err := time.Parse("20060102150405Z", string(e.data))
@@ -291,7 +291,7 @@ func derTime(e element) (time.Time, error) {
 // disagree about the low bits of the options -- the bits that say renew,
 // validate and enc-tkt-in-skey.
 func derBits(e element) (uint32, error) {
-	if !e.is(classUniversal, tagBitString) {
+	if !e.is(tagBitString) {
 		return 0, fmt.Errorf("%w: not a BIT STRING", ErrTag)
 	}
 	if len(e.data) < 1 || e.data[0] != 0 {

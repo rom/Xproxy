@@ -342,7 +342,10 @@ const (
 	// service's long-term key.
 	OptEncTktInSkey Options = 1 << (31 - 28)
 	OptRenew        Options = 1 << (31 - 30)
-	OptValidate     Options = 1 << (31 - 31)
+	// OptValidate is bit 31, the last of the field, so the shift this
+	// list is written with -- 1 << (31 - n) -- is 1 << 0 here, and is
+	// written that way because the general form would read as a mistake.
+	OptValidate Options = 1 << 0
 )
 
 var optionNames = []struct {

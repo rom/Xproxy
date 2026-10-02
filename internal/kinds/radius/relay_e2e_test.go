@@ -250,7 +250,9 @@ func request(id uint8, user string, withMAC bool, extra ...[]byte) []byte {
 // CoA-Request. The order is the standard's and is not interchangeable -- the
 // HMAC is written first, because the MD5 covers it.
 func signedComputed(code wire.Code, id uint8, attrs ...[]byte) []byte {
-	all := append(attrs, attr(wire.AttrMessageAuthenticator, make([]byte, 16)...))
+	all := make([][]byte, 0, len(attrs)+1)
+	all = append(all, attrs...)
+	all = append(all, attr(wire.AttrMessageAuthenticator, make([]byte, 16)...))
 	out := packetWith(code, id, [16]byte{}, all...)
 	at := len(out) - 16
 	h := hmac.New(md5.New, []byte(theSecret)) //nolint:gosec // RFC 3579 specifies HMAC-MD5

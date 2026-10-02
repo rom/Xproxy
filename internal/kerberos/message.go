@@ -25,8 +25,9 @@ import (
 // Message is one Kerberos message, read as far as its plaintext goes.
 type Message struct {
 	Type MsgType
-	// PVNO is the protocol version, which is 5 in everything.
-	PVNO int
+	// PVNO is the protocol version, which is 5 in everything. It is the
+	// standard's Int32, as every numeric field of a message is.
+	PVNO int32
 
 	// Realm is the realm the message is about: req-body's realm in a
 	// request, crealm in a reply, and the error's realm field.
@@ -350,7 +351,7 @@ func (m *Message) readPAData(r *der, e element) error {
 				if err != nil {
 					return err
 				}
-				if !iv.is(classUniversal, tagOctetString) {
+				if !iv.is(tagOctetString) {
 					return fmt.Errorf("%w: padata-value is not an OCTET STRING", ErrTag)
 				}
 				value = iv.data
@@ -566,7 +567,7 @@ func (m *Message) readError(r *der) error {
 			if err != nil {
 				return err
 			}
-			m.ErrorCode = int32(n) //nolint:gosec // derInteger bounds the width to the standard's Int32
+			m.ErrorCode = n
 		case e.ctx(8):
 			if m.Client, err = principalField(r, e); err != nil {
 				return err
@@ -694,16 +695,12 @@ func (m *Message) readAPTicket(r *der, e element) error {
 // The field readers. Each unwraps the explicit context tag and reads the
 // one value inside it, which is the shape of every field in the protocol.
 
-func intField(r *der, e element) (int, error) {
+func intField(r *der, e element) (int32, error) {
 	inner, _, err := r.only(e)
 	if err != nil {
 		return 0, err
 	}
-	n, err := derInteger(inner)
-	if err != nil {
-		return 0, err
-	}
-	return int(n), nil
+	return derInteger(inner)
 }
 
 func stringField(r *der, e element) (string, error) {
@@ -766,7 +763,7 @@ func principalField(r *der, e element) (Principal, error) {
 			if err != nil {
 				return Principal{}, err
 			}
-			p.Type = int32(n) //nolint:gosec // derInteger bounds the width to Int32
+			p.Type = n
 		case f.ctx(1):
 			parts, in, err := seq.only(f)
 			if err != nil {

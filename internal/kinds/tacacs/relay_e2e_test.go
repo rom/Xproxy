@@ -242,7 +242,7 @@ func authorBody(user string, priv uint8, args ...string) []byte {
 	strs = append(strs, user...)
 	strs = append(strs, port...)
 	strs = append(strs, rem...)
-	var alens, abody []byte
+	alens, abody := make([]byte, 0, len(args)), []byte{}
 	for _, a := range args {
 		alens = append(alens, byte(len(a)))
 		abody = append(abody, a...)
@@ -269,7 +269,7 @@ func authenBody(action wire.AuthenAction, typ wire.AuthenType, svc wire.AuthenSe
 // acctBody renders an accounting record.
 func acctBody(flags uint8, user string, args ...string) []byte {
 	const port, rem = "tty0", "10.0.0.9"
-	var alens, abody []byte
+	alens, abody := make([]byte, 0, len(args)), []byte{}
 	for _, a := range args {
 		alens = append(alens, byte(len(a)))
 		abody = append(abody, a...)
