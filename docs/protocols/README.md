@@ -62,6 +62,27 @@ written in each protocol's own terms.
 | TDS 7.x for SQL Server | [tds](tds.md) | 1433 |
 | Redis, RESP2 and RESP3 | [redis](redis.md) | 6379 |
 
+### Authentication, authorisation and accounting
+
+The protocols that decide who may get onto the network and who may change the
+equipment. All three carry credentials, and on two of them the relay holds the
+shared secret -- which is what makes a policy here worth more than a packet
+filter's.
+
+| Protocol | Page | Usual port |
+|----------|------|------------|
+| RADIUS, with EAP and dynamic authorization | [radius](radius.md) | 1812, 1813, 3799 |
+| TACACS+ (RFC 8907), and over TLS | [tacacs](tacacs.md) | 49 |
+| Kerberos over HTTPS (MS-KKDCP) | [kkdcp](kkdcp.md) | 443 |
+
+RADIUS and TACACS+ are linked into **xot** as well, because a plant's switches,
+routers and firewalls authenticate their administrators the same way a data
+centre's do -- and on a TACACS+ listener the work orders a configuration command
+is matched against live there. The KDC proxy is **xproxy**'s by default,
+because MS-KKDCP exists so that a client outside the network can reach a KDC
+inside it: `daemon: xrelay` puts it on the relay for an estate that runs one
+internally.
+
 ## xot — the plant
 
 The protocols in front of equipment that cannot be patched on a release cycle.

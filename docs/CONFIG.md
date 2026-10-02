@@ -1,9 +1,9 @@
 # Configuration reference
 
 Four daemons read this format: **xproxy** (the edge: `http`, `forward`,
-`tcp`, `dns`), **xgate** (the gate: `ssh`), **xrelay** (the relay:
-`smtp`, `ftp`, the databases) and **xot** (the plant: `modbus`,
-`iec104`, `s7`, `mms`, `bacnet`, `opcua`, `coap`). Every one of them
+`tcp`, `dns`, `kkdcp`), **xgate** (the gate: `ssh`), **xrelay** (the relay:
+`smtp`, `ftp`, the databases, `radius`, `tacacs`) and **xot** (the plant:
+`modbus`, `iec104`, `s7`, `mms`, `bacnet`, `opcua`, `coap`). Every one of them
 validates the whole file — a listener kind a sibling serves is checked as
 carefully here as at home — and binds only the listeners it owns, saying
 in the log which it left to whom. That is what lets an estate keep its
@@ -150,9 +150,9 @@ off) logs a warning and lists them under `mismatched_peers`.
 | `h3` | object | defaults when `h3` is listed | QUIC tuning; see below |
 | `h2c` | bool | `false` | Accept HTTP/2 without TLS (prior knowledge and Upgrade) on a plaintext listener, for gRPC clients inside a trusted network |
 | `tls` | object | none | TLS termination; see below |
-| `proxy_protocol` | bool | `false` | Read a PROXY protocol v1 or v2 header at the start of every connection from a peer in `trusted_proxies`: the client address it carries becomes the peer for limits, bans, ACLs, logs and forwarding headers, and the per address connection count moves to it. A trusted peer that sends no header, or a malformed one, is dropped without a response (`drop_connection` with reason `proxy_protocol`, counted in `rejected_connections`); `LOCAL` headers keep the balancer's address; connections from other peers are served unchanged, so a client cannot choose its own address. Requires `trusted_proxies`; read on `kind:` `http`, `forward`, `ssh`, `telnet`, `vnc`, `rdp`, `smtp`, `mqtt`, `ftp`, `syslog` and `modbus`, and not on `tcp` (which reads the first bytes itself to route by server name, and forwards a header instead), `dns`, `udp`, `ntp`, `ntske`, `dhcp` or `dhcp6` -- the datagram kinds have no connection to put a header at the start of, and the key establishment relay reads the ClientHello. |
-| `kind` | `http`, `tcp`, `udp`, `forward`, `dns`, `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `ntp`, `ntske`, `dhcp`, `dhcp6`, `ssh`, `telnet`, `vnc`, `rdp` | `http` | `tcp` is a layer 4 stream listener and `udp` its datagram counterpart, `forward` an explicit proxy for clients, `dns` a DNS proxy, `smtp` a protocol-aware SMTP and submission proxy, `mqtt` an MQTT proxy, `ftp` an FTP proxy, `syslog` a syslog relay, `modbus` a Modbus relay, `ntp` an NTP and NTS time gateway with `ntske` its key establishment relay, and `ssh`, `telnet`, `vnc` and `rdp` the access gateways; see below. The kind also decides which daemon serves the listener: `http`, `forward`, `tcp`, `udp` and `dns` are xproxy's; `ssh`, `telnet`, `vnc` and `rdp` are xgate's; `smtp`, `ftp`, `ldap`, `postgres`, `mysql`, `tds`, `redis` and `amqp` are xrelay's; `modbus`, `iec104`, `s7`, `mms`, `bacnet`, `opcua` and `coap` are xot's; and `mqtt`, `syslog`, `snmp`, `tftp`, `dhcp`, `dhcp6`, `ntp` and `ntske` are served by both relays, xrelay's unless the listener's `daemon` says otherwise. A daemon handed a listener of another kind validates it and leaves it alone; it is never served by the wrong data plane |
-| `daemon` | `xproxy`, `xgate`, `xrelay`, `xot` | the kind's own | Which program binds this listener, for the eight kinds both relays serve (`mqtt`, `syslog`, `snmp`, `tftp`, `dhcp`, `dhcp6`, `ntp`, `ntske`). Naming a daemon that does not carry that kind's code is a load error, because the alternative is a port nobody binds and a policy nobody enforces. Naming the only daemon that serves a kind is allowed and warned about. Left unset, the eight are xrelay's and every other kind belongs to the one daemon that serves it. MQTT is in that set because Sparkplug B telemetry is a plant's own and the device inventory collects what one daemon saw, so an estate whose device births arrive over MQTT wants that listener on the daemon serving its control protocols |
+| `proxy_protocol` | bool | `false` | Read a PROXY protocol v1 or v2 header at the start of every connection from a peer in `trusted_proxies`: the client address it carries becomes the peer for limits, bans, ACLs, logs and forwarding headers, and the per address connection count moves to it. A trusted peer that sends no header, or a malformed one, is dropped without a response (`drop_connection` with reason `proxy_protocol`, counted in `rejected_connections`); `LOCAL` headers keep the balancer's address; connections from other peers are served unchanged, so a client cannot choose its own address. Requires `trusted_proxies`; read on `kind:` `http`, `forward`, `ssh`, `telnet`, `vnc`, `rdp`, `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `tacacs` and `kkdcp`, and not on `tcp` (which reads the first bytes itself to route by server name, and forwards a header instead), `dns`, `udp`, `ntp`, `ntske`, `dhcp`, `dhcp6` or `radius` -- the datagram kinds have no connection to put a header at the start of, and the key establishment relay reads the ClientHello. |
+| `kind` | `http`, `tcp`, `udp`, `forward`, `dns`, `kkdcp`, `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `ntp`, `ntske`, `dhcp`, `dhcp6`, `radius`, `tacacs`, `ssh`, `telnet`, `vnc`, `rdp` | `http` | `tcp` is a layer 4 stream listener and `udp` its datagram counterpart, `forward` an explicit proxy for clients, `dns` a DNS proxy, `smtp` a protocol-aware SMTP and submission proxy, `mqtt` an MQTT proxy, `ftp` an FTP proxy, `syslog` a syslog relay, `modbus` a Modbus relay, `ntp` an NTP and NTS time gateway with `ntske` its key establishment relay, `radius` and `tacacs` the two protocols that authenticate network equipment, `kkdcp` a Kerberos KDC proxy over HTTPS, and `ssh`, `telnet`, `vnc` and `rdp` the access gateways; see below. The kind also decides which daemon serves the listener: `http`, `forward`, `tcp`, `udp` and `dns` are xproxy's; `ssh`, `telnet`, `vnc` and `rdp` are xgate's; `smtp`, `ftp`, `ldap`, `postgres`, `mysql`, `tds`, `redis` and `amqp` are xrelay's; `modbus`, `iec104`, `s7`, `mms`, `bacnet`, `opcua` and `coap` are xot's; `kkdcp` is xproxy's and xrelay's; and `mqtt`, `syslog`, `snmp`, `tftp`, `dhcp`, `dhcp6`, `ntp`, `ntske`, `radius` and `tacacs` are served by both relays, xrelay's unless the listener's `daemon` says otherwise. A daemon handed a listener of another kind validates it and leaves it alone; it is never served by the wrong data plane |
+| `daemon` | `xproxy`, `xgate`, `xrelay`, `xot` | the kind's own | Which program binds this listener, for the eleven kinds more than one daemon serves (`mqtt`, `syslog`, `snmp`, `tftp`, `dhcp`, `dhcp6`, `ntp`, `ntske`, `radius`, `tacacs` -- xrelay's by default, and xot's where a plant's own network equipment is behind them -- and `kkdcp`, which is xproxy's by default because MS-KKDCP exists so that a client outside the network can reach a KDC inside it). Naming a daemon that does not carry that kind's code is a load error, because the alternative is a port nobody binds and a policy nobody enforces. Naming the only daemon that serves a kind is allowed and warned about. Left unset, those ten are xrelay's, `kkdcp` is xproxy's, and every other kind belongs to the one daemon that serves it. MQTT is in that set because Sparkplug B telemetry is a plant's own and the device inventory collects what one daemon saw, so an estate whose device births arrive over MQTT wants that listener on the daemon serving its control protocols |
 | `redirect_to_https` | bool | `false` | Answer every request with 308 to `https://host/path?query`. Plaintext listeners only. |
 | `connection_rate` | object | none | `{per_second, burst}`: how fast this listener accepts, replacing `server.limits.connection_rate` for it. See below |
 | `connection_rate_per_source` | object | none | `{per_second, burst, ipv4_prefix, ipv6_prefix, max_sources}`: how fast one source network may connect to this listener |
@@ -212,7 +212,9 @@ a peer; the access log's `closed` field says which), `tcp_bytes_in`,
 flows are keyed by client address, so a client that migrates to a new
 address starts a new flow (its first packet is not an Initial and is
 dropped; the client falls back or retries); QUIC versions other than 1
-are dropped. Changing a tcp listener needs a restart.
+are dropped. A tcp listener's settings reload like any other; with
+`quic: true` a change on the same address needs a restart instead,
+because the flows are state inside the socket's transport.
 
 #### Transparent interception
 
@@ -851,8 +853,11 @@ Counters: `forward_requests`, `forward_tunnels`, `forward_tunnels_open`,
 `forward_intercept_refused`, `forward_intercept_passed`,
 `forward_intercept_bytes`, `forward_intercept_requests`,
 `forward_intercept_bytes_only`;
-`xproxy_forward_*` metrics. The policy and the users file reload; the
-address and TLS settings need a restart like every listener.
+`xproxy_forward_*` metrics. The policy and the users file apply in place,
+without touching a connection; the TLS settings and the address reload
+too, by rebuilding the listener on the socket it already holds (or
+binding the new address and draining the old one), so neither needs a
+restart.
 
 ### server.listeners[].dns (kind: dns)
 
@@ -871,7 +876,12 @@ NOTIMP otherwise); responses arriving as queries and packets from
 banned clients are dropped. A dns listener takes `address`, `dns` and
 optionally `tls`; bans and the global connection limits apply to TCP
 clients as on every listener. The policy, upstreams and cache bounds
-reload (the cache is kept); the address needs a restart.
+apply in place and the cache is kept. Anything else about the listener
+reloads by rebuilding it on the datagram socket it already holds, which
+is handed from one generation to the next: no query is lost and no
+restart is needed. With `doq` that handover is not possible -- a QUIC
+connection is state inside the transport -- so a change on the same
+address asks for a restart.
 
 With `tls` (certificates only, no ACME) the listener is encrypted: no
 plain UDP is bound, the TCP port serves DNS over TLS (RFC 7858, ALPN
@@ -5050,6 +5060,334 @@ the refusal counters: `client_not_allowed`, `client_denied`,
 `not_selected`, `selection_expired`, `file_denied`, `file_not_allowed`,
 `file_unreadable`, `too_many_names`, `too_many_requests`, `rate_limited`,
 `unreadable_frame`, `upstream_unavailable`.
+
+### server.listeners[].radius (kind: radius)
+
+RADIUS on UDP 1812 and 1813: what authenticates most of the network
+equipment in most estates — every 802.1X switch port, every VPN
+concentrator, every wireless controller, and on the routers that do not run
+TACACS+ the administrative logins too.
+
+**This listener's value is that it holds the shared secret.** Without one it
+can read a packet's code, identifier and attributes — all of that is in the
+clear — but it cannot tell a packet the server will accept from one it will
+not. With one, every arriving packet's integrity is checked before anything
+is forwarded, which is the difference between a relay that filters and a
+relay that filters *and* authenticates. So `secret_file` is not optional in
+any deployment worth the name, and the validator warns when it is missing.
+
+**`require_message_authenticator` defaults on, and that is the Blast-RADIUS
+answer.** The Response Authenticator is MD5 over the reply with the request's
+authenticator spliced in and the secret appended; a chosen-prefix MD5
+collision turns an Access-Reject into an Access-Accept on the wire, which is
+CVE-2024-3596. RFC 3579's Message-Authenticator is a keyed HMAC over the
+whole packet and the attack does not reach it. Every current server and NAS
+can send one; requiring it is the published mitigation.
+
+**The reply leg is where privilege is granted.** A client asks for access by
+logging in; the *server's* answer is what says this login gets the enable
+prompt — `Service-Type = Administrative-User`, or `shell:priv-lvl=15` in a
+Cisco av-pair. So `max_privilege_level` and `deny_administrative_replies` are
+checks on what comes back, and they are the ones that bound what a
+compromised or spoofed RADIUS server can hand out across a whole estate of
+routers.
+
+**A password is read, never recovered.** `User-Password` is XORed with
+MD5(secret ‖ authenticator), so anybody holding the secret can recover it —
+including this relay. It does not: it records that a request carried one and
+how long it was. `refuse_plaintext_passwords` defaults off for the same
+reason the knob on the `mms` listener does: PAP is most of the installed
+base, refusing it removes the only authentication a lot of equipment has,
+and counting it does not.
+
+**This listener takes no `tls` section.** RADIUS is UDP and has no transport
+security of any kind. RadSec (RFC 6614) puts it inside TLS on TCP 2083,
+which is a different transport with a different trust model rather than a
+flag on this one.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | string | required | The RADIUS server pool |
+| `accounting_upstream` | string | `""` | The pool `Accounting-Request` goes to, where an estate separates them. Empty sends accounting to `upstream` |
+| `secret_file` | absolute path | none (warned about) | The shared secret, one line, readable only by its owner — a file rather than a value here, because a secret written in this section is a secret in the configuration management, the backups and every review of the change that added it |
+| `upstream_secret_file` | absolute path | `""` | The secret towards the servers, where it differs. Setting it makes this listener a secret boundary: the equipment's secret never reaches the server and the server's never reaches the equipment. The cost is that the obfuscated `User-Password` has to be re-obfuscated under the new secret, which means this relay recovers it in memory for the length of one packet; a listener that does not set this never does |
+| `allow_clients`, `deny_clients` | list of CIDR | `[]` | The networks a client may send from; deny is evaluated first. On a protocol where the client is a switch at a fixed address this is the cheapest line in the section |
+| `codes`, `deny_codes` | list | the four a client sends | The packet codes carried, by name (`access-request`, `accounting-request`, `status-server`) or number. Empty allows authentication, accounting and the two status queries — and not the dynamic authorization codes |
+| `require_message_authenticator` | bool | `true` | Refuse a packet with no valid RFC 3579 digest. Turning it off on a listener that has a secret means accepting replies whose only integrity check is a collidable MD5; name the equipment too old to send one in a rule instead |
+| `verify_response_authenticator` | bool | `true` | Check RFC 2865's own authenticator on a reply. It is the weaker of the two — it is what the collision forges — and still worth running: it catches a mismatched secret, a corrupted packet and an answer from the wrong server |
+| `allow_dynamic_authorization` | bool | `false` | Carry RFC 5176's `Disconnect-Request` and `CoA-Request`. Each ends or re-authorises a live user's session from one datagram, and they run from the server towards the equipment rather than the other way |
+| `auth_types` | list | any | The credential shapes carried: `pap`, `chap`, `mschap`, `eap`, `none` |
+| `refuse_plaintext_passwords` | bool | `false` | Refuse an `Access-Request` carrying `User-Password`; see above for why it defaults off |
+| `eap_types`, `deny_eap_types` | list | any not weak | The EAP methods carried, by name (`peap`, `tls`, `ttls`, `mschapv2`) or number |
+| `refuse_weak_eap` | bool | `true` | Refuse the methods with no server authentication and no key material, crackable offline from one observed exchange: EAP-MD5, LEAP, and the bare one-time-password and token-card types. A client that Naks its way down to EAP-MD5 has downgraded the estate's authentication to a hash somebody can crack on a laptop |
+| `users`, `deny_users` | list | `[]` | The `User-Name` values carried, matched case-insensitively on the whole name |
+| `realms`, `deny_realms` | list | `[]` | The realms a name may carry, in all three forms the installed base uses: `user@realm`, `realm\user` and `realm/user`. A realm is routing — a server proxies by it — so an allow list here is a say in where a credential goes |
+| `require_realm` | bool | `false` | Refuse a user name with no realm in it, which is where a misconfigured supplicant and a hand-typed login both land |
+| `nas_identifiers` | list | `[]` | The `NAS-Identifier` values carried. It is a claim rather than a fact, so it is worth pairing with `allow_clients` rather than trusting alone |
+| `max_privilege_level` | int | `15` (no bound) | The administrative privilege a *reply* may grant, 0 to 15, read from a Cisco av-pair's `priv-lvl`. Setting it to 1 on the listener in front of the switches means no RADIUS answer crossing this relay can hand out enable, whatever the server says |
+| `deny_administrative_replies` | bool | `false` | Refuse a reply carrying `Service-Type = Administrative-User`, which is the standard attribute's spelling of the same grant |
+| `deny_attributes` | list | `[]` | Attribute types a request may not carry, by name or number |
+| `deny_reply_attributes` | list | `[]` | Attribute types a reply may not carry. The interesting one is `Tunnel-Private-Group-Id`: the VLAN a RADIUS answer puts a port in, which a listener whose job is authentication rather than authorisation can refuse to carry |
+| `refuse_proxy_state` | bool | `false` | Refuse a request carrying `Proxy-State`. The attribute exists so a proxy can recognise its own forwarded requests, and a client sending one is either a proxy or something putting state into a server's reply path |
+| `max_attributes` | int | `255` | The attributes one packet may carry — more than any real packet, and far short of what 4096 octets of empty attributes holds |
+| `max_message_bytes` | int | `4096` | One datagram; RFC 2865's own maximum |
+| `max_pending` | int | `256` | The requests waiting for answers, bounded by the width of the identifier space |
+| `request_timeout` | duration | `10s` | How long a request's slot is held |
+| `rate_limit`, `rate_burst` | int | `0` (off) | Requests a second per client address. Here this is also the only thing between a credential-stuffing run and a server doing a key derivation per attempt |
+| `default_action` | enum | `deny` | `deny` or `allow` for a request no rule matched |
+| `deny_response` | enum | `reject` | `reject` (an `Access-Reject`, which the client reports as a failed login and stops on) or `drop`. An `Accounting-Request` has nothing useful to refuse with, so a refused one is always dropped |
+| `log_requests` | bool | `true` | A line per request and per answer: who, from where, which method, and what was granted |
+| `alert_on_deny` | bool | `true` | A security event for every refusal |
+| `monitor_only` | bool | `false` | Evaluate and enforce nothing, the same as `policy: {mode: shadow}`. The bounds, the integrity checks and the malformed-packet refusals still apply: a packet whose digest does not verify is not a policy question |
+| `anomaly` | object | off | Behavioural models over what each piece of equipment has been doing; see `anomaly` |
+
+Counters: `radius_requests`, `radius_bad_digest`, `radius_no_digest`,
+`radius_plaintext_passwords`, `radius_privilege_grants` and
+`radius_unsolicited`. `radius_bad_digest` is the one to alert on — a packet
+whose Message-Authenticator or Response Authenticator did not verify is
+either a mismatched secret or somebody forging answers, and a relay cannot
+tell which. `radius_plaintext_passwords` is a fact about the estate's
+equipment rather than about this relay.
+
+#### server.listeners[].radius.rules[]
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | string | required | Names the rule in the logs and the counters |
+| `action` | enum | `allow` | `allow`, `deny` or `observe`. `observe` logs and counts and then keeps looking, which is how a rule is tried on live traffic before it decides anything |
+| `clients` | list of CIDR | `[]` | The networks the client is in |
+| `codes` | list | `[]` | The packet codes this rule covers |
+| `auth_types`, `eap_types` | list | inherited | The credential shapes and EAP methods this rule covers |
+| `users`, `realms`, `nas_identifiers` | list | `[]` | Select by who is asking |
+| `max_privilege_level` | int | inherited | The rule's own bound on what a reply may grant, which is how the one jump host that really does get enable is written down |
+| `require_message_authenticator` | bool | inherited | The rule's own answer, which is how the one piece of equipment too old to send a digest is admitted without turning the check off for the estate |
+| `schedule` | object | none | Limit the rule to a time window |
+
+### server.listeners[].tacacs (kind: tacacs)
+
+TACACS+ on TCP 49 (RFC 8907): device administration. Where RADIUS answers
+"may this user onto the network", TACACS+ answers "may this user, at this
+privilege level, run `configure terminal` on this router" — it authorises
+each command separately, and the command is in the packet. Of every protocol
+in this reference it is the one where a policy is worth the most per line.
+
+**The shared key is what makes the rest possible.** RFC 8907 calls its MD5
+construction "obfuscation", not encryption, and §10.3 says it is "not
+cryptographically sound": the pad is a chain of MD5 digests over the session
+identifier, the key, the version and the sequence number, so anybody with the
+key reads everything. This listener uses that. With `secret_file` it reads
+the user, the command and the privilege level; without one it reads the
+twelve-octet header and forwards the body unexamined — which is a bound and
+an audit of sessions, and not a policy on commands. Naming `commands` or
+`users` without a key is a load error rather than a setting that silently
+matches nothing.
+
+**The command patterns are the point.** They match the command line a device
+sends split across `cmd` and one `cmd-arg` per word, so a rule is written the
+way the command is typed and the listener reassembles it. The grammar is
+words with an optional trailing `...` meaning "and anything after": `show
+...` covers every show command, `show running-config` covers exactly that,
+and a wildcard in the middle is refused at load — a pattern whose author and
+whose reader disagree about what it covers is worse than no pattern on a
+protocol that authorises each command separately. Matching is
+case-insensitive, because a device's command line is. Abbreviations are
+*not* expanded: a user may type `conf t`, but what reaches the server is what
+the device sends, and every platform worth naming sends the expanded form.
+
+**Privilege is granted in the reply, and bounded here.** An authorization
+response carries `priv-lvl=15` as a mandatory argument, and a device that
+receives a mandatory argument must apply it. So `max_privilege_level` is
+checked on the server's answer as well as on the request's own field: the
+first is a grant, the second only a claim.
+
+**A `FOLLOW` reply is refused by default.** RFC 8907 §5.2's
+`TAC_PLUS_AUTHEN_STATUS_FOLLOW` redirects the client to a different server,
+and the reply's data field carries that server's address, port and *key*. It
+is a server-chosen redirect to an arbitrary host after which the client sends
+its next credential there; the standard deprecates it and says a client
+should treat it as a failure.
+
+**Device administration is engineering activity.** The `engineering` block
+applies here for the same reason it applies to a PLC download: a `configure
+terminal` on a core router at three in the morning is either a change with a
+work order behind it or an incident. A `show` is not engineering and is not
+reported as one.
+
+A `tls` section is allowed and means TACACS+ over TLS, which is the fix for
+everything §10.3 admits. Almost no equipment speaks it yet, which is why
+`refuse_unencrypted` exists as the weaker thing it is.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | string | required | The TACACS+ server pool |
+| `secret_file` | absolute path | none (warned about) | The shared key, one line, readable only by its owner |
+| `upstream_secret_file` | absolute path | `""` | The key towards the servers, where it differs. Setting it makes this listener a key boundary: a device's key never reaches the server and the server's never reaches a device |
+| `allow_clients`, `deny_clients` | list of CIDR | `[]` | The networks a device may connect from; deny is evaluated first |
+| `exchanges` | list | all three | `authentication`, `authorization`, `accounting`. Naming fewer is a real control: a listener in front of equipment managed from a bastion and nowhere else can carry accounting and authorization and refuse authentication, so no login can be attempted through it at all |
+| `refuse_unencrypted` | bool | `true` | Refuse a packet whose `TAC_PLUS_UNENCRYPTED_FLAG` is set, meaning the body arrived in the clear. RFC 8907 §4.5 allows it only on a secured transport; on bare TCP it is either a mistake or somebody stripping the obfuscation, and either way an administrative login's user name and password are on the wire |
+| `allow_follow` | bool | `false` | Carry a `FOLLOW` status; see above |
+| `allow_change_password` | bool | `false` | Carry an authentication session whose action is `CHPASS`. It changes a credential on the server, and most estates do password changes elsewhere entirely |
+| `allow_sendauth` | bool | `false` | Carry a `SENDAUTH` session, which asks the server for a credential to send onwards to a peer. RFC 8907 §5.4.3 keeps it for outbound CHAP and PAP on dial links; in a modern estate a request for one is either dead configuration or somebody extracting credentials from the server |
+| `authen_types` | list | any | The credential shapes carried: `ascii`, `pap`, `chap`, `mschap`, `mschapv2` |
+| `refuse_plaintext_passwords` | bool | `false` | Refuse a session whose type puts the password in the body — `ascii` and `pap`. It defaults off for the reason the knob on `mms` does: on a lot of equipment interactive login is the only authentication there is. What this listener does by default is count every session that carries one |
+| `allow_unauthenticated_authorization` | bool | `false` | Carry an authorization request whose `authen_method` says the device authenticated nobody: not-set, none, guest, or the line password. This is a whole attack in one octet — a device that asks "may this unnamed user run this command" and is told yes has authorised a command for whoever is on the port |
+| `services` | list | any | The `service` argument values carried: `shell`, `ppp`, or a vendor's own |
+| `authen_services` | list | any | The protocol's own `authen_service` field: `login`, `enable`, `ppp`, `rcmd`. `enable` is the one to think about — it is the privilege escalation inside an existing session, and a separate decision from the login |
+| `users`, `deny_users` | list | `[]` | The user names carried |
+| `commands` | list | any | The command lines carried, written the way they are typed; empty allows any |
+| `deny_commands` | list | `[]` | Checked first, and no rule overrides it, which is how an exception inside an allowed set is written: `show ...` allowed, `show running-config` denied |
+| `max_privilege_level` | int | `15` (no bound) | The privilege level, 0 to 15, checked on a request's own field and on a `priv-lvl` argument in the server's response |
+| `max_args` | int | `64` | The arguments one request may carry; the protocol's own bound is 255 |
+| `max_body_bytes` | int | `32768` | One packet's body. RFC 8907 §4.1 says a server should refuse one past 65536, and nothing legitimate is near either number |
+| `max_sessions`, `max_sessions_per_client` | int | `0` (off) | Concurrent connections |
+| `max_sessions_per_connection` | int | `64` | The sessions one TCP connection may carry. A connection carries more than one only when both ends set `TAC_PLUS_SINGLE_CONNECT_FLAG`, which is ordinary — so this is a bound rather than a refusal |
+| `idle_timeout`, `session_timeout` | duration | `5m`, `1h` | How long a connection may sit silent, and how long it may live |
+| `rate_limit`, `rate_burst` | int | `0` (off) | Connections a second per client address |
+| `require_tls` | bool | `false` | Refuse a connection that is not TLS. Requires a `tls` section on the listener |
+| `upstream_tls_mode` | enum | `disable` | `disable`, `prefer` or `require` towards the servers. `prefer` tries TLS and falls back, which is what an estate migrating its equipment needs |
+| `upstream_tls` | object | none | Client-side TLS settings for that leg; see `upstreams[].tls` |
+| `default_action` | enum | `deny` | `deny` or `allow` for a request no rule matched |
+| `deny_response` | enum | `fail` | `fail` (an authentication FAIL, an authorization FAIL or an accounting ERROR, each carrying a message saying which proxy refused it) or `drop`. `fail` is the right default here in a way it is not on every protocol: the person refused is an engineer at a terminal, and a line saying `refused by xproxy: command_not_allowed` is the difference between a policy they can work with and a router they report as broken |
+| `log_requests` | bool | `true` | A line per request and per answer |
+| `log_accounting` | bool | `true` | Every accounting record as its own line. This is the estate's own copy of the device-administration audit trail — who ran what, on which device, at what privilege level — worth having separately from the server's because it is in a different place, written by a different program, and whoever has just got privileged access to the routers does not have it |
+| `alert_on_deny` | bool | `true` | A security event for every refusal |
+| `monitor_only` | bool | `false` | Evaluate and enforce nothing, the same as `policy: {mode: shadow}`. The bounds, the session limits and the malformed-packet refusals still apply, and so do the refusals about what the *server* sent: carrying a `FOLLOW` to see what would have happened is the thing being prevented |
+| `anomaly` | object | off | Behavioural models over what each device and each user has been doing; see `anomaly` |
+| `engineering` | object | reports, no grant required | Report configuration commands as their own class of event and, with `require_grant`, refuse one with no approved work order open; see `access` |
+
+Counters: `tacacs_sessions`, `tacacs_commands`, `tacacs_accounting`,
+`tacacs_header_only`, `tacacs_plaintext_passwords` and
+`tacacs_privilege_grants`. `tacacs_commands` is the audit number — how many
+command authorizations crossed this listener — and `tacacs_header_only` is
+the one that says a command policy is deciding nothing, because it counts
+the packets whose body this listener could not read.
+
+#### server.listeners[].tacacs.rules[]
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | string | required | Names the rule in the logs and the counters |
+| `action` | enum | `allow` | `allow`, `deny` or `observe` |
+| `clients` | list of CIDR | `[]` | The networks the device is in |
+| `exchanges` | list | `[]` | The exchanges this rule covers |
+| `users` | list | `[]` | The user names this rule covers |
+| `commands`, `deny_commands` | list | inherited | The command lines this rule covers, and the ones it does not cover even when `commands` would match. A rule whose command list does not cover a command does not decide it, so a rule written to allow `show ...` is not the rule that allows `reload` |
+| `services`, `authen_services` | list | inherited | The service values this rule covers |
+| `authen_types` | list | inherited | The credential shapes this rule covers |
+| `max_privilege_level` | int | inherited | The rule's own bound |
+| `schedule` | object | none | Limit the rule to a time window, which is what a change window is: configuration commands allowed while the engineers are on shift and not at three in the morning |
+
+### server.listeners[].kkdcp (kind: kkdcp)
+
+A Kerberos KDC proxy: HTTPS in, TCP to the KDC, and the answer wrapped back.
+MS-KKDCP exists because Kerberos is UDP and TCP on port 88 and the places
+people work from are not on the network the KDC is on; Windows has shipped
+the client since 2012, and MIT and Heimdal both speak it.
+
+It is the only listener here that translates one protocol into another, and
+it is one of the few places an estate's Kerberos traffic can be read at all.
+
+**Everything a policy needs is in the clear.** Which realm, which client
+principal, which service principal, which encryption types the client will
+take, which pre-authentication it brought: those are the fields the KDC
+itself decides on, and they are readable because they have to be — they are
+how the two ends agree what to encrypt. What is encrypted is the ticket and
+the reply's enc-part, and no setting here needs those. One limit worth
+stating: a request wrapped in RFC 6113's FAST armour shows this relay the
+armour and not what is inside it.
+
+**A proxy with no realm policy is an open relay.** `realms` is required. A
+request whose envelope and inner message name different realms is refused
+rather than resolved: the outer one is what the proxy routes by and the inner
+one is what the KDC decides on, so a proxy that picked one would be deciding
+about a different realm than the KDC.
+
+**The interesting attacks are visible, and three have knobs of their own.**
+
+- A TGS-REQ offering **nothing but RC4** is Kerberoasting: an RC4 service
+  ticket's encrypted part is crackable offline against the service account's
+  NT hash. `refuse_weak_etypes` refuses those. "Nothing but" rather than
+  "any", and the distinction is the whole setting — a Windows client lists
+  aes256, aes128 and rc4 and the KDC takes the first it can, so refusing a
+  request that *mentions* RC4 would refuse the estate.
+- An **AS-REP for a request that brought no pre-authentication** means the
+  account is pre-authentication exempt, and the reply's encrypted part is an
+  offline password-cracking target. That is AS-REP roasting, and
+  `refuse_preauth_exempt` refuses the *reply* — because the question cannot
+  be answered on the request: a bare AS-REQ is the normal first message of
+  every exchange, and the KDC answers one with `KDC_ERR_PREAUTH_REQUIRED`.
+- A TGS-REQ carrying `PA-FOR-USER` is **S4U2Self** and one carrying the
+  constrained-delegation option with an additional ticket is **S4U2Proxy**,
+  the two primitives behind most delegation abuse. Both default off, and
+  S4U2Proxy needs both halves to be recognised as one: the option alone is a
+  client setting a reserved bit, and an additional ticket alone is a
+  user-to-user request.
+
+**A run of failures is the other half.** An internet-facing KDC proxy is
+where password spraying lands, and the signal is a burst of
+`KDC_ERR_PREAUTH_FAILED`. `max_preauth_failures` counts them per client over
+a window and refuses past the bound, which is a control the KDC's own lockout
+policy cannot give — it locks the account, which is what the sprayer wanted.
+
+**A `tls` section is required**, not optional: the protocol is HTTPS, and the
+message it carries holds a value derived from the user's password. A listener
+without one is refused at load.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | string | required | The KDC pool, reached over TCP |
+| `password_upstream` | string | `""` | The pool kpasswd requests go to, which is a different service on a different port. Required when `allow_password_change` is set |
+| `path` | path | `/KdcProxy` | The HTTP path served, which is what Windows asks for. Everything else gets a 404 with no body |
+| `realms` | list | required | The realms carried, matched case-insensitively against both the envelope's target domain and the inner message's realm |
+| `require_target_domain` | bool | `false` | Refuse an envelope that names no target domain. The field is optional in MS-KKDCP and MIT's client omits it, so requiring it refuses real traffic; without it the decision is made on the inner realm, which is the realm the KDC will use |
+| `message_types` | list | `as-req`, `tgs-req` | The request types carried; `ap-req` is admitted only when `allow_password_change` is set |
+| `etypes`, `deny_etypes` | list | any not weak | The encryption types a request may ask for, by name (`aes256-cts-hmac-sha1-96`, `rc4-hmac`) or number |
+| `refuse_weak_etypes` | bool | `true` | Refuse a request offering nothing but weak types: single DES, triple DES and RC4-HMAC |
+| `refuse_weak_ticket_etypes` | bool | `false` | Refuse a *reply* whose ticket was encrypted in a weak type. The same finding from the other end, off by default because by then the KDC has minted the ticket; the counter is worth reading either way |
+| `refuse_preauth_exempt` | bool | `true` | Refuse an AS-REP answering a request that carried no pre-authentication; see above |
+| `allow_s4u2self`, `allow_s4u2proxy` | bool | `false` | Carry MS-SFU's protocol transition and constrained delegation |
+| `allow_anonymous` | bool | `false` | Carry a request asking for the anonymous principal (RFC 8062). It is authentication with no identity in it, and a proxy carrying it carries something nobody can attribute afterwards |
+| `allow_password_change` | bool | `false` | Carry RFC 3244's kpasswd exchange, which arrives as an AP-REQ for `kadmin/changepw` |
+| `allow_forwarded_tickets` | bool | `true` | Carry a request with the `forwarded` or `proxy` option set. It is how ordinary delegation works, and an estate that does none can turn it off |
+| `deny_options` | list | `[]` | KDC options a request may not set, by the standard's names: `renew`, `validate`, `enc-tkt-in-skey`, `disable-transited-check`, `postdated` |
+| `principals`, `deny_principals` | list | `[]` | The client principals carried, by name without the realm. `deny_principals` is where the names nobody should be authenticating as from outside go: the built-in administrator, the service accounts, `krbtgt` itself |
+| `services`, `deny_services` | list | `[]` | The service principals a TGS-REQ may ask for, matched on the whole name or on the service class alone — so `MSSQLSvc` covers every SQL Server instance and `host/dc1.corp.example` covers one host |
+| `max_ticket_lifetime` | duration | `0` (off) | The validity a request may ask for |
+| `max_distinct_services`, `service_window` | int, duration | `0` (off), `5m` | How many different service principals one client may ask for inside a window. This is the behavioural half of the Kerberoasting control and catches what the encryption rules cannot: a client asking for forty service tickets in a minute is enumerating the realm's service accounts whatever encryption it asked for them in |
+| `max_preauth_failures`, `failure_window` | int, duration | `0` (off), `5m` | How many `KDC_ERR_PREAUTH_FAILED` replies one client may collect before this listener stops carrying its requests |
+| `max_message_bytes` | int | `131072` | One inner Kerberos message, each way. The bound has to be generous: a Windows reply for a user in several hundred groups carries a PAC of tens of kilobytes, and a listener that refused one would refuse exactly the users whose group membership matters most. The HTTP body is bounded separately and more tightly |
+| `max_requests_per_connection` | int | `64` | The POSTs one keep-alive connection may make |
+| `upstream_timeout` | duration | `10s` | How long this listener waits for the KDC |
+| `max_sessions`, `max_sessions_per_client` | int | `0` (off) | Concurrent connections |
+| `rate_limit`, `rate_burst` | int | `0` (off) | Requests a second per client address. Worth setting here more than on most kinds: this listener's whole purpose is to be reachable from the open internet, and every request it carries costs the KDC a cryptographic operation |
+| `default_action` | enum | `deny` | `deny` or `allow` for a request no rule matched |
+| `deny_response` | enum | `error` | `error` (a KRB-ERROR with `KDC_ERR_POLICY` and a text saying which proxy refused it, wrapped in the envelope the client expects) or `status` (HTTP 403 and no Kerberos message). `error` is the better default, because silence on this protocol is a client that falls back to port 88 — where there is no relay — and then reports a network fault to whoever is sitting at it |
+| `log_requests` | bool | `true` | A line per request and per reply: the realm, the principal, the service, the encryption types, and what the KDC answered |
+| `alert_on_deny` | bool | `true` | A security event for every refusal |
+| `monitor_only` | bool | `false` | Evaluate and enforce nothing, the same as `policy: {mode: shadow}`. The bounds, the realm check and the malformed-message refusals still apply — forwarding a message for a realm this proxy does not serve would make it the open relay the realm list exists to prevent |
+| `anomaly` | object | off | Behavioural models over what each client has been doing; see `anomaly` |
+
+Counters: `kkdcp_requests`, `kkdcp_preauth_failures`, `kkdcp_weak_tickets`,
+`kkdcp_preauth_exempt`, `kkdcp_delegations` and `kkdcp_realm_mismatch`.
+`kkdcp_preauth_failures` is password spraying seen from the one place it is
+visible, and `kkdcp_weak_tickets` counts the tickets that left in RC4 —
+the Kerberoasting target — whether or not this listener was configured to
+refuse them.
+
+#### server.listeners[].kkdcp.rules[]
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | string | required | Names the rule in the logs and the counters |
+| `action` | enum | `allow` | `allow`, `deny` or `observe` |
+| `clients` | list of CIDR | `[]` | The networks the client is in. On an internet-facing listener this will usually be empty; on one in front of a branch office it is the strongest line in the rule |
+| `realms` | list | `[]` | The realms this rule covers |
+| `message_types` | list | `[]` | The request types this rule covers |
+| `principals` | list | `[]` | The client principals this rule covers |
+| `services`, `deny_services` | list | inherited | The service principals this rule covers, and the ones it does not cover even when `services` would match |
+| `etypes` | list | inherited | The encryption types this rule covers |
+| `max_ticket_lifetime` | duration | inherited | The rule's own bound |
+| `schedule` | object | none | Limit the rule to a time window |
 
 ### server.listeners[].tftp (kind: tftp)
 
@@ -9263,7 +9601,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `flow`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `forward_host_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `tcp_denied`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `dhcp6_denied`, `coap_denied`, `opcua_denied`, `mms_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `amqp_denied`, `s7_denied`, `ntp_denied`, `ntske_denied`, `dns_denied`, `dns_threat_intel`, `dns_deceived`, `dns_tripwire`, `telnet_tripwire`, `ssh_tripwire`, `modbus_tripwire`, `iec104_tripwire`, `s7_tripwire`, `redis_tripwire`, `mysql_tripwire`, `postgres_tripwire`, `yara` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `flow`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `forward_host_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `tcp_denied`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `dhcp6_denied`, `coap_denied`, `opcua_denied`, `mms_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `amqp_denied`, `s7_denied`, `radius_denied`, `tacacs_denied`, `kkdcp_denied`, `ntp_denied`, `ntske_denied`, `dns_denied`, `dns_threat_intel`, `dns_deceived`, `dns_tripwire`, `telnet_tripwire`, `ssh_tripwire`, `modbus_tripwire`, `iec104_tripwire`, `s7_tripwire`, `redis_tripwire`, `mysql_tripwire`, `postgres_tripwire`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |

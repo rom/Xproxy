@@ -121,6 +121,21 @@ var roster = map[string][]Role{
 	// richest sources the device inventory has. The broker front end an
 	// enterprise runs is xrelay's, which is why xrelay keeps the default.
 	"mqtt": {RoleRelay, RoleOT},
+	// The two authentication protocols the network equipment speaks. They
+	// are shared for the same reason syslog and TFTP are: a plant's
+	// switches, routers and firewalls authenticate their administrators
+	// against RADIUS and TACACS+ exactly as a data centre's do, and on a
+	// TACACS+ listener the engineering grants and the work orders the
+	// configuration commands are checked against live on xot.
+	"radius": {RoleRelay, RoleOT},
+	"tacacs": {RoleRelay, RoleOT},
+	// The Kerberos KDC proxy is the edge's by default: MS-KKDCP exists so
+	// that a client outside the network can reach a KDC inside it, so the
+	// deployment it was designed for is an internet-facing HTTPS endpoint,
+	// which is xproxy's job description. An estate that runs one inside its
+	// own network, in front of its domain controllers, puts `daemon: xrelay`
+	// on the listener.
+	"kkdcp": {RoleEdge, RoleRelay},
 }
 
 // authorises is every kind that consults the estate's authorisation policy
@@ -167,6 +182,9 @@ var authorises = map[string]bool{
 	"redis":    true,
 	"amqp":     true,
 	"ntp":      true,
+	"radius":   true,
+	"tacacs":   true,
+	"kkdcp":    true,
 }
 
 // Authorises reports whether a kind consults the estate's authorisation policy.

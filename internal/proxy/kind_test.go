@@ -1,12 +1,15 @@
 package proxy
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/listener"
 	"github.com/rom/xproxy/internal/logging"
+	"github.com/rom/xproxy/internal/testutil"
 )
 
 // sections are a minimal valid configuration section per kind, so the
@@ -41,11 +44,20 @@ var sections = map[string]string{
 	"coap":     "coap: {upstream: u}",
 	"opcua":    "opcua: {upstream: u}",
 	"mms":      "mms: {upstream: u}",
+	"radius":   "radius: {upstream: u}",
+	"tacacs":   "tacacs: {upstream: u}",
 	"bacnet":   "bacnet: {upstream: u}",
 	"amqp":     "amqp: {upstream: u, require_tls: false}",
 	"s7":       "s7: {upstream: u}",
 	"ntp":      "ntp: {upstream: u}",
 	"ntske":    "ntske: {upstream: u}",
+	// The one kind whose minimal configuration needs files on disk: a KDC
+	// proxy with no certificate is refused at load, because MS-KKDCP is
+	// HTTPS and the message it carries holds a value derived from the
+	// user's password. %[1]s is the directory the test writes a
+	// certificate into.
+	"kkdcp": "kkdcp: {upstream: u, realms: [CORP.EXAMPLE]}\n      " +
+		"tls: {certificates: [{cert_file: %[1]s/c.pem, key_file: %[1]s/k.pem}]}",
 }
 
 // TestUnlinkedKindRefused is the guarantee the three-binary split rests
@@ -56,6 +68,14 @@ var sections = map[string]string{
 // port.
 func TestUnlinkedKindRefused(t *testing.T) {
 	reached := 0
+	dir := t.TempDir()
+	cert, key := testutil.WriteCert(t, dir, "kdc.test")
+	if err := os.Rename(cert, filepath.Join(dir, "c.pem")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(key, filepath.Join(dir, "k.pem")); err != nil {
+		t.Fatal(err)
+	}
 	for _, kind := range listener.Kinds() {
 		if _, linked := kindFor(kind); linked {
 			t.Fatalf("kind %q is linked into internal/proxy; the engine must not depend on a kind package", kind)
@@ -72,7 +92,7 @@ server:
     - name: l
       address: "127.0.0.1:0"
       kind: ` + kind + `
-      ` + section + `
+      ` + strings.ReplaceAll(section, "%[1]s", dir) + `
 logging: {access: {enabled: false}}
 upstreams:
   - name: u

@@ -1802,6 +1802,69 @@ two users with two sandboxes, and the plant-facing host runs only one.
 
 **Status.** Accepted.
 
+---
+
+## AMR-053: The authentication relays hold a secret; the KDC proxy holds none
+
+**Context.** RADIUS, TACACS+ and Kerberos are what an estate's own
+equipment authenticates against, and all three were missing. They do not
+divide the way the other relay kinds do. RADIUS and TACACS+ are
+symmetric-secret protocols: the integrity of a RADIUS reply and the
+confidentiality of a TACACS+ body are both an MD5 construction over a
+shared secret, so a proxy that renumbers a RADIUS identifier or reads a
+TACACS+ argument list has to hold a secret for each leg and re-sign what
+it forwards. Kerberos is the opposite: every interesting field a policy
+decides about -- the principals, the encryption types offered, whether
+pre-authentication is present -- is in the cleartext part of the message,
+and everything else is encrypted in keys that belong to the KDC and the
+service.
+
+**Decision.** Three kinds, with the key material split accordingly.
+`radius` and `tacacs` hold a secret per leg, read from a file with
+owner-only permissions enforced at load, and re-originate: a RADIUS
+packet is renumbered and both authenticators recomputed, a TACACS+ body
+is deobfuscated, decided about and reobfuscated under the upstream key.
+`kkdcp` holds **no Kerberos key at all** and performs no Kerberos
+cryptography: it parses the KDC-PROXY-MESSAGE envelope and the cleartext
+of the message inside it, decides, and either forwards the bytes it
+received or mints a KRB-ERROR of its own. An encrypted part is recognised
+and its encryption type read, never decrypted.
+
+`kkdcp` is also the first kind shared by `xproxy` and `xrelay` rather
+than by the two service-facing daemons, and the first relay-shaped kind
+whose transport is HTTPS. MS-KKDCP exists so that a client outside the
+network can reach a KDC inside it, so the deployment it was designed for
+is an internet-facing endpoint; the roster makes the edge its default
+owner and an estate that runs one in front of its own domain controllers
+writes `daemon: xrelay`.
+
+**Alternatives.** *Terminating Kerberos properly* -- holding the krbtgt
+or a service key so the proxy could read an encrypted part -- was
+rejected outright: a box that holds the key to a domain's tickets is a
+higher-value target than the domain controller it protects, and nothing a
+policy needs is behind that key. *Refusing to carry RADIUS at all*,
+on the grounds that its integrity check is optional, was rejected for the
+opposite reason: the estates that run it cannot stop, and
+`require_message_authenticator` lets a proxy make the protocol's own
+mitigation mandatory where the equipment supports it, which is more than
+the equipment does for itself. *Making `kkdcp` an HTTP route with a
+filter* rather than a listener kind was rejected because the policy is
+about Kerberos messages, not about requests: a route cannot refuse an
+AS-REP, and the refusal has to be a KRB-ERROR.
+
+**Consequences.** Two kinds in this set can read a credential's envelope
+and one cannot, which is visible in what each can police: `radius` and
+`tacacs` decide about authentication methods, privilege grants and
+individual commands, and `kkdcp` decides about who is asking for what
+kind of ticket with which encryption types. The secret files are the
+operational cost -- a RADIUS or TACACS+ listener cannot be configured
+without them, and rotating one is a reload. And `xproxy` now links a kind
+that speaks a protocol other than HTTP, DNS or raw sockets; it does so
+over its own TLS listener and its own HTTP server, which is why the kind
+refuses to build without a certificate.
+
+**Status.** Accepted.
+
 ## Open items
 
 | Item | Owner | Needed by |

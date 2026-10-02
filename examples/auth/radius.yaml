@@ -1,0 +1,242 @@
+# RADIUS relay: the protocol that lets people onto the network, put behind
+# something that holds the shared secret and therefore knows whether a packet
+# is real.
+#
+# Three facts shape this file.
+#
+#   The secret is the whole of the cryptography. Without it a relay reads a
+#   packet's attributes -- they are in the clear -- and cannot tell one the
+#   server will accept from one it will not. With it, every arriving packet's
+#   integrity is checked before anything is forwarded. secret_file is
+#   therefore the first line of every listener here.
+#
+#   Access-Accept and Access-Reject differ by one octet, and MD5 is
+#   collidable. An attacker on the path who can predict a request can turn a
+#   Reject into an Accept (CVE-2024-3596). require_message_authenticator --
+#   on by default, and stated explicitly below because it is the point --
+#   requires RFC 3579's keyed HMAC, which the collision does not reach.
+#
+#   The privilege is in the REPLY. A client asks for access by logging in;
+#   the server's answer is what says this login gets the enable prompt. So
+#   max_privilege_level and deny_administrative_replies are checks on what
+#   comes back, and they are what stops one compromised RADIUS server from
+#   handing out enable across an estate of switches.
+#
+# Validate with: xproxyctl -config examples/auth/radius.yaml validate
+version: 1
+
+logging:
+  directory: /var/log/xproxy
+  access: {file: access.log}
+  security: {file: security.log}
+
+management:
+  socket: /run/xproxy/mgmt.sock
+  socket_mode: "0660"
+
+server:
+  listeners:
+    # ---------------------------------------------------------------
+    # 802.1X and wireless: the switches and the controllers.
+    #
+    # These clients do EAP and nothing else, and the one line that matters
+    # most is refuse_weak_eap -- on by default, and what stops a supplicant
+    # Nak-ing its way down to EAP-MD5, which is a hash anybody can crack on
+    # a laptop from one observed exchange.
+    #
+    # max_privilege_level: 1 is the reply check. Nothing that authenticates
+    # a laptop onto a wireless network has any business coming back with
+    # priv-lvl 15, and a listener that says so cannot be talked out of it by
+    # a server.
+    - name: dot1x
+      address: "10.20.0.10:1812"
+      kind: radius
+      radius:
+        upstream: radius-auth
+        accounting_upstream: radius-acct
+        secret_file: /etc/xproxy/radius/dot1x.secret
+
+        allow_clients:
+          - 10.30.0.0/16     # access switches
+          - 10.31.0.0/16     # wireless controllers
+
+        require_message_authenticator: true
+        verify_response_authenticator: true
+
+        # The dynamic authorization codes are absent from the default code
+        # list and stay absent: a Disconnect-Request ends a live user's
+        # session and a CoA-Request re-authorises it, from one datagram,
+        # running from the server towards the equipment.
+        allow_dynamic_authorization: false
+
+        auth_types: [eap]
+        refuse_weak_eap: true
+        eap_types: [peap, tls, ttls, mschapv2]
+
+        # The realm is routing: a name carrying one asks this estate's server
+        # to forward the credential somewhere else.
+        realms: [corp.example, guest.example]
+
+        max_privilege_level: 1
+        deny_administrative_replies: true
+
+        # The VLAN a RADIUS answer puts a port in. This listener's job is
+        # authentication; the VLAN assignment is the controller's own
+        # configuration, so an answer carrying one is refused rather than
+        # applied by a switch that trusted it.
+        deny_reply_attributes: [tunnel-private-group-id]
+
+        rate_limit: 200
+        rate_burst: 400
+        max_pending: 256
+        request_timeout: 5s
+
+        default_action: deny
+        rules:
+          - name: switches
+            action: allow
+            clients: [10.30.0.0/16]
+            codes: [access-request, accounting-request]
+          - name: wireless
+            action: allow
+            clients: [10.31.0.0/16]
+            codes: [access-request, accounting-request]
+          - name: health-checks
+            action: allow
+            codes: [status-server]
+
+        anomaly:
+          enabled: true
+          # A NAS that has only ever done PEAP and starts sending PAP is a
+          # new symbol, which is the finding worth reading on this protocol.
+          novelty: {symbols: true}
+          talkers: {enabled: true}
+
+    # ---------------------------------------------------------------
+    # The VPN concentrators, which are the one place PAP still happens.
+    #
+    # refuse_plaintext_passwords stays OFF here and the reason is the same
+    # one it is off by default: on this equipment the obfuscated password is
+    # the only authentication there is, and refusing it removes that rather
+    # than improving it. What this listener does instead is count every one,
+    # which is the number that says how much of the estate is still doing it.
+    - name: vpn
+      address: "10.20.0.11:1812"
+      kind: radius
+      radius:
+        upstream: radius-auth
+        secret_file: /etc/xproxy/radius/vpn.secret
+        # A second secret makes this listener a secret boundary: the
+        # concentrator's secret never reaches the server. The cost is
+        # written down in the reference -- re-obfuscating the password under
+        # the new secret means recovering it in memory for the length of one
+        # packet.
+        upstream_secret_file: /etc/xproxy/radius/server.secret
+
+        allow_clients: [10.32.0.5/32, 10.32.0.6/32]
+        auth_types: [pap, mschap, eap]
+        refuse_plaintext_passwords: false
+
+        realms: [corp.example]
+        require_realm: true
+
+        max_privilege_level: 1
+        rate_limit: 50
+
+        default_action: deny
+        rules:
+          - name: concentrators
+            action: allow
+            clients: [10.32.0.0/24]
+
+    # ---------------------------------------------------------------
+    # The administrative logins to the network equipment that has no
+    # TACACS+ -- and the one listener where a reply may grant enable.
+    #
+    # It is a listener of its own, on its own address, with its own secret,
+    # because "which equipment may be administered over RADIUS" is a
+    # question an estate should be able to answer by reading one address
+    # rather than by reading a rule list.
+    - name: device-admin
+      address: "10.20.0.12:1812"
+      kind: radius
+      radius:
+        upstream: radius-auth
+        secret_file: /etc/xproxy/radius/admin.secret
+
+        allow_clients: [10.33.0.0/24]   # the routers that have no TACACS+
+        auth_types: [pap, chap]
+        realms: [corp.example]
+        users: [netops1, netops2, netops3]
+
+        # Enable is allowed here, and bounded: 15 is the level, and the rule
+        # below is the only thing that reaches it.
+        max_privilege_level: 15
+        deny_administrative_replies: false
+
+        rate_limit: 20
+
+        default_action: deny
+        rules:
+          # The change window. Outside it the rule does not match, nothing
+          # else does either, and default_action refuses -- which is how
+          # "administrative logins during the maintenance window" is written
+          # without a second configuration file.
+          - name: netops-window
+            action: allow
+            users: [netops1, netops2, netops3]
+            max_privilege_level: 15
+            schedule:
+              days: [mon, tue, wed, thu, fri]
+              from: "07:00"
+              to: "19:00"
+              timezone: Europe/Stockholm
+          # Read-only monitoring, any hour, and never with enable.
+          - name: monitoring
+            action: allow
+            users: [nms]
+            max_privilege_level: 1
+
+    # ---------------------------------------------------------------
+    # A shadow-mode trial for a new estate: the policy is evaluated on real
+    # traffic and nothing is refused for policy.
+    #
+    # What is still refused: a packet whose digest does not verify, a
+    # malformed packet, and every bound. None of those is a policy question,
+    # and a relay that forwarded an unverifiable packet to find out what its
+    # policy would have said would have no authentication at all.
+    - name: trial
+      address: "10.20.0.13:1812"
+      kind: radius
+      policy: {mode: shadow}
+      radius:
+        upstream: radius-auth
+        secret_file: /etc/xproxy/radius/trial.secret
+        allow_clients: [10.34.0.0/16]
+        default_action: deny
+        rules:
+          - name: observe-everything
+            action: observe
+
+upstreams:
+  - name: radius-auth
+    endpoints:
+      - {address: "10.10.0.20:1812"}
+      - {address: "10.10.0.21:1812"}
+  - name: radius-acct
+    endpoints:
+      - {address: "10.10.0.20:1813"}
+      - {address: "10.10.0.21:1813"}
+
+bans:
+  triggers:
+    # A client that keeps being refused here is a switch with the wrong
+    # secret or something looking for one. The window is long because the
+    # first is a configuration mistake somebody will fix, and the ladder is
+    # short because the second is not.
+    - name: radius-refusals
+      reasons: [radius_denied]
+      threshold: 50
+      window: 10m
+      duration: 15m
+      max_duration: 2h

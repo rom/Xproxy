@@ -10,10 +10,10 @@ configuration patterns and reading the logs. Installation is covered in
 
 | Binary | Purpose |
 |--------|---------|
-| `xproxy` | The edge data plane: `http`, `forward`, `tcp`, `udp` and `dns` listeners |
+| `xproxy` | The edge data plane: `http`, `forward`, `tcp`, `udp` and `dns` listeners, and `kkdcp`, the Kerberos KDC proxy, which it shares with `xrelay` |
 | `xgate` | The gate: `ssh`, `telnet`, `vnc` and `rdp` listeners — the bastion and the remote access gateways, their policy, second factor and session recording |
-| `xrelay` | The relay: `smtp`, `ftp`, `ldap`, `postgres`, `mysql`, `tds`, `redis` and `amqp` listeners, and the eight it shares with `xot` |
-| `xot` | The OT daemon: `modbus`, `iec104`, `s7`, `mms`, `bacnet`, `opcua` and `coap` listeners, and the shared `mqtt`, `syslog`, `snmp`, `tftp`, `dhcp`, `dhcp6`, `ntp` and `ntske` — the binary for level 3.5, with none of the relay's own protocols in it |
+| `xrelay` | The relay: `smtp`, `ftp`, `ldap`, `postgres`, `mysql`, `tds`, `redis` and `amqp` listeners, `kkdcp` where the KDC proxy stands inside the network, and the ten it shares with `xot` |
+| `xot` | The OT daemon: `modbus`, `iec104`, `s7`, `mms`, `bacnet`, `opcua` and `coap` listeners, and the shared `mqtt`, `syslog`, `snmp`, `tftp`, `dhcp`, `dhcp6`, `ntp`, `ntske`, `radius` and `tacacs` — the binary for level 3.5, with none of the relay's own protocols in it |
 | `xproxyctl` | Control tool talking to a daemon's Unix socket |
 | `xproxy-admin` | Web GUI: a separate process serving a browser interface over the same socket |
 | `xproxy-replay` | Reads a session recording and shows it: a terminal session replayed with its timing, a VNC one decoded into frames or one self-contained page, an RDP one as the timeline of what it did. It opens no sockets and needs no daemon |
@@ -30,12 +30,19 @@ than present and unconfigured. The same argument is why `xot` exists: the
 proxy in front of a process network has no mail parser, no FTP, no
 directory and no database wire protocol in it.
 
-Eight kinds are served by both relays — `mqtt`, `syslog`, `snmp`, `tftp`,
-`dhcp`, `dhcp6`, `ntp` and `ntske`, which a plant and a data centre both
-run — and a listener of one of those says which daemon binds it with
-`daemon: xot`.
+Ten kinds are served by both relays — `mqtt`, `syslog`, `snmp`, `tftp`,
+`dhcp`, `dhcp6`, `ntp`, `ntske`, `radius` and `tacacs`, which a plant and a
+data centre both run; a plant's switches authenticate their administrators
+against RADIUS and TACACS+ exactly as a data centre's servers do — and a
+listener of one of those says which daemon binds it with `daemon: xot`.
 Left unset it is `xrelay`'s, so a configuration written before `xot`
-existed is served by the daemon that has always served it. Every other
+existed is served by the daemon that has always served it.
+
+One kind is shared the other way round. `kkdcp`, the Kerberos KDC proxy, is
+`xproxy`'s by default, because MS-KKDCP exists so that a client outside the
+network can reach a KDC inside it and the deployment it was designed for is
+an internet-facing HTTPS endpoint; an estate that runs one in front of its
+own domain controllers writes `daemon: xrelay` on the listener. Every other
 kind belongs to exactly one daemon, and naming a different one is a load
 error.
 
@@ -878,11 +885,21 @@ socket is handed to the new listener, so a socket passed by systemd or
 bound on a privileged port is kept and no client sees a refused
 connection; the old generation drains as for a removal. Certificate
 files, forward and dns policies still apply in place without a drain.
+A datagram socket is handed over the same way, so a `dns`, `udp`,
+`tftp`, `ntp`, `dhcp`, `dhcpv6`, `bacnet`, `coap`, `syslog` or `snmp`
+listener is rebuilt on the socket it already holds: the retiring
+generation stops reading before the new one starts, so every datagram
+after the switch is answered by the new policy, and one that arrives
+during the switch waits in the socket's receive buffer rather than
+being lost.
+
 The dry run lists the drains and the one case that still needs a
-restart, a listener with a UDP socket (`h3`, `tcp.quic`, plain `dns`)
-changed on the same address, because that socket stays bound until the
-drain ends. A port that cannot be bound fails the reload with the
-running set untouched.
+restart: a listener **carrying QUIC** (`h3`, `tcp.quic`, `dns.doq`)
+changed on the same address. A QUIC connection is cryptographic state
+inside the transport holding the socket, so handing the socket over
+would end every connection on it — refusing that one change is what
+keeps "a reload drops nothing" true. A port that cannot be bound fails
+the reload with the running set untouched.
 
 ### What is listening, and is it enforcing
 

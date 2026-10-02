@@ -197,7 +197,7 @@ compute it.
 | `... table full` in the error log | A bounded table hit its cap; see [Bounded tables](#bounded-tables-and-what-full-means) |
 | `xproxyctl capture status` says `off` and no file appears | The runtime switch is off; the section alone only makes a capture possible. See [Packet capture](#packet-capture) |
 | `management socket ... already in use` | Another xproxy is running, or a stale socket after a kill -9 |
-| A reload says a listener needs a restart | Only a listener with a UDP socket (`h3`, `tcp.quic`, plain `dns`) changed on the same address |
+| A reload says a listener needs a restart | Only a listener carrying QUIC (`h3`, `tcp.quic`, `dns.doq`) changed on the same address: its connections live in the socket's transport. A plain datagram listener -- `dns`, `udp`, `tftp`, `ntp`, `dhcp`, `dhcpv6`, `bacnet`, `coap`, `syslog`, `snmp` -- hands its socket to the new generation and reloads like any other |
 | `configuration advice` warnings at start | Not errors: configurations that load but are a bad idea. Read them |
 | `/v1/health` reports `degraded` | A hardening mechanism did not take effect and `sandbox.strict` is off |
 | 403 with `reason: websocket` | The route does not set `websocket: true`; an `Upgrade` is refused rather than proxied |
@@ -484,10 +484,23 @@ incremented.
 
 **What a reload cannot do.** Four things need a restart and the dry run
 says so: the cluster's `listen` address, `node_id` or TLS material; the
-`management.socket` path; `acme`; and a listener with a UDP socket
-changing on the same address. Everything else — routes, upstreams,
-filters, WAF rules, certificates, listeners added or removed — applies
-on reload.
+`management.socket` path; `acme`; and a listener **carrying QUIC**
+(`h3`, `tcp.quic`, `dns.doq`) changing on the same address. Everything
+else — routes, upstreams, filters, WAF rules, certificates, listeners
+added, removed, renamed or rebuilt, and the policy of a datagram
+listener — applies on reload.
+
+**Why QUIC is the exception.** Every other socket is handed from the
+retiring generation to the new one: the accept socket for a stream
+listener, the datagram socket for `dns`, `udp`, `tftp`, `ntp`, `dhcp`,
+`dhcpv6`, `bacnet`, `coap` and the datagram side of `syslog` and `snmp`.
+A datagram is a whole conversation, so the handover loses nothing — the
+socket is never closed and what arrives mid-switch waits in its receive
+buffer until the new generation reads it. A QUIC connection is not a
+datagram: it is cryptographic state inside the transport holding the
+socket, and handing the socket over would end every connection on it.
+Refusing that one change is the only way the promise "a reload drops no
+connection" stays true.
 
 **Why the old generation lingers.** After a reload the previous
 generation keeps its in-flight requests until the last one ends, then is

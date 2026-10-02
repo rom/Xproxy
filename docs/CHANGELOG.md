@@ -6,6 +6,177 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (the three authentication protocols an estate's own equipment uses: RADIUS, TACACS+ and Kerberos over HTTP)
+
+- **`kind: radius` is a relay in front of the protocol whose integrity check is
+  optional.** A RADIUS Access-Request carries a nonce in its Request
+  Authenticator and the reply carries an MD5 digest over that nonce, the body
+  and the shared secret -- and CVE-2024-3596 (Blast-RADIUS) is a chosen-prefix
+  collision on exactly that digest, which turns an Access-Reject into an
+  Access-Accept for anybody on the path. The protocol's own mitigation has
+  existed since RFC 3579: a keyed Message-Authenticator attribute. So
+  `require_message_authenticator` defaults to **on**, the relay verifies both
+  authenticators on both legs before it decides anything, and a rule can admit
+  the one piece of equipment too old to send a digest without turning the check
+  off for the estate.
+
+  Which authenticator a code carries is part of the check rather than a
+  detail. Access-Request, Status-Server and Status-Client carry a nonce;
+  Accounting-Request and the RFC 5176 codes carry a *computed* digest over
+  sixteen zero octets, so verifying those against the bytes they arrived with
+  accepts anything at all. The relay computes what each code must carry.
+
+  The policy is written in the protocol's terms: which codes may cross, which
+  authentication methods may be negotiated (`auth_types`, with EAP read where a
+  packet carries one), which EAP methods (`eap_types` -- refused whether the
+  packet offers one or Naks toward it, because a downgrade asked for the second
+  way is still a downgrade), which attributes may appear, and
+  **`max_privilege_level`, which is a bound on what a reply may grant**: a
+  Cisco av-pair carrying `priv-lvl=15` is how a RADIUS answer hands out enable
+  on a switch, and that is a decision about the answer, as the dhcp kind's
+  whole policy is. A plaintext User-Password is recognised and counted and
+  never undone. RFC 5176 dynamic authorization -- an unsolicited packet that
+  logs a session out -- is refused rather than carried.
+
+  It is a datagram kind, and the protocol's identifier is eight bits, so two
+  clients using the same identifier would otherwise collide in one upstream
+  conversation. The relay keeps a bounded table per client and renumbers, which
+  forces it to recompute both authenticators, which it can only do because it
+  holds a secret for each leg (`secret_file`, `upstream_secret_file`, owner-only
+  modes enforced at load; no secret is ever written in the configuration file).
+
+- **`kind: tacacs` is where a policy can say which command.** TACACS+ asks the
+  server about each command line a person types on a switch, so this is the one
+  protocol in the estate where authorisation is per command rather than per
+  session -- and device administration is what it carries. A rule names the
+  users, the devices and the command lines: `commands: ["show ...", "configure
+  terminal"]` as an allow list, or `deny_commands` as the narrower statement,
+  with `...` as a trailing wildcard and nowhere else, because a pattern whose
+  wildcard is in the middle describes a command line that ends where nothing
+  follows it. The command arrives split across a `cmd` argument and its
+  `cmd-arg` arguments; the policy is written as the single line the engineer
+  typed.
+
+  RFC 8907 section 10.3 says of its own body obfuscation that it is "not
+  cryptographically sound" -- it is an MD5 pad keyed by the secret and the
+  sequence number, and it is also the only confidentiality the protocol has. So
+  the kind implements it for what it is, refuses a body sent with the
+  unencrypted flag, and offers TLS toward equipment new enough to have it
+  (`upstream_tls_mode`). A `FOLLOW` reply, which hands the device another
+  server's address, port and key, is never carried -- not in shadow mode
+  either, because a compromised server that can redirect the next
+  authentication has not been contained by observing it.
+
+  `max_privilege_level` bounds what a response may grant, as on the radius
+  kind. Several sessions share one connection in single-connection mode and are
+  kept apart by session identifier, with sequence numbers checked in both
+  directions. And the configuration, restart, firmware and file-transfer
+  commands are mapped to **engineering operations**, so a change to a switch is
+  checked against the same work order, grant and ledger a change to a PLC is.
+
+- **`kind: kkdcp` is a Kerberos KDC proxy (MS-KKDCP) that holds no Kerberos
+  key.** Everything a policy needs is in the cleartext of a KDC message -- the
+  realm, the client and service principals, the encryption types offered, the
+  pre-authentication types present, the requested lifetime and options -- and
+  everything else is encrypted in keys that belong to the KDC and the service.
+  So this kind parses the KDC-PROXY-MESSAGE envelope and the message inside it
+  (`internal/kerberos`, with a DER reader that refuses indefinite and
+  non-minimal lengths, bounds nesting and depth, and refuses control characters
+  in a principal name), decides, and forwards the bytes it received or mints a
+  **KRB-ERROR of its own** -- because a Kerberos client reads Kerberos errors,
+  not HTTP statuses.
+
+  Three attacks are the reason the kind exists. **Kerberoasting** is a TGS-REQ
+  that asks for RC4 and nothing else, so that the service ticket can be cracked
+  offline against the service account's hash: `refuse_weak_etypes` refuses a
+  request offering nothing but DES or RC4, and a mixed list is not refused,
+  because that is the client asking for what it can use. **AS-REP roasting** is
+  visible on the *reply* -- an AS-REP to a request that carried no
+  pre-authentication is the roastable material -- so `refuse_preauth_exempt`
+  decides about an answer. **Password spraying** is bounded per client address
+  by `max_preauth_failures`, and service-ticket enumeration by
+  `max_distinct_services`; both reach the ban ladder, which on this kind is
+  where the anomaly findings go. Constrained delegation is two halves,
+  S4U2Self and S4U2Proxy, each separately allowed.
+
+  It is the first kind served by `xproxy` **and** `xrelay` rather than by the
+  two service-facing daemons. MS-KKDCP exists so that a client outside the
+  network can reach a KDC inside it, so the edge owns it by default and an
+  estate that runs one in front of its own domain controllers writes
+  `daemon: xrelay`. Its transport is HTTPS on one path and one method, and the
+  kind refuses to build without a certificate, because the message it carries
+  holds a value derived from the user's password.
+
+- **Eighteen counters, three refusal families and the ATT&CK mappings.**
+  `radius_requests`, `radius_bad_digest`, `radius_no_digest`,
+  `radius_plaintext_passwords`, `radius_privilege_grants`,
+  `radius_unsolicited`; `tacacs_sessions`, `tacacs_commands`,
+  `tacacs_accounting`, `tacacs_header_only`, `tacacs_plaintext_passwords`,
+  `tacacs_privilege_grants`; `kkdcp_requests`, `kkdcp_preauth_failures`,
+  `kkdcp_weak_tickets`, `kkdcp_preauth_exempt`, `kkdcp_delegations`,
+  `kkdcp_realm_mismatch`. Every refusal is bannable
+  (`radius_denied`, `tacacs_denied`, `kkdcp_denied`) and carries its
+  Enterprise ATT&CK technique: T1558 and its Kerberoasting (.003) and AS-REP
+  roasting (.004) subtechniques, T1550 for the stolen ticket, T1556 for the
+  modified authentication process, T1548 for the privilege grant, T1601 for the
+  modified device configuration, T1602 for the configuration repository dump,
+  T1529 for the remote restart, and T1562 for the defences a `no logging`
+  command turns off. `tacacs` joins the kinds that emit engineering events, so
+  four of those mappings are engineering ones.
+
+- **Documentation and examples.** Three sections in
+  [CONFIG.md](CONFIG.md), three protocol pages under
+  [docs/protocols](protocols/README.md) with a new "Authentication,
+  authorisation and accounting" group in the index, three examples
+  (`examples/auth/radius.yaml`, `tacacs.yaml`, `kkdcp.yaml`), the three
+  listener kinds in [README.md](../README.md), [ARCHITECTURE.md](ARCHITECTURE.md)
+  and [USAGE.md](USAGE.md), a new section in [RFC.md](RFC.md) for the
+  specifications they implement and refuse, four rows in
+  [THREAT_MODEL.md](THREAT_MODEL.md), and
+  [AMR-053](AMR.md) for the decision that the two symmetric-secret kinds
+  re-originate and the KDC proxy holds no key.
+
+### Fixed (a reload that drops nothing, including on a datagram listener)
+
+- **A datagram listener could not be reloaded at all.** A UDP socket cannot be
+  bound twice, and a rebuilt listener opened its own: so a reload that changed
+  anything on a `tftp`, `ntp`, `dhcp`, `dhcpv6`, `bacnet` or `coap` listener, or
+  on the datagram side of `syslog` or `snmp`, failed with `bind: address already
+  in use` — about a port this process was itself holding. For the three cases
+  the engine did know bound UDP (`kind: udp`, plain `dns`, and any listener with
+  `h3`) it refused the reload up front and asked for a restart instead, which is
+  the same hole with a better error. An estate whose OT relays are datagram
+  protocols could not change a policy without stopping the daemon.
+
+  The datagram socket is now owned by the engine for the listener's life and
+  handed from one generation to the next, exactly as the accept socket has been:
+  a `packetSource` holds it and each generation reads a `packetFront`, which can
+  be closed without closing the socket. Those fronts are closed before the new
+  generation serves, so from the moment of the switch every datagram is answered
+  by the generation whose policy decided it — on these protocols a datagram is a
+  whole conversation, and one answered under the old rules a moment after a
+  reload is the bug an operator would report. Nothing is lost in between: the
+  socket is never closed, so what arrives during the handover waits in its
+  receive buffer. Writes are not stopped, because a reply the retiring
+  generation is composing belongs to a request it accepted.
+
+- **"Restart required" now means QUIC, and nothing else.** A QUIC connection is
+  not a datagram: it is cryptographic state inside the transport that holds the
+  socket, so handing the socket over would end every connection on it. That is
+  the one change a reload still refuses — a listener carrying `h3`, `tcp.quic`
+  or `dns.doq` changed on the same address — and the refusal now says why.
+  `config.ListenerHasQUIC` is what the engine and the dry run ask, where both
+  used to ask whether the listener bound UDP at all.
+
+- **Three documented limits were not limits.** The forward listener's page said
+  "the address and TLS settings need a restart like every listener": both
+  reload, the TLS settings by rebuilding the listener on the socket it already
+  holds and the address by binding the new one while the old drains. The dns
+  listener's page said "the address needs a restart"; it is the one change that
+  always worked. "Changing a tcp listener needs a restart" was true only with
+  `quic: true`. All three are corrected, and `docs/ARCHITECTURE.md` now
+  describes the datagram handover beside the stream one.
+
 ### Added (WebSocket: a message policy, not only a frame policy)
 
 - **`websocket_guard.types` is the policy the application actually has.** The
