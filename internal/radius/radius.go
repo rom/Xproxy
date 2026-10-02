@@ -194,7 +194,7 @@ func CodeOf(s string) (Code, bool) {
 	case "coa":
 		return CodeCoARequest, true
 	}
-	if n, err := strconv.Atoi(k); err == nil && n >= 0 && n <= 255 {
+	if n, err := strconv.ParseUint(k, 10, 8); err == nil {
 		return Code(n), true
 	}
 	return 0, false
@@ -283,7 +283,7 @@ func AttrOf(s string) (AttrType, bool) {
 			return t, true
 		}
 	}
-	if n, err := strconv.Atoi(k); err == nil && n >= 1 && n <= 255 {
+	if n, err := strconv.ParseUint(k, 10, 8); err == nil && n >= 1 {
 		return AttrType(n), true
 	}
 	return 0, false

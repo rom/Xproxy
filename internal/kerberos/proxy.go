@@ -44,7 +44,7 @@ type ProxyMessage struct {
 	TargetDomain string
 	// HasHint and Hint are the domain-controller locator hint.
 	HasHint bool
-	Hint    int
+	Hint    int32
 }
 
 // Envelope errors.
@@ -94,7 +94,7 @@ func ParseProxyMessage(b []byte, maxInner int) (ProxyMessage, error) {
 			if err != nil {
 				return ProxyMessage{}, err
 			}
-			if !inner.is(classUniversal, tagOctetString) {
+			if !inner.is(tagOctetString) {
 				return ProxyMessage{}, fmt.Errorf("%w: kerb-message is not an OCTET STRING", ErrTag)
 			}
 			framed = inner.data

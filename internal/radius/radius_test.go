@@ -202,7 +202,12 @@ func digest(secret, b []byte, requestAuth [16]byte, at int) []byte {
 // signed builds a packet carrying a correct Message-Authenticator.
 func signed(secret []byte, code Code, id uint8, auth [16]byte,
 	requestAuth [16]byte, attrs ...[]byte) []byte {
-	all := append(attrs, attr(AttrMessageAuthenticator, make([]byte, 16)...))
+	// A copy rather than an append onto the caller's slice: appending into
+	// the spare capacity of a slice somebody else still holds is how one
+	// test's packet quietly changes another's.
+	all := make([][]byte, 0, len(attrs)+1)
+	all = append(all, attrs...)
+	all = append(all, attr(AttrMessageAuthenticator, make([]byte, 16)...))
 	b := packet(code, id, auth, all...)
 	at := len(b) - 16
 	copy(b[at:], digest(secret, b, requestAuth, at))

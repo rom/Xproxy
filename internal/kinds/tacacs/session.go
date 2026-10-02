@@ -1,7 +1,6 @@
 package tacacs
 
 import (
-	"encoding/binary"
 	"errors"
 	"io"
 	"net"
@@ -179,13 +178,4 @@ func writePacket(h wire.Header, body []byte) []byte {
 	h.Length = len(body)
 	out := h.Marshal()
 	return append(out, body...)
-}
-
-// sessionID is the header's identifier, read for a log line without
-// re-parsing.
-func sessionID(hdr []byte) uint32 {
-	if len(hdr) < wire.HeaderBytes {
-		return 0
-	}
-	return binary.BigEndian.Uint32(hdr[4:8])
 }

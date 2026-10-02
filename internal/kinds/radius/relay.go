@@ -445,12 +445,7 @@ func (t *server) fromServer(raw []byte, from net.Addr) {
 	}
 	out := p.Raw
 	if t.reading() {
-		signed, err := backward(p, e, t.secret)
-		if err != nil {
-			t.deny(ip, "cannot_resign", err.Error())
-			return
-		}
-		out = signed
+		out = backward(p, e, t.secret)
 	}
 	if _, err := t.pc.WriteTo(out, e.from); err != nil {
 		t.host.Counters().Refuse("radius", "client_write_failed")

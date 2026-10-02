@@ -123,7 +123,10 @@ func EAPTypeOf(s string) (EAPType, bool) {
 	case "mschap", "ms-chapv2":
 		return EAPTypeMSCHAPv2, true
 	}
-	if n, err := strconv.Atoi(k); err == nil && n >= 1 && n <= 255 {
+	// A bit-sized parse rather than Atoi and a comparison: the width is
+	// then the parser's promise rather than a range check a reader has to
+	// take on trust.
+	if n, err := strconv.ParseUint(k, 10, 8); err == nil && n >= 1 {
 		return EAPType(n), true
 	}
 	return 0, false

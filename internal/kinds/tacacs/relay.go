@@ -89,7 +89,8 @@ func (t *server) dial(client netip.Addr) (net.Conn, error) {
 	if e == nil {
 		return nil, errNoUpstream
 	}
-	d := net.Dialer{Timeout: 10 * time.Second}
+	const dialTimeout = 10 * time.Second
+	d := net.Dialer{Timeout: dialTimeout}
 	c, err := d.Dial("tcp", e.Address)
 	if err != nil {
 		return nil, err
@@ -106,7 +107,9 @@ func (t *server) dial(client netip.Addr) (net.Conn, error) {
 		cfg.ServerName = host
 	}
 	tc := tls.Client(c, cfg)
-	if err := tc.Handshake(); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), dialTimeout)
+	defer cancel()
+	if err := tc.HandshakeContext(ctx); err != nil {
 		_ = c.Close()
 		if t.upTLSMode == "prefer" {
 			// prefer means try and fall back, which is what an estate
@@ -577,7 +580,3 @@ func soonest(a, b time.Time) time.Time {
 	}
 	return b
 }
-
-// unusedContext keeps the context import honest for the log helpers in this
-// package, which take one.
-var _ = context.Background

@@ -52,9 +52,8 @@ func forward(p *wire.Packet, id uint8, oldSecret, newSecret []byte) ([]byte, [wi
 	copy(out, p.Raw)
 	out[1] = id
 	var auth [wire.AuthenticatorBytes]byte
-	switch {
-	case p.Code == wire.CodeAccessRequest || p.Code == wire.CodeStatusServer ||
-		p.Code == wire.CodeStatusClient:
+	switch p.Code {
+	case wire.CodeAccessRequest, wire.CodeStatusServer, wire.CodeStatusClient:
 		// The Request Authenticator is a nonce the client chose. A relay
 		// that reused it would be handing the server a value this relay
 		// does not control, and the password obfuscation is keyed on it --
@@ -76,9 +75,7 @@ func forward(p *wire.Packet, id uint8, oldSecret, newSecret []byte) ([]byte, [wi
 			out[i] = 0
 		}
 	}
-	if err := signMAC(p, out, newSecret, auth); err != nil {
-		return nil, auth, err
-	}
+	signMAC(p, out, newSecret, auth)
 	if p.Code != wire.CodeAccessRequest && p.Code != wire.CodeStatusServer &&
 		p.Code != wire.CodeStatusClient {
 		sum := md5.New() //nolint:gosec // RFC 2866 specifies MD5
@@ -93,7 +90,7 @@ func forward(p *wire.Packet, id uint8, oldSecret, newSecret []byte) ([]byte, [wi
 // backward builds the reply to send to the client: the client's identifier
 // back, and both digests recomputed over the client's own request
 // authenticator.
-func backward(p *wire.Packet, e *exchange, secret []byte) ([]byte, error) {
+func backward(p *wire.Packet, e *exchange, secret []byte) []byte {
 	out := make([]byte, len(p.Raw))
 	copy(out, p.Raw)
 	out[1] = e.clientID
@@ -101,16 +98,14 @@ func backward(p *wire.Packet, e *exchange, secret []byte) ([]byte, error) {
 	// field, so the field is set to it before the HMAC and overwritten by
 	// the MD5 afterwards.
 	copy(out[4:wire.HeaderBytes], e.clientAuth[:])
-	if err := signMAC(p, out, secret, e.clientAuth); err != nil {
-		return nil, err
-	}
+	signMAC(p, out, secret, e.clientAuth)
 	sum := md5.New() //nolint:gosec // RFC 2865 specifies MD5
 	sum.Write(out[:4])
 	sum.Write(e.clientAuth[:])
 	sum.Write(out[wire.HeaderBytes:])
 	sum.Write(secret)
 	copy(out[4:wire.HeaderBytes], sum.Sum(nil))
-	return out, nil
+	return out
 }
 
 // signMAC recomputes the Message-Authenticator in place, where the packet
@@ -121,14 +116,14 @@ func backward(p *wire.Packet, e *exchange, secret []byte) ([]byte, error) {
 // a request as carrying -- and on a protocol where the attribute's presence
 // is itself policy, inventing one would be answering the question the
 // policy asks.
-func signMAC(p *wire.Packet, out, secret []byte, auth [wire.AuthenticatorBytes]byte) error {
+func signMAC(p *wire.Packet, out, secret []byte, auth [wire.AuthenticatorBytes]byte) {
 	a, ok := p.First(wire.AttrMessageAuthenticator)
 	if !ok || len(a.Value) != wire.AuthenticatorBytes {
-		return nil
+		return
 	}
 	at := a.Offset
 	if at < wire.HeaderBytes || at+wire.AuthenticatorBytes > len(out) {
-		return nil
+		return
 	}
 	for i := 0; i < wire.AuthenticatorBytes; i++ {
 		out[at+i] = 0
@@ -142,7 +137,6 @@ func signMAC(p *wire.Packet, out, secret []byte, auth [wire.AuthenticatorBytes]b
 	mac := hmacMD5(secret, out)
 	copy(out[4:wire.HeaderBytes], keep)
 	copy(out[at:], mac)
-	return nil
 }
 
 // reobfuscate rewrites a User-Password under a new secret and a new request
